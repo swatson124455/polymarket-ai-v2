@@ -277,6 +277,10 @@ class Settings(BaseSettings):
     PREDICTION_LOG_TRAINING_WEIGHT: float = float(os.getenv("PREDICTION_LOG_TRAINING_WEIGHT", "0.3"))
     PREDICTION_LOG_TRAINING_MAX_ROWS: int = int(os.getenv("PREDICTION_LOG_TRAINING_MAX_ROWS", "10000"))
     RETRAIN_ON_NEW_FEEDBACK: bool = os.getenv("RETRAIN_ON_NEW_FEEDBACK", "true").lower() in ("true", "1", "yes")
+    # Ensemble blend: weight of ML ensemble vs learning_conf in final prediction.
+    # Session 50: was 0.6 (40% learning_conf ≈ 0.5 diluted all predictions toward coin-flip).
+    # Set to 1.0 to use pure ensemble until learning_conf has real signal from resolved outcomes.
+    ENSEMBLE_BLEND: float = float(os.getenv("ENSEMBLE_BLEND", "1.0"))
     # Model rollback: max Brier score degradation allowed before rejecting new models (lower = stricter)
     MODEL_ROLLBACK_BRIER_TOLERANCE: float = float(os.getenv("MODEL_ROLLBACK_BRIER_TOLERANCE", "0.02"))
     # Alpha decay: exponential decay rate for stale predictions (higher = faster decay)

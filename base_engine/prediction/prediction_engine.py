@@ -377,7 +377,10 @@ class PredictionEngine:
         self.initialized = False
         self.last_trained_at = None
         self.model_weights: Dict[str, float] = {}
-        self.ensemble_blend: float = 0.6
+        # Session 50: was 0.6 — learning_conf returns ~0.5 (sparse resolved data),
+        # so 40% weight on it pulls ALL predictions toward 0.5 (coin flip).
+        # Set to 1.0 to use pure ensemble output until learning_conf has real signal.
+        self.ensemble_blend: float = float(os.getenv("ENSEMBLE_BLEND", "1.0"))
         self.best_feature_names: Optional[List[str]] = None
         # Feature importance learning
         self._feature_engineer: Optional[FeatureEngineer] = None
@@ -1421,19 +1424,24 @@ class PredictionEngine:
                             MAX_WEIGHT_AGE_HOURS, age_hours,
                         )
                         self.model_weights = {}
-                        self.ensemble_blend = 0.6
+                        # Session 50: respect ENSEMBLE_BLEND env var instead of hardcoded 0.6
+                        _env_blend = float(os.getenv("ENSEMBLE_BLEND", "1.0"))
+                        self.ensemble_blend = max(BLEND_MIN, min(BLEND_MAX, _env_blend))
                     else:
                         self.model_weights = metrics.get("model_weights") or {}
-                        self.ensemble_blend = max(BLEND_MIN, min(BLEND_MAX, float(metrics.get("ensemble_blend", 0.6))))
+                        _env_blend = float(os.getenv("ENSEMBLE_BLEND", "1.0"))
+                        self.ensemble_blend = max(BLEND_MIN, min(BLEND_MAX, _env_blend))
                     self.best_feature_names = metrics.get("best_feature_names")
                 except Exception as e:
                     logger.debug("weights_updated_at parse failed, using stored weights: %s", e)
                     self.model_weights = metrics.get("model_weights") or {}
-                    self.ensemble_blend = max(BLEND_MIN, min(BLEND_MAX, float(metrics.get("ensemble_blend", 0.6))))
+                    _env_blend = float(os.getenv("ENSEMBLE_BLEND", "1.0"))
+                    self.ensemble_blend = max(BLEND_MIN, min(BLEND_MAX, _env_blend))
                     self.best_feature_names = metrics.get("best_feature_names")
             else:
                 self.model_weights = metrics.get("model_weights") or {}
-                self.ensemble_blend = max(BLEND_MIN, min(BLEND_MAX, float(metrics.get("ensemble_blend", 0.6))))
+                _env_blend = float(os.getenv("ENSEMBLE_BLEND", "1.0"))
+                self.ensemble_blend = max(BLEND_MIN, min(BLEND_MAX, _env_blend))
                 self.best_feature_names = metrics.get("best_feature_names")
         # I09: Renormalize weights to include all current models.
         # Models added since the last cache save get 1/N default weight so they're included
