@@ -265,6 +265,10 @@ class Settings(BaseSettings):
     RL_EPSILON_DECAY_TRADES: int = int(os.getenv("RL_EPSILON_DECAY_TRADES", "500"))
     RL_REPLAY_BUFFER_SIZE: int = int(os.getenv("RL_REPLAY_BUFFER_SIZE", "2000"))
     RL_REPLAY_BATCH_SIZE: int = int(os.getenv("RL_REPLAY_BATCH_SIZE", "32"))
+    # Max unique (market, token) pairs to fetch price history for during training.
+    # Session 50: was hardcoded 500, now configurable. Higher = more rows get real
+    # path/regime/FE features instead of zeros. Cost: more DB reads at retrain.
+    TRAINING_MAX_PRICE_KEYS: int = int(os.getenv("TRAINING_MAX_PRICE_KEYS", "2000"))
     # Exclude low-volume markets from training (reduces thin-market noise bias)
     TRAINING_MIN_VOLUME: float = float(os.getenv("TRAINING_MIN_VOLUME", "500"))
     TRAINING_PURGE_DAYS: float = float(os.getenv("TRAINING_PURGE_DAYS", "0"))

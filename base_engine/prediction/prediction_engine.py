@@ -1223,6 +1223,29 @@ class PredictionEngine:
 
         logger.info("Models trained successfully")
 
+        # Session 50: Log feature importance after training to identify dead/noisy features
+        try:
+            fi = self.get_feature_scores()
+            if fi:
+                sorted_fi = sorted(fi.items(), key=lambda x: x[1], reverse=True)
+                top_10 = sorted_fi[:10]
+                bottom_5 = sorted_fi[-5:] if len(sorted_fi) > 5 else []
+                logger.info(
+                    "Feature importance (top 10): %s",
+                    ", ".join(f"{k}={v:.4f}" for k, v in top_10),
+                )
+                if bottom_5:
+                    logger.info(
+                        "Feature importance (bottom 5): %s",
+                        ", ".join(f"{k}={v:.4f}" for k, v in bottom_5),
+                    )
+                # Log features with near-zero importance (candidates for removal)
+                dead_features = [k for k, v in fi.items() if v < 0.001]
+                if dead_features:
+                    logger.warning("Near-zero importance features (%d): %s", len(dead_features), dead_features)
+        except Exception as e:
+            logger.debug("Feature importance logging failed: %s", e)
+
     def get_feature_scores(self) -> Dict[str, float]:
         """Build feature name -> importance from tree models (for MetaLearner feature selection). MDI can overweight high-cardinality features."""
         if not self.models or not self.feature_columns:
@@ -1913,9 +1936,9 @@ class PredictionEngine:
         use_clarity = getattr(settings, "RESOLUTION_CLARITY_ENABLED", True)
         if use_clarity:
             if "clarity_score" not in df.columns:
-                df["clarity_score"] = 0.7
+                df["clarity_score"] = 0.5  # Session 50: was 0.7 (positive bias); 0.5 = neutral
             else:
-                df["clarity_score"] = pd.to_numeric(df["clarity_score"], errors="coerce").fillna(0.7)
+                df["clarity_score"] = pd.to_numeric(df["clarity_score"], errors="coerce").fillna(0.5)
             base_cols.append("clarity_score")
         for col in base_cols:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
@@ -2752,10 +2775,13 @@ class PredictionEngine:
                         # lifetime aggregate at inference creates covariate shift as the portfolio
                         # matures. 30-day window keeps inference aligned with recent market regime.
                         # Min 5 resolved trades in window required; falls back to lifetime if sparse.
-                        _win_rate_30d: Optional[float] = None
-                        _n_resolved_30d: int = 0
+                        _win_rate_365d: Optional[float] = None
+                        _profit_365d: Optional[float] = None
+                        _n_resolved_365d: int = 0
                         try:
                             from sqlalchemy import text as _sql_text
+                            # Session 50: aligned with training's 365-day LATERAL JOIN
+                            # (was 30-day win_rate only, profit was lifetime — train-serve skew)
                             _wr_row = (await session.execute(
                                 _sql_text("""
                                     SELECT
@@ -2763,33 +2789,36 @@ class PredictionEngine:
                                             CASE WHEN t.token_id = m.yes_token_id THEN 'YES' ELSE 'NO' END
                                             THEN 1.0 ELSE 0.0 END
                                         ) / NULLIF(COUNT(*), 0),
-                                        COUNT(*)
+                                        COUNT(*),
+                                        COALESCE(SUM(t.pnl), 0.0)
                                     FROM trades t
                                     JOIN markets m ON t.market_id = m.id
                                     WHERE t.user_address = :addr
                                       AND m.resolution IN ('YES', 'NO')
-                                      AND t.timestamp >= NOW() - INTERVAL '30 days'
+                                      AND t.timestamp >= NOW() - INTERVAL '365 days'
                                 """),
                                 {"addr": user_address},
                             )).fetchone()
                             if _wr_row and _wr_row[0] is not None:
-                                _win_rate_30d = float(_wr_row[0])
-                                _n_resolved_30d = int(_wr_row[1] or 0)
+                                _win_rate_365d = float(_wr_row[0])
+                                _n_resolved_365d = int(_wr_row[1] or 0)
+                                _profit_365d = float(_wr_row[2] or 0.0)
                         except Exception as _e:
-                            logger.debug("I07 30d win_rate query failed, falling back to lifetime: %s", _e)
+                            logger.debug("S50 365d user stats query failed, falling back to lifetime: %s", _e)
                     if not user:
                         logger.warning(f"User {user_address} not found in database, using defaults")
                     else:
-                        # Prefer 30-day window if ≥5 resolved trades; else use lifetime aggregate.
+                        # Session 50: prefer 365-day window (matches training LATERAL JOIN)
                         if (
-                            _win_rate_30d is not None
-                            and _n_resolved_30d >= 5
-                            and not (math.isnan(_win_rate_30d) or math.isinf(_win_rate_30d))
+                            _win_rate_365d is not None
+                            and _n_resolved_365d >= 5
+                            and not (math.isnan(_win_rate_365d) or math.isinf(_win_rate_365d))
                         ):
-                            user_win_rate = _win_rate_30d
+                            user_win_rate = _win_rate_365d
+                            user_profit = _profit_365d if _profit_365d is not None else 0.0
                         else:
                             user_win_rate = float(user.win_rate) if user.win_rate is not None else 0.5
-                        user_profit = float(user.total_profit) if user.total_profit is not None else 0.0
+                            user_profit = float(user.total_profit) if user.total_profit is not None else 0.0
                         if math.isnan(user_win_rate) or math.isinf(user_win_rate):
                             logger.warning(f"Invalid user_win_rate {user_win_rate}, using 0.5")
                             user_win_rate = 0.5
@@ -2922,7 +2951,8 @@ class PredictionEngine:
                             try:
                                 from base_engine.learning.path_summary import get_path_summary, path_summary_to_feature_list
                                 end_dt = datetime.now(timezone.utc)
-                                start_dt = end_dt - timedelta(days=7)
+                                # Session 50: was 7 days — training uses 30 days, causing train-serve skew
+                                start_dt = end_dt - timedelta(days=30)
                                 token_id = getattr(market, "yes_token_id", None) or ""
                                 path_sum = await get_path_summary(_s, market_id, token_id, start_dt, end_dt, price)
                                 _path_feats = path_summary_to_feature_list(path_sum)
@@ -3187,7 +3217,7 @@ class PredictionEngine:
 
             # Tier 2 #16: Resolution clarity score (only if this feature is in the trained model)
             if getattr(settings, "RESOLUTION_CLARITY_ENABLED", True) and "clarity_score" in (self.feature_columns or []):
-                _clarity_score = 0.7  # neutral default (unknown / not-yet-scored)
+                _clarity_score = 0.5  # Session 50: was 0.7; 0.5 = truly neutral
                 _rra = getattr(self, "_resolution_risk_analyzer", None)
                 if _rra is not None:
                     _cached_clarity = _rra._clarity_cache.get(str(market_id))
