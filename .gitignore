@@ -1,0 +1,144 @@
+# SECURITY FIX: Comprehensive .gitignore to protect sensitive files
+
+# Sensitive Configuration
+.env
+.env.local
+.env.production
+.env.staging
+*.key
+*.pem
+private_keys/
+wallet_backup/
+secrets/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+postgres_data/
+database_backup/
+
+# Logs (may contain sensitive information)
+logs/
+*.log
+debug.log
+error.log
+access.log
+trading.log
+
+# Cache and temporary files
+__pycache__/
+.cache/
+.pytest_cache/
+.pytest_tmp/
+.redis/
+*.pyc
+*.pyo
+
+# IDE and Editor files
+.vscode/
+.idea/
+.cursor/
+.claude/
+*.swp
+*.swo
+.spyderproject
+.spyproject
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Temporary files
+temp/
+tmp/
+*.tmp
+*.bak
+*.backup
+*.old
+
+# Dependencies and Virtual Environments
+node_modules/
+.venv/
+venv/
+env/
+ENV/
+.pip-cache/
+
+# Distribution and packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# Unit test and coverage reports  
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# MyPy type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# Trading specific sensitive data
+trading_history/
+backtest_results/
+live_trades/
+api_keys/
+wallet_data/
+
+# StreamLit cache
+.streamlit/
+
+# ML training artifacts
+catboost_info/
+data/model_cache.pkl
+dump.rdb
+
+# Stale virtual environments
+lockes-pickspolymarket-ai-v2venv/
+
+# Local development files
+local_config.*
+dev_settings.*
+test_data/
+sandbox/
+
+# Windows device files (NUL is a reserved name on Windows, not a real file)
+NUL
+
+# Additional ML/data artifacts
+catboost_info/
+data/catboost_info/
+data/backups/
+poly_data/processed/
+archive/
+
+# Data ingestion runtime checkpoints
+base_engine/data/*checkpoint*.json
+
+# Transient diagnostic output
+data/*_stderr.txt
+data/*_stdout.txt
+
+# Large data files (CSVs, datasets)
+poly_data/*.csv
+poly_data/goldsky/*.csv

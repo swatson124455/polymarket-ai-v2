@@ -1,0 +1,75 @@
+{
+  "_metadata": {
+    "version": 2,
+    "total_valid": 46,
+    "last_updated": "2026-02-26",
+    "note": "Beat reporter seed file. Valid IDs: 46. Target: 800 before enabling SPORTS_TWITTER_STREAM_ENABLED=true. Expand via: GET https://api.twitter.com/2/users/by?usernames=<comma_list>&user.fields=id with a Bearer token. Entries removed in v2: BNightengale (dup ID=JeffPassan), AlbertBreer (dup ID=AdamSchefter), elliottfriedman (dup ID=FriedgeHNIC), reporterchris (dup ID=PierreVLeBrun), NHL (dup ID=NHLdotcom), MatteTaylor/AlexiLaylas/VicFenech/TransferChecker (null soccer IDs), josemorgado/BarbaraSchett (null tennis IDs). X API Basic: 5 rules x 512 chars ~= 125 IDs max."
+  },
+  "nba": [
+    {"username": "ShamsCharania",   "id": "188669512",  "outlet": "The Athletic",    "priority": 1},
+    {"username": "wojespn",         "id": "25222489",   "outlet": "ESPN",            "priority": 1},
+    {"username": "ChrisBHaynes",    "id": "240153617",  "outlet": "ESPN/Yahoo",      "priority": 1},
+    {"username": "TheSteinLine",    "id": "25070005",   "outlet": "The Athletic",    "priority": 1},
+    {"username": "ByTonyJones",     "id": "149534515",  "outlet": "The Athletic",    "priority": 2},
+    {"username": "sam_amick",       "id": "17419064",   "outlet": "The Athletic",    "priority": 2},
+    {"username": "WindhorstESPN",   "id": "175937693",  "outlet": "ESPN",            "priority": 2},
+    {"username": "JakeLFischer",    "id": "1049785978", "outlet": "Bleacher Report", "priority": 2},
+    {"username": "MikeAScotto",     "id": "17823611",   "outlet": "HoopsHype",       "priority": 2},
+    {"username": "EricPincus",      "id": "45783354",   "outlet": "Bleacher Report", "priority": 2},
+    {"username": "hmfaigen",        "id": "248302009",  "outlet": "Lakers",          "priority": 3},
+    {"username": "AndrewGreif",     "id": "22836648",   "outlet": "LA Times",        "priority": 3},
+    {"username": "FredKatz",        "id": "15460975",   "outlet": "The Athletic",    "priority": 3},
+    {"username": "KevinOConnorNBA", "id": "461726953",  "outlet": "The Ringer",      "priority": 3},
+    {"username": "TimBontemps",     "id": "18900811",   "outlet": "ESPN",            "priority": 3}
+  ],
+  "nfl": [
+    {"username": "RapSheet",        "id": "106585996",  "outlet": "NFL Network",     "priority": 1},
+    {"username": "TomPelissero",    "id": "79421538",   "outlet": "NFL Network",     "priority": 1},
+    {"username": "AdamSchefter",    "id": "21628535",   "outlet": "ESPN",            "priority": 1},
+    {"username": "JayGlazer",       "id": "21337318",   "outlet": "Fox Sports",      "priority": 1},
+    {"username": "MikeGarafolo",    "id": "21028582",   "outlet": "NFL Network",     "priority": 2},
+    {"username": "DanGrazianoESPN", "id": "105455534",  "outlet": "ESPN",            "priority": 2},
+    {"username": "mortreport",      "id": "20615052",   "outlet": "ESPN",            "priority": 2},
+    {"username": "JosinaAnderson",  "id": "62399014",   "outlet": "CBS Sports",      "priority": 2},
+    {"username": "AaronWilsonNFL",  "id": "195350804",  "outlet": "KPRC2/NFL",       "priority": 2},
+    {"username": "nflnetwork",      "id": "10228272",   "outlet": "NFL Network",     "priority": 3},
+    {"username": "NFL",             "id": "35773965",   "outlet": "Official NFL",    "priority": 3}
+  ],
+  "mlb": [
+    {"username": "JeffPassan",      "id": "18966858",   "outlet": "ESPN",            "priority": 1},
+    {"username": "KenRosenthal",    "id": "19816919",   "outlet": "The Athletic",    "priority": 1},
+    {"username": "JonHeyman",       "id": "23632478",   "outlet": "New York Post",   "priority": 1},
+    {"username": "MikeRosenbaum",   "id": "27395095",   "outlet": "MLB Insider",     "priority": 2},
+    {"username": "Feinsand",        "id": "26250360",   "outlet": "MLB.com",         "priority": 2},
+    {"username": "MLBNetwork",      "id": "62450045",   "outlet": "MLB Network",     "priority": 2},
+    {"username": "radiocasey",      "id": "18255892",   "outlet": "CBS Sports",      "priority": 3},
+    {"username": "MLB",             "id": "18479513",   "outlet": "Official MLB",    "priority": 3}
+  ],
+  "nhl": [
+    {"username": "FriedgeHNIC",     "id": "25563555",   "outlet": "TSN/Sportsnet",   "priority": 1},
+    {"username": "PierreVLeBrun",   "id": "40793267",   "outlet": "The Athletic",    "priority": 1},
+    {"username": "TSNBobMcKenzie",  "id": "32776274",   "outlet": "TSN",             "priority": 1},
+    {"username": "NHLdotcom",       "id": "16579812",   "outlet": "Official NHL",    "priority": 2},
+    {"username": "frank_seravalli", "id": "67536538",   "outlet": "Daily Faceoff",   "priority": 2}
+  ],
+  "soccer": [
+    {"username": "FabrizioRomano",  "id": "895563818",  "outlet": "The Guardian",    "priority": 1},
+    {"username": "David_Ornstein",  "id": "216953219",  "outlet": "The Athletic",    "priority": 1},
+    {"username": "OptaJoe",         "id": "7416200",    "outlet": "Opta",            "priority": 2}
+  ],
+  "tennis": [
+    {"username": "atptour",         "id": "21205023",   "outlet": "Official ATP",    "priority": 1},
+    {"username": "WTA",             "id": "15474741",   "outlet": "Official WTA",    "priority": 1},
+    {"username": "Wimbledon",       "id": "18426488",   "outlet": "Wimbledon",       "priority": 2},
+    {"username": "usopen",          "id": "18895516",   "outlet": "US Open",         "priority": 2}
+  ],
+  "_expansion_targets": {
+    "note": "Populate IDs via: GET /2/users/by?usernames=<handles> with Bearer token. Add to sport sections above.",
+    "nba_to_add":    ["ZachLowe_NBA", "DavidAldridgeTV", "GaryVee", "AlexKennedyNBA", "BenGolliver", "HowardBeck"],
+    "nfl_to_add":    ["diannaESPN", "MikeFlorio", "ProFootballTalk", "charlesjrobinson", "SidSaraf", "TomPelisseroNFL"],
+    "mlb_to_add":    ["BNightengale", "JoelSherman", "WillSammon", "evandrelfin", "CraigMish", "JimBowden_MLB"],
+    "nhl_to_add":    ["elliottfriedman", "reporterchris", "KPdotcom", "TSNBobMcKenzie_backup"],
+    "soccer_to_add": ["MatteTaylor", "AlexiLaylas", "FabrizioRomanoEN", "transfermarkt", "WhoScored"],
+    "tennis_to_add": ["josemorgado", "BarbaraSchett", "TennisTV", "TennisChannel"]
+  }
+}

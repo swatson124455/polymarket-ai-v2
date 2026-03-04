@@ -1,0 +1,192 @@
+"""
+Esports DB Helpers — upsert matches, teams, predictions, calibration.
+
+Mirrors sports/data/sports_db.py pattern. All methods accept an optional
+db (AsyncSession) parameter injected by the caller.
+
+Usage::
+    from esports.data.esports_db import upsert_esports_match, get_calibration
+    await upsert_esports_match(db, match_data)
+    cal = await get_calibration(db, game="lol", market_type="match_winner")
+"""
+from __future__ import annotations
+
+import datetime as _dt
+from typing import Any, Dict, List, Optional
+
+from structlog import get_logger
+
+logger = get_logger()
+
+
+async def upsert_esports_team(db, team_data: Dict[str, Any]) -> None:
+    """Insert or update an esports team in esports_teams table."""
+    if db is None:
+        return
+    try:
+        await db.execute(
+            """
+            INSERT INTO esports_teams (external_id, name, game, region, logo_url)
+            VALUES (:external_id, :name, :game, :region, :logo_url)
+            ON CONFLICT (external_id) DO UPDATE SET
+                name = EXCLUDED.name,
+                region = EXCLUDED.region,
+                logo_url = EXCLUDED.logo_url,
+                updated_at = NOW()
+            """,
+            {
+                "external_id": str(team_data.get("id", "")),
+                "name": str(team_data.get("name", "")),
+                "game": str(team_data.get("game", "")),
+                "region": str(team_data.get("region", "")),
+                "logo_url": str(team_data.get("logo_url", "")),
+            },
+        )
+        await db.commit()
+    except Exception as exc:
+        logger.debug("esports_db: upsert_team failed", error=str(exc))
+
+
+async def upsert_esports_match(db, match_data: Dict[str, Any]) -> None:
+    """Insert or update an esports match in esports_matches table."""
+    if db is None:
+        return
+    try:
+        await db.execute(
+            """
+            INSERT INTO esports_matches
+                (external_id, game, tournament, team_a, team_b, team_a_id, team_b_id,
+                 best_of, status, score_a, score_b, scheduled_at)
+            VALUES
+                (:external_id, :game, :tournament, :team_a, :team_b, :team_a_id, :team_b_id,
+                 :best_of, :status, :score_a, :score_b, :scheduled_at)
+            ON CONFLICT (external_id) DO UPDATE SET
+                status = EXCLUDED.status,
+                score_a = EXCLUDED.score_a,
+                score_b = EXCLUDED.score_b,
+                updated_at = NOW()
+            """,
+            {
+                "external_id": str(match_data.get("match_id", "")),
+                "game": str(match_data.get("game", "")),
+                "tournament": str(match_data.get("tournament", "")),
+                "team_a": str(match_data.get("team_a", "")),
+                "team_b": str(match_data.get("team_b", "")),
+                "team_a_id": str(match_data.get("team_a_id", "")),
+                "team_b_id": str(match_data.get("team_b_id", "")),
+                "best_of": int(match_data.get("best_of", 1)),
+                "status": str(match_data.get("status", "not_started")),
+                "score_a": int(match_data.get("score_a", 0)),
+                "score_b": int(match_data.get("score_b", 0)),
+                "scheduled_at": match_data.get("scheduled_at"),
+            },
+        )
+        await db.commit()
+    except Exception as exc:
+        logger.debug("esports_db: upsert_match failed", error=str(exc))
+
+
+async def log_esports_prediction(
+    db,
+    match_id: str,
+    market_id: str,
+    game: str,
+    model_prob: float,
+    market_price: float,
+    side: str,
+    confidence: float,
+    bot_name: str,
+) -> None:
+    """Log an esports prediction to the esports_predictions table."""
+    if db is None:
+        return
+    try:
+        await db.execute(
+            """
+            INSERT INTO esports_live_events
+                (match_id, game, event_type, description, confidence, market_side, edge_estimate)
+            VALUES
+                (:match_id, :game, 'prediction', :description, :confidence, :side, :edge)
+            """,
+            {
+                "match_id": match_id,
+                "game": game,
+                "description": f"{bot_name} prediction: model={model_prob:.3f} market={market_price:.3f}",
+                "confidence": confidence,
+                "side": side,
+                "edge": abs(model_prob - market_price),
+            },
+        )
+        await db.commit()
+    except Exception as exc:
+        logger.debug("esports_db: log_prediction failed", error=str(exc))
+
+
+async def get_calibration(
+    db, game: str, market_type: str = "match_winner"
+) -> Optional[Dict[str, Any]]:
+    """
+    Get calibration data for a (game, market_type) pair.
+
+    Returns dict with: bet_count, correct_count, brier_score, kelly_fraction.
+    """
+    if db is None:
+        return None
+    try:
+        result = await db.execute(
+            """
+            SELECT bet_count, correct_count, brier_score, kelly_fraction
+            FROM esports_calibration
+            WHERE game = :game AND market_type = :market_type
+            """,
+            {"game": game, "market_type": market_type},
+        )
+        row = result.first()
+        if row:
+            return {
+                "bet_count": row.bet_count,
+                "correct_count": row.correct_count,
+                "brier_score": row.brier_score,
+                "kelly_fraction": row.kelly_fraction,
+            }
+    except Exception as exc:
+        logger.debug("esports_db: get_calibration failed", error=str(exc))
+    return None
+
+
+async def update_calibration(
+    db,
+    game: str,
+    market_type: str,
+    bet_count: int,
+    correct_count: int,
+    brier_score: float,
+    kelly_fraction: float,
+) -> None:
+    """Upsert calibration row for a (game, market_type) pair."""
+    if db is None:
+        return
+    try:
+        await db.execute(
+            """
+            INSERT INTO esports_calibration (game, market_type, bet_count, correct_count, brier_score, kelly_fraction)
+            VALUES (:game, :market_type, :bet_count, :correct_count, :brier_score, :kelly_fraction)
+            ON CONFLICT (game, market_type) DO UPDATE SET
+                bet_count = EXCLUDED.bet_count,
+                correct_count = EXCLUDED.correct_count,
+                brier_score = EXCLUDED.brier_score,
+                kelly_fraction = EXCLUDED.kelly_fraction,
+                updated_at = NOW()
+            """,
+            {
+                "game": game,
+                "market_type": market_type,
+                "bet_count": bet_count,
+                "correct_count": correct_count,
+                "brier_score": brier_score,
+                "kelly_fraction": kelly_fraction,
+            },
+        )
+        await db.commit()
+    except Exception as exc:
+        logger.debug("esports_db: update_calibration failed", error=str(exc))

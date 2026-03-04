@@ -1,0 +1,44 @@
+# RSS Feed Configuration — Polymarket Sentiment Pipeline
+# Categorized feeds for news ingestion. Parsed by news_sources.py.
+# All feeds are free, no API key required.
+
+political:
+  - https://rss.nytimes.com/services/xml/rss/nyt/Politics.xml
+  - https://feeds.washingtonpost.com/rss/politics
+  - https://www.politico.com/rss/politics08.xml
+  - https://thehill.com/feed/
+  - https://feeds.bbci.co.uk/news/politics/rss.xml
+  - https://rss.cnn.com/rss/cnn_allpolitics.rss
+  - https://feeds.foxnews.com/foxnews/politics
+
+world:
+  - https://feeds.bbci.co.uk/news/world/rss.xml
+  - https://rss.nytimes.com/services/xml/rss/nyt/World.xml
+  - https://www.aljazeera.com/xml/rss/all.xml
+  - https://feeds.theguardian.com/theguardian/world/rss
+  - https://www.npr.org/rss/rss.php?id=1001
+
+economics:
+  - https://www.cnbc.com/id/100003114/device/rss/rss.html
+  - https://feeds.marketwatch.com/marketwatch/topstories
+  - https://rss.nytimes.com/services/xml/rss/nyt/Business.xml
+  - https://feeds.bbci.co.uk/news/business/rss.xml
+  - https://feeds.theguardian.com/theguardian/business/rss
+
+science_tech:
+  - https://rss.nytimes.com/services/xml/rss/nyt/Science.xml
+  - https://feeds.arstechnica.com/arstechnica/science
+  - https://techcrunch.com/feed/
+
+crypto:
+  - https://cointelegraph.com/rss
+  - https://decrypt.co/feed
+
+sports:
+  - https://rss.nytimes.com/services/xml/rss/nyt/Sports.xml
+
+# Prediction market communities (Reddit RSS — no API key)
+prediction_markets:
+  - https://www.reddit.com/r/polymarket/.rss
+  - https://www.reddit.com/r/predictit/.rss
+  - https://www.reddit.com/r/wallstreetbets/.rss

@@ -1,0 +1,291 @@
+# ============================================
+# POLYMARKET API
+# ============================================
+py-clob-client>=0.1.0
+# Job: Official Polymarket CLOB client
+# Expects: Valid API key, secret, passphrase, private key (for L2 trading)
+# Used by: ExecutionEngine (via clob_adapter), orderbook/order placement
+
+# ============================================
+# BLOCKCHAIN
+# ============================================
+web3>=7.0.0
+# Job: Polygon RPC interaction (v7+ required for AsyncWeb3)
+# Expects: Valid RPC URL (QuickNode), funded wallet
+# Used by: BlockchainClient, ContractManager
+
+# ============================================
+# DATABASE
+# ============================================
+asyncpg>=0.28.0,<0.31
+# Job: Async PostgreSQL driver
+# Expects: Valid DATABASE_URL (local PostgreSQL or remote)
+# Used by: Database class, all DB operations
+
+sqlalchemy>=2.0.0,<3.0
+# Job: ORM, query building, session management
+# Expects: asyncpg as backend (postgresql+asyncpg)
+# Used by: Database, all models, queries
+
+psycopg2-binary>=2.9.0
+# Job: Sync PostgreSQL driver (used by migration scripts)
+# Used by: scripts/run_migrations.py
+
+# ============================================
+# HTTP & ASYNC
+# ============================================
+httpx>=0.24.0
+# Job: Async HTTP client for APIs
+# Expects: Network access
+# Used by: PolymarketClient (Gamma, CLOB fallback, Data APIs)
+
+requests>=2.28.0
+# Job: Sync HTTP for simple calls
+# Expects: Network access
+# Used by: Health pings, webhooks, simple GETs
+
+aiohttp>=3.8.0
+# Job: Async HTTP server + client
+# Expects: Port 8080+ available
+# Used by: HealthServer endpoint
+
+websockets>=16.0
+# Job: WebSocket connections; 16+ for explicit proxy (SOCKS/HTTP) support
+# Expects: Network access to CLOB WebSocket
+# Used by: WebSocketManager, real-time data
+
+orjson>=3.9.0
+# Job: Optional fast JSON parsing for WebSocket messages (3-10x faster); fallback to stdlib json if missing
+# Used by: json_parse.loads in WebSocketManager, UserOrderWebSocket
+
+# ============================================
+# DATA & ML
+# ============================================
+pandas>=2.0.0
+# Job: Data manipulation, feature prep
+# Expects: numpy
+# Used by: DataIngestion, PredictionEngine, analysis
+
+numpy>=1.24.0
+# Job: Numerical arrays, math
+# Used by: All ML code, calculations
+
+scikit-learn>=1.3.0,<1.7
+# Job: ML models (RF, GB), preprocessing
+# Used by: PredictionEngine (_train_models)
+
+xgboost>=2.0.0,<3.0
+# Job: XGBoost gradient boosting
+# Used by: PredictionEngine (ensemble)
+
+lightgbm>=4.0.0
+# Job: LightGBM gradient boosting (leaf-wise, histogram binning)
+# Used by: PredictionEngine (ensemble diversity)
+
+catboost>=1.2.0
+# Job: CatBoost ordered boosting (handles categoricals, robust to overfitting)
+# Used by: PredictionEngine (ensemble diversity)
+
+# ============================================
+# ALERTS
+# ============================================
+python-telegram-bot>=20.0
+# Job: Telegram bot integration
+# Expects: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+# Used by: AlertingSystem, KillSwitch commands
+
+# ============================================
+# MONITORING
+# ============================================
+sentry-sdk>=2.0.0
+# Job: Error tracking + exception reporting (optional Sentry DSN)
+# Expects: SENTRY_DSN env var (optional — works without it via structlog)
+# Used by: monitoring/error_tracking.py (ErrorTracker)
+
+prometheus-client>=0.20.0
+# Job: Prometheus metrics (trade latency, prediction latency, cache hits)
+# Used by: monitoring/metrics_collector.py
+
+# ============================================
+# CONFIG
+# ============================================
+python-dotenv>=1.0.0
+# Job: Load .env file into environment
+# Used by: config/settings.py on import
+
+pydantic>=2.0.0
+# Job: Settings validation, type safety
+# Used by: config/settings.py (Settings class)
+
+pydantic-settings>=2.0.0
+# Job: BaseSettings, env loading for Pydantic
+# Used by: config/settings.py (Settings class)
+
+# Logging (used throughout codebase)
+structlog>=24.0.0
+
+# Wallet key handling (ContractManager, ExecutionEngine)
+eth-account>=0.10.0
+
+# ============================================
+# SIGNALS & TRENDS
+# ============================================
+python-dateutil>=2.8.0
+# Job: Date parsing (e.g. event_calendar, signal_ingestion)
+# Used by: base_engine.signals.event_calendar, signal_ingestion._event_calendar_loop
+
+pytrends>=4.9.0
+feedparser>=6.0.0
+# Job: RSS feed parsing (no API key needed)
+# Used by: NewsAggregator for free news sources
+# Job: Google Trends data (no API key needed)
+# Used by: GoogleTrendsClient for market signals
+
+vaderSentiment>=3.3.2
+# Job: Lightweight rule-based sentiment analysis (no model download needed)
+# Used by: sentiment_analyzer.py for market question sentiment scoring
+
+# ============================================
+# CACHING & RESILIENCE
+# ============================================
+redis>=5.0.0
+# Job: Async caching, rate limit counters, TTL-based eviction
+# Used by: RedisCache, rate limiter, approval cache
+
+hiredis>=3.0.0
+# Job: C-based Redis parser (auto-detected by redis-py for 5-10x faster cache reads)
+# Used by: redis-py (transparent acceleration)
+
+# ============================================
+# STATISTICS & RISK
+# ============================================
+scipy>=1.11.0
+# Job: Statistical distributions, CVaR computation, isotonic regression
+# Used by: CorrelationRiskManager, calibration, position sizing
+
+statsmodels>=0.14.0
+# Job: OLS regression for Kyle's lambda market impact
+# Used by: MarketImpactEstimator (price impact regression)
+
+# ============================================
+# LLM INTEGRATION (optional)
+# ============================================
+anthropic>=0.39.0
+# Job: Claude API for LLM probability estimation
+# Expects: ANTHROPIC_API_KEY env var (optional — graceful fallback when missing)
+# Used by: LLMProbabilityEstimator
+
+openai>=1.0.0
+# Job: OpenAI API for LLM signal extraction / probability (optional)
+# Expects: OPENAI_API_KEY env var when used
+# Used by: LLMSignalExtractor, optional features
+
+# ============================================
+# SECRET MANAGEMENT
+# ============================================
+cryptography>=41.0.0
+# Job: Fernet symmetric encryption for local secret vault
+# Used by: SecretManager encrypted config store
+
+# ============================================
+# DASHBOARD UI
+# ============================================
+streamlit>=1.32.0
+# Job: Dashboard web UI + real-time bot health monitoring
+# Used by: ui/dashboard.py
+
+plotly>=5.18.0
+# Job: Interactive charts for dashboard
+# Used by: ui/dashboard.py
+
+# ============================================
+# CONFIG LOADER (YAML)
+# ============================================
+pyyaml>=6.0.0
+# Job: YAML config file parsing
+# Used by: config/config_loader.py
+
+# ============================================
+# SELF-HEALING ARCHITECTURE (2026-02-23)
+# ============================================
+transitions>=0.9.2
+# Job: Formal state machines for bot health lifecycle (healthy→degraded→failed→recovering→healthy)
+# Used by: base_engine/monitoring/ bot state tracking
+# Python 3.13: ✅ Compatible (pure Python, no native extensions)
+
+river>=0.21.0
+# Job: Streaming anomaly detection — ADWIN drift detection, HalfSpaceTrees on DB semaphore/scan latency
+# Used by: base_engine/monitoring/anomaly_detector.py (streaming layer on top of existing Z-score)
+# Python 3.13: ✅ Has native cp313 wheels
+
+drain3>=0.9.11
+# Job: Log template extraction — mine recurring patterns from paper_trading.log for root cause analysis
+# Used by: base_engine/monitoring/ log intelligence layer
+# Python 3.13: ✅ Compatible (pure Python)
+# NOTE: pins cachetools==4.2.1 (conflicts with pyiceberg>=5.5 warning, but pyiceberg not used in codebase)
+
+cachetools>=5.3,<6.0
+# Job: Extensible memoizing collections and decorators (TTLCache, LRUCache)
+# Used by: Transitive dependency of drain3 and other packages
+# ⚠ CONFLICT: drain3==0.9.11 pins cachetools==4.2.1 in its own install_requires.
+#   pip will resolve to drain3's pinned version (4.2.1) at install time.
+#   If cachetools>=5.3 is needed by other packages, upgrade drain3 or fork it.
+#   Current state: drain3 wins, cachetools 4.2.1 is installed.
+
+apscheduler>=3.10.4
+# Job: Deterministic cron-based scheduling for health checks, position reconciliation, daily reports
+# Used by: replaces asyncio.sleep() infinite loops in background monitors
+# Python 3.13: ✅ Compatible
+
+# ============================================
+# 2026 ALPHA ROADMAP (optional — graceful fallback when missing)
+# ============================================
+# chromadb>=0.4.0          # AgenticRAG vector store (optional; heavy dep)
+# sentence-transformers>=2.2.0  # AgenticRAG embeddings (optional; needs torch)
+causal-learn>=0.1.3
+# Job: Causal inference (PC algorithm for feature importance graph learning)
+# Used by: learning/causal_inference.py (CausalInferenceEngine)
+# ib_insync>=0.9.86        # ForecastEx IB Gateway adapter (optional)
+# trl>=0.7.0               # RLVR training (optional; needs GPU)
+# peft>=0.7.0              # RLVR parameter-efficient fine-tuning (optional)
+# transformers>=4.36.0     # RLVR model inference (optional)
+# torch>=2.0.0             # Deep learning, RLVR (optional; GPU recommended)
+google-generativeai>=0.3.0
+# Job: Gemini LLM for multi-model probability estimation (optional)
+# Expects: GOOGLE_API_KEY env var
+# Used by: LLMProbabilityEstimator (Gemini backend)
+
+psutil>=5.9.0
+# Job: System resource monitoring (CPU, RAM, disk)
+# Used by: HealthMonitor process metrics
+
+# ============================================
+# SOCIAL STREAMING (optional — graceful fallback when missing)
+# ============================================
+praw>=7.7.0
+# Job: Reddit PRAW streaming — r/nba, r/nfl, r/baseball, r/hockey, r/soccer injury monitoring
+# Used by: sports/news/reddit_monitor.py
+# Optional: graceful fallback to public JSON API if not installed
+
+telethon>=1.36.0
+# Job: Telegram channel monitoring — @FantasyLabsNBA, @RotowireNFL, team channels
+# Used by: sports/news/discord_telegram_monitor.py
+# Requires: TELEGRAM_API_ID + TELEGRAM_API_HASH in .env
+
+discord.py>=2.3.0
+# Job: Discord server monitoring — public sports team servers
+# Used by: sports/news/discord_telegram_monitor.py
+# Requires: DISCORD_BOT_TOKEN + SPORTS_DISCORD_CHANNEL_IDS in .env
+
+spacy>=3.7.0
+# Job: NER (en_core_web_sm model) for player name extraction in injury detector Tier 2
+# Used by: sports/news/injury_detector.py
+# Install model: python -m spacy download en_core_web_sm
+
+# ============================================
+# TESTING
+# ============================================
+pytest>=7.4.0             # Tests
+pytest-asyncio>=0.23.0    # Async tests (required by tests/conftest.py)
+pytest-cov>=4.0.0         # Coverage (optional; remove --cov from pytest.ini if not installed)
+pytest-timeout>=2.2.0     # Per-test timeout to prevent hanging tests

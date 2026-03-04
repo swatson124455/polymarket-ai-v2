@@ -1,0 +1,263 @@
+"""
+Probability Engine — converts ensemble temperature forecasts into bucket probabilities.
+
+Core math:
+  1. Fit a skew-normal distribution to ensemble members
+  2. Integrate CDF across each temperature bucket's bounds
+  3. Compare model probabilities against market-implied probabilities
+  4. Compute edge and Kelly-criterion position sizing
+"""
+
+from __future__ import annotations
+
+import math
+from typing import Dict, List, Optional, Tuple
+
+from structlog import get_logger
+
+logger = get_logger()
+
+# Import scipy lazily — it's heavy but already installed
+try:
+    from scipy.stats import skewnorm, norm
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+
+
+class WeatherProbabilityEngine:
+    """Convert ensemble forecasts into Polymarket bucket probabilities."""
+
+    def __init__(self):
+        # Historical bias calibration: station_id → {lead_time_bucket → offset}
+        # Populated from weather_calibration table over time
+        self._calibration: Dict[str, Dict[int, float]] = {}
+
+    def fit_distribution(
+        self,
+        ensemble_members: List[float],
+        lead_time_hours: float,
+        station_id: str = "",
+    ) -> Tuple[float, float, float]:
+        """Fit a skew-normal distribution to ensemble spread.
+
+        Returns (loc, scale, shape) parameters for scipy.stats.skewnorm.
+
+        Strategy:
+          - Compute ensemble mean and std
+          - Apply historical bias correction (if calibration data available)
+          - Inflate std by lead-time factor (uncertainty grows with forecast horizon)
+          - Attempt skew-normal MLE fit; fall back to normal if it fails
+        """
+        if not ensemble_members or len(ensemble_members) < 2:
+            raise ValueError("Need at least 2 ensemble members")
+
+        n = len(ensemble_members)
+        mean = sum(ensemble_members) / n
+        variance = sum((x - mean) ** 2 for x in ensemble_members) / (n - 1)
+        std = max(variance ** 0.5, 0.5)  # Floor at 0.5° to avoid overconfidence
+
+        # Apply historical bias correction
+        bias_offset = self._get_bias_offset(station_id, lead_time_hours)
+        corrected_mean = mean + bias_offset
+
+        # Inflate std by lead time: uncertainty grows ~2% per hour
+        lead_time_factor = 1.0 + 0.015 * min(lead_time_hours, 168.0)
+        effective_std = std * lead_time_factor
+
+        # Try skew-normal fit via MLE
+        shape = 0.0  # Default: symmetric normal
+        if SCIPY_AVAILABLE and n >= 10:
+            try:
+                a, loc, scale = skewnorm.fit(ensemble_members)
+                # Apply lead-time inflation to the fitted scale too
+                scale = max(scale * lead_time_factor, 0.5)
+                # Sanity: reject extreme skew or absurd scale
+                if abs(a) < 10.0 and 0.1 < scale < 30.0:
+                    return (loc + bias_offset, scale, a)
+            except Exception:
+                pass  # Fall through to normal
+
+        return (corrected_mean, effective_std, shape)
+
+    def bucket_probabilities(
+        self,
+        loc: float,
+        scale: float,
+        shape: float,
+        buckets: list,
+    ) -> Dict[str, float]:
+        """Integrate distribution across each bucket's bounds.
+
+        Uses 0.5-degree offsets on range bucket boundaries for proper coverage:
+          - "between 48-49" → P(47.5 ≤ T < 49.5)
+          - "42 or below" → P(T < 42.5)
+          - "55 or higher" → P(T ≥ 54.5)
+          - "exact 10" → P(9.5 ≤ T < 10.5)
+
+        Returns {market_id: probability} dict.
+        """
+        if not SCIPY_AVAILABLE:
+            return self._bucket_probabilities_fallback(loc, scale, buckets)
+
+        if abs(shape) < 0.01:
+            dist = norm(loc=loc, scale=scale)
+        else:
+            dist = skewnorm(shape, loc=loc, scale=scale)
+
+        probs: Dict[str, float] = {}
+        for b in buckets:
+            p = self._integrate_bucket(dist, b)
+            probs[b.market_id] = max(0.001, min(0.999, p))  # Clamp to avoid 0/1
+
+        # Normalize so probabilities sum to 1.0
+        total = sum(probs.values())
+        if total > 0 and abs(total - 1.0) > 0.01:
+            for mid in probs:
+                probs[mid] /= total
+
+        return probs
+
+    @staticmethod
+    def _integrate_bucket(dist, bucket) -> float:
+        """CDF integration for a single bucket."""
+        btype = bucket.bucket_type
+
+        if btype == "at_or_below":
+            # P(T ≤ high_bound)
+            return float(dist.cdf(bucket.high_bound + 0.5))
+
+        elif btype == "at_or_higher":
+            # P(T ≥ low_bound)
+            return float(1.0 - dist.cdf(bucket.low_bound - 0.5))
+
+        elif btype == "range":
+            # P(low - 0.5 ≤ T < high + 0.5)
+            upper = float(dist.cdf(bucket.high_bound + 0.5))
+            lower = float(dist.cdf(bucket.low_bound - 0.5))
+            return max(0.0, upper - lower)
+
+        elif btype == "exact":
+            # P(val - 0.5 ≤ T < val + 0.5)
+            upper = float(dist.cdf(bucket.high_bound + 0.5))
+            lower = float(dist.cdf(bucket.low_bound - 0.5))
+            return max(0.0, upper - lower)
+
+        return 0.0
+
+    def _bucket_probabilities_fallback(
+        self, loc: float, scale: float, buckets: list,
+    ) -> Dict[str, float]:
+        """Fallback using manual normal CDF if scipy unavailable."""
+        probs: Dict[str, float] = {}
+        for b in buckets:
+            p = self._normal_cdf_bucket(loc, scale, b)
+            probs[b.market_id] = max(0.001, min(0.999, p))
+        total = sum(probs.values())
+        if total > 0 and abs(total - 1.0) > 0.01:
+            for mid in probs:
+                probs[mid] /= total
+        return probs
+
+    @staticmethod
+    def _normal_cdf_bucket(loc: float, scale: float, bucket) -> float:
+        """Manual normal CDF integration using math.erf."""
+        def _cdf(x: float) -> float:
+            return 0.5 * (1.0 + math.erf((x - loc) / (scale * math.sqrt(2))))
+
+        btype = bucket.bucket_type
+        if btype == "at_or_below":
+            return _cdf(bucket.high_bound + 0.5)
+        elif btype == "at_or_higher":
+            return 1.0 - _cdf(bucket.low_bound - 0.5)
+        elif btype in ("range", "exact"):
+            return max(0.0, _cdf(bucket.high_bound + 0.5) - _cdf(bucket.low_bound - 0.5))
+        return 0.0
+
+    def compute_edges(
+        self,
+        model_probs: Dict[str, float],
+        market_prices: Dict[str, float],
+    ) -> List[Dict]:
+        """Compute edge = model_prob - market_price for each bucket.
+
+        Returns list sorted by |edge| descending, with side determination:
+          - edge > 0 → model says bucket is underpriced → BUY YES
+          - edge < 0 → model says bucket is overpriced → BUY NO
+        """
+        edges = []
+        for market_id, model_prob in model_probs.items():
+            market_price = market_prices.get(market_id, 0.0)
+            if market_price <= 0.0 or market_price >= 1.0:
+                continue
+
+            edge = model_prob - market_price
+            side = "YES" if edge > 0 else "NO"
+
+            edges.append({
+                "market_id": market_id,
+                "model_prob": round(model_prob, 4),
+                "market_price": round(market_price, 4),
+                "edge": round(edge, 4),
+                "abs_edge": round(abs(edge), 4),
+                "side": side,
+            })
+
+        edges.sort(key=lambda e: e["abs_edge"], reverse=True)
+        return edges
+
+    @staticmethod
+    def kelly_fraction(
+        edge: float,
+        model_prob: float,
+        market_price: float,
+        kelly_mult: float = 0.25,
+    ) -> float:
+        """Fractional Kelly sizing for a weather bucket bet.
+
+        For YES: f* = kelly_mult * (p*b - q) / b  where b = (1/price - 1), p = model_prob, q = 1-p
+        For NO:  same formula with flipped probabilities
+
+        Returns fraction of capital to bet (0.0 if negative edge).
+        """
+        abs_edge = abs(edge)
+        if abs_edge < 0.001:
+            return 0.0
+
+        if edge > 0:
+            # Buying YES at market_price
+            p = model_prob
+            b = (1.0 / market_price) - 1.0 if market_price > 0 else 0.0
+        else:
+            # Buying NO at (1 - market_price)
+            p = 1.0 - model_prob
+            no_price = 1.0 - market_price
+            b = (1.0 / no_price) - 1.0 if no_price > 0 else 0.0
+
+        if b <= 0:
+            return 0.0
+
+        q = 1.0 - p
+        kelly = (p * b - q) / b
+        if kelly <= 0:
+            return 0.0
+
+        return min(kelly * kelly_mult, kelly_mult)  # Cap at kelly_mult
+
+    def _get_bias_offset(self, station_id: str, lead_time_hours: float) -> float:
+        """Look up historical forecast bias for this station + lead time.
+
+        Returns additive offset (actual - forecast average). Positive means
+        forecasts tend to underestimate.
+        """
+        station_cal = self._calibration.get(station_id)
+        if not station_cal:
+            return 0.0
+        # Bucket lead time into 6-hour bins
+        bucket = int(lead_time_hours // 6) * 6
+        return station_cal.get(bucket, 0.0)
+
+    def load_calibration(self, calibration_data: Dict[str, Dict[int, float]]) -> None:
+        """Load calibration offsets from external source (DB or backtest)."""
+        self._calibration = calibration_data
+        logger.info("weather_calibration_loaded", stations=len(calibration_data))

@@ -1,0 +1,34 @@
+[Unit]
+Description=Polymarket AI V2 Streamlit Dashboard
+After=network.target polymarket-ai.service
+Wants=polymarket-ai.service
+
+[Service]
+Type=simple
+User=polymarket
+Group=polymarket
+WorkingDirectory=/opt/polymarket-ai-v2
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/opt/polymarket-ai-v2/.env
+ExecStart=/usr/bin/python3 -m streamlit run ui/dashboard.py --server.port 8501 --server.address 0.0.0.0
+Restart=always
+RestartSec=10
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=/opt/polymarket-ai-v2/data /var/log/polymarket
+PrivateTmp=true
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=50%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=polymarket-dashboard
+
+[Install]
+WantedBy=multi-user.target

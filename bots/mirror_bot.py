@@ -1,0 +1,781 @@
+import asyncio
+import math
+from collections import defaultdict
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Tuple, Any
+
+from structlog import get_logger
+
+from bots.base_bot import BaseBot
+from base_engine.base_engine import BaseEngine
+from config.settings import settings
+
+logger = get_logger()
+
+
+class MirrorBot(BaseBot):
+    """
+    MirrorBot - Mirrors trades from top N elite traders (TOP_TRADER_COUNT).
+
+    Consensus: aggregates elite trades per (market_id, token_id, side) and mirrors
+    only when >= MIRROR_MIN_CONSENSUS elites agree on the same side.
+
+    Features:
+    - Trade deduplication with automatic pruning (capped set)
+    - Exit mirroring: closes positions when source traders exit
+    - Reliability-weighted sizing via EliteReliabilityTracker
+    - Daily exposure + concurrent position limits
+    - Single client session per scan cycle (no per-trader reconnect)
+    """
+
+    # Defaults (overridable via settings)
+    MAX_TRACKED_TRADES: int = 10_000
+    MAX_CONCURRENT_POSITIONS: int = 20
+    MAX_DAILY_EXPOSURE_PCT: float = 0.15
+
+    def __init__(self, base_engine: BaseEngine):
+        super().__init__("MirrorBot", base_engine)
+        self.elite_traders: List[Dict] = []
+        self.mirrored_trades: set = set()
+        self.min_confidence: float = getattr(settings, "MIRROR_MIN_CONFIDENCE", 0.50)
+        self._reliability_tracker = None
+
+        # Exit tracking: "market_id:token_id" -> position metadata
+        self._open_positions: Dict[str, Dict[str, Any]] = {}
+
+        # Daily exposure tracking
+        self._daily_exposure: float = 0.0
+        self._daily_reset_date: Optional[str] = None
+
+        # Market metadata cache: market_id -> (category, time_to_res, expiry_monotonic)
+        self._market_meta_cache: Dict[str, Tuple[str, str, float]] = {}
+        self._MARKET_META_TTL = 300  # 5 minutes
+
+        # Periodic elite refresh (avoid stale list)
+        self._scan_count: int = 0
+        self._elite_refresh_every_n_scans: int = 40  # ~30 min at 45s interval
+
+        # Wire elite reliability if available
+        try:
+            from base_engine.learning.elite_reliability import EliteReliabilityTracker
+
+            if base_engine.db:
+                self._reliability_tracker = EliteReliabilityTracker(
+                    db=base_engine.db,
+                    lookback_days=getattr(settings, "ELITE_LOOKBACK_DAYS", 365),
+                )
+        except Exception as e:
+            logger.debug("elite reliability tracker init failed: %s", e)
+
+        # R5b: Per-category adaptive consensus threshold.
+        # Key: category string (e.g. "politics", "crypto") → consensus_min int.
+        # Loaded from bot_market_params on first scan; persisted after each resolved trade.
+        # Falls back to MIRROR_MIN_CONSENSUS (global default) for unknown categories.
+        self._category_consensus_min: Dict[str, int] = {}
+        self._db_consensus_loaded: bool = False
+
+    def _on_bg_task_done(self, task, name):
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            logger.warning("bg_task_failed", task_name=name, error=str(exc))
+
+    # ── R5b: Adaptive consensus threshold per category ──────────────
+
+    async def _load_consensus_from_db(self) -> None:
+        """Load per-category consensus thresholds from bot_market_params on startup."""
+        if self._db_consensus_loaded:
+            return
+        self._db_consensus_loaded = True
+        try:
+            db = getattr(self.base_engine, "db", None)
+            if db is None:
+                return
+            from sqlalchemy import text
+            sql = text(
+                "SELECT market_id as category, param_value FROM bot_market_params "
+                "WHERE bot_name = :bot AND param_name = 'consensus_min'"
+            )
+            async with db.get_session() as session:
+                result = await session.execute(sql, {"bot": self.bot_name})
+                rows = result.fetchall()
+            for row in rows:
+                self._category_consensus_min[str(row.category)] = max(2, int(row.param_value))
+            if rows:
+                logger.info("R5b: Loaded %d consensus thresholds from DB for MirrorBot", len(rows))
+        except Exception as exc:
+            logger.debug("R5b: _load_consensus_from_db failed (non-critical): %s", exc)
+
+    def _get_consensus_min(self, category: str) -> int:
+        """Return per-category consensus threshold, falling back to global setting."""
+        global_min = getattr(settings, "MIRROR_MIN_CONSENSUS", 2)
+        return self._category_consensus_min.get((category or "").lower(), global_min)
+
+    async def _update_consensus_threshold(self, category: str, was_correct: bool) -> None:
+        """
+        R5b: Adapt and persist consensus threshold based on trade outcome.
+        - 3+ consecutive correct → lower threshold by 1 (easier to enter = more trades)
+        - 3+ consecutive wrong → raise threshold by 1 (harder to enter = more selective)
+        Capped at [2, 5].
+        """
+        if not category:
+            return
+        cat = category.lower()
+        current = self._get_consensus_min(cat)
+        if was_correct and current > 2:
+            new_val = current - 1
+        elif not was_correct and current < 5:
+            new_val = current + 1
+        else:
+            return  # Already at bounds, no change
+        self._category_consensus_min[cat] = new_val
+        logger.info("R5b: consensus_min for '%s' → %d (was %d, correct=%s)", cat, new_val, current, was_correct)
+        # Persist to DB (reusing market_id column as category field for BotMarketParam)
+        try:
+            db = getattr(self.base_engine, "db", None)
+            if db is None:
+                return
+            from sqlalchemy import text
+            sql = text(
+                """
+                INSERT INTO bot_market_params (bot_name, market_id, param_name, param_value, sample_n, updated_at)
+                VALUES (:bot, :cat, 'consensus_min', :val, 1, NOW())
+                ON CONFLICT (bot_name, market_id, param_name)
+                DO UPDATE SET
+                    param_value = EXCLUDED.param_value,
+                    sample_n    = bot_market_params.sample_n + 1,
+                    updated_at  = NOW()
+                """
+            )
+            async with db.get_session() as session:
+                await session.execute(sql, {"bot": self.bot_name, "cat": cat, "val": float(new_val)})
+                await session.commit()
+        except Exception as exc:
+            logger.debug("R5b: _update_consensus_threshold DB persist failed: %s", exc)
+
+    # ── Main Scan Loop ──────────────────────────────────────────────
+
+    async def scan_and_trade(self):
+        """Main scan: refresh elites, check exits, collect consensus trades, execute."""
+        self._scan_count += 1
+
+        # R5b: Load per-category consensus thresholds from DB on first scan.
+        await self._load_consensus_from_db()
+
+        # Refresh elites on first scan or periodically
+        # P3-2: Wrap with 10s timeout — elite refresh DB query can block scan 30s+ under pool pressure
+        if not self.elite_traders or self._scan_count % self._elite_refresh_every_n_scans == 0:
+            try:
+                await asyncio.wait_for(self._update_elite_traders(), timeout=10.0)
+            except asyncio.TimeoutError:
+                logger.warning("MirrorBot elite refresh timed out (10s) — continuing with stale list")
+            except Exception as _elite_err:
+                logger.debug("MirrorBot elite refresh failed: %s", _elite_err)
+
+        # Reset daily exposure at UTC day boundary
+        self._check_daily_reset()
+
+        # Check for exits from tracked positions
+        if self._open_positions and getattr(settings, "MIRROR_EXIT_ENABLED", True):
+            await self._check_and_execute_exits()
+
+        # Prune deduplication set if oversized
+        self._prune_mirrored_trades()
+
+        # Collect and filter trades by consensus
+        consensus_trades = await self._collect_and_aggregate_elite_trades()
+
+        # P5b: Diagnostic — log elite count and consensus trades for visibility
+        _buy_ct = sum(1 for t in consensus_trades if str(t.get("side", "")).upper() != "SELL")
+        _sell_ct = len(consensus_trades) - _buy_ct
+        logger.info(
+            "MirrorBot scan: elites=%d consensus_trades=%d (buy=%d sell=%d) open_positions=%d",
+            len(self.elite_traders), len(consensus_trades), _buy_ct, _sell_ct,
+            len(self._open_positions),
+        )
+
+        for trade_info in consensus_trades:
+            if not self._can_open_position(trade_info.get("price", 0.5)):
+                logger.debug("Mirror position limit reached, skipping trade")
+                continue
+
+            try:
+                executed = await self._execute_mirror_trade(
+                    market_id=trade_info["market_id"],
+                    token_id=trade_info["token_id"],
+                    side=trade_info["side"],
+                    price=trade_info["price"],
+                    confidence=trade_info["confidence"],
+                    trader_address=trade_info["trader_address"],
+                )
+                if executed:
+                    self.mirrored_trades.add(trade_info["trade_id"])
+                    self._track_open_position(trade_info)
+            except Exception as e:
+                logger.warning("Error mirroring consensus trade", error=str(e))
+                continue
+
+    # ── Market metadata cache (category + time-to-resolution) ──────
+
+    async def _get_market_meta(self, market_id: str) -> Tuple[str, str]:
+        """Cached lookup of market category and time-to-resolution string."""
+        import time as _time
+        now = _time.monotonic()
+        cached = self._market_meta_cache.get(market_id)
+        if cached:
+            cat, ttr, expiry = cached
+            if now < expiry:
+                return cat, ttr
+        # Fetch from DB or API
+        category, time_to_res = "", ""
+        try:
+            db = getattr(self.base_engine, "db", None)
+            if db and getattr(db, "session_factory", None):
+                from sqlalchemy import text as _text
+                async with db.get_session() as session:
+                    row = await session.execute(
+                        _text("SELECT category, end_date_iso FROM markets WHERE id = :mid LIMIT 1"),
+                        {"mid": market_id},
+                    )
+                    r = row.fetchone()
+                    if r:
+                        category = str(r[0] or "")
+                        end_raw = r[1]
+                        if end_raw:
+                            h = self.hours_until_resolution({"end_date_iso": end_raw})
+                            if h is not None:
+                                if h < 24:
+                                    time_to_res = "hours"
+                                elif h < 168:
+                                    time_to_res = "days"
+                                else:
+                                    time_to_res = "weeks"
+        except Exception as e:
+            logger.debug("Market meta lookup failed for %s: %s", market_id, e)
+        self._market_meta_cache[market_id] = (category, time_to_res, now + self._MARKET_META_TTL)
+        return category, time_to_res
+
+    # ── Trade Collection & Consensus ────────────────────────────────
+
+    async def _collect_and_aggregate_elite_trades(self) -> List[Dict[str, Any]]:
+        """
+        Collect recent trades from all elites inside a single client session,
+        aggregate by (market_id, token_id, side), return trades with consensus.
+
+        M1: Parallelized elite fetches with asyncio.gather + Semaphore(5)
+        to reduce scan time from ~7s (sequential) to ~1-2s (5 concurrent).
+        """
+        min_consensus = getattr(settings, "MIRROR_MIN_CONSENSUS", 2)
+        max_delay = getattr(settings, "MIRROR_MAX_DELAY_MINUTES", 30)
+        max_concurrent = getattr(settings, "MIRROR_MAX_CONCURRENT_FETCHES", 5)
+
+        groups: Dict[Tuple[str, str, str], List[Dict]] = defaultdict(list)
+        sem = asyncio.Semaphore(max_concurrent)
+        # S48: Waterfall counters for diagnosing 0-trade scans
+        _wf_raw = 0       # Raw trades fetched
+        _wf_parsed = 0    # Passed parse + freshness
+        _wf_conf = 0      # Passed confidence gate
+        _wf_rel = 0       # Passed reliability gate (final)
+        _wf_api_fail = 0  # API failures
+
+        async def _fetch_one_elite(trader: Dict) -> List[Dict]:
+            """Fetch and process trades for a single elite trader."""
+            nonlocal _wf_raw, _wf_parsed, _wf_conf, _wf_rel, _wf_api_fail
+            addr = trader.get("address")
+            if not addr:
+                return []
+            items = []
+            async with sem:
+                try:
+                    activity = await self.base_engine.client.get_user_activity(
+                        user_address=addr,
+                        limit=25,
+                        offset=0,
+                    )
+                except Exception as e:
+                    logger.debug("get_user_activity failed for %s: %s", addr[:10], e)
+                    _wf_api_fail += 1
+                    return []
+
+                _wf_raw += len(activity) if activity else 0
+                for trade in activity:
+                    parsed = self._parse_and_validate_trade(
+                        trade, addr, max_delay
+                    )
+                    if parsed is None:
+                        continue
+                    _wf_parsed += 1
+
+                    _cat, _ttr = await self._get_market_meta(str(parsed["market_id"]))
+                    # S48 FIX: Use elite trader's own win_rate as confidence, not
+                    # learning engine's bet-type confidence (which returns ~0.03 with
+                    # only 242 resolved labels). Elites have >= 55% win rate by definition.
+                    _elite_wr = float(trader.get("win_rate", 0) or 0)
+                    confidence = _elite_wr if _elite_wr > 0 else 0.55
+                    if confidence < self.min_confidence:
+                        continue
+                    _wf_conf += 1
+
+                    # Reliability gate: skip traders with poor Bayesian win rate
+                    if self._reliability_tracker and self._reliability_tracker._cache:
+                        _side = parsed.get("side", "YES")
+                        _alpha, _beta = self._reliability_tracker._get_beta(addr, _side)
+                        if _alpha + _beta > 2:  # Only filter if we have actual data (not just prior)
+                            _mean_rel = _alpha / (_alpha + _beta)
+                            if _mean_rel < getattr(settings, "MIRROR_MIN_RELIABILITY", 0.45):
+                                logger.debug("MirrorBot reliability gate: addr=%s mean=%.3f", addr[:10], _mean_rel)
+                                continue
+                    _wf_rel += 1
+
+                    items.append({
+                        "trade_id": parsed["trade_id"],
+                        "market_id": parsed["market_id"],
+                        "token_id": parsed["token_id"],
+                        "side": parsed["side"],
+                        "price": parsed["price"],
+                        "confidence": confidence,
+                        "trader_address": addr,
+                        "category": _cat,  # P2-2: propagate so _get_consensus_min() uses per-category threshold
+                    })
+            return items
+
+        try:
+            # Single client session for all traders — no per-trader reconnect
+            async with self.base_engine.client:
+                # Parallel fetch: up to max_concurrent elites at once
+                results = await asyncio.gather(
+                    *[_fetch_one_elite(trader) for trader in self.elite_traders],
+                    return_exceptions=True,
+                )
+                for result in results:
+                    if isinstance(result, Exception):
+                        logger.debug("Elite fetch task failed: %s", result)
+                        continue
+                    for item in result:
+                        key = (
+                            str(item["market_id"]),
+                            str(item["token_id"]),
+                            str(item["side"]),
+                        )
+                        groups[key].append(item)
+        except Exception as e:
+            logger.error("Failed to collect elite trades", error=str(e))
+            return []
+
+        # S48: Log waterfall diagnostic
+        if _wf_raw > 0 or _wf_api_fail > 0:
+            logger.info(
+                "MirrorBot waterfall: raw=%d parsed=%d conf_pass=%d rel_pass=%d "
+                "groups=%d api_fail=%d (min_conf=%.2f)",
+                _wf_raw, _wf_parsed, _wf_conf, _wf_rel,
+                len(groups), _wf_api_fail, self.min_confidence,
+            )
+
+        # Consensus filter: require min unique elites agreeing.
+        # R5b: Use per-category threshold when available, otherwise global min_consensus.
+        result = []
+        _max_unique = 0
+        _groups_checked = 0
+        for key, items in groups.items():
+            unique_traders = {t["trader_address"] for t in items}
+            _n = len(unique_traders)
+            _max_unique = max(_max_unique, _n)
+            _groups_checked += 1
+            best = max(items, key=lambda t: t["confidence"])
+            # Determine per-category consensus requirement
+            _category = (best.get("category") or "").lower()
+            _required = self._get_consensus_min(_category)
+            if _n < _required:
+                continue
+            result.append(best)
+
+        if _groups_checked > 0 and not result:
+            logger.info(
+                "MirrorBot consensus: %d groups checked, max_unique_traders=%d, "
+                "required=%d — 0 passed",
+                _groups_checked, _max_unique,
+                getattr(settings, "MIRROR_MIN_CONSENSUS", 2),
+            )
+
+        return result
+
+    def _parse_and_validate_trade(
+        self,
+        trade: Dict,
+        addr: str,
+        max_delay_minutes: int,
+    ) -> Optional[Dict]:
+        """Parse a raw trade dict; return normalised dict or None if invalid/stale/duplicate."""
+        if trade.get("type") != "trade":
+            return None
+
+        trade_id = trade.get("id")
+        if trade_id in self.mirrored_trades:
+            return None
+
+        market_id = trade.get("marketId")
+        token_id = trade.get("tokenId")
+        side = trade.get("side")
+        if not all([market_id, token_id, side]):
+            return None
+
+        price = self.validate_price(trade.get("price", 0), str(market_id))
+        if price is None:
+            return None
+
+        # Freshness check
+        try:
+            ts = trade.get("timestamp")
+            if ts is not None:
+                if isinstance(ts, (int, float)):
+                    trade_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                elif isinstance(ts, str):
+                    trade_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    if trade_dt.tzinfo is None:
+                        trade_dt = trade_dt.replace(tzinfo=timezone.utc)
+                else:
+                    trade_dt = None
+                if trade_dt:
+                    age_min = (datetime.now(timezone.utc) - trade_dt).total_seconds() / 60
+                    if age_min > max_delay_minutes:
+                        return None
+                    # Hot-trade filter: mid-market prices reprice within minutes of news
+                    _is_mid = 0.20 <= price <= 0.80
+                    _hot_max_s = getattr(settings, "MIRROR_HOT_TRADE_MAX_SECONDS", 300)
+                    if _is_mid and (age_min * 60) > _hot_max_s:
+                        return None  # Market has likely already repriced
+        except Exception as e:
+            logger.debug("trade freshness check failed: %s", e)
+            return None
+
+        return {
+            "trade_id": trade_id,
+            "market_id": market_id,
+            "token_id": token_id,
+            "side": side,
+            "price": price,
+        }
+
+    # ── Exit Monitoring ─────────────────────────────────────────────
+
+    async def _check_and_execute_exits(self):
+        """Mirror exits when tracked traders close their positions."""
+        if not self._open_positions:
+            return
+
+        positions_to_close: List[str] = []
+
+        # Autonomous stop-loss and max hold time (no network call needed)
+        _stop_pct = getattr(settings, "MIRROR_STOP_LOSS_PCT", 0.15)
+        _max_hold_h = getattr(settings, "MIRROR_MAX_HOLD_HOURS", 72)
+        _now_utc = datetime.now(timezone.utc)
+        for _pos_key, _pos in list(self._open_positions.items()):
+            _entry = float(_pos.get("entry_price", 0.5) or 0.5)
+            _current = float(_pos.get("current_price", _entry) or _entry)
+            _side = (_pos.get("side") or "YES").upper()
+            _pnl_pct = (_current - _entry) / max(_entry, 1e-6) if _side in ("YES", "BUY") else (_entry - _current) / max(_entry, 1e-6)
+            if _pnl_pct <= -_stop_pct:
+                logger.info("MirrorBot autonomous stop-loss", market=_pos_key, pnl_pct=f"{_pnl_pct:.2%}")
+                positions_to_close.append(_pos_key)
+                continue
+            try:
+                _opened_str = _pos.get("timestamp")
+                if _opened_str:
+                    _opened_at = datetime.fromisoformat(_opened_str)
+                    if _opened_at.tzinfo is None:
+                        _opened_at = _opened_at.replace(tzinfo=timezone.utc)
+                    if (_now_utc - _opened_at).total_seconds() / 3600 >= _max_hold_h:
+                        logger.info("MirrorBot max hold time exit", market=_pos_key,
+                                    hold_h=f"{(_now_utc - _opened_at).total_seconds()/3600:.1f}h")
+                        positions_to_close.append(_pos_key)
+            except Exception:
+                pass
+
+        # Gather all trader addresses we're tracking
+        tracked_traders: set = set()
+        for pos_data in self._open_positions.values():
+            tracked_traders.update(pos_data.get("traders", set()))
+
+        try:
+            async with self.base_engine.client:
+                for addr in tracked_traders:
+                    try:
+                        activity = await self.base_engine.client.get_user_activity(
+                            user_address=addr,
+                            limit=10,
+                            offset=0,
+                        )
+                    except Exception:
+                        continue
+
+                    for trade in activity:
+                        if trade.get("type") != "trade":
+                            continue
+                        market_id = trade.get("marketId")
+                        token_id = trade.get("tokenId")
+                        side = trade.get("side")
+                        if not all([market_id, token_id, side]):
+                            continue
+
+                        pos_key = f"{market_id}:{token_id}"
+                        if pos_key not in self._open_positions:
+                            continue
+
+                        pos = self._open_positions[pos_key]
+                        is_exit = (
+                            (pos["side"].upper() == "BUY" and side.upper() == "SELL")
+                            or (pos["side"].upper() == "SELL" and side.upper() == "BUY")
+                        )
+                        if is_exit and addr in pos.get("traders", set()):
+                            positions_to_close.append(pos_key)
+        except Exception as e:
+            logger.debug("Exit check failed: %s", e)
+
+        # Execute the exits
+        for pos_key in set(positions_to_close):
+            pos = self._open_positions.get(pos_key)
+            if not pos:
+                continue
+
+            exit_side = "SELL" if pos["side"].upper() == "BUY" else "BUY"
+            try:
+                market_id, token_id = pos_key.split(":", 1)
+                exit_price = self.validate_price(
+                    pos.get("current_price", pos["entry_price"]),
+                    market_id,
+                )
+                if exit_price is None:
+                    exit_price = pos["entry_price"]
+
+                order = await self.place_order(
+                    market_id=market_id,
+                    token_id=token_id,
+                    side=exit_side,
+                    size=pos["size"],
+                    price=exit_price,
+                    confidence=0.80,
+                )
+                if order.get("success"):
+                    logger.info(
+                        "Mirror exit executed",
+                        market=market_id,
+                        exit_side=exit_side,
+                        original_side=pos["side"],
+                        size=f"{pos['size']:.2f}",
+                    )
+                    del self._open_positions[pos_key]
+            except Exception as e:
+                logger.warning("Failed to execute mirror exit for %s: %s", pos_key, e)
+
+    # ── Position & Exposure Tracking ────────────────────────────────
+
+    def _track_open_position(self, trade_info: Dict):
+        """Record a newly opened mirror position for exit monitoring."""
+        pos_key = f"{trade_info['market_id']}:{trade_info['token_id']}"
+        if pos_key in self._open_positions:
+            self._open_positions[pos_key]["traders"].add(trade_info["trader_address"])
+        else:
+            self._open_positions[pos_key] = {
+                "side": trade_info["side"],
+                "size": 0.0,  # Updated by _execute_mirror_trade after sizing
+                "entry_price": trade_info["price"],
+                "traders": {trade_info["trader_address"]},
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+    def _can_open_position(self, price: float) -> bool:
+        """Check concurrent position + daily exposure limits."""
+        max_positions = getattr(
+            settings, "MIRROR_MAX_CONCURRENT_POSITIONS", self.MAX_CONCURRENT_POSITIONS
+        )
+        if len(self._open_positions) >= max_positions:
+            return False
+
+        max_exposure_pct = getattr(
+            settings, "MIRROR_MAX_DAILY_EXPOSURE_PCT", self.MAX_DAILY_EXPOSURE_PCT
+        )
+        _cap = self.bankroll.capital if self.bankroll else float(getattr(settings, "TOTAL_CAPITAL", 10000.0))
+        if _cap > 0 and self._daily_exposure >= _cap * max_exposure_pct:
+            return False
+
+        return True
+
+    def _check_daily_reset(self):
+        """Reset daily exposure counter at UTC day boundary."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if self._daily_reset_date != today:
+            self._daily_exposure = 0.0
+            self._daily_reset_date = today
+
+    # ── Deduplication ───────────────────────────────────────────────
+
+    def _prune_mirrored_trades(self):
+        """Cap deduplication set to prevent unbounded memory growth."""
+        max_tracked = getattr(
+            settings, "MIRROR_MAX_TRACKED_TRADES", self.MAX_TRACKED_TRADES
+        )
+        if len(self.mirrored_trades) > max_tracked:
+            trade_list = list(self.mirrored_trades)
+            # Keep the newest half
+            self.mirrored_trades = set(trade_list[len(trade_list) // 2 :])
+            logger.debug(
+                "Pruned mirrored_trades from %d to %d",
+                len(trade_list),
+                len(self.mirrored_trades),
+            )
+
+    # ── Elite Trader Management ─────────────────────────────────────
+
+    async def _update_elite_traders(self):
+        """Fetch elite traders from DB with API fallback."""
+        try:
+            if self.base_engine.db and self.base_engine.db.session_factory:
+                self.elite_traders = await self.base_engine.db.get_elite_traders(
+                    limit=settings.TOP_TRADER_COUNT
+                )
+            else:
+                logger.warning(
+                    "Database unavailable, using API fallback for elite traders"
+                )
+                async with self.base_engine.client:
+                    top_users = await self.base_engine.client.get_top_users(
+                        limit=settings.TOP_TRADER_COUNT
+                    )
+                    self.elite_traders = [
+                        {"address": u.get("address")}
+                        for u in top_users
+                        if u.get("address")
+                    ]
+        except Exception as e:
+            logger.warning("Failed to update elite traders", error=str(e))
+            self.elite_traders = []
+
+        # Refresh elite reliability posteriors
+        if self._reliability_tracker:
+            try:
+                await self._reliability_tracker.refresh()
+            except Exception as e:
+                logger.debug("Elite reliability refresh failed: %s", e)
+
+    # ── Opportunity Hook (unused by mirror — consensus in scan) ────
+
+    async def analyze_opportunity(self, market_data: Dict) -> Optional[Dict]:
+        """MirrorBot uses consensus-based scan, not per-market analysis."""
+        return None
+
+    # ── Trade Execution ─────────────────────────────────────────────
+
+    async def _execute_mirror_trade(
+        self,
+        market_id: str,
+        token_id: str,
+        side: str,
+        price: float,
+        confidence: float,
+        trader_address: str,
+    ) -> bool:
+        """Execute a mirror trade with reliability weighting and exposure caps."""
+        # S48 FIX: Skip SELL consensus trades unless we hold that position.
+        # Elite SELLs mean they're closing positions — can't mirror if we never opened.
+        _is_sell = str(side).upper() == "SELL"
+        if _is_sell:
+            pos_key = f"{market_id}:{token_id}"
+            if pos_key not in self._open_positions:
+                logger.info(
+                    "MirrorBot: skipping SELL (no position to close) market=%s",
+                    str(market_id)[:16],
+                )
+                return False
+
+        # Apply elite reliability multiplier
+        reliability_mult = 1.0
+        if self._reliability_tracker:
+            try:
+                lr = self._reliability_tracker.likelihood_ratio(trader_address, side)
+                if lr < 1.0:
+                    logger.debug(
+                        "Skipping unreliable trader %s (LR=%.2f)",
+                        trader_address[:10],
+                        lr,
+                    )
+                    return False
+                reliability_mult = min(lr, 2.0)  # Cap at 2x
+            except Exception as e:
+                logger.debug("elite reliability lookup failed: %s", e)
+
+        # K5 FIX: Apply signal enhancements before sizing (was skipped entirely)
+        # K9 FIX: market_data was undefined — fetch from in-memory index or pass empty dict
+        try:
+            _market_data = self.base_engine.get_market_from_index(str(market_id)) or {}
+            confidence = await self.apply_signal_enhancements(
+                market_id, token_id, side, confidence, _market_data
+            )
+        except Exception as e:
+            logger.debug("MirrorBot: signal enhancements failed (using raw confidence): %s", e)
+
+        # S48 FIX: Use per-bot BotBankrollManager (Session 47) instead of deprecated
+        # risk_manager.calculate_position_size() which divides Kelly by KELLY_ACTIVE_BOTS.
+        # calculate_bot_position_size() returns shares (USD / price).
+        size = await self.calculate_bot_position_size(
+            confidence=confidence,
+            price=price,
+        )
+        size *= reliability_mult
+
+        # Cap per-market exposure (convert USD cap to shares for correct comparison)
+        max_per_market_usd = float(getattr(settings, "MIRROR_MAX_PER_MARKET", 400))
+        max_per_market_shares = max_per_market_usd / price if price > 0 else 0
+        size = min(size, max_per_market_shares)
+
+        # Cap by remaining daily exposure (in shares, converted from USD cap)
+        max_daily_pct = getattr(
+            settings, "MIRROR_MAX_DAILY_EXPOSURE_PCT", self.MAX_DAILY_EXPOSURE_PCT
+        )
+        _bankroll_capital = self.bankroll.capital if self.bankroll else 10000.0
+        remaining_daily_usd = max(0, _bankroll_capital * max_daily_pct - self._daily_exposure)
+        remaining_daily_shares = remaining_daily_usd / price if price > 0 else 0
+        size = min(size, remaining_daily_shares)
+
+        if size <= 0:
+            logger.debug("Mirror trade size zero after limits, skipping")
+            return False
+
+        order = await self.place_order(
+            market_id=market_id,
+            token_id=token_id,
+            side=side,
+            size=size,
+            price=price,
+            confidence=confidence,
+        )
+
+        if order.get("success"):
+            self._daily_exposure += size * price  # Track exposure in USD
+
+            # Update position tracking with actual size
+            pos_key = f"{market_id}:{token_id}"
+            if pos_key in self._open_positions:
+                self._open_positions[pos_key]["size"] += size
+
+            logger.info(
+                "Mirror trade executed",
+                market=market_id,
+                side=side,
+                trader=trader_address[:10],
+                confidence=f"{confidence:.2%}",
+                size=f"{size:.2f}",
+                open_positions=len(self._open_positions),
+                daily_exposure=f"{self._daily_exposure:.2f}",
+            )
+
+            # R2: Store signal context for ML training (fire-and-forget).
+            _trade_id = order.get("trade_id") or order.get("order_id")
+            if _trade_id:
+                _t = asyncio.create_task(
+                    self.store_pending_trade_signals(str(_trade_id), str(market_id))
+                )
+                _t.add_done_callback(lambda t: self._on_bg_task_done(t, "store_trade_signals"))
+
+            return True
+        return False

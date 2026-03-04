@@ -1,0 +1,14 @@
+# Polymarket AI V2 — Cron Schedule (install with: crontab deploy/crontab)
+# All times in UTC
+
+# Incremental ingestion: every 5 minutes (markets + recent prices)
+*/5 * * * * cd /opt/polymarket-ai-v2 && /usr/bin/python3 scripts/run_ingestion_standalone.py --pull-all >> /var/log/polymarket/ingestion.log 2>&1
+
+# Resolution backfill: every 2 hours (update resolved markets for training)
+0 */2 * * * cd /opt/polymarket-ai-v2 && /usr/bin/python3 scripts/backfill_market_resolution.py >> /var/log/polymarket/resolution.log 2>&1
+
+# Full price history refresh: weekly on Monday at 3am UTC
+0 3 * * 1 cd /opt/polymarket-ai-v2 && /usr/bin/python3 scripts/run_ingestion_standalone.py --backfill --backfill-days 30 >> /var/log/polymarket/weekly-refresh.log 2>&1
+
+# Log rotation: daily cleanup of logs older than 7 days
+0 4 * * * find /var/log/polymarket/ -name "*.log" -mtime +7 -delete 2>/dev/null

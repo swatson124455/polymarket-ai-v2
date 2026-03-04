@@ -1,0 +1,29 @@
+# =============================================================================
+# BOT IMPROVEMENTS - OPTIONAL DEPENDENCIES BY FUNCTION
+# Install: pip install -r requirements-improvements.txt
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# FUNCTION: Hyperparameter optimization (replaces scikit-optimize)
+# Enables: Bayesian optimization for model tuning with pruning + distributed
+# -----------------------------------------------------------------------------
+optuna>=3.5.0
+
+# -----------------------------------------------------------------------------
+# FUNCTION: Cross-platform market matching
+# Enables: Fuzzy matching for ArbScanner ("Bitcoin $100K" ~ "BTC to reach 100000")
+# -----------------------------------------------------------------------------
+rapidfuzz>=3.5.0
+
+# -----------------------------------------------------------------------------
+# FUNCTION: Unified LLM interface
+# Enables: One API for Claude/GPT/Gemini/Mistral instead of 3 separate clients
+# -----------------------------------------------------------------------------
+litellm>=1.30.0
+
+# -----------------------------------------------------------------------------
+# FUNCTION: GPU acceleration (optional - uncomment for CUDA)
+# Enables: Faster matrix ops if NVIDIA GPU available
+# -----------------------------------------------------------------------------
+# cupy-cuda11x>=12.0.0  # CUDA 11.x
+# cupy-cuda12x>=12.0.0  # CUDA 12.x
