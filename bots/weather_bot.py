@@ -517,7 +517,7 @@ class WeatherBot(BaseBot):
 
         # 2. Gamma API direct probe with category=weather
         try:
-            client = getattr(self.base_engine, "polymarket_client", None)
+            client = getattr(self.base_engine, "client", None)  # PolymarketClient attr name
             if client:
                 direct = await client.get_markets(active=True, limit=500, category="weather")
                 matched_api = [m for m in direct if self._market_mapper.is_weather_market(m)]
