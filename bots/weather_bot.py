@@ -81,6 +81,12 @@ class WeatherBot(BaseBot):
         # Startup observability flag — runs market availability check once on first scan
         self._startup_check_done: bool = False
 
+        # Rate-limit the direct API probe (DB + Gamma) to once per 30 min.
+        # Without this, every 5-min scan with 0 weather markets fires an extra
+        # DB query + HTTP call to Gamma API, lengthening every scan cycle.
+        self._last_direct_probe: float = 0.0
+        self._direct_probe_interval: float = 1800.0  # 30 minutes
+
         # P3: dedup tracking (avoid writing same forecast twice in one session)
         self._written_forecasts: Set[str] = set()  # "station_id:date_iso"
 
@@ -113,7 +119,11 @@ class WeatherBot(BaseBot):
                 sample_questions=sample,
             )
             # Fallback: probe DB (no liquidity floor) + Gamma API directly for weather markets.
-            weather_markets = await self._fetch_weather_markets_direct()
+            # Rate-limited to once per 30 min to avoid extra DB/HTTP calls every scan cycle.
+            now_mono = time.monotonic()
+            if now_mono - self._last_direct_probe >= self._direct_probe_interval:
+                self._last_direct_probe = now_mono
+                weather_markets = await self._fetch_weather_markets_direct()
             if not weather_markets:
                 return
 
