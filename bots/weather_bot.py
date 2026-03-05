@@ -36,15 +36,14 @@ from base_engine.weather.market_mapper import (
     WeatherMarketMapper,
 )
 from base_engine.weather.probability_engine import WeatherProbabilityEngine
-from base_engine.weather.station_registry import StationHealthMonitor, WeatherStation
+from base_engine.weather.station_registry import (
+    StationHealthMonitor,
+    US_CITY_NAMES,
+    WeatherStation,
+)
 from config.settings import settings
 
 logger = get_logger()
-
-# US cities where cross-city regime detection applies
-_US_CITIES: Set[str] = {
-    "New York City", "Atlanta", "Seattle", "Dallas", "Miami", "Chicago", "Denver",
-}
 
 
 class WeatherBot(BaseBot):
@@ -99,21 +98,13 @@ class WeatherBot(BaseBot):
         weather_markets = weather_markets[:scan_limit]
 
         if not weather_markets:
-            # P5d: Upgraded from DEBUG — need visibility into why WeatherBot is silent
-            logger.info(
-                "WeatherBot: 0 weather markets found from %d total markets",
-                len(markets),
-            )
+            logger.info("weatherbot_no_weather_markets", total_markets=len(markets))
             return
 
         # 2. Group by (city, date)
         groups = self._market_mapper.group_markets(weather_markets)
         if not groups:
-            # P5d: Upgraded from DEBUG
-            logger.info(
-                "WeatherBot: 0 groups parsed from %d weather markets",
-                len(weather_markets),
-            )
+            logger.info("weatherbot_no_groups_parsed", weather_markets=len(weather_markets))
             return
 
         # Phase 1: Analyze all groups (fetch forecasts, compute edges)
@@ -149,6 +140,11 @@ class WeatherBot(BaseBot):
                 opp["regime_boost"] = regime_boost
                 await self._execute_weather_trade(opp, group)
                 _traded += 1
+
+        # Wire Session 51 heartbeat counters so watchdog can detect silent WeatherBot
+        self._last_scan_markets = len(weather_markets)
+        self._last_scan_opportunities = _groups_with_edge
+        self._last_scan_trades = _traded
 
         logger.info(
             "weatherbot_scan_done",
@@ -455,7 +451,7 @@ class WeatherBot(BaseBot):
         cold_cities: Set[str] = set()
 
         for opps, group in analyzed:
-            if not opps or group.city not in _US_CITIES:
+            if not opps or group.city not in US_CITY_NAMES:
                 continue
             # Best opportunity for this city
             best = max(opps, key=lambda o: o["abs_edge"])
@@ -490,6 +486,10 @@ class WeatherBot(BaseBot):
         # don't reset the daily loss limit check to $0.
         await self._restore_daily_pnl_from_db()
 
+        # Calibration feedback: fill actual_temp for past forecast rows so
+        # bias correction accumulates over time.
+        await self._maybe_update_calibration_actuals()
+
     async def _restore_daily_pnl_from_db(self) -> None:
         """Query today's WeatherBot realized P&L from paper_trades DB."""
         db = getattr(self.base_engine, "db", None)
@@ -517,6 +517,84 @@ class WeatherBot(BaseBot):
                         )
         except Exception as exc:
             logger.debug("weatherbot_daily_pnl_restore_failed", error=str(exc))
+
+    async def _maybe_update_calibration_actuals(self) -> None:
+        """Fetch actual historical temperatures for past forecast rows and update bias.
+
+        Queries weather_calibration for rows where actual_temp IS NULL and
+        target_date is in the past, then fetches actual daily-max from Open-Meteo
+        archive and stores actual_temp + bias = actual_temp - forecast_temp.
+
+        Called once per UTC day boundary. Non-fatal: errors are logged and skipped.
+        """
+        db = getattr(self.base_engine, "db", None)
+        if not db:
+            return
+        try:
+            from sqlalchemy import text
+            from base_engine.weather.station_registry import STATION_REGISTRY
+
+            # Build station_id → station map for coordinate lookup
+            station_map = {s.station_id: s for s in STATION_REGISTRY.values()}
+
+            async with db.get_session() as session:
+                result = await session.execute(text("""
+                    SELECT id, station_id, target_date, forecast_temp, lead_time_hours
+                    FROM weather_calibration
+                    WHERE actual_temp IS NULL
+                      AND target_date < NOW() - INTERVAL '1 day'
+                    ORDER BY target_date DESC
+                    LIMIT 50
+                """))
+                rows = result.fetchall()
+
+            if not rows:
+                return
+
+            logger.info(
+                "weatherbot_calibration_actuals_pending",
+                rows=len(rows),
+            )
+
+            updated = 0
+            for row_id, station_id, target_dt, forecast_temp, lead_time_hours in rows:
+                station = station_map.get(station_id)
+                if not station:
+                    continue
+
+                target_date = target_dt.date() if hasattr(target_dt, "date") else target_dt
+                actual_temp = await self._forecast_client.get_historical_temperature(
+                    latitude=station.latitude,
+                    longitude=station.longitude,
+                    target_date=target_date,
+                    temp_unit=station.temp_unit,
+                )
+                if actual_temp is None:
+                    continue
+
+                bias = actual_temp - forecast_temp
+                async with db.get_session() as session:
+                    await session.execute(text("""
+                        UPDATE weather_calibration
+                        SET actual_temp = :actual_temp,
+                            bias = :bias
+                        WHERE id = :row_id
+                    """), {
+                        "actual_temp": actual_temp,
+                        "bias": bias,
+                        "row_id": row_id,
+                    })
+                    await session.commit()
+                updated += 1
+
+            if updated:
+                logger.info(
+                    "weatherbot_calibration_actuals_updated",
+                    updated=updated,
+                    total_pending=len(rows),
+                )
+        except Exception as exc:
+            logger.debug("weatherbot_calibration_actuals_failed", error=str(exc))
 
     async def _maybe_reload_calibration(self) -> None:
         """Reload bias calibration from weather_calibration DB every 6 hours (P1)."""

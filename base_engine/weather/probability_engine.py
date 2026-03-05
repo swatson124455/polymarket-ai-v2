@@ -11,6 +11,7 @@ Core math:
 from __future__ import annotations
 
 import math
+import warnings
 from typing import Dict, List, Optional, Tuple
 
 from structlog import get_logger
@@ -69,7 +70,11 @@ class WeatherProbabilityEngine:
         shape = 0.0  # Default: symmetric normal
         if SCIPY_AVAILABLE and n >= 10:
             try:
-                a, loc, scale = skewnorm.fit(ensemble_members)
+                with warnings.catch_warnings():
+                    # Suppress scipy precision-loss warning for nearly-identical members;
+                    # the fallback to normal distribution handles this case correctly.
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    a, loc, scale = skewnorm.fit(ensemble_members)
                 # Apply lead-time inflation to the fitted scale too
                 scale = max(scale * lead_time_factor, 0.5)
                 # Sanity: reject extreme skew or absurd scale

@@ -15,6 +15,7 @@ Temperature unit handling:
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -29,6 +30,7 @@ logger = get_logger()
 
 _DETERMINISTIC_URL = "https://api.open-meteo.com/v1/forecast"
 _ENSEMBLE_URL = "https://api.open-meteo.com/v1/ensemble"
+_HISTORICAL_URL = "https://archive-api.open-meteo.com/v1/archive"
 
 
 @dataclass
@@ -279,7 +281,6 @@ class WeatherForecastClient:
         if not ensemble_members and deterministic_high is not None:
             # Use typical HRRR MAE of ~2°F / ~1.1°C as synthetic spread
             spread = 2.0 if station.temp_unit == "F" else 1.1
-            import random
             rng = random.Random(hash((station.station_id, target_iso)))
             ensemble_members = [deterministic_high + rng.gauss(0, spread) for _ in range(31)]
 
@@ -311,6 +312,54 @@ class WeatherForecastClient:
         # Cache
         self._cache[cache_key] = (now_mono + self._cache_ttl, result)
         return result
+
+    async def get_historical_temperature(
+        self,
+        latitude: float,
+        longitude: float,
+        target_date: date,
+        temp_unit: str = "celsius",
+    ) -> Optional[float]:
+        """Fetch actual historical daily-max temperature from Open-Meteo archive API.
+
+        Used by the calibration feedback loop to fill in actual_temp for past
+        forecast rows so bias correction can be computed.
+
+        Returns the daily maximum temperature for target_date, or None if unavailable.
+        """
+        await self._rate_limit_wait()
+        session = await self._ensure_session()
+
+        target_iso = target_date.isoformat()
+        params = {
+            "latitude": latitude,
+            "longitude": longitude,
+            "start_date": target_iso,
+            "end_date": target_iso,
+            "daily": "temperature_2m_max",
+            "timezone": "auto",
+        }
+        if temp_unit.upper() == "F":
+            params["temperature_unit"] = "fahrenheit"
+
+        try:
+            async with session.get(_HISTORICAL_URL, params=params) as resp:
+                if resp.status != 200:
+                    logger.warning(
+                        "historical_api_error",
+                        status=resp.status,
+                        date=target_iso,
+                    )
+                    return None
+                data = await resp.json()
+            daily = data.get("daily", {})
+            maxes = daily.get("temperature_2m_max", [])
+            if maxes and maxes[0] is not None:
+                return float(maxes[0])
+            return None
+        except Exception as exc:
+            logger.debug("historical_api_failed", date=target_iso, error=str(exc))
+            return None
 
     async def close(self) -> None:
         """Close the underlying HTTP session."""

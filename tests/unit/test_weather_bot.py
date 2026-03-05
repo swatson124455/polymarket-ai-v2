@@ -9,6 +9,7 @@ import pytest
 from base_engine.weather.station_registry import (
     STATION_REGISTRY,
     StationHealthMonitor,
+    US_CITY_NAMES,
     WeatherStation,
     lookup_station,
 )
@@ -28,18 +29,36 @@ from base_engine.weather.forecast_client import CombinedForecast, WeatherForecas
 
 
 class TestStationRegistry:
-    def test_registry_has_all_major_cities(self):
-        assert "new_york_city" in STATION_REGISTRY
-        assert "london" in STATION_REGISTRY
-        assert "toronto" in STATION_REGISTRY
-        assert "seoul" in STATION_REGISTRY
-        assert "buenos_aires" in STATION_REGISTRY
-        assert "atlanta" in STATION_REGISTRY
-        assert "seattle" in STATION_REGISTRY
-        assert "dallas" in STATION_REGISTRY
-        assert "miami" in STATION_REGISTRY
-        assert "chicago" in STATION_REGISTRY
-        assert "denver" in STATION_REGISTRY
+    def test_registry_has_all_major_us_cities(self):
+        expected_us = [
+            "new_york_city", "atlanta", "seattle", "dallas", "miami", "chicago", "denver",
+            "los_angeles", "phoenix", "houston", "philadelphia", "san_francisco", "boston",
+            "washington_dc", "minneapolis", "detroit", "las_vegas", "portland", "nashville",
+            "salt_lake_city", "kansas_city", "orlando", "tampa", "charlotte", "new_orleans",
+            "indianapolis", "columbus", "memphis", "louisville", "austin", "san_antonio",
+            "san_diego", "sacramento", "pittsburgh", "st_louis", "baltimore", "raleigh",
+            "oklahoma_city", "omaha", "albuquerque", "tucson", "el_paso", "jacksonville",
+            "honolulu", "anchorage",
+        ]
+        for key in expected_us:
+            assert key in STATION_REGISTRY, f"Missing US city: {key}"
+
+    def test_registry_has_all_major_international_cities(self):
+        expected_intl = [
+            "london", "toronto", "seoul", "buenos_aires", "wellington", "ankara",
+            "tokyo", "sydney", "melbourne", "paris", "berlin", "dubai", "mexico_city",
+            "sao_paulo", "amsterdam", "mumbai", "vienna", "stockholm", "oslo",
+            "copenhagen", "warsaw", "prague", "zurich", "brussels", "madrid", "rome",
+            "singapore", "hong_kong", "bangkok", "taipei", "vancouver", "montreal",
+            "auckland", "johannesburg", "cairo", "istanbul", "athens", "lisbon",
+            "dublin", "helsinki", "beijing", "shanghai", "delhi", "kuala_lumpur",
+            "jakarta", "nairobi",
+        ]
+        for key in expected_intl:
+            assert key in STATION_REGISTRY, f"Missing international city: {key}"
+
+    def test_registry_total_size(self):
+        assert len(STATION_REGISTRY) >= 80, f"Expected ≥80 stations, got {len(STATION_REGISTRY)}"
 
     def test_lookup_nyc_aliases(self):
         assert lookup_station("nyc") is not None
@@ -47,10 +66,31 @@ class TestStationRegistry:
         assert lookup_station("new york") is not None
         assert lookup_station("NYC").station_id == "KLGA"
 
+    def test_lookup_los_angeles_aliases(self):
+        assert lookup_station("Los Angeles").station_id == "KLAX"
+        assert lookup_station("la").station_id == "KLAX"
+
+    def test_lookup_washington_dc_aliases(self):
+        s = lookup_station("Washington D.C.")
+        assert s is not None
+        assert s.station_id == "KDCA"
+        assert lookup_station("Washington DC") is not None
+        assert lookup_station("Washington, D.C.") is not None
+
+    def test_lookup_sao_paulo_aliases(self):
+        assert lookup_station("São Paulo") is not None
+        assert lookup_station("Sao Paulo") is not None
+
     def test_lookup_london(self):
         s = lookup_station("London")
         assert s is not None
         assert s.station_id == "EGLC"
+        assert s.temp_unit == "C"
+
+    def test_lookup_tokyo(self):
+        s = lookup_station("Tokyo")
+        assert s is not None
+        assert s.station_id == "RJTT"
         assert s.temp_unit == "C"
 
     def test_lookup_unknown_city_returns_none(self):
@@ -64,17 +104,47 @@ class TestStationRegistry:
         assert s.station_id == "KLGA"
 
     def test_us_cities_use_fahrenheit(self):
-        for key in ["new_york_city", "atlanta", "seattle", "dallas", "miami", "chicago", "denver"]:
-            assert STATION_REGISTRY[key].temp_unit == "F"
+        us_keys = [
+            "new_york_city", "atlanta", "seattle", "dallas", "miami", "chicago", "denver",
+            "los_angeles", "phoenix", "houston", "boston", "las_vegas", "honolulu",
+        ]
+        for key in us_keys:
+            assert STATION_REGISTRY[key].temp_unit == "F", f"{key} should be F"
 
     def test_international_cities_use_celsius(self):
-        for key in ["london", "toronto", "seoul", "buenos_aires", "wellington", "ankara"]:
-            assert STATION_REGISTRY[key].temp_unit == "C"
+        intl_keys = [
+            "london", "toronto", "seoul", "buenos_aires", "wellington", "ankara",
+            "tokyo", "sydney", "paris", "berlin", "dubai", "singapore",
+        ]
+        for key in intl_keys:
+            assert STATION_REGISTRY[key].temp_unit == "C", f"{key} should be C"
 
-    def test_station_has_coordinates(self):
-        for station in STATION_REGISTRY.values():
-            assert -90 <= station.latitude <= 90
-            assert -180 <= station.longitude <= 180
+    def test_station_has_valid_coordinates(self):
+        for key, station in STATION_REGISTRY.items():
+            assert -90 <= station.latitude <= 90, f"{key}: invalid latitude {station.latitude}"
+            assert -180 <= station.longitude <= 180, f"{key}: invalid longitude {station.longitude}"
+
+    def test_us_city_names_frozenset(self):
+        assert "New York City" in US_CITY_NAMES
+        assert "Los Angeles" in US_CITY_NAMES
+        assert "Chicago" in US_CITY_NAMES
+        assert "London" not in US_CITY_NAMES   # International should not be in US set
+        assert "Tokyo" not in US_CITY_NAMES
+
+    def test_all_us_stations_fahrenheit(self):
+        """Every station in US_CITY_NAMES must use Fahrenheit."""
+        f_cities = {s.city_name for s in STATION_REGISTRY.values() if s.temp_unit == "F"}
+        assert US_CITY_NAMES == f_cities
+
+    def test_no_duplicate_aliases(self):
+        """Each alias must map to exactly one station (no collisions)."""
+        seen: dict = {}
+        for key, station in STATION_REGISTRY.items():
+            for alias in station.aliases:
+                assert alias not in seen, (
+                    f"Duplicate alias '{alias}': {seen[alias]} and {key}"
+                )
+                seen[alias] = key
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -815,3 +885,178 @@ class TestWeatherBotOpportunities:
         weather_bot.base_engine.db.get_session.assert_not_called() if hasattr(
             weather_bot.base_engine.db, "get_session"
         ) else None
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_counters_wired(self, weather_bot, mock_engine):
+        """scan_and_trade() must set _last_scan_markets before returning."""
+        mock_engine.get_all_tradeable_markets = AsyncMock(return_value=[
+            {"id": "m1", "question": "Will Bitcoin hit $100k?", "yes_token_id": "t1", "no_token_id": "n1"},
+        ])
+        await weather_bot.scan_and_trade()
+        # Non-weather market → filtered out, but counter still set
+        assert weather_bot._last_scan_markets == 0
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_counters_reflect_actual_scan(self, weather_bot, mock_engine):
+        """Heartbeat counters reflect actual weather market count."""
+        from datetime import timedelta
+        future = (datetime.now() + timedelta(days=3))
+        future_str = future.strftime("%B %d, %Y")
+
+        mock_engine.get_all_tradeable_markets = AsyncMock(return_value=[
+            {
+                "id": "m1",
+                "question": f"Will the highest temperature in NYC be between 48-49°F on {future_str}?",
+                "yes_token_id": "tok_yes",
+                "no_token_id": "tok_no",
+                "yes_price": 0.98,  # No edge (market == model)
+                "slug": "nyc-temp",
+            },
+        ])
+        fake_forecast = CombinedForecast(
+            ensemble_members=[49.0] * 31,
+            deterministic_high=49.0,
+            model_spread=0.5,
+            lead_time_hours=48.0,
+            models_used=["gfs025"],
+        )
+        weather_bot._forecast_client.get_combined_forecast = AsyncMock(return_value=fake_forecast)
+        weather_bot._station_health.is_healthy = AsyncMock(return_value=True)
+
+        await weather_bot.scan_and_trade()
+        assert weather_bot._last_scan_markets == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Historical Temperature API
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestHistoricalTemperatureAPI:
+    @pytest.mark.asyncio
+    async def test_get_historical_temperature_success(self):
+        client = WeatherForecastClient()
+        target = date(2026, 1, 15)
+
+        mock_resp = MagicMock()
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={
+            "daily": {"temperature_2m_max": [48.5]}
+        })
+
+        mock_sess = MagicMock()
+        mock_sess.__aenter__ = AsyncMock(return_value=mock_sess)
+        mock_sess.__aexit__ = AsyncMock(return_value=False)
+        mock_sess.get = MagicMock(return_value=mock_resp)
+
+        with patch.object(client, "_ensure_session", new_callable=AsyncMock, return_value=mock_sess):
+            result = await client.get_historical_temperature(40.77, -73.87, target, "F")
+
+        assert result == 48.5
+
+    @pytest.mark.asyncio
+    async def test_get_historical_temperature_api_error_returns_none(self):
+        client = WeatherForecastClient()
+
+        mock_resp = MagicMock()
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_resp.status = 500
+
+        mock_sess = MagicMock()
+        mock_sess.__aenter__ = AsyncMock(return_value=mock_sess)
+        mock_sess.__aexit__ = AsyncMock(return_value=False)
+        mock_sess.get = MagicMock(return_value=mock_resp)
+
+        with patch.object(client, "_ensure_session", new_callable=AsyncMock, return_value=mock_sess):
+            result = await client.get_historical_temperature(40.77, -73.87, date(2026, 1, 15))
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_historical_temperature_null_data_returns_none(self):
+        client = WeatherForecastClient()
+
+        mock_resp = MagicMock()
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"daily": {"temperature_2m_max": [None]}})
+
+        mock_sess = MagicMock()
+        mock_sess.__aenter__ = AsyncMock(return_value=mock_sess)
+        mock_sess.__aexit__ = AsyncMock(return_value=False)
+        mock_sess.get = MagicMock(return_value=mock_resp)
+
+        with patch.object(client, "_ensure_session", new_callable=AsyncMock, return_value=mock_sess):
+            result = await client.get_historical_temperature(40.77, -73.87, date(2026, 1, 15))
+
+        assert result is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Calibration Feedback Loop
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestCalibrationFeedbackLoop:
+    @pytest.mark.asyncio
+    async def test_calibration_actuals_no_db_noop(self, weather_bot):
+        """No DB → _maybe_update_calibration_actuals exits silently."""
+        weather_bot.base_engine.db = None
+        # Should not raise
+        await weather_bot._maybe_update_calibration_actuals()
+
+    @pytest.mark.asyncio
+    async def test_calibration_actuals_skips_on_empty_rows(self, weather_bot):
+        """No pending rows → no API calls."""
+        mock_result = MagicMock()
+        mock_result.fetchall.return_value = []
+
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = mock_session
+        weather_bot.base_engine.db = mock_db
+
+        historical_mock = AsyncMock(return_value=50.0)
+        weather_bot._forecast_client.get_historical_temperature = historical_mock
+
+        await weather_bot._maybe_update_calibration_actuals()
+
+        historical_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_calibration_actuals_updates_bias(self, weather_bot):
+        """Found pending row → fetches actual temp and writes bias."""
+        from datetime import date as _date
+        pending_row = (1, "KLGA", _date(2026, 1, 15), 48.0, 24.0)
+
+        call_count = 0
+        fetch_results = [[pending_row], []]  # First SELECT returns row, second (UPDATE) won't fetchall
+
+        mock_select_result = MagicMock()
+        mock_select_result.fetchall.return_value = [pending_row]
+
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_session.execute = AsyncMock(return_value=mock_select_result)
+        mock_session.commit = AsyncMock()
+
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = mock_session
+        weather_bot.base_engine.db = mock_db
+
+        # Actual temperature came in at 50.5°F (forecast was 48.0)
+        weather_bot._forecast_client.get_historical_temperature = AsyncMock(return_value=50.5)
+
+        await weather_bot._maybe_update_calibration_actuals()
+
+        weather_bot._forecast_client.get_historical_temperature.assert_called_once()
+        mock_session.commit.assert_called()  # UPDATE was committed

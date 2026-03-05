@@ -1,10 +1,7 @@
-Exception type: ConnectionError
-Exception: Connection refused
-Traceback:
+[API] ValueError: not enough values to unpack (expected 2, got 0)
 Traceback (most recent call last):
-  File "C:\lockes-picks\polymarket-ai-v2\base_engine\data\data_ingestion.py", line 2219, in _pre_ingestion_checks
-    await self.db._verify_database()
-  File "C:\Users\samwa\AppData\Local\Programs\Python\Python313\Lib\unittest\mock.py", line 2321, in _execute_mock_call
-    raise effect
-ConnectionError: Connection refused
+  File "C:\lockes-picks\polymarket-ai-v2\base_engine\data\data_ingestion.py", line 2205, in _pre_ingestion_checks
+    is_connected, connection_msg = test_result
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: not enough values to unpack (expected 2, got 0)
 
