@@ -462,8 +462,14 @@ class BaseEngine:
             
             # Level 4: Monitoring Systems
             self.health_monitor = HealthMonitor(db=self.db, cache=self.cache, client=self.client)
-            self.alerting_system = AlertingSystem(health_monitor=self.health_monitor)
+            self.alerting_system = AlertingSystem(
+                health_monitor=self.health_monitor,
+                discord_webhook=getattr(settings, "DISCORD_WEBHOOK_URL", None),
+            )
             self.risk_manager.alerting = self.alerting_system
+            # Session 51 P1-3: Wire alerting to API circuit breaker
+            if self.client and hasattr(self.client, 'set_alerting'):
+                self.client.set_alerting(self.alerting_system)
             self.metrics_dashboard = MetricsDashboard(health_monitor=self.health_monitor)
             self.data_quality_monitor = DataQualityMonitor(db=self.db)
             self.recovery_procedure = RecoveryProcedure(health_monitor=self.health_monitor, db=self.db, cache=self.cache)
@@ -540,6 +546,7 @@ class BaseEngine:
                 order_manager=self.advanced_order_manager,
                 db=self.db,
                 prediction_engine=getattr(self, "prediction_engine", None),
+                alerting=self.alerting_system,  # Session 51 P1-4
             )
             
             # Level 8: Signal & Data Systems
@@ -591,6 +598,7 @@ class BaseEngine:
                 # I49: pass market index resolver so WS condition_id → numeric id is resolved
                 # at the source before price_update events are emitted to bots
                 market_index_resolver=self.get_market_from_index,
+                alerting=self.alerting_system,  # Session 51 P1-3
             )
             # Real-time streaming to DB (trade/price events from WebSocket)
             if self.db and self.db.session_factory:
@@ -1294,6 +1302,14 @@ class BaseEngine:
             except Exception as e:
                 logger.warning("Ingestion scheduler failed to start (non-critical)", error=str(e))
 
+        # Session 51 P1-1: Start recovery monitor (auto-recover DB/Redis/API failures)
+        if self.recovery_procedure:
+            self._recovery_task = asyncio.create_task(
+                self.recovery_procedure.monitor_and_recover(interval_seconds=60)
+            )
+            self._recovery_task.add_done_callback(lambda t: self._on_bg_task_done(t, "recovery_monitor"))
+            logger.info("Recovery monitor started")
+
         # Start stale reservation reaper (cleans ghost reservations from crashed processes)
         if self.trade_coordinator is not None:
             try:
@@ -1422,6 +1438,14 @@ class BaseEngine:
                 logger.warning("Lifecycle shutdown failed: %s", e)
 
         stop_errors = []
+
+        # Session 51: Cancel recovery monitor
+        if hasattr(self, "_recovery_task") and self._recovery_task:
+            self._recovery_task.cancel()
+            try:
+                await self._recovery_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
         # Stop self-healing health scheduler
         try:

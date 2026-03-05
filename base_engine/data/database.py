@@ -887,9 +887,9 @@ class Database:
             url = f"postgresql+asyncpg://{url}" if "://" not in url else url
         
         logger.info("Initializing PostgreSQL database")
-        pool_size = getattr(settings, "DB_POOL_SIZE", 50)
-        max_overflow = getattr(settings, "DB_MAX_OVERFLOW", 30)
-        pool_timeout = getattr(settings, "DB_POOL_TIMEOUT", 30)
+        pool_size = settings.DB_POOL_SIZE  # Default: 15 (settings.py)
+        max_overflow = settings.DB_MAX_OVERFLOW  # Default: 5 (settings.py)
+        pool_timeout = settings.DB_POOL_TIMEOUT  # Default: 30 (settings.py)
         connect_timeout = getattr(settings, "DB_CONNECT_TIMEOUT", 15)
         db_ssl = getattr(settings, "DB_SSL", False)
 

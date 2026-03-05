@@ -803,6 +803,12 @@ class Settings(BaseSettings):
     DISCORD_BOT_TOKEN: Optional[str] = os.getenv("DISCORD_BOT_TOKEN", None)
     DISCORD_CHANNEL_IDS: str = os.getenv("DISCORD_CHANNEL_IDS", "")
 
+    # Discord webhook for AlertingSystem (Server Settings → Integrations → Webhooks)
+    DISCORD_WEBHOOK_URL: Optional[str] = os.getenv("DISCORD_WEBHOOK_URL") or None
+
+    # Bot heartbeat staleness threshold (Session 51)
+    BOT_HEARTBEAT_STALE_MINUTES: int = int(os.getenv("BOT_HEARTBEAT_STALE_MINUTES", "15"))
+
     # Cascade/Persuasion detection (already existed as flags, re-exposed for new bot wiring)
     CASCADE_CHECK_ENABLED: bool = os.getenv("CASCADE_CHECK_ENABLED", "true").lower() in ("true", "1", "yes")
     CASCADE_SCORE_THRESHOLD: float = float(os.getenv("CASCADE_SCORE_THRESHOLD", "0.6"))

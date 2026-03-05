@@ -54,7 +54,7 @@ class MarketNotFoundError(Exception):
 
 
 class CircuitBreaker:
-    def __init__(self, failure_threshold: int = 5, timeout: int = 60):
+    def __init__(self, failure_threshold: int = 5, timeout: int = 60, alerting=None):
         self.failure_threshold = failure_threshold
         self.timeout = timeout
         self.failure_count = 0
@@ -63,6 +63,7 @@ class CircuitBreaker:
         self.lock = asyncio.Lock()
         self._last_open_log_time: float = 0  # Rate-limit OPEN warnings
         self._open_reject_count: int = 0  # Track rejected calls while OPEN
+        self._alerting = alerting  # Session 51: AlertingSystem reference
 
     async def reset(self):
         """Reset circuit breaker state with proper async lock to prevent race conditions."""
@@ -119,16 +120,33 @@ class CircuitBreaker:
                 (hasattr(e, 'response') and hasattr(e.response, 'status_code') and 400 <= e.response.status_code < 500)
             )
 
+            _should_alert = False
             async with self.lock:
                 if not is_client_error:
                     # Server error or connection error — count as failure
                     self.failure_count += 1
                     self.last_failure_time = time.time()
                     if self.failure_count >= self.failure_threshold:
+                        _was_open = self.state == "OPEN"
                         self.state = "OPEN"
+                        _should_alert = not _was_open  # Only alert on first transition
                 else:
                     # Client error (4xx) — server is fine, don't count as failure
                     logger.debug("Client error (4xx), not counting as circuit breaker failure")
+            # Session 51 P1-3: Fire alert OUTSIDE lock to avoid deadlock
+            if _should_alert and self._alerting:
+                try:
+                    from base_engine.monitoring.alerting import AlertSeverity
+                    _t = asyncio.create_task(self._alerting.send_alert(
+                        title="API Circuit Breaker OPEN",
+                        message=f"Gamma API circuit breaker tripped after {self.failure_threshold} failures. "
+                                f"Blocking requests for {self.timeout}s.",
+                        severity=AlertSeverity.ERROR,
+                        source="circuit_breaker.gamma_api",
+                    ))
+                    _t.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+                except Exception:
+                    pass
             raise
 
 
@@ -159,6 +177,10 @@ class PolymarketClient:
         
         self.private_key = (private_key or "").strip() or settings.PRIVATE_KEY
         self.wallet_address = (wallet_address or "").strip() or settings.WALLET_ADDRESS
+
+    def set_alerting(self, alerting) -> None:
+        """Session 51: Wire alerting system to circuit breaker for OPEN transition alerts."""
+        self.circuit_breaker._alerting = alerting
 
     def get_circuit_breaker_state(self) -> dict:
         """Return circuit breaker state for diagnostics."""

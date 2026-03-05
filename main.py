@@ -12,6 +12,7 @@ import logging
 import os as _os
 import signal
 import sys
+import time
 from dataclasses import dataclass
 import structlog
 
@@ -291,10 +292,11 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
     """
     Monitor bot liveness. Restart dead bots up to MAX_GLOBAL_RESTART_ATTEMPTS.
     I15: Exponential backoff between restart attempts (30s → 60s → 120s … capped at 600s).
-    If all bots are dead after restarts, trigger graceful shutdown.
+    Session 51: heartbeat staleness check, decision_events retention, sys.exit on all-dead.
     """
     restart_counts = {name: 0 for name in bots}
     restart_backoff: dict = {name: 30.0 for name in bots}  # I15: per-bot backoff seconds
+    _last_retention_cleanup: float = 0.0  # Session 51: P2-3
 
     while True:
         await asyncio.sleep(WATCHDOG_INTERVAL_SECONDS)
@@ -331,6 +333,35 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
                     attempts=restart_counts[bot_name],
                 )
 
+        # Session 51 P0-2: Heartbeat staleness check — detect bots that are running but silent
+        _alerting = getattr(base_engine, "alerting_system", None)
+        _db = getattr(base_engine, "db", None)
+        if _db and _db.session_factory and _alerting:
+            try:
+                from sqlalchemy import text as sa_text
+                from base_engine.monitoring.alerting import AlertSeverity
+                _stale_minutes = getattr(settings, "BOT_HEARTBEAT_STALE_MINUTES", 15)
+                async with _db.get_session() as _hb_sess:
+                    _hb_result = await _hb_sess.execute(
+                        sa_text("""
+                            SELECT bot_name,
+                                   EXTRACT(EPOCH FROM (NOW() - last_scan_at)) / 60 AS minutes_stale
+                            FROM bot_heartbeats
+                            WHERE last_scan_at < NOW() - INTERVAL '1 minute' * :threshold
+                        """),
+                        {"threshold": _stale_minutes},
+                    )
+                    for row in _hb_result.fetchall():
+                        await _alerting.send_alert(
+                            title=f"Bot {row[0]} is stale",
+                            message=f"Last scan {row[1]:.1f}m ago (threshold: {_stale_minutes}m)",
+                            severity=AlertSeverity.WARNING,
+                            source="watchdog.heartbeat",
+                            metadata={"bot_name": row[0], "minutes_stale": float(row[1])},
+                        )
+            except Exception as e:
+                logger.debug("Heartbeat staleness check failed: %s", e)
+
         # Check scheduler health (SF-28)
         if hasattr(base_engine, 'ingestion_scheduler') and base_engine.ingestion_scheduler:
             _is = base_engine.ingestion_scheduler
@@ -350,6 +381,18 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
                 except Exception as e:
                     logger.error("Watchdog: learning_scheduler restart failed: %s", e)
 
+        # Session 51 P2-3: Daily decision_events retention cleanup
+        _now_ts = time.time()
+        if _now_ts - _last_retention_cleanup > 86400:
+            _event_bus = getattr(base_engine, "event_bus", None)
+            if _event_bus and hasattr(_event_bus, "_retention_cleanup"):
+                try:
+                    await _event_bus._retention_cleanup(retain_days=30)
+                    _last_retention_cleanup = _now_ts
+                    logger.info("Watchdog: decision_events retention cleanup completed")
+                except Exception as e:
+                    logger.debug("Retention cleanup failed: %s", e)
+
         if alive_count == 0 and len(bots) > 0:
             logger.critical(
                 "Watchdog: ALL bots dead after restart attempts -- initiating shutdown",
@@ -359,7 +402,19 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
             event_bus = getattr(base_engine, "event_bus", None)
             if event_bus:
                 await event_bus.emit("system_shutdown", {"reason": "all_bots_dead"})
-            return
+            # Session 51 P2-2: Alert before exit, then sys.exit for systemd restart
+            if _alerting:
+                try:
+                    from base_engine.monitoring.alerting import AlertSeverity
+                    await _alerting.send_alert(
+                        title="SYSTEM DOWN: All bots dead",
+                        message="All bots exhausted restart attempts. Exiting for systemd restart.",
+                        severity=AlertSeverity.CRITICAL,
+                        source="watchdog",
+                    )
+                except Exception:
+                    pass
+            sys.exit(1)
 
 
 async def main():
@@ -442,6 +497,17 @@ async def main():
 
         # ── Watchdog + wait for shutdown ───────────────────────────────
         watchdog_task = asyncio.create_task(_watchdog(bots, base_engine))
+
+        # Session 51 P2-2: done_callback so watchdog crash doesn't go unnoticed
+        def _watchdog_done(t):
+            try:
+                if not t.cancelled():
+                    exc = t.exception()
+                    if exc:
+                        logger.critical("Watchdog crashed: %s", exc, exc_info=exc)
+            except Exception:
+                pass
+        watchdog_task.add_done_callback(_watchdog_done)
 
         logger.info("System running -- press Ctrl+C to stop", active_bots=len(bots))
 

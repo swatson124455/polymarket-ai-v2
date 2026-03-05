@@ -149,17 +149,24 @@ class EsportsBot(BaseBot):
         esports_markets = self.base_engine.filter_markets_for_trading(
             markets, categories=["esports"]
         )
+        self._last_scan_markets = len(esports_markets) if esports_markets else 0
         if not esports_markets:
             return
 
         # Step 4: Analyze each market
+        _opps = 0
+        _trades = 0
         for market in esports_markets:
             try:
                 opp = await self.analyze_opportunity(market)
                 if opp:
+                    _opps += 1
                     await self._execute_esports_trade(opp)
+                    _trades += 1
             except Exception as exc:
                 logger.debug("EsportsBot scan error: %s", exc)
+        self._last_scan_opportunities = _opps
+        self._last_scan_trades = _trades
 
     async def analyze_opportunity(self, market_data: Dict) -> Optional[Dict]:
         """

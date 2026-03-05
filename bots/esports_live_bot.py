@@ -126,6 +126,7 @@ class EsportsLiveBot(BaseBot):
         db = getattr(self.base_engine, "db", None)
         processed = 0
         events_detected = 0
+        _trades = 0
 
         # Prune expired cooldowns
         if self._live_trigger:
@@ -152,7 +153,7 @@ class EsportsLiveBot(BaseBot):
                     )
                     if self._live_trigger:
                         try:
-                            await asyncio.wait_for(
+                            result = await asyncio.wait_for(
                                 self._live_trigger.process_event(
                                     live_event,
                                     bot=self,
@@ -162,6 +163,8 @@ class EsportsLiveBot(BaseBot):
                                 ),
                                 timeout=15.0,
                             )
+                            if result:
+                                _trades += 1
                         except asyncio.TimeoutError:
                             logger.warning(
                                 "EsportsLiveBot: live trigger timed out",
@@ -173,6 +176,10 @@ class EsportsLiveBot(BaseBot):
                                 error=str(exc),
                             )
             processed += 1
+
+        self._last_scan_markets = processed
+        self._last_scan_opportunities = events_detected
+        self._last_scan_trades = _trades
 
         if events_detected:
             logger.info(

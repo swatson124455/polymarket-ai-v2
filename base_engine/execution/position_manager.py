@@ -39,11 +39,13 @@ class AutomatedPositionManager:
         order_manager: AdvancedOrderManager,
         db: Database,
         prediction_engine: Optional[Any] = None,
+        alerting: Optional[Any] = None,
     ):
         self.execution_engine = execution_engine
         self.order_manager = order_manager
         self.db = db
         self.prediction_engine = prediction_engine
+        self.alerting = alerting  # Session 51 P1-4: price staleness alerts
         self.order_gateway = None  # Set by BaseEngine so stop-loss/take-profit respect kill switch
         self.risk_manager = None   # Set by BaseEngine to record consecutive trade outcomes
         # Session 45: Intelligent Exit Engine — dynamic cost/vol/TTR/regime-aware exits
@@ -312,8 +314,10 @@ class AutomatedPositionManager:
         current_price == entry_price forever, causing every exit to be a guaranteed loss.
 
         Session 44 fix: root cause of 0% sell win rate.
+        Session 51: also checks price age and alerts on staleness > 1 hour.
         """
         from sqlalchemy import text as sa_text
+        from datetime import datetime, timezone
 
         # Collect all token_ids from open positions
         token_ids = list({str(p.token_id) for p in positions if p.token_id})
@@ -321,17 +325,30 @@ class AutomatedPositionManager:
             return
 
         try:
-            # Single efficient query: latest price per token_id
+            # Single efficient query: latest price per token_id (Session 51: include timestamp)
             result = await session.execute(
                 sa_text("""
-                    SELECT DISTINCT ON (token_id) token_id, price
+                    SELECT DISTINCT ON (token_id) token_id, price, timestamp
                     FROM market_prices
                     WHERE token_id = ANY(:token_ids)
                     ORDER BY token_id, timestamp DESC
                 """),
                 {"token_ids": token_ids}
             )
-            latest_prices = {str(r[0]): float(r[1]) for r in result.fetchall() if r[1] is not None}
+            latest_prices = {}
+            _stale_tokens = []
+            _stale_threshold = 3600  # 1 hour
+            _now = datetime.now(timezone.utc)
+            for r in result.fetchall():
+                if r[1] is not None:
+                    latest_prices[str(r[0])] = float(r[1])
+                    if r[2] is not None:
+                        try:
+                            _age = (_now - r[2]).total_seconds()
+                            if _age > _stale_threshold:
+                                _stale_tokens.append((str(r[0])[:16], round(_age / 3600, 1)))
+                        except Exception:
+                            pass
 
             if not latest_prices:
                 return
@@ -363,6 +380,20 @@ class AutomatedPositionManager:
             if updated > 0:
                 await session.commit()
                 logger.debug("Updated current_price for %d/%d positions", updated, len(positions))
+
+            # Session 51 P1-4: Alert on stale prices
+            if _stale_tokens and self.alerting:
+                try:
+                    from base_engine.monitoring.alerting import AlertSeverity
+                    await self.alerting.send_alert(
+                        title=f"Stale prices for {len(_stale_tokens)} position(s)",
+                        message=f"Oldest: {max(t[1] for t in _stale_tokens)}h. Tokens: {[t[0] for t in _stale_tokens[:5]]}",
+                        severity=AlertSeverity.WARNING,
+                        source="position_manager.price_staleness",
+                        metadata={"stale_count": len(_stale_tokens)},
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             logger.debug("current_price update failed (non-fatal): %s", e)
             try:

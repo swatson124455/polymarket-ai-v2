@@ -175,23 +175,40 @@ class RecoveryProcedure:
     async def monitor_and_recover(self, interval_seconds: int = 60):
         """
         Continuously monitor health and attempt recovery for failed components.
-        
+        Session 51: escalation — sys.exit(1) after 3 consecutive failures per component.
+
         Args:
             interval_seconds: How often to check health
         """
+        _consecutive_failures: Dict[str, int] = {}
+        _MAX_BEFORE_EXIT = 3
         while True:
             try:
                 health = await self.health_monitor.check_all_services()
-                
-                # Check each component
+
                 for comp_name, comp_data in health["components"].items():
                     if comp_data["status"] == "unhealthy":
-                        await self.attempt_recovery(
+                        result = await self.attempt_recovery(
                             component=comp_name,
                             issue=comp_data.get("message", "Component unhealthy")
                         )
-                
+                        if not result.get("success"):
+                            _consecutive_failures[comp_name] = _consecutive_failures.get(comp_name, 0) + 1
+                            if _consecutive_failures[comp_name] >= _MAX_BEFORE_EXIT:
+                                logger.critical(
+                                    "Recovery exhausted for %s (%d consecutive failures) — requesting process restart",
+                                    comp_name, _consecutive_failures[comp_name],
+                                )
+                                import sys
+                                sys.exit(1)
+                        else:
+                            _consecutive_failures[comp_name] = 0
+                    else:
+                        _consecutive_failures.pop(comp_name, None)
+
                 await asyncio.sleep(interval_seconds)
+            except SystemExit:
+                raise
             except Exception as e:
                 logger.error(f"Recovery monitoring error: {str(e)}", exc_info=True)
                 await asyncio.sleep(interval_seconds)

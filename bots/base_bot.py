@@ -91,6 +91,10 @@ class BaseBot(ABC):
         # R2: Stores signal metadata captured during apply_signal_enhancements().
         # Key = market_id string. Written to trade_signals table after place_order succeeds.
         self._pending_signal_meta: Dict[str, Dict] = {}
+        # Session 51: Heartbeat counters — subclasses populate during scan_and_trade()
+        self._last_scan_markets: int = 0
+        self._last_scan_opportunities: int = 0
+        self._last_scan_trades: int = 0
         # Phase 5.2: Whale priority queue — markets pushed here by Redis whale_alerts listener.
         # Drained at the START of each scan cycle so whale markets get immediate attention.
         self._whale_priority_queue: asyncio.Queue = asyncio.Queue(maxsize=50)
@@ -600,6 +604,59 @@ class BaseBot(ABC):
                 logger.debug("get_bot_metrics db fetch failed: %s", e)
         return out
     
+    async def _record_heartbeat(self, scan_duration_ms: float) -> None:
+        """Upsert bot_heartbeats row after a successful scan cycle (Session 51)."""
+        db = getattr(self.base_engine, "db", None)
+        if not db or not db.session_factory:
+            return
+        try:
+            from sqlalchemy import text
+            async with db.get_session() as session:
+                await session.execute(
+                    text("""
+                        INSERT INTO bot_heartbeats
+                            (bot_name, last_scan_at, scan_duration_ms, markets_scanned,
+                             opportunities_found, trades_executed, consecutive_errors, updated_at)
+                        VALUES (:bn, NOW(), :ms, :mk, :op, :tr, 0, NOW())
+                        ON CONFLICT (bot_name) DO UPDATE SET
+                            last_scan_at = NOW(),
+                            scan_duration_ms = :ms,
+                            markets_scanned = :mk,
+                            opportunities_found = :op,
+                            trades_executed = :tr,
+                            consecutive_errors = 0,
+                            updated_at = NOW()
+                    """),
+                    {"bn": self.bot_name, "ms": scan_duration_ms,
+                     "mk": self._last_scan_markets, "op": self._last_scan_opportunities,
+                     "tr": self._last_scan_trades},
+                )
+                await session.commit()
+        except Exception as e:
+            logger.debug("heartbeat upsert failed (non-fatal): %s", e)
+
+    async def _record_heartbeat_error(self, consecutive_errors: int) -> None:
+        """Update bot_heartbeats with error count (Session 51)."""
+        db = getattr(self.base_engine, "db", None)
+        if not db or not db.session_factory:
+            return
+        try:
+            from sqlalchemy import text
+            async with db.get_session() as session:
+                await session.execute(
+                    text("""
+                        INSERT INTO bot_heartbeats (bot_name, last_scan_at, consecutive_errors, updated_at)
+                        VALUES (:bn, NOW(), :errs, NOW())
+                        ON CONFLICT (bot_name) DO UPDATE SET
+                            consecutive_errors = :errs,
+                            updated_at = NOW()
+                    """),
+                    {"bn": self.bot_name, "errs": consecutive_errors},
+                )
+                await session.commit()
+        except Exception:
+            pass
+
     async def _scan_loop(self):
         # BUG FIX: Add failure counting and exponential backoff
         # Root cause: Error handling is too simple - doesn't distinguish between transient
@@ -705,6 +762,8 @@ class BaseBot(ABC):
                 _sm = getattr(self, "state_machine", None)
                 if _sm is not None:
                     _sm.record_health_ok()
+                # Session 51: record heartbeat for silent bot detection
+                await self._record_heartbeat(scan_duration_ms=_scan_ms)
 
                 # Optional burst: if StrategicTimer says burst, run one extra scan at half interval
                 if getattr(settings, "USE_SCAN_JITTER", False):
@@ -733,6 +792,8 @@ class BaseBot(ABC):
                 _sm = getattr(self, "state_machine", None)
                 if _sm is not None:
                     _sm.record_error(is_fatal=(consecutive_failures >= max_consecutive_failures))
+                # Session 51: record error heartbeat
+                await self._record_heartbeat_error(consecutive_failures)
                 logger.error(
                     "Bot scan error",
                     bot_name=self.bot_name,

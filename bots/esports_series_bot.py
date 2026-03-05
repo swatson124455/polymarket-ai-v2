@@ -110,20 +110,27 @@ class EsportsSeriesBot(BaseBot):
         # Refresh live matches from PandaScore
         await self._refresh_series()
 
+        self._last_scan_markets = len(self._active_series)
         if not self._active_series:
             return
 
+        _opps = 0
+        _trades = 0
         for match_id, series_data in list(self._active_series.items()):
             try:
                 opp = await self._analyze_series(match_id, series_data, db)
                 if opp:
+                    _opps += 1
                     await self._execute_series_trade(opp)
+                    _trades += 1
             except Exception as exc:
                 logger.debug(
                     "EsportsSeriesBot: analysis error",
                     match_id=match_id,
                     error=str(exc),
                 )
+        self._last_scan_opportunities = _opps
+        self._last_scan_trades = _trades
 
     async def analyze_opportunity(self, market_data: Dict) -> Optional[Dict]:
         """Required by BaseBot ABC. EsportsSeriesBot is series-driven."""

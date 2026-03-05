@@ -34,6 +34,7 @@ class WebSocketManager:
         whale_threshold_usd: float = 10000.0,
         event_bus: Optional[Any] = None,
         market_index_resolver: Optional[Any] = None,
+        alerting: Optional[Any] = None,
     ):
         self.cache = cache
         self.ws_url = ws_url
@@ -41,6 +42,7 @@ class WebSocketManager:
         self.event_bus = event_bus
         # I49: callable(market_id_str) -> market_dict | None — resolves condition_id to numeric id
         self._market_index_resolver = market_index_resolver
+        self._alerting = alerting  # Session 51: AlertingSystem for circuit breaker alerts
         self.ws = None
         self.subscriptions = set()
         self.handlers: Dict[str, List[Callable]] = {}
@@ -182,6 +184,19 @@ class WebSocketManager:
                         "Will continue retrying every 5 minutes.",
                         _reconnect_attempts,
                     )
+                    # Session 51 P1-3: Alert on WebSocket circuit breaker
+                    if self._alerting:
+                        try:
+                            from base_engine.monitoring.alerting import AlertSeverity
+                            _t = asyncio.create_task(self._alerting.send_alert(
+                                title="WebSocket circuit breaker tripped",
+                                message=f"{_reconnect_attempts} consecutive reconnect failures. Network may be down.",
+                                severity=AlertSeverity.CRITICAL,
+                                source="websocket_manager",
+                            ))
+                            _t.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+                        except Exception:
+                            pass
                 if _reconnect_attempts > _MAX_BEFORE_CRITICAL:
                     _backoff = 300  # 5 min after circuit breaker trips
                 logger.warning("WebSocket connection closed, reconnect attempt %d (backoff %ds)...",
