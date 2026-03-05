@@ -78,6 +78,9 @@ class WeatherBot(BaseBot):
         self._calibration_last_loaded: float = 0.0
         self._calibration_reload_interval: float = 3600.0 * 6  # 6 hours
 
+        # Startup observability flag — runs market availability check once on first scan
+        self._startup_check_done: bool = False
+
         # P3: dedup tracking (avoid writing same forecast twice in one session)
         self._written_forecasts: Set[str] = set()  # "station_id:date_iso"
 
@@ -87,6 +90,10 @@ class WeatherBot(BaseBot):
         # P1+P2: handle day boundary + calibration refresh
         await self._handle_daily_boundary()
         await self._maybe_reload_calibration()
+
+        # One-time startup observability check (logs DB state + Gamma API probe)
+        if not self._startup_check_done:
+            await self._check_weather_market_availability()
 
         # 1. Fetch all markets, filter to weather
         markets = await self.base_engine.get_all_tradeable_markets()
@@ -98,8 +105,17 @@ class WeatherBot(BaseBot):
         weather_markets = weather_markets[:scan_limit]
 
         if not weather_markets:
-            logger.info("weatherbot_no_weather_markets", total_markets=len(markets))
-            return
+            # Diagnostic: sample first 10 questions so we can see what the DB is returning.
+            sample = [(m.get("question") or m.get("title") or "")[:80] for m in markets[:10]]
+            logger.info(
+                "weatherbot_no_weather_markets",
+                total_markets=len(markets),
+                sample_questions=sample,
+            )
+            # Fallback: probe DB (no liquidity floor) + Gamma API directly for weather markets.
+            weather_markets = await self._fetch_weather_markets_direct()
+            if not weather_markets:
+                return
 
         # 2. Group by (city, date)
         groups = self._market_mapper.group_markets(weather_markets)
@@ -467,6 +483,96 @@ class WeatherBot(BaseBot):
             logger.info("weatherbot_cold_regime_detected", cities=sorted(cold_cities))
             return 1.2
         return 1.0
+
+    # ── Market discovery fallbacks ────────────────────────────────────────
+
+    async def _fetch_weather_markets_direct(self) -> List[Dict]:
+        """Probe DB (no liquidity floor) and Gamma API for weather/temperature markets.
+
+        Used as fallback when the normal DB pipeline returns 0 weather markets.
+        This handles two failure modes:
+          - Weather markets in DB but below liquidity threshold (min_liquidity=0 bypass)
+          - Weather markets on Polymarket but not yet ingested (Gamma API probe)
+        """
+        found: List[Dict] = []
+
+        # 1. DB query with zero liquidity floor and weather category filter
+        try:
+            db_weather = await self.base_engine.get_all_tradeable_markets(
+                min_liquidity=0, categories=["weather"]
+            )
+            matched = [m for m in db_weather if self._market_mapper.is_weather_market(m)]
+            if matched:
+                logger.info(
+                    "weatherbot_direct_db_found",
+                    count=len(matched),
+                    note="bypassed liquidity floor with category=weather",
+                )
+                found.extend(matched)
+        except Exception as exc:
+            logger.debug("weatherbot_direct_db_failed", error=str(exc))
+
+        if found:
+            return found
+
+        # 2. Gamma API direct probe with category=weather
+        try:
+            client = getattr(self.base_engine, "polymarket_client", None)
+            if client:
+                direct = await client.get_markets(active=True, limit=500, category="weather")
+                matched_api = [m for m in direct if self._market_mapper.is_weather_market(m)]
+                if matched_api:
+                    logger.info(
+                        "weatherbot_direct_api_found",
+                        count=len(matched_api),
+                        note="Gamma API category=weather probe",
+                    )
+                    found.extend(matched_api)
+                elif direct:
+                    # API returned weather-category markets but none match our regex — log sample
+                    sample = [(m.get("question") or "")[:70] for m in direct[:5]]
+                    logger.info(
+                        "weatherbot_api_probe_regex_miss",
+                        category_markets=len(direct),
+                        sample_questions=sample,
+                        note="weather markets exist but regex did not match — check market_mapper.py",
+                    )
+                else:
+                    logger.info(
+                        "weatherbot_api_probe_empty",
+                        note="Gamma API returned 0 weather-category markets — seasonal gap likely",
+                    )
+        except Exception as exc:
+            logger.debug("weatherbot_direct_api_failed", error=str(exc))
+
+        return found
+
+    async def _check_weather_market_availability(self) -> None:
+        """One-time startup log of weather market availability across DB and Gamma API.
+
+        Runs once on first scan_and_trade() call. Provides immediate visibility
+        into whether the silence is a code issue or a seasonal market gap.
+        """
+        self._startup_check_done = True
+        try:
+            # DB with normal liquidity floor
+            all_markets = await self.base_engine.get_all_tradeable_markets()
+            weather_normal = sum(
+                1 for m in all_markets if self._market_mapper.is_weather_market(m)
+            )
+            # DB with zero liquidity floor
+            no_liq = await self.base_engine.get_all_tradeable_markets(min_liquidity=0)
+            weather_no_liq = sum(
+                1 for m in no_liq if self._market_mapper.is_weather_market(m)
+            )
+            logger.info(
+                "weatherbot_startup_availability",
+                db_total=len(all_markets),
+                db_weather_with_liq_floor=weather_normal,
+                db_weather_no_liq_floor=weather_no_liq,
+            )
+        except Exception as exc:
+            logger.debug("weatherbot_startup_check_failed", error=str(exc))
 
     # ── DB helpers (P1, P2, P3) ──────────────────────────────────────────
 

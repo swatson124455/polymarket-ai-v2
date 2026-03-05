@@ -80,8 +80,19 @@ _RE_EXACT = re.compile(
     re.IGNORECASE,
 )
 
-# Quick pre-filter
-_RE_WEATHER_QUICK = re.compile(r"highest\s+temperature\s+in\s+", re.IGNORECASE)
+# Quick pre-filter — matches "highest/high/maximum temperature in" and decimal variants
+_RE_WEATHER_QUICK = re.compile(
+    r"(?:highest|high|max(?:imum)?)\s+temp(?:erature)?\s+in\s+",
+    re.IGNORECASE,
+)
+
+# Alternative pre-filter — catches "temperature in [city] ... degrees Fahrenheit/Celsius"
+# Used as second-pass for markets that spell out the unit instead of using °F/°C.
+_RE_WEATHER_ALT = re.compile(
+    r"temperature\s+in\s+.+?\s+(?:reach|be|exceed|hit)\s+-?\d+.*?"
+    r"(?:degrees?\s+[FC]|°\s*[FC]|fahrenheit|celsius)",
+    re.IGNORECASE,
+)
 
 # ── Date parsing ──────────────────────────────────────────────────────────
 
@@ -127,7 +138,7 @@ class WeatherMarketMapper:
     def is_weather_market(market_data: Dict) -> bool:
         """Fast check: is this a temperature-bucket weather market?"""
         q = market_data.get("question") or market_data.get("title") or ""
-        return bool(_RE_WEATHER_QUICK.search(q))
+        return bool(_RE_WEATHER_QUICK.search(q) or _RE_WEATHER_ALT.search(q))
 
     @staticmethod
     def parse_market(market_data: Dict) -> Optional[TemperatureBucket]:
