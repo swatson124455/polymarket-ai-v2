@@ -523,6 +523,10 @@ class WeatherBot(BaseBot):
             logger.debug("weatherbot_direct_db_failed", error=str(exc))
 
         if found:
+            # Weather markets in DB have yes_price=NULL (not in 1000-token WS subscription).
+            # Fetch live prices from Gamma API so compute_edges() gets real midpoints,
+            # not the 0.0 fallback that causes every bucket to be skipped (price <= 0 guard).
+            found = await self._enrich_with_live_prices(found)
             return found
 
         # 2. Gamma API direct probe with category=weather
@@ -556,6 +560,64 @@ class WeatherBot(BaseBot):
             logger.debug("weatherbot_direct_api_failed", error=str(exc))
 
         return found
+
+    async def _enrich_with_live_prices(self, markets: List[Dict]) -> List[Dict]:
+        """Fetch live yes_price / no_price from CLOB /midpoint for markets with NULL DB prices.
+
+        Weather markets have yes_price=NULL in the DB because their token IDs are not
+        included in the 1000-token WebSocket subscription (they have liquidity=0).
+        Without a real price, compute_edges() skips every bucket (price <= 0.0 guard).
+
+        Calls CLOB /midpoint per market's yes_token_id — only runs once per 30 min
+        (rate-limited by _fetch_weather_markets_direct's _last_direct_probe timer).
+        Capped at 50 markets to avoid overwhelming the API.
+
+        Note: Gamma API /markets/{id} rejects hex condition IDs (DB id format).
+        CLOB /midpoint accepts the numeric yes_token_id and returns {"mid": "0.48"}.
+        """
+        client = getattr(self.base_engine, "client", None)
+        if not client:
+            return markets
+
+        enriched: List[Dict] = []
+        enriched_count = 0
+        for m in markets[:50]:
+            # Skip if already has a valid price (0 < yes_price < 1)
+            existing = m.get("yes_price")
+            if existing and 0.0 < float(existing) < 1.0:
+                enriched.append(m)
+                continue
+
+            # Use CLOB /midpoint with yes_token_id — Gamma API /markets/{id} rejects
+            # hex condition IDs (the format stored in our DB). CLOB midpoint accepts
+            # the numeric token ID from yes_token_id and returns {"mid": "0.48"}.
+            yes_token_id = str(m.get("yes_token_id") or "")
+            if not yes_token_id:
+                enriched.append(m)
+                continue
+
+            try:
+                yes_p = await client.get_token_midpoint(yes_token_id)
+                if yes_p is not None:
+                    m = dict(m)          # Don't mutate original DB dict
+                    m["yes_price"] = yes_p
+                    m["no_price"] = round(1.0 - yes_p, 6)
+                    enriched_count += 1
+            except Exception as exc:
+                logger.debug(
+                    "weatherbot_price_enrich_error",
+                    yes_token_id=yes_token_id[:20],
+                    error=str(exc),
+                )
+            enriched.append(m)
+
+        logger.info(
+            "weatherbot_price_enriched",
+            total=len(enriched),
+            enriched=enriched_count,
+            skipped=len(enriched) - enriched_count,
+        )
+        return enriched
 
     async def _check_weather_market_availability(self) -> None:
         """One-time startup log of weather market availability across DB and Gamma API.

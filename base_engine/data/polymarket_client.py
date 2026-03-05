@@ -887,6 +887,36 @@ class PolymarketClient:
             logger.warning("Data API leaderboard fallback failed: %s", e)
         return []
     
+    async def get_token_midpoint(self, token_id: str) -> Optional[float]:
+        """Get the current mid-market price for a CLOB token via /midpoint endpoint.
+
+        Returns a float in (0.0, 1.0), or None if the endpoint is unavailable
+        or the price is at an extreme (0 or 1 — market at resolution).
+
+        Used by WeatherBot to get live prices for weather markets whose tokens are
+        not included in the 1000-token WebSocket subscription (liquidity=0 markets).
+
+        Example response: {"mid": "0.9985"}
+        """
+        if not token_id or not token_id.strip():
+            return None
+        try:
+            result = await self._request(
+                "GET",
+                "/midpoint",
+                self.clob_api,
+                params={"token_id": token_id},
+                cache_key=None,   # No caching — we need live prices
+                use_cache=False,
+            )
+            if isinstance(result, dict) and "mid" in result:
+                price = float(result["mid"])
+                if 0.0 < price < 1.0:
+                    return price
+        except Exception:
+            pass
+        return None
+
     async def get_price_history(
         self,
         token_id: str,

@@ -29,7 +29,7 @@ from base_engine.weather.station_registry import WeatherStation
 logger = get_logger()
 
 _DETERMINISTIC_URL = "https://api.open-meteo.com/v1/forecast"
-_ENSEMBLE_URL = "https://api.open-meteo.com/v1/ensemble"
+_ENSEMBLE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
 _HISTORICAL_URL = "https://archive-api.open-meteo.com/v1/archive"
 
 
