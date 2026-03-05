@@ -1,0 +1,279 @@
+"""
+Esports Model Trainer — orchestrates data collection, training, validation, and saving.
+
+Wires EsportsDataCollector → LoLWinModel.train() / CS2EconomyModel.train().
+Graduation gate: model must achieve >55% accuracy on holdout set before use.
+Auto-retrain: runs periodically via LearningScheduler or manual trigger.
+
+Usage::
+    trainer = EsportsModelTrainer(pandascore_client=client)
+    result = await trainer.train_game("lol", db=db)
+    # result = {"game": "lol", "accuracy": 0.62, "graduated": True, "samples": 450}
+"""
+from __future__ import annotations
+
+import asyncio
+import time
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+from structlog import get_logger
+
+from config.settings import settings
+
+logger = get_logger()
+
+# Settings
+_MIN_ACCURACY = float(getattr(settings, "ESPORTS_MODEL_MIN_ACCURACY", 0.55))
+_RETRAIN_INTERVAL = float(getattr(settings, "ESPORTS_RETRAIN_INTERVAL_HOURS", 24)) * 3600
+_VALIDATION_SPLIT = 0.2  # 20% holdout for validation
+_MIN_LOL_SAMPLES = 50
+_MIN_CS2_SAMPLES = 100
+
+
+class EsportsModelTrainer:
+    """
+    Orchestrates training for LoL and CS2 esports models.
+
+    Flow:
+      1. Collect historical data from PandaScore (if not already in DB)
+      2. Load training data from esports_training_data table
+      3. Split into train/validation
+      4. Train model
+      5. Evaluate on holdout → graduation gate
+      6. Save if graduated
+    """
+
+    def __init__(self, pandascore_client=None) -> None:
+        self._ps = pandascore_client
+        self._last_train_time: Dict[str, float] = {}  # game → monotonic timestamp
+        self._train_results: Dict[str, Dict] = {}     # game → last training result
+
+    @property
+    def train_results(self) -> Dict[str, Dict]:
+        """Last training results per game."""
+        return dict(self._train_results)
+
+    def needs_retrain(self, game: str) -> bool:
+        """Check if a game model needs retraining based on interval."""
+        last = self._last_train_time.get(game, 0.0)
+        return (time.monotonic() - last) > _RETRAIN_INTERVAL
+
+    async def train_game(
+        self,
+        game: str,
+        db=None,
+        collect_if_empty: bool = True,
+        days_back: int = 90,
+    ) -> Dict[str, Any]:
+        """
+        Train model for a specific game.
+
+        Args:
+            game: 'lol' or 'cs2'.
+            db: AsyncSession for DB access.
+            collect_if_empty: If True, run data collection when DB has insufficient data.
+            days_back: Days of history to collect.
+
+        Returns:
+            Dict with: game, accuracy, graduated, samples, error (if any).
+        """
+        result = {
+            "game": game,
+            "accuracy": 0.0,
+            "graduated": False,
+            "samples": 0,
+            "error": None,
+        }
+
+        try:
+            # Step 1: Load existing training data
+            from esports.data.esports_data_collector import EsportsDataCollector
+            collector = EsportsDataCollector(pandascore_client=self._ps)
+
+            training_data = []
+            if db is not None:
+                training_data = await collector.get_training_data(db, game)
+
+            min_samples = _MIN_LOL_SAMPLES if game == "lol" else _MIN_CS2_SAMPLES
+
+            # Step 2: Collect if insufficient data
+            if len(training_data) < min_samples and collect_if_empty and self._ps:
+                logger.info(
+                    "EsportsModelTrainer: collecting historical data",
+                    game=game,
+                    current_rows=len(training_data),
+                    min_needed=min_samples,
+                )
+                stats = await collector.collect_historical(
+                    game=game, days_back=days_back, db=db,
+                )
+                # Reload after collection
+                if db is not None:
+                    training_data = await collector.get_training_data(db, game)
+
+            result["samples"] = len(training_data)
+
+            if len(training_data) < min_samples:
+                result["error"] = f"insufficient data: {len(training_data)} < {min_samples}"
+                logger.warning(
+                    "EsportsModelTrainer: insufficient data for training",
+                    game=game,
+                    samples=len(training_data),
+                    min_needed=min_samples,
+                )
+                return result
+
+            # Step 3: Split train/validation
+            split_idx = int(len(training_data) * (1 - _VALIDATION_SPLIT))
+            train_set = training_data[:split_idx]
+            val_set = training_data[split_idx:]
+
+            # Step 4: Train
+            if game == "lol":
+                accuracy = await self._train_lol(train_set, val_set)
+            elif game == "cs2":
+                accuracy = await self._train_cs2(train_set, val_set)
+            else:
+                result["error"] = f"unsupported game: {game}"
+                return result
+
+            result["accuracy"] = round(accuracy, 4)
+            result["graduated"] = accuracy >= _MIN_ACCURACY
+
+            self._last_train_time[game] = time.monotonic()
+            self._train_results[game] = result
+
+            logger.info(
+                "EsportsModelTrainer: training complete",
+                game=game,
+                accuracy=round(accuracy, 4),
+                graduated=result["graduated"],
+                samples=len(training_data),
+                train_size=len(train_set),
+                val_size=len(val_set),
+            )
+
+        except Exception as exc:
+            result["error"] = str(exc)
+            logger.error("EsportsModelTrainer: training failed", game=game, error=str(exc))
+
+        return result
+
+    async def train_all(self, db=None, days_back: int = 90) -> Dict[str, Dict]:
+        """Train all supported games. Returns {game: result}."""
+        results = {}
+        for game in ("lol", "cs2"):
+            results[game] = await self.train_game(game, db=db, days_back=days_back)
+        return results
+
+    def is_graduated(self, game: str) -> bool:
+        """Check if a game's model passed the graduation gate."""
+        r = self._train_results.get(game)
+        if r is None:
+            return False
+        return bool(r.get("graduated", False))
+
+    # ── Game-specific training ──────────────────────────────────────────
+
+    async def _train_lol(
+        self, train_set: List[Dict], val_set: List[Dict]
+    ) -> float:
+        """Train LoL model and return validation accuracy."""
+        from esports.models.lol_win_model import LoLWinModel
+
+        model = LoLWinModel()
+
+        # Determine current patch from most recent data
+        current_patch = ""
+        for row in train_set:
+            p = row.get("patch", "")
+            if p:
+                current_patch = p
+                break
+
+        success = await model.train(train_set, current_patch=current_patch)
+        if not success:
+            return 0.0
+
+        # Calibrate on validation set
+        model.calibrate(val_set)
+
+        # Evaluate accuracy on validation set
+        accuracy = self._evaluate_binary(model, val_set, label_key="blue_win")
+
+        if accuracy >= _MIN_ACCURACY:
+            model.save()
+            logger.info("LoLWinModel: saved (graduated)", accuracy=round(accuracy, 4))
+        else:
+            logger.warning(
+                "LoLWinModel: below graduation threshold — NOT saved",
+                accuracy=round(accuracy, 4),
+                threshold=_MIN_ACCURACY,
+            )
+
+        return accuracy
+
+    async def _train_cs2(
+        self, train_set: List[Dict], val_set: List[Dict]
+    ) -> float:
+        """Train CS2 model and return validation accuracy."""
+        from esports.models.cs2_economy_model import CS2EconomyModel
+
+        model = CS2EconomyModel()
+        success = await model.train(train_set)
+        if not success:
+            return 0.0
+
+        # Evaluate accuracy on validation set
+        accuracy = self._evaluate_binary_cs2(model, val_set)
+
+        if accuracy >= _MIN_ACCURACY:
+            model.save()
+            logger.info("CS2EconomyModel: saved (graduated)", accuracy=round(accuracy, 4))
+        else:
+            logger.warning(
+                "CS2EconomyModel: below graduation threshold — NOT saved",
+                accuracy=round(accuracy, 4),
+                threshold=_MIN_ACCURACY,
+            )
+
+        return accuracy
+
+    # ── Evaluation ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _evaluate_binary(model, val_set: List[Dict], label_key: str = "blue_win") -> float:
+        """Compute accuracy on validation set for LoL model."""
+        if not val_set:
+            return 0.0
+
+        correct = 0
+        total = 0
+        for row in val_set:
+            label = int(row.get(label_key, 0))
+            prob = model.predict(row)
+            predicted = 1 if prob > 0.5 else 0
+            if predicted == label:
+                correct += 1
+            total += 1
+
+        return correct / total if total > 0 else 0.0
+
+    @staticmethod
+    def _evaluate_binary_cs2(model, val_set: List[Dict]) -> float:
+        """Compute accuracy on validation set for CS2 round model."""
+        if not val_set:
+            return 0.0
+
+        correct = 0
+        total = 0
+        for row in val_set:
+            label = int(row.get("team_a_won_round", 0))
+            prob = model.predict_round(row)
+            predicted = 1 if prob > 0.5 else 0
+            if predicted == label:
+                correct += 1
+            total += 1
+
+        return correct / total if total > 0 else 0.0

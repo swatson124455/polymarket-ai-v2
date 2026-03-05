@@ -215,6 +215,83 @@ class PandaScoreClient:
         self._cache.set(cache_key, result)
         return result
 
+    async def get_past_matches(
+        self, game: str, days_back: int = 90, per_page: int = 100
+    ) -> List[EsportsMatch]:
+        """
+        Get past (finished) matches for a game within the last N days.
+
+        Paginates automatically. Rate-limited: 1 request per 4 seconds to
+        stay under 1K req/hour on free tier.
+
+        Args:
+            game: One of 'lol', 'cs2', 'dota2', 'valorant'.
+            days_back: How many days of history to fetch.
+            per_page: Results per page (max 100 on PandaScore).
+
+        Returns:
+            List of EsportsMatch objects for finished matches.
+        """
+        if game not in GAME_SLUGS:
+            return []
+
+        import datetime as _dt
+
+        since = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days_back)).isoformat()
+        slug = GAME_SLUGS[game]
+        all_matches: List[EsportsMatch] = []
+        page = 1
+        max_pages = 20  # Safety cap: 20 * 100 = 2000 matches max
+
+        while page <= max_pages:
+            params = {
+                "per_page": min(per_page, 100),
+                "page": page,
+                "sort": "-scheduled_at",
+                "range[scheduled_at]": f"{since},",
+                "filter[status]": "finished",
+            }
+            data = await self._get(f"/{slug}/matches/past", params=params)
+
+            if not data or not isinstance(data, list) or len(data) == 0:
+                break
+
+            for m in data:
+                if isinstance(m, dict):
+                    parsed = self._parse_match(m, game)
+                    if parsed is not None:
+                        all_matches.append(parsed)
+
+            if len(data) < per_page:
+                break  # Last page
+
+            page += 1
+            # Rate limit: 1 req/4s = 900 req/hr (under 1K limit)
+            await asyncio.sleep(4.0)
+
+        logger.info(
+            "PandaScoreClient: fetched past matches",
+            game=game,
+            days_back=days_back,
+            total=len(all_matches),
+            pages=page,
+        )
+        return all_matches
+
+    async def get_match_games_detail(self, match_id: int) -> List[Dict[str, Any]]:
+        """
+        Get detailed game/map data for a match, including timelines.
+
+        For LoL: includes timeline frames (gold, objectives, kills per team).
+        For CS2: includes round-by-round data (economy, score, bomb events).
+
+        Unlike get_match_games(), this does NOT cache (training data is one-shot).
+        """
+        data = await self._get(f"/matches/{match_id}/games")
+        if not data or not isinstance(data, list):
+            return []
+        return data
+
     async def get_tournaments(self, game: str) -> List[Dict[str, Any]]:
         """Get currently running tournaments for a game."""
         if game not in GAME_SLUGS:

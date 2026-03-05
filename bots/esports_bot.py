@@ -46,10 +46,18 @@ class EsportsBot(BaseBot):
         self._market_scanner = None  # EsportsMarketScanner instance
         self._lol_model = None       # LoLWinModel
         self._cs2_model = None       # CS2EconomyModel
+        self._trainer = None         # EsportsModelTrainer
 
         # Live match tracking
         self._live_matches: Dict[str, Dict] = {}  # match_id → PandaScore match data
         self._last_live_refresh = 0.0
+
+        # Prediction cache for WS reactive path
+        self._prediction_cache: Dict[str, Dict] = {}  # market_id → {prob, ts, game}
+
+        # Latency tracker: WS price move time vs last PandaScore refresh (bounded)
+        self._latency_samples: List[float] = []  # seconds since last PandaScore refresh
+        self._max_latency_samples = 100
 
         # Settings
         self._min_edge = float(getattr(settings, "ESPORTS_MIN_EDGE", 0.08))
@@ -85,26 +93,38 @@ class EsportsBot(BaseBot):
         db = getattr(self.base_engine, "db", None)
         self._market_scanner = EsportsMarketScanner(db=db)
 
-        # Load models (non-blocking)
+        # Load models — try saved first, then train if data available
         try:
             from esports.models.lol_win_model import LoLWinModel
             self._lol_model = LoLWinModel()
-            self._lol_model.load()
+            if not self._lol_model.load():
+                logger.info("EsportsBot: no saved LoL model — will train on first scan")
         except Exception:
             logger.debug("EsportsBot: LoL model not loaded (no saved model yet)")
 
         try:
             from esports.models.cs2_economy_model import CS2EconomyModel
             self._cs2_model = CS2EconomyModel()
+            if not self._cs2_model.load():
+                logger.info("EsportsBot: no saved CS2 model — will train on first scan")
         except Exception:
             logger.debug("EsportsBot: CS2 model not loaded")
 
+        # Initialize trainer for periodic retraining
+        try:
+            from esports.models.esports_trainer import EsportsModelTrainer
+            self._trainer = EsportsModelTrainer(pandascore_client=self._pandascore)
+        except Exception:
+            logger.debug("EsportsBot: trainer not available")
+
+        lol_trained = self._lol_model is not None and self._lol_model.is_trained
+        cs2_trained = self._cs2_model is not None and self._cs2_model.is_trained
         logger.info(
             "EsportsBot: initialized",
             pandascore=True,
             riot_api=bool(riot_key),
-            lol_model=self._lol_model is not None,
-            cs2_model=self._cs2_model is not None,
+            lol_model_trained=lol_trained,
+            cs2_model_trained=cs2_trained,
         )
 
         await super().start()
@@ -114,6 +134,111 @@ class EsportsBot(BaseBot):
         if self._pandascore:
             await self._pandascore.close()
         await super().stop()
+
+    async def on_price_update(self, event: dict) -> None:
+        """
+        React to WS price updates — cross-reference cached prediction vs new price.
+
+        Only trades when:
+          1. We have a cached prediction for this market (populated during scan)
+          2. Price move exceeds significance threshold
+          3. Cooldown per market has elapsed
+          4. Confluence score passes threshold
+          5. Model is graduated (>55% accuracy)
+        """
+        await super().on_price_update(event)
+        if not self.running:
+            return
+
+        market_id = event.get("market_id", "")
+        token_id = event.get("token_id", "")
+        new_price = float(event.get("price", 0))
+        if not market_id or new_price <= 0:
+            return
+
+        # Track latency: time since last PandaScore refresh
+        if self._last_live_refresh > 0:
+            latency = time.monotonic() - self._last_live_refresh
+            if len(self._latency_samples) >= self._max_latency_samples:
+                self._latency_samples.pop(0)
+            self._latency_samples.append(latency)
+
+        # Only react to markets we've already analyzed
+        cached = self._prediction_cache.get(market_id)
+        if not cached:
+            return
+
+        # Significance threshold
+        threshold = float(getattr(settings, "ESPORTS_WS_PRICE_CHANGE_PCT", 0.01))
+        if not hasattr(self, "_ws_prev_prices"):
+            self._ws_prev_prices: dict = {}
+        old_price = self._ws_prev_prices.get(market_id)
+        self._ws_prev_prices[market_id] = new_price
+        if old_price is None or abs(new_price - old_price) / max(old_price, 0.01) < threshold:
+            return
+
+        # Cooldown
+        now = time.monotonic()
+        if not hasattr(self, "_ws_cooldowns"):
+            self._ws_cooldowns: dict = {}
+        cooldown = int(getattr(settings, "ESPORTS_WS_COOLDOWN_SECONDS", 10))
+        if now - self._ws_cooldowns.get(market_id, 0) < cooldown:
+            return
+        self._ws_cooldowns[market_id] = now
+
+        # Recalculate edge with new price
+        model_prob = cached["prob"]
+        game = cached.get("game", "")
+        edge = model_prob - new_price
+
+        if abs(edge) < self._min_edge:
+            return
+
+        side = "YES" if edge > 0 else "NO"
+        trade_price = new_price if side == "YES" else (1.0 - new_price)
+
+        # Confluence gate
+        confluence = self._compute_confluence_score(
+            model_edge=edge,
+            side=side,
+            token_id=token_id,
+            market_id=market_id,
+            prediction_ts=cached.get("ts", 0),
+        )
+        confluence_min = float(getattr(settings, "ESPORTS_CONFLUENCE_MIN", 0.60))
+        if confluence < confluence_min:
+            return
+
+        # Position check
+        og = getattr(self.base_engine, "order_gateway", None)
+        if og is not None and og.has_open_position(self.bot_name, str(market_id)):
+            return
+
+        try:
+            confidence = model_prob if side == "YES" else (1.0 - model_prob)
+            opp = {
+                "type": "esports_ws_reactive",
+                "market_id": market_id,
+                "token_id": token_id,
+                "side": side,
+                "price": trade_price,
+                "confidence": confidence,
+                "prediction": model_prob,
+                "edge": round(abs(edge), 4),
+                "game": game,
+                "market_type": "match_winner",
+                "confluence": confluence,
+            }
+            logger.info(
+                "EsportsBot WS reactive trade",
+                market_id=market_id,
+                price_move=f"{old_price:.4f}→{new_price:.4f}",
+                edge=round(abs(edge), 4),
+                confluence=confluence,
+            )
+            await self._execute_esports_trade(opp)
+        except Exception as exc:
+            logger.debug("EsportsBot WS reactive failed", error=str(exc))
 
     async def scan_and_trade(self) -> None:
         """
@@ -125,6 +250,49 @@ class EsportsBot(BaseBot):
         4. Analyze each market for edge
         """
         db = getattr(self.base_engine, "db", None)
+
+        # Step 0: Auto-retrain models if interval elapsed
+        if self._trainer and self._trainer.needs_retrain("lol"):
+            try:
+                result = await asyncio.wait_for(
+                    self._trainer.train_game("lol", db=db), timeout=300.0,
+                )
+                if result.get("graduated"):
+                    # Reload trained model
+                    if self._lol_model:
+                        self._lol_model.load()
+            except (asyncio.TimeoutError, Exception) as exc:
+                logger.debug("EsportsBot: LoL retrain failed", error=str(exc))
+
+        if self._trainer and self._trainer.needs_retrain("cs2"):
+            try:
+                result = await asyncio.wait_for(
+                    self._trainer.train_game("cs2", db=db), timeout=300.0,
+                )
+                if result.get("graduated"):
+                    if self._cs2_model:
+                        self._cs2_model.load()
+            except (asyncio.TimeoutError, Exception) as exc:
+                logger.debug("EsportsBot: CS2 retrain failed", error=str(exc))
+
+        # Step 0b: Check rolling accuracy — auto-disable if below threshold
+        min_acc = float(getattr(settings, "ESPORTS_MIN_ACCURACY_TO_TRADE", 0.52))
+        try:
+            from esports.data.esports_db import get_rolling_accuracy
+            for game in ("lol", "cs2"):
+                acc_data = await get_rolling_accuracy(db, game, bot_name="EsportsBot")
+                if acc_data and acc_data["total"] >= 30 and acc_data["accuracy"] < min_acc:
+                    logger.warning(
+                        "EsportsBot: accuracy below threshold — triggering retrain",
+                        game=game,
+                        accuracy=round(acc_data["accuracy"], 3),
+                        threshold=min_acc,
+                        brier=round(acc_data["brier_score"], 4),
+                    )
+                    if self._trainer:
+                        self._trainer._last_train_time.pop(game, None)
+        except Exception:
+            pass
 
         # Step 1: Patch drift check — skip live trading during observation mode
         if self._patch_drift:
@@ -251,6 +419,43 @@ class EsportsBot(BaseBot):
         if confidence < self._min_confidence:
             return None
 
+        # Log prediction for accuracy tracking
+        db = getattr(self.base_engine, "db", None)
+        try:
+            from esports.data.esports_db import log_prediction
+            await log_prediction(
+                db=db,
+                match_id=market_id,
+                game=game,
+                market_id=market_id,
+                bot_name="EsportsBot",
+                predicted_prob=model_prob,
+                market_price=price,
+                side=side,
+                edge=round(edge, 4),
+            )
+        except Exception:
+            pass
+
+        # Confluence gate — require multiple signals to agree
+        pred_ts = self._prediction_cache.get(market_id, {}).get("ts", time.monotonic())
+        confluence = self._compute_confluence_score(
+            model_edge=edge,
+            side=side,
+            token_id=str(trade_token_id),
+            market_id=market_id,
+            prediction_ts=pred_ts,
+        )
+        confluence_min = float(getattr(settings, "ESPORTS_CONFLUENCE_MIN", 0.60))
+        if confluence < confluence_min:
+            logger.debug(
+                "EsportsBot: confluence below threshold",
+                market_id=market_id,
+                confluence=confluence,
+                threshold=confluence_min,
+            )
+            return None
+
         return {
             "type": "esports_pregame" if not self._is_live(market_id) else "esports_live",
             "market_id": market_id,
@@ -262,6 +467,7 @@ class EsportsBot(BaseBot):
             "edge": round(edge, 4),
             "game": game,
             "market_type": market_type,
+            "confluence": confluence,
         }
 
     # ── Internal helpers ───────────────────────────────────────────────────
@@ -280,10 +486,10 @@ class EsportsBot(BaseBot):
 
         Returns model's estimated probability for YES outcome, or None.
         """
-        # Try game-specific model for live matches
+        # Try game-specific model for live matches (only if graduated)
         live_data = self._live_matches.get(market_id)
 
-        if game == "lol" and self._lol_model and live_data:
+        if game == "lol" and self._lol_model and self._lol_model.is_trained and live_data:
             try:
                 game_state = live_data.get("game_state", {})
                 if game_state:
@@ -291,11 +497,15 @@ class EsportsBot(BaseBot):
                         self._lol_model.predict, game_state
                     )
                     if 0.0 < prob < 1.0:
+                        # Cache prediction for WS reactive path
+                        self._prediction_cache[market_id] = {
+                            "prob": prob, "ts": time.monotonic(), "game": game,
+                        }
                         return prob
             except Exception:
                 pass
 
-        if game == "cs2" and self._cs2_model and live_data:
+        if game == "cs2" and self._cs2_model and self._cs2_model.is_trained and live_data:
             try:
                 game_state = live_data.get("game_state", {})
                 if game_state:
@@ -306,6 +516,9 @@ class EsportsBot(BaseBot):
                         map_probs=game_state.get("map_probs"),
                     )
                     if 0.0 < prob < 1.0:
+                        self._prediction_cache[market_id] = {
+                            "prob": prob, "ts": time.monotonic(), "game": game,
+                        }
                         return prob
             except Exception:
                 pass
@@ -328,9 +541,10 @@ class EsportsBot(BaseBot):
         return None
 
     async def _refresh_live_matches(self) -> None:
-        """Fetch live matches from PandaScore (rate-limited to every 15s)."""
+        """Fetch live matches from PandaScore (rate-limited, configurable interval)."""
         now = time.monotonic()
-        if now - self._last_live_refresh < 15:
+        refresh_interval = int(getattr(settings, "ESPORTS_PANDASCORE_REFRESH_INTERVAL", 15))
+        if now - self._last_live_refresh < refresh_interval:
             return
         self._last_live_refresh = now
 
@@ -353,6 +567,21 @@ class EsportsBot(BaseBot):
     def _is_live(self, market_id: str) -> bool:
         """Check if a market has an associated live match."""
         return market_id in self._live_matches
+
+    def get_latency_stats(self) -> Dict[str, float]:
+        """Return PandaScore data latency statistics (seconds since last refresh at WS event time)."""
+        if not self._latency_samples:
+            return {"min": 0.0, "max": 0.0, "avg": 0.0, "p50": 0.0, "p95": 0.0, "samples": 0}
+        sorted_s = sorted(self._latency_samples)
+        n = len(sorted_s)
+        return {
+            "min": round(sorted_s[0], 2),
+            "max": round(sorted_s[-1], 2),
+            "avg": round(sum(sorted_s) / n, 2),
+            "p50": round(sorted_s[n // 2], 2),
+            "p95": round(sorted_s[int(n * 0.95)], 2),
+            "samples": n,
+        }
 
     @staticmethod
     def _detect_game(question: str) -> Optional[str]:
@@ -383,6 +612,73 @@ class EsportsBot(BaseBot):
         if any(kw in q for kw in ("mvp", "kills", "assists")):
             return "props"
         return "match_winner"
+
+    def _compute_confluence_score(
+        self,
+        model_edge: float,
+        side: str,
+        token_id: str,
+        market_id: str,
+        prediction_ts: float,
+    ) -> float:
+        """
+        Compute confluence score (0.0-1.0) from multiple signals.
+
+        Weights:
+          - Model prediction edge: 40%
+          - Whale direction alignment: 25%
+          - Orderbook imbalance: 20%
+          - Prediction freshness: 15%
+
+        Only trades when score > ESPORTS_CONFLUENCE_MIN (default 0.60).
+        """
+        import math
+
+        # 1. Model edge signal (40%) — normalized to 0-1
+        edge_score = min(abs(model_edge) / self._min_edge, 1.0)
+
+        # 2. Whale signal (25%) — check if whale trades align with our side
+        whale_score = 0.5  # Neutral when no whale data
+        try:
+            whale_queue = getattr(self, "_whale_priority_queue", None)
+            whale_markets = getattr(self, "_whale_priority_markets", set())
+            if market_id in whale_markets:
+                # Whale is active on this market — alignment boost
+                whale_score = 0.8
+        except Exception:
+            pass
+
+        # 3. Orderbook imbalance (20%)
+        ob_score = 0.5  # Neutral
+        try:
+            ob_tracker = getattr(self.base_engine, "orderbook_tracker", None)
+            if ob_tracker:
+                signal = ob_tracker.get_imbalance_signal(token_id)
+                if signal:
+                    direction = signal.get("direction", "")
+                    strength = float(signal.get("strength", 0.0))
+                    # YES side wants bullish, NO side wants bearish
+                    if (side == "YES" and direction == "bullish") or \
+                       (side == "NO" and direction == "bearish"):
+                        ob_score = 0.5 + 0.5 * strength
+                    elif direction:
+                        ob_score = 0.5 - 0.5 * strength
+        except Exception:
+            pass
+
+        # 4. Prediction freshness (15%) — exponential decay
+        age_seconds = time.monotonic() - prediction_ts if prediction_ts > 0 else 0
+        freshness_score = math.exp(-age_seconds / 120.0)  # 0s=1.0, 60s=0.61, 120s=0.37
+
+        # Weighted sum
+        confluence = (
+            0.40 * edge_score +
+            0.25 * whale_score +
+            0.20 * ob_score +
+            0.15 * freshness_score
+        )
+
+        return round(confluence, 4)
 
     async def _execute_esports_trade(self, opp: Dict) -> None:
         """Execute trade with maker-first, taker-fallback strategy."""

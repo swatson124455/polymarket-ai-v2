@@ -926,6 +926,27 @@ class Settings(BaseSettings):
     ESPORTS_MAKER_FALLBACK_TIMEOUT_S: float = float(os.getenv("ESPORTS_MAKER_FALLBACK_TIMEOUT_S", "3.0"))
     ESPORTS_OBSERVATION_HOURS: int = int(os.getenv("ESPORTS_OBSERVATION_HOURS", "48"))
 
+    # --- Model training pipeline ---
+    ESPORTS_MODEL_MIN_ACCURACY: float = float(os.getenv("ESPORTS_MODEL_MIN_ACCURACY", "0.55"))
+    ESPORTS_RETRAIN_INTERVAL_HOURS: int = int(os.getenv("ESPORTS_RETRAIN_INTERVAL_HOURS", "24"))
+    ESPORTS_MIN_ACCURACY_TO_TRADE: float = float(os.getenv("ESPORTS_MIN_ACCURACY_TO_TRADE", "0.52"))
+
+    # --- Signal confluence ---
+    ESPORTS_CONFLUENCE_MIN: float = float(os.getenv("ESPORTS_CONFLUENCE_MIN", "0.60"))
+    ESPORTS_WHALE_SMART_MONEY_THRESHOLD: float = float(os.getenv("ESPORTS_WHALE_SMART_MONEY_THRESHOLD", "0.60"))
+
+    # --- WebSocket reactive ---
+    ESPORTS_WS_PRICE_CHANGE_PCT: float = float(os.getenv("ESPORTS_WS_PRICE_CHANGE_PCT", "0.01"))
+    ESPORTS_WS_COOLDOWN_SECONDS: int = int(os.getenv("ESPORTS_WS_COOLDOWN_SECONDS", "10"))
+    ESPORTS_LIVE_WS_PRICE_CHANGE_PCT: float = float(os.getenv("ESPORTS_LIVE_WS_PRICE_CHANGE_PCT", "0.005"))
+    ESPORTS_LIVE_WS_COOLDOWN_SECONDS: int = int(os.getenv("ESPORTS_LIVE_WS_COOLDOWN_SECONDS", "5"))
+    ESPORTS_SERIES_WS_PRICE_CHANGE_PCT: float = float(os.getenv("ESPORTS_SERIES_WS_PRICE_CHANGE_PCT", "0.01"))
+    ESPORTS_SERIES_WS_COOLDOWN_SECONDS: int = int(os.getenv("ESPORTS_SERIES_WS_COOLDOWN_SECONDS", "10"))
+
+    # --- Latency tracking ---
+    ESPORTS_PANDASCORE_REFRESH_INTERVAL: int = int(os.getenv("ESPORTS_PANDASCORE_REFRESH_INTERVAL", "15"))
+    ESPORTS_SERIES_REFRESH_INTERVAL: int = int(os.getenv("ESPORTS_SERIES_REFRESH_INTERVAL", "30"))
+
     # --- API keys (PANDASCORE required — bots fail fast if missing) ---
     PANDASCORE_API_KEY: Optional[str] = os.getenv("PANDASCORE_API_KEY")
     RIOT_API_KEY: Optional[str] = os.getenv("RIOT_API_KEY")

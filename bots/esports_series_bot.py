@@ -62,6 +62,8 @@ class EsportsSeriesBot(BaseBot):
 
         # Track active series to avoid redundant analysis
         self._active_series: Dict[str, Dict] = {}  # match_id → last analyzed state
+        # Prediction cache for WS reactive path
+        self._series_prediction_cache: Dict[str, Dict] = {}
         self._last_refresh = 0.0
 
     def _get_scan_interval_seconds(self) -> float:
@@ -99,6 +101,79 @@ class EsportsSeriesBot(BaseBot):
         if self._pandascore:
             await self._pandascore.close()
         await super().stop()
+
+    async def on_price_update(self, event: dict) -> None:
+        """React to WS price updates — cross-reference cached series prediction."""
+        await super().on_price_update(event)
+        if not self.running:
+            return
+
+        import time as _time
+
+        market_id = event.get("market_id", "")
+        token_id = event.get("token_id", "")
+        new_price = float(event.get("price", 0))
+        if not market_id or new_price <= 0:
+            return
+
+        cached = self._series_prediction_cache.get(market_id)
+        if not cached:
+            return
+
+        # Significance threshold
+        threshold = float(getattr(settings, "ESPORTS_SERIES_WS_PRICE_CHANGE_PCT", 0.01))
+        if not hasattr(self, "_ws_prev_prices"):
+            self._ws_prev_prices: dict = {}
+        old_price = self._ws_prev_prices.get(market_id)
+        self._ws_prev_prices[market_id] = new_price
+        if old_price is None or abs(new_price - old_price) / max(old_price, 0.01) < threshold:
+            return
+
+        # Cooldown
+        now = _time.monotonic()
+        if not hasattr(self, "_ws_cooldowns"):
+            self._ws_cooldowns: dict = {}
+        cooldown = int(getattr(settings, "ESPORTS_SERIES_WS_COOLDOWN_SECONDS", 10))
+        if now - self._ws_cooldowns.get(market_id, 0) < cooldown:
+            return
+        self._ws_cooldowns[market_id] = now
+
+        model_prob = cached["prob"]
+        edge = model_prob - new_price
+        if abs(edge) < self._min_edge:
+            return
+
+        side = "YES" if edge > 0 else "NO"
+
+        # Position check
+        og = getattr(self.base_engine, "order_gateway", None)
+        if og is not None and og.has_open_position(self.bot_name, str(market_id)):
+            return
+
+        try:
+            confidence = model_prob if side == "YES" else (1.0 - model_prob)
+            trade_price = new_price if side == "YES" else (1.0 - new_price)
+            opp = {
+                "type": "esports_series_ws",
+                "market_id": market_id,
+                "token_id": token_id,
+                "side": side,
+                "price": trade_price,
+                "confidence": confidence,
+                "prediction": model_prob,
+                "edge": round(abs(edge), 4),
+                "game": cached.get("game", ""),
+                "market_type": "match_winner",
+            }
+            logger.info(
+                "EsportsSeriesBot WS reactive trade",
+                market_id=market_id,
+                price_move=f"{old_price:.4f}→{new_price:.4f}",
+                edge=round(abs(edge), 4),
+            )
+            await self._execute_series_trade(opp)
+        except Exception as exc:
+            logger.debug("EsportsSeriesBot WS reactive failed", error=str(exc))
 
     async def scan_and_trade(self) -> None:
         """
@@ -260,6 +335,29 @@ class EsportsSeriesBot(BaseBot):
 
         confidence = model_prob if side == "YES" else (1.0 - model_prob)
 
+        # Cache prediction for WS reactive path
+        import time as _time
+        self._series_prediction_cache[market_id] = {
+            "prob": model_prob, "ts": _time.monotonic(), "game": game,
+        }
+
+        # Log prediction for accuracy tracking
+        try:
+            from esports.data.esports_db import log_prediction
+            await log_prediction(
+                db=db,
+                match_id=match_id,
+                game=game,
+                market_id=market_id,
+                bot_name="EsportsSeriesBot",
+                predicted_prob=model_prob,
+                market_price=market_price,
+                side=side,
+                edge=round(edge, 4),
+            )
+        except Exception:
+            pass
+
         return {
             "type": "esports_series",
             "market_id": market_id,
@@ -312,10 +410,11 @@ class EsportsSeriesBot(BaseBot):
         return None
 
     async def _refresh_series(self) -> None:
-        """Refresh active BO3/BO5 series from PandaScore."""
+        """Refresh active BO3/BO5 series from PandaScore (configurable interval)."""
         import time
         now = time.monotonic()
-        if now - self._last_refresh < 30:
+        refresh_interval = int(getattr(settings, "ESPORTS_SERIES_REFRESH_INTERVAL", 30))
+        if now - self._last_refresh < refresh_interval:
             return
         self._last_refresh = now
 

@@ -154,6 +154,126 @@ async def get_calibration(
     return None
 
 
+async def log_prediction(
+    db,
+    match_id: str,
+    game: str,
+    market_id: str,
+    bot_name: str,
+    predicted_prob: float,
+    market_price: float,
+    side: str,
+    edge: float,
+) -> None:
+    """Log a prediction to esports_prediction_log for accuracy tracking."""
+    if db is None:
+        return
+    try:
+        await db.execute(
+            """
+            INSERT INTO esports_prediction_log
+                (match_id, game, market_id, bot_name, predicted_prob, market_price, side, edge)
+            VALUES
+                (:match_id, :game, :market_id, :bot_name, :predicted_prob, :market_price, :side, :edge)
+            """,
+            {
+                "match_id": match_id,
+                "game": game,
+                "market_id": market_id,
+                "bot_name": bot_name,
+                "predicted_prob": predicted_prob,
+                "market_price": market_price,
+                "side": side,
+                "edge": edge,
+            },
+        )
+        await db.commit()
+    except Exception as exc:
+        logger.debug("esports_db: log_prediction failed", error=str(exc))
+
+
+async def resolve_predictions(db, market_id: str, outcome: int) -> int:
+    """
+    Backfill actual_outcome for all unresolved predictions on a market.
+
+    Args:
+        market_id: The resolved market ID.
+        outcome: 1 = YES won, 0 = NO won.
+
+    Returns:
+        Number of predictions resolved.
+    """
+    if db is None:
+        return 0
+    try:
+        result = await db.execute(
+            """
+            UPDATE esports_prediction_log
+            SET actual_outcome = :outcome, resolved_at = NOW()
+            WHERE market_id = :market_id AND actual_outcome IS NULL
+            """,
+            {"market_id": market_id, "outcome": outcome},
+        )
+        await db.commit()
+        return result.rowcount if hasattr(result, "rowcount") else 0
+    except Exception as exc:
+        logger.debug("esports_db: resolve_predictions failed", error=str(exc))
+        return 0
+
+
+async def get_rolling_accuracy(
+    db, game: str, bot_name: str = "", last_n: int = 50
+) -> Optional[Dict[str, Any]]:
+    """
+    Compute rolling accuracy for a game (and optionally a specific bot).
+
+    Returns:
+        Dict with: total, correct, accuracy, brier_score. None if no data.
+    """
+    if db is None:
+        return None
+    try:
+        bot_filter = "AND bot_name = :bot_name" if bot_name else ""
+        params: Dict[str, Any] = {"game": game, "limit": last_n}
+        if bot_name:
+            params["bot_name"] = bot_name
+
+        result = await db.execute(
+            f"""
+            SELECT predicted_prob, actual_outcome, side
+            FROM esports_prediction_log
+            WHERE game = :game AND actual_outcome IS NOT NULL {bot_filter}
+            ORDER BY created_at DESC
+            LIMIT :limit
+            """,
+            params,
+        )
+        rows = result.fetchall()
+        if not rows:
+            return None
+
+        total = len(rows)
+        correct = 0
+        brier_sum = 0.0
+        for row in rows:
+            pred = float(row.predicted_prob)
+            actual = int(row.actual_outcome)
+            predicted_outcome = 1 if pred > 0.5 else 0
+            if predicted_outcome == actual:
+                correct += 1
+            brier_sum += (pred - actual) ** 2
+
+        return {
+            "total": total,
+            "correct": correct,
+            "accuracy": correct / total if total > 0 else 0.0,
+            "brier_score": brier_sum / total if total > 0 else 1.0,
+        }
+    except Exception as exc:
+        logger.debug("esports_db: get_rolling_accuracy failed", error=str(exc))
+        return None
+
+
 async def update_calibration(
     db,
     game: str,

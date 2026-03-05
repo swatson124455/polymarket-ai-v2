@@ -117,6 +117,47 @@ class EsportsLiveBot(BaseBot):
                 pass
         await super().stop()
 
+    async def on_price_update(self, event: dict) -> None:
+        """React to WS price updates — log price moves on active game markets."""
+        await super().on_price_update(event)
+        if not self.running or not self._game_monitor:
+            return
+
+        import time as _time
+
+        market_id = event.get("market_id", "")
+        new_price = float(event.get("price", 0))
+        if not market_id or new_price <= 0:
+            return
+
+        # Significance threshold for live games (tighter: 0.5%)
+        threshold = float(getattr(settings, "ESPORTS_LIVE_WS_PRICE_CHANGE_PCT", 0.005))
+        if not hasattr(self, "_ws_prev_prices"):
+            self._ws_prev_prices: dict = {}
+        old_price = self._ws_prev_prices.get(market_id)
+        self._ws_prev_prices[market_id] = new_price
+        if old_price is None or abs(new_price - old_price) / max(old_price, 0.01) < threshold:
+            return
+
+        # Cooldown
+        now = _time.monotonic()
+        if not hasattr(self, "_ws_cooldowns"):
+            self._ws_cooldowns: dict = {}
+        cooldown = int(getattr(settings, "ESPORTS_LIVE_WS_COOLDOWN_SECONDS", 5))
+        if now - self._ws_cooldowns.get(market_id, 0) < cooldown:
+            return
+        self._ws_cooldowns[market_id] = now
+
+        # Log significant price move during active game
+        active_games = getattr(self._game_monitor, "active_games", {})
+        if active_games:
+            logger.info(
+                "EsportsLiveBot: significant price move during active games",
+                market_id=market_id,
+                price_move=f"{old_price:.4f}→{new_price:.4f}",
+                active_games=len(active_games),
+            )
+
     async def scan_and_trade(self) -> None:
         """
         Drain game update queue, detect events, fire live bets.
