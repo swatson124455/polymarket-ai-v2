@@ -1989,8 +1989,11 @@ class BaseEngine:
             # Order by liquidity DESC + LIMIT to prioritize high-value markets per scan cycle.
             scan_limit = getattr(settings, "SCAN_MARKET_LIMIT", 300)
 
-            # B4: Check Redis cache first (TTL 300s) to avoid DB query every cycle
-            _cache_key = f"tradeable_market_ids:{min_liq}:{scan_limit}"
+            # B4: Check Redis cache first (TTL 60s) to avoid DB query every cycle.
+            # Cache key includes categories so category-specific queries don't collide
+            # with the uncategorised cache used by other bots.
+            _cats_key = ",".join(sorted(categories)) if categories else ""
+            _cache_key = f"tradeable_market_ids:{min_liq}:{scan_limit}:{_cats_key}"
             if self.cache:
                 try:
                     cached = await self.cache.get(_cache_key)
@@ -2006,6 +2009,17 @@ class BaseEngine:
 
             if cached is None:
                 async with self.db.get_session() as session:
+                    # When a category filter is requested, push it into SQL so the
+                    # LIMIT applies within that category — not across all 18k markets
+                    # with category filtering applied afterwards (which would cut off
+                    # low-liquidity category markets before they could be seen).
+                    sql_params: dict = {"min_liq": min_liq, "scan_limit": scan_limit}
+                    category_clause = ""
+                    if categories:
+                        category_clause = (
+                            "AND LOWER(COALESCE(m.category, '')) = ANY(:categories) "
+                        )
+                        sql_params["categories"] = [c.lower() for c in categories]
                     result = await session.execute(sa_text(
                         "SELECT m.id FROM markets m "
                         "WHERE m.active = true "
@@ -2013,10 +2027,11 @@ class BaseEngine:
                         "AND ((m.yes_token_id IS NOT NULL AND m.yes_token_id != '') "
                         "  OR (m.no_token_id IS NOT NULL AND m.no_token_id != '')) "
                         "AND COALESCE(m.liquidity, 0) >= :min_liq "
-                        "AND COALESCE(m.yes_price, 0.5) BETWEEN 0.01 AND 0.99 "  # I19: wider range
+                        "AND COALESCE(m.yes_price, 0.5) BETWEEN 0.01 AND 0.99 "
+                        + category_clause +
                         "ORDER BY COALESCE(m.liquidity, 0) DESC "
                         "LIMIT :scan_limit"
-                    ), {"min_liq": min_liq, "scan_limit": scan_limit})
+                    ), sql_params)
                     market_ids = [str(row[0]) for row in result.fetchall()]
 
                 # Cache in Redis for 60s (I20: was 300s — resolved/delisted markets scanned for ≤60s now)
