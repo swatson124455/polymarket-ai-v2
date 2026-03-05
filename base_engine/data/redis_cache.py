@@ -1,10 +1,19 @@
 import json
+from datetime import date, datetime
 from typing import Optional, Any
 import redis.asyncio as aioredis
 from structlog import get_logger
 from config.settings import settings
 
 logger = get_logger()
+
+
+class _SafeEncoder(json.JSONEncoder):
+    """JSON encoder that converts datetime/date objects to ISO strings."""
+    def default(self, obj):
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        return super().default(obj)
 
 
 class RedisCache:
@@ -98,7 +107,7 @@ class RedisCache:
                 else:
                     ttl = 3600  # 1 hour default
             
-            serialized = json.dumps(value)
+            serialized = json.dumps(value, cls=_SafeEncoder)
             await self.redis.set(key, serialized, ex=ttl)
         except Exception as e:
             logger.warning(f"Redis set error for key {key}", error=str(e))
