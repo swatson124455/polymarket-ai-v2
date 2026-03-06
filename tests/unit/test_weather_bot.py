@@ -390,12 +390,21 @@ class TestProbabilityEngine:
         assert probs["m4"] > probs["m2"]  # 49-51 > 43-45
         assert probs["m4"] > probs["m6"]  # 49-51 > 55+
 
-    def test_lead_time_inflates_uncertainty(self):
-        members = [50.0] * 31
-        loc_short, scale_short, _ = self.engine.fit_distribution(members, lead_time_hours=6.0)
-        loc_long, scale_long, _ = self.engine.fit_distribution(members, lead_time_hours=72.0)
-        # Longer lead time → wider scale
-        assert scale_long > scale_short
+    def test_fit_distribution_uses_ensemble_spread(self):
+        """P6: Scale reflects actual ensemble spread, not fixed lead-time inflation.
+
+        With 133 members (GEFS+IFS+AIFS), naturally wider spread at longer lead
+        times is captured by the ensemble members themselves. EMOS d-parameter will
+        calibrate residual underdispersion once calibration data accumulates.
+        """
+        # Tight ensemble (stable pattern): std ≈ 0.7°F
+        tight_members = [50.0 + (i % 3) * 0.5 for i in range(31)]
+        # Wide ensemble (chaotic pattern): std ≈ 9°F
+        wide_members = [50.0 + (i - 15) * 1.0 for i in range(31)]
+        _, scale_tight, _ = self.engine.fit_distribution(tight_members, lead_time_hours=6.0)
+        _, scale_wide, _ = self.engine.fit_distribution(wide_members, lead_time_hours=72.0)
+        # Wider-spread ensemble → larger scale (real meteorological property)
+        assert scale_wide > scale_tight
 
     def test_compute_edges_basic(self):
         model_probs = {"m1": 0.30, "m2": 0.50, "m3": 0.20}

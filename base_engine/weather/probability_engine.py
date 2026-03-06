@@ -62,9 +62,11 @@ class WeatherProbabilityEngine:
         bias_offset = self._get_bias_offset(station_id, lead_time_hours)
         corrected_mean = mean + bias_offset
 
-        # Inflate std by lead time: uncertainty grows ~2% per hour
-        lead_time_factor = 1.0 + 0.015 * min(lead_time_hours, 168.0)
-        effective_std = std * lead_time_factor
+        # Use ensemble spread directly as the scale. With 133 members (GEFS+IFS+AIFS),
+        # the members naturally diverge at longer lead times — wider real spread at
+        # day 5 vs day 1. No fixed inflation needed. EMOS d-parameter will correct
+        # residual underdispersion once calibration data accumulates (≥20 samples/bucket).
+        effective_std = std  # floor already applied above (min 0.5°)
 
         # Try skew-normal fit via MLE
         shape = 0.0  # Default: symmetric normal
@@ -75,8 +77,9 @@ class WeatherProbabilityEngine:
                     # the fallback to normal distribution handles this case correctly.
                     warnings.simplefilter("ignore", RuntimeWarning)
                     a, loc, scale = skewnorm.fit(ensemble_members)
-                # Apply lead-time inflation to the fitted scale too
-                scale = max(scale * lead_time_factor, 0.5)
+                # Clamp to sensible range — do NOT apply a fixed lead_time_factor;
+                # the fitted scale already reflects natural ensemble spread.
+                scale = max(scale, 0.5)
                 # Sanity: reject extreme skew or absurd scale
                 if abs(a) < 10.0 and 0.1 < scale < 30.0:
                     return (loc + bias_offset, scale, a)
