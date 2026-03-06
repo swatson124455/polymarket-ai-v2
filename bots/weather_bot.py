@@ -626,21 +626,21 @@ class WeatherBot(BaseBot):
         """
         self._startup_check_done = True
         try:
-            # DB with normal liquidity floor
+            # All tradeable markets (no category filter — for total context)
             all_markets = await self.base_engine.get_all_tradeable_markets()
-            weather_normal = sum(
-                1 for m in all_markets if self._market_mapper.is_weather_market(m)
+            # Weather-category markets with no liquidity floor (same query as main scan)
+            weather_markets = await self.base_engine.get_all_tradeable_markets(
+                min_liquidity=0, categories=["weather"]
             )
-            # DB with zero liquidity floor
-            no_liq = await self.base_engine.get_all_tradeable_markets(min_liquidity=0)
-            weather_no_liq = sum(
-                1 for m in no_liq if self._market_mapper.is_weather_market(m)
+            # Subset recognised by regex as actual temperature bucket markets
+            weather_regex_match = sum(
+                1 for m in weather_markets if self._market_mapper.is_weather_market(m)
             )
             logger.info(
                 "weatherbot_startup_availability",
                 db_total=len(all_markets),
-                db_weather_with_liq_floor=weather_normal,
-                db_weather_no_liq_floor=weather_no_liq,
+                db_weather_category=len(weather_markets),
+                db_weather_regex_match=weather_regex_match,
             )
         except Exception as exc:
             logger.debug("weatherbot_startup_check_failed", error=str(exc))
