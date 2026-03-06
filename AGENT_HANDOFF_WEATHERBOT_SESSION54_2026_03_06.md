@@ -57,7 +57,15 @@ Weather markets: ~260 in DB category=weather, 33 regex-matched, 16 groups, 0 wit
 The São Paulo March 6 market (the only market that had live CLOB pricing) expired/converged by ~15:13 UTC.
 Its orderbook is now empty → CLOB enrichment skips it → `yes_price=NULL` → `edge=NULL` → group skipped.
 Remaining 15 groups: no CLOB prices available (empty orderbooks on stale/expired Feb-March markets).
-This is correct behavior — no actionable markets exist until new spring markets appear.
+The 33 regex-matched markets in DB are all old 2020 markets (`end_date_iso=2020-11-04`). Their question
+dates ("February 15", "March 1" etc.) parse as 2026 dates, all of which are now in the past.
+`_analyze_group()` skips groups where `target_date < today`. Zero edge is correct for this set.
+Bot will trade again as soon as a fresh market with a future date and live CLOB orderbook is ingested.
+
+**DB cleanup performed this session:**
+- Deleted 2 ghost positions from `positions` table (`bot_id='WeatherBot'`)
+- Deleted 8 fake paper_trades from `paper_trades` table (today, all pre-fix artifacts)
+- Service restarted: `_restore_daily_pnl_from_db()` found $0 (no `weatherbot_daily_pnl_restored` log)
 
 ---
 
@@ -136,33 +144,35 @@ This is correct behavior — no actionable markets exist until new spring market
 
 ## Priority Queue for Session 55+
 
-**P1 — Monitor next real trade (when spring markets appear)**
-When a new weather market with CLOB price and edge ≥ 15% appears:
-- Verify `_recently_exited` cooldown fires correctly (15-min block after first entry)
-- Verify `current_price` stays stable (no more 0.5 spikes in position logs)
-- Verify `_enrich_with_live_prices()` correctly fetches CLOB for new market token IDs
+**CONTEXT: Seasonal gap is OVER. Bot actively scans ~16 groups/scan. São Paulo March 6 was traded.**
+**0 edge right now = all 33 DB markets are 2020 past-date markets. Trades when fresh markets ingest.**
+
+**P1 — Verify next trade is clean (both S54 bugs are fixed)**
+On next trade (new market ingested with future date + live CLOB orderbook):
+- `_recently_exited` cooldown should fire after first entry (no repeat entries within 15 min)
+- `current_price` should stay at entry price for illiquid markets (no 0.5 spikes)
+- Check VPS: `sudo journalctl -u polymarket-ai -f | grep WeatherBot` for trade + cooldown logs
 
 **P2 — Calibration loop validation**
-At UTC midnight boundary on first day with resolved weather markets:
+At UTC midnight boundary after first market resolves:
 ```bash
 ssh -i "$KEY" "$VPS" "sudo -u postgres psql -d polymarket -c \"
   SELECT station_id, lead_bucket, forecast_temp, actual_temp, bias
   FROM weather_calibration LIMIT 10;\""
 ```
-Should see rows with `actual_temp` filled and `bias` computed.
+Should see rows with `actual_temp` filled and `bias` computed (São Paulo March 6 was today).
 
 **P3 — São Paulo resolution tracking**
 ```bash
 ssh -i "$KEY" "$VPS" "sudo -u postgres psql -d polymarket -c \"
   SELECT id, question, resolution, active, end_date_iso
-  FROM markets WHERE category='weather' AND question LIKE '%São Paulo%' OR question LIKE '%Sao Paulo%'
+  FROM markets WHERE question ILIKE '%Sao Paulo%' OR question ILIKE '%São Paulo%'
   LIMIT 5;\""
 ```
 
-**P4 — Spring market readiness (do when new markets appear)**
-- Run startup availability check to confirm regex matches new question phrasing
-- Verify `_enrich_with_live_prices()` enriches new token IDs (not just the São Paulo one)
-- Check lead time gate fires correctly for markets >7 days out
+**P4 — DB fake trade cleanup**
+Session 54 deleted all 8 fake WeatherBot paper_trades from today (pre-fix artifacts).
+Daily P&L is now $0. São Paulo March 6 real performance: net 0 (position deleted with records).
 
 **P5 — Documentation**
 - BOT_WEATHERBOT.md: updated this session ✓

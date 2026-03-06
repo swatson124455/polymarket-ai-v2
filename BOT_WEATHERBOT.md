@@ -10,9 +10,9 @@
 | Max per city+date group | $200 (WEATHER_MAX_PER_GROUP_USD) |
 | Max correlated city exposure | $500 (WEATHER_MAX_CORRELATED_EXPOSURE) |
 | Daily loss limit | $500 (WEATHER_DAILY_LOSS_LIMIT) |
-| VPS State | RUNNING — scanning, ~16 groups/scan, finding 0 tradeable markets (São Paulo expired) |
+| VPS State | RUNNING — actively scanning ~16 groups/scan. Seasonal gap is OVER. |
 | Last trade | 2026-03-06 14:38:22 UTC: São Paulo 32°C YES @ 0.0135, size=100, edge=0.9865 |
-| Blocker | São Paulo March 6 market expired. Next markets: expect spring heat waves (May-June 2026) |
+| Current state | São Paulo March 6 expired; 33 regex-matched markets in DB (all 2020 past-date). Trades when fresh markets with live CLOB prices appear. |
 | Special overrides | RISK_MIN_VOL_WEATHERBOT=0, RISK_MIN_PRICE_WEATHERBOT=0.005 |
 
 ## Purpose & Strategy
@@ -104,27 +104,38 @@ Trades Polymarket temperature-bucket markets using Open-Meteo ensemble weather f
 | RISK_MIN_PRICE_WEATHERBOT | not set | 0.005 | Per-bot price floor (0.5¢ min) — allows 1-2¢ weather markets |
 
 ## Market Detection Behavior
-**Current state (March 2026): ~16 groups/scan, 0 with edge — São Paulo expired, no new markets**
+**Seasonal gap is OVER as of early March 2026. Bot is actively scanning and has traded.**
 
 Startup log format (runs once per process start):
 ```
-[WeatherBot] _check_weather_market_availability: DB total=3421, DB weather-category=260, regex-matched=33
+[WeatherBot] _check_weather_market_availability: DB total=800, DB weather-category=260, regex-matched=33
+```
+Normal scan log:
+```
+weatherbot_price_enriched enriched=10 skipped=40 total=50
+weatherbot_scan_done best_edge=0.0 groups=15 groups_with_edge=0 regime_boost=1.0 trades=0
 ```
 
+**Why groups_with_edge=0 right now (not a bug):**
+- 33 regex-matched markets are all old 2020 markets with past target dates (Jan-Feb)
+- `_parse_date()` infers current year (2026), so "February 15" → 2026-02-15 → already past
+- `_analyze_group()` skips groups where `target_date < today`
+- Bot trades when a genuinely new market appears with a future date AND live CLOB orderbook
+- São Paulo March 6 was such a market and was traded successfully
+
 **Diagnosis guide:**
-- `regex-matched = 0` AND `DB weather-category = 0` → seasonal gap, no markets yet
+- `regex-matched = 0` AND `DB weather-category = 0` → no markets at all, check ingestion
 - `regex-matched = 0` AND `DB weather-category > 0` → regex needs expansion for new question phrasing
-- `regex-matched > 0` AND `groups_with_edge = 0` → check CLOB price enrichment (enriched count vs skipped)
-- `enriched=10 skipped=40` → 40 markets have empty orderbooks (expired/illiquid) — expected for stale markets
-- `regex-matched > 0` AND trades still 0 → check edge gate, lead time, calibration
+- `regex-matched > 0` AND `groups_with_edge = 0` → check if any groups have future target dates
+- `groups > 0` AND `groups_with_edge = 0` → all target dates in past OR no CLOB prices for future markets
+- `enriched=10 skipped=40` → 40 markets have empty orderbooks — expected for expired/stale markets
+- `regex-matched > 0` AND trades still 0 with future dates → check edge gate, lead time, calibration
 
 **Why Gamma API category=weather is unreliable:**
 - Polymarket's Gamma API `?category=weather` returns ~500 markets that include politics, pop culture
 - WeatherBot falls back to: DB query (min_liq=0, categories=["weather"]) + regex filter
 - `_RE_WEATHER_QUICK`: matches "high/maximum temperature in {city}" patterns
 - `_RE_WEATHER_ALT`: matches "degrees Fahrenheit/Celsius" patterns
-
-**When markets will appear:** Spring/summer heat waves (May-September). March has minimal activity.
 
 **Price enrichment note:** Weather markets have `yes_price=NULL` in DB (token IDs not in WS 1000-token
 subscription). `_enrich_with_live_prices()` fetches CLOB /midpoint for up to 50 markets per scan
@@ -218,11 +229,9 @@ pytest tests/ -k "weather" -v
 ssh -i "$KEY" "$VPS" "curl -s 'https://api.open-meteo.com/v1/forecast?latitude=40.71&longitude=-74.01&hourly=temperature_2m&forecast_days=1' | head -c 200"
 ```
 
-## Next Steps / Blockers
-- [ ] Wait for new temperature bucket markets (expect May-June 2026 heat waves)
-- [ ] When markets appear: verify `_RE_WEATHER_QUICK` + `_RE_WEATHER_ALT` catch all question phrasings
-- [ ] Validate that `_enrich_with_live_prices()` correctly fetches CLOB prices for new markets
-- [ ] Monitor first calibration feedback loop after São Paulo resolves (verify actual_temp fills at UTC day boundary)
+## Next Steps / Monitoring
+- [ ] When new markets appear with future dates: verify `_enrich_with_live_prices()` gets CLOB prices
+- [ ] Verify `_recently_exited` 15-min cooldown fires correctly on next trade (fixed Session 54)
+- [ ] Monitor calibration loop: at UTC day boundary, `weather_calibration` table should fill actual_temp for São Paulo March 6
 - [ ] If >50 weather markets appear simultaneously: raise CLOB enrichment cap from 50
-- [ ] Verify `_recently_exited` 15-min cooldown fires on next real trade (was dead code before Session 54)
-- [ ] São Paulo March 6 paper P&L: daily_pnl will reset to 0 at midnight UTC (pre-fix fake exits were $48.53)
+- [ ] Check `db_weather_regex_match` count in startup log after each ingestion cycle — new markets will increment it
