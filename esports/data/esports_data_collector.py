@@ -21,11 +21,11 @@ from structlog import get_logger
 logger = get_logger()
 
 # LoL feature names (must match lol_win_model.FEATURE_NAMES)
+# Only features reliably available from PandaScore in training AND live inference.
 _LOL_FEATURES = [
-    "game_time_minutes", "gold_pct_blue", "team_xp_diff", "alive_diff",
-    "tower_kills_diff", "dragon_kills_diff", "dragon_soul_blue", "herald_blue",
-    "inhib_down_diff", "baron_buff_blue", "elder_buff_blue", "baron_buff_count_diff",
-    "gold_diff_top", "gold_diff_jungle", "gold_diff_mid", "gold_diff_adc", "gold_diff_support",
+    "game_time_minutes", "gold_pct_blue", "tower_kills_diff", "dragon_kills_diff",
+    "dragon_soul_blue", "herald_blue", "inhib_down_diff", "baron_buff_count_diff",
+    "team_strength_diff",
 ]
 
 # CS2 round feature names (must match cs2_economy_model.ROUND_FEATURES)
@@ -33,7 +33,7 @@ _CS2_FEATURES = [
     "team_a_money", "team_b_money", "team_a_equip_value", "team_b_equip_value",
     "round_score_a", "round_score_b", "map_ct_rate", "team_a_is_ct",
     "team_a_loss_streak", "team_b_loss_streak", "bomb_planted",
-    "team_a_alive", "team_b_alive",
+    "team_a_alive", "team_b_alive", "team_strength_diff",
 ]
 
 # CS2 map CT win rates (professional average)
@@ -51,6 +51,9 @@ class EsportsDataCollector:
 
     def __init__(self, pandascore_client) -> None:
         self._ps = pandascore_client
+        self._team_strength_cache: Dict[str, float] = {}  # "game:team_id" → win_rate
+        # Glicko-2 trackers for team strength (per game)
+        self._glicko2_trackers: Dict[str, Any] = {}  # game → Glicko2Tracker
 
     async def collect_historical(
         self,
@@ -86,6 +89,8 @@ class EsportsDataCollector:
                     if db is not None:
                         await self._store_row(db, row)
                     stats["rows_stored"] += 1
+                # Update Glicko-2 ratings after processing match
+                self._update_glicko2(match, game)
             except Exception as exc:
                 stats["errors"] += 1
                 logger.debug(
@@ -127,11 +132,14 @@ class EsportsDataCollector:
         Extract LoL game-level features from match detail.
 
         PandaScore provides per-game data including team stats at end-of-game.
-        We extract the 17 FEATURE_NAMES and blue_win label.
+        We extract the 9 FEATURE_NAMES and blue_win label.
         """
         games = await self._ps.get_match_games_detail(match.match_id)
         if not games:
             return []
+
+        # Compute team strength diff once per match (cached)
+        team_str_diff = await self._compute_team_strength_diff(match, "lol")
 
         rows = []
         for g in games:
@@ -156,6 +164,7 @@ class EsportsDataCollector:
 
             # Extract game-level stats into features
             game_state = self._extract_lol_features(blue_team, red_team, g)
+            game_state["team_strength_diff"] = team_str_diff
 
             # Determine patch from match data
             patch = ""
@@ -185,7 +194,7 @@ class EsportsDataCollector:
     def _extract_lol_features(
         self, blue: Dict, red: Dict, game_data: Dict
     ) -> Dict[str, float]:
-        """Extract 17 LoL features from PandaScore game-level team stats."""
+        """Extract 8 reliable LoL features from PandaScore game-level team stats."""
         # Game duration
         length = game_data.get("length", 0) or 0
         game_time_minutes = length / 60.0 if length else 30.0
@@ -198,46 +207,17 @@ class EsportsDataCollector:
         red_gold = float(red_stats.get("gold_earned", 0) or 0)
         total_gold = blue_gold + red_gold
 
-        # Build feature dict
+        # Build feature dict — only 8 reliable features
         features: Dict[str, float] = {
             "game_time_minutes": game_time_minutes,
             "gold_pct_blue": blue_gold / total_gold if total_gold > 0 else 0.5,
-            "team_xp_diff": 0.0,  # PandaScore doesn't always provide XP
-            "alive_diff": 0.0,    # End-of-game: not meaningful (one nexus dead)
             "tower_kills_diff": float(blue_stats.get("tower_kills", 0) or 0) - float(red_stats.get("tower_kills", 0) or 0),
             "dragon_kills_diff": float(blue_stats.get("dragon_kills", 0) or 0) - float(red_stats.get("dragon_kills", 0) or 0),
             "dragon_soul_blue": 1.0 if int(blue_stats.get("dragon_kills", 0) or 0) >= 4 else 0.0,
-            "herald_blue": float(blue_stats.get("herald_kill", 0) or blue_stats.get("rift_heralds", 0) or 0) > 0,
+            "herald_blue": float(int(blue_stats.get("herald_kill", 0) or blue_stats.get("rift_heralds", 0) or 0) > 0),
             "inhib_down_diff": float(blue_stats.get("inhibitor_kills", 0) or 0) - float(red_stats.get("inhibitor_kills", 0) or 0),
-            "baron_buff_blue": float(blue_stats.get("baron_kills", 0) or 0) > 0,
-            "elder_buff_blue": 0.0,  # PandaScore doesn't reliably track elder
             "baron_buff_count_diff": float(blue_stats.get("baron_kills", 0) or 0) - float(red_stats.get("baron_kills", 0) or 0),
-            # Role gold diffs — PandaScore doesn't always provide per-role gold
-            # Use 0.0 as placeholder; trainer handles missing features
-            "gold_diff_top": 0.0,
-            "gold_diff_jungle": 0.0,
-            "gold_diff_mid": 0.0,
-            "gold_diff_adc": 0.0,
-            "gold_diff_support": 0.0,
         }
-
-        # Try to extract per-role gold from player stats
-        blue_players = blue.get("players", []) or []
-        red_players = red.get("players", []) or []
-        if len(blue_players) >= 5 and len(red_players) >= 5:
-            role_map = {"top": 0, "jun": 1, "mid": 2, "adc": 3, "sup": 4}
-            role_keys = ["gold_diff_top", "gold_diff_jungle", "gold_diff_mid", "gold_diff_adc", "gold_diff_support"]
-
-            for bp, rp, key in zip(blue_players[:5], red_players[:5], role_keys):
-                bp_stats = bp.get("stats", {}) or {} if isinstance(bp, dict) else {}
-                rp_stats = rp.get("stats", {}) or {} if isinstance(rp, dict) else {}
-                bg = float(bp_stats.get("gold_earned", 0) or 0)
-                rg = float(rp_stats.get("gold_earned", 0) or 0)
-                features[key] = bg - rg
-
-        # Convert bools to float
-        for k, v in features.items():
-            features[k] = float(v)
 
         return features
 
@@ -252,6 +232,9 @@ class EsportsDataCollector:
         games = await self._ps.get_match_games_detail(match.match_id)
         if not games:
             return []
+
+        # Compute team strength diff once per match (cached)
+        team_str_diff = await self._compute_team_strength_diff(match, "cs2")
 
         rows = []
         for g_idx, g in enumerate(games):
@@ -286,44 +269,73 @@ class EsportsDataCollector:
                 if not isinstance(rnd, dict):
                     continue
 
+                # Round winner: try winner_team (PandaScore docs) then winner (legacy)
                 round_winner_id = None
-                rw = rnd.get("winner", {})
-                if isinstance(rw, dict):
-                    round_winner_id = rw.get("id")
-                elif isinstance(rw, (int, str)):
-                    round_winner_id = int(rw)
+                wt = rnd.get("winner_team") or rnd.get("winner", {})
+                if isinstance(wt, dict):
+                    round_winner_id = wt.get("team_id") or wt.get("id")
+                elif isinstance(wt, (int, str)):
+                    round_winner_id = int(wt)
+                if round_winner_id is None:
+                    continue  # Skip rounds without clear winner
 
-                # Determine if team_a is CT in this round (first 12 rounds = starting side)
-                # PandaScore: first_side in teams array
-                team_a_is_ct = 1.0
-                first_side_a = str(team_a_data.get("first_side", "ct")).lower()
-                if r_idx < 12:
-                    team_a_is_ct = 1.0 if first_side_a == "ct" else 0.0
+                # ── Economy from PandaScore round structure ────────────
+                # PandaScore nests per-player economy under
+                # counter_terrorists/terrorists → players[] → freeze_time_economy
+                ct_data = rnd.get("counter_terrorists", {}) or {}
+                t_data = rnd.get("terrorists", {}) or {}
+                ct_players = ct_data.get("players") or []
+                t_players = t_data.get("players") or []
+
+                ct_money = sum(
+                    int((p.get("freeze_time_economy") or {}).get("economy", 0) or 0)
+                    for p in ct_players if isinstance(p, dict)
+                ) if ct_players else 0
+                t_money = sum(
+                    int((p.get("freeze_time_economy") or {}).get("economy", 0) or 0)
+                    for p in t_players if isinstance(p, dict)
+                ) if t_players else 0
+
+                # Map CT/T to team_a/team_b by team_id
+                ct_id = int(ct_data.get("team_id", 0) or 0)
+                t_id = int(t_data.get("team_id", 0) or 0)
+
+                if ct_id and ct_id == int(team_a_id):
+                    team_a_money = float(ct_money)
+                    team_b_money = float(t_money)
+                    team_a_is_ct = 1.0
+                elif t_id and t_id == int(team_a_id):
+                    team_a_money = float(t_money)
+                    team_b_money = float(ct_money)
+                    team_a_is_ct = 0.0
                 else:
-                    # After halftime: sides swap
-                    team_a_is_ct = 0.0 if first_side_a == "ct" else 1.0
+                    # Fallback: positional side logic (first_side + round index)
+                    team_a_money = 0.0
+                    team_b_money = 0.0
+                    first_side_a = str(team_a_data.get("first_side", "ct")).lower()
+                    if r_idx < 12:
+                        team_a_is_ct = 1.0 if first_side_a == "ct" else 0.0
+                    else:
+                        team_a_is_ct = 0.0 if first_side_a == "ct" else 1.0
 
                 round_state = {
-                    "team_a_money": float(rnd.get("team_a_economy", 0) or 0),
-                    "team_b_money": float(rnd.get("team_b_economy", 0) or 0),
-                    "team_a_equip_value": float(rnd.get("team_a_equipment_value", 0) or rnd.get("team_a_economy", 0) or 0),
-                    "team_b_equip_value": float(rnd.get("team_b_equipment_value", 0) or rnd.get("team_b_economy", 0) or 0),
+                    "team_a_money": team_a_money,
+                    "team_b_money": team_b_money,
+                    "team_a_equip_value": team_a_money,  # Economy as proxy
+                    "team_b_equip_value": team_b_money,
                     "round_score_a": float(score_a),
                     "round_score_b": float(score_b),
                     "map_ct_rate": ct_rate,
                     "team_a_is_ct": team_a_is_ct,
                     "team_a_loss_streak": float(loss_streak_a),
                     "team_b_loss_streak": float(loss_streak_b),
-                    "bomb_planted": 0.0,  # Historical data is end-of-round
+                    "bomb_planted": 0.0,  # Pre-round state
                     "team_a_alive": 5.0,  # Pre-round: all alive
                     "team_b_alive": 5.0,
+                    "team_strength_diff": team_str_diff,
                 }
 
-                # Outcome
-                if round_winner_id is not None:
-                    team_a_won = 1 if int(round_winner_id) == int(team_a_id) else 0
-                else:
-                    continue  # Skip rounds without clear winner
+                team_a_won = 1 if int(round_winner_id) == int(team_a_id) else 0
 
                 rows.append({
                     "match_id": f"{match.match_id}_g{g_idx}_r{r_idx}",
@@ -349,6 +361,90 @@ class EsportsDataCollector:
                     loss_streak_a += 1
 
         return rows
+
+    # ── Team strength ─────────────────────────────────────────────────
+
+    async def _get_team_strength(self, team_id: int, game: str) -> float:
+        """Get team win rate from PandaScore (cached per session).
+
+        Returns win rate 0.0-1.0, or 0.5 if unavailable.
+        """
+        cache_key = f"{game}:{team_id}"
+        if cache_key in self._team_strength_cache:
+            return self._team_strength_cache[cache_key]
+
+        win_rate = 0.5  # default
+        try:
+            stats = await self._ps.get_team_stats(team_id, game)
+            if stats and isinstance(stats, dict):
+                # PandaScore team stats: look for win/loss counts
+                wins = int(stats.get("wins", 0) or 0)
+                losses = int(stats.get("losses", 0) or 0)
+                total = wins + losses
+                if total >= 5:  # need enough games for meaningful rate
+                    win_rate = wins / total
+                elif "winrate" in stats:
+                    wr = float(stats.get("winrate", 0.5) or 0.5)
+                    if 0.0 < wr <= 1.0:
+                        win_rate = wr
+        except Exception as exc:
+            logger.debug("EsportsDataCollector: team strength fetch failed", team_id=team_id, error=str(exc))
+
+        self._team_strength_cache[cache_key] = win_rate
+        return win_rate
+
+    async def _compute_team_strength_diff(self, match, game: str) -> float:
+        """Compute team_strength_diff using Glicko-2 (preferred) or raw win-rate (fallback)."""
+        team_a_id = getattr(match, "team_a_id", 0)
+        team_b_id = getattr(match, "team_b_id", 0)
+        if not team_a_id or not team_b_id:
+            return 0.0
+
+        # Try Glicko-2 first (if tracker has seen both teams)
+        tracker = self._glicko2_trackers.get(game)
+        if tracker is not None and tracker.match_count >= 10:
+            rating_a = tracker.get_rating(str(team_a_id))
+            rating_b = tracker.get_rating(str(team_b_id))
+            # Only use Glicko-2 if both teams have been rated (phi < default)
+            if rating_a.phi < 350.0 and rating_b.phi < 350.0:
+                return tracker.strength_diff(str(team_a_id), str(team_b_id))
+
+        # Fallback: raw PandaScore win rate
+        wr_a = await self._get_team_strength(team_a_id, game)
+        wr_b = await self._get_team_strength(team_b_id, game)
+        return wr_a - wr_b
+
+    def _update_glicko2(self, match, game: str) -> None:
+        """Update Glicko-2 ratings after processing a match result."""
+        try:
+            from esports.models.glicko2 import Glicko2Tracker
+
+            if game not in self._glicko2_trackers:
+                self._glicko2_trackers[game] = Glicko2Tracker()
+
+            tracker = self._glicko2_trackers[game]
+            team_a_id = str(getattr(match, "team_a_id", 0))
+            team_b_id = str(getattr(match, "team_b_id", 0))
+            if not team_a_id or team_a_id == "0" or not team_b_id or team_b_id == "0":
+                return
+
+            # Determine winner from match result
+            winner_id = getattr(match, "winner_id", None)
+            if winner_id is not None:
+                winner = "a" if str(winner_id) == team_a_id else "b"
+            else:
+                score_a = getattr(match, "score_a", 0) or 0
+                score_b = getattr(match, "score_b", 0) or 0
+                if score_a > score_b:
+                    winner = "a"
+                elif score_b > score_a:
+                    winner = "b"
+                else:
+                    return  # Can't determine winner
+
+            tracker.process_match(team_a_id, team_b_id, winner=winner)
+        except Exception:
+            pass  # Glicko-2 update is best-effort
 
     # ── DB persistence ──────────────────────────────────────────────────
 
@@ -421,10 +517,12 @@ class EsportsDataCollector:
                     entry = dict(state)
                     entry["blue_win"] = int(row.outcome)
                     entry["patch"] = row.patch or ""
+                    entry["match_id"] = row.match_id or ""
                     training_data.append(entry)
                 elif game == "cs2":
                     entry = dict(state)
                     entry["team_a_won_round"] = int(row.outcome)
+                    entry["match_id"] = row.match_id or ""
                     training_data.append(entry)
 
             logger.info(
