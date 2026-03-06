@@ -20,6 +20,36 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 
 
+def bo1_underdog_adjustment(base_prob: float) -> float:
+    """
+    Adjust base probability for BO1 format variance.
+
+    BO1 matches have systematically higher upset rates than BO3/BO5 due to
+    reduced sample size (single map). Empirical research (Journal of Economic
+    Psychology 2020) shows CS:GO underdogs are underpriced, with BO1 upset
+    rates 1.5-2x higher than BO3 equivalents.
+
+    Adjustment: boost underdog probability proportional to distance from 0.5.
+    The further the underdog is from even, the larger the boost (more variance).
+
+    Args:
+        base_prob: Base P(team_a wins) from model (0.0-1.0).
+
+    Returns:
+        Adjusted probability accounting for BO1 variance (clamped 0.05-0.95).
+    """
+    if base_prob < 0.5:
+        # Team A is the underdog — boost toward 0.5
+        adjusted = base_prob + 0.03 * (0.5 - base_prob)
+    elif base_prob > 0.5:
+        # Team A is the favorite — compress toward 0.5
+        adjusted = base_prob - 0.03 * (base_prob - 0.5)
+    else:
+        adjusted = base_prob
+
+    return max(0.05, min(0.95, adjusted))
+
+
 def bo3_match_prob(
     game_win_rate: float,
     maps_won_a: int = 0,

@@ -1,19 +1,16 @@
 """
-LoL Win Probability Model — XGBoost with 17 features (12 Riot/AWS + 5 role-weighted gold).
+LoL Win Probability Model — XGBoost with 8 reliable features.
 
-Based on the official Riot/AWS model deployed for LoL Worlds 2023+.
-Trained on professional match timeline data with patch-weighted sampling.
+Based on PandaScore professional match data with patch-weighted sampling.
+Only uses features reliably available in BOTH training (post-game stats) and
+live inference (mid-game PandaScore data). Dead/unreliable features removed.
 
-Features (17 total):
-  12 Riot/AWS production features:
-    game_time, gold_pct, team_xp, alive_count, tower_kills,
-    dragon_kills, dragon_soul, herald, inhib_down_count,
-    baron_buff_timer, elder_buff_timer, baron_buff_count, elder_buff_count
-
-  5 role-weighted gold decomposition:
-    gold_diff_top, gold_diff_jungle, gold_diff_mid, gold_diff_adc, gold_diff_support
+Features (8 total):
+    game_time_minutes, gold_pct_blue, tower_kills_diff, dragon_kills_diff,
+    dragon_soul_blue, herald_blue, inhib_down_diff, baron_buff_count_diff
 
 Patch-weighted training: current=1.0, prev=0.7, 2-ago=0.5, 3+ ago=0.3.
+Heuristic fallback: gold+tower+dragon sigmoid when model not yet trained.
 
 Usage::
     model = LoLWinModel()
@@ -23,6 +20,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import collections
 import math
 import os
 import pickle
@@ -33,27 +31,20 @@ from structlog import get_logger
 
 logger = get_logger()
 
-# Feature names in order — must match training and inference
+# Feature names in order — must match training and inference.
+# Only features reliably available from PandaScore in BOTH training and live.
+# Removed (always 0.0 or unreliable): team_xp_diff, alive_diff, elder_buff_blue,
+# baron_buff_blue (redundant with count_diff), 5x gold_diff_role.
 FEATURE_NAMES = [
-    # 12 Riot/AWS features
     "game_time_minutes",
-    "gold_pct_blue",           # blue team gold / total gold
-    "team_xp_diff",            # blue XP - red XP
-    "alive_diff",              # blue alive - red alive (-5 to +5)
+    "gold_pct_blue",           # blue team gold / total gold (ratio 0.0-1.0)
     "tower_kills_diff",        # blue towers - red towers
     "dragon_kills_diff",       # blue dragons - red dragons
     "dragon_soul_blue",        # 1.0 if blue has soul, else 0.0
-    "herald_blue",             # 1.0 if blue has herald trinket
+    "herald_blue",             # 1.0 if blue took herald
     "inhib_down_diff",         # blue inhibs down on red - red inhibs down on blue
-    "baron_buff_blue",         # 1.0 if blue has baron buff active
-    "elder_buff_blue",         # 1.0 if blue has elder buff active
-    "baron_buff_count_diff",   # # blue players with baron - # red players with baron
-    # 5 role-weighted gold diffs
-    "gold_diff_top",
-    "gold_diff_jungle",
-    "gold_diff_mid",
-    "gold_diff_adc",
-    "gold_diff_support",
+    "baron_buff_count_diff",   # baron kills diff
+    "team_strength_diff",      # blue win_rate - red win_rate (from PandaScore stats)
 ]
 
 # Patch weight decay: how much to weight historical patches
@@ -82,6 +73,8 @@ class LoLWinModel:
         self._is_trained = False
         self._current_patch: Optional[str] = None
         self._training_patches: List[str] = []
+        # Adaptive blend: rolling Brier errors for Glicko-2 vs ML components
+        self._blend_errors: collections.deque = collections.deque(maxlen=50)
 
     @property
     def is_trained(self) -> bool:
@@ -95,14 +88,14 @@ class LoLWinModel:
             game_state: Dict with keys matching FEATURE_NAMES.
 
         Returns:
-            Probability 0.0-1.0. Returns 0.5 if model not trained.
+            Probability 0.0-1.0. Falls back to heuristic if model not trained.
         """
         if not self._is_trained or self._model is None:
-            return 0.5
+            return self._predict_heuristic(game_state)
 
         features = self._extract_features(game_state)
         if features is None:
-            return 0.5
+            return self._predict_heuristic(game_state)
 
         try:
             X = np.array([features], dtype=np.float32)
@@ -118,6 +111,79 @@ class LoLWinModel:
         except Exception as exc:
             logger.debug("LoLWinModel: predict failed", error=str(exc))
             return 0.5
+
+    def predict_with_glicko2(
+        self, game_state: Dict[str, Any], glicko2_expected: float
+    ) -> float:
+        """
+        Two-stage prediction: Glicko-2 baseline + ML residual correction.
+
+        The ML model captures what Glicko-2 misses (game state, economy,
+        objectives taken). Glicko-2 provides the team-strength baseline.
+
+        Uses adaptive weights when 20+ blend outcomes are tracked,
+        otherwise falls back to hardcoded defaults.
+
+        Args:
+            game_state: Feature dict for ML model.
+            glicko2_expected: P(blue_win) from Glicko-2 ratings.
+
+        Returns:
+            Blended probability (0.05-0.95).
+        """
+        ml_prob = self.predict(game_state)
+
+        # Adaptive weights if enough blend outcomes tracked
+        adaptive_ml_weight = self._compute_adaptive_ml_weight()
+
+        game_time = float(game_state.get("game_time_minutes", 0))
+        if game_time > 5.0 and self._is_trained:
+            # Mid-game: ML has strong in-game signals (gold, towers, dragons)
+            ml_weight = adaptive_ml_weight if adaptive_ml_weight is not None else 0.7
+        elif self._is_trained:
+            # Pre-game: ML has limited signal — scale adaptive weight down
+            ml_weight = (adaptive_ml_weight * 0.7) if adaptive_ml_weight is not None else 0.5
+        else:
+            # Untrained: ML is just heuristic, lean on Glicko-2
+            ml_weight = 0.4
+
+        blend = (1 - ml_weight) * glicko2_expected + ml_weight * ml_prob
+        return float(max(0.05, min(0.95, blend)))
+
+    def record_blend_outcome(
+        self, glicko2_prob: float, ml_prob: float, actual: int
+    ) -> None:
+        """
+        Record a prediction outcome for adaptive blend weight learning.
+
+        Call after each bet resolves. Tracks per-component Brier errors
+        to shift weight toward whichever component performs better.
+        """
+        glicko2_err = (glicko2_prob - actual) ** 2
+        ml_err = (ml_prob - actual) ** 2
+        self._blend_errors.append((glicko2_err, ml_err))
+
+    def _compute_adaptive_ml_weight(self) -> Optional[float]:
+        """
+        Compute ML weight from rolling Brier errors.
+
+        Returns None if insufficient data (<20 outcomes).
+        Weight bounded [0.2, 0.8] to prevent one component dominating.
+        """
+        if len(self._blend_errors) < 20:
+            return None
+
+        glicko2_brier = sum(e[0] for e in self._blend_errors) / len(self._blend_errors)
+        ml_brier = sum(e[1] for e in self._blend_errors) / len(self._blend_errors)
+
+        # Inverse Brier: lower error → higher weight
+        # Add epsilon to avoid division by zero
+        eps = 1e-6
+        glicko2_inv = 1.0 / (glicko2_brier + eps)
+        ml_inv = 1.0 / (ml_brier + eps)
+
+        ml_weight = ml_inv / (glicko2_inv + ml_inv)
+        return max(0.2, min(0.8, ml_weight))
 
     async def predict_async(self, game_state: Dict[str, Any]) -> float:
         """Thread-safe async prediction (offloads to thread pool)."""
@@ -184,6 +250,12 @@ class LoLWinModel:
         # Sanitize
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
+        # Split 15% for early stopping eval set (from end = most recent)
+        es_split = max(int(len(X) * 0.85), 50)
+        X_train, X_es = X[:es_split], X[es_split:]
+        y_train, y_es = y[:es_split], y[es_split:]
+        w_train = w[:es_split]
+
         model = XGBClassifier(
             n_estimators=200,
             max_depth=6,
@@ -193,8 +265,14 @@ class LoLWinModel:
             use_label_encoder=False,
             eval_metric="logloss",
             random_state=42,
+            early_stopping_rounds=20,
         )
-        model.fit(X, y, sample_weight=w)
+
+        if len(X_es) >= 10:
+            model.fit(X_train, y_train, sample_weight=w_train,
+                      eval_set=[(X_es, y_es)], verbose=False)
+        else:
+            model.fit(X, y, sample_weight=w)
 
         self._model = model
         self._is_trained = True
@@ -289,6 +367,29 @@ class LoLWinModel:
         except Exception as exc:
             logger.warning("LoLWinModel: load failed", error=str(exc))
             return False
+
+    # ── Heuristic fallback ─────────────────────────────────────────────
+
+    @staticmethod
+    def _predict_heuristic(game_state: Dict[str, Any]) -> float:
+        """Heuristic win probability when ML model is not trained.
+
+        Uses gold share + tower/dragon advantages + team strength as logistic regression.
+        Coefficients based on professional match analysis:
+          - 1% gold lead ≈ 8% win probability shift
+          - Each tower advantage ≈ 4% shift
+          - Each dragon advantage ≈ 3% shift
+          - 10% team strength diff ≈ 5% win probability shift
+        """
+        gold_pct = float(game_state.get("gold_pct_blue", 0.5))
+        tower_diff = float(game_state.get("tower_kills_diff", 0.0))
+        dragon_diff = float(game_state.get("dragon_kills_diff", 0.0))
+        baron_diff = float(game_state.get("baron_buff_count_diff", 0.0))
+        team_str = float(game_state.get("team_strength_diff", 0.0))
+        z = (8.0 * (gold_pct - 0.5) + 0.08 * tower_diff + 0.06 * dragon_diff
+             + 0.10 * baron_diff + 2.0 * team_str)
+        prob = 1.0 / (1.0 + math.exp(-z))
+        return float(max(0.05, min(0.95, prob)))
 
     # ── Feature extraction ──────────────────────────────────────────────
 

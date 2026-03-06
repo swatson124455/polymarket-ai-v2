@@ -53,6 +53,7 @@ class AutomatedPositionManager:
         self.monitoring = False
         self.monitor_task: Optional[asyncio.Task] = None
         self.check_interval_seconds = 10.0
+        self._api_price_cache: Dict[str, tuple] = {}  # token_id -> (price, timestamp) for CLOB fallback
         # Configurable base thresholds (wider defaults for prediction markets)
         self.default_stop_loss_pct = getattr(settings, "PM_STOP_LOSS_PCT", 0.30)
         self.default_take_profit_pct = getattr(settings, "PM_TAKE_PROFIT_PCT", 0.60)
@@ -364,18 +365,53 @@ class AutomatedPositionManager:
                 if old_price is not None and abs(new_price - old_price) < 1e-6:
                     continue
                 pos.current_price = new_price
-                # Recompute unrealized P&L — cost-aware (Session 45)
+                # Recompute unrealized P&L — raw price movement (Session 51 fix)
+                # Costs (slippage, fees) are handled by trade decision code, not display P&L
                 entry = float(pos.entry_price) if pos.entry_price else 0.5
                 size = float(pos.size) if pos.size else 0.0
-                # Deduct entry cost + estimated exit cost for realistic P&L
-                _entry_cost = float(pos.entry_cost) if getattr(pos, "entry_cost", None) else 0.0
-                _exit_cost_rate = (
-                    getattr(settings, "FIXED_SLIPPAGE_BPS", 50)
-                    + getattr(settings, "TAKER_FEE_BPS", 150)
-                ) / 10000.0
-                _est_exit_cost = size * new_price * _exit_cost_rate
-                pos.unrealized_pnl = (new_price - entry) * size - _entry_cost - _est_exit_cost
+                pos.unrealized_pnl = (new_price - entry) * size
                 updated += 1
+
+            # Session 51: CLOB API fallback for positions not in market_prices (e.g. MirrorBot)
+            _pm_client = getattr(self.execution_engine, "client", None) if self.execution_engine else None
+            if _pm_client and hasattr(_pm_client, "get_orderbook"):
+                _now_mono = time.monotonic()
+                _API_COOLDOWN = 60  # seconds between API fetches per token
+                for pos in positions:
+                    tid = str(pos.token_id) if pos.token_id else ""
+                    if not tid or tid in latest_prices:
+                        continue  # already handled by market_prices
+                    mid = str(pos.market_id) if pos.market_id else ""
+                    # Throttle: skip if fetched recently
+                    _cached = self._api_price_cache.get(tid)
+                    if _cached and (_now_mono - _cached[1]) < _API_COOLDOWN:
+                        _api_price = _cached[0]
+                    else:
+                        try:
+                            _book = await _pm_client.get_orderbook(mid, tid)
+                            _bids = _book.get("bids", []) if _book else []
+                            _asks = _book.get("asks", []) if _book else []
+                            if _bids and _asks:
+                                _best_bid = float(_bids[0].get("price", 0))
+                                _best_ask = float(_asks[0].get("price", 0))
+                                if 0 < _best_bid <= _best_ask < 1:
+                                    _api_price = (_best_bid + _best_ask) / 2
+                                    self._api_price_cache[tid] = (_api_price, _now_mono)
+                                else:
+                                    continue
+                            else:
+                                continue
+                        except Exception:
+                            continue
+                    # Update position price
+                    old_price = float(pos.current_price) if pos.current_price is not None else None
+                    if old_price is not None and abs(_api_price - old_price) < 1e-6:
+                        continue
+                    pos.current_price = _api_price
+                    entry = float(pos.entry_price) if pos.entry_price else 0.5
+                    size = float(pos.size) if pos.size else 0.0
+                    pos.unrealized_pnl = (_api_price - entry) * size
+                    updated += 1
 
             if updated > 0:
                 await session.commit()

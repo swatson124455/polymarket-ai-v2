@@ -497,9 +497,12 @@ class EsportsBot(BaseBot):
                         self._lol_model.predict, game_state
                     )
                     if 0.0 < prob < 1.0:
-                        # Cache prediction for WS reactive path
+                        # Derive Glicko-2 expected from team_strength_diff for agreement tracking
+                        tsd = float(game_state.get("team_strength_diff", 0.0))
+                        glicko2_est = max(0.05, min(0.95, 0.5 + tsd / 2))
                         self._prediction_cache[market_id] = {
                             "prob": prob, "ts": time.monotonic(), "game": game,
+                            "ml_raw": prob, "glicko2_est": glicko2_est,
                         }
                         return prob
             except Exception:
@@ -516,8 +519,11 @@ class EsportsBot(BaseBot):
                         map_probs=game_state.get("map_probs"),
                     )
                     if 0.0 < prob < 1.0:
+                        tsd = float(game_state.get("team_strength_diff", 0.0))
+                        glicko2_est = max(0.05, min(0.95, 0.5 + tsd / 2))
                         self._prediction_cache[market_id] = {
                             "prob": prob, "ts": time.monotonic(), "game": game,
+                            "ml_raw": prob, "glicko2_est": glicko2_est,
                         }
                         return prob
             except Exception:
@@ -625,19 +631,20 @@ class EsportsBot(BaseBot):
         Compute confluence score (0.0-1.0) from multiple signals.
 
         Weights:
-          - Model prediction edge: 40%
-          - Whale direction alignment: 25%
-          - Orderbook imbalance: 20%
-          - Prediction freshness: 15%
+          - Model prediction edge: 37%
+          - Whale direction alignment: 23%
+          - Orderbook imbalance: 18%
+          - Prediction freshness: 14%
+          - Model agreement (Glicko-2 vs ML): 8%
 
         Only trades when score > ESPORTS_CONFLUENCE_MIN (default 0.60).
         """
         import math
 
-        # 1. Model edge signal (40%) — normalized to 0-1
+        # 1. Model edge signal (37%) — normalized to 0-1
         edge_score = min(abs(model_edge) / self._min_edge, 1.0)
 
-        # 2. Whale signal (25%) — check if whale trades align with our side
+        # 2. Whale signal (23%) — check if whale trades align with our side
         whale_score = 0.5  # Neutral when no whale data
         try:
             whale_queue = getattr(self, "_whale_priority_queue", None)
@@ -648,7 +655,7 @@ class EsportsBot(BaseBot):
         except Exception:
             pass
 
-        # 3. Orderbook imbalance (20%)
+        # 3. Orderbook imbalance (18%)
         ob_score = 0.5  # Neutral
         try:
             ob_tracker = getattr(self.base_engine, "orderbook_tracker", None)
@@ -666,16 +673,27 @@ class EsportsBot(BaseBot):
         except Exception:
             pass
 
-        # 4. Prediction freshness (15%) — exponential decay
+        # 4. Prediction freshness (14%) — exponential decay
         age_seconds = time.monotonic() - prediction_ts if prediction_ts > 0 else 0
         freshness_score = math.exp(-age_seconds / 120.0)  # 0s=1.0, 60s=0.61, 120s=0.37
 
+        # 5. Model agreement (8%) — penalize when Glicko-2 and ML disagree
+        agreement_score = 0.5  # Neutral when no component data
+        cached = self._prediction_cache.get(market_id, {})
+        ml_raw = cached.get("ml_raw")
+        glicko2_est = cached.get("glicko2_est")
+        if ml_raw is not None and glicko2_est is not None:
+            disagreement = abs(ml_raw - glicko2_est)
+            # Score: 1.0 when perfectly aligned, 0.0 when disagreement >= 0.15
+            agreement_score = max(0.0, 1.0 - disagreement / 0.15)
+
         # Weighted sum
         confluence = (
-            0.40 * edge_score +
-            0.25 * whale_score +
-            0.20 * ob_score +
-            0.15 * freshness_score
+            0.37 * edge_score +
+            0.23 * whale_score +
+            0.18 * ob_score +
+            0.14 * freshness_score +
+            0.08 * agreement_score
         )
 
         return round(confluence, 4)

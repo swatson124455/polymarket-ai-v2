@@ -21,6 +21,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import collections
 import math
 import os
 import pickle
@@ -65,7 +66,28 @@ ROUND_FEATURES = [
     "bomb_planted",     # 1.0 if bomb is currently planted
     "team_a_alive",
     "team_b_alive",
+    "team_strength_diff",  # team_a win_rate - team_b win_rate (from PandaScore)
 ]
+
+# Sensible defaults for features missing at live inference time.
+# Critical: team_a_alive/team_b_alive default to 5.0 (pre-round, all alive)
+# instead of 0.0, which would invert the signal vs training data.
+_ROUND_FEATURE_DEFAULTS = {
+    "team_a_money": 0.0,
+    "team_b_money": 0.0,
+    "team_a_equip_value": 0.0,
+    "team_b_equip_value": 0.0,
+    "round_score_a": 0.0,
+    "round_score_b": 0.0,
+    "map_ct_rate": 0.50,
+    "team_a_is_ct": 1.0,
+    "team_a_loss_streak": 0.0,
+    "team_b_loss_streak": 0.0,
+    "bomb_planted": 0.0,
+    "team_a_alive": 5.0,
+    "team_b_alive": 5.0,
+    "team_strength_diff": 0.0,
+}
 
 MODEL_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "data", "esports_cs2_model.pkl"
@@ -83,7 +105,10 @@ class CS2EconomyModel:
 
     def __init__(self) -> None:
         self._round_model = None
+        self._calibrator = None  # IsotonicRegression for probability calibration
         self._is_trained = False
+        # Adaptive blend: rolling Brier errors for Glicko-2 vs ML components
+        self._blend_errors: collections.deque = collections.deque(maxlen=50)
 
     @property
     def is_trained(self) -> bool:
@@ -100,6 +125,71 @@ class CS2EconomyModel:
         if self._round_model is not None and self._is_trained:
             return self._predict_round_ml(round_state)
         return self._predict_round_heuristic(round_state)
+
+    def predict_round_with_glicko2(
+        self, round_state: Dict[str, Any], glicko2_expected: float
+    ) -> float:
+        """
+        Two-stage round prediction: Glicko-2 baseline + ML/heuristic correction.
+
+        For CS2 rounds, the economy model captures round-specific economy state
+        while Glicko-2 provides the team-strength baseline.
+        Uses adaptive weights when 20+ blend outcomes are tracked.
+
+        Args:
+            round_state: Round economy + game state features.
+            glicko2_expected: P(team_a wins round) from Glicko-2 ratings.
+
+        Returns:
+            Blended probability (0.05-0.95).
+        """
+        round_prob = self.predict_round(round_state)
+
+        # Adaptive weights if enough blend outcomes tracked
+        adaptive_ml_weight = self._compute_adaptive_ml_weight()
+
+        # CS2 rounds are heavily economy-dependent, ML/heuristic gets more weight
+        if self._is_trained:
+            ml_weight = adaptive_ml_weight if adaptive_ml_weight is not None else 0.7
+        else:
+            ml_weight = 0.6
+
+        blend = (1 - ml_weight) * glicko2_expected + ml_weight * round_prob
+        return float(np.clip(blend, 0.05, 0.95))
+
+    def record_blend_outcome(
+        self, glicko2_prob: float, ml_prob: float, actual: int
+    ) -> None:
+        """
+        Record a prediction outcome for adaptive blend weight learning.
+
+        Call after each round resolves. Tracks per-component Brier errors
+        to shift weight toward whichever component performs better.
+        """
+        glicko2_err = (glicko2_prob - actual) ** 2
+        ml_err = (ml_prob - actual) ** 2
+        self._blend_errors.append((glicko2_err, ml_err))
+
+    def _compute_adaptive_ml_weight(self) -> Optional[float]:
+        """
+        Compute ML weight from rolling Brier errors.
+
+        Returns None if insufficient data (<20 outcomes).
+        Weight bounded [0.2, 0.8] to prevent one component dominating.
+        """
+        if len(self._blend_errors) < 20:
+            return None
+
+        glicko2_brier = sum(e[0] for e in self._blend_errors) / len(self._blend_errors)
+        ml_brier = sum(e[1] for e in self._blend_errors) / len(self._blend_errors)
+
+        # Inverse Brier: lower error → higher weight
+        eps = 1e-6
+        glicko2_inv = 1.0 / (glicko2_brier + eps)
+        ml_inv = 1.0 / (ml_brier + eps)
+
+        ml_weight = ml_inv / (glicko2_inv + ml_inv)
+        return max(0.2, min(0.8, ml_weight))
 
     def _predict_round_heuristic(self, state: Dict[str, Any]) -> float:
         """Heuristic round probability based on economy and numbers."""
@@ -144,10 +234,15 @@ class CS2EconomyModel:
     def _predict_round_ml(self, state: Dict[str, Any]) -> float:
         """ML-based round probability using trained XGBoost model."""
         try:
-            features = [float(state.get(f, 0.0)) for f in ROUND_FEATURES]
+            features = [float(state.get(f, _ROUND_FEATURE_DEFAULTS.get(f, 0.0))) for f in ROUND_FEATURES]
             X = np.array([features], dtype=np.float32)
             X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
             proba = self._round_model.predict_proba(X)[0][1]
+
+            # Apply isotonic calibration if available
+            if self._calibrator is not None:
+                proba = float(self._calibrator.predict([proba])[0])
+
             return float(np.clip(proba, 0.05, 0.95))
         except Exception:
             return self._predict_round_heuristic(state)
@@ -262,19 +357,23 @@ class CS2EconomyModel:
 
     # ── Training ────────────────────────────────────────────────────────
 
-    async def train(self, training_data: List[Dict[str, Any]]) -> bool:
+    async def train(
+        self, training_data: List[Dict[str, Any]], val_data: Optional[List[Dict[str, Any]]] = None
+    ) -> bool:
         """Train the round-level XGBoost model on historical round data."""
         if len(training_data) < 100:
             logger.warning("CS2EconomyModel: insufficient data", count=len(training_data))
             return False
 
         try:
-            return await asyncio.to_thread(self._train_sync, training_data)
+            return await asyncio.to_thread(self._train_sync, training_data, val_data)
         except Exception as exc:
             logger.error("CS2EconomyModel: training failed", error=str(exc))
             return False
 
-    def _train_sync(self, training_data: List[Dict[str, Any]]) -> bool:
+    def _train_sync(
+        self, training_data: List[Dict[str, Any]], val_data: Optional[List[Dict[str, Any]]] = None
+    ) -> bool:
         """Synchronous training (runs in thread pool)."""
         from xgboost import XGBClassifier
 
@@ -282,7 +381,7 @@ class CS2EconomyModel:
         y_rows = []
 
         for row in training_data:
-            features = [float(row.get(f, 0.0)) for f in ROUND_FEATURES]
+            features = [float(row.get(f, _ROUND_FEATURE_DEFAULTS.get(f, 0.0))) for f in ROUND_FEATURES]
             label = int(row.get("team_a_won_round", 0))
             X_rows.append(features)
             y_rows.append(label)
@@ -290,6 +389,19 @@ class CS2EconomyModel:
         X = np.array(X_rows, dtype=np.float32)
         y = np.array(y_rows, dtype=np.int32)
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Build eval set for early stopping from val_data (if provided)
+        eval_set = None
+        if val_data and len(val_data) >= 20:
+            X_val_rows = []
+            y_val_rows = []
+            for row in val_data:
+                features = [float(row.get(f, _ROUND_FEATURE_DEFAULTS.get(f, 0.0))) for f in ROUND_FEATURES]
+                X_val_rows.append(features)
+                y_val_rows.append(int(row.get("team_a_won_round", 0)))
+            X_val = np.nan_to_num(np.array(X_val_rows, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+            y_val = np.array(y_val_rows, dtype=np.int32)
+            eval_set = [(X_val, y_val)]
 
         model = XGBClassifier(
             n_estimators=150,
@@ -299,20 +411,81 @@ class CS2EconomyModel:
             use_label_encoder=False,
             eval_metric="logloss",
             random_state=42,
+            early_stopping_rounds=20 if eval_set else None,
         )
-        model.fit(X, y)
+
+        if eval_set:
+            model.fit(X, y, eval_set=eval_set, verbose=False)
+        else:
+            model.fit(X, y)
 
         self._round_model = model
         self._is_trained = True
-        logger.info("CS2EconomyModel: trained", n_samples=len(X_rows))
+
+        # Log feature importances (matches LoL pattern)
+        importances = dict(zip(ROUND_FEATURES, model.feature_importances_))
+        sorted_imp = sorted(importances.items(), key=lambda x: x[1], reverse=True)
+        logger.info(
+            "CS2EconomyModel: trained",
+            n_samples=len(X_rows),
+            top_features=[(n, round(v, 3)) for n, v in sorted_imp[:5]],
+            bottom_features=[(n, round(v, 3)) for n, v in sorted_imp[-3:]],
+        )
         return True
+
+    def calibrate(self, val_data: List[Dict[str, Any]]) -> bool:
+        """
+        Calibrate round model using isotonic regression on validation data.
+
+        Collects raw model probabilities and actual outcomes, then fits
+        an isotonic regression to map raw probs → calibrated probs.
+
+        Args:
+            val_data: List of dicts with round features + 'team_a_won_round'.
+
+        Returns:
+            True if calibration succeeded.
+        """
+        if not self._is_trained or not val_data:
+            return False
+
+        try:
+            from sklearn.isotonic import IsotonicRegression
+
+            # Disable any existing calibrator to collect raw probs
+            old_calibrator = self._calibrator
+            self._calibrator = None
+
+            raw_probs = []
+            actuals = []
+            for row in val_data:
+                prob = self._predict_round_ml(row)
+                actual = int(row.get("team_a_won_round", 0))
+                raw_probs.append(prob)
+                actuals.append(actual)
+
+            if len(raw_probs) < 20:
+                self._calibrator = old_calibrator
+                return False
+
+            self._calibrator = IsotonicRegression(out_of_bounds="clip")
+            self._calibrator.fit(raw_probs, actuals)
+            logger.info("CS2EconomyModel: calibrated", n_samples=len(raw_probs))
+            return True
+        except Exception as exc:
+            logger.debug("CS2EconomyModel: calibration failed", error=str(exc))
+            self._calibrator = old_calibrator
+            return False
 
     def save(self, path: Optional[str] = None) -> bool:
         path = path or MODEL_PATH
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "wb") as f:
-                pickle.dump({"round_model": self._round_model}, f)
+                pickle.dump({
+                    "round_model": self._round_model,
+                    "calibrator": self._calibrator,
+                }, f)
             return True
         except Exception as exc:
             logger.warning("CS2EconomyModel: save failed", error=str(exc))
@@ -326,6 +499,7 @@ class CS2EconomyModel:
             with open(path, "rb") as f:
                 data = pickle.load(f)
             self._round_model = data.get("round_model")
+            self._calibrator = data.get("calibrator")
             self._is_trained = self._round_model is not None
             return self._is_trained
         except Exception as exc:

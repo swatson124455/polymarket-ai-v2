@@ -930,6 +930,7 @@ class Settings(BaseSettings):
     ESPORTS_MODEL_MIN_ACCURACY: float = float(os.getenv("ESPORTS_MODEL_MIN_ACCURACY", "0.55"))
     ESPORTS_RETRAIN_INTERVAL_HOURS: int = int(os.getenv("ESPORTS_RETRAIN_INTERVAL_HOURS", "24"))
     ESPORTS_MIN_ACCURACY_TO_TRADE: float = float(os.getenv("ESPORTS_MIN_ACCURACY_TO_TRADE", "0.52"))
+    ESPORTS_LOL_HEURISTIC_ENABLED: bool = os.getenv("ESPORTS_LOL_HEURISTIC_ENABLED", "true").lower() in ("true", "1", "yes")
 
     # --- Signal confluence ---
     ESPORTS_CONFLUENCE_MIN: float = float(os.getenv("ESPORTS_CONFLUENCE_MIN", "0.60"))

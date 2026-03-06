@@ -274,6 +274,106 @@ async def get_rolling_accuracy(
         return None
 
 
+async def update_prediction_closing_price(
+    db, match_id: str, market_id: str, closing_price: float
+) -> int:
+    """
+    Record the market closing price for CLV (Closing Line Value) tracking.
+
+    Called when a match transitions to "running" — the last market price
+    before game start is the closing line. CLV = predicted_prob - closing_price.
+    Positive CLV means we beat the closing line (real edge signal).
+
+    Returns number of rows updated.
+    """
+    if db is None:
+        return 0
+    try:
+        result = await db.execute(
+            """
+            UPDATE esports_prediction_log
+            SET closing_price = :closing_price
+            WHERE match_id = :match_id
+              AND market_id = :market_id
+              AND closing_price IS NULL
+            """,
+            {
+                "match_id": match_id,
+                "market_id": market_id,
+                "closing_price": closing_price,
+            },
+        )
+        await db.commit()
+        return result.rowcount if hasattr(result, "rowcount") else 0
+    except Exception as exc:
+        logger.debug("esports_db: update_closing_price failed", error=str(exc))
+        return 0
+
+
+async def compute_clv_stats(
+    db, game: str, days: int = 30
+) -> Optional[Dict[str, Any]]:
+    """
+    Compute Closing Line Value stats for recent predictions.
+
+    CLV = (predicted_prob - closing_price) for YES bets.
+    Positive CLV = beating the closing line = evidence of real edge.
+    Pinnacle research: CLV has r²=0.997 against outcomes across 397k+ matches.
+
+    Returns:
+        Dict with: total, clv_positive_count, avg_clv, clv_hit_rate.
+        None if no data.
+    """
+    if db is None:
+        return None
+    try:
+        result = await db.execute(
+            """
+            SELECT predicted_prob, market_price, closing_price, side, actual_outcome
+            FROM esports_prediction_log
+            WHERE game = :game
+              AND closing_price IS NOT NULL
+              AND created_at > NOW() - INTERVAL ':days days'
+            ORDER BY created_at DESC
+            """,
+            {"game": game, "days": days},
+        )
+        rows = result.fetchall()
+        if not rows:
+            return None
+
+        total = 0
+        clv_sum = 0.0
+        clv_positive = 0
+
+        for row in rows:
+            pred_prob = float(row.predicted_prob)
+            closing = float(row.closing_price)
+
+            # CLV: did our prediction beat the closing line?
+            # For YES bets: CLV = predicted_prob - closing_price
+            # For NO bets: CLV = (1 - predicted_prob) - (1 - closing_price) = closing_price - predicted_prob
+            if row.side == "YES":
+                clv = pred_prob - closing
+            else:
+                clv = closing - pred_prob
+
+            clv_sum += clv
+            if clv > 0:
+                clv_positive += 1
+            total += 1
+
+        return {
+            "total": total,
+            "clv_positive_count": clv_positive,
+            "avg_clv": clv_sum / total if total > 0 else 0.0,
+            "clv_hit_rate": clv_positive / total if total > 0 else 0.0,
+        }
+    except Exception as exc:
+        logger.debug("esports_db: compute_clv_stats failed", error=str(exc))
+        return None
+
+
 async def update_calibration(
     db,
     game: str,

@@ -77,6 +77,27 @@ class EsportsLiveBot(BaseBot):
             pandascore_client=pandascore,
         )
         self._event_detector = EsportsEventDetector()
+
+        # Inject trained ML models for model-based event confidence
+        try:
+            from esports.models.lol_win_model import LoLWinModel
+            from esports.models.cs2_economy_model import CS2EconomyModel
+            lol_model = LoLWinModel()
+            cs2_model = CS2EconomyModel()
+            lol_loaded = lol_model.load()
+            cs2_loaded = cs2_model.load()
+            self._event_detector.set_models(
+                lol_model=lol_model if lol_loaded else None,
+                cs2_model=cs2_model if cs2_loaded else None,
+            )
+            logger.info(
+                "EsportsLiveBot: ML models for event confidence",
+                lol_loaded=lol_loaded,
+                cs2_loaded=cs2_loaded,
+            )
+        except Exception as exc:
+            logger.debug("EsportsLiveBot: ML model loading skipped", error=str(exc))
+
         self._live_trigger = EsportsLiveTrigger()
         self._scanner = EsportsMarketScanner(db=db)
         self._bankroll_mgr = EsportsBankrollManager(order_gateway=gw)

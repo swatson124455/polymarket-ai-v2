@@ -40,11 +40,20 @@ class EsportsEventDetector:
     Processes EsportsGameState snapshots and emits EsportsLiveEvent signals.
 
     Per-game thresholds are configurable via settings.
+    Optionally accepts ML models for model-based confidence (used as fair_prob
+    in bankroll sizing). Falls back to heuristic confidence when models unavailable.
     """
 
     def __init__(self) -> None:
         self._triggered: Dict[str, Set[str]] = {}  # match_id → set of triggered event keys
         self._last_state: Dict[str, dict] = {}      # match_id → last game_state for delta detection
+        self._lol_model = None
+        self._cs2_model = None
+
+    def set_models(self, lol_model=None, cs2_model=None) -> None:
+        """Inject trained ML models for model-based confidence."""
+        self._lol_model = lol_model
+        self._cs2_model = cs2_model
 
     def detect(self, state) -> List[EsportsLiveEvent]:
         """
@@ -83,6 +92,22 @@ class EsportsEventDetector:
         self._triggered.pop(match_id, None)
         self._last_state.pop(match_id, None)
 
+    def _get_model_confidence(self, game_state: dict, game: str) -> float:
+        """
+        Get model-based fair probability from ML model, or 0.0 if unavailable.
+
+        Returns P(team_a wins) from the appropriate game model.
+        A return of 0.0 means the model is unavailable — caller should use heuristic.
+        """
+        try:
+            if game == "lol" and self._lol_model and getattr(self._lol_model, "is_trained", False):
+                return float(self._lol_model.predict(game_state))
+            if game == "cs2" and self._cs2_model and getattr(self._cs2_model, "is_trained", False):
+                return float(self._cs2_model.predict_round(game_state))
+        except Exception:
+            pass
+        return 0.0
+
     # ── LoL-specific detection ──────────────────────────────────────────
 
     def _detect_lol_events(
@@ -102,15 +127,20 @@ class EsportsEventDetector:
 
         leading = state.team_a if int(gs.get("gold_diff", 0)) > 0 else state.team_b
 
+        # Model-based fair probability (0.0 = unavailable, use heuristic)
+        model_prob = self._get_model_confidence(gs, "lol")
+
         # Gold lead event
         key = f"gold_lead_{state.current_map}"
         if gold_diff >= gold_threshold and key not in triggered:
+            heuristic_conf = min(0.85, 0.60 + gold_diff / 20000)
+            confidence = model_prob if model_prob > 0.0 else heuristic_conf
             events.append(EsportsLiveEvent(
                 match_id=state.match_id,
                 game="lol",
                 event_type="gold_lead",
                 description=f"{leading} has {gold_diff} gold lead on map {state.current_map}",
-                confidence=min(0.85, 0.60 + gold_diff / 20000),
+                confidence=confidence,
                 map_number=state.current_map,
                 edge_estimate=min(0.15, gold_diff / 30000),
                 market_side="YES",
@@ -120,12 +150,14 @@ class EsportsEventDetector:
         # Tower advantage
         key = f"tower_advantage_{state.current_map}"
         if tower_diff >= tower_threshold and key not in triggered:
+            heuristic_conf = min(0.80, 0.55 + tower_diff * 0.05)
+            confidence = model_prob if model_prob > 0.0 else heuristic_conf
             events.append(EsportsLiveEvent(
                 match_id=state.match_id,
                 game="lol",
                 event_type="tower_advantage",
                 description=f"{leading} has {tower_diff} tower advantage on map {state.current_map}",
-                confidence=min(0.80, 0.55 + tower_diff * 0.05),
+                confidence=confidence,
                 map_number=state.current_map,
                 edge_estimate=min(0.12, tower_diff * 0.03),
                 market_side="YES",
@@ -137,12 +169,14 @@ class EsportsEventDetector:
         if gold_diff - prev_gold >= 3000 and gold_diff > gold_threshold:
             key = f"baron_take_{state.current_map}_{gold_diff}"
             if key not in triggered:
+                heuristic_conf = 0.75
+                confidence = model_prob if model_prob > 0.0 else heuristic_conf
                 events.append(EsportsLiveEvent(
                     match_id=state.match_id,
                     game="lol",
                     event_type="baron_take",
                     description=f"Suspected baron take by {leading} (gold spike +{gold_diff - prev_gold})",
-                    confidence=0.75,
+                    confidence=confidence,
                     map_number=state.current_map,
                     edge_estimate=0.10,
                     market_side="YES",
@@ -172,15 +206,20 @@ class EsportsEventDetector:
         prev_a = int(prev.get("round_score_a", 0))
         prev_b = int(prev.get("round_score_b", 0))
 
+        # Model-based fair probability (0.0 = unavailable, use heuristic)
+        model_prob = self._get_model_confidence(gs, "cs2")
+
         # Large round differential
         key = f"round_lead_{state.current_map}"
         if round_diff >= round_threshold and key not in triggered:
+            heuristic_conf = min(0.85, 0.55 + round_diff * 0.04)
+            confidence = model_prob if model_prob > 0.0 else heuristic_conf
             events.append(EsportsLiveEvent(
                 match_id=state.match_id,
                 game="cs2",
                 event_type="round_streak",
                 description=f"{leading} has {round_diff} round lead ({round_a}-{round_b}) on map {state.current_map}",
-                confidence=min(0.85, 0.55 + round_diff * 0.04),
+                confidence=confidence,
                 map_number=state.current_map,
                 edge_estimate=min(0.15, round_diff * 0.025),
                 market_side="YES",
@@ -191,12 +230,14 @@ class EsportsEventDetector:
         if max(round_a, round_b) >= 12 and round_diff >= 3:
             key = f"map_clinch_{state.current_map}"
             if key not in triggered:
+                heuristic_conf = min(0.90, 0.70 + round_diff * 0.04)
+                confidence = model_prob if model_prob > 0.0 else heuristic_conf
                 events.append(EsportsLiveEvent(
                     match_id=state.match_id,
                     game="cs2",
                     event_type="map_clinch",
                     description=f"{leading} approaching map clinch ({round_a}-{round_b})",
-                    confidence=min(0.90, 0.70 + round_diff * 0.04),
+                    confidence=confidence,
                     map_number=state.current_map,
                     edge_estimate=min(0.20, 0.08 + round_diff * 0.03),
                     market_side="YES",
