@@ -843,7 +843,7 @@ class PolymarketClient:
                 if out:
                     return out
         except Exception as e:
-            logger.warning("Gamma /users failed, trying Data API fallback: %s", e)
+            logger.debug("Gamma /users failed (expected if unauthenticated), falling back to Data API: %s", e)
         # Fallback: Data API leaderboard (proxyWallet, pnl, vol). API caps at 50/request; paginate when limit > 50.
         try:
             out: List[Dict] = []

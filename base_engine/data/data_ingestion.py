@@ -281,7 +281,8 @@ class DataIngestionService:
         if not self.db or not self.client:
             return {"inserted": 0, "updated": 0, "prediction_log_updated": 0, "error": "DB or client not available"}
         from base_engine.data.resolution_backfill import run_resolution_backfill
-        return await run_resolution_backfill(
+        started_at = datetime.now(timezone.utc)
+        result = await run_resolution_backfill(
             self.db,
             self.client,
             missing_limit=200,
@@ -289,6 +290,18 @@ class DataIngestionService:
             log_progress=log_progress,
             **kwargs,
         )
+        # Write sync_log so health_runner._check_resolution_backfill() can confirm runs occurred
+        if not result.get("error"):
+            await self.db.insert_sync_log(
+                sync_type="resolution_backfill",
+                component="resolution_backfill",
+                status="success",
+                started_at=started_at,
+                completed_at=datetime.now(timezone.utc),
+                records_processed=(result.get("updated", 0) + result.get("inserted", 0)),
+                records_inserted=result.get("inserted", 0),
+            )
+        return result
     
     # REMOVED: Unused background ingestion loops
     # These methods were part of a broken background thread approach that has been removed.

@@ -527,11 +527,11 @@ class HealthRunner:
         """Ping Redis to verify connectivity."""
         report.checks_run += 1
         try:
-            from base_engine.cache.redis_manager import RedisManager
-            rm = RedisManager()
-            await rm.connect()
-            pong = await rm.client.ping() if rm.client else False
-            await rm.close()
+            from base_engine.data.redis_cache import RedisCache
+            rc = RedisCache()
+            await rc.init()
+            pong = bool(rc.redis and await rc.redis.ping())
+            await rc.close()
             if pong:
                 report.add("info", "redis", "Redis ping OK")
             else:

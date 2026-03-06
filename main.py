@@ -249,8 +249,8 @@ async def _preflight_check(base_engine: BaseEngine) -> bool:
     cache = getattr(base_engine, "cache", None)
     if cache and getattr(settings, "REDIS_ENABLED", True):
         try:
-            if hasattr(cache, "client") and cache.client:
-                await cache.client.ping()
+            if hasattr(cache, "redis") and cache.redis:
+                await cache.redis.ping()
                 redis_ok = True
                 logger.info("Pre-flight: redis OK")
             else:
