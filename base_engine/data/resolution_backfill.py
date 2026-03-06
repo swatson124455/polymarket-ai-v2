@@ -27,22 +27,51 @@ async def _fetch_market_by_condition_id(condition_id: str) -> Optional[Dict[str,
 
 
 def _clob_to_market_format(clob: dict, condition_id: str) -> dict:
-    """Transform CLOB API market to our market format."""
+    """Transform CLOB API market to our market format.
+
+    Extracts token IDs, prices, and active/closed status from the CLOB response.
+    Previously hardcoded liquidity=0, volume=0, no prices — leaving markets invisible
+    to any bot that gates on price or liquidity.
+    """
     tokens = clob.get("tokens") or []
     yes_tid = no_tid = None
+    yes_price = no_price = None
     for t in tokens:
         o = (t.get("outcome") or "").upper()
         tid = str(t.get("token_id") or "").strip()
         if not tid:
             continue
+        # Extract price from token (CLOB API returns "price" per token)
+        _price = t.get("price")
+        if _price is not None:
+            try:
+                _price = float(_price)
+            except (ValueError, TypeError):
+                _price = None
         if o in ("YES", "YES "):
             yes_tid = tid
+            yes_price = _price
         elif o in ("NO", "NO "):
             no_tid = tid
+            no_price = _price
     if not yes_tid and len(tokens) >= 1:
         yes_tid = str(tokens[0].get("token_id") or "").strip()
+        if yes_price is None:
+            _p = tokens[0].get("price")
+            if _p is not None:
+                try:
+                    yes_price = float(_p)
+                except (ValueError, TypeError):
+                    pass
     if not no_tid and len(tokens) >= 2:
         no_tid = str(tokens[1].get("token_id") or "").strip()
+        if no_price is None:
+            _p = tokens[1].get("price")
+            if _p is not None:
+                try:
+                    no_price = float(_p)
+                except (ValueError, TypeError):
+                    pass
     closed = clob.get("closed", False)
     res = None
     if closed and tokens:
@@ -55,18 +84,31 @@ def _clob_to_market_format(clob: dict, condition_id: str) -> dict:
                 if "NO" in o or o == "NO":
                     res = "NO"
                     break
+    # Volume: CLOB may provide volume or we leave 0.0 (refreshed later by EsportsMarketService)
+    vol = 0.0
+    for vk in ("volume", "volumeNum", "volume_num"):
+        _v = clob.get(vk)
+        if _v is not None:
+            try:
+                vol = float(_v)
+                break
+            except (ValueError, TypeError):
+                pass
     return {
         "id": condition_id,
         "condition_id": condition_id,
         "question": clob.get("question") or "",
         "slug": clob.get("market_slug") or "",
         "category": _infer_category(clob.get("question", "") or ""),
-        "liquidity": 0.0,
-        "volume": 0.0,
+        "liquidity": 0.0,  # CLOB markets have no AMM liquidity by design
+        "volume": vol,
         "resolved": bool(res),
         "resolution": res,
         "yes_token_id": yes_tid,
         "no_token_id": no_tid,
+        "yes_price": yes_price,
+        "no_price": no_price,
+        "active": not closed,  # Mark closed markets as inactive immediately
     }
 
 

@@ -36,9 +36,15 @@ logger = get_logger()
 _CATEGORY_KEYWORDS: Dict[str, List[str]] = {
     "crypto": ["bitcoin","btc","eth","ethereum","solana","sol","crypto","blockchain",
                "token","coin","defi","nft"],
+    # CRITICAL: esports MUST come before sports — dict iteration is insertion-order.
+    # "league", "championship" in sports would match "League of Legends Championship" first.
+    "esports": ["esports","league of legends","lol ","cs2","counter-strike","csgo","dota",
+                "valorant","overwatch","rainbow six","call of duty","worlds","msi",
+                "lck","lec","lpl","lcs","blast premier","esl ","pgl ","iem ","vct"],
     "sports": ["nfl","nba","mlb","nhl","fifa","soccer","football","basketball","baseball",
                "hockey","tennis","ufc","mma","golf","f1","racing","league","championship",
-               "playoffs","world cup","super bowl"],
+               "playoffs","world cup","super bowl","bundesliga","la liga","serie a",
+               "premier league","ligue 1","eredivisie"],
     "politics": ["trump","biden","election","president","congress","senate","democrat",
                  "republican","vote","campaign","governor","minister","parliament","referendum"],
     "weather": ["temperature","rain","snow","hurricane","storm","degrees","fahrenheit",
@@ -51,9 +57,6 @@ _CATEGORY_KEYWORDS: Dict[str, List[str]] = {
                       "music","artist","actor"],
     "geopolitical": ["war","invasion","ceasefire","sanctions","nato","un ","united nations",
                      "treaty","conflict","troops"],
-    "esports": ["esports","league of legends","lol ","cs2","counter-strike","csgo","dota",
-                "valorant","overwatch","rainbow six","call of duty","worlds","msi",
-                "lck","lec","lpl","lcs","blast","esl","pgl","iem","vct"],
 }
 
 

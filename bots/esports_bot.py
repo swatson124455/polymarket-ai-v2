@@ -41,9 +41,10 @@ class EsportsBot(BaseBot):
             )
 
         self._api_key = api_key
-        self._pandascore = None      # Lazy init in start()
-        self._patch_drift = None     # PatchDriftDetector instance
-        self._market_scanner = None  # EsportsMarketScanner instance
+        self._pandascore = None       # Lazy init in start()
+        self._patch_drift = None      # PatchDriftDetector instance
+        self._market_scanner = None   # EsportsMarketScanner instance
+        self._market_service = None   # EsportsMarketService instance (Commit 4/5)
         self._lol_model = None       # LoLWinModel
         self._cs2_model = None       # CS2EconomyModel
         self._trainer = None         # EsportsModelTrainer
@@ -59,9 +60,16 @@ class EsportsBot(BaseBot):
         self._latency_samples: List[float] = []  # seconds since last PandaScore refresh
         self._max_latency_samples = 100
 
+        # Glicko-2 trackers for "easy mode" pre-game predictions
+        self._glicko2_trackers: Dict[str, Any] = {}  # game → Glicko2Tracker
+        self._team_name_to_id: Dict[str, str] = {}    # lowercased team name → PandaScore ID
+
         # Settings
-        self._min_edge = float(getattr(settings, "ESPORTS_MIN_EDGE", 0.08))
-        self._min_confidence = float(getattr(settings, "ESPORTS_MIN_CONFIDENCE", 0.55))
+        # "Easy mode": relaxed thresholds until models graduate, then tighten.
+        # Graduation = accuracy >= 55% + brier <= 0.24 on holdout.
+        self._models_graduated = False
+        self._min_edge = float(getattr(settings, "ESPORTS_MIN_EDGE", 0.05))  # 5% easy mode
+        self._min_confidence = float(getattr(settings, "ESPORTS_MIN_CONFIDENCE", 0.52))  # easy mode
         self._maker_timeout = float(
             getattr(settings, "ESPORTS_MAKER_FALLBACK_TIMEOUT_S", 3.0)
         )
@@ -91,6 +99,7 @@ class EsportsBot(BaseBot):
         self._patch_drift = PatchDriftDetector(riot_client=riot_client)
 
         db = getattr(self.base_engine, "db", None)
+        # market_service passed below after initialization (if successful)
         self._market_scanner = EsportsMarketScanner(db=db)
 
         # Load models — try saved first, then train if data available
@@ -119,18 +128,40 @@ class EsportsBot(BaseBot):
 
         lol_trained = self._lol_model is not None and self._lol_model.is_trained
         cs2_trained = self._cs2_model is not None and self._cs2_model.is_trained
+
+        # Build Glicko-2 trackers and team name mapping for "easy mode" pre-game predictions.
+        # These provide real signal (63% accuracy per EsportsBench) while ML models train.
+        await self._init_glicko2_trackers(db)
+
+        # Initialize dedicated esports market service — bypasses broken Gamma API.
+        # Queries DB directly for esports markets + background CLOB price refresh.
+        try:
+            from esports.markets.esports_market_service import EsportsMarketService
+            poly_client = getattr(self.base_engine, "client", None)
+            self._market_service = EsportsMarketService(db=db, polymarket_client=poly_client)
+            self._market_service.start_background_refresh()
+            # Wire to scanner so it also benefits from DB-backed market discovery
+            if self._market_scanner:
+                self._market_scanner._market_service = self._market_service
+        except Exception as exc:
+            logger.warning("EsportsBot: market service init failed", error=str(exc))
+
         logger.info(
             "EsportsBot: initialized",
             pandascore=True,
             riot_api=bool(riot_key),
             lol_model_trained=lol_trained,
             cs2_model_trained=cs2_trained,
+            glicko2_teams=len(self._team_name_to_id),
+            market_service=self._market_service is not None,
         )
 
         await super().start()
 
     async def stop(self) -> None:
-        """Clean up HTTP clients."""
+        """Clean up HTTP clients and market service."""
+        if self._market_service:
+            await self._market_service.close()
         if self._pandascore:
             await self._pandascore.close()
         await super().stop()
@@ -145,15 +176,32 @@ class EsportsBot(BaseBot):
           3. Cooldown per market has elapsed
           4. Confluence score passes threshold
           5. Model is graduated (>55% accuracy)
+
+        LATENCY FIX: Check prediction cache BEFORE calling super().on_price_update().
+        The base_bot's on_price_update() does latency logging, price caching, and
+        metrics for EVERY WS event (~26K markets). By skipping super() for non-esports
+        markets, we reduce processing from ~100 events/sec to ~1/sec for this bot.
+        This eliminates 589-3610ms WS latency warnings.
         """
-        await super().on_price_update(event)
         if not self.running:
             return
 
         market_id = event.get("market_id", "")
+        if not market_id:
+            return
+
+        # Early exit: only process events for markets we've already analyzed.
+        # This MUST come before super() to avoid processing all 26K markets.
+        cached = self._prediction_cache.get(market_id)
+        if not cached:
+            return  # Skip super() for non-esports markets — avoids latency overhead
+
+        # Only call super() for esports markets we care about
+        await super().on_price_update(event)
+
         token_id = event.get("token_id", "")
         new_price = float(event.get("price", 0))
-        if not market_id or new_price <= 0:
+        if new_price <= 0:
             return
 
         # Track latency: time since last PandaScore refresh
@@ -162,11 +210,6 @@ class EsportsBot(BaseBot):
             if len(self._latency_samples) >= self._max_latency_samples:
                 self._latency_samples.pop(0)
             self._latency_samples.append(latency)
-
-        # Only react to markets we've already analyzed
-        cached = self._prediction_cache.get(market_id)
-        if not cached:
-            return
 
         # Significance threshold
         threshold = float(getattr(settings, "ESPORTS_WS_PRICE_CHANGE_PCT", 0.01))
@@ -312,11 +355,17 @@ class EsportsBot(BaseBot):
         # Step 2: Refresh live match data from PandaScore
         await self._refresh_live_matches()
 
-        # Step 3: Get esports markets from Polymarket
-        markets = await self.base_engine.get_markets(active=True, limit=200)
-        esports_markets = self.base_engine.filter_markets_for_trading(
-            markets, categories=["esports"]
-        )
+        # Step 3: Get esports markets via dedicated EsportsMarketService.
+        # Bypasses broken Gamma API path (get_markets returns 0 esports).
+        # Queries DB directly for category='esports', no liquidity filter.
+        if self._market_service:
+            esports_markets = await self._market_service.get_tradeable_esports_markets()
+        else:
+            # Fallback if market service failed to init (shouldn't happen)
+            markets = await self.base_engine.get_markets(active=True, limit=200)
+            esports_markets = self.base_engine.filter_markets_for_trading(
+                markets, categories=["esports"]
+            )
         self._last_scan_markets = len(esports_markets) if esports_markets else 0
         if not esports_markets:
             return
@@ -529,20 +578,21 @@ class EsportsBot(BaseBot):
             except Exception:
                 pass
 
-        # Fallback: use base prediction engine
+        # "Easy mode" fallback: Glicko-2 expected score from team strength ratings.
+        # Replaces base prediction engine (politics/crypto model) which produced
+        # random predictions for esports markets — cross-contamination.
+        # Graduation: once ML models pass accuracy >= 55% + brier <= 0.24,
+        # they take over and Glicko-2 becomes just one blend component.
         try:
-            prediction = await self.base_engine.get_predictions(
-                market_id=market_id,
-                token_id=token_id,
-                price=price,
-                correlation_id=getattr(self, "_current_correlation_id", None),
-            )
-            if prediction:
-                pred_value = prediction.get("prediction")
-                if pred_value is not None:
-                    return float(pred_value)
-        except Exception as exc:
-            logger.debug("EsportsBot: prediction engine failed", error=str(exc))
+            glicko2_prob = self._get_glicko2_prediction(market_data, game)
+            if glicko2_prob is not None:
+                self._prediction_cache[market_id] = {
+                    "prob": glicko2_prob, "ts": time.monotonic(), "game": game,
+                    "ml_raw": None, "glicko2_est": glicko2_prob,
+                }
+                return glicko2_prob
+        except Exception:
+            pass
 
         return None
 
@@ -726,3 +776,155 @@ class EsportsBot(BaseBot):
                 edge=opp.get("edge"),
                 size=round(size, 2),
             )
+
+    # ── Glicko-2 "easy mode" helpers ──────────────────────────────────────
+
+    async def _init_glicko2_trackers(self, db) -> None:
+        """Build Glicko-2 trackers and team name→ID mapping from DB training data.
+
+        Called once during start(). Rebuilds Glicko-2 ratings from historical
+        match results in esports_training_data table, and team name→ID mapping
+        from esports_teams table. This gives the bot a real prediction source
+        (63% accuracy per EsportsBench) while ML models are training.
+        """
+        if db is None or not getattr(db, "session_factory", None):
+            return
+        try:
+            from sqlalchemy import text
+            from esports.models.glicko2 import Glicko2Tracker
+
+            # 1. Build team name → ID mapping from esports_teams
+            async with db.get_session() as session:
+                rows = await session.execute(text(
+                    "SELECT external_id, name FROM esports_teams WHERE name IS NOT NULL"
+                ))
+                for row in rows.fetchall():
+                    tid, name = str(row[0]).strip(), str(row[1]).strip()
+                    if tid and name:
+                        self._team_name_to_id[name.lower()] = tid
+
+            # 2. Build Glicko-2 trackers from training data match results
+            for game in ("lol", "cs2"):
+                async with db.get_session() as session:
+                    rows = await session.execute(text("""
+                        SELECT team_a_id, team_b_id, winner, team_a, team_b
+                        FROM esports_training_data
+                        WHERE game = :game AND winner IS NOT NULL
+                        ORDER BY match_date ASC
+                    """), {"game": game})
+                    matches = rows.fetchall()
+
+                if not matches:
+                    continue
+
+                tracker = Glicko2Tracker()
+                for row in matches:
+                    a_id, b_id = str(row[0] or ""), str(row[1] or "")
+                    winner_str = str(row[2] or "").lower()
+                    team_a_name = str(row[3] or "").strip()
+                    team_b_name = str(row[4] or "").strip()
+                    if not a_id or not b_id or a_id == "0" or b_id == "0":
+                        continue
+                    # Process match result
+                    w = "a" if winner_str in ("a", "team_a", "1") else "b"
+                    tracker.process_match(a_id, b_id, winner=w)
+                    # Also populate name→id mapping from training data
+                    if team_a_name:
+                        self._team_name_to_id[team_a_name.lower()] = a_id
+                    if team_b_name:
+                        self._team_name_to_id[team_b_name.lower()] = b_id
+
+                self._glicko2_trackers[game] = tracker
+                logger.info(
+                    "EsportsBot: Glicko-2 tracker initialized",
+                    game=game,
+                    matches_processed=tracker.match_count,
+                    teams_rated=len(tracker._ratings),
+                )
+        except Exception as exc:
+            logger.debug("EsportsBot: Glicko-2 init failed (non-fatal)", error=str(exc))
+
+    def _get_glicko2_prediction(
+        self, market_data: Dict, game: str
+    ) -> Optional[float]:
+        """Extract team names from market question and return Glicko-2 expected score.
+
+        Returns P(team_a wins) based on Glicko-2 ratings, or None if we can't
+        identify both teams or don't have ratings for them.
+        """
+        import re
+
+        tracker = self._glicko2_trackers.get(game)
+        if tracker is None or tracker.match_count < 10:
+            return None
+
+        question = str(market_data.get("question", "")).lower()
+        if not question:
+            return None
+
+        # Try to extract team names from question patterns:
+        # "Will [Team A] beat [Team B]?"
+        # "Will [Team A] win [vs/against] [Team B]?"
+        # "[Team A] vs [Team B]"
+        team_a_id = team_b_id = None
+
+        # Pattern 1: "Team A vs Team B" or "Team A versus Team B"
+        vs_match = re.search(r"(.+?)\s+(?:vs\.?|versus|v)\s+(.+?)(?:\?|$)", question)
+        if vs_match:
+            name_a = vs_match.group(1).strip().rstrip(":")
+            name_b = vs_match.group(2).strip().rstrip("?").strip()
+            # Remove leading "will" etc
+            for prefix in ("will ", "can ", "does "):
+                if name_a.startswith(prefix):
+                    name_a = name_a[len(prefix):]
+            team_a_id = self._match_team_name(name_a)
+            team_b_id = self._match_team_name(name_b)
+
+        # Pattern 2: "Will [Team] beat/defeat [Team]?"
+        if not team_a_id or not team_b_id:
+            beat_match = re.search(
+                r"(?:will\s+)?(.+?)\s+(?:beat|defeat|win against|win over)\s+(.+?)(?:\?|$)",
+                question,
+            )
+            if beat_match:
+                team_a_id = self._match_team_name(beat_match.group(1).strip())
+                team_b_id = self._match_team_name(beat_match.group(2).strip())
+
+        if not team_a_id or not team_b_id:
+            return None
+
+        # Get Glicko-2 expected score
+        try:
+            rating_a = tracker.get_rating(team_a_id)
+            rating_b = tracker.get_rating(team_b_id)
+            # Only predict if both teams have been rated (phi < default 350)
+            if rating_a.phi >= 350.0 or rating_b.phi >= 350.0:
+                return None
+            prob = tracker.expected_score(team_a_id, team_b_id)
+            if 0.05 < prob < 0.95:
+                return prob
+        except Exception:
+            pass
+        return None
+
+    def _match_team_name(self, name: str) -> Optional[str]:
+        """Fuzzy match a team name to a PandaScore team ID.
+
+        Tries exact match first, then substring match for common abbreviations
+        like "T1", "G2", "NAVI" that may appear differently in market questions.
+        """
+        name = name.lower().strip()
+        if not name:
+            return None
+
+        # Exact match
+        tid = self._team_name_to_id.get(name)
+        if tid:
+            return tid
+
+        # Substring match: check if any known team name is contained in the query name
+        for known_name, tid in self._team_name_to_id.items():
+            if known_name in name or name in known_name:
+                return tid
+
+        return None

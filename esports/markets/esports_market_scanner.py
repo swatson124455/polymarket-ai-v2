@@ -57,9 +57,10 @@ class EsportsMarketScanner:
         markets = await scanner.find_markets_for_match("12345", "lol")
     """
 
-    def __init__(self, db=None, polymarket_client=None) -> None:
+    def __init__(self, db=None, polymarket_client=None, market_service=None) -> None:
         self._db = db
         self._poly = polymarket_client
+        self._market_service = market_service  # EsportsMarketService (Commit 4)
 
     async def find_markets_for_match(
         self,
@@ -87,56 +88,69 @@ class EsportsMarketScanner:
 
         results = []
 
-        # Strategy 1: keyword search across active esports markets
-        keywords = list(_GAME_KEYWORDS.get(game, []))
-        if team_names:
-            keywords.extend(team_names)
+        # Strategy 1: EsportsMarketService (DB-backed, bypasses broken Gamma API)
+        all_markets = []
+        if self._market_service:
+            try:
+                all_markets = await asyncio.wait_for(
+                    self._market_service.get_tradeable_esports_markets(game=game),
+                    timeout=10.0,
+                )
+            except (asyncio.TimeoutError, Exception) as exc:
+                logger.debug("EsportsMarketScanner: market service failed", error=str(exc))
 
-        if self._poly:
+        # Strategy 2 (fallback): Polymarket API — kept for backward compatibility
+        if not all_markets and self._poly:
             try:
                 all_markets = await asyncio.wait_for(
                     self._poly.get_markets(active=True, limit=500),
                     timeout=10.0,
                 )
-                for market in (all_markets or []):
-                    question = str(market.get("question", "")).lower()
-                    category = str(market.get("category", "")).lower()
-
-                    # Must be esports-related
-                    if category != "esports" and not any(kw in question for kw in keywords):
-                        continue
-
-                    # Check for team name matches
-                    if team_names:
-                        if not any(t.lower() in question for t in team_names):
-                            continue
-
-                    # Classify market type
-                    market_type = self._classify_market_type(question)
-
-                    # Extract price and token info
-                    tokens = market.get("tokens", [])
-                    if not tokens:
-                        continue
-
-                    token = tokens[0]
-                    price_raw = token.get("outcomePrice") or token.get("price")
-                    try:
-                        price = float(price_raw) if price_raw else None
-                    except (ValueError, TypeError):
-                        price = None
-
-                    results.append({
-                        "market_id": str(market.get("id", "")),
-                        "token_id": str(token.get("tokenId") or token.get("token_id", "")),
-                        "price": price,
-                        "question": market.get("question", ""),
-                        "market_type": market_type,
-                        "match_id": match_id,
-                        "game": game,
-                    })
             except (asyncio.TimeoutError, Exception) as exc:
                 logger.debug("EsportsMarketScanner: Polymarket scan failed", error=str(exc))
+
+        # Strategy 1: keyword search across active esports markets
+        keywords = list(_GAME_KEYWORDS.get(game, []))
+        if team_names:
+            keywords.extend(team_names)
+
+        for market in (all_markets or []):
+            question = str(market.get("question", "")).lower()
+            category = str(market.get("category", "")).lower()
+
+            # Must be esports-related
+            if category != "esports" and not any(kw in question for kw in keywords):
+                continue
+
+            # Check for team name matches
+            if team_names:
+                if not any(t.lower() in question for t in team_names):
+                    continue
+
+            # Classify market type
+            market_type = self._classify_market_type(question)
+
+            # Extract price and token info
+            tokens = market.get("tokens", [])
+            if not tokens:
+                continue
+
+            token = tokens[0]
+            price_raw = token.get("outcomePrice") or token.get("price")
+            try:
+                price = float(price_raw) if price_raw else None
+            except (ValueError, TypeError):
+                price = None
+
+            results.append({
+                "market_id": str(market.get("id", "")),
+                "token_id": str(token.get("tokenId") or token.get("token_id", "")),
+                "price": price,
+                "question": market.get("question", ""),
+                "market_type": market_type,
+                "match_id": match_id,
+                "game": game,
+            })
 
         await self._set_cache(cache_key, results)
         return results
@@ -155,6 +169,28 @@ class EsportsMarketScanner:
             return cached
 
         results = []
+
+        # Primary: EsportsMarketService (DB-backed, bypasses broken Gamma API)
+        all_markets = []
+        if self._market_service:
+            try:
+                all_markets = await asyncio.wait_for(
+                    self._market_service.get_tradeable_esports_markets(game=game),
+                    timeout=15.0,
+                )
+            except (asyncio.TimeoutError, Exception) as exc:
+                logger.debug("EsportsMarketScanner: market service failed", error=str(exc))
+
+        # Fallback: Polymarket API (kept for backward compatibility)
+        if not all_markets and self._poly:
+            try:
+                all_markets = await asyncio.wait_for(
+                    self._poly.get_markets(active=True, limit=500),
+                    timeout=15.0,
+                )
+            except (asyncio.TimeoutError, Exception) as exc:
+                logger.debug("EsportsMarketScanner: full scan failed", error=str(exc))
+
         keywords = []
         if game and game in _GAME_KEYWORDS:
             keywords = _GAME_KEYWORDS[game]
@@ -163,37 +199,29 @@ class EsportsMarketScanner:
                 keywords.extend(kws)
             keywords.append("esports")
 
-        if self._poly:
-            try:
-                all_markets = await asyncio.wait_for(
-                    self._poly.get_markets(active=True, limit=500),
-                    timeout=15.0,
-                )
-                for market in (all_markets or []):
-                    question = str(market.get("question", "")).lower()
-                    category = str(market.get("category", "")).lower()
+        for market in (all_markets or []):
+            question = str(market.get("question", "")).lower()
+            category = str(market.get("category", "")).lower()
 
-                    if category == "esports" or any(kw in question for kw in keywords):
-                        tokens = market.get("tokens", [])
-                        if not tokens:
-                            continue
-                        token = tokens[0]
-                        price_raw = token.get("outcomePrice") or token.get("price")
-                        try:
-                            price = float(price_raw) if price_raw else None
-                        except (ValueError, TypeError):
-                            price = None
+            if category == "esports" or any(kw in question for kw in keywords):
+                tokens = market.get("tokens", [])
+                if not tokens:
+                    continue
+                token = tokens[0]
+                price_raw = token.get("outcomePrice") or token.get("price")
+                try:
+                    price = float(price_raw) if price_raw else None
+                except (ValueError, TypeError):
+                    price = None
 
-                        results.append({
-                            "market_id": str(market.get("id", "")),
-                            "token_id": str(token.get("tokenId") or token.get("token_id", "")),
-                            "price": price,
-                            "question": market.get("question", ""),
-                            "market_type": self._classify_market_type(question),
-                            "game": self._detect_game(question),
-                        })
-            except (asyncio.TimeoutError, Exception) as exc:
-                logger.debug("EsportsMarketScanner: full scan failed", error=str(exc))
+                results.append({
+                    "market_id": str(market.get("id", "")),
+                    "token_id": str(token.get("tokenId") or token.get("token_id", "")),
+                    "price": price,
+                    "question": market.get("question", ""),
+                    "market_type": self._classify_market_type(question),
+                    "game": self._detect_game(question),
+                })
 
         await self._set_cache(cache_key, results)
         return results
