@@ -690,7 +690,7 @@ class TestStationHealthMonitor:
 class TestECMWFEnsembleMerging:
     @pytest.mark.asyncio
     async def test_get_ensemble_fetches_both_models(self):
-        """P5: get_ensemble_forecast fetches GEFS + ECMWF in parallel."""
+        """P5/P6: get_ensemble_forecast fetches GEFS + ECMWF IFS + ECMWF AIFS in parallel."""
         client = WeatherForecastClient()
 
         # Simulate GEFS response with 3 members
@@ -702,7 +702,7 @@ class TestECMWFEnsembleMerging:
                 "temperature_2m_max_member02": [50.0],
             }
         }
-        # Simulate ECMWF response with 2 members
+        # Simulate ECMWF IFS response with 2 members
         ecmwf_resp = {
             "daily": {
                 "time": ["2026-03-01"],
@@ -712,20 +712,21 @@ class TestECMWFEnsembleMerging:
         }
 
         with patch.object(client, "_fetch_ensemble_model", new_callable=AsyncMock) as mock_fetch:
-            mock_fetch.side_effect = [gefs_resp, ecmwf_resp]
+            # P6: 3 calls — GEFS, IFS, AIFS (AIFS returns None here)
+            mock_fetch.side_effect = [gefs_resp, ecmwf_resp, None]
             merged = await client.get_ensemble_forecast(40.77, -73.87, temp_unit="F")
 
         assert merged is not None
         daily = merged["daily"]
-        # GEFS: member00..02, ECMWF offset: member03..04
+        # GEFS: member00..02, ECMWF IFS offset: member03..04
         assert "temperature_2m_max_member00" in daily
-        assert "temperature_2m_max_member03" in daily  # ECMWF offset
+        assert "temperature_2m_max_member03" in daily  # ECMWF IFS offset
         assert daily["temperature_2m_max_member03"] == [47.5]
         assert daily["temperature_2m_max_member04"] == [48.5]
 
     @pytest.mark.asyncio
     async def test_ensemble_falls_back_to_gefs_on_ecmwf_failure(self):
-        """P5: If ECMWF fails, still return GEFS-only result."""
+        """P5/P6: If ECMWF IFS + AIFS fail, still return GEFS-only result."""
         client = WeatherForecastClient()
 
         gefs_resp = {
@@ -736,20 +737,60 @@ class TestECMWFEnsembleMerging:
         }
 
         with patch.object(client, "_fetch_ensemble_model", new_callable=AsyncMock) as mock_fetch:
-            mock_fetch.side_effect = [gefs_resp, Exception("ECMWF timeout")]
+            # P6: 3 calls — GEFS succeeds, IFS fails, AIFS fails
+            mock_fetch.side_effect = [gefs_resp, Exception("ECMWF IFS timeout"), Exception("AIFS timeout")]
             merged = await client.get_ensemble_forecast(40.77, -73.87)
 
         assert merged is not None
         assert "temperature_2m_max_member00" in merged["daily"]
 
     @pytest.mark.asyncio
+    async def test_ensemble_includes_aifs_members(self):
+        """P6: AIFS ENS members are appended after GEFS + IFS with correct offsets."""
+        client = WeatherForecastClient()
+
+        gefs_resp = {
+            "daily": {
+                "time": ["2026-03-01"],
+                "temperature_2m_max_member00": [48.0],
+                "temperature_2m_max_member01": [49.0],
+            }
+        }
+        ifs_resp = {
+            "daily": {
+                "time": ["2026-03-01"],
+                "temperature_2m_max_member00": [47.5],
+            }
+        }
+        aifs_resp = {
+            "daily": {
+                "time": ["2026-03-01"],
+                "temperature_2m_max_member00": [46.0],
+                "temperature_2m_max_member01": [47.0],
+            }
+        }
+
+        with patch.object(client, "_fetch_ensemble_model", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.side_effect = [gefs_resp, ifs_resp, aifs_resp]
+            merged = await client.get_ensemble_forecast(40.77, -73.87, temp_unit="F")
+
+        assert merged is not None
+        daily = merged["daily"]
+        # GEFS: member00..01, IFS: member02, AIFS: member03..04
+        assert daily["temperature_2m_max_member00"] == [48.0]   # GEFS
+        assert daily["temperature_2m_max_member01"] == [49.0]   # GEFS
+        assert daily["temperature_2m_max_member02"] == [47.5]   # IFS offset
+        assert daily["temperature_2m_max_member03"] == [46.0]   # AIFS offset
+        assert daily["temperature_2m_max_member04"] == [47.0]   # AIFS offset
+
+    @pytest.mark.asyncio
     async def test_combined_forecast_uses_all_members(self):
-        """P5: Combined forecast incorporates ECMWF members in ensemble list."""
+        """P5/P6: Combined forecast incorporates ECMWF IFS members; AIFS=None falls back cleanly."""
         from base_engine.weather.station_registry import STATION_REGISTRY
         client = WeatherForecastClient()
         station = STATION_REGISTRY["new_york_city"]
 
-        # GEFS: 3 members, ECMWF: 2 members → 5 total
+        # GEFS: 3 members, ECMWF IFS: 2 members, AIFS: None → 5 total
         gefs_resp = {
             "daily": {
                 "time": ["2026-03-10"],
@@ -774,11 +815,12 @@ class TestECMWFEnsembleMerging:
         }
 
         with patch.object(client, "get_deterministic_forecast", new_callable=AsyncMock, return_value=det_resp), \
-             patch.object(client, "_fetch_ensemble_model", new_callable=AsyncMock, side_effect=[gefs_resp, ecmwf_resp]):
+             patch.object(client, "_fetch_ensemble_model", new_callable=AsyncMock,
+                          side_effect=[gefs_resp, ecmwf_resp, None]):
             fc = await client.get_combined_forecast(station, date(2026, 3, 10))
 
         assert fc is not None
-        assert len(fc.ensemble_members) == 5  # 3 GEFS + 2 ECMWF
+        assert len(fc.ensemble_members) == 5  # 3 GEFS + 2 ECMWF IFS
 
 
 # ═══════════════════════════════════════════════════════════════════════════

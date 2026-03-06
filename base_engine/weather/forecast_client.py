@@ -117,50 +117,59 @@ class WeatherForecastClient:
         temp_unit: str = "celsius",
         forecast_days: int = 7,
     ) -> Optional[Dict]:
-        """Fetch ensemble member forecasts from GEFS (31 members) + ECMWF IFS (51 members).
+        """Fetch ensemble forecasts from GEFS (31) + ECMWF IFS ENS (51) + ECMWF AIFS ENS (51).
 
-        P5 upgrade: previously only fetched GEFS (31 members). Now fetches GEFS and
-        ECMWF IFS025 in parallel, combining all members for a richer distribution.
-        Combined count: up to 82 members vs prior 31 (~40% variance reduction).
+        P6 upgrade: adds ECMWF AIFS ENS (free CC-BY-4.0, available Oct 2025) as a third
+        parallel model. AIFS ENS improves CRPS for 2m temperature at all lead times vs IFS ENS.
+        Combined count: up to 133 members vs prior 82 (~25% further variance reduction).
 
         Returns a synthetic merged response dict with all member columns combined.
         """
-        # Fetch GEFS and ECMWF in parallel — each costs 1 API request
+        # Fetch all three ensemble models in parallel — each costs 1 API request
         gefs_task = self._fetch_ensemble_model(latitude, longitude, temp_unit, "gfs025", forecast_days)
         ecmwf_task = self._fetch_ensemble_model(latitude, longitude, temp_unit, "ecmwf_ifs025", forecast_days)
-        gefs_data, ecmwf_data = await asyncio.gather(gefs_task, ecmwf_task, return_exceptions=True)
+        aifs_task = self._fetch_ensemble_model(latitude, longitude, temp_unit, "ecmwf_aifs025", forecast_days)
+        gefs_data, ecmwf_data, aifs_data = await asyncio.gather(
+            gefs_task, ecmwf_task, aifs_task, return_exceptions=True
+        )
 
         if isinstance(gefs_data, Exception):
             logger.debug("gefs_ensemble_exception", error=str(gefs_data))
             gefs_data = None
         if isinstance(ecmwf_data, Exception):
-            logger.debug("ecmwf_ensemble_exception", error=str(ecmwf_data))
+            logger.debug("ecmwf_ifs_ensemble_exception", error=str(ecmwf_data))
             ecmwf_data = None
+        if isinstance(aifs_data, Exception):
+            logger.debug("ecmwf_aifs_ensemble_exception", error=str(aifs_data))
+            aifs_data = None
 
-        if gefs_data is None and ecmwf_data is None:
+        if gefs_data is None and ecmwf_data is None and aifs_data is None:
             return None
 
-        # Merge: use GEFS structure as base, append ECMWF members with offset keys
-        if gefs_data is not None:
-            merged = gefs_data
-            if ecmwf_data is not None and "daily" in ecmwf_data and "daily" in merged:
-                # Append ECMWF member columns with offset to avoid key collision
-                ecmwf_daily = ecmwf_data["daily"]
-                gefs_member_count = sum(
-                    1 for k in merged["daily"] if k.startswith("temperature_2m_max_member")
-                )
-                for key, vals in ecmwf_daily.items():
-                    if key.startswith("temperature_2m_max_member"):
-                        # Offset member index: member00 → member31, member01 → member32, etc.
-                        suffix = key[len("temperature_2m_max_member"):]
-                        try:
-                            ecmwf_idx = int(suffix)
-                            new_key = f"temperature_2m_max_member{gefs_member_count + ecmwf_idx:02d}"
-                            merged["daily"][new_key] = vals
-                        except ValueError:
-                            pass
-        else:
-            merged = ecmwf_data
+        # Use first available model as base; merge remaining sources with offset key renaming
+        sources = [gefs_data, ecmwf_data, aifs_data]
+        merged = next(s for s in sources if s is not None)
+        running_offset = sum(
+            1 for k in merged["daily"] if k.startswith("temperature_2m_max_member")
+        )
+
+        for src_data in sources:
+            if src_data is None or src_data is merged:
+                continue
+            if "daily" not in src_data or "daily" not in merged:
+                continue
+            src_count = 0
+            for key, vals in src_data["daily"].items():
+                if key.startswith("temperature_2m_max_member"):
+                    suffix = key[len("temperature_2m_max_member"):]
+                    try:
+                        src_idx = int(suffix)
+                        new_key = f"temperature_2m_max_member{running_offset + src_idx:02d}"
+                        merged["daily"][new_key] = vals
+                        src_count = max(src_count, src_idx + 1)
+                    except ValueError:
+                        pass
+            running_offset += src_count
 
         return merged
 
@@ -269,9 +278,12 @@ class WeatherForecastClient:
                             ensemble_members.append(float(vals[idx]))
                 if ensemble_members:
                     models_used.append("gfs025_ensemble")
-                    # P5: If member count exceeds GEFS-only count (31), ECMWF was also merged
+                    # P5: If member count exceeds GEFS-only count (31), ECMWF IFS was also merged
                     if len(ensemble_members) > 31:
                         models_used.append("ecmwf_ifs025")
+                    # P6: If member count exceeds GEFS+IFS count (82), ECMWF AIFS was also merged
+                    if len(ensemble_members) > 82:
+                        models_used.append("ecmwf_aifs025")
 
         if not ensemble_members and deterministic_high is None:
             logger.debug("forecast_no_data_for_date", station=station.station_id, date=target_iso)
