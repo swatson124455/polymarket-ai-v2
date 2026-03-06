@@ -803,14 +803,16 @@ class EsportsBot(BaseBot):
                     if tid and name:
                         self._team_name_to_id[name.lower()] = tid
 
-            # 2. Build Glicko-2 trackers from training data match results
+            # 2. Build Glicko-2 trackers from training data match results.
+            # Schema: team_a/team_b are names (not IDs), outcome is smallint
+            # (0=team_a wins, 1=team_b wins), no match_date — use scheduled_at.
             for game in ("lol", "cs2"):
                 async with db.get_session() as session:
                     rows = await session.execute(text("""
-                        SELECT team_a_id, team_b_id, winner, team_a, team_b
+                        SELECT team_a, team_b, outcome
                         FROM esports_training_data
-                        WHERE game = :game AND winner IS NOT NULL
-                        ORDER BY match_date ASC
+                        WHERE game = :game AND outcome IS NOT NULL
+                        ORDER BY COALESCE(scheduled_at, created_at) ASC
                     """), {"game": game})
                     matches = rows.fetchall()
 
@@ -819,20 +821,20 @@ class EsportsBot(BaseBot):
 
                 tracker = Glicko2Tracker()
                 for row in matches:
-                    a_id, b_id = str(row[0] or ""), str(row[1] or "")
-                    winner_str = str(row[2] or "").lower()
-                    team_a_name = str(row[3] or "").strip()
-                    team_b_name = str(row[4] or "").strip()
-                    if not a_id or not b_id or a_id == "0" or b_id == "0":
+                    team_a_name = str(row[0] or "").strip()
+                    team_b_name = str(row[1] or "").strip()
+                    outcome = int(row[2]) if row[2] is not None else None
+                    if not team_a_name or not team_b_name or outcome is None:
                         continue
-                    # Process match result
-                    w = "a" if winner_str in ("a", "team_a", "1") else "b"
+                    # Use lowercased team names as IDs for Glicko-2 tracking
+                    a_id = team_a_name.lower()
+                    b_id = team_b_name.lower()
+                    # outcome=0 means team_a wins, outcome=1 means team_b wins
+                    w = "a" if outcome == 0 else "b"
                     tracker.process_match(a_id, b_id, winner=w)
-                    # Also populate name→id mapping from training data
-                    if team_a_name:
-                        self._team_name_to_id[team_a_name.lower()] = a_id
-                    if team_b_name:
-                        self._team_name_to_id[team_b_name.lower()] = b_id
+                    # Populate name→id mapping (name IS the id here)
+                    self._team_name_to_id[a_id] = a_id
+                    self._team_name_to_id[b_id] = b_id
 
                 self._glicko2_trackers[game] = tracker
                 logger.info(
