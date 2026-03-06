@@ -253,8 +253,14 @@ class RiskManager:
             checks["allowed"] = False
             checks["reasons"].append(f"Position ${position_value:.2f} exceeds max ${max_pos_usd:.2f}")
 
-        min_price = getattr(settings, "RISK_MIN_PRICE", 0.05)
-        max_price = getattr(settings, "RISK_MAX_PRICE", 0.95)
+        _global_min_price = getattr(settings, "RISK_MIN_PRICE", 0.05)
+        _global_max_price = getattr(settings, "RISK_MAX_PRICE", 0.95)
+        # Bot-specific override: RISK_MIN_PRICE_{BOTNAME} / RISK_MAX_PRICE_{BOTNAME}
+        # (e.g. RISK_MIN_PRICE_WEATHERBOT=0.005 lets weather markets priced at 1-2% through)
+        _bot_price_min_key = f"RISK_MIN_PRICE_{bot_name.upper()}" if bot_name else None
+        _bot_price_max_key = f"RISK_MAX_PRICE_{bot_name.upper()}" if bot_name else None
+        min_price = float(os.getenv(_bot_price_min_key, _global_min_price)) if _bot_price_min_key else _global_min_price
+        max_price = float(os.getenv(_bot_price_max_key, _global_max_price)) if _bot_price_max_key else _global_max_price
         if price < min_price or price > max_price:
             checks["allowed"] = False
             checks["reasons"].append(f"Price {price:.2%} outside bounds [{min_price:.2%}, {max_price:.2%}]")
