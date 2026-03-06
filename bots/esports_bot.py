@@ -56,6 +56,13 @@ class EsportsBot(BaseBot):
         # Prediction cache for WS reactive path
         self._prediction_cache: Dict[str, Dict] = {}  # market_id → {prob, ts, game}
 
+        # Token map: market_id → {"yes": yes_token_id, "no": no_token_id}
+        # Populated during scan, used by WS path to identify YES vs NO token prices.
+        self._market_token_map: Dict[str, Dict[str, str]] = {}
+
+        # Pending trades: market_ids currently being executed (race condition guard)
+        self._ws_pending_trades: set = set()
+
         # Latency tracker: WS price move time vs last PandaScore refresh (bounded)
         self._latency_samples: List[float] = []  # seconds since last PandaScore refresh
         self._max_latency_samples = 100
@@ -70,6 +77,7 @@ class EsportsBot(BaseBot):
         self._models_graduated = False
         self._min_edge = float(getattr(settings, "ESPORTS_MIN_EDGE", 0.05))  # 5% easy mode
         self._min_confidence = float(getattr(settings, "ESPORTS_MIN_CONFIDENCE", 0.52))  # easy mode
+        self._max_edge = float(getattr(settings, "ESPORTS_MAX_EDGE", 0.20))  # 20% sanity cap
         self._maker_timeout = float(
             getattr(settings, "ESPORTS_MAKER_FALLBACK_TIMEOUT_S", 3.0)
         )
@@ -170,18 +178,16 @@ class EsportsBot(BaseBot):
         """
         React to WS price updates — cross-reference cached prediction vs new price.
 
-        Only trades when:
-          1. We have a cached prediction for this market (populated during scan)
-          2. Price move exceeds significance threshold
-          3. Cooldown per market has elapsed
-          4. Confluence score passes threshold
-          5. Model is graduated (>55% accuracy)
-
         LATENCY FIX: Check prediction cache BEFORE calling super().on_price_update().
         The base_bot's on_price_update() does latency logging, price caching, and
         metrics for EVERY WS event (~26K markets). By skipping super() for non-esports
         markets, we reduce processing from ~100 events/sec to ~1/sec for this bot.
-        This eliminates 589-3610ms WS latency warnings.
+
+        TOKEN FIX: WS events carry a token_id (YES or NO token). Previous code keyed
+        _ws_prev_prices by market_id only, so YES (0.84) and NO (0.06) prices
+        overwrote each other → false 0.84→0.06 "oscillation" and fake 44-63% edges.
+        Now uses _market_token_map to identify which token the price belongs to and
+        converts to YES-equivalent before computing edge.
         """
         if not self.running:
             return
@@ -201,8 +207,24 @@ class EsportsBot(BaseBot):
 
         token_id = event.get("token_id", "")
         new_price = float(event.get("price", 0))
-        if new_price <= 0:
+        if new_price <= 0 or not token_id:
             return
+
+        # Identify which token this price update is for (YES or NO).
+        # _market_token_map is populated during scan_and_trade → analyze_opportunity.
+        token_map = self._market_token_map.get(market_id)
+        if not token_map:
+            return  # Haven't scanned this market yet — skip
+
+        yes_token_id = token_map.get("yes", "")
+        no_token_id = token_map.get("no", "")
+
+        if token_id == yes_token_id:
+            yes_price = new_price
+        elif token_id == no_token_id:
+            yes_price = 1.0 - new_price  # Convert NO price to YES-equivalent
+        else:
+            return  # Unknown token for this market — skip
 
         # Track latency: time since last PandaScore refresh
         if self._last_live_refresh > 0:
@@ -211,13 +233,13 @@ class EsportsBot(BaseBot):
                 self._latency_samples.pop(0)
             self._latency_samples.append(latency)
 
-        # Significance threshold
+        # Significance threshold — keyed by token_id to avoid YES/NO cross-contamination
         threshold = float(getattr(settings, "ESPORTS_WS_PRICE_CHANGE_PCT", 0.01))
         if not hasattr(self, "_ws_prev_prices"):
             self._ws_prev_prices: dict = {}
-        old_price = self._ws_prev_prices.get(market_id)
-        self._ws_prev_prices[market_id] = new_price
-        if old_price is None or abs(new_price - old_price) / max(old_price, 0.01) < threshold:
+        old_yes_price = self._ws_prev_prices.get(token_id)
+        self._ws_prev_prices[token_id] = yes_price
+        if old_yes_price is None or abs(yes_price - old_yes_price) / max(old_yes_price, 0.01) < threshold:
             return
 
         # Cooldown
@@ -229,22 +251,33 @@ class EsportsBot(BaseBot):
             return
         self._ws_cooldowns[market_id] = now
 
-        # Recalculate edge with new price
-        model_prob = cached["prob"]
+        # Recalculate edge with correctly-identified YES price
+        model_prob = cached["prob"]  # Always P(YES)
         game = cached.get("game", "")
-        edge = model_prob - new_price
+        edge = model_prob - yes_price
 
         if abs(edge) < self._min_edge:
             return
 
+        # Edge sanity cap — Glicko-2 producing >20% edge is suspicious
+        if abs(edge) > self._max_edge:
+            logger.debug(
+                "EsportsBot WS: edge exceeds sanity cap",
+                market_id=market_id,
+                edge=round(edge, 4),
+                max_edge=self._max_edge,
+            )
+            return
+
         side = "YES" if edge > 0 else "NO"
-        trade_price = new_price if side == "YES" else (1.0 - new_price)
+        trade_token_id = yes_token_id if side == "YES" else no_token_id
+        trade_price = yes_price if side == "YES" else (1.0 - yes_price)
 
         # Confluence gate
         confluence = self._compute_confluence_score(
             model_edge=edge,
             side=side,
-            token_id=token_id,
+            token_id=trade_token_id,
             market_id=market_id,
             prediction_ts=cached.get("ts", 0),
         )
@@ -252,17 +285,20 @@ class EsportsBot(BaseBot):
         if confluence < confluence_min:
             return
 
-        # Position check
+        # Position check + pending trade guard (race condition prevention)
+        if market_id in self._ws_pending_trades:
+            return
         og = getattr(self.base_engine, "order_gateway", None)
         if og is not None and og.has_open_position(self.bot_name, str(market_id)):
             return
 
+        self._ws_pending_trades.add(market_id)
         try:
             confidence = model_prob if side == "YES" else (1.0 - model_prob)
             opp = {
                 "type": "esports_ws_reactive",
                 "market_id": market_id,
-                "token_id": token_id,
+                "token_id": trade_token_id,
                 "side": side,
                 "price": trade_price,
                 "confidence": confidence,
@@ -275,13 +311,19 @@ class EsportsBot(BaseBot):
             logger.info(
                 "EsportsBot WS reactive trade",
                 market_id=market_id,
-                price_move=f"{old_price:.4f}→{new_price:.4f}",
+                side=side,
+                yes_price=round(yes_price, 4),
                 edge=round(abs(edge), 4),
                 confluence=confluence,
             )
             await self._execute_esports_trade(opp)
+            # After successful execution, extend cooldown to one full scan cycle
+            # to prevent re-triggering on the same market before next scan
+            self._ws_cooldowns[market_id] = time.monotonic() + 110  # +110 so total ~120s
         except Exception as exc:
             logger.debug("EsportsBot WS reactive failed", error=str(exc))
+        finally:
+            self._ws_pending_trades.discard(market_id)
 
     async def scan_and_trade(self) -> None:
         """
@@ -447,6 +489,12 @@ class EsportsBot(BaseBot):
         no_token = tokens[1] if len(tokens) > 1 else {}
         no_token_id = no_token.get("tokenId") or no_token.get("token_id")
 
+        # Populate token map for WS reactive path (Fix 1: YES/NO identification)
+        self._market_token_map[market_id] = {
+            "yes": str(token_id),
+            "no": str(no_token_id) if no_token_id else "",
+        }
+
         edge_yes = model_prob - price
         edge_no = (1.0 - model_prob) - (1.0 - price)  # simplifies to price - model_prob
 
@@ -463,6 +511,16 @@ class EsportsBot(BaseBot):
             edge = -edge_yes
             confidence = 1.0 - model_prob
         else:
+            return None
+
+        # Edge sanity cap — reject unrealistically large edges
+        if edge > self._max_edge:
+            logger.debug(
+                "EsportsBot: edge exceeds sanity cap",
+                market_id=market_id,
+                edge=round(edge, 4),
+                max_edge=self._max_edge,
+            )
             return None
 
         if confidence < self._min_confidence:
