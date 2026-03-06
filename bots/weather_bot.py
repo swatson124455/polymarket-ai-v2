@@ -90,6 +90,43 @@ class WeatherBot(BaseBot):
         # P3: dedup tracking (avoid writing same forecast twice in one session)
         self._written_forecasts: Set[str] = set()  # "station_id:date_iso"
 
+    # ── Adaptive scan interval ─────────────────────────────────────────────
+
+    def _get_scan_interval_seconds(self) -> float:
+        """Override base: scan aggressively during NWP model update windows.
+
+        Model availability windows (UTC) where market edge is freshest:
+          07:00-08:00  ECMWF 00Z ENS lands (highest-alpha window)
+          18:00-19:00  ECMWF 12Z ENS lands
+          05:15-06:00  GFS 00Z lands (~05:30)
+          17:15-18:00  GFS 12Z lands (~17:30)
+
+        Outside model windows: HRRR updates hourly at ~:45 past the hour,
+        so scan every 2 min in the :40-:59 window to catch HRRR data.
+        Default: 60s (normal cadence — matches SCAN_INTERVAL_WEATHER).
+        """
+        now_utc = datetime.now(timezone.utc)
+        h, m = now_utc.hour, now_utc.minute
+
+        # ECMWF ENS model windows: scan every 60s
+        ecmwf_windows = [(7, 0, 8, 0), (18, 0, 19, 0)]
+        for wh, wm, eh, em in ecmwf_windows:
+            if (h, m) >= (wh, wm) and (h, m) < (eh, em):
+                return 60.0
+
+        # GFS model windows: scan every 90s
+        gfs_windows = [(5, 15, 6, 0), (17, 15, 18, 0)]
+        for wh, wm, eh, em in gfs_windows:
+            if (h, m) >= (wh, wm) and (h, m) < (eh, em):
+                return 90.0
+
+        # HRRR window (~:40-:59 each hour): scan every 120s
+        if m >= 40:
+            return 120.0
+
+        # Default: use configured SCAN_INTERVAL_WEATHER (normally 300s)
+        return super()._get_scan_interval_seconds()
+
     # ── Main scan loop ────────────────────────────────────────────────────
 
     async def scan_and_trade(self) -> None:
