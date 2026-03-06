@@ -101,31 +101,30 @@ class WeatherBot(BaseBot):
         if not self._startup_check_done:
             await self._check_weather_market_availability()
 
-        # 1. Fetch all markets, filter to weather
-        markets = await self.base_engine.get_all_tradeable_markets()
-        if not markets:
-            return
-
-        weather_markets = [m for m in markets if self._market_mapper.is_weather_market(m)]
-        scan_limit = getattr(settings, "SCAN_MARKET_LIMIT", 800)
-        weather_markets = weather_markets[:scan_limit]
+        # 1. Fetch weather markets directly from DB on every scan.
+        #    category filter is pushed into SQL WHERE before LIMIT (commit 0ba0267),
+        #    so weather markets are returned regardless of liquidity=0 ranking.
+        weather_markets = await self.base_engine.get_all_tradeable_markets(
+            min_liquidity=0, categories=["weather"]
+        )
 
         if not weather_markets:
-            # Diagnostic: sample first 10 questions so we can see what the DB is returning.
-            sample = [(m.get("question") or m.get("title") or "")[:80] for m in markets[:10]]
-            logger.info(
-                "weatherbot_no_weather_markets",
-                total_markets=len(markets),
-                sample_questions=sample,
-            )
-            # Fallback: probe DB (no liquidity floor) + Gamma API directly for weather markets.
-            # Rate-limited to once per 30 min to avoid extra DB/HTTP calls every scan cycle.
+            # Fallback: Gamma API direct probe — only needed if DB has no weather category
+            # markets at all. Rate-limited to avoid hammering the external API.
             now_mono = time.monotonic()
             if now_mono - self._last_direct_probe >= self._direct_probe_interval:
                 self._last_direct_probe = now_mono
                 weather_markets = await self._fetch_weather_markets_direct()
             if not weather_markets:
+                logger.info("weatherbot_no_weather_markets")
                 return
+
+        # Enrich live prices via CLOB /midpoint for markets not in the 1000-token
+        # WebSocket subscription (yes_price=NULL in DB). Skips markets already priced.
+        weather_markets = await self._enrich_with_live_prices(weather_markets)
+
+        scan_limit = getattr(settings, "SCAN_MARKET_LIMIT", 800)
+        weather_markets = weather_markets[:scan_limit]
 
         # 2. Group by (city, date)
         groups = self._market_mapper.group_markets(weather_markets)
