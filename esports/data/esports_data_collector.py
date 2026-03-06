@@ -178,17 +178,21 @@ class EsportsDataCollector:
             length = g.get("length", 0) or 0
             game_time_minutes = length / 60.0 if length else 30.0
 
-            # Build feature dict with neutral in-game features
-            # team_strength_diff is the primary signal from historical data
+            # Build feature dict with neutral in-game features.
+            # team_strength_diff + game_time_minutes are the real signals.
+            # All other features are neutral (PandaScore free tier has no
+            # per-game team stats). Old code derived features FROM outcome
+            # (gold=0.55 if win) — label leakage that confused the model.
+            # During LIVE matches, the game monitor provides real features.
             game_state = {
                 "game_time_minutes": game_time_minutes,
-                "gold_pct_blue": 0.55 if blue_win else 0.45,  # Proxy from outcome
-                "tower_kills_diff": 2.0 if blue_win else -2.0,
-                "dragon_kills_diff": 1.0 if blue_win else -1.0,
-                "dragon_soul_blue": float(blue_win),
+                "gold_pct_blue": 0.5,           # Neutral (no label leakage)
+                "tower_kills_diff": 0.0,         # Neutral
+                "dragon_kills_diff": 0.0,        # Neutral
+                "dragon_soul_blue": 0.0,         # Neutral
                 "herald_blue": 0.5,
-                "inhib_down_diff": float(blue_win),
-                "baron_buff_count_diff": 0.5 if blue_win else -0.5,
+                "inhib_down_diff": 0.0,          # Neutral
+                "baron_buff_count_diff": 0.0,    # Neutral
                 "team_strength_diff": team_str_diff,
             }
 
@@ -280,15 +284,18 @@ class EsportsDataCollector:
             ct_rate = _MAP_SIDE_RATES.get(map_name, 0.50)
 
             # Build feature dict with neutral economy defaults.
-            # team_strength_diff is the primary signal from historical data.
+            # team_strength_diff + map_ct_rate are the real signals.
+            # Economy features are neutral (PandaScore free tier has no round data).
             # During LIVE matches, the game monitor provides real economy data.
+            # NOTE: round_score_a/b are neutral 6.0 (not outcome-derived) to avoid
+            # label leakage. Old code used 8/5 or 5/8 based on winner — tautological.
             game_state = {
                 "team_a_money": 4150.0,   # Neutral: typical round-start
                 "team_b_money": 4150.0,
                 "team_a_equip_value": 4150.0,
                 "team_b_equip_value": 4150.0,
-                "round_score_a": 8.0 if team_a_won else 5.0,   # Proxy from outcome
-                "round_score_b": 5.0 if team_a_won else 8.0,
+                "round_score_a": 6.0,     # Neutral half-score (no label leakage)
+                "round_score_b": 6.0,
                 "map_ct_rate": ct_rate,
                 "team_a_is_ct": 0.5,      # Unknown side -- neutral
                 "team_a_loss_streak": 0.0,
@@ -482,11 +489,24 @@ class EsportsDataCollector:
                     entry["blue_win"] = int(row.outcome)
                     entry["patch"] = row.patch or ""
                     entry["match_id"] = row.match_id or ""
+                    # Neutralize label-leaked features from old data.
+                    # Old collector set gold=0.55 if win, towers=2.0 if win, etc.
+                    # These encode the outcome into features → tautological training.
+                    entry["gold_pct_blue"] = 0.5
+                    entry["tower_kills_diff"] = 0.0
+                    entry["dragon_kills_diff"] = 0.0
+                    entry["dragon_soul_blue"] = 0.0
+                    entry["inhib_down_diff"] = 0.0
+                    entry["baron_buff_count_diff"] = 0.0
                     training_data.append(entry)
                 elif game == "cs2":
                     entry = dict(state)
                     entry["team_a_won_round"] = int(row.outcome)
                     entry["match_id"] = row.match_id or ""
+                    # Neutralize label-leaked round_score from old data.
+                    # Old collector set round_score=8/5 based on winner → label leakage.
+                    entry["round_score_a"] = 6.0
+                    entry["round_score_b"] = 6.0
                     training_data.append(entry)
 
             logger.info(

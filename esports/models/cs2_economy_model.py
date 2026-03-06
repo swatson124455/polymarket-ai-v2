@@ -403,9 +403,14 @@ class CS2EconomyModel:
             y_val = np.array(y_val_rows, dtype=np.int32)
             eval_set = [(X_val, y_val)]
 
+        # Complexity tuned for current feature set: only team_strength_diff has
+        # real signal (importance=1.0), all other features are constant placeholders.
+        # With 1 effective feature, depth=3 (8 leaves) prevents overfitting a 1D
+        # function — depth=5 (32 leaves) memorized training noise and hurt calibration.
+        # When live economy features become available, increase depth back to 5.
         model = XGBClassifier(
-            n_estimators=150,
-            max_depth=5,
+            n_estimators=80,
+            max_depth=3,
             learning_rate=0.1,
             subsample=0.8,
             eval_metric="logloss",

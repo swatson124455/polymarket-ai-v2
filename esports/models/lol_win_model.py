@@ -256,9 +256,14 @@ class LoLWinModel:
         y_train, y_es = y[:es_split], y[es_split:]
         w_train = w[:es_split]
 
+        # Complexity tuned for current feature set: only team_strength_diff and
+        # game_time_minutes have real signal (importance ~0.5 each), all other
+        # features are constant after label-leakage neutralization.
+        # With 2 effective features, depth=3 prevents overfitting.
+        # When live game features become available, increase depth back to 6.
         model = XGBClassifier(
-            n_estimators=200,
-            max_depth=6,
+            n_estimators=80,
+            max_depth=3,
             learning_rate=0.1,
             subsample=0.8,
             colsample_bytree=0.8,
