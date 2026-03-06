@@ -394,7 +394,7 @@ class AutomatedPositionManager:
                             if _bids and _asks:
                                 _best_bid = float(_bids[0].get("price", 0))
                                 _best_ask = float(_asks[0].get("price", 0))
-                                if 0 < _best_bid <= _best_ask < 1:
+                                if 0 < _best_bid <= _best_ask < 1 and (_best_ask - _best_bid) < 0.5:
                                     _api_price = (_best_bid + _best_ask) / 2
                                     self._api_price_cache[tid] = (_api_price, _now_mono)
                                 else:
