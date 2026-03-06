@@ -453,6 +453,11 @@ class WeatherBot(BaseBot):
             # Update exposure trackers
             self._group_exposure[group_key] = current_group_exp + size
             self._city_exposure[group.city] = current_city_exp + size
+            # Cooldown guard: prevent re-entry on same market within 15 min.
+            # _recently_exited is checked in _analyze_group(); must be populated here
+            # because the position_manager (not weather_bot) triggers SELL exits,
+            # so without this the dict stays empty and the cooldown never fires.
+            self._recently_exited[opp["market_id"]] = time.monotonic()
         else:
             logger.debug(
                 "weatherbot_trade_failed",
