@@ -116,6 +116,13 @@ class WeatherProbabilityEngine:
         probs: Dict[str, float] = {}
         for b in buckets:
             p = self._integrate_bucket(dist, b)
+            # Tail bracket discount: at_or_below / at_or_higher buckets are
+            # systematically overpriced on Polymarket (favourite-longshot bias —
+            # casual bettors overweight extreme outcomes). Discount by 15% to
+            # reduce spurious edge signals on tail brackets. Replace with
+            # isotonic regression calibration once ≥20 resolved tail pairs exist.
+            if b.bucket_type in ("at_or_below", "at_or_higher"):
+                p *= 0.85
             probs[b.market_id] = max(0.001, min(0.999, p))  # Clamp to avoid 0/1
 
         # Normalize so probabilities sum to 1.0
@@ -160,6 +167,8 @@ class WeatherProbabilityEngine:
         probs: Dict[str, float] = {}
         for b in buckets:
             p = self._normal_cdf_bucket(loc, scale, b)
+            if b.bucket_type in ("at_or_below", "at_or_higher"):
+                p *= 0.85  # Tail bracket discount (same as scipy path)
             probs[b.market_id] = max(0.001, min(0.999, p))
         total = sum(probs.values())
         if total > 0 and abs(total - 1.0) > 0.01:

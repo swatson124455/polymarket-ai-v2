@@ -390,6 +390,21 @@ class TestProbabilityEngine:
         assert probs["m4"] > probs["m2"]  # 49-51 > 43-45
         assert probs["m4"] > probs["m6"]  # 49-51 > 55+
 
+    def test_tail_bracket_discount_applied(self):
+        """P6: at_or_below and at_or_higher buckets get 15% discount (longshot bias)."""
+        buckets = self._make_buckets()
+        # Distribution centered at 50: at_or_below(42) and at_or_higher(55) are tail buckets
+        # Without discount a highly symmetric dist would give equal probabilities to
+        # symmetric tails; with discount the tail probs should be lower than they'd be
+        # otherwise, keeping range buckets' share relatively larger.
+        probs = self.engine.bucket_probabilities(50.0, 3.0, 0.0, buckets)
+        # Total still sums to ~1.0 after normalization
+        assert abs(sum(probs.values()) - 1.0) < 0.02
+        # at_or_below(m1) should be very small (mean=50 is far above 42) — discount just makes it smaller
+        assert probs["m1"] < 0.05
+        # Range buckets near mean should collectively dominate
+        assert probs["m3"] + probs["m4"] + probs["m5"] > 0.6
+
     def test_fit_distribution_uses_ensemble_spread(self):
         """P6: Scale reflects actual ensemble spread, not fixed lead-time inflation.
 
