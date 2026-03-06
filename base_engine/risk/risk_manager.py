@@ -1,6 +1,7 @@
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timedelta, timezone
 import math
+import os
 import time
 from structlog import get_logger
 from base_engine.data.database import Database, Position
@@ -258,10 +259,14 @@ class RiskManager:
             checks["allowed"] = False
             checks["reasons"].append(f"Price {price:.2%} outside bounds [{min_price:.2%}, {max_price:.2%}]")
 
-        # Universal volume gate: applies to ALL bots. Thin markets have unreliable
-        # price discovery and high slippage. Cached 1h per market_id — fails open on error.
+        # Volume gate: thin markets have unreliable price discovery and high slippage.
+        # Bot-specific override: RISK_MIN_VOL_{BOTNAME} (e.g. RISK_MIN_VOL_WEATHERBOT=0)
+        # takes precedence over the global ENSEMBLE_MIN_MARKET_VOLUME_USD floor.
+        # This lets WeatherBot (volume=0 in DB) bypass the gate without lowering it for all bots.
         if market_id and self.db and getattr(self.db, "session_factory", None):
-            _min_vol = getattr(settings, "ENSEMBLE_MIN_MARKET_VOLUME_USD", 5000.0)
+            _global_min_vol = float(getattr(settings, "ENSEMBLE_MIN_MARKET_VOLUME_USD", 5000.0))
+            _bot_vol_key = f"RISK_MIN_VOL_{bot_name.upper()}" if bot_name else None
+            _min_vol = float(os.getenv(_bot_vol_key, _global_min_vol)) if _bot_vol_key else _global_min_vol
             if _min_vol > 0:
                 _market_vol = await self._get_market_volume(market_id)
                 if _market_vol < _min_vol:
