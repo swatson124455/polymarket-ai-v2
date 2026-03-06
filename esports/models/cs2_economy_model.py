@@ -408,7 +408,6 @@ class CS2EconomyModel:
             max_depth=5,
             learning_rate=0.1,
             subsample=0.8,
-            use_label_encoder=False,
             eval_metric="logloss",
             random_state=42,
             early_stopping_rounds=20 if eval_set else None,

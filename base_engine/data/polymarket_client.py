@@ -660,7 +660,8 @@ class PolymarketClient:
 
     async def get_polymarket_health(self) -> Dict[str, str]:
         ok, msg = await self.check_gamma_connectivity()
-        return {"gamma": "ok" if ok else "error", "message": msg}
+        # health_monitor.py checks health.get("status") == "healthy"
+        return {"status": "healthy" if ok else "degraded", "gamma": "ok" if ok else "error", "message": msg}
 
     async def reset_circuit_breaker(self) -> None:
         await self.circuit_breaker.reset()

@@ -341,6 +341,25 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
                 from sqlalchemy import text as sa_text
                 from base_engine.monitoring.alerting import AlertSeverity
                 _stale_minutes = getattr(settings, "BOT_HEARTBEAT_STALE_MINUTES", 15)
+                # Map bot heartbeat names → settings flag so disabled bots don't trigger false alarms.
+                # A stale heartbeat for a bot explicitly disabled via BOT_ENABLED_*=false is expected.
+                _bot_enabled_map = {
+                    "EnsembleBot": "BOT_ENABLED_ENSEMBLE",
+                    "ArbitrageBot": "BOT_ENABLED_ARBITRAGE",
+                    "MirrorBot": "BOT_ENABLED_MIRROR",
+                    "CrossPlatformArbBot": "BOT_ENABLED_CROSS_PLATFORM_ARB",
+                    "OracleBot": "BOT_ENABLED_ORACLE",
+                    "SportsBot": "BOT_ENABLED_SPORTS",
+                    "LLMForecasterBot": "BOT_ENABLED_LLM_FORECASTER",
+                    "SportsInjuryBot": "BOT_ENABLED_SPORTS_INJURY",
+                    "SportsLiveBot": "BOT_ENABLED_SPORTS_LIVE",
+                    "SportsArbBot": "BOT_ENABLED_SPORTS_ARB",
+                    "LogicalArbBot": "BOT_ENABLED_LOGICAL_ARB",
+                    "WeatherBot": "BOT_ENABLED_WEATHER",
+                    "EsportsBot": "BOT_ENABLED_ESPORTS",
+                    "EsportsLiveBot": "BOT_ENABLED_ESPORTS_LIVE",
+                    "EsportsSeriesBot": "BOT_ENABLED_ESPORTS_SERIES",
+                }
                 async with _db.get_session() as _hb_sess:
                     _hb_result = await _hb_sess.execute(
                         sa_text("""
@@ -352,6 +371,9 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
                         {"threshold": _stale_minutes},
                     )
                     for row in _hb_result.fetchall():
+                        _setting_key = _bot_enabled_map.get(row[0])
+                        if _setting_key and not getattr(settings, _setting_key, True):
+                            continue  # Bot is intentionally disabled — expected to be stale
                         await _alerting.send_alert(
                             title=f"Bot {row[0]} is stale",
                             message=f"Last scan {row[1]:.1f}m ago (threshold: {_stale_minutes}m)",
