@@ -378,12 +378,30 @@ class WeatherBot(BaseBot):
                 if str(e["market_id"]) in bot_positions:
                     continue
 
+            # WU vs NWS resolution-source uncertainty:
+            # When the ensemble mean (loc) is within 0.5°F/°C of a bucket boundary,
+            # a small discrepancy between WU hourly max and NWS official daily high
+            # can flip the resolution outcome. Reduce confidence by 50% in these cases.
+            boundary_risk = WeatherBot._near_boundary(loc, bucket)
+            base_confidence = min(0.95, 0.50 + e["abs_edge"])
+            effective_confidence = base_confidence * 0.5 if boundary_risk else base_confidence
+
+            if boundary_risk:
+                logger.debug(
+                    "weatherbot_boundary_risk",
+                    market_id=e["market_id"],
+                    loc=round(loc, 2),
+                    bucket_type=bucket.bucket_type,
+                    high_bound=bucket.high_bound,
+                    low_bound=bucket.low_bound,
+                )
+
             tradeable.append({
                 "market_id": e["market_id"],
                 "token_id": token_id,
                 "side": side,
                 "price": price,
-                "confidence": min(0.95, 0.50 + e["abs_edge"]),
+                "confidence": effective_confidence,
                 "model_prob": e["model_prob"],
                 "edge": e["edge"],
                 "abs_edge": e["abs_edge"],
@@ -393,6 +411,7 @@ class WeatherBot(BaseBot):
                 "ensemble_mean": round(forecast.deterministic_high, 1),
                 "model_spread": round(forecast.model_spread, 2),
                 "ensemble_count": len(forecast.ensemble_members),
+                "resolution_boundary_risk": boundary_risk,
             })
 
         return tradeable
@@ -901,6 +920,32 @@ class WeatherBot(BaseBot):
                 )
         except Exception as exc:
             logger.debug("weatherbot_calibration_actuals_failed", error=str(exc))
+
+    @staticmethod
+    def _near_boundary(loc: float, bucket, threshold: float = 0.5) -> bool:
+        """Return True if the ensemble mean is within threshold of a bucket boundary.
+
+        When the model's expected temperature is close to a bracket boundary, the
+        resolution outcome becomes sensitive to the data source (WU hourly max vs
+        NWS official daily high). A 0.5°F/°C gap between WU and NWS can flip the
+        result — the Dec 2025 NYC incident (WU=29°F vs NWS=30°F) is the canonical
+        example. Caller should reduce position size when this flag is True.
+
+        Args:
+            loc:       EMOS-corrected ensemble mean (°F or °C)
+            bucket:    TemperatureBucket with low_bound/high_bound
+            threshold: Distance from boundary that triggers the flag (default 0.5°)
+        """
+        btype = bucket.bucket_type
+        if btype == "at_or_below":
+            return abs(loc - bucket.high_bound) <= threshold
+        elif btype == "at_or_higher":
+            return abs(loc - bucket.low_bound) <= threshold
+        elif btype in ("range", "exact"):
+            near_low = abs(loc - bucket.low_bound) <= threshold
+            near_high = abs(loc - bucket.high_bound) <= threshold
+            return near_low or near_high
+        return False
 
     @staticmethod
     def _fit_emos(

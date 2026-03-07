@@ -1126,6 +1126,45 @@ class TestWeatherBotOpportunities:
         await weather_bot.scan_and_trade()
         assert weather_bot._last_scan_markets == 1
 
+    def test_near_boundary_range_bucket_at_low(self, weather_bot):
+        """Ensemble mean within 0.5° of range low_bound → boundary risk."""
+        from bots.weather_bot import WeatherBot
+        bucket = TemperatureBucket(
+            market_id="m1", bucket_type="range", low_bound=70.0, high_bound=74.0,
+            yes_price=0.25, token_id="t1", no_token_id="n1", temp_unit="F",
+        )
+        assert WeatherBot._near_boundary(70.3, bucket) is True   # within 0.5° above low
+        assert WeatherBot._near_boundary(69.6, bucket) is True   # within 0.5° below low
+        assert WeatherBot._near_boundary(71.0, bucket) is False  # safely inside
+
+    def test_near_boundary_range_bucket_at_high(self, weather_bot):
+        """Ensemble mean within 0.5° of range high_bound → boundary risk."""
+        from bots.weather_bot import WeatherBot
+        bucket = TemperatureBucket(
+            market_id="m1", bucket_type="range", low_bound=70.0, high_bound=74.0,
+            yes_price=0.25, token_id="t1", no_token_id="n1", temp_unit="F",
+        )
+        assert WeatherBot._near_boundary(74.4, bucket) is True   # within 0.5° of high
+        assert WeatherBot._near_boundary(75.0, bucket) is False  # > 0.5° outside range
+
+    def test_near_boundary_at_or_below(self, weather_bot):
+        from bots.weather_bot import WeatherBot
+        bucket = TemperatureBucket(
+            market_id="m1", bucket_type="at_or_below", low_bound=float("-inf"), high_bound=72.0,
+            yes_price=0.20, token_id="t1", no_token_id="n1", temp_unit="F",
+        )
+        assert WeatherBot._near_boundary(72.3, bucket) is True
+        assert WeatherBot._near_boundary(70.0, bucket) is False
+
+    def test_near_boundary_at_or_higher(self, weather_bot):
+        from bots.weather_bot import WeatherBot
+        bucket = TemperatureBucket(
+            market_id="m1", bucket_type="at_or_higher", low_bound=80.0, high_bound=float("inf"),
+            yes_price=0.15, token_id="t1", no_token_id="n1", temp_unit="F",
+        )
+        assert WeatherBot._near_boundary(79.8, bucket) is True
+        assert WeatherBot._near_boundary(82.0, bucket) is False
+
     def test_fit_emos_basic_regression(self, weather_bot):
         """_fit_emos returns correct OLS (a, b, sigma) from (forecast, actual) pairs."""
         from bots.weather_bot import WeatherBot
