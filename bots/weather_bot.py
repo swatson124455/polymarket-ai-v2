@@ -372,8 +372,21 @@ class WeatherBot(BaseBot):
                 group, model_probs, lead_time,
             )
 
-        # Compute edges
+        # M7: Multi-outcome coherence check — reject if >50% of buckets lack prices.
+        # Trading on partial data breaks the sum-to-1 probability assumption.
         market_prices = {b.market_id: b.yes_price for b in group.buckets}
+        priced_count = sum(1 for p in market_prices.values() if p and 0.0 < float(p) < 1.0)
+        if len(group.buckets) >= 4 and priced_count < len(group.buckets) * 0.5:
+            logger.debug(
+                "weatherbot_incomplete_bucket_prices",
+                city=group.city,
+                date=group.target_date.isoformat(),
+                priced=priced_count,
+                total=len(group.buckets),
+            )
+            return []
+
+        # Compute edges
         edges = self._prob_engine.compute_edges(model_probs, market_prices)
 
         # Filter to tradeable
@@ -577,8 +590,12 @@ class WeatherBot(BaseBot):
         # Severe weather boost (hurricane/tornado/blizzard near station)
         severe_boost = await self._get_severe_weather_boost(group.station)
 
-        # Combined boost for near-expiry + cross-city regime + severe weather (capped at 3.0×)
-        combined_boost = min(expiry_boost * regime_boost * severe_boost, 3.0)
+        # C4: Combined boost — additive with diminishing returns to prevent
+        # multiplicative stacking (was 2.0×1.2×2.0=4.8→cap 3.0 = 0.75 Kelly).
+        # New: each boost contributes its excess independently; capped at 2.0×
+        # to keep effective Kelly ≤ 0.5 (quarter-Kelly × 2.0).
+        combined_boost = 1.0 + (expiry_boost - 1.0) + (regime_boost - 1.0) * 0.5 + (severe_boost - 1.0) * 0.5
+        combined_boost = min(combined_boost, 2.0)
 
         # Size via central risk_manager Kelly (same as all other bots)
         try:
@@ -613,6 +630,12 @@ class WeatherBot(BaseBot):
             ensemble_count=opp.get("ensemble_count", 0),
         )
 
+        # M4: Pre-update exposure trackers BEFORE placing order to prevent
+        # race condition where multiple orders pass the exposure check
+        # simultaneously. Revert on failure.
+        self._group_exposure[group_key] = current_group_exp + size
+        self._city_exposure[group.city] = current_city_exp + size
+
         result = await self.place_order(
             market_id=opp["market_id"],
             token_id=opp["token_id"],
@@ -629,15 +652,15 @@ class WeatherBot(BaseBot):
                 side=opp["side"],
                 size=round(size, 2),
             )
-            # Update exposure trackers
-            self._group_exposure[group_key] = current_group_exp + size
-            self._city_exposure[group.city] = current_city_exp + size
             # Cooldown guard: prevent re-entry on same market within 15 min.
             # _recently_exited is checked in _analyze_group(); must be populated here
             # because the position_manager (not weather_bot) triggers SELL exits,
             # so without this the dict stays empty and the cooldown never fires.
             self._recently_exited[opp["market_id"]] = time.monotonic()
         else:
+            # Revert exposure trackers on failure
+            self._group_exposure[group_key] = current_group_exp
+            self._city_exposure[group.city] = current_city_exp
             logger.debug(
                 "weatherbot_trade_failed",
                 market_id=opp["market_id"],
@@ -753,7 +776,7 @@ class WeatherBot(BaseBot):
 
         Calls CLOB /midpoint per market's yes_token_id — only runs once per 30 min
         (rate-limited by _fetch_weather_markets_direct's _last_direct_probe timer).
-        Capped at 50 markets to avoid overwhelming the API.
+        Capped at 200 markets (was 50) to avoid missing mispriced buckets.
 
         Note: Gamma API /markets/{id} rejects hex condition IDs (DB id format).
         CLOB /midpoint accepts the numeric yes_token_id and returns {"mid": "0.48"}.
@@ -764,7 +787,7 @@ class WeatherBot(BaseBot):
 
         enriched: List[Dict] = []
         enriched_count = 0
-        for m in markets[:50]:
+        for m in markets[:200]:
             # Skip if already has a valid price (0 < yes_price < 1)
             existing = m.get("yes_price")
             if existing and 0.0 < float(existing) < 1.0:
@@ -967,19 +990,24 @@ class WeatherBot(BaseBot):
         result — the Dec 2025 NYC incident (WU=29°F vs NWS=30°F) is the canonical
         example. Caller should reduce position size when this flag is True.
 
+        L1: Threshold scaled by unit — 0.5°F for US, 0.3°C for international.
+        0.5°C ≈ 0.9°F was too tight for Celsius markets.
+
         Args:
             loc:       EMOS-corrected ensemble mean (°F or °C)
             bucket:    TemperatureBucket with low_bound/high_bound
             threshold: Distance from boundary that triggers the flag (default 0.5°)
         """
+        # L1: Scale threshold by temperature unit
+        t = 0.5 if bucket.temp_unit == "F" else 0.3
         btype = bucket.bucket_type
         if btype == "at_or_below":
-            return abs(loc - bucket.high_bound) <= threshold
+            return abs(loc - bucket.high_bound) <= t
         elif btype == "at_or_higher":
-            return abs(loc - bucket.low_bound) <= threshold
+            return abs(loc - bucket.low_bound) <= t
         elif btype in ("range", "exact"):
-            near_low = abs(loc - bucket.low_bound) <= threshold
-            near_high = abs(loc - bucket.high_bound) <= threshold
+            near_low = abs(loc - bucket.low_bound) <= t
+            near_high = abs(loc - bucket.high_bound) <= t
             return near_low or near_high
         return False
 
@@ -1296,17 +1324,20 @@ class WeatherBot(BaseBot):
         """
         import re
 
+        # M2: Added negative lookahead to reduce false positives from
+        # historical context ("in past data", "previous model runs", etc.)
+        _HIST_GUARD = r"(?!\s+(?:in\s+(?:past|previous|historical)|last\s+(?:year|month|week)))"
         _HIGH_UNCERTAINTY = [
-            r"model\s+(?:spread|disagreement|divergence)",
-            r"(?:significant|considerable|large)\s+uncertainty",
+            r"model\s+(?:spread|disagreement|divergence)" + _HIST_GUARD,
+            r"(?:significant|considerable|large)\s+uncertainty" + _HIST_GUARD,
             r"low\s+confidence",
             r"tricky\s+forecast",
             r"challenging\s+forecast",
             r"difficult\s+to\s+(?:forecast|predict)",
             r"uncertainty\s+(?:remains|persists|exists)",
-            r"models?\s+(?:disagree|diverge|differ|split)",
-            r"wide\s+(?:range|spread)",
-            r"ensemble\s+spread",
+            r"models?\s+(?:disagree|diverge|differ|split)" + _HIST_GUARD,
+            r"wide\s+(?:range|spread)" + _HIST_GUARD,
+            r"ensemble\s+spread" + _HIST_GUARD,
             r"bust\s+potential",
         ]
 

@@ -118,14 +118,25 @@ def _parse_date(date_str: str) -> Optional[date]:
         return None
     month_str = m.group(1).lower()
     day = int(m.group(2))
-    year = int(m.group(3)) if m.group(3) else datetime.now(timezone.utc).year
+    explicit_year = m.group(3)
+    year = int(explicit_year) if explicit_year else datetime.now(timezone.utc).year
     month = _MONTH_MAP.get(month_str)
     if month is None:
         return None
     try:
-        return date(year, month, day)
+        parsed = date(year, month, day)
     except ValueError:
         return None
+    # L2: If no explicit year and parsed date is >180 days in the past,
+    # the market likely targets next year (e.g., "January 5" asked in December).
+    if not explicit_year:
+        today = datetime.now(timezone.utc).date()
+        if (today - parsed).days > 180:
+            try:
+                parsed = date(year + 1, month, day)
+            except ValueError:
+                pass
+    return parsed
 
 
 # ── Market Mapper ─────────────────────────────────────────────────────────

@@ -15,6 +15,7 @@ Temperature unit handling:
 from __future__ import annotations
 
 import asyncio
+import math
 import random
 import time
 from dataclasses import dataclass, field
@@ -271,26 +272,34 @@ class WeatherForecastClient:
                 data = await resp.json(content_type=None)
             periods = data.get("properties", {}).get("periods", [])
             for period in periods:
-                # Each period has startTime like "2026-03-06T06:00:00-05:00"
-                start_time = period.get("startTime", "")
                 is_daytime = period.get("isDaytime", False)
                 if not is_daytime:
                     continue
-                # Match target_date by checking if date portion of startTime matches
-                if target_iso in start_time:
-                    temp = period.get("temperature")
-                    temp_unit = period.get("temperatureUnit", "F")
-                    if temp is not None:
-                        temp_f = float(temp)
-                        if temp_unit.upper() == "C":
-                            temp_f = temp_f * 9.0 / 5.0 + 32.0
-                        logger.debug(
-                            "nws_nbm_forecast_retrieved",
-                            station=station_id,
-                            date=target_iso,
-                            temp_f=round(temp_f, 1),
-                        )
-                        return temp_f
+                # H3: Parse ISO datetime properly instead of string search
+                # to avoid timezone-related off-by-one day errors.
+                start_time = period.get("startTime", "")
+                try:
+                    # ISO 8601 with offset: "2026-03-06T06:00:00-05:00"
+                    st = datetime.fromisoformat(start_time)
+                    if st.date() != target_date:
+                        continue
+                except (ValueError, TypeError):
+                    # Fallback to string match if ISO parse fails
+                    if target_iso not in start_time:
+                        continue
+                temp = period.get("temperature")
+                temp_unit = period.get("temperatureUnit", "F")
+                if temp is not None:
+                    temp_f = float(temp)
+                    if temp_unit.upper() == "C":
+                        temp_f = temp_f * 9.0 / 5.0 + 32.0
+                    logger.debug(
+                        "nws_nbm_forecast_retrieved",
+                        station=station_id,
+                        date=target_iso,
+                        temp_f=round(temp_f, 1),
+                    )
+                    return temp_f
             return None
         except Exception as exc:
             logger.debug("nws_forecast_failed", station=station_id, error=str(exc))
@@ -416,7 +425,10 @@ class WeatherForecastClient:
                     if key.startswith("temperature_2m_max_member"):
                         vals = daily[key]
                         if idx < len(vals) and vals[idx] is not None:
-                            ensemble_members.append(float(vals[idx]))
+                            val = float(vals[idx])
+                            # C1: Filter NaN/Inf at extraction point
+                            if math.isfinite(val):
+                                ensemble_members.append(val)
                 if ensemble_members:
                     models_used.append("gfs025_ensemble")
                     # P5: If member count exceeds GEFS-only count (31), ECMWF IFS was also merged
@@ -427,7 +439,13 @@ class WeatherForecastClient:
                         models_used.append("ecmwf_aifs025")
 
         if not ensemble_members and deterministic_high is None:
-            logger.debug("forecast_no_data_for_date", station=station.station_id, date=target_iso)
+            logger.debug(
+                "forecast_no_data_for_date",
+                station=station.station_id,
+                date=target_iso,
+                det_available=det_data is not None,
+                ens_available=ens_data is not None,
+            )
             return None
 
         # If no ensemble, create a synthetic spread around deterministic

@@ -1203,8 +1203,11 @@ US_CITY_NAMES: frozenset = frozenset(
 def lookup_station(city_text: str) -> Optional[WeatherStation]:
     """Match city text (from a market question) to a station.
 
-    Tries exact alias match first, then substring search. Returns None
-    if no match found.
+    Tries exact alias match first, then word-boundary substring search.
+    Returns None if no match found.
+
+    M8: Substring matching now requires word boundaries to avoid
+    false positives (e.g., "San Francisco Bay Area" matching the wrong station).
     """
     if not city_text:
         return None
@@ -1212,9 +1215,18 @@ def lookup_station(city_text: str) -> Optional[WeatherStation]:
     # Exact alias match
     if text in _ALIAS_MAP:
         return _ALIAS_MAP[text]
-    # Substring match (longest alias first to avoid "new york" matching before "new york city")
+    # M8: Word-boundary substring match (longest alias first)
+    import re
     for alias in sorted(_ALIAS_MAP, key=len, reverse=True):
-        if alias in text:
+        # Require alias to be at a word boundary in the text
+        pattern = r"(?:^|\b)" + re.escape(alias) + r"(?:\b|$)"
+        if re.search(pattern, text):
+            logger.debug(
+                "station_substring_match",
+                input=city_text,
+                matched_alias=alias,
+                station=_ALIAS_MAP[alias].station_id,
+            )
             return _ALIAS_MAP[alias]
     return None
 

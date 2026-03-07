@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import re
 import time
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 import aiohttp
@@ -185,8 +185,11 @@ class MetarClient:
                     if daily_max_c is None or temp_c > daily_max_c:
                         daily_max_c = temp_c
 
-            # Cache the °C result for subsequent calls within the TTL window
-            self._daily_max_cache[cache_key] = (now_mono + self._cache_ttl, daily_max_c)
+            # M6: Resolution-day cache TTL — use 60s (not 5min) for same-day
+            # queries where midday highs can spike 2°C in 5 minutes.
+            is_resolution_day = target_date == datetime.now(timezone.utc).date()
+            effective_ttl = 60.0 if is_resolution_day else self._cache_ttl
+            self._daily_max_cache[cache_key] = (now_mono + effective_ttl, daily_max_c)
 
             if daily_max_c is None:
                 logger.debug(

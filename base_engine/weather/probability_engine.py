@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Set
 
 from structlog import get_logger
 
@@ -61,12 +61,22 @@ class WeatherProbabilityEngine:
           - Use raw ensemble spread as scale when EMOS sigma unavailable
           - Attempt skew-normal MLE fit; fall back to normal if it fails
         """
-        if not ensemble_members or len(ensemble_members) < 2:
+        if not ensemble_members:
             raise ValueError("Need at least 2 ensemble members")
 
-        n = len(ensemble_members)
-        mean = sum(ensemble_members) / n
-        variance = sum((x - mean) ** 2 for x in ensemble_members) / (n - 1)
+        # C1: Filter NaN/Inf values — Open-Meteo can return NaN for members
+        # beyond model horizon; unfiltered NaN propagates through the entire
+        # probability pipeline (mean→variance→CDF→edge→trade).
+        clean = [m for m in ensemble_members if math.isfinite(m)]
+        if len(clean) < 2:
+            raise ValueError(
+                f"Need at least 2 finite ensemble members "
+                f"(got {len(clean)} after filtering {len(ensemble_members) - len(clean)} NaN/Inf)"
+            )
+
+        n = len(clean)
+        mean = sum(clean) / n
+        variance = sum((x - mean) ** 2 for x in clean) / (n - 1)
         std = max(variance ** 0.5, 0.5)  # Floor at 0.5° to avoid overconfidence
 
         # Apply EMOS calibration (or fall back to simple bias offset)
@@ -92,7 +102,7 @@ class WeatherProbabilityEngine:
                     # Suppress scipy precision-loss warning for nearly-identical members;
                     # the fallback to normal distribution handles this case correctly.
                     warnings.simplefilter("ignore", RuntimeWarning)
-                    a, loc, scale = skewnorm.fit(ensemble_members)
+                    a, loc, scale = skewnorm.fit(clean)
                 # Apply EMOS corrections: shift loc, use EMOS sigma if available
                 loc_emos = loc + loc_shift
                 scale_emos = max(emos_sigma if emos_sigma is not None else scale, 0.5)
@@ -142,9 +152,16 @@ class WeatherProbabilityEngine:
 
         # Normalize so probabilities sum to 1.0
         total = sum(probs.values())
-        if total > 0 and abs(total - 1.0) > 0.01:
+        if total > 0.01 and abs(total - 1.0) > 0.01:
             for mid in probs:
                 probs[mid] /= total
+        elif total <= 0.01 and probs:
+            # M1: Degenerate distribution — all buckets clamped to near-zero.
+            # Fall back to uniform to avoid inflated probabilities from
+            # dividing by a near-zero total.
+            uniform = 1.0 / len(probs)
+            for mid in probs:
+                probs[mid] = uniform
 
         return probs
 
@@ -187,9 +204,13 @@ class WeatherProbabilityEngine:
                 p *= self._get_tail_discount(b.bucket_type, lead_time_hours)
             probs[b.market_id] = max(0.001, min(0.999, p))
         total = sum(probs.values())
-        if total > 0 and abs(total - 1.0) > 0.01:
+        if total > 0.01 and abs(total - 1.0) > 0.01:
             for mid in probs:
                 probs[mid] /= total
+        elif total <= 0.01 and probs:
+            uniform = 1.0 / len(probs)
+            for mid in probs:
+                probs[mid] = uniform
         return probs
 
     @staticmethod
@@ -257,6 +278,10 @@ class WeatherProbabilityEngine:
         if abs_edge < 0.001:
             return 0.0
 
+        # Guard: extreme prices produce degenerate Kelly fractions
+        if market_price < 0.02 or market_price > 0.98:
+            return 0.0
+
         if edge > 0:
             # Buying YES at market_price
             p = model_prob
@@ -291,14 +316,14 @@ class WeatherProbabilityEngine:
         lead_bucket = int(lead_time_hours // 6) * 6
         points = self._tail_isotonic.get((bucket_type, lead_bucket))
         if not points or len(points) < 5:
-            return 0.85  # Fixed fallback
+            return 0.90  # M5: Less aggressive cold-start fallback (was 0.85)
 
         # Isotonic calibration: average ratio of (actual_freq / model_prob)
         # across binned (model_prob, actual_freq) pairs from resolved markets.
         # This gives a data-driven discount that varies by lead time and bucket type.
         ratios = [af / mp for mp, af in points if mp > 0.01]
         if not ratios:
-            return 0.85
+            return 0.90
         avg_ratio = sum(ratios) / len(ratios)
         # Clamp to [0.5, 1.0] — never inflate tail probs, never discount more than 50%
         return max(0.5, min(1.0, avg_ratio))
