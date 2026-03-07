@@ -1543,15 +1543,15 @@ class PredictionEngine:
                        pt.realized_pnl,
                        COALESCE(ts.signal_confidence, 0.5) as signal_confidence,
                        CASE
-                           WHEN ts.signal_direction = 'YES' AND LOWER(pt.side) IN ('yes', 'buy') THEN 1.0
+                           WHEN ts.signal_direction = 'YES' AND LOWER(pt.side) = 'yes' THEN 1.0
                            WHEN ts.signal_direction = 'NO' AND LOWER(pt.side) IN ('no', 'sell') THEN 1.0
                            WHEN ts.signal_direction IS NOT NULL THEN 0.0
                            ELSE 0.5
                        END as signal_direction_encoded,
                        CASE
-                           WHEN m.resolution = 'YES' AND LOWER(pt.side) IN ('yes', 'buy') THEN 1
+                           WHEN m.resolution = 'YES' AND LOWER(pt.side) = 'yes' THEN 1
                            WHEN m.resolution = 'YES' AND LOWER(pt.side) IN ('no', 'sell') THEN 0
-                           WHEN m.resolution = 'NO' AND LOWER(pt.side) IN ('yes', 'buy') THEN 0
+                           WHEN m.resolution = 'NO' AND LOWER(pt.side) = 'yes' THEN 0
                            WHEN m.resolution = 'NO' AND LOWER(pt.side) IN ('no', 'sell') THEN 1
                            ELSE NULL
                        END as outcome

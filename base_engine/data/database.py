@@ -2928,9 +2928,9 @@ class Database:
                         resolved_at = m.resolved_at,
                         realized_pnl = (
                             CASE
-                                WHEN m.resolution = 'YES' AND LOWER(pt.side) IN ('yes', 'buy') THEN pt.size * (1.0 - pt.price)
+                                WHEN m.resolution = 'YES' AND LOWER(pt.side) = 'yes' THEN pt.size * (1.0 - pt.price)
                                 WHEN m.resolution = 'YES' AND LOWER(pt.side) IN ('no', 'sell') THEN pt.size * (0.0 - pt.price)
-                                WHEN m.resolution = 'NO' AND LOWER(pt.side) IN ('yes', 'buy') THEN pt.size * (0.0 - pt.price)
+                                WHEN m.resolution = 'NO' AND LOWER(pt.side) = 'yes' THEN pt.size * (0.0 - pt.price)
                                 WHEN m.resolution = 'NO' AND LOWER(pt.side) IN ('no', 'sell') THEN pt.size * (1.0 - pt.price)
                                 ELSE NULL
                             END
