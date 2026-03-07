@@ -364,12 +364,17 @@ class PaperTradingEngine:
             if pos["size"] <= 1e-6:
                 del self.positions[market_id]
         
-        # Record trade
+        # Record trade — store token-outcome side (YES/NO) not order direction (BUY)
+        # so downstream PnL queries correctly distinguish YES vs NO bets.
+        _db_side = side  # SELL stays SELL for exit trades
+        if side != "SELL" and original_side in ("YES", "NO"):
+            _db_side = original_side
+
         trade = PaperTrade(
             trade_id=trade_id,
             market_id=market_id,
             token_id=token_id,
-            side=side,
+            side=_db_side,
             size=size,
             price=price,
             timestamp=datetime.now(timezone.utc)
@@ -382,7 +387,7 @@ class PaperTradingEngine:
                     market_id=market_id,
                     token_id=token_id,
                     bot_name=bot_name,
-                    side=side,
+                    side=_db_side,
                     size=size,
                     price=price,
                     confidence=confidence,
