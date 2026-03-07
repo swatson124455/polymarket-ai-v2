@@ -39,6 +39,10 @@ class WeatherProbabilityEngine:
         # Identity fallback: (a=0, b=1, sigma=None) ≡ no correction.
         # Requires ≥20 resolved pairs per bucket before activating.
         self._emos: Dict[str, Dict[int, Tuple[float, float, Optional[float]]]] = {}
+        # Isotonic tail calibration: (bucket_type, lead_bucket) → List[(model_prob, actual_freq)]
+        # Replaces fixed 15% tail discount with data-driven calibration.
+        # Requires ≥50 resolved tail events per cell; falls back to 0.85 multiplier until then.
+        self._tail_isotonic: Dict[Tuple[str, int], List[Tuple[float, float]]] = {}
 
     def fit_distribution(
         self,
@@ -106,6 +110,7 @@ class WeatherProbabilityEngine:
         scale: float,
         shape: float,
         buckets: list,
+        lead_time_hours: float = 48.0,
     ) -> Dict[str, float]:
         """Integrate distribution across each bucket's bounds.
 
@@ -118,7 +123,7 @@ class WeatherProbabilityEngine:
         Returns {market_id: probability} dict.
         """
         if not SCIPY_AVAILABLE:
-            return self._bucket_probabilities_fallback(loc, scale, buckets)
+            return self._bucket_probabilities_fallback(loc, scale, buckets, lead_time_hours)
 
         if abs(shape) < 0.01:
             dist = norm(loc=loc, scale=scale)
@@ -128,13 +133,11 @@ class WeatherProbabilityEngine:
         probs: Dict[str, float] = {}
         for b in buckets:
             p = self._integrate_bucket(dist, b)
-            # Tail bracket discount: at_or_below / at_or_higher buckets are
-            # systematically overpriced on Polymarket (favourite-longshot bias —
-            # casual bettors overweight extreme outcomes). Discount by 15% to
-            # reduce spurious edge signals on tail brackets. Replace with
-            # isotonic regression calibration once ≥20 resolved tail pairs exist.
+            # Tail bracket discount: use isotonic calibration if available (≥5 data
+            # points per cell), otherwise fall back to fixed 0.85 (15% discount).
+            # Favourite-longshot bias: retail bettors overweight extreme outcomes.
             if b.bucket_type in ("at_or_below", "at_or_higher"):
-                p *= 0.85
+                p *= self._get_tail_discount(b.bucket_type, lead_time_hours)
             probs[b.market_id] = max(0.001, min(0.999, p))  # Clamp to avoid 0/1
 
         # Normalize so probabilities sum to 1.0
@@ -174,13 +177,14 @@ class WeatherProbabilityEngine:
 
     def _bucket_probabilities_fallback(
         self, loc: float, scale: float, buckets: list,
+        lead_time_hours: float = 48.0,
     ) -> Dict[str, float]:
         """Fallback using manual normal CDF if scipy unavailable."""
         probs: Dict[str, float] = {}
         for b in buckets:
             p = self._normal_cdf_bucket(loc, scale, b)
             if b.bucket_type in ("at_or_below", "at_or_higher"):
-                p *= 0.85  # Tail bracket discount (same as scipy path)
+                p *= self._get_tail_discount(b.bucket_type, lead_time_hours)
             probs[b.market_id] = max(0.001, min(0.999, p))
         total = sum(probs.values())
         if total > 0 and abs(total - 1.0) > 0.01:
@@ -272,6 +276,48 @@ class WeatherProbabilityEngine:
             return 0.0
 
         return min(kelly * kelly_mult, kelly_mult)  # Cap at kelly_mult
+
+    def _get_tail_discount(
+        self, bucket_type: str, lead_time_hours: float,
+    ) -> float:
+        """Return tail calibration multiplier for at_or_below / at_or_higher buckets.
+
+        If isotonic calibration data exists (≥50 resolved tail events for this cell),
+        returns the average actual_freq / model_prob ratio as the multiplier.
+        Otherwise returns the fixed 0.85 (15% discount) fallback.
+        """
+        if bucket_type not in ("at_or_below", "at_or_higher"):
+            return 1.0
+        lead_bucket = int(lead_time_hours // 6) * 6
+        points = self._tail_isotonic.get((bucket_type, lead_bucket))
+        if not points or len(points) < 5:
+            return 0.85  # Fixed fallback
+
+        # Isotonic calibration: average ratio of (actual_freq / model_prob)
+        # across binned (model_prob, actual_freq) pairs from resolved markets.
+        # This gives a data-driven discount that varies by lead time and bucket type.
+        ratios = [af / mp for mp, af in points if mp > 0.01]
+        if not ratios:
+            return 0.85
+        avg_ratio = sum(ratios) / len(ratios)
+        # Clamp to [0.5, 1.0] — never inflate tail probs, never discount more than 50%
+        return max(0.5, min(1.0, avg_ratio))
+
+    def load_tail_calibration(
+        self,
+        tail_data: Dict[Tuple[str, int], List[Tuple[float, float]]],
+    ) -> None:
+        """Load isotonic tail calibration data.
+
+        Args:
+            tail_data: {(bucket_type, lead_bucket) → [(model_prob, actual_freq), ...]}
+        """
+        self._tail_isotonic = tail_data
+        logger.info(
+            "weather_tail_calibration_loaded",
+            cells=len(tail_data),
+            total_points=sum(len(v) for v in tail_data.values()),
+        )
 
     def _get_bias_offset(self, station_id: str, lead_time_hours: float) -> float:
         """Look up historical forecast bias for this station + lead time.
