@@ -1190,3 +1190,202 @@ class TestCalibrationFeedbackLoop:
 
         weather_bot._forecast_client.get_historical_temperature.assert_called_once()
         mock_session.commit.assert_called()  # UPDATE was committed
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# METAR Client
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestMetarClientParseGroup:
+    """Unit tests for the T-group parser (pure function, no I/O)."""
+
+    def test_parse_t_group_positive_temp(self):
+        from base_engine.weather.metar_client import MetarClient
+        # T02890267 → +28.9°C
+        assert MetarClient.parse_t_group("METAR KLGA ... RMK T02890267") == pytest.approx(28.9, abs=0.01)
+
+    def test_parse_t_group_negative_temp(self):
+        from base_engine.weather.metar_client import MetarClient
+        # T11001267 → -10.0°C
+        assert MetarClient.parse_t_group("T11001267") == pytest.approx(-10.0, abs=0.01)
+
+    def test_parse_t_group_no_match_returns_none(self):
+        from base_engine.weather.metar_client import MetarClient
+        assert MetarClient.parse_t_group("METAR KLGA 061856Z 28010KT") is None
+
+    def test_parse_t_group_zero_temp(self):
+        from base_engine.weather.metar_client import MetarClient
+        # T00000267 → 0.0°C
+        assert MetarClient.parse_t_group("T00000267") == pytest.approx(0.0, abs=0.01)
+
+
+class TestMetarClientAPI:
+    """Integration-style tests with mocked HTTP session."""
+
+    @pytest.mark.asyncio
+    async def test_get_latest_metar_success(self):
+        from base_engine.weather.metar_client import MetarClient
+        client = MetarClient()
+        mock_resp = MagicMock()
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value=[{
+            "rawOb": "KLGA 061856Z T02890267",
+            "temp": 29,
+            "dewp": 15,
+            "obsTime": "2026-03-06 18:56:00",
+        }])
+        mock_sess = MagicMock()
+        mock_sess.__aenter__ = AsyncMock(return_value=mock_sess)
+        mock_sess.__aexit__ = AsyncMock(return_value=False)
+        mock_sess.get = MagicMock(return_value=mock_resp)
+
+        with patch.object(client, "_ensure_session", new_callable=AsyncMock, return_value=mock_sess):
+            result = await client.get_latest_metar("KLGA")
+
+        assert result is not None
+        assert result["temp_c"] == pytest.approx(28.9, abs=0.01)  # T-group precision
+        assert result["station_id"] == "KLGA"
+
+    @pytest.mark.asyncio
+    async def test_get_running_daily_max_fahrenheit(self):
+        from base_engine.weather.metar_client import MetarClient
+        client = MetarClient()
+        mock_resp = MagicMock()
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_resp.status = 200
+        # Two observations on the target date: 20.0°C and 25.0°C → max = 25°C = 77°F
+        mock_resp.json = AsyncMock(return_value=[
+            {"rawOb": "T02000200", "temp": 20, "obsTime": "2026-03-06 14:00:00"},
+            {"rawOb": "T02500200", "temp": 25, "obsTime": "2026-03-06 16:00:00"},
+        ])
+        mock_sess = MagicMock()
+        mock_sess.__aenter__ = AsyncMock(return_value=mock_sess)
+        mock_sess.__aexit__ = AsyncMock(return_value=False)
+        mock_sess.get = MagicMock(return_value=mock_resp)
+
+        with patch.object(client, "_ensure_session", new_callable=AsyncMock, return_value=mock_sess):
+            result = await client.get_running_daily_max("KLGA", date(2026, 3, 6), temp_unit="F")
+
+        assert result is not None
+        # 25°C * 9/5 + 32 = 77.0°F
+        assert result == pytest.approx(77.0, abs=0.1)
+
+    @pytest.mark.asyncio
+    async def test_get_running_daily_max_cache(self):
+        """Second call returns cached result without hitting the API."""
+        from base_engine.weather.metar_client import MetarClient
+        client = MetarClient()
+        mock_resp = MagicMock()
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value=[
+            {"rawOb": "T02500200", "temp": 25, "obsTime": "2026-03-06 16:00:00"},
+        ])
+        mock_sess = MagicMock()
+        mock_sess.get = MagicMock(return_value=mock_resp)
+
+        with patch.object(client, "_ensure_session", new_callable=AsyncMock, return_value=mock_sess):
+            r1 = await client.get_running_daily_max("KLGA", date(2026, 3, 6), temp_unit="C")
+            # Force cache hit by not resetting it
+            r2 = await client.get_running_daily_max("KLGA", date(2026, 3, 6), temp_unit="C")
+
+        assert r1 == r2
+        # API should only be called once
+        assert mock_resp.json.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_get_running_daily_max_api_error_returns_none(self):
+        from base_engine.weather.metar_client import MetarClient
+        client = MetarClient()
+        mock_resp = MagicMock()
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_resp.status = 503
+        mock_sess = MagicMock()
+        mock_sess.get = MagicMock(return_value=mock_resp)
+
+        with patch.object(client, "_ensure_session", new_callable=AsyncMock, return_value=mock_sess):
+            result = await client.get_running_daily_max("KLGA", date(2026, 3, 6))
+
+        assert result is None
+
+
+class TestMetarResolutionDayOverride:
+    """Tests for _apply_metar_resolution_day_override logic in WeatherBot."""
+
+    def _make_group(self, city: str = "NYC", target_date: date = date(2026, 3, 6)):
+        """Build a minimal WeatherMarketGroup with a range of buckets."""
+        from base_engine.weather.station_registry import STATION_REGISTRY
+        station = STATION_REGISTRY.get("new_york_city")
+        buckets = [
+            TemperatureBucket(
+                market_id="m1", bucket_type="at_or_below",
+                low_bound=float("-inf"), high_bound=72.0,
+                yes_price=0.10, token_id="t1", no_token_id="n1", temp_unit="F",
+            ),
+            TemperatureBucket(
+                market_id="m2", bucket_type="range",
+                low_bound=73.0, high_bound=75.0,
+                yes_price=0.25, token_id="t2", no_token_id="n2", temp_unit="F",
+            ),
+            TemperatureBucket(
+                market_id="m3", bucket_type="range",
+                low_bound=76.0, high_bound=78.0,
+                yes_price=0.35, token_id="t3", no_token_id="n3", temp_unit="F",
+            ),
+            TemperatureBucket(
+                market_id="m4", bucket_type="at_or_higher",
+                low_bound=79.0, high_bound=float("inf"),
+                yes_price=0.30, token_id="t4", no_token_id="n4", temp_unit="F",
+            ),
+        ]
+        return WeatherMarketGroup(
+            city=city,
+            station=station,
+            target_date=target_date,
+            buckets=buckets,
+        )
+
+    @pytest.mark.asyncio
+    async def test_metar_override_eliminates_exceeded_range_bucket(self, weather_bot):
+        """When running_max > range.high_bound + 0.5, that range is ruled out."""
+        group = self._make_group()
+        # Running max = 80°F — exceeds m2 (73-75) and m3 (76-78) ranges
+        weather_bot._metar_client.get_running_daily_max = AsyncMock(return_value=80.0)
+        model_probs = {"m1": 0.05, "m2": 0.20, "m3": 0.30, "m4": 0.45}
+
+        result = await weather_bot._apply_metar_resolution_day_override(group, model_probs, 2.0)
+
+        # m2 and m3 exceeded → overridden to ~0
+        assert result["m2"] < 0.01
+        assert result["m3"] < 0.01
+        # m4 (at_or_higher 79°F): running_max=80 >= 79-0.5=78.5 → confirmed YES
+        assert result["m4"] > 0.85
+
+    @pytest.mark.asyncio
+    async def test_metar_override_no_data_returns_unchanged(self, weather_bot):
+        """When METAR returns None, model_probs unchanged."""
+        group = self._make_group()
+        weather_bot._metar_client.get_running_daily_max = AsyncMock(return_value=None)
+        model_probs = {"m1": 0.10, "m2": 0.25, "m3": 0.35, "m4": 0.30}
+
+        result = await weather_bot._apply_metar_resolution_day_override(group, model_probs, 3.0)
+
+        assert result == model_probs  # unchanged
+
+    @pytest.mark.asyncio
+    async def test_metar_at_or_below_exceeded(self, weather_bot):
+        """at_or_below bucket ruled out when running_max > high_bound + 0.5."""
+        group = self._make_group()
+        weather_bot._metar_client.get_running_daily_max = AsyncMock(return_value=75.0)
+        model_probs = {"m1": 0.20, "m2": 0.30, "m3": 0.30, "m4": 0.20}
+
+        result = await weather_bot._apply_metar_resolution_day_override(group, model_probs, 1.0)
+
+        # m1 is at_or_below 72°F; running_max=75 > 72.5 → ruled out
+        assert result["m1"] < 0.01

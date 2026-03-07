@@ -30,6 +30,7 @@ from structlog import get_logger
 from bots.base_bot import BaseBot
 from base_engine.base_engine import BaseEngine
 from base_engine.weather.forecast_client import CombinedForecast, WeatherForecastClient
+from base_engine.weather.metar_client import MetarClient
 from base_engine.weather.market_mapper import (
     TemperatureBucket,
     WeatherMarketGroup,
@@ -54,6 +55,7 @@ class WeatherBot(BaseBot):
         self._forecast_client = WeatherForecastClient(
             cache_ttl=float(getattr(settings, "WEATHER_FORECAST_CACHE_TTL", 900)),
         )
+        self._metar_client = MetarClient()
         self._prob_engine = WeatherProbabilityEngine()
         self._market_mapper = WeatherMarketMapper()
         self._station_health = StationHealthMonitor()
@@ -329,6 +331,14 @@ class WeatherBot(BaseBot):
             loc, scale, shape, group.buckets,
         )
 
+        # Resolution-day METAR override: if within 6h of resolution, fetch the
+        # running daily max from METAR T-groups and override model probabilities
+        # for buckets that are already definitively ruled in or out.
+        if lead_time < 6.0:
+            model_probs = await self._apply_metar_resolution_day_override(
+                group, model_probs, lead_time,
+            )
+
         # Compute edges
         market_prices = {b.market_id: b.yes_price for b in group.buckets}
         edges = self._prob_engine.compute_edges(model_probs, market_prices)
@@ -386,6 +396,83 @@ class WeatherBot(BaseBot):
             })
 
         return tradeable
+
+    async def _apply_metar_resolution_day_override(
+        self,
+        group: WeatherMarketGroup,
+        model_probs: Dict[str, float],
+        lead_time_hours: float,
+    ) -> Dict[str, float]:
+        """Override model probabilities with METAR running daily max on resolution day.
+
+        When lead_time_hours < 6 (same calendar day as resolution), the running
+        daily maximum from METAR T-groups can definitively rule buckets in or out:
+          - running_max > bucket.high_bound + 0.5: range/at_or_below can't resolve YES
+          - running_max >= at_or_higher.low_bound - 0.5: threshold already crossed → YES
+          - running_max < at_or_below.high_bound - 1.5: well below ceiling → YES
+          - running_max < at_or_higher.low_bound - 2.0: far below floor → NO
+
+        Returns updated model_probs dict (original unchanged if METAR unavailable).
+        Probabilities are renormalized after overrides to maintain sum ≈ 1.0.
+        """
+        running_max = await self._metar_client.get_running_daily_max(
+            group.station.station_id,
+            group.target_date,
+            group.station.temp_unit,
+        )
+        if running_max is None:
+            return model_probs
+
+        logger.info(
+            "weatherbot_metar_resolution_override",
+            station=group.station.station_id,
+            date=group.target_date.isoformat(),
+            running_max=round(running_max, 1),
+            unit=group.station.temp_unit,
+            lead_time_hours=round(lead_time_hours, 1),
+        )
+
+        updated = dict(model_probs)
+        bucket_map = {b.market_id: b for b in group.buckets}
+
+        for market_id, bucket in bucket_map.items():
+            btype = bucket.bucket_type
+
+            if btype == "at_or_below":
+                if running_max > bucket.high_bound + 0.5:
+                    # Daily max already exceeded threshold — bucket cannot resolve YES
+                    updated[market_id] = 0.001
+                elif running_max < bucket.high_bound - 1.5:
+                    # Well below ceiling with little time left — almost certainly YES
+                    updated[market_id] = 0.97
+
+            elif btype == "at_or_higher":
+                if running_max >= bucket.low_bound - 0.5:
+                    # Daily max has reached or nearly reached the floor — resolving YES
+                    updated[market_id] = 0.97
+                elif running_max < bucket.low_bound - 2.0:
+                    # Well below floor — unlikely to reach threshold in remaining time
+                    updated[market_id] = 0.001
+
+            elif btype == "range":
+                if running_max > bucket.high_bound + 0.5:
+                    # Daily max has exceeded the range upper bound — cannot resolve YES
+                    updated[market_id] = 0.001
+                # Note: if running_max is already within range, we let model_prob stand
+                # since we can't yet rule out the max climbing further above the range.
+
+            elif btype == "exact":
+                if running_max > bucket.high_bound + 0.5:
+                    # Already exceeded the exact value — cannot resolve YES
+                    updated[market_id] = 0.001
+
+        # Renormalize so probabilities sum to 1.0
+        total = sum(updated.values())
+        if total > 0:
+            for mid in updated:
+                updated[mid] /= total
+
+        return updated
 
     # ── Trade execution ───────────────────────────────────────────────────
 
@@ -1021,4 +1108,5 @@ class WeatherBot(BaseBot):
     async def stop(self) -> None:
         """Clean up resources."""
         await self._forecast_client.close()
+        await self._metar_client.close()
         await super().stop()
