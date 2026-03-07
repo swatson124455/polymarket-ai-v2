@@ -33,6 +33,12 @@ class WeatherProbabilityEngine:
         # Historical bias calibration: station_id → {lead_time_bucket → offset}
         # Populated from weather_calibration table over time
         self._calibration: Dict[str, Dict[int, float]] = {}
+        # EMOS parameters: station_id → {lead_time_bucket → (a, b, sigma)}
+        # μ_emos = a + b·X̄  (EMOS mean correction; b≠1 corrects systematic slope)
+        # σ_emos = sigma    (EMOS spread correction; None = use raw ensemble spread)
+        # Identity fallback: (a=0, b=1, sigma=None) ≡ no correction.
+        # Requires ≥20 resolved pairs per bucket before activating.
+        self._emos: Dict[str, Dict[int, Tuple[float, float, Optional[float]]]] = {}
 
     def fit_distribution(
         self,
@@ -45,9 +51,10 @@ class WeatherProbabilityEngine:
         Returns (loc, scale, shape) parameters for scipy.stats.skewnorm.
 
         Strategy:
-          - Compute ensemble mean and std
-          - Apply historical bias correction (if calibration data available)
-          - Inflate std by lead-time factor (uncertainty grows with forecast horizon)
+          - Compute ensemble mean and std from raw members
+          - Apply EMOS calibration: μ = a + b·X̄, σ = sigma (when ≥20 pairs exist)
+          - Fall back to simple bias offset (a=bias, b=1, sigma=None) if not yet
+          - Use raw ensemble spread as scale when EMOS sigma unavailable
           - Attempt skew-normal MLE fit; fall back to normal if it fails
         """
         if not ensemble_members or len(ensemble_members) < 2:
@@ -58,15 +65,20 @@ class WeatherProbabilityEngine:
         variance = sum((x - mean) ** 2 for x in ensemble_members) / (n - 1)
         std = max(variance ** 0.5, 0.5)  # Floor at 0.5° to avoid overconfidence
 
-        # Apply historical bias correction
-        bias_offset = self._get_bias_offset(station_id, lead_time_hours)
-        corrected_mean = mean + bias_offset
+        # Apply EMOS calibration (or fall back to simple bias offset)
+        # μ_emos = a + b·X̄  — corrects both mean bias and systematic slope
+        # σ_emos = sigma     — corrects spread (underdispersion common in raw ensembles)
+        emos_a, emos_b, emos_sigma = self._get_emos_params(station_id, lead_time_hours)
+        corrected_mean = emos_a + emos_b * mean
 
-        # Use ensemble spread directly as the scale. With 133 members (GEFS+IFS+AIFS),
-        # the members naturally diverge at longer lead times — wider real spread at
-        # day 5 vs day 1. No fixed inflation needed. EMOS d-parameter will correct
-        # residual underdispersion once calibration data accumulates (≥20 samples/bucket).
-        effective_std = std  # floor already applied above (min 0.5°)
+        # Use EMOS sigma when available; otherwise use raw ensemble spread.
+        # With 133 members (GEFS+IFS+AIFS) the members naturally diverge at longer
+        # lead times — no fixed inflation needed. EMOS sigma corrects residual
+        # underdispersion once ≥20 calibration samples/bucket accumulate.
+        effective_std = max(emos_sigma if emos_sigma is not None else std, 0.5)
+
+        # EMOS loc shift applied to skewnorm-fitted location
+        loc_shift = corrected_mean - mean  # = emos_a + (emos_b - 1) * mean
 
         # Try skew-normal fit via MLE
         shape = 0.0  # Default: symmetric normal
@@ -77,12 +89,12 @@ class WeatherProbabilityEngine:
                     # the fallback to normal distribution handles this case correctly.
                     warnings.simplefilter("ignore", RuntimeWarning)
                     a, loc, scale = skewnorm.fit(ensemble_members)
-                # Clamp to sensible range — do NOT apply a fixed lead_time_factor;
-                # the fitted scale already reflects natural ensemble spread.
-                scale = max(scale, 0.5)
+                # Apply EMOS corrections: shift loc, use EMOS sigma if available
+                loc_emos = loc + loc_shift
+                scale_emos = max(emos_sigma if emos_sigma is not None else scale, 0.5)
                 # Sanity: reject extreme skew or absurd scale
-                if abs(a) < 10.0 and 0.1 < scale < 30.0:
-                    return (loc + bias_offset, scale, a)
+                if abs(a) < 10.0 and 0.1 < scale_emos < 30.0:
+                    return (loc_emos, scale_emos, a)
             except Exception:
                 pass  # Fall through to normal
 
@@ -278,3 +290,39 @@ class WeatherProbabilityEngine:
         """Load calibration offsets from external source (DB or backtest)."""
         self._calibration = calibration_data
         logger.info("weather_calibration_loaded", stations=len(calibration_data))
+
+    def _get_emos_params(
+        self, station_id: str, lead_time_hours: float
+    ) -> Tuple[float, float, Optional[float]]:
+        """Return EMOS (a, b, sigma) for station + lead time.
+
+        Returns:
+            a     — intercept (additive mean correction)
+            b     — slope (multiplicative mean correction; b≠1 corrects slope bias)
+            sigma — spread correction (°F/°C); None = use raw ensemble spread
+
+        Falls back to simple bias offset (a=bias, b=1, sigma=None) when no EMOS
+        params exist. Cold start identity: (a=0, b=1, sigma=None) = no correction.
+        """
+        station_emos = self._emos.get(station_id)
+        if station_emos:
+            bucket = int(lead_time_hours // 6) * 6
+            params = station_emos.get(bucket)
+            if params is not None:
+                return params
+
+        # Fall back to simple bias offset (backward compat)
+        bias = self._get_bias_offset(station_id, lead_time_hours)
+        return (bias, 1.0, None)
+
+    def load_emos_calibration(
+        self,
+        emos_data: Dict[str, Dict[int, Tuple[float, float, Optional[float]]]],
+    ) -> None:
+        """Load EMOS (a, b, sigma) parameters from external source (DB or backtest).
+
+        Called after load_calibration() once ≥20 resolved pairs per bucket exist.
+        EMOS takes precedence over simple bias offset in _get_emos_params().
+        """
+        self._emos = emos_data
+        logger.info("weather_emos_calibration_loaded", stations=len(emos_data))

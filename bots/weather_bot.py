@@ -815,6 +815,48 @@ class WeatherBot(BaseBot):
         except Exception as exc:
             logger.debug("weatherbot_calibration_actuals_failed", error=str(exc))
 
+    @staticmethod
+    def _fit_emos(
+        pairs: List[Tuple[float, float]],
+    ) -> Tuple[float, float, float]:
+        """OLS regression: actual_temp = a + b * forecast_temp.
+
+        Returns (a, b, sigma) where:
+            a     — intercept (systematic bias correction)
+            b     — slope    (b≠1 corrects under/over-forecast spread)
+            sigma — residual std (replaces raw ensemble spread in probability_engine)
+
+        Requires ≥2 pairs. Falls back to identity (a=0, b=1, sigma=2.0) on
+        degenerate input (all forecast temps identical → singular OLS system).
+        """
+        n = len(pairs)
+        if n < 2:
+            return (0.0, 1.0, 2.0)
+
+        x_vals = [p[0] for p in pairs]
+        y_vals = [p[1] for p in pairs]
+        sx = sum(x_vals)
+        sy = sum(y_vals)
+        sxx = sum(x * x for x in x_vals)
+        sxy = sum(x * y for x, y in pairs)
+
+        denom = n * sxx - sx * sx
+        if abs(denom) < 1e-10:
+            # Degenerate: all forecast temps identical → simple mean bias
+            mean_bias = (sy - sx) / n
+            return (mean_bias, 1.0, 2.0)
+
+        b = (n * sxy - sx * sy) / denom
+        a = (sy - b * sx) / n
+
+        # Residual std (σ correction for spread underdispersion)
+        residuals = [y - (a + b * x) for x, y in pairs]
+        mean_res = sum(residuals) / n
+        var_res = sum((r - mean_res) ** 2 for r in residuals) / max(n - 1, 1)
+        sigma = max(var_res ** 0.5, 0.5)  # Floor at 0.5° to avoid overconfidence
+
+        return (a, b, sigma)
+
     async def _maybe_reload_calibration(self) -> None:
         """Reload bias calibration from weather_calibration DB every 6 hours (P1)."""
         now_mono = time.monotonic()
@@ -828,7 +870,7 @@ class WeatherBot(BaseBot):
             async with db.get_session() as session:
                 from sqlalchemy import text
                 rows = await session.execute(text("""
-                    SELECT station_id, lead_time_hours, bias
+                    SELECT station_id, lead_time_hours, bias, forecast_temp, actual_temp
                     FROM weather_calibration
                     WHERE bias IS NOT NULL AND actual_temp IS NOT NULL
                 """))
@@ -838,26 +880,51 @@ class WeatherBot(BaseBot):
                 self._calibration_last_loaded = now_mono
                 return
 
-            # Aggregate: station_id → {lead_bucket → [bias values]}
-            raw: Dict[str, Dict[int, List[float]]] = {}
-            for station_id, lt_hours, bias in all_rows:
+            # Aggregate: station_id → {lead_bucket → {"biases": [...], "pairs": [(x, y)]}}
+            # pairs = (forecast_temp, actual_temp) for EMOS OLS fitting
+            raw: Dict[str, Dict[int, Dict]] = {}
+            for station_id, lt_hours, bias, forecast_temp, actual_temp in all_rows:
                 bucket = int(float(lt_hours) // 6) * 6
                 if station_id not in raw:
                     raw[station_id] = {}
                 if bucket not in raw[station_id]:
-                    raw[station_id][bucket] = []
-                raw[station_id][bucket].append(float(bias))
+                    raw[station_id][bucket] = {"biases": [], "pairs": []}
+                raw[station_id][bucket]["biases"].append(float(bias))
+                if forecast_temp is not None and actual_temp is not None:
+                    raw[station_id][bucket]["pairs"].append(
+                        (float(forecast_temp), float(actual_temp))
+                    )
 
-            # Average biases per bucket
+            # Build simple bias calibration (backward compat)
             cal_avg: Dict[str, Dict[int, float]] = {
                 sid: {
-                    bucket: sum(biases) / len(biases)
-                    for bucket, biases in buckets.items()
+                    bucket: sum(data["biases"]) / len(data["biases"])
+                    for bucket, data in buckets.items()
                 }
                 for sid, buckets in raw.items()
             }
 
+            # Build EMOS calibration where ≥20 resolved pairs are available per bucket
+            # EMOS: actual_temp = a + b * forecast_temp + ε  (OLS fit)
+            # σ = std(residuals) → replaces raw ensemble spread when populated
+            _MIN_EMOS_SAMPLES = 20
+            emos_params: Dict[str, Dict[int, Tuple[float, float, Optional[float]]]] = {}
+            for sid, buckets in raw.items():
+                for bucket, data in buckets.items():
+                    pairs = data["pairs"]
+                    if len(pairs) >= _MIN_EMOS_SAMPLES:
+                        emos_a, emos_b, emos_sigma = WeatherBot._fit_emos(pairs)
+                        if sid not in emos_params:
+                            emos_params[sid] = {}
+                        emos_params[sid][bucket] = (emos_a, emos_b, emos_sigma)
+
             self._prob_engine.load_calibration(cal_avg)
+            if emos_params:
+                self._prob_engine.load_emos_calibration(emos_params)
+                logger.info(
+                    "weatherbot_emos_calibration_loaded",
+                    stations_with_emos=len(emos_params),
+                )
             self._calibration_last_loaded = now_mono
             logger.info(
                 "weatherbot_calibration_reloaded",

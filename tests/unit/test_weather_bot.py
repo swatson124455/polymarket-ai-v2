@@ -468,6 +468,40 @@ class TestProbabilityEngine:
         # Bias bucket 0 → offset = 0.5
         assert loc > 50.0
 
+    def test_load_emos_calibration_shifts_mean(self):
+        """EMOS a + b*mean correction shifts loc correctly."""
+        eng = WeatherProbabilityEngine()
+        # a=2.0, b=1.05, sigma=1.5: corrected_mean = 2.0 + 1.05 * 50 = 54.5
+        emos = {"KLGA": {0: (2.0, 1.05, 1.5)}}
+        eng.load_emos_calibration(emos)
+        members = [50.0] * 31  # ensemble mean = 50.0
+        loc, scale, _ = eng.fit_distribution(members, lead_time_hours=3.0, station_id="KLGA")
+        # loc should reflect a + b*mean = 2.0 + 1.05*50 = 54.5
+        assert abs(loc - 54.5) < 1.0  # some tolerance for skewnorm path
+        # scale should use EMOS sigma = 1.5
+        assert abs(scale - 1.5) < 0.1
+
+    def test_emos_sigma_overrides_ensemble_spread(self):
+        """EMOS sigma replaces raw ensemble spread as scale."""
+        eng = WeatherProbabilityEngine()
+        # Wide spread ensemble: std ≈ 5° — but EMOS says sigma=1.0
+        wide_members = [50.0 + (i - 15) * 0.7 for i in range(31)]
+        emos = {"KLGA": {0: (0.0, 1.0, 1.0)}}  # a=0, b=1 (no mean shift), sigma=1.0
+        eng.load_emos_calibration(emos)
+        _, scale, _ = eng.fit_distribution(wide_members, lead_time_hours=3.0, station_id="KLGA")
+        # EMOS sigma=1.0 should override the wider raw spread
+        assert scale <= 1.5  # EMOS constrains the scale tighter than raw spread
+
+    def test_emos_fallback_to_simple_bias_when_no_emos(self):
+        """When EMOS not loaded, falls back to simple bias offset (backward compat)."""
+        eng = WeatherProbabilityEngine()
+        eng.load_calibration({"KLGA": {0: 1.0}})  # simple bias: +1.0°
+        # No EMOS loaded
+        members = [50.0] * 31
+        loc, _, _ = eng.fit_distribution(members, lead_time_hours=3.0, station_id="KLGA")
+        # loc should be 50.0 + 1.0 bias = 51.0 (identity EMOS: a=1.0, b=1.0)
+        assert abs(loc - 51.0) < 0.5
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Forecast Client
@@ -991,6 +1025,36 @@ class TestWeatherBotOpportunities:
 
         await weather_bot.scan_and_trade()
         assert weather_bot._last_scan_markets == 1
+
+    def test_fit_emos_basic_regression(self, weather_bot):
+        """_fit_emos returns correct OLS (a, b, sigma) from (forecast, actual) pairs."""
+        from bots.weather_bot import WeatherBot
+        # Perfect relationship: actual = 1.0 + 1.0 * forecast → a=1.0, b=1.0, sigma≈0
+        pairs = [(float(x), 1.0 + float(x)) for x in range(20, 50)]
+        a, b, sigma = WeatherBot._fit_emos(pairs)
+        assert abs(a - 1.0) < 0.1
+        assert abs(b - 1.0) < 0.01
+        assert sigma <= 1.0  # near-zero residuals → sigma floored at 0.5
+
+    def test_fit_emos_slope_correction(self, weather_bot):
+        """_fit_emos detects b < 1 when forecasts over-predict spread."""
+        from bots.weather_bot import WeatherBot
+        # actual = 0.5 * forecast + 10 (model over-forecasts temperatures)
+        pairs = [(float(x), 0.5 * x + 10.0) for x in range(30, 80)]
+        a, b, sigma = WeatherBot._fit_emos(pairs)
+        # slope should be ~0.5
+        assert abs(b - 0.5) < 0.05
+        # intercept should be ~10
+        assert abs(a - 10.0) < 1.0
+
+    def test_fit_emos_degenerate_identical_forecasts(self, weather_bot):
+        """_fit_emos falls back gracefully when all forecast temps are identical."""
+        from bots.weather_bot import WeatherBot
+        # All forecasts the same → singular OLS → fallback
+        pairs = [(50.0, 50.0 + i * 0.1) for i in range(25)]
+        a, b, sigma = WeatherBot._fit_emos(pairs)
+        assert b == 1.0  # identity slope in fallback
+        assert sigma >= 0.5  # floored
 
 
 # ═══════════════════════════════════════════════════════════════════════════
