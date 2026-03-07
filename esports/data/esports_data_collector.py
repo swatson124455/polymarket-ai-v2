@@ -152,8 +152,9 @@ class EsportsDataCollector:
             # Single-game match -- use match-level outcome
             games_list = [{"winner": raw.get("winner", {}), "length": 0}]
 
-        # Compute team strength diff once per match (cached)
+        # Compute team strength diff + Glicko-2 metadata once per match
         team_str_diff = await self._compute_team_strength_diff(match, "lol")
+        glicko2_meta = self._get_glicko2_metadata(match, "lol")
 
         # Determine patch from match raw data
         patch = ""
@@ -178,21 +179,20 @@ class EsportsDataCollector:
             length = g.get("length", 0) or 0
             game_time_minutes = length / 60.0 if length else 30.0
 
-            # Build feature dict with neutral in-game features.
-            # team_strength_diff + game_time_minutes are the real signals.
-            # All other features are neutral (PandaScore free tier has no
-            # per-game team stats). Old code derived features FROM outcome
-            # (gold=0.55 if win) — label leakage that confused the model.
-            # During LIVE matches, the game monitor provides real features.
+            # Build feature dict. In-game features (gold, towers, dragons)
+            # are neutral (PandaScore free tier has no per-game team stats).
+            # Glicko-2 metadata features (uncertainty, volatility) are REAL
+            # and provide signal beyond team_strength_diff alone.
+            # During LIVE matches, the game monitor provides real in-game features.
             game_state = {
                 "game_time_minutes": game_time_minutes,
                 "gold_pct_blue": 0.5,           # Neutral (no label leakage)
                 "tower_kills_diff": 0.0,         # Neutral
                 "dragon_kills_diff": 0.0,        # Neutral
-                "dragon_soul_blue": 0.0,         # Neutral
-                "herald_blue": 0.5,
-                "inhib_down_diff": 0.0,          # Neutral
-                "baron_buff_count_diff": 0.0,    # Neutral
+                "matchup_uncertainty": glicko2_meta["matchup_uncertainty"],
+                "rd_asymmetry": glicko2_meta["rd_asymmetry"],
+                "team_a_volatility": glicko2_meta["team_a_volatility"],
+                "team_b_volatility": glicko2_meta["team_b_volatility"],
                 "team_strength_diff": team_str_diff,
             }
 
@@ -375,6 +375,34 @@ class EsportsDataCollector:
         wr_a = await self._get_team_strength(team_a_id, game)
         wr_b = await self._get_team_strength(team_b_id, game)
         return wr_a - wr_b
+
+    def _get_glicko2_metadata(self, match, game: str) -> Dict[str, float]:
+        """Extract per-team Glicko-2 metadata (uncertainty, volatility) for training features.
+
+        Called BEFORE _update_glicko2() so ratings reflect pre-match state.
+        Returns defaults when tracker is unavailable.
+        """
+        defaults = {
+            "matchup_uncertainty": 1.0,  # max uncertainty
+            "rd_asymmetry": 0.0,
+            "team_a_volatility": 1.0,
+            "team_b_volatility": 1.0,
+        }
+        tracker = self._glicko2_trackers.get(game)
+        if tracker is None or tracker.match_count < 10:
+            return defaults
+        team_a_id = str(getattr(match, "team_a_id", 0))
+        team_b_id = str(getattr(match, "team_b_id", 0))
+        if not team_a_id or team_a_id == "0" or not team_b_id or team_b_id == "0":
+            return defaults
+        rating_a = tracker.get_rating(team_a_id)
+        rating_b = tracker.get_rating(team_b_id)
+        return {
+            "matchup_uncertainty": (rating_a.phi + rating_b.phi) / 700.0,
+            "rd_asymmetry": (rating_a.phi - rating_b.phi) / 350.0,
+            "team_a_volatility": rating_a.sigma / 0.06,
+            "team_b_volatility": rating_b.sigma / 0.06,
+        }
 
     def _update_glicko2(self, match, game: str) -> None:
         """Update Glicko-2 ratings after processing a match result."""

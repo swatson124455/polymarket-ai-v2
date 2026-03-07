@@ -40,11 +40,11 @@ FEATURE_NAMES = [
     "gold_pct_blue",           # blue team gold / total gold (ratio 0.0-1.0)
     "tower_kills_diff",        # blue towers - red towers
     "dragon_kills_diff",       # blue dragons - red dragons
-    "dragon_soul_blue",        # 1.0 if blue has soul, else 0.0
-    "herald_blue",             # 1.0 if blue took herald
-    "inhib_down_diff",         # blue inhibs down on red - red inhibs down on blue
-    "baron_buff_count_diff",   # baron kills diff
-    "team_strength_diff",      # blue win_rate - red win_rate (from PandaScore stats)
+    "matchup_uncertainty",     # (phi_a + phi_b) / 700 — joint rating uncertainty [0-1]
+    "rd_asymmetry",            # (phi_a - phi_b) / 350 — which team has less certain rating [-1,1]
+    "team_a_volatility",       # sigma_a / 0.06 — team A rating stability (normalized)
+    "team_b_volatility",       # sigma_b / 0.06 — team B rating stability (normalized)
+    "team_strength_diff",      # expected_score(a,b) - 0.5 from Glicko-2
 ]
 
 # Patch weight decay: how much to weight historical patches
@@ -378,27 +378,29 @@ class LoLWinModel:
     def _predict_heuristic(game_state: Dict[str, Any]) -> float:
         """Heuristic win probability when ML model is not trained.
 
-        Uses gold share + tower/dragon advantages + team strength as logistic regression.
-        Coefficients based on professional match analysis:
-          - 1% gold lead ≈ 8% win probability shift
-          - Each tower advantage ≈ 4% shift
-          - Each dragon advantage ≈ 3% shift
-          - 10% team strength diff ≈ 5% win probability shift
+        Uses gold share + tower/dragon advantages + team strength + matchup
+        uncertainty as logistic regression. Coefficients based on professional
+        match analysis. Matchup uncertainty dampens the prediction toward 0.5
+        when Glicko-2 ratings are uncertain.
         """
         gold_pct = float(game_state.get("gold_pct_blue", 0.5))
         tower_diff = float(game_state.get("tower_kills_diff", 0.0))
         dragon_diff = float(game_state.get("dragon_kills_diff", 0.0))
-        baron_diff = float(game_state.get("baron_buff_count_diff", 0.0))
         team_str = float(game_state.get("team_strength_diff", 0.0))
+        uncertainty = float(game_state.get("matchup_uncertainty", 0.5))
+        # Dampen team_str signal when matchup uncertainty is high:
+        # uncertainty ≈ 1.0 means both teams at default RD → halve the signal
+        # uncertainty ≈ 0.15 means both well-rated → full signal
+        certainty_weight = max(0.3, 1.0 - 0.7 * uncertainty)
         z = (8.0 * (gold_pct - 0.5) + 0.08 * tower_diff + 0.06 * dragon_diff
-             + 0.10 * baron_diff + 2.0 * team_str)
+             + 2.0 * team_str * certainty_weight)
         prob = 1.0 / (1.0 + math.exp(-z))
         return float(max(0.05, min(0.95, prob)))
 
     # ── Feature extraction ──────────────────────────────────────────────
 
     def _extract_features(self, state: Dict[str, Any]) -> Optional[List[float]]:
-        """Extract 17 features from a game state dict."""
+        """Extract 9 features from a game state dict."""
         try:
             features = []
             for name in FEATURE_NAMES:

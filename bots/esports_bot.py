@@ -597,16 +597,24 @@ class EsportsBot(BaseBot):
             try:
                 game_state = live_data.get("game_state", {})
                 if game_state:
+                    # Inject Glicko-2 metadata features for live inference
+                    self._inject_glicko2_metadata(game_state, game, live_data)
+                    # Blend ML + Glicko-2: trained model only learned from
+                    # team_strength_diff (in-game features were neutralized in
+                    # training), so raw predict() is ~51% on live data.
+                    # predict_with_glicko2() anchors on the Glicko-2 baseline
+                    # and lets the ML model adjust, dampening noise.
+                    tsd = float(game_state.get("team_strength_diff", 0.0))
+                    glicko2_est = max(0.05, min(0.95, 0.5 + tsd))
                     prob = await asyncio.to_thread(
-                        self._lol_model.predict, game_state
+                        self._lol_model.predict_with_glicko2,
+                        game_state, glicko2_est,
                     )
                     if 0.0 < prob < 1.0:
-                        # Derive Glicko-2 expected from team_strength_diff for agreement tracking
-                        tsd = float(game_state.get("team_strength_diff", 0.0))
-                        glicko2_est = max(0.05, min(0.95, 0.5 + tsd / 2))
                         self._prediction_cache[market_id] = {
                             "prob": prob, "ts": time.monotonic(), "game": game,
-                            "ml_raw": prob, "glicko2_est": glicko2_est,
+                            "ml_raw": self._lol_model.predict(game_state),
+                            "glicko2_est": glicko2_est,
                         }
                         return prob
             except Exception:
@@ -678,6 +686,35 @@ class EsportsBot(BaseBot):
     def _is_live(self, market_id: str) -> bool:
         """Check if a market has an associated live match."""
         return market_id in self._live_matches
+
+    def _inject_glicko2_metadata(
+        self, game_state: Dict, game: str, live_data: Dict
+    ) -> None:
+        """Inject Glicko-2 metadata features into game_state for model inference.
+
+        The Glicko-2 tracker provides per-team mu, phi, sigma. We derive
+        matchup_uncertainty, rd_asymmetry, and volatility features that the
+        LoL model can use for predictions. Modifies game_state in place.
+        """
+        tracker = self._glicko2_trackers.get(game)
+        if tracker is None:
+            return
+        # Try to find team IDs from live_data opponents
+        opponents = live_data.get("opponents", [])
+        team_a_id = team_b_id = None
+        if len(opponents) >= 2:
+            team_a_id = str(opponents[0].get("opponent", {}).get("id", "")
+                           if isinstance(opponents[0], dict) else "")
+            team_b_id = str(opponents[1].get("opponent", {}).get("id", "")
+                           if isinstance(opponents[1], dict) else "")
+        if not team_a_id or not team_b_id:
+            return
+        rating_a = tracker.get_rating(team_a_id)
+        rating_b = tracker.get_rating(team_b_id)
+        game_state["matchup_uncertainty"] = (rating_a.phi + rating_b.phi) / 700.0
+        game_state["rd_asymmetry"] = (rating_a.phi - rating_b.phi) / 350.0
+        game_state["team_a_volatility"] = rating_a.sigma / 0.06
+        game_state["team_b_volatility"] = rating_b.sigma / 0.06
 
     def get_latency_stats(self) -> Dict[str, float]:
         """Return PandaScore data latency statistics (seconds since last refresh at WS event time)."""
