@@ -98,6 +98,12 @@ class WeatherBot(BaseBot):
         self._regime_last_fetched: float = 0.0
         self._regime_cache_ttl: float = 86400.0  # 24 hours
 
+        # T3C: AFD (Area Forecast Discussion) spread adjustment cache
+        # station_id → (expiry_mono, spread_factor)
+        self._afd_cache: Dict[str, Tuple[float, float]] = {}
+        # NWS WFO cache: station_id → Optional[wfo_code] (never expires — WFOs are static)
+        self._wfo_cache: Dict[str, Optional[str]] = {}
+
     # ── Adaptive scan interval ─────────────────────────────────────────────
 
     def _get_scan_interval_seconds(self) -> float:
@@ -141,6 +147,9 @@ class WeatherBot(BaseBot):
         # P1+P2: handle day boundary + calibration refresh
         await self._handle_daily_boundary()
         await self._maybe_reload_calibration()
+
+        # Reset per-scan climate normal computation limiter (T3B)
+        self._forecast_client.reset_climate_cycle()
 
         # One-time startup observability check (logs DB state + Gamma API probe)
         if not self._startup_check_done:
@@ -331,6 +340,24 @@ class WeatherBot(BaseBot):
         except ValueError as exc:
             logger.debug("weatherbot_fit_failed", error=str(exc))
             return []
+
+        # T3B: Climate normal Bayesian prior — blend toward climatology at long lead times.
+        # At ≤72h the ensemble is skilled; beyond 72h, blend 0-40% toward 10-year climate mean.
+        if lead_time > 72.0:
+            climate = await self._forecast_client.get_climate_normal(
+                group.station.latitude, group.station.longitude,
+                group.target_date, group.station.temp_unit,
+            )
+            if climate:
+                clim_mean, clim_std = climate
+                loc, scale = WeatherProbabilityEngine.apply_climate_prior(
+                    loc, scale, clim_mean, clim_std, lead_time,
+                )
+
+        # T3C: AFD uncertainty adjustment — widen/tighten spread based on NWS forecast discussion
+        afd_factor = await self._get_afd_spread_factor(group.station)
+        if afd_factor != 1.0:
+            scale *= afd_factor
 
         # Compute bucket probabilities
         model_probs = self._prob_engine.bucket_probabilities(
@@ -1145,6 +1172,171 @@ class WeatherBot(BaseBot):
 
         cache[station.station_id] = (now_mono, boost)
         return boost
+
+    async def _get_afd_spread_factor(self, station: WeatherStation) -> float:
+        """Parse latest NWS Area Forecast Discussion for uncertainty signals.
+
+        Returns a spread adjustment factor:
+          - > 1.0: AFD indicates above-normal uncertainty (widen spread)
+          - < 1.0: AFD indicates high confidence (tighten spread)
+          - 1.0: no signal or non-US station
+
+        US stations only. Cached per station for 6 hours.
+        """
+        if station.temp_unit.upper() != "F":
+            return 1.0  # AFDs only available for US stations
+
+        # Check cache
+        cached = self._afd_cache.get(station.station_id)
+        now_mono = time.monotonic()
+        if cached and now_mono < cached[0]:
+            return cached[1]
+
+        # Get WFO from NWS /points
+        wfo = await self._get_station_wfo(station)
+        if not wfo:
+            self._afd_cache[station.station_id] = (now_mono + 21600.0, 1.0)
+            return 1.0
+
+        # Fetch latest AFD
+        import aiohttp
+        url = f"https://api.weather.gov/products?type=AFD&location={wfo}&limit=1"
+        factor = 1.0
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=8),
+                headers={
+                    "Accept": "application/ld+json",
+                    "User-Agent": "PolymarketWeatherBot/1.0",
+                },
+            ) as session:
+                # Get list of recent AFDs
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        self._afd_cache[station.station_id] = (now_mono + 3600.0, 1.0)
+                        return 1.0
+                    data = await resp.json(content_type=None)
+
+                # Get the latest AFD product
+                products = data.get("@graph", [])
+                if not products:
+                    self._afd_cache[station.station_id] = (now_mono + 3600.0, 1.0)
+                    return 1.0
+
+                latest_url = products[0].get("@id", "")
+                if not latest_url:
+                    self._afd_cache[station.station_id] = (now_mono + 3600.0, 1.0)
+                    return 1.0
+
+                # Fetch the actual AFD text
+                async with session.get(latest_url) as resp2:
+                    if resp2.status != 200:
+                        self._afd_cache[station.station_id] = (now_mono + 3600.0, 1.0)
+                        return 1.0
+                    afd_data = await resp2.json(content_type=None)
+
+                afd_text = afd_data.get("productText", "").lower()
+
+                # Parse for uncertainty/confidence signals
+                factor = WeatherBot._parse_afd_uncertainty(afd_text)
+        except Exception as exc:
+            logger.debug("afd_fetch_failed", station=station.station_id, error=str(exc))
+
+        self._afd_cache[station.station_id] = (now_mono + 21600.0, factor)
+        if factor != 1.0:
+            logger.info(
+                "weatherbot_afd_spread_factor",
+                station=station.station_id,
+                wfo=wfo,
+                factor=round(factor, 2),
+            )
+        return factor
+
+    async def _get_station_wfo(self, station: WeatherStation) -> Optional[str]:
+        """Get NWS WFO (Weather Forecast Office) code for a station.
+
+        Calls NWS /points API once per station, caches permanently (WFOs are static).
+        US stations only.
+        """
+        if station.station_id in self._wfo_cache:
+            return self._wfo_cache[station.station_id]
+
+        import aiohttp
+        url = f"https://api.weather.gov/points/{station.latitude:.4f},{station.longitude:.4f}"
+        wfo = None
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=8),
+                headers={
+                    "Accept": "application/geo+json",
+                    "User-Agent": "PolymarketWeatherBot/1.0",
+                },
+            ) as session:
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        data = await resp.json(content_type=None)
+                        wfo = data.get("properties", {}).get("gridId")
+        except Exception as exc:
+            logger.debug("wfo_lookup_failed", station=station.station_id, error=str(exc))
+
+        self._wfo_cache[station.station_id] = wfo
+        if wfo:
+            logger.debug("wfo_cached", station=station.station_id, wfo=wfo)
+        return wfo
+
+    @staticmethod
+    def _parse_afd_uncertainty(afd_text: str) -> float:
+        """Scan AFD text for uncertainty and confidence keywords.
+
+        Returns spread adjustment factor:
+          - 1.3: strong uncertainty signals (≥3 net)
+          - 1.15: moderate uncertainty (1-2 net)
+          - 0.9: strong confidence signals (≤-2 net)
+          - 1.0: neutral or mixed signals
+        """
+        import re
+
+        _HIGH_UNCERTAINTY = [
+            r"model\s+(?:spread|disagreement|divergence)",
+            r"(?:significant|considerable|large)\s+uncertainty",
+            r"low\s+confidence",
+            r"tricky\s+forecast",
+            r"challenging\s+forecast",
+            r"difficult\s+to\s+(?:forecast|predict)",
+            r"uncertainty\s+(?:remains|persists|exists)",
+            r"models?\s+(?:disagree|diverge|differ|split)",
+            r"wide\s+(?:range|spread)",
+            r"ensemble\s+spread",
+            r"bust\s+potential",
+        ]
+
+        _HIGH_CONFIDENCE = [
+            r"high\s+confidence",
+            r"good\s+(?:agreement|consensus)",
+            r"models?\s+(?:agree|converge|in\s+agreement)",
+            r"strong\s+confidence",
+            r"well\s+(?:captured|handled)",
+            r"confident\s+in",
+        ]
+
+        uncertainty_count = sum(
+            len(re.findall(pattern, afd_text)) for pattern in _HIGH_UNCERTAINTY
+        )
+        confidence_count = sum(
+            len(re.findall(pattern, afd_text)) for pattern in _HIGH_CONFIDENCE
+        )
+
+        # Net signal: positive = more uncertain, negative = more confident
+        net = uncertainty_count - confidence_count
+
+        if net >= 3:
+            return 1.3   # Strong uncertainty → widen spread 30%
+        elif net >= 1:
+            return 1.15  # Moderate uncertainty → widen spread 15%
+        elif net <= -2:
+            return 0.9   # Strong confidence → tighten spread 10%
+
+        return 1.0  # Neutral
 
     async def _maybe_reload_calibration(self) -> None:
         """Reload bias calibration from weather_calibration DB every 6 hours (P1)."""

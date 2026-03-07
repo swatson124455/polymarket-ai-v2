@@ -18,7 +18,7 @@ import asyncio
 import random
 import time
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
 import aiohttp
@@ -59,6 +59,9 @@ class WeatherForecastClient:
         # NWS grid forecast URLs per station: station_id → (expiry_mono, forecast_url)
         # Grid coordinates are static per station; cache for 24h to avoid repeated lookups.
         self._nws_forecast_url_cache: Dict[str, Tuple[float, Optional[str]]] = {}
+        # Climate normals cache: cache_key → (expiry_mono, Optional[(mean, std)])
+        self._climate_cache: Dict[str, Tuple[float, Optional[Tuple[float, float]]]] = {}
+        self._climate_computed_this_cycle: bool = False
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -510,6 +513,116 @@ class WeatherForecastClient:
         except Exception as exc:
             logger.debug("historical_api_failed", date=target_iso, error=str(exc))
             return None
+
+    async def get_climate_normal(
+        self,
+        latitude: float,
+        longitude: float,
+        target_date: date,
+        temp_unit: str = "celsius",
+    ) -> Optional[Tuple[float, float]]:
+        """Compute climate normal (mean, std) for this day-of-year from archive data.
+
+        Uses Open-Meteo archive API for a ±3 day window across the last 10 years.
+        Returns (mean_daily_max, std_daily_max) or None if insufficient data.
+        Cached per (lat, lon, day_of_year) for 30 days.
+        Limited to 1 new computation per scan cycle to avoid rate-limit pressure.
+        """
+        doy = target_date.timetuple().tm_yday
+        cache_key = f"clim:{latitude:.2f}:{longitude:.2f}:{doy}:{temp_unit}"
+
+        cached = self._climate_cache.get(cache_key)
+        if cached and time.monotonic() < cached[0]:
+            return cached[1]
+
+        # Limit to 1 new climate normal computation per scan cycle
+        if self._climate_computed_this_cycle:
+            return None
+        self._climate_computed_this_cycle = True
+
+        # Fetch ±3 day window from last 10 years
+        temps: List[float] = []
+        current_year = target_date.year
+
+        for year_offset in range(1, 11):
+            year = current_year - year_offset
+            try:
+                center = date(year, target_date.month, target_date.day)
+            except ValueError:
+                continue  # Feb 29 in non-leap year
+            start = center - timedelta(days=3)
+            end = center + timedelta(days=3)
+
+            year_temps = await self._fetch_archive_range(
+                latitude, longitude, start, end, temp_unit,
+            )
+            temps.extend(year_temps)
+
+        if len(temps) < 20:
+            # Not enough data — cache the miss for 24h
+            self._climate_cache[cache_key] = (time.monotonic() + 86400.0, None)
+            logger.debug("climate_normal_insufficient_data", doy=doy, samples=len(temps))
+            return None
+
+        mean = sum(temps) / len(temps)
+        std = max(
+            (sum((t - mean) ** 2 for t in temps) / (len(temps) - 1)) ** 0.5,
+            0.5,
+        )
+        result = (mean, std)
+
+        # Cache for 30 days (climate normals are stable)
+        self._climate_cache[cache_key] = (time.monotonic() + 86400.0 * 30, result)
+        logger.info(
+            "climate_normal_computed",
+            doy=doy,
+            mean=round(mean, 1),
+            std=round(std, 1),
+            samples=len(temps),
+            unit=temp_unit,
+        )
+        return result
+
+    async def _fetch_archive_range(
+        self,
+        latitude: float,
+        longitude: float,
+        start_date: date,
+        end_date: date,
+        temp_unit: str,
+    ) -> List[float]:
+        """Fetch daily max temperatures for a date range from Open-Meteo archive."""
+        await self._rate_limit_wait()
+        session = await self._ensure_session()
+
+        params = {
+            "latitude": latitude,
+            "longitude": longitude,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "daily": "temperature_2m_max",
+            "timezone": "auto",
+        }
+        if temp_unit.upper() == "F":
+            params["temperature_unit"] = "fahrenheit"
+
+        try:
+            async with session.get(_HISTORICAL_URL, params=params) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json()
+            maxes = data.get("daily", {}).get("temperature_2m_max", [])
+            return [float(t) for t in maxes if t is not None]
+        except Exception:
+            return []
+
+    def reset_climate_cycle(self) -> None:
+        """Reset the per-cycle climate normal computation limiter.
+
+        Called at the start of each scan cycle to allow one new climate normal
+        computation per scan.
+        """
+        self._climate_computed_this_cycle = False
 
     async def close(self) -> None:
         """Close the underlying HTTP session."""

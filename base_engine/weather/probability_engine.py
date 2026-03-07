@@ -372,3 +372,39 @@ class WeatherProbabilityEngine:
         """
         self._emos = emos_data
         logger.info("weather_emos_calibration_loaded", stations=len(emos_data))
+
+    @staticmethod
+    def apply_climate_prior(
+        loc: float,
+        scale: float,
+        clim_mean: float,
+        clim_std: float,
+        lead_time_hours: float,
+    ) -> Tuple[float, float]:
+        """Blend ensemble (loc, scale) toward climate normal based on lead time.
+
+        At short lead times (≤72h), ensemble forecasts are skilled and no blending
+        is needed. At longer lead times, model skill degrades and the forecast
+        should be pulled toward climatology to prevent overconfident long-range bets.
+
+        Blend schedule:
+          ≤72h:   weight = 0.0 (pure ensemble)
+          72-168h: weight ramps linearly from 0.0 to 0.4
+          ≥168h:  weight = 0.4 (40% climatology, 60% ensemble)
+
+        Returns (blended_loc, blended_scale).
+        """
+        if lead_time_hours <= 72.0:
+            return (loc, scale)
+
+        # Linear ramp from 0.0 at 72h to 0.4 at 168h
+        w = min(0.4, 0.4 * (lead_time_hours - 72.0) / (168.0 - 72.0))
+
+        blended_loc = (1.0 - w) * loc + w * clim_mean
+        # RMS blend of variances (preserves total variance)
+        blended_scale = max(
+            ((1.0 - w) * scale ** 2 + w * clim_std ** 2) ** 0.5,
+            0.5,  # Floor
+        )
+
+        return (blended_loc, blended_scale)
