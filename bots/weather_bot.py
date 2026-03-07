@@ -23,7 +23,7 @@ SWOT upgrades applied:
 import json
 import time
 from datetime import date, datetime, timezone
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from structlog import get_logger
 
@@ -91,6 +91,12 @@ class WeatherBot(BaseBot):
 
         # P3: dedup tracking (avoid writing same forecast twice in one session)
         self._written_forecasts: Set[str] = set()  # "station_id:date_iso"
+
+        # P2-regime: ENSO regime cache (el_nino / la_nina / neutral)
+        # Nino 3.4 SST anomaly updated monthly; cache for 24h.
+        self._regime_tag: Optional[str] = None
+        self._regime_last_fetched: float = 0.0
+        self._regime_cache_ttl: float = 86400.0  # 24 hours
 
     # ── Adaptive scan interval ─────────────────────────────────────────────
 
@@ -328,7 +334,7 @@ class WeatherBot(BaseBot):
 
         # Compute bucket probabilities
         model_probs = self._prob_engine.bucket_probabilities(
-            loc, scale, shape, group.buckets,
+            loc, scale, shape, group.buckets, forecast.lead_time_hours,
         )
 
         # Resolution-day METAR override: if within 6h of resolution, fetch the
@@ -541,8 +547,11 @@ class WeatherBot(BaseBot):
         # Cross-city regime boost (P-Opportunity)
         regime_boost = opp.get("regime_boost", 1.0)
 
-        # Combined boost for near-expiry + cross-city regime (capped at 2.5×)
-        combined_boost = min(expiry_boost * regime_boost, 2.5)
+        # Severe weather boost (hurricane/tornado/blizzard near station)
+        severe_boost = await self._get_severe_weather_boost(group.station)
+
+        # Combined boost for near-expiry + cross-city regime + severe weather (capped at 3.0×)
+        combined_boost = min(expiry_boost * regime_boost * severe_boost, 3.0)
 
         # Size via central risk_manager Kelly (same as all other bots)
         try:
@@ -989,6 +998,154 @@ class WeatherBot(BaseBot):
 
         return (a, b, sigma)
 
+    async def _get_enso_regime(self) -> str:
+        """Fetch current ENSO regime from NOAA PSL Nino 3.4 SST anomaly data.
+
+        Classifies the latest monthly Nino 3.4 SST anomaly:
+          - ONI >= +0.5  → "el_nino"
+          - ONI <= -0.5  → "la_nina"
+          - |ONI| < 0.5  → "neutral"
+
+        Cached for 24h (SST anomalies are monthly). Falls back to "neutral"
+        on any fetch error so calibration rows are never left without a tag.
+        """
+        now_mono = time.monotonic()
+        if self._regime_tag and now_mono - self._regime_last_fetched < self._regime_cache_ttl:
+            return self._regime_tag
+
+        import aiohttp
+        url = "https://psl.noaa.gov/data/correlation/nina34.anom.data"
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as session:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        logger.debug("enso_regime_fetch_error", status=resp.status)
+                        self._regime_tag = self._regime_tag or "neutral"
+                        self._regime_last_fetched = now_mono
+                        return self._regime_tag
+                    text = await resp.text()
+
+            # Parse: each data line is "YYYY val1 val2 ... val12"
+            # Find latest non-missing value (not -99.99)
+            latest_oni: Optional[float] = None
+            for line in text.strip().splitlines():
+                parts = line.split()
+                if len(parts) < 2:
+                    continue
+                try:
+                    int(parts[0])  # year check
+                except ValueError:
+                    continue
+                for val_str in reversed(parts[1:]):
+                    try:
+                        val = float(val_str)
+                        if val > -90.0:  # -99.99 = missing
+                            latest_oni = val
+                            break
+                    except ValueError:
+                        continue
+                if latest_oni is not None:
+                    # Don't break — keep scanning to get the truly latest year's data
+                    pass
+
+            if latest_oni is None:
+                self._regime_tag = "neutral"
+            elif latest_oni >= 0.5:
+                self._regime_tag = "el_nino"
+            elif latest_oni <= -0.5:
+                self._regime_tag = "la_nina"
+            else:
+                self._regime_tag = "neutral"
+
+            self._regime_last_fetched = now_mono
+            logger.info(
+                "enso_regime_fetched",
+                regime=self._regime_tag,
+                oni=latest_oni,
+            )
+        except Exception as exc:
+            logger.debug("enso_regime_fetch_failed", error=str(exc))
+            self._regime_tag = self._regime_tag or "neutral"
+            self._regime_last_fetched = now_mono
+
+        return self._regime_tag
+
+    async def _get_severe_weather_boost(self, station: WeatherStation) -> float:
+        """Check NWS alerts for severe weather near a station → kelly boost.
+
+        Queries the NWS /alerts/active API for alerts affecting the station's
+        lat/lon (50km radius via NWS point lookup). Returns:
+          - 2.0 if Hurricane Watch/Warning, Tropical Storm Warning, or Extreme Wind
+          - 1.5 if Severe Thunderstorm Warning, Tornado Warning, or Winter Storm Warning
+          - 1.0 otherwise (no boost)
+
+        Only fetches for US stations (temp_unit == "F"). Cached for 30 min per station.
+        """
+        if station.temp_unit.upper() != "F":
+            return 1.0
+
+        # Cache key per station, 30 min TTL
+        cache_attr = "_nws_alert_cache"
+        if not hasattr(self, cache_attr):
+            object.__setattr__(self, cache_attr, {})
+        cache: Dict[str, Tuple[float, float]] = getattr(self, cache_attr)
+        now_mono = time.monotonic()
+        cached = cache.get(station.station_id)
+        if cached and now_mono - cached[0] < 1800.0:
+            return cached[1]
+
+        import aiohttp
+        # NWS /alerts/active/point endpoint: filters by lat/lon
+        url = f"https://api.weather.gov/alerts/active?point={station.latitude:.4f},{station.longitude:.4f}"
+        boost = 1.0
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=8),
+                headers={
+                    "Accept": "application/geo+json",
+                    "User-Agent": "PolymarketWeatherBot/1.0",
+                },
+            ) as session:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        logger.debug("nws_alerts_error", station=station.station_id, status=resp.status)
+                        cache[station.station_id] = (now_mono, 1.0)
+                        return 1.0
+                    data = await resp.json(content_type=None)
+
+            features = data.get("features", [])
+            _HIGH_IMPACT = {
+                "Hurricane Warning", "Hurricane Watch",
+                "Tropical Storm Warning", "Extreme Wind Warning",
+            }
+            _MED_IMPACT = {
+                "Severe Thunderstorm Warning", "Tornado Warning",
+                "Winter Storm Warning", "Ice Storm Warning",
+                "Blizzard Warning",
+            }
+            for feat in features:
+                props = feat.get("properties", {})
+                event = props.get("event", "")
+                if event in _HIGH_IMPACT:
+                    boost = max(boost, 2.0)
+                elif event in _MED_IMPACT:
+                    boost = max(boost, 1.5)
+
+            if boost > 1.0:
+                logger.info(
+                    "weatherbot_severe_weather_boost",
+                    station=station.station_id,
+                    boost=boost,
+                    alerts=[f.get("properties", {}).get("event", "") for f in features[:3]],
+                )
+        except Exception as exc:
+            logger.debug("nws_alerts_failed", station=station.station_id, error=str(exc))
+
+        cache[station.station_id] = (now_mono, boost)
+        return boost
+
     async def _maybe_reload_calibration(self) -> None:
         """Reload bias calibration from weather_calibration DB every 6 hours (P1)."""
         now_mono = time.monotonic()
@@ -1002,7 +1159,7 @@ class WeatherBot(BaseBot):
             async with db.get_session() as session:
                 from sqlalchemy import text
                 rows = await session.execute(text("""
-                    SELECT station_id, lead_time_hours, bias, forecast_temp, actual_temp
+                    SELECT station_id, lead_time_hours, bias, forecast_temp, actual_temp, regime
                     FROM weather_calibration
                     WHERE bias IS NOT NULL AND actual_temp IS NOT NULL
                 """))
@@ -1014,8 +1171,12 @@ class WeatherBot(BaseBot):
 
             # Aggregate: station_id → {lead_bucket → {"biases": [...], "pairs": [(x, y)]}}
             # pairs = (forecast_temp, actual_temp) for EMOS OLS fitting
-            raw: Dict[str, Dict[int, Dict]] = {}
-            for station_id, lt_hours, bias, forecast_temp, actual_temp in all_rows:
+            raw: Dict[str, Dict[int, Dict[str, Any]]] = {}
+            # Regime-aware aggregation: (station_id, regime) → {lead_bucket → {"pairs": [...]}}
+            raw_regime: Dict[Tuple[str, str], Dict[int, Dict[str, Any]]] = {}
+            current_regime = await self._get_enso_regime()
+
+            for station_id, lt_hours, bias, forecast_temp, actual_temp, regime in all_rows:
                 bucket = int(float(lt_hours) // 6) * 6
                 if station_id not in raw:
                     raw[station_id] = {}
@@ -1026,6 +1187,16 @@ class WeatherBot(BaseBot):
                     raw[station_id][bucket]["pairs"].append(
                         (float(forecast_temp), float(actual_temp))
                     )
+                    # Regime-conditioned grouping (only rows with regime tag)
+                    if regime:
+                        rkey = (station_id, regime)
+                        if rkey not in raw_regime:
+                            raw_regime[rkey] = {}
+                        if bucket not in raw_regime[rkey]:
+                            raw_regime[rkey][bucket] = {"pairs": []}
+                        raw_regime[rkey][bucket]["pairs"].append(
+                            (float(forecast_temp), float(actual_temp))
+                        )
 
             # Build simple bias calibration (backward compat)
             cal_avg: Dict[str, Dict[int, float]] = {
@@ -1036,12 +1207,17 @@ class WeatherBot(BaseBot):
                 for sid, buckets in raw.items()
             }
 
-            # Build EMOS calibration where ≥20 resolved pairs are available per bucket
-            # EMOS: actual_temp = a + b * forecast_temp + ε  (OLS fit)
-            # σ = std(residuals) → replaces raw ensemble spread when populated
+            # Build EMOS calibration where ≥20 resolved pairs are available per bucket.
+            # Regime-conditioned EMOS: if current regime has ≥20 pairs, use regime-specific
+            # params. Otherwise fall back to regime-agnostic EMOS from all data.
             _MIN_EMOS_SAMPLES = 20
             emos_params: Dict[str, Dict[int, Tuple[float, float, Optional[float]]]] = {}
-            for sid, buckets in raw.items():
+
+            # Step 1: Try regime-specific EMOS for current regime
+            _regime_buckets = 0
+            for (sid, regime), buckets in raw_regime.items():
+                if regime != current_regime:
+                    continue
                 for bucket, data in buckets.items():
                     pairs = data["pairs"]
                     if len(pairs) >= _MIN_EMOS_SAMPLES:
@@ -1049,6 +1225,22 @@ class WeatherBot(BaseBot):
                         if sid not in emos_params:
                             emos_params[sid] = {}
                         emos_params[sid][bucket] = (emos_a, emos_b, emos_sigma)
+                        _regime_buckets += 1
+
+            # Step 2: Fill in from regime-agnostic data where regime-specific is unavailable
+            _agnostic_buckets = 0
+            for sid, buckets in raw.items():
+                for bucket, data in buckets.items():
+                    # Skip if regime-specific already populated this cell
+                    if sid in emos_params and bucket in emos_params[sid]:
+                        continue
+                    pairs = data["pairs"]
+                    if len(pairs) >= _MIN_EMOS_SAMPLES:
+                        emos_a, emos_b, emos_sigma = WeatherBot._fit_emos(pairs)
+                        if sid not in emos_params:
+                            emos_params[sid] = {}
+                        emos_params[sid][bucket] = (emos_a, emos_b, emos_sigma)
+                        _agnostic_buckets += 1
 
             self._prob_engine.load_calibration(cal_avg)
             if emos_params:
@@ -1056,7 +1248,51 @@ class WeatherBot(BaseBot):
                 logger.info(
                     "weatherbot_emos_calibration_loaded",
                     stations_with_emos=len(emos_params),
+                    regime=current_regime,
+                    regime_buckets=_regime_buckets,
+                    agnostic_buckets=_agnostic_buckets,
                 )
+            # Load isotonic tail calibration data from weather_tail_calibration table.
+            # Groups (model_prob, actual_freq) pairs by (bucket_type, lead_bucket).
+            # Falls back to fixed 0.85 tail discount when < 5 data points per cell.
+            try:
+                async with db.get_session() as session:
+                    tail_rows = await session.execute(text("""
+                        SELECT bucket_type, lead_time_bucket, model_prob, actual_outcome
+                        FROM weather_tail_calibration
+                    """))
+                    tail_all = tail_rows.fetchall()
+
+                if tail_all:
+                    # Bin by (bucket_type, lead_bucket), compute actual_freq in probability bins
+                    from collections import defaultdict
+                    tail_bins: Dict[Tuple[str, int], List[Tuple[float, int]]] = defaultdict(list)
+                    for btype, lt_bucket, mp, outcome in tail_all:
+                        tail_bins[(btype, lt_bucket)].append((float(mp), int(outcome)))
+
+                    # Compute (model_prob_bin_center, actual_freq) for each cell
+                    tail_data: Dict[Tuple[str, int], List[Tuple[float, float]]] = {}
+                    for key, points in tail_bins.items():
+                        if len(points) < 5:
+                            continue
+                        # Sort by model_prob, bin into 10 equal-sized bins
+                        points.sort(key=lambda x: x[0])
+                        bin_size = max(len(points) // 10, 1)
+                        calibrated: List[Tuple[float, float]] = []
+                        for i in range(0, len(points), bin_size):
+                            chunk = points[i:i + bin_size]
+                            avg_mp = sum(p[0] for p in chunk) / len(chunk)
+                            avg_freq = sum(p[1] for p in chunk) / len(chunk)
+                            if avg_mp > 0.01:
+                                calibrated.append((avg_mp, avg_freq))
+                        if calibrated:
+                            tail_data[key] = calibrated
+
+                    if tail_data:
+                        self._prob_engine.load_tail_calibration(tail_data)
+            except Exception as tail_exc:
+                logger.debug("weatherbot_tail_calibration_failed", error=str(tail_exc))
+
             self._calibration_last_loaded = now_mono
             logger.info(
                 "weatherbot_calibration_reloaded",
@@ -1118,13 +1354,14 @@ class WeatherBot(BaseBot):
                 })
 
                 # Insert calibration row (forecast only; actual_temp filled on resolution)
+                regime = await self._get_enso_regime()
                 await session.execute(text("""
                     INSERT INTO weather_calibration
                         (station_id, target_date, forecast_temp, actual_temp,
-                         lead_time_hours, model_name, created_at)
+                         lead_time_hours, model_name, regime, created_at)
                     VALUES
                         (:station_id, :target_date, :forecast_temp, NULL,
-                         :lead_time_hours, :model_name, :created_at)
+                         :lead_time_hours, :model_name, :regime, :created_at)
                     ON CONFLICT (station_id, target_date, lead_time_hours) DO NOTHING
                 """), {
                     "station_id": station.station_id,
@@ -1132,6 +1369,7 @@ class WeatherBot(BaseBot):
                     "forecast_temp": forecast.deterministic_high,
                     "lead_time_hours": round(forecast.lead_time_hours, 1),
                     "model_name": ",".join(forecast.models_used),
+                    "regime": regime,
                     "created_at": now_utc,
                 })
 
