@@ -528,6 +528,106 @@ class TestWeatherForecastClient:
         assert client._cache_ttl == 900.0
         assert client._rate_limit == 50
 
+    @pytest.mark.asyncio
+    async def test_get_nbm_forecast_success(self):
+        """get_nbm_forecast returns daytime high from NWS 7-day forecast."""
+        client = WeatherForecastClient()
+
+        # Mock session for both NWS /points and /forecast calls
+        mock_resp = MagicMock()
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_resp.status = 200
+
+        # First call: /points → forecast URL; second call: forecast periods
+        mock_resp.json = AsyncMock(side_effect=[
+            {"properties": {"forecast": "https://api.weather.gov/gridpoints/OKX/44,32/forecast"}},
+            {"properties": {"periods": [
+                {"startTime": "2026-03-06T06:00:00-05:00", "isDaytime": True,
+                 "temperature": 72, "temperatureUnit": "F"},
+                {"startTime": "2026-03-06T18:00:00-05:00", "isDaytime": False,
+                 "temperature": 55, "temperatureUnit": "F"},
+            ]}},
+        ])
+        mock_sess = MagicMock()
+        mock_sess.__aenter__ = AsyncMock(return_value=mock_sess)
+        mock_sess.__aexit__ = AsyncMock(return_value=False)
+        mock_sess.get = MagicMock(return_value=mock_resp)
+
+        with patch.object(client, "_ensure_session", new_callable=AsyncMock, return_value=mock_sess):
+            result = await client.get_nbm_forecast(
+                40.7772, -73.8726, "KLGA", date(2026, 3, 6)
+            )
+
+        assert result == pytest.approx(72.0, abs=0.1)
+
+    @pytest.mark.asyncio
+    async def test_get_nbm_forecast_api_error_returns_none(self):
+        """get_nbm_forecast returns None when NWS /points API fails."""
+        client = WeatherForecastClient()
+        mock_resp = MagicMock()
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_resp.status = 503
+        mock_sess = MagicMock()
+        mock_sess.get = MagicMock(return_value=mock_resp)
+
+        with patch.object(client, "_ensure_session", new_callable=AsyncMock, return_value=mock_sess):
+            result = await client.get_nbm_forecast(
+                40.7772, -73.8726, "KLGA", date(2026, 3, 6)
+            )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_nbm_used_as_deterministic_high_for_us_station(self):
+        """get_combined_forecast uses NBM as deterministic_high for US stations (temp_unit=F)."""
+        from base_engine.weather.station_registry import STATION_REGISTRY
+        client = WeatherForecastClient()
+        station = STATION_REGISTRY["new_york_city"]  # temp_unit="F"
+
+        # Patch get_deterministic_forecast and get_ensemble_forecast to return minimal data
+        dummy_date = date(2026, 3, 10)
+        dummy_iso = dummy_date.isoformat()
+
+        with patch.object(client, "get_deterministic_forecast", new_callable=AsyncMock,
+                          return_value={"daily": {"time": [dummy_iso], "temperature_2m_max": [65.0]}}), \
+             patch.object(client, "get_ensemble_forecast", new_callable=AsyncMock,
+                          return_value={"daily": {"time": [dummy_iso],
+                                                   "temperature_2m_max_member01": [65.0] * 7,
+                                                   "temperature_2m_max_member02": [66.0] * 7}}), \
+             patch.object(client, "get_nbm_forecast", new_callable=AsyncMock, return_value=70.0):
+            result = await client.get_combined_forecast(station, dummy_date)
+
+        assert result is not None
+        # NBM value (70.0) should override GFS (65.0) as deterministic_high
+        assert result.deterministic_high == pytest.approx(70.0, abs=0.1)
+        assert "nbm" in result.models_used
+        assert "gfs_seamless" not in result.models_used
+
+    @pytest.mark.asyncio
+    async def test_nbm_not_called_for_international_station(self):
+        """get_combined_forecast skips NBM fetch for non-US stations (temp_unit=C)."""
+        from base_engine.weather.station_registry import STATION_REGISTRY
+        client = WeatherForecastClient()
+        station = STATION_REGISTRY.get("london") or STATION_REGISTRY.get("paris")
+        if station is None:
+            pytest.skip("No international station available in registry")
+
+        dummy_date = date(2026, 3, 10)
+        dummy_iso = dummy_date.isoformat()
+
+        with patch.object(client, "get_deterministic_forecast", new_callable=AsyncMock,
+                          return_value={"daily": {"time": [dummy_iso], "temperature_2m_max": [15.0]}}), \
+             patch.object(client, "get_ensemble_forecast", new_callable=AsyncMock,
+                          return_value={"daily": {"time": [dummy_iso],
+                                                   "temperature_2m_max_member01": [15.0] * 7}}), \
+             patch.object(client, "get_nbm_forecast", new_callable=AsyncMock, return_value=99.0) as mock_nbm:
+            result = await client.get_combined_forecast(station, dummy_date)
+
+        # NBM should not have been called for international station
+        mock_nbm.assert_not_called()
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # WeatherBot

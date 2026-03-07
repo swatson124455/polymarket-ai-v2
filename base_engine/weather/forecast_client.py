@@ -31,6 +31,8 @@ logger = get_logger()
 _DETERMINISTIC_URL = "https://api.open-meteo.com/v1/forecast"
 _ENSEMBLE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
 _HISTORICAL_URL = "https://archive-api.open-meteo.com/v1/archive"
+# NWS API (free, no key) — NBM-based daily forecasts for US stations
+_NWS_POINTS_URL = "https://api.weather.gov/points"
 
 
 @dataclass
@@ -54,6 +56,9 @@ class WeatherForecastClient:
         self._cache_ttl = cache_ttl
         self._rate_limit = rate_limit_per_min
         self._request_times: List[float] = []
+        # NWS grid forecast URLs per station: station_id → (expiry_mono, forecast_url)
+        # Grid coordinates are static per station; cache for 24h to avoid repeated lookups.
+        self._nws_forecast_url_cache: Dict[str, Tuple[float, Optional[str]]] = {}
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -211,6 +216,117 @@ class WeatherForecastClient:
             logger.warning("open_meteo_ensemble_failed", model=model, error=str(exc))
             return None
 
+    async def get_nbm_forecast(
+        self,
+        latitude: float,
+        longitude: float,
+        station_id: str,
+        target_date: date,
+    ) -> Optional[float]:
+        """Fetch NBM-based daily high temperature from NWS API for US stations.
+
+        NWS 7-day forecast is generated directly from NBM (National Blend of Models),
+        which applies MAE-weighted blending of 31+ model systems with bias correction.
+        NBM MAE at day-1 is 0.8-1.2°F — better than or equal to raw GFS deterministic.
+
+        Returns daily high in °F (NWS always uses °F for US stations), or None if
+        the NWS API is unavailable or target_date is beyond the 7-day horizon.
+
+        Two-step NWS call:
+          1. GET /points/{lat},{lon} → returns forecast URL for this grid point
+          2. GET {forecast_url}       → returns 7-day periods; extract daytime high
+        The forecast URL is cached per station for 24h (grid coordinates are static).
+        """
+        # Step 1: Get or cache the NWS forecast URL for this station
+        now_mono = time.monotonic()
+        cached_url = self._nws_forecast_url_cache.get(station_id)
+        if cached_url and now_mono < cached_url[0]:
+            forecast_url = cached_url[1]
+        else:
+            forecast_url = await self._fetch_nws_forecast_url(latitude, longitude, station_id)
+            # Cache for 24h regardless of result (None = station not served by NWS)
+            self._nws_forecast_url_cache[station_id] = (now_mono + 86400.0, forecast_url)
+
+        if not forecast_url:
+            return None
+
+        # Step 2: Fetch 7-day forecast and find the daytime period for target_date
+        session = await self._ensure_session()
+        target_iso = target_date.isoformat()
+        try:
+            async with session.get(
+                forecast_url,
+                headers={"Accept": "application/geo+json"},
+            ) as resp:
+                if resp.status != 200:
+                    logger.debug(
+                        "nws_forecast_api_error",
+                        station=station_id,
+                        status=resp.status,
+                    )
+                    return None
+                data = await resp.json(content_type=None)
+            periods = data.get("properties", {}).get("periods", [])
+            for period in periods:
+                # Each period has startTime like "2026-03-06T06:00:00-05:00"
+                start_time = period.get("startTime", "")
+                is_daytime = period.get("isDaytime", False)
+                if not is_daytime:
+                    continue
+                # Match target_date by checking if date portion of startTime matches
+                if target_iso in start_time:
+                    temp = period.get("temperature")
+                    temp_unit = period.get("temperatureUnit", "F")
+                    if temp is not None:
+                        temp_f = float(temp)
+                        if temp_unit.upper() == "C":
+                            temp_f = temp_f * 9.0 / 5.0 + 32.0
+                        logger.debug(
+                            "nws_nbm_forecast_retrieved",
+                            station=station_id,
+                            date=target_iso,
+                            temp_f=round(temp_f, 1),
+                        )
+                        return temp_f
+            return None
+        except Exception as exc:
+            logger.debug("nws_forecast_failed", station=station_id, error=str(exc))
+            return None
+
+    async def _fetch_nws_forecast_url(
+        self,
+        latitude: float,
+        longitude: float,
+        station_id: str,
+    ) -> Optional[str]:
+        """Call NWS /points/{lat},{lon} to get the 7-day forecast URL for this grid cell."""
+        session = await self._ensure_session()
+        url = f"{_NWS_POINTS_URL}/{latitude:.4f},{longitude:.4f}"
+        try:
+            async with session.get(
+                url,
+                headers={"Accept": "application/geo+json"},
+            ) as resp:
+                if resp.status != 200:
+                    logger.debug(
+                        "nws_points_api_error",
+                        station=station_id,
+                        status=resp.status,
+                    )
+                    return None
+                data = await resp.json(content_type=None)
+            forecast_url = data.get("properties", {}).get("forecast")
+            if forecast_url:
+                logger.debug(
+                    "nws_forecast_url_cached",
+                    station=station_id,
+                    forecast_url=forecast_url,
+                )
+            return forecast_url
+        except Exception as exc:
+            logger.debug("nws_points_failed", station=station_id, error=str(exc))
+            return None
+
     async def get_combined_forecast(
         self,
         station: WeatherStation,
@@ -229,14 +345,24 @@ class WeatherForecastClient:
         if cached and now_mono < cached[0]:
             return cached[1]
 
-        # Fetch both in parallel
+        # Fetch deterministic, ensemble, and (for US stations) NBM in parallel
         det_task = self.get_deterministic_forecast(
             station.latitude, station.longitude, station.temp_unit,
         )
         ens_task = self.get_ensemble_forecast(
             station.latitude, station.longitude, station.temp_unit,
         )
-        det_data, ens_data = await asyncio.gather(det_task, ens_task, return_exceptions=True)
+        # NBM via NWS API is only available for US stations (temp_unit == "F")
+        nbm_task = (
+            self.get_nbm_forecast(
+                station.latitude, station.longitude, station.station_id, target_date,
+            )
+            if station.temp_unit.upper() == "F"
+            else asyncio.sleep(0, result=None)  # no-op coroutine for non-US stations
+        )
+        det_data, ens_data, nbm_high = await asyncio.gather(
+            det_task, ens_task, nbm_task, return_exceptions=True
+        )
 
         if isinstance(det_data, Exception):
             logger.warning("forecast_deterministic_exception", error=str(det_data))
@@ -244,6 +370,9 @@ class WeatherForecastClient:
         if isinstance(ens_data, Exception):
             logger.warning("forecast_ensemble_exception", error=str(ens_data))
             ens_data = None
+        if isinstance(nbm_high, Exception):
+            logger.debug("forecast_nbm_exception", error=str(nbm_high))
+            nbm_high = None
 
         if det_data is None and ens_data is None:
             return None
@@ -262,6 +391,15 @@ class WeatherForecastClient:
                 if idx < len(maxes) and maxes[idx] is not None:
                     deterministic_high = float(maxes[idx])
                     models_used.append("gfs_seamless")
+
+        # NBM override for US stations: NWS NBM has lower MAE than raw GFS at day 1-3.
+        # Use NBM as the primary deterministic_high when available; GFS is the fallback.
+        # NBM is already in °F (NWS API always returns °F); no unit conversion needed.
+        if nbm_high is not None:
+            deterministic_high = nbm_high
+            if "gfs_seamless" in models_used:
+                models_used.remove("gfs_seamless")
+            models_used.append("nbm")
 
         # Extract ensemble members for target date
         ensemble_members = []
