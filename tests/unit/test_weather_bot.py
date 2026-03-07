@@ -1007,10 +1007,10 @@ class TestWeatherBotOpportunities:
         """≥3 US cities all showing YES (warm) → 1.2x boost."""
         from bots.weather_bot import WeatherBot
         analyzed = [
-            ([self._make_opp("New York City", "YES")], self._make_group("New York City")),
-            ([self._make_opp("Atlanta", "YES")], self._make_group("Atlanta")),
-            ([self._make_opp("Dallas", "YES")], self._make_group("Dallas")),
-            ([self._make_opp("Miami", "YES")], self._make_group("Miami")),
+            ([self._make_opp("New York City", "YES")], self._make_group("New York City"), {}),
+            ([self._make_opp("Atlanta", "YES")], self._make_group("Atlanta"), {}),
+            ([self._make_opp("Dallas", "YES")], self._make_group("Dallas"), {}),
+            ([self._make_opp("Miami", "YES")], self._make_group("Miami"), {}),
         ]
         boost = WeatherBot._compute_regime_boost(analyzed)
         assert boost == 1.2
@@ -1019,9 +1019,9 @@ class TestWeatherBotOpportunities:
         """≥3 US cities all showing NO (cold) → 1.2x boost."""
         from bots.weather_bot import WeatherBot
         analyzed = [
-            ([self._make_opp("Chicago", "NO")], self._make_group("Chicago")),
-            ([self._make_opp("Seattle", "NO")], self._make_group("Seattle")),
-            ([self._make_opp("Denver", "NO")], self._make_group("Denver")),
+            ([self._make_opp("Chicago", "NO")], self._make_group("Chicago"), {}),
+            ([self._make_opp("Seattle", "NO")], self._make_group("Seattle"), {}),
+            ([self._make_opp("Denver", "NO")], self._make_group("Denver"), {}),
         ]
         boost = WeatherBot._compute_regime_boost(analyzed)
         assert boost == 1.2
@@ -1030,9 +1030,9 @@ class TestWeatherBotOpportunities:
         """Mixed warm/cold → no regime → 1.0 boost."""
         from bots.weather_bot import WeatherBot
         analyzed = [
-            ([self._make_opp("New York City", "YES")], self._make_group("New York City")),
-            ([self._make_opp("Atlanta", "NO")], self._make_group("Atlanta")),
-            ([self._make_opp("Dallas", "YES")], self._make_group("Dallas")),
+            ([self._make_opp("New York City", "YES")], self._make_group("New York City"), {}),
+            ([self._make_opp("Atlanta", "NO")], self._make_group("Atlanta"), {}),
+            ([self._make_opp("Dallas", "YES")], self._make_group("Dallas"), {}),
         ]
         boost = WeatherBot._compute_regime_boost(analyzed)
         assert boost == 1.0
@@ -1041,9 +1041,9 @@ class TestWeatherBotOpportunities:
         """Only international cities → no regime signal."""
         from bots.weather_bot import WeatherBot
         analyzed = [
-            ([self._make_opp("London", "YES")], self._make_group("london")),
-            ([self._make_opp("Seoul", "YES")], self._make_group("seoul")),
-            ([self._make_opp("Toronto", "YES")], self._make_group("toronto")),
+            ([self._make_opp("London", "YES")], self._make_group("london"), {}),
+            ([self._make_opp("Seoul", "YES")], self._make_group("seoul"), {}),
+            ([self._make_opp("Toronto", "YES")], self._make_group("toronto"), {}),
         ]
         boost = WeatherBot._compute_regime_boost(analyzed)
         assert boost == 1.0

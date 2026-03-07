@@ -381,25 +381,51 @@ class PaperTradingEngine:
         )
         self.trades.append(trade)
         if self.db and hasattr(self.db, "insert_paper_trade"):
-            try:
-                await self.db.insert_paper_trade(
-                    order_id=trade_id,
-                    market_id=market_id,
-                    token_id=token_id,
-                    bot_name=bot_name,
-                    side=_db_side,
-                    size=size,
-                    price=price,
-                    confidence=confidence,
-                    correlation_id=correlation_id,
-                    realized_pnl=realized_pnl,  # None for BUY, computed value for SELL
-                    latency_ms=latency_ms,
-                )
-            except Exception as e:
-                # C4 FIX: Elevate to WARNING. At DEBUG, this was invisible — position was closed
-                # in memory but not in DB, so on restart seed_positions_from_db() reloads the
-                # ghost position causing double-position bugs and incorrect cash balances.
-                logger.warning("Paper trade persist failed — position may reappear on restart: %s", e)
+            # H5/M9: Retry 3× with backoff to prevent ghost positions.
+            # Most DB failures are transient (pool exhaustion, brief network blips).
+            # If all retries fail on a SELL, log ERROR so operator knows a ghost may exist.
+            for _attempt in range(3):
+                try:
+                    await self.db.insert_paper_trade(
+                        order_id=trade_id,
+                        market_id=market_id,
+                        token_id=token_id,
+                        bot_name=bot_name,
+                        side=_db_side,
+                        size=size,
+                        price=price,
+                        confidence=confidence,
+                        correlation_id=correlation_id,
+                        realized_pnl=realized_pnl,  # None for BUY, computed value for SELL
+                        latency_ms=latency_ms,
+                    )
+                    break  # Success — exit retry loop
+                except Exception as e:
+                    if _attempt < 2:
+                        await asyncio.sleep(0.5 * (_attempt + 1))
+                        logger.warning(
+                            "Paper trade persist retry %d/3",
+                            _attempt + 1,
+                            market_id=market_id,
+                            error=str(e),
+                        )
+                    else:
+                        # Final failure — ghost position risk on restart
+                        if side == "SELL":
+                            logger.error(
+                                "Paper trade SELL persist FAILED after 3 attempts — "
+                                "ghost position may reappear on restart",
+                                market_id=market_id,
+                                error=str(e),
+                            )
+                        else:
+                            logger.warning(
+                                "Paper trade persist FAILED after 3 attempts — "
+                                "position may reappear on restart",
+                                market_id=market_id,
+                                side=side,
+                                error=str(e),
+                            )
         slippage_applied = round(abs(price - original_price) * 10000, 1)  # bps
         logger.info(
             "Paper trade executed",

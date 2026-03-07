@@ -187,11 +187,11 @@ class WeatherBot(BaseBot):
             return
 
         # Phase 1: Analyze all groups (fetch forecasts, compute edges)
-        analyzed: List[Tuple[List[Dict], WeatherMarketGroup]] = []
+        analyzed: List[Tuple[List[Dict], WeatherMarketGroup, Dict[str, float]]] = []
         for group in groups:
             try:
-                opps = await self._analyze_group(group)
-                analyzed.append((opps, group))
+                opps, model_probs = await self._analyze_group(group)
+                analyzed.append((opps, group, model_probs))
             except Exception as exc:
                 logger.debug(
                     "weatherbot_group_error",
@@ -210,7 +210,7 @@ class WeatherBot(BaseBot):
         _groups_with_edge = 0
         _best_edge = 0.0
 
-        for opps, group in analyzed:
+        for opps, group, _probs in analyzed:
             if opps:
                 _groups_with_edge += 1
             for opp in opps:
@@ -219,6 +219,10 @@ class WeatherBot(BaseBot):
                 opp["regime_boost"] = regime_boost
                 await self._execute_weather_trade(opp, group)
                 _traded += 1
+
+        # Phase 4: Re-evaluate open positions with fresh model probabilities
+        # Feeds position_manager's model-reversal exit logic with current forecasts.
+        await self._reevaluate_open_positions(analyzed)
 
         # Wire Session 51 heartbeat counters so watchdog can detect silent WeatherBot
         self._last_scan_markets = len(weather_markets)
@@ -290,15 +294,18 @@ class WeatherBot(BaseBot):
 
     # ── Group analysis ────────────────────────────────────────────────────
 
-    async def _analyze_group(self, group: WeatherMarketGroup) -> List[Dict]:
+    async def _analyze_group(
+        self, group: WeatherMarketGroup,
+    ) -> Tuple[List[Dict], Dict[str, float]]:
         """Analyze all buckets in a city+date group.
 
-        Returns list of tradeable opportunities (edge >= threshold).
+        Returns (tradeable_opportunities, model_probs) where model_probs maps
+        market_id → model probability for all buckets (used by L4 re-evaluation).
         """
         # Skip if target date is in the past
         today = date.today()
         if group.target_date < today:
-            return []
+            return [], {}
 
         # Skip if lead time exceeds max
         now_utc = datetime.now(timezone.utc)
@@ -308,12 +315,12 @@ class WeatherBot(BaseBot):
         )
         lead_time = max(0.0, (target_noon - now_utc).total_seconds() / 3600.0)
         if lead_time > self._max_lead_time:
-            return []
+            return [], {}
 
         # Station health check
         if not await self._station_health.is_healthy(group.station):
             logger.warning("weatherbot_station_unhealthy", station=group.station.station_id)
-            return []
+            return [], {}
 
         # Fetch ensemble forecast
         forecast = await self._forecast_client.get_combined_forecast(
@@ -325,7 +332,7 @@ class WeatherBot(BaseBot):
                 station=group.station.station_id,
                 date=group.target_date.isoformat(),
             )
-            return []
+            return [], {}
 
         # P3: Persist forecast to DB (async, non-blocking on failure)
         await self._save_forecast_to_db(group.station, group.target_date, forecast)
@@ -339,7 +346,7 @@ class WeatherBot(BaseBot):
             )
         except ValueError as exc:
             logger.debug("weatherbot_fit_failed", error=str(exc))
-            return []
+            return [], {}
 
         # T3B: Climate normal Bayesian prior — blend toward climatology at long lead times.
         # At ≤72h the ensemble is skilled; beyond 72h, blend 0-40% toward 10-year climate mean.
@@ -384,7 +391,7 @@ class WeatherBot(BaseBot):
                 priced=priced_count,
                 total=len(group.buckets),
             )
-            return []
+            return [], model_probs
 
         # Compute edges
         edges = self._prob_engine.compute_edges(model_probs, market_prices)
@@ -460,7 +467,7 @@ class WeatherBot(BaseBot):
                 "resolution_boundary_risk": boundary_risk,
             })
 
-        return tradeable
+        return tradeable, model_probs
 
     async def _apply_metar_resolution_day_override(
         self,
@@ -597,6 +604,51 @@ class WeatherBot(BaseBot):
         combined_boost = 1.0 + (expiry_boost - 1.0) + (regime_boost - 1.0) * 0.5 + (severe_boost - 1.0) * 0.5
         combined_boost = min(combined_boost, 2.0)
 
+        # H1: Slippage-adjusted edge — query order book depth and skip if
+        # estimated slippage eats the edge. Cap size to max safe fill.
+        # Fail-open: if liquidity check fails, proceed at full size.
+        _slippage_size_cap = float("inf")
+        _liq_guard = getattr(self.base_engine, "liquidity_guardian", None)
+        if _liq_guard:
+            try:
+                _cid = ""
+                _midx = getattr(self.base_engine.order_gateway, "_market_index", None)
+                if _midx:
+                    _mdata = _midx.get(str(opp["market_id"]))
+                    if _mdata:
+                        _cid = str(_mdata.get("conditionId") or _mdata.get("condition_id") or "")
+                liq_check = await _liq_guard.check_liquidity(
+                    market_id=opp["market_id"],
+                    token_id=opp["token_id"],
+                    trade_size=self._default_size / max(opp["price"], 0.01),
+                    side="BUY",
+                    condition_id=_cid,
+                )
+                if liq_check:
+                    _slippage_pct = liq_check.get("slippage", 0.0)
+                    _effective_edge = opp["abs_edge"] - _slippage_pct
+                    if _effective_edge < self._min_edge:
+                        logger.debug(
+                            "weatherbot_slippage_skip",
+                            market_id=opp["market_id"],
+                            raw_edge=round(opp["abs_edge"], 4),
+                            slippage=round(_slippage_pct, 4),
+                            effective_edge=round(_effective_edge, 4),
+                        )
+                        return
+                    # Cap size to what the book can fill within 2% slippage
+                    max_safe = await _liq_guard.get_max_safe_size(
+                        market_id=opp["market_id"],
+                        token_id=opp["token_id"],
+                        side="BUY",
+                        max_slippage_pct=0.02,
+                        condition_id=_cid,
+                    )
+                    if max_safe > 0:
+                        _slippage_size_cap = max_safe * max(opp["price"], 0.01)
+            except Exception as exc:
+                logger.debug("weatherbot_liquidity_check_failed", error=str(exc))
+
         # Size via central risk_manager Kelly (same as all other bots)
         try:
             kelly_shares = await self.calculate_bot_position_size(
@@ -606,10 +658,10 @@ class WeatherBot(BaseBot):
         except Exception:
             size = max(1.0, self._default_size)
 
-        # Cap to remaining group/city budget
+        # Cap to remaining group/city budget + liquidity cap
         remaining_group = self._max_per_group - current_group_exp
         remaining_city = self._max_correlated - current_city_exp
-        size = min(size, remaining_group, remaining_city, self._default_size * 4.0)
+        size = min(size, remaining_group, remaining_city, self._default_size * 4.0, _slippage_size_cap)
 
         if size < 1.0:
             return
@@ -667,11 +719,63 @@ class WeatherBot(BaseBot):
                 error=result.get("error", "unknown"),
             )
 
+    # ── Position re-evaluation (L4) ──────────────────────────────────────
+
+    async def _reevaluate_open_positions(
+        self,
+        analyzed: List[Tuple[List[Dict], WeatherMarketGroup, Dict[str, float]]],
+    ) -> None:
+        """Update predicted_prob on open WeatherBot positions using fresh forecast data.
+
+        Feeds position_manager's model-reversal exit logic with current probabilities
+        instead of stale entry-time values. Called at end of each scan cycle.
+        """
+        og = getattr(self.base_engine, "order_gateway", None)
+        if not og:
+            return
+
+        bot_positions = og._open_position_markets.get("WeatherBot", set())
+        if not bot_positions:
+            return
+
+        # Build market_id → fresh probability lookup from all analyzed groups
+        fresh_probs: Dict[str, float] = {}
+        for _opps, _group, _model_probs in analyzed:
+            fresh_probs.update(_model_probs)
+
+        if not fresh_probs:
+            return
+
+        updated = 0
+        for mid in list(bot_positions):
+            if mid in fresh_probs:
+                new_prob = fresh_probs[mid]
+                detail_key = f"WeatherBot:{mid}"
+                details = og._position_details.get(detail_key)
+                if details:
+                    old_prob = details.get("predicted_prob", 0.5)
+                    if abs(new_prob - old_prob) > 0.05:
+                        details["predicted_prob"] = new_prob
+                        updated += 1
+                        logger.debug(
+                            "weatherbot_position_prob_updated",
+                            market_id=mid,
+                            old_prob=round(old_prob, 3),
+                            new_prob=round(new_prob, 3),
+                        )
+
+        if updated:
+            logger.info(
+                "weatherbot_positions_reevaluated",
+                updated=updated,
+                total=len(bot_positions),
+            )
+
     # ── Regime detection ─────────────────────────────────────────────────
 
     @staticmethod
     def _compute_regime_boost(
-        analyzed: List[Tuple[List[Dict], "WeatherMarketGroup"]],
+        analyzed: List[Tuple[List[Dict], "WeatherMarketGroup", Dict[str, float]]],
     ) -> float:
         """Detect broad warm/cold front across ≥3 US cities → 1.2x Kelly boost.
 
@@ -682,7 +786,7 @@ class WeatherBot(BaseBot):
         warm_cities: Set[str] = set()
         cold_cities: Set[str] = set()
 
-        for opps, group in analyzed:
+        for opps, group, _probs in analyzed:
             if not opps or group.city not in US_CITY_NAMES:
                 continue
             # Best opportunity for this city
