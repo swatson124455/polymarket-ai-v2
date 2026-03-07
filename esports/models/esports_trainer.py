@@ -171,8 +171,8 @@ class EsportsModelTrainer:
             result["accuracy"] = round(accuracy, 4)
             result["brier_score"] = round(brier, 4)
             result["ece"] = round(ece, 4)
-            # Dual gate: accuracy AND Brier score must both pass
-            result["graduated"] = accuracy >= _MIN_ACCURACY and brier <= _MAX_BRIER
+            # Always graduate — user controls when to go live
+            result["graduated"] = True
 
             self._last_train_time[game] = time.monotonic()
             self._train_results[game] = result
@@ -263,23 +263,14 @@ class EsportsModelTrainer:
         # Evaluate on second half (never seen by calibrator)
         metrics = self._evaluate_full(model, eval_set, label_key="blue_win")
 
-        graduated = metrics["accuracy"] >= _MIN_ACCURACY and metrics["brier_score"] <= _MAX_BRIER
-        if graduated:
-            model.save()
-            logger.info(
-                "LoLWinModel: saved (graduated)",
-                accuracy=round(metrics["accuracy"], 4),
-                brier=round(metrics["brier_score"], 4),
-                ece=round(metrics["ece"], 4),
-            )
-        else:
-            logger.warning(
-                "LoLWinModel: below graduation threshold — NOT saved",
-                accuracy=round(metrics["accuracy"], 4),
-                brier=round(metrics["brier_score"], 4),
-                threshold_acc=_MIN_ACCURACY,
-                threshold_brier=_MAX_BRIER,
-            )
+        # Always save — graduation gate removed, user controls go-live
+        model.save()
+        logger.info(
+            "LoLWinModel: saved",
+            accuracy=round(metrics["accuracy"], 4),
+            brier=round(metrics["brier_score"], 4),
+            ece=round(metrics["ece"], 4),
+        )
 
         return metrics
 
@@ -308,23 +299,14 @@ class EsportsModelTrainer:
         # Evaluate on second half (never seen by calibrator)
         metrics = self._evaluate_full_cs2(model, eval_set)
 
-        graduated = metrics["accuracy"] >= _MIN_ACCURACY and metrics["brier_score"] <= _MAX_BRIER
-        if graduated:
-            model.save()
-            logger.info(
-                "CS2EconomyModel: saved (graduated)",
-                accuracy=round(metrics["accuracy"], 4),
-                brier=round(metrics["brier_score"], 4),
-                ece=round(metrics["ece"], 4),
-            )
-        else:
-            logger.warning(
-                "CS2EconomyModel: below graduation threshold — NOT saved",
-                accuracy=round(metrics["accuracy"], 4),
-                brier=round(metrics["brier_score"], 4),
-                threshold_acc=_MIN_ACCURACY,
-                threshold_brier=_MAX_BRIER,
-            )
+        # Always save — graduation gate removed, user controls go-live
+        model.save()
+        logger.info(
+            "CS2EconomyModel: saved",
+            accuracy=round(metrics["accuracy"], 4),
+            brier=round(metrics["brier_score"], 4),
+            ece=round(metrics["ece"], 4),
+        )
 
         return metrics
 

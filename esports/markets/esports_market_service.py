@@ -126,21 +126,22 @@ class EsportsMarketService:
             from sqlalchemy import text
 
             async with self._db.get_session() as session:
-                # Direct DB query: category='esports', active, not resolved, has prices.
-                # NO liquidity filter — CLOB markets have liq=0 by design.
-                # Volume gate filters out untradeable/dead markets.
+                # Query ALL active unresolved markets with prices — category
+                # is unreliable (Polymarket miscategorizes esports as politics,
+                # crypto, weather, etc). The _is_real_esports() keyword filter
+                # below is the real gate. No volume filter — CLOB markets
+                # start with volume=0.
                 rows = await session.execute(text("""
                     SELECT id, condition_id, question, slug, category,
                            liquidity, volume, yes_token_id, no_token_id,
                            yes_price, no_price, resolution_source,
                            end_date_iso, active, resolved, resolution
                     FROM markets
-                    WHERE category = 'esports'
-                      AND active = true
+                    WHERE active = true
                       AND (resolved = false OR resolved IS NULL)
                       AND yes_price IS NOT NULL
                     ORDER BY volume DESC NULLS LAST
-                    LIMIT 500
+                    LIMIT 5000
                 """))
                 all_rows = rows.fetchall()
 
@@ -148,14 +149,11 @@ class EsportsMarketService:
             for row in all_rows:
                 question = str(row[2] or "")
 
-                # Double-gate: reject soccer/football miscategorized as esports
+                # Keyword gate: only pass markets matching esports game keywords
                 if not _is_real_esports(question):
                     continue
 
-                # Volume gate
                 vol = float(row[6] or 0)
-                if vol < vol_min:
-                    continue
 
                 yes_price = float(row[9]) if row[9] is not None else None
                 no_price = float(row[10]) if row[10] is not None else None

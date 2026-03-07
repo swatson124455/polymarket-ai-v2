@@ -342,10 +342,8 @@ class EsportsBot(BaseBot):
                 result = await asyncio.wait_for(
                     self._trainer.train_game("lol", db=db), timeout=300.0,
                 )
-                if result.get("graduated"):
-                    # Reload trained model
-                    if self._lol_model:
-                        self._lol_model.load()
+                if self._lol_model:
+                    self._lol_model.load()
             except (asyncio.TimeoutError, Exception) as exc:
                 logger.debug("EsportsBot: LoL retrain failed", error=str(exc))
 
@@ -354,9 +352,8 @@ class EsportsBot(BaseBot):
                 result = await asyncio.wait_for(
                     self._trainer.train_game("cs2", db=db), timeout=300.0,
                 )
-                if result.get("graduated"):
-                    if self._cs2_model:
-                        self._cs2_model.load()
+                if self._cs2_model:
+                    self._cs2_model.load()
             except (asyncio.TimeoutError, Exception) as exc:
                 logger.debug("EsportsBot: CS2 retrain failed", error=str(exc))
 
@@ -541,8 +538,8 @@ class EsportsBot(BaseBot):
                 side=side,
                 edge=round(edge, 4),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("EsportsBot: prediction logging failed", error=str(exc))
 
         # Confluence gate — require multiple signals to agree
         pred_ts = self._prediction_cache.get(market_id, {}).get("ts", time.monotonic())

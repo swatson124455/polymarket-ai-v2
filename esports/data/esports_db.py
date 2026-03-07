@@ -167,29 +167,32 @@ async def log_prediction(
 ) -> None:
     """Log a prediction to esports_prediction_log for accuracy tracking."""
     if db is None:
+        logger.warning("esports_db: log_prediction skipped — db is None")
         return
     try:
-        await db.execute(
-            """
-            INSERT INTO esports_prediction_log
-                (match_id, game, market_id, bot_name, predicted_prob, market_price, side, edge)
-            VALUES
-                (:match_id, :game, :market_id, :bot_name, :predicted_prob, :market_price, :side, :edge)
-            """,
-            {
-                "match_id": match_id,
-                "game": game,
-                "market_id": market_id,
-                "bot_name": bot_name,
-                "predicted_prob": predicted_prob,
-                "market_price": market_price,
-                "side": side,
-                "edge": edge,
-            },
-        )
-        await db.commit()
+        from sqlalchemy import text
+        async with db.get_session() as session:
+            await session.execute(
+                text("""
+                INSERT INTO esports_prediction_log
+                    (match_id, game, market_id, bot_name, predicted_prob, market_price, side, edge)
+                VALUES
+                    (:match_id, :game, :market_id, :bot_name, :predicted_prob, :market_price, :side, :edge)
+                """),
+                {
+                    "match_id": match_id,
+                    "game": game,
+                    "market_id": market_id,
+                    "bot_name": bot_name,
+                    "predicted_prob": predicted_prob,
+                    "market_price": market_price,
+                    "side": side,
+                    "edge": edge,
+                },
+            )
+            await session.commit()
     except Exception as exc:
-        logger.debug("esports_db: log_prediction failed", error=str(exc))
+        logger.warning("esports_db: log_prediction failed", error=str(exc))
 
 
 async def resolve_predictions(db, market_id: str, outcome: int) -> int:

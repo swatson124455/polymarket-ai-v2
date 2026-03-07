@@ -355,8 +355,8 @@ class EsportsSeriesBot(BaseBot):
                 side=side,
                 edge=round(edge, 4),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("EsportsSeriesBot: prediction logging failed", error=str(exc))
 
         return {
             "type": "esports_series",
