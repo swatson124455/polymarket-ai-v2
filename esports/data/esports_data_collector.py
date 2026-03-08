@@ -515,7 +515,7 @@ class EsportsDataCollector:
                             (match_id, game, team_a, team_b, patch, game_state_json,
                              outcome, snapshot_type, tournament, scheduled_at)
                         VALUES
-                            (:match_id, :game, :team_a, :team_b, :patch, :game_state_json::jsonb,
+                            (:match_id, :game, :team_a, :team_b, :patch, CAST(:game_state_json AS jsonb),
                              :outcome, :snapshot_type, :tournament, :scheduled_at)
                         ON CONFLICT DO NOTHING
                     """),
