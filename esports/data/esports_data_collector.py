@@ -495,7 +495,15 @@ class EsportsDataCollector:
             db: Database instance (has get_session()) -- NOT a raw session.
         """
         try:
+            import datetime as _dt
+
             game_state_str = json.dumps(row["game_state_json"])
+
+            # asyncpg requires native datetime for timestamp columns
+            sched_raw = row.get("scheduled_at")
+            if isinstance(sched_raw, str) and sched_raw:
+                sched_raw = _dt.datetime.fromisoformat(sched_raw.replace("Z", "+00:00"))
+
             params = {
                 "match_id": row["match_id"],
                 "game": row["game"],
@@ -506,7 +514,7 @@ class EsportsDataCollector:
                 "outcome": row["outcome"],
                 "snapshot_type": row.get("snapshot_type", "match"),
                 "tournament": row.get("tournament", ""),
-                "scheduled_at": row.get("scheduled_at"),
+                "scheduled_at": sched_raw,
             }
             async with db.get_session() as session:
                 await session.execute(
