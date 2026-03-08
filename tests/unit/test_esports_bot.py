@@ -22,6 +22,7 @@ def make_bot():
     base_engine = MagicMock()
     base_engine.db = MagicMock()
     base_engine.order_gateway = MagicMock()
+    base_engine.order_gateway.has_open_position = MagicMock(return_value=False)
     base_engine.order_gateway._daily_exposure_usd = {}
     base_engine.get_markets = AsyncMock(return_value=[])
     base_engine.filter_markets_for_trading = MagicMock(return_value=[])

@@ -1,7 +1,7 @@
 """
 PandaScore API Client — async HTTP client for live + historical esports data.
 
-Covers all 4 game titles: LoL, CS2, Dota 2, Valorant.
+Covers 8 game titles: LoL, CS2, Dota 2, Valorant, CoD, R6, StarCraft II, Rocket League.
 PandaScore REST API: https://developers.pandascore.co/
 
 Rate limit: 1000 req/hour (free tier). Bounded response cache with 30s TTL.
@@ -37,6 +37,10 @@ GAME_SLUGS = {
     "cs2": "csgo",         # PandaScore still uses "csgo" slug for CS2
     "dota2": "dota2",
     "valorant": "valorant",
+    "cod": "cod-mw",
+    "r6": "r6siege",
+    "sc2": "starcraft-2",
+    "rl": "rl",
 }
 
 
@@ -44,7 +48,7 @@ GAME_SLUGS = {
 class EsportsMatch:
     """Normalised match data from PandaScore."""
     match_id: int
-    game: str                    # lol / cs2 / dota2 / valorant
+    game: str                    # lol / cs2 / dota2 / valorant / cod / r6 / sc2 / rl
     tournament: str = ""
     team_a: str = ""
     team_b: str = ""

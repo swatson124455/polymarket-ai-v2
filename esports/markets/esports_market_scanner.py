@@ -32,9 +32,13 @@ _CACHE_MAX = 200
 # Game-specific keywords for market matching
 _GAME_KEYWORDS: Dict[str, List[str]] = {
     "lol": ["league of legends", "lol", "lck", "lec", "lpl", "lcs", "worlds", "msi", "rift"],
-    "cs2": ["counter-strike", "cs2", "csgo", "cs:go", "blast", "esl", "pgl", "iem", "faceit"],
+    "cs2": ["counter-strike", "cs2", "csgo", "cs:go", "blast", "esl ", "pgl ", "iem ", "faceit"],
     "dota2": ["dota", "dota 2", "the international", "ti", "dpc"],
     "valorant": ["valorant", "vct", "champions tour", "vcl", "vrl"],
+    "cod": ["call of duty", "cod ", "call of duty league", "cdl"],
+    "r6": ["rainbow six", "r6 ", "six invitational", "r6 siege"],
+    "sc2": ["starcraft", "sc2", "brood war", "gsl", "asl"],
+    "rl": ["rocket league", "rlcs"],
 }
 
 # Market type patterns

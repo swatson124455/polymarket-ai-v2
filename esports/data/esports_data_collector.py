@@ -132,7 +132,9 @@ class EsportsDataCollector:
             return await self._process_lol_match(match)
         elif game == "cs2":
             return await self._process_cs2_match(match)
-        return []
+        else:
+            # Generic processor for dota2, valorant, cod, r6, sc2, rl
+            return await self._process_generic_match(match, game)
 
     # -- LoL extraction ------------------------------------------------------
 
@@ -319,6 +321,54 @@ class EsportsDataCollector:
                 "scheduled_at": match.scheduled_at or None,
             })
 
+        return rows
+
+    # -- Generic extraction (all other games) ---------------------------------
+
+    async def _process_generic_match(self, match, game: str) -> List[Dict[str, Any]]:
+        """Generic processor for games without dedicated feature extraction.
+
+        Works for dota2, valorant, cod, r6, sc2, rl.
+        Stores outcome + team_strength_diff + Glicko-2 metadata for Glicko-2 training.
+        Creates 1 row per game in the series.
+        """
+        raw = getattr(match, "raw", {}) or {}
+        games_list = raw.get("games", [])
+        if not games_list:
+            games_list = [{"winner": raw.get("winner", {}), "length": 0}]
+
+        team_str_diff = await self._compute_team_strength_diff(match, game)
+        glicko2_meta = self._get_glicko2_metadata(match, game)
+
+        rows = []
+        for g_idx, g in enumerate(games_list):
+            if not isinstance(g, dict):
+                continue
+            winner = g.get("winner", {})
+            if not isinstance(winner, dict) or not winner.get("id"):
+                continue
+            winner_id = winner.get("id", -1)
+            team_a_won = 1 if winner_id == match.team_a_id else 0
+
+            game_state = {
+                "team_strength_diff": team_str_diff,
+                "matchup_uncertainty": glicko2_meta["matchup_uncertainty"],
+                "rd_asymmetry": glicko2_meta["rd_asymmetry"],
+                "team_a_volatility": glicko2_meta["team_a_volatility"],
+                "team_b_volatility": glicko2_meta["team_b_volatility"],
+            }
+            rows.append({
+                "match_id": f"{match.match_id}_g{g_idx}",
+                "game": game,
+                "team_a": match.team_a,
+                "team_b": match.team_b,
+                "patch": "",
+                "game_state_json": game_state,
+                "outcome": team_a_won,
+                "snapshot_type": "match",
+                "tournament": match.tournament,
+                "scheduled_at": match.scheduled_at or None,
+            })
         return rows
 
     # -- Team strength -------------------------------------------------------
@@ -535,6 +585,12 @@ class EsportsDataCollector:
                     # Old collector set round_score=8/5 based on winner → label leakage.
                     entry["round_score_a"] = 6.0
                     entry["round_score_b"] = 6.0
+                    training_data.append(entry)
+                else:
+                    # Generic: dota2, valorant, cod, r6, sc2, rl
+                    entry = dict(state)
+                    entry["team_a_won"] = int(row.outcome)
+                    entry["match_id"] = row.match_id or ""
                     training_data.append(entry)
 
             logger.info(

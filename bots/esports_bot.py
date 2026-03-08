@@ -1,7 +1,7 @@
 """
 EsportsBot — Pre-game + live in-play esports trading bot.
 
-All 4 game titles: LoL, CS2, Dota 2, Valorant.
+All 8 game titles: LoL, CS2, Dota 2, Valorant, CoD, R6, StarCraft II, Rocket League.
 Pre-game: prediction engine + model-vs-market edge validation.
 Live: win probability model updates on game events via PandaScore.
 
@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from structlog import get_logger
 
 from bots.base_bot import BaseBot
+from base_engine.monitoring.alerting import AlertSeverity
 from config.settings import settings
 
 logger = get_logger()
@@ -27,7 +28,7 @@ class EsportsBot(BaseBot):
     Pre-game + live in-play esports trading bot.
 
     Covers match_winner, map_winner, tournament_winner, total_maps
-    across LoL, CS2, Dota 2, and Valorant on Polymarket.
+    across LoL, CS2, Dota 2, Valorant, CoD, R6, StarCraft II, and Rocket League on Polymarket.
     """
 
     def __init__(self, base_engine):
@@ -63,9 +64,21 @@ class EsportsBot(BaseBot):
         # Pending trades: market_ids currently being executed (race condition guard)
         self._ws_pending_trades: set = set()
 
+        # Track games that already attempted data collection (prevent repeated attempts)
+        self._collection_attempted: set = set()
+
         # Latency tracker: WS price move time vs last PandaScore refresh (bounded)
         self._latency_samples: List[float] = []  # seconds since last PandaScore refresh
         self._max_latency_samples = 100
+
+        # Prediction log dedup: market_id → (logged_prob, logged_ts)
+        # Skip re-logging if prediction unchanged for same market within 10 min
+        self._prediction_log_cache: Dict[str, tuple] = {}
+
+        # E4: Monitoring thresholds — per-game Brier alerts
+        self._monitoring_halted_games: set = set()  # games halted by monitoring
+        self._monitoring_last_check: float = 0.0
+        self._monitoring_check_interval: float = 600.0  # 10 minutes
 
         # Glicko-2 trackers for "easy mode" pre-game predictions
         self._glicko2_trackers: Dict[str, Any] = {}  # game → Glicko2Tracker
@@ -336,6 +349,9 @@ class EsportsBot(BaseBot):
         """
         db = getattr(self.base_engine, "db", None)
 
+        # E4: Monitoring thresholds — check per-game Brier and emit alerts
+        await self._check_monitoring_thresholds(db)
+
         # Step 0: Auto-retrain models if interval elapsed
         if self._trainer and self._trainer.needs_retrain("lol"):
             try:
@@ -357,11 +373,27 @@ class EsportsBot(BaseBot):
             except (asyncio.TimeoutError, Exception) as exc:
                 logger.debug("EsportsBot: CS2 retrain failed", error=str(exc))
 
+        # Step 0a: Collect historical data for games missing Glicko-2 trackers (one-shot)
+        _new_data_collected = False
+        for _game in ("dota2", "valorant", "cod", "r6", "sc2", "rl"):
+            if _game not in self._glicko2_trackers and _game not in self._collection_attempted and self._trainer:
+                self._collection_attempted.add(_game)
+                try:
+                    result = await asyncio.wait_for(
+                        self._trainer.train_game(_game, db=db), timeout=300.0,
+                    )
+                    if result.get("samples", 0) > 0:
+                        _new_data_collected = True
+                except (asyncio.TimeoutError, Exception) as exc:
+                    logger.debug("EsportsBot: collection failed", game=_game, error=str(exc))
+        if _new_data_collected:
+            await self._init_glicko2_trackers(db)
+
         # Step 0b: Check rolling accuracy — auto-disable if below threshold
         min_acc = float(getattr(settings, "ESPORTS_MIN_ACCURACY_TO_TRADE", 0.52))
         try:
             from esports.data.esports_db import get_rolling_accuracy
-            for game in ("lol", "cs2"):
+            for game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
                 acc_data = await get_rolling_accuracy(db, game, bot_name="EsportsBot")
                 if acc_data and acc_data["total"] >= 30 and acc_data["accuracy"] < min_acc:
                     logger.warning(
@@ -412,8 +444,13 @@ class EsportsBot(BaseBot):
         # Step 4: Analyze each market
         _opps = 0
         _trades = 0
+        og = getattr(self.base_engine, "order_gateway", None)
         for market in esports_markets:
             try:
+                # Skip markets where we already have an open position
+                mid = str(market.get("id", ""))
+                if og and mid and og.has_open_position(self.bot_name, mid):
+                    continue
                 opp = await self.analyze_opportunity(market)
                 if opp:
                     _opps += 1
@@ -456,6 +493,10 @@ class EsportsBot(BaseBot):
         # Detect game title
         game = self._detect_game(question)
         if not game:
+            return None
+
+        # E4: Check monitoring-halted games
+        if game in self._monitoring_halted_games:
             return None
 
         # Check observation mode for this game
@@ -523,23 +564,31 @@ class EsportsBot(BaseBot):
         if confidence < self._min_confidence:
             return None
 
-        # Log prediction for accuracy tracking
+        # Log prediction for accuracy tracking (dedup: skip if unchanged within 10 min)
         db = getattr(self.base_engine, "db", None)
-        try:
-            from esports.data.esports_db import log_prediction
-            await log_prediction(
-                db=db,
-                match_id=market_id,
-                game=game,
-                market_id=market_id,
-                bot_name="EsportsBot",
-                predicted_prob=model_prob,
-                market_price=price,
-                side=side,
-                edge=round(edge, 4),
-            )
-        except Exception as exc:
-            logger.warning("EsportsBot: prediction logging failed", error=str(exc))
+        _log_cache = self._prediction_log_cache.get(market_id)
+        _should_log = True
+        if _log_cache:
+            _prev_prob, _prev_ts = _log_cache
+            if abs(_prev_prob - model_prob) < 0.01 and (time.monotonic() - _prev_ts) < 600:
+                _should_log = False
+        if _should_log:
+            try:
+                from esports.data.esports_db import log_prediction
+                await log_prediction(
+                    db=db,
+                    match_id=market_id,
+                    game=game,
+                    market_id=market_id,
+                    bot_name="EsportsBot",
+                    predicted_prob=model_prob,
+                    market_price=price,
+                    side=side,
+                    edge=round(edge, 4),
+                )
+                self._prediction_log_cache[market_id] = (model_prob, time.monotonic())
+            except Exception as exc:
+                logger.warning("EsportsBot: prediction logging failed", error=str(exc))
 
         # Confluence gate — require multiple signals to agree
         pred_ts = self._prediction_cache.get(market_id, {}).get("ts", time.monotonic())
@@ -737,12 +786,20 @@ class EsportsBot(BaseBot):
         q = question.lower()
         if any(kw in q for kw in ("league of legends", "lol ", "lck", "lec", "lpl", "lcs", "worlds", "msi")):
             return "lol"
-        if any(kw in q for kw in ("counter-strike", "cs2", "csgo", "blast premier", "esl", "pgl", "iem")):
+        if any(kw in q for kw in ("counter-strike", "cs2", "csgo", "blast premier", "esl ", "pgl ", "iem ")):
             return "cs2"
         if any(kw in q for kw in ("dota", "the international", " ti ", "dpc")):
             return "dota2"
         if any(kw in q for kw in ("valorant", "vct", "champions tour")):
             return "valorant"
+        if any(kw in q for kw in ("call of duty", "cod ")):
+            return "cod"
+        if any(kw in q for kw in ("rainbow six", "r6 ", "six invitational")):
+            return "r6"
+        if any(kw in q for kw in ("starcraft", "sc2 ", "sc2:", "brood war")):
+            return "sc2"
+        if any(kw in q for kw in ("rocket league", "rlcs")):
+            return "rl"
         return None
 
     @staticmethod
@@ -770,56 +827,31 @@ class EsportsBot(BaseBot):
         prediction_ts: float,
     ) -> float:
         """
-        Compute confluence score (0.0-1.0) from multiple signals.
+        Compute confluence score (0.0-1.0) from active signals.
 
-        Weights:
-          - Model prediction edge: 37%
-          - Whale direction alignment: 23%
-          - Orderbook imbalance: 18%
-          - Prediction freshness: 14%
-          - Model agreement (Glicko-2 vs ML): 8%
+        Weights (3-factor, all live):
+          - Model prediction edge: 55%
+          - Prediction freshness: 30%
+          - Model agreement (Glicko-2 vs ML): 15%
+
+        Whale direction (23%) and orderbook imbalance (18%) removed — both
+        always returned neutral 0.5 (whale_alerts service not running,
+        orderbook cache empty for CLOB esports tokens). This inflated
+        confluence by a fixed +0.205, making the 0.60 gate too easy to pass.
+        TODO: re-enable when whale_alerts service and orderbook refresh are active.
 
         Only trades when score > ESPORTS_CONFLUENCE_MIN (default 0.60).
         """
         import math
 
-        # 1. Model edge signal (37%) — normalized to 0-1
+        # 1. Model edge signal (55%) — normalized to 0-1
         edge_score = min(abs(model_edge) / self._min_edge, 1.0)
 
-        # 2. Whale signal (23%) — check if whale trades align with our side
-        whale_score = 0.5  # Neutral when no whale data
-        try:
-            whale_queue = getattr(self, "_whale_priority_queue", None)
-            whale_markets = getattr(self, "_whale_priority_markets", set())
-            if market_id in whale_markets:
-                # Whale is active on this market — alignment boost
-                whale_score = 0.8
-        except Exception:
-            pass
-
-        # 3. Orderbook imbalance (18%)
-        ob_score = 0.5  # Neutral
-        try:
-            ob_tracker = getattr(self.base_engine, "orderbook_tracker", None)
-            if ob_tracker:
-                signal = ob_tracker.get_imbalance_signal(token_id)
-                if signal:
-                    direction = signal.get("direction", "")
-                    strength = float(signal.get("strength", 0.0))
-                    # YES side wants bullish, NO side wants bearish
-                    if (side == "YES" and direction == "bullish") or \
-                       (side == "NO" and direction == "bearish"):
-                        ob_score = 0.5 + 0.5 * strength
-                    elif direction:
-                        ob_score = 0.5 - 0.5 * strength
-        except Exception:
-            pass
-
-        # 4. Prediction freshness (14%) — exponential decay
+        # 2. Prediction freshness (30%) — exponential decay
         age_seconds = time.monotonic() - prediction_ts if prediction_ts > 0 else 0
         freshness_score = math.exp(-age_seconds / 120.0)  # 0s=1.0, 60s=0.61, 120s=0.37
 
-        # 5. Model agreement (8%) — penalize when Glicko-2 and ML disagree
+        # 3. Model agreement (15%) — penalize when Glicko-2 and ML disagree
         agreement_score = 0.5  # Neutral when no component data
         cached = self._prediction_cache.get(market_id, {})
         ml_raw = cached.get("ml_raw")
@@ -831,18 +863,16 @@ class EsportsBot(BaseBot):
 
         # Weighted sum
         confluence = (
-            0.37 * edge_score +
-            0.23 * whale_score +
-            0.18 * ob_score +
-            0.14 * freshness_score +
-            0.08 * agreement_score
+            0.55 * edge_score +
+            0.30 * freshness_score +
+            0.15 * agreement_score
         )
 
         return round(confluence, 4)
 
     async def _execute_esports_trade(self, opp: Dict) -> None:
         """Execute trade with maker-first, taker-fallback strategy."""
-        size = await self.calculate_bot_position_size(opp["confidence"], opp["price"])
+        size = await self.calculate_bot_position_size(opp["confidence"], opp["price"], category="esports")
         if size <= 0:
             return
 
@@ -872,18 +902,17 @@ class EsportsBot(BaseBot):
     # ── Glicko-2 "easy mode" helpers ──────────────────────────────────────
 
     async def _init_glicko2_trackers(self, db) -> None:
-        """Build Glicko-2 trackers and team name→ID mapping from DB training data.
+        """Build Glicko-2 trackers from persisted DB ratings or historical data.
 
-        Called once during start(). Rebuilds Glicko-2 ratings from historical
-        match results in esports_training_data table, and team name→ID mapping
-        from esports_teams table. This gives the bot a real prediction source
-        (63% accuracy per EsportsBench) while ML models are training.
+        Called once during start(). Tries fast path first (load persisted
+        ratings from glicko2_ratings table). Falls back to full rebuild from
+        esports_training_data if no persisted ratings exist, then saves them.
         """
         if db is None or not getattr(db, "session_factory", None):
             return
         try:
             from sqlalchemy import text
-            from esports.models.glicko2 import Glicko2Tracker
+            from esports.models.glicko2 import Glicko2Tracker, Glicko2Rating
 
             # 1. Build team name → ID mapping from esports_teams
             async with db.get_session() as session:
@@ -895,10 +924,52 @@ class EsportsBot(BaseBot):
                     if tid and name:
                         self._team_name_to_id[name.lower()] = tid
 
-            # 2. Build Glicko-2 trackers from training data match results.
-            # Schema: team_a/team_b are names (not IDs), outcome is smallint
-            # (0=team_a wins, 1=team_b wins), no match_date — use scheduled_at.
-            for game in ("lol", "cs2"):
+            # 2. Fast path: load persisted Glicko-2 ratings from DB
+            all_games = ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl")
+            games_loaded = set()
+            for game in all_games:
+                try:
+                    async with db.get_session() as session:
+                        rows = await session.execute(text("""
+                            SELECT team_key, mu, phi, sigma, match_count
+                            FROM glicko2_ratings
+                            WHERE game = :game
+                        """), {"game": game})
+                        ratings_rows = rows.fetchall()
+                except Exception:
+                    # Table doesn't exist yet (migration not run) — fall back
+                    ratings_rows = []
+
+                if ratings_rows:
+                    tracker = Glicko2Tracker()
+                    total_matches = 0
+                    for row in ratings_rows:
+                        team_key = str(row[0])
+                        rating = Glicko2Rating(
+                            mu=float(row[1]),
+                            phi=float(row[2]),
+                            sigma=float(row[3]),
+                        )
+                        tracker.set_rating(team_key, rating)
+                        self._team_name_to_id[team_key] = team_key
+                        total_matches = max(total_matches, int(row[4] or 0))
+                    tracker.set_match_count(total_matches)
+                    self._glicko2_trackers[game] = tracker
+                    games_loaded.add(game)
+                    logger.info(
+                        "EsportsBot: Glicko-2 loaded from DB",
+                        game=game,
+                        teams_rated=len(ratings_rows),
+                        match_count=total_matches,
+                    )
+
+            # 3. Slow path: rebuild games missing from DB (first run or new game added)
+            games_to_rebuild = [g for g in all_games if g not in games_loaded]
+            if not games_to_rebuild:
+                return
+
+            rebuilt_any = False
+            for game in games_to_rebuild:
                 async with db.get_session() as session:
                     rows = await session.execute(text("""
                         SELECT team_a, team_b, outcome
@@ -918,25 +989,138 @@ class EsportsBot(BaseBot):
                     outcome = int(row[2]) if row[2] is not None else None
                     if not team_a_name or not team_b_name or outcome is None:
                         continue
-                    # Use lowercased team names as IDs for Glicko-2 tracking
                     a_id = team_a_name.lower()
                     b_id = team_b_name.lower()
-                    # outcome=0 means team_a wins, outcome=1 means team_b wins
-                    w = "a" if outcome == 0 else "b"
+                    w = "a" if outcome == 1 else "b"
                     tracker.process_match(a_id, b_id, winner=w)
-                    # Populate name→id mapping (name IS the id here)
                     self._team_name_to_id[a_id] = a_id
                     self._team_name_to_id[b_id] = b_id
 
                 self._glicko2_trackers[game] = tracker
+                rebuilt_any = True
                 logger.info(
-                    "EsportsBot: Glicko-2 tracker initialized",
+                    "EsportsBot: Glicko-2 rebuilt from training data",
                     game=game,
                     matches_processed=tracker.match_count,
                     teams_rated=len(tracker._ratings),
                 )
+
+            # 4. Persist rebuilt ratings so next restart is fast
+            if rebuilt_any:
+                await self._save_glicko2_ratings(db)
+
         except Exception as exc:
             logger.debug("EsportsBot: Glicko-2 init failed (non-fatal)", error=str(exc))
+
+    async def _save_glicko2_ratings(self, db) -> None:
+        """Persist all Glicko-2 ratings to glicko2_ratings table.
+
+        Uses upsert (ON CONFLICT UPDATE) so it's safe to call repeatedly.
+        """
+        if db is None:
+            return
+        try:
+            from sqlalchemy import text
+
+            for game, tracker in self._glicko2_trackers.items():
+                all_ratings = tracker.get_all_ratings()
+                if not all_ratings:
+                    continue
+                match_count = tracker.match_count
+                async with db.get_session() as session:
+                    for team_key, rating in all_ratings.items():
+                        await session.execute(text("""
+                            INSERT INTO glicko2_ratings
+                                (game, team_key, mu, phi, sigma, match_count, updated_at)
+                            VALUES
+                                (:game, :team_key, :mu, :phi, :sigma, :mc, NOW())
+                            ON CONFLICT (game, team_key) DO UPDATE SET
+                                mu = :mu, phi = :phi, sigma = :sigma,
+                                match_count = :mc, updated_at = NOW()
+                        """), {
+                            "game": game,
+                            "team_key": team_key,
+                            "mu": rating.mu,
+                            "phi": rating.phi,
+                            "sigma": rating.sigma,
+                            "mc": match_count,
+                        })
+                    await session.commit()
+            logger.info("EsportsBot: Glicko-2 ratings saved to DB",
+                        games=len(self._glicko2_trackers))
+        except Exception as exc:
+            logger.debug("EsportsBot: Glicko-2 save failed (non-fatal)", error=str(exc))
+
+    async def _check_monitoring_thresholds(self, db) -> None:
+        """E4: Check per-game Brier scores and emit structured alerts.
+
+        Thresholds:
+          - Brier > 0.25 (7d) → WARNING, retrain model
+          - Brier > 0.30 (7d) → CRITICAL, halt trading for that game
+
+        Checks run every 10 minutes (self._monitoring_check_interval).
+        """
+        now = time.monotonic()
+        if now - self._monitoring_last_check < self._monitoring_check_interval:
+            return
+        self._monitoring_last_check = now
+
+        if not db:
+            return
+
+        alerting = getattr(self.base_engine, "alerting_system", None)
+
+        try:
+            from esports.data.esports_db import get_rolling_accuracy
+            for game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
+                acc_data = await get_rolling_accuracy(db, game, bot_name="EsportsBot")
+                if not acc_data or acc_data["total"] < 20:
+                    continue
+
+                brier = acc_data["brier_score"]
+                accuracy = acc_data["accuracy"]
+
+                if brier > 0.30:
+                    self._monitoring_halted_games.add(game)
+                    if alerting:
+                        await alerting.send_alert(
+                            title=f"EsportsBot {game} Brier CRITICAL",
+                            message=f"{game} 7d Brier={brier:.4f} (>0.30), accuracy={accuracy:.1%} — "
+                                    f"trading halted for {game}.",
+                            severity=AlertSeverity.CRITICAL,
+                            source="EsportsBot",
+                            metadata={"game": game, "brier": brier, "accuracy": accuracy,
+                                      "total": acc_data["total"]},
+                        )
+                    logger.critical(
+                        "esportsbot_monitoring_halt",
+                        game=game, brier=round(brier, 4), accuracy=round(accuracy, 3),
+                    )
+                elif brier > 0.25:
+                    # WARNING but don't halt — trigger retrain
+                    self._monitoring_halted_games.discard(game)
+                    if alerting:
+                        await alerting.send_alert(
+                            title=f"EsportsBot {game} Brier WARNING",
+                            message=f"{game} 7d Brier={brier:.4f} (>0.25), accuracy={accuracy:.1%} — "
+                                    f"consider retraining.",
+                            severity=AlertSeverity.WARNING,
+                            source="EsportsBot",
+                            metadata={"game": game, "brier": brier, "accuracy": accuracy,
+                                      "total": acc_data["total"]},
+                        )
+                    logger.warning(
+                        "esportsbot_monitoring_warning",
+                        game=game, brier=round(brier, 4), accuracy=round(accuracy, 3),
+                    )
+                else:
+                    # Below thresholds — clear halt
+                    if game in self._monitoring_halted_games:
+                        logger.info("esportsbot_monitoring_halt_cleared",
+                                    game=game, brier=round(brier, 4))
+                    self._monitoring_halted_games.discard(game)
+        except Exception as exc:
+            logger.debug("esportsbot_monitoring_check_failed", error=str(exc))
 
     def _get_glicko2_prediction(
         self, market_data: Dict, game: str
@@ -971,6 +1155,7 @@ class EsportsBot(BaseBot):
             for prefix in ("will ", "can ", "does "):
                 if name_a.startswith(prefix):
                     name_a = name_a[len(prefix):]
+            name_a, name_b = self._clean_team_names(name_a, name_b)
             team_a_id = self._match_team_name(name_a)
             team_b_id = self._match_team_name(name_b)
 
@@ -981,31 +1166,88 @@ class EsportsBot(BaseBot):
                 question,
             )
             if beat_match:
-                team_a_id = self._match_team_name(beat_match.group(1).strip())
-                team_b_id = self._match_team_name(beat_match.group(2).strip())
+                ba = beat_match.group(1).strip()
+                bb = beat_match.group(2).strip()
+                ba, bb = self._clean_team_names(ba, bb)
+                team_a_id = self._match_team_name(ba)
+                team_b_id = self._match_team_name(bb)
 
         if not team_a_id or not team_b_id:
             return None
 
-        # Get Glicko-2 expected score
+        # Get Glicko-2 expected score with Bayesian prior blending (E5).
+        # When teams have few matches (high phi), blend toward 0.50 (base rate)
+        # instead of returning None. Blend weight based on min(phi_a, phi_b):
+        #   phi >= 350 (unrated):    80% prior (0.50), 20% Glicko-2
+        #   phi 200-350 (sparse):    50% prior, 50% Glicko-2
+        #   phi < 200 (established): 20% prior, 80% Glicko-2
+        #   phi < 100 (mature):       0% prior, 100% Glicko-2
         try:
             rating_a = tracker.get_rating(team_a_id)
             rating_b = tracker.get_rating(team_b_id)
-            # Only predict if both teams have been rated (phi < default 350)
-            if rating_a.phi >= 350.0 or rating_b.phi >= 350.0:
-                return None
             prob = tracker.expected_score(team_a_id, team_b_id)
+            if not (0.01 < prob < 0.99):
+                return None
+
+            # E5: Bayesian prior blend — dampen predictions for uncertain teams
+            max_phi = max(rating_a.phi, rating_b.phi)
+            if max_phi >= 350.0:
+                prior_weight = 0.80
+            elif max_phi >= 200.0:
+                prior_weight = 0.50
+            elif max_phi >= 100.0:
+                prior_weight = 0.20
+            else:
+                prior_weight = 0.0
+
+            if prior_weight > 0:
+                prob = prior_weight * 0.50 + (1.0 - prior_weight) * prob
+
             if 0.05 < prob < 0.95:
                 return prob
         except Exception:
             pass
         return None
 
+    @staticmethod
+    def _clean_team_names(name_a: str, name_b: str) -> tuple:
+        """Strip game title prefixes and tournament/format suffixes from extracted team names.
+
+        Regex captures game titles (e.g. "counter-strike: themongolz") and
+        tournament suffixes (e.g. "pain (bo3) - esl pro league stage 2").
+        This method cleans both before fuzzy matching.
+        """
+        import re as _re
+        _game_prefixes = (
+            "counter-strike 2: ", "counter-strike: ", "cs2: ", "csgo: ",
+            "league of legends: ", "lol: ",
+            "dota 2: ", "dota: ",
+            "valorant: ",
+            "call of duty: ", "cod: ",
+            "rainbow six siege: ", "rainbow six: ", "r6: ",
+            "starcraft ii: ", "starcraft 2: ", "starcraft: ",
+            "rocket league: ",
+        )
+        for gp in _game_prefixes:
+            if name_a.startswith(gp):
+                name_a = name_a[len(gp):]
+            if name_b.startswith(gp):
+                name_b = name_b[len(gp):]
+        # Strip tournament/format suffixes: "(bo3)", "- esl pro league ...", etc.
+        name_b = _re.sub(r"\s*\(bo\d+\).*$", "", name_b).strip()
+        name_b = _re.sub(
+            r"\s*-\s+(?:esl |blast |pgl |iem |dreamhack|faceit|weplay|rievent).*$",
+            "", name_b,
+        ).strip()
+        # Same cleanup for name_a (less common but possible)
+        name_a = _re.sub(r"\s*\(bo\d+\).*$", "", name_a).strip()
+        return name_a.strip(), name_b.strip()
+
     def _match_team_name(self, name: str) -> Optional[str]:
         """Fuzzy match a team name to a PandaScore team ID.
 
-        Tries exact match first, then substring match for common abbreviations
-        like "T1", "G2", "NAVI" that may appear differently in market questions.
+        Tries exact match first, then longest-substring-first match to prevent
+        short team names (e.g. "t1", "g2") from colliding inside longer strings.
         """
         name = name.lower().strip()
         if not name:
@@ -1016,9 +1258,12 @@ class EsportsBot(BaseBot):
         if tid:
             return tid
 
-        # Substring match: check if any known team name is contained in the query name
-        for known_name, tid in self._team_name_to_id.items():
-            if known_name in name or name in known_name:
+        # Substring match: longest known name first to prevent short-name collision.
+        # Only check known_name in name (not bidirectional) to avoid "t1" matching "fnatic".
+        for known_name, tid in sorted(
+            self._team_name_to_id.items(), key=lambda kv: len(kv[0]), reverse=True
+        ):
+            if known_name in name:
                 return tid
 
         return None

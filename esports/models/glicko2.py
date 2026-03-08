@@ -208,6 +208,14 @@ class Glicko2Tracker:
         """
         return self.expected_score(team_a_id, team_b_id) - 0.5
 
+    def set_rating(self, team_id: str, rating: Glicko2Rating) -> None:
+        """Pre-populate a team's rating (e.g., from DB persistence)."""
+        self._ratings[team_id] = rating
+
+    def set_match_count(self, count: int) -> None:
+        """Restore match count from DB (for cold-start detection)."""
+        self._match_count = count
+
     def get_all_ratings(self) -> Dict[str, Glicko2Rating]:
         """Get all tracked team ratings."""
         return dict(self._ratings)

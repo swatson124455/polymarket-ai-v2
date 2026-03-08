@@ -102,7 +102,7 @@ class EsportsModelTrainer:
             if db is not None:
                 training_data = await collector.get_training_data(db, game)
 
-            min_samples = _MIN_LOL_SAMPLES if game == "lol" else _MIN_CS2_SAMPLES
+            min_samples = _MIN_CS2_SAMPLES if game == "cs2" else _MIN_LOL_SAMPLES
 
             # Step 2: Collect if insufficient data
             if len(training_data) < min_samples and collect_if_empty and self._ps:
@@ -160,6 +160,13 @@ class EsportsModelTrainer:
                 metrics = await self._train_lol(train_set, val_set)
             elif game == "cs2":
                 metrics = await self._train_cs2(train_set, val_set)
+            elif game in ("dota2", "valorant", "cod", "r6", "sc2", "rl"):
+                # No dedicated ML model — Glicko-2 only. Collection already stored rows.
+                metrics = {"accuracy": 0.0, "brier_score": 1.0, "ece": 1.0}
+                result["graduated"] = False
+                self._last_train_time[game] = time.monotonic()
+                self._train_results[game] = result
+                return result
             else:
                 result["error"] = f"unsupported game: {game}"
                 return result
@@ -216,9 +223,149 @@ class EsportsModelTrainer:
     async def train_all(self, db=None, days_back: int = 90) -> Dict[str, Dict]:
         """Train all supported games. Returns {game: result}."""
         results = {}
-        for game in ("lol", "cs2"):
+        for game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
             results[game] = await self.train_game(game, db=db, days_back=days_back)
         return results
+
+    async def train_cross_game(
+        self, db=None, days_back: int = 90,
+    ) -> Dict[str, Any]:
+        """E7: Train a single XGBoost model across ALL 8 games.
+
+        Uses shared Glicko-2 features (team_strength_diff, matchup_uncertainty,
+        rd_asymmetry, volatility) plus a game_id categorical feature. Cross-game
+        patterns (e.g. "high uncertainty + BO1 = more upsets") learned jointly,
+        while game_id lets the model specialize per game.
+
+        Returns training result dict with accuracy, brier_score, graduated, etc.
+        """
+        result = {
+            "game": "cross_game",
+            "accuracy": 0.0,
+            "brier_score": 1.0,
+            "graduated": False,
+            "samples": 0,
+            "error": None,
+        }
+
+        try:
+            from esports.data.esports_data_collector import EsportsDataCollector
+            collector = EsportsDataCollector(pandascore_client=self._ps)
+
+            _GAMES = ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl")
+            _GAME_IDS = {g: i for i, g in enumerate(_GAMES)}
+
+            # Shared features used across all games
+            _SHARED_FEATURES = [
+                "team_strength_diff", "matchup_uncertainty",
+                "rd_asymmetry", "team_a_volatility", "team_b_volatility",
+            ]
+
+            all_rows = []
+            for game in _GAMES:
+                if db is None:
+                    continue
+                rows = await collector.get_training_data(db, game)
+                for row in rows:
+                    row["_game_id"] = _GAME_IDS[game]
+                    row["_game"] = game
+                all_rows.append(rows)
+
+            # Flatten
+            pooled = [row for rows in all_rows for row in rows]
+            result["samples"] = len(pooled)
+
+            if len(pooled) < 100:
+                result["error"] = f"insufficient cross-game data: {len(pooled)} < 100"
+                return result
+
+            # Oldest-first for temporal split
+            pooled = list(reversed(pooled))
+            split_idx = int(len(pooled) * (1 - _VALIDATION_SPLIT))
+            train_set = pooled[:split_idx]
+            val_set = pooled[split_idx:]
+
+            # Extract features + labels
+            import numpy as _np
+
+            def _extract(row):
+                feats = [float(row.get(f, 0.0)) for f in _SHARED_FEATURES]
+                feats.append(float(row.get("_game_id", 0)))
+                # Best-of as additional feature (default 1)
+                feats.append(float(row.get("best_of", 1)))
+                return feats
+
+            def _label(row):
+                # LoL uses blue_win, CS2 uses team_a_won_round, others use winner
+                if row.get("_game") == "lol":
+                    return int(row.get("blue_win", 0))
+                elif row.get("_game") == "cs2":
+                    return int(row.get("team_a_won_round", 0))
+                else:
+                    return int(row.get("winner", 0))
+
+            X_train = _np.array([_extract(r) for r in train_set], dtype=_np.float32)
+            y_train = _np.array([_label(r) for r in train_set], dtype=_np.int32)
+            X_val = _np.array([_extract(r) for r in val_set], dtype=_np.float32)
+            y_val = _np.array([_label(r) for r in val_set], dtype=_np.int32)
+
+            if len(X_train) < 50 or len(X_val) < 20:
+                result["error"] = "insufficient split sizes"
+                return result
+
+            # Train XGBoost
+            from xgboost import XGBClassifier
+
+            model = XGBClassifier(
+                n_estimators=200,
+                max_depth=4,
+                learning_rate=0.05,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                eval_metric="logloss",
+                verbosity=0,
+            )
+            model.fit(X_train, y_train)
+
+            # Evaluate
+            probs = model.predict_proba(X_val)[:, 1]
+            preds = (probs > 0.5).astype(int)
+            accuracy = float((preds == y_val).mean())
+            brier = float(((probs - y_val) ** 2).mean())
+            ece = self._compute_ece(probs.tolist(), y_val.tolist())
+
+            result["accuracy"] = round(accuracy, 4)
+            result["brier_score"] = round(brier, 4)
+            result["ece"] = round(ece, 4)
+            result["graduated"] = True
+            result["train_size"] = len(train_set)
+            result["val_size"] = len(val_set)
+
+            # Save the model
+            import os
+            model_dir = os.path.join(os.path.dirname(__file__), "saved_models")
+            os.makedirs(model_dir, exist_ok=True)
+            model_path = os.path.join(model_dir, "cross_game_xgb.json")
+            model.save_model(model_path)
+
+            self._last_train_time["cross_game"] = time.monotonic()
+            self._train_results["cross_game"] = result
+
+            logger.info(
+                "EsportsModelTrainer: cross-game XGBoost trained",
+                accuracy=round(accuracy, 4),
+                brier_score=round(brier, 4),
+                ece=round(ece, 4),
+                samples=len(pooled),
+                train_size=len(train_set),
+                val_size=len(val_set),
+            )
+
+        except Exception as exc:
+            result["error"] = str(exc)
+            logger.error("EsportsModelTrainer: cross-game training failed", error=str(exc))
+
+        return result
 
     def is_graduated(self, game: str) -> bool:
         """Check if a game's model passed the graduation gate."""

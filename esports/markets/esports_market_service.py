@@ -48,6 +48,10 @@ _ESPORTS_GAME_KEYWORDS: Dict[str, List[str]] = {
     "cs2": ["counter-strike", "cs2", "csgo", "blast premier", "esl ", "pgl ", "iem "],
     "dota2": ["dota", "the international", " ti ", "dpc"],
     "valorant": ["valorant", "vct", "champions tour"],
+    "cod": ["call of duty", "cod ", "call of duty league", "cdl"],
+    "r6": ["rainbow six", "r6 ", "six invitational", "r6 siege"],
+    "sc2": ["starcraft", "sc2", "brood war", "gsl", "asl"],
+    "rl": ["rocket league", "rlcs"],
 }
 
 
