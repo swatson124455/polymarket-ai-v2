@@ -137,6 +137,19 @@ class TestExecuteArbSuccess:
         bot.place_order.assert_not_awaited()
         bot._kalshi_client.place_order.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_missing_no_token_id_skips_arb(self):
+        """If leg_a_side=NO but no_token_id is None, bot should skip (not fallback to yes_token)."""
+        bot = make_bot()
+        opp = make_opp(leg_a_side="NO", leg_b_side="YES")
+        opp.poly_candidate.no_token_id = None
+        bot.place_order = AsyncMock(return_value={"success": True})
+
+        await bot._execute_arb(opp, db=None)
+
+        bot.place_order.assert_not_awaited()
+        bot._kalshi_client.place_order.assert_not_awaited()
+
 
 class TestLegAFailure:
     """If Leg A fails, Leg B must never be placed."""

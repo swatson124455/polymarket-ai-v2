@@ -21,7 +21,9 @@ class TestKalshiAdapter:
         fees = adapter.fee_schedule()
         assert isinstance(fees, FeeSchedule)
         assert fees.platform == "kalshi"
-        assert fees.taker_fee == 0.01
+        assert fees.taker_fee == 0.0175  # conservative flat fallback (max at P=0.50)
+        assert fees.taker_coefficient == 0.07  # proportional: 0.07 × P × (1-P)
+        assert fees.maker_coefficient == 0.0175
 
     def test_platform_name(self):
         from base_engine.exchanges.kalshi_adapter import KalshiAdapter

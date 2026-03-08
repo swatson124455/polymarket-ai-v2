@@ -70,21 +70,50 @@ class MarketSnapshot:
 
 @dataclass(frozen=True)
 class FeeSchedule:
-    """Fee structure for a platform. All values in decimal (e.g. 0.015 = 1.5%)."""
+    """Fee structure for a platform. All values in decimal (e.g. 0.015 = 1.5%).
+
+    For platforms with price-proportional fees (Kalshi), set taker_coefficient
+    and/or maker_coefficient.  Fee per contract = coefficient × P × (1 − P).
+    When coefficients are 0 (default), the flat taker_fee/maker_fee are used.
+    """
     taker_fee: float = 0.0
     maker_fee: float = 0.0
     settlement_fee: float = 0.0
     platform: str = ""
+    # Price-proportional coefficients (Kalshi-style): abs fee = coeff × P × (1-P)
+    taker_coefficient: float = 0.0
+    maker_coefficient: float = 0.0
+
+    def taker_fee_at_price(self, price: float) -> float:
+        """Effective taker fee rate at a given price.
+
+        Flat model:         returns self.taker_fee (constant).
+        Proportional model: returns coefficient × (1 − price), so that
+                            absolute_fee = price × rate = coefficient × price × (1 − price).
+        """
+        if self.taker_coefficient > 0 and 0 < price < 1:
+            return self.taker_coefficient * (1.0 - price)
+        return self.taker_fee
+
+    def maker_fee_at_price(self, price: float) -> float:
+        """Effective maker fee rate at a given price (same logic as taker)."""
+        if self.maker_coefficient > 0 and 0 < price < 1:
+            return self.maker_coefficient * (1.0 - price)
+        return self.maker_fee
 
     def total_round_trip(self) -> float:
-        """Total cost of entering + exiting a position (worst case: taker both sides)."""
+        """Total cost of entering + exiting a position (worst case: taker both sides).
+
+        For proportional-fee platforms this uses the flat fallback (conservative).
+        """
         return self.taker_fee * 2 + self.settlement_fee
 
     def net_price_after_fees(self, gross_price: float, side: str = "BUY") -> float:
         """Effective price after fees. For BUY: price goes up. For SELL: proceeds go down."""
+        fee_rate = self.taker_fee_at_price(gross_price)
         if side.upper() == "BUY":
-            return gross_price * (1.0 + self.taker_fee)
-        return gross_price * (1.0 - self.taker_fee)
+            return gross_price * (1.0 + fee_rate)
+        return gross_price * (1.0 - fee_rate)
 
 
 @dataclass

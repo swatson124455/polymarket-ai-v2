@@ -1,7 +1,11 @@
 """
 Kalshi exchange adapter — wraps existing KalshiClient.
 
-Fee schedule: variable taker (typically 7% of profit or ~1c/contract), 0% maker, 0% settlement.
+Fee schedule (2026): proportional taker/maker fees.
+  Taker: 0.07 × P × (1-P)  → max 1.75¢/contract at P=50¢
+  Maker: 0.0175 × P × (1-P) → max 0.44¢/contract at P=50¢
+  Settlement: $0
+Source: https://kalshi.com/fee-schedule
 """
 from __future__ import annotations
 from typing import List, Optional
@@ -149,8 +153,16 @@ class KalshiAdapter(ExchangeAdapter):
     # ── Platform info ───────────────────────────────────────────────────
 
     def fee_schedule(self) -> FeeSchedule:
-        # Kalshi charges ~7% of profit or ~$0.01/contract, whichever is greater
-        return FeeSchedule(taker_fee=0.01, maker_fee=0.0, settlement_fee=0.0, platform="kalshi")
+        # Kalshi proportional fees: fee = coefficient × P × (1-P) per contract.
+        # taker_fee kept as conservative flat fallback for total_round_trip().
+        return FeeSchedule(
+            taker_fee=0.0175,  # max taker at P=0.50 (conservative flat fallback)
+            maker_fee=0.0,
+            settlement_fee=0.0,
+            platform="kalshi",
+            taker_coefficient=0.07,
+            maker_coefficient=0.0175,
+        )
 
     def platform_name(self) -> str:
         return "kalshi"

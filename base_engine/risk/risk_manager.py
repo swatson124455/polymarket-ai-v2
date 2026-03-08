@@ -208,9 +208,14 @@ class RiskManager:
             return checks
         position_size_pct = position_value / settings.TOTAL_CAPITAL  # Convert to percentage
         
-        if confidence < settings.MIN_CONFIDENCE_THRESHOLD:
+        # WeatherBot uses multi-bucket markets (9 temperature outcomes) where
+        # single-bucket model_prob rarely exceeds 45%.  Use WEATHER_MIN_CONFIDENCE.
+        _min_conf = settings.MIN_CONFIDENCE_THRESHOLD
+        if bot_name == "WeatherBot":
+            _min_conf = getattr(settings, "WEATHER_MIN_CONFIDENCE", _min_conf)
+        if confidence < _min_conf:
             checks["allowed"] = False
-            checks["reasons"].append(f"Confidence {confidence:.2%} below threshold {settings.MIN_CONFIDENCE_THRESHOLD:.2%}")
+            checks["reasons"].append(f"Confidence {confidence:.2%} below threshold {_min_conf:.2%}")
 
         # Consecutive loss guardrail: pause trading after N consecutive losing trades.
         # 0 = disabled. Learning phase = 3. Resets on any winning trade via record_trade_outcome().

@@ -131,14 +131,17 @@ class ArbScanner:
                     continue
 
                 # Compare prices after fees
-                # Strategy: buy cheap YES on one platform, buy cheap NO on other (equivalent to selling YES)
+                # Strategy: buy cheap YES on one platform, buy cheap NO on other
                 net_a = fees_a.net_price_after_fees(ma.yes_price, "BUY")
                 net_b = fees_b.net_price_after_fees(mb.yes_price, "BUY")
 
-                spread = abs(ma.yes_price - mb.yes_price)
-                # True arb: account for round-trip fees
-                fee_cost = fees_a.taker_fee + fees_b.taker_fee
-                true_spread = spread - fee_cost
+                # Compute arb profit per contract using actual price-dependent fees.
+                # Arb: buy YES on cheap side + buy NO on expensive side → payout $1.
+                if ma.yes_price < mb.yes_price:
+                    cost = net_a + fees_b.net_price_after_fees(1.0 - mb.yes_price, "BUY")
+                else:
+                    cost = fees_a.net_price_after_fees(1.0 - ma.yes_price, "BUY") + net_b
+                true_spread = 1.0 - cost
 
                 if true_spread <= 0:
                     continue
@@ -147,10 +150,7 @@ class ArbScanner:
                 if profit_pct < min_profit_pct:
                     continue
 
-                if ma.yes_price < mb.yes_price:
-                    side = "buy_a_sell_b"
-                else:
-                    side = "buy_b_sell_a"
+                side = "buy_a_sell_b" if ma.yes_price < mb.yes_price else "buy_b_sell_a"
 
                 opps.append(ArbOpportunity(
                     event_question=ma.question[:120],

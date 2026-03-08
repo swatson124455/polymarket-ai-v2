@@ -413,6 +413,50 @@ class AutomatedPositionManager:
                     pos.unrealized_pnl = (_api_price - entry) * size
                     updated += 1
 
+            # Session 57: markets table fallback for CLOB tokens with wide spreads.
+            # CLOB esports tokens have bid=$0.01/ask=$0.99 (spread > 0.5) so the
+            # orderbook fallback skips them. The markets.yes_price/no_price columns
+            # are refreshed by EsportsMarketService every 5 min via CLOB API.
+            _still_missing = [p for p in positions
+                              if str(p.token_id or "") not in latest_prices
+                              and str(p.token_id or "") not in self._api_price_cache]
+            if _still_missing:
+                _missing_mids = list({str(p.market_id) for p in _still_missing if p.market_id})
+                if _missing_mids:
+                    try:
+                        _mkt_result = await session.execute(
+                            sa_text("""
+                                SELECT id::text, yes_token_id, no_token_id, yes_price, no_price
+                                FROM markets
+                                WHERE id::text = ANY(:mids)
+                                  AND yes_price IS NOT NULL
+                            """),
+                            {"mids": _missing_mids}
+                        )
+                        _mkt_prices = {}
+                        for r in _mkt_result.fetchall():
+                            if r[1] and r[3] is not None:
+                                _mkt_prices[str(r[1])] = float(r[3])  # yes_token → yes_price
+                            if r[2] and r[4] is not None:
+                                _mkt_prices[str(r[2])] = float(r[4])  # no_token → no_price
+                        for pos in _still_missing:
+                            tid = str(pos.token_id) if pos.token_id else ""
+                            if tid not in _mkt_prices:
+                                continue
+                            new_price = _mkt_prices[tid]
+                            if new_price <= 0 or new_price >= 1:
+                                continue  # skip resolved (0/1) prices
+                            old_price = float(pos.current_price) if pos.current_price is not None else None
+                            if old_price is not None and abs(new_price - old_price) < 1e-6:
+                                continue
+                            pos.current_price = new_price
+                            entry = float(pos.entry_price) if pos.entry_price else 0.5
+                            size = float(pos.size) if pos.size else 0.0
+                            pos.unrealized_pnl = (new_price - entry) * size
+                            updated += 1
+                    except Exception:
+                        pass
+
             if updated > 0:
                 await session.commit()
                 logger.debug("Updated current_price for %d/%d positions", updated, len(positions))
@@ -477,7 +521,11 @@ class AutomatedPositionManager:
                 if age_seconds < _GRACE_PERIOD_SECONDS:
                     _in_grace_period = True
             except Exception:
-                pass
+                # Timestamp parse failed — safer to assume grace period than exit early
+                _in_grace_period = True
+        else:
+            # No timestamp — assume grace period to prevent premature model-reversal exits
+            _in_grace_period = True
 
         # --- Model reversal: cost-gated (Session 45) ---
         # Only exit on reversal if: (a) strong conviction, (b) price above breakeven, or (c) deep real loss

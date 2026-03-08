@@ -5,12 +5,11 @@ Kalshi's v2 API uses RSA-PSS / SHA-256 key-based authentication instead of
 the legacy email+password flow in base_engine/data/kalshi_client.py.
 
 Auth header format:
-  Kalshi-Access-Key: <your_api_key_id>
-  Kalshi-Access-Timestamp: <unix_ms>
-  Kalshi-Access-Nonce: <uuid4 without dashes>
-  Kalshi-Access-Signature: <base64(RSA-PSS-SHA256(message))>
+  KALSHI-ACCESS-KEY: <your_api_key_id>
+  KALSHI-ACCESS-TIMESTAMP: <unix_ms>
+  KALSHI-ACCESS-SIGNATURE: <base64(RSA-PSS-SHA256(message))>
 
-Message to sign:  "{timestamp}{nonce}{METHOD}{path}"
+Message to sign:  "{timestamp}{METHOD}{path}" (no nonce, no query params)
 
 The private key is a PEM-encoded RSA key stored at KALSHI_RSA_PRIVATE_KEY_PATH.
 The key ID (api key identifier) is KALSHI_API_KEY.
@@ -22,13 +21,12 @@ from __future__ import annotations
 
 import base64
 import time
-import uuid
 from typing import Any, Dict, List, Optional
 from structlog import get_logger
 
 logger = get_logger()
 
-_KALSHI_BASE_URL = "https://trading-api.kalshi.com/trade-api/v2"
+_KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
 
 # Sports event type categories used to filter Kalshi markets
 _SPORTS_EVENT_TYPES = {
@@ -80,18 +78,18 @@ def _sign_request(
     method: str,
     path: str,
     timestamp_ms: int,
-    nonce: str,
 ) -> str:
     """
     Sign a Kalshi API request using RSA-PSS / SHA-256.
 
-    Message: "{timestamp_ms}{nonce}{METHOD}{path}"
-    Returns: base64-encoded signature string (URL-safe, no padding strip).
+    Message: "{timestamp_ms}{METHOD}{path}" — no nonce, no query params.
+    Returns: base64-encoded signature string.
+    Source: https://docs.kalshi.com/getting_started/api_keys
     """
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import padding
 
-    message = f"{timestamp_ms}{nonce}{method.upper()}{path}".encode("utf-8")
+    message = f"{timestamp_ms}{method.upper()}{path}".encode("utf-8")
     signature_bytes = private_key.sign(
         message,
         padding.PSS(
@@ -180,18 +178,20 @@ class KalshiSportsClient:
             logger.warning("KalshiSportsClient: RSA key rotation failed", error=str(e))
 
     def _auth_headers(self, method: str, path: str) -> Dict[str, str]:
-        """Build RSA-PSS auth headers for a Kalshi v2 API request."""
+        """Build RSA-PSS auth headers for a Kalshi v2 API request.
+
+        Source: https://docs.kalshi.com/getting_started/api_keys
+        Headers: KALSHI-ACCESS-KEY, KALSHI-ACCESS-TIMESTAMP, KALSHI-ACCESS-SIGNATURE
+        """
         if not self._initialized or self._private_key is None:
             return {}
         self._maybe_rotate_key()  # I62: rotate if interval elapsed
         timestamp_ms = int(time.time() * 1000)
-        nonce = uuid.uuid4().hex  # no dashes
-        signature = _sign_request(self._private_key, method, path, timestamp_ms, nonce)
+        signature = _sign_request(self._private_key, method, path, timestamp_ms)
         return {
-            "Kalshi-Access-Key": self._api_key or "",
-            "Kalshi-Access-Timestamp": str(timestamp_ms),
-            "Kalshi-Access-Nonce": nonce,
-            "Kalshi-Access-Signature": signature,
+            "KALSHI-ACCESS-KEY": self._api_key or "",
+            "KALSHI-ACCESS-TIMESTAMP": str(timestamp_ms),
+            "KALSHI-ACCESS-SIGNATURE": signature,
             "Content-Type": "application/json",
         }
 

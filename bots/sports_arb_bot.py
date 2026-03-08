@@ -142,10 +142,17 @@ class SportsArbBot(BaseBot):
                            poly_market_id=opp.polymarket_id)
             return
 
-        token_id = (
-            poly_candidate.yes_token_id if opp.leg_a_side == "YES"
-            else (poly_candidate.no_token_id or poly_candidate.yes_token_id or "")
-        )
+        if opp.leg_a_side == "YES":
+            token_id = poly_candidate.yes_token_id or ""
+        else:
+            token_id = poly_candidate.no_token_id or ""
+        if not token_id:
+            logger.warning(
+                "SportsArbBot: Leg A skipped — missing %s token_id",
+                opp.leg_a_side,
+                poly_market_id=opp.polymarket_id,
+            )
+            return
 
         try:
             result_a = await asyncio.wait_for(

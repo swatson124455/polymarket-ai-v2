@@ -11,7 +11,7 @@ from structlog import get_logger
 
 logger = get_logger()
 
-KALSHI_BASE_URL = "https://trading-api.kalshi.com/trade-api/v2"
+KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
 
 
 class KalshiClient:

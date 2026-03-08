@@ -162,14 +162,23 @@ async def _scan_sport_for_arb(
                 continue
 
             # Check both arb directions:
-            # Direction A: Buy YES on Poly + NO on Kalshi
             if poly_m.current_price and kalshi_m.current_price:
                 poly_yes = poly_m.current_price
-                kalshi_no = 1.0 - kalshi_m.current_price
+                kalshi_yes = kalshi_m.current_price
 
+                # Fee estimates per contract (absolute):
+                #   Polymarket: 0.10% taker (flat) — post-QCEX US rate
+                #   Kalshi:     0.07 × P × (1-P) taker, 0.0175 × P × (1-P) maker
+                # Use maker fees for Kalshi (limit orders), taker for Polymarket.
+                _poly_fee_rate = 0.001   # 0.10% flat taker
+                _kalshi_coeff = 0.0175   # maker coefficient
+
+                # Direction A: Buy YES on Poly + buy NO on Kalshi
+                kalshi_no = 1.0 - kalshi_yes
                 gross_a = 1.0 - poly_yes - kalshi_no
-                # Estimate fees: ~1.5% Polymarket taker + ~0% Kalshi
-                net_a = gross_a - 0.015
+                poly_fee_a = _poly_fee_rate * poly_yes
+                kalshi_fee_a = _kalshi_coeff * kalshi_no * (1.0 - kalshi_no)
+                net_a = gross_a - poly_fee_a - kalshi_fee_a
 
                 if net_a >= min_spread:
                     opportunities.append(ArbOpportunity(
@@ -189,12 +198,12 @@ async def _scan_sport_for_arb(
                         kalshi_candidate=kalshi_m,
                     ))
 
-                # Direction B: Buy NO on Poly + YES on Kalshi
+                # Direction B: Buy NO on Poly + buy YES on Kalshi
                 poly_no = 1.0 - poly_yes
-                kalshi_yes = kalshi_m.current_price
-
                 gross_b = 1.0 - poly_no - kalshi_yes
-                net_b = gross_b - 0.015
+                poly_fee_b = _poly_fee_rate * poly_no
+                kalshi_fee_b = _kalshi_coeff * kalshi_yes * (1.0 - kalshi_yes)
+                net_b = gross_b - poly_fee_b - kalshi_fee_b
 
                 if net_b >= min_spread:
                     opportunities.append(ArbOpportunity(
