@@ -224,6 +224,16 @@ class LoLWinModel:
         y_rows = []
         weights = []
 
+        # E2: Pre-scan for patch-conditioned training.
+        # If current patch has >=30 samples, train on current-patch ONLY
+        # for sharper adaptation to meta shifts.
+        _MIN_PATCH_ONLY = 30
+        current_patch_count = sum(
+            1 for row in training_data
+            if self._compute_patch_age(str(row.get("patch", "")), current_patch) == 0
+        )
+        patch_only_mode = current_patch_count >= _MIN_PATCH_ONLY
+
         for row in training_data:
             features = self._extract_features(row)
             if features is None:
@@ -234,6 +244,11 @@ class LoLWinModel:
 
             # Compute patch weight
             patch_age = self._compute_patch_age(patch, current_patch)
+
+            # E2: Skip non-current-patch rows when enough current-patch data exists
+            if patch_only_mode and patch_age > 0:
+                continue
+
             weight = PATCH_WEIGHTS.get(patch_age, 0.3)
 
             X_rows.append(features)
@@ -288,6 +303,7 @@ class LoLWinModel:
             "LoLWinModel: trained",
             n_samples=len(X_rows),
             current_patch=current_patch,
+            patch_only_mode=patch_only_mode,
             top_features=[(n, round(v, 3)) for n, v in top_5],
         )
 

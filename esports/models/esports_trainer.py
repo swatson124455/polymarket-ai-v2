@@ -302,7 +302,7 @@ class EsportsModelTrainer:
                 elif row.get("_game") == "cs2":
                     return int(row.get("team_a_won_round", 0))
                 else:
-                    return int(row.get("winner", 0))
+                    return int(row.get("team_a_won", 0))
 
             X_train = _np.array([_extract(r) for r in train_set], dtype=_np.float32)
             y_train = _np.array([_label(r) for r in train_set], dtype=_np.int32)

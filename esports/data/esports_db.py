@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as _dt
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import text as _text
 from structlog import get_logger
 
 logger = get_logger()
@@ -24,25 +25,26 @@ async def upsert_esports_team(db, team_data: Dict[str, Any]) -> None:
     if db is None:
         return
     try:
-        await db.execute(
-            """
-            INSERT INTO esports_teams (external_id, name, game, region, logo_url)
-            VALUES (:external_id, :name, :game, :region, :logo_url)
-            ON CONFLICT (external_id) DO UPDATE SET
-                name = EXCLUDED.name,
-                region = EXCLUDED.region,
-                logo_url = EXCLUDED.logo_url,
-                updated_at = NOW()
-            """,
-            {
-                "external_id": str(team_data.get("id", "")),
-                "name": str(team_data.get("name", "")),
-                "game": str(team_data.get("game", "")),
-                "region": str(team_data.get("region", "")),
-                "logo_url": str(team_data.get("logo_url", "")),
-            },
-        )
-        await db.commit()
+        async with db.get_session() as session:
+            await session.execute(
+                _text("""
+                INSERT INTO esports_teams (external_id, name, game, region, logo_url)
+                VALUES (:external_id, :name, :game, :region, :logo_url)
+                ON CONFLICT (external_id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    region = EXCLUDED.region,
+                    logo_url = EXCLUDED.logo_url,
+                    updated_at = NOW()
+                """),
+                {
+                    "external_id": str(team_data.get("id", "")),
+                    "name": str(team_data.get("name", "")),
+                    "game": str(team_data.get("game", "")),
+                    "region": str(team_data.get("region", "")),
+                    "logo_url": str(team_data.get("logo_url", "")),
+                },
+            )
+            await session.commit()
     except Exception as exc:
         logger.debug("esports_db: upsert_team failed", error=str(exc))
 
@@ -52,36 +54,37 @@ async def upsert_esports_match(db, match_data: Dict[str, Any]) -> None:
     if db is None:
         return
     try:
-        await db.execute(
-            """
-            INSERT INTO esports_matches
-                (external_id, game, tournament, team_a, team_b, team_a_id, team_b_id,
-                 best_of, status, score_a, score_b, scheduled_at)
-            VALUES
-                (:external_id, :game, :tournament, :team_a, :team_b, :team_a_id, :team_b_id,
-                 :best_of, :status, :score_a, :score_b, :scheduled_at)
-            ON CONFLICT (external_id) DO UPDATE SET
-                status = EXCLUDED.status,
-                score_a = EXCLUDED.score_a,
-                score_b = EXCLUDED.score_b,
-                updated_at = NOW()
-            """,
-            {
-                "external_id": str(match_data.get("match_id", "")),
-                "game": str(match_data.get("game", "")),
-                "tournament": str(match_data.get("tournament", "")),
-                "team_a": str(match_data.get("team_a", "")),
-                "team_b": str(match_data.get("team_b", "")),
-                "team_a_id": str(match_data.get("team_a_id", "")),
-                "team_b_id": str(match_data.get("team_b_id", "")),
-                "best_of": int(match_data.get("best_of", 1)),
-                "status": str(match_data.get("status", "not_started")),
-                "score_a": int(match_data.get("score_a", 0)),
-                "score_b": int(match_data.get("score_b", 0)),
-                "scheduled_at": match_data.get("scheduled_at"),
-            },
-        )
-        await db.commit()
+        async with db.get_session() as session:
+            await session.execute(
+                _text("""
+                INSERT INTO esports_matches
+                    (external_id, game, tournament, team_a, team_b, team_a_id, team_b_id,
+                     best_of, status, score_a, score_b, scheduled_at)
+                VALUES
+                    (:external_id, :game, :tournament, :team_a, :team_b, :team_a_id, :team_b_id,
+                     :best_of, :status, :score_a, :score_b, :scheduled_at)
+                ON CONFLICT (external_id) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    score_a = EXCLUDED.score_a,
+                    score_b = EXCLUDED.score_b,
+                    updated_at = NOW()
+                """),
+                {
+                    "external_id": str(match_data.get("match_id", "")),
+                    "game": str(match_data.get("game", "")),
+                    "tournament": str(match_data.get("tournament", "")),
+                    "team_a": str(match_data.get("team_a", "")),
+                    "team_b": str(match_data.get("team_b", "")),
+                    "team_a_id": str(match_data.get("team_a_id", "")),
+                    "team_b_id": str(match_data.get("team_b_id", "")),
+                    "best_of": int(match_data.get("best_of", 1)),
+                    "status": str(match_data.get("status", "not_started")),
+                    "score_a": int(match_data.get("score_a", 0)),
+                    "score_b": int(match_data.get("score_b", 0)),
+                    "scheduled_at": match_data.get("scheduled_at"),
+                },
+            )
+            await session.commit()
     except Exception as exc:
         logger.debug("esports_db: upsert_match failed", error=str(exc))
 
@@ -101,23 +104,24 @@ async def log_esports_prediction(
     if db is None:
         return
     try:
-        await db.execute(
-            """
-            INSERT INTO esports_live_events
-                (match_id, game, event_type, description, confidence, market_side, edge_estimate)
-            VALUES
-                (:match_id, :game, 'prediction', :description, :confidence, :side, :edge)
-            """,
-            {
-                "match_id": match_id,
-                "game": game,
-                "description": f"{bot_name} prediction: model={model_prob:.3f} market={market_price:.3f}",
-                "confidence": confidence,
-                "side": side,
-                "edge": abs(model_prob - market_price),
-            },
-        )
-        await db.commit()
+        async with db.get_session() as session:
+            await session.execute(
+                _text("""
+                INSERT INTO esports_live_events
+                    (match_id, game, event_type, description, confidence, market_side, edge_estimate)
+                VALUES
+                    (:match_id, :game, 'prediction', :description, :confidence, :side, :edge)
+                """),
+                {
+                    "match_id": match_id,
+                    "game": game,
+                    "description": f"{bot_name} prediction: model={model_prob:.3f} market={market_price:.3f}",
+                    "confidence": confidence,
+                    "side": side,
+                    "edge": abs(model_prob - market_price),
+                },
+            )
+            await session.commit()
     except Exception as exc:
         logger.debug("esports_db: log_prediction failed", error=str(exc))
 
@@ -133,22 +137,23 @@ async def get_calibration(
     if db is None:
         return None
     try:
-        result = await db.execute(
-            """
-            SELECT bet_count, correct_count, brier_score, kelly_fraction
-            FROM esports_calibration
-            WHERE game = :game AND market_type = :market_type
-            """,
-            {"game": game, "market_type": market_type},
-        )
-        row = result.first()
-        if row:
-            return {
-                "bet_count": row.bet_count,
-                "correct_count": row.correct_count,
-                "brier_score": row.brier_score,
-                "kelly_fraction": row.kelly_fraction,
-            }
+        async with db.get_session() as session:
+            result = await session.execute(
+                _text("""
+                SELECT bet_count, correct_count, brier_score, kelly_fraction
+                FROM esports_calibration
+                WHERE game = :game AND market_type = :market_type
+                """),
+                {"game": game, "market_type": market_type},
+            )
+            row = result.first()
+            if row:
+                return {
+                    "bet_count": row.bet_count,
+                    "correct_count": row.correct_count,
+                    "brier_score": row.brier_score,
+                    "kelly_fraction": row.kelly_fraction,
+                }
     except Exception as exc:
         logger.debug("esports_db: get_calibration failed", error=str(exc))
     return None
@@ -170,10 +175,9 @@ async def log_prediction(
         logger.warning("esports_db: log_prediction skipped — db is None")
         return
     try:
-        from sqlalchemy import text
         async with db.get_session() as session:
             await session.execute(
-                text("""
+                _text("""
                 INSERT INTO esports_prediction_log
                     (match_id, game, market_id, bot_name, predicted_prob, market_price, side, edge)
                 VALUES
@@ -209,16 +213,17 @@ async def resolve_predictions(db, market_id: str, outcome: int) -> int:
     if db is None:
         return 0
     try:
-        result = await db.execute(
-            """
-            UPDATE esports_prediction_log
-            SET actual_outcome = :outcome, resolved_at = NOW()
-            WHERE market_id = :market_id AND actual_outcome IS NULL
-            """,
-            {"market_id": market_id, "outcome": outcome},
-        )
-        await db.commit()
-        return result.rowcount if hasattr(result, "rowcount") else 0
+        async with db.get_session() as session:
+            result = await session.execute(
+                _text("""
+                UPDATE esports_prediction_log
+                SET actual_outcome = :outcome, resolved_at = NOW()
+                WHERE market_id = :market_id AND actual_outcome IS NULL
+                """),
+                {"market_id": market_id, "outcome": outcome},
+            )
+            await session.commit()
+            return result.rowcount if hasattr(result, "rowcount") else 0
     except Exception as exc:
         logger.debug("esports_db: resolve_predictions failed", error=str(exc))
         return 0
@@ -241,17 +246,18 @@ async def get_rolling_accuracy(
         if bot_name:
             params["bot_name"] = bot_name
 
-        result = await db.execute(
-            f"""
-            SELECT predicted_prob, actual_outcome, side
-            FROM esports_prediction_log
-            WHERE game = :game AND actual_outcome IS NOT NULL {bot_filter}
-            ORDER BY created_at DESC
-            LIMIT :limit
-            """,
-            params,
-        )
-        rows = result.fetchall()
+        async with db.get_session() as session:
+            result = await session.execute(
+                _text(f"""
+                SELECT predicted_prob, actual_outcome, side
+                FROM esports_prediction_log
+                WHERE game = :game AND actual_outcome IS NOT NULL {bot_filter}
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """),
+                params,
+            )
+            rows = result.fetchall()
         if not rows:
             return None
 
@@ -292,22 +298,23 @@ async def update_prediction_closing_price(
     if db is None:
         return 0
     try:
-        result = await db.execute(
-            """
-            UPDATE esports_prediction_log
-            SET closing_price = :closing_price
-            WHERE match_id = :match_id
-              AND market_id = :market_id
-              AND closing_price IS NULL
-            """,
-            {
-                "match_id": match_id,
-                "market_id": market_id,
-                "closing_price": closing_price,
-            },
-        )
-        await db.commit()
-        return result.rowcount if hasattr(result, "rowcount") else 0
+        async with db.get_session() as session:
+            result = await session.execute(
+                _text("""
+                UPDATE esports_prediction_log
+                SET closing_price = :closing_price
+                WHERE match_id = :match_id
+                  AND market_id = :market_id
+                  AND closing_price IS NULL
+                """),
+                {
+                    "match_id": match_id,
+                    "market_id": market_id,
+                    "closing_price": closing_price,
+                },
+            )
+            await session.commit()
+            return result.rowcount if hasattr(result, "rowcount") else 0
     except Exception as exc:
         logger.debug("esports_db: update_closing_price failed", error=str(exc))
         return 0
@@ -330,18 +337,19 @@ async def compute_clv_stats(
     if db is None:
         return None
     try:
-        result = await db.execute(
-            """
-            SELECT predicted_prob, market_price, closing_price, side, actual_outcome
-            FROM esports_prediction_log
-            WHERE game = :game
-              AND closing_price IS NOT NULL
-              AND created_at > NOW() - INTERVAL ':days days'
-            ORDER BY created_at DESC
-            """,
-            {"game": game, "days": days},
-        )
-        rows = result.fetchall()
+        async with db.get_session() as session:
+            result = await session.execute(
+                _text("""
+                SELECT predicted_prob, market_price, closing_price, side, actual_outcome
+                FROM esports_prediction_log
+                WHERE game = :game
+                  AND closing_price IS NOT NULL
+                  AND created_at > NOW() - INTERVAL ':days days'
+                ORDER BY created_at DESC
+                """),
+                {"game": game, "days": days},
+            )
+            rows = result.fetchall()
         if not rows:
             return None
 
@@ -377,6 +385,111 @@ async def compute_clv_stats(
         return None
 
 
+async def analyze_edge_decay(
+    db, game: str = "", days: int = 30, n_bins: int = 5,
+) -> Optional[Dict[str, Any]]:
+    """Analyze how prediction edge decays with time-to-resolution.
+
+    Groups resolved predictions by how long before resolution they were made,
+    then computes actual edge (profit if you bet at that time) per bin.
+
+    Edge decay tells us:
+      - Fast decay → bet immediately when edge is found
+      - Slow decay → we have time, can wait for better prices
+      - No decay → market is inefficient for extended periods
+
+    Args:
+        db: Database session.
+        game: Filter by game (empty = all games).
+        days: Lookback window.
+        n_bins: Number of time bins.
+
+    Returns:
+        Dict with bins (each having avg_edge, avg_profit, n_predictions, hours_before_close),
+        or None if insufficient data.
+    """
+    if db is None:
+        return None
+    try:
+        game_filter = "AND game = :game" if game else ""
+        params: dict = {"days": days}
+        if game:
+            params["game"] = game
+
+        async with db.get_session() as session:
+            result = await session.execute(
+                _text(f"""
+                SELECT edge, predicted_prob, market_price, actual_outcome, side, created_at,
+                       closing_price
+                FROM esports_prediction_log
+                WHERE actual_outcome IS NOT NULL
+                  AND closing_price IS NOT NULL
+                  {game_filter}
+                  AND created_at > NOW() - INTERVAL '{days} days'
+                ORDER BY created_at ASC
+                """),
+                params,
+            )
+            rows = result.fetchall()
+        if not rows or len(rows) < 20:
+            return None
+
+        # Compute profit per prediction: did the edge convert to actual profit?
+        entries = []
+        for row in rows:
+            edge = float(row.edge)
+            pred = float(row.predicted_prob)
+            market_p = float(row.market_price)
+            actual = int(row.actual_outcome)
+            closing = float(row.closing_price)
+
+            # CLV: edge at closing vs edge at prediction time
+            clv = abs(pred - market_p) - abs(pred - closing)
+
+            # Actual profit: simplified binary P&L
+            if row.side == "YES":
+                profit = (1.0 - market_p) if actual == 1 else -market_p
+            else:
+                profit = market_p if actual == 0 else -(1.0 - market_p)
+
+            entries.append({
+                "edge": abs(edge),
+                "clv": clv,
+                "profit": profit,
+            })
+
+        # Sort by edge magnitude and bin
+        entries.sort(key=lambda e: e["edge"], reverse=True)
+        bin_size = max(1, len(entries) // n_bins)
+        bins = []
+        for i in range(n_bins):
+            start = i * bin_size
+            end = start + bin_size if i < n_bins - 1 else len(entries)
+            bucket = entries[start:end]
+            if not bucket:
+                continue
+            bins.append({
+                "bin": i,
+                "n": len(bucket),
+                "avg_edge": round(sum(e["edge"] for e in bucket) / len(bucket), 4),
+                "avg_clv": round(sum(e["clv"] for e in bucket) / len(bucket), 4),
+                "avg_profit": round(sum(e["profit"] for e in bucket) / len(bucket), 4),
+                "win_rate": round(
+                    sum(1 for e in bucket if e["profit"] > 0) / len(bucket), 4
+                ),
+            })
+
+        return {
+            "game": game or "all",
+            "total_predictions": len(entries),
+            "days": days,
+            "bins": bins,
+        }
+    except Exception as exc:
+        logger.debug("esports_db: analyze_edge_decay failed", error=str(exc))
+        return None
+
+
 async def update_calibration(
     db,
     game: str,
@@ -390,26 +503,27 @@ async def update_calibration(
     if db is None:
         return
     try:
-        await db.execute(
-            """
-            INSERT INTO esports_calibration (game, market_type, bet_count, correct_count, brier_score, kelly_fraction)
-            VALUES (:game, :market_type, :bet_count, :correct_count, :brier_score, :kelly_fraction)
-            ON CONFLICT (game, market_type) DO UPDATE SET
-                bet_count = EXCLUDED.bet_count,
-                correct_count = EXCLUDED.correct_count,
-                brier_score = EXCLUDED.brier_score,
-                kelly_fraction = EXCLUDED.kelly_fraction,
-                updated_at = NOW()
-            """,
-            {
-                "game": game,
-                "market_type": market_type,
-                "bet_count": bet_count,
-                "correct_count": correct_count,
-                "brier_score": brier_score,
-                "kelly_fraction": kelly_fraction,
-            },
-        )
-        await db.commit()
+        async with db.get_session() as session:
+            await session.execute(
+                _text("""
+                INSERT INTO esports_calibration (game, market_type, bet_count, correct_count, brier_score, kelly_fraction)
+                VALUES (:game, :market_type, :bet_count, :correct_count, :brier_score, :kelly_fraction)
+                ON CONFLICT (game, market_type) DO UPDATE SET
+                    bet_count = EXCLUDED.bet_count,
+                    correct_count = EXCLUDED.correct_count,
+                    brier_score = EXCLUDED.brier_score,
+                    kelly_fraction = EXCLUDED.kelly_fraction,
+                    updated_at = NOW()
+                """),
+                {
+                    "game": game,
+                    "market_type": market_type,
+                    "bet_count": bet_count,
+                    "correct_count": correct_count,
+                    "brier_score": brier_score,
+                    "kelly_fraction": kelly_fraction,
+                },
+            )
+            await session.commit()
     except Exception as exc:
         logger.debug("esports_db: update_calibration failed", error=str(exc))
