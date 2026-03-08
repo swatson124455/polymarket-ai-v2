@@ -373,6 +373,15 @@ class EsportsBot(BaseBot):
             except (asyncio.TimeoutError, Exception) as exc:
                 logger.debug("EsportsBot: CS2 retrain failed", error=str(exc))
 
+        # E7: Cross-game XGBoost retrain (pools all 8 games)
+        if self._trainer and self._trainer.needs_retrain("cross_game"):
+            try:
+                await asyncio.wait_for(
+                    self._trainer.train_cross_game(db=db), timeout=300.0,
+                )
+            except (asyncio.TimeoutError, Exception) as exc:
+                logger.debug("EsportsBot: cross-game retrain failed", error=str(exc))
+
         # Step 0a: Collect historical data for games missing Glicko-2 trackers (one-shot)
         _new_data_collected = False
         for _game in ("dota2", "valorant", "cod", "r6", "sc2", "rl"):
