@@ -241,7 +241,9 @@ class PandaScoreClient:
 
         import datetime as _dt
 
-        since = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days_back)).isoformat()
+        now = _dt.datetime.now(_dt.timezone.utc)
+        since = (now - _dt.timedelta(days=days_back)).isoformat()
+        until = now.isoformat()
         slug = GAME_SLUGS[game]
         all_matches: List[EsportsMatch] = []
         page = 1
@@ -252,7 +254,7 @@ class PandaScoreClient:
                 "per_page": min(per_page, 100),
                 "page": page,
                 "sort": "-scheduled_at",
-                "range[scheduled_at]": f"{since},",
+                "range[scheduled_at]": f"{since},{until}",
                 "filter[status]": "finished",
             }
             data = await self._get(f"/{slug}/matches/past", params=params)
