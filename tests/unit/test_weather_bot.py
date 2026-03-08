@@ -690,7 +690,7 @@ class TestWeatherBot:
                 "question": f"Will the highest temperature in NYC be between 48-49°F on {future_str}?",
                 "yes_token_id": "tok_yes",
                 "no_token_id": "tok_no",
-                "yes_price": 0.10,  # Market says 10% prob (above 5¢ penny-bet filter)
+                "yes_price": 0.85,  # Market says 85% — single-bucket normalizes to 1.0, edge=15% (within 8-25%)
                 "slug": "nyc-temp-future",
             },
         ])
@@ -708,7 +708,7 @@ class TestWeatherBot:
         weather_bot.running = True  # BaseBot.place_order checks this
 
         await weather_bot.scan_and_trade()
-        # Should have attempted at least one trade (edge should be >> 15%)
+        # Should have attempted at least one trade (edge 8-25%)
         assert mock_engine.place_order.called
 
     @pytest.mark.asyncio

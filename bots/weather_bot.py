@@ -61,7 +61,7 @@ class WeatherBot(BaseBot):
         self._station_health = StationHealthMonitor()
 
         # Config
-        self._min_edge = float(getattr(settings, "WEATHER_MIN_EDGE", 0.15))
+        self._min_edge = float(getattr(settings, "WEATHER_MIN_EDGE", 0.08))
         self._max_per_group = float(getattr(settings, "WEATHER_MAX_PER_GROUP_USD", 200.0))
         self._daily_loss_limit = float(getattr(settings, "WEATHER_DAILY_LOSS_LIMIT", 500.0))
         self._max_correlated = float(getattr(settings, "WEATHER_MAX_CORRELATED_EXPOSURE", 500.0))
@@ -75,6 +75,7 @@ class WeatherBot(BaseBot):
         self._group_exposure: Dict[str, float] = {}   # "city:date" → USD deployed
         self._city_exposure: Dict[str, float] = {}     # city → total USD deployed
         self._recently_exited: Dict[str, float] = {}   # market_id → mono time
+        self._known_open_markets: Set[str] = set()     # snapshot for PM exit detection
 
         # P1: calibration state
         self._calibration_last_loaded: float = 0.0
@@ -147,6 +148,16 @@ class WeatherBot(BaseBot):
         # P1+P2: handle day boundary + calibration refresh
         await self._handle_daily_boundary()
         await self._maybe_reload_calibration()
+
+        # Detect PM exits: markets open last scan but not now → add to cooldown
+        og = getattr(self.base_engine, "order_gateway", None)
+        if og:
+            current_open = og._open_position_markets.get("WeatherBot", set())
+            exited_by_pm = self._known_open_markets - current_open
+            for mid in exited_by_pm:
+                self._recently_exited[mid] = time.monotonic()
+                logger.debug("weatherbot_pm_exit_detected", market_id=mid)
+            self._known_open_markets = set(current_open)
 
         # Reset per-scan climate normal computation limiter (T3B)
         self._forecast_client.reset_climate_cycle()
@@ -286,7 +297,7 @@ class WeatherBot(BaseBot):
             "token_id": token_id,
             "side": side,
             "price": price,
-            "confidence": min(0.95, 0.50 + abs(edge)),
+            "confidence": min(0.95, model_prob),
             "model_prob": model_prob,
             "edge": edge,
             "city": station.city_name,
@@ -404,6 +415,11 @@ class WeatherBot(BaseBot):
             if e["abs_edge"] < self._min_edge:
                 continue
 
+            # Edge sanity cap: edges >25% are almost certainly model errors
+            if e["abs_edge"] > 0.25:
+                logger.debug("weatherbot_edge_cap", market_id=e["market_id"], edge=round(e["abs_edge"], 4))
+                continue
+
             # Skip recently exited markets
             mono_now = time.monotonic()
             exited_at = self._recently_exited.get(e["market_id"])
@@ -440,7 +456,7 @@ class WeatherBot(BaseBot):
             # a small discrepancy between WU hourly max and NWS official daily high
             # can flip the resolution outcome. Reduce confidence by 50% in these cases.
             boundary_risk = WeatherBot._near_boundary(loc, bucket)
-            base_confidence = min(0.95, 0.50 + e["abs_edge"])
+            base_confidence = min(0.95, e["model_prob"])
             effective_confidence = base_confidence * 0.5 if boundary_risk else base_confidence
 
             if boundary_risk:

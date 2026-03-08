@@ -156,12 +156,16 @@ class WeatherProbabilityEngine:
             for mid in probs:
                 probs[mid] /= total
         elif total <= 0.01 and probs:
-            # M1: Degenerate distribution — all buckets clamped to near-zero.
-            # Fall back to uniform to avoid inflated probabilities from
-            # dividing by a near-zero total.
-            uniform = 1.0 / len(probs)
-            for mid in probs:
-                probs[mid] = uniform
+            # M1 fix: Degenerate distribution — ensemble is too tight for
+            # any bucket to get meaningful probability.  Return empty rather
+            # than uniform — uniform creates fake 45%+ edges on tail markets
+            # (the root cause of the 10× re-entry doom loop on 2¢ markets).
+            logger.debug(
+                "weatherbot_degenerate_distribution",
+                total=round(total, 6),
+                n_buckets=len(probs),
+            )
+            return {}
 
         return probs
 
