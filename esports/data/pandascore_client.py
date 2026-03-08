@@ -37,7 +37,7 @@ GAME_SLUGS = {
     "cs2": "csgo",         # PandaScore still uses "csgo" slug for CS2
     "dota2": "dota2",
     "valorant": "valorant",
-    "cod": "cod-mw",
+    "cod": "codmw",
     "r6": "r6siege",
     "sc2": "starcraft-2",
     "rl": "rl",
