@@ -634,6 +634,15 @@ class WeatherForecastClient:
         except Exception:
             return []
 
+    def invalidate_forecast_cache(self) -> None:
+        """Clear all forecast caches so next fetch gets fresh model data.
+
+        Called at the start of NWP model update windows (ECMWF/GFS) to ensure
+        the bot picks up new model runs immediately instead of waiting for the
+        15-minute cache TTL to expire.
+        """
+        self._cache.clear()
+
     def reset_climate_cycle(self) -> None:
         """Reset the per-cycle climate normal computation limiter.
 
