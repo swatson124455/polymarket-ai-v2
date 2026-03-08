@@ -66,7 +66,7 @@ class WeatherBot(BaseBot):
         self._daily_loss_limit = float(getattr(settings, "WEATHER_DAILY_LOSS_LIMIT", 500.0))
         self._max_correlated = float(getattr(settings, "WEATHER_MAX_CORRELATED_EXPOSURE", 500.0))
         self._kelly_mult = float(getattr(settings, "WEATHER_KELLY_FRACTION", 0.25))
-        self._default_size = float(getattr(settings, "WEATHER_DEFAULT_SIZE", 25.0))
+        self._default_size = float(getattr(settings, "WEATHER_DEFAULT_SIZE", 100.0))
         self._max_lead_time = float(getattr(settings, "WEATHER_MAX_LEAD_TIME_HOURS", 168.0))
 
         # Risk state (P2: restored from DB on day boundary)
@@ -421,7 +421,11 @@ class WeatherBot(BaseBot):
                 continue
 
             price = bucket.yes_price if side == "YES" else (1.0 - bucket.yes_price)
-            if price <= 0.01 or price >= 0.99:
+            # Penny-bet filter: skip markets below 5¢ (deep tail buckets).
+            # At <5¢, spreads are 50-90% of position value and position_manager
+            # exits destroy capital. Hold-to-resolution is the only viable strategy
+            # at these prices, but PM exits mid-trade. Better to skip entirely.
+            if price <= 0.05 or price >= 0.95:
                 continue
 
             # Check position already open

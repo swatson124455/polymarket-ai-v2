@@ -31,7 +31,6 @@ from structlog import get_logger
 from base_engine.base_engine import BaseEngine
 from base_engine.data.database import Database as DbClass
 from bots.arbitrage_bot import ArbitrageBot
-from bots.ensemble_bot import EnsembleBot
 from bots.mirror_bot import MirrorBot
 from bots.cross_platform_arb_bot import CrossPlatformArbBot
 from bots.oracle_bot import OracleBot
@@ -351,7 +350,6 @@ async def init_system(wallet_private_key: str = "", wallet_address: str = ""):
             logger.warning(f"Failed to start automated data ingestion: {e}")
 
         bots = {
-            "EnsembleBot": EnsembleBot(base_engine),
             "ArbitrageBot": ArbitrageBot(base_engine),
             "MirrorBot": MirrorBot(base_engine),
             "CrossPlatformArbBot": CrossPlatformArbBot(base_engine),

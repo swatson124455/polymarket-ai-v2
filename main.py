@@ -87,7 +87,6 @@ except ImportError:
 from structlog import get_logger
 from base_engine.base_engine import BaseEngine
 from bots.arbitrage_bot import ArbitrageBot
-from bots.ensemble_bot import EnsembleBot
 from bots.mirror_bot import MirrorBot
 from bots.cross_platform_arb_bot import CrossPlatformArbBot
 from bots.oracle_bot import OracleBot
@@ -122,7 +121,6 @@ class PreflightResult:
 
 # Mapping of bot names to their classes and enable flags
 BOT_REGISTRY = {
-    "EnsembleBot": (EnsembleBot, "BOT_ENABLED_ENSEMBLE"),
     "ArbitrageBot": (ArbitrageBot, "BOT_ENABLED_ARBITRAGE"),
     "MirrorBot": (MirrorBot, "BOT_ENABLED_MIRROR"),
     "CrossPlatformArbBot": (CrossPlatformArbBot, "BOT_ENABLED_CROSS_PLATFORM_ARB"),
@@ -344,7 +342,6 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
                 # Map bot heartbeat names → settings flag so disabled bots don't trigger false alarms.
                 # A stale heartbeat for a bot explicitly disabled via BOT_ENABLED_*=false is expected.
                 _bot_enabled_map = {
-                    "EnsembleBot": "BOT_ENABLED_ENSEMBLE",
                     "ArbitrageBot": "BOT_ENABLED_ARBITRAGE",
                     "MirrorBot": "BOT_ENABLED_MIRROR",
                     "CrossPlatformArbBot": "BOT_ENABLED_CROSS_PLATFORM_ARB",
@@ -475,12 +472,6 @@ async def main():
                 logger.info("Bot disabled via config", bot_name=bot_name, flag=enable_flag)
                 continue
             bots[bot_name] = bot_cls(base_engine)
-
-        # Wire EnsembleBot into LearningScheduler
-        _ensemble_bot = bots.get("EnsembleBot")
-        if _ensemble_bot and hasattr(base_engine, "scheduler") and base_engine.scheduler is not None:
-            base_engine.scheduler.ensemble_bot = _ensemble_bot
-            logger.info("L6: EnsembleBot wired into LearningScheduler for optimize_weights()")  # I48
 
         # ── Register bots with DegradationManager ──────────────────────
         # Each bot gets a BotStateMachine that feeds fleet-level tier recomputation.

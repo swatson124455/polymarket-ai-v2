@@ -37,7 +37,6 @@ class _LatencyTracker:
 _SCAN_INTERVAL_KEYS = {
     # Active bots (2026 roster)
     "ArbitrageBot": "ARBITRAGE",
-    "EnsembleBot": "ENSEMBLE",
     "MirrorBot": "MIRROR",
     "CrossPlatformArbBot": "CROSS_PLATFORM_ARB",
     "OracleBot": "ORACLE",

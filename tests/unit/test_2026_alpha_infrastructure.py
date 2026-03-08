@@ -79,6 +79,32 @@ class TestFeeSchedule:
         fees = FeeSchedule(taker_fee=0.02)
         assert fees.net_price_after_fees(0.50, "SELL") == pytest.approx(0.49)
 
+    def test_proportional_taker_fee_at_midpoint(self):
+        fees = FeeSchedule(taker_coefficient=0.07, maker_coefficient=0.0175, platform="kalshi")
+        # At P=0.50: taker = 0.07 * (1 - 0.50) = 0.035 (3.5%)
+        assert fees.taker_fee_at_price(0.50) == pytest.approx(0.035)
+        # At P=0.80: taker = 0.07 * 0.20 = 0.014 (1.4%)
+        assert fees.taker_fee_at_price(0.80) == pytest.approx(0.014)
+
+    def test_proportional_maker_fee(self):
+        fees = FeeSchedule(taker_coefficient=0.07, maker_coefficient=0.0175, platform="kalshi")
+        # At P=0.50: maker = 0.0175 * 0.50 = 0.00875 (0.875%)
+        assert fees.maker_fee_at_price(0.50) == pytest.approx(0.00875)
+
+    def test_proportional_net_price(self):
+        fees = FeeSchedule(taker_coefficient=0.07, platform="kalshi")
+        # Buy at P=0.55: fee_rate = 0.07 * 0.45 = 0.0315
+        # net = 0.55 * (1 + 0.0315) = 0.567325
+        assert fees.net_price_after_fees(0.55, "BUY") == pytest.approx(0.567325)
+        # Absolute fee = 0.567325 - 0.55 = 0.017325 ≈ 0.07 * 0.55 * 0.45
+        assert (fees.net_price_after_fees(0.55, "BUY") - 0.55) == pytest.approx(0.07 * 0.55 * 0.45)
+
+    def test_flat_fee_at_price_returns_constant(self):
+        fees = FeeSchedule(taker_fee=0.015, maker_fee=0.005)
+        assert fees.taker_fee_at_price(0.50) == 0.015
+        assert fees.taker_fee_at_price(0.80) == 0.015
+        assert fees.maker_fee_at_price(0.50) == 0.005
+
 
 # ─── ArbScanner ─────────────────────────────────────────────────────
 from base_engine.exchanges.arb_scanner import ArbScanner, _match_score, _normalize_question
@@ -536,10 +562,10 @@ class TestEnsembleBotNewMethods:
 # ─── Main.py BOT_REGISTRY ───────────────────────────────────────────
 class TestBotRegistry:
     def test_registry_has_all_new_bots(self):
-        """main.py BOT_REGISTRY should contain exactly 15 bots (8 original + 3 sports + 3 esports + 1 logical arb)."""
+        """main.py BOT_REGISTRY should contain exactly 14 bots (EnsembleBot archived Session 60)."""
         from main import BOT_REGISTRY
         expected_bots = {
-            "EnsembleBot", "ArbitrageBot", "MirrorBot",
+            "ArbitrageBot", "MirrorBot",
             "CrossPlatformArbBot", "OracleBot", "SportsBot", "LLMForecasterBot",
             "WeatherBot",
             # Sports betting bots — Migration 022
@@ -556,5 +582,5 @@ class TestBotRegistry:
         from main import BOT_REGISTRY
         deleted = {"CryptoPoliticalBot", "CryptoBot", "PoliticalBot",
                    "MarketMakerBot", "StalePriceBot", "FrontRunningHFTBot",
-                   "TemporalArbitrageBot", "MomentumBot"}
+                   "TemporalArbitrageBot", "MomentumBot", "EnsembleBot"}
         assert deleted.isdisjoint(set(BOT_REGISTRY.keys()))

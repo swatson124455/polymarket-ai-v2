@@ -690,7 +690,7 @@ class TestWeatherBot:
                 "question": f"Will the highest temperature in NYC be between 48-49°F on {future_str}?",
                 "yes_token_id": "tok_yes",
                 "no_token_id": "tok_no",
-                "yes_price": 0.05,  # Market says 5% prob
+                "yes_price": 0.10,  # Market says 10% prob (above 5¢ penny-bet filter)
                 "slug": "nyc-temp-future",
             },
         ])

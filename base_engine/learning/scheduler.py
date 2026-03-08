@@ -35,7 +35,6 @@ class LearningScheduler:
         causal_engine: Optional[Any] = None,
         feature_engineer: Optional[Any] = None,
         model_version_manager: Optional[Any] = None,
-        ensemble_bot: Optional[Any] = None,
     ):
         self.db = db
         self.learning_engine = learning_engine
@@ -50,7 +49,7 @@ class LearningScheduler:
         self.causal_engine = causal_engine
         self.feature_engineer = feature_engineer
         self.model_version_manager = model_version_manager
-        self.ensemble_bot = ensemble_bot  # L6: Reference to EnsembleBot for optimize_weights()
+        self.ensemble_bot = None  # L6: archived — EnsembleBot removed from registry
         self.running = False
         self._task: Optional[asyncio.Task] = None
         self._cycles_without_retrain = 0
