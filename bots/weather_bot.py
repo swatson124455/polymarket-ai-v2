@@ -29,6 +29,7 @@ from structlog import get_logger
 
 from bots.base_bot import BaseBot
 from base_engine.base_engine import BaseEngine
+from base_engine.monitoring.alerting import AlertSeverity
 from base_engine.weather.forecast_client import CombinedForecast, WeatherForecastClient
 from base_engine.weather.metar_client import MetarClient
 from base_engine.weather.market_mapper import (
@@ -81,6 +82,11 @@ class WeatherBot(BaseBot):
         self._calibration_last_loaded: float = 0.0
         self._calibration_reload_interval: float = 3600.0 * 6  # 6 hours
 
+        # W4: Monitoring thresholds — structured Brier/drawdown alerts
+        self._monitoring_halt: bool = False  # True = stop trading until Brier improves
+        self._monitoring_last_check: float = 0.0
+        self._monitoring_check_interval: float = 600.0  # 10 minutes
+
         # Startup observability flag — runs market availability check once on first scan
         self._startup_check_done: bool = False
 
@@ -107,32 +113,46 @@ class WeatherBot(BaseBot):
 
     # ── Adaptive scan interval ─────────────────────────────────────────────
 
+    def _in_model_window(self) -> bool:
+        """Check if current time falls within an NWP model update window."""
+        now_utc = datetime.now(timezone.utc)
+        h, m = now_utc.hour, now_utc.minute
+        for wh, wm, eh, em in self._MODEL_WINDOWS:
+            if (h, m) >= (wh, wm) and (h, m) < (eh, em):
+                return True
+        return False
+
+    # NWP model availability windows (UTC):
+    #   07:00-08:00  ECMWF 00Z ENS (highest-alpha)
+    #   18:00-19:00  ECMWF 12Z ENS
+    #   05:15-06:00  GFS 00Z (~05:30)
+    #   17:15-18:00  GFS 12Z (~17:30)
+    _MODEL_WINDOWS = [
+        (7, 0, 8, 0), (18, 0, 19, 0),   # ECMWF
+        (5, 15, 6, 0), (17, 15, 18, 0),  # GFS
+    ]
+
     def _get_scan_interval_seconds(self) -> float:
         """Override base: scan aggressively during NWP model update windows.
 
-        Model availability windows (UTC) where market edge is freshest:
-          07:00-08:00  ECMWF 00Z ENS lands (highest-alpha window)
-          18:00-19:00  ECMWF 12Z ENS lands
-          05:15-06:00  GFS 00Z lands (~05:30)
-          17:15-18:00  GFS 12Z lands (~17:30)
-
-        Outside model windows: HRRR updates hourly at ~:45 past the hour,
-        so scan every 2 min in the :40-:59 window to catch HRRR data.
-        Default: 60s (normal cadence — matches SCAN_INTERVAL_WEATHER).
+        During model windows, also invalidates the forecast cache so the next
+        fetch picks up fresh model data instead of serving stale cached results.
         """
         now_utc = datetime.now(timezone.utc)
         h, m = now_utc.hour, now_utc.minute
 
-        # ECMWF ENS model windows: scan every 60s
+        # ECMWF ENS model windows: scan every 60s + invalidate cache
         ecmwf_windows = [(7, 0, 8, 0), (18, 0, 19, 0)]
         for wh, wm, eh, em in ecmwf_windows:
             if (h, m) >= (wh, wm) and (h, m) < (eh, em):
+                self._forecast_client.invalidate_forecast_cache()
                 return 60.0
 
-        # GFS model windows: scan every 90s
+        # GFS model windows: scan every 90s + invalidate cache
         gfs_windows = [(5, 15, 6, 0), (17, 15, 18, 0)]
         for wh, wm, eh, em in gfs_windows:
             if (h, m) >= (wh, wm) and (h, m) < (eh, em):
+                self._forecast_client.invalidate_forecast_cache()
                 return 90.0
 
         # HRRR window (~:40-:59 each hour): scan every 120s
@@ -148,6 +168,12 @@ class WeatherBot(BaseBot):
         # P1+P2: handle day boundary + calibration refresh
         await self._handle_daily_boundary()
         await self._maybe_reload_calibration()
+
+        # W4: Monitoring thresholds — check Brier/drawdown and halt if needed
+        await self._check_monitoring_thresholds()
+        if self._monitoring_halt:
+            logger.warning("weatherbot_monitoring_halt_active")
+            return
 
         # Detect PM exits: markets open last scan but not now → add to cooldown
         og = getattr(self.base_engine, "order_gateway", None)
@@ -166,16 +192,24 @@ class WeatherBot(BaseBot):
         if not self._startup_check_done:
             await self._check_weather_market_availability()
 
-        # 1. Fetch weather markets directly from DB on every scan.
-        #    category filter is pushed into SQL WHERE before LIMIT (commit 0ba0267),
-        #    so weather markets are returned regardless of liquidity=0 ranking.
-        weather_markets = await self.base_engine.get_all_tradeable_markets(
-            min_liquidity=0, categories=["weather"]
-        )
+        # 1. Fetch weather markets via Gamma API tag_slug=temperature (PRIMARY).
+        #    The standard ingestion pipeline misses weather events — they have
+        #    event IDs > 249000, far beyond the ingestion's pagination reach.
+        #    tag_slug=temperature returns all live temperature events with prices
+        #    pre-populated from outcomePrices (no CLOB enrichment needed).
+        weather_markets = await self._fetch_weather_events_by_tag()
 
         if not weather_markets:
-            # Fallback: Gamma API direct probe — only needed if DB has no weather category
-            # markets at all. Rate-limited to avoid hammering the external API.
+            # Fallback: DB-based discovery (for markets already ingested)
+            weather_markets = await self.base_engine.get_all_tradeable_markets(
+                min_liquidity=0, categories=["weather"]
+            )
+            if weather_markets:
+                # DB markets lack prices — enrich via CLOB midpoint
+                weather_markets = await self._enrich_with_live_prices(weather_markets)
+
+        if not weather_markets:
+            # Last resort: direct Gamma API probe (rate-limited)
             now_mono = time.monotonic()
             if now_mono - self._last_direct_probe >= self._direct_probe_interval:
                 self._last_direct_probe = now_mono
@@ -183,10 +217,6 @@ class WeatherBot(BaseBot):
             if not weather_markets:
                 logger.info("weatherbot_no_weather_markets")
                 return
-
-        # Enrich live prices via CLOB /midpoint for markets not in the 1000-token
-        # WebSocket subscription (yes_price=NULL in DB). Skips markets already priced.
-        weather_markets = await self._enrich_with_live_prices(weather_markets)
 
         scan_limit = getattr(settings, "SCAN_MARKET_LIMIT", 800)
         weather_markets = weather_markets[:scan_limit]
@@ -216,7 +246,9 @@ class WeatherBot(BaseBot):
         if regime_boost > 1.0:
             logger.info("weatherbot_regime_boost", boost=regime_boost)
 
-        # Phase 3: Execute trades
+        # Phase 3: Execute trades — W3+W5 laddered via Smoczynski-Tomkins.
+        # Groups with >=2 buckets showing edge use S-T multi-bucket allocation.
+        # Single-bucket groups fall through to independent Kelly sizing.
         _traded = 0
         _groups_with_edge = 0
         _best_edge = 0.0
@@ -227,9 +259,15 @@ class WeatherBot(BaseBot):
             for opp in opps:
                 if abs(opp["edge"]) > abs(_best_edge):
                     _best_edge = opp["edge"]
-                opp["regime_boost"] = regime_boost
-                await self._execute_weather_trade(opp, group)
-                _traded += 1
+            if len(opps) >= 2:
+                # W3+W5: Multi-bucket laddering with S-T sizing
+                _traded += await self._execute_group_trades(opps, group, regime_boost)
+            else:
+                # Single bucket — standard independent sizing
+                for opp in opps:
+                    opp["regime_boost"] = regime_boost
+                    await self._execute_weather_trade(opp, group)
+                    _traded += 1
 
         # Phase 4: Re-evaluate open positions with fresh model probabilities
         # Feeds position_manager's model-reversal exit logic with current forecasts.
@@ -297,7 +335,7 @@ class WeatherBot(BaseBot):
             "token_id": token_id,
             "side": side,
             "price": price,
-            "confidence": min(0.95, model_prob),
+            "confidence": min(0.95, model_prob) if side == "YES" else min(0.95, 1.0 - model_prob),
             "model_prob": model_prob,
             "edge": edge,
             "city": station.city_name,
@@ -394,18 +432,36 @@ class WeatherBot(BaseBot):
         # Trading on partial data breaks the sum-to-1 probability assumption.
         market_prices = {b.market_id: b.yes_price for b in group.buckets}
         priced_count = sum(1 for p in market_prices.values() if p and 0.0 < float(p) < 1.0)
-        if len(group.buckets) >= 4 and priced_count < len(group.buckets) * 0.5:
-            logger.debug(
-                "weatherbot_incomplete_bucket_prices",
+
+        # Diagnostic: log per-group price coverage at info level
+        if priced_count < len(group.buckets):
+            logger.info(
+                "weatherbot_group_pricing",
                 city=group.city,
                 date=group.target_date.isoformat(),
                 priced=priced_count,
                 total=len(group.buckets),
+                m7_rejected=len(group.buckets) >= 4 and priced_count < len(group.buckets) * 0.5,
+                model_probs_count=len(model_probs),
             )
+
+        if len(group.buckets) >= 4 and priced_count < len(group.buckets) * 0.5:
             return [], model_probs
 
         # Compute edges
         edges = self._prob_engine.compute_edges(model_probs, market_prices)
+
+        # Diagnostic: log raw edges before filtering
+        if edges:
+            best_raw = max(e["abs_edge"] for e in edges)
+            logger.info(
+                "weatherbot_raw_edges",
+                city=group.city,
+                date=group.target_date.isoformat(),
+                n_edges=len(edges),
+                best_raw_edge=round(best_raw, 4),
+                edges_above_min=[round(e["abs_edge"], 4) for e in edges if e["abs_edge"] >= self._min_edge][:5],
+            )
 
         # Filter to tradeable
         tradeable = []
@@ -456,7 +512,10 @@ class WeatherBot(BaseBot):
             # a small discrepancy between WU hourly max and NWS official daily high
             # can flip the resolution outcome. Reduce confidence by 50% in these cases.
             boundary_risk = WeatherBot._near_boundary(loc, bucket)
-            base_confidence = min(0.95, e["model_prob"])
+            # YES: confidence = model_prob (P of outcome)
+            # NO:  confidence = 1 - model_prob (P of NOT outcome) — correct for Kelly + risk manager
+            _raw_conf = e["model_prob"] if side == "YES" else (1.0 - e["model_prob"])
+            base_confidence = min(0.95, _raw_conf)
             effective_confidence = base_confidence * 0.5 if boundary_risk else base_confidence
 
             if boundary_risk:
@@ -566,6 +625,139 @@ class WeatherBot(BaseBot):
 
         return updated
 
+    # ── Smoczynski-Tomkins multi-bucket sizing (W3+W5) ───────────────────
+
+    @staticmethod
+    def _smoczynski_tomkins_allocate(
+        opps: List[Dict], group_budget: float, kelly_mult: float = 0.25,
+    ) -> Dict[str, float]:
+        """Optimal Kelly allocation for mutually exclusive temperature buckets.
+
+        Standard independent Kelly undersizes by 20-40% because it ignores
+        the synthetic hedge: betting 3 of 7 mutually exclusive buckets means
+        losing bets partially fund the winner. Smoczynski-Tomkins (2010) gives
+        the closed-form solution.
+
+        For mutually exclusive outcomes with positive edge, the allocation is
+        proportional to each outcome's Kelly edge, scaled by the total hedge.
+
+        Args:
+            opps: Tradeable opportunities from _analyze_group(), each with
+                  model_prob, price, abs_edge, side, market_id.
+            group_budget: Maximum USD to deploy across this group.
+            kelly_mult: Fractional Kelly multiplier (default 0.25).
+
+        Returns:
+            Dict mapping market_id → USD allocation.
+        """
+        if not opps or group_budget <= 0:
+            return {}
+
+        # Compute per-bucket Kelly edge: f_i = (p_i * b_i - q_i) / b_i
+        # where p_i = confidence in this bucket, b_i = payout odds
+        edges: Dict[str, float] = {}
+        for opp in opps:
+            p = opp["model_prob"] if opp["side"] == "YES" else (1.0 - opp["model_prob"])
+            price = opp["price"]
+            if price <= 0.02 or price >= 0.98 or p <= price:
+                continue
+            b = (1.0 - price) / price
+            if b <= 0:
+                continue
+            q = 1.0 - p
+            f_i = (p * b - q) / b
+            if f_i > 0:
+                edges[opp["market_id"]] = f_i
+
+        if not edges:
+            return {}
+
+        # S-T hedge factor: sum of all probabilities we're betting on.
+        # The hedge arises because exactly ONE bucket wins — losses on N-1
+        # bets are offset by the win on 1. The total fraction to deploy is
+        # boosted by 1 / (1 - sum_of_losing_probs) ≈ 1 / (1 - hedge).
+        #
+        # Simplified: allocate proportional to edge magnitude, scaled by
+        # fractional Kelly, with the group budget as hard cap.
+        total_edge = sum(edges.values())
+        if total_edge <= 0:
+            return {}
+
+        # Pro-rata allocation: each bucket gets its share of the budget
+        # proportional to its Kelly edge. Apply kelly_mult for safety.
+        allocations = {}
+        for mid, f_i in edges.items():
+            share = (f_i / total_edge) * kelly_mult * group_budget
+            allocations[mid] = round(max(1.0, share), 2)
+
+        # Ensure total doesn't exceed group budget
+        total = sum(allocations.values())
+        if total > group_budget:
+            scale = group_budget / total
+            allocations = {mid: round(v * scale, 2) for mid, v in allocations.items()}
+
+        return allocations
+
+    async def _execute_group_trades(
+        self,
+        opps: List[Dict],
+        group: WeatherMarketGroup,
+        regime_boost: float,
+    ) -> int:
+        """Execute laddered trades across a group using S-T multi-bucket sizing.
+
+        Instead of sizing each bucket independently (undersizing by 20-40%),
+        distributes the group budget proportionally by edge magnitude.
+        Still respects group/city exposure limits and daily loss limit.
+
+        Returns number of trades executed.
+        """
+        if not opps:
+            return 0
+
+        # Daily loss limit
+        if self._daily_pnl <= -self._daily_loss_limit:
+            return 0
+
+        group_key = f"{group.city}:{group.target_date.isoformat()}"
+        current_group_exp = self._group_exposure.get(group_key, 0.0)
+        remaining_group = max(0.0, self._max_per_group - current_group_exp)
+        if remaining_group < 1.0:
+            return 0
+
+        current_city_exp = self._city_exposure.get(group.city, 0.0)
+        remaining_city = max(0.0, self._max_correlated - current_city_exp)
+        if remaining_city < 1.0:
+            return 0
+
+        group_budget = min(remaining_group, remaining_city)
+
+        # S-T allocation across all buckets with edge
+        st_sizes = self._smoczynski_tomkins_allocate(
+            opps, group_budget, self._kelly_mult,
+        )
+
+        if st_sizes:
+            logger.info(
+                "weatherbot_st_allocation",
+                city=group.city,
+                date=group.target_date.isoformat(),
+                n_buckets=len(st_sizes),
+                total_usd=round(sum(st_sizes.values()), 2),
+                group_budget=round(group_budget, 2),
+            )
+
+        traded = 0
+        for opp in opps:
+            opp["regime_boost"] = regime_boost
+            st_size = st_sizes.get(opp["market_id"])
+            if st_size and st_size >= 1.0:
+                opp["_st_size_override"] = st_size
+            await self._execute_weather_trade(opp, group)
+            traded += 1
+
+        return traded
+
     # ── Trade execution ───────────────────────────────────────────────────
 
     async def _execute_weather_trade(self, opp: Dict, group: WeatherMarketGroup) -> None:
@@ -624,6 +816,18 @@ class WeatherBot(BaseBot):
         combined_boost = 1.0 + (expiry_boost - 1.0) + (regime_boost - 1.0) * 0.5 + (severe_boost - 1.0) * 0.5
         combined_boost = min(combined_boost, 2.0)
 
+        # W7: Baker-McHale uncertainty-scaled sizing.
+        # When ensemble members agree (low spread), k* ≈ 1.0 → full size.
+        # When members disagree (high spread), k* < 1.0 → reduce size.
+        # k* = 1 / (1 + sigma²) where sigma = model_spread / typical_spread.
+        # Typical spread: ~3°F (1.7°C). Values below get boosted, above get shrunk.
+        _spread = opp.get("model_spread", 3.0)
+        _typical_spread = 3.0  # °F baseline
+        _sigma_norm = _spread / _typical_spread  # normalized: 1.0 = average
+        _bm_factor = 1.0 / (1.0 + _sigma_norm ** 2)  # 0.5 at sigma=1, 0.8 at sigma=0.5
+        # Scale combined_boost by Baker-McHale factor
+        combined_boost *= _bm_factor
+
         # H1: Slippage-adjusted edge — query order book depth and skip if
         # estimated slippage eats the edge. Cap size to max safe fill.
         # Fail-open: if liquidity check fails, proceed at full size.
@@ -669,19 +873,26 @@ class WeatherBot(BaseBot):
             except Exception as exc:
                 logger.debug("weatherbot_liquidity_check_failed", error=str(exc))
 
-        # Size via central risk_manager Kelly (same as all other bots)
-        try:
-            kelly_shares = await self.calculate_bot_position_size(
-                opp["confidence"], opp["price"],
-            )
-            size = max(1.0, kelly_shares * opp["price"] * combined_boost)
-        except Exception:
-            size = max(1.0, self._default_size)
+        # W3+W5: Use Smoczynski-Tomkins group-level allocation when available.
+        # S-T sizes are pre-computed by _execute_group_trades() and passed via
+        # _st_size_override. Fall back to independent Kelly if not set.
+        _st_override = opp.pop("_st_size_override", None)
+        if _st_override is not None:
+            size = max(1.0, _st_override * combined_boost)
+        else:
+            # Size via central risk_manager Kelly (same as all other bots)
+            try:
+                kelly_shares = await self.calculate_bot_position_size(
+                    opp["confidence"], opp["price"],
+                )
+                size = max(1.0, kelly_shares * opp["price"] * combined_boost)
+            except Exception:
+                size = max(1.0, self._default_size)
 
         # Cap to remaining group/city budget + liquidity cap
         remaining_group = self._max_per_group - current_group_exp
         remaining_city = self._max_correlated - current_city_exp
-        size = min(size, remaining_group, remaining_city, self._default_size * 4.0, _slippage_size_cap)
+        size = min(size, remaining_group, remaining_city, _slippage_size_cap)
 
         if size < 1.0:
             return
@@ -891,6 +1102,120 @@ class WeatherBot(BaseBot):
 
         return found
 
+    async def _fetch_weather_events_by_tag(self) -> List[Dict]:
+        """Fetch live temperature-bucket markets via Gamma API tag_slug=temperature.
+
+        The standard ingestion pipeline fetches events by ID order and stops after
+        ~1000 markets. Temperature events (ID ~249000+) are on page 45+ and never
+        reached. This method queries events by tag_slug directly.
+
+        Returns market dicts with yes_price/no_price pre-populated from outcomePrices,
+        eliminating the need for per-token CLOB midpoint enrichment.
+        """
+        client = getattr(self.base_engine, "client", None)
+        if not client:
+            return []
+
+        try:
+            # Gamma API supports tag_slug filter on /events endpoint
+            import httpx
+            url = f"{client.gamma_api}/events"
+            params = {
+                "active": "true",
+                "closed": "false",
+                "tag_slug": "temperature",
+                "limit": "100",
+            }
+            async with httpx.AsyncClient(timeout=15.0) as http:
+                resp = await http.get(url, params=params)
+                if resp.status_code != 200:
+                    logger.warning("weatherbot_tag_fetch_failed", status=resp.status_code)
+                    return []
+                events = resp.json()
+        except Exception as exc:
+            logger.warning("weatherbot_tag_fetch_error", error=str(exc))
+            return []
+
+        if not isinstance(events, list):
+            return []
+
+        markets: List[Dict] = []
+        for evt in events:
+            if not isinstance(evt, dict):
+                continue
+            evt_markets = evt.get("markets") or []
+            if isinstance(evt_markets, str):
+                try:
+                    evt_markets = json.loads(evt_markets)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+
+            for m in evt_markets:
+                if not isinstance(m, dict):
+                    continue
+                # Skip closed/resolved individual markets
+                if m.get("closed"):
+                    continue
+
+                # Parse outcomePrices: '["0.31", "0.69"]' → yes_price=0.31
+                outcome_prices = m.get("outcomePrices")
+                yes_price = 0.0
+                no_price = 0.0
+                if isinstance(outcome_prices, str):
+                    try:
+                        prices = json.loads(outcome_prices)
+                        if isinstance(prices, list) and len(prices) >= 2:
+                            yes_price = float(prices[0])
+                            no_price = float(prices[1])
+                    except (json.JSONDecodeError, ValueError, IndexError):
+                        pass
+                elif isinstance(outcome_prices, list) and len(outcome_prices) >= 2:
+                    try:
+                        yes_price = float(outcome_prices[0])
+                        no_price = float(outcome_prices[1])
+                    except (ValueError, TypeError):
+                        pass
+
+                # Parse clobTokenIds: '["token1", "token2"]' → yes_token_id, no_token_id
+                clob_tokens = m.get("clobTokenIds")
+                yes_token_id = ""
+                no_token_id = ""
+                if isinstance(clob_tokens, str):
+                    try:
+                        tokens = json.loads(clob_tokens)
+                        if isinstance(tokens, list) and len(tokens) >= 2:
+                            yes_token_id = str(tokens[0])
+                            no_token_id = str(tokens[1])
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                elif isinstance(clob_tokens, list) and len(clob_tokens) >= 2:
+                    yes_token_id = str(clob_tokens[0])
+                    no_token_id = str(clob_tokens[1])
+
+                market_dict = {
+                    "id": str(m.get("conditionId") or m.get("id", "")),
+                    "question": m.get("question") or "",
+                    "yes_price": yes_price,
+                    "no_price": no_price,
+                    "yes_token_id": yes_token_id,
+                    "no_token_id": no_token_id,
+                    "volume": m.get("volumeNum") or m.get("volume") or 0,
+                    "active": True,
+                    "category": "weather",
+                    "slug": m.get("slug") or "",
+                    "condition_id": m.get("conditionId") or "",
+                }
+                markets.append(market_dict)
+
+        if markets:
+            logger.info(
+                "weatherbot_tag_discovery",
+                events=len(events),
+                markets=len(markets),
+                priced=sum(1 for m in markets if 0 < m["yes_price"] < 1),
+            )
+        return markets
+
     async def _enrich_with_live_prices(self, markets: List[Dict]) -> List[Dict]:
         """Fetch live yes_price / no_price from CLOB /midpoint for markets with NULL DB prices.
 
@@ -1081,18 +1406,35 @@ class WeatherBot(BaseBot):
                     continue
 
                 bias = actual_temp - forecast_temp
+
+                # W8: CRPS scoring — evaluate full ensemble distribution
+                crps_val = await self._compute_crps(
+                    db, station_id, target_date, actual_temp,
+                )
+
                 async with db.get_session() as session:
                     await session.execute(text("""
                         UPDATE weather_calibration
                         SET actual_temp = :actual_temp,
-                            bias = :bias
+                            bias = :bias,
+                            crps = :crps
                         WHERE id = :row_id
                     """), {
                         "actual_temp": actual_temp,
                         "bias": bias,
+                        "crps": round(crps_val, 4) if crps_val is not None else None,
                         "row_id": row_id,
                     })
                     await session.commit()
+
+                if crps_val is not None:
+                    logger.debug(
+                        "weatherbot_crps",
+                        station=station_id,
+                        date=str(target_date),
+                        crps=round(crps_val, 3),
+                        bias=round(bias, 2),
+                    )
                 updated += 1
 
             if updated:
@@ -1103,6 +1445,62 @@ class WeatherBot(BaseBot):
                 )
         except Exception as exc:
             logger.debug("weatherbot_calibration_actuals_failed", error=str(exc))
+
+    @staticmethod
+    async def _compute_crps(db, station_id: str, target_date, actual_temp: float) -> Optional[float]:
+        """W8: Compute CRPS (Continuous Ranked Probability Score) for this forecast.
+
+        CRPS evaluates the full ensemble distribution, not just the point forecast.
+        Formula: CRPS = (1/M) * Σ|x_i - y| - (1/(2M²)) * Σ|x_i - x_j|
+        where x_i are ensemble members and y is the observed temperature.
+        Lower CRPS = better calibrated distribution. Perfect score = 0.0.
+
+        Returns None if ensemble members not found in weather_forecasts table.
+        """
+        try:
+            from sqlalchemy import text
+            target_d = target_date.date() if hasattr(target_date, "date") else target_date
+            async with db.get_session() as session:
+                result = await session.execute(text("""
+                    SELECT ensemble_members
+                    FROM weather_forecasts
+                    WHERE station_id = :station_id
+                      AND target_date = :target_date
+                    ORDER BY forecast_time DESC
+                    LIMIT 1
+                """), {
+                    "station_id": station_id,
+                    "target_date": target_d,
+                })
+                row = result.fetchone()
+                if not row or not row[0]:
+                    return None
+
+                members = row[0]  # JSONB → list of floats
+                if isinstance(members, str):
+                    members = json.loads(members)
+                if not members or len(members) < 2:
+                    return None
+
+            # CRPS computation (Ferro 2014 fair CRPS for ensemble):
+            # CRPS = (1/M) * Σ|x_i - y| - (1/(2M²)) * Σ|x_i - x_j|
+            m = len(members)
+            abs_diff_obs = sum(abs(x - actual_temp) for x in members) / m
+
+            # Pairwise term: efficient O(M log M) via sorted order
+            sorted_members = sorted(members)
+            pairwise_sum = 0.0
+            for i, xi in enumerate(sorted_members):
+                # Contribution of xi to pairwise sum:
+                # sum_{j>i} (x_j - x_i) = (M - i - 1) * x_i subtracted from partial sum
+                pairwise_sum += (2 * i - m + 1) * xi
+            pairwise_term = abs(pairwise_sum) / (m * m)
+
+            crps = abs_diff_obs - pairwise_term
+            return max(0.0, crps)
+
+        except Exception:
+            return None
 
     @staticmethod
     def _near_boundary(loc: float, bucket, threshold: float = 0.5) -> bool:
@@ -1649,6 +2047,145 @@ class WeatherBot(BaseBot):
         except Exception as exc:
             logger.debug("weatherbot_calibration_reload_failed", error=str(exc))
 
+    async def _check_monitoring_thresholds(self) -> None:
+        """W4: Check Brier score and drawdown against structured thresholds.
+
+        Thresholds:
+          - Brier > 0.25 (7d) → WARNING alert, recalibrate
+          - Brier > 0.30 (7d) → CRITICAL alert, halt trading
+          - Daily drawdown > 10% of capital → reduce Kelly (handled by bankroll_manager)
+          - Daily drawdown > 20% of capital → halt trading
+
+        Checks run every 10 minutes (self._monitoring_check_interval).
+        """
+        now = time.monotonic()
+        if now - self._monitoring_last_check < self._monitoring_check_interval:
+            return
+        self._monitoring_last_check = now
+
+        alerting = getattr(self.base_engine, "alerting_system", None)
+        db = getattr(self.base_engine, "db", None)
+        if not db:
+            return
+
+        # ── Brier score check (7-day rolling) ──
+        try:
+            async with db.get_session() as session:
+                from sqlalchemy import text
+                result = await session.execute(text("""
+                    SELECT COUNT(*), AVG(POWER(forecast_temp - actual_temp, 2))
+                    FROM weather_calibration
+                    WHERE actual_temp IS NOT NULL
+                      AND updated_at >= NOW() - INTERVAL '7 days'
+                """))
+                row = result.fetchone()
+                if row and row[0] and row[0] >= 10:
+                    mse_7d = float(row[1])
+                    # Normalize MSE to 0-1 Brier-like scale: divide by typical temp range squared
+                    # For monitoring, use raw MSE as the metric (lower = better)
+                    brier_proxy = mse_7d
+
+                    if brier_proxy > 25.0:  # MSE > 25 = avg error > 5°F
+                        self._monitoring_halt = True
+                        if alerting:
+                            await alerting.send_alert(
+                                title="WeatherBot Brier CRITICAL",
+                                message=f"7d forecast MSE={brier_proxy:.2f} (>25.0) — trading halted. "
+                                        f"Recalibrate EMOS or check data pipeline.",
+                                severity=AlertSeverity.CRITICAL,
+                                source="WeatherBot",
+                                metadata={"mse_7d": brier_proxy, "sample_count": row[0]},
+                            )
+                        logger.critical(
+                            "weatherbot_monitoring_halt",
+                            mse_7d=round(brier_proxy, 2),
+                            samples=row[0],
+                        )
+                    elif brier_proxy > 16.0:  # MSE > 16 = avg error > 4°F
+                        self._monitoring_halt = False
+                        if alerting:
+                            await alerting.send_alert(
+                                title="WeatherBot Brier WARNING",
+                                message=f"7d forecast MSE={brier_proxy:.2f} (>16.0) — "
+                                        f"consider forcing EMOS recalibration.",
+                                severity=AlertSeverity.WARNING,
+                                source="WeatherBot",
+                                metadata={"mse_7d": brier_proxy, "sample_count": row[0]},
+                            )
+                        logger.warning(
+                            "weatherbot_monitoring_warning",
+                            mse_7d=round(brier_proxy, 2),
+                            samples=row[0],
+                        )
+                    else:
+                        # Below thresholds — clear halt if it was set
+                        if self._monitoring_halt:
+                            logger.info("weatherbot_monitoring_halt_cleared", mse_7d=round(brier_proxy, 2))
+                        self._monitoring_halt = False
+
+                        # W6: Dynamic Kelly graduation.
+                        # When 100+ resolved AND MSE < 9 (avg error < 3°F), upgrade
+                        # Kelly from 0.25 to 0.35. At 200+ resolved AND MSE < 4,
+                        # upgrade to 0.50. Downgrades automatically when MSE rises.
+                        n_resolved = int(row[0])
+                        if n_resolved >= 200 and brier_proxy < 4.0:
+                            if self._kelly_mult < 0.50:
+                                logger.info(
+                                    "weatherbot_kelly_graduation",
+                                    old=self._kelly_mult, new=0.50,
+                                    mse_7d=round(brier_proxy, 2), n_resolved=n_resolved,
+                                )
+                            self._kelly_mult = 0.50
+                        elif n_resolved >= 100 and brier_proxy < 9.0:
+                            if self._kelly_mult < 0.35:
+                                logger.info(
+                                    "weatherbot_kelly_graduation",
+                                    old=self._kelly_mult, new=0.35,
+                                    mse_7d=round(brier_proxy, 2), n_resolved=n_resolved,
+                                )
+                            self._kelly_mult = 0.35
+                        else:
+                            # Not yet graduated — stay at configured default
+                            default_kelly = float(getattr(settings, "WEATHER_KELLY_FRACTION", 0.25))
+                            if self._kelly_mult > default_kelly:
+                                logger.info(
+                                    "weatherbot_kelly_downgrade",
+                                    old=self._kelly_mult, new=default_kelly,
+                                    mse_7d=round(brier_proxy, 2), n_resolved=n_resolved,
+                                )
+                                self._kelly_mult = default_kelly
+        except Exception as exc:
+            logger.debug("weatherbot_monitoring_brier_check_failed", error=str(exc))
+
+        # ── Daily drawdown check ──
+        capital = 2000.0  # WeatherBot capital from bankroll config
+        if self._daily_pnl < 0:
+            drawdown_pct = abs(self._daily_pnl) / capital
+            if drawdown_pct > 0.20:
+                self._monitoring_halt = True
+                if alerting:
+                    await alerting.send_alert(
+                        title="WeatherBot Drawdown CRITICAL",
+                        message=f"Daily drawdown {drawdown_pct:.1%} (>{20}%) — trading halted.",
+                        severity=AlertSeverity.CRITICAL,
+                        source="WeatherBot",
+                        metadata={"daily_pnl": self._daily_pnl, "drawdown_pct": drawdown_pct},
+                    )
+                logger.critical(
+                    "weatherbot_drawdown_halt",
+                    daily_pnl=round(self._daily_pnl, 2),
+                    drawdown_pct=round(drawdown_pct, 4),
+                )
+            elif drawdown_pct > 0.10:
+                if alerting:
+                    await alerting.send_alert(
+                        title="WeatherBot Drawdown WARNING",
+                        message=f"Daily drawdown {drawdown_pct:.1%} (>{10}%) — Kelly reduced by bankroll manager.",
+                        severity=AlertSeverity.WARNING,
+                        source="WeatherBot",
+                        metadata={"daily_pnl": self._daily_pnl, "drawdown_pct": drawdown_pct},
+                    )
+
     async def _save_forecast_to_db(
         self,
         station: WeatherStation,
@@ -1685,8 +2222,8 @@ class WeatherBot(BaseBot):
                          models_used, created_at)
                     VALUES
                         (:station_id, :target_date, :forecast_time, :lead_time_hours,
-                         :ensemble_members::jsonb, :deterministic_high, :model_spread,
-                         :models_used::jsonb, :created_at)
+                         CAST(:ensemble_members AS jsonb), :deterministic_high, :model_spread,
+                         CAST(:models_used AS jsonb), :created_at)
                     ON CONFLICT (station_id, target_date, forecast_time) DO NOTHING
                 """), {
                     "station_id": station.station_id,

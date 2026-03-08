@@ -163,6 +163,16 @@ scipy>=1.11.0
 # Job: Statistical distributions, CVaR computation, isotonic regression
 # Used by: CorrelationRiskManager, calibration, position sizing
 
+shin>=0.1.0
+# Job: Shin's (1992) method for true implied probability extraction from bookmaker odds
+# Strips overround + insider trading fraction (z). High z = informed money present.
+# Used by: EsportsBot, SportsArbBot — benchmark model probs against bookmaker-implied
+
+scoringrules>=0.8.0
+# Job: Proper scoring rules including CRPS for full distribution evaluation
+# Used by: WeatherBot — evaluates ensemble forecast distributions beyond binary Brier
+# Pure Python, lightweight. CRPS catches miscalibration that Brier misses.
+
 statsmodels>=0.14.0
 # Job: OLS regression for Kyle's lambda market impact
 # Used by: MarketImpactEstimator (price impact regression)
@@ -245,6 +255,16 @@ apscheduler>=3.10.4
 causal-learn>=0.1.3
 # Job: Causal inference (PC algorithm for feature importance graph learning)
 # Used by: learning/causal_inference.py (CausalInferenceEngine)
+
+pymc>=5.10.0
+# Job: Hierarchical Bayesian inference (PyTensor backend, native Windows support)
+# Used by: Per-game accuracy estimation (8 esports games), weather station calibration pooling
+# Partial pooling: sparse games (SC2, RL) borrow strength from dense games (LoL, Dota2)
+# Replaces NumPyro+JAX (which doesn't work on Windows). nutpie provides 2x speedup.
+
+nutpie>=0.13.0
+# Job: Rust-based NUTS sampler for PyMC (~2x faster than default PyMC sampler)
+# Has Windows wheels. Optional — PyMC works without it, just slower.
 # ib_insync>=0.9.86        # ForecastEx IB Gateway adapter (optional)
 # trl>=0.7.0               # RLVR training (optional; needs GPU)
 # peft>=0.7.0              # RLVR parameter-efficient fine-tuning (optional)
