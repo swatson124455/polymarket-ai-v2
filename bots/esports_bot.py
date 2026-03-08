@@ -113,8 +113,8 @@ class EsportsBot(BaseBot):
         riot_key = getattr(settings, "RIOT_API_KEY", None)
         riot_client = None
         if riot_key:
-            from esports.data.riot_api_client import RiotAPIClient
-            riot_client = RiotAPIClient(api_key=riot_key)
+            from esports.data.riot_api_client import RiotApiClient
+            riot_client = RiotApiClient(api_key=riot_key)
             await riot_client.init()
 
         self._patch_drift = PatchDriftDetector(riot_client=riot_client)
