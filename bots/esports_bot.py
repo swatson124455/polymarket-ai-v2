@@ -53,6 +53,7 @@ class EsportsBot(BaseBot):
         self._trainer = None         # EsportsModelTrainer
         self._opendota = None        # OpenDotaClient (Dota2 enrichment)
         self._aligulac = None        # AligulacClient (SC2 ratings blend)
+        self._ballchasing = None     # BallchasingClient (RL replay stats)
         self._bg_train_tasks: Dict[str, asyncio.Task] = {}  # game → background train task
 
         # Per-game/tournament/team exposure tracking (USD deployed)
@@ -150,6 +151,19 @@ class EsportsBot(BaseBot):
                 logger.debug("EsportsBot: Aligulac client not available")
         else:
             self._aligulac = None
+
+        # Ballchasing client — RL replay stats (free key)
+        ballchasing_key = getattr(settings, "BALLCHASING_API_KEY", None)
+        if ballchasing_key:
+            try:
+                from esports.data.ballchasing_client import BallchasingClient
+                self._ballchasing = BallchasingClient(api_key=ballchasing_key)
+                logger.info("EsportsBot: Ballchasing client initialized")
+            except Exception:
+                self._ballchasing = None
+                logger.debug("EsportsBot: Ballchasing client not available")
+        else:
+            self._ballchasing = None
 
         db = getattr(self.base_engine, "db", None)
         # market_service passed below after initialization (if successful)
@@ -804,6 +818,11 @@ class EsportsBot(BaseBot):
                     glicko2_prob = await self._aligulac_sc2_blend(
                         market_data, glicko2_prob,
                     )
+                # Ballchasing stats adjustment for RL (±3% based on team stats)
+                if game == "rl":
+                    glicko2_prob = await self._ballchasing_rl_adjustment(
+                        market_data, glicko2_prob,
+                    )
                 self._prediction_cache[market_id] = {
                     "prob": glicko2_prob, "ts": time.monotonic(), "game": game,
                     "ml_raw": None, "glicko2_est": glicko2_prob,
@@ -1023,6 +1042,67 @@ class EsportsBot(BaseBot):
             return blended
         except Exception:
             return glicko2_prob
+
+    async def _ballchasing_rl_adjustment(
+        self, market_data: Dict, base_prob: float,
+    ) -> float:
+        """Adjust RL probability using Ballchasing aggregate team stats.
+
+        Compares goals_per_game and shooting_pct between teams.
+        Returns adjusted prob, or base_prob unchanged if data unavailable.
+        """
+        if not self._ballchasing:
+            return base_prob
+
+        import re
+
+        question = str(market_data.get("question", "")).lower()
+        vs_match = re.search(r"(.+?)\s+(?:vs\.?|versus|v)\s+(.+?)(?:\?|$)", question)
+        if not vs_match:
+            return base_prob
+
+        name_a = vs_match.group(1).strip().rstrip(":")
+        name_b = vs_match.group(2).strip().rstrip("?").strip()
+        for prefix in ("will ", "can ", "does "):
+            if name_a.startswith(prefix):
+                name_a = name_a[len(prefix):]
+        name_a, name_b = self._clean_team_names(name_a, name_b)
+
+        try:
+            stats_a, stats_b = await asyncio.gather(
+                asyncio.wait_for(
+                    self._ballchasing.get_team_aggregate_stats(name_a, days_back=30),
+                    timeout=10.0,
+                ),
+                asyncio.wait_for(
+                    self._ballchasing.get_team_aggregate_stats(name_b, days_back=30),
+                    timeout=10.0,
+                ),
+                return_exceptions=True,
+            )
+            if isinstance(stats_a, Exception) or isinstance(stats_b, Exception):
+                return base_prob
+            if not stats_a or not stats_b:
+                return base_prob
+
+            # Compare goals_per_game and shooting_pct
+            gpg_diff = stats_a["goals_per_game"] - stats_b["goals_per_game"]
+            shoot_diff = stats_a["shooting_pct"] - stats_b["shooting_pct"]
+
+            # Small adjustment: ±3% max, weighted by goals and shooting diff
+            adj = max(-0.03, min(0.03, gpg_diff * 0.01 + shoot_diff * 0.001))
+            adjusted = max(0.05, min(0.95, base_prob + adj))
+
+            if abs(adj) >= 0.005:
+                logger.debug(
+                    "ballchasing_rl_adjustment",
+                    team_a=name_a, team_b=name_b,
+                    gpg_a=stats_a["goals_per_game"], gpg_b=stats_b["goals_per_game"],
+                    adj=round(adj, 4),
+                )
+            return adjusted
+        except Exception:
+            return base_prob
 
     @staticmethod
     def _detect_game(question: str) -> Optional[str]:
@@ -1419,6 +1499,24 @@ class EsportsBot(BaseBot):
                 )
         except Exception as exc:
             logger.debug("esportsbot_pnl_summary_failed", error=str(exc))
+
+        # Pinnacle CLV backfill (every 10th scan cycle, ~20 min)
+        if not hasattr(self, "_clv_backfill_counter"):
+            self._clv_backfill_counter = 0
+        self._clv_backfill_counter += 1
+        if self._clv_backfill_counter >= 10:
+            self._clv_backfill_counter = 0
+            oddspapi_key = getattr(settings, "ODDSPAPI_API_KEY", "")
+            if oddspapi_key:
+                try:
+                    from esports.data.oddspapi_client import OddsPapiClient
+                    from esports.data.esports_db import backfill_pinnacle_closing_lines
+                    oddspapi = OddsPapiClient(api_key=oddspapi_key)
+                    updated = await backfill_pinnacle_closing_lines(db, oddspapi)
+                    if updated > 0:
+                        logger.info("pinnacle_clv_backfill_done", rows_updated=updated)
+                except Exception as exc:
+                    logger.debug("pinnacle_clv_backfill_failed", error=str(exc))
 
     def _get_glicko2_prediction(
         self, market_data: Dict, game: str

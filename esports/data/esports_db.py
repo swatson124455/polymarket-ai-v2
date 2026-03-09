@@ -650,3 +650,73 @@ async def update_calibration(
             await session.commit()
     except Exception as exc:
         logger.debug("esports_db: update_calibration failed", error=str(exc))
+
+
+async def backfill_pinnacle_closing_lines(db, oddspapi_client) -> int:
+    """Backfill Pinnacle closing lines for predictions missing closing_price.
+
+    Queries the esports_prediction_log for recent predictions without a
+    closing_price, fetches Pinnacle closing lines from OddsPapi by matching
+    team names + game, and updates the rows.
+
+    Returns count of rows updated.
+    """
+    if db is None or oddspapi_client is None:
+        return 0
+
+    try:
+        # Find predictions missing closing_price (last 7 days, limit 20)
+        async with db.get_session() as session:
+            result = await session.execute(
+                _text("""
+                SELECT DISTINCT match_id, game, market_id
+                FROM esports_prediction_log
+                WHERE closing_price IS NULL
+                  AND created_at > NOW() - INTERVAL '7 days'
+                ORDER BY created_at DESC
+                LIMIT 20
+                """),
+            )
+            rows = result.fetchall()
+
+        if not rows:
+            return 0
+
+        updated = 0
+        for row in rows:
+            game = row.game
+            market_id = row.market_id
+
+            # Fetch OddsPapi fixtures for this game (last 7 days)
+            fixtures = await oddspapi_client.get_fixtures(game, days_back=7)
+            if not fixtures:
+                continue
+
+            # For each fixture, try to get Pinnacle closing line
+            for fixture in fixtures:
+                closing = await oddspapi_client.get_pinnacle_closing_line(
+                    fixture["fixture_id"],
+                )
+                if closing is None:
+                    continue
+
+                # Use home closing probability as the closing_price
+                # (maps to YES side probability for match_winner markets)
+                closing_prob = closing["closing_prob_home"]
+                n = await update_prediction_closing_price(
+                    db, row.match_id, market_id, closing_prob,
+                )
+                if n > 0:
+                    updated += n
+                    logger.info(
+                        "pinnacle_clv_backfill",
+                        match_id=row.match_id,
+                        game=game,
+                        closing_prob=round(closing_prob, 4),
+                    )
+                break  # Only need one fixture match per prediction
+
+        return updated
+    except Exception as exc:
+        logger.debug("esports_db: backfill_pinnacle failed", error=str(exc))
+        return 0

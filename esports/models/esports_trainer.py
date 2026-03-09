@@ -345,9 +345,12 @@ class EsportsModelTrainer:
             result["train_size"] = len(train_set)
             result["val_size"] = len(val_set)
 
-            # Save the model
+            # Save the model — use top-level saved_models/ (same as dota2/valorant)
             import os
-            model_dir = os.path.join(os.path.dirname(__file__), "saved_models")
+            model_dir = os.path.join(
+                os.path.dirname(__file__), "..", "..", "saved_models",
+            )
+            model_dir = os.path.abspath(model_dir)
             os.makedirs(model_dir, exist_ok=True)
             model_path = os.path.join(model_dir, "cross_game_xgb.json")
             model.save_model(model_path)
