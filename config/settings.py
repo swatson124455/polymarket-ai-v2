@@ -617,8 +617,9 @@ class Settings(BaseSettings):
 
     # WeatherBot configuration
     SCAN_INTERVAL_WEATHER: int = int(os.getenv("SCAN_INTERVAL_WEATHER", "300"))
-    WEATHER_MIN_EDGE: float = float(os.getenv("WEATHER_MIN_EDGE", "0.15"))
-    WEATHER_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_MIN_CONFIDENCE", "0.15"))  # Multi-bucket: 9 outcomes → peak ~35-40%
+    WEATHER_MIN_EDGE: float = float(os.getenv("WEATHER_MIN_EDGE", "0.08"))
+    WEATHER_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_MIN_CONFIDENCE", "0.10"))  # Multi-bucket: 9 outcomes → peak ~35-40%; lowered to 0.10 to not block boundary-risk trades
+    WEATHER_MAX_POSITIONS: int = int(os.getenv("WEATHER_MAX_POSITIONS", "200"))  # Multi-bucket: 28 groups × up to 9 buckets each
     WEATHER_MAX_PER_GROUP_USD: float = float(os.getenv("WEATHER_MAX_PER_GROUP_USD", "1000"))
     WEATHER_DAILY_LOSS_LIMIT: float = float(os.getenv("WEATHER_DAILY_LOSS_LIMIT", "2000"))
     WEATHER_MAX_CORRELATED_EXPOSURE: float = float(os.getenv("WEATHER_MAX_CORRELATED_EXPOSURE", "2000"))
@@ -932,6 +933,11 @@ class Settings(BaseSettings):
     ESPORTS_RETRAIN_INTERVAL_HOURS: int = int(os.getenv("ESPORTS_RETRAIN_INTERVAL_HOURS", "24"))
     ESPORTS_MIN_ACCURACY_TO_TRADE: float = float(os.getenv("ESPORTS_MIN_ACCURACY_TO_TRADE", "0.52"))
     ESPORTS_LOL_HEURISTIC_ENABLED: bool = os.getenv("ESPORTS_LOL_HEURISTIC_ENABLED", "true").lower() in ("true", "1", "yes")
+
+    # --- Exposure limits (per-game/tournament/team concentration caps) ---
+    ESPORTS_MAX_GAME_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_GAME_EXPOSURE", "300.0"))
+    ESPORTS_MAX_TOURNAMENT_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_TOURNAMENT_EXPOSURE", "200.0"))
+    ESPORTS_MAX_TEAM_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_TEAM_EXPOSURE", "150.0"))
 
     # --- Signal confluence ---
     ESPORTS_CONFLUENCE_MIN: float = float(os.getenv("ESPORTS_CONFLUENCE_MIN", "0.60"))

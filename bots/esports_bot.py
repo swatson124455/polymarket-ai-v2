@@ -51,6 +51,12 @@ class EsportsBot(BaseBot):
         self._dota2_model = None     # Dota2Model
         self._valorant_model = None  # ValorantModel
         self._trainer = None         # EsportsModelTrainer
+        self._bg_train_tasks: Dict[str, asyncio.Task] = {}  # game → background train task
+
+        # Per-game/tournament/team exposure tracking (USD deployed)
+        self._game_exposure: Dict[str, float] = {}        # game → USD
+        self._tournament_exposure: Dict[str, float] = {}  # tournament_id → USD
+        self._team_exposure: Dict[str, float] = {}        # team_name → USD
 
         # Live match tracking
         self._live_matches: Dict[str, Dict] = {}  # match_id → PandaScore match data
@@ -370,51 +376,42 @@ class EsportsBot(BaseBot):
         # E4: Monitoring thresholds — check per-game Brier and emit alerts
         await self._check_monitoring_thresholds(db)
 
-        # Step 0: Auto-retrain models if interval elapsed
-        if self._trainer and self._trainer.needs_retrain("lol"):
-            try:
-                result = await asyncio.wait_for(
-                    self._trainer.train_game("lol", db=db), timeout=300.0,
-                )
-                if self._lol_model:
-                    self._lol_model.load()
-            except (asyncio.TimeoutError, Exception) as exc:
-                logger.debug("EsportsBot: LoL retrain failed", error=str(exc))
+        # Step 0: Auto-retrain models in background (non-blocking)
+        # Clean up completed background training tasks
+        for game_key in list(self._bg_train_tasks):
+            task = self._bg_train_tasks[game_key]
+            if task.done():
+                del self._bg_train_tasks[game_key]
 
-        if self._trainer and self._trainer.needs_retrain("cs2"):
-            try:
-                result = await asyncio.wait_for(
-                    self._trainer.train_game("cs2", db=db), timeout=300.0,
+        for _retrain_game in ("lol", "cs2"):
+            if (self._trainer
+                    and self._trainer.needs_retrain(_retrain_game)
+                    and _retrain_game not in self._bg_train_tasks):
+                self._bg_train_tasks[_retrain_game] = asyncio.create_task(
+                    self._train_in_background(_retrain_game, db),
+                    name=f"retrain_{_retrain_game}",
                 )
-                if self._cs2_model:
-                    self._cs2_model.load()
-            except (asyncio.TimeoutError, Exception) as exc:
-                logger.debug("EsportsBot: CS2 retrain failed", error=str(exc))
 
         # E7: Cross-game XGBoost retrain (pools all 8 games)
-        if self._trainer and self._trainer.needs_retrain("cross_game"):
-            try:
-                await asyncio.wait_for(
-                    self._trainer.train_cross_game(db=db), timeout=300.0,
-                )
-            except (asyncio.TimeoutError, Exception) as exc:
-                logger.debug("EsportsBot: cross-game retrain failed", error=str(exc))
+        if (self._trainer
+                and self._trainer.needs_retrain("cross_game")
+                and "cross_game" not in self._bg_train_tasks):
+            self._bg_train_tasks["cross_game"] = asyncio.create_task(
+                self._train_in_background("cross_game", db),
+                name="retrain_cross_game",
+            )
 
         # Step 0a: Collect historical data for games missing Glicko-2 trackers (one-shot)
-        _new_data_collected = False
         for _game in ("dota2", "valorant", "cod", "r6", "sc2", "rl"):
-            if _game not in self._glicko2_trackers and _game not in self._collection_attempted and self._trainer:
+            if (_game not in self._glicko2_trackers
+                    and _game not in self._collection_attempted
+                    and self._trainer
+                    and _game not in self._bg_train_tasks):
                 self._collection_attempted.add(_game)
-                try:
-                    result = await asyncio.wait_for(
-                        self._trainer.train_game(_game, db=db), timeout=300.0,
-                    )
-                    if result.get("samples", 0) > 0:
-                        _new_data_collected = True
-                except (asyncio.TimeoutError, Exception) as exc:
-                    logger.debug("EsportsBot: collection failed", game=_game, error=str(exc))
-        if _new_data_collected:
-            await self._init_glicko2_trackers(db)
+                self._bg_train_tasks[_game] = asyncio.create_task(
+                    self._train_in_background(_game, db, init_glicko=True),
+                    name=f"collect_{_game}",
+                )
 
         # Step 0b: Check rolling accuracy — auto-disable if below threshold
         min_acc = float(getattr(settings, "ESPORTS_MIN_ACCURACY_TO_TRADE", 0.52))
@@ -526,6 +523,11 @@ class EsportsBot(BaseBot):
         if game in self._monitoring_halted_games:
             return None
 
+        # Exposure concentration check (per-game cap)
+        max_game = float(getattr(settings, "ESPORTS_MAX_GAME_EXPOSURE", 300.0))
+        if self._game_exposure.get(game, 0.0) >= max_game:
+            return None
+
         # Check observation mode for this game
         if self._patch_drift and self._patch_drift.is_observation_mode(game):
             logger.debug(
@@ -587,6 +589,9 @@ class EsportsBot(BaseBot):
                 max_edge=self._max_edge,
             )
             return None
+
+        # Tournament phase confidence boost (regime detection for esports)
+        confidence *= self._get_tournament_phase_mult(market_data)
 
         if confidence < self._min_confidence:
             return None
@@ -846,6 +851,35 @@ class EsportsBot(BaseBot):
         }
 
     @staticmethod
+    def _get_tournament_phase_mult(market_data: Dict) -> float:
+        """Tournament phase confidence multiplier (esports regime detection).
+
+        Group stage: higher variance, more upsets → 0.85× confidence.
+        Bracket/playoffs: reduced field, better accuracy → 1.0× baseline.
+        Grand finals: highest accuracy window → 1.15× boost.
+
+        Falls back to 1.0 if phase not detected.
+        """
+        serie_type = str(market_data.get("serie_type", "")).lower()
+        question = str(market_data.get("question", "")).lower()
+
+        # Detect from PandaScore serie_type (primary)
+        if serie_type in ("group", "group_stage", "round_robin"):
+            return 0.85
+        if serie_type in ("grand_final", "grand_finals", "final", "finals"):
+            return 1.15
+        if serie_type in ("bracket", "playoff", "quarterfinal", "semifinal"):
+            return 1.0
+
+        # Fallback: detect from market question text
+        if any(kw in question for kw in ("group stage", "group play", "round robin")):
+            return 0.85
+        if any(kw in question for kw in ("grand final", "championship", "finals")):
+            return 1.15
+
+        return 1.0
+
+    @staticmethod
     def _detect_game(question: str) -> Optional[str]:
         """Detect game title from market question text."""
         q = question.lower()
@@ -951,10 +985,19 @@ class EsportsBot(BaseBot):
         )
 
         if order and order.get("success"):
+            # Update exposure tracking
+            game = opp.get("game", "")
+            self._game_exposure[game] = self._game_exposure.get(game, 0.0) + size
+            tournament = opp.get("tournament", "")
+            if tournament:
+                self._tournament_exposure[tournament] = (
+                    self._tournament_exposure.get(tournament, 0.0) + size
+                )
+
             logger.info(
                 "EsportsBot trade executed",
                 type=opp.get("type"),
-                game=opp.get("game"),
+                game=game,
                 market_type=opp.get("market_type"),
                 market_id=opp["market_id"],
                 side=opp["side"],
@@ -962,6 +1005,7 @@ class EsportsBot(BaseBot):
                 confidence=round(opp["confidence"], 3),
                 edge=opp.get("edge"),
                 size=round(size, 2),
+                game_exposure=round(self._game_exposure.get(game, 0.0), 2),
             )
 
     # ── Glicko-2 "easy mode" helpers ──────────────────────────────────────
@@ -1115,6 +1159,35 @@ class EsportsBot(BaseBot):
                         games=len(self._glicko2_trackers))
         except Exception as exc:
             logger.debug("EsportsBot: Glicko-2 save failed (non-fatal)", error=str(exc))
+
+    async def _train_in_background(
+        self, game: str, db, init_glicko: bool = False
+    ) -> None:
+        """Run model training as background task — does not block scan loop."""
+        try:
+            if game == "cross_game":
+                await asyncio.wait_for(
+                    self._trainer.train_cross_game(db=db), timeout=300.0,
+                )
+            else:
+                result = await asyncio.wait_for(
+                    self._trainer.train_game(game, db=db), timeout=300.0,
+                )
+                # Reload updated models
+                if game == "lol" and self._lol_model:
+                    self._lol_model.load()
+                elif game == "cs2" and self._cs2_model:
+                    self._cs2_model.load()
+                elif game == "dota2" and self._dota2_model:
+                    self._dota2_model.load()
+                elif game == "valorant" and self._valorant_model:
+                    self._valorant_model.load()
+                # Rebuild Glicko-2 trackers if new game data collected
+                if init_glicko and result.get("samples", 0) > 0:
+                    await self._init_glicko2_trackers(db)
+            logger.info("EsportsBot: bg retrain complete", game=game)
+        except (asyncio.TimeoutError, Exception) as exc:
+            logger.debug("EsportsBot: bg retrain failed", game=game, error=str(exc))
 
     async def _check_monitoring_thresholds(self, db) -> None:
         """E4: Check per-game Brier scores and emit structured alerts.
