@@ -20,6 +20,7 @@ import time
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
+import requests
 from structlog import get_logger
 
 logger = get_logger()
@@ -193,32 +194,321 @@ class HLTVScraper:
 
     # ── Sync scraping methods (run in asyncio.to_thread) ──────────────
 
+    _HLTV_HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.hltv.org/",
+    }
+    _HLTV_RATE_LIMIT = 10.0  # seconds between HLTV requests
+    _LIQUIPEDIA_RATE_LIMIT = 0.5  # seconds between Liquipedia requests
+    _last_hltv_request: float = 0.0
+    _last_liquipedia_request: float = 0.0
+
+    def _hltv_get(self, url: str, timeout: float = 10.0) -> Optional[str]:
+        """Rate-limited HTTP GET for HLTV. Returns HTML text or None."""
+        now = time.monotonic()
+        wait = self._HLTV_RATE_LIMIT - (now - HLTVScraper._last_hltv_request)
+        if wait > 0:
+            time.sleep(wait)
+        HLTVScraper._last_hltv_request = time.monotonic()
+        try:
+            resp = requests.get(url, headers=self._HLTV_HEADERS, timeout=timeout)
+            if resp.status_code == 200:
+                return resp.text
+            logger.debug("HLTVScraper: HTTP %d from %s", resp.status_code, url)
+        except requests.RequestException as exc:
+            logger.debug("HLTVScraper: request failed", url=url, error=str(exc))
+        return None
+
+    def _liquipedia_get(self, url: str, timeout: float = 10.0) -> Optional[Dict]:
+        """Rate-limited HTTP GET for Liquipedia API. Returns JSON or None."""
+        now = time.monotonic()
+        wait = self._LIQUIPEDIA_RATE_LIMIT - (now - HLTVScraper._last_liquipedia_request)
+        if wait > 0:
+            time.sleep(wait)
+        HLTVScraper._last_liquipedia_request = time.monotonic()
+        headers = {
+            "User-Agent": "PolymarketEsportsBot/1.0 (sam@lockes.io)",
+            "Accept": "application/json",
+        }
+        try:
+            resp = requests.get(url, headers=headers, timeout=timeout)
+            if resp.status_code == 200:
+                return resp.json()
+            logger.debug("HLTVScraper: Liquipedia HTTP %d", resp.status_code)
+        except requests.RequestException as exc:
+            logger.debug("HLTVScraper: Liquipedia request failed", error=str(exc))
+        return None
+
     def _scrape_hltv_team_rating(self, team_name: str) -> Optional[float]:
-        """Scrape HLTV team rating. Returns 0.0-2.0 scale."""
-        # In production, this would scrape hltv.org/ranking/teams
-        # For now, return None to indicate "no data" — PandaScore provides
-        # team stats as a fallback
-        logger.debug("HLTVScraper: HLTV scraping not yet wired — using PandaScore fallback")
+        """Scrape HLTV team rating from ranking page. Returns 0.0-2.0 scale."""
+        try:
+            from bs4 import BeautifulSoup
+        except ImportError:
+            logger.debug("HLTVScraper: beautifulsoup4 not installed")
+            return None
+
+        html = self._hltv_get("https://www.hltv.org/ranking/teams")
+        if not html:
+            return None
+
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+            name_lower = team_name.lower().strip()
+
+            # HLTV ranking page has ranked-team elements with team name + rating
+            for team_div in soup.select(".ranked-team"):
+                name_el = team_div.select_one(".name")
+                if not name_el:
+                    continue
+                found_name = name_el.get_text(strip=True).lower()
+                if found_name == name_lower or name_lower in found_name:
+                    # Extract rating points
+                    points_el = team_div.select_one(".points")
+                    if points_el:
+                        pts_text = points_el.get_text(strip=True)
+                        # Format: "842 points" or "(842)"
+                        import re
+                        m = re.search(r"(\d+)", pts_text)
+                        if m:
+                            pts = int(m.group(1))
+                            # Normalize to 0-2 scale (top team ~1000 pts)
+                            return round(min(pts / 500.0, 2.0), 3)
+            logger.debug("HLTVScraper: team not found in ranking", team=team_name)
+        except Exception as exc:
+            logger.debug("HLTVScraper: parse ranking failed", error=str(exc))
         return None
 
     def _scrape_hltv_map_stats(self, team_name: str) -> Optional[Dict[str, float]]:
-        """Scrape HLTV map statistics for a team."""
-        logger.debug("HLTVScraper: HLTV map stats scraping not yet wired")
-        return None
+        """Scrape HLTV per-map win rates for a team."""
+        try:
+            from bs4 import BeautifulSoup
+        except ImportError:
+            return None
+
+        # Search for team page to find team ID
+        html = self._hltv_get(
+            f"https://www.hltv.org/search?query={team_name.replace(' ', '+')}&type=team"
+        )
+        if not html:
+            return None
+
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+            name_lower = team_name.lower().strip()
+
+            # Find team link in search results
+            team_link = None
+            for a_tag in soup.select("a[href*='/stats/teams/']"):
+                link_text = a_tag.get_text(strip=True).lower()
+                if link_text == name_lower or name_lower in link_text:
+                    team_link = a_tag.get("href", "")
+                    break
+
+            if not team_link:
+                return None
+
+            # Fetch team stats page (contains map stats)
+            stats_url = f"https://www.hltv.org{team_link}"
+            stats_html = self._hltv_get(stats_url)
+            if not stats_html:
+                return None
+
+            stats_soup = BeautifulSoup(stats_html, "html.parser")
+            rates: Dict[str, float] = {}
+
+            # Parse map statistics table
+            for map_row in stats_soup.select(".map-stats-container .map-pool-map-holder"):
+                map_el = map_row.select_one(".map-pool-map-name")
+                wr_el = map_row.select_one(".map-pool-map-wr")
+                if not map_el or not wr_el:
+                    continue
+                map_name = map_el.get_text(strip=True).lower()
+                wr_text = wr_el.get_text(strip=True).rstrip("%")
+                try:
+                    rates[map_name] = round(float(wr_text) / 100.0, 4)
+                except ValueError:
+                    pass
+
+            return rates if rates else None
+        except Exception as exc:
+            logger.debug("HLTVScraper: parse map stats failed", error=str(exc))
+            return None
 
     def _scrape_hltv_results(self, team_name: str, n: int) -> List[Dict[str, Any]]:
-        """Scrape recent HLTV match results."""
-        logger.debug("HLTVScraper: HLTV results scraping not yet wired")
-        return []
+        """Scrape recent HLTV match results for a CS2 team."""
+        try:
+            from bs4 import BeautifulSoup
+        except ImportError:
+            return []
+
+        html = self._hltv_get(
+            f"https://www.hltv.org/results?query={team_name.replace(' ', '+')}"
+        )
+        if not html:
+            return []
+
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+            name_lower = team_name.lower().strip()
+            results: List[Dict[str, Any]] = []
+
+            for result_div in soup.select(".result-con"):
+                if len(results) >= n:
+                    break
+
+                team1_el = result_div.select_one(".team1 .team")
+                team2_el = result_div.select_one(".team2 .team")
+                score_el = result_div.select_one(".result-score")
+                event_el = result_div.select_one(".event-name")
+
+                if not team1_el or not team2_el:
+                    continue
+
+                t1 = team1_el.get_text(strip=True)
+                t2 = team2_el.get_text(strip=True)
+
+                # Determine if our team is team1 or team2
+                is_team1 = t1.lower() == name_lower or name_lower in t1.lower()
+                is_team2 = t2.lower() == name_lower or name_lower in t2.lower()
+                if not is_team1 and not is_team2:
+                    continue
+
+                opponent = t2 if is_team1 else t1
+                score = score_el.get_text(strip=True) if score_el else ""
+                event = event_el.get_text(strip=True) if event_el else ""
+
+                # Parse score to determine winner
+                won = False
+                import re
+                score_match = re.match(r"(\d+)\s*-\s*(\d+)", score)
+                if score_match:
+                    s1, s2 = int(score_match.group(1)), int(score_match.group(2))
+                    if is_team1:
+                        won = s1 > s2
+                    else:
+                        won = s2 > s1
+
+                results.append({
+                    "opponent": opponent,
+                    "score": score,
+                    "won": won,
+                    "event": event,
+                })
+
+            return results
+        except Exception as exc:
+            logger.debug("HLTVScraper: parse results failed", error=str(exc))
+            return []
 
     def _scrape_liquipedia_results(
         self, team_name: str, game: str, n: int
     ) -> List[Dict[str, Any]]:
-        """Scrape Liquipedia match results for non-CS2 games."""
-        logger.debug("HLTVScraper: Liquipedia scraping not yet wired")
-        return []
+        """Fetch recent results from Liquipedia API for non-CS2 games."""
+        _GAME_WIKIS = {
+            "lol": "leagueoflegends",
+            "dota2": "dota2",
+            "valorant": "valorant",
+            "cod": "callofduty",
+            "r6": "rainbowsix",
+            "sc2": "starcraft2",
+            "rl": "rocketleague",
+        }
+
+        wiki = _GAME_WIKIS.get(game)
+        if not wiki:
+            return []
+
+        # Liquipedia API: fetch team page and parse match results
+        url = (
+            f"https://liquipedia.net/{wiki}/api.php"
+            f"?action=parse&page={team_name.replace(' ', '_')}"
+            f"&prop=wikitext&format=json"
+        )
+
+        data = self._liquipedia_get(url)
+        if not data or "parse" not in data:
+            return []
+
+        try:
+            wikitext = data["parse"].get("wikitext", {}).get("*", "")
+            if not wikitext:
+                return []
+
+            # Parse recent match entries from wikitext
+            # Liquipedia match history format: {{Match|...}}
+            import re
+            results: List[Dict[str, Any]] = []
+            match_blocks = re.findall(
+                r"\{\{MatchMaps\|([^}]+)\}\}|\{\{Match\|([^}]+)\}\}",
+                wikitext,
+            )
+
+            for block in match_blocks[:n]:
+                text = block[0] or block[1]
+                opponent_m = re.search(r"opponent\d?=([^|]+)", text)
+                score_m = re.search(r"score=(\d+)-(\d+)", text)
+                won_m = re.search(r"win=(\d)", text)
+
+                opponent = opponent_m.group(1).strip() if opponent_m else "Unknown"
+                score = f"{score_m.group(1)}-{score_m.group(2)}" if score_m else ""
+                won = won_m.group(1) == "1" if won_m else False
+
+                results.append({
+                    "opponent": opponent,
+                    "score": score,
+                    "won": won,
+                    "event": "",
+                })
+
+            return results
+        except Exception as exc:
+            logger.debug("HLTVScraper: Liquipedia parse failed", error=str(exc))
+            return []
 
     def _scrape_cs2_patch(self) -> Optional[Dict[str, Any]]:
-        """Scrape latest CS2 patch information from official blog."""
-        logger.debug("HLTVScraper: CS2 patch scraping not yet wired")
-        return None
+        """Scrape latest CS2 patch info from counter-strike.net."""
+        try:
+            from bs4 import BeautifulSoup
+        except ImportError:
+            return None
+
+        html = self._hltv_get("https://www.counter-strike.net/news/updates")
+        if not html:
+            return None
+
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+
+            # Find most recent update post
+            update_el = soup.select_one(
+                ".inner_post, .post_content, article"
+            )
+            if not update_el:
+                return None
+
+            title_el = update_el.select_one("h1, h2, .post_title")
+            date_el = update_el.select_one("time, .post_date, .date")
+
+            title = title_el.get_text(strip=True) if title_el else "CS2 Update"
+            date_str = ""
+            if date_el:
+                date_str = date_el.get("datetime", "") or date_el.get_text(strip=True)
+
+            # Extract major changes (list items)
+            changes = []
+            for li in update_el.select("li")[:10]:
+                text = li.get_text(strip=True)
+                if text and len(text) > 5:
+                    changes.append(text)
+
+            return {
+                "version": title,
+                "date": date_str,
+                "url": "https://www.counter-strike.net/news/updates",
+                "major_changes": changes[:5],
+            }
+        except Exception as exc:
+            logger.debug("HLTVScraper: CS2 patch parse failed", error=str(exc))
+            return None

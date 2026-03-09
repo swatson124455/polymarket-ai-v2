@@ -44,6 +44,11 @@ requests>=2.28.0
 # Expects: Network access
 # Used by: Health pings, webhooks, simple GETs
 
+beautifulsoup4>=4.12.0
+# Job: HTML parsing for web scraping
+# Expects: None
+# Used by: HLTVScraper (CS2 team ratings, map stats)
+
 aiohttp>=3.8.0
 # Job: Async HTTP server + client
 # Expects: Port 8080+ available
