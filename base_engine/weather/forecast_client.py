@@ -71,6 +71,119 @@ class WeatherForecastClient:
         # this timestamp passes (1-hour cooldown). Prevents retry storms after
         # quota exhaustion — all 3 models share this dict.
         self._model_429_until: Dict[str, float] = {}
+        # Phase 1: Redis reference for persisting 429 cooldown across restarts.
+        # Injected via set_redis_cache() after construction.
+        self._redis: Optional[Any] = None
+
+    def set_redis_cache(self, cache: Any) -> None:
+        """Inject the RedisCache instance so 429 cooldowns survive restarts."""
+        self._redis = cache
+
+    async def restore_state(self) -> None:
+        """Phase 1: Restore _model_429_until from Redis after a restart.
+
+        Uses Redis PTTL (remaining TTL in ms) to reconstruct the monotonic
+        deadline — time.monotonic() resets on every process restart so we
+        cannot store the raw deadline; we store remaining duration instead.
+        """
+        if not self._redis or not getattr(self._redis, "redis", None):
+            return
+        for model in ("gfs025", "ecmwf_ifs025", "ecmwf_aifs025"):
+            try:
+                pttl_ms = await self._redis.redis.pttl(f"weatherbot:429:{model}")
+                if pttl_ms > 0:
+                    self._model_429_until[model] = time.monotonic() + pttl_ms / 1000.0
+                    logger.info(
+                        "weatherbot_429_cooldown_restored",
+                        model=model,
+                        remaining_s=round(pttl_ms / 1000.0, 0),
+                    )
+            except Exception as exc:
+                logger.debug("weatherbot_429_restore_failed", model=model, error=str(exc))
+
+    async def warm_cache_from_db(self, db: Any) -> None:
+        """Phase 2: Pre-populate _cache from weather_forecasts on startup.
+
+        Reads rows written by _save_forecast_to_db() that are still within
+        their TTL window (forecast_time within the last cache_ttl seconds).
+        Avoids cold-start API burst when the process restarts — cached entries
+        serve scans until they expire naturally.
+        """
+        if not db:
+            return
+        try:
+            from sqlalchemy import text as sa_text
+
+            ttl_s = int(self._cache_ttl)
+            now_utc = datetime.now(timezone.utc)
+            async with db.get_session() as session:
+                rows = await session.execute(sa_text(f"""
+                    SELECT DISTINCT ON (station_id, target_date)
+                        station_id,
+                        target_date,
+                        forecast_time,
+                        ensemble_members,
+                        deterministic_high,
+                        model_spread,
+                        models_used
+                    FROM weather_forecasts
+                    WHERE forecast_time > NOW() - INTERVAL '{ttl_s} seconds'
+                      AND target_date >= CURRENT_DATE
+                    ORDER BY station_id, target_date, forecast_time DESC
+                """))
+                rows = rows.fetchall()
+
+            loaded = 0
+            now_mono = time.monotonic()
+            for row in rows:
+                station_id = row[0]
+                target_date_val = row[1]
+                forecast_time_val = row[2]
+                ensemble_raw = row[3]
+                deterministic_high = row[4]
+                model_spread = row[5]
+                models_raw = row[6]
+
+                cache_key = f"{station_id}:{target_date_val.date().isoformat() if hasattr(target_date_val, 'date') else str(target_date_val)[:10]}"
+                if cache_key in self._cache:
+                    continue  # fresher in-memory entry takes precedence
+
+                # Compute remaining TTL from when it was stored
+                if forecast_time_val.tzinfo is None:
+                    ft_utc = forecast_time_val.replace(tzinfo=timezone.utc)
+                else:
+                    ft_utc = forecast_time_val
+                age_s = (now_utc - ft_utc).total_seconds()
+                remaining_s = self._cache_ttl - age_s
+                if remaining_s <= 0:
+                    continue
+
+                try:
+                    members = ensemble_raw if isinstance(ensemble_raw, list) else []
+                    used = models_raw if isinstance(models_raw, list) else []
+                    if not members or deterministic_high is None:
+                        continue
+                    # Approximate lead_time_hours from target_date
+                    td = target_date_val.date() if hasattr(target_date_val, 'date') else datetime.strptime(str(target_date_val)[:10], "%Y-%m-%d").date()
+                    target_noon_utc = datetime(td.year, td.month, td.day, 18, 0, tzinfo=timezone.utc)
+                    lead_time_hours = max(0.0, (target_noon_utc - now_utc).total_seconds() / 3600.0)
+
+                    fc = CombinedForecast(
+                        ensemble_members=members,
+                        deterministic_high=float(deterministic_high),
+                        model_spread=float(model_spread) if model_spread else 2.0,
+                        lead_time_hours=lead_time_hours,
+                        models_used=used,
+                    )
+                    self._cache[cache_key] = (now_mono + remaining_s, fc)
+                    loaded += 1
+                except Exception as exc:
+                    logger.debug("warm_cache_row_failed", key=cache_key, error=str(exc))
+
+            if loaded:
+                logger.info("weatherbot_cache_warmed", loaded=loaded)
+        except Exception as exc:
+            logger.warning("weatherbot_warm_cache_failed", error=str(exc))
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -228,6 +341,8 @@ class WeatherForecastClient:
                 if resp.status == 429:
                     # Fix A: set 1-hour cooldown so subsequent scans skip this model
                     self._model_429_until[model] = time.monotonic() + 3600.0
+                    if self._redis:
+                        await self._redis.set(f"weatherbot:429:{model}", "1", ttl=3600)
                 if resp.status != 200:
                     logger.warning(
                         "open_meteo_ensemble_error", model=model, status=resp.status
@@ -277,6 +392,10 @@ class WeatherForecastClient:
                 async with session.get(_ENSEMBLE_URL, params=params) as resp:
                     if resp.status == 429:
                         self._model_429_until[model] = time.monotonic() + 3600.0
+                        if self._redis:
+                            await self._redis.set(
+                                f"weatherbot:429:{model}", "1", ttl=3600
+                            )
                     if resp.status != 200:
                         continue
                     data = await resp.json()
@@ -411,6 +530,10 @@ class WeatherForecastClient:
                 async with session.get(_ENSEMBLE_URL, params=params) as resp:
                     if resp.status == 429:
                         self._model_429_until[model] = time.monotonic() + 3600.0
+                        if self._redis:
+                            await self._redis.set(
+                                f"weatherbot:429:{model}", "1", ttl=3600
+                            )
                     if resp.status != 200:
                         continue
                     data = await resp.json()
@@ -517,6 +640,10 @@ class WeatherForecastClient:
                 async with session.get(_ENSEMBLE_URL, params=params) as resp:
                     if resp.status == 429:
                         self._model_429_until[model] = time.monotonic() + 3600.0
+                        if self._redis:
+                            await self._redis.set(
+                                f"weatherbot:429:{model}", "1", ttl=3600
+                            )
                     if resp.status != 200:
                         continue
                     data = await resp.json()
@@ -591,6 +718,10 @@ class WeatherForecastClient:
                 async with session.get(_ENSEMBLE_URL, params=params) as resp:
                     if resp.status == 429:
                         self._model_429_until[model] = time.monotonic() + 3600.0
+                        if self._redis:
+                            await self._redis.set(
+                                f"weatherbot:429:{model}", "1", ttl=3600
+                            )
                     if resp.status != 200:
                         continue
                     data = await resp.json()

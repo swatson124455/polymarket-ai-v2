@@ -60,6 +60,10 @@ class WeatherBot(BaseBot):
         self._forecast_client = WeatherForecastClient(
             cache_ttl=float(getattr(settings, "WEATHER_FORECAST_CACHE_TTL", 900)),
         )
+        # Phase 1: inject Redis cache so 429 cooldowns survive restarts
+        redis_cache = getattr(base_engine, "cache", None)
+        if redis_cache:
+            self._forecast_client.set_redis_cache(redis_cache)
         self._metar_client = MetarClient()
         self._prob_engine = WeatherProbabilityEngine()
         self._precip_engine = PrecipitationProbabilityEngine()
@@ -94,6 +98,8 @@ class WeatherBot(BaseBot):
 
         # Startup observability flag — runs market availability check once on first scan
         self._startup_check_done: bool = False
+        # Phase 1+2: one-time cache restore from Redis/DB on first scan
+        self._cache_warmed: bool = False
 
         # Rate-limit the direct API probe (DB + Gamma) to once per 30 min.
         # Without this, every 5-min scan with 0 weather markets fires an extra
@@ -201,6 +207,13 @@ class WeatherBot(BaseBot):
 
         # Reset per-scan climate normal computation limiter (T3B)
         self._forecast_client.reset_climate_cycle()
+
+        # One-time startup: restore 429 cooldowns from Redis + warm forecast cache from DB
+        if not self._cache_warmed:
+            await self._forecast_client.restore_state()
+            db = getattr(self.base_engine, "db", None)
+            await self._forecast_client.warm_cache_from_db(db)
+            self._cache_warmed = True
 
         # One-time startup observability check (logs DB state + Gamma API probe)
         if not self._startup_check_done:
