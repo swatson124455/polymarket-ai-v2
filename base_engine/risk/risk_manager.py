@@ -296,12 +296,34 @@ class RiskManager:
         if og is not None:
             count = og.get_position_count(bot_name)
             max_positions = getattr(settings, "RISK_MAX_POSITIONS_COUNT", None) or settings.MAX_POSITIONS_PER_BOT
+            # WeatherBot: multi-bucket markets (28 groups × up to 9 buckets) need higher cap
+            if bot_name == "WeatherBot":
+                max_positions = getattr(settings, "WEATHER_MAX_POSITIONS", max_positions)
             if count > max_positions:
                 checks["allowed"] = False
                 checks["reasons"].append(f"Max positions {max_positions} exceeded (have {count})")
 
+            # Per-bot exposure cap: prevents one bot from consuming entire exposure budget.
+            # Override via RISK_MAX_EXPOSURE_{BOTNAME} env var (e.g. RISK_MAX_EXPOSURE_MIRRORBOT=6000).
+            # When set, the bot is checked against its own budget instead of the global cap.
+            _bot_exp_key = f"RISK_MAX_EXPOSURE_{bot_name.upper()}" if bot_name else None
+            _per_bot_max_str = os.getenv(_bot_exp_key, "") if _bot_exp_key else ""
+            _per_bot_max = float(_per_bot_max_str) if _per_bot_max_str else 0.0
+            if _per_bot_max > 0:
+                bot_exposure = og.get_bot_exposure_usd(bot_name)
+                if bot_exposure + position_value > _per_bot_max:
+                    checks["allowed"] = False
+                    checks["reasons"].append(
+                        f"{bot_name} exposure ${bot_exposure + position_value:.2f} exceeds bot max ${_per_bot_max:.2f}"
+                    )
+
             total_exposure = og.get_total_exposure_usd()
             max_total = getattr(settings, "RISK_MAX_TOTAL_EXPOSURE_USD", 500.0)
+            # WeatherBot: use bot-specific exposure (not global) + higher cap to allow
+            # multi-bucket trading across 30+ city/date groups simultaneously.
+            if bot_name == "WeatherBot":
+                total_exposure = og.get_bot_exposure_usd(bot_name)
+                max_total = getattr(settings, "WEATHER_MAX_TOTAL_EXPOSURE_USD", max_total)
             if total_exposure + position_value > max_total:
                 checks["allowed"] = False
                 checks["reasons"].append(
@@ -330,10 +352,30 @@ class RiskManager:
                 )
                 count = active_positions.scalar() or 0
                 max_positions = getattr(settings, "RISK_MAX_POSITIONS_COUNT", None) or settings.MAX_POSITIONS_PER_BOT
+                if bot_name == "WeatherBot":
+                    max_positions = getattr(settings, "WEATHER_MAX_POSITIONS", max_positions)
 
                 if count > max_positions:
                     checks["allowed"] = False
                     checks["reasons"].append(f"Max positions {max_positions} exceeded (have {count})")
+
+                # Per-bot exposure cap (DB fallback path)
+                _bot_exp_key = f"RISK_MAX_EXPOSURE_{bot_name.upper()}" if bot_name else None
+                _per_bot_max_str = os.getenv(_bot_exp_key, "") if _bot_exp_key else ""
+                _per_bot_max = float(_per_bot_max_str) if _per_bot_max_str else 0.0
+                if _per_bot_max > 0:
+                    bot_exp_query = await session.execute(
+                        select(func.coalesce(func.sum(Position.size * Position.entry_price), 0)).where(
+                            or_(Position.bot_id == bot_name, Position.source_bot == bot_name),
+                            Position.status == "open"
+                        )
+                    )
+                    bot_exposure = bot_exp_query.scalar() or 0.0
+                    if bot_exposure + position_value > _per_bot_max:
+                        checks["allowed"] = False
+                        checks["reasons"].append(
+                            f"{bot_name} exposure ${bot_exposure + position_value:.2f} exceeds bot max ${_per_bot_max:.2f}"
+                        )
 
                 total_exposure_query = await session.execute(
                     select(func.coalesce(func.sum(Position.size * Position.entry_price), 0)).where(
@@ -342,6 +384,9 @@ class RiskManager:
                 )
                 total_exposure = total_exposure_query.scalar() or 0.0
                 max_total = getattr(settings, "RISK_MAX_TOTAL_EXPOSURE_USD", 500.0)
+                # WeatherBot: apply higher bot-specific cap (DB fallback path)
+                if bot_name == "WeatherBot":
+                    max_total = getattr(settings, "WEATHER_MAX_TOTAL_EXPOSURE_USD", max_total)
                 if total_exposure + position_value > max_total:
                     checks["allowed"] = False
                     checks["reasons"].append(

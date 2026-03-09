@@ -73,6 +73,10 @@ class OrderGateway:
         """O(1) in-memory total exposure across all bots."""
         return self._total_exposure_usd
 
+    def get_bot_exposure_usd(self, bot_name: str) -> float:
+        """O(n) sum of open position values for a specific bot."""
+        return sum(self._position_exposure.get(bot_name, {}).values())
+
     def get_daily_exposure_usd(self, bot_name: str) -> float:
         """O(1) in-memory daily exposure for a bot. Resets at day boundary."""
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
