@@ -740,6 +740,7 @@ class WeatherCalibration(Base):
     actual_temp = Column(Float, nullable=True)  # Null until resolved
     lead_time_hours = Column(Float, nullable=False)
     bias = Column(Float, nullable=True)  # actual - forecast
+    crps = Column(Float, nullable=True)  # Continuous Ranked Probability Score (migration 032)
     model_name = Column(String(50), nullable=True)
     created_at = Column(NaiveUTCDateTime, nullable=False,
                         default=lambda: _naive_utc(datetime.now(timezone.utc)))

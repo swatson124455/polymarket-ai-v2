@@ -405,6 +405,7 @@ class WeatherForecastClient:
                     continue
 
                 # Sum each member's daily values over the remaining period
+                members_before = len(member_sums)
                 for key, vals in daily.items():
                     if not key.startswith("precipitation_sum_member"):
                         continue
@@ -422,6 +423,13 @@ class WeatherForecastClient:
                         if station.temp_unit.upper() == "F":
                             val = val / 25.4  # mm → inches
                         member_sums.append(max(0.0, actual_total + val))
+                if len(member_sums) == members_before:
+                    logger.warning(
+                        "monthly_precip_model_no_members",
+                        model=model,
+                        remaining_days=len(target_indices),
+                        reason="all members below 70% coverage threshold",
+                    )
             except Exception as exc:
                 logger.debug(
                     "monthly_precip_ensemble_failed",
