@@ -344,7 +344,7 @@ async def compute_clv_stats(
                 FROM esports_prediction_log
                 WHERE game = :game
                   AND closing_price IS NOT NULL
-                  AND created_at > NOW() - INTERVAL ':days days'
+                  AND created_at > NOW() - MAKE_INTERVAL(days => :days)
                 ORDER BY created_at DESC
                 """),
                 {"game": game, "days": days},
@@ -425,7 +425,7 @@ async def analyze_edge_decay(
                 WHERE actual_outcome IS NOT NULL
                   AND closing_price IS NOT NULL
                   {game_filter}
-                  AND created_at > NOW() - INTERVAL '{days} days'
+                  AND created_at > NOW() - MAKE_INTERVAL(days => :days)
                 ORDER BY created_at ASC
                 """),
                 params,
@@ -567,22 +567,27 @@ async def get_team_map_rates(
         return {}
     try:
         async with db.get_session() as session:
+            # Subquery limits to most recent `last_n` matches for the team,
+            # then the outer query aggregates per map_name with GROUP BY.
             result = await session.execute(
                 _text("""
-                SELECT
-                    game_state_json->>'map_name' as map_name,
-                    COUNT(*) as total,
-                    SUM(CASE WHEN
-                        (team_a = :team AND outcome = 1)
-                        OR (team_b = :team AND outcome = 0)
-                    THEN 1 ELSE 0 END) as wins
-                FROM esports_training_data
-                WHERE game = :game
-                  AND game_state_json->>'map_name' IS NOT NULL
-                  AND game_state_json->>'map_name' != ''
-                  AND (team_a = :team OR team_b = :team)
-                ORDER BY scheduled_at DESC
-                LIMIT :last_n
+                SELECT map_name, COUNT(*) as total,
+                       SUM(CASE WHEN
+                           (team_a = :team AND outcome = 1)
+                           OR (team_b = :team AND outcome = 0)
+                       THEN 1 ELSE 0 END) as wins
+                FROM (
+                    SELECT team_a, team_b, outcome,
+                           game_state_json->>'map_name' as map_name
+                    FROM esports_training_data
+                    WHERE game = :game
+                      AND game_state_json->>'map_name' IS NOT NULL
+                      AND game_state_json->>'map_name' != ''
+                      AND (team_a = :team OR team_b = :team)
+                    ORDER BY scheduled_at DESC
+                    LIMIT :last_n
+                ) recent
+                GROUP BY map_name
                 """),
                 {"team": team_name, "game": game, "last_n": last_n},
             )
