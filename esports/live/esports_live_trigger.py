@@ -18,12 +18,13 @@ import time
 from typing import Any, Dict, Optional
 
 from structlog import get_logger
+from config.settings import settings
 
 logger = get_logger()
 
-_DEFAULT_COOLDOWN = 60.0        # seconds between bets on same match
-_DEFAULT_MAX_PER_MATCH = 5
-_DEFAULT_MAX_PER_MAP = 2
+_DEFAULT_COOLDOWN = float(getattr(settings, "ESPORTS_LIVE_COOLDOWN_SECONDS", 60.0))
+_DEFAULT_MAX_PER_MATCH = int(getattr(settings, "ESPORTS_LIVE_MAX_PER_MATCH", 5))
+_DEFAULT_MAX_PER_MAP = int(getattr(settings, "ESPORTS_LIVE_MAX_PER_MAP", 2))
 
 
 class EsportsLiveTrigger:

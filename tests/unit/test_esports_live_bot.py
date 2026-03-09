@@ -381,8 +381,8 @@ class TestScanAndTrade:
         assert bot._event_detector.detect.call_count == 3
 
     @pytest.mark.asyncio
-    async def test_processes_max_20_game_states(self):
-        """scan_and_trade processes at most 20 game states per cycle."""
+    async def test_processes_max_events_per_scan(self):
+        """scan_and_trade processes at most ESPORTS_LIVE_MAX_EVENTS_PER_SCAN per cycle."""
         bot = make_bot()
         bot._live_trigger = MagicMock()
         bot._live_trigger.prune_cooldowns = MagicMock()
@@ -391,18 +391,18 @@ class TestScanAndTrade:
         bot._game_monitor = MagicMock()
         bot._game_monitor.active_games = {}
 
-        # Put 25 game states in queue
-        for i in range(25):
+        # Put 60 game states in queue (default max=50)
+        for i in range(60):
             await bot._game_update_queue.put(
                 _make_game_state(match_id=f"match-{i}")
             )
 
         await bot.scan_and_trade()
-        # Only 20 should be processed
-        assert bot._last_scan_markets == 20
-        assert bot._event_detector.detect.call_count == 20
-        # 5 remain in queue
-        assert bot._game_update_queue.qsize() == 5
+        # Only 50 should be processed (default ESPORTS_LIVE_MAX_EVENTS_PER_SCAN)
+        assert bot._last_scan_markets == 50
+        assert bot._event_detector.detect.call_count == 50
+        # 10 remain in queue
+        assert bot._game_update_queue.qsize() == 10
 
     @pytest.mark.asyncio
     async def test_detects_events_via_event_detector(self):

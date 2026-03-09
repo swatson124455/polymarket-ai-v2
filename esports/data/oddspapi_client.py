@@ -43,6 +43,7 @@ _CACHE_TTL = 3600  # 1 hour — CLV data doesn't change after settlement
 _CACHE_MAX = 200
 _last_request: float = 0.0
 _MIN_INTERVAL = 5.5  # 5.5s between requests — historical-odds has 5s cooldown
+_rate_lock: asyncio.Lock = asyncio.Lock()
 
 
 async def _rate_limited_get(
@@ -58,11 +59,13 @@ async def _rate_limited_get(
         return cached[0]
 
     # Rate limit (conservative — 250 req/month budget)
-    now = _time.monotonic()
-    wait = _MIN_INTERVAL - (now - _last_request)
-    if wait > 0:
-        await asyncio.sleep(wait)
-    _last_request = _time.monotonic()
+    # Lock prevents concurrent coroutines from reading stale _last_request
+    async with _rate_lock:
+        now = _time.monotonic()
+        wait = _MIN_INTERVAL - (now - _last_request)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _last_request = _time.monotonic()
 
     url = f"{BASE_URL}{path}"
     try:

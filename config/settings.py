@@ -934,6 +934,11 @@ class Settings(BaseSettings):
     ESPORTS_RETRAIN_INTERVAL_HOURS: int = int(os.getenv("ESPORTS_RETRAIN_INTERVAL_HOURS", "24"))
     ESPORTS_MIN_ACCURACY_TO_TRADE: float = float(os.getenv("ESPORTS_MIN_ACCURACY_TO_TRADE", "0.52"))
     ESPORTS_LOL_HEURISTIC_ENABLED: bool = os.getenv("ESPORTS_LOL_HEURISTIC_ENABLED", "true").lower() in ("true", "1", "yes")
+    ESPORTS_VALIDATION_SPLIT: float = float(os.getenv("ESPORTS_VALIDATION_SPLIT", "0.2"))
+    ESPORTS_MIN_LOL_SAMPLES: int = int(os.getenv("ESPORTS_MIN_LOL_SAMPLES", "50"))
+    ESPORTS_MIN_CS2_SAMPLES: int = int(os.getenv("ESPORTS_MIN_CS2_SAMPLES", "100"))
+    ESPORTS_MIN_CS2_UNIQUE_MATCHES: int = int(os.getenv("ESPORTS_MIN_CS2_UNIQUE_MATCHES", "15"))
+    ESPORTS_EARLY_STOPPING_ROUNDS: int = int(os.getenv("ESPORTS_EARLY_STOPPING_ROUNDS", "20"))
 
     # --- Exposure limits (per-game/tournament/team concentration caps) ---
     ESPORTS_MAX_GAME_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_GAME_EXPOSURE", "300.0"))
@@ -947,6 +952,11 @@ class Settings(BaseSettings):
 
     # --- Signal confluence ---
     ESPORTS_CONFLUENCE_MIN: float = float(os.getenv("ESPORTS_CONFLUENCE_MIN", "0.60"))
+    ESPORTS_CONFLUENCE_WEIGHT_EDGE: float = float(os.getenv("ESPORTS_CONFLUENCE_WEIGHT_EDGE", "0.55"))
+    ESPORTS_CONFLUENCE_WEIGHT_FRESHNESS: float = float(os.getenv("ESPORTS_CONFLUENCE_WEIGHT_FRESHNESS", "0.30"))
+    ESPORTS_CONFLUENCE_WEIGHT_AGREEMENT: float = float(os.getenv("ESPORTS_CONFLUENCE_WEIGHT_AGREEMENT", "0.15"))
+    ESPORTS_FRESHNESS_DECAY_SECONDS: float = float(os.getenv("ESPORTS_FRESHNESS_DECAY_SECONDS", "120.0"))
+    ESPORTS_FRESHNESS_DECAY_PREGAME_SECONDS: float = float(os.getenv("ESPORTS_FRESHNESS_DECAY_PREGAME_SECONDS", "600.0"))
     ESPORTS_WHALE_SMART_MONEY_THRESHOLD: float = float(os.getenv("ESPORTS_WHALE_SMART_MONEY_THRESHOLD", "0.60"))
 
     # --- WebSocket reactive ---
@@ -956,6 +966,18 @@ class Settings(BaseSettings):
     ESPORTS_LIVE_WS_COOLDOWN_SECONDS: int = int(os.getenv("ESPORTS_LIVE_WS_COOLDOWN_SECONDS", "5"))
     ESPORTS_SERIES_WS_PRICE_CHANGE_PCT: float = float(os.getenv("ESPORTS_SERIES_WS_PRICE_CHANGE_PCT", "0.01"))
     ESPORTS_SERIES_WS_COOLDOWN_SECONDS: int = int(os.getenv("ESPORTS_SERIES_WS_COOLDOWN_SECONDS", "10"))
+
+    # --- Live trigger ---
+    ESPORTS_LIVE_COOLDOWN_SECONDS: float = float(os.getenv("ESPORTS_LIVE_COOLDOWN_SECONDS", "60.0"))
+    ESPORTS_LIVE_MAX_PER_MATCH: int = int(os.getenv("ESPORTS_LIVE_MAX_PER_MATCH", "5"))
+    ESPORTS_LIVE_MAX_PER_MAP: int = int(os.getenv("ESPORTS_LIVE_MAX_PER_MAP", "2"))
+    ESPORTS_LIVE_MAX_EVENTS_PER_SCAN: int = int(os.getenv("ESPORTS_LIVE_MAX_EVENTS_PER_SCAN", "50"))
+    ESPORTS_LIVE_EVENT_MAX_AGE_SECONDS: float = float(os.getenv("ESPORTS_LIVE_EVENT_MAX_AGE_SECONDS", "60.0"))
+
+    # --- Game monitor ---
+    ESPORTS_MONITOR_BASE_BACKOFF: int = int(os.getenv("ESPORTS_MONITOR_BASE_BACKOFF", "30"))
+    ESPORTS_MONITOR_MAX_BACKOFF: int = int(os.getenv("ESPORTS_MONITOR_MAX_BACKOFF", "300"))
+    ESPORTS_MONITOR_POLL_INTERVAL: int = int(os.getenv("ESPORTS_MONITOR_POLL_INTERVAL", "15"))
 
     # --- Latency tracking ---
     ESPORTS_PANDASCORE_REFRESH_INTERVAL: int = int(os.getenv("ESPORTS_PANDASCORE_REFRESH_INTERVAL", "15"))

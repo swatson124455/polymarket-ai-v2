@@ -18,12 +18,13 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from structlog import get_logger
+from config.settings import settings
 
 logger = get_logger()
 
-_BASE_BACKOFF = 30
-_MAX_BACKOFF = 300
-_POLL_INTERVAL = 15  # seconds between polls
+_BASE_BACKOFF = int(getattr(settings, "ESPORTS_MONITOR_BASE_BACKOFF", 30))
+_MAX_BACKOFF = int(getattr(settings, "ESPORTS_MONITOR_MAX_BACKOFF", 300))
+_POLL_INTERVAL = int(getattr(settings, "ESPORTS_MONITOR_POLL_INTERVAL", 15))
 
 # CS2 map CT win rates (professional average)
 _MAP_SIDE_RATES = {

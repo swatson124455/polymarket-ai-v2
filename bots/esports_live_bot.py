@@ -211,23 +211,37 @@ class EsportsLiveBot(BaseBot):
         """
         Drain game update queue, detect events, fire live bets.
 
-        Processes up to 20 game state updates per scan cycle.
+        Processes up to ESPORTS_LIVE_MAX_EVENTS_PER_SCAN events per cycle.
+        Skips events older than ESPORTS_LIVE_EVENT_MAX_AGE_SECONDS.
         """
+        import time as _time
+
         db = getattr(self.base_engine, "db", None)
         processed = 0
+        skipped_stale = 0
         events_detected = 0
         _trades = 0
+
+        max_per_scan = int(getattr(settings, "ESPORTS_LIVE_MAX_EVENTS_PER_SCAN", 50))
+        max_age = float(getattr(settings, "ESPORTS_LIVE_EVENT_MAX_AGE_SECONDS", 60.0))
 
         # Prune expired cooldowns
         if self._live_trigger:
             self._live_trigger.prune_cooldowns()
 
-        while processed < 20:
+        while processed < max_per_scan:
             try:
                 from esports.live.esports_game_monitor import EsportsGameState
                 game_state: EsportsGameState = self._game_update_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+
+            # Skip stale events — game state has changed since queuing
+            age = _time.monotonic() - getattr(game_state, "last_updated", _time.monotonic())
+            if age > max_age:
+                skipped_stale += 1
+                processed += 1
+                continue
 
             if self._event_detector:
                 live_events = self._event_detector.detect(game_state)

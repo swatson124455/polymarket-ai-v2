@@ -28,11 +28,11 @@ logger = get_logger()
 _MIN_ACCURACY = float(getattr(settings, "ESPORTS_MODEL_MIN_ACCURACY", 0.55))
 _MAX_BRIER = float(getattr(settings, "ESPORTS_MODEL_MAX_BRIER", 0.24))  # no-skill = 0.25
 _RETRAIN_INTERVAL = float(getattr(settings, "ESPORTS_RETRAIN_INTERVAL_HOURS", 24)) * 3600
-_VALIDATION_SPLIT = 0.2  # 20% holdout for validation
-_MIN_LOL_SAMPLES = 50
-_MIN_CS2_SAMPLES = 100
-_MIN_CS2_UNIQUE_MATCHES = 15  # At least 15 unique matches (not just 100 rounds)
-_EARLY_STOPPING_ROUNDS = 20
+_VALIDATION_SPLIT = float(getattr(settings, "ESPORTS_VALIDATION_SPLIT", 0.2))
+_MIN_LOL_SAMPLES = int(getattr(settings, "ESPORTS_MIN_LOL_SAMPLES", 50))
+_MIN_CS2_SAMPLES = int(getattr(settings, "ESPORTS_MIN_CS2_SAMPLES", 100))
+_MIN_CS2_UNIQUE_MATCHES = int(getattr(settings, "ESPORTS_MIN_CS2_UNIQUE_MATCHES", 15))
+_EARLY_STOPPING_ROUNDS = int(getattr(settings, "ESPORTS_EARLY_STOPPING_ROUNDS", 20))
 _ECE_BINS = 10  # Number of bins for Expected Calibration Error
 
 

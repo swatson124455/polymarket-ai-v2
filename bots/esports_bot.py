@@ -54,6 +54,7 @@ class EsportsBot(BaseBot):
         self._opendota = None        # OpenDotaClient (Dota2 enrichment)
         self._aligulac = None        # AligulacClient (SC2 ratings blend)
         self._ballchasing = None     # BallchasingClient (RL replay stats)
+        self._cross_game_model = None  # XGBClassifier (cross-game meta model)
         self._bg_train_tasks: Dict[str, asyncio.Task] = {}  # game → background train task
 
         # Per-game/tournament/team exposure tracking (USD deployed)
@@ -75,8 +76,8 @@ class EsportsBot(BaseBot):
         # Pending trades: market_ids currently being executed (race condition guard)
         self._ws_pending_trades: set = set()
 
-        # Track games that already attempted data collection (prevent repeated attempts)
-        self._collection_attempted: set = set()
+        # Track data collection attempts per game: game → attempt count (max 3 retries)
+        self._collection_attempted: Dict[str, int] = {}
 
         # Latency tracker: WS price move time vs last PandaScore refresh (bounded)
         self._latency_samples: List[float] = []  # seconds since last PandaScore refresh
@@ -135,9 +136,9 @@ class EsportsBot(BaseBot):
             from esports.data.opendota_client import OpenDotaClient
             self._opendota = OpenDotaClient()
             logger.info("EsportsBot: OpenDota client initialized")
-        except Exception:
+        except Exception as exc:
             self._opendota = None
-            logger.debug("EsportsBot: OpenDota client not available")
+            logger.warning("EsportsBot: OpenDota client not available", error=str(exc))
 
         # Aligulac client — SC2 Elo ratings + match predictions (free key)
         aligulac_key = getattr(settings, "ALIGULAC_API_KEY", None)
@@ -146,9 +147,9 @@ class EsportsBot(BaseBot):
                 from esports.data.aligulac_client import AligulacClient
                 self._aligulac = AligulacClient(api_key=aligulac_key)
                 logger.info("EsportsBot: Aligulac client initialized")
-            except Exception:
+            except Exception as exc:
                 self._aligulac = None
-                logger.debug("EsportsBot: Aligulac client not available")
+                logger.warning("EsportsBot: Aligulac client not available", error=str(exc))
         else:
             self._aligulac = None
 
@@ -159,9 +160,9 @@ class EsportsBot(BaseBot):
                 from esports.data.ballchasing_client import BallchasingClient
                 self._ballchasing = BallchasingClient(api_key=ballchasing_key)
                 logger.info("EsportsBot: Ballchasing client initialized")
-            except Exception:
+            except Exception as exc:
                 self._ballchasing = None
-                logger.debug("EsportsBot: Ballchasing client not available")
+                logger.warning("EsportsBot: Ballchasing client not available", error=str(exc))
         else:
             self._ballchasing = None
 
@@ -208,6 +209,9 @@ class EsportsBot(BaseBot):
             self._trainer = EsportsModelTrainer(pandascore_client=self._pandascore)
         except Exception:
             logger.debug("EsportsBot: trainer not available")
+
+        # Load cross-game XGBoost meta model (if previously trained)
+        self._load_cross_game_model()
 
         lol_trained = self._lol_model is not None and self._lol_model.is_trained
         cs2_trained = self._cs2_model is not None and self._cs2_model.is_trained
@@ -442,10 +446,10 @@ class EsportsBot(BaseBot):
         # Step 0a: Collect historical data for games missing Glicko-2 trackers (one-shot)
         for _game in ("dota2", "valorant", "cod", "r6", "sc2", "rl"):
             if (_game not in self._glicko2_trackers
-                    and _game not in self._collection_attempted
+                    and self._collection_attempted.get(_game, 0) < 3
                     and self._trainer
                     and _game not in self._bg_train_tasks):
-                self._collection_attempted.add(_game)
+                self._collection_attempted[_game] = self._collection_attempted.get(_game, 0) + 1
                 self._bg_train_tasks[_game] = asyncio.create_task(
                     self._train_in_background(_game, db, init_glicko=True),
                     name=f"collect_{_game}",
@@ -467,8 +471,8 @@ class EsportsBot(BaseBot):
                     )
                     if self._trainer:
                         self._trainer._last_train_time.pop(game, None)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("esportsbot_accuracy_check_failed", error=str(exc))
 
         # Step 1: Patch drift check — skip live trading during observation mode
         if self._patch_drift:
@@ -823,13 +827,38 @@ class EsportsBot(BaseBot):
                     glicko2_prob = await self._ballchasing_rl_adjustment(
                         market_data, glicko2_prob,
                     )
+                # Cross-game XGB blend: augment Glicko-2 with meta-patterns
+                xgb_raw = None
+                if self._cross_game_model is not None and game in self._CROSS_GAME_IDS:
+                    game_state = self._build_glicko2_game_state(market_data, game)
+                    if game_state:
+                        import numpy as _np
+                        feats = [
+                            game_state["team_strength_diff"],
+                            game_state["matchup_uncertainty"],
+                            game_state["rd_asymmetry"],
+                            game_state["team_a_volatility"],
+                            game_state["team_b_volatility"],
+                            float(self._CROSS_GAME_IDS[game]),
+                            game_state.get("best_of", 1.0),
+                        ]
+                        xgb_prob = float(
+                            self._cross_game_model.predict_proba(
+                                _np.array([feats], dtype=_np.float32)
+                            )[0][1]
+                        )
+                        # Blend: 40% XGB + 60% Glicko-2 (Glicko-2 anchored)
+                        xgb_raw = xgb_prob
+                        glicko2_prob = 0.6 * glicko2_prob + 0.4 * xgb_prob
+                        glicko2_prob = max(0.05, min(0.95, glicko2_prob))
+
                 self._prediction_cache[market_id] = {
                     "prob": glicko2_prob, "ts": time.monotonic(), "game": game,
-                    "ml_raw": None, "glicko2_est": glicko2_prob,
+                    "ml_raw": xgb_raw, "glicko2_est": glicko2_prob,
                 }
                 return glicko2_prob
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("esportsbot_glicko2_fallback_failed", game=game, error=str(exc))
 
         return None
 
@@ -1168,14 +1197,26 @@ class EsportsBot(BaseBot):
         """
         import math
 
-        # 1. Model edge signal (55%) — normalized to 0-1
+        # Configurable weights (P4.2-A)
+        w_edge = float(getattr(settings, "ESPORTS_CONFLUENCE_WEIGHT_EDGE", 0.55))
+        w_fresh = float(getattr(settings, "ESPORTS_CONFLUENCE_WEIGHT_FRESHNESS", 0.30))
+        w_agree = float(getattr(settings, "ESPORTS_CONFLUENCE_WEIGHT_AGREEMENT", 0.15))
+
+        # 1. Model edge signal — normalized to 0-1
         edge_score = min(abs(model_edge) / self._min_edge, 1.0)
 
-        # 2. Prediction freshness (30%) — exponential decay
+        # 2. Prediction freshness — exponential decay (P4.3-A: pre-game vs live)
         age_seconds = time.monotonic() - prediction_ts if prediction_ts > 0 else 0
-        freshness_score = math.exp(-age_seconds / 120.0)  # 0s=1.0, 60s=0.61, 120s=0.37
+        is_live = market_id in self._live_matches
+        decay_s = float(getattr(
+            settings,
+            "ESPORTS_FRESHNESS_DECAY_SECONDS" if is_live
+            else "ESPORTS_FRESHNESS_DECAY_PREGAME_SECONDS",
+            120.0 if is_live else 600.0,
+        ))
+        freshness_score = math.exp(-age_seconds / decay_s)
 
-        # 3. Model agreement (15%) — penalize when Glicko-2 and ML disagree
+        # 3. Model agreement — penalize when Glicko-2 and ML disagree
         agreement_score = 0.5  # Neutral when no component data
         cached = self._prediction_cache.get(market_id, {})
         ml_raw = cached.get("ml_raw")
@@ -1187,9 +1228,9 @@ class EsportsBot(BaseBot):
 
         # Weighted sum
         confluence = (
-            0.55 * edge_score +
-            0.30 * freshness_score +
-            0.15 * agreement_score
+            w_edge * edge_score +
+            w_fresh * freshness_score +
+            w_agree * agreement_score
         )
 
         return round(confluence, 4)
@@ -1394,6 +1435,7 @@ class EsportsBot(BaseBot):
                 await asyncio.wait_for(
                     self._trainer.train_cross_game(db=db), timeout=300.0,
                 )
+                self._load_cross_game_model()
             else:
                 result = await asyncio.wait_for(
                     self._trainer.train_game(game, db=db), timeout=300.0,
@@ -1412,7 +1454,7 @@ class EsportsBot(BaseBot):
                     await self._init_glicko2_trackers(db)
             logger.info("EsportsBot: bg retrain complete", game=game)
         except (asyncio.TimeoutError, Exception) as exc:
-            logger.debug("EsportsBot: bg retrain failed", game=game, error=str(exc))
+            logger.warning("EsportsBot: bg retrain failed", game=game, error=str(exc))
 
     async def _check_monitoring_thresholds(self, db) -> None:
         """E4: Check per-game Brier scores and emit structured alerts.
@@ -1604,6 +1646,28 @@ class EsportsBot(BaseBot):
         except Exception:
             pass
         return None
+
+    # Cross-game model: game → integer ID (must match esports_trainer.py _GAME_IDS)
+    _CROSS_GAME_IDS = {"lol": 0, "cs2": 1, "dota2": 2, "valorant": 3,
+                       "cod": 4, "r6": 5, "sc2": 6, "rl": 7}
+
+    def _load_cross_game_model(self) -> None:
+        """Load cross-game XGBoost model from saved_models/ (if exists)."""
+        import os
+        model_path = os.path.join(
+            os.path.dirname(__file__), "..", "saved_models", "cross_game_xgb.json",
+        )
+        model_path = os.path.abspath(model_path)
+        if not os.path.exists(model_path):
+            return
+        try:
+            from xgboost import XGBClassifier
+            model = XGBClassifier()
+            model.load_model(model_path)
+            self._cross_game_model = model
+            logger.info("EsportsBot: cross_game_xgb loaded", path=model_path)
+        except Exception as exc:
+            logger.warning("EsportsBot: cross_game_xgb load failed", error=str(exc))
 
     def _build_glicko2_game_state(
         self, market_data: Dict, game: str
