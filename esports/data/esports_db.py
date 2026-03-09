@@ -12,12 +12,16 @@ Usage::
 from __future__ import annotations
 
 import datetime as _dt
-from typing import Any, Dict, List, Optional
+import time as _time
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import text as _text
 from structlog import get_logger
 
 logger = get_logger()
+
+# Module-level TTL cache for per-team map rates: "team:game" → (rates_dict, mono_ts)
+_map_rates_cache: Dict[str, Tuple[Dict[str, float], float]] = {}
 
 
 async def upsert_esports_team(db, team_data: Dict[str, Any]) -> None:
@@ -561,8 +565,13 @@ async def get_team_map_rates(
     """Get per-map win rates for a team from training data.
 
     Queries esports_training_data for rows with map_name in game_state_json.
-    Returns {map_name: win_rate} dict.
+    Returns {map_name: win_rate} dict. Cached for 60s per team:game.
     """
+    cache_key = f"{team_name}:{game}"
+    cached = _map_rates_cache.get(cache_key)
+    if cached and (_time.monotonic() - cached[1]) < 60:
+        return cached[0]
+
     if db is None:
         return {}
     try:
@@ -597,6 +606,7 @@ async def get_team_map_rates(
         for row in rows:
             if row.map_name and row.total > 0:
                 rates[row.map_name] = round(int(row.wins) / int(row.total), 4)
+        _map_rates_cache[cache_key] = (rates, _time.monotonic())
         return rates
     except Exception as exc:
         logger.debug("esports_db: get_team_map_rates failed", error=str(exc))
