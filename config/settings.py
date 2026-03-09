@@ -941,6 +941,7 @@ class Settings(BaseSettings):
 
     # --- External API keys (esports data enrichment) ---
     ALIGULAC_API_KEY: str = os.getenv("ALIGULAC_API_KEY", "")
+    ODDSPAPI_API_KEY: str = os.getenv("ODDSPAPI_API_KEY", "")
 
     # --- Signal confluence ---
     ESPORTS_CONFLUENCE_MIN: float = float(os.getenv("ESPORTS_CONFLUENCE_MIN", "0.60"))
