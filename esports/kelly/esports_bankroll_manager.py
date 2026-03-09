@@ -59,6 +59,8 @@ class EsportsBankrollManager:
         self._gw = order_gateway
         self._daily_lock = asyncio.Lock()
         self._consecutive_losses: Dict[str, int] = {}  # game → consecutive loss count
+        # Calibration cache: (game, market_type) → (kelly_fraction, monotonic_ts)
+        self._calibration_cache: Dict[tuple, tuple] = {}
 
     async def get_bet_size(
         self,
@@ -87,8 +89,9 @@ class EsportsBankrollManager:
         if market_price <= 0 or market_price >= 1.0:
             return 0.0
 
-        # Step 1: Get Kelly fraction from calibration table
+        # Step 1: Get Kelly fraction from calibration table, then apply graduation
         kelly_fraction = await self._get_kelly_fraction(game, market_type, db)
+        kelly_fraction = await self._apply_kelly_graduation(kelly_fraction, game, db)
 
         # Step 2: Kelly formula
         capital = float(getattr(settings, "ESPORTS_TOTAL_CAPITAL", 5000.0))
@@ -148,8 +151,18 @@ class EsportsBankrollManager:
     async def _get_kelly_fraction(
         self, game: str, market_type: str, db=None
     ) -> float:
-        """Get Kelly fraction from calibration table, or default."""
+        """Get Kelly fraction from calibration table, or default.
+
+        Caches results for 1 hour to avoid DB round-trip per bet.
+        """
+        import time as _time
+
         default = float(getattr(settings, "ESPORTS_KELLY_DEFAULT_FRACTION", 0.25))
+
+        cache_key = (game, market_type)
+        cached = self._calibration_cache.get(cache_key)
+        if cached and (_time.monotonic() - cached[1]) < 3600:
+            return cached[0]
 
         if db is None:
             return default
@@ -161,11 +174,58 @@ class EsportsBankrollManager:
                 timeout=3.0,
             )
             if cal and cal.get("kelly_fraction"):
-                return float(cal["kelly_fraction"])
+                fraction = float(cal["kelly_fraction"])
+                self._calibration_cache[cache_key] = (fraction, _time.monotonic())
+                return fraction
         except (asyncio.TimeoutError, Exception):
             pass
 
+        self._calibration_cache[cache_key] = (default, _time.monotonic())
         return default
+
+    async def _apply_kelly_graduation(
+        self, base_fraction: float, game: str, db=None,
+    ) -> float:
+        """Dynamic Kelly graduation — auto-upgrade based on accuracy.
+
+        Mirrors WeatherBot's graduation tiers:
+          - 50+ resolved + Brier < 0.25 → kelly 0.35
+          - 100+ resolved + Brier < 0.20 → kelly 0.50
+          - Auto-downgrade when Brier rises above threshold.
+        """
+        if db is None:
+            return base_fraction
+        try:
+            from esports.data.esports_db import get_rolling_accuracy
+            acc = await asyncio.wait_for(
+                get_rolling_accuracy(db, game, bot_name="", last_n=200),
+                timeout=3.0,
+            )
+            if acc is None:
+                return base_fraction
+
+            n = acc["total"]
+            brier = acc["brier_score"]
+
+            if n >= 100 and brier < 0.20:
+                graduated = max(base_fraction, 0.50)
+            elif n >= 50 and brier < 0.25:
+                graduated = max(base_fraction, 0.35)
+            else:
+                return base_fraction
+
+            if graduated != base_fraction:
+                logger.info(
+                    "EsportsBankrollManager: Kelly graduated",
+                    game=game,
+                    base=base_fraction,
+                    graduated=graduated,
+                    resolved=n,
+                    brier=round(brier, 4),
+                )
+            return graduated
+        except (asyncio.TimeoutError, Exception):
+            return base_fraction
 
     def _compute_drawdown_factor(self, game: str) -> float:
         """
