@@ -160,7 +160,11 @@ class EsportsModelTrainer:
                 metrics = await self._train_lol(train_set, val_set)
             elif game == "cs2":
                 metrics = await self._train_cs2(train_set, val_set)
-            elif game in ("dota2", "valorant", "cod", "r6", "sc2", "rl"):
+            elif game == "dota2":
+                metrics = await self._train_dota2(train_set, val_set)
+            elif game == "valorant":
+                metrics = await self._train_valorant(train_set, val_set)
+            elif game in ("cod", "r6", "sc2", "rl"):
                 # No dedicated ML model — Glicko-2 only. Collection already stored rows.
                 metrics = {"accuracy": 0.0, "brier_score": 1.0, "ece": 1.0}
                 result["graduated"] = False
@@ -455,6 +459,52 @@ class EsportsModelTrainer:
             ece=round(metrics["ece"], 4),
         )
 
+        return metrics
+
+    async def _train_dota2(
+        self, train_set: List[Dict], val_set: List[Dict]
+    ) -> Dict[str, float]:
+        """Train Dota2 model and return validation metrics dict."""
+        from esports.models.dota2_model import Dota2Model
+
+        zero_metrics = {"accuracy": 0.0, "brier_score": 1.0, "ece": 1.0}
+
+        model = Dota2Model()
+        success = model.train(train_set)
+        if not success:
+            return zero_metrics
+
+        metrics = self._evaluate_full(model, val_set, label_key="team_a_won")
+        model.save()
+        logger.info(
+            "Dota2Model: saved",
+            accuracy=round(metrics["accuracy"], 4),
+            brier=round(metrics["brier_score"], 4),
+            ece=round(metrics["ece"], 4),
+        )
+        return metrics
+
+    async def _train_valorant(
+        self, train_set: List[Dict], val_set: List[Dict]
+    ) -> Dict[str, float]:
+        """Train Valorant model and return validation metrics dict."""
+        from esports.models.valorant_model import ValorantModel
+
+        zero_metrics = {"accuracy": 0.0, "brier_score": 1.0, "ece": 1.0}
+
+        model = ValorantModel()
+        success = model.train(train_set)
+        if not success:
+            return zero_metrics
+
+        metrics = self._evaluate_full(model, val_set, label_key="team_a_won")
+        model.save()
+        logger.info(
+            "ValorantModel: saved",
+            accuracy=round(metrics["accuracy"], 4),
+            brier=round(metrics["brier_score"], 4),
+            ece=round(metrics["ece"], 4),
+        )
         return metrics
 
     # ── Evaluation ──────────────────────────────────────────────────────
