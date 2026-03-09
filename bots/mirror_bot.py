@@ -78,6 +78,9 @@ class MirrorBot(BaseBot):
         # Avoids repeated DB queries for the same token across scan cycles.
         self._token_side_cache: Dict[str, str] = {}
 
+        # Startup state restoration flag — run once on first scan.
+        self._state_restored: bool = False
+
     def _on_bg_task_done(self, task, name):
         if task.cancelled():
             return
@@ -151,11 +154,88 @@ class MirrorBot(BaseBot):
     # M4: _update_consensus_threshold deleted — dead code (zero callers) with logic bug.
     # Bug: docstring said "3+ consecutive" but code adjusted on every single trade.
 
+    # ── Startup State Restoration ───────────────────────────────────
+
+    async def _restore_state_on_startup(self) -> None:
+        """
+        Reload _daily_exposure and _open_positions from DB after restart.
+
+        Without this, every restart zeroes out the daily spend counter and clears
+        all open position tracking — causing overspend and lost stop-loss coverage.
+
+        _daily_exposure: seeded from today's paper_trades (YES/NO entries).
+        _open_positions: rebuilt from open positions table (YES/NO rows only).
+          traders set is unrecoverable — stop-loss and count checks work;
+          trader-exit mirroring only works for positions opened after this restart.
+        """
+        if self._state_restored:
+            return
+        self._state_restored = True
+
+        db = getattr(self.base_engine, "db", None)
+        if db is None or not getattr(db, "session_factory", None):
+            return
+
+        from sqlalchemy import text as _text
+        try:
+            async with db.get_session() as session:
+                # 1. Seed _daily_exposure from today's YES/NO paper_trades entries.
+                row = await session.execute(
+                    _text(
+                        "SELECT COALESCE(SUM(size * price), 0.0) FROM paper_trades "
+                        "WHERE bot_name = :bot AND side IN ('YES', 'NO') "
+                        "AND created_at >= CURRENT_DATE"
+                    ),
+                    {"bot": self.bot_name},
+                )
+                spent_today = float(row.scalar() or 0.0)
+                self._daily_exposure = spent_today
+                logger.info(
+                    "MirrorBot startup: seeded _daily_exposure=%.2f from today's paper_trades",
+                    spent_today,
+                )
+
+                # 2. Rebuild _open_positions from positions table (YES/NO only).
+                rows = await session.execute(
+                    _text(
+                        "SELECT market_id, token_id, side, size, entry_price, "
+                        "       COALESCE(current_price, entry_price) AS current_price, opened_at "
+                        "FROM positions "
+                        "WHERE (bot_id = :bot OR source_bot = :bot) "
+                        "  AND status = 'open' AND side IN ('YES', 'NO')"
+                    ),
+                    {"bot": self.bot_name},
+                )
+                restored = 0
+                for r in rows.fetchall():
+                    pos_key = f"{r.market_id}:{r.token_id}"
+                    if pos_key not in self._open_positions:
+                        ts = r.opened_at.isoformat() if r.opened_at else datetime.now(timezone.utc).isoformat()
+                        self._open_positions[pos_key] = {
+                            "side": r.side,
+                            "size": float(r.size or 0.0),
+                            "entry_price": float(r.entry_price or 0.5),
+                            "current_price": float(r.current_price or r.entry_price or 0.5),
+                            "traders": set(),  # unrecoverable — trader-exit mirroring won't fire for these
+                            "timestamp": ts,
+                        }
+                        restored += 1
+                logger.info(
+                    "MirrorBot startup: restored %d open positions from DB "
+                    "(traders set empty — stop-loss/count active, exit-mirroring inactive for these)",
+                    restored,
+                )
+        except Exception as exc:
+            logger.warning("MirrorBot _restore_state_on_startup failed: %s", exc)
+
     # ── Main Scan Loop ──────────────────────────────────────────────
 
     async def scan_and_trade(self):
         """Main scan: refresh elites, check exits, collect consensus trades, execute."""
         self._scan_count += 1
+
+        # Restore _daily_exposure + _open_positions from DB on first scan after restart.
+        await self._restore_state_on_startup()
 
         # R5b: Load per-category consensus thresholds from DB on first scan.
         await self._load_consensus_from_db()
