@@ -248,36 +248,43 @@ class EsportsSeriesBot(BaseBot):
         if maps_a >= needed or maps_b >= needed:
             return None
 
-        # Get per-map win rates (from HLTV or use default)
+        # Get per-map win rates from DB (replaces HLTV stubs)
         map_rates_a = {}
         map_rates_b = {}
-        if self._hltv and game == "cs2":
+        if game == "cs2" and db:
             try:
-                map_rates_a = await asyncio.wait_for(
-                    self._hltv.get_map_win_rates(team_a), timeout=5.0
-                )
-                map_rates_b = await asyncio.wait_for(
-                    self._hltv.get_map_win_rates(team_b), timeout=5.0
-                )
-            except (asyncio.TimeoutError, Exception):
+                from esports.data.esports_db import get_team_map_rates
+                map_rates_a = await get_team_map_rates(db, team_a, game="cs2")
+                map_rates_b = await get_team_map_rates(db, team_b, game="cs2")
+            except Exception:
                 pass
 
         # Compute conditional probability
         if map_rates_a and map_rates_b:
-            # Use map-veto-adjusted heterogeneous model
-            try:
-                model_prob = series_prob_with_map_veto(
-                    team_a_map_rates=map_rates_a,
-                    team_b_map_rates=map_rates_b,
-                    maps_won_a=maps_a,
-                    maps_won_b=maps_b,
-                    best_of=best_of,
-                )
-            except Exception:
-                # Fallback to simple model
-                model_prob = self._simple_series_prob(
-                    maps_a, maps_b, best_of
-                )
+            # Build veto_order from available map data
+            veto_order = self._derive_veto_order(
+                map_rates_a, map_rates_b, best_of
+            )
+            if veto_order:
+                try:
+                    model_prob = series_prob_with_map_veto(
+                        team_a_map_rates=map_rates_a,
+                        team_b_map_rates=map_rates_b,
+                        veto_order=veto_order,
+                        maps_won_a=maps_a,
+                        maps_won_b=maps_b,
+                    )
+                    logger.debug(
+                        "EsportsSeriesBot: map_veto model used",
+                        match_id=match_id, veto_order=veto_order,
+                        model_prob=round(model_prob, 4),
+                    )
+                except Exception:
+                    model_prob = self._simple_series_prob(
+                        maps_a, maps_b, best_of
+                    )
+            else:
+                model_prob = self._simple_series_prob(maps_a, maps_b, best_of)
         else:
             model_prob = self._simple_series_prob(maps_a, maps_b, best_of)
 
@@ -386,6 +393,50 @@ class EsportsSeriesBot(BaseBot):
         elif best_of == 5:
             return bo5_match_prob(0.50, maps_a, maps_b)
         return None
+
+    @staticmethod
+    def _derive_veto_order(
+        rates_a: Dict[str, float],
+        rates_b: Dict[str, float],
+        best_of: int,
+    ) -> List[str]:
+        """Derive plausible map veto order from team map preferences.
+
+        CS2 BO3 veto: team_a picks best map, team_b picks best map,
+        decider is the remaining map with highest combined interest.
+        BO5: each team picks 2 best maps, decider is remaining best.
+
+        Returns list of map names in play order, or empty if insufficient data.
+        """
+        pool = set(rates_a.keys()) | set(rates_b.keys())
+        if len(pool) < best_of:
+            return []
+
+        picks_per_team = 1 if best_of == 3 else 2
+        veto_order: List[str] = []
+        remaining = set(pool)
+
+        # Team A picks their best maps
+        a_sorted = sorted(remaining, key=lambda m: rates_a.get(m, 0.5), reverse=True)
+        for m in a_sorted[:picks_per_team]:
+            veto_order.append(m)
+            remaining.discard(m)
+
+        # Team B picks their best maps
+        b_sorted = sorted(remaining, key=lambda m: rates_b.get(m, 0.5), reverse=True)
+        for m in b_sorted[:picks_per_team]:
+            veto_order.append(m)
+            remaining.discard(m)
+
+        # Decider: highest combined win rate from remaining pool
+        if remaining:
+            decider = max(
+                remaining,
+                key=lambda m: rates_a.get(m, 0.5) + rates_b.get(m, 0.5),
+            )
+            veto_order.append(decider)
+
+        return veto_order[:best_of]
 
     async def _find_series_market(
         self,

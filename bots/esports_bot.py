@@ -48,6 +48,8 @@ class EsportsBot(BaseBot):
         self._market_service = None   # EsportsMarketService instance (Commit 4/5)
         self._lol_model = None       # LoLWinModel
         self._cs2_model = None       # CS2EconomyModel
+        self._dota2_model = None     # Dota2Model
+        self._valorant_model = None  # ValorantModel
         self._trainer = None         # EsportsModelTrainer
 
         # Live match tracking
@@ -139,6 +141,22 @@ class EsportsBot(BaseBot):
                 logger.info("EsportsBot: no saved CS2 model — will train on first scan")
         except Exception:
             logger.debug("EsportsBot: CS2 model not loaded")
+
+        try:
+            from esports.models.dota2_model import Dota2Model
+            self._dota2_model = Dota2Model()
+            if not self._dota2_model.load():
+                logger.info("EsportsBot: no saved Dota2 model — will train on first scan")
+        except Exception:
+            logger.debug("EsportsBot: Dota2 model not loaded")
+
+        try:
+            from esports.models.valorant_model import ValorantModel
+            self._valorant_model = ValorantModel()
+            if not self._valorant_model.load():
+                logger.info("EsportsBot: no saved Valorant model — will train on first scan")
+        except Exception:
+            logger.debug("EsportsBot: Valorant model not loaded")
 
         # Initialize trainer for periodic retraining
         try:
@@ -699,6 +717,44 @@ class EsportsBot(BaseBot):
             except Exception:
                 pass
 
+        # Dota2/Valorant: use ML model with Glicko-2 features (pre-match only)
+        if game == "dota2" and self._dota2_model and self._dota2_model.is_trained:
+            try:
+                glicko2_prob = self._get_glicko2_prediction(market_data, game)
+                if glicko2_prob is not None:
+                    game_state = self._build_glicko2_game_state(market_data, game)
+                    if game_state:
+                        prob = self._dota2_model.predict(game_state)
+                        # Blend ML with Glicko-2: 60% ML, 40% Glicko-2
+                        prob = 0.6 * prob + 0.4 * glicko2_prob
+                        prob = max(0.05, min(0.95, prob))
+                        self._prediction_cache[market_id] = {
+                            "prob": prob, "ts": time.monotonic(), "game": game,
+                            "ml_raw": self._dota2_model.predict(game_state),
+                            "glicko2_est": glicko2_prob,
+                        }
+                        return prob
+            except Exception:
+                pass
+
+        if game == "valorant" and self._valorant_model and self._valorant_model.is_trained:
+            try:
+                glicko2_prob = self._get_glicko2_prediction(market_data, game)
+                if glicko2_prob is not None:
+                    game_state = self._build_glicko2_game_state(market_data, game)
+                    if game_state:
+                        prob = self._valorant_model.predict(game_state)
+                        prob = 0.6 * prob + 0.4 * glicko2_prob
+                        prob = max(0.05, min(0.95, prob))
+                        self._prediction_cache[market_id] = {
+                            "prob": prob, "ts": time.monotonic(), "game": game,
+                            "ml_raw": self._valorant_model.predict(game_state),
+                            "glicko2_est": glicko2_prob,
+                        }
+                        return prob
+            except Exception:
+                pass
+
         # "Easy mode" fallback: Glicko-2 expected score from team strength ratings.
         # Replaces base prediction engine (politics/crypto model) which produced
         # random predictions for esports markets — cross-contamination.
@@ -1131,6 +1187,21 @@ class EsportsBot(BaseBot):
         except Exception as exc:
             logger.debug("esportsbot_monitoring_check_failed", error=str(exc))
 
+        # P&L summary logging
+        try:
+            from esports.data.esports_db import compute_pnl_summary
+            pnl = await compute_pnl_summary(db)
+            if pnl and pnl["total_trades"] > 0:
+                logger.info(
+                    "esportsbot_pnl_summary",
+                    total_pnl=pnl["total_pnl"],
+                    total_trades=pnl["total_trades"],
+                    win_rate=round(pnl["win_rate"], 4),
+                    per_game=pnl["per_game"],
+                )
+        except Exception as exc:
+            logger.debug("esportsbot_pnl_summary_failed", error=str(exc))
+
     def _get_glicko2_prediction(
         self, market_data: Dict, game: str
     ) -> Optional[float]:
@@ -1217,6 +1288,55 @@ class EsportsBot(BaseBot):
         except Exception:
             pass
         return None
+
+    def _build_glicko2_game_state(
+        self, market_data: Dict, game: str
+    ) -> Optional[Dict[str, float]]:
+        """Build a feature dict from Glicko-2 ratings for dota2/valorant ML models.
+
+        Extracts team names from market question, looks up Glicko-2 ratings,
+        and returns the 6-feature dict expected by Dota2Model/ValorantModel.
+        """
+        import re
+
+        tracker = self._glicko2_trackers.get(game)
+        if tracker is None:
+            return None
+
+        question = str(market_data.get("question", "")).lower()
+        if not question:
+            return None
+
+        team_a_id = team_b_id = None
+        vs_match = re.search(r"(.+?)\s+(?:vs\.?|versus|v)\s+(.+?)(?:\?|$)", question)
+        if vs_match:
+            name_a = vs_match.group(1).strip().rstrip(":")
+            name_b = vs_match.group(2).strip().rstrip("?").strip()
+            for prefix in ("will ", "can ", "does "):
+                if name_a.startswith(prefix):
+                    name_a = name_a[len(prefix):]
+            name_a, name_b = self._clean_team_names(name_a, name_b)
+            team_a_id = self._match_team_name(name_a)
+            team_b_id = self._match_team_name(name_b)
+
+        if not team_a_id or not team_b_id:
+            return None
+
+        try:
+            rating_a = tracker.get_rating(team_a_id)
+            rating_b = tracker.get_rating(team_b_id)
+            expected = tracker.expected_score(team_a_id, team_b_id)
+
+            return {
+                "team_strength_diff": expected - 0.5,
+                "matchup_uncertainty": (rating_a.phi + rating_b.phi) / 700.0,
+                "rd_asymmetry": (rating_a.phi - rating_b.phi) / 350.0,
+                "team_a_volatility": rating_a.sigma / 0.06,
+                "team_b_volatility": rating_b.sigma / 0.06,
+                "best_of": 1.0,  # Default; overridden if series data available
+            }
+        except Exception:
+            return None
 
     @staticmethod
     def _clean_team_names(name_a: str, name_b: str) -> tuple:

@@ -490,6 +490,114 @@ async def analyze_edge_decay(
         return None
 
 
+async def compute_pnl_summary(db) -> Optional[Dict[str, Any]]:
+    """Compute P&L summary for all Esports bots, grouped by game.
+
+    Joins paper_trades with esports_prediction_log to get per-game breakdown.
+    Returns dict with per_game stats, total_pnl, total_trades, win_rate.
+    """
+    if db is None:
+        return None
+    try:
+        async with db.get_session() as session:
+            result = await session.execute(
+                _text("""
+                SELECT
+                    COALESCE(epl.game, 'unknown') as game,
+                    COUNT(*) as total_trades,
+                    SUM(CASE WHEN pt.realized_pnl > 0 THEN 1 ELSE 0 END) as wins,
+                    COALESCE(SUM(pt.realized_pnl), 0) as total_pnl,
+                    COALESCE(AVG(ABS(epl.edge)), 0) as avg_edge
+                FROM paper_trades pt
+                LEFT JOIN esports_prediction_log epl
+                    ON pt.market_id = epl.market_id
+                WHERE pt.bot_name LIKE 'Esports%'
+                  AND pt.realized_pnl IS NOT NULL
+                GROUP BY COALESCE(epl.game, 'unknown')
+                """)
+            )
+            rows = result.fetchall()
+
+        if not rows:
+            return None
+
+        per_game: Dict[str, Any] = {}
+        total_pnl = 0.0
+        total_trades = 0
+        total_wins = 0
+
+        for row in rows:
+            game = row.game
+            trades = int(row.total_trades)
+            wins = int(row.wins)
+            pnl = float(row.total_pnl)
+            avg_edge = float(row.avg_edge)
+
+            per_game[game] = {
+                "trades": trades,
+                "wins": wins,
+                "win_rate": round(wins / trades, 4) if trades > 0 else 0.0,
+                "pnl": round(pnl, 2),
+                "avg_edge": round(avg_edge, 4),
+            }
+            total_pnl += pnl
+            total_trades += trades
+            total_wins += wins
+
+        return {
+            "per_game": per_game,
+            "total_pnl": round(total_pnl, 2),
+            "total_trades": total_trades,
+            "win_rate": round(total_wins / total_trades, 4) if total_trades > 0 else 0.0,
+        }
+    except Exception as exc:
+        logger.debug("esports_db: compute_pnl_summary failed", error=str(exc))
+        return None
+
+
+async def get_team_map_rates(
+    db, team_name: str, game: str = "cs2", last_n: int = 50
+) -> Dict[str, float]:
+    """Get per-map win rates for a team from training data.
+
+    Queries esports_training_data for rows with map_name in game_state_json.
+    Returns {map_name: win_rate} dict.
+    """
+    if db is None:
+        return {}
+    try:
+        async with db.get_session() as session:
+            result = await session.execute(
+                _text("""
+                SELECT
+                    game_state_json->>'map_name' as map_name,
+                    COUNT(*) as total,
+                    SUM(CASE WHEN
+                        (team_a = :team AND outcome = 1)
+                        OR (team_b = :team AND outcome = 0)
+                    THEN 1 ELSE 0 END) as wins
+                FROM esports_training_data
+                WHERE game = :game
+                  AND game_state_json->>'map_name' IS NOT NULL
+                  AND game_state_json->>'map_name' != ''
+                  AND (team_a = :team OR team_b = :team)
+                ORDER BY scheduled_at DESC
+                LIMIT :last_n
+                """),
+                {"team": team_name, "game": game, "last_n": last_n},
+            )
+            rows = result.fetchall()
+
+        rates: Dict[str, float] = {}
+        for row in rows:
+            if row.map_name and row.total > 0:
+                rates[row.map_name] = round(int(row.wins) / int(row.total), 4)
+        return rates
+    except Exception as exc:
+        logger.debug("esports_db: get_team_map_rates failed", error=str(exc))
+        return {}
+
+
 async def update_calibration(
     db,
     game: str,

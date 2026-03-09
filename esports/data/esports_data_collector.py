@@ -299,6 +299,7 @@ class EsportsDataCollector:
                 "round_score_a": 6.0,     # Neutral half-score (no label leakage)
                 "round_score_b": 6.0,
                 "map_ct_rate": ct_rate,
+                "map_name": map_name,     # For map veto analysis (P2.3)
                 "team_a_is_ct": 0.5,      # Unknown side -- neutral
                 "team_a_loss_streak": 0.0,
                 "team_b_loss_streak": 0.0,
@@ -356,6 +357,7 @@ class EsportsDataCollector:
                 "rd_asymmetry": glicko2_meta["rd_asymmetry"],
                 "team_a_volatility": glicko2_meta["team_a_volatility"],
                 "team_b_volatility": glicko2_meta["team_b_volatility"],
+                "best_of": int(getattr(match, "best_of", 1) or 1),
             }
             rows.append({
                 "match_id": f"{match.match_id}_g{g_idx}",
