@@ -287,16 +287,31 @@ class EsportsSeriesBot(BaseBot):
         if maps_a >= needed or maps_b >= needed:
             return None
 
-        # Get per-map win rates from DB (replaces HLTV stubs)
+        # Get per-map win rates: DB first (if map data exists), HLTV fallback.
+        # PandaScore free tier does not provide per-game map names, so DB query
+        # almost always returns {} unless rows were seeded from a paid source.
+        # HLTV scrapes live team map stats from hltv.org (CS2 only).
         map_rates_a = {}
         map_rates_b = {}
-        if game == "cs2" and db:
-            try:
-                from esports.data.esports_db import get_team_map_rates
-                map_rates_a = await get_team_map_rates(db, team_a, game="cs2")
-                map_rates_b = await get_team_map_rates(db, team_b, game="cs2")
-            except Exception:
-                pass
+        if game == "cs2":
+            if db:
+                try:
+                    from esports.data.esports_db import get_team_map_rates
+                    map_rates_a = await get_team_map_rates(db, team_a, game="cs2")
+                    map_rates_b = await get_team_map_rates(db, team_b, game="cs2")
+                except Exception:
+                    pass
+            # Fallback to HLTV when DB has no per-map data (free-tier PandaScore gap)
+            if not map_rates_a and self._hltv:
+                try:
+                    map_rates_a = await self._hltv.get_map_win_rates(team_a)
+                except Exception:
+                    pass
+            if not map_rates_b and self._hltv:
+                try:
+                    map_rates_b = await self._hltv.get_map_win_rates(team_b)
+                except Exception:
+                    pass
 
         # Compute conditional probability
         if map_rates_a and map_rates_b:
