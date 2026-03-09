@@ -51,6 +51,7 @@ class EsportsBot(BaseBot):
         self._dota2_model = None     # Dota2Model
         self._valorant_model = None  # ValorantModel
         self._trainer = None         # EsportsModelTrainer
+        self._opendota = None        # OpenDotaClient (Dota2 enrichment)
         self._bg_train_tasks: Dict[str, asyncio.Task] = {}  # game → background train task
 
         # Per-game/tournament/team exposure tracking (USD deployed)
@@ -126,6 +127,15 @@ class EsportsBot(BaseBot):
             await riot_client.init()
 
         self._patch_drift = PatchDriftDetector(riot_client=riot_client)
+
+        # OpenDota client — free Dota2 hero + team form data (no auth needed)
+        try:
+            from esports.data.opendota_client import OpenDotaClient
+            self._opendota = OpenDotaClient()
+            logger.info("EsportsBot: OpenDota client initialized")
+        except Exception:
+            self._opendota = None
+            logger.debug("EsportsBot: OpenDota client not available")
 
         db = getattr(self.base_engine, "db", None)
         # market_service passed below after initialization (if successful)
@@ -733,6 +743,8 @@ class EsportsBot(BaseBot):
                         # Blend ML with Glicko-2: 60% ML, 40% Glicko-2
                         prob = 0.6 * prob + 0.4 * glicko2_prob
                         prob = max(0.05, min(0.95, prob))
+                        # OpenDota form adjustment (small ±3% based on recent form)
+                        prob = await self._opendota_form_adjustment(market_data, prob)
                         self._prediction_cache[market_id] = {
                             "prob": prob, "ts": time.monotonic(), "game": game,
                             "ml_raw": self._dota2_model.predict(game_state),
@@ -768,6 +780,11 @@ class EsportsBot(BaseBot):
         try:
             glicko2_prob = self._get_glicko2_prediction(market_data, game)
             if glicko2_prob is not None:
+                # OpenDota form adjustment for dota2 (small ±3%)
+                if game == "dota2":
+                    glicko2_prob = await self._opendota_form_adjustment(
+                        market_data, glicko2_prob,
+                    )
                 self._prediction_cache[market_id] = {
                     "prob": glicko2_prob, "ts": time.monotonic(), "game": game,
                     "ml_raw": None, "glicko2_est": glicko2_prob,
@@ -878,6 +895,66 @@ class EsportsBot(BaseBot):
             return 1.15
 
         return 1.0
+
+    async def _opendota_form_adjustment(
+        self, market_data: Dict, base_prob: float,
+    ) -> float:
+        """Adjust Dota2 probability using OpenDota recent form data.
+
+        Fetches team form (win rate over last 10 matches) for both teams
+        and applies a small ±3% adjustment to the base probability.
+        Returns adjusted prob, or base_prob unchanged if data unavailable.
+
+        All API calls are cached (30 min TTL) so first call per team is slow
+        (~1.5s) but subsequent calls within the same scan are instant.
+        """
+        if not self._opendota:
+            return base_prob
+
+        import re
+
+        question = str(market_data.get("question", "")).lower()
+        vs_match = re.search(r"(.+?)\s+(?:vs\.?|versus|v)\s+(.+?)(?:\?|$)", question)
+        if not vs_match:
+            return base_prob
+
+        name_a = vs_match.group(1).strip().rstrip(":")
+        name_b = vs_match.group(2).strip().rstrip("?").strip()
+        for prefix in ("will ", "can ", "does "):
+            if name_a.startswith(prefix):
+                name_a = name_a[len(prefix):]
+        name_a, name_b = self._clean_team_names(name_a, name_b)
+
+        try:
+            enrich_a, enrich_b = await asyncio.gather(
+                asyncio.wait_for(
+                    self._opendota.get_team_enrichment(name_a), timeout=5.0,
+                ),
+                asyncio.wait_for(
+                    self._opendota.get_team_enrichment(name_b), timeout=5.0,
+                ),
+                return_exceptions=True,
+            )
+            if isinstance(enrich_a, Exception) or isinstance(enrich_b, Exception):
+                return base_prob
+            if not enrich_a or not enrich_b:
+                return base_prob
+
+            form_diff = enrich_a["form_wr"] - enrich_b["form_wr"]
+            # Small adjustment: ±3% max, scaled by form difference
+            form_adj = max(-0.03, min(0.03, form_diff * 0.05))
+            adjusted = max(0.05, min(0.95, base_prob + form_adj))
+
+            if abs(form_adj) >= 0.005:
+                logger.debug(
+                    "opendota_form_adjustment",
+                    team_a=name_a, team_b=name_b,
+                    form_a=enrich_a["form_wr"], form_b=enrich_b["form_wr"],
+                    adj=round(form_adj, 4),
+                )
+            return adjusted
+        except Exception:
+            return base_prob
 
     @staticmethod
     def _detect_game(question: str) -> Optional[str]:
