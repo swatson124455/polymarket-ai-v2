@@ -33,6 +33,8 @@ class EsportsLiveEvent:
     map_number: int          # Which map in the series
     edge_estimate: float     # Estimated probability edge (0.0 – 0.30)
     market_side: str         # "YES" (bet on leader winning) or "NO"
+    team_a: str = ""         # Team A name (from EsportsGameState) for market discovery
+    team_b: str = ""         # Team B name (from EsportsGameState) for market discovery
 
 
 class EsportsEventDetector:
@@ -144,6 +146,8 @@ class EsportsEventDetector:
                 map_number=state.current_map,
                 edge_estimate=min(0.15, gold_diff / 30000),
                 market_side="YES",
+                team_a=state.team_a,
+                team_b=state.team_b,
             ))
             triggered.add(key)
 
@@ -161,6 +165,8 @@ class EsportsEventDetector:
                 map_number=state.current_map,
                 edge_estimate=min(0.12, tower_diff * 0.03),
                 market_side="YES",
+                team_a=state.team_a,
+                team_b=state.team_b,
             ))
             triggered.add(key)
 
@@ -180,6 +186,8 @@ class EsportsEventDetector:
                     map_number=state.current_map,
                     edge_estimate=0.10,
                     market_side="YES",
+                    team_a=state.team_a,
+                    team_b=state.team_b,
                 ))
                 triggered.add(key)
 
@@ -223,6 +231,8 @@ class EsportsEventDetector:
                 map_number=state.current_map,
                 edge_estimate=min(0.15, round_diff * 0.025),
                 market_side="YES",
+                team_a=state.team_a,
+                team_b=state.team_b,
             ))
             triggered.add(key)
 
@@ -241,6 +251,8 @@ class EsportsEventDetector:
                     map_number=state.current_map,
                     edge_estimate=min(0.20, 0.08 + round_diff * 0.03),
                     market_side="YES",
+                    team_a=state.team_a,
+                    team_b=state.team_b,
                 ))
                 triggered.add(key)
 
@@ -268,6 +280,8 @@ class EsportsEventDetector:
                     map_number=state.current_map,
                     edge_estimate=0.10,
                     market_side="YES",
+                    team_a=state.team_a,
+                    team_b=state.team_b,
                 ))
                 triggered.add(key)
 

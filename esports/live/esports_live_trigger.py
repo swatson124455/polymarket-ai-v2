@@ -121,8 +121,13 @@ class EsportsLiveTrigger:
 
         if scanner:
             try:
+                # Pass team names so the scanner can do keyword matching on team names,
+                # not just game keywords. Without this, the scanner can't distinguish
+                # one live match from another for the same game.
+                team_names = [n for n in (event.team_a, event.team_b) if n]
                 markets = await asyncio.wait_for(
-                    scanner.find_markets_for_match(match_id, event.game, db=db),
+                    scanner.find_markets_for_match(match_id, event.game, db=db,
+                                                   team_names=team_names or None),
                     timeout=5.0,
                 )
                 if markets:
