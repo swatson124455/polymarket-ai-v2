@@ -198,22 +198,52 @@ class EsportsSeriesBot(BaseBot):
         if not self._active_series:
             return
 
-        _opps = 0
-        _trades = 0
+        # Collect all opportunities first, then S-T allocate across series
+        all_opps: List[Dict] = []
         for match_id, series_data in list(self._active_series.items()):
             try:
                 opp = await self._analyze_series(match_id, series_data, db)
                 if opp:
-                    _opps += 1
-                    await self._execute_series_trade(opp)
-                    _trades += 1
+                    all_opps.append(opp)
             except Exception as exc:
                 logger.debug(
                     "EsportsSeriesBot: analysis error",
                     match_id=match_id,
                     error=str(exc),
                 )
-        self._last_scan_opportunities = _opps
+
+        self._last_scan_opportunities = len(all_opps)
+        _trades = 0
+
+        if len(all_opps) >= 2:
+            # Multiple series bets are correlated (same capital pool) —
+            # use S-T allocation to size them optimally as a group.
+            max_daily = float(getattr(settings, "ESPORTS_MAX_DAILY_USD", 500.0))
+            daily_spent = 0.0
+            if self._bankroll_mgr:
+                daily_spent = await self._bankroll_mgr.get_daily_esports_exposure()
+            group_budget = max(0.0, max_daily * 0.5 - daily_spent)  # 50% of daily for series
+
+            st_sizes = self._smoczynski_tomkins_allocate(all_opps, group_budget)
+            if st_sizes:
+                logger.info(
+                    "EsportsSeriesBot: S-T allocation",
+                    n_opps=len(st_sizes),
+                    total_usd=round(sum(st_sizes.values()), 2),
+                    budget=round(group_budget, 2),
+                )
+            for opp in all_opps:
+                st_size = st_sizes.get(opp["market_id"])
+                if st_size and st_size >= 1.0:
+                    opp["_st_size_override"] = st_size
+                    await self._execute_series_trade(opp)
+                    _trades += 1
+        else:
+            # Single opportunity — standard independent Kelly sizing
+            for opp in all_opps:
+                await self._execute_series_trade(opp)
+                _trades += 1
+
         self._last_scan_trades = _trades
 
     async def analyze_opportunity(self, market_data: Dict) -> Optional[Dict]:
@@ -404,6 +434,61 @@ class EsportsSeriesBot(BaseBot):
         return None
 
     @staticmethod
+    def _smoczynski_tomkins_allocate(
+        opps: List[Dict], group_budget: float, kelly_mult: float = 0.25,
+    ) -> Dict[str, float]:
+        """Optimal Kelly allocation for correlated series bets.
+
+        When multiple series are active simultaneously, bets share the same
+        capital pool. S-T allocation sizes them proportionally by Kelly edge
+        rather than independently, preventing over-deployment.
+
+        Args:
+            opps: Opportunities from _analyze_series(), each with
+                  confidence, price, edge, market_id.
+            group_budget: Maximum USD to deploy across all series.
+            kelly_mult: Fractional Kelly multiplier (default 0.25).
+
+        Returns:
+            Dict mapping market_id → USD allocation.
+        """
+        if not opps or group_budget <= 0:
+            return {}
+
+        edges: Dict[str, float] = {}
+        for opp in opps:
+            p = opp.get("confidence", 0.5)
+            price = opp.get("price", 0.5)
+            if price <= 0.02 or price >= 0.98 or p <= price:
+                continue
+            b = (1.0 - price) / price
+            if b <= 0:
+                continue
+            q = 1.0 - p
+            f_i = (p * b - q) / b
+            if f_i > 0:
+                edges[opp["market_id"]] = f_i
+
+        if not edges:
+            return {}
+
+        total_edge = sum(edges.values())
+        if total_edge <= 0:
+            return {}
+
+        allocations = {}
+        for mid, f_i in edges.items():
+            share = (f_i / total_edge) * kelly_mult * group_budget
+            allocations[mid] = round(max(1.0, share), 2)
+
+        total = sum(allocations.values())
+        if total > group_budget:
+            scale = group_budget / total
+            allocations = {mid: round(v * scale, 2) for mid, v in allocations.items()}
+
+        return allocations
+
+    @staticmethod
     def _derive_veto_order(
         rates_a: Dict[str, float],
         rates_b: Dict[str, float],
@@ -535,10 +620,16 @@ class EsportsSeriesBot(BaseBot):
             logger.debug("EsportsSeriesBot: refresh failed", error=str(exc))
 
     async def _execute_series_trade(self, opp: Dict) -> None:
-        """Execute series trade using own bankroll manager."""
-        # Use EsportsBankrollManager for sizing (separate Kelly pool)
-        size = 0.0
-        if self._bankroll_mgr:
+        """Execute series trade using own bankroll manager.
+
+        If _st_size_override is set (by S-T allocator), use that directly
+        instead of independent Kelly sizing.
+        """
+        st_override = opp.pop("_st_size_override", None)
+
+        if st_override and st_override >= 1.0:
+            size = st_override
+        elif self._bankroll_mgr:
             db = getattr(self.base_engine, "db", None)
             try:
                 size = await self._bankroll_mgr.get_bet_size(
@@ -550,6 +641,8 @@ class EsportsSeriesBot(BaseBot):
                 )
             except Exception:
                 size = 0.0
+        else:
+            size = 0.0
 
         if size <= 0:
             return
