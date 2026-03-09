@@ -67,6 +67,10 @@ class WeatherForecastClient:
         self._climate_cache: Dict[str, Tuple[float, Optional[Tuple[float, float]]]] = {}
         self._climate_computed_this_cycle: int = 0
         self._climate_max_per_cycle: int = 3
+        # Fix A: per-model 429 backoff. When a model returns 429, skip it until
+        # this timestamp passes (1-hour cooldown). Prevents retry storms after
+        # quota exhaustion — all 3 models share this dict.
+        self._model_429_until: Dict[str, float] = {}
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -199,6 +203,9 @@ class WeatherForecastClient:
         forecast_days: int,
     ) -> Optional[Dict]:
         """Fetch one ensemble model from Open-Meteo /v1/ensemble endpoint."""
+        # Fix A: skip if this model is in 429 cooldown (quota exhausted)
+        if time.monotonic() < self._model_429_until.get(model, 0.0):
+            return None
         await self._rate_limit_wait()
         session = await self._ensure_session()
 
@@ -218,6 +225,9 @@ class WeatherForecastClient:
 
         try:
             async with session.get(_ENSEMBLE_URL, params=params) as resp:
+                if resp.status == 429:
+                    # Fix A: set 1-hour cooldown so subsequent scans skip this model
+                    self._model_429_until[model] = time.monotonic() + 3600.0
                 if resp.status != 200:
                     logger.warning(
                         "open_meteo_ensemble_error", model=model, status=resp.status
@@ -250,6 +260,9 @@ class WeatherForecastClient:
 
         all_members: List[float] = []
         for model in ("gfs025", "ecmwf_ifs025", "ecmwf_aifs025"):
+            # Fix A: skip model if still in 429 cooldown
+            if time.monotonic() < self._model_429_until.get(model, 0.0):
+                continue
             await self._rate_limit_wait()
             session = await self._ensure_session()
             params = {
@@ -262,6 +275,8 @@ class WeatherForecastClient:
             }
             try:
                 async with session.get(_ENSEMBLE_URL, params=params) as resp:
+                    if resp.status == 429:
+                        self._model_429_until[model] = time.monotonic() + 3600.0
                     if resp.status != 200:
                         continue
                     data = await resp.json()
@@ -287,8 +302,11 @@ class WeatherForecastClient:
         if not all_members:
             return None
 
-        # Cache for standard TTL
-        self._precip_cache[cache_key] = (time.monotonic() + self._cache_ttl, all_members)
+        # Cache — Fix B: jitter expiry to spread API refreshes
+        self._precip_cache[cache_key] = (
+            time.monotonic() + self._cache_ttl + random.uniform(0, self._cache_ttl * 0.5),
+            all_members,
+        )
         logger.debug(
             "precip_ensemble_fetched",
             station=station.station_id,
@@ -360,7 +378,10 @@ class WeatherForecastClient:
         # 2. If entire month is in the past, return actual as single-value list
         if today > month_end:
             result = [actual_total]
-            self._precip_cache[cache_key] = (time.monotonic() + self._cache_ttl, result)
+            self._precip_cache[cache_key] = (
+                time.monotonic() + self._cache_ttl + random.uniform(0, self._cache_ttl * 0.5),
+                result,
+            )
             return result
 
         # 3. Ensemble forecasts for remaining days (today through month_end)
@@ -373,6 +394,9 @@ class WeatherForecastClient:
         member_sums: List[float] = []
 
         for model in ("gfs025", "ecmwf_ifs025", "ecmwf_aifs025"):
+            # Fix A: skip model if still in 429 cooldown
+            if time.monotonic() < self._model_429_until.get(model, 0.0):
+                continue
             await self._rate_limit_wait()
             session = await self._ensure_session()
             params = {
@@ -385,6 +409,8 @@ class WeatherForecastClient:
             }
             try:
                 async with session.get(_ENSEMBLE_URL, params=params) as resp:
+                    if resp.status == 429:
+                        self._model_429_until[model] = time.monotonic() + 3600.0
                     if resp.status != 200:
                         continue
                     data = await resp.json()
@@ -440,7 +466,8 @@ class WeatherForecastClient:
             return None
 
         self._precip_cache[cache_key] = (
-            time.monotonic() + self._cache_ttl, member_sums,
+            time.monotonic() + self._cache_ttl + random.uniform(0, self._cache_ttl * 0.5),
+            member_sums,
         )
         logger.debug(
             "monthly_precip_ensemble_fetched",
@@ -473,6 +500,9 @@ class WeatherForecastClient:
 
         all_members: List[float] = []
         for model in ("gfs025", "ecmwf_ifs025", "ecmwf_aifs025"):
+            # Fix A: skip model if still in 429 cooldown
+            if time.monotonic() < self._model_429_until.get(model, 0.0):
+                continue
             await self._rate_limit_wait()
             session = await self._ensure_session()
             params = {
@@ -485,6 +515,8 @@ class WeatherForecastClient:
             }
             try:
                 async with session.get(_ENSEMBLE_URL, params=params) as resp:
+                    if resp.status == 429:
+                        self._model_429_until[model] = time.monotonic() + 3600.0
                     if resp.status != 200:
                         continue
                     data = await resp.json()
@@ -508,7 +540,10 @@ class WeatherForecastClient:
         if not all_members:
             return None
 
-        self._snowfall_cache[cache_key] = (time.monotonic() + self._cache_ttl, all_members)
+        self._snowfall_cache[cache_key] = (
+            time.monotonic() + self._cache_ttl + random.uniform(0, self._cache_ttl * 0.5),
+            all_members,
+        )
         logger.debug(
             "snowfall_ensemble_fetched",
             station=station.station_id,
@@ -539,6 +574,9 @@ class WeatherForecastClient:
 
         all_members: List[float] = []
         for model in ("gfs025", "ecmwf_ifs025", "ecmwf_aifs025"):
+            # Fix A: skip model if still in 429 cooldown
+            if time.monotonic() < self._model_429_until.get(model, 0.0):
+                continue
             await self._rate_limit_wait()
             session = await self._ensure_session()
             params = {
@@ -551,6 +589,8 @@ class WeatherForecastClient:
             }
             try:
                 async with session.get(_ENSEMBLE_URL, params=params) as resp:
+                    if resp.status == 429:
+                        self._model_429_until[model] = time.monotonic() + 3600.0
                     if resp.status != 200:
                         continue
                     data = await resp.json()
@@ -574,7 +614,10 @@ class WeatherForecastClient:
         if not all_members:
             return None
 
-        self._wind_cache[cache_key] = (time.monotonic() + self._cache_ttl, all_members)
+        self._wind_cache[cache_key] = (
+            time.monotonic() + self._cache_ttl + random.uniform(0, self._cache_ttl * 0.5),
+            all_members,
+        )
         logger.debug(
             "wind_ensemble_fetched",
             station=station.station_id,
@@ -844,8 +887,11 @@ class WeatherForecastClient:
             models_used=models_used,
         )
 
-        # Cache
-        self._cache[cache_key] = (now_mono + self._cache_ttl, result)
+        # Cache — Fix B: jitter expiry so all stations don't expire simultaneously
+        self._cache[cache_key] = (
+            now_mono + self._cache_ttl + random.uniform(0, self._cache_ttl * 0.5),
+            result,
+        )
         return result
 
     async def get_historical_temperature(
