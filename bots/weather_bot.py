@@ -25,6 +25,8 @@ import time
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+import aiohttp
+
 from structlog import get_logger
 
 from bots.base_bot import BaseBot
@@ -33,10 +35,12 @@ from base_engine.monitoring.alerting import AlertSeverity
 from base_engine.weather.forecast_client import CombinedForecast, WeatherForecastClient
 from base_engine.weather.metar_client import MetarClient
 from base_engine.weather.market_mapper import (
+    PrecipitationMarketGroup,
     TemperatureBucket,
     WeatherMarketGroup,
     WeatherMarketMapper,
 )
+from base_engine.weather.precipitation_engine import PrecipitationProbabilityEngine
 from base_engine.weather.probability_engine import WeatherProbabilityEngine
 from base_engine.weather.station_registry import (
     StationHealthMonitor,
@@ -58,6 +62,7 @@ class WeatherBot(BaseBot):
         )
         self._metar_client = MetarClient()
         self._prob_engine = WeatherProbabilityEngine()
+        self._precip_engine = PrecipitationProbabilityEngine()
         self._market_mapper = WeatherMarketMapper()
         self._station_health = StationHealthMonitor()
 
@@ -110,6 +115,11 @@ class WeatherBot(BaseBot):
         self._afd_cache: Dict[str, Tuple[float, float]] = {}
         # NWS WFO cache: station_id → Optional[wfo_code] (never expires — WFOs are static)
         self._wfo_cache: Dict[str, Optional[str]] = {}
+
+        # Batch NWS severe weather alerts cache (prefetched once per scan)
+        # station_id → boost_factor
+        self._severe_weather_batch: Dict[str, float] = {}
+        self._severe_weather_batch_time: float = 0.0
 
     # ── Adaptive scan interval ─────────────────────────────────────────────
 
@@ -169,6 +179,10 @@ class WeatherBot(BaseBot):
         await self._handle_daily_boundary()
         await self._maybe_reload_calibration()
 
+        # Bug fix: refresh intra-day P&L every scan so daily loss limit
+        # reflects realized P&L from positions closed since last scan.
+        await self._restore_daily_pnl_from_db()
+
         # W4: Monitoring thresholds — check Brier/drawdown and halt if needed
         await self._check_monitoring_thresholds()
         if self._monitoring_halt:
@@ -227,6 +241,9 @@ class WeatherBot(BaseBot):
             logger.info("weatherbot_no_groups_parsed", weather_markets=len(weather_markets))
             return
 
+        # Pre-fetch NWS severe weather alerts for all US stations in one pass
+        await self._prefetch_severe_weather_alerts(groups)
+
         # Phase 1: Analyze all groups (fetch forecasts, compute edges)
         analyzed: List[Tuple[List[Dict], WeatherMarketGroup, Dict[str, float]]] = []
         for group in groups:
@@ -273,10 +290,19 @@ class WeatherBot(BaseBot):
         # Feeds position_manager's model-reversal exit logic with current forecasts.
         await self._reevaluate_open_positions(analyzed)
 
+        # Phase 5: M1 — Precipitation markets (independent from temperature)
+        _precip_traded = await self._scan_precipitation_markets()
+
+        # Phase 6: M2 — Snowfall markets (reuses precipitation engine)
+        _snow_traded = await self._scan_snowfall_markets()
+
+        # Phase 7: M3 — Wind gust markets
+        _wind_traded = await self._scan_wind_markets()
+
         # Wire Session 51 heartbeat counters so watchdog can detect silent WeatherBot
         self._last_scan_markets = len(weather_markets)
         self._last_scan_opportunities = _groups_with_edge
-        self._last_scan_trades = _traded
+        self._last_scan_trades = _traded + _precip_traded + _snow_traded + _wind_traded
 
         logger.info(
             "weatherbot_scan_done",
@@ -284,6 +310,9 @@ class WeatherBot(BaseBot):
             groups=len(groups),
             groups_with_edge=_groups_with_edge,
             trades=_traded,
+            precip_trades=_precip_traded,
+            snow_trades=_snow_traded,
+            wind_trades=_wind_traded,
             best_edge=round(_best_edge, 4),
             regime_boost=regime_boost,
         )
@@ -341,6 +370,579 @@ class WeatherBot(BaseBot):
             "city": station.city_name,
         }
 
+    # ── Precipitation scanning ───────────────────────────────────────────
+
+    async def _scan_precipitation_markets(self) -> int:
+        """M1: Scan and trade precipitation markets.
+
+        Uses Gamma API tag_slug=precipitation to discover markets,
+        parses into PrecipitationMarketGroup, fetches ensemble precip
+        data, and executes trades with edge.
+
+        Returns number of trades executed.
+        """
+        import httpx
+
+        # Discover precipitation markets via tag_slug
+        try:
+            url = "https://gamma-api.polymarket.com/events"
+            params = {
+                "active": "true",
+                "closed": "false",
+                "tag_slug": "precipitation",
+                "limit": "100",
+            }
+            async with httpx.AsyncClient(timeout=15.0) as http:
+                resp = await http.get(url, params=params)
+                if resp.status_code != 200:
+                    return 0
+                events = resp.json()
+        except Exception as exc:
+            logger.debug("weatherbot_precip_tag_fetch_error", error=str(exc))
+            return 0
+
+        if not isinstance(events, list):
+            return 0
+
+        # Extract markets from events (same pattern as temperature)
+        markets: List[Dict] = []
+        for evt in events:
+            if not isinstance(evt, dict):
+                continue
+            for mkt in evt.get("markets", []):
+                if not isinstance(mkt, dict):
+                    continue
+                q = mkt.get("question", "")
+                if not q:
+                    continue
+                # Extract yes_price from outcomePrices
+                prices = mkt.get("outcomePrices")
+                if isinstance(prices, str):
+                    try:
+                        price_list = json.loads(prices)
+                        if isinstance(price_list, list) and len(price_list) >= 1:
+                            mkt["yes_price"] = float(price_list[0])
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                elif isinstance(prices, list) and len(prices) >= 1:
+                    try:
+                        mkt["yes_price"] = float(prices[0])
+                    except (ValueError, TypeError):
+                        pass
+                # Extract token IDs
+                clobTokenIds = mkt.get("clobTokenIds")
+                if isinstance(clobTokenIds, str):
+                    try:
+                        token_list = json.loads(clobTokenIds)
+                        if isinstance(token_list, list) and len(token_list) >= 2:
+                            mkt["yes_token_id"] = token_list[0]
+                            mkt["no_token_id"] = token_list[1]
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                elif isinstance(clobTokenIds, list) and len(clobTokenIds) >= 2:
+                    mkt["yes_token_id"] = clobTokenIds[0]
+                    mkt["no_token_id"] = clobTokenIds[1]
+
+                mkt["id"] = mkt.get("id") or mkt.get("conditionId", "")
+                markets.append(mkt)
+
+        if not markets:
+            return 0
+
+        # Group by (city, date/period)
+        precip_groups = self._market_mapper.group_precipitation_markets(markets)
+        if not precip_groups:
+            logger.debug("weatherbot_precip_no_groups", markets=len(markets))
+            return 0
+
+        # Analyze and trade each group
+        traded = 0
+        for group in precip_groups:
+            try:
+                opps = await self._analyze_precipitation_group(group)
+                for opp in opps:
+                    await self._execute_weather_trade(opp, self._precip_to_temp_group(group))
+                    traded += 1
+            except Exception as exc:
+                logger.debug(
+                    "weatherbot_precip_group_error",
+                    city=group.city, error=str(exc),
+                )
+
+        if traded > 0 or precip_groups:
+            logger.info(
+                "weatherbot_precip_scan_done",
+                markets=len(markets),
+                groups=len(precip_groups),
+                trades=traded,
+            )
+        return traded
+
+    async def _analyze_precipitation_group(
+        self,
+        group: PrecipitationMarketGroup,
+    ) -> List[Dict]:
+        """Analyze a precipitation market group: fetch ensemble, compute edges."""
+        # Fetch precipitation ensemble — monthly or daily
+        if getattr(group, "period", "daily") == "monthly":
+            ensemble = await self._forecast_client.get_monthly_precipitation_ensemble(
+                group.station,
+                month=group.target_date.month,
+                year=group.target_date.year,
+            )
+        else:
+            ensemble = await self._forecast_client.get_precipitation_ensemble(
+                group.station, group.target_date,
+            )
+        if not ensemble or len(ensemble) < 10:
+            return []
+
+        # Fetch NDFD PoP for US stations (blends into rain probability)
+        # Only for daily markets — monthly uses pure ensemble CDF.
+        ndfd_pop = None
+        if getattr(group, "period", "daily") == "daily" and group.station.temp_unit.upper() == "F":
+            pop_data = await self._forecast_client.get_ndfd_pop(group.station)
+            if pop_data:
+                target_iso = group.target_date.isoformat()
+                day_pops = [p for _name, p, dt in pop_data if dt == target_iso]
+                if day_pops:
+                    ndfd_pop = sum(day_pops) / len(day_pops)
+                else:
+                    # Fallback: use first 2 periods (today day + night)
+                    ndfd_pop = sum(p for _, p, _ in pop_data[:2]) / max(len(pop_data[:2]), 1)
+
+        # Convert PrecipitationBucket → PrecipBucket for the engine
+        from base_engine.weather.precipitation_engine import PrecipBucket
+        engine_buckets = [
+            PrecipBucket(
+                market_id=b.market_id,
+                token_id=b.token_id,
+                no_token_id=b.no_token_id,
+                yes_price=b.yes_price,
+                bucket_type=b.bucket_type,
+                low_bound=b.low_bound,
+                high_bound=b.high_bound,
+                precip_unit=b.precip_unit,
+            )
+            for b in group.buckets
+        ]
+
+        # Compute probabilities
+        model_probs = self._precip_engine.compute_bucket_probabilities(
+            ensemble, engine_buckets, ndfd_pop=ndfd_pop,
+        )
+        if not model_probs:
+            return []
+
+        # Find edges
+        opps = self._precip_engine.compute_edges(
+            model_probs, engine_buckets, min_edge=self._min_edge,
+        )
+
+        # Compute actual lead time
+        now_utc = datetime.now(timezone.utc)
+        target_noon = datetime.combine(
+            group.target_date, datetime.min.time(),
+        ).replace(hour=18, tzinfo=timezone.utc)
+        _lead_h = max(0.0, (target_noon - now_utc).total_seconds() / 3600.0)
+
+        # Add metadata for trade execution
+        for opp in opps:
+            opp["city"] = group.city
+            opp["target_date"] = group.target_date.isoformat()
+            opp["lead_time_hours"] = _lead_h
+            opp["model_spread"] = 3.0  # Default
+            opp["ensemble_count"] = len(ensemble)
+
+        if opps:
+            logger.info(
+                "weatherbot_precip_edges",
+                city=group.city,
+                date=group.target_date.isoformat(),
+                n_buckets=len(group.buckets),
+                n_opps=len(opps),
+                best_edge=round(max(o["abs_edge"] for o in opps), 4),
+            )
+
+        return opps
+
+    @staticmethod
+    def _precip_to_temp_group(group) -> WeatherMarketGroup:
+        """Convert Precipitation/SnowfallMarketGroup to WeatherMarketGroup for trade execution.
+
+        _execute_weather_trade expects a WeatherMarketGroup for exposure tracking.
+        """
+        return WeatherMarketGroup(
+            city=group.city,
+            target_date=group.target_date,
+            station=group.station,
+            buckets=[],
+            slug_prefix=group.slug_prefix,
+            temp_unit=group.station.temp_unit,
+        )
+
+    # ── Snowfall scanning ─────────────────────────────────────────────────
+
+    async def _scan_snowfall_markets(self) -> int:
+        """M2: Scan and trade snowfall markets.
+
+        Uses Gamma API tag_slug=snowfall to discover markets.
+        Reuses PrecipitationProbabilityEngine (Gamma distribution works for snowfall).
+        Returns number of trades executed.
+        """
+        import httpx
+
+        try:
+            url = "https://gamma-api.polymarket.com/events"
+            params = {
+                "active": "true",
+                "closed": "false",
+                "tag_slug": "snowfall",
+                "limit": "100",
+            }
+            async with httpx.AsyncClient(timeout=15.0) as http:
+                resp = await http.get(url, params=params)
+                if resp.status_code != 200:
+                    return 0
+                events = resp.json()
+        except Exception as exc:
+            logger.debug("weatherbot_snow_tag_fetch_error", error=str(exc))
+            return 0
+
+        if not isinstance(events, list):
+            return 0
+
+        # Extract markets from events (same pattern as precipitation)
+        markets: List[Dict] = []
+        for evt in events:
+            if not isinstance(evt, dict):
+                continue
+            for mkt in evt.get("markets", []):
+                if not isinstance(mkt, dict):
+                    continue
+                q = mkt.get("question", "")
+                if not q:
+                    continue
+                prices = mkt.get("outcomePrices")
+                if isinstance(prices, str):
+                    try:
+                        price_list = json.loads(prices)
+                        if isinstance(price_list, list) and len(price_list) >= 1:
+                            mkt["yes_price"] = float(price_list[0])
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                elif isinstance(prices, list) and len(prices) >= 1:
+                    try:
+                        mkt["yes_price"] = float(prices[0])
+                    except (ValueError, TypeError):
+                        pass
+                clobTokenIds = mkt.get("clobTokenIds")
+                if isinstance(clobTokenIds, str):
+                    try:
+                        token_list = json.loads(clobTokenIds)
+                        if isinstance(token_list, list) and len(token_list) >= 2:
+                            mkt["yes_token_id"] = token_list[0]
+                            mkt["no_token_id"] = token_list[1]
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                elif isinstance(clobTokenIds, list) and len(clobTokenIds) >= 2:
+                    mkt["yes_token_id"] = clobTokenIds[0]
+                    mkt["no_token_id"] = clobTokenIds[1]
+                mkt["id"] = mkt.get("id") or mkt.get("conditionId", "")
+                markets.append(mkt)
+
+        if not markets:
+            return 0
+
+        snow_groups = self._market_mapper.group_snowfall_markets(markets)
+        if not snow_groups:
+            logger.debug("weatherbot_snow_no_groups", markets=len(markets))
+            return 0
+
+        traded = 0
+        for group in snow_groups:
+            try:
+                opps = await self._analyze_snowfall_group(group)
+                for opp in opps:
+                    await self._execute_weather_trade(opp, self._precip_to_temp_group(group))
+                    traded += 1
+            except Exception as exc:
+                logger.debug(
+                    "weatherbot_snow_group_error",
+                    city=group.city, error=str(exc),
+                )
+
+        if traded > 0 or snow_groups:
+            logger.info(
+                "weatherbot_snow_scan_done",
+                markets=len(markets),
+                groups=len(snow_groups),
+                trades=traded,
+            )
+        return traded
+
+    async def _analyze_snowfall_group(self, group) -> List[Dict]:
+        """Analyze a snowfall market group: fetch ensemble, compute edges.
+
+        Reuses PrecipitationProbabilityEngine — Gamma distribution is appropriate
+        for snowfall amounts (same zero-inflated positive continuous structure).
+        """
+        ensemble = await self._forecast_client.get_snowfall_ensemble(
+            group.station, group.target_date,
+        )
+        if not ensemble or len(ensemble) < 10:
+            return []
+
+        # Convert SnowfallBucket → PrecipBucket for the engine
+        from base_engine.weather.precipitation_engine import PrecipBucket
+        engine_buckets = [
+            PrecipBucket(
+                market_id=b.market_id,
+                token_id=b.token_id,
+                no_token_id=b.no_token_id,
+                yes_price=b.yes_price,
+                bucket_type=b.bucket_type,
+                low_bound=b.low_bound,
+                high_bound=b.high_bound,
+                precip_unit=b.snow_unit,
+            )
+            for b in group.buckets
+        ]
+
+        # No NDFD PoP for snowfall — use ensemble-only rain probability
+        model_probs = self._precip_engine.compute_bucket_probabilities(
+            ensemble, engine_buckets, ndfd_pop=None,
+        )
+        if not model_probs:
+            return []
+
+        opps = self._precip_engine.compute_edges(
+            model_probs, engine_buckets, min_edge=self._min_edge,
+        )
+
+        # Compute lead time
+        now_utc = datetime.now(timezone.utc)
+        target_noon = datetime.combine(
+            group.target_date, datetime.min.time(),
+        ).replace(hour=18, tzinfo=timezone.utc)
+        _lead_h = max(0.0, (target_noon - now_utc).total_seconds() / 3600.0)
+
+        for opp in opps:
+            opp["city"] = group.city
+            opp["target_date"] = group.target_date.isoformat()
+            opp["lead_time_hours"] = _lead_h
+            opp["model_spread"] = 3.0
+            opp["ensemble_count"] = len(ensemble)
+
+        if opps:
+            logger.info(
+                "weatherbot_snow_edges",
+                city=group.city,
+                date=group.target_date.isoformat(),
+                n_buckets=len(group.buckets),
+                n_opps=len(opps),
+                best_edge=round(max(o["abs_edge"] for o in opps), 4),
+            )
+
+        return opps
+
+    # ── Wind gust scanning ────────────────────────────────────────────────
+
+    async def _scan_wind_markets(self) -> int:
+        """M3: Scan and trade wind gust markets.
+
+        Uses Gamma API tag_slug=wind to discover markets.
+        Uses normal CDF for bucket probabilities (wind gusts are ~normally distributed).
+        Returns number of trades executed.
+        """
+        import httpx
+
+        try:
+            url = "https://gamma-api.polymarket.com/events"
+            params = {
+                "active": "true",
+                "closed": "false",
+                "tag_slug": "wind",
+                "limit": "100",
+            }
+            async with httpx.AsyncClient(timeout=15.0) as http:
+                resp = await http.get(url, params=params)
+                if resp.status_code != 200:
+                    return 0
+                events = resp.json()
+        except Exception as exc:
+            logger.debug("weatherbot_wind_tag_fetch_error", error=str(exc))
+            return 0
+
+        if not isinstance(events, list):
+            return 0
+
+        markets: List[Dict] = []
+        for evt in events:
+            if not isinstance(evt, dict):
+                continue
+            for mkt in evt.get("markets", []):
+                if not isinstance(mkt, dict):
+                    continue
+                q = mkt.get("question", "")
+                if not q:
+                    continue
+                prices = mkt.get("outcomePrices")
+                if isinstance(prices, str):
+                    try:
+                        price_list = json.loads(prices)
+                        if isinstance(price_list, list) and len(price_list) >= 1:
+                            mkt["yes_price"] = float(price_list[0])
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                elif isinstance(prices, list) and len(prices) >= 1:
+                    try:
+                        mkt["yes_price"] = float(prices[0])
+                    except (ValueError, TypeError):
+                        pass
+                clobTokenIds = mkt.get("clobTokenIds")
+                if isinstance(clobTokenIds, str):
+                    try:
+                        token_list = json.loads(clobTokenIds)
+                        if isinstance(token_list, list) and len(token_list) >= 2:
+                            mkt["yes_token_id"] = token_list[0]
+                            mkt["no_token_id"] = token_list[1]
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                elif isinstance(clobTokenIds, list) and len(clobTokenIds) >= 2:
+                    mkt["yes_token_id"] = clobTokenIds[0]
+                    mkt["no_token_id"] = clobTokenIds[1]
+                mkt["id"] = mkt.get("id") or mkt.get("conditionId", "")
+                markets.append(mkt)
+
+        if not markets:
+            return 0
+
+        wind_groups = self._market_mapper.group_wind_markets(markets)
+        if not wind_groups:
+            logger.debug("weatherbot_wind_no_groups", markets=len(markets))
+            return 0
+
+        traded = 0
+        for group in wind_groups:
+            try:
+                opps = await self._analyze_wind_group(group)
+                for opp in opps:
+                    await self._execute_weather_trade(opp, self._precip_to_temp_group(group))
+                    traded += 1
+            except Exception as exc:
+                logger.debug(
+                    "weatherbot_wind_group_error",
+                    city=group.city, error=str(exc),
+                )
+
+        if traded > 0 or wind_groups:
+            logger.info(
+                "weatherbot_wind_scan_done",
+                markets=len(markets),
+                groups=len(wind_groups),
+                trades=traded,
+            )
+        return traded
+
+    async def _analyze_wind_group(self, group) -> List[Dict]:
+        """Analyze a wind gust market group: fetch ensemble, compute edges.
+
+        Uses normal distribution (wind gusts are ~normally distributed at daily max).
+        Computes CDF across bucket bounds, then finds mispriced buckets.
+        """
+        import math
+
+        ensemble = await self._forecast_client.get_wind_ensemble(
+            group.station, group.target_date,
+        )
+        if not ensemble or len(ensemble) < 10:
+            return []
+
+        # Compute mean and std of ensemble
+        mean_wind = sum(ensemble) / len(ensemble)
+        if len(ensemble) > 1:
+            variance = sum((x - mean_wind) ** 2 for x in ensemble) / len(ensemble)
+            std_wind = max(variance ** 0.5, 0.5)  # Floor at 0.5 to avoid division by zero
+        else:
+            std_wind = 5.0  # Conservative default
+
+        # Use normal CDF for bucket probabilities
+        # math.erf is available without scipy
+        def _norm_cdf(x: float) -> float:
+            """Standard normal CDF using erf."""
+            return 0.5 * (1.0 + math.erf((x - mean_wind) / (std_wind * math.sqrt(2.0))))
+
+        # Compute model probability for each bucket
+        opps: List[Dict] = []
+        for b in group.buckets:
+            if b.bucket_type == "range" and b.low_bound is not None and b.high_bound is not None:
+                model_prob = _norm_cdf(b.high_bound + 0.5) - _norm_cdf(b.low_bound - 0.5)
+            elif b.bucket_type == "at_or_below" and b.high_bound is not None:
+                model_prob = _norm_cdf(b.high_bound + 0.5)
+            elif b.bucket_type == "at_or_higher" and b.low_bound is not None:
+                model_prob = 1.0 - _norm_cdf(b.low_bound - 0.5)
+            else:
+                continue
+
+            model_prob = max(0.001, min(0.999, model_prob))
+            market_prob = max(0.001, min(0.999, b.yes_price))
+
+            # Check YES side edge
+            yes_edge = model_prob - market_prob
+            # Check NO side edge
+            no_edge = (1.0 - model_prob) - (1.0 - market_prob)
+
+            if abs(yes_edge) >= self._min_edge:
+                if yes_edge > 0:
+                    opps.append({
+                        "market_id": b.market_id,
+                        "token_id": b.token_id,
+                        "side": "YES",
+                        "model_prob": round(model_prob, 4),
+                        "market_prob": round(market_prob, 4),
+                        "abs_edge": round(abs(yes_edge), 4),
+                        "confidence": round(model_prob, 4),
+                    })
+                else:
+                    opps.append({
+                        "market_id": b.market_id,
+                        "token_id": b.no_token_id,
+                        "side": "NO",
+                        "model_prob": round(1.0 - model_prob, 4),
+                        "market_prob": round(1.0 - market_prob, 4),
+                        "abs_edge": round(abs(no_edge), 4),
+                        "confidence": round(1.0 - model_prob, 4),
+                    })
+
+        # Compute lead time
+        now_utc = datetime.now(timezone.utc)
+        target_noon = datetime.combine(
+            group.target_date, datetime.min.time(),
+        ).replace(hour=18, tzinfo=timezone.utc)
+        _lead_h = max(0.0, (target_noon - now_utc).total_seconds() / 3600.0)
+
+        for opp in opps:
+            opp["city"] = group.city
+            opp["target_date"] = group.target_date.isoformat()
+            opp["lead_time_hours"] = _lead_h
+            opp["model_spread"] = round(std_wind, 1)
+            opp["ensemble_count"] = len(ensemble)
+
+        if opps:
+            logger.info(
+                "weatherbot_wind_edges",
+                city=group.city,
+                date=group.target_date.isoformat(),
+                n_buckets=len(group.buckets),
+                n_opps=len(opps),
+                mean_wind=round(mean_wind, 1),
+                std_wind=round(std_wind, 1),
+                best_edge=round(max(o["abs_edge"] for o in opps), 4),
+            )
+
+        return opps
+
     # ── Group analysis ────────────────────────────────────────────────────
 
     async def _analyze_group(
@@ -369,6 +971,16 @@ class WeatherBot(BaseBot):
         # Station health check
         if not await self._station_health.is_healthy(group.station):
             logger.warning("weatherbot_station_unhealthy", station=group.station.station_id)
+            # B4: Alert on station offline
+            _alerting = getattr(self.base_engine, "alerting_system", None)
+            if _alerting:
+                await _alerting.send_alert(
+                    title="WeatherBot Station Unhealthy",
+                    message=f"Station {group.station.station_id} ({group.station.city_name}) failed health check.",
+                    severity=AlertSeverity.WARNING,
+                    source="WeatherBot",
+                    metadata={"station": group.station.station_id},
+                )
             return [], {}
 
         # Fetch ensemble forecast
@@ -471,9 +1083,20 @@ class WeatherBot(BaseBot):
             if e["abs_edge"] < self._min_edge:
                 continue
 
-            # Edge sanity cap: edges >25% are almost certainly model errors
-            if e["abs_edge"] > 0.25:
-                logger.debug("weatherbot_edge_cap", market_id=e["market_id"], edge=round(e["abs_edge"], 4))
+            # Lead-time-graduated edge cap: at short lead times, NOAA ensemble
+            # convergence and METAR data produce legitimately large edges.
+            if lead_time < 6.0:
+                _max_edge = 0.70
+            elif lead_time < 12.0:
+                _max_edge = 0.50
+            elif lead_time < 24.0:
+                _max_edge = 0.40
+            elif lead_time < 48.0:
+                _max_edge = 0.30
+            else:
+                _max_edge = 0.25
+            if e["abs_edge"] > _max_edge:
+                logger.debug("weatherbot_edge_cap", market_id=e["market_id"], edge=round(e["abs_edge"], 4), max_edge=_max_edge, lead_time_h=round(lead_time, 1))
                 continue
 
             # Skip recently exited markets
@@ -586,34 +1209,50 @@ class WeatherBot(BaseBot):
         updated = dict(model_probs)
         bucket_map = {b.market_id: b for b in group.buckets}
 
+        # At <2h lead time, daily high is nearly established — tighter margins.
+        # Unit-aware margin: 0.5°F or 0.3°C (matching boundary_risk logic).
+        aggressive = lead_time_hours < 2.0
+        unit_margin = 0.3 if group.temp_unit == "C" else 0.5
+
         for market_id, bucket in bucket_map.items():
             btype = bucket.bucket_type
 
             if btype == "at_or_below":
-                if running_max > bucket.high_bound + 0.5:
+                if running_max > bucket.high_bound + unit_margin:
                     # Daily max already exceeded threshold — bucket cannot resolve YES
                     updated[market_id] = 0.001
+                elif aggressive and running_max < bucket.high_bound - unit_margin:
+                    # <2h: well below ceiling, max essentially established
+                    updated[market_id] = 0.98
                 elif running_max < bucket.high_bound - 1.5:
                     # Well below ceiling with little time left — almost certainly YES
                     updated[market_id] = 0.97
 
             elif btype == "at_or_higher":
-                if running_max >= bucket.low_bound - 0.5:
+                if aggressive and running_max >= bucket.low_bound - unit_margin:
+                    # <2h: running max at or near floor — resolving YES
+                    updated[market_id] = 0.98
+                elif running_max >= bucket.low_bound - 0.5:
                     # Daily max has reached or nearly reached the floor — resolving YES
                     updated[market_id] = 0.97
+                elif aggressive and running_max < bucket.low_bound - 1.0:
+                    # <2h: still well below floor — very unlikely to reach
+                    updated[market_id] = 0.001
                 elif running_max < bucket.low_bound - 2.0:
                     # Well below floor — unlikely to reach threshold in remaining time
                     updated[market_id] = 0.001
 
             elif btype == "range":
-                if running_max > bucket.high_bound + 0.5:
+                if running_max > bucket.high_bound + unit_margin:
                     # Daily max has exceeded the range upper bound — cannot resolve YES
                     updated[market_id] = 0.001
-                # Note: if running_max is already within range, we let model_prob stand
-                # since we can't yet rule out the max climbing further above the range.
+                elif aggressive and bucket.low_bound <= running_max <= bucket.high_bound - unit_margin:
+                    # <2h: running max is within range and below upper bound with margin.
+                    # Daily high is nearly established — this range is very likely to win.
+                    updated[market_id] = 0.92
 
             elif btype == "exact":
-                if running_max > bucket.high_bound + 0.5:
+                if running_max > bucket.high_bound + unit_margin:
                     # Already exceeded the exact value — cannot resolve YES
                     updated[market_id] = 0.001
 
@@ -765,6 +1404,16 @@ class WeatherBot(BaseBot):
         # Daily loss limit
         if self._daily_pnl <= -self._daily_loss_limit:
             logger.warning("weatherbot_daily_loss_limit_hit", pnl=self._daily_pnl)
+            # B4: Alert on daily loss limit hit
+            _alerting = getattr(self.base_engine, "alerting_system", None)
+            if _alerting:
+                await _alerting.send_alert(
+                    title="WeatherBot Daily Loss Limit",
+                    message=f"Daily P&L ${self._daily_pnl:.2f} hit limit -${self._daily_loss_limit:.0f}. Trades blocked.",
+                    severity=AlertSeverity.WARNING,
+                    source="WeatherBot",
+                    metadata={"daily_pnl": self._daily_pnl, "limit": self._daily_loss_limit},
+                )
             return
 
         # Per-group exposure limit
@@ -1130,6 +1779,16 @@ class WeatherBot(BaseBot):
                 resp = await http.get(url, params=params)
                 if resp.status_code != 200:
                     logger.warning("weatherbot_tag_fetch_failed", status=resp.status_code)
+                    # B4: Alert on tag API failure
+                    _alerting = getattr(self.base_engine, "alerting_system", None)
+                    if _alerting:
+                        await _alerting.send_alert(
+                            title="WeatherBot Tag Fetch Failed",
+                            message=f"Gamma API tag_slug=temperature returned {resp.status_code}.",
+                            severity=AlertSeverity.WARNING,
+                            source="WeatherBot",
+                            metadata={"status_code": resp.status_code},
+                        )
                     return []
                 events = resp.json()
         except Exception as exc:
@@ -1234,37 +1893,39 @@ class WeatherBot(BaseBot):
         if not client:
             return markets
 
-        enriched: List[Dict] = []
-        enriched_count = 0
-        for m in markets[:200]:
-            # Skip if already has a valid price (0 < yes_price < 1)
+        import asyncio
+
+        # B3: Parallelize CLOB midpoint calls with semaphore (10 concurrent)
+        sem = asyncio.Semaphore(10)
+
+        async def _fetch_midpoint(m: Dict) -> Dict:
             existing = m.get("yes_price")
             if existing and 0.0 < float(existing) < 1.0:
-                enriched.append(m)
-                continue
-
-            # Use CLOB /midpoint with yes_token_id — Gamma API /markets/{id} rejects
-            # hex condition IDs (the format stored in our DB). CLOB midpoint accepts
-            # the numeric token ID from yes_token_id and returns {"mid": "0.48"}.
+                return m
             yes_token_id = str(m.get("yes_token_id") or "")
             if not yes_token_id:
-                enriched.append(m)
-                continue
+                return m
+            async with sem:
+                try:
+                    yes_p = await client.get_token_midpoint(yes_token_id)
+                    if yes_p is not None:
+                        m = dict(m)
+                        m["yes_price"] = yes_p
+                        m["no_price"] = round(1.0 - yes_p, 6)
+                        m["_enriched"] = True
+                except Exception as exc:
+                    logger.debug(
+                        "weatherbot_price_enrich_error",
+                        yes_token_id=yes_token_id[:20],
+                        error=str(exc),
+                    )
+            return m
 
-            try:
-                yes_p = await client.get_token_midpoint(yes_token_id)
-                if yes_p is not None:
-                    m = dict(m)          # Don't mutate original DB dict
-                    m["yes_price"] = yes_p
-                    m["no_price"] = round(1.0 - yes_p, 6)
-                    enriched_count += 1
-            except Exception as exc:
-                logger.debug(
-                    "weatherbot_price_enrich_error",
-                    yes_token_id=yes_token_id[:20],
-                    error=str(exc),
-                )
-            enriched.append(m)
+        enriched = await asyncio.gather(*[_fetch_midpoint(m) for m in markets[:200]])
+        enriched_count = sum(1 for m in enriched if m.get("_enriched"))
+        # Clean up transient flag
+        for m in enriched:
+            m.pop("_enriched", None)
 
         logger.info(
             "weatherbot_price_enriched",
@@ -1272,7 +1933,7 @@ class WeatherBot(BaseBot):
             enriched=enriched_count,
             skipped=len(enriched) - enriched_count,
         )
-        return enriched
+        return list(enriched)
 
     async def _check_weather_market_availability(self) -> None:
         """One-time startup log of weather market availability across DB and Gamma API.
@@ -1396,12 +2057,37 @@ class WeatherBot(BaseBot):
                     continue
 
                 target_date = target_dt.date() if hasattr(target_dt, "date") else target_dt
-                actual_temp = await self._forecast_client.get_historical_temperature(
+                # B1: Prefer Weather Underground (Polymarket resolution source)
+                wu_temp = await self._fetch_wu_daily_high(station, target_date)
+                om_temp = await self._forecast_client.get_historical_temperature(
                     latitude=station.latitude,
                     longitude=station.longitude,
                     target_date=target_date,
                     temp_unit=station.temp_unit,
                 )
+                # Use WU when available (resolution source); fall back to Open-Meteo
+                # Sanity check: reject WU values that differ from Open-Meteo by
+                # more than 10°F/5°C — likely a scraping error, not a real value.
+                max_diff = 10.0 if station.temp_unit.upper() == "F" else 5.0
+                if wu_temp is not None and om_temp is not None:
+                    diff = abs(wu_temp - om_temp)
+                    if diff > max_diff:
+                        logger.warning(
+                            "weatherbot_wu_sanity_rejected",
+                            station=station_id,
+                            date=str(target_date),
+                            wu=wu_temp, om=om_temp, diff=round(diff, 1),
+                            threshold=max_diff,
+                        )
+                        wu_temp = None  # Fall back to Open-Meteo
+                    elif diff > 1.0:
+                        logger.warning(
+                            "weatherbot_wu_om_discrepancy",
+                            station=station_id,
+                            date=str(target_date),
+                            wu=wu_temp, om=om_temp, diff=round(diff, 1),
+                        )
+                actual_temp = wu_temp if wu_temp is not None else om_temp
                 if actual_temp is None:
                     continue
 
@@ -1445,6 +2131,93 @@ class WeatherBot(BaseBot):
                 )
         except Exception as exc:
             logger.debug("weatherbot_calibration_actuals_failed", error=str(exc))
+
+    async def _fetch_wu_daily_high(
+        self, station: WeatherStation, target_date,
+    ) -> Optional[float]:
+        """B1: Scrape Weather Underground history page for daily high temperature.
+
+        WU is the resolution source for Polymarket temperature markets.
+        URL: https://www.wunderground.com/history/daily/{ICAO}/date/{YYYY-M-D}
+        Parses the daily high from the "Max" row in the history table.
+        Returns temperature in station's native unit (F or C), or None on failure.
+        """
+        import re
+
+        icao = station.station_id
+        d = target_date
+        url = f"https://www.wunderground.com/history/daily/{icao}/date/{d.isoformat()}"
+
+        try:
+            session = await self._forecast_client.get_session()
+            async with session.get(
+                url,
+                timeout=aiohttp.ClientTimeout(total=10),
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/122.0.0.0 Safari/537.36"
+                    ),
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Referer": "https://www.wunderground.com/",
+                },
+            ) as resp:
+                if resp.status != 200:
+                    logger.debug("weatherbot_wu_http_error", station=icao, status=resp.status)
+                    return None
+                html = await resp.text()
+
+            # WU history pages show "Max Temperature" in a summary table.
+            # The page uses Angular but embeds observation data in initial HTML.
+            # Try 4 patterns in order of reliability.
+
+            # Pattern 1: "Max</span>" or "Max Temperature</span>" … °value
+            match = re.search(
+                r'Max\s*(?:Temperature)?</span>.*?(-?\d+(?:\.\d+)?)\s*°',
+                html, re.DOTALL | re.IGNORECASE,
+            )
+            if match:
+                temp_val = float(match.group(1))
+                logger.debug("weatherbot_wu_actual", station=icao, date=str(target_date), temp=temp_val)
+                return temp_val
+
+            # Pattern 2: JSON property "maxTemp" or "maxTemperature"
+            match2 = re.search(
+                r'"maxTemp(?:erature)?"\s*:\s*\{\s*"[^"]*"\s*:\s*(-?\d+(?:\.\d+)?)',
+                html, re.DOTALL | re.IGNORECASE,
+            )
+            if match2:
+                temp_val = float(match2.group(1))
+                logger.debug("weatherbot_wu_actual_p2", station=icao, date=str(target_date), temp=temp_val)
+                return temp_val
+
+            # Pattern 3: Angular state dump — "High": value near temperature context
+            match3 = re.search(
+                r'"(?:High|Maximum)\s*Temperature[^"]*"\s*[,:].*?(-?\d{2,3}(?:\.\d+)?)',
+                html, re.DOTALL | re.IGNORECASE,
+            )
+            if match3:
+                temp_val = float(match3.group(1))
+                logger.debug("weatherbot_wu_actual_p3", station=icao, date=str(target_date), temp=temp_val)
+                return temp_val
+
+            # Pattern 4: observation summary JSON block (WU server-side state)
+            match4 = re.search(
+                r'"observationSummary".*?["\s]Max["\s].*?(-?\d{2,3}(?:\.\d+)?)',
+                html, re.DOTALL | re.IGNORECASE,
+            )
+            if match4:
+                temp_val = float(match4.group(1))
+                logger.debug("weatherbot_wu_actual_p4", station=icao, date=str(target_date), temp=temp_val)
+                return temp_val
+
+            logger.debug("weatherbot_wu_no_match", station=icao, date=str(target_date), html_len=len(html))
+
+        except Exception as exc:
+            logger.debug("weatherbot_wu_fetch_failed", station=icao, error=str(exc))
+        return None
 
     @staticmethod
     async def _compute_crps(db, station_id: str, target_date, actual_temp: float) -> Optional[float]:
@@ -1649,79 +2422,88 @@ class WeatherBot(BaseBot):
 
         return self._regime_tag
 
+    async def _prefetch_severe_weather_alerts(
+        self, groups: list,
+    ) -> None:
+        """Batch-fetch NWS severe weather alerts for all US stations in one scan.
+
+        Instead of N individual API calls during trade execution, fetch once
+        per scan and cache per-station. 30-min TTL — skip refetch if recent.
+        """
+        now_mono = time.monotonic()
+        if now_mono - self._severe_weather_batch_time < 1800.0:
+            return  # batch still fresh
+
+        import aiohttp
+
+        _HIGH_IMPACT = {
+            "Hurricane Warning", "Hurricane Watch",
+            "Tropical Storm Warning", "Extreme Wind Warning",
+        }
+        _MED_IMPACT = {
+            "Severe Thunderstorm Warning", "Tornado Warning",
+            "Winter Storm Warning", "Ice Storm Warning",
+            "Blizzard Warning",
+        }
+
+        # Collect unique US stations from active groups
+        us_stations: Dict[str, WeatherStation] = {}
+        for g in groups:
+            if g.station and g.station.temp_unit.upper() == "F":
+                us_stations[g.station.station_id] = g.station
+
+        if not us_stations:
+            self._severe_weather_batch_time = now_mono
+            return
+
+        batch: Dict[str, float] = {}
+        try:
+            session = await self._forecast_client.get_session()
+            for sid, station in us_stations.items():
+                url = f"https://api.weather.gov/alerts/active?point={station.latitude:.4f},{station.longitude:.4f}"
+                try:
+                    async with session.get(
+                        url,
+                        timeout=aiohttp.ClientTimeout(total=8),
+                        headers={
+                            "Accept": "application/geo+json",
+                            "User-Agent": "PolymarketWeatherBot/1.0",
+                        },
+                    ) as resp:
+                        if resp.status != 200:
+                            batch[sid] = 1.0
+                            continue
+                        data = await resp.json(content_type=None)
+                    boost = 1.0
+                    for feat in data.get("features", []):
+                        event = feat.get("properties", {}).get("event", "")
+                        if event in _HIGH_IMPACT:
+                            boost = max(boost, 2.0)
+                        elif event in _MED_IMPACT:
+                            boost = max(boost, 1.5)
+                    batch[sid] = boost
+                    if boost > 1.0:
+                        logger.info(
+                            "weatherbot_severe_weather_boost",
+                            station=sid, boost=boost,
+                        )
+                except Exception:
+                    batch[sid] = 1.0
+        except Exception as exc:
+            logger.debug("nws_alerts_batch_failed", error=str(exc))
+
+        self._severe_weather_batch = batch
+        self._severe_weather_batch_time = now_mono
+
     async def _get_severe_weather_boost(self, station: WeatherStation) -> float:
-        """Check NWS alerts for severe weather near a station → kelly boost.
+        """Return cached severe weather boost for a station.
 
-        Queries the NWS /alerts/active API for alerts affecting the station's
-        lat/lon (50km radius via NWS point lookup). Returns:
-          - 2.0 if Hurricane Watch/Warning, Tropical Storm Warning, or Extreme Wind
-          - 1.5 if Severe Thunderstorm Warning, Tornado Warning, or Winter Storm Warning
-          - 1.0 otherwise (no boost)
-
-        Only fetches for US stations (temp_unit == "F"). Cached for 30 min per station.
+        Uses batch-prefetched data from _prefetch_severe_weather_alerts().
+        Falls back to 1.0 for non-US stations or missing cache.
         """
         if station.temp_unit.upper() != "F":
             return 1.0
-
-        # Cache key per station, 30 min TTL
-        cache_attr = "_nws_alert_cache"
-        if not hasattr(self, cache_attr):
-            object.__setattr__(self, cache_attr, {})
-        cache: Dict[str, Tuple[float, float]] = getattr(self, cache_attr)
-        now_mono = time.monotonic()
-        cached = cache.get(station.station_id)
-        if cached and now_mono - cached[0] < 1800.0:
-            return cached[1]
-
-        import aiohttp
-        # NWS /alerts/active/point endpoint: filters by lat/lon
-        url = f"https://api.weather.gov/alerts/active?point={station.latitude:.4f},{station.longitude:.4f}"
-        boost = 1.0
-        try:
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=8),
-                headers={
-                    "Accept": "application/geo+json",
-                    "User-Agent": "PolymarketWeatherBot/1.0",
-                },
-            ) as session:
-                async with session.get(url) as resp:
-                    if resp.status != 200:
-                        logger.debug("nws_alerts_error", station=station.station_id, status=resp.status)
-                        cache[station.station_id] = (now_mono, 1.0)
-                        return 1.0
-                    data = await resp.json(content_type=None)
-
-            features = data.get("features", [])
-            _HIGH_IMPACT = {
-                "Hurricane Warning", "Hurricane Watch",
-                "Tropical Storm Warning", "Extreme Wind Warning",
-            }
-            _MED_IMPACT = {
-                "Severe Thunderstorm Warning", "Tornado Warning",
-                "Winter Storm Warning", "Ice Storm Warning",
-                "Blizzard Warning",
-            }
-            for feat in features:
-                props = feat.get("properties", {})
-                event = props.get("event", "")
-                if event in _HIGH_IMPACT:
-                    boost = max(boost, 2.0)
-                elif event in _MED_IMPACT:
-                    boost = max(boost, 1.5)
-
-            if boost > 1.0:
-                logger.info(
-                    "weatherbot_severe_weather_boost",
-                    station=station.station_id,
-                    boost=boost,
-                    alerts=[f.get("properties", {}).get("event", "") for f in features[:3]],
-                )
-        except Exception as exc:
-            logger.debug("nws_alerts_failed", station=station.station_id, error=str(exc))
-
-        cache[station.station_id] = (now_mono, boost)
-        return boost
+        return self._severe_weather_batch.get(station.station_id, 1.0)
 
     async def _get_afd_spread_factor(self, station: WeatherStation) -> float:
         """Parse latest NWS Area Forecast Discussion for uncertainty signals.
@@ -2158,7 +2940,7 @@ class WeatherBot(BaseBot):
             logger.debug("weatherbot_monitoring_brier_check_failed", error=str(exc))
 
         # ── Daily drawdown check ──
-        capital = 2000.0  # WeatherBot capital from bankroll config
+        capital = self.bankroll.capital if self.bankroll else 5000.0
         if self._daily_pnl < 0:
             drawdown_pct = abs(self._daily_pnl) / capital
             if drawdown_pct > 0.20:

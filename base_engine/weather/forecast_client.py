@@ -54,6 +54,9 @@ class WeatherForecastClient:
     def __init__(self, cache_ttl: float = 900.0, rate_limit_per_min: int = 50):
         self._session: Optional[aiohttp.ClientSession] = None
         self._cache: Dict[str, Tuple[float, CombinedForecast]] = {}
+        self._precip_cache: Dict[str, Tuple[float, List[float]]] = {}
+        self._snowfall_cache: Dict[str, Tuple[float, List[float]]] = {}
+        self._wind_cache: Dict[str, Tuple[float, List[float]]] = {}
         self._cache_ttl = cache_ttl
         self._rate_limit = rate_limit_per_min
         self._request_times: List[float] = []
@@ -62,7 +65,8 @@ class WeatherForecastClient:
         self._nws_forecast_url_cache: Dict[str, Tuple[float, Optional[str]]] = {}
         # Climate normals cache: cache_key → (expiry_mono, Optional[(mean, std)])
         self._climate_cache: Dict[str, Tuple[float, Optional[Tuple[float, float]]]] = {}
-        self._climate_computed_this_cycle: bool = False
+        self._climate_computed_this_cycle: int = 0
+        self._climate_max_per_cycle: int = 3
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -71,6 +75,10 @@ class WeatherForecastClient:
                 headers={"User-Agent": "PolymarketWeatherBot/1.0"},
             )
         return self._session
+
+    async def get_session(self) -> aiohttp.ClientSession:
+        """Public accessor — reuse the shared aiohttp session for external calls."""
+        return await self._ensure_session()
 
     async def _rate_limit_wait(self) -> None:
         """Simple sliding-window rate limiter."""
@@ -219,6 +227,354 @@ class WeatherForecastClient:
         except Exception as exc:
             logger.warning("open_meteo_ensemble_failed", model=model, error=str(exc))
             return None
+
+    async def get_precipitation_ensemble(
+        self,
+        station: WeatherStation,
+        target_date: date,
+        forecast_days: int = 7,
+    ) -> Optional[List[float]]:
+        """D3: Fetch daily precipitation_sum ensemble members from Open-Meteo.
+
+        Returns list of precipitation totals (mm or inches) per ensemble member
+        for the target_date. Uses same GEFS + ECMWF IFS + AIFS models as temperature.
+        Precipitation is always returned in mm from Open-Meteo; convert to inches for US.
+        """
+        cache_key = f"precip:{station.station_id}:{target_date.isoformat()}"
+        cached = self._precip_cache.get(cache_key)
+        if cached and time.monotonic() < cached[0]:
+            return cached[1]
+
+        lat, lon = station.latitude, station.longitude
+        _capped_days = min(forecast_days, 15)
+
+        all_members: List[float] = []
+        for model in ("gfs025", "ecmwf_ifs025", "ecmwf_aifs025"):
+            await self._rate_limit_wait()
+            session = await self._ensure_session()
+            params = {
+                "latitude": lat,
+                "longitude": lon,
+                "daily": "precipitation_sum",
+                "models": model,
+                "forecast_days": _capped_days,
+                "timezone": "auto",
+            }
+            try:
+                async with session.get(_ENSEMBLE_URL, params=params) as resp:
+                    if resp.status != 200:
+                        continue
+                    data = await resp.json()
+                daily = data.get("daily", {})
+                dates = daily.get("time", [])
+                # Find index matching target_date
+                target_str = target_date.isoformat()
+                if target_str not in dates:
+                    continue
+                idx = dates.index(target_str)
+                # Collect all member values at that index
+                for key, vals in daily.items():
+                    if key.startswith("precipitation_sum_member") and isinstance(vals, list):
+                        if idx < len(vals) and vals[idx] is not None:
+                            val = float(vals[idx])
+                            # Convert mm → inches for US stations
+                            if station.temp_unit.upper() == "F":
+                                val = val / 25.4
+                            all_members.append(max(0.0, val))
+            except Exception as exc:
+                logger.debug("precip_ensemble_fetch_failed", model=model, error=str(exc))
+
+        if not all_members:
+            return None
+
+        # Cache for standard TTL
+        self._precip_cache[cache_key] = (time.monotonic() + self._cache_ttl, all_members)
+        logger.debug(
+            "precip_ensemble_fetched",
+            station=station.station_id,
+            date=target_date.isoformat(),
+            n_members=len(all_members),
+            mean=round(sum(all_members) / len(all_members), 2),
+        )
+        return all_members
+
+    async def get_monthly_precipitation_ensemble(
+        self,
+        station: WeatherStation,
+        month: int,
+        year: int,
+    ) -> Optional[List[float]]:
+        """Fetch monthly cumulative precipitation ensemble for a given month.
+
+        Combines:
+          1. Historical actuals (Open-Meteo archive) for elapsed days.
+          2. Ensemble forecasts for remaining days in the month.
+
+        Each "member" value = actual_so_far + member's sum of remaining daily forecasts.
+        Returns list of monthly totals (one per ensemble member), in inches (US) or mm.
+        """
+        import calendar
+
+        cache_key = f"precip_monthly:{station.station_id}:{year}-{month:02d}"
+        cached = self._precip_cache.get(cache_key)
+        if cached and time.monotonic() < cached[0]:
+            return cached[1]
+
+        lat, lon = station.latitude, station.longitude
+        last_day = calendar.monthrange(year, month)[1]
+        month_start = date(year, month, 1)
+        month_end = date(year, month, last_day)
+        today = datetime.now(timezone.utc).date()
+
+        # 1. Historical actuals for elapsed days (month_start to yesterday)
+        actual_total = 0.0
+        yesterday = today - timedelta(days=1)
+        if yesterday >= month_start:
+            hist_end = min(yesterday, month_end)
+            await self._rate_limit_wait()
+            session = await self._ensure_session()
+            params = {
+                "latitude": lat,
+                "longitude": lon,
+                "start_date": month_start.isoformat(),
+                "end_date": hist_end.isoformat(),
+                "daily": "precipitation_sum",
+                "timezone": "auto",
+            }
+            try:
+                async with session.get(_HISTORICAL_URL, params=params) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        daily = data.get("daily", {})
+                        precip_vals = daily.get("precipitation_sum", [])
+                        for v in precip_vals:
+                            if v is not None:
+                                actual_total += float(v)
+            except Exception as exc:
+                logger.debug("monthly_precip_hist_failed", error=str(exc))
+
+            # Convert mm → inches for US
+            if station.temp_unit.upper() == "F":
+                actual_total = actual_total / 25.4
+
+        # 2. If entire month is in the past, return actual as single-value list
+        if today > month_end:
+            result = [actual_total]
+            self._precip_cache[cache_key] = (time.monotonic() + self._cache_ttl, result)
+            return result
+
+        # 3. Ensemble forecasts for remaining days (today through month_end)
+        remaining_days = (month_end - today).days + 1  # inclusive
+        # GEFS goes 35 days, ECMWF IFS 15, AIFS 6 — use max feasible
+        forecast_days = min(remaining_days + 3, 35)  # +3 buffer for date alignment
+
+        # Collect per-member daily sums for remaining period
+        # member_sums[member_key] = sum of daily precip for remaining days
+        member_sums: List[float] = []
+
+        for model in ("gfs025", "ecmwf_ifs025", "ecmwf_aifs025"):
+            await self._rate_limit_wait()
+            session = await self._ensure_session()
+            params = {
+                "latitude": lat,
+                "longitude": lon,
+                "daily": "precipitation_sum",
+                "models": model,
+                "forecast_days": forecast_days,
+                "timezone": "auto",
+            }
+            try:
+                async with session.get(_ENSEMBLE_URL, params=params) as resp:
+                    if resp.status != 200:
+                        continue
+                    data = await resp.json()
+                daily = data.get("daily", {})
+                dates = daily.get("time", [])
+
+                # Build date→index mapping for remaining month dates
+                target_dates = set()
+                d = max(today, month_start)
+                while d <= month_end:
+                    target_dates.add(d.isoformat())
+                    d += timedelta(days=1)
+
+                target_indices = [
+                    i for i, dt in enumerate(dates) if dt in target_dates
+                ]
+                if not target_indices:
+                    continue
+
+                # Sum each member's daily values over the remaining period
+                for key, vals in daily.items():
+                    if not key.startswith("precipitation_sum_member"):
+                        continue
+                    if not isinstance(vals, list):
+                        continue
+                    member_total = 0.0
+                    valid = 0
+                    for idx in target_indices:
+                        if idx < len(vals) and vals[idx] is not None:
+                            member_total += float(vals[idx])
+                            valid += 1
+                    # Only include if we got data for most remaining days
+                    if valid >= len(target_indices) * 0.7:
+                        val = member_total
+                        if station.temp_unit.upper() == "F":
+                            val = val / 25.4  # mm → inches
+                        member_sums.append(max(0.0, actual_total + val))
+            except Exception as exc:
+                logger.debug(
+                    "monthly_precip_ensemble_failed",
+                    model=model, error=str(exc),
+                )
+
+        if not member_sums:
+            return None
+
+        self._precip_cache[cache_key] = (
+            time.monotonic() + self._cache_ttl, member_sums,
+        )
+        logger.debug(
+            "monthly_precip_ensemble_fetched",
+            station=station.station_id,
+            month=f"{year}-{month:02d}",
+            actual_so_far=round(actual_total, 2),
+            n_members=len(member_sums),
+            mean=round(sum(member_sums) / len(member_sums), 2),
+        )
+        return member_sums
+
+    async def get_snowfall_ensemble(
+        self,
+        station: WeatherStation,
+        target_date: date,
+        forecast_days: int = 7,
+    ) -> Optional[List[float]]:
+        """Fetch daily snowfall_sum ensemble members from Open-Meteo.
+
+        Returns list of snowfall totals per ensemble member.
+        Open-Meteo returns snowfall in cm; convert to inches for US stations.
+        """
+        cache_key = f"snow:{station.station_id}:{target_date.isoformat()}"
+        cached = self._snowfall_cache.get(cache_key)
+        if cached and time.monotonic() < cached[0]:
+            return cached[1]
+
+        lat, lon = station.latitude, station.longitude
+        _capped_days = min(forecast_days, 15)
+
+        all_members: List[float] = []
+        for model in ("gfs025", "ecmwf_ifs025", "ecmwf_aifs025"):
+            await self._rate_limit_wait()
+            session = await self._ensure_session()
+            params = {
+                "latitude": lat,
+                "longitude": lon,
+                "daily": "snowfall_sum",
+                "models": model,
+                "forecast_days": _capped_days,
+                "timezone": "auto",
+            }
+            try:
+                async with session.get(_ENSEMBLE_URL, params=params) as resp:
+                    if resp.status != 200:
+                        continue
+                    data = await resp.json()
+                daily = data.get("daily", {})
+                dates = daily.get("time", [])
+                target_str = target_date.isoformat()
+                if target_str not in dates:
+                    continue
+                idx = dates.index(target_str)
+                for key, vals in daily.items():
+                    if key.startswith("snowfall_sum_member") and isinstance(vals, list):
+                        if idx < len(vals) and vals[idx] is not None:
+                            val = float(vals[idx])
+                            # Open-Meteo snowfall is in cm; convert to inches for US
+                            if station.temp_unit.upper() == "F":
+                                val = val / 2.54
+                            all_members.append(max(0.0, val))
+            except Exception as exc:
+                logger.debug("snowfall_ensemble_fetch_failed", model=model, error=str(exc))
+
+        if not all_members:
+            return None
+
+        self._snowfall_cache[cache_key] = (time.monotonic() + self._cache_ttl, all_members)
+        logger.debug(
+            "snowfall_ensemble_fetched",
+            station=station.station_id,
+            date=target_date.isoformat(),
+            n_members=len(all_members),
+            mean=round(sum(all_members) / len(all_members), 2),
+        )
+        return all_members
+
+    async def get_wind_ensemble(
+        self,
+        station: WeatherStation,
+        target_date: date,
+        forecast_days: int = 7,
+    ) -> Optional[List[float]]:
+        """Fetch daily wind_gusts_10m_max ensemble members from Open-Meteo.
+
+        Returns list of max wind gust values per ensemble member.
+        Open-Meteo returns wind gusts in km/h; convert to mph for US stations.
+        """
+        cache_key = f"wind:{station.station_id}:{target_date.isoformat()}"
+        cached = self._wind_cache.get(cache_key)
+        if cached and time.monotonic() < cached[0]:
+            return cached[1]
+
+        lat, lon = station.latitude, station.longitude
+        _capped_days = min(forecast_days, 15)
+
+        all_members: List[float] = []
+        for model in ("gfs025", "ecmwf_ifs025", "ecmwf_aifs025"):
+            await self._rate_limit_wait()
+            session = await self._ensure_session()
+            params = {
+                "latitude": lat,
+                "longitude": lon,
+                "daily": "wind_gusts_10m_max",
+                "models": model,
+                "forecast_days": _capped_days,
+                "timezone": "auto",
+            }
+            try:
+                async with session.get(_ENSEMBLE_URL, params=params) as resp:
+                    if resp.status != 200:
+                        continue
+                    data = await resp.json()
+                daily = data.get("daily", {})
+                dates = daily.get("time", [])
+                target_str = target_date.isoformat()
+                if target_str not in dates:
+                    continue
+                idx = dates.index(target_str)
+                for key, vals in daily.items():
+                    if key.startswith("wind_gusts_10m_max_member") and isinstance(vals, list):
+                        if idx < len(vals) and vals[idx] is not None:
+                            val = float(vals[idx])
+                            # Open-Meteo wind is km/h; convert to mph for US
+                            if station.temp_unit.upper() == "F":
+                                val = val / 1.609
+                            all_members.append(max(0.0, val))
+            except Exception as exc:
+                logger.debug("wind_ensemble_fetch_failed", model=model, error=str(exc))
+
+        if not all_members:
+            return None
+
+        self._wind_cache[cache_key] = (time.monotonic() + self._cache_ttl, all_members)
+        logger.debug(
+            "wind_ensemble_fetched",
+            station=station.station_id,
+            date=target_date.isoformat(),
+            n_members=len(all_members),
+            mean=round(sum(all_members) / len(all_members), 2),
+        )
+        return all_members
 
     async def get_nbm_forecast(
         self,
@@ -553,10 +909,10 @@ class WeatherForecastClient:
         if cached and time.monotonic() < cached[0]:
             return cached[1]
 
-        # Limit to 1 new climate normal computation per scan cycle
-        if self._climate_computed_this_cycle:
+        # Limit new climate normal computations per scan cycle
+        if self._climate_computed_this_cycle >= self._climate_max_per_cycle:
             return None
-        self._climate_computed_this_cycle = True
+        self._climate_computed_this_cycle += 1
 
         # Fetch ±3 day window from last 10 years
         temps: List[float] = []
@@ -634,22 +990,84 @@ class WeatherForecastClient:
         except Exception:
             return []
 
-    def invalidate_forecast_cache(self) -> None:
-        """Clear all forecast caches so next fetch gets fresh model data.
+    async def get_ndfd_pop(
+        self,
+        station: WeatherStation,
+    ) -> Optional[List[Tuple[str, float, str]]]:
+        """D2: Fetch NDFD probability of precipitation from NWS digital forecast.
 
-        Called at the start of NWP model update windows (ECMWF/GFS) to ensure
-        the bot picks up new model runs immediately instead of waiting for the
-        15-minute cache TTL to expire.
+        Returns list of (period_name, pop_pct, start_date_iso) tuples for next 72h.
+        start_date_iso is YYYY-MM-DD extracted from the period's startTime.
+        Uses same NWS /forecast endpoint as NBM (includes PoP in periods).
+        US stations only.
+        """
+        if station.temp_unit.upper() != "F":
+            return None
+
+        # Reuse NWS forecast URL cache (same as get_nbm_forecast)
+        now_mono = time.monotonic()
+        cached_url = self._nws_forecast_url_cache.get(station.station_id)
+        if cached_url and now_mono < cached_url[0]:
+            forecast_url = cached_url[1]
+        else:
+            forecast_url = await self._fetch_nws_forecast_url(
+                station.latitude, station.longitude, station.station_id,
+            )
+            self._nws_forecast_url_cache[station.station_id] = (
+                now_mono + 86400.0, forecast_url,
+            )
+
+        if not forecast_url:
+            return None
+
+        await self._rate_limit_wait()
+        session = await self._ensure_session()
+        try:
+            async with session.get(
+                forecast_url,
+                headers={"Accept": "application/geo+json"},
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json(content_type=None)
+
+            periods = data.get("properties", {}).get("periods", [])
+            pop_data: List[Tuple[str, float, str]] = []
+            for p in periods:
+                pop = p.get("probabilityOfPrecipitation", {})
+                val = pop.get("value")
+                if val is not None:
+                    # Extract date from startTime ISO 8601 (e.g. "2026-03-08T06:00:00-05:00")
+                    start_time = p.get("startTime", "")
+                    try:
+                        start_date_iso = datetime.fromisoformat(start_time).date().isoformat()
+                    except (ValueError, TypeError):
+                        start_date_iso = ""
+                    pop_data.append((p.get("name", ""), float(val), start_date_iso))
+            return pop_data if pop_data else None
+        except Exception as exc:
+            logger.debug("ndfd_pop_failed", station=station.station_id, error=str(exc))
+            return None
+
+    def invalidate_forecast_cache(self) -> None:
+        """Clear the temperature forecast cache on NWP model update windows.
+
+        Called at the start of ECMWF/GFS update windows so the bot picks up new
+        model runs immediately instead of waiting for the cache TTL to expire.
+
+        Only clears _cache (temperature). Precipitation, snowfall, and wind caches
+        are NOT cleared — monthly aggregates don't change meaningfully within a
+        6h NWP cycle, and clearing them wastes daily API quota (Open-Meteo 429).
         """
         self._cache.clear()
 
     def reset_climate_cycle(self) -> None:
         """Reset the per-cycle climate normal computation limiter.
 
-        Called at the start of each scan cycle to allow one new climate normal
-        computation per scan.
+        Called at the start of each scan cycle to allow up to 3 new climate
+        normal computations per scan.
         """
-        self._climate_computed_this_cycle = False
+        self._climate_computed_this_cycle = 0
 
     async def close(self) -> None:
         """Close the underlying HTTP session."""
