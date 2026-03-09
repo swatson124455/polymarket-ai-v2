@@ -541,12 +541,14 @@ class EsportsBot(BaseBot):
         # Step 4: Analyze each market
         _opps = 0
         _trades = 0
+        _skipped_position = 0
         og = getattr(self.base_engine, "order_gateway", None)
         for market in esports_markets:
             try:
                 # Skip markets where we already have an open position
                 mid = str(market.get("id", ""))
                 if og and mid and og.has_open_position(self.bot_name, mid):
+                    _skipped_position += 1
                     continue
                 opp = await self.analyze_opportunity(market)
                 if opp:
@@ -557,6 +559,19 @@ class EsportsBot(BaseBot):
                 logger.debug("EsportsBot scan error: %s", exc)
         self._last_scan_opportunities = _opps
         self._last_scan_trades = _trades
+
+        # Diagnostic log every scan — helps diagnose low trade rate
+        logger.info(
+            "esportsbot_scan_summary",
+            markets=len(esports_markets),
+            skipped_has_position=_skipped_position,
+            opportunities=_opps,
+            trades=_trades,
+            live_matches=len(self._live_matches),
+            halted_games=list(self._monitoring_halted_games) or None,
+            min_confidence=self._min_confidence,
+            min_edge=self._min_edge,
+        )
 
     async def analyze_opportunity(self, market_data: Dict) -> Optional[Dict]:
         """
@@ -993,14 +1008,14 @@ class EsportsBot(BaseBot):
 
         return "unknown"
 
-    _PHASE_STATIC_MULTS = {"group": 0.85, "bracket": 1.0, "finals": 1.15, "unknown": 1.0}
+    _PHASE_STATIC_MULTS = {"group": 0.90, "bracket": 1.0, "finals": 1.15, "unknown": 1.0}
 
     async def _get_tournament_phase_mult(
         self, market_data: Dict, game: str = "", phase: str = "", db=None,
     ) -> float:
         """Tournament phase confidence multiplier with auto-calibration.
 
-        Static multipliers: group=0.85, bracket=1.0, finals=1.15.
+        Static multipliers: group=0.90, bracket=1.0, finals=1.15.
         When ≥ESPORTS_TOURNAMENT_PHASE_MIN_SAMPLES resolved trades exist for a
         phase, blends 70% static + 30% calibrated (from observed Brier score).
         Falls back to static multipliers when data is insufficient.
