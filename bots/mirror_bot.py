@@ -69,10 +69,14 @@ class MirrorBot(BaseBot):
 
         # R5b: Per-category adaptive consensus threshold.
         # Key: category string (e.g. "politics", "crypto") → consensus_min int.
-        # Loaded from bot_market_params on first scan; persisted after each resolved trade.
+        # Loaded from bot_category_params on first scan.
         # Falls back to MIRROR_MIN_CONSENSUS (global default) for unknown categories.
         self._category_consensus_min: Dict[str, int] = {}
         self._db_consensus_loaded: bool = False
+
+        # C1: YES/NO resolution cache. Key: "market_id:token_id" → "YES"/"NO".
+        # Avoids repeated DB queries for the same token across scan cycles.
+        self._token_side_cache: Dict[str, str] = {}
 
     def _on_bg_task_done(self, task, name):
         if task.cancelled():
@@ -84,7 +88,7 @@ class MirrorBot(BaseBot):
     # ── R5b: Adaptive consensus threshold per category ──────────────
 
     async def _load_consensus_from_db(self) -> None:
-        """Load per-category consensus thresholds from bot_market_params on startup."""
+        """Load per-category consensus thresholds from bot_category_params on startup."""
         if self._db_consensus_loaded:
             return
         self._db_consensus_loaded = True
@@ -93,8 +97,9 @@ class MirrorBot(BaseBot):
             if db is None:
                 return
             from sqlalchemy import text
+            # M3: Use bot_category_params (not bot_market_params.market_id which is a UUID column)
             sql = text(
-                "SELECT market_id as category, param_value FROM bot_market_params "
+                "SELECT category, param_value FROM bot_category_params "
                 "WHERE bot_name = :bot AND param_name = 'consensus_min'"
             )
             async with db.get_session() as session:
@@ -112,47 +117,39 @@ class MirrorBot(BaseBot):
         global_min = getattr(settings, "MIRROR_MIN_CONSENSUS", 2)
         return self._category_consensus_min.get((category or "").lower(), global_min)
 
-    async def _update_consensus_threshold(self, category: str, was_correct: bool) -> None:
+    async def _get_token_side(self, market_id: str, token_id: str) -> str:
         """
-        R5b: Adapt and persist consensus threshold based on trade outcome.
-        - 3+ consecutive correct → lower threshold by 1 (easier to enter = more trades)
-        - 3+ consecutive wrong → raise threshold by 1 (harder to enter = more selective)
-        Capped at [2, 5].
+        C1: Resolve a Polymarket token_id to 'YES' or 'NO' using the markets table.
+        Polymarket Data API returns side='BUY'/'SELL'; place_order() requires 'YES'/'NO'.
+        Caches results in _token_side_cache to avoid repeated DB queries.
+        Returns 'YES' as fallback if market not found.
         """
-        if not category:
-            return
-        cat = category.lower()
-        current = self._get_consensus_min(cat)
-        if was_correct and current > 2:
-            new_val = current - 1
-        elif not was_correct and current < 5:
-            new_val = current + 1
-        else:
-            return  # Already at bounds, no change
-        self._category_consensus_min[cat] = new_val
-        logger.info("R5b: consensus_min for '%s' → %d (was %d, correct=%s)", cat, new_val, current, was_correct)
-        # Persist to DB (reusing market_id column as category field for BotMarketParam)
+        cache_key = f"{market_id}:{token_id}"
+        if cache_key in self._token_side_cache:
+            return self._token_side_cache[cache_key]
         try:
             db = getattr(self.base_engine, "db", None)
-            if db is None:
-                return
-            from sqlalchemy import text
-            sql = text(
-                """
-                INSERT INTO bot_market_params (bot_name, market_id, param_name, param_value, sample_n, updated_at)
-                VALUES (:bot, :cat, 'consensus_min', :val, 1, NOW())
-                ON CONFLICT (bot_name, market_id, param_name)
-                DO UPDATE SET
-                    param_value = EXCLUDED.param_value,
-                    sample_n    = bot_market_params.sample_n + 1,
-                    updated_at  = NOW()
-                """
-            )
-            async with db.get_session() as session:
-                await session.execute(sql, {"bot": self.bot_name, "cat": cat, "val": float(new_val)})
-                await session.commit()
-        except Exception as exc:
-            logger.debug("R5b: _update_consensus_threshold DB persist failed: %s", exc)
+            if db and getattr(db, "session_factory", None):
+                from sqlalchemy import text as _text
+                async with db.get_session() as session:
+                    row = await session.execute(
+                        _text(
+                            "SELECT yes_token_id, no_token_id FROM markets "
+                            "WHERE condition_id = :mid OR id::text = :mid LIMIT 1"
+                        ),
+                        {"mid": str(market_id)},
+                    )
+                    r = row.fetchone()
+                    if r:
+                        resolved = "YES" if str(token_id) == str(r[0]) else "NO"
+                        self._token_side_cache[cache_key] = resolved
+                        return resolved
+        except Exception as e:
+            logger.debug("_get_token_side failed for %s: %s", str(market_id)[:16], e)
+        return "YES"  # Fallback: assume YES token
+
+    # M4: _update_consensus_threshold deleted — dead code (zero callers) with logic bug.
+    # Bug: docstring said "3+ consecutive" but code adjusted on every single trade.
 
     # ── Main Scan Loop ──────────────────────────────────────────────
 
@@ -317,10 +314,19 @@ class MirrorBot(BaseBot):
                         continue
                     _wf_conf += 1
 
+                    # C1: Resolve BUY→YES/NO using markets table (place_order requires YES/NO).
+                    # SELL stays as SELL (exit signal handled separately in _check_and_execute_exits).
+                    _raw_side = str(parsed.get("side", "BUY")).upper()
+                    if _raw_side == "SELL":
+                        _resolved_side = "SELL"
+                    else:
+                        _resolved_side = await self._get_token_side(
+                            str(parsed["market_id"]), str(parsed["token_id"])
+                        )
+
                     # Reliability gate: skip traders with poor Bayesian win rate
                     if self._reliability_tracker and self._reliability_tracker._cache:
-                        _side = parsed.get("side", "YES")
-                        _alpha, _beta = self._reliability_tracker._get_beta(addr, _side)
+                        _alpha, _beta = self._reliability_tracker._get_beta(addr, _resolved_side)
                         if _alpha + _beta > 2:  # Only filter if we have actual data (not just prior)
                             _mean_rel = _alpha / (_alpha + _beta)
                             if _mean_rel < getattr(settings, "MIRROR_MIN_RELIABILITY", 0.45):
@@ -332,7 +338,7 @@ class MirrorBot(BaseBot):
                         "trade_id": parsed["trade_id"],
                         "market_id": parsed["market_id"],
                         "token_id": parsed["token_id"],
-                        "side": parsed["side"],
+                        "side": _resolved_side,  # C1: YES/NO (not BUY/SELL)
                         "price": parsed["price"],
                         "confidence": confidence,
                         "trader_address": addr,
@@ -474,7 +480,8 @@ class MirrorBot(BaseBot):
             _entry = float(_pos.get("entry_price", 0.5) or 0.5)
             _current = float(_pos.get("current_price", _entry) or _entry)
             _side = (_pos.get("side") or "YES").upper()
-            _pnl_pct = (_current - _entry) / max(_entry, 1e-6) if _side in ("YES", "BUY") else (_entry - _current) / max(_entry, 1e-6)
+            # C2: positions now store YES/NO (post-C1); remove stale "BUY" check
+            _pnl_pct = (_current - _entry) / max(_entry, 1e-6) if _side == "YES" else (_entry - _current) / max(_entry, 1e-6)
             if _pnl_pct <= -_stop_pct:
                 logger.info("MirrorBot autonomous stop-loss", market=_pos_key, pnl_pct=f"{_pnl_pct:.2%}")
                 positions_to_close.append(_pos_key)
@@ -523,10 +530,9 @@ class MirrorBot(BaseBot):
                             continue
 
                         pos = self._open_positions[pos_key]
-                        is_exit = (
-                            (pos["side"].upper() == "BUY" and side.upper() == "SELL")
-                            or (pos["side"].upper() == "SELL" and side.upper() == "BUY")
-                        )
+                        # C2: pos_key match already confirms same market+token;
+                        # trader's SELL of same token = exit regardless of our stored side (YES/NO)
+                        is_exit = side.upper() == "SELL"
                         if is_exit and addr in pos.get("traders", set()):
                             positions_to_close.append(pos_key)
         except Exception as e:
@@ -538,7 +544,8 @@ class MirrorBot(BaseBot):
             if not pos:
                 continue
 
-            exit_side = "SELL" if pos["side"].upper() == "BUY" else "BUY"
+            # C2: pos["side"] is now YES/NO (post-C1). Exit by buying the opposite token.
+            exit_side = "NO" if pos["side"].upper() == "YES" else "YES"
             try:
                 market_id, token_id = pos_key.split(":", 1)
                 exit_price = self.validate_price(
@@ -564,6 +571,9 @@ class MirrorBot(BaseBot):
                         original_side=pos["side"],
                         size=f"{pos['size']:.2f}",
                     )
+                    # M1: Decrement daily exposure on exit (was never decremented, causing monotonic fill)
+                    _exit_cost = pos["size"] * pos.get("current_price", pos["entry_price"])
+                    self._daily_exposure = max(0.0, self._daily_exposure - _exit_cost)
                     del self._open_positions[pos_key]
             except Exception as e:
                 logger.warning("Failed to execute mirror exit for %s: %s", pos_key, e)
@@ -575,6 +585,8 @@ class MirrorBot(BaseBot):
         pos_key = f"{trade_info['market_id']}:{trade_info['token_id']}"
         if pos_key in self._open_positions:
             self._open_positions[pos_key]["traders"].add(trade_info["trader_address"])
+            # N1: Refresh max-hold timer on each new trader entry (not just first entry)
+            self._open_positions[pos_key]["timestamp"] = datetime.now(timezone.utc).isoformat()
         else:
             self._open_positions[pos_key] = {
                 "side": trade_info["side"],
@@ -592,11 +604,14 @@ class MirrorBot(BaseBot):
         if len(self._open_positions) >= max_positions:
             return False
 
-        max_exposure_pct = getattr(
-            settings, "MIRROR_MAX_DAILY_EXPOSURE_PCT", self.MAX_DAILY_EXPOSURE_PCT
-        )
-        _cap = self.bankroll.capital if self.bankroll else float(getattr(settings, "TOTAL_CAPITAL", 10000.0))
-        if _cap > 0 and self._daily_exposure >= _cap * max_exposure_pct:
+        # Daily cap: read bankroll.max_daily_usd directly (avoids capital*0.15 mismatch).
+        # Fallback: MIRROR_MAX_DAILY_EXPOSURE_PCT * TOTAL_CAPITAL for test/mock scenarios.
+        if self.bankroll:
+            _max_daily_usd = self.bankroll.max_daily_usd
+        else:
+            max_exposure_pct = getattr(settings, "MIRROR_MAX_DAILY_EXPOSURE_PCT", self.MAX_DAILY_EXPOSURE_PCT)
+            _max_daily_usd = float(getattr(settings, "TOTAL_CAPITAL", 10000.0)) * max_exposure_pct
+        if self._daily_exposure >= _max_daily_usd:
             return False
 
         return True
@@ -648,15 +663,16 @@ class MirrorBot(BaseBot):
                         if u.get("address")
                     ]
         except Exception as e:
-            logger.warning("Failed to update elite traders", error=str(e))
-            self.elite_traders = []
+            # M2: Keep stale list on error (clearing causes ~30min blackout until next refresh)
+            logger.warning("Failed to update elite traders — retaining stale list", error=str(e))
 
         # Refresh elite reliability posteriors
         if self._reliability_tracker:
             try:
                 await self._reliability_tracker.refresh()
             except Exception as e:
-                logger.debug("Elite reliability refresh failed: %s", e)
+                # N2: Raised from debug to warning — DB failures are not silent in production
+                logger.warning("Elite reliability refresh failed: %s", e)
 
     # ── Opportunity Hook (unused by mirror — consensus in scan) ────
 
@@ -728,12 +744,13 @@ class MirrorBot(BaseBot):
         max_per_market_shares = max_per_market_usd / price if price > 0 else 0
         size = min(size, max_per_market_shares)
 
-        # Cap by remaining daily exposure (in shares, converted from USD cap)
-        max_daily_pct = getattr(
-            settings, "MIRROR_MAX_DAILY_EXPOSURE_PCT", self.MAX_DAILY_EXPOSURE_PCT
-        )
-        _bankroll_capital = self.bankroll.capital if self.bankroll else 10000.0
-        remaining_daily_usd = max(0, _bankroll_capital * max_daily_pct - self._daily_exposure)
+        # Cap by remaining daily exposure: read bankroll.max_daily_usd directly (matching _can_open_position fix)
+        if self.bankroll:
+            _max_daily_usd = self.bankroll.max_daily_usd
+        else:
+            max_daily_pct = getattr(settings, "MIRROR_MAX_DAILY_EXPOSURE_PCT", self.MAX_DAILY_EXPOSURE_PCT)
+            _max_daily_usd = float(getattr(settings, "TOTAL_CAPITAL", 10000.0)) * max_daily_pct
+        remaining_daily_usd = max(0.0, _max_daily_usd - self._daily_exposure)
         remaining_daily_shares = remaining_daily_usd / price if price > 0 else 0
         size = min(size, remaining_daily_shares)
 

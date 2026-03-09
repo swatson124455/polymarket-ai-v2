@@ -299,6 +299,9 @@ class RiskManager:
             # WeatherBot: multi-bucket markets (28 groups × up to 9 buckets) need higher cap
             if bot_name == "WeatherBot":
                 max_positions = getattr(settings, "WEATHER_MAX_POSITIONS", max_positions)
+            # MirrorBot: 51 pre-fix BUY positions exceed global 50 cap; needs higher limit
+            if bot_name == "MirrorBot":
+                max_positions = getattr(settings, "MIRROR_MAX_POSITIONS", max_positions)
             if count > max_positions:
                 checks["allowed"] = False
                 checks["reasons"].append(f"Max positions {max_positions} exceeded (have {count})")
@@ -354,6 +357,8 @@ class RiskManager:
                 max_positions = getattr(settings, "RISK_MAX_POSITIONS_COUNT", None) or settings.MAX_POSITIONS_PER_BOT
                 if bot_name == "WeatherBot":
                     max_positions = getattr(settings, "WEATHER_MAX_POSITIONS", max_positions)
+                if bot_name == "MirrorBot":
+                    max_positions = getattr(settings, "MIRROR_MAX_POSITIONS", max_positions)
 
                 if count > max_positions:
                     checks["allowed"] = False

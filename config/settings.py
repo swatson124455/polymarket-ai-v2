@@ -325,6 +325,7 @@ class Settings(BaseSettings):
     MIRROR_MIN_RELIABILITY: float = float(os.getenv("MIRROR_MIN_RELIABILITY", "0.45"))
     MIRROR_STOP_LOSS_PCT: float = float(os.getenv("MIRROR_STOP_LOSS_PCT", "0.15"))
     MIRROR_MAX_HOLD_HOURS: float = float(os.getenv("MIRROR_MAX_HOLD_HOURS", "72"))
+    MIRROR_MAX_POSITIONS: int = int(os.getenv("MIRROR_MAX_POSITIONS", "200"))  # 51 pre-fix BUY positions exceed global 50 cap; 200 matches WeatherBot
     
     # Bot Settings
     BOT_SCAN_INTERVAL_SECONDS: int = int(os.getenv("BOT_SCAN_INTERVAL_SECONDS", "60"))
