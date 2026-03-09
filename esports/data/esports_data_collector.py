@@ -527,7 +527,11 @@ class EsportsDataCollector:
                         VALUES
                             (:match_id, :game, :team_a, :team_b, :patch, CAST(:game_state_json AS jsonb),
                              :outcome, :snapshot_type, :tournament, :scheduled_at)
-                        ON CONFLICT DO NOTHING
+                        ON CONFLICT (match_id, snapshot_type, game)
+                        WHERE snapshot_type = 'match'
+                        DO UPDATE SET game_state_json = EXCLUDED.game_state_json
+                        WHERE esports_training_data.game_state_json->>'map_name' IS NULL
+                           OR esports_training_data.game_state_json->>'map_name' = ''
                     """),
                     params,
                 )
