@@ -202,9 +202,8 @@ class EsportsSeriesBot(BaseBot):
         all_opps: List[Dict] = []
         for match_id, series_data in list(self._active_series.items()):
             try:
-                opp = await self._analyze_series(match_id, series_data, db)
-                if opp:
-                    all_opps.append(opp)
+                opps = await self._analyze_series(match_id, series_data, db)
+                all_opps.extend(opps)
             except Exception as exc:
                 logger.debug(
                     "EsportsSeriesBot: analysis error",
@@ -254,7 +253,7 @@ class EsportsSeriesBot(BaseBot):
 
     async def _analyze_series(
         self, match_id: str, series_data: Dict, db=None
-    ) -> Optional[Dict]:
+    ) -> List[Dict]:
         """
         Compute conditional match probability and compare to market.
 
@@ -274,7 +273,7 @@ class EsportsSeriesBot(BaseBot):
 
         best_of = int(series_data.get("best_of", 1))
         if best_of < 3:
-            return None  # Only trade BO3+ series
+            return []  # Only trade BO3+ series
 
         maps_a = int(series_data.get("score_maps_a", 0))
         maps_b = int(series_data.get("score_maps_b", 0))
@@ -285,7 +284,7 @@ class EsportsSeriesBot(BaseBot):
         # Skip if series is already decided
         needed = (best_of + 1) // 2
         if maps_a >= needed or maps_b >= needed:
-            return None
+            return []
 
         # Get per-map win rates: DB first (if map data exists), HLTV fallback.
         # PandaScore free tier does not provide per-game map names, so DB query
@@ -343,21 +342,21 @@ class EsportsSeriesBot(BaseBot):
             model_prob = self._simple_series_prob(maps_a, maps_b, best_of)
 
         if model_prob is None or not (0.01 < model_prob < 0.99):
-            return None
+            return []
 
         # Find matching Polymarket market
         market_info = await self._find_series_market(
             match_id, game, team_a, team_b, db
         )
         if not market_info:
-            return None
+            return []
 
         market_price = market_info.get("price", 0.5)
         market_id = market_info.get("market_id")
         token_id = market_info.get("token_id")
 
         if not market_id or not token_id:
-            return None
+            return []
 
         # Determine side and edge
         edge_yes = model_prob - market_price
@@ -381,7 +380,7 @@ class EsportsSeriesBot(BaseBot):
                 trade_token_id = no_token_id
 
         if not side:
-            return None
+            return []
 
         # Don't trade if market already prices in reverse sweep
         if (maps_a > maps_b and side == "NO") or (maps_b > maps_a and side == "YES"):
@@ -419,7 +418,7 @@ class EsportsSeriesBot(BaseBot):
         except Exception as exc:
             logger.warning("EsportsSeriesBot: prediction logging failed", error=str(exc))
 
-        return {
+        match_opp = {
             "type": "esports_series",
             "market_id": market_id,
             "token_id": str(trade_token_id),
@@ -433,6 +432,47 @@ class EsportsSeriesBot(BaseBot):
             "series_score": f"{maps_a}-{maps_b}",
             "best_of": best_of,
         }
+        result = [match_opp]
+
+        # P6.4: Check for current-map hedge opportunity (correlated entry)
+        hedge_enabled = getattr(settings, "ESPORTS_SERIES_HEDGE_ENABLED", True)
+        if hedge_enabled:
+            current_map = maps_a + maps_b + 1
+            map_market = await self._find_current_map_market(
+                match_id, game, team_a, team_b, current_map, db
+            )
+            if map_market:
+                map_price = float(map_market.get("price") or 0.5)
+                map_edge_yes = model_prob - map_price
+                map_edge_no = map_price - model_prob
+                map_side = None
+                map_trade_price = map_price
+                map_edge_val = 0.0
+                if side == "YES" and map_edge_yes >= self._min_edge:
+                    map_side = "YES"
+                    map_edge_val = map_edge_yes
+                elif side == "NO" and map_edge_no >= self._min_edge:
+                    map_side = "NO"
+                    map_trade_price = 1.0 - map_price
+                    map_edge_val = map_edge_no
+                if map_side:
+                    map_conf = model_prob if map_side == "YES" else (1.0 - model_prob)
+                    result.append({
+                        "type": "esports_series_hedge",
+                        "market_id": map_market["market_id"],
+                        "token_id": str(map_market["token_id"]),
+                        "side": map_side,
+                        "price": map_trade_price,
+                        "confidence": map_conf,
+                        "prediction": model_prob,
+                        "edge": round(map_edge_val, 4),
+                        "game": game,
+                        "market_type": "map_winner",
+                        "series_score": f"{maps_a}-{maps_b}",
+                        "map_number": current_map,
+                    })
+
+        return result
 
     # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -547,6 +587,41 @@ class EsportsSeriesBot(BaseBot):
 
         return veto_order[:best_of]
 
+    async def _find_current_map_market(
+        self,
+        match_id: str,
+        game: str,
+        team_a: str,
+        team_b: str,
+        current_map: int,
+        db=None,
+    ) -> Optional[Dict]:
+        """Find Polymarket map-winner market for the current map being played.
+
+        Reuses the cached find_markets_for_match() result — no extra API call.
+        Filters for market_type=map_winner and checks question for map number.
+        """
+        if not self._scanner:
+            return None
+        try:
+            team_names = [n for n in (team_a, team_b) if n]
+            markets = await asyncio.wait_for(
+                self._scanner.find_markets_for_match(
+                    match_id, game, db=db, team_names=team_names or None,
+                ),
+                timeout=5.0,
+            )
+            map_patterns = [f"map {current_map}", f"game {current_map}"]
+            for m in (markets or []):
+                if m.get("market_type") != "map_winner":
+                    continue
+                q = str(m.get("question", "")).lower()
+                if any(p in q for p in map_patterns):
+                    return m
+        except (asyncio.TimeoutError, Exception):
+            pass
+        return None
+
     async def _find_series_market(
         self,
         match_id: str,
@@ -559,8 +634,11 @@ class EsportsSeriesBot(BaseBot):
         if not self._scanner:
             return None
         try:
+            team_names = [n for n in (team_a, team_b) if n]
             markets = await asyncio.wait_for(
-                self._scanner.find_markets_for_match(match_id, game, db=db),
+                self._scanner.find_markets_for_match(
+                    match_id, game, db=db, team_names=team_names or None,
+                ),
                 timeout=5.0,
             )
             if markets:

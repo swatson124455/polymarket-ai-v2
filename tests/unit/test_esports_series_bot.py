@@ -405,7 +405,7 @@ class TestScanAndTrade:
             "edge": 0.20,
             "game": "cs2",
         }
-        bot._analyze_series = AsyncMock(return_value=opp)
+        bot._analyze_series = AsyncMock(return_value=[opp])
         bot._execute_series_trade = AsyncMock()
 
         await bot.scan_and_trade()
@@ -429,7 +429,7 @@ class TestScanAndTrade:
             call_count += 1
             if match_id == "m1":
                 raise RuntimeError("flaky error")
-            return None
+            return []
 
         bot._analyze_series = flaky_analyze
         await bot.scan_and_trade()
@@ -459,8 +459,8 @@ class TestScanAndTrade:
             "m2": _make_series_data(match_id="m2"),
         }
 
-        # First returns opportunity, second returns None
-        bot._analyze_series = AsyncMock(side_effect=[opp, None])
+        # First returns opportunity, second returns empty list
+        bot._analyze_series = AsyncMock(side_effect=[[opp], []])
         bot._execute_series_trade = AsyncMock()
 
         await bot.scan_and_trade()
@@ -478,35 +478,35 @@ class TestScanAndTrade:
 class TestAnalyzeSeries:
     @pytest.mark.asyncio
     async def test_returns_none_for_bo1(self):
-        """Returns None for BO1 series (only trades BO3+)."""
+        """Returns [] for BO1 series (only trades BO3+)."""
         bot = make_bot()
         series = _make_series_data(best_of=1)
         result = await bot._analyze_series("m1", series, db=None)
-        assert result is None
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_returns_none_for_bo2(self):
-        """Returns None for BO2 series (only trades BO3+)."""
+        """Returns [] for BO2 series (only trades BO3+)."""
         bot = make_bot()
         series = _make_series_data(best_of=2)
         result = await bot._analyze_series("m1", series, db=None)
-        assert result is None
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_returns_none_when_series_decided_bo3(self):
-        """Returns None when team A has already won BO3 (2-0)."""
+        """Returns [] when team A has already won BO3 (2-0)."""
         bot = make_bot()
         series = _make_series_data(best_of=3, score_maps_a=2, score_maps_b=0)
         result = await bot._analyze_series("m1", series, db=None)
-        assert result is None
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_returns_none_when_series_decided_bo5(self):
-        """Returns None when team B has already won BO5 (1-3)."""
+        """Returns [] when team B has already won BO5 (1-3)."""
         bot = make_bot()
         series = _make_series_data(best_of=5, score_maps_a=1, score_maps_b=3)
         result = await bot._analyze_series("m1", series, db=None)
-        assert result is None
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_uses_simple_series_prob_when_no_map_rates(self):
@@ -529,24 +529,24 @@ class TestAnalyzeSeries:
         with patch("bots.esports_series_bot.log_prediction", new_callable=AsyncMock, create=True):
             result = await bot._analyze_series("m1", series, db=None)
 
-        assert result is not None
-        assert result["side"] == "YES"
-        assert result["prediction"] > 0.50
+        assert result
+        assert result[0]["side"] == "YES"
+        assert result[0]["prediction"] > 0.50
 
     @pytest.mark.asyncio
     async def test_returns_none_when_no_matching_market(self):
-        """Returns None when _find_series_market returns None."""
+        """Returns [] when _find_series_market returns None."""
         bot = make_bot()
         bot._hltv = None
         series = _make_series_data(best_of=3, score_maps_a=1, score_maps_b=0)
 
         bot._find_series_market = AsyncMock(return_value=None)
         result = await bot._analyze_series("m1", series, db=None)
-        assert result is None
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_returns_none_when_market_missing_id(self):
-        """Returns None when market has no market_id."""
+        """Returns [] when market has no market_id."""
         bot = make_bot()
         bot._hltv = None
         series = _make_series_data(best_of=3, score_maps_a=1, score_maps_b=0)
@@ -557,11 +557,11 @@ class TestAnalyzeSeries:
             "price": 0.50,
         })
         result = await bot._analyze_series("m1", series, db=None)
-        assert result is None
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_returns_none_when_market_missing_token_id(self):
-        """Returns None when market has no token_id."""
+        """Returns [] when market has no token_id."""
         bot = make_bot()
         bot._hltv = None
         series = _make_series_data(best_of=3, score_maps_a=1, score_maps_b=0)
@@ -572,7 +572,7 @@ class TestAnalyzeSeries:
             "price": 0.50,
         })
         result = await bot._analyze_series("m1", series, db=None)
-        assert result is None
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_returns_yes_trade_when_edge_sufficient(self):
@@ -593,16 +593,16 @@ class TestAnalyzeSeries:
         with patch("bots.esports_series_bot.log_prediction", new_callable=AsyncMock, create=True):
             result = await bot._analyze_series("m1", series, db=None)
 
-        assert result is not None
-        assert result["side"] == "YES"
-        assert result["type"] == "esports_series"
-        assert result["market_id"] == "mkt-1"
-        assert result["token_id"] == "tok-yes-1"
-        assert result["edge"] > 0.10
-        assert result["best_of"] == 3
-        assert result["series_score"] == "1-0"
-        assert result["game"] == "cs2"
-        assert result["market_type"] == "match_winner"
+        assert result
+        assert result[0]["side"] == "YES"
+        assert result[0]["type"] == "esports_series"
+        assert result[0]["market_id"] == "mkt-1"
+        assert result[0]["token_id"] == "tok-yes-1"
+        assert result[0]["edge"] > 0.10
+        assert result[0]["best_of"] == 3
+        assert result[0]["series_score"] == "1-0"
+        assert result[0]["game"] == "cs2"
+        assert result[0]["market_type"] == "match_winner"
 
     @pytest.mark.asyncio
     async def test_returns_no_trade_when_model_prob_below_market(self):
@@ -624,10 +624,10 @@ class TestAnalyzeSeries:
         with patch("bots.esports_series_bot.log_prediction", new_callable=AsyncMock, create=True):
             result = await bot._analyze_series("m1", series, db=None)
 
-        assert result is not None
-        assert result["side"] == "NO"
-        assert result["token_id"] == "tok-no-1"
-        assert result["confidence"] == pytest.approx(1.0 - result["prediction"])
+        assert result
+        assert result[0]["side"] == "NO"
+        assert result[0]["token_id"] == "tok-no-1"
+        assert result[0]["confidence"] == pytest.approx(1.0 - result[0]["prediction"])
 
     @pytest.mark.asyncio
     async def test_returns_none_when_no_edge(self):
@@ -647,7 +647,7 @@ class TestAnalyzeSeries:
         })
 
         result = await bot._analyze_series("m1", series, db=None)
-        assert result is None
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_caches_prediction_for_ws_path(self):
@@ -667,7 +667,7 @@ class TestAnalyzeSeries:
         with patch("bots.esports_series_bot.log_prediction", new_callable=AsyncMock, create=True):
             result = await bot._analyze_series("m1", series, db=None)
 
-        assert result is not None
+        assert result
         assert "mkt-1" in bot._series_prediction_cache
         assert "prob" in bot._series_prediction_cache["mkt-1"]
         assert "ts" in bot._series_prediction_cache["mkt-1"]
@@ -702,7 +702,7 @@ class TestAnalyzeSeries:
             result = await bot._analyze_series("m1", series, db=None)
 
         # Verify series_prob_with_map_veto was called (the import is inside _analyze_series)
-        assert result is not None
+        assert result
 
     @pytest.mark.asyncio
     async def test_prediction_logging_failure_doesnt_crash(self):
@@ -726,9 +726,9 @@ class TestAnalyzeSeries:
         ):
             result = await bot._analyze_series("m1", series, db=None)
 
-        # Should still return the trade dict despite logging failure
-        assert result is not None
-        assert result["side"] == "YES"
+        # Should still return list with trade dict despite logging failure
+        assert result
+        assert result[0]["side"] == "YES"
 
 
 # =========================================================================

@@ -350,10 +350,11 @@ class EsportsModelTrainer:
             _GAMES = ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl")
             _GAME_IDS = {g: i for i, g in enumerate(_GAMES)}
 
-            # Shared features used across all games
+            # Shared features used across all games (P6.5: + recent form)
             _SHARED_FEATURES = [
                 "team_strength_diff", "matchup_uncertainty",
                 "rd_asymmetry", "team_a_volatility", "team_b_volatility",
+                "team_a_recent_form", "team_b_recent_form",
             ]
 
             all_rows = []
@@ -396,6 +397,35 @@ class EsportsModelTrainer:
             if len(pooled) < 100:
                 result["error"] = f"insufficient cross-game data after filter: {len(pooled)} < 100"
                 return result
+
+            # P6.5: Compute rolling 10-game recent form per team per game.
+            # Sort oldest-first, annotate each row BEFORE updating histories
+            # so there is zero lookahead bias. Teams without names default to 0.5.
+            from collections import deque as _deque
+            _team_win_hist: dict = {}
+            for row in sorted(pooled, key=lambda r: str(r.get("scheduled_at", ""))):
+                _g = row.get("_game", "")
+                _ta = str(row.get("team_a", row.get("team_a_name", ""))).lower().strip()
+                _tb = str(row.get("team_b", row.get("team_b_name", ""))).lower().strip()
+                _lbl = int(
+                    row.get("blue_win",
+                    row.get("team_a_won_round",
+                    row.get("team_a_won", 0)))
+                )
+                key_a = (_g, _ta) if _ta else None
+                key_b = (_g, _tb) if _tb else None
+                hist_a = _team_win_hist.get(key_a) if key_a else None
+                hist_b = _team_win_hist.get(key_b) if key_b else None
+                row["team_a_recent_form"] = (sum(hist_a) / len(hist_a)) if hist_a else 0.5
+                row["team_b_recent_form"] = (sum(hist_b) / len(hist_b)) if hist_b else 0.5
+                if key_a:
+                    if key_a not in _team_win_hist:
+                        _team_win_hist[key_a] = _deque(maxlen=10)
+                    _team_win_hist[key_a].append(_lbl)
+                if key_b:
+                    if key_b not in _team_win_hist:
+                        _team_win_hist[key_b] = _deque(maxlen=10)
+                    _team_win_hist[key_b].append(1 - _lbl)
 
             # Oldest-first for temporal split
             pooled = list(reversed(pooled))

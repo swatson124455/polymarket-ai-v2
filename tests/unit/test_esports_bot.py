@@ -90,7 +90,7 @@ class TestEsportsBotInit:
     def test_settings_stored_correctly(self):
         bot = make_bot()
         assert bot._min_edge == pytest.approx(0.08)
-        assert bot._min_confidence == pytest.approx(0.55)
+        assert bot._min_confidence == pytest.approx(0.52)
         assert bot._maker_timeout == pytest.approx(3.0)
 
 
