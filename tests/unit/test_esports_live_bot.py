@@ -835,17 +835,22 @@ class TestOnBgTaskDone:
             mock_logger.warning.assert_not_called()
 
     def test_failed_task_logs_warning(self):
-        """_on_bg_task_done logs warning when task has exception."""
+        """_on_bg_task_done logs warning when task has exception and schedules restart."""
         bot = make_bot()
         task = MagicMock()
         task.cancelled.return_value = False
         task.exception.return_value = RuntimeError("task failed")
-        with patch("bots.esports_live_bot.logger") as mock_logger:
+        mock_loop = MagicMock()
+        with patch("bots.esports_live_bot.logger") as mock_logger, \
+             patch("bots.esports_live_bot.asyncio.get_event_loop", return_value=mock_loop):
             bot._on_bg_task_done(task, "test_task")
             mock_logger.warning.assert_called_once()
             call_kwargs = mock_logger.warning.call_args[1]
             assert call_kwargs["task_name"] == "test_task"
             assert "task failed" in call_kwargs["error"]
+            # Verify restart was scheduled
+            mock_loop.call_later.assert_called_once()
+            assert bot._monitor_restart_count == 1
 
     def test_successful_task_no_log(self):
         """_on_bg_task_done does not log when task succeeded (no exception)."""

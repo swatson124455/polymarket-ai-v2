@@ -119,12 +119,40 @@ class EsportsLiveBot(BaseBot):
         await super().start()
 
     def _on_bg_task_done(self, task: asyncio.Task, name: str) -> None:
-        """Log background task failures."""
+        """Log background task failures and restart with backoff."""
         if task.cancelled():
             return
         exc = task.exception()
         if exc:
-            logger.warning("bg_task_failed", task_name=name, error=str(exc))
+            if not hasattr(self, "_monitor_restart_count"):
+                self._monitor_restart_count = 0
+            self._monitor_restart_count += 1
+            delay = min(60.0, 2.0 ** self._monitor_restart_count)
+            logger.warning(
+                "bg_task_failed — scheduling restart",
+                task_name=name,
+                error=str(exc),
+                restart_attempt=self._monitor_restart_count,
+                delay_s=delay,
+            )
+            loop = asyncio.get_event_loop()
+            loop.call_later(delay, lambda: asyncio.ensure_future(self._restart_monitor()))
+
+    async def _restart_monitor(self) -> None:
+        """Restart game monitor after failure with exponential backoff."""
+        if not self.running or self._game_monitor is None:
+            return
+        logger.info(
+            "EsportsLiveBot: restarting game monitor",
+            attempt=getattr(self, "_monitor_restart_count", 0),
+        )
+        self._monitor_task = asyncio.create_task(
+            self._game_monitor.run_forever(),
+            name="esports_game_monitor",
+        )
+        self._monitor_task.add_done_callback(
+            lambda t: self._on_bg_task_done(t, "esports_game_monitor")
+        )
 
     async def stop(self) -> None:
         """Stop game monitor and scan loop."""
