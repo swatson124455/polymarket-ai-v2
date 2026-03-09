@@ -918,8 +918,10 @@ class EsportsBot(BaseBot):
                 if mid:
                     new_live[mid] = match
             self._live_matches = new_live
-        except (asyncio.TimeoutError, Exception) as exc:
-            logger.debug("EsportsBot: live match refresh failed", error=str(exc))
+        except asyncio.TimeoutError:
+            logger.warning("EsportsBot: live match refresh timed out (10s)")
+        except Exception as exc:
+            logger.warning("EsportsBot: live match refresh failed", error=str(exc))
 
     def _is_live(self, market_id: str) -> bool:
         """Check if a market has an associated live match."""

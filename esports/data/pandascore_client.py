@@ -16,6 +16,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -353,7 +354,9 @@ class PandaScoreClient:
                     backoff_s=backoff,
                 )
                 if attempt < 2:
-                    await asyncio.sleep(backoff)
+                    # Add ±10% jitter to avoid thundering herd after mass failures
+                    jitter = random.uniform(0.0, backoff * 0.1)
+                    await asyncio.sleep(backoff + jitter)
 
         return None
 
