@@ -52,6 +52,7 @@ class EsportsBot(BaseBot):
         self._valorant_model = None  # ValorantModel
         self._trainer = None         # EsportsModelTrainer
         self._opendota = None        # OpenDotaClient (Dota2 enrichment)
+        self._aligulac = None        # AligulacClient (SC2 ratings blend)
         self._bg_train_tasks: Dict[str, asyncio.Task] = {}  # game → background train task
 
         # Per-game/tournament/team exposure tracking (USD deployed)
@@ -136,6 +137,19 @@ class EsportsBot(BaseBot):
         except Exception:
             self._opendota = None
             logger.debug("EsportsBot: OpenDota client not available")
+
+        # Aligulac client — SC2 Elo ratings + match predictions (free key)
+        aligulac_key = getattr(settings, "ALIGULAC_API_KEY", None)
+        if aligulac_key:
+            try:
+                from esports.data.aligulac_client import AligulacClient
+                self._aligulac = AligulacClient(api_key=aligulac_key)
+                logger.info("EsportsBot: Aligulac client initialized")
+            except Exception:
+                self._aligulac = None
+                logger.debug("EsportsBot: Aligulac client not available")
+        else:
+            self._aligulac = None
 
         db = getattr(self.base_engine, "db", None)
         # market_service passed below after initialization (if successful)
@@ -785,6 +799,11 @@ class EsportsBot(BaseBot):
                     glicko2_prob = await self._opendota_form_adjustment(
                         market_data, glicko2_prob,
                     )
+                # Aligulac blend for SC2 (50/50 with established Elo)
+                if game == "sc2":
+                    glicko2_prob = await self._aligulac_sc2_blend(
+                        market_data, glicko2_prob,
+                    )
                 self._prediction_cache[market_id] = {
                     "prob": glicko2_prob, "ts": time.monotonic(), "game": game,
                     "ml_raw": None, "glicko2_est": glicko2_prob,
@@ -955,6 +974,55 @@ class EsportsBot(BaseBot):
             return adjusted
         except Exception:
             return base_prob
+
+    async def _aligulac_sc2_blend(
+        self, market_data: Dict, glicko2_prob: float,
+    ) -> float:
+        """Blend Glicko-2 prediction with Aligulac's SC2 rating prediction.
+
+        50% Aligulac + 50% Glicko-2 when Aligulac data available.
+        Returns glicko2_prob unchanged if Aligulac unavailable.
+        """
+        if not self._aligulac:
+            return glicko2_prob
+
+        import re
+
+        question = str(market_data.get("question", "")).lower()
+        vs_match = re.search(r"(.+?)\s+(?:vs\.?|versus|v)\s+(.+?)(?:\?|$)", question)
+        if not vs_match:
+            return glicko2_prob
+
+        name_a = vs_match.group(1).strip().rstrip(":")
+        name_b = vs_match.group(2).strip().rstrip("?").strip()
+        for prefix in ("will ", "can ", "does "):
+            if name_a.startswith(prefix):
+                name_a = name_a[len(prefix):]
+        name_a, name_b = self._clean_team_names(name_a, name_b)
+
+        try:
+            enrichment = await asyncio.wait_for(
+                self._aligulac.get_player_enrichment(name_a, name_b, best_of=3),
+                timeout=5.0,
+            )
+            if enrichment is None:
+                return glicko2_prob
+
+            aligulac_prob = enrichment["aligulac_prob_a"]
+            # 50/50 blend of Aligulac and our Glicko-2
+            blended = 0.5 * aligulac_prob + 0.5 * glicko2_prob
+            blended = max(0.05, min(0.95, blended))
+
+            logger.debug(
+                "aligulac_sc2_blend",
+                player_a=name_a, player_b=name_b,
+                aligulac_prob=round(aligulac_prob, 4),
+                glicko2_prob=round(glicko2_prob, 4),
+                blended=round(blended, 4),
+            )
+            return blended
+        except Exception:
+            return glicko2_prob
 
     @staticmethod
     def _detect_game(question: str) -> Optional[str]:

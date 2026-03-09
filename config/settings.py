@@ -939,6 +939,9 @@ class Settings(BaseSettings):
     ESPORTS_MAX_TOURNAMENT_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_TOURNAMENT_EXPOSURE", "200.0"))
     ESPORTS_MAX_TEAM_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_TEAM_EXPOSURE", "150.0"))
 
+    # --- External API keys (esports data enrichment) ---
+    ALIGULAC_API_KEY: str = os.getenv("ALIGULAC_API_KEY", "")
+
     # --- Signal confluence ---
     ESPORTS_CONFLUENCE_MIN: float = float(os.getenv("ESPORTS_CONFLUENCE_MIN", "0.60"))
     ESPORTS_WHALE_SMART_MONEY_THRESHOLD: float = float(os.getenv("ESPORTS_WHALE_SMART_MONEY_THRESHOLD", "0.60"))
