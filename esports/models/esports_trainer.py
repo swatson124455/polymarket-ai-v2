@@ -53,16 +53,97 @@ class EsportsModelTrainer:
         self._ps = pandascore_client
         self._last_train_time: Dict[str, float] = {}  # game → monotonic timestamp
         self._train_results: Dict[str, Dict] = {}     # game → last training result
+        # Smart retrain state (set at training time)
+        self._last_train_brier: Dict[str, float] = {}      # game → brier at last training
+        self._last_train_row_count: Dict[str, int] = {}    # game → row count at last training
+        self._last_train_patch: Dict[str, str] = {}        # game → patch at last training
+        self._min_retrain_interval: float = 7200.0          # 2h minimum between retrains
 
     @property
     def train_results(self) -> Dict[str, Dict]:
         """Last training results per game."""
         return dict(self._train_results)
 
-    def needs_retrain(self, game: str) -> bool:
-        """Check if a game model needs retraining based on interval."""
+    def needs_retrain(
+        self,
+        game: str,
+        *,
+        current_brier: Optional[float] = None,
+        current_row_count: Optional[int] = None,
+        current_patch: Optional[str] = None,
+        recent_loss_streak: int = 0,
+    ) -> bool:
+        """Check if a game model needs retraining (interval + smart triggers).
+
+        Smart triggers (any fires → retrain):
+          1. 24h interval (original)
+          2. Brier degradation >0.05 since last training
+          3. ≥50 new training rows since last training
+          4. Patch change (LoL only)
+          5. ≥4 consecutive losing trades
+
+        All triggers respect a 2h minimum cooldown to prevent spam.
+        """
         last = self._last_train_time.get(game, 0.0)
-        return (time.monotonic() - last) > _RETRAIN_INTERVAL
+        elapsed = time.monotonic() - last
+
+        # Hard minimum: don't retrain within 2h of last training
+        if elapsed < self._min_retrain_interval:
+            return False
+
+        # Trigger 1: 24h interval (original behavior)
+        if elapsed > _RETRAIN_INTERVAL:
+            return True
+
+        # Trigger 2: Brier degradation
+        if current_brier is not None and game in self._last_train_brier:
+            brier_delta = current_brier - self._last_train_brier[game]
+            if brier_delta > 0.05:
+                logger.info(
+                    "EsportsModelTrainer: retrain trigger — brier degradation",
+                    game=game,
+                    last_brier=round(self._last_train_brier[game], 4),
+                    current_brier=round(current_brier, 4),
+                    delta=round(brier_delta, 4),
+                )
+                return True
+
+        # Trigger 3: Data volume (≥50 new rows)
+        if current_row_count is not None and game in self._last_train_row_count:
+            new_rows = current_row_count - self._last_train_row_count[game]
+            if new_rows >= 50:
+                logger.info(
+                    "EsportsModelTrainer: retrain trigger — data volume",
+                    game=game,
+                    last_count=self._last_train_row_count[game],
+                    current_count=current_row_count,
+                    new_rows=new_rows,
+                )
+                return True
+
+        # Trigger 4: Patch change (LoL only)
+        if (current_patch is not None
+                and game in self._last_train_patch
+                and current_patch
+                and current_patch != self._last_train_patch[game]):
+            logger.info(
+                "EsportsModelTrainer: retrain trigger — patch change",
+                game=game,
+                old_patch=self._last_train_patch[game],
+                new_patch=current_patch,
+            )
+            return True
+
+        # Trigger 5: Loss streak (≥4 consecutive losses)
+        if recent_loss_streak >= 4:
+            logger.info(
+                "EsportsModelTrainer: retrain trigger — loss streak",
+                game=game,
+                loss_streak=recent_loss_streak,
+            )
+            return True
+
+        return False
 
     async def train_game(
         self,
@@ -169,6 +250,7 @@ class EsportsModelTrainer:
                 metrics = {"accuracy": 0.0, "brier_score": 1.0, "ece": 1.0}
                 result["graduated"] = False
                 self._last_train_time[game] = time.monotonic()
+                self._last_train_row_count[game] = len(training_data)
                 self._train_results[game] = result
                 return result
             else:
@@ -187,6 +269,15 @@ class EsportsModelTrainer:
 
             self._last_train_time[game] = time.monotonic()
             self._train_results[game] = result
+            # Smart retrain state — snapshot at training time
+            self._last_train_brier[game] = brier
+            self._last_train_row_count[game] = len(training_data)
+            if game == "lol":
+                for row in reversed(training_data):
+                    p = row.get("patch", "")
+                    if p:
+                        self._last_train_patch[game] = p
+                        break
 
             logger.info(
                 "EsportsModelTrainer: training complete",
@@ -283,6 +374,29 @@ class EsportsModelTrainer:
                 result["error"] = f"insufficient cross-game data: {len(pooled)} < 100"
                 return result
 
+            # Filter rows with missing Glicko-2 data: both team_strength_diff
+            # and matchup_uncertainty at 0.0 means "unknown" (real even matches
+            # have non-zero matchup_uncertainty from phi values).
+            pre_filter = len(pooled)
+            pooled = [
+                r for r in pooled
+                if not (
+                    float(r.get("team_strength_diff", 0.0)) == 0.0
+                    and float(r.get("matchup_uncertainty", 0.0)) == 0.0
+                )
+            ]
+            if pre_filter != len(pooled):
+                logger.info(
+                    "EsportsModelTrainer: filtered missing-Glicko2 rows",
+                    before=pre_filter,
+                    after=len(pooled),
+                    dropped=pre_filter - len(pooled),
+                )
+
+            if len(pooled) < 100:
+                result["error"] = f"insufficient cross-game data after filter: {len(pooled)} < 100"
+                return result
+
             # Oldest-first for temporal split
             pooled = list(reversed(pooled))
             split_idx = int(len(pooled) * (1 - _VALIDATION_SPLIT))
@@ -357,6 +471,8 @@ class EsportsModelTrainer:
 
             self._last_train_time["cross_game"] = time.monotonic()
             self._train_results["cross_game"] = result
+            self._last_train_brier["cross_game"] = brier
+            self._last_train_row_count["cross_game"] = len(pooled)
 
             logger.info(
                 "EsportsModelTrainer: cross-game XGBoost trained",

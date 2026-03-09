@@ -630,6 +630,15 @@ class EsportsSeriesBot(BaseBot):
                     "best_of": best_of,
                 }
 
+            # Prune ended series (no longer in PandaScore live feed)
+            stale = set(self._active_series) - set(new_series)
+            if stale:
+                logger.debug(
+                    "EsportsSeriesBot: pruning ended series",
+                    pruned=len(stale),
+                    match_ids=list(stale)[:5],
+                )
+
             self._active_series = new_series
         except (asyncio.TimeoutError, Exception) as exc:
             logger.debug("EsportsSeriesBot: refresh failed", error=str(exc))

@@ -425,9 +425,40 @@ class EsportsBot(BaseBot):
             if task.done():
                 del self._bg_train_tasks[game_key]
 
+        # Gather smart retrain trigger data (lightweight, degrades gracefully)
+        _smart_brier: Dict[str, float] = {}
+        _smart_row_count: Dict[str, int] = {}
+        try:
+            from esports.data.esports_db import get_rolling_accuracy
+            for _rg in ("lol", "cs2"):
+                _acc = await get_rolling_accuracy(db, _rg, bot_name="EsportsBot")
+                if _acc and _acc["total"] >= 10:
+                    _smart_brier[_rg] = _acc["brier_score"]
+        except Exception:
+            pass
+        try:
+            from sqlalchemy import text as _sa_text
+            async with db.get_session() as _sess:
+                for _rg in ("lol", "cs2"):
+                    _cnt = await _sess.execute(
+                        _sa_text("SELECT COUNT(*) FROM esports_training_data WHERE game = :game"),
+                        {"game": _rg},
+                    )
+                    _smart_row_count[_rg] = int(_cnt.scalar() or 0)
+        except Exception:
+            pass
+        _lol_patch = ""
+        if self._patch_drift:
+            _lol_patch = self._patch_drift._known_patches.get("lol", "")
+
         for _retrain_game in ("lol", "cs2"):
             if (self._trainer
-                    and self._trainer.needs_retrain(_retrain_game)
+                    and self._trainer.needs_retrain(
+                        _retrain_game,
+                        current_brier=_smart_brier.get(_retrain_game),
+                        current_row_count=_smart_row_count.get(_retrain_game),
+                        current_patch=_lol_patch if _retrain_game == "lol" else None,
+                    )
                     and _retrain_game not in self._bg_train_tasks):
                 self._bg_train_tasks[_retrain_game] = asyncio.create_task(
                     self._train_in_background(_retrain_game, db),
@@ -632,14 +663,17 @@ class EsportsBot(BaseBot):
             )
             return None
 
-        # Tournament phase confidence boost (regime detection for esports)
-        confidence *= self._get_tournament_phase_mult(market_data)
+        # Tournament phase detection and confidence boost
+        db = getattr(self.base_engine, "db", None)
+        _tournament_phase = self._detect_tournament_phase(market_data)
+        confidence *= await self._get_tournament_phase_mult(
+            market_data, game, _tournament_phase, db
+        )
 
         if confidence < self._min_confidence:
             return None
 
         # Log prediction for accuracy tracking (dedup: skip if unchanged within 10 min)
-        db = getattr(self.base_engine, "db", None)
         _log_cache = self._prediction_log_cache.get(market_id)
         _should_log = True
         if _log_cache:
@@ -659,6 +693,7 @@ class EsportsBot(BaseBot):
                     market_price=price,
                     side=side,
                     edge=round(edge, 4),
+                    tournament_phase=_tournament_phase,
                 )
                 self._prediction_log_cache[market_id] = (model_prob, time.monotonic())
             except Exception as exc:
@@ -935,33 +970,70 @@ class EsportsBot(BaseBot):
         }
 
     @staticmethod
-    def _get_tournament_phase_mult(market_data: Dict) -> float:
-        """Tournament phase confidence multiplier (esports regime detection).
-
-        Group stage: higher variance, more upsets → 0.85× confidence.
-        Bracket/playoffs: reduced field, better accuracy → 1.0× baseline.
-        Grand finals: highest accuracy window → 1.15× boost.
-
-        Falls back to 1.0 if phase not detected.
-        """
+    def _detect_tournament_phase(market_data: Dict) -> str:
+        """Detect tournament phase from market data. Returns phase string."""
         serie_type = str(market_data.get("serie_type", "")).lower()
         question = str(market_data.get("question", "")).lower()
 
         # Detect from PandaScore serie_type (primary)
         if serie_type in ("group", "group_stage", "round_robin"):
-            return 0.85
+            return "group"
         if serie_type in ("grand_final", "grand_finals", "final", "finals"):
-            return 1.15
+            return "finals"
         if serie_type in ("bracket", "playoff", "quarterfinal", "semifinal"):
-            return 1.0
+            return "bracket"
 
         # Fallback: detect from market question text
         if any(kw in question for kw in ("group stage", "group play", "round robin")):
-            return 0.85
+            return "group"
         if any(kw in question for kw in ("grand final", "championship", "finals")):
-            return 1.15
+            return "finals"
 
-        return 1.0
+        return "unknown"
+
+    _PHASE_STATIC_MULTS = {"group": 0.85, "bracket": 1.0, "finals": 1.15, "unknown": 1.0}
+
+    async def _get_tournament_phase_mult(
+        self, market_data: Dict, game: str = "", phase: str = "", db=None,
+    ) -> float:
+        """Tournament phase confidence multiplier with auto-calibration.
+
+        Static multipliers: group=0.85, bracket=1.0, finals=1.15.
+        When ≥ESPORTS_TOURNAMENT_PHASE_MIN_SAMPLES resolved trades exist for a
+        phase, blends 70% static + 30% calibrated (from observed Brier score).
+        Falls back to static multipliers when data is insufficient.
+        """
+        if not phase:
+            phase = self._detect_tournament_phase(market_data)
+        static_mult = self._PHASE_STATIC_MULTS.get(phase, 1.0)
+
+        # Auto-tune if enough resolved trades exist
+        if db and game and phase != "unknown":
+            try:
+                from esports.data.esports_db import get_phase_accuracy
+                min_samples = int(getattr(
+                    settings, "ESPORTS_TOURNAMENT_PHASE_MIN_SAMPLES", 20
+                ))
+                acc = await get_phase_accuracy(db, game, phase)
+                if acc and acc["total"] >= min_samples:
+                    # Brier 0.25 (no-skill) → calibrated=1.0; lower Brier → higher mult
+                    calibrated_mult = 1.0 + (0.25 - acc["brier_score"]) * 2.0
+                    calibrated_mult = max(0.70, min(1.30, calibrated_mult))
+                    blended = 0.7 * static_mult + 0.3 * calibrated_mult
+                    logger.debug(
+                        "EsportsBot: phase mult auto-tuned",
+                        game=game,
+                        phase=phase,
+                        static=round(static_mult, 3),
+                        calibrated=round(calibrated_mult, 3),
+                        blended=round(blended, 3),
+                        samples=acc["total"],
+                    )
+                    return blended
+            except Exception:
+                pass
+
+        return static_mult
 
     async def _opendota_form_adjustment(
         self, market_data: Dict, base_prob: float,

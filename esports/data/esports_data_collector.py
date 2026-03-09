@@ -380,6 +380,10 @@ class EsportsDataCollector:
 
         Returns win rate 0.0-1.0, or 0.5 if unavailable.
         """
+        # PandaScore free tier only has team_stats for LoL/CS2 — others return 403
+        if game not in ("lol", "cs2"):
+            return 0.5
+
         cache_key = f"{game}:{team_id}"
         if cache_key in self._team_strength_cache:
             return self._team_strength_cache[cache_key]

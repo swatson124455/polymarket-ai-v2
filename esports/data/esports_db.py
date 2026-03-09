@@ -23,6 +23,28 @@ logger = get_logger()
 # Module-level TTL cache for per-team map rates: "team:game" → (rates_dict, mono_ts)
 _map_rates_cache: Dict[str, Tuple[Dict[str, float], float]] = {}
 
+# One-shot flag: ensure tournament_phase column exists in esports_prediction_log
+_phase_column_ensured = False
+
+
+async def _ensure_phase_column(db) -> None:
+    """Add tournament_phase column to esports_prediction_log if not present (one-shot)."""
+    global _phase_column_ensured
+    if _phase_column_ensured:
+        return
+    try:
+        async with db.get_session() as session:
+            await session.execute(
+                _text(
+                    "ALTER TABLE esports_prediction_log "
+                    "ADD COLUMN IF NOT EXISTS tournament_phase VARCHAR(50) DEFAULT ''"
+                )
+            )
+            await session.commit()
+        _phase_column_ensured = True
+    except Exception:
+        _phase_column_ensured = True  # Don't retry endlessly
+
 
 async def upsert_esports_team(db, team_data: Dict[str, Any]) -> None:
     """Insert or update an esports team in esports_teams table."""
@@ -173,19 +195,21 @@ async def log_prediction(
     market_price: float,
     side: str,
     edge: float,
+    tournament_phase: str = "",
 ) -> None:
     """Log a prediction to esports_prediction_log for accuracy tracking."""
     if db is None:
         logger.warning("esports_db: log_prediction skipped — db is None")
         return
     try:
+        await _ensure_phase_column(db)
         async with db.get_session() as session:
             await session.execute(
                 _text("""
                 INSERT INTO esports_prediction_log
-                    (match_id, game, market_id, bot_name, predicted_prob, market_price, side, edge)
+                    (match_id, game, market_id, bot_name, predicted_prob, market_price, side, edge, tournament_phase)
                 VALUES
-                    (:match_id, :game, :market_id, :bot_name, :predicted_prob, :market_price, :side, :edge)
+                    (:match_id, :game, :market_id, :bot_name, :predicted_prob, :market_price, :side, :edge, :tournament_phase)
                 """),
                 {
                     "match_id": match_id,
@@ -196,6 +220,7 @@ async def log_prediction(
                     "market_price": market_price,
                     "side": side,
                     "edge": edge,
+                    "tournament_phase": tournament_phase or "",
                 },
             )
             await session.commit()
@@ -284,6 +309,57 @@ async def get_rolling_accuracy(
         }
     except Exception as exc:
         logger.debug("esports_db: get_rolling_accuracy failed", error=str(exc))
+        return None
+
+
+async def get_phase_accuracy(
+    db, game: str, phase: str, bot_name: str = "EsportsBot",
+) -> Optional[Dict[str, Any]]:
+    """
+    Compute Brier score for a specific tournament phase.
+
+    Returns:
+        Dict with: total, brier_score, accuracy. None if insufficient data.
+    """
+    if db is None:
+        return None
+    try:
+        await _ensure_phase_column(db)
+        async with db.get_session() as session:
+            result = await session.execute(
+                _text("""
+                SELECT predicted_prob, actual_outcome
+                FROM esports_prediction_log
+                WHERE game = :game
+                  AND tournament_phase = :phase
+                  AND bot_name = :bot_name
+                  AND actual_outcome IS NOT NULL
+                ORDER BY created_at DESC
+                LIMIT 200
+                """),
+                {"game": game, "phase": phase, "bot_name": bot_name},
+            )
+            rows = result.fetchall()
+        if not rows:
+            return None
+
+        total = len(rows)
+        correct = 0
+        brier_sum = 0.0
+        for row in rows:
+            pred = float(row.predicted_prob)
+            actual = int(row.actual_outcome)
+            if (1 if pred > 0.5 else 0) == actual:
+                correct += 1
+            brier_sum += (pred - actual) ** 2
+
+        return {
+            "total": total,
+            "accuracy": correct / total if total > 0 else 0.0,
+            "brier_score": brier_sum / total if total > 0 else 1.0,
+        }
+    except Exception as exc:
+        logger.debug("esports_db: get_phase_accuracy failed", error=str(exc))
         return None
 
 

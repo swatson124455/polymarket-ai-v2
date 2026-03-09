@@ -939,6 +939,7 @@ class Settings(BaseSettings):
     ESPORTS_MIN_CS2_SAMPLES: int = int(os.getenv("ESPORTS_MIN_CS2_SAMPLES", "100"))
     ESPORTS_MIN_CS2_UNIQUE_MATCHES: int = int(os.getenv("ESPORTS_MIN_CS2_UNIQUE_MATCHES", "15"))
     ESPORTS_EARLY_STOPPING_ROUNDS: int = int(os.getenv("ESPORTS_EARLY_STOPPING_ROUNDS", "20"))
+    ESPORTS_TOURNAMENT_PHASE_MIN_SAMPLES: int = int(os.getenv("ESPORTS_TOURNAMENT_PHASE_MIN_SAMPLES", "20"))
 
     # --- Exposure limits (per-game/tournament/team concentration caps) ---
     ESPORTS_MAX_GAME_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_GAME_EXPOSURE", "300.0"))
