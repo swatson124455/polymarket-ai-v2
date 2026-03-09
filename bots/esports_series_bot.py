@@ -180,7 +180,16 @@ class EsportsSeriesBot(BaseBot):
         Find active BO3/BO5 series, compute conditional probability,
         compare to Polymarket price, trade if mispriced.
         """
+        import time as _time
+
         db = getattr(self.base_engine, "db", None)
+
+        # Prune stale prediction cache entries (>30 min)
+        now = _time.monotonic()
+        stale = [k for k, v in self._series_prediction_cache.items()
+                 if now - v.get("ts", 0) > 1800]
+        for k in stale:
+            del self._series_prediction_cache[k]
 
         # Refresh live matches from PandaScore
         await self._refresh_series()
