@@ -106,6 +106,7 @@ class EsportsBot(BaseBot):
         self._maker_timeout = float(
             getattr(settings, "ESPORTS_MAKER_FALLBACK_TIMEOUT_S", 3.0)
         )
+        self._scan_count: int = 0  # P1.2: periodic outcome backfill counter
 
     def _get_scan_interval_seconds(self) -> float:
         """10s during live matches, 120s otherwise."""
@@ -232,6 +233,11 @@ class EsportsBot(BaseBot):
                 self._market_scanner._market_service = self._market_service
         except Exception as exc:
             logger.warning("EsportsBot: market service init failed", error=str(exc))
+
+        # P2.2: Wire trainer into LearningScheduler for unified retrain scheduling
+        _sched = getattr(self.base_engine, "scheduler", None)
+        if _sched is not None and self._trainer is not None:
+            _sched.esports_trainer = self._trainer
 
         logger.info(
             "EsportsBot: initialized",
@@ -413,6 +419,7 @@ class EsportsBot(BaseBot):
         3. Get esports markets from Polymarket
         4. Analyze each market for edge
         """
+        self._scan_count += 1
         db = getattr(self.base_engine, "db", None)
 
         # E4: Monitoring thresholds — check per-game Brier and emit alerts
@@ -572,6 +579,37 @@ class EsportsBot(BaseBot):
             min_confidence=self._min_confidence,
             min_edge=self._min_edge,
         )
+
+        # P1.2: Backfill actual_outcome for settled esports paper_trades every 10 scans
+        if self._scan_count % 10 == 0 and db is not None:
+            try:
+                await self._backfill_esports_outcomes(db)
+            except Exception as _exc:
+                logger.debug("esportsbot_outcome_backfill_failed", error=str(_exc))
+
+    async def _backfill_esports_outcomes(self, db) -> None:
+        """Backfill actual_outcome in esports_prediction_log from settled paper_trades.
+
+        Runs every 10 scans. Idempotent — resolve_predictions() only updates
+        rows where actual_outcome IS NULL. YES win → outcome=1, NO win → outcome=0.
+        """
+        from sqlalchemy import text as _sa_text
+        from esports.data.esports_db import resolve_predictions as _resolve
+        async with db.get_session() as _sess:
+            result = await _sess.execute(
+                _sa_text("""
+                    SELECT DISTINCT pt.market_id, pt.side,
+                        CASE WHEN pt.realized_pnl > 0 THEN 1 ELSE 0 END AS won
+                    FROM paper_trades pt
+                    WHERE pt.bot_name IN ('EsportsBot', 'EsportsSeriesBot', 'EsportsLiveBot')
+                      AND pt.realized_pnl IS NOT NULL
+                      AND pt.created_at > NOW() - INTERVAL '7 days'
+                """)
+            )
+            resolved = result.fetchall()
+        for r in resolved:
+            outcome = int(r.won) if r.side == "YES" else (1 - int(r.won))
+            await _resolve(db, r.market_id, outcome)
 
     async def analyze_opportunity(self, market_data: Dict) -> Optional[Dict]:
         """
@@ -889,6 +927,8 @@ class EsportsBot(BaseBot):
                             game_state["rd_asymmetry"],
                             game_state["team_a_volatility"],
                             game_state["team_b_volatility"],
+                            game_state.get("team_a_recent_form", 0.5),  # P6.5 parity
+                            game_state.get("team_b_recent_form", 0.5),  # P6.5 parity
                             float(self._CROSS_GAME_IDS[game]),
                             game_state.get("best_of", 1.0),
                         ]
@@ -1796,6 +1836,11 @@ class EsportsBot(BaseBot):
             rating_b = tracker.get_rating(team_b_id)
             expected = tracker.expected_score(team_a_id, team_b_id)
 
+            # P6.5 parity: compute inference-time proxy for rolling win rate.
+            # expected_score(team, neutral_ref) maps Glicko-2 rating to [0,1],
+            # correlated with recent winning — same range as training-time form.
+            from esports.models.glicko2 import Glicko2Rating as _G2R, expected_score as _g2es
+            _ref = _G2R()  # neutral: mu=1500, phi=350, sigma=0.06
             return {
                 "team_strength_diff": expected - 0.5,
                 "matchup_uncertainty": (rating_a.phi + rating_b.phi) / 700.0,
@@ -1803,6 +1848,8 @@ class EsportsBot(BaseBot):
                 "team_a_volatility": rating_a.sigma / 0.06,
                 "team_b_volatility": rating_b.sigma / 0.06,
                 "best_of": 1.0,  # Default; overridden if series data available
+                "team_a_recent_form": float(_g2es(rating_a, _ref)),
+                "team_b_recent_form": float(_g2es(rating_b, _ref)),
             }
         except Exception:
             return None
