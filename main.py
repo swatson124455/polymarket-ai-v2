@@ -552,6 +552,21 @@ async def main():
                 pass
 
         if bots:
+            # Phase 2: wait for in-progress scan cycles to finish before cancelling tasks.
+            # Prevents mid-trade cancellation. Timeout 25s stays inside systemd's default
+            # TimeoutStopSec=90s with headroom for base_engine.stop() to flush state.
+            logger.info("Graceful shutdown: waiting for active scan cycles (max 25s)")
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        *[bot.wait_for_idle() for bot in bots.values()],
+                        return_exceptions=True,
+                    ),
+                    timeout=25.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Graceful shutdown: scan wait timed out — proceeding with force stop")
+
             for bot_name, bot in bots.items():
                 try:
                     await bot.stop()

@@ -98,7 +98,11 @@ class BaseBot(ABC):
         # Drained at the START of each scan cycle so whale markets get immediate attention.
         self._whale_priority_queue: asyncio.Queue = asyncio.Queue(maxsize=50)
         self._whale_listener_task: Optional[asyncio.Task] = None
-    
+        # Phase 2: set when bot is idle (not in scan_and_trade), cleared while scanning.
+        # Used by wait_for_idle() to allow graceful SIGTERM without mid-scan cancellation.
+        self._idle_event: asyncio.Event = asyncio.Event()
+        self._idle_event.set()  # starts idle
+
     async def start(self):
         self.running = True
         logger.info("Bot started", bot_name=self.bot_name)
@@ -124,6 +128,23 @@ class BaseBot(ABC):
             except asyncio.CancelledError:
                 pass
         logger.info("Bot stopped", bot_name=self.bot_name)
+
+    async def wait_for_idle(self, timeout: float = 25.0) -> None:
+        """Wait until current scan_and_trade() completes. Called before stop() during graceful shutdown."""
+        try:
+            await asyncio.wait_for(self._idle_event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "wait_for_idle: timed out after %ss — forcing stop",
+                timeout,
+                bot_name=self.bot_name,
+            )
+
+    async def flush_state(self) -> None:
+        """Hook for subclasses to flush in-memory state on graceful shutdown. No-op by default.
+        Subclasses with write-through persistence (daily_counters, Redis) don't need this —
+        base_engine.stop() already calls order_gateway._flush_daily_exposure()."""
+        pass
 
     def get_feature_importance(self) -> Dict[str, float]:
         """Get current global feature importance scores.
@@ -735,6 +756,7 @@ class BaseBot(ABC):
                 # would block the entire event loop indefinitely — blocking all bots and WS
                 # message processing. 60s covers the longest scan interval; anything longer = hang.
                 _scan_timeout = getattr(settings, "BOT_SCAN_TIMEOUT_SECONDS", 60)
+                self._idle_event.clear()
                 try:
                     await asyncio.wait_for(self.scan_and_trade(), timeout=_scan_timeout)
                 except asyncio.TimeoutError:
@@ -743,6 +765,8 @@ class BaseBot(ABC):
                         _scan_timeout,
                         bot_name=self.bot_name,
                     )
+                finally:
+                    self._idle_event.set()
                 self._latency_tracker.mark("scan_done")
                 _scan_ms = (time.monotonic() - _scan_t0) * 1000
                 # Log per-stage breakdown (INFO when slow, DEBUG otherwise)
@@ -776,7 +800,11 @@ class BaseBot(ABC):
                             logger.debug("%s: burst scan triggered", self.bot_name)
                             await asyncio.sleep(self._get_scan_interval() * 0.5)
                             # C2 FIX: also apply timeout to burst scan
-                            await asyncio.wait_for(self.scan_and_trade(), timeout=_scan_timeout)
+                            self._idle_event.clear()
+                            try:
+                                await asyncio.wait_for(self.scan_and_trade(), timeout=_scan_timeout)
+                            finally:
+                                self._idle_event.set()
                     except Exception as e:
                         logger.debug("burst scan failed: %s", e)
 
