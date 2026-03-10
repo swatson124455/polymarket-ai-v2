@@ -856,29 +856,19 @@ class MirrorBot(BaseBot):
             except Exception as e:
                 logger.debug("elite reliability lookup failed: %s", e)
 
-        # K5 FIX: Apply signal enhancements before sizing (was skipped entirely)
-        # K9 FIX: market_data was undefined — fetch from in-memory index or pass empty dict
-        # PERF: Cache result per (market_id, side) for _SIGNAL_CACHE_TTL seconds.
-        # Same market appears 10–30x per scan; caching cuts external service calls to ~5–8.
-        import time as _time
-        _sig_key = f"{market_id}:{side}"
-        _now_m = _time.monotonic()
-        _cached_mult, _sig_expiry = self._signal_cache.get(_sig_key, (1.0, 0.0))
-        if _now_m >= _sig_expiry:
+        # PERF: MirrorBot is a pure trader-mirroring strategy — confidence comes from
+        # elite trader consensus + reliability weighting, not from market signals.
+        # Signal enhancements (Google Trends, WS orderflow) add 700-2000ms of network
+        # latency per trade and are noise for this strategy. Skipped via settings flag.
+        # Set MIRROR_SKIP_SIGNAL_ENHANCEMENTS=false to re-enable if needed.
+        if not getattr(settings, "MIRROR_SKIP_SIGNAL_ENHANCEMENTS", True):
             try:
                 _market_data = self.base_engine.get_market_from_index(str(market_id)) or {}
-                _raw_conf = confidence
                 confidence = await self.apply_signal_enhancements(
                     market_id, token_id, side, confidence, _market_data
                 )
-                self._signal_cache[_sig_key] = (
-                    confidence / _raw_conf if _raw_conf > 0 else 1.0,
-                    _now_m + self._SIGNAL_CACHE_TTL,
-                )
             except Exception as e:
                 logger.debug("MirrorBot: signal enhancements failed (using raw confidence): %s", e)
-        else:
-            confidence *= _cached_mult
 
         # S48 FIX: Use per-bot BotBankrollManager (Session 47) instead of deprecated
         # risk_manager.calculate_position_size() which divides Kelly by KELLY_ACTIVE_BOTS.
