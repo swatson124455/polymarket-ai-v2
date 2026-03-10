@@ -620,7 +620,7 @@ class Settings(BaseSettings):
     SCAN_INTERVAL_WEATHER: int = int(os.getenv("SCAN_INTERVAL_WEATHER", "300"))
     WEATHER_MIN_EDGE: float = float(os.getenv("WEATHER_MIN_EDGE", "0.08"))
     WEATHER_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_MIN_CONFIDENCE", "0.10"))  # Multi-bucket: 9 outcomes → peak ~35-40%; lowered to 0.10 to not block boundary-risk trades
-    WEATHER_MAX_POSITIONS: int = int(os.getenv("WEATHER_MAX_POSITIONS", "200"))  # Multi-bucket: 28 groups × up to 9 buckets each
+    WEATHER_MAX_POSITIONS: int = int(os.getenv("WEATHER_MAX_POSITIONS", "500"))  # Multi-bucket: 45 groups × up to 9 buckets = 405 max; raised from 200 (was hitting cap at 201)
     WEATHER_MAX_PER_GROUP_USD: float = float(os.getenv("WEATHER_MAX_PER_GROUP_USD", "1000"))
     WEATHER_DAILY_LOSS_LIMIT: float = float(os.getenv("WEATHER_DAILY_LOSS_LIMIT", "2000"))
     WEATHER_MAX_CORRELATED_EXPOSURE: float = float(os.getenv("WEATHER_MAX_CORRELATED_EXPOSURE", "2000"))
