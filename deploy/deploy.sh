@@ -101,7 +101,9 @@ sudo chown -h polymarket:polymarket \
     $NEW_RELEASE/venv
 
 # Run migrations — abort + clean up on failure
-sudo -u polymarket $SHARED/venv/bin/python $NEW_RELEASE/scripts/run_migrations.py || {
+# cd first so pydantic-settings resolves .env relative to the release dir
+cd $NEW_RELEASE
+sudo -u polymarket $SHARED/venv/bin/python scripts/run_migrations.py || {
     echo "MIGRATION FAILED — removing release $NEW_RELEASE"
     sudo rm -rf "$NEW_RELEASE"
     exit 1
