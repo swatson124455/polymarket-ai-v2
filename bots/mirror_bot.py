@@ -51,6 +51,11 @@ class MirrorBot(BaseBot):
         self._market_meta_cache: Dict[str, Tuple[str, str, float]] = {}
         self._MARKET_META_TTL = 300  # 5 minutes
 
+        # Signal enhancement cache: "market_id:side" -> (confidence_multiplier, expiry_monotonic)
+        # Avoids calling 3 external services per trade when the same market appears 10-30x per scan.
+        self._signal_cache: Dict[str, Tuple[float, float]] = {}
+        self._SIGNAL_CACHE_TTL = 60.0  # seconds
+
         # Periodic elite refresh (avoid stale list)
         self._scan_count: int = 0
         self._elite_refresh_every_n_scans: int = 40  # ~30 min at 45s interval
@@ -812,6 +817,28 @@ class MirrorBot(BaseBot):
                     str(market_id)[:16],
                 )
                 return False
+            # Use ACTUAL position size — Kelly sizing gives fresh max-bet (wrong for exits)
+            _pos = self._open_positions[pos_key]
+            _exit_size = _pos.get("size", 0.0)
+            if _exit_size <= 0:
+                logger.debug("MirrorBot: SELL position size=0, skipping market=%s", str(market_id)[:16])
+                return False
+            order = await self.place_order(
+                market_id=market_id,
+                token_id=token_id,
+                side=side,
+                size=_exit_size,
+                price=price,
+                confidence=confidence,
+            )
+            if order.get("success"):
+                self._daily_exposure = max(0.0, self._daily_exposure - _exit_size * price)
+                del self._open_positions[pos_key]
+                logger.info(
+                    "MirrorBot: SELL exit executed market=%s size=%.2f",
+                    str(market_id)[:16], _exit_size,
+                )
+            return bool(order.get("success"))
 
         # Apply elite reliability multiplier
         reliability_mult = 1.0
@@ -831,13 +858,27 @@ class MirrorBot(BaseBot):
 
         # K5 FIX: Apply signal enhancements before sizing (was skipped entirely)
         # K9 FIX: market_data was undefined — fetch from in-memory index or pass empty dict
-        try:
-            _market_data = self.base_engine.get_market_from_index(str(market_id)) or {}
-            confidence = await self.apply_signal_enhancements(
-                market_id, token_id, side, confidence, _market_data
-            )
-        except Exception as e:
-            logger.debug("MirrorBot: signal enhancements failed (using raw confidence): %s", e)
+        # PERF: Cache result per (market_id, side) for _SIGNAL_CACHE_TTL seconds.
+        # Same market appears 10–30x per scan; caching cuts external service calls to ~5–8.
+        import time as _time
+        _sig_key = f"{market_id}:{side}"
+        _now_m = _time.monotonic()
+        _cached_mult, _sig_expiry = self._signal_cache.get(_sig_key, (1.0, 0.0))
+        if _now_m >= _sig_expiry:
+            try:
+                _market_data = self.base_engine.get_market_from_index(str(market_id)) or {}
+                _raw_conf = confidence
+                confidence = await self.apply_signal_enhancements(
+                    market_id, token_id, side, confidence, _market_data
+                )
+                self._signal_cache[_sig_key] = (
+                    confidence / _raw_conf if _raw_conf > 0 else 1.0,
+                    _now_m + self._SIGNAL_CACHE_TTL,
+                )
+            except Exception as e:
+                logger.debug("MirrorBot: signal enhancements failed (using raw confidence): %s", e)
+        else:
+            confidence *= _cached_mult
 
         # S48 FIX: Use per-bot BotBankrollManager (Session 47) instead of deprecated
         # risk_manager.calculate_position_size() which divides Kelly by KELLY_ACTIVE_BOTS.
