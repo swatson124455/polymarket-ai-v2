@@ -107,6 +107,7 @@ class EsportsBot(BaseBot):
             getattr(settings, "ESPORTS_MAKER_FALLBACK_TIMEOUT_S", 3.0)
         )
         self._scan_count: int = 0  # P1.2: periodic outcome backfill counter
+        self._exposure_restored: bool = False  # P0: seed exposure dicts from DB on first scan
 
     def _get_scan_interval_seconds(self) -> float:
         """10s during live matches, 120s otherwise."""
@@ -422,6 +423,10 @@ class EsportsBot(BaseBot):
         self._scan_count += 1
         db = getattr(self.base_engine, "db", None)
 
+        # P0: Restore exposure counters from today's paper_trades on first scan
+        if not self._exposure_restored:
+            await self._restore_exposure_from_db(db)
+
         # E4: Monitoring thresholds — check per-game Brier and emit alerts
         await self._check_monitoring_thresholds(db)
 
@@ -586,6 +591,49 @@ class EsportsBot(BaseBot):
                 await self._backfill_esports_outcomes(db)
             except Exception as _exc:
                 logger.debug("esportsbot_outcome_backfill_failed", error=str(_exc))
+
+    async def _restore_exposure_from_db(self, db) -> None:
+        """Seed _game_exposure + _tournament_exposure from today's paper_trades on startup.
+
+        Mirrors MirrorBot._restore_state_on_startup() pattern. Runs once per process
+        lifetime (guarded by _exposure_restored). Prevents overspend after mid-day restart.
+        """
+        if self._exposure_restored:
+            return
+        self._exposure_restored = True
+        if db is None or not getattr(db, "session_factory", None):
+            return
+        from sqlalchemy import text as _sa_text
+        try:
+            async with db.get_session() as _sess:
+                rows = await _sess.execute(
+                    _sa_text("""
+                        SELECT
+                            COALESCE(metadata->>'game', 'unknown')  AS game,
+                            COALESCE(metadata->>'tournament', '')   AS tournament,
+                            COALESCE(SUM(size * price), 0.0)       AS spent
+                        FROM paper_trades
+                        WHERE bot_name IN ('EsportsBot','EsportsSeriesBot','EsportsLiveBot')
+                          AND created_at >= CURRENT_DATE
+                        GROUP BY game, tournament
+                    """)
+                )
+                for r in rows.fetchall():
+                    if r.game and r.game != "unknown":
+                        self._game_exposure[r.game] = (
+                            self._game_exposure.get(r.game, 0.0) + float(r.spent)
+                        )
+                    if r.tournament:
+                        self._tournament_exposure[r.tournament] = (
+                            self._tournament_exposure.get(r.tournament, 0.0) + float(r.spent)
+                        )
+            logger.info(
+                "esports_exposure_restored",
+                games=dict(self._game_exposure),
+                tournaments=dict(self._tournament_exposure),
+            )
+        except Exception as exc:
+            logger.warning("esports_restore_exposure_failed", error=str(exc))
 
     async def _backfill_esports_outcomes(self, db) -> None:
         """Backfill actual_outcome in esports_prediction_log from settled paper_trades.
