@@ -56,6 +56,12 @@ class MirrorBot(BaseBot):
         self._signal_cache: Dict[str, Tuple[float, float]] = {}
         self._SIGNAL_CACHE_TTL = 60.0  # seconds
 
+        # Per-trader activity cache: addr -> (activity_list, expiry_monotonic)
+        # Skips the API call for traders whose activity hasn't changed within the TTL window.
+        # At TTL=90s and scan_interval=~15s: ~50/500 traders expire per scan → ~2s vs 14s.
+        self._trader_activity_cache: Dict[str, Tuple[List, float]] = {}
+        self._TRADER_CACHE_TTL: float = float(getattr(settings, "MIRROR_TRADER_CACHE_TTL", 90))
+
         # Periodic elite refresh (avoid stale list)
         self._scan_count: int = 0
         self._elite_refresh_every_n_scans: int = 40  # ~30 min at 45s interval
@@ -356,81 +362,99 @@ class MirrorBot(BaseBot):
 
         groups: Dict[Tuple[str, str, str], List[Dict]] = defaultdict(list)
         sem = asyncio.Semaphore(max_concurrent)
+        import time as _time
         # S48: Waterfall counters for diagnosing 0-trade scans
-        _wf_raw = 0       # Raw trades fetched
-        _wf_parsed = 0    # Passed parse + freshness
-        _wf_conf = 0      # Passed confidence gate
-        _wf_rel = 0       # Passed reliability gate (final)
-        _wf_api_fail = 0  # API failures
+        _wf_raw = 0        # Raw trades fetched
+        _wf_parsed = 0     # Passed parse + freshness
+        _wf_conf = 0       # Passed confidence gate
+        _wf_rel = 0        # Passed reliability gate (final)
+        _wf_api_fail = 0   # API failures
+        _wf_cache_hit = 0  # Served from per-trader cache (no API call)
 
         async def _fetch_one_elite(trader: Dict) -> List[Dict]:
-            """Fetch and process trades for a single elite trader."""
-            nonlocal _wf_raw, _wf_parsed, _wf_conf, _wf_rel, _wf_api_fail
+            """Fetch and process trades for a single elite trader.
+
+            Per-trader cache: skips the API call if activity was fetched within
+            MIRROR_TRADER_CACHE_TTL seconds (default 90s). Semaphore only gates
+            the API call itself — processing runs concurrently outside the lock.
+            """
+            nonlocal _wf_raw, _wf_parsed, _wf_conf, _wf_rel, _wf_api_fail, _wf_cache_hit
             addr = trader.get("address")
             if not addr:
                 return []
-            items = []
-            async with sem:
-                try:
-                    activity = await self.base_engine.client.get_user_activity(
-                        user_address=addr,
-                        limit=25,
-                        offset=0,
-                    )
-                except Exception as e:
-                    logger.debug("get_user_activity failed for %s: %s", addr[:10], e)
-                    _wf_api_fail += 1
-                    return []
 
-                _wf_raw += len(activity) if activity else 0
-                for trade in activity:
-                    parsed = self._parse_and_validate_trade(
-                        trade, addr, max_delay
-                    )
-                    if parsed is None:
-                        continue
-                    _wf_parsed += 1
-
-                    _cat, _ttr = await self._get_market_meta(str(parsed["market_id"]))
-                    # S48 FIX: Use elite trader's own win_rate as confidence, not
-                    # learning engine's bet-type confidence (which returns ~0.03 with
-                    # only 242 resolved labels). Elites have >= 55% win rate by definition.
-                    _elite_wr = float(trader.get("win_rate", 0) or 0)
-                    confidence = _elite_wr if _elite_wr > 0 else 0.55
-                    if confidence < self.min_confidence:
-                        continue
-                    _wf_conf += 1
-
-                    # C1: Resolve BUY→YES/NO using markets table (place_order requires YES/NO).
-                    # SELL stays as SELL (exit signal handled separately in _check_and_execute_exits).
-                    _raw_side = str(parsed.get("side", "BUY")).upper()
-                    if _raw_side == "SELL":
-                        _resolved_side = "SELL"
-                    else:
-                        _resolved_side = await self._get_token_side(
-                            str(parsed["market_id"]), str(parsed["token_id"])
+            # Check per-trader cache before acquiring semaphore
+            _now = _time.monotonic()
+            _cached = self._trader_activity_cache.get(addr)
+            if _cached and _now < _cached[1]:
+                activity = _cached[0]
+                _wf_cache_hit += 1
+            else:
+                async with sem:
+                    try:
+                        activity = await self.base_engine.client.get_user_activity(
+                            user_address=addr,
+                            limit=25,
+                            offset=0,
                         )
+                    except Exception as e:
+                        logger.debug("get_user_activity failed for %s: %s", addr[:10], e)
+                        _wf_api_fail += 1
+                        return []
+                # Store in cache outside semaphore (no need to hold lock during write)
+                self._trader_activity_cache[addr] = (activity or [], _now + self._TRADER_CACHE_TTL)
 
-                    # Reliability gate: skip traders with poor Bayesian win rate
-                    if self._reliability_tracker and self._reliability_tracker._cache:
-                        _alpha, _beta = self._reliability_tracker._get_beta(addr, _resolved_side)
-                        if _alpha + _beta > 2:  # Only filter if we have actual data (not just prior)
-                            _mean_rel = _alpha / (_alpha + _beta)
-                            if _mean_rel < getattr(settings, "MIRROR_MIN_RELIABILITY", 0.45):
-                                logger.debug("MirrorBot reliability gate: addr=%s mean=%.3f", addr[:10], _mean_rel)
-                                continue
-                    _wf_rel += 1
+            # Process activity outside semaphore — DB/cache calls, not rate-limited
+            items = []
+            _wf_raw += len(activity) if activity else 0
+            for trade in activity:
+                parsed = self._parse_and_validate_trade(
+                    trade, addr, max_delay
+                )
+                if parsed is None:
+                    continue
+                _wf_parsed += 1
 
-                    items.append({
-                        "trade_id": parsed["trade_id"],
-                        "market_id": parsed["market_id"],
-                        "token_id": parsed["token_id"],
-                        "side": _resolved_side,  # C1: YES/NO (not BUY/SELL)
-                        "price": parsed["price"],
-                        "confidence": confidence,
-                        "trader_address": addr,
-                        "category": _cat,  # P2-2: propagate so _get_consensus_min() uses per-category threshold
-                    })
+                _cat, _ttr = await self._get_market_meta(str(parsed["market_id"]))
+                # S48 FIX: Use elite trader's own win_rate as confidence, not
+                # learning engine's bet-type confidence (which returns ~0.03 with
+                # only 242 resolved labels). Elites have >= 55% win rate by definition.
+                _elite_wr = float(trader.get("win_rate", 0) or 0)
+                confidence = _elite_wr if _elite_wr > 0 else 0.55
+                if confidence < self.min_confidence:
+                    continue
+                _wf_conf += 1
+
+                # C1: Resolve BUY→YES/NO using markets table (place_order requires YES/NO).
+                # SELL stays as SELL (exit signal handled separately in _check_and_execute_exits).
+                _raw_side = str(parsed.get("side", "BUY")).upper()
+                if _raw_side == "SELL":
+                    _resolved_side = "SELL"
+                else:
+                    _resolved_side = await self._get_token_side(
+                        str(parsed["market_id"]), str(parsed["token_id"])
+                    )
+
+                # Reliability gate: skip traders with poor Bayesian win rate
+                if self._reliability_tracker and self._reliability_tracker._cache:
+                    _alpha, _beta = self._reliability_tracker._get_beta(addr, _resolved_side)
+                    if _alpha + _beta > 2:  # Only filter if we have actual data (not just prior)
+                        _mean_rel = _alpha / (_alpha + _beta)
+                        if _mean_rel < getattr(settings, "MIRROR_MIN_RELIABILITY", 0.45):
+                            logger.debug("MirrorBot reliability gate: addr=%s mean=%.3f", addr[:10], _mean_rel)
+                            continue
+                _wf_rel += 1
+
+                items.append({
+                    "trade_id": parsed["trade_id"],
+                    "market_id": parsed["market_id"],
+                    "token_id": parsed["token_id"],
+                    "side": _resolved_side,  # C1: YES/NO (not BUY/SELL)
+                    "price": parsed["price"],
+                    "confidence": confidence,
+                    "trader_address": addr,
+                    "category": _cat,  # P2-2: propagate so _get_consensus_min() uses per-category threshold
+                })
             return items
 
         try:
@@ -460,9 +484,10 @@ class MirrorBot(BaseBot):
         if _wf_raw > 0 or _wf_api_fail > 0:
             logger.info(
                 "MirrorBot waterfall: raw=%d parsed=%d conf_pass=%d rel_pass=%d "
-                "groups=%d api_fail=%d (min_conf=%.2f)",
+                "groups=%d api_fail=%d cache_hits=%d/%d (min_conf=%.2f)",
                 _wf_raw, _wf_parsed, _wf_conf, _wf_rel,
-                len(groups), _wf_api_fail, self.min_confidence,
+                len(groups), _wf_api_fail, _wf_cache_hit, len(self.elite_traders),
+                self.min_confidence,
             )
 
         # Consensus filter: require min unique elites agreeing.
