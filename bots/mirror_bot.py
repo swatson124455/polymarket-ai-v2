@@ -352,7 +352,7 @@ class MirrorBot(BaseBot):
         """
         min_consensus = getattr(settings, "MIRROR_MIN_CONSENSUS", 2)
         max_delay = getattr(settings, "MIRROR_MAX_DELAY_MINUTES", 30)
-        max_concurrent = getattr(settings, "MIRROR_MAX_CONCURRENT_FETCHES", 5)
+        max_concurrent = getattr(settings, "MIRROR_MAX_CONCURRENT_FETCHES", 20)
 
         groups: Dict[Tuple[str, str, str], List[Dict]] = defaultdict(list)
         sem = asyncio.Semaphore(max_concurrent)
