@@ -53,10 +53,10 @@ tar czf "$TMPTAR" \
     --exclude='__pycache__' \
     --exclude='*.pyc' \
     --exclude='.env' \
-    --exclude='data' \
-    --exclude='saved_models' \
-    --exclude='venv' \
-    --exclude='.venv' \
+    --exclude='./data' \
+    --exclude='./saved_models' \
+    --exclude='./venv' \
+    --exclude='./.venv' \
     --exclude='pa2-releases' \
     --exclude='pa2-shared' \
     --exclude='*.egg-info' \
