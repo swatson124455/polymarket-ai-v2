@@ -471,6 +471,25 @@ class EsportsSeriesBot(BaseBot):
                         "series_score": f"{maps_a}-{maps_b}",
                         "map_number": current_map,
                     })
+                    # P7.2: Log hedge opp for accuracy calibration
+                    try:
+                        from esports.data.esports_db import log_prediction as _log_pred
+                        await _log_pred(
+                            db=db,
+                            match_id=match_id,
+                            game=game,
+                            market_id=map_market["market_id"],
+                            bot_name="EsportsSeriesBot",
+                            predicted_prob=model_prob,
+                            market_price=map_price,
+                            side=map_side,
+                            edge=round(map_edge_val, 4),
+                        )
+                    except Exception as _exc:
+                        logger.warning(
+                            "EsportsSeriesBot: hedge prediction logging failed",
+                            error=str(_exc),
+                        )
 
         return result
 
