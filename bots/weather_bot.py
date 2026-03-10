@@ -20,6 +20,7 @@ SWOT upgrades applied:
   Cross-city  - regime boost 1.2x when ≥3 US cities show unanimous warm/cold edge
 """
 
+import asyncio
 import json
 import time
 from datetime import date, datetime, timezone
@@ -202,6 +203,7 @@ class WeatherBot(BaseBot):
             exited_by_pm = self._known_open_markets - current_open
             for mid in exited_by_pm:
                 self._recently_exited[mid] = time.monotonic()
+                asyncio.create_task(self._save_exit_to_redis(mid))
                 logger.debug("weatherbot_pm_exit_detected", market_id=mid)
             self._known_open_markets = set(current_open)
 
@@ -213,6 +215,8 @@ class WeatherBot(BaseBot):
             await self._forecast_client.restore_state()
             db = getattr(self.base_engine, "db", None)
             await self._forecast_client.warm_cache_from_db(db)
+            await self._restore_exits_from_redis()
+            await self._restore_exposure_from_db()
             self._cache_warmed = True
 
         # One-time startup observability check (logs DB state + Gamma API probe)
@@ -1602,6 +1606,7 @@ class WeatherBot(BaseBot):
             # because the position_manager (not weather_bot) triggers SELL exits,
             # so without this the dict stays empty and the cooldown never fires.
             self._recently_exited[opp["market_id"]] = time.monotonic()
+            asyncio.create_task(self._save_exit_to_redis(opp["market_id"]))
         else:
             # Revert exposure trackers on failure
             self._group_exposure[group_key] = current_group_exp
@@ -1906,8 +1911,6 @@ class WeatherBot(BaseBot):
         if not client:
             return markets
 
-        import asyncio
-
         # B3: Parallelize CLOB midpoint calls with semaphore (10 concurrent)
         sem = asyncio.Semaphore(10)
 
@@ -1947,6 +1950,95 @@ class WeatherBot(BaseBot):
             skipped=len(enriched) - enriched_count,
         )
         return list(enriched)
+
+    async def _save_exit_to_redis(self, market_id: str) -> None:
+        """Persist a recent-exit event to Redis with 15-min TTL so it survives restarts."""
+        try:
+            cache = getattr(getattr(self, "base_engine", None), "cache", None)
+            if cache is None or not getattr(cache, "redis", None):
+                return
+            expire_at = time.time() + 900.0
+            await cache.set(f"weatherbot:exit:{market_id}", expire_at, ttl=900)
+        except Exception:
+            pass
+
+    async def _restore_exits_from_redis(self) -> None:
+        """Reload _recently_exited cooldowns from Redis on startup."""
+        try:
+            cache = getattr(getattr(self, "base_engine", None), "cache", None)
+            if cache is None or not getattr(cache, "redis", None):
+                return
+            keys = await cache.redis.keys("weatherbot:exit:*")
+            now_wall = time.time()
+            now_mono = time.monotonic()
+            count = 0
+            for key in keys:
+                raw = await cache.get(key)
+                if raw is None:
+                    continue
+                expire_at = float(raw)
+                if expire_at <= now_wall:
+                    continue  # cooldown already expired
+                elapsed = 900.0 - (expire_at - now_wall)
+                mid = key.split("weatherbot:exit:", 1)[-1]
+                self._recently_exited[mid] = now_mono - elapsed
+                count += 1
+            if count:
+                logger.info("weatherbot_exits_restored", count=count)
+        except Exception as exc:
+            logger.warning("weatherbot_restore_exits_failed", error=str(exc))
+
+    async def _restore_exposure_from_db(self) -> None:
+        """Rebuild _group_exposure and _city_exposure from today's open paper_trades.
+
+        Called once on startup (inside the _cache_warmed block). Prevents the
+        per-group and per-city USD soft caps from resetting to $0 after a mid-day
+        restart, which would allow the bot to double-invest in the same city/group.
+
+        Uses the same today_start UTC alignment as _restore_daily_pnl_from_db().
+        The JOIN to markets works because the resolution_backfill (commit d3c8a0f)
+        ensures all WeatherBot market_ids are now present in the markets table.
+        Fail-open: any error logs at debug level and continues with empty dicts.
+        """
+        db = getattr(self.base_engine, "db", None)
+        if not db:
+            return
+        try:
+            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            today_start = datetime.strptime(today_str, "%Y-%m-%d")
+            async with db.get_session() as session:
+                from sqlalchemy import text
+                result = await session.execute(text("""
+                    SELECT m.question, SUM(pt.size) AS total_size
+                    FROM paper_trades pt
+                    JOIN markets m
+                      ON (pt.market_id = m.condition_id OR pt.market_id = CAST(m.id AS TEXT))
+                    WHERE pt.bot_name = 'WeatherBot'
+                      AND pt.created_at >= :today_start
+                      AND pt.side IN ('YES', 'NO')
+                      AND pt.resolution IS NULL
+                    GROUP BY m.question
+                """), {"today_start": today_start})
+                rows = result.fetchall()
+            rebuilt_groups = 0
+            for question, total_size in rows:
+                if not question or not total_size:
+                    continue
+                city_text, target_date = self._market_mapper._extract_city_and_date(question)
+                if not city_text or not target_date:
+                    continue
+                group_key = f"{city_text}:{target_date.isoformat()}"
+                self._group_exposure[group_key] = self._group_exposure.get(group_key, 0.0) + float(total_size)
+                self._city_exposure[city_text] = self._city_exposure.get(city_text, 0.0) + float(total_size)
+                rebuilt_groups += 1
+            if rebuilt_groups:
+                logger.info(
+                    "weatherbot_exposure_restored",
+                    groups=rebuilt_groups,
+                    cities=len(self._city_exposure),
+                )
+        except Exception as exc:
+            logger.debug("weatherbot_exposure_restore_failed", error=str(exc))
 
     async def _check_weather_market_availability(self) -> None:
         """One-time startup log of weather market availability across DB and Gamma API.
