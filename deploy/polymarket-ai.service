@@ -25,7 +25,7 @@ StartLimitBurst=5
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=false
-ReadWritePaths=/opt/pa2-shared/data /var/log/polymarket
+ReadWritePaths=/opt/pa2-shared/data /opt/pa2-shared/saved_models /var/log/polymarket
 PrivateTmp=true
 
 # Resource limits

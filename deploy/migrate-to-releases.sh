@@ -75,9 +75,10 @@ sudo mkdir -p "$RELEASES" "$SHARED"
 sudo chown polymarket:polymarket "$RELEASES" "$SHARED"
 
 echo "[2/8] Moving shared resources to $SHARED..."
-[ -f "$CURRENT/.env"  ] && sudo mv "$CURRENT/.env"  "$SHARED/.env"  || echo "  .env not found, skipping"
-[ -d "$CURRENT/venv"  ] && sudo mv "$CURRENT/venv"  "$SHARED/venv"  || echo "  venv not found, skipping"
-[ -d "$CURRENT/data"  ] && sudo mv "$CURRENT/data"  "$SHARED/data"  || echo "  data not found, skipping"
+[ -f "$CURRENT/.env"         ] && sudo mv "$CURRENT/.env"         "$SHARED/.env"         || echo "  .env not found, skipping"
+[ -d "$CURRENT/venv"         ] && sudo mv "$CURRENT/venv"         "$SHARED/venv"         || echo "  venv not found, skipping"
+[ -d "$CURRENT/data"         ] && sudo mv "$CURRENT/data"         "$SHARED/data"         || echo "  data not found, skipping"
+[ -d "$CURRENT/saved_models" ] && sudo mv "$CURRENT/saved_models" "$SHARED/saved_models" || echo "  saved_models not found, skipping"
 sudo chown -R polymarket:polymarket "$SHARED"
 
 echo "[3/8] Copying code to $INITIAL..."
@@ -85,15 +86,17 @@ sudo cp -rp "$CURRENT" "$INITIAL"
 sudo chown -R polymarket:polymarket "$INITIAL"
 
 echo "[4/8] Removing shared items from initial release copy..."
-sudo rm -f "$INITIAL/.env"
+sudo rm -f  "$INITIAL/.env"
 sudo rm -rf "$INITIAL/venv"
 sudo rm -rf "$INITIAL/data"
+sudo rm -rf "$INITIAL/saved_models"
 
 echo "[5/8] Creating symlinks in initial release..."
-sudo ln -sfn "$SHARED/.env"  "$INITIAL/.env"
-sudo ln -sfn "$SHARED/venv"  "$INITIAL/venv"
-sudo ln -sfn "$SHARED/data"  "$INITIAL/data"
-sudo chown -h polymarket:polymarket "$INITIAL/.env" "$INITIAL/venv" "$INITIAL/data"
+sudo ln -sfn "$SHARED/.env"         "$INITIAL/.env"
+sudo ln -sfn "$SHARED/venv"         "$INITIAL/venv"
+sudo ln -sfn "$SHARED/data"         "$INITIAL/data"
+sudo ln -sfn "$SHARED/saved_models" "$INITIAL/saved_models"
+sudo chown -h polymarket:polymarket "$INITIAL/.env" "$INITIAL/venv" "$INITIAL/data" "$INITIAL/saved_models"
 
 echo "[6/8] Stopping service..."
 sudo systemctl stop polymarket-ai
@@ -106,8 +109,8 @@ echo "  Backup at: $BACKUP"
 
 echo "[8/8] Updating systemd service file..."
 if [ -f "$SERVICE_FILE" ]; then
-    # Update ReadWritePaths to use absolute shared path
-    sudo sed -i "s|ReadWritePaths=.*|ReadWritePaths=$SHARED/data /var/log/polymarket|" "$SERVICE_FILE"
+    # Update ReadWritePaths to use absolute shared path (includes saved_models)
+    sudo sed -i "s|ReadWritePaths=.*|ReadWritePaths=$SHARED/data $SHARED/saved_models /var/log/polymarket|" "$SERVICE_FILE"
     # Update EnvironmentFile to use absolute shared path
     sudo sed -i "s|EnvironmentFile=.*|EnvironmentFile=$SHARED/.env|" "$SERVICE_FILE"
     sudo systemctl daemon-reload

@@ -54,6 +54,7 @@ tar czf "$TMPTAR" \
     --exclude='*.pyc' \
     --exclude='.env' \
     --exclude='data' \
+    --exclude='saved_models' \
     --exclude='venv' \
     --exclude='.venv' \
     --exclude='pa2-releases' \
@@ -89,12 +90,14 @@ rm -f "\$TARFILE"
 echo "  Extracted to $NEW_RELEASE"
 
 # Symlink shared resources into release (code dir stays read-only)
-sudo ln -sfn $SHARED/.env $NEW_RELEASE/.env
-sudo ln -sfn $SHARED/data $NEW_RELEASE/data
-sudo ln -sfn $SHARED/venv $NEW_RELEASE/venv
+sudo ln -sfn $SHARED/.env          $NEW_RELEASE/.env
+sudo ln -sfn $SHARED/data          $NEW_RELEASE/data
+sudo ln -sfn $SHARED/saved_models  $NEW_RELEASE/saved_models
+sudo ln -sfn $SHARED/venv          $NEW_RELEASE/venv
 sudo chown -h polymarket:polymarket \
     $NEW_RELEASE/.env \
     $NEW_RELEASE/data \
+    $NEW_RELEASE/saved_models \
     $NEW_RELEASE/venv
 
 # Run migrations — abort + clean up on failure
