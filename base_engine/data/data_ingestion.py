@@ -288,7 +288,7 @@ class DataIngestionService:
         result = await run_resolution_backfill(
             self.db,
             self.client,
-            missing_limit=200,
+            missing_limit=500,
             resolution_limit=500,
             log_progress=log_progress,
             **kwargs,

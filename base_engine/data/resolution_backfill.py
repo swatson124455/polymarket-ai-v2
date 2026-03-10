@@ -155,11 +155,14 @@ async def run_resolution_backfill(
     # Phase 1: Fetch and insert missing markets
     async with db.get_session() as session:
         missing = await session.execute(text("""
-            SELECT DISTINCT t.market_id FROM trades t
-            WHERE t.market_id IS NOT NULL AND t.market_id != ''
-            AND NOT EXISTS (
+            SELECT DISTINCT market_id FROM (
+                SELECT t.market_id FROM trades t WHERE t.market_id IS NOT NULL AND t.market_id != ''
+                UNION
+                SELECT pt.market_id FROM paper_trades pt WHERE pt.market_id IS NOT NULL AND pt.market_id != ''
+            ) combined
+            WHERE NOT EXISTS (
                 SELECT 1 FROM markets m
-                WHERE m.id = t.market_id OR m.condition_id = t.market_id OR m.slug = t.market_id
+                WHERE m.id::text = market_id OR m.condition_id = market_id OR m.slug = market_id
             )
             LIMIT :lim
         """), {"lim": missing_limit})
