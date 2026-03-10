@@ -165,8 +165,8 @@ class MirrorBot(BaseBot):
 
         _daily_exposure: seeded from today's paper_trades (YES/NO entries).
         _open_positions: rebuilt from open positions table (YES/NO rows only).
-          traders set is unrecoverable — stop-loss and count checks work;
-          trader-exit mirroring only works for positions opened after this restart.
+          traders set restored from positions.trader_addresses (migration 035).
+          Exit-mirroring active immediately for positions that were persisted.
         """
         if self._state_restored:
             return
@@ -196,10 +196,12 @@ class MirrorBot(BaseBot):
                 )
 
                 # 2. Rebuild _open_positions from positions table (YES/NO only).
+                # trader_addresses column added by migration 035 — falls back to '{}' on older rows.
                 rows = await session.execute(
                     _text(
                         "SELECT market_id, token_id, side, size, entry_price, "
-                        "       COALESCE(current_price, entry_price) AS current_price, opened_at "
+                        "       COALESCE(current_price, entry_price) AS current_price, opened_at, "
+                        "       COALESCE(trader_addresses, '{}') AS trader_addresses "
                         "FROM positions "
                         "WHERE (bot_id = :bot OR source_bot = :bot) "
                         "  AND status = 'open' AND side IN ('YES', 'NO')"
@@ -216,13 +218,12 @@ class MirrorBot(BaseBot):
                             "size": float(r.size or 0.0),
                             "entry_price": float(r.entry_price or 0.5),
                             "current_price": float(r.current_price or r.entry_price or 0.5),
-                            "traders": set(),  # unrecoverable — trader-exit mirroring won't fire for these
+                            "traders": set(r.trader_addresses or []),
                             "timestamp": ts,
                         }
                         restored += 1
                 logger.info(
-                    "MirrorBot startup: restored %d open positions from DB "
-                    "(traders set empty — stop-loss/count active, exit-mirroring inactive for these)",
+                    "MirrorBot startup: restored %d open positions from DB",
                     restored,
                 )
         except Exception as exc:
@@ -289,6 +290,7 @@ class MirrorBot(BaseBot):
                 if executed:
                     self.mirrored_trades.add(trade_info["trade_id"])
                     self._track_open_position(trade_info)
+                    await self._persist_trader_to_position(trade_info)
             except Exception as e:
                 logger.warning("Error mirroring consensus trade", error=str(e))
                 continue
@@ -675,6 +677,33 @@ class MirrorBot(BaseBot):
                 "traders": {trade_info["trader_address"]},
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
+
+    async def _persist_trader_to_position(self, trade_info: Dict) -> None:
+        """Append trader_address to positions.trader_addresses for restart recovery."""
+        db = getattr(self.base_engine, "db", None)
+        if db is None:
+            return
+        from sqlalchemy import text as _text
+        try:
+            async with db.get_session() as session:
+                await session.execute(
+                    _text(
+                        "UPDATE positions SET trader_addresses = "
+                        "  array_append(COALESCE(trader_addresses, '{}'), :addr) "
+                        "WHERE (bot_id = :bot OR source_bot = :bot) "
+                        "  AND market_id = :mid AND token_id = :tid "
+                        "  AND status = 'open'"
+                    ),
+                    {
+                        "addr": trade_info["trader_address"],
+                        "bot": self.bot_name,
+                        "mid": trade_info["market_id"],
+                        "tid": trade_info["token_id"],
+                    },
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.warning("MirrorBot: failed to persist trader address: %s", exc)
 
     def _can_open_position(self, price: float) -> bool:
         """Check concurrent position + daily exposure limits."""
