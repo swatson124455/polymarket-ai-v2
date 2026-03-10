@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from structlog import get_logger
 
 from bots.base_bot import BaseBot
+from base_engine.data.daily_counter import increment_counter as _inc_daily, restore_counters as _restore_daily
 from base_engine.monitoring.alerting import AlertSeverity
 from config.settings import settings
 
@@ -593,38 +594,26 @@ class EsportsBot(BaseBot):
                 logger.debug("esportsbot_outcome_backfill_failed", error=str(_exc))
 
     async def _restore_exposure_from_db(self, db) -> None:
-        """Seed _game_exposure + _tournament_exposure from today's paper_trades on startup.
+        """Seed _game_exposure from daily_counters on startup.
 
-        Mirrors MirrorBot._restore_state_on_startup() pattern. Runs once per process
-        lifetime (guarded by _exposure_restored). Prevents overspend after mid-day restart.
+        Reads the write-through daily_counters table (migration 036) — the authoritative
+        source for per-game exposure since every _execute_esports_trade() call writes
+        through immediately. counter_date = CURRENT_DATE means this auto-resets at UTC midnight.
+
+        Note: _tournament_exposure is NOT restored — tournament caps span multiple UTC days
+        and daily_counters would reset them at midnight. Accept tournament exposure resets.
         """
         if self._exposure_restored:
             return
         self._exposure_restored = True
         if db is None or not getattr(db, "session_factory", None):
             return
-        from sqlalchemy import text as _sa_text
         try:
-            async with db.get_session() as _sess:
-                # Join paper_trades with esports_prediction_log to get game per trade.
-                # paper_trades has no metadata column — prediction_log is the source of game info.
-                rows = await _sess.execute(
-                    _sa_text("""
-                        SELECT
-                            COALESCE(epl.game, 'unknown')          AS game,
-                            COALESCE(SUM(pt.size * pt.price), 0.0) AS spent
-                        FROM paper_trades pt
-                        LEFT JOIN esports_prediction_log epl ON pt.market_id = epl.market_id
-                        WHERE pt.bot_name IN ('EsportsBot','EsportsSeriesBot','EsportsLiveBot')
-                          AND pt.created_at >= CURRENT_DATE
-                        GROUP BY epl.game
-                    """)
-                )
-                for r in rows.fetchall():
-                    if r.game and r.game != "unknown":
-                        self._game_exposure[r.game] = (
-                            self._game_exposure.get(r.game, 0.0) + float(r.spent)
-                        )
+            counters = await _restore_daily(db, "EsportsBot")
+            for name, value in counters.items():
+                if name.startswith("game_"):
+                    game_key = name[5:]  # "game_cs2" → "cs2"
+                    self._game_exposure[game_key] = value
             logger.info(
                 "esports_exposure_restored",
                 games=dict(self._game_exposure),
@@ -1433,6 +1422,14 @@ class EsportsBot(BaseBot):
                 self._tournament_exposure[tournament] = (
                     self._tournament_exposure.get(tournament, 0.0) + size
                 )
+            # Write-through: persist game exposure to daily_counters for restart recovery
+            if game:
+                _db = getattr(self.base_engine, "db", None)
+                if _db is not None:
+                    try:
+                        await _inc_daily(_db, "EsportsBot", f"game_{game}", size)
+                    except Exception as _exc:
+                        logger.warning("esports_game_counter_write_failed", error=str(_exc))
 
             logger.info(
                 "EsportsBot trade executed",

@@ -35,6 +35,7 @@ class OrderGateway:
         drawdown_controller=None,
         multi_kill_switch=None,
         rl_agent=None,
+        db=None,
     ):
         self.kill_switch = kill_switch
         self.risk_manager = risk_manager
@@ -50,6 +51,7 @@ class OrderGateway:
         self.drawdown_controller = drawdown_controller
         self.multi_kill_switch = multi_kill_switch
         self.rl_agent = rl_agent
+        self.db = db  # optional Database handle for daily_counters persistence
         self._market_index: Optional[Dict[str, Dict[str, Any]]] = None  # Set by base_engine after construction
         self._bot_names_used: Set[str] = set()  # For shutdown: release reservations for all bots in this process
         # In-memory position tracker for ms-latency reactive path
@@ -180,6 +182,68 @@ class OrderGateway:
             logger.info("OrderGateway: seeded %d open positions (exposure $%.2f) from DB", count, total_exp)
         except Exception as e:
             logger.warning("OrderGateway: position seed from DB failed (non-critical): %s", e)
+
+    async def _restore_daily_exposure(self) -> None:
+        """Seed _daily_exposure_usd from daily_counters table on startup.
+
+        Called once from base_engine.start() after seed_positions_from_db().
+        Uses absolute-set semantics: reads the last flushed total for each bot.
+        See migration 036_daily_counters.sql for write-pattern documentation.
+
+        Fail-open: any exception leaves _daily_exposure_usd empty — same as
+        current restart behaviour (no regression).
+        """
+        if not self.db:
+            return
+        try:
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            async with self.db.get_session() as session:
+                from sqlalchemy import text
+                result = await session.execute(text("""
+                    SELECT bot_id, counter_value
+                    FROM daily_counters
+                    WHERE counter_date = :today
+                      AND counter_name = 'daily_exposure_usd'
+                """), {"today": today})
+                rows = result.fetchall()
+            for bot_id, value in rows:
+                self._daily_exposure_usd[bot_id] = float(value)
+            self._daily_exposure_date = today
+            logger.info("order_gateway_daily_exposure_restored", count=len(rows))
+        except Exception as exc:
+            logger.debug("order_gateway_daily_exposure_restore_failed", error=str(exc))
+
+    async def _flush_daily_exposure(self) -> None:
+        """Persist current _daily_exposure_usd totals to daily_counters.
+
+        Called on SIGTERM (from base_engine.stop()) AND by the periodic flush loop
+        in base_engine.start() every 60 seconds. The periodic flush bounds worst-case
+        data loss on hard kills (SIGKILL, OOM) to ~60 seconds of exposure state.
+
+        Uses absolute-set semantics: writes the current authoritative in-memory total.
+        See migration 036_daily_counters.sql for write-pattern documentation.
+        """
+        if not self.db or not self._daily_exposure_usd:
+            return
+        try:
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            async with self.db.get_session() as session:
+                from sqlalchemy import text
+                for bot_id, value in self._daily_exposure_usd.items():
+                    await session.execute(text("""
+                        INSERT INTO daily_counters
+                            (bot_id, counter_date, counter_name, counter_value, updated_at)
+                        VALUES (:bot_id, :date, 'daily_exposure_usd', :value, NOW())
+                        ON CONFLICT (bot_id, counter_date, counter_name)
+                        DO UPDATE SET
+                            counter_value = EXCLUDED.counter_value,
+                            updated_at    = NOW()
+                    """), {"bot_id": bot_id, "date": today, "value": value})
+                await session.commit()
+            logger.info("order_gateway_daily_exposure_flushed",
+                        count=len(self._daily_exposure_usd))
+        except Exception as exc:
+            logger.warning("order_gateway_daily_exposure_flush_failed", error=str(exc))
 
     async def reconcile_exposure_from_db(self, db) -> None:
         """Rebuild in-memory exposure trackers from DB ground truth.

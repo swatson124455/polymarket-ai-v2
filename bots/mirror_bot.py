@@ -622,7 +622,7 @@ class MirrorBot(BaseBot):
                     try:
                         activity = await self.base_engine.client.get_user_activity(
                             user_address=addr,
-                            limit=10,
+                            limit=50,
                             offset=0,
                         )
                     except Exception:

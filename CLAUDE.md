@@ -98,6 +98,27 @@ If you cannot fully verify a change, you MUST state:
 
 Silence about uncertainty is forbidden. When in doubt, flag it.
 
+## State Persistence Decision Tree
+
+When a bot accumulates in-memory financial state that must survive a restart, pick the right persistence tier based on mutation semantics:
+
+| State type | Example | Correct mechanism |
+|-----------|---------|------------------|
+| **Purely additive, resets daily** | `_game_exposure[game] += size` (never decremented) | `daily_counters` write-through (`base_engine/data/daily_counter.py`) |
+| **Net counter (up + down), resets daily** | `_daily_exposure` (increments on open, decrements on exit) | Query `paper_trades` SUM on startup — ground truth |
+| **TTL-based cooldown** | `_recently_exited[market_id] = mono_time` (15-min cooldown) | Redis key with matching TTL; restore via remaining TTL |
+| **Open position set** | `_open_positions` | `positions` table; restore from DB on startup |
+| **Not needed across restarts** | Live match tracking, API caches, prediction dedup | Leave in memory — loss is 10-second re-sync, not financial risk |
+
+**Current implementations:**
+- MirrorBot `_daily_exposure` → paper_trades SUM in `_restore_state_on_startup()` ✅
+- EsportsBot `_game_exposure` → `daily_counters` write-through + `_restore_exposure_from_db()` ✅
+- WeatherBot `_recently_exited` → Redis TTL in `_save_exit_to_redis()` / `_restore_exits_from_redis()` ✅
+- WeatherBot `_group_exposure`/`_city_exposure` → DB restore in `_restore_group_city_exposure_from_db()` ✅
+- MirrorBot `_open_positions` → `positions` table in `_restore_state_on_startup()` ✅
+
+**Do NOT use `asyncio.create_task()` for financial write-throughs** — fire-and-forget means DB errors silently corrupt the counter. Always `await` the persistence call. The ~2ms upsert latency is negligible on 30–120s scan intervals.
+
 ## Key Architecture Facts
 
 - **15 bots** in BOT_REGISTRY (MomentumBot DELETED)

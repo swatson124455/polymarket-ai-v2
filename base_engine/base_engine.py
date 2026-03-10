@@ -1032,6 +1032,7 @@ class BaseEngine:
                 drawdown_controller=self.drawdown_controller,
                 multi_kill_switch=self.multi_kill_switch,
                 rl_agent=self.rl_agent,
+                db=self.db,
             )
             # Share market index with order gateway for condition_id lookups (order book API)
             self.order_gateway._market_index = self._market_index
@@ -1075,6 +1076,10 @@ class BaseEngine:
                     await self.order_gateway.seed_positions_from_db(self.db)
                 except Exception as e:
                     logger.debug("Position seed from DB failed (non-critical): %s", e)
+                try:
+                    await self.order_gateway._restore_daily_exposure()
+                except Exception as e:
+                    logger.debug("Daily exposure restore failed (non-critical): %s", e)
             self.elite_detector = EliteUserDetector(self.db) if self.db is not None else None
             if self.learning_engine is not None and self.prediction_engine is not None and self.db is not None:
                 self.incremental_learner = IncrementalLearner(
@@ -1425,7 +1430,22 @@ class BaseEngine:
                 logger.info("Resolution listener started (events -> event_bus -> webhooks + feedback backfill)")
             except Exception as e:
                 logger.warning("Resolution listener start failed (non-critical): %s", e)
-    
+
+        # Periodic daily-exposure flush: persists _daily_exposure_usd every 60s so a
+        # hard kill (SIGKILL, OOM) loses at most 60 seconds of exposure state.
+        if self.order_gateway:
+            _gw = self.order_gateway
+
+            async def _periodic_exposure_flush():
+                while self.running:
+                    await asyncio.sleep(60)
+                    try:
+                        await _gw._flush_daily_exposure()
+                    except Exception as _e:
+                        logger.debug("Periodic exposure flush error (non-critical): %s", _e)
+
+            asyncio.ensure_future(_periodic_exposure_flush())
+
     async def stop(self):
         self.running = False
         logger.info("Stopping base engine services")
@@ -1579,13 +1599,21 @@ class BaseEngine:
             stop_errors.append(f"data_ingestion: {str(e)}")
             logger.warning(f"Error stopping data ingestion: {str(e)}")
         
+        # Flush daily exposure counters before closing DB/cache (graceful SIGTERM path).
+        # The periodic 60s flush in start() handles the SIGKILL path.
+        try:
+            if self.order_gateway:
+                await self.order_gateway._flush_daily_exposure()
+        except Exception as e:
+            logger.warning("Daily exposure flush on shutdown failed: %s", e)
+
         try:
             if self.cache:
                 await self.cache.close()
         except Exception as e:
             stop_errors.append(f"cache: {str(e)}")
             logger.warning(f"Error closing cache: {str(e)}")
-        
+
         try:
             if self.db and not db_closed_by_lifecycle:
                 await self.db.close()
