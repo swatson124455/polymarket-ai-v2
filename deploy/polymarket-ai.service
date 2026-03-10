@@ -10,7 +10,7 @@ Group=polymarket
 WorkingDirectory=/opt/polymarket-ai-v2
 Environment=PYTHONUNBUFFERED=1
 Environment="PYTHONWARNINGS=ignore::UserWarning:sklearn,ignore::FutureWarning:sklearn"
-EnvironmentFile=/opt/polymarket-ai-v2/.env
+EnvironmentFile=/opt/pa2-shared/.env
 ExecStart=/opt/polymarket-ai-v2/venv/bin/python main.py
 Restart=always
 RestartSec=10
@@ -25,7 +25,7 @@ StartLimitBurst=5
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=false
-ReadWritePaths=/opt/polymarket-ai-v2/data /var/log/polymarket
+ReadWritePaths=/opt/pa2-shared/data /var/log/polymarket
 PrivateTmp=true
 
 # Resource limits
