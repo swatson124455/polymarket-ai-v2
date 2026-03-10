@@ -606,16 +606,18 @@ class EsportsBot(BaseBot):
         from sqlalchemy import text as _sa_text
         try:
             async with db.get_session() as _sess:
+                # Join paper_trades with esports_prediction_log to get game per trade.
+                # paper_trades has no metadata column — prediction_log is the source of game info.
                 rows = await _sess.execute(
                     _sa_text("""
                         SELECT
-                            COALESCE(metadata->>'game', 'unknown')  AS game,
-                            COALESCE(metadata->>'tournament', '')   AS tournament,
-                            COALESCE(SUM(size * price), 0.0)       AS spent
-                        FROM paper_trades
-                        WHERE bot_name IN ('EsportsBot','EsportsSeriesBot','EsportsLiveBot')
-                          AND created_at >= CURRENT_DATE
-                        GROUP BY game, tournament
+                            COALESCE(epl.game, 'unknown')          AS game,
+                            COALESCE(SUM(pt.size * pt.price), 0.0) AS spent
+                        FROM paper_trades pt
+                        LEFT JOIN esports_prediction_log epl ON pt.market_id = epl.market_id
+                        WHERE pt.bot_name IN ('EsportsBot','EsportsSeriesBot','EsportsLiveBot')
+                          AND pt.created_at >= CURRENT_DATE
+                        GROUP BY epl.game
                     """)
                 )
                 for r in rows.fetchall():
@@ -623,14 +625,9 @@ class EsportsBot(BaseBot):
                         self._game_exposure[r.game] = (
                             self._game_exposure.get(r.game, 0.0) + float(r.spent)
                         )
-                    if r.tournament:
-                        self._tournament_exposure[r.tournament] = (
-                            self._tournament_exposure.get(r.tournament, 0.0) + float(r.spent)
-                        )
             logger.info(
                 "esports_exposure_restored",
                 games=dict(self._game_exposure),
-                tournaments=dict(self._tournament_exposure),
             )
         except Exception as exc:
             logger.warning("esports_restore_exposure_failed", error=str(exc))
