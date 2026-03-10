@@ -309,6 +309,22 @@ class EsportsModelTrainer:
                 except Exception:
                     pass  # CLV is informational
 
+            # P2.1: Persist calibration metrics for adaptive Kelly sizing
+            if db is not None:
+                try:
+                    from esports.data.esports_db import update_calibration as _update_cal
+                    _correct = int(round(accuracy * len(val_set)))
+                    _kelly = float(getattr(settings, "KELLY_FRACTION", 0.25))
+                    await _update_cal(
+                        db, game, "match_winner",
+                        bet_count=len(val_set),
+                        correct_count=_correct,
+                        brier_score=round(brier, 4),
+                        kelly_fraction=_kelly,
+                    )
+                except Exception:
+                    pass  # Non-critical — don't fail training on calibration write error
+
         except Exception as exc:
             result["error"] = str(exc)
             logger.error("EsportsModelTrainer: training failed", game=game, error=str(exc))
