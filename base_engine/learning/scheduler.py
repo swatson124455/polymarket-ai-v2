@@ -50,6 +50,7 @@ class LearningScheduler:
         self.feature_engineer = feature_engineer
         self.model_version_manager = model_version_manager
         self.ensemble_bot = None  # L6: archived — EnsembleBot removed from registry
+        self.esports_trainer = None  # P2.2: set by EsportsBot.start() after init
         self.running = False
         self._task: Optional[asyncio.Task] = None
         self._cycles_without_retrain = 0
@@ -580,6 +581,18 @@ class LearningScheduler:
                 logger.debug("Canary auto-transition failed: %s", e)
 
         logger.info("Scheduled retraining complete")
+
+        # P2.2: Trigger esports cross-game retrain if trainer available + due
+        if self.esports_trainer is not None:
+            try:
+                if self.esports_trainer.needs_retrain("cross_game"):
+                    asyncio.create_task(
+                        self.esports_trainer.train_cross_game(db=self.db),
+                        name="scheduler_retrain_cross_game",
+                    )
+                    logger.info("LearningScheduler: triggered esports cross-game retrain")
+            except Exception as _exc:
+                logger.warning("LearningScheduler: esports retrain hook failed", error=str(_exc))
 
     async def _canary_auto_transition(self) -> None:
         """Auto-advance or reset canary stage based on Brier + accuracy metrics.
