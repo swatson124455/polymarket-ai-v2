@@ -189,6 +189,22 @@ class AutomatedPositionManager:
         except Exception as e:
             logger.debug("adverse fill persistence failed: %s", e)
 
+    async def refresh_positions(self) -> None:
+        """One-shot position price refresh. Called after WS reconnect to close stale-price gap."""
+        if not self.db or not getattr(self.db, "session_factory", None):
+            return
+        try:
+            from sqlalchemy import select
+            async with self.db.get_session() as session:
+                result = await session.execute(
+                    select(Position).where(Position.status.in_(["open", "reserving"]))
+                )
+                positions = result.scalars().all()
+                if positions:
+                    await self._update_current_prices(session, positions)
+        except Exception as e:
+            logger.debug("refresh_positions failed: %s", e)
+
     async def _monitor_positions(self):
         """Monitor all positions and execute stop-loss/take-profit."""
         # Initial delay: let startup DB connections settle before position monitoring begins.

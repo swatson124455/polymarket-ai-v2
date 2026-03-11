@@ -35,6 +35,7 @@ class WebSocketManager:
         event_bus: Optional[Any] = None,
         market_index_resolver: Optional[Any] = None,
         alerting: Optional[Any] = None,
+        on_reconnect: Optional[Callable] = None,
     ):
         self.cache = cache
         self.ws_url = ws_url
@@ -43,6 +44,8 @@ class WebSocketManager:
         # I49: callable(market_id_str) -> market_dict | None — resolves condition_id to numeric id
         self._market_index_resolver = market_index_resolver
         self._alerting = alerting  # Session 51: AlertingSystem for circuit breaker alerts
+        # Optional async callback fired after successful reconnect — use for REST price resync.
+        self._on_reconnect: Optional[Callable] = on_reconnect
         self.ws = None
         self.subscriptions = set()
         self.handlers: Dict[str, List[Callable]] = {}
@@ -109,6 +112,11 @@ class WebSocketManager:
                     token_id = sub_key.replace("price:", "")
                     await self.ws.send(json.dumps({"assets_ids": [token_id], "operation": "subscribe"}))
             logger.info("WebSocket reconnected")
+            if self._on_reconnect is not None:
+                try:
+                    await self._on_reconnect()
+                except Exception as _cb_exc:
+                    logger.warning("ws_reconnect_callback_failed", error=str(_cb_exc))
             return True
         except Exception as e:
             logger.error("WebSocket reconnect failed: %s", e)
