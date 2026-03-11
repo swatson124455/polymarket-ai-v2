@@ -33,7 +33,7 @@ logger = get_logger()
 _DEFAULT_BOT_CONFIGS: Dict[str, Dict[str, Any]] = {
     "EnsembleBot":         {"capital": 8000, "kelly_fraction": 0.25, "max_bet_usd": 100, "max_daily_usd": 2000},
     "ArbitrageBot":        {"capital": 1000, "kelly_fraction": 0.25, "max_bet_usd": 100, "max_daily_usd": 500},
-    "MirrorBot":           {"capital": 3000, "kelly_fraction": 0.30, "max_bet_usd": 250, "max_daily_usd": 3000},
+    "MirrorBot":           {"capital": 3000, "kelly_fraction": 0.30, "max_bet_usd": 250, "max_daily_usd": 10000},
     "CrossPlatformArbBot": {"capital": 500,  "kelly_fraction": 0.20, "max_bet_usd": 50,  "max_daily_usd": 200},
     "OracleBot":           {"capital": 500,  "kelly_fraction": 0.20, "max_bet_usd": 50,  "max_daily_usd": 200},
     "LLMForecasterBot":    {"capital": 500,  "kelly_fraction": 0.20, "max_bet_usd": 50,  "max_daily_usd": 200},
