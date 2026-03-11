@@ -196,19 +196,17 @@ class OrderGateway:
         if not self.db:
             return
         try:
-            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             async with self.db.get_session() as session:
                 from sqlalchemy import text
                 result = await session.execute(text("""
                     SELECT bot_id, counter_value
                     FROM daily_counters
-                    WHERE counter_date = :today
+                    WHERE counter_date = CURRENT_DATE
                       AND counter_name = 'daily_exposure_usd'
-                """), {"today": today})
+                """))
                 rows = result.fetchall()
             for bot_id, value in rows:
                 self._daily_exposure_usd[bot_id] = float(value)
-            self._daily_exposure_date = today
             logger.info("order_gateway_daily_exposure_restored", count=len(rows))
         except Exception as exc:
             logger.debug("order_gateway_daily_exposure_restore_failed", error=str(exc))
@@ -226,19 +224,18 @@ class OrderGateway:
         if not self.db or not self._daily_exposure_usd:
             return
         try:
-            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             async with self.db.get_session() as session:
                 from sqlalchemy import text
                 for bot_id, value in self._daily_exposure_usd.items():
                     await session.execute(text("""
                         INSERT INTO daily_counters
                             (bot_id, counter_date, counter_name, counter_value, updated_at)
-                        VALUES (:bot_id, :date, 'daily_exposure_usd', :value, NOW())
+                        VALUES (:bot_id, CURRENT_DATE, 'daily_exposure_usd', :value, NOW())
                         ON CONFLICT (bot_id, counter_date, counter_name)
                         DO UPDATE SET
                             counter_value = EXCLUDED.counter_value,
                             updated_at    = NOW()
-                    """), {"bot_id": bot_id, "date": today, "value": value})
+                    """), {"bot_id": bot_id, "value": value})
                 await session.commit()
             logger.info("order_gateway_daily_exposure_flushed",
                         count=len(self._daily_exposure_usd))
