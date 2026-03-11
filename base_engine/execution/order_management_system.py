@@ -3,14 +3,35 @@ Order Management System
 =======================
 Comprehensive order tracking and management.
 Tracks all orders, fills, and order history.
+
+Order lifecycle states:
+  PENDING → SUBMITTED → OPEN → FILLED (happy path)
+  PENDING → FAILED (pre-trade check rejected)
+  OPEN → CANCELLED (user/kill-switch cancellation)
+  OPEN → PARTIALLY_FILLED → FILLED (gradual fill)
+
+Paper trading: orders transition PENDING → FILLED instantly (no CLOB).
+Live trading: orders transition through SUBMITTED → OPEN as CLOB confirms.
 """
 import uuid
+from enum import Enum
 from typing import Dict, List, Optional
 from datetime import datetime, timezone
 from collections import defaultdict
 from structlog import get_logger
 
 logger = get_logger()
+
+
+class OrderState(Enum):
+    """Order lifecycle states."""
+    PENDING = "pending"
+    SUBMITTED = "submitted"      # Sent to CLOB, awaiting acknowledgement
+    OPEN = "open"                # CLOB confirmed, on the book
+    PARTIALLY_FILLED = "partially_filled"
+    FILLED = "filled"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
 
 
 class OrderManagementSystem:

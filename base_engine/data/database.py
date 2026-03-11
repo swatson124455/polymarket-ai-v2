@@ -428,6 +428,10 @@ class PaperTradeRecord(Base):
     realized_pnl = Column(Float, nullable=True)
     correlation_id = Column(String, nullable=True, index=True)
     latency_ms = Column(Float, nullable=True)  # Order execution latency (ms) — S43
+    # Order state machine: PENDING→SUBMITTED→FILLED (migration 039)
+    status = Column(String, nullable=False, default="filled")
+    submitted_at = Column(NaiveUTCDateTime, nullable=True)
+    filled_at = Column(NaiveUTCDateTime, nullable=True)
 
 
 class MLModel(Base):
@@ -2082,6 +2086,50 @@ class Database:
                 for r in rows
             ]
 
+    async def get_user_resolution_counts_by_category(
+        self, lookback_days: int = 365
+    ) -> List[Dict[str, Any]]:
+        """Per-user per-category resolution counts for category-aware elite reliability.
+
+        Returns list of { user_address, category, yes_correct, yes_total, no_correct, no_total }.
+        """
+        if self.session_factory is None:
+            return []
+        async with self.get_session() as session:
+            q = text("""
+                SELECT
+                    t.user_address,
+                    LOWER(COALESCE(m.category, 'unknown')) AS category,
+                    SUM(CASE WHEN (t.side IN ('YES','BUY') OR t.token_id = m.yes_token_id)
+                             AND m.resolution = 'YES' THEN 1 ELSE 0 END) as yes_correct,
+                    SUM(CASE WHEN (t.side IN ('YES','BUY') OR t.token_id = m.yes_token_id)
+                             AND m.resolution IN ('YES','NO') THEN 1 ELSE 0 END) as yes_total,
+                    SUM(CASE WHEN (t.side IN ('NO','SELL') OR t.token_id = m.no_token_id)
+                             AND m.resolution = 'NO' THEN 1 ELSE 0 END) as no_correct,
+                    SUM(CASE WHEN (t.side IN ('NO','SELL') OR t.token_id = m.no_token_id)
+                             AND m.resolution IN ('YES','NO') THEN 1 ELSE 0 END) as no_total
+                FROM trades t
+                JOIN markets m ON t.market_id = m.id
+                WHERE t.user_address IS NOT NULL
+                AND t.market_id IS NOT NULL
+                AND m.resolved = TRUE AND m.resolution IN ('YES', 'NO')
+                AND t.timestamp >= NOW() - INTERVAL '1 day' * :days
+                GROUP BY t.user_address, LOWER(COALESCE(m.category, 'unknown'))
+            """)
+            result = await session.execute(q, {"days": lookback_days})
+            rows = result.mappings().all()
+            return [
+                {
+                    "user_address": r["user_address"],
+                    "category": r["category"],
+                    "yes_correct": r["yes_correct"] or 0,
+                    "yes_total": r["yes_total"] or 0,
+                    "no_correct": r["no_correct"] or 0,
+                    "no_total": r["no_total"] or 0,
+                }
+                for r in rows
+            ]
+
     async def upsert_users(self, users: List[Dict[str, Any]]) -> int:
         """
         Upsert users (insert or update on address conflict).
@@ -2861,6 +2909,9 @@ class Database:
         correlation_id: Optional[str] = None,
         realized_pnl: Optional[float] = None,
         latency_ms: Optional[float] = None,
+        status: str = "filled",
+        submitted_at: Optional[datetime] = None,
+        filled_at: Optional[datetime] = None,
     ) -> None:
         """Persist one paper trade for SIMULATION_MODE. No-op if no db."""
         if self.session_factory is None:
@@ -2879,6 +2930,9 @@ class Database:
                     correlation_id=correlation_id,
                     realized_pnl=realized_pnl,
                     latency_ms=latency_ms,
+                    status=status,
+                    submitted_at=submitted_at,
+                    filled_at=filled_at,
                 )
                 session.add(rec)
                 await session.commit()
