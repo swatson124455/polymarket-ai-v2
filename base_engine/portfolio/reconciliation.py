@@ -138,18 +138,20 @@ class PositionReconciler:
         if not internal:
             return results
         try:
-            from sqlalchemy import text as _text
+            from sqlalchemy import text as _text, bindparam
             market_ids = [p["market_id"] for p in internal]
-            placeholders = ", ".join(f"'{mid}'" for mid in market_ids)
             async with self.db.get_session() as session:
-                pt_rows = await session.execute(_text(f"""
-                    SELECT market_id,
-                           SUM(CASE WHEN side IN ('YES', 'BUY') THEN size ELSE -size END) AS net_size
-                    FROM paper_trades
-                    WHERE market_id IN ({placeholders})
-                      AND realized_pnl IS NULL
-                    GROUP BY market_id
-                """))
+                pt_rows = await session.execute(
+                    _text(
+                        "SELECT market_id,"
+                        " SUM(CASE WHEN side IN ('YES', 'BUY') THEN size ELSE -size END) AS net_size"
+                        " FROM paper_trades"
+                        " WHERE market_id = ANY(:ids)"
+                        " AND realized_pnl IS NULL"
+                        " GROUP BY market_id"
+                    ),
+                    {"ids": market_ids},
+                )
                 pt_map: Dict[str, float] = {
                     row.market_id: float(row.net_size or 0.0) for row in pt_rows.fetchall()
                 }
