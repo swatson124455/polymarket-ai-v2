@@ -405,6 +405,12 @@ class BaseEngine:
         # Level 1: Core Infrastructure
         try:
             self.client = PolymarketClient(private_key=pk, wallet_address=addr)
+            logger.info(
+                "polymarket_client_initialized",
+                shared_across_bots=True,
+                rate_limit_rps=self.client.rate_limiter.rate,
+                rate_limit_burst=self.client.rate_limiter.capacity,
+            )
         except Exception as e:
             logger.error("Failed to create PolymarketClient: %s", ascii(str(e)))
             raise RuntimeError(f"Cannot initialize without PolymarketClient: {str(e)}") from e
@@ -591,6 +597,27 @@ class BaseEngine:
 
             # Use WebSocket URL from client (which gets it from settings)
             ws_url = getattr(self.client, 'ws_url', 'wss://ws-subscriptions-clob.polymarket.com/ws/market')
+            async def _on_ws_reconnect() -> None:
+                """Callback fired after WS reconnects — triggers immediate price refresh.
+
+                position_manager._update_current_prices() polls every 10s from DB.
+                After WS reconnect, force an immediate position price refresh to close
+                the gap faster (instead of waiting up to 10s).
+                """
+                subs = getattr(self.websocket_manager, "subscriptions", set())
+                price_subs = [s for s in subs if s.startswith("price:")]
+                logger.info(
+                    "ws_reconnect_price_resync",
+                    subscribed_tokens=len(price_subs),
+                )
+                # Trigger immediate position price update (normally polls every 10s)
+                if self.position_manager:
+                    try:
+                        await self.position_manager.refresh_positions()
+                        logger.info("ws_reconnect_positions_refreshed")
+                    except Exception as _e:
+                        logger.debug("ws_reconnect_position_refresh_failed", error=str(_e))
+
             self.websocket_manager = WebSocketManager(
                 cache=self.cache,
                 ws_url=ws_url,
@@ -599,6 +626,7 @@ class BaseEngine:
                 # at the source before price_update events are emitted to bots
                 market_index_resolver=self.get_market_from_index,
                 alerting=self.alerting_system,  # Session 51 P1-3
+                on_reconnect=_on_ws_reconnect,
             )
             # Real-time streaming to DB (trade/price events from WebSocket)
             if self.db and self.db.session_factory:
@@ -972,7 +1000,11 @@ class BaseEngine:
         # Coordination and lifecycle (mandatory for multi-bot)
         bot_id = getattr(settings, "BOT_ID", "default")
         if self.db is not None:
-            self.kill_switch = KillSwitch(self.db, telegram_bot=None)
+            _cancel_cb = None
+            if self.order_management_system is not None:
+                _cancel_cb = self.order_management_system.cancel_all_orders
+            self.kill_switch = KillSwitch(self.db, telegram_bot=None,
+                                          on_engage_callback=_cancel_cb)
             if self.risk_manager is not None:
                 self.risk_manager.set_kill_switch(self.kill_switch)
             if self.execution_engine is not None:
@@ -1067,6 +1099,8 @@ class BaseEngine:
             )
             # BUG-1 fix: OrderGateway was created before multi_kill_switch — backfill the reference
             self.order_gateway.multi_kill_switch = self.multi_kill_switch
+            # B1: Wire OrderGateway into KillSwitch so engage() can mark positions halted
+            self.kill_switch._order_gateway = self.order_gateway
             # Wire OrderGateway into RiskManager for in-memory position/exposure lookups (avoids 3+ DB queries)
             if self.risk_manager is not None:
                 self.risk_manager.set_order_gateway(self.order_gateway)
@@ -1169,6 +1203,13 @@ class BaseEngine:
     async def start(self):
         self.running = True
         logger.info("Starting base engine services")
+        _canary = getattr(settings, "CANARY_STAGE", 0)
+        _canary_pcts = {0: "off (paper)", 1: "5%", 2: "25%", 3: "50%", 4: "100%"}
+        logger.info(
+            "canary_stage_active",
+            stage=_canary,
+            capital_pct=_canary_pcts.get(_canary, "unknown"),
+        )
 
         # Enable paper trading when SIMULATION_MODE=true (orders go to PaperTradingEngine, not real API)
         if getattr(settings, "SIMULATION_MODE", False) and self.paper_trading:
