@@ -221,8 +221,8 @@ class IngestionScheduler:
                             performance_tracker=self.performance_tracker,
                         )
                         _rb_inserted = bf.get("inserted", 0) + bf.get("updated", 0)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("mini_backfill_resolution_failed", error=str(exc))
                     # Phase 2: Propagate resolutions to prediction_log + paper_trades
                     pred_updated = await db.backfill_prediction_log_resolution()
                     pseudo_updated = 0

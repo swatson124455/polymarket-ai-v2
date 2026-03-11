@@ -943,6 +943,8 @@ class WeatherBot(BaseBot):
                         "market_id": b.market_id,
                         "token_id": b.token_id,
                         "side": "YES",
+                        "edge": round(yes_edge, 4),
+                        "price": round(market_prob, 4),
                         "model_prob": round(model_prob, 4),
                         "market_prob": round(market_prob, 4),
                         "abs_edge": round(abs(yes_edge), 4),
@@ -953,6 +955,8 @@ class WeatherBot(BaseBot):
                         "market_id": b.market_id,
                         "token_id": b.no_token_id,
                         "side": "NO",
+                        "edge": round(no_edge, 4),
+                        "price": round(1.0 - market_prob, 4),
                         "model_prob": round(1.0 - model_prob, 4),
                         "market_prob": round(1.0 - market_prob, 4),
                         "abs_edge": round(abs(no_edge), 4),
@@ -1436,8 +1440,8 @@ class WeatherBot(BaseBot):
             st_size = st_sizes.get(opp["market_id"])
             if st_size and st_size >= 1.0:
                 opp["_st_size_override"] = st_size
-            await self._execute_weather_trade(opp, group)
-            traded += 1
+            if await self._execute_weather_trade(opp, group):
+                traded += 1
 
         return traded
 
@@ -1592,7 +1596,8 @@ class WeatherBot(BaseBot):
                     opp["confidence"], opp["price"],
                 )
                 size = max(1.0, kelly_shares * opp["price"] * combined_boost)
-            except Exception:
+            except Exception as exc:
+                logger.warning("weatherbot_kelly_sizing_failed", error=str(exc))
                 size = max(1.0, self._default_size)
 
         # Cap to remaining group/city budget + liquidity cap
@@ -2001,8 +2006,8 @@ class WeatherBot(BaseBot):
                 return
             expire_at = time.time() + 900.0
             await cache.set(f"weatherbot:exit:{market_id}", expire_at, ttl=900)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("weatherbot_redis_exit_save_failed", error=str(exc))
 
     async def _restore_exits_from_redis(self) -> None:
         """Reload _recently_exited cooldowns from Redis on startup."""
@@ -2051,7 +2056,7 @@ class WeatherBot(BaseBot):
             async with db.get_session() as session:
                 from sqlalchemy import text
                 result = await session.execute(text("""
-                    SELECT m.question, SUM(pt.size) AS total_size
+                    SELECT m.question, SUM(pt.size * pt.price) AS total_size
                     FROM paper_trades pt
                     JOIN markets m
                       ON (pt.market_id = m.condition_id OR pt.market_id = CAST(m.id AS TEXT))
@@ -3022,7 +3027,7 @@ class WeatherBot(BaseBot):
                     SELECT COUNT(*), AVG(POWER(forecast_temp - actual_temp, 2))
                     FROM weather_calibration
                     WHERE actual_temp IS NOT NULL
-                      AND updated_at >= NOW() - INTERVAL '7 days'
+                      AND created_at >= NOW() - INTERVAL '7 days'
                 """))
                 row = result.fetchone()
                 if row and row[0] and row[0] >= 10:

@@ -252,6 +252,17 @@ async def run_resolution_backfill(
         for mid in market_ids:
             try:
                 m = await client.get_market(mid, use_cache=False)
+                _from_clob = False
+                # Gamma API returns nulls for condition_id (0x…) markets.
+                # Fall back to CLOB API which has correct closure/winner data.
+                _closed_gamma = (
+                    m.get("closed") or m.get("isResolved") or m.get("resolved")
+                ) if m and isinstance(m, dict) else None
+                if not _closed_gamma and str(mid).startswith("0x") and len(str(mid)) == 66:
+                    _clob = await _fetch_market_by_condition_id(mid)
+                    if _clob and _clob.get("closed"):
+                        m = _clob_to_market_format(_clob, mid)
+                        _from_clob = True
                 if not m or not isinstance(m, dict):
                     continue
 
@@ -285,7 +296,8 @@ async def run_resolution_backfill(
                 if res is None:
                     res = _infer_resolution_from_outcome_prices(m)
                 if res and str(res).upper() in ("YES", "NO"):
-                    await db.save_market_resolution(mid, True, str(res).upper(), "gamma_api", None)
+                    _source = "clob_api" if _from_clob else "gamma_api"
+                    await db.save_market_resolution(mid, True, str(res).upper(), _source, None)
                     updated += 1
                     if log_progress and updated % 50 == 0:
                         logger.info("Resolution backfill: updated %d resolutions", updated)
