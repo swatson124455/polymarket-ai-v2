@@ -111,6 +111,25 @@ class WeatherBot(BaseBot):
         # P3: dedup tracking (avoid writing same forecast twice in one session)
         self._written_forecasts: Set[str] = set()  # "station_id:date_iso"
 
+        # Cross-bot transfer: prediction logging dedup cache
+        # market_id → (predicted_prob, monotonic_ts); skip if delta < 0.01 within 600s
+        self._prediction_log_cache: Dict[str, Tuple[float, float]] = {}
+        self._scan_count: int = 0
+
+        # Cross-bot transfer: per-market-type consecutive loss tracking (from EsportsBot)
+        self._consecutive_losses: Dict[str, int] = {}  # market_type → streak count
+
+        # Cross-bot transfer: per-market-type adaptive parameters (from MirrorBot)
+        self._category_params: Dict[str, Dict[str, float]] = {}
+        self._category_params_loaded: bool = False
+
+        # Cross-bot transfer: per-station reliability-weighted sizing (from MirrorBot)
+        # station_id → (mse, monotonic_ts); 1-hour TTL
+        self._station_mse_cache: Dict[str, Tuple[float, float]] = {}
+
+        # Cross-bot transfer: EMOS drift detection (DDM/EDDM per station)
+        self._drift_detectors: Dict[str, Any] = {}  # station_id → DriftDetector
+
         # P2-regime: ENSO regime cache (el_nino / la_nina / neutral)
         # Nino 3.4 SST anomaly updated monthly; cache for 24h.
         self._regime_tag: Optional[str] = None
@@ -127,6 +146,236 @@ class WeatherBot(BaseBot):
         # station_id → boost_factor
         self._severe_weather_batch: Dict[str, float] = {}
         self._severe_weather_batch_time: float = 0.0
+
+    # ── Prediction logging (cross-bot transfer from EsportsBot) ────────────
+
+    async def _log_weather_prediction(
+        self,
+        market_id: str,
+        model_prob: float,
+        market_price: float,
+        confidence: float,
+        market_type: str,
+    ) -> None:
+        """Log prediction to prediction_log for accuracy tracking + drift detection.
+
+        Dedup: skip if same market_id has |delta_prob| < 0.01 within 600s.
+        """
+        now_mono = time.monotonic()
+        cached = self._prediction_log_cache.get(market_id)
+        if cached and abs(model_prob - cached[0]) < 0.01 and now_mono - cached[1] < 600:
+            return
+        db = getattr(self.base_engine, "db", None)
+        if not db:
+            return
+        try:
+            await db.insert_prediction_log(
+                market_id=market_id,
+                predicted_prob=model_prob,
+                market_price=market_price,
+                model_name=f"weather_{market_type}",
+                bot_name="WeatherBot",
+                confidence=confidence,
+            )
+            self._prediction_log_cache[market_id] = (model_prob, now_mono)
+        except Exception:
+            pass  # insert_prediction_log already logs internally
+
+    async def _backfill_weather_outcomes(self) -> None:
+        """Resolve WeatherBot predictions against settled markets.
+
+        Runs every 10 scans (~50 min). Calls shared backfill_prediction_log_resolution()
+        which propagates market resolutions to prediction_log rows.
+        Also feeds consecutive loss tracker with newly resolved outcomes.
+        """
+        db = getattr(self.base_engine, "db", None)
+        if not db:
+            return
+        try:
+            n = await db.backfill_prediction_log_resolution()
+            if n:
+                logger.info("weatherbot_prediction_backfill_resolved", count=n)
+        except Exception as exc:
+            logger.debug("weatherbot_prediction_backfill_failed", error=str(exc))
+
+        # Feed consecutive loss tracker with recently resolved predictions
+        try:
+            from sqlalchemy import text as sa_text
+            async with db.get_session() as session:
+                result = await session.execute(sa_text(
+                    "SELECT model_name, was_correct FROM prediction_log "
+                    "WHERE bot_name = 'WeatherBot' "
+                    "AND was_correct IS NOT NULL "
+                    "AND resolved_at > NOW() - INTERVAL '1 hour'"
+                ))
+                for row in result.fetchall():
+                    mtype = str(row[0]).replace("weather_", "")
+                    self._record_weather_outcome(mtype, bool(row[1]))
+        except Exception as exc:
+            logger.debug("weatherbot_outcome_feed_failed", error=str(exc))
+
+    # ── Drawdown compression (cross-bot transfer from EsportsBot) ────────
+
+    # (min_consecutive_losses, kelly_factor) — first matching threshold wins
+    _DRAWDOWN_SCHEDULE = [(8, 0.25), (5, 0.50), (3, 0.75)]
+
+    def _compute_weather_drawdown_factor(self, market_type: str) -> float:
+        """Return Kelly compression factor based on consecutive losses for this market type."""
+        streak = self._consecutive_losses.get(market_type, 0)
+        for threshold, factor in self._DRAWDOWN_SCHEDULE:
+            if streak >= threshold:
+                return factor
+        return 1.0
+
+    def _record_weather_outcome(self, market_type: str, won: bool) -> None:
+        """Update consecutive loss counter for a market type."""
+        if won:
+            prev = self._consecutive_losses.get(market_type, 0)
+            if prev >= 3:
+                logger.info("weatherbot_drawdown_reset", market_type=market_type, was_streak=prev)
+            self._consecutive_losses[market_type] = 0
+        else:
+            self._consecutive_losses[market_type] = self._consecutive_losses.get(market_type, 0) + 1
+            streak = self._consecutive_losses[market_type]
+            if streak >= 3:
+                logger.warning(
+                    "weatherbot_losing_streak",
+                    market_type=market_type,
+                    consecutive_losses=streak,
+                    kelly_factor=self._compute_weather_drawdown_factor(market_type),
+                )
+
+    # ── Per-market-type adaptive parameters (cross-bot from MirrorBot) ─────
+
+    async def _load_category_params(self) -> None:
+        """Load per-market-type parameters from bot_category_params table.
+
+        Runs once on first scan. Falls back to global settings when no DB overrides exist.
+        """
+        if self._category_params_loaded:
+            return
+        self._category_params_loaded = True
+        db = getattr(self.base_engine, "db", None)
+        if not db:
+            return
+        try:
+            from sqlalchemy import text as sa_text
+            async with db.get_session() as session:
+                result = await session.execute(sa_text(
+                    "SELECT category, param_name, param_value "
+                    "FROM bot_category_params "
+                    "WHERE bot_name = 'WeatherBot'"
+                ))
+                for row in result.fetchall():
+                    cat = str(row[0])
+                    if cat not in self._category_params:
+                        self._category_params[cat] = {}
+                    self._category_params[cat][str(row[1])] = float(row[2])
+            if self._category_params:
+                logger.info("weatherbot_category_params_loaded", types=list(self._category_params.keys()))
+        except Exception as exc:
+            logger.debug("weatherbot_category_params_load_failed", error=str(exc))
+
+    def _get_min_edge(self, market_type: str) -> float:
+        """Return per-market-type min_edge, falling back to global setting."""
+        params = self._category_params.get(market_type, {})
+        return params.get("min_edge", self._min_edge)
+
+    # ── Per-station reliability sizing (cross-bot from MirrorBot) ────────
+
+    async def _get_station_reliability_factor(self, station_id: str) -> float:
+        """Compute sizing factor from per-station MSE. Well-calibrated → larger, poor → smaller.
+
+        MSE thresholds (°F²):
+          < 4  (avg error < 2°F): 1.2x
+          4-9  (avg error 2-3°F): 1.0x (baseline)
+          9-16 (avg error 3-4°F): 0.8x
+          > 16 (avg error > 4°F): 0.5x
+        """
+        now_mono = time.monotonic()
+        cached = self._station_mse_cache.get(station_id)
+        if cached and now_mono - cached[1] < 3600:
+            mse = cached[0]
+        else:
+            db = getattr(self.base_engine, "db", None)
+            if not db:
+                return 1.0
+            try:
+                from sqlalchemy import text as sa_text
+                async with db.get_session() as session:
+                    result = await session.execute(sa_text(
+                        "SELECT AVG(POWER(forecast_temp - actual_temp, 2)) "
+                        "FROM weather_calibration "
+                        "WHERE station_id = :sid AND actual_temp IS NOT NULL "
+                        "AND created_at >= NOW() - INTERVAL '14 days'"
+                    ), {"sid": station_id})
+                    row = result.fetchone()
+                    if not row or row[0] is None:
+                        return 1.0
+                    mse = float(row[0])
+                self._station_mse_cache[station_id] = (mse, now_mono)
+            except Exception:
+                return 1.0
+
+        if mse < 4.0:
+            return 1.2
+        elif mse < 9.0:
+            return 1.0
+        elif mse < 16.0:
+            return 0.8
+        else:
+            return 0.5
+
+    # ── EMOS drift detection (cross-bot from CalibrationTracker) ───────────
+
+    async def _check_emos_drift(self) -> None:
+        """Check per-station EMOS calibration drift using DDM/EDDM.
+
+        Feeds recent forecast errors into per-station DriftDetectors.
+        Sends advisory alert on drift — does NOT halt trading.
+        """
+        db = getattr(self.base_engine, "db", None)
+        if not db:
+            return
+        try:
+            from base_engine.learning.calibration_tracker import DriftDetector
+            from sqlalchemy import text as sa_text
+            async with db.get_session() as session:
+                result = await session.execute(sa_text(
+                    "SELECT station_id, ABS(forecast_temp - actual_temp) AS abs_error "
+                    "FROM weather_calibration "
+                    "WHERE actual_temp IS NOT NULL "
+                    "AND created_at >= NOW() - INTERVAL '7 days' "
+                    "ORDER BY created_at"
+                ))
+                for row in result.fetchall():
+                    sid = str(row[0])
+                    abs_err = float(row[1])
+                    if sid not in self._drift_detectors:
+                        self._drift_detectors[sid] = DriftDetector()
+                    # Error threshold: > 3°F considered a miss
+                    status = self._drift_detectors[sid].update(abs_err > 3.0)
+                    if status.get("ddm_drift") or status.get("eddm_drift"):
+                        logger.warning(
+                            "weatherbot_emos_drift_detected",
+                            station_id=sid,
+                            ddm_drift=status.get("ddm_drift"),
+                            eddm_drift=status.get("eddm_drift"),
+                            error_rate=round(status.get("error_rate", 0), 3),
+                            n_observations=status.get("n_observations"),
+                        )
+                        alerting = getattr(self.base_engine, "alerting_system", None)
+                        if alerting:
+                            await alerting.send_alert(
+                                title=f"WeatherBot EMOS drift: {sid}",
+                                message=f"DDM/EDDM detected calibration drift for station {sid}. "
+                                        f"Error rate: {status.get('error_rate', 0):.1%}",
+                                severity=AlertSeverity.WARNING,
+                            )
+                        # Reset after alerting to avoid repeated drift alerts
+                        self._drift_detectors[sid].reset()
+        except Exception as exc:
+            logger.debug("weatherbot_emos_drift_check_failed", error=str(exc))
 
     # ── Adaptive scan interval ─────────────────────────────────────────────
 
@@ -182,9 +431,12 @@ class WeatherBot(BaseBot):
     # ── Main scan loop ────────────────────────────────────────────────────
 
     async def scan_and_trade(self) -> None:
+        self._scan_count += 1
+
         # P1+P2: handle day boundary + calibration refresh
         await self._handle_daily_boundary()
         await self._maybe_reload_calibration()
+        await self._load_category_params()
 
         # Bug fix: refresh intra-day P&L every scan so daily loss limit
         # reflects realized P&L from positions closed since last scan.
@@ -326,6 +578,11 @@ class WeatherBot(BaseBot):
         # Phase 4: Re-evaluate open positions with fresh model probabilities
         # Feeds position_manager's model-reversal exit logic with current forecasts.
         await self._reevaluate_open_positions(analyzed)
+
+        # Phase 4b: Outcome backfill + drift detection — every 10 scans
+        if self._scan_count % 10 == 0:
+            await self._backfill_weather_outcomes()
+            await self._check_emos_drift()
 
         _t_trades = time.monotonic()
 
@@ -580,7 +837,7 @@ class WeatherBot(BaseBot):
 
         # Find edges
         opps = self._precip_engine.compute_edges(
-            model_probs, engine_buckets, min_edge=self._min_edge,
+            model_probs, engine_buckets, min_edge=self._get_min_edge("precipitation"),
         )
 
         # Compute actual lead time
@@ -597,6 +854,11 @@ class WeatherBot(BaseBot):
             opp["lead_time_hours"] = _lead_h
             opp["model_spread"] = 3.0  # Default
             opp["ensemble_count"] = len(ensemble)
+            opp["market_type"] = "precipitation"
+            await self._log_weather_prediction(
+                opp["market_id"], opp["model_prob"], opp["price"],
+                opp.get("confidence", opp["model_prob"]), "precipitation",
+            )
 
         if opps:
             logger.info(
@@ -761,7 +1023,7 @@ class WeatherBot(BaseBot):
             return []
 
         opps = self._precip_engine.compute_edges(
-            model_probs, engine_buckets, min_edge=self._min_edge,
+            model_probs, engine_buckets, min_edge=self._get_min_edge("snowfall"),
         )
 
         # Compute lead time
@@ -777,6 +1039,11 @@ class WeatherBot(BaseBot):
             opp["lead_time_hours"] = _lead_h
             opp["model_spread"] = 3.0
             opp["ensemble_count"] = len(ensemble)
+            opp["market_type"] = "snowfall"
+            await self._log_weather_prediction(
+                opp["market_id"], opp["model_prob"], opp["price"],
+                opp.get("confidence", opp["model_prob"]), "snowfall",
+            )
 
         if opps:
             logger.info(
@@ -937,7 +1204,7 @@ class WeatherBot(BaseBot):
             # Check NO side edge
             no_edge = (1.0 - model_prob) - (1.0 - market_prob)
 
-            if abs(yes_edge) >= self._min_edge:
+            if abs(yes_edge) >= self._get_min_edge("wind"):
                 if yes_edge > 0:
                     opps.append({
                         "market_id": b.market_id,
@@ -976,6 +1243,11 @@ class WeatherBot(BaseBot):
             opp["lead_time_hours"] = _lead_h
             opp["model_spread"] = round(std_wind, 1)
             opp["ensemble_count"] = len(ensemble)
+            opp["market_type"] = "wind"
+            await self._log_weather_prediction(
+                opp["market_id"], opp["model_prob"], opp["price"],
+                opp.get("confidence", opp["model_prob"]), "wind",
+            )
 
         if opps:
             logger.info(
@@ -1128,7 +1400,7 @@ class WeatherBot(BaseBot):
         bucket_map = {b.market_id: b for b in group.buckets}
 
         for e in edges:
-            if e["abs_edge"] < self._min_edge:
+            if e["abs_edge"] < self._get_min_edge("temperature"):
                 continue
 
             # Lead-time-graduated edge cap: at short lead times, NOAA ensemble
@@ -1215,7 +1487,12 @@ class WeatherBot(BaseBot):
                 "model_spread": round(forecast.model_spread, 2),
                 "ensemble_count": len(forecast.ensemble_members),
                 "resolution_boundary_risk": boundary_risk,
+                "market_type": "temperature",
             })
+            await self._log_weather_prediction(
+                e["market_id"], e["model_prob"], price,
+                effective_confidence, "temperature",
+            )
 
         return tradeable, model_probs
 
@@ -1537,6 +1814,19 @@ class WeatherBot(BaseBot):
         _bm_factor = 1.0 / (1.0 + _sigma_norm ** 2)  # 0.5 at sigma=1, 0.8 at sigma=0.5
         # Scale combined_boost by Baker-McHale factor
         combined_boost *= _bm_factor
+
+        # Drawdown compression: reduce sizing during losing streaks per market type
+        _mtype = opp.get("market_type", "temperature")
+        _dd_factor = self._compute_weather_drawdown_factor(_mtype)
+        if _dd_factor < 1.0:
+            combined_boost *= _dd_factor
+
+        # Per-station reliability: well-calibrated stations get larger size
+        _station_id = getattr(getattr(group, "station", None), "station_id", None)
+        if _station_id:
+            _station_factor = await self._get_station_reliability_factor(_station_id)
+            if _station_factor != 1.0:
+                combined_boost *= _station_factor
 
         # H1: Slippage-adjusted edge — query order book depth and skip if
         # estimated slippage eats the edge. Cap size to max safe fill.
