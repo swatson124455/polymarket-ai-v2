@@ -269,6 +269,28 @@ class PaperTradingEngine:
             self.realized_pnl_today = 0.0
             self._pnl_reset_date = today
 
+        # H1: Idempotency guard — reject if correlation_id already executed (prevents double-fill
+        # on timeout + retry). Checks DB before any cash/position mutation.
+        if correlation_id and self.db and hasattr(self.db, "get_paper_trade_by_correlation_id"):
+            try:
+                existing = await self.db.get_paper_trade_by_correlation_id(correlation_id)
+                if existing:
+                    logger.info(
+                        "paper_trade_idempotent",
+                        correlation_id=correlation_id,
+                        order_id=existing["order_id"],
+                        market_id=market_id,
+                    )
+                    return {
+                        "success": True,
+                        "order_id": existing["order_id"],
+                        "filled": existing["size"],
+                        "price": existing["price"],
+                        "idempotent": True,
+                    }
+            except Exception as _idem_err:
+                logger.debug("Idempotency check failed (proceeding with trade): %s", _idem_err)
+
         # Order state machine: record timestamps for PENDING→SUBMITTED→FILLED transitions.
         _pending_at = datetime.now(timezone.utc)
 

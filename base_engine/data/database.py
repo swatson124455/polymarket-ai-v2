@@ -2939,6 +2939,37 @@ class Database:
         except Exception as e:
             logger.debug("Failed to write paper_trades (table may not exist): %s", e)
 
+    async def get_paper_trade_by_correlation_id(self, correlation_id: str) -> Optional[Dict[str, Any]]:
+        """H1: Idempotency check — returns existing paper_trade dict if correlation_id already used.
+
+        Called before executing a trade to prevent double-fills on timeout + retry.
+        Returns None if no matching record found (safe to proceed with trade).
+        """
+        if self.session_factory is None or not correlation_id:
+            return None
+        try:
+            async with self.get_session() as session:
+                from sqlalchemy import text as _sa_text
+                result = await session.execute(
+                    _sa_text(
+                        "SELECT order_id, price, size, side, status "
+                        "FROM paper_trades WHERE correlation_id = :cid LIMIT 1"
+                    ),
+                    {"cid": str(correlation_id)},
+                )
+                row = result.fetchone()
+                if row:
+                    return {
+                        "order_id": str(row[0]),
+                        "price": float(row[1] or 0),
+                        "size": float(row[2] or 0),
+                        "side": str(row[3] or ""),
+                        "status": str(row[4] or "filled"),
+                    }
+        except Exception as e:
+            logger.debug("get_paper_trade_by_correlation_id failed (non-fatal): %s", e)
+        return None
+
     async def backfill_prediction_log_from_closed_trades(self) -> int:
         """
         Pseudo-label fallback: set prediction_log.was_correct from closed paper trades when
