@@ -582,18 +582,22 @@ async def compute_pnl_summary(db) -> Optional[Dict[str, Any]]:
         async with db.get_session() as session:
             result = await session.execute(
                 _text("""
+                WITH game_map AS (
+                    SELECT DISTINCT ON (market_id) market_id, game, edge
+                    FROM esports_prediction_log
+                    ORDER BY market_id, created_at DESC
+                )
                 SELECT
-                    COALESCE(epl.game, 'unknown') as game,
+                    COALESCE(gm.game, 'unknown') as game,
                     COUNT(*) as total_trades,
                     SUM(CASE WHEN pt.realized_pnl > 0 THEN 1 ELSE 0 END) as wins,
                     COALESCE(SUM(pt.realized_pnl), 0) as total_pnl,
-                    COALESCE(AVG(ABS(epl.edge)), 0) as avg_edge
+                    COALESCE(AVG(ABS(gm.edge)), 0) as avg_edge
                 FROM paper_trades pt
-                LEFT JOIN esports_prediction_log epl
-                    ON pt.market_id = epl.market_id
+                LEFT JOIN game_map gm ON pt.market_id = gm.market_id
                 WHERE pt.bot_name LIKE 'Esports%'
                   AND pt.realized_pnl IS NOT NULL
-                GROUP BY COALESCE(epl.game, 'unknown')
+                GROUP BY COALESCE(gm.game, 'unknown')
                 """)
             )
             rows = result.fetchall()

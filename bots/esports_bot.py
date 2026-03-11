@@ -555,9 +555,14 @@ class EsportsBot(BaseBot):
         _opps = 0
         _trades = 0
         _skipped_position = 0
+        _by_game: dict = {}  # markets per game for diagnostic
         og = getattr(self.base_engine, "order_gateway", None)
         for market in esports_markets:
             try:
+                # Track per-game market counts for diagnostic
+                _q = str(market.get("question", "")).lower()
+                _g = self._detect_game(_q) or "other"
+                _by_game[_g] = _by_game.get(_g, 0) + 1
                 # Skip markets where we already have an open position
                 mid = str(market.get("id", ""))
                 if og and mid and og.has_open_position(self.bot_name, mid):
@@ -577,6 +582,7 @@ class EsportsBot(BaseBot):
         logger.info(
             "esportsbot_scan_summary",
             markets=len(esports_markets),
+            markets_by_game=_by_game,
             skipped_has_position=_skipped_position,
             opportunities=_opps,
             trades=_trades,
@@ -637,6 +643,7 @@ class EsportsBot(BaseBot):
                     FROM paper_trades pt
                     WHERE pt.bot_name IN ('EsportsBot', 'EsportsSeriesBot', 'EsportsLiveBot')
                       AND pt.realized_pnl IS NOT NULL
+                      AND pt.side IN ('YES', 'NO')
                       AND pt.created_at > NOW() - INTERVAL '7 days'
                 """)
             )

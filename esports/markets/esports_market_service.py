@@ -143,7 +143,7 @@ class EsportsMarketService:
                     FROM markets
                     WHERE active = true
                       AND (resolved = false OR resolved IS NULL)
-                      AND yes_price IS NOT NULL
+                      AND yes_price BETWEEN 0.03 AND 0.97
                     ORDER BY volume DESC NULLS LAST
                     LIMIT 5000
                 """))
