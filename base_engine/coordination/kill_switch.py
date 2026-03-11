@@ -16,12 +16,15 @@ KILL_CACHE_TTL_SECONDS = 30.0  # TTL cache to reduce DB pressure
 class KillSwitch:
     """Emergency stop for all bots. Uses system_config and session-based DB."""
 
-    def __init__(self, db: Database, telegram_bot: Optional[Any] = None):
+    def __init__(self, db: Database, telegram_bot: Optional[Any] = None,
+                 on_engage_callback=None):
         self.db = db
         self.telegram = telegram_bot
+        self._on_engage_callback = on_engage_callback
         self._killed = False
         self._cache_engaged: Optional[bool] = None
         self._cache_until: float = 0.0
+        self._order_gateway: Optional[Any] = None  # Wired by BaseEngine after construction
 
     async def check_kill_status(self) -> bool:
         """Check if kill switch is engaged. Phase 8: 5s cache to avoid DB on every check."""
@@ -64,6 +67,14 @@ class KillSwitch:
         self._killed = True
         self._cache_engaged = True
         self._cache_until = time.monotonic() + KILL_CACHE_TTL_SECONDS
+        # Kill switch blocks NEW orders and cancels pending open orders via
+        # on_engage_callback (OMS.cancel_all_orders). Open POSITIONS are NOT
+        # automatically closed — manual intervention required for position exits.
+        logger.warning(
+            "kill_switch_engaged_open_orders_persist",
+            reason=reason,
+            note="Open positions are NOT automatically cancelled — manual close required",
+        )
         if not self.db.session_factory:
             return
         from sqlalchemy import select
@@ -82,6 +93,20 @@ class KillSwitch:
             raise
         if self.telegram and hasattr(self.telegram, "send_alert"):
             await self.telegram.send_alert(f"KILL SWITCH ENGAGED: {reason}")
+        # Mark open positions as halted in DB so bots don't re-enter them on restart
+        if self._order_gateway is not None:
+            try:
+                halted = await self._order_gateway.mark_positions_halted()
+                logger.warning("kill_switch_positions_halted", count=halted)
+            except Exception as e:
+                logger.error("kill_switch_halt_positions_failed", error=str(e))
+        # Cancel all open orders (e.g., pending CLOB limit orders)
+        if self._on_engage_callback:
+            try:
+                cancelled = await self._on_engage_callback()
+                logger.warning("kill_switch_cancelled_open_orders", count=cancelled)
+            except Exception as e:
+                logger.error("kill_switch_cancel_orders_failed", error=str(e))
         logger.warning("Kill switch engaged: %s", reason)
 
     async def disengage(self) -> None:
