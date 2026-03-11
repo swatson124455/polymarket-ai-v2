@@ -93,6 +93,10 @@ class PandaScoreClient:
     """
     Async PandaScore REST API client.
 
+    Rate counter is CLASS-LEVEL: all instances (EsportsBot, EsportsLiveBot,
+    EsportsSeriesBot) share one request counter per hour, preventing aggregate
+    overrun of the 1000 req/hr free-tier quota.
+
     Usage::
         client = PandaScoreClient(api_key="your-key")
         await client.init()
@@ -101,6 +105,14 @@ class PandaScoreClient:
         await client.close()
     """
 
+    # Shared rate-limit counter across ALL PandaScoreClient instances.
+    # EsportsBot + EsportsLiveBot + EsportsSeriesBot each create their own
+    # PandaScoreClient, so the aggregate quota is 3× any single bot's count.
+    # Class-level state ensures all 3 bots share one 1000 req/hr budget.
+    _shared_req_count: int = 0
+    _shared_req_window_start: float = 0.0  # set to time.monotonic() on first use
+    _shared_lock: Optional[asyncio.Lock] = None  # lazy-init in asyncio context
+
     def __init__(self, api_key: str) -> None:
         if not api_key:
             raise ValueError("PANDASCORE_API_KEY is required — esports bot cannot start without it")
@@ -108,10 +120,13 @@ class PandaScoreClient:
         self._client = None  # httpx.AsyncClient — created in init()
         self._cache = _BoundedCache()
         self._consecutive_failures = 0
-        # Rate-limit tracking: 1000 req/hr free tier, baseline ~360/hr.
-        # Counts successful requests in a rolling 3600s window.
-        self._req_count: int = 0
-        self._req_window_start: float = time.monotonic()
+
+    @classmethod
+    def _get_shared_lock(cls) -> asyncio.Lock:
+        """Lazy-init class-level lock (must be called inside asyncio event loop)."""
+        if cls._shared_lock is None:
+            cls._shared_lock = asyncio.Lock()
+        return cls._shared_lock
 
     async def init(self) -> None:
         """Create persistent HTTP client."""
@@ -326,6 +341,25 @@ class PandaScoreClient:
             logger.warning("PandaScoreClient: not initialised — call init() first")
             return None
 
+        # Hard circuit breaker: refuse requests above 950/hr to avoid 429s
+        _HARD_LIMIT = 950
+        async with self._get_shared_lock():
+            now = time.monotonic()
+            if PandaScoreClient._shared_req_window_start == 0.0:
+                PandaScoreClient._shared_req_window_start = now
+            if now - PandaScoreClient._shared_req_window_start >= 3600.0:
+                PandaScoreClient._shared_req_count = 0
+                PandaScoreClient._shared_req_window_start = now
+            if PandaScoreClient._shared_req_count >= _HARD_LIMIT:
+                _remaining = 3600.0 - (now - PandaScoreClient._shared_req_window_start)
+                logger.error(
+                    "pandascore_circuit_breaker_open",
+                    requests_this_hour=PandaScoreClient._shared_req_count,
+                    hard_limit=_HARD_LIMIT,
+                    window_resets_in_s=round(_remaining, 0),
+                )
+                return None
+
         for attempt in range(3):
             try:
                 resp = await self._client.get(path, params=params)
@@ -347,23 +381,28 @@ class PandaScoreClient:
 
                 resp.raise_for_status()
                 self._consecutive_failures = 0
-                # Rate-limit counter: reset window each hour, log at milestones.
-                now = time.monotonic()
-                if now - self._req_window_start >= 3600.0:
-                    self._req_count = 0
-                    self._req_window_start = now
-                self._req_count += 1
-                if self._req_count in (500, 750, 900, 950, 990):
+                # Shared rate-limit counter (class-level, all 3 esports bot instances).
+                # Reset window each hour; log at milestones.
+                async with self._get_shared_lock():
+                    now = time.monotonic()
+                    if PandaScoreClient._shared_req_window_start == 0.0:
+                        PandaScoreClient._shared_req_window_start = now
+                    if now - PandaScoreClient._shared_req_window_start >= 3600.0:
+                        PandaScoreClient._shared_req_count = 0
+                        PandaScoreClient._shared_req_window_start = now
+                    PandaScoreClient._shared_req_count += 1
+                    _cur = PandaScoreClient._shared_req_count
+                if _cur in (500, 750, 900, 950, 990):
                     logger.warning(
                         "pandascore_rate_limit_budget",
-                        requests_this_hour=self._req_count,
+                        requests_this_hour=_cur,
                         budget=1000,
-                        pct_used=round(self._req_count / 10, 1),
+                        pct_used=round(_cur / 10, 1),
                     )
-                elif self._req_count % 100 == 0:
+                elif _cur % 100 == 0:
                     logger.info(
                         "pandascore_request_count",
-                        requests_this_hour=self._req_count,
+                        requests_this_hour=_cur,
                         budget=1000,
                     )
                 return resp.json()
