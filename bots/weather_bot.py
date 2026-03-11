@@ -2926,10 +2926,18 @@ class WeatherBot(BaseBot):
                 logger.debug("weatherbot_tail_calibration_failed", error=str(tail_exc))
 
             self._calibration_last_loaded = now_mono
+            _sc: Dict[str, int] = {
+                sid: sum(len(data["pairs"]) for data in buckets.values())
+                for sid, buckets in raw.items()
+            }
+            _emos_ready = sorted(s for s, c in _sc.items() if c >= _MIN_EMOS_SAMPLES)
+            _emos_pending = {s: c for s, c in _sc.items() if c < _MIN_EMOS_SAMPLES}
             logger.info(
                 "weatherbot_calibration_reloaded",
                 stations=len(cal_avg),
                 total_rows=len(all_rows),
+                emos_ready_stations=_emos_ready,
+                emos_pending=_emos_pending,
             )
         except Exception as exc:
             logger.debug("weatherbot_calibration_reload_failed", error=str(exc))
