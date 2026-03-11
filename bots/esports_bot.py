@@ -74,7 +74,10 @@ class EsportsBot(BaseBot):
         # Populated during scan, used by WS path to identify YES vs NO token prices.
         self._market_token_map: Dict[str, Dict[str, str]] = {}
 
-        # Pending trades: market_ids currently being executed (race condition guard)
+        # Race-condition guard: prevents concurrent WS trades on the same market.
+        # Lifecycle: added at the top of _handle_ws_price_update(), removed in
+        # the `finally` block — always, even on exception.
+        # This set is empty between trades; it never accumulates entries.
         self._ws_pending_trades: set = set()
 
         # Track data collection attempts per game: game → attempt count (max 3 retries)
@@ -482,10 +485,19 @@ class EsportsBot(BaseBot):
         if (self._trainer
                 and self._trainer.needs_retrain("cross_game")
                 and "cross_game" not in self._bg_train_tasks):
-            self._bg_train_tasks["cross_game"] = asyncio.create_task(
+            _cg_task = asyncio.create_task(
                 self._train_in_background("cross_game", db),
                 name="retrain_cross_game",
             )
+
+            def _on_retrain_done(t: asyncio.Task) -> None:
+                if t.cancelled():
+                    logger.warning("esports_cross_game_retrain_cancelled")
+                elif t.exception():
+                    logger.error("esports_cross_game_retrain_failed", error=str(t.exception()))
+
+            _cg_task.add_done_callback(_on_retrain_done)
+            self._bg_train_tasks["cross_game"] = _cg_task
 
         # Step 0a: Collect historical data for games missing Glicko-2 trackers (one-shot)
         for _game in ("dota2", "valorant", "cod", "r6", "sc2", "rl"):
