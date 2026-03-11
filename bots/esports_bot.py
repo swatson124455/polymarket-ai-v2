@@ -435,10 +435,16 @@ class EsportsBot(BaseBot):
         await self._check_monitoring_thresholds(db)
 
         # Step 0: Auto-retrain models in background (non-blocking)
-        # Clean up completed background training tasks
+        # Clean up completed background training tasks — retrieve exceptions to
+        # prevent "Task exception was never retrieved" warnings.
         for game_key in list(self._bg_train_tasks):
             task = self._bg_train_tasks[game_key]
             if task.done():
+                if not task.cancelled():
+                    exc = task.exception()
+                    if exc:
+                        logger.error("bg_train_task_failed", game=game_key,
+                                     error=str(exc), task_name=task.get_name())
                 del self._bg_train_tasks[game_key]
 
         # Gather smart retrain trigger data (lightweight, degrades gracefully)
@@ -1643,6 +1649,8 @@ class EsportsBot(BaseBot):
                 if init_glicko and result.get("samples", 0) > 0:
                     await self._init_glicko2_trackers(db)
             logger.info("EsportsBot: bg retrain complete", game=game)
+        except asyncio.CancelledError:
+            logger.info("EsportsBot: bg retrain cancelled", game=game)
         except (asyncio.TimeoutError, Exception) as exc:
             logger.warning("EsportsBot: bg retrain failed", game=game, error=str(exc))
 

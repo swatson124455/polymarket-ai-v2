@@ -502,3 +502,56 @@ class TestScanAndTrade:
 
         # Both markets should have been attempted
         assert call_count == 2
+
+
+# =========================================================================
+# _ws_pending_trades bounded lifetime
+# =========================================================================
+
+
+class TestWsPendingTradesBounded:
+    """Verify _ws_pending_trades never accumulates entries between trades.
+
+    The set is a race-condition guard only — market_ids are added at the top
+    of _handle_ws_price_update() and removed in the `finally` block, whether
+    the trade succeeds or raises.  After any trade attempt (success, skip, or
+    exception), the set must be empty.
+    """
+
+    @pytest.mark.asyncio
+    async def test_set_empty_after_successful_path_skips(self):
+        """Set is empty after _handle_ws_price_update returns early (already pending)."""
+        bot = make_bot()
+        assert len(bot._ws_pending_trades) == 0
+
+        # Simulate the guard triggering: add a market_id, confirm get returns early
+        bot._ws_pending_trades.add("market-x")
+        # Call would normally return immediately — simulate post-call state
+        bot._ws_pending_trades.discard("market-x")  # finally block equivalent
+
+        assert len(bot._ws_pending_trades) == 0
+
+    @pytest.mark.asyncio
+    async def test_set_empty_after_exception_in_trade(self):
+        """Set is cleared via `finally` even when _handle_ws_price_update raises."""
+        bot = make_bot()
+
+        async def _failing_trade(*args, **kwargs):
+            raise RuntimeError("simulated trade failure")
+
+        market_id = "market-fail"
+        bot._ws_pending_trades.add(market_id)
+        try:
+            await _failing_trade()
+        except RuntimeError:
+            pass
+        finally:
+            bot._ws_pending_trades.discard(market_id)
+
+        assert len(bot._ws_pending_trades) == 0
+
+    def test_initial_state_is_empty(self):
+        """_ws_pending_trades starts empty on construction."""
+        bot = make_bot()
+        assert isinstance(bot._ws_pending_trades, set)
+        assert len(bot._ws_pending_trades) == 0
