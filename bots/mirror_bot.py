@@ -1,6 +1,6 @@
 import asyncio
 import math
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -36,7 +36,7 @@ class MirrorBot(BaseBot):
     def __init__(self, base_engine: BaseEngine):
         super().__init__("MirrorBot", base_engine)
         self.elite_traders: List[Dict] = []
-        self.mirrored_trades: set = set()
+        self.mirrored_trades: OrderedDict = OrderedDict()
         self.min_confidence: float = getattr(settings, "MIRROR_MIN_CONFIDENCE", 0.50)
         self._reliability_tracker = None
 
@@ -91,6 +91,9 @@ class MirrorBot(BaseBot):
 
         # Startup state restoration flag — run once on first scan.
         self._state_restored: bool = False
+
+        # Deprecation flag: MIRROR_MAX_DAILY_EXPOSURE_PCT fallback warning (log once)
+        self._deprecation_warned: bool = False
 
     def _on_bg_task_done(self, task, name):
         if task.cancelled():
@@ -297,9 +300,10 @@ class MirrorBot(BaseBot):
                     price=trade_info["price"],
                     confidence=trade_info["confidence"],
                     trader_address=trade_info["trader_address"],
+                    category=trade_info.get("category"),
                 )
                 if executed:
-                    self.mirrored_trades.add(trade_info["trade_id"])
+                    self.mirrored_trades[trade_info["trade_id"]] = None
                     self._track_open_position(trade_info)
                     await self._persist_trader_to_position(trade_info)
             except Exception as e:
@@ -436,8 +440,9 @@ class MirrorBot(BaseBot):
                     )
 
                 # Reliability gate: skip traders with poor Bayesian win rate
+                # Uses per-category Beta when enough data exists; falls back to overall.
                 if self._reliability_tracker and self._reliability_tracker._cache:
-                    _alpha, _beta = self._reliability_tracker._get_beta(addr, _resolved_side)
+                    _alpha, _beta = self._reliability_tracker._get_beta(addr, _resolved_side, category=_cat)
                     if _alpha + _beta > 2:  # Only filter if we have actual data (not just prior)
                         _mean_rel = _alpha / (_alpha + _beta)
                         if _mean_rel < getattr(settings, "MIRROR_MIN_RELIABILITY", 0.45):
@@ -748,6 +753,13 @@ class MirrorBot(BaseBot):
         if self.bankroll:
             _max_daily_usd = self.bankroll.max_daily_usd
         else:
+            # DEPRECATED: MIRROR_MAX_DAILY_EXPOSURE_PCT — use BotBankrollManager config instead.
+            if not self._deprecation_warned:
+                logger.warning(
+                    "MIRROR_MAX_DAILY_EXPOSURE_PCT is deprecated — "
+                    "configure bankroll.max_daily_usd in BotBankrollManager instead"
+                )
+                self._deprecation_warned = True
             max_exposure_pct = getattr(settings, "MIRROR_MAX_DAILY_EXPOSURE_PCT", self.MAX_DAILY_EXPOSURE_PCT)
             _max_daily_usd = float(getattr(settings, "TOTAL_CAPITAL", 10000.0)) * max_exposure_pct
         if self._daily_exposure >= _max_daily_usd:
@@ -765,17 +777,20 @@ class MirrorBot(BaseBot):
     # ── Deduplication ───────────────────────────────────────────────
 
     def _prune_mirrored_trades(self):
-        """Cap deduplication set to prevent unbounded memory growth."""
+        """Cap deduplication dict to prevent unbounded memory growth."""
         max_tracked = getattr(
             settings, "MIRROR_MAX_TRACKED_TRADES", self.MAX_TRACKED_TRADES
         )
         if len(self.mirrored_trades) > max_tracked:
-            trade_list = list(self.mirrored_trades)
-            # Keep the newest half
-            self.mirrored_trades = set(trade_list[len(trade_list) // 2 :])
+            old_len = len(self.mirrored_trades)
+            # Keep the newest half — OrderedDict preserves insertion order
+            keep_count = old_len // 2
+            drop_count = old_len - keep_count
+            for _ in range(drop_count):
+                self.mirrored_trades.popitem(last=False)  # remove oldest
             logger.debug(
                 "Pruned mirrored_trades from %d to %d",
-                len(trade_list),
+                old_len,
                 len(self.mirrored_trades),
             )
 
@@ -829,6 +844,7 @@ class MirrorBot(BaseBot):
         price: float,
         confidence: float,
         trader_address: str,
+        category: Optional[str] = None,
     ) -> bool:
         """Execute a mirror trade with reliability weighting and exposure caps."""
         # S48 FIX: Skip SELL consensus trades unless we hold that position.
@@ -869,7 +885,7 @@ class MirrorBot(BaseBot):
         reliability_mult = 1.0
         if self._reliability_tracker:
             try:
-                lr = self._reliability_tracker.likelihood_ratio(trader_address, side)
+                lr = self._reliability_tracker.likelihood_ratio(trader_address, side, category=category)
                 if lr < 1.0:
                     logger.debug(
                         "Skipping unreliable trader %s (LR=%.2f)",

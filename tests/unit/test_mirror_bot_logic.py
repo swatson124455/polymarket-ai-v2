@@ -413,7 +413,7 @@ class TestParseAndValidateTrade:
 
     def test_returns_none_for_duplicate_trade_id(self):
         bot = self._bot()
-        bot.mirrored_trades.add("trade-001")
+        bot.mirrored_trades["trade-001"] = None
         trade = self._fresh_trade()
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_HOT_TRADE_MAX_SECONDS = 300
@@ -697,21 +697,40 @@ class TestTraderSellExitDetection:
 class TestDeduplication:
     def test_prune_mirrored_trades_caps_size(self):
         bot, _ = _make_bot()
+        from collections import OrderedDict
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_MAX_TRACKED_TRADES = 100
             # Fill well beyond the cap
-            bot.mirrored_trades = set(str(i) for i in range(200))
+            bot.mirrored_trades = OrderedDict((str(i), None) for i in range(200))
             bot._prune_mirrored_trades()
         # Should be pruned to ~100 (the newest half of 200)
         assert len(bot.mirrored_trades) == 100
 
     def test_prune_does_nothing_below_cap(self):
         bot, _ = _make_bot()
+        from collections import OrderedDict
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_MAX_TRACKED_TRADES = 10_000
-            bot.mirrored_trades = set(str(i) for i in range(50))
+            bot.mirrored_trades = OrderedDict((str(i), None) for i in range(50))
             bot._prune_mirrored_trades()
         assert len(bot.mirrored_trades) == 50
+
+    def test_prune_keeps_newest_drops_oldest(self):
+        """Verify pruning preserves insertion order — oldest removed first."""
+        bot, _ = _make_bot()
+        from collections import OrderedDict
+        with patch("bots.mirror_bot.settings") as ms:
+            ms.MIRROR_MAX_TRACKED_TRADES = 5
+            bot.mirrored_trades = OrderedDict(
+                (f"trade-{i}", None) for i in range(10)
+            )
+            bot._prune_mirrored_trades()
+        # Should keep the newest 5 (trade-5 through trade-9)
+        assert len(bot.mirrored_trades) == 5
+        assert "trade-0" not in bot.mirrored_trades
+        assert "trade-4" not in bot.mirrored_trades
+        assert "trade-5" in bot.mirrored_trades
+        assert "trade-9" in bot.mirrored_trades
 
 
 # ── Daily reset ───────────────────────────────────────────────────────────────
@@ -736,3 +755,719 @@ class TestDailyReset:
         bot._daily_reset_date = today
         bot._check_daily_reset()
         assert bot._daily_exposure == 500.0
+
+
+# ── _restore_state_on_startup() ────────────────────────────────────────────
+
+
+class TestRestoreStateOnStartup:
+    @pytest.mark.asyncio
+    async def test_seeds_daily_exposure_from_paper_trades(self):
+        """Startup restore reads today's paper_trades and seeds _daily_exposure."""
+        bot, engine = _make_bot()
+        bot._state_restored = False
+
+        # Mock DB session returning a scalar (total spent today)
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        # First execute: SUM of paper_trades (daily exposure)
+        scalar_result = MagicMock()
+        scalar_result.scalar = MagicMock(return_value=350.0)
+        # Second execute: positions query (returns empty)
+        positions_result = MagicMock()
+        positions_result.fetchall = MagicMock(return_value=[])
+        mock_ctx.execute = AsyncMock(side_effect=[scalar_result, positions_result])
+        engine.db.get_session = MagicMock(return_value=mock_ctx)
+
+        await bot._restore_state_on_startup()
+
+        assert bot._daily_exposure == 350.0
+        assert bot._state_restored is True
+
+    @pytest.mark.asyncio
+    async def test_restores_open_positions(self):
+        """Startup restore rebuilds _open_positions from positions table."""
+        bot, engine = _make_bot()
+        bot._state_restored = False
+
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        # First execute: SUM of paper_trades
+        scalar_result = MagicMock()
+        scalar_result.scalar = MagicMock(return_value=0.0)
+
+        # Second execute: positions table rows
+        pos_row = MagicMock()
+        pos_row.market_id = "mkt1"
+        pos_row.token_id = "tok-yes"
+        pos_row.side = "YES"
+        pos_row.size = 50.0
+        pos_row.entry_price = 0.60
+        pos_row.current_price = 0.55
+        pos_row.opened_at = datetime(2026, 3, 9, tzinfo=timezone.utc)
+        pos_row.trader_addresses = ["addr1", "addr2"]
+        positions_result = MagicMock()
+        positions_result.fetchall = MagicMock(return_value=[pos_row])
+
+        mock_ctx.execute = AsyncMock(side_effect=[scalar_result, positions_result])
+        engine.db.get_session = MagicMock(return_value=mock_ctx)
+
+        await bot._restore_state_on_startup()
+
+        assert "mkt1:tok-yes" in bot._open_positions
+        pos = bot._open_positions["mkt1:tok-yes"]
+        assert pos["side"] == "YES"
+        assert pos["size"] == 50.0
+        assert pos["entry_price"] == 0.60
+        assert pos["current_price"] == 0.55
+        assert pos["traders"] == {"addr1", "addr2"}
+
+    @pytest.mark.asyncio
+    async def test_only_runs_once(self):
+        """Guard: _state_restored prevents double execution."""
+        bot, engine = _make_bot()
+        bot._state_restored = True
+        await bot._restore_state_on_startup()
+        # DB should not be touched at all
+        engine.db.get_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handles_db_failure_gracefully(self):
+        """DB exception is caught — bot starts with default state."""
+        bot, engine = _make_bot()
+        bot._state_restored = False
+        engine.db.get_session.side_effect = Exception("DB down")
+        await bot._restore_state_on_startup()
+        assert bot._state_restored is True
+        assert bot._daily_exposure == 0.0
+        assert bot._open_positions == {}
+
+    @pytest.mark.asyncio
+    async def test_no_db_skips_restore(self):
+        """When engine.db is None, restoration is skipped cleanly."""
+        bot, engine = _make_bot()
+        bot._state_restored = False
+        engine.db = None
+        await bot._restore_state_on_startup()
+        assert bot._state_restored is True
+        assert bot._daily_exposure == 0.0
+
+
+# ── _load_consensus_from_db() ──────────────────────────────────────────────
+
+
+class TestLoadConsensusFromDB:
+    @pytest.mark.asyncio
+    async def test_loads_thresholds(self):
+        """Loads per-category consensus thresholds from bot_category_params."""
+        bot, engine = _make_bot()
+        bot._db_consensus_loaded = False
+
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        row1 = MagicMock(category="politics", param_value="3")
+        row2 = MagicMock(category="crypto", param_value="4")
+        mock_ctx.execute = AsyncMock(
+            return_value=MagicMock(fetchall=MagicMock(return_value=[row1, row2]))
+        )
+        engine.db.get_session = MagicMock(return_value=mock_ctx)
+
+        await bot._load_consensus_from_db()
+
+        assert bot._db_consensus_loaded is True
+        assert bot._category_consensus_min["politics"] == 3
+        assert bot._category_consensus_min["crypto"] == 4
+
+    @pytest.mark.asyncio
+    async def test_only_runs_once(self):
+        """Guard: _db_consensus_loaded prevents double execution."""
+        bot, engine = _make_bot()
+        bot._db_consensus_loaded = True
+        await bot._load_consensus_from_db()
+        engine.db.get_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handles_db_failure_gracefully(self):
+        """DB exception is caught — consensus thresholds remain default."""
+        bot, engine = _make_bot()
+        bot._db_consensus_loaded = False
+        engine.db.get_session.side_effect = Exception("DB down")
+        await bot._load_consensus_from_db()
+        assert bot._db_consensus_loaded is True
+        assert bot._category_consensus_min == {}
+
+    @pytest.mark.asyncio
+    async def test_enforces_minimum_of_2(self):
+        """Category threshold is clamped to at least 2."""
+        bot, engine = _make_bot()
+        bot._db_consensus_loaded = False
+
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        row = MagicMock(category="politics", param_value="1")
+        mock_ctx.execute = AsyncMock(
+            return_value=MagicMock(fetchall=MagicMock(return_value=[row]))
+        )
+        engine.db.get_session = MagicMock(return_value=mock_ctx)
+
+        await bot._load_consensus_from_db()
+        assert bot._category_consensus_min["politics"] == 2  # clamped to 2
+
+
+# ── _track_open_position() ─────────────────────────────────────────────────
+
+
+class TestTrackOpenPosition:
+    def test_creates_new_position(self):
+        """First trade for a market creates position with size=0 (updated later by _execute_mirror_trade)."""
+        bot, _ = _make_bot()
+        trade_info = {
+            "market_id": "mkt1",
+            "token_id": "tok-yes",
+            "side": "YES",
+            "price": 0.65,
+            "trader_address": "addr1",
+        }
+        bot._track_open_position(trade_info)
+        pos_key = "mkt1:tok-yes"
+        assert pos_key in bot._open_positions
+        pos = bot._open_positions[pos_key]
+        assert pos["side"] == "YES"
+        assert pos["size"] == 0.0
+        assert pos["entry_price"] == 0.65
+        assert "addr1" in pos["traders"]
+        assert pos["timestamp"]  # ISO string set
+
+    def test_adds_trader_to_existing_position(self):
+        """N1: second trader entry adds to traders set."""
+        bot, _ = _make_bot()
+        bot._open_positions["mkt1:tok-yes"] = {
+            "side": "YES",
+            "size": 50.0,
+            "entry_price": 0.60,
+            "traders": {"addr1"},
+            "timestamp": "2026-01-01T00:00:00+00:00",
+        }
+        trade_info = {
+            "market_id": "mkt1",
+            "token_id": "tok-yes",
+            "side": "YES",
+            "price": 0.65,
+            "trader_address": "addr2",
+        }
+        bot._track_open_position(trade_info)
+        pos = bot._open_positions["mkt1:tok-yes"]
+        assert pos["traders"] == {"addr1", "addr2"}
+
+    def test_n1_timestamp_refreshed_on_reentry(self):
+        """N1 fix: timestamp is refreshed when a new trader enters same position."""
+        bot, _ = _make_bot()
+        old_ts = "2026-01-01T00:00:00+00:00"
+        bot._open_positions["mkt1:tok-yes"] = {
+            "side": "YES",
+            "size": 50.0,
+            "entry_price": 0.60,
+            "traders": {"addr1"},
+            "timestamp": old_ts,
+        }
+        trade_info = {
+            "market_id": "mkt1",
+            "token_id": "tok-yes",
+            "side": "YES",
+            "price": 0.65,
+            "trader_address": "addr2",
+        }
+        bot._track_open_position(trade_info)
+        # Timestamp must be newer than the original
+        assert bot._open_positions["mkt1:tok-yes"]["timestamp"] != old_ts
+
+
+# ── _persist_trader_to_position() ──────────────────────────────────────────
+
+
+class TestPersistTraderToPosition:
+    @pytest.mark.asyncio
+    async def test_writes_trader_to_db(self):
+        """Persists trader_address to positions.trader_addresses via DB UPDATE."""
+        bot, engine = _make_bot()
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_ctx.execute = AsyncMock()
+        mock_ctx.commit = AsyncMock()
+        engine.db.get_session = MagicMock(return_value=mock_ctx)
+
+        trade_info = {
+            "trader_address": "addr1",
+            "market_id": "mkt1",
+            "token_id": "tok-yes",
+        }
+        await bot._persist_trader_to_position(trade_info)
+
+        mock_ctx.execute.assert_called_once()
+        mock_ctx.commit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_handles_db_failure_gracefully(self):
+        """DB exception is caught and logged — does not crash."""
+        bot, engine = _make_bot()
+        engine.db.get_session.side_effect = Exception("DB down")
+        trade_info = {
+            "trader_address": "addr1",
+            "market_id": "mkt1",
+            "token_id": "tok-yes",
+        }
+        # Should not raise
+        await bot._persist_trader_to_position(trade_info)
+
+    @pytest.mark.asyncio
+    async def test_no_db_returns_early(self):
+        """When engine.db is None, persist is skipped."""
+        bot, engine = _make_bot()
+        engine.db = None
+        trade_info = {
+            "trader_address": "addr1",
+            "market_id": "mkt1",
+            "token_id": "tok-yes",
+        }
+        await bot._persist_trader_to_position(trade_info)
+        # No crash, no calls
+
+
+# ── _execute_mirror_trade() ────────────────────────────────────────────────
+
+
+class TestExecuteMirrorTrade:
+    @pytest.mark.asyncio
+    async def test_entry_trade_success(self):
+        """Successful entry trade increments _daily_exposure and updates position size."""
+        bot, engine = _make_bot()
+        bot.bankroll = MagicMock()
+        bot.bankroll.max_daily_usd = 10000
+        bot.calculate_bot_position_size = AsyncMock(return_value=100.0)
+        bot.place_order = AsyncMock(return_value={"success": True, "order_id": "ord1"})
+        bot.store_pending_trade_signals = AsyncMock()
+        bot._open_positions["mkt1:tok-yes"] = {
+            "side": "YES", "size": 0.0, "entry_price": 0.60,
+            "traders": {"addr1"}, "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        result = await bot._execute_mirror_trade(
+            market_id="mkt1", token_id="tok-yes", side="YES",
+            price=0.60, confidence=0.70, trader_address="addr1",
+        )
+
+        assert result is True
+        # Size capped at MIRROR_MAX_PER_MARKET/price
+        assert bot._daily_exposure > 0
+        assert bot._open_positions["mkt1:tok-yes"]["size"] > 0
+
+    @pytest.mark.asyncio
+    async def test_sell_skipped_when_no_position(self):
+        """SELL consensus trades are skipped if we don't hold the position."""
+        bot, engine = _make_bot()
+        result = await bot._execute_mirror_trade(
+            market_id="mkt1", token_id="tok-yes", side="SELL",
+            price=0.60, confidence=0.70, trader_address="addr1",
+        )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_sell_exits_when_position_exists(self):
+        """SELL with existing position: exit uses position size, not Kelly sizing."""
+        bot, engine = _make_bot()
+        bot._open_positions["mkt1:tok-yes"] = {
+            "side": "YES", "size": 75.0, "entry_price": 0.60,
+            "current_price": 0.55,
+            "traders": {"addr1"}, "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        bot._daily_exposure = 100.0
+        bot.place_order = AsyncMock(return_value={"success": True})
+
+        result = await bot._execute_mirror_trade(
+            market_id="mkt1", token_id="tok-yes", side="SELL",
+            price=0.55, confidence=0.70, trader_address="addr1",
+        )
+
+        assert result is True
+        assert "mkt1:tok-yes" not in bot._open_positions
+        # Daily exposure decremented: 100 - (75 * 0.55) = 58.75
+        expected = max(0.0, 100.0 - 75.0 * 0.55)
+        assert abs(bot._daily_exposure - expected) < 0.01
+
+    @pytest.mark.asyncio
+    async def test_sell_with_zero_size_skipped(self):
+        """SELL with position size=0 is skipped."""
+        bot, engine = _make_bot()
+        bot._open_positions["mkt1:tok-yes"] = {
+            "side": "YES", "size": 0.0, "entry_price": 0.60,
+            "traders": set(), "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        result = await bot._execute_mirror_trade(
+            market_id="mkt1", token_id="tok-yes", side="SELL",
+            price=0.60, confidence=0.70, trader_address="addr1",
+        )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_max_per_market_cap(self):
+        """Entry trade size is capped at MIRROR_MAX_PER_MARKET / price."""
+        bot, engine = _make_bot()
+        bot.bankroll = MagicMock()
+        bot.bankroll.max_daily_usd = 10000
+        bot.calculate_bot_position_size = AsyncMock(return_value=10000.0)  # huge raw size
+        bot.place_order = AsyncMock(return_value={"success": True, "order_id": "ord1"})
+        bot.store_pending_trade_signals = AsyncMock()
+        bot._open_positions["mkt1:tok-yes"] = {
+            "side": "YES", "size": 0.0, "entry_price": 0.50,
+            "traders": set(), "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        with patch("bots.mirror_bot.settings") as ms:
+            ms.MIRROR_MAX_PER_MARKET = 400
+            ms.MIRROR_MAX_DAILY_EXPOSURE_PCT = 0.15
+            ms.MIRROR_SKIP_SIGNAL_ENHANCEMENTS = True
+            ms.MIRROR_MIN_RELIABILITY = 0.45
+            await bot._execute_mirror_trade(
+                market_id="mkt1", token_id="tok-yes", side="YES",
+                price=0.50, confidence=0.70, trader_address="addr1",
+            )
+
+        # place_order should have been called with size <= 400/0.50 = 800
+        call_kwargs = bot.place_order.call_args.kwargs
+        assert call_kwargs["size"] <= 800.0
+
+    @pytest.mark.asyncio
+    async def test_daily_cap_limits_size(self):
+        """Entry trade size is limited by remaining daily exposure."""
+        bot, engine = _make_bot()
+        bot.bankroll = MagicMock()
+        bot.bankroll.max_daily_usd = 100.0  # only $100 daily
+        bot._daily_exposure = 90.0  # already spent $90
+        bot.calculate_bot_position_size = AsyncMock(return_value=1000.0)
+        bot.place_order = AsyncMock(return_value={"success": True, "order_id": "ord1"})
+        bot.store_pending_trade_signals = AsyncMock()
+        bot._open_positions["mkt1:tok-yes"] = {
+            "side": "YES", "size": 0.0, "entry_price": 0.50,
+            "traders": set(), "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        with patch("bots.mirror_bot.settings") as ms:
+            ms.MIRROR_MAX_PER_MARKET = 10000
+            ms.MIRROR_SKIP_SIGNAL_ENHANCEMENTS = True
+            ms.MIRROR_MIN_RELIABILITY = 0.45
+            await bot._execute_mirror_trade(
+                market_id="mkt1", token_id="tok-yes", side="YES",
+                price=0.50, confidence=0.70, trader_address="addr1",
+            )
+
+        # Remaining = $10 → max shares = 10/0.50 = 20
+        call_kwargs = bot.place_order.call_args.kwargs
+        assert call_kwargs["size"] <= 20.0
+
+    @pytest.mark.asyncio
+    async def test_zero_size_after_limits_returns_false(self):
+        """If sizing yields zero after caps, trade is skipped."""
+        bot, engine = _make_bot()
+        bot.bankroll = MagicMock()
+        bot.bankroll.max_daily_usd = 100.0
+        bot._daily_exposure = 100.0  # fully spent
+        bot.calculate_bot_position_size = AsyncMock(return_value=100.0)
+        bot.place_order = AsyncMock(return_value={"success": False})
+
+        with patch("bots.mirror_bot.settings") as ms:
+            ms.MIRROR_MAX_PER_MARKET = 400
+            ms.MIRROR_SKIP_SIGNAL_ENHANCEMENTS = True
+            ms.MIRROR_MIN_RELIABILITY = 0.45
+            result = await bot._execute_mirror_trade(
+                market_id="mkt1", token_id="tok-yes", side="YES",
+                price=0.50, confidence=0.70, trader_address="addr1",
+            )
+
+        assert result is False
+        bot.place_order.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_failed_order_no_exposure_change(self):
+        """If place_order fails, _daily_exposure and position size unchanged."""
+        bot, engine = _make_bot()
+        bot.bankroll = MagicMock()
+        bot.bankroll.max_daily_usd = 10000
+        bot.calculate_bot_position_size = AsyncMock(return_value=100.0)
+        bot.place_order = AsyncMock(return_value={"success": False})
+        bot._open_positions["mkt1:tok-yes"] = {
+            "side": "YES", "size": 0.0, "entry_price": 0.50,
+            "traders": set(), "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        with patch("bots.mirror_bot.settings") as ms:
+            ms.MIRROR_MAX_PER_MARKET = 400
+            ms.MIRROR_SKIP_SIGNAL_ENHANCEMENTS = True
+            ms.MIRROR_MIN_RELIABILITY = 0.45
+            result = await bot._execute_mirror_trade(
+                market_id="mkt1", token_id="tok-yes", side="YES",
+                price=0.50, confidence=0.70, trader_address="addr1",
+            )
+
+        assert result is False
+        assert bot._daily_exposure == 0.0
+        assert bot._open_positions["mkt1:tok-yes"]["size"] == 0.0
+
+
+# ── _update_elite_traders() ────────────────────────────────────────────────
+
+
+class TestUpdateEliteTraders:
+    @pytest.mark.asyncio
+    async def test_m2_retains_stale_list_on_db_failure(self):
+        """M2: On DB exception, elite_traders list is NOT cleared."""
+        bot, engine = _make_bot()
+        original_elites = [{"address": "addr1"}, {"address": "addr2"}]
+        bot.elite_traders = list(original_elites)
+        bot._reliability_tracker = None
+
+        engine.db.get_elite_traders = AsyncMock(side_effect=Exception("DB down"))
+        await bot._update_elite_traders()
+
+        assert bot.elite_traders == original_elites
+
+    @pytest.mark.asyncio
+    async def test_loads_from_db(self):
+        """Normal path: loads elite traders from DB."""
+        bot, engine = _make_bot()
+        bot._reliability_tracker = None
+        expected = [{"address": "addr1"}, {"address": "addr2"}]
+        engine.db.get_elite_traders = AsyncMock(return_value=expected)
+
+        await bot._update_elite_traders()
+
+        assert bot.elite_traders == expected
+
+
+# ── _get_market_meta() ─────────────────────────────────────────────────────
+
+
+class TestGetMarketMeta:
+    @pytest.mark.asyncio
+    async def test_cache_hit(self):
+        """Cached market meta returned without DB query."""
+        import time
+        bot, engine = _make_bot()
+        bot._market_meta_cache["mkt1"] = ("politics", "days", time.monotonic() + 300)
+
+        cat, ttr = await bot._get_market_meta("mkt1")
+
+        assert cat == "politics"
+        assert ttr == "days"
+        # DB not queried (get_session already set up, but execute not called for this market)
+
+    @pytest.mark.asyncio
+    async def test_cache_miss_queries_db(self):
+        """Cache miss queries markets table and caches result."""
+        bot, engine = _make_bot()
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        row = MagicMock()
+        row.__getitem__ = lambda self, i: "crypto" if i == 0 else "2026-03-20T00:00:00Z"
+        mock_ctx.execute = AsyncMock(
+            return_value=MagicMock(fetchone=MagicMock(return_value=row))
+        )
+        engine.db.get_session = MagicMock(return_value=mock_ctx)
+        # Mock hours_until_resolution to return a value
+        bot.hours_until_resolution = MagicMock(return_value=240)  # 10 days
+
+        cat, ttr = await bot._get_market_meta("mkt1")
+
+        assert cat == "crypto"
+        assert ttr == "weeks"  # 240h > 168h
+        assert "mkt1" in bot._market_meta_cache
+
+    @pytest.mark.asyncio
+    async def test_cache_expired(self):
+        """Expired cache entry causes re-query."""
+        import time
+        bot, engine = _make_bot()
+        bot._market_meta_cache["mkt1"] = ("old", "old", time.monotonic() - 10)  # expired
+
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_ctx.execute = AsyncMock(
+            return_value=MagicMock(fetchone=MagicMock(return_value=None))
+        )
+        engine.db.get_session = MagicMock(return_value=mock_ctx)
+
+        cat, ttr = await bot._get_market_meta("mkt1")
+
+        # No row → empty strings
+        assert cat == ""
+        assert ttr == ""
+
+
+# ── _can_open_position() with bankroll ─────────────────────────────────────
+
+
+class TestCanOpenPositionBankroll:
+    def test_uses_bankroll_max_daily_usd(self):
+        """When bankroll is set, max_daily_usd comes from bankroll, not settings."""
+        bot, _ = _make_bot()
+        bot.bankroll = MagicMock()
+        bot.bankroll.max_daily_usd = 5000
+        bot._daily_exposure = 4999.0
+
+        with patch("bots.mirror_bot.settings") as ms:
+            ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
+            # This setting should be IGNORED when bankroll is set
+            ms.MIRROR_MAX_DAILY_EXPOSURE_PCT = 0.01
+            ms.TOTAL_CAPITAL = 10000.0
+            assert bot._can_open_position(0.50) is True
+
+    def test_blocks_at_bankroll_cap(self):
+        """Blocks when daily exposure reaches bankroll.max_daily_usd."""
+        bot, _ = _make_bot()
+        bot.bankroll = MagicMock()
+        bot.bankroll.max_daily_usd = 5000
+        bot._daily_exposure = 5000.0
+
+        with patch("bots.mirror_bot.settings") as ms:
+            ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
+            assert bot._can_open_position(0.50) is False
+
+
+# ── MIRROR_MAX_DAILY_EXPOSURE_PCT deprecation ──────────────────────────────
+
+
+class TestDeprecationWarning:
+    def test_deprecation_logged_when_bankroll_is_none(self):
+        """Deprecation warning fires when fallback path is used."""
+        bot, _ = _make_bot()
+        bot.bankroll = None
+        bot._deprecation_warned = False
+        with patch("bots.mirror_bot.settings") as ms:
+            ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
+            ms.MIRROR_MAX_DAILY_EXPOSURE_PCT = 0.15
+            ms.TOTAL_CAPITAL = 10000.0
+            with patch("bots.mirror_bot.logger") as mock_logger:
+                bot._can_open_position(0.50)
+                mock_logger.warning.assert_called_once()
+                assert "deprecated" in mock_logger.warning.call_args[0][0].lower()
+        assert bot._deprecation_warned is True
+
+    def test_deprecation_logged_only_once(self):
+        """Second call does not re-log the deprecation warning."""
+        bot, _ = _make_bot()
+        bot.bankroll = None
+        bot._deprecation_warned = True
+        with patch("bots.mirror_bot.settings") as ms:
+            ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
+            ms.MIRROR_MAX_DAILY_EXPOSURE_PCT = 0.15
+            ms.TOTAL_CAPITAL = 10000.0
+            with patch("bots.mirror_bot.logger") as mock_logger:
+                bot._can_open_position(0.50)
+                mock_logger.warning.assert_not_called()
+
+    def test_no_deprecation_when_bankroll_set(self):
+        """No deprecation warning when bankroll provides max_daily_usd."""
+        bot, _ = _make_bot()
+        bot.bankroll = MagicMock()
+        bot.bankroll.max_daily_usd = 10000
+        bot._deprecation_warned = False
+        with patch("bots.mirror_bot.settings") as ms:
+            ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
+            with patch("bots.mirror_bot.logger") as mock_logger:
+                bot._can_open_position(0.50)
+                mock_logger.warning.assert_not_called()
+        assert bot._deprecation_warned is False
+
+
+# ── Elite Reliability Per-Category ──────────────────────────────────────────
+
+class TestEliteReliabilityCategory:
+    """Tests for per-category Beta tracking in EliteReliabilityTracker."""
+
+    def test_category_specific_beta_used_when_enough_samples(self):
+        """Category-specific Beta returned when min_cat_samples met."""
+        from base_engine.learning.elite_reliability import EliteReliabilityTracker
+        tracker = EliteReliabilityTracker(db=None)
+        # Overall: 10 correct, 5 incorrect → alpha=11, beta=6
+        tracker._cache = {
+            "0xabc": {"alpha_yes": 11, "beta_yes": 6, "alpha_no": 1, "beta_no": 1,
+                      "yes_total": 15, "no_total": 0},
+        }
+        # Category "crypto": 8 correct, 2 incorrect → alpha=9, beta=3
+        tracker._cat_cache = {
+            ("0xabc", "crypto"): {"alpha_yes": 9, "beta_yes": 3, "alpha_no": 1, "beta_no": 1,
+                                  "yes_total": 10, "no_total": 0},
+        }
+        # Without category → overall
+        a, b = tracker._get_beta("0xabc", "YES")
+        assert (a, b) == (11, 6)
+        # With category → category-specific (10 samples >= 5 min)
+        a, b = tracker._get_beta("0xabc", "YES", category="crypto")
+        assert (a, b) == (9, 3)
+
+    def test_category_fallback_when_insufficient_samples(self):
+        """Falls back to overall when category has < min_cat_samples."""
+        from base_engine.learning.elite_reliability import EliteReliabilityTracker
+        tracker = EliteReliabilityTracker(db=None)
+        tracker._cache = {
+            "0xabc": {"alpha_yes": 11, "beta_yes": 6, "alpha_no": 1, "beta_no": 1,
+                      "yes_total": 15, "no_total": 0},
+        }
+        # Only 3 samples in "politics" — below default min_cat_samples=5
+        tracker._cat_cache = {
+            ("0xabc", "politics"): {"alpha_yes": 3, "beta_yes": 1, "alpha_no": 1, "beta_no": 1,
+                                    "yes_total": 3, "no_total": 0},
+        }
+        a, b = tracker._get_beta("0xabc", "YES", category="politics")
+        assert (a, b) == (11, 6)  # Fell back to overall
+
+    def test_category_none_uses_overall(self):
+        """category=None uses overall stats (backward compatible)."""
+        from base_engine.learning.elite_reliability import EliteReliabilityTracker
+        tracker = EliteReliabilityTracker(db=None)
+        tracker._cache = {
+            "0xabc": {"alpha_yes": 5, "beta_yes": 2, "alpha_no": 3, "beta_no": 4,
+                      "yes_total": 6, "no_total": 6},
+        }
+        tracker._cat_cache = {
+            ("0xabc", "crypto"): {"alpha_yes": 9, "beta_yes": 1, "alpha_no": 1, "beta_no": 1,
+                                  "yes_total": 9, "no_total": 0},
+        }
+        a, b = tracker._get_beta("0xabc", "YES", category=None)
+        assert (a, b) == (5, 2)
+
+    def test_likelihood_ratio_accepts_category_kwarg(self):
+        """likelihood_ratio() passes category through to _get_beta."""
+        from base_engine.learning.elite_reliability import EliteReliabilityTracker
+        tracker = EliteReliabilityTracker(db=None)
+        # 8 correct out of 10 in crypto → alpha=9, beta=3
+        tracker._cache = {"0xabc": {"alpha_yes": 6, "beta_yes": 6, "alpha_no": 1, "beta_no": 1,
+                                    "yes_total": 10, "no_total": 0}}
+        tracker._cat_cache = {
+            ("0xabc", "crypto"): {"alpha_yes": 9, "beta_yes": 3, "alpha_no": 1, "beta_no": 1,
+                                  "yes_total": 10, "no_total": 0},
+        }
+        lr_overall = tracker.likelihood_ratio("0xabc", "YES")
+        lr_crypto = tracker.likelihood_ratio("0xabc", "YES", category="crypto")
+        # Overall: 6/12=0.5 → LR=1.0, Crypto: 9/12=0.75 → LR=3.0
+        assert lr_overall == 1.0
+        assert abs(lr_crypto - 3.0) < 0.01
+
+    def test_build_beta_rec_static(self):
+        """_build_beta_rec correctly computes Beta params from row."""
+        from base_engine.learning.elite_reliability import EliteReliabilityTracker
+        rec = EliteReliabilityTracker._build_beta_rec({
+            "yes_correct": 7, "yes_total": 10, "no_correct": 3, "no_total": 5,
+        })
+        assert rec["alpha_yes"] == 8  # 7+1
+        assert rec["beta_yes"] == 4   # (10-7)+1
+        assert rec["alpha_no"] == 4   # 3+1
+        assert rec["beta_no"] == 3    # (5-3)+1
