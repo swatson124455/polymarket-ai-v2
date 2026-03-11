@@ -223,6 +223,9 @@ class WeatherBot(BaseBot):
         if not self._startup_check_done:
             await self._check_weather_market_availability()
 
+        # Phase timing — track where scan time is spent
+        _t0 = time.monotonic()
+
         # 1. Fetch weather markets via Gamma API tag_slug=temperature (PRIMARY).
         #    The standard ingestion pipeline misses weather events — they have
         #    event IDs > 249000, far beyond the ingestion's pagination reach.
@@ -258,8 +261,12 @@ class WeatherBot(BaseBot):
             logger.info("weatherbot_no_groups_parsed", weather_markets=len(weather_markets))
             return
 
+        _t_discovery = time.monotonic()
+
         # Pre-fetch NWS severe weather alerts for all US stations in one pass
         await self._prefetch_severe_weather_alerts(groups)
+
+        _t_alerts = time.monotonic()
 
         # Phase 1: Analyze all groups (fetch forecasts, compute edges)
         # Parallel with bounded concurrency — 5 concurrent Open-Meteo/NWS requests.
@@ -285,6 +292,8 @@ class WeatherBot(BaseBot):
             else:
                 opps, model_probs = result
                 analyzed.append((opps, group, model_probs))
+
+        _t_analysis = time.monotonic()
 
         # Phase 2: Cross-city regime detection → regime_boost factor
         regime_boost = self._compute_regime_boost(analyzed)
@@ -318,19 +327,21 @@ class WeatherBot(BaseBot):
         # Feeds position_manager's model-reversal exit logic with current forecasts.
         await self._reevaluate_open_positions(analyzed)
 
-        # Phase 5: M1 — Precipitation markets (independent from temperature)
-        _precip_traded = await self._scan_precipitation_markets()
+        _t_trades = time.monotonic()
 
-        # Phase 6: M2 — Snowfall markets (reuses precipitation engine)
-        _snow_traded = await self._scan_snowfall_markets()
-
-        # Phase 7: M3 — Wind gust markets
-        _wind_traded = await self._scan_wind_markets()
+        # Phases 5-7: Precip/Snow/Wind — independent market types, run in parallel
+        _precip_traded, _snow_traded, _wind_traded = await asyncio.gather(
+            self._scan_precipitation_markets(),
+            self._scan_snowfall_markets(),
+            self._scan_wind_markets(),
+        )
 
         # Wire Session 51 heartbeat counters so watchdog can detect silent WeatherBot
         self._last_scan_markets = len(weather_markets)
         self._last_scan_opportunities = _groups_with_edge
         self._last_scan_trades = _traded + _precip_traded + _snow_traded + _wind_traded
+
+        _t_end = time.monotonic()
 
         logger.info(
             "weatherbot_scan_done",
@@ -343,6 +354,11 @@ class WeatherBot(BaseBot):
             wind_trades=_wind_traded,
             best_edge=round(_best_edge, 4),
             regime_boost=regime_boost,
+            ms_discovery=round((_t_discovery - _t0) * 1000),
+            ms_alerts=round((_t_alerts - _t_discovery) * 1000),
+            ms_analysis=round((_t_analysis - _t_alerts) * 1000),
+            ms_trades=round((_t_trades - _t_analysis) * 1000),
+            ms_precip_snow_wind=round((_t_end - _t_trades) * 1000),
         )
 
     async def analyze_opportunity(self, market_data: Dict) -> Optional[Dict]:
@@ -2575,7 +2591,8 @@ class WeatherBot(BaseBot):
         batch: Dict[str, float] = {}
         try:
             session = await self._forecast_client.get_session()
-            for sid, station in us_stations.items():
+
+            async def _fetch_alert(sid: str, station: WeatherStation) -> Tuple[str, float]:
                 url = f"https://api.weather.gov/alerts/active?point={station.latitude:.4f},{station.longitude:.4f}"
                 try:
                     async with session.get(
@@ -2587,8 +2604,7 @@ class WeatherBot(BaseBot):
                         },
                     ) as resp:
                         if resp.status != 200:
-                            batch[sid] = 1.0
-                            continue
+                            return sid, 1.0
                         data = await resp.json(content_type=None)
                     boost = 1.0
                     for feat in data.get("features", []):
@@ -2597,14 +2613,23 @@ class WeatherBot(BaseBot):
                             boost = max(boost, 2.0)
                         elif event in _MED_IMPACT:
                             boost = max(boost, 1.5)
-                    batch[sid] = boost
                     if boost > 1.0:
                         logger.info(
                             "weatherbot_severe_weather_boost",
                             station=sid, boost=boost,
                         )
+                    return sid, boost
                 except Exception:
-                    batch[sid] = 1.0
+                    return sid, 1.0
+
+            results = await asyncio.gather(
+                *[_fetch_alert(sid, st) for sid, st in us_stations.items()],
+                return_exceptions=True,
+            )
+            for r in results:
+                if isinstance(r, Exception):
+                    continue
+                batch[r[0]] = r[1]
         except Exception as exc:
             logger.debug("nws_alerts_batch_failed", error=str(exc))
 
