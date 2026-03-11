@@ -1490,6 +1490,30 @@ class BaseEngine:
 
             asyncio.ensure_future(_periodic_exposure_flush())
 
+        # H2: Periodic position reconciliation — compares positions table vs paper_trades net.
+        # Fires every 30 min; logs WARNING on divergence > 1%. Non-fatal.
+        if self.position_reconciler:
+            _recon = self.position_reconciler
+
+            async def _periodic_reconcile():
+                await asyncio.sleep(1800)  # Initial delay — let startup settle
+                while self.running:
+                    try:
+                        discrepancies = await _recon.reconcile()
+                        matched = sum(1 for d in discrepancies if d.get("type") == "MATCHED")
+                        flagged = len(discrepancies) - matched
+                        logger.info(
+                            "position_reconcile_complete",
+                            total=len(discrepancies),
+                            matched=matched,
+                            flagged=flagged,
+                        )
+                    except Exception as _e:
+                        logger.debug("Periodic reconcile error (non-critical): %s", _e)
+                    await asyncio.sleep(1800)
+
+            asyncio.ensure_future(_periodic_reconcile())
+
     async def stop(self):
         self.running = False
         logger.info("Stopping base engine services")

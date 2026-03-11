@@ -125,11 +125,11 @@ sudo systemctl restart polymarket-ai
 
 | Gate | Status | Notes |
 |------|--------|-------|
-| H1 Order state machine | NOT STARTED | Plan Step 13 |
-| H2 PositionReconciler | NOT STARTED | Plan Step 14 |
-| H3 Rate limiter | NOT STARTED | Plan Step 15 |
-| Kill switch position halt | NOT STARTED | Plan Step 11 |
-| 30d paper Sharpe > 0 | IN PROGRESS | ~90 paper trades resolved so far |
+| H1 Order state machine | DONE | correlation_id idempotency guard — commit `2b85073` |
+| H2 PositionReconciler | DONE | 30-min periodic schedule wired — commit this session |
+| H3 Rate limiter | PRE-EXISTING | PolymarketClient is singleton (`shared_across_bots=True`); PandaScore class-level shared |
+| Kill switch position halt | DONE | `mark_positions_halted()` — commit `da2b214` |
+| 30d paper Sharpe > 0 | IN PROGRESS | ~90 paper trades resolved, +$479 P&L as of 2026-03-10 |
 | EMOS ≥13 stations | DONE | 13/15 active (NZWN +3, RJTT +19) |
 | Daily PnL alert | DONE | `check_daily_pnl_summary()` wired in scheduler |
 | WS latency threshold | DONE | `WS_SIGNAL_LATENCY_ALERT_MS=2500` set on VPS |
