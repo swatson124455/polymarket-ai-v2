@@ -203,7 +203,7 @@ class WeatherBot(BaseBot):
             exited_by_pm = self._known_open_markets - current_open
             for mid in exited_by_pm:
                 self._recently_exited[mid] = time.monotonic()
-                asyncio.create_task(self._save_exit_to_redis(mid))
+                await self._save_exit_to_redis(mid)
                 logger.debug("weatherbot_pm_exit_detected", market_id=mid)
             self._known_open_markets = set(current_open)
 
@@ -262,18 +262,29 @@ class WeatherBot(BaseBot):
         await self._prefetch_severe_weather_alerts(groups)
 
         # Phase 1: Analyze all groups (fetch forecasts, compute edges)
+        # Parallel with bounded concurrency — 5 concurrent Open-Meteo/NWS requests.
+        _group_sem = asyncio.Semaphore(5)
+
+        async def _analyze_bounded(g: WeatherMarketGroup):
+            async with _group_sem:
+                return await self._analyze_group(g)
+
+        _results = await asyncio.gather(
+            *[_analyze_bounded(g) for g in groups],
+            return_exceptions=True,
+        )
         analyzed: List[Tuple[List[Dict], WeatherMarketGroup, Dict[str, float]]] = []
-        for group in groups:
-            try:
-                opps, model_probs = await self._analyze_group(group)
-                analyzed.append((opps, group, model_probs))
-            except Exception as exc:
+        for group, result in zip(groups, _results):
+            if isinstance(result, Exception):
                 logger.debug(
                     "weatherbot_group_error",
                     city=group.city,
                     date=group.target_date.isoformat(),
-                    error=str(exc),
+                    error=str(result),
                 )
+            else:
+                opps, model_probs = result
+                analyzed.append((opps, group, model_probs))
 
         # Phase 2: Cross-city regime detection → regime_boost factor
         regime_boost = self._compute_regime_boost(analyzed)
@@ -1606,7 +1617,7 @@ class WeatherBot(BaseBot):
             # because the position_manager (not weather_bot) triggers SELL exits,
             # so without this the dict stays empty and the cooldown never fires.
             self._recently_exited[opp["market_id"]] = time.monotonic()
-            asyncio.create_task(self._save_exit_to_redis(opp["market_id"]))
+            await self._save_exit_to_redis(opp["market_id"])
         else:
             # Revert exposure trackers on failure
             self._group_exposure[group_key] = current_group_exp
