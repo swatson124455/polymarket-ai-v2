@@ -990,6 +990,28 @@ class Database:
         else:
             logger.debug("No database engine to close")
     
+    async def get_flag(self, flag_name: str, default: bool = True) -> bool:
+        """Read a feature flag from the database.  Returns `default` on any error (fail-open).
+
+        Flags are seeded by migration 038_feature_flags.sql.  Update a flag at runtime via:
+            UPDATE feature_flags SET enabled = false, updated_at = NOW()
+              WHERE flag_name = 'mirrorbot_buy_enabled';
+        The change propagates to the bot within one scan cycle (no restart needed).
+        """
+        if self.session_factory is None:
+            return default
+        try:
+            from sqlalchemy import text as _sa_text
+            async with self.get_session() as sess:
+                row = await sess.execute(
+                    _sa_text("SELECT enabled FROM feature_flags WHERE flag_name = :n"),
+                    {"n": flag_name},
+                )
+                result = row.scalar_one_or_none()
+                return bool(result) if result is not None else default
+        except Exception:
+            return default
+
     async def bulk_insert_markets(self, markets: List[Dict[str, Any]]) -> Tuple[int, int]:
         """Bulk insert or update markets in the database. Returns (processed_count, failed_count)."""
         if self.session_factory is None:
