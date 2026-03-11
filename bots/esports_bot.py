@@ -415,6 +415,25 @@ class EsportsBot(BaseBot):
         finally:
             self._ws_pending_trades.discard(market_id)
 
+    def _cleanup_caches(self) -> None:
+        """Evict stale entries from in-memory caches to prevent unbounded growth."""
+        now = time.monotonic()
+        # _prediction_cache: entries have 'ts' field — evict > 1 hour old
+        stale = [k for k, v in self._prediction_cache.items() if now - v.get("ts", 0) > 3600]
+        for k in stale:
+            del self._prediction_cache[k]
+        # _prediction_log_cache: entries are (confidence, ts) tuples — evict > 1 hour
+        stale_log = [k for k, v in self._prediction_log_cache.items()
+                     if isinstance(v, tuple) and len(v) >= 2 and now - v[1] > 3600]
+        for k in stale_log:
+            del self._prediction_log_cache[k]
+        # _market_token_map: cap at 1000 entries — bulk clear when oversized
+        if len(self._market_token_map) > 1000:
+            self._market_token_map.clear()
+        if stale or stale_log:
+            logger.debug("esports_cache_cleanup", prediction_evicted=len(stale),
+                         log_evicted=len(stale_log), token_map_size=len(self._market_token_map))
+
     async def scan_and_trade(self) -> None:
         """
         Main scan loop body.
@@ -425,6 +444,8 @@ class EsportsBot(BaseBot):
         4. Analyze each market for edge
         """
         self._scan_count += 1
+        if self._scan_count % 100 == 0:
+            self._cleanup_caches()
         db = getattr(self.base_engine, "db", None)
 
         # P0: Restore exposure counters from today's paper_trades on first scan
