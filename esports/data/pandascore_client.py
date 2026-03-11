@@ -370,7 +370,7 @@ class PandaScoreClient:
                     logger.warning(
                         "pandascore_rate_limited",
                         retry_after=retry_after,
-                        requests_this_hour=self._req_count,
+                        requests_this_hour=PandaScoreClient._shared_req_count,
                         budget=1000,
                     )
                     await asyncio.sleep(retry_after)
