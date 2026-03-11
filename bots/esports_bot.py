@@ -1028,7 +1028,7 @@ class EsportsBot(BaseBot):
             )
             new_live = {}
             for match in (live or []):
-                mid = str(match.get("id", ""))
+                mid = str(match.match_id)
                 if mid:
                     new_live[mid] = match
             self._live_matches = new_live
