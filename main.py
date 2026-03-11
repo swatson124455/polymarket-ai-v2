@@ -8,6 +8,7 @@ Startup flow:
   4. Watchdog monitors bot liveness; restarts dead bots or shuts down if all fail
 """
 import asyncio
+import json
 import logging
 import os as _os
 import signal
@@ -436,12 +437,59 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
             sys.exit(1)
 
 
+_PROCESS_START = time.monotonic()
+
+
+async def _health_server(bots_ref: dict, shutdown_event: asyncio.Event, port: int = 8765) -> None:
+    """Lightweight asyncio health endpoint on localhost:{port}.
+
+    Responds to any HTTP GET with JSON status — no new pip dependencies.
+    Example:
+        curl http://localhost:8765/health
+        {"ok": true, "uptime_s": 142, "active_bots": ["MirrorBot", "WeatherBot", ...]}
+    Port is localhost-only for security; never exposed to the internet.
+    """
+    async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            await asyncio.wait_for(reader.read(512), timeout=2.0)
+        except Exception:
+            pass
+        payload = json.dumps({
+            "ok": True,
+            "uptime_s": round(time.monotonic() - _PROCESS_START, 1),
+            "active_bots": list(bots_ref.keys()),
+        })
+        writer.write(
+            f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            f"Content-Length: {len(payload)}\r\n\r\n{payload}".encode()
+        )
+        try:
+            await writer.drain()
+        except Exception:
+            pass
+        writer.close()
+
+    try:
+        server = await asyncio.start_server(_handle, "127.0.0.1", port)
+        logger.info("Health endpoint started", port=port)
+        await shutdown_event.wait()
+        server.close()
+        await server.wait_closed()
+        logger.info("Health endpoint stopped")
+    except OSError as exc:
+        # Non-fatal: port already in use or similar — bots still run
+        logger.warning("Health endpoint failed to start", port=port, error=str(exc))
+    except asyncio.CancelledError:
+        pass
+
+
 async def main():
     logger.info("Starting Polymarket AI Trading System V2")
 
     base_engine = None
     bots = {}
     watchdog_task = None
+    health_task = None
 
     try:
         # ── Event loop + signal handling ───────────────────────────────
@@ -508,7 +556,7 @@ async def main():
         for fb in failed_bots:
             bots.pop(fb, None)
 
-        # ── Watchdog + wait for shutdown ───────────────────────────────
+        # ── Watchdog + health endpoint + wait for shutdown ─────────────
         watchdog_task = asyncio.create_task(_watchdog(bots, base_engine))
 
         # Session 51 P2-2: done_callback so watchdog crash doesn't go unnoticed
@@ -521,6 +569,9 @@ async def main():
             except Exception:
                 pass
         watchdog_task.add_done_callback(_watchdog_done)
+
+        # Phase 5b: lightweight health endpoint on localhost:8765
+        health_task = asyncio.create_task(_health_server(bots, _shutdown_event))
 
         logger.info("System running -- press Ctrl+C to stop", active_bots=len(bots))
 
@@ -548,6 +599,14 @@ async def main():
             watchdog_task.cancel()
             try:
                 await watchdog_task
+            except asyncio.CancelledError:
+                pass
+
+        # Cancel health server task (shutdown_event already set, but guard against early exit paths)
+        if health_task and not health_task.done():
+            health_task.cancel()
+            try:
+                await health_task
             except asyncio.CancelledError:
                 pass
 
