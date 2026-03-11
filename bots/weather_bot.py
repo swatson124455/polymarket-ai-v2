@@ -320,8 +320,8 @@ class WeatherBot(BaseBot):
                 # Single bucket — standard independent sizing
                 for opp in opps:
                     opp["regime_boost"] = regime_boost
-                    await self._execute_weather_trade(opp, group)
-                    _traded += 1
+                    if await self._execute_weather_trade(opp, group):
+                        _traded += 1
 
         # Phase 4: Re-evaluate open positions with fresh model probabilities
         # Feeds position_manager's model-reversal exit logic with current forecasts.
@@ -505,8 +505,8 @@ class WeatherBot(BaseBot):
             try:
                 opps = await self._analyze_precipitation_group(group)
                 for opp in opps:
-                    await self._execute_weather_trade(opp, self._precip_to_temp_group(group))
-                    traded += 1
+                    if await self._execute_weather_trade(opp, self._precip_to_temp_group(group)):
+                        traded += 1
             except Exception as exc:
                 logger.debug(
                     "weatherbot_precip_group_error",
@@ -708,8 +708,8 @@ class WeatherBot(BaseBot):
             try:
                 opps = await self._analyze_snowfall_group(group)
                 for opp in opps:
-                    await self._execute_weather_trade(opp, self._precip_to_temp_group(group))
-                    traded += 1
+                    if await self._execute_weather_trade(opp, self._precip_to_temp_group(group)):
+                        traded += 1
             except Exception as exc:
                 logger.debug(
                     "weatherbot_snow_group_error",
@@ -872,8 +872,8 @@ class WeatherBot(BaseBot):
             try:
                 opps = await self._analyze_wind_group(group)
                 for opp in opps:
-                    await self._execute_weather_trade(opp, self._precip_to_temp_group(group))
-                    traded += 1
+                    if await self._execute_weather_trade(opp, self._precip_to_temp_group(group)):
+                        traded += 1
             except Exception as exc:
                 logger.debug(
                     "weatherbot_wind_group_error",
@@ -1443,8 +1443,21 @@ class WeatherBot(BaseBot):
 
     # ── Trade execution ───────────────────────────────────────────────────
 
-    async def _execute_weather_trade(self, opp: Dict, group: WeatherMarketGroup) -> None:
-        """Execute a weather trade with risk checks."""
+    async def _execute_weather_trade(self, opp: Dict, group: WeatherMarketGroup) -> bool:
+        """Execute a weather trade with risk checks. Returns True if trade was placed."""
+        # Skip if position already open (prevents re-entry on same market every scan)
+        gw = self.base_engine.order_gateway
+        if gw and hasattr(gw, "_open_position_markets"):
+            bot_positions = gw._open_position_markets.get("WeatherBot", set())
+            if str(opp.get("market_id", "")) in bot_positions:
+                return False
+
+        # Skip recently exited markets (15-min cooldown)
+        _mono_now = time.monotonic()
+        _exited_at = self._recently_exited.get(opp.get("market_id", ""))
+        if _exited_at and _mono_now - _exited_at < 900.0:
+            return False
+
         # Daily loss limit
         if self._daily_pnl <= -self._daily_loss_limit:
             logger.warning("weatherbot_daily_loss_limit_hit", pnl=self._daily_pnl)
@@ -1458,18 +1471,18 @@ class WeatherBot(BaseBot):
                     source="WeatherBot",
                     metadata={"daily_pnl": self._daily_pnl, "limit": self._daily_loss_limit},
                 )
-            return
+            return False
 
         # Per-group exposure limit
         group_key = f"{group.city}:{group.target_date.isoformat()}"
         current_group_exp = self._group_exposure.get(group_key, 0.0)
         if current_group_exp >= self._max_per_group:
-            return
+            return False
 
         # Correlated city exposure limit
         current_city_exp = self._city_exposure.get(group.city, 0.0)
         if current_city_exp >= self._max_correlated:
-            return
+            return False
 
         # Near-expiry Kelly boost — 2h: WEATHER_HOLD_HOURS_BEFORE_RESOLUTION window.
         # NOAA model spread narrows as resolution approaches (more ensemble members converge),
@@ -1552,7 +1565,7 @@ class WeatherBot(BaseBot):
                             slippage=round(_slippage_pct, 4),
                             effective_edge=round(_effective_edge, 4),
                         )
-                        return
+                        return False
                     # Cap size to what the book can fill within 2% slippage
                     max_safe = await _liq_guard.get_max_safe_size(
                         market_id=opp["market_id"],
@@ -1588,7 +1601,7 @@ class WeatherBot(BaseBot):
         size = min(size, remaining_group, remaining_city, _slippage_size_cap)
 
         if size < 1.0:
-            return
+            return False
 
         logger.info(
             "weatherbot_trade_signal",
@@ -1634,6 +1647,7 @@ class WeatherBot(BaseBot):
             # so without this the dict stays empty and the cooldown never fires.
             self._recently_exited[opp["market_id"]] = time.monotonic()
             await self._save_exit_to_redis(opp["market_id"])
+            return True
         else:
             # Revert exposure trackers on failure
             self._group_exposure[group_key] = current_group_exp
@@ -1643,6 +1657,7 @@ class WeatherBot(BaseBot):
                 market_id=opp["market_id"],
                 error=result.get("error", "unknown"),
             )
+            return False
 
     # ── Position re-evaluation (L4) ──────────────────────────────────────
 

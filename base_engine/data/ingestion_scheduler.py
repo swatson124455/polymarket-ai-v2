@@ -201,9 +201,9 @@ class IngestionScheduler:
             except Exception as oc:
                 logger.debug("Orphan cleanup (non-fatal): %s", oc)
 
-        # Mini backfill: run prediction_log labeling + pseudo-labels on every cycle (not just daily).
-        # Ensures labels flow to the model as soon as markets resolve, without waiting for
-        # the full 24h daily ingestion cycle.
+        # Mini backfill: run resolution backfill + prediction_log labeling + pseudo-labels
+        # every 30 min (not just daily). Ensures markets are resolved and labels flow to
+        # the model as soon as markets settle, without waiting for the 24h daily cycle.
         _mini_backfill_interval = int(getattr(settings, "MINI_BACKFILL_INTERVAL_MINUTES", 30)) * 60
         _now = datetime.now(timezone.utc)
         _mini_due = (
@@ -213,6 +213,17 @@ class IngestionScheduler:
         if _mini_due and RESOLUTION_BACKFILL_ENABLED:
             try:
                 async with acquire_lock(db, "resolution_backfill", timeout_seconds=10):
+                    # Phase 1: Insert missing markets + update resolutions from Gamma API
+                    _rb_inserted = 0
+                    try:
+                        bf = await self.data_ingestion.run_resolution_backfill(
+                            log_progress=False,
+                            performance_tracker=self.performance_tracker,
+                        )
+                        _rb_inserted = bf.get("inserted", 0) + bf.get("updated", 0)
+                    except Exception:
+                        pass
+                    # Phase 2: Propagate resolutions to prediction_log + paper_trades
                     pred_updated = await db.backfill_prediction_log_resolution()
                     pseudo_updated = 0
                     try:
@@ -224,10 +235,10 @@ class IngestionScheduler:
                         paper_updated = await db.backfill_paper_trades_resolution()
                     except Exception:
                         pass
-                    if pred_updated > 0 or pseudo_updated > 0 or paper_updated > 0:
+                    if _rb_inserted > 0 or pred_updated > 0 or pseudo_updated > 0 or paper_updated > 0:
                         logger.info(
-                            "Mini backfill: %d prediction_log, %d pseudo-labels, %d paper_trades",
-                            pred_updated, pseudo_updated, paper_updated,
+                            "Mini backfill: %d markets_resolved, %d prediction_log, %d pseudo-labels, %d paper_trades",
+                            _rb_inserted, pred_updated, pseudo_updated, paper_updated,
                         )
                     self._last_mini_backfill = _now
             except Exception as mb_err:

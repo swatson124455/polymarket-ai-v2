@@ -147,7 +147,6 @@ class PositionReconciler:
                         " SUM(CASE WHEN side IN ('YES', 'BUY') THEN size ELSE -size END) AS net_size"
                         " FROM paper_trades"
                         " WHERE market_id = ANY(:ids)"
-                        " AND realized_pnl IS NULL"
                         " GROUP BY market_id"
                     ),
                     {"ids": market_ids},
