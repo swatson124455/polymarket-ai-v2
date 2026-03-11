@@ -433,3 +433,45 @@ class AlertingSystem:
                 source="drift_detector",
                 metadata=drift_status,
             )
+
+    async def check_daily_pnl_summary(self, db) -> None:
+        """Query today's resolved paper_trades and send a daily PnL summary alert.
+
+        Aggregates per bot_name for trades resolved (realized_pnl IS NOT NULL)
+        today (UTC). Sends a single Slack/Discord/Email message. Called once per
+        calendar day by LearningScheduler._retrain_cycle_inner().
+        """
+        from datetime import date
+        from sqlalchemy import text as _text
+        try:
+            async with db.get_session() as session:
+                rows = await session.execute(_text("""
+                    SELECT bot_name,
+                           COUNT(*) AS trades,
+                           COALESCE(SUM(realized_pnl), 0) AS total_pnl,
+                           COUNT(*) FILTER (WHERE realized_pnl > 0) AS wins
+                    FROM paper_trades
+                    WHERE created_at >= CURRENT_DATE
+                      AND realized_pnl IS NOT NULL
+                    GROUP BY bot_name
+                    ORDER BY bot_name
+                """))
+                data = rows.fetchall()
+        except Exception as e:
+            logger.warning("daily_pnl_summary_query_failed", error=str(e))
+            return
+        if not data:
+            return
+        lines = [f"Daily PnL Summary ({date.today().isoformat()})"]
+        total_pnl = 0.0
+        for row in data:
+            wr = round(row.wins / row.trades * 100, 1) if row.trades else 0.0
+            lines.append(f"• {row.bot_name}: {row.trades} trades, ${row.total_pnl:+.2f}, {wr}% win")
+            total_pnl += row.total_pnl
+        lines.append(f"Total: ${total_pnl:+.2f}")
+        await self.send_alert(
+            title="Daily PnL Summary",
+            message="\n".join(lines),
+            severity=AlertSeverity.INFO,
+            source="daily_pnl_summary",
+        )
