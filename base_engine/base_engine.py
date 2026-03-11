@@ -1077,6 +1077,9 @@ class BaseEngine:
                 except Exception as e:
                     logger.debug("Position seed from DB failed (non-critical): %s", e)
                 try:
+                    # Late-bind db: DB is initialized after OrderGateway is constructed,
+                    # so self.db was None at construction time. Set it now.
+                    self.order_gateway.db = self.db
                     await self.order_gateway._restore_daily_exposure()
                 except Exception as e:
                     logger.debug("Daily exposure restore failed (non-critical): %s", e)

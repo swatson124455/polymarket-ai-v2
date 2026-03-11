@@ -1375,7 +1375,7 @@ class EsportsBot(BaseBot):
             settings,
             "ESPORTS_FRESHNESS_DECAY_SECONDS" if is_live
             else "ESPORTS_FRESHNESS_DECAY_PREGAME_SECONDS",
-            120.0 if is_live else 600.0,
+            30.0 if is_live else 600.0,
         ))
         freshness_score = math.exp(-age_seconds / decay_s)
 

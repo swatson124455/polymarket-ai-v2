@@ -108,6 +108,10 @@ class PandaScoreClient:
         self._client = None  # httpx.AsyncClient — created in init()
         self._cache = _BoundedCache()
         self._consecutive_failures = 0
+        # Rate-limit tracking: 1000 req/hr free tier, baseline ~360/hr.
+        # Counts successful requests in a rolling 3600s window.
+        self._req_count: int = 0
+        self._req_window_start: float = time.monotonic()
 
     async def init(self) -> None:
         """Create persistent HTTP client."""
@@ -329,7 +333,12 @@ class PandaScoreClient:
                 if resp.status_code == 429:
                     # Rate limited — back off
                     retry_after = int(resp.headers.get("Retry-After", "5"))
-                    logger.warning("PandaScoreClient: rate limited", retry_after=retry_after)
+                    logger.warning(
+                        "pandascore_rate_limited",
+                        retry_after=retry_after,
+                        requests_this_hour=self._req_count,
+                        budget=1000,
+                    )
                     await asyncio.sleep(retry_after)
                     continue
 
@@ -338,6 +347,25 @@ class PandaScoreClient:
 
                 resp.raise_for_status()
                 self._consecutive_failures = 0
+                # Rate-limit counter: reset window each hour, log at milestones.
+                now = time.monotonic()
+                if now - self._req_window_start >= 3600.0:
+                    self._req_count = 0
+                    self._req_window_start = now
+                self._req_count += 1
+                if self._req_count in (500, 750, 900, 950, 990):
+                    logger.warning(
+                        "pandascore_rate_limit_budget",
+                        requests_this_hour=self._req_count,
+                        budget=1000,
+                        pct_used=round(self._req_count / 10, 1),
+                    )
+                elif self._req_count % 100 == 0:
+                    logger.info(
+                        "pandascore_request_count",
+                        requests_this_hour=self._req_count,
+                        budget=1000,
+                    )
                 return resp.json()
 
             except Exception as exc:
