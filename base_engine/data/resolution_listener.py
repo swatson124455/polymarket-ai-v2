@@ -215,10 +215,19 @@ class PGNotificationListener:
             data = _json.loads(payload)
         except (ValueError, TypeError):
             data = {"raw": payload}
+        def _handler_done_cb(t: asyncio.Task) -> None:
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc:
+                logger.error("PG NOTIFY async handler failed",
+                             channel=channel, error=str(exc))
+
         for handler in handlers:
             try:
                 if asyncio.iscoroutinefunction(handler):
-                    asyncio.create_task(handler(data))
+                    _t = asyncio.create_task(handler(data))
+                    _t.add_done_callback(_handler_done_cb)
                 else:
                     handler(data)
             except Exception as e:

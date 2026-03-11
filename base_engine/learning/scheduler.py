@@ -582,14 +582,34 @@ class LearningScheduler:
 
         logger.info("Scheduled retraining complete")
 
+        # Daily PnL summary alert — fires once per UTC calendar day
+        if self.alerting and self.db:
+            try:
+                from datetime import date as _date
+                _today = _date.today()
+                if _today != getattr(self, "_last_daily_pnl_date", None):
+                    await self.alerting.check_daily_pnl_summary(self.db)
+                    self._last_daily_pnl_date = _today
+            except Exception as _pnl_exc:
+                logger.debug("daily_pnl_alert_failed", error=str(_pnl_exc))
+
         # P2.2: Trigger esports cross-game retrain if trainer available + due
         if self.esports_trainer is not None:
             try:
                 if self.esports_trainer.needs_retrain("cross_game"):
-                    asyncio.create_task(
+                    _cg_task = asyncio.create_task(
                         self.esports_trainer.train_cross_game(db=self.db),
                         name="scheduler_retrain_cross_game",
                     )
+
+                    def _on_cross_game_retrain_done(t: asyncio.Task) -> None:
+                        if not t.cancelled() and t.exception() is not None:
+                            logger.error(
+                                "LearningScheduler: cross_game retrain task failed",
+                                error=str(t.exception()),
+                            )
+
+                    _cg_task.add_done_callback(_on_cross_game_retrain_done)
                     logger.info("LearningScheduler: triggered esports cross-game retrain")
             except Exception as _exc:
                 logger.warning("LearningScheduler: esports retrain hook failed", error=str(_exc))
@@ -624,8 +644,25 @@ class LearningScheduler:
             return  # Acceptable range — no change
         if new_stage != old_stage:
             settings.CANARY_STAGE = new_stage
+            _pcts = {0: "off (paper)", 1: "5%", 2: "25%", 3: "50%", 4: "100%"}
             logger.info(
                 "Canary stage transition",
                 old=old_stage, new=new_stage,
+                capital_pct=_pcts.get(new_stage, "unknown"),
                 brier=round(brier, 4), accuracy=round(accuracy, 4),
             )
+            if self.alerting:
+                try:
+                    from base_engine.monitoring.alerting import AlertSeverity
+                    await self.alerting.send_alert(
+                        title=f"CANARY_STAGE: {old_stage} → {new_stage} ({_pcts.get(new_stage, '?')} capital)",
+                        message=(
+                            f"Capital deployment stage changed.\n"
+                            f"Brier={brier:.4f}, accuracy={accuracy:.2%}.\n"
+                            f"To rollback: export CANARY_STAGE={old_stage} && sudo systemctl restart polymarket-ai"
+                        ),
+                        severity=AlertSeverity.WARNING,
+                        source="canary_controller",
+                    )
+                except Exception as _ae:
+                    logger.debug("canary_alert_failed", error=str(_ae))
