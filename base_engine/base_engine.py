@@ -751,13 +751,16 @@ class BaseEngine:
                 except Exception as e:
                     logger.debug("ModelVersionManager init failed (non-critical): %s", e)
 
-            # Optional: Mempool Monitor (if blockchain available)
-            try:
-                from base_engine.data.blockchain_client import BlockchainClient
-                blockchain_client = BlockchainClient()
-                self.mempool_monitor = MempoolMonitor(blockchain_client=blockchain_client)
-            except Exception as e:
-                logger.debug(f"Mempool monitor not available (blockchain client not initialized): {str(e)}")
+            # Optional: Mempool Monitor (skip in SIMULATION_MODE — no blockchain needed)
+            if not getattr(settings, "SIMULATION_MODE", True) and os.getenv("WALLET_ADDRESS"):
+                try:
+                    from base_engine.data.blockchain_client import BlockchainClient
+                    blockchain_client = BlockchainClient()
+                    self.mempool_monitor = MempoolMonitor(blockchain_client=blockchain_client)
+                except Exception as e:
+                    logger.debug("Mempool monitor not available: %s", str(e))
+                    self.mempool_monitor = None
+            else:
                 self.mempool_monitor = None
 
             # Webhooks (#39), Arbitrage (#24), Resolution listener (#33), Anomaly (#35)
@@ -1202,6 +1205,7 @@ class BaseEngine:
 
     async def start(self):
         self.running = True
+        self._periodic_tasks: List[asyncio.Task] = []
         logger.info("Starting base engine services")
         _canary = getattr(settings, "CANARY_STAGE", 0)
         _canary_pcts = {0: "off (paper)", 1: "5%", 2: "25%", 3: "50%", 4: "100%"}
@@ -1342,6 +1346,15 @@ class BaseEngine:
                 logger.info("Learning scheduler started")
             except Exception as e:
                 logger.warning(f"Learning scheduler failed to start (non-critical): {str(e)}")
+
+        # Clear stale sync_log entries from prior crash (30-min threshold on startup)
+        if self.db and hasattr(self.db, "mark_stale_sync_logs_failed"):
+            try:
+                await self.db.mark_stale_sync_logs_failed(
+                    component="data_ingestion", sync_type="full", older_than_hours=0.5,
+                )
+            except Exception:
+                pass  # Best-effort cleanup
 
         # Start ingestion scheduler (periodic markets; daily full ingestion when DAILY_FULL_INGESTION_ENABLED)
         if self.ingestion_scheduler is not None:
@@ -1488,7 +1501,7 @@ class BaseEngine:
                     except Exception as _e:
                         logger.debug("Periodic exposure flush error (non-critical): %s", _e)
 
-            asyncio.ensure_future(_periodic_exposure_flush())
+            self._periodic_tasks.append(asyncio.ensure_future(_periodic_exposure_flush()))
 
         # H2: Periodic position reconciliation — compares positions table vs paper_trades net.
         # Fires every 30 min; logs WARNING on divergence > 1%. Non-fatal.
@@ -1512,10 +1525,13 @@ class BaseEngine:
                         logger.debug("Periodic reconcile error (non-critical): %s", _e)
                     await asyncio.sleep(1800)
 
-            asyncio.ensure_future(_periodic_reconcile())
+            self._periodic_tasks.append(asyncio.ensure_future(_periodic_reconcile()))
 
     async def stop(self):
         self.running = False
+        # Cancel periodic background tasks (exposure flush, reconciliation)
+        for _t in getattr(self, "_periodic_tasks", []):
+            _t.cancel()
         logger.info("Stopping base engine services")
         db_closed_by_lifecycle = False
         if self.lifecycle_manager is not None:
