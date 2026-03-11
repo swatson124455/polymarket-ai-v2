@@ -14,6 +14,27 @@ from config.settings import settings
 logger = get_logger()
 
 
+def _size_dependent_slippage_bps(order_size_usd: float) -> int:
+    """Tiered market-impact slippage model.
+
+    Flat 50 bps is unrealistic: small orders face tight spreads, large orders
+    move the book. Tiers calibrated to Polymarket CLOB typical depth.
+
+    < $50:    35 bps  — small retail, inside spread
+    $50-200:  50 bps  — baseline (matches old flat rate)
+    $200-500: 75 bps  — medium, liquidity thins
+    > $500:  120 bps  — large, meaningful market impact
+    """
+    if order_size_usd < 50:
+        return 35
+    elif order_size_usd < 200:
+        return 50
+    elif order_size_usd < 500:
+        return 75
+    else:
+        return 120
+
+
 def _apply_slippage(price: float, side: str, slippage_bps: int) -> float:
     """
     Apply realistic slippage to a paper trade price.
@@ -193,6 +214,8 @@ class PaperTradingEngine:
         order_type: str = "market",
         correlation_id: Optional[str] = None,
         latency_ms: Optional[float] = None,
+        bid: float = 0.0,
+        ask: float = 0.0,
     ) -> Dict:
         """
         Place a paper trade order.
@@ -217,7 +240,8 @@ class PaperTradingEngine:
         # Lock protects cash, positions, and realized_pnl from concurrent bot updates
         async with self._trade_lock:
             return await self._place_order_locked(
-                market_id, token_id, side, size, price, bot_name, confidence, original_side, order_type, correlation_id, latency_ms
+                market_id, token_id, side, size, price, bot_name, confidence, original_side, order_type, correlation_id, latency_ms,
+                bid=bid, ask=ask,
             )
 
     async def _place_order_locked(
@@ -233,6 +257,8 @@ class PaperTradingEngine:
         order_type: str = "market",
         correlation_id: Optional[str] = None,
         latency_ms: Optional[float] = None,
+        bid: float = 0.0,
+        ask: float = 0.0,
     ) -> Dict:
         """Inner order handler — called under self._trade_lock."""
         # Auto-reset daily P&L at day boundary (UTC)
@@ -243,9 +269,20 @@ class PaperTradingEngine:
             self.realized_pnl_today = 0.0
             self._pnl_reset_date = today
 
-        # Apply realistic slippage (FIXED_SLIPPAGE_BPS default: 50 bps = 0.5%)
-        slippage_bps = getattr(settings, "FIXED_SLIPPAGE_BPS", 50)
+        # Order state machine: record timestamps for PENDING→SUBMITTED→FILLED transitions.
+        _pending_at = datetime.now(timezone.utc)
+
+        # B4: Use spread-side anchor when bid/ask available (buys fill at ask, sells at bid).
+        # Falls back to mid-price when bid/ask not provided (backward-compatible default).
+        if bid > 0.0 and ask > 0.0:
+            price = ask if side == "BUY" else bid
+
+        # Apply size-dependent slippage. Set FIXED_SLIPPAGE_BPS>0 in env to override.
+        _order_size_usd = size * price
+        _fixed = getattr(settings, "FIXED_SLIPPAGE_BPS", 0)
+        slippage_bps = _fixed if _fixed > 0 else _size_dependent_slippage_bps(_order_size_usd)
         original_price = price
+        _submitted_at = datetime.now(timezone.utc)
         price = _apply_slippage(price, side, slippage_bps)
 
         # Apply maker/taker fee (Polymarket: maker=0%, taker=1.5%)
@@ -386,6 +423,7 @@ class PaperTradingEngine:
             # If all retries fail on a SELL, log ERROR so operator knows a ghost may exist.
             for _attempt in range(3):
                 try:
+                    _filled_at = datetime.now(timezone.utc)
                     await self.db.insert_paper_trade(
                         order_id=trade_id,
                         market_id=market_id,
@@ -398,6 +436,9 @@ class PaperTradingEngine:
                         correlation_id=correlation_id,
                         realized_pnl=realized_pnl,  # None for BUY, computed value for SELL
                         latency_ms=latency_ms,
+                        status="filled",
+                        submitted_at=_submitted_at,
+                        filled_at=_filled_at,
                     )
                     break  # Success — exit retry loop
                 except Exception as e:

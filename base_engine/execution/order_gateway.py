@@ -307,6 +307,8 @@ class OrderGateway:
         prediction: Optional[float] = None,
         order_type: str = "market",
         correlation_id: Optional[str] = None,
+        bid: float = 0.0,
+        ask: float = 0.0,
     ) -> Dict[str, Any]:
         """
         Place order through kill switch, risk, and coordinator. Returns same shape as execution_engine.place_order.
@@ -618,6 +620,10 @@ class OrderGateway:
             except Exception as e:
                 logger.warning("OrderBook analysis failed (using original price): %s", e)
 
+        # Tick size enforcement: Polymarket uses 0.01 (1 cent) tick increments.
+        # Round price to nearest valid tick to prevent invalid orders in live mode.
+        effective_price = round(effective_price, 2)
+
         # Paper trading: full pipeline (risk, coordinator) then record order instead of CLOB
         if getattr(settings, "SIMULATION_MODE", False) and self.paper_trading_engine and self.paper_trading_engine.enabled:
             # In binary prediction markets, YES/NO indicate which token to buy, not trade direction.
@@ -640,6 +646,8 @@ class OrderGateway:
                     order_type=order_type,
                     correlation_id=correlation_id,
                     latency_ms=None,  # placeholder — set after timing
+                    bid=bid,
+                    ask=ask,
                 )
                 latency_ms = (time.monotonic() - t0) * 1000
                 if not result.get("success"):
