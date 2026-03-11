@@ -153,6 +153,26 @@ class OrderGateway:
         if hasattr(self, "_position_details"):
             self._position_details.pop(f"{bot_name}:{mid}", None)
 
+    async def mark_positions_halted(self) -> int:
+        """B1: Mark all open positions as halted when kill switch engages.
+
+        Prevents bots from re-entering halted positions on restart. Returns
+        the count of positions updated (0 if DB unavailable or none open).
+        """
+        if not self.db or not self.db.session_factory:
+            return 0
+        try:
+            from sqlalchemy import text as _sa_text
+            async with self.db.get_session() as session:
+                result = await session.execute(
+                    _sa_text("UPDATE positions SET status = 'halted' WHERE status = 'open'")
+                )
+                await session.commit()
+                return result.rowcount or 0
+        except Exception as e:
+            logger.error("mark_positions_halted failed: %s", e)
+            return 0
+
     async def seed_positions_from_db(self, db) -> None:
         """Load open positions from DB at startup so the in-memory tracker is warm."""
         try:

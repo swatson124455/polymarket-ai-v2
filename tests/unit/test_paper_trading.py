@@ -7,7 +7,8 @@ from base_engine.execution.paper_trading import PaperTradingEngine
 @pytest.fixture(autouse=True)
 def _disable_slippage():
     """Disable slippage and fees in paper trading tests for deterministic assertions."""
-    with patch("base_engine.execution.paper_trading.settings") as mock_settings:
+    with patch("base_engine.execution.paper_trading.settings") as mock_settings, \
+         patch("base_engine.execution.paper_trading._size_dependent_slippage_bps", return_value=0):
         mock_settings.FIXED_SLIPPAGE_BPS = 0
         mock_settings.TAKER_FEE_BPS = 0
         mock_settings.MAKER_FEE_BPS = 0

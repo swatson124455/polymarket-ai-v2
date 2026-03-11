@@ -210,7 +210,7 @@ class Settings(BaseSettings):
     TAKER_FEE_BPS: int = int(os.getenv("TAKER_FEE_BPS", "150"))  # 1.5%
     MAKER_FEE_BPS: int = int(os.getenv("MAKER_FEE_BPS", "0"))
     GAS_COST_USD: float = float(os.getenv("GAS_COST_USD", "0.01"))
-    FIXED_SLIPPAGE_BPS: int = int(os.getenv("FIXED_SLIPPAGE_BPS", "50"))  # 0.5%
+    FIXED_SLIPPAGE_BPS: int = int(os.getenv("FIXED_SLIPPAGE_BPS", "0"))  # 0=use tiered model; >0=flat override
 
     # Learning Settings
     # Per-bot model training (Session 47): when enabled, each bot trains on its own prediction_log entries.
