@@ -30,7 +30,7 @@ class MirrorBot(BaseBot):
 
     # Defaults (overridable via settings)
     MAX_TRACKED_TRADES: int = 10_000
-    MAX_CONCURRENT_POSITIONS: int = 20
+    MAX_CONCURRENT_POSITIONS: int = 50
     MAX_DAILY_EXPOSURE_PCT: float = 0.15
 
     def __init__(self, base_engine: BaseEngine):
@@ -289,7 +289,7 @@ class MirrorBot(BaseBot):
 
         for trade_info in consensus_trades:
             if not self._can_open_position(trade_info.get("price", 0.5)):
-                logger.debug("Mirror position limit reached, skipping trade")
+                logger.info("Mirror position limit reached, skipping trade")
                 continue
 
             try:
@@ -661,8 +661,9 @@ class MirrorBot(BaseBot):
             if not pos:
                 continue
 
-            # C2: pos["side"] is now YES/NO (post-C1). Exit by buying the opposite token.
-            exit_side = "NO" if pos["side"].upper() == "YES" else "YES"
+            # Exit by selling our position — SELL bypasses risk price bounds in order_gateway
+            # (buying the opposite token was treated as a new entry, blocked at extreme prices).
+            exit_side = "SELL"
             try:
                 market_id, token_id = pos_key.split(":", 1)
                 exit_price = self.validate_price(

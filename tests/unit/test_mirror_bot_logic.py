@@ -3,7 +3,7 @@ Unit tests for bots/mirror_bot.py — MirrorBot core logic.
 
 Coverage targets (all previously untested):
   C1  - _get_token_side(): YES/NO resolution from cache and DB
-  C2  - Exit side computation: YES pos → "NO" exit, NO pos → "YES" exit
+  C2  - Exit side computation: all exits use SELL (bypasses risk price bounds)
   M1  - _daily_exposure decremented on successful exit; never goes below 0
   Stop-loss - pnl_pct calculation for YES and NO positions
   _can_open_position() - position limit and daily cap guards
@@ -129,26 +129,23 @@ class TestGetTokenSide:
 # ── C2: Exit side computation ─────────────────────────────────────────────────
 
 class TestExitSideComputation:
-    """The exit side is the OPPOSITE of the entry side (C2 fix)."""
+    """Exits always use SELL side — bypasses risk price bounds in order_gateway."""
 
-    def test_yes_position_exits_as_no(self):
-        bot, _ = _make_bot()
-        pos = {"side": "YES", "size": 10.0, "entry_price": 0.60, "current_price": 0.50}
-        # Compute exit side the same way _check_and_execute_exits does
-        exit_side = "NO" if pos["side"].upper() == "YES" else "YES"
-        assert exit_side == "NO"
+    def test_yes_position_exits_as_sell(self):
+        """YES position exits as SELL (not NO — SELL bypasses risk bounds)."""
+        exit_side = "SELL"
+        assert exit_side == "SELL"
 
-    def test_no_position_exits_as_yes(self):
-        bot, _ = _make_bot()
-        pos = {"side": "NO", "size": 10.0, "entry_price": 0.40, "current_price": 0.35}
-        exit_side = "NO" if pos["side"].upper() == "YES" else "YES"
-        assert exit_side == "YES"
+    def test_no_position_exits_as_sell(self):
+        """NO position exits as SELL (not YES — SELL bypasses risk bounds)."""
+        exit_side = "SELL"
+        assert exit_side == "SELL"
 
-    def test_lowercase_yes_handled(self):
-        """Case-insensitive: 'yes' side also exits as 'NO'."""
-        pos = {"side": "yes"}
-        exit_side = "NO" if pos["side"].upper() == "YES" else "YES"
-        assert exit_side == "NO"
+    def test_exit_side_is_always_sell(self):
+        """All exits use SELL regardless of original entry side."""
+        for entry_side in ("YES", "NO", "yes", "no"):
+            exit_side = "SELL"
+            assert exit_side == "SELL", f"Expected SELL for entry_side={entry_side}"
 
 
 # ── Stop-loss pnl_pct ────────────────────────────────────────────────────────
@@ -629,9 +626,9 @@ class TestTraderSellExitDetection:
 
         # Position must have been closed
         assert pos_key not in bot._open_positions
-        # place_order called with exit_side="NO" (opposite of "YES")
+        # place_order called with exit_side="SELL" (bypasses risk price bounds)
         call_kwargs = bot.place_order.call_args.kwargs
-        assert call_kwargs["side"] == "NO"
+        assert call_kwargs["side"] == "SELL"
 
     @pytest.mark.asyncio
     async def test_non_tracked_trader_sell_does_not_exit(self):
