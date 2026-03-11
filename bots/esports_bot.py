@@ -477,8 +477,8 @@ class EsportsBot(BaseBot):
                 _acc = await get_rolling_accuracy(db, _rg, bot_name="EsportsBot")
                 if _acc and _acc["total"] >= 10:
                     _smart_brier[_rg] = _acc["brier_score"]
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug("esportsbot_smart_retrain_brier_failed", error=str(_e))
         try:
             from sqlalchemy import text as _sa_text
             async with db.get_session() as _sess:
@@ -488,8 +488,8 @@ class EsportsBot(BaseBot):
                         {"game": _rg},
                     )
                     _smart_row_count[_rg] = int(_cnt.scalar() or 0)
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug("esportsbot_training_data_count_failed", error=str(_e))
         _lol_patch = ""
         if self._patch_drift:
             _lol_patch = self._patch_drift._known_patches.get("lol", "")
@@ -908,8 +908,8 @@ class EsportsBot(BaseBot):
                             "glicko2_est": glicko2_est,
                         }
                         return prob
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug("esportsbot_lol_model_predict_failed", game="lol", error=str(_e))
 
         if game == "cs2" and self._cs2_model and self._cs2_model.is_trained and live_data:
             try:
@@ -929,8 +929,8 @@ class EsportsBot(BaseBot):
                             "ml_raw": prob, "glicko2_est": glicko2_est,
                         }
                         return prob
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug("esportsbot_cs2_model_predict_failed", game="cs2", error=str(_e))
 
         # Dota2/Valorant: use ML model with Glicko-2 features (pre-match only)
         if game == "dota2" and self._dota2_model and self._dota2_model.is_trained:
@@ -951,8 +951,8 @@ class EsportsBot(BaseBot):
                             "glicko2_est": glicko2_prob,
                         }
                         return prob
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug("esportsbot_dota2_model_predict_failed", game="dota2", error=str(_e))
 
         if game == "valorant" and self._valorant_model and self._valorant_model.is_trained:
             try:
@@ -969,8 +969,8 @@ class EsportsBot(BaseBot):
                             "glicko2_est": glicko2_prob,
                         }
                         return prob
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug("esportsbot_valorant_model_predict_failed", game="valorant", error=str(_e))
 
         # "Easy mode" fallback: Glicko-2 expected score from team strength ratings.
         # Replaces base prediction engine (politics/crypto model) which produced

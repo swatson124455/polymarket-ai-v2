@@ -273,7 +273,7 @@ class PaperTradingEngine:
         # on timeout + retry). Checks DB before any cash/position mutation.
         if correlation_id and self.db and hasattr(self.db, "get_paper_trade_by_correlation_id"):
             try:
-                existing = await self.db.get_paper_trade_by_correlation_id(correlation_id)
+                existing = await self.db.get_paper_trade_by_correlation_id(correlation_id, market_id=market_id)
                 if existing:
                     logger.info(
                         "paper_trade_idempotent",

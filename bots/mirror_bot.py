@@ -289,8 +289,7 @@ class MirrorBot(BaseBot):
 
         for trade_info in consensus_trades:
             if not self._can_open_position(trade_info.get("price", 0.5)):
-                logger.info("Mirror position limit reached, skipping trade")
-                continue
+                continue  # _can_open_position() logs the specific reason
 
             try:
                 executed = await self._execute_mirror_trade(
@@ -402,7 +401,7 @@ class MirrorBot(BaseBot):
                             offset=0,
                         )
                     except Exception as e:
-                        logger.debug("get_user_activity failed for %s: %s", addr[:10], e)
+                        logger.info("get_user_activity failed for %s: %s", addr[:10], e)
                         _wf_api_fail += 1
                         return []
                 # Store in cache outside semaphore (no need to hold lock during write)
@@ -446,7 +445,7 @@ class MirrorBot(BaseBot):
                     if _alpha + _beta > 2:  # Only filter if we have actual data (not just prior)
                         _mean_rel = _alpha / (_alpha + _beta)
                         if _mean_rel < getattr(settings, "MIRROR_MIN_RELIABILITY", 0.45):
-                            logger.debug("MirrorBot reliability gate: addr=%s mean=%.3f", addr[:10], _mean_rel)
+                            logger.info("MirrorBot reliability gate: addr=%s mean=%.3f", addr[:10], _mean_rel)
                             continue
                 _wf_rel += 1
 
@@ -569,7 +568,7 @@ class MirrorBot(BaseBot):
                     if _is_mid and (age_min * 60) > _hot_max_s:
                         return None  # Market has likely already repriced
         except Exception as e:
-            logger.debug("trade freshness check failed: %s", e)
+            logger.info("trade freshness check failed: %s", e)
             return None
 
         return {
@@ -613,8 +612,8 @@ class MirrorBot(BaseBot):
                         logger.info("MirrorBot max hold time exit", market=_pos_key,
                                     hold_h=f"{(_now_utc - _opened_at).total_seconds()/3600:.1f}h")
                         positions_to_close.append(_pos_key)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("MirrorBot exit: timestamp parse failed for %s: %s", _pos_key, e)
 
         # Gather all trader addresses we're tracking
         tracked_traders: set = set()
@@ -630,7 +629,8 @@ class MirrorBot(BaseBot):
                             limit=50,
                             offset=0,
                         )
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("MirrorBot exit: activity fetch failed for %s: %s", addr[:10], e)
                         continue
 
                     for trade in activity:
@@ -742,11 +742,16 @@ class MirrorBot(BaseBot):
             logger.warning("MirrorBot: failed to persist trader address: %s", exc)
 
     def _can_open_position(self, price: float) -> bool:
-        """Check concurrent position + daily exposure limits."""
+        """Check concurrent position + daily exposure limits.
+
+        Returns False with a specific INFO log identifying WHICH limit was hit.
+        """
         max_positions = getattr(
             settings, "MIRROR_MAX_CONCURRENT_POSITIONS", self.MAX_CONCURRENT_POSITIONS
         )
         if len(self._open_positions) >= max_positions:
+            logger.info("Mirror POSITION CAP: %d/%d positions, skipping",
+                        len(self._open_positions), max_positions)
             return False
 
         # Daily cap: read bankroll.max_daily_usd directly (avoids capital*0.15 mismatch).
@@ -764,6 +769,8 @@ class MirrorBot(BaseBot):
             max_exposure_pct = getattr(settings, "MIRROR_MAX_DAILY_EXPOSURE_PCT", self.MAX_DAILY_EXPOSURE_PCT)
             _max_daily_usd = float(getattr(settings, "TOTAL_CAPITAL", 10000.0)) * max_exposure_pct
         if self._daily_exposure >= _max_daily_usd:
+            logger.info("Mirror DAILY CAP: $%.0f/$%.0f exposure, skipping",
+                        self._daily_exposure, _max_daily_usd)
             return False
 
         return True
@@ -863,7 +870,7 @@ class MirrorBot(BaseBot):
             _pos = self._open_positions[pos_key]
             _exit_size = _pos.get("size", 0.0)
             if _exit_size <= 0:
-                logger.debug("MirrorBot: SELL position size=0, skipping market=%s", str(market_id)[:16])
+                logger.info("MirrorBot: SELL position size=0, skipping market=%s", str(market_id)[:16])
                 return False
             order = await self.place_order(
                 market_id=market_id,
@@ -888,7 +895,7 @@ class MirrorBot(BaseBot):
             try:
                 lr = self._reliability_tracker.likelihood_ratio(trader_address, side, category=category)
                 if lr < 1.0:
-                    logger.debug(
+                    logger.info(
                         "Skipping unreliable trader %s (LR=%.2f)",
                         trader_address[:10],
                         lr,
@@ -937,7 +944,8 @@ class MirrorBot(BaseBot):
         size = min(size, remaining_daily_shares)
 
         if size <= 0:
-            logger.debug("Mirror trade size zero after limits, skipping")
+            logger.info("Mirror trade size zero after limits (per_mkt=$%.0f daily_rem=$%.0f), skipping",
+                        max_per_market_usd, remaining_daily_usd)
             return False
 
         order = await self.place_order(
@@ -949,8 +957,8 @@ class MirrorBot(BaseBot):
             confidence=confidence,
         )
 
-        if order.get("success"):
-            self._daily_exposure += size * price  # Track exposure in USD
+        if order.get("success") and not order.get("idempotent"):
+            self._daily_exposure += size * price  # Track exposure in USD (skip idempotent dedup'd orders)
 
             # Update position tracking with actual size
             pos_key = f"{market_id}:{token_id}"

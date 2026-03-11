@@ -3,7 +3,7 @@ from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base, Session
-from sqlalchemy import Column, String, Float, Integer, BigInteger, Boolean, DateTime, Text, Index, UniqueConstraint, text, and_, LargeBinary, JSON, event, insert, update, bindparam
+from sqlalchemy import Column, String, Float, Integer, BigInteger, Boolean, DateTime, Text, Index, UniqueConstraint, text, and_, LargeBinary, JSON, event, insert, update, bindparam, ARRAY
 from sqlalchemy.types import TypeDecorator
 from structlog import get_logger
 from config.settings import settings
@@ -268,7 +268,8 @@ class Position(Base):
     opened_at = Column(NaiveUTCDateTime, default=lambda: _naive_utc(datetime.now(timezone.utc)), index=True)
     status = Column(String, default="open", index=True)  # 'open' | 'reserving' | 'closed'
     is_paper = Column(Boolean, default=False, index=True)  # True for SIMULATION_MODE positions; excluded from real metrics
-    
+    trader_addresses = Column(ARRAY(String), nullable=True, server_default="{}")  # Migration 035: elite trader addresses tracking
+
     __table_args__ = (
         UniqueConstraint("bot_id", "market_id", "side", name="uq_positions_bot_market_side"),
         Index("idx_positions_bot_id", "bot_id"),
@@ -2939,24 +2940,36 @@ class Database:
         except Exception as e:
             logger.debug("Failed to write paper_trades (table may not exist): %s", e)
 
-    async def get_paper_trade_by_correlation_id(self, correlation_id: str) -> Optional[Dict[str, Any]]:
+    async def get_paper_trade_by_correlation_id(self, correlation_id: str, market_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """H1: Idempotency check — returns existing paper_trade dict if correlation_id already used.
 
         Called before executing a trade to prevent double-fills on timeout + retry.
         Returns None if no matching record found (safe to proceed with trade).
+
+        When market_id is provided, matches on (correlation_id, market_id) composite key.
+        This prevents false dedup when multiple orders share a per-scan correlation_id.
         """
         if self.session_factory is None or not correlation_id:
             return None
         try:
             async with self.get_session() as session:
                 from sqlalchemy import text as _sa_text
-                result = await session.execute(
-                    _sa_text(
-                        "SELECT order_id, price, size, side, status "
-                        "FROM paper_trades WHERE correlation_id = :cid LIMIT 1"
-                    ),
-                    {"cid": str(correlation_id)},
-                )
+                if market_id:
+                    result = await session.execute(
+                        _sa_text(
+                            "SELECT order_id, price, size, side, status "
+                            "FROM paper_trades WHERE correlation_id = :cid AND market_id = :mid LIMIT 1"
+                        ),
+                        {"cid": str(correlation_id), "mid": str(market_id)},
+                    )
+                else:
+                    result = await session.execute(
+                        _sa_text(
+                            "SELECT order_id, price, size, side, status "
+                            "FROM paper_trades WHERE correlation_id = :cid LIMIT 1"
+                        ),
+                        {"cid": str(correlation_id)},
+                    )
                 row = result.fetchone()
                 if row:
                     return {
