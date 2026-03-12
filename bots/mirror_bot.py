@@ -95,6 +95,18 @@ class MirrorBot(BaseBot):
         # Deprecation flag: MIRROR_MAX_DAILY_EXPOSURE_PCT fallback warning (log once)
         self._deprecation_warned: bool = False
 
+        # Real-time WebSocket copy trading via EliteWatchlist + RTDS global feed
+        self._watchlist = None
+        self._watchlist_started: bool = False
+        self._rtds_ws = None
+        self._rtds_started: bool = False
+        if getattr(settings, "WATCHLIST_ENABLED", False):
+            try:
+                from bots.elite_watchlist import EliteWatchlist
+                self._watchlist = EliteWatchlist(base_engine.client, base_engine.db, self)
+            except Exception as e:
+                logger.warning("EliteWatchlist init failed: %s", e)
+
     def _on_bg_task_done(self, task, name):
         if task.cancelled():
             return
@@ -264,6 +276,53 @@ class MirrorBot(BaseBot):
                 logger.warning("MirrorBot elite refresh timed out (10s) — continuing with stale list")
             except Exception as _elite_err:
                 logger.debug("MirrorBot elite refresh failed: %s", _elite_err)
+
+        # Start WebSocket watchlist on first scan (register handler once)
+        if self._watchlist and not self._watchlist_started:
+            try:
+                await self._watchlist.refresh_watchlist()
+                ws_mgr = getattr(self.base_engine, "ws_manager", None)
+                if ws_mgr:
+                    ws_mgr.register_handler("last_trade_price", self._watchlist.on_trade_event)
+                    ws_mgr.register_handler("trade", self._watchlist.on_trade_event)
+                self._watchlist_started = True
+                logger.info("MirrorBot: WebSocket watchlist started")
+            except Exception as e:
+                logger.warning("MirrorBot: watchlist start failed: %s", e)
+
+        # Start RTDS global trade feed (all trades on platform, not per-market)
+        if self._watchlist and self._watchlist_started and not self._rtds_started:
+            try:
+                from base_engine.data.rtds_websocket import RTDSWebSocket
+                _rtds_url = getattr(settings, "RTDS_WS_URL", "wss://ws-live-data.polymarket.com")
+                _rtds_ping = int(getattr(settings, "RTDS_PING_INTERVAL", 5))
+                self._rtds_ws = RTDSWebSocket(
+                    handler=self._watchlist.on_rtds_trade,
+                    ws_url=_rtds_url,
+                    ping_interval=_rtds_ping,
+                )
+                await self._rtds_ws.connect()
+                self._rtds_started = True
+                logger.info("MirrorBot: RTDS global trade feed connected")
+            except Exception as e:
+                logger.warning("MirrorBot: RTDS connect failed: %s", e)
+
+        # Daily watchlist refresh (once per UTC day)
+        if self._watchlist and self._watchlist_started and self._watchlist.needs_refresh():
+            try:
+                await self._watchlist.refresh_watchlist()
+            except Exception as e:
+                logger.debug("MirrorBot: watchlist refresh failed: %s", e)
+
+            # Log watchlist stats every 10 scans
+            if self._scan_count % 10 == 0:
+                _ws = self._watchlist.get_stats()
+                logger.info(
+                    "MirrorBot watchlist stats",
+                    watchlist_size=_ws["watchlist_size"],
+                    events_matched=_ws["events_matched"],
+                    copies_executed=_ws["copies_executed"],
+                )
 
         # Reset daily exposure at UTC day boundary
         self._check_daily_reset()

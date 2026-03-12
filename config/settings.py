@@ -328,6 +328,9 @@ class Settings(BaseSettings):
     # Watchlist: real-time WebSocket copy trading (monthly leaderboard top 1k)
     WATCHLIST_ENABLED: bool = os.getenv("WATCHLIST_ENABLED", "false").lower() in ("true", "1", "yes")
     WATCHLIST_SIZE: int = int(os.getenv("WATCHLIST_SIZE", "1000"))  # Monthly top 1k (API caps at ~1050)
+    # RTDS: global trade feed (all trades on platform, not per-market)
+    RTDS_WS_URL: str = os.getenv("RTDS_WS_URL", "wss://ws-live-data.polymarket.com")
+    RTDS_PING_INTERVAL: int = int(os.getenv("RTDS_PING_INTERVAL", "5"))  # seconds — RTDS keep-alive requirement
 
     MIRROR_STOP_LOSS_PCT: float = float(os.getenv("MIRROR_STOP_LOSS_PCT", "0.15"))
     MIRROR_MAX_HOLD_HOURS: float = float(os.getenv("MIRROR_MAX_HOLD_HOURS", "72"))

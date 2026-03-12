@@ -217,27 +217,39 @@ async def run_resolution_backfill(
 
     result["inserted"] = inserted
 
-    # Phase 2: Backfill resolution for markets with on-chain trades OR paper trades
-    # Fix 10: Original query only joined on `trades` (on-chain, 986K rows we didn't place).
-    # Also include markets from `paper_trades` so our own positions get resolution backfilled.
+    # Phase 2: Backfill resolution — OUR paper trades first, then on-chain trades.
+    # Paper trade markets are always resolved first (no limit) since we have real
+    # capital at risk. Remaining slots filled from on-chain trades table.
     async with db.get_session() as session:
-        res_result = await session.execute(text("""
-            SELECT DISTINCT m.id, m.end_date_iso FROM markets m
+        # 2a: Markets WE traded on — always processed, no limit
+        pt_result = await session.execute(text("""
+            SELECT DISTINCT m.id FROM markets m
             WHERE (m.resolution IS NULL OR m.resolution NOT IN ('YES', 'NO'))
-            AND (
-                EXISTS (
+            AND EXISTS (
+                SELECT 1 FROM paper_trades pt
+                WHERE pt.market_id::text = m.id::text OR pt.market_id = m.condition_id
+            )
+        """))
+        paper_market_ids = [r[0] for r in pt_result.fetchall() if r[0]]
+        _paper_set = set(paper_market_ids)
+
+        # 2b: On-chain trades markets — fill remaining slots
+        _remaining = max(0, resolution_limit - len(paper_market_ids))
+        other_ids: list = []
+        if _remaining > 0:
+            ot_result = await session.execute(text("""
+                SELECT DISTINCT m.id FROM markets m
+                WHERE (m.resolution IS NULL OR m.resolution NOT IN ('YES', 'NO'))
+                AND EXISTS (
                     SELECT 1 FROM trades t
                     WHERE t.market_id = m.id::text OR t.market_id = m.condition_id
                 )
-                OR EXISTS (
-                    SELECT 1 FROM paper_trades pt
-                    WHERE pt.market_id::text = m.id::text
-                )
-            )
-            ORDER BY m.end_date_iso ASC NULLS LAST
-            LIMIT :lim
-        """), {"lim": resolution_limit})
-        market_ids = [r[0] for r in res_result.fetchall() if r[0]]
+                ORDER BY m.end_date_iso ASC NULLS LAST
+                LIMIT :lim
+            """), {"lim": _remaining})
+            other_ids = [r[0] for r in ot_result.fetchall() if r[0] and r[0] not in _paper_set]
+
+        market_ids = paper_market_ids + other_ids
 
     if not market_ids:
         if log_progress:
