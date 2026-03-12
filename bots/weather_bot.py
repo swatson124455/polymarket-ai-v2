@@ -2534,6 +2534,7 @@ class WeatherBot(BaseBot):
                     SELECT COALESCE(SUM(realized_pnl), 0.0)
                     FROM paper_trades
                     WHERE bot_name = 'WeatherBot'
+                      AND side IN ('YES', 'NO')
                       AND realized_pnl IS NOT NULL
                       AND created_at >= :today_start
                 """), {"today_start": today_start})

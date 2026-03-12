@@ -453,6 +453,7 @@ class AlertingSystem:
                     FROM paper_trades
                     WHERE created_at >= CURRENT_DATE
                       AND realized_pnl IS NOT NULL
+                      AND side IN ('YES', 'NO')
                     GROUP BY bot_name
                     ORDER BY bot_name
                 """))

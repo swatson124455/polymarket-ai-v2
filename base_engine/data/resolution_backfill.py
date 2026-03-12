@@ -372,6 +372,7 @@ async def run_resolution_backfill(
                     FROM paper_trades pt
                     LEFT JOIN markets m ON (pt.market_id = CAST(m.id AS TEXT) OR pt.market_id = m.condition_id)
                     WHERE pt.resolution IS NOT NULL AND pt.realized_pnl IS NOT NULL
+                      AND pt.side IN ('YES', 'NO')
                     ORDER BY pt.created_at DESC
                     LIMIT :lim
                 """), {"lim": paper_updated + 50})

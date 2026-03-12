@@ -3085,6 +3085,7 @@ class Database:
                     FROM paper_trades pt
                     WHERE pt.resolution IS NOT NULL
                       AND pt.resolution IN ('YES', 'NO')
+                      AND pt.side IN ('YES', 'NO')
                       AND pt.created_at >= NOW() - INTERVAL ':days days'
                     GROUP BY DATE(pt.created_at)
                     ORDER BY day
@@ -3124,6 +3125,7 @@ class Database:
                         MAX(realized_pnl) AS best_trade,
                         MIN(realized_pnl) AS worst_trade
                     FROM paper_trades
+                    WHERE side IN ('YES', 'NO')
                 """))
                 o = overall.first()
                 if not o:
@@ -3138,6 +3140,7 @@ class Database:
                         COALESCE(SUM(realized_pnl), 0) AS pnl
                     FROM paper_trades
                     WHERE resolution IS NOT NULL
+                      AND side IN ('YES', 'NO')
                     GROUP BY bot_name
                     ORDER BY pnl DESC
                 """))
@@ -3180,6 +3183,7 @@ class Database:
                     FROM paper_trades
                     WHERE resolution IS NOT NULL
                       AND resolution IN ('YES', 'NO')
+                      AND side IN ('YES', 'NO')
                       AND realized_pnl IS NOT NULL
                       AND created_at >= NOW() - INTERVAL ':days days'
                     ORDER BY bot_name, created_at ASC

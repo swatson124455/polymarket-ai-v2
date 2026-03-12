@@ -597,6 +597,7 @@ async def compute_pnl_summary(db) -> Optional[Dict[str, Any]]:
                 LEFT JOIN game_map gm ON pt.market_id = gm.market_id
                 WHERE pt.bot_name LIKE 'Esports%'
                   AND pt.realized_pnl IS NOT NULL
+                  AND pt.side IN ('YES', 'NO')
                 GROUP BY COALESCE(gm.game, 'unknown')
                 """)
             )
