@@ -2941,7 +2941,7 @@ class Database:
                         " price = EXCLUDED.price, "
                         " confidence = EXCLUDED.confidence, "
                         " correlation_id = EXCLUDED.correlation_id, "
-                        " realized_pnl = EXCLUDED.realized_pnl, "
+                        " realized_pnl = COALESCE(paper_trades.realized_pnl, EXCLUDED.realized_pnl), "
                         " latency_ms = EXCLUDED.latency_ms, "
                         " status = EXCLUDED.status, "
                         " submitted_at = EXCLUDED.submitted_at, "
