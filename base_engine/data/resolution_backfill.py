@@ -4,6 +4,7 @@ Callable from IngestionScheduler (optimal flow automation) or scripts/backfill_m
 """
 import asyncio
 import json
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from structlog import get_logger
@@ -273,16 +274,17 @@ async def run_resolution_backfill(
                 _end_raw = (m.get("endDateISO") or m.get("endDateIso")
                             or m.get("endDate") or m.get("end_date")
                             or m.get("end_date_iso"))
+                _end_dt_parsed = None
                 if _end_raw:
                     try:
                         from datetime import datetime as _dt
                         _ds = str(_end_raw)
-                        _end_dt = _dt.fromisoformat(_ds.replace("Z", "+00:00"))
-                        _end_dt = _end_dt.replace(tzinfo=None)
+                        _end_dt_parsed = _dt.fromisoformat(_ds.replace("Z", "+00:00"))
+                        _end_dt_parsed = _end_dt_parsed.replace(tzinfo=None)
                         async with db.get_session() as _s:
                             await _s.execute(
                                 text("UPDATE markets SET end_date_iso=:ed WHERE id=:mid AND end_date_iso IS NULL"),
-                                {"ed": _end_dt, "mid": mid},
+                                {"ed": _end_dt_parsed, "mid": mid},
                             )
                             await _s.commit()
                         end_date_patched += 1
@@ -297,7 +299,9 @@ async def run_resolution_backfill(
                     res = _infer_resolution_from_outcome_prices(m)
                 if res and str(res).upper() in ("YES", "NO"):
                     _source = "clob_api" if _from_clob else "gamma_api"
-                    await db.save_market_resolution(mid, True, str(res).upper(), _source, None)
+                    # Pass end_date as resolved_at; fallback to now() so resolved_at is never NULL
+                    _resolved_at = _end_dt_parsed or datetime.now(timezone.utc).replace(tzinfo=None)
+                    await db.save_market_resolution(mid, True, str(res).upper(), _source, _resolved_at)
                     updated += 1
                     if log_progress and updated % 50 == 0:
                         logger.info("Resolution backfill: updated %d resolutions", updated)
