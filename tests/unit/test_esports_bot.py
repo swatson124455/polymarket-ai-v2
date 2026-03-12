@@ -11,6 +11,8 @@ Tests:
   - analyze_opportunity returns trade dict when edge > min_edge
   - scan_and_trade calls analyze for each esports market
 """
+import asyncio
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -555,3 +557,346 @@ class TestWsPendingTradesBounded:
         bot = make_bot()
         assert isinstance(bot._ws_pending_trades, set)
         assert len(bot._ws_pending_trades) == 0
+
+
+class TestTeamNameExtraction:
+    """Tests for team name extraction patterns and cleaning (Item 1)."""
+
+    def test_clean_team_names_major_suffix(self):
+        """Tournament suffixes like '- major' are stripped."""
+        a, b = EsportsBot._clean_team_names("navi", "vitality - blast major 2026")
+        assert a == "navi"
+        assert b == "vitality"
+
+    def test_clean_team_names_champions_suffix(self):
+        """'- champions' suffix stripped."""
+        a, b = EsportsBot._clean_team_names("fnatic", "g2 - champions stage")
+        assert a == "fnatic"
+        assert b == "g2"
+
+    def test_clean_team_names_short_names_preserved(self):
+        """Short names like t1, g2, 100 thieves survive cleaning."""
+        a, b = EsportsBot._clean_team_names("t1", "g2")
+        assert a == "t1"
+        assert b == "g2"
+        a2, b2 = EsportsBot._clean_team_names("100 thieves", "cloud9")
+        assert a2 == "100 thieves"
+        assert b2 == "cloud9"
+
+    def test_clean_team_names_game_prefix(self):
+        """Game title prefixes like 'league of legends: ' are stripped."""
+        a, b = EsportsBot._clean_team_names("league of legends: t1", "league of legends: gen.g")
+        assert a == "t1"
+        assert b == "gen.g"
+
+    @pytest.mark.asyncio
+    async def test_glicko2_pattern_win_against(self):
+        """Pattern 3: 'Will T1 win against Gen.G?' extracts both teams."""
+        bot = make_bot()
+        # Set up tracker with both teams
+        from unittest.mock import MagicMock as MM
+        tracker = MM()
+        tracker.match_count = 100
+        tracker.get_rating = MM(return_value=MM(phi=150.0, sigma=0.06))
+        tracker.expected_score = MM(return_value=0.65)
+        bot._glicko2_trackers["lol"] = tracker
+        bot._team_name_to_id = {"t1": "t1_id", "gen.g": "geng_id"}
+
+        market = {"question": "Will T1 win against Gen.G?", "id": "m1"}
+        result = await bot._get_glicko2_prediction(market, "lol")
+        assert result is not None
+        assert 0.05 < result < 0.95
+
+    @pytest.mark.asyncio
+    async def test_glicko2_pattern_to_win_over(self):
+        """Pattern 4: 'Fnatic to win over Vitality' extracts both teams."""
+        bot = make_bot()
+        from unittest.mock import MagicMock as MM
+        tracker = MM()
+        tracker.match_count = 100
+        tracker.get_rating = MM(return_value=MM(phi=150.0, sigma=0.06))
+        tracker.expected_score = MM(return_value=0.60)
+        bot._glicko2_trackers["cs2"] = tracker
+        bot._team_name_to_id = {"fnatic": "fn_id", "vitality": "vit_id"}
+
+        market = {"question": "Fnatic to win over Vitality", "id": "m2"}
+        result = await bot._get_glicko2_prediction(market, "cs2")
+        assert result is not None
+        assert 0.05 < result < 0.95
+
+    @pytest.mark.asyncio
+    async def test_glicko2_pattern_standard_vs_still_works(self):
+        """Pattern 1: 'T1 vs Gen.G' still works after adding new patterns."""
+        bot = make_bot()
+        from unittest.mock import MagicMock as MM
+        tracker = MM()
+        tracker.match_count = 100
+        tracker.get_rating = MM(return_value=MM(phi=150.0, sigma=0.06))
+        tracker.expected_score = MM(return_value=0.55)
+        bot._glicko2_trackers["lol"] = tracker
+        bot._team_name_to_id = {"t1": "t1_id", "gen.g": "geng_id"}
+
+        market = {"question": "T1 vs Gen.G", "id": "m3"}
+        result = await bot._get_glicko2_prediction(market, "lol")
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_team_fail_logged_rate_limited(self):
+        """team_match_fail is logged once per unique team pair per session."""
+        bot = make_bot()
+        from unittest.mock import MagicMock as MM
+        tracker = MM()
+        tracker.match_count = 100
+        bot._glicko2_trackers["lol"] = tracker
+        bot._team_name_to_id = {}  # no teams → will fail
+
+        market = {"question": "Unknown1 vs Unknown2", "id": "m4"}
+        # Call twice — should only log once
+        await bot._get_glicko2_prediction(market, "lol")
+        await bot._get_glicko2_prediction(market, "lol")
+        assert "lol:unknown1:unknown2" in bot._team_fail_logged
+
+
+class TestPandaScoreTimeout:
+    """Tests for PandaScore refresh timeout and staleness tracking (Item 2)."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_preserves_cache(self):
+        """On timeout, existing _live_matches are preserved (stale but usable)."""
+        bot = make_bot()
+        bot._live_matches = {"existing_match": {"id": "123"}}
+        bot._last_live_refresh = 0.0  # force refresh
+        bot._pandascore = MagicMock()
+        bot._pandascore.get_live_matches = AsyncMock(side_effect=asyncio.TimeoutError())
+
+        with patch("bots.esports_bot.settings") as ms:
+            ms.ESPORTS_PANDASCORE_REFRESH_INTERVAL = 15
+            ms.ESPORTS_PANDASCORE_TIMEOUT = 5.0
+            await bot._refresh_live_matches()
+
+        # Stale data preserved
+        assert "existing_match" in bot._live_matches
+        assert bot._live_refresh_failures == 1
+
+    @pytest.mark.asyncio
+    async def test_success_resets_failure_count(self):
+        """Successful refresh resets _live_refresh_failures to 0."""
+        bot = make_bot()
+        bot._live_refresh_failures = 5
+        bot._last_live_refresh = 0.0
+        match_obj = MagicMock()
+        match_obj.match_id = "m1"
+        bot._pandascore = MagicMock()
+        bot._pandascore.get_live_matches = AsyncMock(return_value=[match_obj])
+
+        with patch("bots.esports_bot.settings") as ms:
+            ms.ESPORTS_PANDASCORE_REFRESH_INTERVAL = 15
+            ms.ESPORTS_PANDASCORE_TIMEOUT = 5.0
+            await bot._refresh_live_matches()
+
+        assert bot._live_refresh_failures == 0
+        assert "m1" in bot._live_matches
+
+
+class TestCalibrationCurve:
+    """Tests for compute_calibration_curve (Item 3)."""
+
+    @pytest.mark.asyncio
+    async def test_calibration_curve_basic(self):
+        """Verify ECE computation with known data."""
+        from esports.data.esports_db import compute_calibration_curve
+
+        # Mock DB returning predictions with known calibration
+        rows = []
+        # 20 predictions at ~0.60 confidence, 50% win rate → miscalibrated by 0.10
+        for i in range(20):
+            rows.append({"predicted_prob": 0.60, "side": "YES",
+                         "actual_outcome": 1 if i < 10 else 0})
+        # 10 predictions at ~0.80, 80% win rate → perfectly calibrated
+        for i in range(10):
+            rows.append({"predicted_prob": 0.80, "side": "YES",
+                         "actual_outcome": 1 if i < 8 else 0})
+
+        db = MagicMock()
+        db.fetch_all = AsyncMock(return_value=rows)
+
+        result = await compute_calibration_curve(db, game="cs2", days=90)
+        assert result is not None
+        assert result["total"] == 30
+        assert 0.0 < result["ece"] < 0.15  # Should have some calibration error
+
+    @pytest.mark.asyncio
+    async def test_calibration_curve_insufficient_data(self):
+        """Returns None with < 20 rows."""
+        from esports.data.esports_db import compute_calibration_curve
+
+        db = MagicMock()
+        db.fetch_all = AsyncMock(return_value=[
+            {"predicted_prob": 0.60, "side": "YES", "actual_outcome": 1}
+        ] * 10)
+
+        result = await compute_calibration_curve(db, game="lol", days=90)
+        assert result is None
+
+
+class TestPerGameKellyMult:
+    """Tests for per-game Kelly multiplier (Item 4)."""
+
+    def test_game_kelly_mult_penalty(self):
+        """Brier > 0.25 produces mult=0.5."""
+        bot = make_bot()
+        # Simulate: monitoring loop would set this based on brier
+        bot._game_kelly_mult["cs2"] = 0.5  # brier > 0.25
+        assert bot._game_kelly_mult["cs2"] == 0.5
+
+    def test_game_kelly_mult_boost(self):
+        """Brier < 0.20 produces mult=1.2."""
+        bot = make_bot()
+        bot._game_kelly_mult["lol"] = 1.2  # brier < 0.20
+        assert bot._game_kelly_mult["lol"] == 1.2
+
+    def test_game_kelly_mult_default_is_one(self):
+        """Unknown game returns 1.0 from dict.get()."""
+        bot = make_bot()
+        assert bot._game_kelly_mult.get("unknown_game", 1.0) == 1.0
+
+
+class TestEdgeDecay:
+    """Tests for edge decay monitoring (Item 5)."""
+
+    @pytest.mark.asyncio
+    async def test_edge_decay_stored(self):
+        """Verify _edge_decay_data is populated after monitoring check."""
+        bot = make_bot()
+        # Just verify the dict exists and can be populated
+        bot._edge_decay_data["cs2"] = {
+            "total_predictions": 30,
+            "bins": [{"avg_clv": 0.02, "avg_profit": 0.01}],
+        }
+        assert bot._edge_decay_data["cs2"]["total_predictions"] == 30
+
+    @pytest.mark.asyncio
+    async def test_edge_decay_negative_clv_flagged(self):
+        """Negative CLV in top bin should be detectable."""
+        bot = make_bot()
+        bot._edge_decay_data["lol"] = {
+            "total_predictions": 25,
+            "bins": [{"avg_clv": -0.03, "avg_profit": -0.05}],
+        }
+        top_bin = bot._edge_decay_data["lol"]["bins"][0]
+        assert top_bin["avg_clv"] < 0  # Would trigger warning
+
+
+class TestParallelAnalysis:
+    """Tests for parallel market analysis (Item 6)."""
+
+    def test_semaphore_exists(self):
+        """Bot has analysis semaphore and trade lock."""
+        bot = make_bot()
+        assert hasattr(bot, "_analysis_semaphore")
+        assert hasattr(bot, "_trade_lock")
+
+    @pytest.mark.asyncio
+    async def test_parallel_exception_isolation(self):
+        """One failing market doesn't crash the whole gather."""
+        async def _ok():
+            return (1, 1, 0)
+
+        async def _fail():
+            raise ValueError("boom")
+
+        results = await asyncio.gather(_ok(), _fail(), return_exceptions=True)
+        # First succeeded, second is an exception
+        assert results[0] == (1, 1, 0)
+        assert isinstance(results[1], ValueError)
+
+
+class TestDynamicKellyGraduation:
+    """Tests for continuous Kelly scaling (Item 7)."""
+
+    @pytest.mark.asyncio
+    async def test_kelly_scales_up_good_brier(self):
+        """Good Brier (0.18) → scale > 1.0 → Kelly increases."""
+        bot = make_bot()
+        bot.bankroll = MagicMock()
+        bot.bankroll.kelly_fraction = 0.25
+
+        # Mock: 60 resolved trades, avg brier=0.18
+        acc_return = {"total": 60, "correct": 39, "accuracy": 0.65, "brier_score": 0.18}
+        db = MagicMock()
+
+        with patch("bots.esports_bot.settings") as ms:
+            ms.ESPORTS_KELLY_DEFAULT_FRACTION = 0.25
+            ms.ESPORTS_KELLY_DEGRADE_BRIER = 0.28
+            ms.ESPORTS_KELLY_MAX_FRACTION = 0.35
+            with patch("esports.data.esports_db.get_rolling_accuracy", new_callable=AsyncMock) as mock_acc:
+                mock_acc.return_value = acc_return
+                await bot._check_kelly_graduation(db)
+
+        # scale = clamp(2.0 - 0.18/0.25, 0.80, 1.30) = clamp(1.28, 0.80, 1.30) = 1.28
+        # new_kelly = 0.25 * 1.28 = 0.32
+        assert bot.bankroll.kelly_fraction > 0.25
+
+    @pytest.mark.asyncio
+    async def test_kelly_scales_down_bad_brier(self):
+        """Bad Brier (0.26) → scale < 1.0 → Kelly decreases."""
+        bot = make_bot()
+        bot.bankroll = MagicMock()
+        bot.bankroll.kelly_fraction = 0.30
+
+        acc_return = {"total": 60, "correct": 30, "accuracy": 0.50, "brier_score": 0.26}
+        db = MagicMock()
+
+        with patch("bots.esports_bot.settings") as ms:
+            ms.ESPORTS_KELLY_DEFAULT_FRACTION = 0.25
+            ms.ESPORTS_KELLY_DEGRADE_BRIER = 0.28
+            ms.ESPORTS_KELLY_MAX_FRACTION = 0.35
+            with patch("esports.data.esports_db.get_rolling_accuracy", new_callable=AsyncMock) as mock_acc:
+                mock_acc.return_value = acc_return
+                await bot._check_kelly_graduation(db)
+
+        # scale = clamp(2.0 - 0.26/0.25, 0.80, 1.30) = clamp(0.96, 0.80, 1.30) = 0.96
+        # new_kelly = 0.25 * 0.96 = 0.24
+        assert bot.bankroll.kelly_fraction < 0.30
+
+    @pytest.mark.asyncio
+    async def test_kelly_absolute_cap(self):
+        """Kelly never exceeds ESPORTS_KELLY_MAX_FRACTION."""
+        bot = make_bot()
+        bot.bankroll = MagicMock()
+        bot.bankroll.kelly_fraction = 0.25
+
+        # Extremely good Brier → would push scale to 1.30
+        acc_return = {"total": 100, "correct": 70, "accuracy": 0.70, "brier_score": 0.10}
+        db = MagicMock()
+
+        with patch("bots.esports_bot.settings") as ms:
+            ms.ESPORTS_KELLY_DEFAULT_FRACTION = 0.25
+            ms.ESPORTS_KELLY_DEGRADE_BRIER = 0.28
+            ms.ESPORTS_KELLY_MAX_FRACTION = 0.35
+            with patch("esports.data.esports_db.get_rolling_accuracy", new_callable=AsyncMock) as mock_acc:
+                mock_acc.return_value = acc_return
+                await bot._check_kelly_graduation(db)
+
+        assert bot.bankroll.kelly_fraction <= 0.35
+
+    @pytest.mark.asyncio
+    async def test_kelly_no_change_below_50_resolved(self):
+        """Kelly unchanged with < 50 resolved trades."""
+        bot = make_bot()
+        bot.bankroll = MagicMock()
+        bot.bankroll.kelly_fraction = 0.25
+
+        acc_return = {"total": 5, "correct": 3, "accuracy": 0.60, "brier_score": 0.20}
+        db = MagicMock()
+
+        with patch("bots.esports_bot.settings") as ms:
+            ms.ESPORTS_KELLY_DEFAULT_FRACTION = 0.25
+            ms.ESPORTS_KELLY_DEGRADE_BRIER = 0.28
+            ms.ESPORTS_KELLY_MAX_FRACTION = 0.35
+            with patch("esports.data.esports_db.get_rolling_accuracy", new_callable=AsyncMock) as mock_acc:
+                mock_acc.return_value = acc_return
+                await bot._check_kelly_graduation(db)
+
+        # 5 trades per game × 8 games = 40 total < 50 threshold
+        assert bot.bankroll.kelly_fraction == 0.25

@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     # Empty when not set - avoids trying localhost (which fails with "password auth failed for user")
     DATABASE_URL: str = os.getenv("DATABASE_URL") or ""
     # Connection pool configuration
-    DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "15"))
+    DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "30"))
     DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "5"))
     DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))
     # Optional: after bulk insert, run a quick COUNT/exists check and log if data not visible (debug/staging)
@@ -993,6 +993,7 @@ class Settings(BaseSettings):
 
     # --- Latency tracking ---
     ESPORTS_PANDASCORE_REFRESH_INTERVAL: int = int(os.getenv("ESPORTS_PANDASCORE_REFRESH_INTERVAL", "15"))
+    ESPORTS_PANDASCORE_TIMEOUT: float = float(os.getenv("ESPORTS_PANDASCORE_TIMEOUT", "5.0"))
     ESPORTS_SERIES_REFRESH_INTERVAL: int = int(os.getenv("ESPORTS_SERIES_REFRESH_INTERVAL", "30"))
 
     # --- API keys (PANDASCORE required — bots fail fast if missing) ---
@@ -1017,6 +1018,15 @@ class Settings(BaseSettings):
     # 25% stop-loss + 96h hold — esports resolve fast (24-48h), these are safety nets.
     ESPORTS_STOP_LOSS_PCT: float = float(os.getenv("ESPORTS_STOP_LOSS_PCT", "0.25"))
     ESPORTS_MAX_HOLD_HOURS: float = float(os.getenv("ESPORTS_MAX_HOLD_HOURS", "96"))
+
+    # --- Per-game Kelly multiplier thresholds ---
+    ESPORTS_KELLY_BRIER_PENALTY: float = float(os.getenv("ESPORTS_KELLY_BRIER_PENALTY", "0.25"))
+    ESPORTS_KELLY_BRIER_BOOST: float = float(os.getenv("ESPORTS_KELLY_BRIER_BOOST", "0.20"))
+    ESPORTS_KELLY_MAX_FRACTION: float = float(os.getenv("ESPORTS_KELLY_MAX_FRACTION", "0.35"))
+    ESPORTS_KELLY_DEGRADE_BRIER: float = float(os.getenv("ESPORTS_KELLY_DEGRADE_BRIER", "0.28"))
+
+    # --- Parallel analysis ---
+    ESPORTS_ANALYSIS_CONCURRENCY: int = int(os.getenv("ESPORTS_ANALYSIS_CONCURRENCY", "10"))
 
     # --- Pinnacle / cross-market (Phase 2 — deferred) ---
     ESPORTS_PINNACLE_ENABLED: bool = os.getenv("ESPORTS_PINNACLE_ENABLED", "false").lower() in ("true", "1", "yes")

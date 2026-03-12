@@ -68,6 +68,7 @@ class EsportsBot(BaseBot):
         # Live match tracking
         self._live_matches: Dict[str, Dict] = {}  # match_id → PandaScore match data
         self._last_live_refresh = 0.0
+        self._live_refresh_failures: int = 0       # consecutive PandaScore refresh failures
 
         # Prediction cache for WS reactive path
         self._prediction_cache: Dict[str, Dict] = {}  # market_id → {prob, ts, game}
@@ -104,6 +105,15 @@ class EsportsBot(BaseBot):
         self._backfill_attempted: set = set()            # "game:name" keys already queried this session
         self._backfill_calls_this_scan: int = 0          # reset each scan; capped at 5
         self._max_backfills_per_scan: int = 5
+        self._team_fail_logged: set = set()              # rate-limit team_match_fail logs (per session)
+        self._calibration_ece: Dict[str, float] = {}     # game → latest ECE (updated every 10 min)
+        self._edge_decay_data: Dict[str, Dict] = {}      # game → latest edge decay analysis
+        self._game_kelly_mult: Dict[str, float] = {}     # game → Kelly multiplier (Brier-based)
+
+        # Parallel analysis (Item 6)
+        _concurrency = int(getattr(settings, "ESPORTS_ANALYSIS_CONCURRENCY", 10))
+        self._analysis_semaphore = asyncio.Semaphore(_concurrency)
+        self._trade_lock = asyncio.Lock()  # serializes exposure-mutating trade execution
 
         # Settings
         # "Easy mode": relaxed thresholds until models graduate, then tighten.
@@ -662,24 +672,38 @@ class EsportsBot(BaseBot):
                      "low_edge": 0, "edge_cap": 0, "low_confidence": 0,
                      "low_confluence": 0, "passed": 0}
         og = getattr(self.base_engine, "order_gateway", None)
+
+        # Pre-compute per-game counts (sync, before parallel analysis)
         for market in esports_markets:
-            try:
-                # Track per-game market counts for diagnostic
-                _q = str(market.get("question", "")).lower()
-                _g = self._detect_game(_q) or "other"
-                _by_game[_g] = _by_game.get(_g, 0) + 1
-                # Skip markets where we already have an open position
-                mid = str(market.get("id", ""))
+            _q = str(market.get("question", "")).lower()
+            _g = self._detect_game(_q) or "other"
+            _by_game[_g] = _by_game.get(_g, 0) + 1
+
+        # Parallel market analysis with bounded concurrency
+        async def _analyze_one(m: Dict) -> tuple:
+            """Analyze one market; returns (opps, trades, skips)."""
+            async with self._analysis_semaphore:
+                mid = str(m.get("id", ""))
                 if og and mid and og.has_open_position(self.bot_name, mid):
-                    _skipped_position += 1
-                    continue
-                opp = await self.analyze_opportunity(market)
+                    return (0, 0, 1)
+                opp = await self.analyze_opportunity(m)
                 if opp:
-                    _opps += 1
-                    await self._execute_esports_trade(opp)
-                    _trades += 1
-            except Exception as exc:
-                logger.debug("EsportsBot scan error: %s", exc)
+                    async with self._trade_lock:
+                        await self._execute_esports_trade(opp)
+                    return (1, 1, 0)
+                return (0, 0, 0)
+
+        results = await asyncio.gather(
+            *[_analyze_one(m) for m in esports_markets],
+            return_exceptions=True,
+        )
+        for r in results:
+            if isinstance(r, Exception):
+                logger.debug("EsportsBot scan error: %s", r)
+            else:
+                _opps += r[0]
+                _trades += r[1]
+                _skipped_position += r[2]
         self._last_scan_opportunities = _opps
         self._last_scan_trades = _trades
 
@@ -1340,9 +1364,10 @@ class EsportsBot(BaseBot):
         if not self._pandascore:
             return
 
+        _ps_timeout = float(getattr(settings, "ESPORTS_PANDASCORE_TIMEOUT", 5.0))
         try:
             live = await asyncio.wait_for(
-                self._pandascore.get_live_matches(), timeout=10.0
+                self._pandascore.get_live_matches(), timeout=_ps_timeout
             )
             new_live = {}
             for match in (live or []):
@@ -1350,9 +1375,17 @@ class EsportsBot(BaseBot):
                 if mid:
                     new_live[mid] = match
             self._live_matches = new_live
+            self._live_refresh_failures = 0
         except asyncio.TimeoutError:
-            logger.warning("EsportsBot: live match refresh timed out (10s)")
+            self._live_refresh_failures += 1
+            if self._live_refresh_failures >= 3:
+                logger.warning("esportsbot_live_refresh_stale",
+                               consecutive_failures=self._live_refresh_failures,
+                               timeout_s=_ps_timeout)
+            else:
+                logger.debug("EsportsBot: live match refresh timed out (%.0fs)", _ps_timeout)
         except Exception as exc:
+            self._live_refresh_failures += 1
             logger.warning("EsportsBot: live match refresh failed", error=str(exc))
 
     def _is_live(self, market_id: str) -> bool:
@@ -1795,8 +1828,9 @@ class EsportsBot(BaseBot):
         if size <= 0:
             return
 
-        # Apply A6 + A8 scaling after base sizing
-        size = size * phi_factor * dd_factor
+        # Apply A6 + A8 + per-game Kelly multiplier scaling after base sizing
+        _game_mult = self._game_kelly_mult.get(opp.get("game", ""), 1.0)
+        size = size * phi_factor * dd_factor * _game_mult
         if size < 1.0:
             return
 
@@ -1843,6 +1877,7 @@ class EsportsBot(BaseBot):
                 game_exposure=round(self._game_exposure.get(game, 0.0), 2),
                 phi_factor=phi_factor,
                 dd_factor=dd_factor,
+                game_kelly_mult=_game_mult,
             )
         else:
             # A10: Rollback exposure if order failed
@@ -1924,34 +1959,72 @@ class EsportsBot(BaseBot):
         return 0.5        # Low certainty (barely above min_edge)
 
     async def _check_kelly_graduation(self, db) -> None:
-        """A3: Check if esports models meet graduation criteria for Kelly bump.
+        """A3: Continuous Kelly scaling with de-graduation.
 
-        Criteria: 50+ resolved trades AND Brier < 0.24 across all games.
-        Graduates from Kelly 0.25 → 0.30 by modifying BotBankrollManager.kelly_fraction.
+        Runs every 10 scans. Replaces the old one-shot 0.25→0.30 threshold.
+        Scale = clamp(2.0 - avg_brier/0.25, 0.80, 1.30) → effective Kelly [0.20, 0.325].
+        De-graduation: if recent 20-trade Brier > degrade_threshold → cap at 0.20.
         """
-        if self._kelly_graduated:
-            return
         if db is None:
             return
         try:
             from esports.data.esports_db import get_rolling_accuracy
             total_resolved = 0
-            max_brier = 0.0
-            for game in ("lol", "cs2", "dota2", "valorant"):
+            weighted_brier = 0.0
+
+            for game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
                 acc = await get_rolling_accuracy(db, game, bot_name="EsportsBot")
                 if acc and acc["total"] > 0:
                     total_resolved += acc["total"]
-                    max_brier = max(max_brier, acc["brier_score"])
-            if total_resolved >= 50 and max_brier < 0.24:
-                self._kelly_graduated = True
-                self._models_graduated = True
-                # Wire graduation to BotBankrollManager
-                if self.bankroll is not None and self.bankroll.kelly_fraction < 0.30:
-                    self.bankroll.kelly_fraction = 0.30
-                    logger.info("esportsbot_kelly_graduated",
+                    weighted_brier += acc["brier_score"] * acc["total"]
+
+            if total_resolved < 50:
+                return  # Not enough data for reliable scaling
+
+            avg_brier = weighted_brier / total_resolved
+
+            # Continuous scaling: lower Brier → higher multiplier
+            # scale = clamp(2.0 - avg_brier/0.25, 0.80, 1.30)
+            scale = max(0.80, min(1.30, 2.0 - avg_brier / 0.25))
+
+            base_kelly = float(getattr(settings, "ESPORTS_KELLY_DEFAULT_FRACTION", 0.25))
+            new_kelly = base_kelly * scale
+
+            # De-graduation: recent 20-trade Brier too high → floor
+            _degrade_brier = float(getattr(settings, "ESPORTS_KELLY_DEGRADE_BRIER", 0.28))
+            # Use per-game data to compute recent aggregate (most recent 20 across all games)
+            recent_total = 0
+            recent_brier_sum = 0.0
+            for game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
+                acc = await get_rolling_accuracy(db, game, bot_name="EsportsBot", last_n=20)
+                if acc and acc["total"] > 0:
+                    recent_total += acc["total"]
+                    recent_brier_sum += acc["brier_score"] * acc["total"]
+            if recent_total >= 20:
+                recent_brier = recent_brier_sum / recent_total
+                if recent_brier > _degrade_brier:
+                    new_kelly = min(new_kelly, 0.20)
+                    logger.warning("esportsbot_kelly_degraded",
+                                   recent_brier=round(recent_brier, 4),
+                                   new_kelly=round(new_kelly, 4))
+
+            # Absolute cap
+            max_kelly = float(getattr(settings, "ESPORTS_KELLY_MAX_FRACTION", 0.35))
+            new_kelly = min(new_kelly, max_kelly)
+
+            # Apply if changed significantly
+            if self.bankroll is not None:
+                old_kelly = self.bankroll.kelly_fraction
+                if abs(new_kelly - old_kelly) > 0.005:
+                    self.bankroll.kelly_fraction = round(new_kelly, 4)
+                    self._kelly_graduated = new_kelly > base_kelly
+                    self._models_graduated = self._kelly_graduated
+                    logger.info("esportsbot_kelly_updated",
+                                old=round(old_kelly, 4),
+                                new=round(new_kelly, 4),
+                                avg_brier=round(avg_brier, 4),
                                 total_resolved=total_resolved,
-                                max_brier=round(max_brier, 4),
-                                new_kelly=0.30)
+                                scale=round(scale, 3))
         except Exception:
             pass
 
@@ -2207,8 +2280,58 @@ class EsportsBot(BaseBot):
                         logger.info("esportsbot_monitoring_halt_cleared",
                                     game=game, brier=round(brier, 4))
                     self._monitoring_halted_games.discard(game)
+
+                # Per-game Kelly multiplier based on Brier score
+                _brier_penalty = float(getattr(settings, "ESPORTS_KELLY_BRIER_PENALTY", 0.25))
+                _brier_boost = float(getattr(settings, "ESPORTS_KELLY_BRIER_BOOST", 0.20))
+                if brier > _brier_penalty:
+                    self._game_kelly_mult[game] = 0.5
+                elif brier < _brier_boost:
+                    self._game_kelly_mult[game] = 1.2
+                else:
+                    self._game_kelly_mult[game] = 1.0
         except Exception as exc:
             logger.debug("esportsbot_monitoring_check_failed", error=str(exc))
+
+        # Log per-game Kelly multipliers if any changed
+        if self._game_kelly_mult:
+            _nondefault = {g: m for g, m in self._game_kelly_mult.items() if m != 1.0}
+            if _nondefault:
+                logger.info("esportsbot_game_kelly_mult", multipliers=_nondefault)
+
+        # Calibration curve + ECE tracking per game
+        try:
+            from esports.data.esports_db import compute_calibration_curve
+            for game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
+                cal = await compute_calibration_curve(db, game=game, days=90)
+                if cal and cal["total"] >= 30:
+                    self._calibration_ece[game] = cal["ece"]
+                    logger.info("esportsbot_calibration_report",
+                                game=game, ece=cal["ece"],
+                                bins=cal["bins"], total=cal["total"])
+        except Exception as exc:
+            logger.debug("esportsbot_calibration_failed", error=str(exc))
+
+        # Edge decay analysis per game
+        try:
+            from esports.data.esports_db import analyze_edge_decay
+            for game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
+                decay = await analyze_edge_decay(db, game=game, days=30, n_bins=5)
+                if decay and decay.get("total_predictions", 0) >= 20:
+                    self._edge_decay_data[game] = decay
+                    bins = decay.get("bins", [])
+                    logger.info("esportsbot_edge_decay",
+                                game=game,
+                                total=decay["total_predictions"],
+                                bins=bins)
+                    # Flag fast decay: top time-bin has negative CLV
+                    if bins and bins[0].get("avg_clv", 0) < 0:
+                        logger.warning("esportsbot_edge_decay_negative_clv",
+                                       game=game,
+                                       top_bin_clv=bins[0].get("avg_clv"),
+                                       top_bin_profit=bins[0].get("avg_profit"))
+        except Exception as exc:
+            logger.debug("esportsbot_edge_decay_failed", error=str(exc))
 
         # P&L summary logging
         try:
@@ -2383,6 +2506,34 @@ class EsportsBot(BaseBot):
                 team_a_id = self._match_team_name(ba)
                 team_b_id = self._match_team_name(bb)
 
+        # Pattern 3: "Will [Team] win against/over/vs [Team]?"
+        if not team_a_id or not team_b_id:
+            win_match = re.search(
+                r"(?:will\s+)?(.+?)\s+win\s+(?:against|over|vs\.?)\s+(.+?)(?:\?|$)",
+                question,
+            )
+            if win_match:
+                wa = win_match.group(1).strip()
+                wb = win_match.group(2).strip()
+                wa, wb = self._clean_team_names(wa, wb)
+                _clean_a, _clean_b = wa, wb
+                team_a_id = self._match_team_name(wa)
+                team_b_id = self._match_team_name(wb)
+
+        # Pattern 4: "[Team] to win against/over/vs [Team]"
+        if not team_a_id or not team_b_id:
+            to_win_match = re.search(
+                r"(.+?)\s+to\s+win\s+(?:against|over|vs\.?)\s+(.+?)(?:\?|$)",
+                question,
+            )
+            if to_win_match:
+                ta = to_win_match.group(1).strip()
+                tb = to_win_match.group(2).strip()
+                ta, tb = self._clean_team_names(ta, tb)
+                _clean_a, _clean_b = ta, tb
+                team_a_id = self._match_team_name(ta)
+                team_b_id = self._match_team_name(tb)
+
         if not team_a_id or not team_b_id:
             # On-demand backfill: try PandaScore lookup for missing team(s)
             if not team_a_id and _clean_a:
@@ -2390,11 +2541,14 @@ class EsportsBot(BaseBot):
             if not team_b_id and _clean_b:
                 team_b_id = await self._backfill_unknown_team(_clean_b, game)
             if not team_a_id or not team_b_id:
-                logger.debug("esportsbot_team_match_fail", game=game,
-                             question=question[:80],
-                             name_a=_clean_a or "?",
-                             name_b=_clean_b or "?",
-                             team_a_id=team_a_id, team_b_id=team_b_id)
+                _fail_key = f"{game}:{_clean_a}:{_clean_b}"
+                if _fail_key not in self._team_fail_logged:
+                    self._team_fail_logged.add(_fail_key)
+                    logger.info("esportsbot_team_match_fail", game=game,
+                                question=question[:80],
+                                name_a=_clean_a or "?",
+                                name_b=_clean_b or "?",
+                                team_a_id=team_a_id, team_b_id=team_b_id)
                 return None
 
         # Get Glicko-2 expected score with Bayesian prior blending (E5).
@@ -2536,7 +2690,7 @@ class EsportsBot(BaseBot):
         # Strip tournament/format suffixes: "(bo3)", "- esl pro league ...", etc.
         name_b = _re.sub(r"\s*\(bo\d+\).*$", "", name_b).strip()
         name_b = _re.sub(
-            r"\s*-\s+(?:esl |blast |pgl |iem |dreamhack|faceit|weplay|rievent).*$",
+            r"\s*-\s+(?:esl |blast |pgl |iem |dreamhack|faceit|weplay|rievent|major|champions|masters|challengers).*$",
             "", name_b,
         ).strip()
         # Same cleanup for name_a (less common but possible)

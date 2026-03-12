@@ -363,6 +363,92 @@ async def get_phase_accuracy(
         return None
 
 
+async def compute_calibration_curve(
+    db, game: str = "", days: int = 90,
+) -> Optional[Dict[str, Any]]:
+    """Compute calibration curve: predicted probability vs actual win rate.
+
+    Bins resolved predictions into 5 confidence buckets and computes ECE
+    (Expected Calibration Error) — the weighted average of |predicted - actual|
+    across bins.  A perfectly calibrated model has ECE = 0.
+
+    Args:
+        db: Database session.
+        game: Filter by game (empty = all games).
+        days: Lookback window in days.
+
+    Returns:
+        Dict with bins, ece, total, or None if insufficient data (< 20 rows).
+    """
+    if db is None:
+        return None
+    try:
+        game_filter = "AND game = :game" if game else ""
+        params: dict = {"days": days}
+        if game:
+            params["game"] = game
+
+        sql = f"""
+            SELECT predicted_prob, side, actual_outcome
+            FROM esports_prediction_log
+            WHERE actual_outcome IS NOT NULL
+              AND created_at >= CURRENT_DATE - :days
+              {game_filter}
+        """
+        rows = await db.fetch_all(sql, params)
+        if not rows or len(rows) < 20:
+            return None
+
+        # Build calibration bins: [0.50-0.60), [0.60-0.70), [0.70-0.80), [0.80-0.90), [0.90-1.00]
+        bins = [{"lo": 0.50 + i * 0.10, "hi": 0.60 + i * 0.10,
+                 "sum_pred": 0.0, "sum_actual": 0.0, "count": 0}
+                for i in range(5)]
+
+        for row in rows:
+            pred = float(row["predicted_prob"])
+            side = str(row["side"]).upper()
+            actual = int(row["actual_outcome"])
+            # Convert to "confidence in our pick" perspective
+            # If side=YES and outcome=1 → correct; side=NO and outcome=0 → correct
+            conf = pred if side == "YES" else (1.0 - pred)
+            won = 1.0 if (side == "YES" and actual == 1) or (side == "NO" and actual == 0) else 0.0
+
+            # Place in bin based on confidence
+            idx = min(int((conf - 0.50) / 0.10), 4)
+            if idx < 0:
+                continue  # conf < 0.50 shouldn't happen (we pick the favored side)
+            bins[idx]["sum_pred"] += conf
+            bins[idx]["sum_actual"] += won
+            bins[idx]["count"] += 1
+
+        total = sum(b["count"] for b in bins)
+        if total == 0:
+            return None
+
+        ece = 0.0
+        result_bins = []
+        for b in bins:
+            n = b["count"]
+            if n == 0:
+                result_bins.append({"range": f"{b['lo']:.2f}-{b['hi']:.2f}",
+                                    "mean_predicted": 0.0, "mean_actual": 0.0, "count": 0})
+                continue
+            mean_pred = b["sum_pred"] / n
+            mean_actual = b["sum_actual"] / n
+            ece += (n / total) * abs(mean_pred - mean_actual)
+            result_bins.append({
+                "range": f"{b['lo']:.2f}-{b['hi']:.2f}",
+                "mean_predicted": round(mean_pred, 4),
+                "mean_actual": round(mean_actual, 4),
+                "count": n,
+            })
+
+        return {"bins": result_bins, "ece": round(ece, 4), "total": total}
+    except Exception as exc:
+        logger.debug("esports_db: compute_calibration_curve failed", error=str(exc))
+        return None
+
+
 async def update_prediction_closing_price(
     db, match_id: str, market_id: str, closing_price: float
 ) -> int:
