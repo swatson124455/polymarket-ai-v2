@@ -44,15 +44,39 @@ _REFRESH_INTERVAL = float(os.environ.get("ESPORTS_PRICE_REFRESH_INTERVAL", "300"
 
 # Game keywords for the soccer/football double-gate
 _ESPORTS_GAME_KEYWORDS: Dict[str, List[str]] = {
-    "lol": ["league of legends", "lol ", "lck", "lec", "lpl", "lcs", "worlds", "msi"],
-    "cs2": ["counter-strike", "cs2", "csgo", "blast premier", "esl ", "pgl ", "iem "],
-    "dota2": ["dota", "the international", " ti ", "dpc"],
-    "valorant": ["valorant", "vct", "champions tour"],
-    "cod": ["call of duty", "cod ", "call of duty league", "cdl"],
+    "lol": ["league of legends", "lol:", "lol ", " lol "],
+    "cs2": ["counter-strike", "cs2", "csgo", "blast premier"],
+    "dota2": ["dota 2", "dota2", "dota:"],
+    "valorant": ["valorant", "vct ", "champions tour"],
+    "cod": ["call of duty", "cod ", "call of duty league"],
     "r6": ["rainbow six", "r6 ", "six invitational", "r6 siege"],
-    "sc2": ["starcraft", "sc2", "brood war", "gsl", "asl"],
+    "sc2": ["starcraft", "sc2", "brood war"],
     "rl": ["rocket league", "rlcs"],
 }
+
+# Short esports acronyms that need word-boundary matching to avoid
+# false positives inside common words (e.g. "lec" in "election",
+# "lcs" in "councils", "msi" in various strings).
+# Checked via regex \b...\b in _kw_match().
+import re as _re
+_BOUNDARY_KEYWORDS: Dict[str, List[_re.Pattern]] = {
+    "lol": [_re.compile(r"\blck\b"), _re.compile(r"\blec\b"), _re.compile(r"\blpl\b"),
+            _re.compile(r"\blcs\b"), _re.compile(r"\bmsi\b")],
+    "cs2": [_re.compile(r"\besl\b"), _re.compile(r"\bpgl\b"), _re.compile(r"\biem\b")],
+    "dota2": [_re.compile(r"\bdpc\b"), _re.compile(r"\bthe international\s+\d"), _re.compile(r"\bti\b")],
+    "cod": [_re.compile(r"\bcdl\b")],
+    "sc2": [_re.compile(r"\bgsl\b"), _re.compile(r"\basl\b")],
+}
+
+
+def _game_matches(q: str, game: str) -> bool:
+    """Check if lowercased question *q* matches a specific esports game."""
+    if any(kw in q for kw in _ESPORTS_GAME_KEYWORDS.get(game, [])):
+        return True
+    for pat in _BOUNDARY_KEYWORDS.get(game, []):
+        if pat.search(q):
+            return True
+    return False
 
 
 def _is_real_esports(question: str) -> bool:
@@ -66,17 +90,14 @@ def _is_real_esports(question: str) -> bool:
     # Explicit "esports" keyword is sufficient
     if "esports" in q:
         return True
-    for keywords in _ESPORTS_GAME_KEYWORDS.values():
-        if any(kw in q for kw in keywords):
-            return True
-    return False
+    return any(_game_matches(q, g) for g in _ESPORTS_GAME_KEYWORDS)
 
 
 def _detect_game(question: str) -> str:
     """Detect which esports game a market is for from question text."""
     q = question.lower()
-    for game, keywords in _ESPORTS_GAME_KEYWORDS.items():
-        if any(kw in q for kw in keywords):
+    for game in _ESPORTS_GAME_KEYWORDS:
+        if _game_matches(q, game):
             return game
     return "unknown"
 
