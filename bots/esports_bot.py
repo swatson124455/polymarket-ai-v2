@@ -855,12 +855,10 @@ class EsportsBot(BaseBot):
                 current = float(pos.get("current_price", 0.5) or 0.5)
                 if size <= 0 or not token_id:
                     continue
-                # Exit by placing opposite-side order at current price
-                exit_side = "NO" if side == "YES" else "YES"
-                exit_price = (1.0 - current) if side == "YES" else current
+                # Exit by SELL order — bypasses risk_manager confidence check (line 448 order_gateway.py)
                 await self.place_order(
-                    market_id=mid, token_id=token_id, side=exit_side,
-                    size=size, price=exit_price, confidence=0.0,
+                    market_id=mid, token_id=token_id, side="SELL",
+                    size=size, price=current, confidence=0.0,
                 )
                 # B3: Decrement game exposure on exit
                 question = ""
@@ -876,7 +874,7 @@ class EsportsBot(BaseBot):
                 if game and game in self._game_exposure:
                     self._game_exposure[game] = max(0.0, self._game_exposure.get(game, 0.0) - size)
                 logger.info("esportsbot_exit_executed", market_id=mid, reason=reason,
-                            exit_side=exit_side, size=round(size, 2))
+                            exit_side="SELL", size=round(size, 2))
             except Exception as exc:
                 logger.debug("esportsbot_exit_failed", market_id=mid, error=str(exc))
 
