@@ -377,6 +377,55 @@ class WeatherBot(BaseBot):
         except Exception as exc:
             logger.debug("weatherbot_emos_drift_check_failed", error=str(exc))
 
+    # ── Zombie position cleanup ────────────────────────────────────────────
+
+    async def _close_stale_positions(self) -> None:
+        """Close WeatherBot positions that are stale or already resolved.
+
+        Two criteria (OR):
+        1. Age > 20h — weather markets resolve within 24h of target date
+        2. Corresponding paper_trade has realized_pnl (market already settled)
+
+        Without this, stale 'open' positions block re-entry on the same market_id
+        via the position-already-open filter in _execute_weather_trade().
+        Also removes them from in-memory _open_position_markets set.
+        """
+        db = getattr(self.base_engine, "db", None)
+        if not db:
+            return
+        try:
+            from sqlalchemy import text as sa_text
+            async with db.get_session() as session:
+                result = await session.execute(sa_text(
+                    "UPDATE positions SET status = 'closed' "
+                    "WHERE (bot_id = 'WeatherBot' OR source_bot = 'WeatherBot') "
+                    "AND status = 'open' "
+                    "AND ("
+                    "  opened_at < NOW() - INTERVAL '20 hours' "
+                    "  OR market_id IN ("
+                    "    SELECT pt.market_id FROM paper_trades pt "
+                    "    WHERE pt.realized_pnl IS NOT NULL"
+                    "  )"
+                    ") "
+                    "RETURNING market_id"
+                ))
+                closed_markets = [str(row[0]) for row in result.fetchall()]
+                await session.commit()
+
+            if closed_markets:
+                logger.info(
+                    "weatherbot_stale_positions_closed",
+                    count=len(closed_markets),
+                )
+                # Also evict from in-memory set so the filter unblocks immediately
+                gw = getattr(self.base_engine, "order_gateway", None)
+                if gw and hasattr(gw, "_open_position_markets"):
+                    bot_set = gw._open_position_markets.get("WeatherBot", set())
+                    for mid in closed_markets:
+                        bot_set.discard(mid)
+        except Exception as exc:
+            logger.debug("weatherbot_stale_position_cleanup_failed", error=str(exc))
+
     # ── Adaptive scan interval ─────────────────────────────────────────────
 
     def _in_model_window(self) -> bool:
@@ -469,6 +518,7 @@ class WeatherBot(BaseBot):
             await self._forecast_client.warm_cache_from_db(db)
             await self._restore_exits_from_redis()
             await self._restore_exposure_from_db()
+            await self._close_stale_positions()
             self._cache_warmed = True
 
         # One-time startup observability check (logs DB state + Gamma API probe)
@@ -579,10 +629,11 @@ class WeatherBot(BaseBot):
         # Feeds position_manager's model-reversal exit logic with current forecasts.
         await self._reevaluate_open_positions(analyzed)
 
-        # Phase 4b: Outcome backfill + drift detection — every 10 scans
+        # Phase 4b: Outcome backfill + drift detection + cleanup — every 10 scans
         if self._scan_count % 10 == 0:
             await self._backfill_weather_outcomes()
             await self._check_emos_drift()
+            await self._close_stale_positions()
 
         _t_trades = time.monotonic()
 
