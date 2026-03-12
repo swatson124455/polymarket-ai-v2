@@ -2914,28 +2914,56 @@ class Database:
         submitted_at: Optional[datetime] = None,
         filled_at: Optional[datetime] = None,
     ) -> None:
-        """Persist one paper trade for SIMULATION_MODE. No-op if no db."""
+        """Persist one paper trade for SIMULATION_MODE. No-op if no db.
+
+        Uses UPSERT (ON CONFLICT DO UPDATE) on the UNIQUE(bot_name, market_id, side)
+        constraint so re-entries after a position close overwrite the old row
+        instead of failing with a duplicate key error.
+        """
         if self.session_factory is None:
             return
         try:
+            from sqlalchemy import text as _sa_text
             async with self.get_session() as session:
-                rec = PaperTradeRecord(
-                    order_id=order_id,
-                    market_id=market_id,
-                    token_id=token_id,
-                    bot_name=bot_name,
-                    side=side,
-                    size=size,
-                    price=price,
-                    confidence=confidence,
-                    correlation_id=correlation_id,
-                    realized_pnl=realized_pnl,
-                    latency_ms=latency_ms,
-                    status=status,
-                    submitted_at=submitted_at,
-                    filled_at=filled_at,
+                await session.execute(
+                    _sa_text(
+                        "INSERT INTO paper_trades "
+                        "(order_id, market_id, token_id, bot_name, side, size, price, "
+                        " confidence, correlation_id, realized_pnl, latency_ms, status, "
+                        " submitted_at, filled_at) "
+                        "VALUES (:order_id, :market_id, :token_id, :bot_name, :side, :size, :price, "
+                        " :confidence, :correlation_id, :realized_pnl, :latency_ms, :status, "
+                        " :submitted_at, :filled_at) "
+                        "ON CONFLICT (bot_name, market_id, side) DO UPDATE SET "
+                        " order_id = EXCLUDED.order_id, "
+                        " token_id = EXCLUDED.token_id, "
+                        " size = EXCLUDED.size, "
+                        " price = EXCLUDED.price, "
+                        " confidence = EXCLUDED.confidence, "
+                        " correlation_id = EXCLUDED.correlation_id, "
+                        " realized_pnl = EXCLUDED.realized_pnl, "
+                        " latency_ms = EXCLUDED.latency_ms, "
+                        " status = EXCLUDED.status, "
+                        " submitted_at = EXCLUDED.submitted_at, "
+                        " filled_at = EXCLUDED.filled_at"
+                    ),
+                    {
+                        "order_id": order_id,
+                        "market_id": market_id,
+                        "token_id": token_id,
+                        "bot_name": bot_name,
+                        "side": side,
+                        "size": size,
+                        "price": price,
+                        "confidence": confidence,
+                        "correlation_id": correlation_id,
+                        "realized_pnl": realized_pnl,
+                        "latency_ms": latency_ms,
+                        "status": status,
+                        "submitted_at": submitted_at,
+                        "filled_at": filled_at,
+                    },
                 )
-                session.add(rec)
                 await session.commit()
         except Exception as e:
             logger.debug("Failed to write paper_trades (table may not exist): %s", e)
