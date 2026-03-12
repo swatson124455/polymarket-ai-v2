@@ -453,6 +453,30 @@ class WeatherBot(BaseBot):
                 await session.commit()
 
             all_closed = stale_ids + fallback_closed
+
+            # Compute unrealized_pnl for just-closed positions where market resolved
+            if all_closed:
+                _fee_rate = getattr(settings, "TAKER_FEE_BPS", 150) / 10000.0
+                try:
+                    async with db.get_session() as session:
+                        await session.execute(sa_text(
+                            "UPDATE positions p SET "
+                            "  unrealized_pnl = CASE "
+                            "    WHEN UPPER(p.side) = m.resolution "
+                            "      THEN (1.0 - p.entry_price) * p.size "
+                            "    ELSE (0.0 - p.entry_price) * p.size "
+                            "  END - (p.entry_price * p.size * :fee_rate) "
+                            "FROM markets m "
+                            "WHERE p.market_id = m.id "
+                            "AND p.market_id = ANY(:ids) "
+                            "AND p.status = 'closed' "
+                            "AND m.resolution IN ('YES', 'NO') "
+                            "AND (p.unrealized_pnl IS NULL OR p.unrealized_pnl = 0.0)"
+                        ), {"fee_rate": _fee_rate, "ids": all_closed})
+                        await session.commit()
+                except Exception as exc:
+                    logger.debug("weatherbot_stale_pnl_fill_failed", error=str(exc))
+
             if all_closed:
                 logger.info(
                     "weatherbot_stale_positions_closed",
