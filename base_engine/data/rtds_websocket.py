@@ -169,22 +169,39 @@ class RTDSWebSocket:
                 await asyncio.sleep(1)
 
     async def _dispatch(self, data: Dict[str, Any]) -> None:
-        """Route trade events to handler."""
+        """Route trade events to handler.
+
+        RTDS wraps events: {connection_id, payload, timestamp, topic, type}.
+        The actual trade data lives in data["payload"] (may be a dict or list).
+        """
+        # Unwrap RTDS envelope: trade data is in "payload"
+        payload = data.get("payload", data)
+
         # Log first N raw events for payload verification (then stop)
         if self._debug_samples < self._MAX_DEBUG_SAMPLES:
             self._debug_samples += 1
             _keys = sorted(data.keys()) if isinstance(data, dict) else []
+            _p_keys = sorted(payload.keys()) if isinstance(payload, dict) else []
             logger.info("rtds_raw_sample", sample_num=self._debug_samples,
-                        keys=_keys,
-                        has_proxyWallet=bool(data.get("proxyWallet")),
-                        has_asset=bool(data.get("asset")),
-                        side=data.get("side"),
-                        outcome=data.get("outcome"))
+                        envelope_keys=_keys,
+                        payload_keys=_p_keys,
+                        has_proxyWallet=bool(payload.get("proxyWallet") if isinstance(payload, dict) else False),
+                        has_asset=bool(payload.get("asset") if isinstance(payload, dict) else False),
+                        side=payload.get("side") if isinstance(payload, dict) else None,
+                        outcome=payload.get("outcome") if isinstance(payload, dict) else None)
 
-        # RTDS activity/trades events contain proxyWallet
-        if data.get("proxyWallet") or data.get("asset"):
+        # Handle payload: could be a single dict or a list of dicts
+        if isinstance(payload, list):
+            for item in payload:
+                if isinstance(item, dict) and (item.get("proxyWallet") or item.get("asset")):
+                    self._events_dispatched += 1
+                    try:
+                        await self._handler(item)
+                    except Exception as e:
+                        logger.debug("rtds_handler_error", error=str(e))
+        elif isinstance(payload, dict) and (payload.get("proxyWallet") or payload.get("asset")):
             self._events_dispatched += 1
             try:
-                await self._handler(data)
+                await self._handler(payload)
             except Exception as e:
                 logger.debug("rtds_handler_error", error=str(e))
