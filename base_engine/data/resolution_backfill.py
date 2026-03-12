@@ -245,7 +245,7 @@ async def run_resolution_backfill(
         other_ids: list = []
         if _remaining > 0:
             ot_result = await session.execute(text("""
-                SELECT DISTINCT m.id FROM markets m
+                SELECT DISTINCT m.id, m.end_date_iso FROM markets m
                 WHERE (m.resolution IS NULL OR m.resolution NOT IN ('YES', 'NO'))
                 AND EXISTS (
                     SELECT 1 FROM trades t
