@@ -2054,6 +2054,12 @@ class WeatherBot(BaseBot):
                 side=opp["side"],
                 size=round(size, 2),
             )
+            # Log prediction for accuracy tracking at trade execution time
+            await self._log_weather_prediction(
+                opp["market_id"], opp["model_prob"], opp["price"],
+                opp.get("confidence", opp["model_prob"]),
+                opp.get("market_type", "temperature"),
+            )
             # Cooldown guard: prevent re-entry on same market within 15 min.
             # _recently_exited is checked in _analyze_group(); must be populated here
             # because the position_manager (not weather_bot) triggers SELL exits,

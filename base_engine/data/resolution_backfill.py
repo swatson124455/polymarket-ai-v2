@@ -221,16 +221,23 @@ async def run_resolution_backfill(
     # Paper trade markets are always resolved first (no limit) since we have real
     # capital at risk. Remaining slots filled from on-chain trades table.
     async with db.get_session() as session:
-        # 2a: Markets WE traded on — always processed, no limit
-        pt_result = await session.execute(text("""
-            SELECT DISTINCT m.id FROM markets m
-            WHERE (m.resolution IS NULL OR m.resolution NOT IN ('YES', 'NO'))
-            AND EXISTS (
-                SELECT 1 FROM paper_trades pt
-                WHERE pt.market_id::text = m.id::text OR pt.market_id = m.condition_id
-            )
-        """))
-        paper_market_ids = [r[0] for r in pt_result.fetchall() if r[0]]
+        # 2a: Markets WE traded on — fast lookup from traded_markets table (~100 rows)
+        try:
+            pt_result = await session.execute(text(
+                "SELECT market_id FROM traded_markets WHERE resolved = FALSE"
+            ))
+            paper_market_ids = [r[0] for r in pt_result.fetchall() if r[0]]
+        except Exception:
+            # Fallback if traded_markets table doesn't exist yet (pre-migration)
+            pt_result = await session.execute(text("""
+                SELECT DISTINCT m.id FROM markets m
+                WHERE (m.resolution IS NULL OR m.resolution NOT IN ('YES', 'NO'))
+                AND EXISTS (
+                    SELECT 1 FROM paper_trades pt
+                    WHERE pt.market_id::text = m.id::text OR pt.market_id = m.condition_id
+                )
+            """))
+            paper_market_ids = [r[0] for r in pt_result.fetchall() if r[0]]
         _paper_set = set(paper_market_ids)
 
         # 2b: On-chain trades markets — fill remaining slots

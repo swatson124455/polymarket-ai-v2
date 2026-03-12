@@ -1573,8 +1573,20 @@ class Database:
                     )
                 )
                 await session.execute(stmt)
+                # Mark traded_markets resolved so backfill skips this market
+                try:
+                    from sqlalchemy import text as _sa_text2
+                    await session.execute(
+                        _sa_text2(
+                            "UPDATE traded_markets SET resolved = TRUE, resolution = :res, resolved_at = :rat "
+                            "WHERE market_id = :mid AND resolved = FALSE"
+                        ),
+                        {"mid": market_id, "res": resolution, "rat": _naive_utc(final_resolved_at)},
+                    )
+                except Exception:
+                    pass  # Table may not exist yet (pre-migration)
                 await session.commit()
-                
+
                 logger.debug(
                     f"Saved resolution for market {market_id}",
                     resolved=resolved,
@@ -2964,6 +2976,22 @@ class Database:
                         "filled_at": filled_at,
                     },
                 )
+                # Upsert traded_markets so resolution backfill can find our markets fast
+                try:
+                    await session.execute(
+                        _sa_text(
+                            "INSERT INTO traded_markets (market_id, bot_names, first_trade_at) "
+                            "VALUES (:market_id, :bot_name, NOW()) "
+                            "ON CONFLICT (market_id) DO UPDATE SET "
+                            "  bot_names = CASE "
+                            "    WHEN traded_markets.bot_names NOT LIKE '%%' || :bot_name || '%%' "
+                            "    THEN traded_markets.bot_names || ',' || :bot_name "
+                            "    ELSE traded_markets.bot_names END"
+                        ),
+                        {"market_id": market_id, "bot_name": bot_name},
+                    )
+                except Exception:
+                    pass  # Table may not exist yet (pre-migration)
                 await session.commit()
         except Exception as e:
             logger.debug("Failed to write paper_trades (table may not exist): %s", e)
