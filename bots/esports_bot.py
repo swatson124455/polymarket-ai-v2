@@ -477,7 +477,18 @@ class EsportsBot(BaseBot):
             await self._restore_exposure_from_db(db)
 
         # A1: Restore daily P&L + reset at UTC midnight
+        # Refresh every 10 scans to capture mid-day resolutions
+        if self._scan_count % 10 == 0:
+            self._daily_pnl_date = None
         await self._restore_daily_pnl_from_db(db)
+
+        # Fetch positions once for stop-loss + re-evaluation (avoids duplicate DB query)
+        _positions = None
+        try:
+            if db:
+                _positions = await db.get_open_positions_for_bot(self.bot_name)
+        except Exception:
+            _positions = None
 
         # A1+A8: Block trading if daily loss limit or drawdown halt active
         if self._check_daily_loss_limit():
@@ -485,15 +496,15 @@ class EsportsBot(BaseBot):
                         daily_pnl=round(self._daily_pnl, 2),
                         limit=-self._daily_loss_limit)
             # B1: Still check stop-loss exits even when new entries blocked
-            await self._check_and_execute_exits(db)
+            await self._check_and_execute_exits(db, positions=_positions)
             return
 
         # B1: Check stop-loss and max hold time exits
-        await self._check_and_execute_exits(db)
+        await self._check_and_execute_exits(db, positions=_positions)
 
         # A2: Re-evaluate open positions (every 5 scans, ~10 min)
         if self._scan_count % 5 == 0:
-            await self._reevaluate_open_positions(db)
+            await self._reevaluate_open_positions(db, positions=_positions)
 
         # A3: Dynamic Kelly graduation check (every 10 scans)
         if self._scan_count % 10 == 0:
@@ -782,7 +793,7 @@ class EsportsBot(BaseBot):
             return round(max(0.1, factor), 3)  # Floor at 10% Kelly
         return 1.0
 
-    async def _check_and_execute_exits(self, db) -> None:
+    async def _check_and_execute_exits(self, db, positions=None) -> None:
         """B1: Stop-loss + max hold time exits for open EsportsBot positions.
 
         Queries the positions DB table (which has current_price updated every 10s
@@ -791,11 +802,12 @@ class EsportsBot(BaseBot):
         """
         if db is None:
             return
-        try:
-            positions = await db.get_open_positions_for_bot(self.bot_name)
-        except Exception as exc:
-            logger.debug("esportsbot_exit_check_failed", error=str(exc))
-            return
+        if positions is None:
+            try:
+                positions = await db.get_open_positions_for_bot(self.bot_name)
+            except Exception as exc:
+                logger.debug("esportsbot_exit_check_failed", error=str(exc))
+                return
         if not positions:
             return
 
@@ -878,7 +890,7 @@ class EsportsBot(BaseBot):
             except Exception as exc:
                 logger.debug("esportsbot_exit_failed", market_id=mid, error=str(exc))
 
-    async def _reevaluate_open_positions(self, db) -> None:
+    async def _reevaluate_open_positions(self, db, positions=None) -> None:
         """A2: Re-evaluate open positions with fresh Glicko-2 predictions.
 
         Queries DB for current_price (updated every 10s by position_manager),
@@ -887,10 +899,11 @@ class EsportsBot(BaseBot):
         """
         if db is None:
             return
-        try:
-            positions = await db.get_open_positions_for_bot(self.bot_name)
-        except Exception:
-            return
+        if positions is None:
+            try:
+                positions = await db.get_open_positions_for_bot(self.bot_name)
+            except Exception:
+                return
         if not positions:
             return
 
