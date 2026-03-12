@@ -574,7 +574,7 @@ class EsportsBot(BaseBot):
             self._bg_train_tasks["cross_game"] = _cg_task
 
         # Step 0a: Collect historical data for games missing Glicko-2 trackers (one-shot)
-        for _game in ("dota2", "valorant", "cod", "r6", "sc2", "rl"):
+        for _game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
             if (_game not in self._glicko2_trackers
                     and self._collection_attempted.get(_game, 0) < 3
                     and self._trainer
