@@ -306,8 +306,10 @@ class EliteWatchlist:
 
         if raw_side == "SELL":
             resolved_side = "SELL"
-        elif outcome in ("Yes", "No"):
-            resolved_side = outcome.upper()
+        elif outcome in ("Yes", "Up"):
+            resolved_side = "YES"
+        elif outcome in ("No", "Down"):
+            resolved_side = "NO"
         else:
             # Fallback: use MirrorBot's token resolution
             resolved_side = await self._mirror_bot._get_token_side(market_id, token_id)
@@ -412,8 +414,9 @@ class EliteWatchlist:
         if not addr or addr.lower() not in self._watchlist_addresses:
             return
 
-        # RTDS has no transaction_hash — build composite dedup key
-        _dedup_key = f"rtds_{addr}_{data.get('asset')}_{data.get('price')}_{data.get('size')}_{data.get('side')}"
+        # Dedup: prefer real transactionHash from RTDS, fall back to composite key
+        _dedup_key = data.get("transactionHash") or \
+            f"rtds_{addr}_{data.get('asset')}_{data.get('price')}_{data.get('size')}_{data.get('side')}"
         if _dedup_key in self._seen_tx:
             return
         self._seen_tx[_dedup_key] = None

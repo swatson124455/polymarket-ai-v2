@@ -267,6 +267,7 @@ class MirrorBot(BaseBot):
     async def scan_and_trade(self):
         """Main scan: refresh elites, check exits, collect consensus trades, execute."""
         self._scan_count += 1
+        self._cap_logged_this_scan = False
 
         # Restore _daily_exposure + _open_positions from DB on first scan after restart.
         await self._restore_state_on_startup()
@@ -354,11 +355,19 @@ class MirrorBot(BaseBot):
         self._prune_mirrored_trades()
 
         # Collect and filter trades by consensus
-        # When RTDS watchlist is active (primary copy path), relax consensus to 1
+        # When RTDS watchlist is active AND healthy (dispatching events), relax consensus to 1
         # so the scan loop acts as a fallback for traders outside the top-1k watchlist.
-        if self._rtds_started and not self._consensus_relaxed:
+        # If RTDS stops dispatching (disconnect/error), revert to consensus=2.
+        _rtds_healthy = (
+            self._rtds_ws is not None
+            and getattr(self._rtds_ws, "_events_dispatched", 0) > 0
+        )
+        if _rtds_healthy and not self._consensus_relaxed:
             self._consensus_relaxed = True
-            logger.info("MirrorBot: RTDS active, consensus fallback relaxed to 1")
+            logger.info("MirrorBot: RTDS healthy, consensus relaxed to 1")
+        elif not _rtds_healthy and self._consensus_relaxed:
+            self._consensus_relaxed = False
+            logger.info("MirrorBot: RTDS unhealthy, consensus restored to 2")
         consensus_trades = await self._collect_and_aggregate_elite_trades()
 
         # P5b: Diagnostic — log elite count and consensus trades for visibility
@@ -841,8 +850,10 @@ class MirrorBot(BaseBot):
             settings, "MIRROR_MAX_CONCURRENT_POSITIONS", self.MAX_CONCURRENT_POSITIONS
         )
         if len(self._open_positions) >= max_positions:
-            logger.info("Mirror POSITION CAP: %d/%d positions, skipping",
-                        len(self._open_positions), max_positions)
+            if not getattr(self, '_cap_logged_this_scan', False):
+                logger.info("Mirror POSITION CAP: %d/%d positions, skipping",
+                            len(self._open_positions), max_positions)
+                self._cap_logged_this_scan = True
             return False
 
         # Daily cap: read bankroll.max_daily_usd directly (avoids capital*0.15 mismatch).
