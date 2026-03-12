@@ -102,6 +102,8 @@ class EsportsBot(BaseBot):
         self._glicko2_trackers: Dict[str, Any] = {}  # game → Glicko2Tracker
         self._team_name_to_id: Dict[str, str] = {}    # lowercased team name → PandaScore ID
         self._backfill_attempted: set = set()            # "game:name" keys already queried this session
+        self._backfill_calls_this_scan: int = 0          # reset each scan; capped at 5
+        self._max_backfills_per_scan: int = 5
 
         # Settings
         # "Easy mode": relaxed thresholds until models graduate, then tighten.
@@ -468,6 +470,7 @@ class EsportsBot(BaseBot):
         4. Analyze each market for edge
         """
         self._scan_count += 1
+        self._backfill_calls_this_scan = 0
         if self._scan_count % 100 == 0:
             self._cleanup_caches()
         db = getattr(self.base_engine, "db", None)
@@ -695,6 +698,7 @@ class EsportsBot(BaseBot):
             min_confidence=self._min_confidence,
             min_edge=self._min_edge,
             waterfall=_wf_nonzero or None,
+            backfills_this_scan=self._backfill_calls_this_scan,
         )
 
         # P1.2: Backfill actual_outcome for settled esports paper_trades every 10 scans
@@ -2252,6 +2256,11 @@ class EsportsBot(BaseBot):
         cache_key = f"{game}:{name.lower()}"
         if cache_key in self._backfill_attempted:
             return self._team_name_to_id.get(name.lower())
+        # Rate budget: cap backfill API calls per scan to avoid blowing PandaScore quota
+        if self._backfill_calls_this_scan >= self._max_backfills_per_scan:
+            logger.debug("esportsbot_backfill_budget_exhausted", name=name, game=game)
+            return None
+        self._backfill_calls_this_scan += 1
         self._backfill_attempted.add(cache_key)
 
         if not self._pandascore:
