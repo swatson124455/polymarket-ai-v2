@@ -90,15 +90,17 @@ class AutomatedPositionManager:
         try:
             from sqlalchemy import text as sa_text
             async with self.db.get_session() as session:
-                # 1) Churn: count exit→rebuy cycles per market (last 72h)
+                # 1) Churn: count loss exits per market (last 72h)
+                #    Uses positions table (status='closed', unrealized_pnl < 0)
+                #    instead of paper_trades SELL records (no longer persisted).
                 rows = (await session.execute(sa_text(
                     "SELECT market_id, "
-                    "  SUM(CASE WHEN side='SELL' AND realized_pnl < 0 THEN 1 ELSE 0 END) AS loss_exits, "
-                    "  SUM(CASE WHEN side='BUY' THEN 1 ELSE 0 END) AS buys "
-                    "FROM paper_trades "
-                    "WHERE created_at > NOW() - INTERVAL '72 hours' "
+                    "  SUM(CASE WHEN status='closed' AND unrealized_pnl < 0 THEN 1 ELSE 0 END) AS loss_exits, "
+                    "  SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) AS buys "
+                    "FROM positions "
+                    "WHERE opened_at > NOW() - INTERVAL '72 hours' "
                     "GROUP BY market_id "
-                    "HAVING SUM(CASE WHEN side='SELL' AND realized_pnl < 0 THEN 1 ELSE 0 END) >= 2"
+                    "HAVING SUM(CASE WHEN status='closed' AND unrealized_pnl < 0 THEN 1 ELSE 0 END) >= 2"
                 ))).fetchall()
 
                 mults: Dict[str, float] = {}
@@ -116,14 +118,16 @@ class AutomatedPositionManager:
                     mults[mid] = min(3.0, max(0.5, mult))
 
                 # 2) Resolution outcomes: check resolved markets
+                #    Uses positions table (closed positions with unrealized_pnl)
+                #    instead of paper_trades SELL records.
                 resolved = (await session.execute(sa_text(
-                    "SELECT pt.market_id, pt.side AS entry_side, "
-                    "  AVG(pt.realized_pnl) AS avg_pnl, COUNT(*) AS cnt "
-                    "FROM paper_trades pt "
-                    "JOIN markets m ON CAST(pt.market_id AS TEXT) = CAST(m.id AS TEXT) "
-                    "WHERE pt.side = 'SELL' AND m.resolved = true "
-                    "  AND pt.created_at > NOW() - INTERVAL '7 days' "
-                    "GROUP BY pt.market_id, pt.side"
+                    "SELECT p.market_id, "
+                    "  AVG(p.unrealized_pnl) AS avg_pnl, COUNT(*) AS cnt "
+                    "FROM positions p "
+                    "JOIN markets m ON CAST(p.market_id AS TEXT) = CAST(m.id AS TEXT) "
+                    "WHERE p.status = 'closed' AND m.resolved = true "
+                    "  AND p.opened_at > NOW() - INTERVAL '7 days' "
+                    "GROUP BY p.market_id"
                 ))).fetchall()
 
                 for r in resolved:

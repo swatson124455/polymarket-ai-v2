@@ -425,9 +425,7 @@ class PaperTradingEngine:
         
         # Record trade — store token-outcome side (YES/NO) not order direction (BUY)
         # so downstream PnL queries correctly distinguish YES vs NO bets.
-        _db_side = side  # SELL stays SELL for exit trades
-        if side != "SELL" and original_side in ("YES", "NO"):
-            _db_side = original_side
+        _db_side = original_side if original_side in ("YES", "NO") else side
 
         trade = PaperTrade(
             trade_id=trade_id,
@@ -439,10 +437,23 @@ class PaperTradingEngine:
             timestamp=datetime.now(timezone.utc)
         )
         self.trades.append(trade)
-        if self.db and hasattr(self.db, "insert_paper_trade"):
+
+        # SELL trades are position exits (stop-loss, take-profit, model reversal).
+        # Do NOT persist to paper_trades DB — exit P&L is already tracked on the
+        # positions table (unrealized_pnl) by position_manager._execute_exit/stop_loss/
+        # take_profit, and consecutive loss tracking uses risk_manager.record_trade_outcome()
+        # directly. SELL paper_trades corrupted P&L queries across all bots.
+        if side == "SELL":
+            logger.info(
+                "Paper exit executed (no DB record)",
+                trade_id=trade_id,
+                market_id=market_id,
+                size=size,
+                realized_pnl=round(realized_pnl or 0, 4),
+            )
+        elif self.db and hasattr(self.db, "insert_paper_trade"):
             # H5/M9: Retry 3× with backoff to prevent ghost positions.
             # Most DB failures are transient (pool exhaustion, brief network blips).
-            # If all retries fail on a SELL, log ERROR so operator knows a ghost may exist.
             for _attempt in range(3):
                 try:
                     _filled_at = datetime.now(timezone.utc)
@@ -456,7 +467,7 @@ class PaperTradingEngine:
                         price=price,
                         confidence=confidence,
                         correlation_id=correlation_id,
-                        realized_pnl=realized_pnl,  # None for BUY, computed value for SELL
+                        realized_pnl=None,  # Entry trades have no realized P&L
                         latency_ms=latency_ms,
                         status="filled",
                         submitted_at=_submitted_at,
@@ -473,22 +484,13 @@ class PaperTradingEngine:
                             error=str(e),
                         )
                     else:
-                        # Final failure — ghost position risk on restart
-                        if side == "SELL":
-                            logger.error(
-                                "Paper trade SELL persist FAILED after 3 attempts — "
-                                "ghost position may reappear on restart",
-                                market_id=market_id,
-                                error=str(e),
-                            )
-                        else:
-                            logger.warning(
-                                "Paper trade persist FAILED after 3 attempts — "
-                                "position may reappear on restart",
-                                market_id=market_id,
-                                side=side,
-                                error=str(e),
-                            )
+                        logger.warning(
+                            "Paper trade persist FAILED after 3 attempts — "
+                            "position may reappear on restart",
+                            market_id=market_id,
+                            side=side,
+                            error=str(e),
+                        )
         slippage_applied = round(abs(price - original_price) * 10000, 1)  # bps
         logger.info(
             "Paper trade executed",
