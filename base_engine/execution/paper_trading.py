@@ -475,6 +475,15 @@ class PaperTradingEngine:
                     )
                     break  # Success — exit retry loop
                 except Exception as e:
+                    err_str = str(e).lower()
+                    if "unique" in err_str or "duplicate" in err_str or "uq_paper_trades" in err_str:
+                        logger.info(
+                            "Paper trade already exists (duplicate skipped)",
+                            market_id=market_id,
+                            side=_db_side,
+                            bot_name=bot_name,
+                        )
+                        break  # Not an error — constraint working as intended
                     if _attempt < 2:
                         await asyncio.sleep(0.5 * (_attempt + 1))
                         logger.warning(
