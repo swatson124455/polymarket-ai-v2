@@ -3060,6 +3060,7 @@ class Database:
                     WHERE (pt.market_id = CAST(m.id AS TEXT) OR pt.market_id = m.condition_id)
                     AND m.resolution IN ('YES', 'NO')
                     AND (pt.resolution IS NULL OR pt.resolution NOT IN ('YES', 'NO'))
+                    AND LOWER(pt.side) != 'sell'
                 """), {"fee_rate": _fee_rate})
                 count = getattr(r, "rowcount", 0) or 0
                 await session.commit()

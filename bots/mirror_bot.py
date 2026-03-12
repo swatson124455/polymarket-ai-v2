@@ -889,6 +889,21 @@ class MirrorBot(BaseBot):
                 )
             return bool(order.get("success"))
 
+        # FIX: Use CURRENT market price, not the trader's historical fill price.
+        # The trader may have traded hours ago at a different price. Entering at their
+        # stale price produces fake P&L (buying at yesterday's prices, selling at today's).
+        _market_data = self.base_engine.get_market_from_index(str(market_id))
+        if _market_data:
+            _side_upper = str(side).upper()
+            if _side_upper in ("YES", "NO"):
+                _current = float(_market_data.get(f"{_side_upper.lower()}_price", 0) or 0)
+                if 0.01 <= _current <= 0.99:
+                    _old_price = price
+                    price = _current
+                    if abs(_old_price - price) > 0.05:
+                        logger.info("mirror_price_corrected", market=str(market_id)[:16],
+                                    trader_price=round(_old_price, 4), market_price=round(price, 4))
+
         # Apply elite reliability multiplier
         reliability_mult = 1.0
         if self._reliability_tracker:
