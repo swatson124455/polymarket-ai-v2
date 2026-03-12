@@ -2942,10 +2942,10 @@ class Database:
                         "INSERT INTO paper_trades "
                         "(order_id, market_id, token_id, bot_name, side, size, price, "
                         " confidence, correlation_id, realized_pnl, latency_ms, status, "
-                        " submitted_at, filled_at) "
+                        " submitted_at, filled_at, created_at) "
                         "VALUES (:order_id, :market_id, :token_id, :bot_name, :side, :size, :price, "
                         " :confidence, :correlation_id, :realized_pnl, :latency_ms, :status, "
-                        " :submitted_at, :filled_at) "
+                        " :submitted_at, :filled_at, NOW()) "
                         "ON CONFLICT (bot_name, market_id, side) DO UPDATE SET "
                         " order_id = EXCLUDED.order_id, "
                         " token_id = EXCLUDED.token_id, "
@@ -2994,7 +2994,7 @@ class Database:
                     pass  # Table may not exist yet (pre-migration)
                 await session.commit()
         except Exception as e:
-            logger.debug("Failed to write paper_trades (table may not exist): %s", e)
+            logger.warning("Failed to write paper_trades: %s", e)
 
     async def get_paper_trade_by_correlation_id(self, correlation_id: str, market_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """H1: Idempotency check — returns existing paper_trade dict if correlation_id already used.

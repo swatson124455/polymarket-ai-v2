@@ -304,7 +304,7 @@ class PaperTradingEngine:
         _fixed = getattr(settings, "FIXED_SLIPPAGE_BPS", 0)
         slippage_bps = _fixed if _fixed > 0 else _size_dependent_slippage_bps(_order_size_usd)
         original_price = price
-        _submitted_at = datetime.now(timezone.utc)
+        _submitted_at = datetime.now(timezone.utc).replace(tzinfo=None)
         price = _apply_slippage(price, side, slippage_bps)
 
         # Apply maker/taker fee (Polymarket: maker=0%, taker=1.5%)
@@ -454,9 +454,14 @@ class PaperTradingEngine:
         elif self.db and hasattr(self.db, "insert_paper_trade"):
             # H5/M9: Retry 3× with backoff to prevent ghost positions.
             # Most DB failures are transient (pool exhaustion, brief network blips).
+            if getattr(self.db, "session_factory", None) is None:
+                logger.warning(
+                    "Paper trade NOT persisted: db.session_factory is None (DB not initialized yet?)",
+                    market_id=market_id, bot_name=bot_name,
+                )
             for _attempt in range(3):
                 try:
-                    _filled_at = datetime.now(timezone.utc)
+                    _filled_at = datetime.now(timezone.utc).replace(tzinfo=None)
                     await self.db.insert_paper_trade(
                         order_id=trade_id,
                         market_id=market_id,
