@@ -38,6 +38,10 @@ class RTDSWebSocket:
         self.running = False
         self._ping_task: Optional[asyncio.Task] = None
         self._message_loop_task: Optional[asyncio.Task] = None
+        self._events_total: int = 0
+        self._events_dispatched: int = 0
+        self._debug_samples: int = 0  # Log first N raw events for payload verification
+        self._MAX_DEBUG_SAMPLES: int = 5
 
     async def connect(self) -> None:
         """Connect to RTDS and subscribe to activity/trades."""
@@ -141,9 +145,16 @@ class RTDSWebSocket:
                 if isinstance(data, list):
                     for item in data:
                         if isinstance(item, dict):
+                            self._events_total += 1
                             await self._dispatch(item)
                 elif isinstance(data, dict):
+                    self._events_total += 1
                     await self._dispatch(data)
+
+                # Periodic throughput log (every 1000 events)
+                if self._events_total > 0 and self._events_total % 1000 == 0:
+                    logger.info("rtds_throughput", events_total=self._events_total,
+                                events_dispatched=self._events_dispatched)
 
             except websockets.exceptions.ConnectionClosed:
                 reconnect_attempts += 1
@@ -159,8 +170,20 @@ class RTDSWebSocket:
 
     async def _dispatch(self, data: Dict[str, Any]) -> None:
         """Route trade events to handler."""
+        # Log first N raw events for payload verification (then stop)
+        if self._debug_samples < self._MAX_DEBUG_SAMPLES:
+            self._debug_samples += 1
+            _keys = sorted(data.keys()) if isinstance(data, dict) else []
+            logger.info("rtds_raw_sample", sample_num=self._debug_samples,
+                        keys=_keys,
+                        has_proxyWallet=bool(data.get("proxyWallet")),
+                        has_asset=bool(data.get("asset")),
+                        side=data.get("side"),
+                        outcome=data.get("outcome"))
+
         # RTDS activity/trades events contain proxyWallet
         if data.get("proxyWallet") or data.get("asset"):
+            self._events_dispatched += 1
             try:
                 await self._handler(data)
             except Exception as e:

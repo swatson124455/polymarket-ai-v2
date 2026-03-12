@@ -100,6 +100,7 @@ class MirrorBot(BaseBot):
         self._watchlist_started: bool = False
         self._rtds_ws = None
         self._rtds_started: bool = False
+        self._consensus_relaxed: bool = False
         if getattr(settings, "WATCHLIST_ENABLED", False):
             try:
                 from bots.elite_watchlist import EliteWatchlist
@@ -142,7 +143,13 @@ class MirrorBot(BaseBot):
             logger.debug("R5b: _load_consensus_from_db failed (non-critical): %s", exc)
 
     def _get_consensus_min(self, category: str) -> int:
-        """Return per-category consensus threshold, falling back to global setting."""
+        """Return per-category consensus threshold, falling back to global setting.
+
+        When RTDS watchlist is active (primary copy path), consensus relaxes to 1
+        so the scan loop serves as a secondary source for traders outside the top-1k.
+        """
+        if getattr(self, "_consensus_relaxed", False):
+            return self._category_consensus_min.get((category or "").lower(), 1)
         global_min = getattr(settings, "MIRROR_MIN_CONSENSUS", 2)
         return self._category_consensus_min.get((category or "").lower(), global_min)
 
@@ -314,15 +321,27 @@ class MirrorBot(BaseBot):
             except Exception as e:
                 logger.debug("MirrorBot: watchlist refresh failed: %s", e)
 
-            # Log watchlist stats every 10 scans
-            if self._scan_count % 10 == 0:
-                _ws = self._watchlist.get_stats()
-                logger.info(
-                    "MirrorBot watchlist stats",
-                    watchlist_size=_ws["watchlist_size"],
-                    events_matched=_ws["events_matched"],
-                    copies_executed=_ws["copies_executed"],
-                )
+        # Log watchlist + RTDS stats every 10 scans (independent of refresh)
+        if self._watchlist and self._watchlist_started and self._scan_count % 10 == 0:
+            _ws = self._watchlist.get_stats()
+            _rtds_info = {}
+            if self._rtds_ws:
+                _rtds_info = {
+                    "rtds_events_total": self._rtds_ws._events_total,
+                    "rtds_dispatched": self._rtds_ws._events_dispatched,
+                }
+            logger.info(
+                "MirrorBot watchlist stats",
+                watchlist_size=_ws["watchlist_size"],
+                events_received=_ws["events_received"],
+                events_matched=_ws["events_matched"],
+                copies_attempted=_ws["copies_attempted"],
+                copies_executed=_ws["copies_executed"],
+                copies_yes=_ws.get("copies_yes", 0),
+                copies_no=_ws.get("copies_no", 0),
+                copies_sell=_ws.get("copies_sell", 0),
+                **_rtds_info,
+            )
 
         # Reset daily exposure at UTC day boundary
         self._check_daily_reset()
@@ -335,6 +354,11 @@ class MirrorBot(BaseBot):
         self._prune_mirrored_trades()
 
         # Collect and filter trades by consensus
+        # When RTDS watchlist is active (primary copy path), relax consensus to 1
+        # so the scan loop acts as a fallback for traders outside the top-1k watchlist.
+        if self._rtds_started and not self._consensus_relaxed:
+            self._consensus_relaxed = True
+            logger.info("MirrorBot: RTDS active, consensus fallback relaxed to 1")
         consensus_trades = await self._collect_and_aggregate_elite_trades()
 
         # P5b: Diagnostic — log elite count and consensus trades for visibility

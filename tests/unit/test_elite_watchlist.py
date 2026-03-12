@@ -429,3 +429,64 @@ async def test_rtds_field_mapping(watchlist, mock_mirror_bot):
     assert call_kwargs["token_id"] == "TOKEN99"
     assert call_kwargs["side"] == "NO"
     assert call_kwargs["price"] == 0.42
+
+
+@pytest.mark.asyncio
+async def test_rtds_sell_event_passes_through(watchlist, mock_mirror_bot):
+    """RTDS SELL events should pass side=SELL to _execute_mirror_trade."""
+    with patch.object(watchlist, "_fetch_monthly_leaderboard", new_callable=AsyncMock) as mock_lb:
+        mock_lb.return_value = _make_leaderboard_data()
+        await watchlist.refresh_watchlist()
+    # Mock _get_token_side since it's async and called in fallback
+    watchlist._mirror_bot._get_token_side = AsyncMock(return_value="YES")
+    event = _make_rtds_event(addr="0xAAA", side="SELL", outcome="Yes")
+    await watchlist.on_rtds_trade(event)
+    assert watchlist._copies_attempted == 1
+    call_kwargs = mock_mirror_bot._execute_mirror_trade.call_args.kwargs
+    assert call_kwargs["side"] == "SELL"
+
+
+@pytest.mark.asyncio
+async def test_rtds_buy_yes_maps_to_yes(watchlist, mock_mirror_bot):
+    """BUY + outcome=Yes should resolve to side=YES."""
+    with patch.object(watchlist, "_fetch_monthly_leaderboard", new_callable=AsyncMock) as mock_lb:
+        mock_lb.return_value = _make_leaderboard_data()
+        await watchlist.refresh_watchlist()
+    event = _make_rtds_event(addr="0xCCC", side="BUY", outcome="Yes")
+    await watchlist.on_rtds_trade(event)
+    call_kwargs = mock_mirror_bot._execute_mirror_trade.call_args.kwargs
+    assert call_kwargs["side"] == "YES"
+
+
+@pytest.mark.asyncio
+async def test_rtds_buy_no_maps_to_no(watchlist, mock_mirror_bot):
+    """BUY + outcome=No should resolve to side=NO."""
+    with patch.object(watchlist, "_fetch_monthly_leaderboard", new_callable=AsyncMock) as mock_lb:
+        mock_lb.return_value = _make_leaderboard_data()
+        await watchlist.refresh_watchlist()
+    event = _make_rtds_event(addr="0xCCC", side="BUY", outcome="No", price=0.40)
+    await watchlist.on_rtds_trade(event)
+    call_kwargs = mock_mirror_bot._execute_mirror_trade.call_args.kwargs
+    assert call_kwargs["side"] == "NO"
+
+
+@pytest.mark.asyncio
+async def test_side_distribution_counters(watchlist, mock_mirror_bot):
+    """Side distribution counters should track YES/NO/SELL copies."""
+    with patch.object(watchlist, "_fetch_monthly_leaderboard", new_callable=AsyncMock) as mock_lb:
+        mock_lb.return_value = _make_leaderboard_data()
+        await watchlist.refresh_watchlist()
+    watchlist._mirror_bot._get_token_side = AsyncMock(return_value="YES")
+
+    # YES trade
+    await watchlist.on_rtds_trade(_make_rtds_event(addr="0xAAA", side="BUY", outcome="Yes", price=0.60))
+    # NO trade
+    await watchlist.on_rtds_trade(_make_rtds_event(addr="0xBBB", side="BUY", outcome="No", price=0.40))
+    # SELL trade
+    await watchlist.on_rtds_trade(_make_rtds_event(addr="0xCCC", side="SELL", outcome="Yes", price=0.70))
+
+    stats = watchlist.get_stats()
+    assert stats["copies_yes"] == 1
+    assert stats["copies_no"] == 1
+    assert stats["copies_sell"] == 1
+    assert stats["copies_executed"] == 3

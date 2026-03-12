@@ -63,6 +63,9 @@ class EliteWatchlist:
         self._events_matched: int = 0
         self._copies_attempted: int = 0
         self._copies_executed: int = 0
+        self._copies_yes: int = 0
+        self._copies_no: int = 0
+        self._copies_sell: int = 0
 
     # ── Leaderboard Fetch ─────────────────────────────────────────
 
@@ -340,6 +343,13 @@ class EliteWatchlist:
 
             if executed:
                 self._copies_executed += 1
+                # Side distribution tracking
+                if resolved_side == "YES":
+                    self._copies_yes += 1
+                elif resolved_side == "NO":
+                    self._copies_no += 1
+                elif resolved_side == "SELL":
+                    self._copies_sell += 1
                 # Track the position
                 self._mirror_bot.mirrored_trades[tx_hash or f"ws_{market_id}_{token_id}_{addr[:10]}"] = None
                 if resolved_side != "SELL":
@@ -432,6 +442,9 @@ class EliteWatchlist:
             "events_matched": self._events_matched,
             "copies_attempted": self._copies_attempted,
             "copies_executed": self._copies_executed,
+            "copies_yes": self._copies_yes,
+            "copies_no": self._copies_no,
+            "copies_sell": self._copies_sell,
             "seen_tx_count": len(self._seen_tx),
             "last_refresh_date": self._last_refresh_date,
             "last_refresh_ago_s": round(time.monotonic() - self._last_refresh, 0) if self._last_refresh else None,
