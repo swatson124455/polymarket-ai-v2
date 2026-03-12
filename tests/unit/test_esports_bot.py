@@ -255,7 +255,7 @@ class TestAnalyzeOpportunity:
             yes_price=0.60,
         )
         # Model predicts 0.60 = same as market price -> no edge
-        bot._get_glicko2_prediction = MagicMock(return_value=0.60)
+        bot._get_glicko2_prediction = AsyncMock(return_value=0.60)
         result = await bot.analyze_opportunity(market)
         assert result is None
 
@@ -265,7 +265,7 @@ class TestAnalyzeOpportunity:
         bot = make_bot()
         bot._patch_drift = None
         market = _make_market(question="Will Team A win the LoL match?")
-        bot._get_glicko2_prediction = MagicMock(return_value=None)
+        bot._get_glicko2_prediction = AsyncMock(return_value=None)
         result = await bot.analyze_opportunity(market)
         assert result is None
 
@@ -304,7 +304,7 @@ class TestAnalyzeOpportunity:
             yes_price=0.50,
         )
         # Mock Glicko-2 prediction (replaced base_engine.get_predictions fallback)
-        bot._get_glicko2_prediction = MagicMock(return_value=0.70)
+        bot._get_glicko2_prediction = AsyncMock(return_value=0.70)
         result = await bot.analyze_opportunity(market)
         assert result is not None
         assert result["side"] == "YES"
@@ -328,7 +328,7 @@ class TestAnalyzeOpportunity:
             no_price=0.20,
         )
         # Mock Glicko-2 prediction (replaced base_engine.get_predictions fallback)
-        bot._get_glicko2_prediction = MagicMock(return_value=0.30)
+        bot._get_glicko2_prediction = AsyncMock(return_value=0.30)
         result = await bot.analyze_opportunity(market)
         assert result is not None
         assert result["side"] == "NO"
@@ -348,7 +348,7 @@ class TestAnalyzeOpportunity:
             question="Will Team A win the LoL match?",
             yes_price=0.42,
         )
-        bot._get_glicko2_prediction = MagicMock(return_value=0.51)
+        bot._get_glicko2_prediction = AsyncMock(return_value=0.51)
         result = await bot.analyze_opportunity(market)
         assert result is None
 
@@ -377,7 +377,7 @@ class TestAnalyzeOpportunity:
             yes_price=0.40,
         )
         # Mock Glicko-2 prediction (replaced base_engine.get_predictions fallback)
-        bot._get_glicko2_prediction = MagicMock(return_value=0.70)
+        bot._get_glicko2_prediction = AsyncMock(return_value=0.70)
         result = await bot.analyze_opportunity(market)
         assert result is not None
         assert result["type"] == "esports_pregame"
@@ -396,7 +396,7 @@ class TestAnalyzeOpportunity:
             yes_price=0.40,
         )
         # Mock Glicko-2 prediction (replaced base_engine.get_predictions fallback)
-        bot._get_glicko2_prediction = MagicMock(return_value=0.70)
+        bot._get_glicko2_prediction = AsyncMock(return_value=0.70)
         result = await bot.analyze_opportunity(market)
         assert result is not None
         assert result["type"] == "esports_live"

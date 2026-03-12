@@ -333,6 +333,44 @@ class PandaScoreClient:
         self._cache.set(cache_key, result)
         return result
 
+    async def search_team_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Search PandaScore for a team by name. Returns best match or None.
+
+        Uses GET /teams?search[name]=X&per_page=5. Costs 1 API request.
+        """
+        if not name or len(name) < 2:
+            return None
+        data = await self._get("/teams", params={"search[name]": name, "per_page": 5})
+        if not data or not isinstance(data, list) or len(data) == 0:
+            return None
+        # Prefer exact name match, else first result
+        name_lower = name.lower()
+        for team in data:
+            if isinstance(team, dict) and str(team.get("name", "")).lower() == name_lower:
+                return team
+        return data[0] if isinstance(data[0], dict) else None
+
+    async def get_team_matches(
+        self, team_id: int, game: str, per_page: int = 20
+    ) -> List[EsportsMatch]:
+        """Get recent finished matches for a specific team. Costs 1 API request."""
+        if game not in GAME_SLUGS:
+            return []
+        slug = GAME_SLUGS[game]
+        data = await self._get(
+            f"/{slug}/matches/past",
+            params={
+                "filter[opponent_id]": team_id,
+                "per_page": per_page,
+                "sort": "-scheduled_at",
+                "filter[status]": "finished",
+            },
+        )
+        if not data or not isinstance(data, list):
+            return []
+        matches = [self._parse_match(m, game) for m in data if isinstance(m, dict)]
+        return [m for m in matches if m is not None]
+
     # ── Internal helpers ────────────────────────────────────────────────
 
     async def _get(self, path: str, params: Optional[Dict] = None) -> Any:
