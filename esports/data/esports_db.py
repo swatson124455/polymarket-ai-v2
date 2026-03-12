@@ -583,9 +583,9 @@ async def compute_pnl_summary(db) -> Optional[Dict[str, Any]]:
             result = await session.execute(
                 _text("""
                 WITH game_map AS (
-                    SELECT DISTINCT ON (market_id) market_id, game, edge
+                    SELECT DISTINCT ON (market_id, side) market_id, side, game, edge
                     FROM esports_prediction_log
-                    ORDER BY market_id, created_at DESC
+                    ORDER BY market_id, side, created_at DESC
                 )
                 SELECT
                     COALESCE(gm.game, 'unknown') as game,
@@ -595,6 +595,7 @@ async def compute_pnl_summary(db) -> Optional[Dict[str, Any]]:
                     COALESCE(AVG(ABS(gm.edge)), 0) as avg_edge
                 FROM paper_trades pt
                 LEFT JOIN game_map gm ON pt.market_id = gm.market_id
+                    AND UPPER(gm.side) = UPPER(pt.side)
                 WHERE pt.bot_name LIKE 'Esports%'
                   AND pt.realized_pnl IS NOT NULL
                   AND pt.side IN ('YES', 'NO')

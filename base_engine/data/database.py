@@ -2036,13 +2036,13 @@ class Database:
             from sqlalchemy import select
             # Select only needed columns; avoids is_likely_market_maker which may not exist (migration 008)
             result = await session.execute(
-                select(User.address, User.total_profit, User.win_rate)
+                select(User.address, User.total_profit, User.win_rate, User.total_trades, User.total_volume)
                 .where(User.is_elite == True)
                 .order_by(User.total_profit.desc(), User.win_rate.desc())
                 .limit(limit)
             )
             rows = result.fetchall()
-            return [{"address": r[0], "total_profit": r[1], "win_rate": r[2]} for r in rows]
+            return [{"address": r[0], "total_profit": r[1], "win_rate": r[2], "total_trades": r[3] or 0, "total_volume": r[4] or 0} for r in rows]
 
     async def get_user_resolution_counts(
         self, lookback_days: int = 365
@@ -3050,9 +3050,9 @@ class Database:
                         realized_pnl = (
                             CASE
                                 WHEN m.resolution = 'YES' AND LOWER(pt.side) = 'yes' THEN pt.size * (1.0 - pt.price)
-                                WHEN m.resolution = 'YES' AND LOWER(pt.side) IN ('no', 'sell') THEN pt.size * (0.0 - pt.price)
+                                WHEN m.resolution = 'YES' AND LOWER(pt.side) = 'no' THEN pt.size * (0.0 - pt.price)
                                 WHEN m.resolution = 'NO' AND LOWER(pt.side) = 'yes' THEN pt.size * (0.0 - pt.price)
-                                WHEN m.resolution = 'NO' AND LOWER(pt.side) IN ('no', 'sell') THEN pt.size * (1.0 - pt.price)
+                                WHEN m.resolution = 'NO' AND LOWER(pt.side) = 'no' THEN pt.size * (1.0 - pt.price)
                                 ELSE NULL
                             END
                         ) - (pt.size * pt.price * :fee_rate)
