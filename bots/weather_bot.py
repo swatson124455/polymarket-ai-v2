@@ -382,9 +382,10 @@ class WeatherBot(BaseBot):
     async def _close_stale_positions(self) -> None:
         """Close WeatherBot positions that are stale or already resolved.
 
-        Two criteria (OR):
-        1. Age > 20h — weather markets resolve within 24h of target date
-        2. Corresponding paper_trade has realized_pnl (market already settled)
+        Three criteria (OR):
+        1. Target date has passed — parsed from market question (date-aware)
+        2. Age > 20h — fallback when question parsing fails
+        3. Corresponding paper_trade has realized_pnl (market already settled)
 
         Without this, stale 'open' positions block re-entry on the same market_id
         via the position-already-open filter in _execute_weather_trade().
@@ -395,6 +396,45 @@ class WeatherBot(BaseBot):
             return
         try:
             from sqlalchemy import text as sa_text
+
+            # Step 1: Fetch open positions with their market questions
+            async with db.get_session() as session:
+                rows = await session.execute(sa_text(
+                    "SELECT p.market_id, m.question "
+                    "FROM positions p "
+                    "LEFT JOIN markets m ON p.market_id = m.id "
+                    "WHERE (p.bot_id = 'WeatherBot' OR p.source_bot = 'WeatherBot') "
+                    "AND p.status = 'open'"
+                ))
+                open_positions = [(str(r[0]), r[1]) for r in rows.fetchall()]
+
+            if not open_positions:
+                return
+
+            # Step 2: Determine which positions are stale
+            today = datetime.now(timezone.utc).date()
+            stale_ids: list[str] = []
+            date_closed = 0
+
+            for market_id, question in open_positions:
+                if question:
+                    _, target_date = WeatherMarketMapper._extract_city_and_date(question)
+                    if target_date and target_date < today:
+                        stale_ids.append(market_id)
+                        date_closed += 1
+                        continue
+
+            # Step 3: Also close via age fallback + resolved paper_trade
+            if stale_ids:
+                # Close date-aware stale positions
+                async with db.get_session() as session:
+                    await session.execute(sa_text(
+                        "UPDATE positions SET status = 'closed' "
+                        "WHERE market_id = ANY(:ids) AND status = 'open'"
+                    ), {"ids": stale_ids})
+                    await session.commit()
+
+            # Step 4: Age fallback (20h) + resolved paper_trade for remaining
             async with db.get_session() as session:
                 result = await session.execute(sa_text(
                     "UPDATE positions SET status = 'closed' "
@@ -409,19 +449,22 @@ class WeatherBot(BaseBot):
                     ") "
                     "RETURNING market_id"
                 ))
-                closed_markets = [str(row[0]) for row in result.fetchall()]
+                fallback_closed = [str(row[0]) for row in result.fetchall()]
                 await session.commit()
 
-            if closed_markets:
+            all_closed = stale_ids + fallback_closed
+            if all_closed:
                 logger.info(
                     "weatherbot_stale_positions_closed",
-                    count=len(closed_markets),
+                    count=len(all_closed),
+                    date_aware=date_closed,
+                    fallback=len(fallback_closed),
                 )
                 # Also evict from in-memory set so the filter unblocks immediately
                 gw = getattr(self.base_engine, "order_gateway", None)
                 if gw and hasattr(gw, "_open_position_markets"):
                     bot_set = gw._open_position_markets.get("WeatherBot", set())
-                    for mid in closed_markets:
+                    for mid in all_closed:
                         bot_set.discard(mid)
         except Exception as exc:
             logger.debug("weatherbot_stale_position_cleanup_failed", error=str(exc))
