@@ -13,11 +13,12 @@ logger = get_logger()
 
 
 def _get_elite_thresholds() -> dict:
-    """Elite thresholds from settings: 5 trades in last year, 55% win, focus on high vol+return."""
+    """Elite thresholds: 100 trades OR $10k volume, 55% win, focus on high vol+return."""
     return {
-        "min_trades": getattr(settings, "ELITE_MIN_TRADES", 5),
+        "min_trades": getattr(settings, "ELITE_MIN_TRADES", 100),
         "min_win_rate": getattr(settings, "ELITE_MIN_WIN_RATE", 0.55),
         "min_profit": getattr(settings, "ELITE_MIN_PROFIT_USD", 0.0),
+        "min_volume": getattr(settings, "ELITE_MIN_VOLUME_USD", 10000.0),
     }
 
 
@@ -135,23 +136,32 @@ class EliteUserDetector:
         mt = self.thresholds["min_trades"]
         mw = self.thresholds["min_win_rate"]
         mp = self.thresholds["min_profit"]
+        mv = self.thresholds.get("min_volume", 10000.0)
         try:
             async with self.db.get_session() as session:
                 await self._update_market_maker_flags(session)
                 # COALESCE so NULL total_profit passes when min_profit=0 (preserves API-ingested users)
                 profit_ok = func.coalesce(User.total_profit, 0) >= mp
+                # Activity gate: 100 trades OR $10k volume (either proves meaningful activity)
+                from sqlalchemy import or_, and_
+                activity_ok = or_(
+                    User.total_trades >= mt,
+                    func.coalesce(User.total_volume, 0) >= mv,
+                )
                 await session.execute(
                     update(User).where(
-                        User.total_trades >= mt,
+                        activity_ok,
                         User.win_rate >= mw,
                         profit_ok,
                     ).values(is_elite=True)
                 )
-                # Mark non-elite: anyone who doesn't meet ALL thresholds
-                from sqlalchemy import or_
+                # Mark non-elite: anyone who doesn't meet activity + win_rate thresholds
+                non_activity = and_(
+                    or_(User.total_trades.is_(None), User.total_trades < mt),
+                    or_(User.total_volume.is_(None), User.total_volume < mv),
+                )
                 non_elite_cond = or_(
-                    User.total_trades.is_(None),
-                    User.total_trades < mt,
+                    non_activity,
                     User.win_rate.is_(None),
                     User.win_rate < mw,
                 )

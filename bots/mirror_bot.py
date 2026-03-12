@@ -386,6 +386,14 @@ class MirrorBot(BaseBot):
             if not addr:
                 return []
 
+            # Gate: elite must have 100+ trades OR $10k+ volume on Polymarket
+            _min_trades = getattr(settings, "MIRROR_MIN_ELITE_TRADES", 250)
+            _min_volume = getattr(settings, "ELITE_MIN_VOLUME_USD", 10000.0)
+            _trader_trades = int(trader.get("total_trades", 0) or 0)
+            _trader_volume = float(trader.get("total_volume", 0) or 0)
+            if _trader_trades < _min_trades and _trader_volume < _min_volume:
+                return []
+
             # Check per-trader cache before acquiring semaphore
             _now = _time.monotonic()
             _cached = self._trader_activity_cache.get(addr)

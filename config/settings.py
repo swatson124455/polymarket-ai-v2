@@ -295,7 +295,8 @@ class Settings(BaseSettings):
     # Elite Trader Settings - Top 200 traders
     TOP_TRADER_COUNT: int = 500  # Top 500 traders
     # Elite thresholds (relaxed: 5 bets in last year, 55% win; high vol+return weighted higher)
-    ELITE_MIN_TRADES: int = int(os.getenv("ELITE_MIN_TRADES", "5"))
+    ELITE_MIN_TRADES: int = int(os.getenv("ELITE_MIN_TRADES", "100"))  # 5→100: minimum trades to qualify as elite
+    ELITE_MIN_VOLUME_USD: float = float(os.getenv("ELITE_MIN_VOLUME_USD", "10000"))  # OR $10k volume — either proves activity
     ELITE_MIN_WIN_RATE: float = float(os.getenv("ELITE_MIN_WIN_RATE", "0.55"))
     ELITE_MIN_PROFIT_USD: float = float(os.getenv("ELITE_MIN_PROFIT_USD", "0"))
     ELITE_LOOKBACK_DAYS: int = int(os.getenv("ELITE_LOOKBACK_DAYS", "365"))
@@ -314,7 +315,7 @@ class Settings(BaseSettings):
     # MirrorBot
     MIRROR_MAX_DELAY_MINUTES: int = int(os.getenv("MIRROR_MAX_DELAY_MINUTES", "30"))
     MIRROR_MIN_CONSENSUS: int = int(os.getenv("MIRROR_MIN_CONSENSUS", "2"))  # 3→2: with 500 elites, 3 was impossibly tight
-    MIRROR_MIN_CONFIDENCE: float = float(os.getenv("MIRROR_MIN_CONFIDENCE", "0.10"))  # Was hardcoded 0.70 → 0.50 → 0.10: learning engine returns low conf with <250 labels
+    MIRROR_MIN_CONFIDENCE: float = float(os.getenv("MIRROR_MIN_CONFIDENCE", "0.55"))  # 0.10→0.55: elite must win >55% of trades
     MIRROR_MAX_PER_MARKET: float = float(os.getenv("MIRROR_MAX_PER_MARKET", "400"))
     MIRROR_MAX_TRACKED_TRADES: int = int(os.getenv("MIRROR_MAX_TRACKED_TRADES", "10000"))
     MIRROR_EXIT_ENABLED: bool = os.getenv("MIRROR_EXIT_ENABLED", "true").lower() in ("true", "1", "yes")
@@ -322,7 +323,8 @@ class Settings(BaseSettings):
     MIRROR_MAX_DAILY_EXPOSURE_PCT: float = float(os.getenv("MIRROR_MAX_DAILY_EXPOSURE_PCT", "0.15"))
     # Phase 4: MirrorBot structural hardening
     MIRROR_HOT_TRADE_MAX_SECONDS: int = int(os.getenv("MIRROR_HOT_TRADE_MAX_SECONDS", "900"))  # 300→900: 5min was too aggressive, 15min allows more trades
-    MIRROR_MIN_RELIABILITY: float = float(os.getenv("MIRROR_MIN_RELIABILITY", "0.45"))
+    MIRROR_MIN_RELIABILITY: float = float(os.getenv("MIRROR_MIN_RELIABILITY", "0.52"))  # 0.45→0.52: Bayesian posterior must beat coin-flip
+    MIRROR_MIN_ELITE_TRADES: int = int(os.getenv("MIRROR_MIN_ELITE_TRADES", "100"))  # 100 trades OR $10k volume (checked with ELITE_MIN_VOLUME_USD)
     MIRROR_STOP_LOSS_PCT: float = float(os.getenv("MIRROR_STOP_LOSS_PCT", "0.15"))
     MIRROR_MAX_HOLD_HOURS: float = float(os.getenv("MIRROR_MAX_HOLD_HOURS", "72"))
     MIRROR_MAX_POSITIONS: int = int(os.getenv("MIRROR_MAX_POSITIONS", "200"))  # 51 pre-fix BUY positions exceed global 50 cap; 200 matches WeatherBot

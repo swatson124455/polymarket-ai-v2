@@ -8,8 +8,9 @@ from base_engine.learning.elite_detector import EliteUserDetector, ELITE_THRESHO
 
 
 def test_elite_thresholds_relaxed():
-    """Elite thresholds should be relaxed: min_trades low, min_profit=0."""
-    assert ELITE_THRESHOLDS["min_trades"] <= 10
+    """Elite thresholds: 100 trades OR $10k volume, 55% win, profit=0."""
+    assert ELITE_THRESHOLDS["min_trades"] == 100
+    assert ELITE_THRESHOLDS["min_volume"] == 10000.0
     assert ELITE_THRESHOLDS["min_profit"] == 0.0
     assert 0.5 <= ELITE_THRESHOLDS["min_win_rate"] <= 0.6
 
