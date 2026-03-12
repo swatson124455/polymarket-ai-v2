@@ -325,6 +325,10 @@ class Settings(BaseSettings):
     MIRROR_HOT_TRADE_MAX_SECONDS: int = int(os.getenv("MIRROR_HOT_TRADE_MAX_SECONDS", "900"))  # 300→900: 5min was too aggressive, 15min allows more trades
     MIRROR_MIN_RELIABILITY: float = float(os.getenv("MIRROR_MIN_RELIABILITY", "0.52"))  # 0.45→0.52: Bayesian posterior must beat coin-flip
     MIRROR_MIN_ELITE_TRADES: int = int(os.getenv("MIRROR_MIN_ELITE_TRADES", "100"))  # 100 trades OR $10k volume (checked with ELITE_MIN_VOLUME_USD)
+    # Watchlist: real-time WebSocket copy trading (monthly leaderboard top 1k)
+    WATCHLIST_ENABLED: bool = os.getenv("WATCHLIST_ENABLED", "false").lower() in ("true", "1", "yes")
+    WATCHLIST_SIZE: int = int(os.getenv("WATCHLIST_SIZE", "1000"))  # Monthly top 1k (API caps at ~1050)
+
     MIRROR_STOP_LOSS_PCT: float = float(os.getenv("MIRROR_STOP_LOSS_PCT", "0.15"))
     MIRROR_MAX_HOLD_HOURS: float = float(os.getenv("MIRROR_MAX_HOLD_HOURS", "72"))
     MIRROR_MAX_POSITIONS: int = int(os.getenv("MIRROR_MAX_POSITIONS", "200"))  # 51 pre-fix BUY positions exceed global 50 cap; 200 matches WeatherBot
@@ -999,6 +1003,17 @@ class Settings(BaseSettings):
     # --- Per-game thresholds (CS2) ---
     ESPORTS_CS2_ROUND_DIFF_THRESHOLD: int = int(os.getenv("ESPORTS_CS2_ROUND_DIFF_THRESHOLD", "5"))
     ESPORTS_CS2_ECONOMY_BREAK_THRESHOLD: int = int(os.getenv("ESPORTS_CS2_ECONOMY_BREAK_THRESHOLD", "10000"))
+
+    # --- Risk guardrails (A1+A8: daily loss limit + drawdown halt) ---
+    # Paper-trading defaults — loose enough for training. Tighten via env for live.
+    ESPORTS_DAILY_LOSS_LIMIT: float = float(os.getenv("ESPORTS_DAILY_LOSS_LIMIT", "500.0"))
+    ESPORTS_DRAWDOWN_HALT_PCT: float = float(os.getenv("ESPORTS_DRAWDOWN_HALT_PCT", "0.40"))
+    ESPORTS_DRAWDOWN_REDUCE_PCT: float = float(os.getenv("ESPORTS_DRAWDOWN_REDUCE_PCT", "0.20"))
+
+    # --- Stop-loss (B1) ---
+    # 25% stop-loss + 96h hold — esports resolve fast (24-48h), these are safety nets.
+    ESPORTS_STOP_LOSS_PCT: float = float(os.getenv("ESPORTS_STOP_LOSS_PCT", "0.25"))
+    ESPORTS_MAX_HOLD_HOURS: float = float(os.getenv("ESPORTS_MAX_HOLD_HOURS", "96"))
 
     # --- Pinnacle / cross-market (Phase 2 — deferred) ---
     ESPORTS_PINNACLE_ENABLED: bool = os.getenv("ESPORTS_PINNACLE_ENABLED", "false").lower() in ("true", "1", "yes")

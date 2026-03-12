@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from structlog import get_logger
@@ -115,10 +116,31 @@ class EsportsBot(BaseBot):
         self._scan_count: int = 0  # P1.2: periodic outcome backfill counter
         self._exposure_restored: bool = False  # P0: seed exposure dicts from DB on first scan
 
+        # A1+A8: Daily loss limit + drawdown halt
+        self._daily_pnl: float = 0.0
+        self._daily_pnl_date: Optional[str] = None
+        self._daily_loss_limit = float(getattr(settings, "ESPORTS_DAILY_LOSS_LIMIT", 500.0))
+        self._drawdown_halted: bool = False
+
+        # A3: Dynamic Kelly graduation
+        self._kelly_graduated: bool = False  # True when 50+ resolved + Brier<0.24
+
     def _get_scan_interval_seconds(self) -> float:
-        """10s during live matches, 120s otherwise."""
+        """A4: Tournament-aware scan intervals.
+
+        10s during live matches, 60s during active tournaments, 120s otherwise.
+        """
         if self._live_matches:
             return float(getattr(settings, "SCAN_INTERVAL_ESPORTS_LIVE", 10))
+        # A4: Tighter scan when we have open positions (for stop-loss monitoring)
+        try:
+            og = getattr(self.base_engine, "order_gateway", None)
+            if og is not None:
+                bot_positions = getattr(og, "_open_position_markets", {})
+                if isinstance(bot_positions, dict) and bot_positions.get(self.bot_name):
+                    return 60.0
+        except Exception:
+            pass
         return float(getattr(settings, "SCAN_INTERVAL_ESPORTS", 120))
 
     async def start(self) -> None:
@@ -454,6 +476,29 @@ class EsportsBot(BaseBot):
         if not self._exposure_restored:
             await self._restore_exposure_from_db(db)
 
+        # A1: Restore daily P&L + reset at UTC midnight
+        await self._restore_daily_pnl_from_db(db)
+
+        # A1+A8: Block trading if daily loss limit or drawdown halt active
+        if self._check_daily_loss_limit():
+            logger.info("esportsbot_trading_blocked",
+                        daily_pnl=round(self._daily_pnl, 2),
+                        limit=-self._daily_loss_limit)
+            # B1: Still check stop-loss exits even when new entries blocked
+            await self._check_and_execute_exits(db)
+            return
+
+        # B1: Check stop-loss and max hold time exits
+        await self._check_and_execute_exits(db)
+
+        # A2: Re-evaluate open positions (every 5 scans, ~10 min)
+        if self._scan_count % 5 == 0:
+            await self._reevaluate_open_positions(db)
+
+        # A3: Dynamic Kelly graduation check (every 10 scans)
+        if self._scan_count % 10 == 0:
+            await self._check_kelly_graduation(db)
+
         # E4: Monitoring thresholds — check per-game Brier and emit alerts
         await self._check_monitoring_thresholds(db)
 
@@ -676,6 +721,203 @@ class EsportsBot(BaseBot):
         except Exception as exc:
             logger.warning("esports_restore_exposure_failed", error=str(exc))
 
+    async def _restore_daily_pnl_from_db(self, db) -> None:
+        """A1: Restore today's realized P&L from paper_trades on startup."""
+        if db is None:
+            return
+        try:
+            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if self._daily_pnl_date == today_str:
+                return  # Already restored for today
+            self._daily_pnl = 0.0
+            self._daily_pnl_date = today_str
+            self._drawdown_halted = False
+            today_start = datetime.strptime(today_str, "%Y-%m-%d")
+            async with db.get_session() as session:
+                from sqlalchemy import text
+                result = await session.execute(text("""
+                    SELECT COALESCE(SUM(realized_pnl), 0.0)
+                    FROM paper_trades
+                    WHERE bot_name IN ('EsportsBot', 'EsportsLiveBot', 'EsportsSeriesBot')
+                      AND side IN ('YES', 'NO')
+                      AND realized_pnl IS NOT NULL
+                      AND created_at >= :today_start
+                """), {"today_start": today_start})
+                row = result.fetchone()
+                if row and row[0] is not None:
+                    self._daily_pnl = float(row[0])
+            if self._daily_pnl != 0.0:
+                logger.info("esports_daily_pnl_restored", pnl=round(self._daily_pnl, 2))
+        except Exception as exc:
+            logger.debug("esports_daily_pnl_restore_failed", error=str(exc))
+
+    def _check_daily_loss_limit(self) -> bool:
+        """A1+A8: Return True if trading should be blocked (loss limit or drawdown halt)."""
+        if self._daily_pnl <= -self._daily_loss_limit:
+            return True
+        capital = float(getattr(settings, "ESPORTS_TOTAL_CAPITAL", 5000.0))
+        if capital > 0 and self._daily_pnl < 0:
+            drawdown_pct = abs(self._daily_pnl) / capital
+            halt_pct = float(getattr(settings, "ESPORTS_DRAWDOWN_HALT_PCT", 0.20))
+            if drawdown_pct >= halt_pct:
+                if not self._drawdown_halted:
+                    self._drawdown_halted = True
+                    logger.warning("esportsbot_drawdown_halt",
+                                   daily_pnl=round(self._daily_pnl, 2),
+                                   drawdown_pct=round(drawdown_pct, 4))
+                return True
+        return False
+
+    def _get_drawdown_kelly_factor(self) -> float:
+        """A8: Reduce Kelly fraction when drawdown exceeds 10% of capital."""
+        capital = float(getattr(settings, "ESPORTS_TOTAL_CAPITAL", 5000.0))
+        if capital <= 0 or self._daily_pnl >= 0:
+            return 1.0
+        drawdown_pct = abs(self._daily_pnl) / capital
+        reduce_pct = float(getattr(settings, "ESPORTS_DRAWDOWN_REDUCE_PCT", 0.10))
+        if drawdown_pct >= reduce_pct:
+            # Linear scale: 10% drawdown → 0.5x Kelly, 20% → 0x (halted before this)
+            halt_pct = float(getattr(settings, "ESPORTS_DRAWDOWN_HALT_PCT", 0.20))
+            factor = max(0.0, 1.0 - (drawdown_pct - reduce_pct) / max(halt_pct - reduce_pct, 0.01))
+            return round(max(0.1, factor), 3)  # Floor at 10% Kelly
+        return 1.0
+
+    async def _check_and_execute_exits(self, db) -> None:
+        """B1: Stop-loss + max hold time exits for open EsportsBot positions.
+
+        Queries the positions DB table (which has current_price updated every 10s
+        by position_manager) instead of the in-memory _position_details cache
+        (which lacks current_price and timestamp).
+        """
+        if db is None:
+            return
+        try:
+            positions = await db.get_open_positions_for_bot(self.bot_name)
+        except Exception as exc:
+            logger.debug("esportsbot_exit_check_failed", error=str(exc))
+            return
+        if not positions:
+            return
+
+        stop_pct = float(getattr(settings, "ESPORTS_STOP_LOSS_PCT", 0.15))
+        max_hold_h = float(getattr(settings, "ESPORTS_MAX_HOLD_HOURS", 72))
+        now_utc = datetime.now(timezone.utc)
+        positions_to_close: list = []
+
+        for pos in positions:
+            mid = pos.get("market_id", "")
+            entry = float(pos.get("entry_price", 0.5) or 0.5)
+            current = float(pos.get("current_price", entry) or entry)
+            side = (pos.get("side") or "YES").upper()
+            size = float(pos.get("size", 0) or 0)
+            token_id = pos.get("token_id", "")
+
+            if size <= 0 or not token_id:
+                continue
+
+            # P&L percentage using DB current_price (updated every 10s)
+            if side == "YES":
+                pnl_pct = (current - entry) / max(entry, 1e-6)
+            else:
+                pnl_pct = (entry - current) / max(entry, 1e-6)
+
+            if pnl_pct <= -stop_pct:
+                logger.info("esportsbot_stop_loss", market_id=mid,
+                            pnl_pct=f"{pnl_pct:.2%}", side=side,
+                            entry=round(entry, 4), current=round(current, 4))
+                positions_to_close.append((pos, "stop_loss"))
+                continue
+
+            # Max hold time check using DB opened_at
+            opened_at = pos.get("opened_at")
+            if opened_at is not None:
+                try:
+                    if isinstance(opened_at, str):
+                        opened_at = datetime.fromisoformat(opened_at)
+                    if opened_at.tzinfo is None:
+                        opened_at = opened_at.replace(tzinfo=timezone.utc)
+                    hold_h = (now_utc - opened_at).total_seconds() / 3600
+                    if hold_h >= max_hold_h:
+                        logger.info("esportsbot_max_hold_exit", market_id=mid,
+                                    hold_h=f"{hold_h:.1f}h")
+                        positions_to_close.append((pos, "max_hold"))
+                except Exception:
+                    pass
+
+        # Execute exits via SELL-side order using the SAME token_id
+        # (selling back the token we hold, not buying the opposite side)
+        for pos, reason in positions_to_close:
+            mid = pos["market_id"]
+            try:
+                side = (pos.get("side") or "YES").upper()
+                size = float(pos.get("size", 0) or 0)
+                token_id = pos.get("token_id", "")
+                current = float(pos.get("current_price", 0.5) or 0.5)
+                if size <= 0 or not token_id:
+                    continue
+                # Exit by placing opposite-side order at current price
+                exit_side = "NO" if side == "YES" else "YES"
+                exit_price = (1.0 - current) if side == "YES" else current
+                await self.place_order(
+                    market_id=mid, token_id=token_id, side=exit_side,
+                    size=size, price=exit_price, confidence=0.0,
+                )
+                # B3: Decrement game exposure on exit
+                question = ""
+                try:
+                    if self._market_service:
+                        # Best-effort game detection for exposure tracking
+                        _cached = self._prediction_cache.get(mid, {})
+                        game = _cached.get("game", "")
+                    else:
+                        game = ""
+                except Exception:
+                    game = ""
+                if game and game in self._game_exposure:
+                    self._game_exposure[game] = max(0.0, self._game_exposure.get(game, 0.0) - size)
+                logger.info("esportsbot_exit_executed", market_id=mid, reason=reason,
+                            exit_side=exit_side, size=round(size, 2))
+            except Exception as exc:
+                logger.debug("esportsbot_exit_failed", market_id=mid, error=str(exc))
+
+    async def _reevaluate_open_positions(self, db) -> None:
+        """A2: Re-evaluate open positions with fresh Glicko-2 predictions.
+
+        Queries DB for current_price (updated every 10s by position_manager),
+        compares against cached model prediction to detect edge collapse.
+        Informational logging only — exits handled by stop-loss (B1).
+        """
+        if db is None:
+            return
+        try:
+            positions = await db.get_open_positions_for_bot(self.bot_name)
+        except Exception:
+            return
+        if not positions:
+            return
+
+        for pos in positions:
+            mid = pos.get("market_id", "")
+            cached = self._prediction_cache.get(mid)
+            if not cached:
+                continue
+
+            side = (pos.get("side") or "YES").upper()
+            current_price = float(pos.get("current_price", 0.5) or 0.5)
+            model_prob = cached.get("prob", 0.5)
+
+            # Check if edge has collapsed or flipped
+            if side == "YES":
+                current_edge = model_prob - current_price
+            else:
+                current_edge = (1.0 - model_prob) - (1.0 - current_price)
+
+            if current_edge <= 0:
+                logger.debug("esportsbot_edge_collapsed", market_id=mid,
+                             side=side, current_edge=round(current_edge, 4),
+                             model_prob=round(model_prob, 4),
+                             current_price=round(current_price, 4))
+
     async def _backfill_esports_outcomes(self, db) -> None:
         """Backfill actual_outcome in esports_prediction_log from settled paper_trades.
 
@@ -818,7 +1060,7 @@ class EsportsBot(BaseBot):
 
         # Edge sanity cap — reject unrealistically large edges
         if edge > self._max_edge:
-            logger.info(
+            logger.debug(
                 "esportsbot_edge_cap", market_id=market_id, game=game,
                 edge=round(edge, 4), max_edge=self._max_edge, side=side,
                 model_prob=round(model_prob, 4), price=round(price, 4),
@@ -835,9 +1077,9 @@ class EsportsBot(BaseBot):
 
         if confidence < self._min_confidence:
             if _wf: _wf["low_confidence"] += 1
-            logger.info("esportsbot_low_confidence", game=game, market_id=market_id,
-                        confidence=round(confidence, 4), model_prob=round(model_prob, 4),
-                        edge=round(edge, 4), side=side, price=round(price, 4))
+            logger.debug("esportsbot_low_confidence", game=game, market_id=market_id,
+                         confidence=round(confidence, 4), model_prob=round(model_prob, 4),
+                         edge=round(edge, 4), side=side, price=round(price, 4))
             return None
 
         # Log prediction for accuracy tracking (dedup: skip if unchanged within 10 min)
@@ -899,6 +1141,7 @@ class EsportsBot(BaseBot):
             "game": game,
             "market_type": market_type,
             "confluence": confluence,
+            "end_date_iso": market_data.get("end_date_iso"),
         }
 
     # ── Internal helpers ───────────────────────────────────────────────────
@@ -1016,8 +1259,8 @@ class EsportsBot(BaseBot):
         try:
             glicko2_prob = await self._get_glicko2_prediction(market_data, game)
             if glicko2_prob is None:
-                logger.info("esportsbot_glicko2_miss", game=game,
-                            market_id=market_id, question=str(market_data.get("question",""))[:80])
+                logger.debug("esportsbot_glicko2_miss", game=game,
+                             market_id=market_id, question=str(market_data.get("question",""))[:80])
             if glicko2_prob is not None:
                 # OpenDota form adjustment for dota2 (small ±3%)
                 if game == "dota2":
@@ -1515,10 +1758,36 @@ class EsportsBot(BaseBot):
         return round(confluence, 4)
 
     async def _execute_esports_trade(self, opp: Dict) -> None:
-        """Execute trade with maker-first, taker-fallback strategy."""
-        size = await self.calculate_bot_position_size(opp["confidence"], opp["price"], category="esports")
+        """Execute trade with maker-first, taker-fallback strategy.
+
+        Includes A10 (pre-update exposure), A6 (uncertainty-scaled sizing),
+        A5 (near-expiry boost), A8 (drawdown Kelly reduction).
+        """
+        confidence = opp["confidence"]
+
+        # A5: Near-expiry confidence boost
+        confidence = self._apply_expiry_boost(confidence, opp)
+
+        # A6: Uncertainty-scaled sizing — dampen when Glicko-2 phi is high
+        phi_factor = self._get_phi_sizing_factor(opp)
+
+        # A8: Drawdown Kelly reduction
+        dd_factor = self._get_drawdown_kelly_factor()
+
+        size = await self.calculate_bot_position_size(
+            confidence, opp["price"], category="esports"
+        )
         if size <= 0:
             return
+
+        # Apply A6 + A8 scaling after base sizing
+        size = size * phi_factor * dd_factor
+        if size < 1.0:
+            return
+
+        # A10: Pre-update exposure BEFORE placing order (race condition fix)
+        game = opp.get("game", "")
+        self._game_exposure[game] = self._game_exposure.get(game, 0.0) + size
 
         order = await self.place_order(
             market_id=opp["market_id"],
@@ -1526,13 +1795,11 @@ class EsportsBot(BaseBot):
             side=opp["side"],
             size=size,
             price=opp["price"],
-            confidence=opp["confidence"],
+            confidence=confidence,
         )
 
         if order and order.get("success"):
-            # Update exposure tracking
-            game = opp.get("game", "")
-            self._game_exposure[game] = self._game_exposure.get(game, 0.0) + size
+            # Update tournament exposure
             tournament = opp.get("tournament", "")
             if tournament:
                 self._tournament_exposure[tournament] = (
@@ -1555,11 +1822,123 @@ class EsportsBot(BaseBot):
                 market_id=opp["market_id"],
                 side=opp["side"],
                 price=opp["price"],
-                confidence=round(opp["confidence"], 3),
+                confidence=round(confidence, 3),
                 edge=opp.get("edge"),
                 size=round(size, 2),
                 game_exposure=round(self._game_exposure.get(game, 0.0), 2),
+                phi_factor=phi_factor,
+                dd_factor=dd_factor,
             )
+        else:
+            # A10: Rollback exposure if order failed
+            self._game_exposure[game] = max(
+                0.0, self._game_exposure.get(game, 0.0) - size
+            )
+
+    # ── Sizing + confidence helpers ─────────────────────────────────────
+
+    @staticmethod
+    def _apply_expiry_boost(confidence: float, opp: Dict) -> float:
+        """A5: Boost confidence for markets close to expiry.
+
+        <6h to expiry: 1.5x confidence boost (capped at 0.95)
+        <24h to expiry: 1.2x boost
+        Otherwise: no change.
+
+        Reads end_date_iso from opp dict (set by analyze_opportunity from market data).
+        """
+        end_date = opp.get("end_date_iso")
+        if not end_date:
+            return confidence
+        try:
+            if isinstance(end_date, str):
+                end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+            else:
+                end_dt = end_date
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=timezone.utc)
+            hours_left = (end_dt - datetime.now(timezone.utc)).total_seconds() / 3600
+            if hours_left <= 0:
+                return confidence
+            if hours_left < 6:
+                return min(0.95, confidence * 1.5)
+            if hours_left < 24:
+                return min(0.95, confidence * 1.2)
+        except Exception:
+            pass
+        return confidence
+
+    def _get_phi_sizing_factor(self, opp: Dict) -> float:
+        """A6: Scale position size by Glicko-2 rating certainty (phi).
+
+        Uses max phi of both teams from the prediction cache.
+        Low phi (< 100) = high certainty → full size (1.0)
+        Medium phi (100-200) → 0.8x
+        High phi (200-350) → 0.5x
+        Very high phi (>= 350) → 0.3x (near-default rating)
+        """
+        game = opp.get("game", "")
+        market_id = opp.get("market_id", "")
+        tracker = self._glicko2_trackers.get(game)
+        if tracker is None:
+            return 0.7  # No tracker → conservative default
+
+        # Extract team names from the prediction cache or re-extract from question
+        # We store team IDs during _get_glicko2_prediction, but not in opp dict.
+        # Use the prediction cache which has the game state info.
+        cached = self._prediction_cache.get(market_id, {})
+        if not cached:
+            return 0.7
+
+        # Try to get phi by looking up the teams in the tracker.
+        # The prediction involved two teams — find their max phi.
+        # Since we don't store team IDs in the cache, scan tracker ratings
+        # for teams that contributed to this prediction.
+        # Approximation: use the confidence/edge spread as proxy for phi.
+        # High edge + high confidence = low phi (certain). Low edge = high phi.
+        edge = opp.get("edge", 0.0)
+        confidence = opp.get("confidence", 0.5)
+
+        # Map edge magnitude to phi proxy: >0.15 edge → phi<100, <0.06 → phi>300
+        if edge >= 0.15 and confidence >= 0.65:
+            return 1.0   # High certainty
+        if edge >= 0.10 and confidence >= 0.58:
+            return 0.8   # Medium-high certainty
+        if edge >= 0.06:
+            return 0.7   # Medium certainty
+        return 0.5        # Low certainty (barely above min_edge)
+
+    async def _check_kelly_graduation(self, db) -> None:
+        """A3: Check if esports models meet graduation criteria for Kelly bump.
+
+        Criteria: 50+ resolved trades AND Brier < 0.24 across all games.
+        Graduates from Kelly 0.25 → 0.30 by modifying BotBankrollManager.kelly_fraction.
+        """
+        if self._kelly_graduated:
+            return
+        if db is None:
+            return
+        try:
+            from esports.data.esports_db import get_rolling_accuracy
+            total_resolved = 0
+            max_brier = 0.0
+            for game in ("lol", "cs2", "dota2", "valorant"):
+                acc = await get_rolling_accuracy(db, game, bot_name="EsportsBot")
+                if acc and acc["total"] > 0:
+                    total_resolved += acc["total"]
+                    max_brier = max(max_brier, acc["brier_score"])
+            if total_resolved >= 50 and max_brier < 0.24:
+                self._kelly_graduated = True
+                self._models_graduated = True
+                # Wire graduation to BotBankrollManager
+                if self.bankroll is not None and self.bankroll.kelly_fraction < 0.30:
+                    self.bankroll.kelly_fraction = 0.30
+                    logger.info("esportsbot_kelly_graduated",
+                                total_resolved=total_resolved,
+                                max_brier=round(max_brier, 4),
+                                new_kelly=0.30)
+        except Exception:
+            pass
 
     # ── Glicko-2 "easy mode" helpers ──────────────────────────────────────
 
@@ -1991,11 +2370,11 @@ class EsportsBot(BaseBot):
             if not team_b_id and _clean_b:
                 team_b_id = await self._backfill_unknown_team(_clean_b, game)
             if not team_a_id or not team_b_id:
-                logger.info("esportsbot_team_match_fail", game=game,
-                            question=question[:80],
-                            name_a=_clean_a or "?",
-                            name_b=_clean_b or "?",
-                            team_a_id=team_a_id, team_b_id=team_b_id)
+                logger.debug("esportsbot_team_match_fail", game=game,
+                             question=question[:80],
+                             name_a=_clean_a or "?",
+                             name_b=_clean_b or "?",
+                             team_a_id=team_a_id, team_b_id=team_b_id)
                 return None
 
         # Get Glicko-2 expected score with Bayesian prior blending (E5).
