@@ -11,15 +11,18 @@ import asyncio
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _project_root)
+
+from dotenv import load_dotenv
+load_dotenv(os.path.join(_project_root, ".env"))
 
 
 async def main():
     from base_engine.data.database import Database
-    from config.settings import settings
 
     db = Database()
-    await db.initialize(settings.DATABASE_URL)
+    await db.init()
 
     print("=== Backfill Trade Events ===")
 
@@ -139,7 +142,7 @@ async def main():
     else:
         print("PnL match confirmed")
 
-    await db.engine.dispose()
+    await db.close()
     print("\n=== Backfill Complete ===")
 
 
