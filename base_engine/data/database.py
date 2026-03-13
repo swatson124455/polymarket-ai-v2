@@ -4821,7 +4821,7 @@ class Database:
                             "  COUNT(*) FILTER (WHERE realized_pnl > 0) AS wins,"
                             "  COUNT(*) FILTER (WHERE realized_pnl < 0) AS losses "
                             "FROM paper_trades "
-                            "WHERE bot_name = :bot AND created_at >= :snap_date::date"
+                            "WHERE bot_name = :bot AND created_at >= CAST(:snap_date AS date)"
                         ),
                         {"bot": bot_name, "snap_date": _date},
                     )
@@ -5027,7 +5027,7 @@ class Database:
                             "   internal_value, external_value, difference, severity, details) "
                             "VALUES (:today, 'POSITION', :bot, :market,"
                             "  :pos_size, :trade_size, :delta, 'WARNING',"
-                            "  '{\"source\": \"positions_vs_paper_trades\"}'::jsonb)"
+                            "  CAST('{\"source\": \"positions_vs_paper_trades\"}' AS jsonb))"
                         ),
                         {
                             "today": today,
@@ -5064,7 +5064,7 @@ class Database:
                             "   severity, details) "
                             "VALUES (:today, 'STALE_POSITION', :bot, :market,"
                             "  'CRITICAL',"
-                            "  '{\"source\": \"traded_markets_status_mismatch\"}'::jsonb)"
+                            "  CAST('{\"source\": \"traded_markets_status_mismatch\"}' AS jsonb))"
                         ),
                         {
                             "today": today,
