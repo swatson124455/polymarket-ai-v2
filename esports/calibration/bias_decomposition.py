@@ -105,7 +105,7 @@ class EsportsBiasDecomposition:
             "EXTRACT(EPOCH FROM (resolved_at - created_at))/3600 as hours_to_resolve "
             "FROM esports_predictions "
             "WHERE actual_outcome IS NOT NULL "
-            "AND created_at > NOW() - INTERVAL :interval_days "
+            "AND created_at > NOW() - :days_int * INTERVAL '1 day' "
         )
 
         rows_by_game: Dict[str, list] = {g: [] for g in games}
@@ -113,7 +113,7 @@ class EsportsBiasDecomposition:
         try:
             async with db.get_session() as session:
                 result = await session.execute(
-                    query, {"interval_days": f"{days} days"}
+                    query, {"days_int": int(days)}
                 )
                 for row in result:
                     game_key = row.game.lower() if row.game else None

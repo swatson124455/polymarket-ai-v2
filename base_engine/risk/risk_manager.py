@@ -142,15 +142,13 @@ class RiskManager:
         }
 
         # PipelineGate: refuse risk evaluation when data is stale. Phase 8: 60s cache.
-        # In SIMULATION_MODE: warn but DON'T block — paper trading must continue to evaluate
-        # models even when sync_log is stale. WebSocket streams provide live prices regardless.
-        _sim_mode = getattr(settings, "SIMULATION_MODE", False)
+        # Blocks in all modes — paper trading is production.
         if self.db and getattr(self.db, "session_factory", None):
             try:
                 now = time.monotonic()
                 if now < self._pipeline_gate_cache_until and self._pipeline_gate_cache is not None:
                     passed, _ = self._pipeline_gate_cache
-                    if not passed and not _sim_mode:
+                    if not passed:
                         checks["allowed"] = False
                         checks["reasons"].append("Data freshness check failed")
                         return checks
@@ -163,28 +161,21 @@ class RiskManager:
                     self._pipeline_gate_cache = (gate_result.passed, gate_result)
                     self._pipeline_gate_cache_until = now + PIPELINE_GATE_CACHE_TTL
                     if not gate_result.passed:
-                        if _sim_mode:
-                            # Paper trading: warn but continue — don't block model evaluation
-                            logger.warning(
-                                "PipelineGate stale data (paper trading continues): %s",
-                                gate_result.summary,
+                        logger.error(
+                            "Risk gate failed — refusing to evaluate. Data may be stale: %s",
+                            gate_result.summary,
+                        )
+                        if self.alerting:
+                            await self.alerting.send_alert(
+                                title="Risk gate failed — data freshness check",
+                                message=gate_result.summary,
+                                severity=AlertSeverity.ERROR,
+                                source="pipeline_gate",
+                                metadata={"failures": gate_result.failures},
                             )
-                        else:
-                            logger.error(
-                                "Risk gate failed — refusing to evaluate. Data may be stale: %s",
-                                gate_result.summary,
-                            )
-                            if self.alerting:
-                                await self.alerting.send_alert(
-                                    title="Risk gate failed — data freshness check",
-                                    message=gate_result.summary,
-                                    severity=AlertSeverity.ERROR,
-                                    source="pipeline_gate",
-                                    metadata={"failures": gate_result.failures},
-                                )
-                            checks["allowed"] = False
-                            checks["reasons"].append("Data freshness check failed")
-                            return checks
+                        checks["allowed"] = False
+                        checks["reasons"].append("Data freshness check failed")
+                        return checks
             except Exception as e:
                 logger.warning("PipelineGate check failed (proceeding with risk eval): %s", e)
 
@@ -240,12 +231,8 @@ class RiskManager:
                 if order_value > 0:
                     cost_model = TransactionCostModel()
                     cost_edge = cost_model.min_edge_for_profitability(order_value, 0)
-                    # Paper trading: exit via explicit SELL (full taker fee on entry AND exit).
-                    # Live trading: resolution is free (one-way cost only).
-                    # Double edge requirement in simulation to account for round-trip fees.
-                    _is_sim = getattr(settings, "SIMULATION_MODE", False)
-                    if _is_sim:
-                        cost_edge *= 2.0
+                    # Transaction cost edge: single-sided cost model (same in all modes).
+                    # PaperTradingEngine handles exit fee accounting internally.
                     min_edge = max(min_edge, cost_edge)
             except Exception as e:
                 logger.debug("transaction cost model edge calculation failed: %s", e)
@@ -682,12 +669,11 @@ class RiskManager:
 
         # Calibration-aware fraction reduction: scale Kelly down when Brier is poor.
         # Good Brier (< 0.15): full fraction. Mediocre (0.15-0.30): reduce 15-50%.
-        # Poor (> 0.30): halve fraction (0.75× floor in sim mode).
+        # Poor (> 0.30): halve fraction (0.50× floor).
         if calibration_quality and calibration_quality.get("count", 0) >= 20:
             brier = calibration_quality.get("brier", 0.25)
             if brier > 0.15:
-                _sim_mode = getattr(settings, "SIMULATION_MODE", False)
-                cal_floor = 0.75 if _sim_mode else 0.50
+                cal_floor = 0.50
                 cal_multiplier = max(cal_floor, 1.0 - (brier - 0.15) * 3.33)
                 kelly_frac *= cal_multiplier
                 logger.debug("Kelly calibration adj: brier=%.3f mult=%.2f", brier, cal_multiplier)

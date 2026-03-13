@@ -498,7 +498,7 @@ class PaperTradingEngine:
                     # Emit ENTRY event to trade_events audit trail
                     if hasattr(self.db, "insert_trade_event"):
                         try:
-                            await self.db.insert_trade_event(
+                            _seq_num = await self.db.insert_trade_event(
                                 event_type="ENTRY",
                                 bot_name=bot_name,
                                 market_id=market_id,
@@ -510,6 +510,12 @@ class PaperTradingEngine:
                                 correlation_id=correlation_id,
                                 order_id=trade_id,
                             )
+                            # Link trade to its prediction for model attribution
+                            if _seq_num and correlation_id and hasattr(self.db, "insert_trade_model_linkage"):
+                                await self.db.insert_trade_model_linkage(
+                                    trade_event_seq=_seq_num,
+                                    correlation_id=correlation_id,
+                                )
                         except Exception:
                             pass  # Non-critical: trade_events is audit trail
                     break  # Success — exit retry loop

@@ -497,9 +497,7 @@ class OrderGateway:
         _t_risk_end = time.monotonic()
 
         # Cascade + liquidity checks: run in parallel (were sequential: 30-100ms)
-        # Liquidity check now runs in simulation mode too (fail-open: warns but doesn't block).
-        # This gives ALL bots spread/depth visibility in paper trading for model calibration.
-        _is_simulation = getattr(settings, "SIMULATION_MODE", False)
+        # Liquidity check blocks in all modes (paper = production).
         _cascade_enabled = getattr(settings, "CASCADE_CHECK_ENABLED", False) and self.cascade_detector is not None
         _liquidity_enabled = self.liquidity_guardian is not None
 
@@ -544,15 +542,8 @@ class OrderGateway:
                 if not liq_result.get("can_execute", True):
                     rec = liq_result.get("recommendation", "abort")
                     reason = liq_result.get("reason", "liquidity check failed")
-                    if _is_simulation:
-                        # Paper trading: warn but don't block — calibrate model against real spread data
-                        logger.warning(
-                            "Liquidity check failed (paper mode, not blocking): %s (%s)",
-                            reason, rec, market_id=market_id, bot_name=bot_name,
-                        )
-                    else:
-                        logger.warning("Order blocked: liquidity", market_id=market_id, reason=reason, rec=rec)
-                        return {"success": False, "error": f"Liquidity check: {reason} ({rec})"}
+                    logger.warning("Order blocked: liquidity", market_id=market_id, reason=reason, rec=rec)
+                    return {"success": False, "error": f"Liquidity check: {reason} ({rec})"}
 
         # Pre-validation: check paper trading balance before reserving position
         # YES/NO/BUY all require cash (buying tokens); only SELL is closing a position

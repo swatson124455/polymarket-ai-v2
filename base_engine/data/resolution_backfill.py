@@ -397,7 +397,9 @@ async def run_resolution_backfill(
                             event_type="RESOLUTION",
                             bot_name=row[1],
                             market_id=row[0],
-                            side=row[2],
+                            side=row[4],       # pt.side (YES/NO position direction)
+                            size=0.0,          # Symbolic — resolution is an event, not a trade
+                            price=0.0,         # No trade price on resolution
                             realized_pnl=float(row[3]) if row[3] is not None else None,
                         )
                     except Exception:

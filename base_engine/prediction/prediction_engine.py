@@ -1409,6 +1409,7 @@ class PredictionEngine:
         }
         if self.best_feature_names is not None:
             learned_metrics["best_feature_names"] = self.best_feature_names
+        _saved_versions: dict = {}  # name → (version, model_type, metrics)
         async with self.db.get_session() as session:
             await session.execute(update(MLModel).values(is_active=False))
             scaler_blob = pickle.dumps(self.scaler) if self.scaler else None
@@ -1433,8 +1434,24 @@ class PredictionEngine:
                     metrics=metrics,
                 )
                 session.add(rec)
+                _saved_versions[name] = (next_version, type(model).__name__, metrics)
             await session.commit()
         logger.info("Models saved to database")
+        # Register each model version in model_registry for lifecycle tracking
+        if hasattr(self.db, "register_model"):
+            _skv = getattr(sklearn, "__version__", None) or ""
+            for _name, (_ver, _mtype, _met) in _saved_versions.items():
+                try:
+                    await self.db.register_model(
+                        model_name=_name,
+                        model_version=_ver,
+                        model_type=_mtype,
+                        framework=f"sklearn-{_skv}",
+                        training_metrics=_met,
+                        is_active=True,
+                    )
+                except Exception:
+                    pass  # Non-critical: register_model has own guard
 
     async def load_models_from_db(self) -> None:
         """Load active models and scaler from ml_models table. Validates sklearn version and runs test predict."""

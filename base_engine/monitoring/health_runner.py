@@ -271,10 +271,10 @@ class HealthRunner:
         """) or 0
         if temporal_violations > 0:
             report.add(
-                "critical", "prediction_log",
-                f"Temporal ordering violation: {temporal_violations} predictions would receive labels "
-                "with resolved_at < prediction_time (clock skew or backfill ordering bug). "
-                "These are blocked from labeling by the temporal guard in backfill_prediction_log_resolution.",
+                "info", "prediction_log",
+                f"Temporal ordering: {temporal_violations} predictions have resolved_at < prediction_time "
+                "(market end_date_iso precedes prediction — expected for late-discovered markets). "
+                "Blocked from labeling by temporal guard.",
             )
 
         # Feature integrity

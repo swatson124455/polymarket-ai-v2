@@ -176,8 +176,7 @@ class BotBankrollManager:
         if calibration_quality and calibration_quality.get("count", 0) >= 20:
             brier = calibration_quality.get("brier", 0.25)
             if brier > 0.15:
-                _sim_mode = getattr(settings, "SIMULATION_MODE", False)
-                cal_floor = 0.75 if _sim_mode else 0.50
+                cal_floor = 0.50
                 cal_mult = max(cal_floor, 1.0 - (brier - 0.15) * 3.33)
                 fraction *= cal_mult
 
