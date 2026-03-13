@@ -512,6 +512,11 @@ class OrderGateway:
             async def _liquidity_check():
                 if not _liquidity_enabled:
                     return None
+                # Session 82: Skip liquidity API call for RTDS fast-copy trades (saves 100-300ms).
+                # Gated by MIRROR_SKIP_LIQUIDITY_RTDS=true AND correlation_id prefix "rtds:".
+                if (correlation_id and str(correlation_id).startswith("rtds:")
+                        and getattr(settings, "MIRROR_SKIP_LIQUIDITY_RTDS", False)):
+                    return None
                 # Look up condition_id from market index for CLOB API order book query
                 _cid = ""
                 if self._market_index:

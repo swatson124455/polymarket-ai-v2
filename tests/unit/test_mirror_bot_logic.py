@@ -64,6 +64,7 @@ def _make_bot(**kwargs):
         ms.MIRROR_MAX_CONCURRENT_FETCHES = 20
         bot = MirrorBot(engine)
     bot.bankroll = None  # Disable bankroll so daily cap uses settings path
+    bot._adaptive_safety = None  # Disable adaptive safety so tests control limits via settings
     return bot, engine
 
 

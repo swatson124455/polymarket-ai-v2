@@ -340,6 +340,7 @@ class EliteWatchlist:
                 confidence=confidence,
                 trader_address=addr,
                 category=None,
+                source="rtds",
             )
             _latency_ms = (time.monotonic() - _start) * 1000
 
@@ -363,11 +364,14 @@ class EliteWatchlist:
                         "trader_address": addr,
                         "trade_id": tx_hash or f"ws_{int(time.time())}",
                     })
-                    await self._mirror_bot._persist_trader_to_position({
+                    # Fire-and-forget: non-financial metadata (trader address on position).
+                    # Shaves ~50-200ms off copy latency by not awaiting DB write.
+                    _t = asyncio.create_task(self._mirror_bot._persist_trader_to_position({
                         "market_id": market_id,
                         "token_id": token_id,
                         "trader_address": addr,
-                    })
+                    }))
+                    _t.add_done_callback(lambda t: t.result() if not t.cancelled() and not t.exception() else None)
 
                 logger.info(
                     "mirror_instant_copy",

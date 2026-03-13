@@ -202,7 +202,8 @@ class PolymarketClient:
             limits = httpx.Limits(max_keepalive_connections=100, max_connections=200)
             headers = {"User-Agent": "PolymarketAI/1.0 (https://github.com; data)"}
             self.client = httpx.AsyncClient(
-                timeout=timeout, limits=limits, headers=headers
+                timeout=timeout, limits=limits, headers=headers,
+                http2=True,
             )
             # Session 46: Ensure circuit breaker starts clean on first connection
             await self.circuit_breaker.reset()

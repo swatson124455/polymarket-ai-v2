@@ -95,6 +95,23 @@ class MirrorBot(BaseBot):
         # Deprecation flag: MIRROR_MAX_DAILY_EXPOSURE_PCT fallback warning (log once)
         self._deprecation_warned: bool = False
 
+        # Session 82: Calibration stack (FTS + Le2026 + conformal)
+        self._calibration_stack = None
+        self._calibration_fitted: bool = False
+        try:
+            from bots.mirror_calibration import MirrorCalibrationStack
+            self._calibration_stack = MirrorCalibrationStack(db=base_engine.db)
+        except Exception as e:
+            logger.debug("MirrorCalibrationStack init skipped: %s", e)
+
+        # Session 82: Adaptive safety constraints (Pearl-inspired)
+        self._adaptive_safety = None
+        try:
+            from bots.mirror_adaptive_safety import MirrorAdaptiveSafety
+            self._adaptive_safety = MirrorAdaptiveSafety(db=base_engine.db)
+        except Exception as e:
+            logger.debug("MirrorAdaptiveSafety init skipped: %s", e)
+
         # Real-time WebSocket copy trading via EliteWatchlist + RTDS global feed
         self._watchlist = None
         self._watchlist_started: bool = False
@@ -274,6 +291,24 @@ class MirrorBot(BaseBot):
 
         # R5b: Load per-category consensus thresholds from DB on first scan.
         await self._load_consensus_from_db()
+
+        # Session 82: Fit calibration stack on first scan (re-fit daily via _calibration_fitted flag)
+        if self._calibration_stack and not self._calibration_fitted:
+            try:
+                _cal_results = await self._calibration_stack.fit()
+                await self._calibration_stack.fit_conformal()
+                self._calibration_fitted = True
+                if _cal_results:
+                    logger.info("MirrorBot calibration stack fitted", results=_cal_results)
+            except Exception as e:
+                logger.debug("MirrorBot calibration fit failed: %s", e)
+
+        # Session 82: Refresh adaptive safety metrics periodically
+        if self._adaptive_safety:
+            try:
+                await self._adaptive_safety.refresh(self._scan_count)
+            except Exception as e:
+                logger.debug("MirrorBot adaptive safety refresh failed: %s", e)
 
         # Refresh elites on first scan or periodically
         # P3-2: Wrap with 10s timeout — elite refresh DB query can block scan 30s+ under pool pressure
@@ -596,6 +631,10 @@ class MirrorBot(BaseBot):
 
         # Consensus filter: require min unique elites agreeing.
         # R5b: Use per-category threshold when available, otherwise global min_consensus.
+        # Session 82: When MIRROR_USE_GEOMEAN_CONSENSUS=true, aggregate confidence via
+        # extremized geometric mean of odds (Satopää et al. 2014) instead of max-confidence.
+        _use_geomean = getattr(settings, "MIRROR_USE_GEOMEAN_CONSENSUS", False)
+        _extremize_d = float(getattr(settings, "MIRROR_GEOMEAN_EXTREMIZE_D", 2.0))
         result = []
         _max_unique = 0
         _groups_checked = 0
@@ -604,7 +643,32 @@ class MirrorBot(BaseBot):
             _n = len(unique_traders)
             _max_unique = max(_max_unique, _n)
             _groups_checked += 1
-            best = max(items, key=lambda t: t["confidence"])
+
+            if _use_geomean and _n >= 2:
+                # Extremized geometric mean of odds:
+                # 1. Convert each confidence p_i to odds o_i = p_i / (1 - p_i)
+                # 2. Geometric mean: o_geo = (prod(o_i))^(1/n)
+                # 3. Extremize: o_ext = o_geo^d  (d=2.0 corrects hedging toward 50%)
+                # 4. Convert back: p_agg = o_ext / (1 + o_ext)
+                _confidences = [t["confidence"] for t in items]
+                _log_odds_sum = 0.0
+                for _c in _confidences:
+                    _c_clip = max(0.01, min(0.99, _c))
+                    _log_odds_sum += math.log(_c_clip / (1.0 - _c_clip))
+                _geo_log_odds = _log_odds_sum / len(_confidences)
+                _ext_log_odds = _geo_log_odds * _extremize_d
+                # Stable sigmoid: avoid overflow
+                if _ext_log_odds > 10:
+                    _agg_conf = 0.99
+                elif _ext_log_odds < -10:
+                    _agg_conf = 0.01
+                else:
+                    _agg_conf = 1.0 / (1.0 + math.exp(-_ext_log_odds))
+                best = max(items, key=lambda t: t["confidence"])
+                best = {**best, "confidence": _agg_conf}
+            else:
+                best = max(items, key=lambda t: t["confidence"])
+
             # Determine per-category consensus requirement
             _category = (best.get("category") or "").lower()
             _required = self._get_consensus_min(_category)
@@ -846,9 +910,16 @@ class MirrorBot(BaseBot):
 
         Returns False with a specific INFO log identifying WHICH limit was hit.
         """
-        max_positions = getattr(
-            settings, "MIRROR_MAX_CONCURRENT_POSITIONS", self.MAX_CONCURRENT_POSITIONS
-        )
+        # Session 82: Adaptive safety overrides static max_positions when enabled.
+        # Gate on MIRROR_ADAPTIVE_SAFETY + _fitted to avoid reading wrong settings in tests.
+        if (self._adaptive_safety
+                and getattr(settings, "MIRROR_ADAPTIVE_SAFETY", False)
+                and self._adaptive_safety._fitted):
+            max_positions = self._adaptive_safety.get_adjusted_max_positions()
+        else:
+            max_positions = getattr(
+                settings, "MIRROR_MAX_CONCURRENT_POSITIONS", self.MAX_CONCURRENT_POSITIONS
+            )
         if len(self._open_positions) >= max_positions:
             if not getattr(self, '_cap_logged_this_scan', False):
                 logger.info("Mirror POSITION CAP: %d/%d positions, skipping",
@@ -955,6 +1026,7 @@ class MirrorBot(BaseBot):
         confidence: float,
         trader_address: str,
         category: Optional[str] = None,
+        source: str = "consensus",
     ) -> bool:
         """Execute a mirror trade with reliability weighting and exposure caps."""
         # S48 FIX: Skip SELL consensus trades unless we hold that position.
@@ -1036,12 +1108,39 @@ class MirrorBot(BaseBot):
             except Exception as e:
                 logger.debug("MirrorBot: signal enhancements failed (using raw confidence): %s", e)
 
+        # Session 82: Apply calibration stack (FTS + Le2026 domain bias) to confidence.
+        # Gated by MIRROR_USE_CALIBRATION=true. When off, confidence passes through unchanged.
+        _conformal_interval = None
+        if self._calibration_stack:
+            # Calibrate confidence (domain + horizon aware)
+            _ttr_days = None
+            _cat = category or ""
+            if _cat or market_id:
+                try:
+                    _meta_cat, _meta_ttr = await self._get_market_meta(str(market_id))
+                    _cat = _cat or _meta_cat
+                    _ttr_map = {"hours": 0.5, "days": 3.0, "weeks": 21.0}
+                    _ttr_days = _ttr_map.get(_meta_ttr)
+                except Exception:
+                    pass
+            _raw_conf = confidence
+            confidence = self._calibration_stack.calibrate_confidence(
+                confidence, category=_cat, ttr_days=_ttr_days,
+            )
+            if abs(_raw_conf - confidence) > 0.01:
+                logger.info("mirror_calibrated", raw=round(_raw_conf, 3), cal=round(confidence, 3))
+
+            # Conformal prediction interval for conservative Kelly sizing
+            _conformal_interval = self._calibration_stack.get_conformal_interval(confidence)
+
         # S48 FIX: Use per-bot BotBankrollManager (Session 47) instead of deprecated
         # risk_manager.calculate_position_size() which divides Kelly by KELLY_ACTIVE_BOTS.
         # calculate_bot_position_size() returns shares (USD / price).
+        # Session 82: Pass conformal_interval for conservative Kelly sizing when available.
         size = await self.calculate_bot_position_size(
             confidence=confidence,
             price=price,
+            conformal_interval=_conformal_interval,
         )
         size *= reliability_mult
 
@@ -1064,6 +1163,12 @@ class MirrorBot(BaseBot):
             logger.info("Mirror trade size zero after limits (per_mkt=$%.0f daily_rem=$%.0f), skipping",
                         max_per_market_usd, remaining_daily_usd)
             return False
+
+        # Session 82: Tag RTDS trades so order_gateway can skip liquidity check (saves 100-300ms).
+        if source == "rtds":
+            self._current_correlation_id = f"rtds:{trader_address[:10]}"
+        else:
+            self._current_correlation_id = None
 
         order = await self.place_order(
             market_id=market_id,

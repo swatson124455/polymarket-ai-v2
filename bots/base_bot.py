@@ -538,11 +538,13 @@ class BaseBot(ABC):
         calibration_quality: Optional[Dict] = None,
         market_vol: float = 0.0,
         category: str = "",
+        conformal_interval: Optional[tuple] = None,
     ) -> float:
         """Position sizing via per-bot BotBankrollManager (Session 47).
         Falls back to legacy risk_manager.calculate_position_size() if bankroll not available.
         Pass calibration_quality from prediction result to enable calibration-aware sizing.
-        Pass category for category-specific Kelly fractions."""
+        Pass category for category-specific Kelly fractions.
+        Pass conformal_interval (p_low, p_high) for conservative Kelly sizing (Session 82)."""
         try:
             # Session 47: Use per-bot bankroll manager when available
             if self.bankroll is not None:
@@ -551,6 +553,7 @@ class BaseBot(ABC):
                     price=price,
                     calibration_quality=calibration_quality,
                     category=category,
+                    conformal_interval=conformal_interval,
                 )
                 # Convert USD to shares for compatibility with downstream code
                 if price > 0 and size_usd > 0:
