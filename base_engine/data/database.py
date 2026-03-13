@@ -4745,7 +4745,7 @@ class Database:
                         "INSERT INTO position_snapshots "
                         "  (snapshot_date, bot_name, market_id, side, quantity,"
                         "   entry_price, mark_price, unrealized_pnl) "
-                        "SELECT :snap_date, bot_name, market_id, side, size, entry_price,"
+                        "SELECT :snap_date, COALESCE(source_bot, bot_id), market_id, side, size, entry_price,"
                         "  COALESCE(current_price, entry_price),"
                         "  CASE "
                         "    WHEN side = 'YES' THEN size * (COALESCE(current_price, entry_price) - entry_price) "
@@ -4780,7 +4780,7 @@ class Database:
                 # Per-bot aggregates from open positions
                 bots_result = await session.execute(
                     _sa_text(
-                        "SELECT bot_name,"
+                        "SELECT COALESCE(source_bot, bot_id) AS bot_name,"
                         "  COUNT(*) AS open_positions,"
                         "  COALESCE(SUM(size * entry_price), 0) AS deployed_capital,"
                         "  COALESCE(SUM("
@@ -4791,7 +4791,7 @@ class Database:
                         "    END"
                         "  ), 0) AS unrealized_pnl "
                         "FROM positions WHERE status = 'open' "
-                        "GROUP BY bot_name"
+                        "GROUP BY COALESCE(source_bot, bot_id)"
                     )
                 )
                 bots = bots_result.fetchall()
@@ -4998,7 +4998,7 @@ class Database:
                 mismatches = await session.execute(
                     _sa_text(
                         "WITH position_state AS ("
-                        "  SELECT bot_name, market_id, side, size FROM positions WHERE status = 'open'"
+                        "  SELECT COALESCE(source_bot, bot_id) AS bot_name, market_id, side, size FROM positions WHERE status = 'open'"
                         "), trade_state AS ("
                         "  SELECT bot_name, market_id, side, SUM(size) AS total_size"
                         "  FROM paper_trades"
