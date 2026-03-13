@@ -240,10 +240,10 @@ class FocalTemperatureCalibrator:
                     "SELECT predicted_prob, resolution"
                     " FROM prediction_log"
                     " WHERE resolution IS NOT NULL"
-                    " AND prediction_time > NOW() - INTERVAL :interval_days"
+                    " AND prediction_time > NOW() - INTERVAL '1 day' * :interval_days"
                     " ORDER BY prediction_time DESC"
                     " LIMIT 5000"
-                ), {"interval_days": f"{int(n_days)} days"})
+                ), {"interval_days": int(n_days)})
                 rows = r.fetchall()
 
             if len(rows) < MIN_RESOLVED_FOR_CALIBRATION:
@@ -369,10 +369,10 @@ class HorizonBiasCalibrator:
                     " WHERE pt.realized_pnl IS NOT NULL"
                     " AND pt.side IN ('YES', 'NO')"
                     " AND LOWER(pt.side) != 'sell'"
-                    " AND pt.created_at > NOW() - INTERVAL :interval_days"
+                    " AND pt.created_at > NOW() - INTERVAL '1 day' * :interval_days"
                     " AND m.end_date_iso IS NOT NULL"
                     " ORDER BY pt.created_at DESC LIMIT 10000"
-                ), {"interval_days": f"{int(n_days)} days"})
+                ), {"interval_days": int(n_days)})
                 rows = r.fetchall()
 
             if len(rows) < self.MIN_SAMPLES_PER_BUCKET:

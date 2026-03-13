@@ -4718,7 +4718,7 @@ class Database:
                         "LEFT JOIN trade_events te ON te.correlation_id = pl.correlation_id"
                         "  AND te.event_type = 'ENTRY' "
                         "LEFT JOIN model_registry mr ON mr.model_name = pl.model_name"
-                        "  AND mr.is_active = TRUE "
+                        "  AND mr.status = 'production' "
                         "WHERE pl.prediction_time >= :start AND pl.prediction_time < :end "
                         "GROUP BY pl.model_name, mr.model_version, pl.bot_name "
                         "ON CONFLICT (perf_date, model_name, model_version, bot_name) DO UPDATE SET "
@@ -5412,6 +5412,50 @@ class Database:
                 await session.commit()
         except Exception as e:
             logger.warning("update_model_performance failed: %s", e)
+
+    async def register_feature_set(
+        self,
+        name: str,
+        version: int = 1,
+        *,
+        description: Optional[str] = None,
+        feature_names: Optional[list] = None,
+        feature_types: Optional[list] = None,
+        preprocessing: Optional[Dict] = None,
+    ) -> Optional[int]:
+        """Register a feature set definition. Returns id or None."""
+        if self.session_factory is None:
+            return None
+        try:
+            from sqlalchemy import text as _sa_text
+            async with self.get_session() as session:
+                result = await session.execute(
+                    _sa_text(
+                        "INSERT INTO feature_sets "
+                        "  (name, version, description, feature_names, feature_types, preprocessing) "
+                        "VALUES (:name, :version, :desc, :names, :types, CAST(:preproc AS jsonb)) "
+                        "ON CONFLICT (name, version) DO UPDATE SET "
+                        "  description = EXCLUDED.description,"
+                        "  feature_names = EXCLUDED.feature_names,"
+                        "  feature_types = EXCLUDED.feature_types,"
+                        "  preprocessing = EXCLUDED.preprocessing "
+                        "RETURNING id"
+                    ),
+                    {
+                        "name": name,
+                        "version": version,
+                        "desc": description,
+                        "names": feature_names,
+                        "types": feature_types,
+                        "preproc": json.dumps(preprocessing or {}),
+                    },
+                )
+                row = result.fetchone()
+                await session.commit()
+                return row[0] if row else None
+        except Exception as e:
+            logger.warning("register_feature_set failed for %s v%d: %s", name, version, e)
+            return None
 
     async def ensure_future_partitions(self) -> int:
         """Create monthly partitions 3 months ahead for trade_events and position_snapshots.

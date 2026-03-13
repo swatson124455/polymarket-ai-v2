@@ -1446,9 +1446,9 @@ class PredictionEngine:
                         model_name=_name,
                         model_version=_ver,
                         model_type=_mtype,
-                        framework=f"sklearn-{_skv}",
-                        training_metrics=_met,
-                        is_active=True,
+                        status="production",
+                        training_params={"framework": f"sklearn-{_skv}"},
+                        metrics=_met,
                     )
                 except Exception:
                     pass  # Non-critical: register_model has own guard

@@ -6,6 +6,21 @@ This is a live 15-bot Polymarket automated trading system. Real capital is at ri
 
 Working code is sacred. Fix only what is broken. Fix it at the root. Prove it before and after. If you cannot explain exactly why a line needs to change and exactly what breaks if you don't change it, do not change it.
 
+## PAPER TRADING IS PRODUCTION
+
+Paper trading is NOT a sandbox, prototype, or test environment. Paper trading is LIVE PRODUCTION with a $0 execution flag.
+Every system, check, feature, and edge case that matters in live trading matters IDENTICALLY in paper trading. The ONLY difference is whether the final order submission sends to the CLOB or logs to the paper trade table.
+
+### Rules (non-negotiable):
+1. NEVER skip, defer, or simplify a feature because "we're only paper trading." If it would matter with real USDC, it matters now.
+2. NEVER say "this isn't worth implementing until we go live." Going live is flipping a boolean. Everything else must already work.
+3. Paper trading exists to VALIDATE that the system works correctly BEFORE real capital is at risk. Cutting corners in paper trading defeats the entire purpose — it means we'd discover bugs with real money instead of fake money.
+4. If a feature improves edge detection, risk management, execution quality, or system reliability, implement it fully regardless of trading mode. The paper/live flag affects ONLY the final order submission step.
+5. Position reconciliation, fill confirmation, order state tracking, rate limiting, WebSocket management, and all infrastructure must operate identically in paper and live modes.
+
+### The test:
+Before pushing back on any feature, ask: "If we were live with $25K deployed right now, would I skip this?" If the answer is no, implement it.
+
 ## Before You Write a Single Line
 
 Complete this checklist out loud before modifying ANY file:

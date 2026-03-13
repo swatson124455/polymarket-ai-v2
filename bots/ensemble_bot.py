@@ -811,24 +811,28 @@ class EnsembleBot(BaseBot):
                     current_price=round(_cur_price, 4),
                     unrealized_pnl=round(_unrealized_pnl, 2),
                     exit_pct=_exit_pct,
-                    action="close_signal_logged"
-                    + (" (paper: held to resolution)" if getattr(settings, "SIMULATION_MODE", True) else ""),
+                    action="close_signal_logged",
                 )
 
-                # In paper mode: mark for cooldown to prevent re-entry after resolution
-                # In live mode: would call self.base_engine.close_position(market_id, bot_name)
-                _is_sim = getattr(settings, "SIMULATION_MODE", True)
-                if not _is_sim:
-                    # Live mode: attempt to close position (sell opposing side)
-                    try:
-                        _close_result = await self.base_engine.close_position(market_id, self.bot_name)
-                        logger.info("politics_position_closed", market_id=market_id, result=_close_result)
-                    except Exception as _ce:
-                        logger.warning("politics_close_failed: %s", _ce)
-                else:
-                    # Paper mode: apply longer cooldown so capital isn't re-deployed on same market
-                    self._recently_exited[str(market_id)] = time.time()
-                    self._exit_count[str(market_id)] = 3  # 3 exits = 4× base cooldown
+                # Close position via OrderGateway (routes to paper or live engine)
+                try:
+                    _token_id = str(pos.get("token_id") or _mkt.get("conditionId") or "")
+                    _close_result = await self.base_engine.place_order(
+                        bot_name=self.bot_name,
+                        market_id=market_id,
+                        token_id=_token_id,
+                        side="SELL",
+                        size=_size,
+                        price=_cur_price,
+                        confidence=1.0,
+                        correlation_id=f"profit_take:{market_id}",
+                    )
+                    logger.info("politics_position_closed", market_id=market_id, result=_close_result)
+                except Exception as _ce:
+                    logger.warning("politics_close_failed: %s", _ce)
+                # Cooldown prevents re-entry on same market
+                self._recently_exited[str(market_id)] = time.time()
+                self._exit_count[str(market_id)] = 3  # 3 exits = 4× base cooldown
         except Exception as e:
             logger.debug("politics_profit_taking check failed: %s", e)
 

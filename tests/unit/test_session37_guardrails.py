@@ -392,6 +392,8 @@ class TestPoliticsProfitTaking:
         mock_engine._market_index = {
             mid: {"yes_price": price} for mid, price in market_prices.items()
         }
+        # Mock place_order as async (used for SELL exits)
+        mock_engine.place_order = AsyncMock(return_value={"success": True})
 
         bot = EnsembleBot.__new__(EnsembleBot)
         bot.bot_name = "EnsembleBot"
@@ -415,9 +417,12 @@ class TestPoliticsProfitTaking:
             mock_s.POLITICS_EXIT_ENABLED = True
             mock_s.POLITICS_EXIT_PCT = 0.65
             mock_s.POLITICS_EXIT_MIN_PROFIT_USD = 0.0  # no minimum for this test
-            mock_s.SIMULATION_MODE = True
             await bot._check_politics_profit_taking()
-        # In sim mode: cooldown applied
+        # place_order called with SELL to close position
+        bot.base_engine.place_order.assert_called_once()
+        call_kwargs = bot.base_engine.place_order.call_args
+        assert call_kwargs.kwargs.get("side") == "SELL" or call_kwargs[1].get("side") == "SELL"
+        # Cooldown applied after close
         assert "mkt1" in bot._recently_exited, "Market should be added to recently_exited"
         assert bot._exit_count.get("mkt1") == 3
 
@@ -435,7 +440,6 @@ class TestPoliticsProfitTaking:
             mock_s.POLITICS_EXIT_ENABLED = True
             mock_s.POLITICS_EXIT_PCT = 0.65
             mock_s.POLITICS_EXIT_MIN_PROFIT_USD = 0.0
-            mock_s.SIMULATION_MODE = True
             await bot._check_politics_profit_taking()
         assert "mkt1" not in bot._recently_exited, "Should not trigger below target"
 
@@ -457,7 +461,6 @@ class TestPoliticsProfitTaking:
             mock_s.POLITICS_EXIT_ENABLED = True
             mock_s.POLITICS_EXIT_PCT = 0.65
             mock_s.POLITICS_EXIT_MIN_PROFIT_USD = 0.0
-            mock_s.SIMULATION_MODE = True
             await bot._check_politics_profit_taking()
         assert "mkt2" in bot._recently_exited
 
@@ -475,7 +478,6 @@ class TestPoliticsProfitTaking:
             mock_s.POLITICS_EXIT_ENABLED = False
             mock_s.POLITICS_EXIT_PCT = 0.65
             mock_s.POLITICS_EXIT_MIN_PROFIT_USD = 0.0
-            mock_s.SIMULATION_MODE = True
             await bot._check_politics_profit_taking()
         assert "mkt1" not in bot._recently_exited, "Should not trigger when disabled"
 
@@ -493,7 +495,6 @@ class TestPoliticsProfitTaking:
             mock_s.POLITICS_EXIT_ENABLED = True
             mock_s.POLITICS_EXIT_PCT = 0.65
             mock_s.POLITICS_EXIT_MIN_PROFIT_USD = 0.0
-            mock_s.SIMULATION_MODE = True
             await bot._check_politics_profit_taking()
         assert "mkt1" not in bot._recently_exited
 
@@ -512,7 +513,6 @@ class TestPoliticsProfitTaking:
             mock_s.POLITICS_EXIT_ENABLED = True
             mock_s.POLITICS_EXIT_PCT = 0.65
             mock_s.POLITICS_EXIT_MIN_PROFIT_USD = 2.0
-            mock_s.SIMULATION_MODE = True
             await bot._check_politics_profit_taking()
         assert "mkt1" not in bot._recently_exited
 
@@ -531,7 +531,6 @@ class TestPoliticsProfitTaking:
             mock_s.POLITICS_EXIT_ENABLED = True
             mock_s.POLITICS_EXIT_PCT = 0.65
             mock_s.POLITICS_EXIT_MIN_PROFIT_USD = 0.0
-            mock_s.SIMULATION_MODE = True
             await bot._check_politics_profit_taking()
         assert "mkt1" not in bot._recently_exited
 

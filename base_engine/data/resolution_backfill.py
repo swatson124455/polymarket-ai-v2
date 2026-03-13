@@ -163,7 +163,7 @@ async def run_resolution_backfill(
             ) combined
             WHERE NOT EXISTS (
                 SELECT 1 FROM markets m
-                WHERE m.id::text = market_id OR m.condition_id = market_id OR m.slug = market_id
+                WHERE CAST(m.id AS TEXT) = market_id OR m.condition_id = market_id OR m.slug = market_id
             )
             LIMIT :lim
         """), {"lim": missing_limit})
@@ -234,7 +234,7 @@ async def run_resolution_backfill(
                 WHERE (m.resolution IS NULL OR m.resolution NOT IN ('YES', 'NO'))
                 AND EXISTS (
                     SELECT 1 FROM paper_trades pt
-                    WHERE pt.market_id::text = m.id::text OR pt.market_id = m.condition_id
+                    WHERE CAST(pt.market_id AS TEXT) = CAST(m.id AS TEXT) OR pt.market_id = m.condition_id
                 )
             """))
             paper_market_ids = [r[0] for r in pt_result.fetchall() if r[0]]
@@ -249,7 +249,7 @@ async def run_resolution_backfill(
                 WHERE (m.resolution IS NULL OR m.resolution NOT IN ('YES', 'NO'))
                 AND EXISTS (
                     SELECT 1 FROM trades t
-                    WHERE t.market_id = m.id::text OR t.market_id = m.condition_id
+                    WHERE t.market_id = CAST(m.id AS TEXT) OR t.market_id = m.condition_id
                 )
                 ORDER BY m.end_date_iso ASC NULLS LAST
                 LIMIT :lim

@@ -78,6 +78,10 @@ class EsportsBot(BaseBot):
         # Populated during scan, used by WS path to identify YES vs NO token prices.
         self._market_token_map: Dict[str, Dict[str, str]] = {}
 
+        # Market→game mapping: populated on trade execution, used for game
+        # exposure decrement on exit.  Survives prediction_cache expiry (1h TTL).
+        self._market_game: Dict[str, str] = {}
+
         # Race-condition guard: prevents concurrent WS trades on the same market.
         # Lifecycle: added at the top of _handle_ws_price_update(), removed in
         # the `finally` block — always, even on exception.
@@ -643,8 +647,11 @@ class EsportsBot(BaseBot):
                         current_patch=_lol_patch if _retrain_game == "lol" else None,
                     )
                     and _retrain_game not in self._bg_train_tasks):
+                # Rebuild Glicko-2 trackers after training if this game
+                # has no tracker yet (e.g. LoL on first data collection)
+                _needs_glicko = self._glicko2_trackers.get(_retrain_game) is None
                 self._bg_train_tasks[_retrain_game] = asyncio.create_task(
-                    self._train_in_background(_retrain_game, db),
+                    self._train_in_background(_retrain_game, db, init_glicko=_needs_glicko),
                     name=f"retrain_{_retrain_game}",
                 )
 
@@ -970,20 +977,24 @@ class EsportsBot(BaseBot):
                     size=size, price=current, confidence=0.0,
                 )
                 # B3: Decrement game exposure on exit
-                question = ""
-                try:
-                    if self._market_service:
-                        # Best-effort game detection for exposure tracking
-                        _cached = self._prediction_cache.get(mid, {})
-                        game = _cached.get("game", "")
-                    else:
-                        game = ""
-                except Exception:
-                    game = ""
+                # Primary: _market_game (populated on entry, survives cache expiry)
+                # Fallback: prediction_cache (1h TTL, may be stale)
+                game = self._market_game.get(mid, "")
+                if not game:
+                    game = self._prediction_cache.get(mid, {}).get("game", "")
                 if game and game in self._game_exposure:
                     self._game_exposure[game] = max(0.0, self._game_exposure.get(game, 0.0) - size)
+                    # Write-through decrement so daily_counters stays accurate across restarts
+                    _db = getattr(self.base_engine, "db", None)
+                    if _db is not None:
+                        try:
+                            await _inc_daily(_db, "EsportsBot", f"game_{game}", -size)
+                        except Exception:
+                            pass  # Non-critical: in-memory is authoritative intra-day
+                # Clean up market→game mapping for exited position
+                self._market_game.pop(mid, None)
                 logger.info("esportsbot_exit_executed", market_id=mid, reason=reason,
-                            exit_side="SELL", size=round(size, 2))
+                            exit_side="SELL", size=round(size, 2), game=game)
             except Exception as exc:
                 logger.debug("esportsbot_exit_failed", market_id=mid, error=str(exc))
 
@@ -1996,6 +2007,9 @@ class EsportsBot(BaseBot):
         # A10: Pre-update exposure BEFORE placing order (race condition fix)
         game = opp.get("game", "")
         self._game_exposure[game] = self._game_exposure.get(game, 0.0) + size
+        # Persist market→game for reliable exit decrement (outlives prediction_cache 1h TTL)
+        if game:
+            self._market_game[opp["market_id"]] = game
 
         order = await self.place_order(
             market_id=opp["market_id"],
