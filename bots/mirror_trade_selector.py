@@ -134,14 +134,14 @@ class MirrorTradeSelector:
 
             async with self._db.get_session() as session:
                 rows = await session.execute(text(
-                    "SELECT pt.entry_price, pt.predicted_prob, pt.resolved_pnl, "
+                    "SELECT pt.price, pt.confidence, pt.realized_pnl, "
                     "  pt.side, pt.size, "
-                    "  LOWER(COALESCE(m.market_category, 'other')) AS category, "
+                    "  LOWER(COALESCE(m.category, 'other')) AS category, "
                     "  EXTRACT(EPOCH FROM (m.end_date_iso - pt.created_at)) / 86400.0 AS ttr_days "
                     "FROM paper_trades pt "
-                    "JOIN markets m ON pt.market_id = m.id "
+                    "JOIN markets m ON pt.market_id = CAST(m.id AS TEXT) "
                     "WHERE pt.bot_name = 'MirrorBot' "
-                    "  AND pt.resolved_pnl IS NOT NULL "
+                    "  AND pt.realized_pnl IS NOT NULL "
                     "  AND pt.side IN ('YES', 'NO') "
                     "  AND LOWER(pt.side) != 'sell' "
                     "  AND pt.created_at > NOW() - INTERVAL '" + str(int(n_days)) + " days' "

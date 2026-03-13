@@ -40,8 +40,8 @@ class RTDSWebSocket:
         self._message_loop_task: Optional[asyncio.Task] = None
         self._events_total: int = 0
         self._events_dispatched: int = 0
-        self._debug_samples: int = 0  # Log first N raw events for payload verification
-        self._MAX_DEBUG_SAMPLES: int = 5
+        self._debug_samples: int = 0
+        self._MAX_DEBUG_SAMPLES: int = 0  # Session 83: disabled diagnostic logging
 
     async def connect(self) -> None:
         """Connect to RTDS and subscribe to activity/trades."""

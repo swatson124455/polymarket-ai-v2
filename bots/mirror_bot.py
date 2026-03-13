@@ -98,6 +98,7 @@ class MirrorBot(BaseBot):
         # Session 82: Calibration stack (FTS + Le2026 + conformal)
         self._calibration_stack = None
         self._calibration_fitted: bool = False
+        self._calibration_fit_date: Optional[str] = None  # Session 83: track fit date for daily re-fit
         try:
             from bots.mirror_calibration import MirrorCalibrationStack
             self._calibration_stack = MirrorCalibrationStack(db=base_engine.db)
@@ -292,12 +293,16 @@ class MirrorBot(BaseBot):
         # R5b: Load per-category consensus thresholds from DB on first scan.
         await self._load_consensus_from_db()
 
-        # Session 82: Fit calibration stack on first scan (re-fit daily via _calibration_fitted flag)
+        # Session 82: Fit calibration stack on first scan; Session 83: re-fit daily
+        _today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if self._calibration_fit_date and self._calibration_fit_date != _today:
+            self._calibration_fitted = False  # Reset for daily re-fit
         if self._calibration_stack and not self._calibration_fitted:
             try:
                 _cal_results = await self._calibration_stack.fit()
                 await self._calibration_stack.fit_conformal()
                 self._calibration_fitted = True
+                self._calibration_fit_date = _today
                 if _cal_results:
                     logger.info("MirrorBot calibration stack fitted", results=_cal_results)
             except Exception as e:
@@ -1155,6 +1160,11 @@ class MirrorBot(BaseBot):
         else:
             max_daily_pct = getattr(settings, "MIRROR_MAX_DAILY_EXPOSURE_PCT", self.MAX_DAILY_EXPOSURE_PCT)
             _max_daily_usd = float(getattr(settings, "TOTAL_CAPITAL", 10000.0)) * max_daily_pct
+        # Session 83: Apply adaptive safety daily cap multiplier (0.5-1.15x based on performance)
+        if (self._adaptive_safety
+                and getattr(settings, "MIRROR_ADAPTIVE_SAFETY", False)
+                and self._adaptive_safety._fitted):
+            _max_daily_usd *= self._adaptive_safety.get_adjusted_daily_cap_mult()
         remaining_daily_usd = max(0.0, _max_daily_usd - self._daily_exposure)
         remaining_daily_shares = remaining_daily_usd / price if price > 0 else 0
         size = min(size, remaining_daily_shares)
