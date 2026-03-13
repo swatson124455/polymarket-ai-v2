@@ -298,6 +298,8 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
     _last_retention_cleanup: float = 0.0  # Session 51: P2-3
     _last_snapshot: float = 0.0  # Session 83: daily position/equity snapshots
     _last_reconciliation: float = 0.0  # Session 83: 6h integrity check
+    _last_model_perf: float = 0.0  # Session 83: daily model performance aggregation
+    _last_partition_check: float = 0.0  # Session 83: monthly partition auto-creation
 
     while True:
         await asyncio.sleep(WATCHDOG_INTERVAL_SECONDS)
@@ -435,9 +437,37 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
             if _db and hasattr(_db, "run_reconciliation"):
                 try:
                     _breaks = await _db.run_reconciliation()
-                    _last_reconciliation = _now_ts
+                    if _breaks and _breaks > 0:
+                        logger.warning("Watchdog: reconciliation found %d breaks", _breaks)
                 except Exception as e:
                     logger.warning("Watchdog: reconciliation failed: %s", e)
+                finally:
+                    _last_reconciliation = _now_ts
+
+        # Session 83: Daily model performance aggregation
+        if _now_ts - _last_model_perf > 86400:
+            _db = getattr(base_engine, "db", None)
+            if _db and hasattr(_db, "aggregate_model_performance"):
+                try:
+                    _rows = await _db.aggregate_model_performance()
+                    logger.info("Watchdog: model performance aggregation completed, %d rows", _rows)
+                except Exception as e:
+                    logger.warning("Watchdog: model performance aggregation failed: %s", e)
+                finally:
+                    _last_model_perf = _now_ts
+
+        # Session 83: Daily partition auto-creation (trade_events + position_snapshots)
+        if _now_ts - _last_partition_check > 86400:
+            _db = getattr(base_engine, "db", None)
+            if _db and hasattr(_db, "ensure_future_partitions"):
+                try:
+                    _parts = await _db.ensure_future_partitions()
+                    if _parts > 0:
+                        logger.info("Watchdog: created %d future partitions", _parts)
+                except Exception as e:
+                    logger.warning("Watchdog: partition creation failed: %s", e)
+                finally:
+                    _last_partition_check = _now_ts
 
         if alive_count == 0 and len(bots) > 0:
             logger.critical(

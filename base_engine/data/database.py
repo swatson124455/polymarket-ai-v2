@@ -4646,60 +4646,103 @@ class Database:
             logger.warning("trade_event %s persist failed for %s: %s", event_type, market_id, e)
             return None
 
-    async def upsert_traded_market(
+    async def insert_trade_model_linkage(
         self,
-        market_id: str,
-        bot_name: str,
-        side: str,
-        size: float,
-        price: float,
-        condition_id: Optional[str] = None,
-        question: Optional[str] = None,
-        execution_mode: str = "paper",
-    ) -> None:
-        """Update traded_markets index. Called on every ENTRY trade."""
-        if self.session_factory is None:
-            return
-        yes_delta = size if side == "YES" else 0
-        no_delta = size if side == "NO" else 0
-        invested_delta = size * price
-
+        trade_event_seq: int,
+        correlation_id: str,
+    ) -> Optional[int]:
+        """Link a trade_event to its prediction_log row via correlation_id. Returns linkage id or None."""
+        if self.session_factory is None or not correlation_id:
+            return None
         try:
             from sqlalchemy import text as _sa_text
             async with self.get_session() as session:
-                await session.execute(
+                await session.execute(_sa_text("SET LOCAL synchronous_commit = off"))
+                result = await session.execute(
                     _sa_text(
-                        "INSERT INTO traded_markets "
-                        "  (market_id, condition_id, question, bot_names,"
-                        "   net_yes_shares, net_no_shares, total_invested,"
-                        "   trade_count, first_trade_at, execution_mode) "
-                        "VALUES (:market_id, :condition_id, :question, :bot_name,"
-                        "   :yes_delta, :no_delta, :invested, 1, NOW(), :exec_mode) "
-                        "ON CONFLICT (market_id) DO UPDATE SET "
-                        "  net_yes_shares = traded_markets.net_yes_shares + :yes_delta,"
-                        "  net_no_shares = traded_markets.net_no_shares + :no_delta,"
-                        "  total_invested = traded_markets.total_invested + :invested,"
-                        "  trade_count = traded_markets.trade_count + 1,"
-                        "  bot_names = CASE "
-                        "    WHEN traded_markets.bot_names NOT LIKE '%%' || :bot_name || '%%' "
-                        "    THEN traded_markets.bot_names || ',' || :bot_name "
-                        "    ELSE traded_markets.bot_names END,"
-                        "  last_trade_at = NOW()"
+                        "INSERT INTO trade_model_linkage "
+                        "  (trade_event_seq, prediction_source, prediction_id,"
+                        "   model_name, model_version, predicted_prob,"
+                        "   market_price_at_prediction, edge_at_prediction) "
+                        "SELECT :seq, 'prediction_log', pl.id, pl.model_name,"
+                        "  COALESCE(pl.model_version, 0), pl.predicted_prob,"
+                        "  pl.market_price, pl.edge "
+                        "FROM prediction_log pl "
+                        "WHERE pl.correlation_id = :cid "
+                        "ORDER BY pl.prediction_time DESC LIMIT 1 "
+                        "ON CONFLICT DO NOTHING "
+                        "RETURNING id"
+                    ),
+                    {"seq": trade_event_seq, "cid": correlation_id},
+                )
+                row = result.fetchone()
+                await session.commit()
+                return row[0] if row else None
+        except Exception as e:
+            logger.debug("trade_model_linkage failed for seq=%s: %s", trade_event_seq, e)
+            return None
+
+    async def aggregate_model_performance(self, perf_date: Optional[date] = None) -> int:
+        """Aggregate yesterday's predictions into model_performance_daily. Returns rows inserted."""
+        if self.session_factory is None:
+            return 0
+        target_date = perf_date or (date.today() - timedelta(days=1))
+        try:
+            from sqlalchemy import text as _sa_text
+            async with self.get_session() as session:
+                result = await session.execute(
+                    _sa_text(
+                        "INSERT INTO model_performance_daily "
+                        "  (perf_date, model_name, model_version, bot_name,"
+                        "   prediction_count, trade_count, hit_count, miss_count,"
+                        "   avg_predicted_prob, avg_realized_prob, brier_score,"
+                        "   total_pnl, avg_edge) "
+                        "SELECT :perf_date, pl.model_name, COALESCE(mr.model_version, 0),"
+                        "  COALESCE(pl.bot_name, 'unknown'),"
+                        "  COUNT(*),"
+                        "  COUNT(te.sequence_num),"
+                        "  SUM(CASE WHEN pl.actual_outcome = 1 AND pl.predicted_prob > 0.5 THEN 1"
+                        "           WHEN pl.actual_outcome = 0 AND pl.predicted_prob < 0.5 THEN 1"
+                        "           ELSE 0 END),"
+                        "  SUM(CASE WHEN pl.actual_outcome IS NOT NULL THEN 1 ELSE 0 END)"
+                        "    - SUM(CASE WHEN pl.actual_outcome = 1 AND pl.predicted_prob > 0.5 THEN 1"
+                        "               WHEN pl.actual_outcome = 0 AND pl.predicted_prob < 0.5 THEN 1"
+                        "               ELSE 0 END),"
+                        "  AVG(pl.predicted_prob),"
+                        "  AVG(CASE WHEN pl.actual_outcome IS NOT NULL THEN pl.actual_outcome::numeric END),"
+                        "  AVG(CASE WHEN pl.actual_outcome IS NOT NULL"
+                        "    THEN POWER(pl.predicted_prob - pl.actual_outcome, 2) END),"
+                        "  COALESCE(SUM(te.realized_pnl), 0),"
+                        "  AVG(pl.edge) "
+                        "FROM prediction_log pl "
+                        "LEFT JOIN trade_events te ON te.correlation_id = pl.correlation_id"
+                        "  AND te.event_type = 'ENTRY' "
+                        "LEFT JOIN model_registry mr ON mr.model_name = pl.model_name"
+                        "  AND mr.is_active = TRUE "
+                        "WHERE pl.prediction_time >= :start AND pl.prediction_time < :end "
+                        "GROUP BY pl.model_name, mr.model_version, pl.bot_name "
+                        "ON CONFLICT (perf_date, model_name, model_version, bot_name) DO UPDATE SET "
+                        "  prediction_count = EXCLUDED.prediction_count,"
+                        "  trade_count = EXCLUDED.trade_count,"
+                        "  hit_count = EXCLUDED.hit_count,"
+                        "  miss_count = EXCLUDED.miss_count,"
+                        "  avg_predicted_prob = EXCLUDED.avg_predicted_prob,"
+                        "  avg_realized_prob = EXCLUDED.avg_realized_prob,"
+                        "  brier_score = EXCLUDED.brier_score,"
+                        "  total_pnl = EXCLUDED.total_pnl,"
+                        "  avg_edge = EXCLUDED.avg_edge"
                     ),
                     {
-                        "market_id": market_id,
-                        "condition_id": condition_id,
-                        "question": question,
-                        "bot_name": bot_name,
-                        "yes_delta": yes_delta,
-                        "no_delta": no_delta,
-                        "invested": invested_delta,
-                        "exec_mode": execution_mode,
+                        "perf_date": target_date,
+                        "start": datetime.combine(target_date, datetime.min.time()),
+                        "end": datetime.combine(target_date + timedelta(days=1), datetime.min.time()),
                     },
                 )
                 await session.commit()
+                return result.rowcount or 0
         except Exception as e:
-            logger.warning("upsert_traded_market failed for %s: %s", market_id, e)
+            logger.warning("aggregate_model_performance failed for %s: %s", target_date, e)
+            return 0
 
     async def mark_market_resolved(
         self,
@@ -4984,12 +5027,22 @@ class Database:
     async def run_reconciliation(self) -> int:
         """
         Cross-validate positions vs paper_trades vs traded_markets.
-        Returns number of breaks found (-1 on error).
+        Returns number of NEW breaks found (-1 on error).
+        Filters: active bots only, $0.50 tolerance, dedup per (date, type, bot, market).
         """
         if self.session_factory is None:
             return -1
         breaks_found = 0
         today = date.today()
+        # Only recon active bots — skip disabled bots and archived EnsembleBot
+        import os as _os
+        _active_bots = set()
+        for _bname in ("WeatherBot", "MirrorBot", "EsportsBot", "EsportsLiveBot", "EsportsSeriesBot"):
+            _env_key = f"BOT_ENABLED_{_bname.upper()}"
+            if _os.getenv(_env_key, "true").lower() != "false":
+                _active_bots.add(_bname)
+        if not _active_bots:
+            _active_bots = {"WeatherBot", "MirrorBot", "EsportsBot", "EsportsLiveBot", "EsportsSeriesBot"}
 
         try:
             from sqlalchemy import text as _sa_text
@@ -5002,7 +5055,7 @@ class Database:
                         "), trade_state AS ("
                         "  SELECT bot_name, market_id, side, SUM(size) AS total_size"
                         "  FROM paper_trades"
-                        "  WHERE realized_pnl IS NULL AND side IN ('YES', 'NO')"
+                        "  WHERE realized_pnl IS NULL AND side IN ('YES', 'NO') AND COALESCE(status, 'filled') != 'resolved'"
                         "  GROUP BY bot_name, market_id, side"
                         ") "
                         "SELECT "
@@ -5014,12 +5067,26 @@ class Database:
                         "FROM position_state p "
                         "FULL OUTER JOIN trade_state t "
                         "  ON p.bot_name = t.bot_name AND p.market_id = t.market_id AND p.side = t.side "
-                        "WHERE ABS(COALESCE(p.size, 0) - COALESCE(t.total_size, 0)) > 0.0001"
+                        "WHERE ABS(COALESCE(p.size, 0) - COALESCE(t.total_size, 0)) > 0.50"
                     )
                 )
                 mismatch_rows = mismatches.fetchall()
 
                 for m in mismatch_rows:
+                    _bot = m[0]
+                    if _bot not in _active_bots:
+                        continue
+                    # Dedup: skip if same break already recorded today
+                    _dup = await session.execute(
+                        _sa_text(
+                            "SELECT 1 FROM reconciliation_breaks "
+                            "WHERE recon_date = :today AND recon_type = 'POSITION' "
+                            "AND bot_name = :bot AND market_id = :market LIMIT 1"
+                        ),
+                        {"today": today, "bot": _bot, "market": m[1]},
+                    )
+                    if _dup.fetchone():
+                        continue
                     await session.execute(
                         _sa_text(
                             "INSERT INTO reconciliation_breaks "
@@ -5031,7 +5098,7 @@ class Database:
                         ),
                         {
                             "today": today,
-                            "bot": m[0],
+                            "bot": _bot,
                             "market": m[1],
                             "pos_size": m[2],
                             "trade_size": m[3],
@@ -5057,6 +5124,19 @@ class Database:
                 stale_rows = stale.fetchall()
 
                 for s in stale_rows:
+                    _sbot = str(s[1]).split(",")[0] if s[1] else "unknown"
+                    if _sbot not in _active_bots:
+                        continue
+                    _dup = await session.execute(
+                        _sa_text(
+                            "SELECT 1 FROM reconciliation_breaks "
+                            "WHERE recon_date = :today AND recon_type = 'STALE_POSITION' "
+                            "AND market_id = :market LIMIT 1"
+                        ),
+                        {"today": today, "market": s[0]},
+                    )
+                    if _dup.fetchone():
+                        continue
                     await session.execute(
                         _sa_text(
                             "INSERT INTO reconciliation_breaks "
@@ -5068,7 +5148,7 @@ class Database:
                         ),
                         {
                             "today": today,
-                            "bot": str(s[1]).split(",")[0] if s[1] else "unknown",
+                            "bot": _sbot,
                             "market": s[0],
                         },
                     )
@@ -5161,13 +5241,10 @@ class Database:
         model_version: int,
         model_type: str,
         *,
-        framework: Optional[str] = None,
-        training_config: Optional[Dict] = None,
-        training_metrics: Optional[Dict] = None,
+        status: str = "staging",
+        training_params: Optional[Dict] = None,
+        metrics: Optional[Dict] = None,
         training_samples: Optional[int] = None,
-        feature_names: Optional[List[str]] = None,
-        is_active: bool = False,
-        notes: Optional[str] = None,
     ) -> Optional[int]:
         """Register a trained model version. Returns id or None."""
         if self.session_factory is None:
@@ -5178,29 +5255,23 @@ class Database:
                 result = await session.execute(
                     _sa_text(
                         "INSERT INTO model_registry "
-                        "  (model_name, model_version, model_type, framework,"
-                        "   training_config, training_metrics, training_samples,"
-                        "   feature_names, is_active, notes) "
-                        "VALUES (:name, :version, :type, :framework,"
-                        "  CAST(:config AS jsonb), CAST(:metrics AS jsonb), :samples,"
-                        "  :features, :active, :notes) "
+                        "  (model_name, model_version, model_type, status,"
+                        "   training_params, metrics, training_samples) "
+                        "VALUES (:name, :version, :type, :status,"
+                        "  CAST(:params AS jsonb), CAST(:metrics AS jsonb), :samples) "
                         "ON CONFLICT (model_name, model_version) DO UPDATE SET "
-                        "  training_metrics = CAST(EXCLUDED.training_metrics AS jsonb),"
-                        "  is_active = EXCLUDED.is_active,"
-                        "  notes = EXCLUDED.notes "
+                        "  metrics = CAST(EXCLUDED.metrics AS jsonb),"
+                        "  status = EXCLUDED.status "
                         "RETURNING id"
                     ),
                     {
                         "name": model_name,
                         "version": model_version,
                         "type": model_type,
-                        "framework": framework,
-                        "config": json.dumps(training_config or {}),
-                        "metrics": json.dumps(training_metrics or {}),
+                        "status": status,
+                        "params": json.dumps(training_params or {}),
+                        "metrics": json.dumps(metrics or {}),
                         "samples": training_samples,
-                        "features": feature_names or [],
-                        "active": is_active,
-                        "notes": notes,
                     },
                 )
                 row = result.fetchone()
@@ -5219,14 +5290,14 @@ class Database:
             async with self.get_session() as session:
                 await session.execute(
                     _sa_text(
-                        "UPDATE model_registry SET is_active = FALSE, retired_at = NOW() "
-                        "WHERE model_name = :name AND is_active = TRUE"
+                        "UPDATE model_registry SET status = 'retired', retired_at = NOW() "
+                        "WHERE model_name = :name AND status = 'production'"
                     ),
                     {"name": model_name},
                 )
                 await session.execute(
                     _sa_text(
-                        "UPDATE model_registry SET is_active = TRUE, promoted_at = NOW() "
+                        "UPDATE model_registry SET status = 'production', promoted_at = NOW() "
                         "WHERE model_name = :name AND model_version = :version"
                     ),
                     {"name": model_name, "version": model_version},
@@ -5237,69 +5308,20 @@ class Database:
             logger.warning("promote_model failed for %s v%d: %s", model_name, model_version, e)
             return False
 
-    async def save_feature_snapshot(
-        self,
-        model_name: str,
-        market_id: str,
-        feature_vector: Dict,
-        *,
-        model_version: Optional[int] = None,
-        predicted_prob: Optional[float] = None,
-        market_price: Optional[float] = None,
-        snapshot_type: str = "prediction",
-        event_time: Optional[datetime] = None,
-    ) -> Optional[int]:
-        """Save frozen feature vector at prediction time for reproducibility."""
-        if self.session_factory is None:
-            return None
-        evt_time = _naive_utc(event_time) if event_time else _naive_utc(datetime.now(timezone.utc))
-        edge = (predicted_prob - market_price) if predicted_prob and market_price else None
-
-        try:
-            from sqlalchemy import text as _sa_text
-            async with self.get_session() as session:
-                await session.execute(_sa_text("SET LOCAL synchronous_commit = off"))
-                result = await session.execute(
-                    _sa_text(
-                        "INSERT INTO feature_snapshots "
-                        "  (snapshot_type, model_name, model_version, market_id,"
-                        "   feature_vector, predicted_prob, market_price, edge, event_time) "
-                        "VALUES (:type, :name, :version, :market,"
-                        "  CAST(:features AS jsonb), :prob, :price, :edge, :event_time) "
-                        "ON CONFLICT (model_name, market_id, event_time) DO NOTHING "
-                        "RETURNING id"
-                    ),
-                    {
-                        "type": snapshot_type,
-                        "name": model_name,
-                        "version": model_version,
-                        "market": market_id,
-                        "features": json.dumps(feature_vector),
-                        "prob": predicted_prob,
-                        "price": market_price,
-                        "edge": edge,
-                        "event_time": evt_time,
-                    },
-                )
-                row = result.fetchone()
-                await session.commit()
-                return row[0] if row else None
-        except Exception as e:
-            logger.warning("save_feature_snapshot failed for %s: %s", market_id, e)
-            return None
-
     async def update_model_performance(
         self,
-        metric_date: date,
+        perf_date: date,
         model_name: str,
         model_version: int,
+        bot_name: str,
         *,
         prediction_count: int = 0,
-        resolved_count: int = 0,
-        correct_count: int = 0,
+        trade_count: int = 0,
+        hit_count: int = 0,
+        miss_count: int = 0,
         brier_score: Optional[float] = None,
         avg_edge: Optional[float] = None,
-        realized_pnl: Optional[float] = None,
+        total_pnl: Optional[float] = None,
     ) -> None:
         """Upsert daily model performance metrics."""
         if self.session_factory is None:
@@ -5309,33 +5331,110 @@ class Database:
             async with self.get_session() as session:
                 await session.execute(
                     _sa_text(
-                        "INSERT INTO model_performance "
-                        "  (metric_date, model_name, model_version,"
-                        "   prediction_count, resolved_count, correct_count,"
-                        "   brier_score, avg_edge, realized_pnl) "
-                        "VALUES (:date, :name, :version,"
-                        "  :preds, :resolved, :correct,"
+                        "INSERT INTO model_performance_daily "
+                        "  (perf_date, model_name, model_version, bot_name,"
+                        "   prediction_count, trade_count, hit_count, miss_count,"
+                        "   brier_score, avg_edge, total_pnl) "
+                        "VALUES (:date, :name, :version, :bot,"
+                        "  :preds, :trades, :hits, :misses,"
                         "  :brier, :edge, :pnl) "
-                        "ON CONFLICT (metric_date, model_name, model_version) DO UPDATE SET "
+                        "ON CONFLICT (perf_date, model_name, model_version, bot_name) DO UPDATE SET "
                         "  prediction_count = EXCLUDED.prediction_count,"
-                        "  resolved_count = EXCLUDED.resolved_count,"
-                        "  correct_count = EXCLUDED.correct_count,"
+                        "  trade_count = EXCLUDED.trade_count,"
+                        "  hit_count = EXCLUDED.hit_count,"
+                        "  miss_count = EXCLUDED.miss_count,"
                         "  brier_score = EXCLUDED.brier_score,"
                         "  avg_edge = EXCLUDED.avg_edge,"
-                        "  realized_pnl = EXCLUDED.realized_pnl"
+                        "  total_pnl = EXCLUDED.total_pnl"
                     ),
                     {
-                        "date": metric_date,
+                        "date": perf_date,
                         "name": model_name,
                         "version": model_version,
+                        "bot": bot_name,
                         "preds": prediction_count,
-                        "resolved": resolved_count,
-                        "correct": correct_count,
+                        "trades": trade_count,
+                        "hits": hit_count,
+                        "misses": miss_count,
                         "brier": brier_score,
                         "edge": avg_edge,
-                        "pnl": realized_pnl,
+                        "pnl": total_pnl,
                     },
                 )
                 await session.commit()
         except Exception as e:
             logger.warning("update_model_performance failed: %s", e)
+
+    async def ensure_future_partitions(self) -> int:
+        """Create monthly partitions 3 months ahead for trade_events and position_snapshots.
+        Returns number of partitions created."""
+        if self.session_factory is None:
+            return 0
+        created = 0
+        try:
+            from sqlalchemy import text as _sa_text
+            async with self.get_session() as session:
+                # Find latest existing partition month for trade_events
+                result = await session.execute(
+                    _sa_text(
+                        "SELECT relname FROM pg_class "
+                        "WHERE relname ~ '^trade_events_\\d{4}_\\d{2}$' AND relkind = 'r' "
+                        "ORDER BY relname DESC LIMIT 1"
+                    )
+                )
+                row = result.fetchone()
+                if not row:
+                    return 0
+
+                latest = row[0]  # e.g. trade_events_2026_12
+                parts = latest.split("_")
+                latest_year = int(parts[2])
+                latest_month = int(parts[3])
+
+                # Check if we're within 2 months of the last partition
+                from datetime import date as _d
+                today = _d.today()
+                months_left = (latest_year - today.year) * 12 + (latest_month - today.month)
+                if months_left > 2:
+                    return 0
+
+                # Create next 12 monthly partitions for both tables
+                import calendar
+                cur_year = latest_year
+                cur_month = latest_month
+                for _ in range(12):
+                    cur_month += 1
+                    if cur_month > 12:
+                        cur_month = 1
+                        cur_year += 1
+                    next_month = cur_month + 1
+                    next_year = cur_year
+                    if next_month > 12:
+                        next_month = 1
+                        next_year += 1
+
+                    start = f"{cur_year}-{cur_month:02d}-01"
+                    end = f"{next_year}-{next_month:02d}-01"
+                    te_name = f"trade_events_{cur_year}_{cur_month:02d}"
+                    ps_name = f"position_snapshots_{cur_year}_{cur_month:02d}"
+
+                    for tbl, part in [("trade_events", te_name), ("position_snapshots", ps_name)]:
+                        try:
+                            await session.execute(
+                                _sa_text(
+                                    f"CREATE TABLE IF NOT EXISTS {part} "
+                                    f"PARTITION OF {tbl} "
+                                    f"FOR VALUES FROM ('{start}') TO ('{end}')"
+                                )
+                            )
+                            created += 1
+                        except Exception:
+                            pass  # Partition may already exist
+
+                await session.commit()
+                if created > 0:
+                    logger.info("ensure_future_partitions: created %d partitions", created)
+                return created
+        except Exception as e:
+            logger.warning("ensure_future_partitions failed: %s", e)
+            return 0

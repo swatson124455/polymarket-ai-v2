@@ -1113,6 +1113,18 @@ class BaseEngine:
                     await self.order_gateway.seed_positions_from_db(self.db)
                 except Exception as e:
                     logger.debug("Position seed from DB failed (non-critical): %s", e)
+                # Fallback: if positions table returned nothing, rebuild from trade_events
+                if not getattr(self.order_gateway, "_open_position_markets", None) and hasattr(self.db, "rebuild_positions_from_events"):
+                    for _bot in getattr(self, "_bots", []):
+                        _bn = getattr(_bot, "bot_name", None)
+                        if not _bn:
+                            continue
+                        try:
+                            _rebuilt = await self.db.rebuild_positions_from_events(_bn)
+                            if _rebuilt:
+                                logger.warning("Rebuilt %d positions from trade_events for %s", len(_rebuilt), _bn)
+                        except Exception:
+                            pass
                 try:
                     # Late-bind db: DB is initialized after OrderGateway is constructed,
                     # so self.db was None at construction time. Set it now.
