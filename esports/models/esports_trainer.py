@@ -14,6 +14,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Any, Dict, List, Optional
 
@@ -515,6 +516,15 @@ class EsportsModelTrainer:
             model_path = os.path.join(model_dir, "cross_game_xgb.json")
             model.save_model(model_path)
 
+            # ONNX export for faster inference
+            try:
+                from esports.models.onnx_compiler import OnnxCompiler
+                _compiler = OnnxCompiler()
+                _onnx_path = os.path.join(model_dir, "cross_game_xgb.onnx")
+                _compiler.export_xgboost(model, n_features=9, save_path=_onnx_path)
+            except Exception:
+                pass  # ONNX export is optional
+
             self._last_train_time["cross_game"] = time.monotonic()
             self._train_results["cross_game"] = result
             self._last_train_brier["cross_game"] = brier
@@ -588,6 +598,16 @@ class EsportsModelTrainer:
             ece=round(metrics["ece"], 4),
         )
 
+        # ONNX export for faster inference
+        try:
+            from esports.models.onnx_compiler import OnnxCompiler
+            _compiler = OnnxCompiler()
+            _onnx_dir = os.path.join(os.path.dirname(__file__), "..", "..", "saved_models")
+            _onnx_path = os.path.join(os.path.abspath(_onnx_dir), "lol_win_model.onnx")
+            _compiler.export_xgboost(model._model, n_features=8, save_path=_onnx_path)
+        except Exception:
+            pass  # ONNX export is optional
+
         return metrics
 
     async def _train_cs2(
@@ -623,6 +643,16 @@ class EsportsModelTrainer:
             brier=round(metrics["brier_score"], 4),
             ece=round(metrics["ece"], 4),
         )
+
+        # ONNX export for faster inference
+        try:
+            from esports.models.onnx_compiler import OnnxCompiler
+            _compiler = OnnxCompiler()
+            _onnx_dir = os.path.join(os.path.dirname(__file__), "..", "..", "saved_models")
+            _onnx_path = os.path.join(os.path.abspath(_onnx_dir), "cs2_economy_model.onnx")
+            _compiler.export_xgboost(model._round_model, n_features=14, save_path=_onnx_path)
+        except Exception:
+            pass  # ONNX export is optional
 
         return metrics
 

@@ -138,6 +138,7 @@ class PandaScoreClient:
                 "Accept": "application/json",
             },
             timeout=httpx.Timeout(connect=5.0, read=12.0, write=5.0, pool=3.0),
+            http2=True,
         )
         logger.info("PandaScoreClient: initialised", base_url=_BASE_URL)
 

@@ -34,10 +34,10 @@ psycopg2-binary>=2.9.0
 # ============================================
 # HTTP & ASYNC
 # ============================================
-httpx>=0.24.0
-# Job: Async HTTP client for APIs
+httpx[http2]>=0.24.0
+# Job: Async HTTP client for APIs (http2 extra installs h2 for HTTP/2 multiplexing)
 # Expects: Network access
-# Used by: PolymarketClient (Gamma, CLOB fallback, Data APIs)
+# Used by: PolymarketClient (Gamma, CLOB fallback, Data APIs), PandaScoreClient (HTTP/2)
 
 requests>=2.28.0
 # Job: Sync HTTP for simple calls
@@ -62,6 +62,10 @@ websockets>=16.0
 orjson>=3.9.0
 # Job: Optional fast JSON parsing for WebSocket messages (3-10x faster); fallback to stdlib json if missing
 # Used by: json_parse.loads in WebSocketManager, UserOrderWebSocket
+
+uvloop>=0.19.0; sys_platform != 'win32'
+# Job: Rust-based async event loop (2-4x faster than default asyncio). Linux/macOS only.
+# Used by: main.py entrypoint (conditional import)
 
 # ============================================
 # DATA & ML
@@ -90,6 +94,18 @@ lightgbm>=4.0.0
 catboost>=1.2.0
 # Job: CatBoost ordered boosting (handles categoricals, robust to overfitting)
 # Used by: PredictionEngine (ensemble diversity)
+
+onnxmltools>=1.12.0
+# Job: Convert XGBoost/LightGBM models to ONNX format for compiled inference
+# Used by: esports/models/esports_trainer.py (post-training ONNX export)
+
+onnxruntime>=1.17.0
+# Job: ONNX model inference runtime (50-200x faster than native Python predict)
+# Used by: esports/models/ (compiled model inference)
+
+skl2onnx>=1.16.0
+# Job: scikit-learn to ONNX converter (needed by onnxmltools for XGBoost conversion)
+# Used by: esports/models/esports_trainer.py
 
 # ============================================
 # ALERTS
@@ -306,6 +322,19 @@ spacy>=3.7.0
 # Job: NER (en_core_web_sm model) for player name extraction in injury detector Tier 2
 # Used by: sports/news/injury_detector.py
 # Install model: python -m spacy download en_core_web_sm
+
+# ============================================
+# CALIBRATION & INFERENCE OPTIMIZATION (optional)
+# ============================================
+mapie>=0.9.0
+# Job: Conformal prediction intervals for Kelly sizing
+# Used by: base_engine/risk/bankroll_manager.py — wraps ensemble for [p_low, p_high]
+# Provides distribution-free coverage guarantees for bet sizing
+
+lleaves>=0.4.0; sys_platform == "linux"
+# Job: LLVM-compiled LightGBM inference (16x faster)
+# Used by: base_engine/prediction/prediction_engine.py — compiled LightGBM model
+# Linux only (LLVM backend). Falls back to native LightGBM on other platforms.
 
 # ============================================
 # TESTING

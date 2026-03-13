@@ -20,6 +20,7 @@ from structlog import get_logger
 
 from bots.base_bot import BaseBot
 from base_engine.data.daily_counter import increment_counter as _inc_daily, restore_counters as _restore_daily
+from base_engine.features.aggregation import extremized_geometric_mean
 from base_engine.monitoring.alerting import AlertSeverity
 from config.settings import settings
 
@@ -1258,8 +1259,8 @@ class EsportsBot(BaseBot):
                     game_state = self._build_glicko2_game_state(market_data, game)
                     if game_state:
                         prob = self._dota2_model.predict(game_state)
-                        # Blend ML with Glicko-2: 60% ML, 40% Glicko-2
-                        prob = 0.6 * prob + 0.4 * glicko2_prob
+                        # Blend ML with Glicko-2: extremized geometric mean of odds
+                        prob = extremized_geometric_mean([prob, glicko2_prob], d=1.5)
                         prob = max(0.05, min(0.95, prob))
                         # OpenDota form adjustment (small ±3% based on recent form)
                         prob = await self._opendota_form_adjustment(market_data, prob)
@@ -1279,7 +1280,8 @@ class EsportsBot(BaseBot):
                     game_state = self._build_glicko2_game_state(market_data, game)
                     if game_state:
                         prob = self._valorant_model.predict(game_state)
-                        prob = 0.6 * prob + 0.4 * glicko2_prob
+                        # Blend ML with Glicko-2: extremized geometric mean of odds
+                        prob = extremized_geometric_mean([prob, glicko2_prob], d=1.5)
                         prob = max(0.05, min(0.95, prob))
                         self._prediction_cache[market_id] = {
                             "prob": prob, "ts": time.monotonic(), "game": game,
@@ -1338,9 +1340,11 @@ class EsportsBot(BaseBot):
                                 _np.array([feats], dtype=_np.float32)
                             )[0][1]
                         )
-                        # Blend: 40% XGB + 60% Glicko-2 (Glicko-2 anchored)
+                        # Blend: XGB + Glicko-2 (Glicko-2 anchored via weights)
                         xgb_raw = xgb_prob
-                        glicko2_prob = 0.6 * glicko2_prob + 0.4 * xgb_prob
+                        glicko2_prob = extremized_geometric_mean(
+                            [glicko2_prob, xgb_prob], weights=[0.6, 0.4], d=1.5
+                        )
                         glicko2_prob = max(0.05, min(0.95, glicko2_prob))
 
                 self._prediction_cache[market_id] = {
