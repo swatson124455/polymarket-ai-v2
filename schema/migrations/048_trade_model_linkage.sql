@@ -23,7 +23,7 @@ CREATE INDEX idx_trade_model_link_model ON trade_model_linkage (model_name, mode
 CREATE INDEX idx_trade_model_link_prediction ON trade_model_linkage (prediction_source, prediction_id);
 
 -- Bi-temporal enhancement on existing ml_features (if table exists)
-DO $$
+DO $body$
 BEGIN
     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'ml_features') THEN
         ALTER TABLE ml_features ADD COLUMN IF NOT EXISTS knowledge_time TIMESTAMP DEFAULT NOW();
@@ -36,7 +36,9 @@ BEGIN
         EXECUTE 'CREATE INDEX IF NOT EXISTS idx_ml_features_pit
             ON ml_features (market_id, knowledge_time DESC)';
     END IF;
-END $$;
+END;
+$body$
+;
 
 -- Model version on prediction_log
 ALTER TABLE prediction_log ADD COLUMN IF NOT EXISTS model_version INTEGER;

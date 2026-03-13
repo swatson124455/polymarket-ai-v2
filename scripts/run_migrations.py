@@ -20,20 +20,70 @@ load_dotenv(_project_root / ".env")
 
 
 def _split_sql(sql: str):
-    """Split SQL on ';' while respecting $$ dollar-quoted blocks (DO/FUNCTION bodies)."""
+    """Split SQL on ';' while respecting dollar-quoted blocks ($$, $body$, etc.)."""
+    import re
+    _dollar_re = re.compile(r'\$[a-zA-Z_]*\$')  # Match $$, $body$, $func$, etc.
+
     parts = []
     current = []
     in_dollar = False
+    dollar_tag = None  # Track which tag opened the block (e.g. '$$' or '$body$')
+
     for line in sql.splitlines():
         stripped = line.strip()
-        # Toggle dollar-quoting on lines containing $$ (DO $$, END $$, $body$, etc.)
-        if '$$' in stripped:
-            # Count $$ occurrences on this line — odd count toggles state
-            count = stripped.count('$$')
-            current.append(line)
-            if count % 2 == 1:
-                in_dollar = not in_dollar
-            continue
+
+        # Check for dollar-quoting tags
+        tags = _dollar_re.findall(stripped)
+        if tags:
+            if not in_dollar:
+                # Opening a dollar block
+                in_dollar = True
+                dollar_tag = tags[0]
+                # Check if same tag appears twice (open+close on same line)
+                if stripped.count(dollar_tag) >= 2:
+                    in_dollar = False
+                    dollar_tag = None
+                    # Closed on same line — check for trailing ';'
+                    if stripped.endswith(';'):
+                        before_semi = line.rstrip().rstrip(';')
+                        current.append(before_semi)
+                        stmt_text = "\n".join(current).strip()
+                        stmt_text = "\n".join(
+                            l for l in stmt_text.splitlines()
+                            if l.strip() and not l.strip().startswith("--")
+                        ).strip()
+                        if stmt_text:
+                            parts.append(stmt_text)
+                        current = []
+                    else:
+                        current.append(line)
+                else:
+                    current.append(line)
+                continue
+            elif dollar_tag in tags:
+                # Closing the dollar block
+                in_dollar = False
+                dollar_tag = None
+                # Check for trailing ';' on this line
+                if stripped.endswith(';'):
+                    before_semi = line.rstrip().rstrip(';')
+                    current.append(before_semi)
+                    stmt_text = "\n".join(current).strip()
+                    stmt_text = "\n".join(
+                        l for l in stmt_text.splitlines()
+                        if l.strip() and not l.strip().startswith("--")
+                    ).strip()
+                    if stmt_text:
+                        parts.append(stmt_text)
+                    current = []
+                else:
+                    current.append(line)
+                continue
+            else:
+                # Different tag inside dollar block — treat as content
+                current.append(line)
+                continue
+
         if in_dollar:
             current.append(line)
             continue
