@@ -30,7 +30,7 @@ BEGIN
         ALTER TABLE ml_features ADD COLUMN IF NOT EXISTS feature_version INTEGER DEFAULT 1;
 
         -- Backfill existing rows
-        UPDATE ml_features SET knowledge_time = created_at WHERE knowledge_time IS NULL;
+        UPDATE ml_features SET knowledge_time = updated_at WHERE knowledge_time IS NULL;
 
         -- Point-in-time retrieval index
         EXECUTE 'CREATE INDEX IF NOT EXISTS idx_ml_features_pit
