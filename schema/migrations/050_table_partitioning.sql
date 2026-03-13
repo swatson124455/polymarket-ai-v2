@@ -96,9 +96,13 @@ CREATE INDEX idx_trade_events_correlation ON trade_events (correlation_id)
     WHERE correlation_id IS NOT NULL;
 CREATE INDEX idx_trade_events_mode ON trade_events (execution_mode);
 
--- Unique constraint on idempotency_key (partition-local)
-CREATE UNIQUE INDEX idx_trade_events_idempotency ON trade_events (idempotency_key)
+-- Idempotency index — unique per partition (includes partition key as required)
+-- ON CONFLICT uses this for dedup within a single month partition
+CREATE UNIQUE INDEX idx_trade_events_idempotency ON trade_events (idempotency_key, event_time)
     WHERE idempotency_key IS NOT NULL;
+
+-- Also update position_snapshots unique constraint
+-- (already includes snapshot_date as part of UNIQUE in table definition)
 
 -- Re-apply immutability trigger (automatically propagated to partitions)
 CREATE TRIGGER trg_trade_events_immutable

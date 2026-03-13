@@ -4630,7 +4630,8 @@ class Database:
                         "  :token_id, :correlation_id, :order_id, :side, :size, :price, :fees,"
                         "  :realized_pnl, :confidence, :predicted_probability,"
                         "  :model_version, :model_name, :idempotency_key, CAST(:event_data AS jsonb)"
-                        ") ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING"
+                        ") ON CONFLICT (idempotency_key, event_time)"
+                        " WHERE idempotency_key IS NOT NULL DO NOTHING"
                         " RETURNING sequence_num"
                     ),
                     {
