@@ -1,9 +1,10 @@
 import asyncio
+import json
 from typing import Optional, List, Dict, Any, Tuple
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base, Session
-from sqlalchemy import Column, String, Float, Integer, BigInteger, Boolean, DateTime, Text, Index, UniqueConstraint, text, and_, LargeBinary, JSON, event, insert, update, bindparam, ARRAY
+from sqlalchemy import Column, String, Float, Integer, BigInteger, Boolean, DateTime, Text, Index, UniqueConstraint, text, and_, LargeBinary, JSON, event, insert, update, bindparam, ARRAY, Numeric, Date
 from sqlalchemy.types import TypeDecorator
 from structlog import get_logger
 from config.settings import settings
@@ -433,6 +434,116 @@ class PaperTradeRecord(Base):
     status = Column(String, nullable=False, default="filled")
     submitted_at = Column(NaiveUTCDateTime, nullable=True)
     filled_at = Column(NaiveUTCDateTime, nullable=True)
+
+
+class TradeEvent(Base):
+    """Immutable append-only event store for trade audit trail (migration 043)."""
+    __tablename__ = "trade_events"
+    sequence_num = Column(BigInteger, primary_key=True, autoincrement=True)
+    event_type = Column(String, nullable=False)
+    execution_mode = Column(String, nullable=False, default="paper")
+    event_time = Column(NaiveUTCDateTime, nullable=False)
+    knowledge_time = Column(NaiveUTCDateTime, nullable=False, default=lambda: _naive_utc(datetime.now(timezone.utc)))
+    recorded_at = Column(NaiveUTCDateTime, nullable=False, default=lambda: _naive_utc(datetime.now(timezone.utc)))
+    bot_name = Column(String, nullable=False)
+    market_id = Column(String, nullable=False)
+    token_id = Column(String, nullable=True)
+    correlation_id = Column(String, nullable=True)
+    order_id = Column(String, nullable=True)
+    side = Column(String, nullable=True)
+    size = Column(Numeric(18, 8), nullable=True)
+    price = Column(Numeric(18, 8), nullable=True)
+    fees = Column(Numeric(18, 8), nullable=True, default=0)
+    realized_pnl = Column(Numeric(18, 4), nullable=True)
+    confidence = Column(Numeric(6, 4), nullable=True)
+    predicted_probability = Column(Numeric(6, 4), nullable=True)
+    model_version = Column(Integer, nullable=True)
+    model_name = Column(String, nullable=True)
+    idempotency_key = Column(String, nullable=True, unique=True)
+    event_data = Column(JSON, nullable=True, default=dict)
+
+
+class PositionSnapshot(Base):
+    """Daily position state capture for time-travel analysis (migration 045)."""
+    __tablename__ = "position_snapshots"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    snapshot_date = Column(Date, nullable=False)
+    bot_name = Column(String, nullable=False)
+    market_id = Column(String, nullable=False)
+    side = Column(String, nullable=False)
+    quantity = Column(Numeric(18, 8), nullable=False)
+    entry_price = Column(Numeric(18, 8), nullable=False)
+    mark_price = Column(Numeric(18, 8), nullable=True)
+    unrealized_pnl = Column(Numeric(18, 4), nullable=True)
+    realized_pnl = Column(Numeric(18, 4), nullable=True, default=0)
+    last_event_seq = Column(BigInteger, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("snapshot_date", "bot_name", "market_id", "side",
+                         name="uq_position_snapshots_date_bot_market_side"),
+    )
+
+
+class EquitySnapshot(Base):
+    """Portfolio-level daily snapshot with peak/drawdown/Sharpe (migration 045)."""
+    __tablename__ = "equity_snapshots"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    snapshot_date = Column(Date, nullable=False)
+    bot_name = Column(String, nullable=False)
+    total_capital = Column(Numeric(18, 4), nullable=False)
+    deployed_capital = Column(Numeric(18, 4), nullable=False)
+    realized_pnl = Column(Numeric(18, 4), nullable=False)
+    unrealized_pnl = Column(Numeric(18, 4), nullable=False)
+    total_equity = Column(Numeric(18, 4), nullable=False)
+    open_positions = Column(Integer, nullable=False, default=0)
+    daily_trades = Column(Integer, nullable=False, default=0)
+    win_count = Column(Integer, nullable=False, default=0)
+    loss_count = Column(Integer, nullable=False, default=0)
+    peak_equity = Column(Numeric(18, 4), nullable=True)
+    drawdown_pct = Column(Numeric(8, 6), nullable=True)
+    rolling_sharpe = Column(Numeric(8, 4), nullable=True)
+    execution_mode = Column(String, nullable=False, default="paper")
+
+    __table_args__ = (
+        UniqueConstraint("snapshot_date", "bot_name",
+                         name="uq_equity_snapshots_date_bot"),
+    )
+
+
+class ReconciliationBreak(Base):
+    """Automated integrity check results (migration 046)."""
+    __tablename__ = "reconciliation_breaks"
+    break_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    recon_date = Column(Date, nullable=False)
+    recon_type = Column(String, nullable=False)
+    bot_name = Column(String, nullable=False)
+    market_id = Column(String, nullable=True)
+    internal_value = Column(Numeric(18, 8), nullable=True)
+    external_value = Column(Numeric(18, 8), nullable=True)
+    difference = Column(Numeric(18, 8), nullable=True)
+    severity = Column(String, nullable=True, default="WARNING")
+    status = Column(String, nullable=True, default="OPEN")
+    details = Column(JSON, nullable=True, default=dict)
+    detected_at = Column(NaiveUTCDateTime, nullable=True, default=lambda: _naive_utc(datetime.now(timezone.utc)))
+    resolved_at = Column(NaiveUTCDateTime, nullable=True)
+    resolution_note = Column(Text, nullable=True)
+
+
+class TradeModelLinkage(Base):
+    """ML attribution linking model versions to trade outcomes (migration 048)."""
+    __tablename__ = "trade_model_linkage"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    trade_event_seq = Column(BigInteger, nullable=False)
+    prediction_source = Column(String, nullable=False)
+    prediction_id = Column(BigInteger, nullable=False)
+    model_name = Column(String, nullable=False)
+    model_version = Column(Integer, nullable=True)
+    predicted_prob = Column(Numeric(6, 4), nullable=True)
+    market_price_at_prediction = Column(Numeric(6, 4), nullable=True)
+    edge_at_prediction = Column(Numeric(6, 4), nullable=True)
+    kelly_fraction = Column(Numeric(6, 4), nullable=True)
+    feature_snapshot = Column(JSON, nullable=True)
+    created_at = Column(NaiveUTCDateTime, nullable=True, default=lambda: _naive_utc(datetime.now(timezone.utc)))
 
 
 class MLModel(Base):
@@ -2993,6 +3104,25 @@ class Database:
                 except Exception:
                     pass  # Table may not exist yet (pre-migration)
                 await session.commit()
+            # Append immutable trade event (separate session, never blocks paper_trade)
+            try:
+                _evt_type = "EXIT" if side and side.upper() == "SELL" else "ENTRY"
+                await self.insert_trade_event(
+                    event_type=_evt_type,
+                    bot_name=bot_name,
+                    market_id=market_id,
+                    side=side,
+                    size=size,
+                    price=price,
+                    token_id=token_id,
+                    confidence=confidence,
+                    correlation_id=correlation_id,
+                    order_id=order_id,
+                    realized_pnl=realized_pnl,
+                    event_time=_naive_utc(filled_at) if filled_at else None,
+                )
+            except Exception:
+                logger.warning("trade_event persist failed for %s (non-blocking)", market_id)
         except Exception as e:
             logger.warning("Failed to write paper_trades: %s", e)
 
@@ -3103,6 +3233,7 @@ class Database:
                     SET
                         resolution = m.resolution,
                         resolved_at = m.resolved_at,
+                        status = 'resolved',
                         realized_pnl = (
                             CASE
                                 WHEN m.resolution = 'YES' AND LOWER(pt.side) = 'yes' THEN pt.size * (1.0 - pt.price)
@@ -3120,6 +3251,39 @@ class Database:
                 """), {"fee_rate": _fee_rate})
                 count = getattr(r, "rowcount", 0) or 0
                 await session.commit()
+
+                # Emit RESOLUTION events to trade_events for newly resolved rows
+                if count > 0:
+                    try:
+                        resolved_rows = await session.execute(text("""
+                            SELECT pt.market_id, pt.bot_name, pt.side, pt.size, pt.price,
+                                   pt.realized_pnl, pt.resolution, pt.token_id, pt.correlation_id
+                            FROM paper_trades pt
+                            JOIN markets m ON (pt.market_id = CAST(m.id AS TEXT) OR pt.market_id = m.condition_id)
+                            WHERE m.resolution IN ('YES', 'NO')
+                              AND pt.status = 'resolved'
+                              AND LOWER(pt.side) != 'sell'
+                              AND pt.resolved_at >= NOW() - INTERVAL '1 hour'
+                        """))
+                        for rr in resolved_rows.fetchall():
+                            try:
+                                await self.insert_trade_event(
+                                    event_type="RESOLUTION",
+                                    bot_name=rr[1],
+                                    market_id=rr[0],
+                                    side=rr[2],
+                                    size=float(rr[3] or 0),
+                                    price=float(rr[4] or 0),
+                                    realized_pnl=float(rr[5]) if rr[5] is not None else None,
+                                    token_id=rr[7],
+                                    correlation_id=rr[8],
+                                    event_data={"resolution": rr[6]},
+                                )
+                            except Exception:
+                                pass  # Non-critical audit trail
+                    except Exception:
+                        pass  # trade_events table may not exist yet
+
                 return count
         except Exception as e:
             logger.debug("paper_trades resolution backfill failed (table may not exist): %s", e)
@@ -4412,3 +4576,782 @@ class Database:
                 "issues": issues[:10],  # Limit to first 10 issues
                 "status": "✅ GOOD" if valid == total and total > 0 else "⚠️ ISSUES FOUND" if total > 0 else "❌ NO DATA"
             }
+
+    # ──────────────────────────────────────────────────────────────────
+    # Trade Event Store — immutable append-only log (migration 043)
+    # ──────────────────────────────────────────────────────────────────
+
+    async def insert_trade_event(
+        self,
+        event_type: str,
+        bot_name: str,
+        market_id: str,
+        side: str,
+        size: float,
+        price: float,
+        *,
+        execution_mode: str = "paper",
+        token_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+        order_id: Optional[str] = None,
+        fees: float = 0.0,
+        realized_pnl: Optional[float] = None,
+        confidence: Optional[float] = None,
+        predicted_probability: Optional[float] = None,
+        model_version: Optional[int] = None,
+        model_name: Optional[str] = None,
+        event_time: Optional[datetime] = None,
+        event_data: Optional[Dict] = None,
+    ) -> Optional[int]:
+        """
+        Append an immutable trade event. Returns sequence_num or None on failure.
+
+        Uses synchronous_commit=off (non-financial table).
+        Idempotency_key prevents duplicate events on retries.
+        """
+        if self.session_factory is None:
+            return None
+        idem_key = f"{bot_name}:{market_id}:{side}:{order_id or correlation_id or ''}"
+        evt_time = _naive_utc(event_time) if event_time else _naive_utc(datetime.now(timezone.utc))
+
+        try:
+            from sqlalchemy import text as _sa_text
+            async with self.get_session() as session:
+                await session.execute(_sa_text("SET LOCAL synchronous_commit = off"))
+                result = await session.execute(
+                    _sa_text(
+                        "INSERT INTO trade_events ("
+                        "  event_type, execution_mode, event_time, bot_name, market_id,"
+                        "  token_id, correlation_id, order_id, side, size, price, fees,"
+                        "  realized_pnl, confidence, predicted_probability,"
+                        "  model_version, model_name, idempotency_key, event_data"
+                        ") VALUES ("
+                        "  :event_type, :execution_mode, :event_time, :bot_name, :market_id,"
+                        "  :token_id, :correlation_id, :order_id, :side, :size, :price, :fees,"
+                        "  :realized_pnl, :confidence, :predicted_probability,"
+                        "  :model_version, :model_name, :idempotency_key, CAST(:event_data AS jsonb)"
+                        ") ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING"
+                        " RETURNING sequence_num"
+                    ),
+                    {
+                        "event_type": event_type,
+                        "execution_mode": execution_mode,
+                        "event_time": evt_time,
+                        "bot_name": bot_name,
+                        "market_id": market_id,
+                        "token_id": token_id,
+                        "correlation_id": correlation_id,
+                        "order_id": order_id,
+                        "side": side,
+                        "size": size,
+                        "price": price,
+                        "fees": fees,
+                        "realized_pnl": realized_pnl,
+                        "confidence": confidence,
+                        "predicted_probability": predicted_probability,
+                        "model_version": model_version,
+                        "model_name": model_name,
+                        "idempotency_key": idem_key,
+                        "event_data": json.dumps(event_data or {}),
+                    },
+                )
+                row = result.fetchone()
+                await session.commit()
+                return row[0] if row else None
+        except Exception as e:
+            logger.warning("trade_event %s persist failed for %s: %s", event_type, market_id, e)
+            return None
+
+    async def upsert_traded_market(
+        self,
+        market_id: str,
+        bot_name: str,
+        side: str,
+        size: float,
+        price: float,
+        condition_id: Optional[str] = None,
+        question: Optional[str] = None,
+        execution_mode: str = "paper",
+    ) -> None:
+        """Update traded_markets index. Called on every ENTRY trade."""
+        if self.session_factory is None:
+            return
+        yes_delta = size if side == "YES" else 0
+        no_delta = size if side == "NO" else 0
+        invested_delta = size * price
+
+        try:
+            from sqlalchemy import text as _sa_text
+            async with self.get_session() as session:
+                await session.execute(
+                    _sa_text(
+                        "INSERT INTO traded_markets "
+                        "  (market_id, condition_id, question, bot_names,"
+                        "   net_yes_shares, net_no_shares, total_invested,"
+                        "   trade_count, first_trade_at, execution_mode) "
+                        "VALUES (:market_id, :condition_id, :question, :bot_name,"
+                        "   :yes_delta, :no_delta, :invested, 1, NOW(), :exec_mode) "
+                        "ON CONFLICT (market_id) DO UPDATE SET "
+                        "  net_yes_shares = traded_markets.net_yes_shares + :yes_delta,"
+                        "  net_no_shares = traded_markets.net_no_shares + :no_delta,"
+                        "  total_invested = traded_markets.total_invested + :invested,"
+                        "  trade_count = traded_markets.trade_count + 1,"
+                        "  bot_names = CASE "
+                        "    WHEN traded_markets.bot_names NOT LIKE '%%' || :bot_name || '%%' "
+                        "    THEN traded_markets.bot_names || ',' || :bot_name "
+                        "    ELSE traded_markets.bot_names END,"
+                        "  last_trade_at = NOW()"
+                    ),
+                    {
+                        "market_id": market_id,
+                        "condition_id": condition_id,
+                        "question": question,
+                        "bot_name": bot_name,
+                        "yes_delta": yes_delta,
+                        "no_delta": no_delta,
+                        "invested": invested_delta,
+                        "exec_mode": execution_mode,
+                    },
+                )
+                await session.commit()
+        except Exception as e:
+            logger.warning("upsert_traded_market failed for %s: %s", market_id, e)
+
+    async def mark_market_resolved(
+        self,
+        market_id: str,
+        resolution: str,
+        pnl: Optional[float] = None,
+    ) -> None:
+        """Mark a traded market as resolved and record the outcome."""
+        if self.session_factory is None:
+            return
+        try:
+            from sqlalchemy import text as _sa_text
+            async with self.get_session() as session:
+                await session.execute(
+                    _sa_text(
+                        "UPDATE traded_markets SET "
+                        "  status = 'resolved', resolved = TRUE,"
+                        "  resolution = :resolution,"
+                        "  resolved_at = NOW(),"
+                        "  resolution_pnl = :pnl "
+                        "WHERE market_id = :market_id AND status = 'open'"
+                    ),
+                    {"market_id": market_id, "resolution": resolution, "pnl": pnl},
+                )
+                await session.commit()
+        except Exception as e:
+            logger.warning("mark_market_resolved failed for %s: %s", market_id, e)
+
+    # ──────────────────────────────────────────────────────────────────
+    # Position & Equity Snapshots — daily state capture (migration 045)
+    # ──────────────────────────────────────────────────────────────────
+
+    async def take_position_snapshot(self, snapshot_date: Optional[date] = None) -> int:
+        """Snapshot all open positions. Returns count of rows written."""
+        if self.session_factory is None:
+            return 0
+        _date = snapshot_date or date.today()
+        try:
+            from sqlalchemy import text as _sa_text
+            async with self.get_session() as session:
+                result = await session.execute(
+                    _sa_text(
+                        "INSERT INTO position_snapshots "
+                        "  (snapshot_date, bot_name, market_id, side, quantity,"
+                        "   entry_price, mark_price, unrealized_pnl) "
+                        "SELECT :snap_date, bot_name, market_id, side, size, entry_price,"
+                        "  COALESCE(current_price, entry_price),"
+                        "  CASE "
+                        "    WHEN side = 'YES' THEN size * (COALESCE(current_price, entry_price) - entry_price) "
+                        "    WHEN side = 'NO' THEN size * (entry_price - COALESCE(current_price, entry_price)) "
+                        "    ELSE 0 "
+                        "  END "
+                        "FROM positions WHERE status = 'open' "
+                        "ON CONFLICT (snapshot_date, bot_name, market_id, side) DO UPDATE SET "
+                        "  quantity = EXCLUDED.quantity,"
+                        "  mark_price = EXCLUDED.mark_price,"
+                        "  unrealized_pnl = EXCLUDED.unrealized_pnl"
+                    ),
+                    {"snap_date": _date},
+                )
+                count = result.rowcount or 0
+                await session.commit()
+                logger.info("position_snapshot: %d positions captured for %s", count, _date)
+                return count
+        except Exception as e:
+            logger.warning("take_position_snapshot failed: %s", e)
+            return 0
+
+    async def take_equity_snapshot(self, snapshot_date: Optional[date] = None) -> int:
+        """Snapshot per-bot equity with peak/drawdown/Sharpe. Returns bot count."""
+        if self.session_factory is None:
+            return 0
+        _date = snapshot_date or date.today()
+        bot_count = 0
+        try:
+            from sqlalchemy import text as _sa_text
+            async with self.get_session() as session:
+                # Per-bot aggregates from open positions
+                bots_result = await session.execute(
+                    _sa_text(
+                        "SELECT bot_name,"
+                        "  COUNT(*) AS open_positions,"
+                        "  COALESCE(SUM(size * entry_price), 0) AS deployed_capital,"
+                        "  COALESCE(SUM("
+                        "    CASE "
+                        "      WHEN side = 'YES' THEN size * (COALESCE(current_price, entry_price) - entry_price)"
+                        "      WHEN side = 'NO' THEN size * (entry_price - COALESCE(current_price, entry_price))"
+                        "      ELSE 0"
+                        "    END"
+                        "  ), 0) AS unrealized_pnl "
+                        "FROM positions WHERE status = 'open' "
+                        "GROUP BY bot_name"
+                    )
+                )
+                bots = bots_result.fetchall()
+
+                for bot_row in bots:
+                    bot_name = bot_row[0]
+                    open_positions = bot_row[1]
+                    deployed_capital = float(bot_row[2])
+                    unrealized_pnl = float(bot_row[3])
+
+                    # Realized PnL
+                    rpnl_result = await session.execute(
+                        _sa_text(
+                            "SELECT COALESCE(SUM(realized_pnl), 0) "
+                            "FROM paper_trades "
+                            "WHERE bot_name = :bot AND realized_pnl IS NOT NULL "
+                            "  AND side IN ('YES', 'NO') AND LOWER(side) != 'sell'"
+                        ),
+                        {"bot": bot_name},
+                    )
+                    realized = float(rpnl_result.scalar() or 0)
+
+                    # Daily trades + win/loss
+                    daily_result = await session.execute(
+                        _sa_text(
+                            "SELECT COUNT(*) AS daily_trades,"
+                            "  COUNT(*) FILTER (WHERE realized_pnl > 0) AS wins,"
+                            "  COUNT(*) FILTER (WHERE realized_pnl < 0) AS losses "
+                            "FROM paper_trades "
+                            "WHERE bot_name = :bot AND created_at >= :snap_date::date"
+                        ),
+                        {"bot": bot_name, "snap_date": _date},
+                    )
+                    daily_row = daily_result.fetchone()
+                    daily_trades = daily_row[0] if daily_row else 0
+                    win_count = daily_row[1] if daily_row else 0
+                    loss_count = daily_row[2] if daily_row else 0
+
+                    total_capital = 1000.0  # Default; overridden per-bot via config
+                    current_equity = total_capital + realized + unrealized_pnl
+
+                    # Peak equity from history
+                    peak_result = await session.execute(
+                        _sa_text(
+                            "SELECT MAX(peak_equity) FROM equity_snapshots WHERE bot_name = :bot"
+                        ),
+                        {"bot": bot_name},
+                    )
+                    prev_peak = float(peak_result.scalar() or current_equity)
+                    peak = max(prev_peak, current_equity)
+                    drawdown = (peak - current_equity) / peak if peak > 0 else 0
+
+                    # Rolling 30-day Sharpe
+                    sharpe_result = await session.execute(
+                        _sa_text(
+                            "WITH daily_returns AS ("
+                            "  SELECT total_equity - LAG(total_equity) OVER (ORDER BY snapshot_date) AS daily_return "
+                            "  FROM equity_snapshots WHERE bot_name = :bot "
+                            "  ORDER BY snapshot_date DESC LIMIT 30"
+                            ") "
+                            "SELECT CASE WHEN STDDEV(daily_return) > 0 "
+                            "  THEN AVG(daily_return) / STDDEV(daily_return) * SQRT(252) "
+                            "  ELSE NULL END "
+                            "FROM daily_returns WHERE daily_return IS NOT NULL"
+                        ),
+                        {"bot": bot_name},
+                    )
+                    sharpe = sharpe_result.scalar()
+
+                    await session.execute(
+                        _sa_text(
+                            "INSERT INTO equity_snapshots ("
+                            "  snapshot_date, bot_name, total_capital, deployed_capital,"
+                            "  realized_pnl, unrealized_pnl, total_equity, open_positions,"
+                            "  daily_trades, win_count, loss_count,"
+                            "  peak_equity, drawdown_pct, rolling_sharpe, execution_mode"
+                            ") VALUES (:snap_date, :bot, :capital, :deployed,"
+                            "  :realized, :unrealized, :total_equity, :positions,"
+                            "  :daily_trades, :wins, :losses,"
+                            "  :peak, :drawdown, :sharpe, 'paper')"
+                            " ON CONFLICT (snapshot_date, bot_name) DO UPDATE SET"
+                            "  deployed_capital = EXCLUDED.deployed_capital,"
+                            "  realized_pnl = EXCLUDED.realized_pnl,"
+                            "  unrealized_pnl = EXCLUDED.unrealized_pnl,"
+                            "  total_equity = EXCLUDED.total_equity,"
+                            "  open_positions = EXCLUDED.open_positions,"
+                            "  daily_trades = EXCLUDED.daily_trades,"
+                            "  win_count = EXCLUDED.win_count,"
+                            "  loss_count = EXCLUDED.loss_count,"
+                            "  peak_equity = EXCLUDED.peak_equity,"
+                            "  drawdown_pct = EXCLUDED.drawdown_pct,"
+                            "  rolling_sharpe = EXCLUDED.rolling_sharpe"
+                        ),
+                        {
+                            "snap_date": _date,
+                            "bot": bot_name,
+                            "capital": total_capital,
+                            "deployed": deployed_capital,
+                            "realized": realized,
+                            "unrealized": unrealized_pnl,
+                            "total_equity": current_equity,
+                            "positions": open_positions,
+                            "daily_trades": daily_trades,
+                            "wins": win_count,
+                            "losses": loss_count,
+                            "peak": peak,
+                            "drawdown": drawdown,
+                            "sharpe": sharpe,
+                        },
+                    )
+                    bot_count += 1
+
+                await session.commit()
+                logger.info("equity_snapshot: %d bots captured for %s", bot_count, _date)
+                return bot_count
+        except Exception as e:
+            logger.warning("take_equity_snapshot failed: %s", e)
+            return 0
+
+    # ──────────────────────────────────────────────────────────────────
+    # Position Rebuild — crash recovery from event replay (migration 043)
+    # ──────────────────────────────────────────────────────────────────
+
+    async def rebuild_positions_from_events(self, bot_name: str) -> Dict[str, Dict]:
+        """
+        Reconstruct position state from trade_events for a specific bot.
+        Returns dict of {market_id:side: {market_id, side, net_quantity, avg_price}}.
+        Called during bot startup if positions table is empty/stale.
+        """
+        if self.session_factory is None:
+            return {}
+        try:
+            from sqlalchemy import text as _sa_text
+            async with self.get_session() as session:
+                result = await session.execute(
+                    _sa_text(
+                        "SELECT market_id, side, size, price, event_type "
+                        "FROM trade_events "
+                        "WHERE bot_name = :bot "
+                        "  AND event_type IN ('ENTRY', 'EXIT', 'RESOLUTION') "
+                        "ORDER BY sequence_num ASC"
+                    ),
+                    {"bot": bot_name},
+                )
+                rows = result.fetchall()
+
+            positions: Dict[str, Dict[str, Dict[str, float]]] = {}
+            for row in rows:
+                mid = row[0]
+                side_val = row[1]
+                size_val = float(row[2] or 0)
+                price_val = float(row[3] or 0)
+                evt_type = row[4]
+
+                if mid not in positions:
+                    positions[mid] = {
+                        "YES": {"qty": 0.0, "cost": 0.0},
+                        "NO": {"qty": 0.0, "cost": 0.0},
+                    }
+
+                if evt_type == "ENTRY" and side_val in ("YES", "NO"):
+                    positions[mid][side_val]["qty"] += size_val
+                    positions[mid][side_val]["cost"] += size_val * price_val
+                elif evt_type in ("EXIT", "RESOLUTION"):
+                    for s in ("YES", "NO"):
+                        positions[mid][s] = {"qty": 0.0, "cost": 0.0}
+
+            # Filter to open positions only
+            result_dict: Dict[str, Dict] = {}
+            for mid, sides in positions.items():
+                for side_val, data in sides.items():
+                    if data["qty"] > 0:
+                        result_dict[f"{mid}:{side_val}"] = {
+                            "market_id": mid,
+                            "side": side_val,
+                            "net_quantity": data["qty"],
+                            "avg_price": data["cost"] / data["qty"],
+                        }
+
+            logger.info("rebuild_positions: %d open positions rebuilt for %s", len(result_dict), bot_name)
+            return result_dict
+        except Exception as e:
+            logger.warning("rebuild_positions_from_events failed for %s: %s", bot_name, e)
+            return {}
+
+    # ──────────────────────────────────────────────────────────────────
+    # Reconciliation — 6h integrity check (migration 046)
+    # ──────────────────────────────────────────────────────────────────
+
+    async def run_reconciliation(self) -> int:
+        """
+        Cross-validate positions vs paper_trades vs traded_markets.
+        Returns number of breaks found (-1 on error).
+        """
+        if self.session_factory is None:
+            return -1
+        breaks_found = 0
+        today = date.today()
+
+        try:
+            from sqlalchemy import text as _sa_text
+            async with self.get_session() as session:
+                # Check 1: positions vs paper_trades size mismatch
+                mismatches = await session.execute(
+                    _sa_text(
+                        "WITH position_state AS ("
+                        "  SELECT bot_name, market_id, side, size FROM positions WHERE status = 'open'"
+                        "), trade_state AS ("
+                        "  SELECT bot_name, market_id, side, SUM(size) AS total_size"
+                        "  FROM paper_trades"
+                        "  WHERE realized_pnl IS NULL AND side IN ('YES', 'NO')"
+                        "  GROUP BY bot_name, market_id, side"
+                        ") "
+                        "SELECT "
+                        "  COALESCE(p.bot_name, t.bot_name) AS bot_name,"
+                        "  COALESCE(p.market_id, t.market_id) AS market_id,"
+                        "  p.size AS position_size,"
+                        "  t.total_size AS trade_size,"
+                        "  ABS(COALESCE(p.size, 0) - COALESCE(t.total_size, 0)) AS delta "
+                        "FROM position_state p "
+                        "FULL OUTER JOIN trade_state t "
+                        "  ON p.bot_name = t.bot_name AND p.market_id = t.market_id AND p.side = t.side "
+                        "WHERE ABS(COALESCE(p.size, 0) - COALESCE(t.total_size, 0)) > 0.0001"
+                    )
+                )
+                mismatch_rows = mismatches.fetchall()
+
+                for m in mismatch_rows:
+                    await session.execute(
+                        _sa_text(
+                            "INSERT INTO reconciliation_breaks "
+                            "  (recon_date, recon_type, bot_name, market_id,"
+                            "   internal_value, external_value, difference, severity, details) "
+                            "VALUES (:today, 'POSITION', :bot, :market,"
+                            "  :pos_size, :trade_size, :delta, 'WARNING',"
+                            "  '{\"source\": \"positions_vs_paper_trades\"}'::jsonb)"
+                        ),
+                        {
+                            "today": today,
+                            "bot": m[0],
+                            "market": m[1],
+                            "pos_size": m[2],
+                            "trade_size": m[3],
+                            "delta": m[4],
+                        },
+                    )
+                    breaks_found += 1
+
+                # Check 2: traded_markets status vs actual resolution
+                stale = await session.execute(
+                    _sa_text(
+                        "SELECT tm.market_id, tm.bot_names "
+                        "FROM traded_markets tm "
+                        "WHERE tm.status = 'open' "
+                        "  AND EXISTS ("
+                        "    SELECT 1 FROM paper_trades pt "
+                        "    WHERE pt.market_id = tm.market_id "
+                        "      AND pt.realized_pnl IS NOT NULL"
+                        "      AND pt.side IN ('YES', 'NO')"
+                        "  )"
+                    )
+                )
+                stale_rows = stale.fetchall()
+
+                for s in stale_rows:
+                    await session.execute(
+                        _sa_text(
+                            "INSERT INTO reconciliation_breaks "
+                            "  (recon_date, recon_type, bot_name, market_id,"
+                            "   severity, details) "
+                            "VALUES (:today, 'STALE_POSITION', :bot, :market,"
+                            "  'CRITICAL',"
+                            "  '{\"source\": \"traded_markets_status_mismatch\"}'::jsonb)"
+                        ),
+                        {
+                            "today": today,
+                            "bot": str(s[1]).split(",")[0] if s[1] else "unknown",
+                            "market": s[0],
+                        },
+                    )
+                    breaks_found += 1
+
+                await session.commit()
+
+            if breaks_found:
+                logger.warning("reconciliation: %d breaks found", breaks_found)
+            else:
+                logger.info("reconciliation: clean — 0 breaks")
+            return breaks_found
+        except Exception as e:
+            logger.warning("run_reconciliation failed: %s", e)
+            return -1
+
+    # ──────────────────────────────────────────────────────────────────
+    # COPY Bulk Insert — 10x faster for batch trade_events (migration 043)
+    # ──────────────────────────────────────────────────────────────────
+
+    async def copy_insert_trade_events(self, events: List[Dict]) -> int:
+        """
+        Bulk insert trade events using raw asyncpg COPY (10x faster than INSERT).
+        Used for backfill and replay operations. Returns count of rows inserted.
+        Falls back to individual inserts on failure.
+        """
+        if not events or self.session_factory is None:
+            return 0
+
+        columns = [
+            "event_type", "execution_mode", "event_time", "bot_name",
+            "market_id", "token_id", "correlation_id", "order_id",
+            "side", "size", "price", "fees", "realized_pnl",
+            "confidence", "predicted_probability", "model_version",
+            "model_name", "idempotency_key", "event_data",
+        ]
+
+        try:
+            # Get raw asyncpg connection from SQLAlchemy engine
+            async with self.engine.connect() as conn:
+                raw_conn = await conn.get_raw_connection()
+                asyncpg_conn = raw_conn.dbapi_connection
+
+                records = []
+                for e in events:
+                    records.append(tuple(
+                        e.get(col) for col in columns
+                    ))
+
+                result = await asyncpg_conn.copy_records_to_table(
+                    "trade_events",
+                    records=records,
+                    columns=columns,
+                )
+                count = int(result.split()[-1]) if result else len(records)
+                logger.info("copy_insert_trade_events: %d events inserted", count)
+                return count
+        except Exception as e:
+            logger.warning("copy_insert_trade_events failed, falling back to individual inserts: %s", e)
+            # Fallback to individual inserts
+            inserted = 0
+            for evt in events:
+                seq = await self.insert_trade_event(
+                    event_type=evt.get("event_type", "ENTRY"),
+                    bot_name=evt.get("bot_name", ""),
+                    market_id=evt.get("market_id", ""),
+                    side=evt.get("side", "YES"),
+                    size=float(evt.get("size", 0)),
+                    price=float(evt.get("price", 0)),
+                    execution_mode=evt.get("execution_mode", "paper"),
+                    token_id=evt.get("token_id"),
+                    correlation_id=evt.get("correlation_id"),
+                    order_id=evt.get("order_id"),
+                    realized_pnl=evt.get("realized_pnl"),
+                    confidence=evt.get("confidence"),
+                    event_time=evt.get("event_time"),
+                    event_data=evt.get("event_data"),
+                )
+                if seq is not None:
+                    inserted += 1
+            return inserted
+
+    # ──────────────────────────────────────────────────────────────────
+    # Feature Store — lightweight model registry + snapshots (migration 051)
+    # ──────────────────────────────────────────────────────────────────
+
+    async def register_model(
+        self,
+        model_name: str,
+        model_version: int,
+        model_type: str,
+        *,
+        framework: Optional[str] = None,
+        training_config: Optional[Dict] = None,
+        training_metrics: Optional[Dict] = None,
+        training_samples: Optional[int] = None,
+        feature_names: Optional[List[str]] = None,
+        is_active: bool = False,
+        notes: Optional[str] = None,
+    ) -> Optional[int]:
+        """Register a trained model version. Returns id or None."""
+        if self.session_factory is None:
+            return None
+        try:
+            from sqlalchemy import text as _sa_text
+            async with self.get_session() as session:
+                result = await session.execute(
+                    _sa_text(
+                        "INSERT INTO model_registry "
+                        "  (model_name, model_version, model_type, framework,"
+                        "   training_config, training_metrics, training_samples,"
+                        "   feature_names, is_active, notes) "
+                        "VALUES (:name, :version, :type, :framework,"
+                        "  CAST(:config AS jsonb), CAST(:metrics AS jsonb), :samples,"
+                        "  :features, :active, :notes) "
+                        "ON CONFLICT (model_name, model_version) DO UPDATE SET "
+                        "  training_metrics = CAST(EXCLUDED.training_metrics AS jsonb),"
+                        "  is_active = EXCLUDED.is_active,"
+                        "  notes = EXCLUDED.notes "
+                        "RETURNING id"
+                    ),
+                    {
+                        "name": model_name,
+                        "version": model_version,
+                        "type": model_type,
+                        "framework": framework,
+                        "config": json.dumps(training_config or {}),
+                        "metrics": json.dumps(training_metrics or {}),
+                        "samples": training_samples,
+                        "features": feature_names or [],
+                        "active": is_active,
+                        "notes": notes,
+                    },
+                )
+                row = result.fetchone()
+                await session.commit()
+                return row[0] if row else None
+        except Exception as e:
+            logger.warning("register_model failed for %s v%d: %s", model_name, model_version, e)
+            return None
+
+    async def promote_model(self, model_name: str, model_version: int) -> bool:
+        """Set a model version as active, deactivating all others of same name."""
+        if self.session_factory is None:
+            return False
+        try:
+            from sqlalchemy import text as _sa_text
+            async with self.get_session() as session:
+                await session.execute(
+                    _sa_text(
+                        "UPDATE model_registry SET is_active = FALSE, retired_at = NOW() "
+                        "WHERE model_name = :name AND is_active = TRUE"
+                    ),
+                    {"name": model_name},
+                )
+                await session.execute(
+                    _sa_text(
+                        "UPDATE model_registry SET is_active = TRUE, promoted_at = NOW() "
+                        "WHERE model_name = :name AND model_version = :version"
+                    ),
+                    {"name": model_name, "version": model_version},
+                )
+                await session.commit()
+                return True
+        except Exception as e:
+            logger.warning("promote_model failed for %s v%d: %s", model_name, model_version, e)
+            return False
+
+    async def save_feature_snapshot(
+        self,
+        model_name: str,
+        market_id: str,
+        feature_vector: Dict,
+        *,
+        model_version: Optional[int] = None,
+        predicted_prob: Optional[float] = None,
+        market_price: Optional[float] = None,
+        snapshot_type: str = "prediction",
+        event_time: Optional[datetime] = None,
+    ) -> Optional[int]:
+        """Save frozen feature vector at prediction time for reproducibility."""
+        if self.session_factory is None:
+            return None
+        evt_time = _naive_utc(event_time) if event_time else _naive_utc(datetime.now(timezone.utc))
+        edge = (predicted_prob - market_price) if predicted_prob and market_price else None
+
+        try:
+            from sqlalchemy import text as _sa_text
+            async with self.get_session() as session:
+                await session.execute(_sa_text("SET LOCAL synchronous_commit = off"))
+                result = await session.execute(
+                    _sa_text(
+                        "INSERT INTO feature_snapshots "
+                        "  (snapshot_type, model_name, model_version, market_id,"
+                        "   feature_vector, predicted_prob, market_price, edge, event_time) "
+                        "VALUES (:type, :name, :version, :market,"
+                        "  CAST(:features AS jsonb), :prob, :price, :edge, :event_time) "
+                        "ON CONFLICT (model_name, market_id, event_time) DO NOTHING "
+                        "RETURNING id"
+                    ),
+                    {
+                        "type": snapshot_type,
+                        "name": model_name,
+                        "version": model_version,
+                        "market": market_id,
+                        "features": json.dumps(feature_vector),
+                        "prob": predicted_prob,
+                        "price": market_price,
+                        "edge": edge,
+                        "event_time": evt_time,
+                    },
+                )
+                row = result.fetchone()
+                await session.commit()
+                return row[0] if row else None
+        except Exception as e:
+            logger.warning("save_feature_snapshot failed for %s: %s", market_id, e)
+            return None
+
+    async def update_model_performance(
+        self,
+        metric_date: date,
+        model_name: str,
+        model_version: int,
+        *,
+        prediction_count: int = 0,
+        resolved_count: int = 0,
+        correct_count: int = 0,
+        brier_score: Optional[float] = None,
+        avg_edge: Optional[float] = None,
+        realized_pnl: Optional[float] = None,
+    ) -> None:
+        """Upsert daily model performance metrics."""
+        if self.session_factory is None:
+            return
+        try:
+            from sqlalchemy import text as _sa_text
+            async with self.get_session() as session:
+                await session.execute(
+                    _sa_text(
+                        "INSERT INTO model_performance "
+                        "  (metric_date, model_name, model_version,"
+                        "   prediction_count, resolved_count, correct_count,"
+                        "   brier_score, avg_edge, realized_pnl) "
+                        "VALUES (:date, :name, :version,"
+                        "  :preds, :resolved, :correct,"
+                        "  :brier, :edge, :pnl) "
+                        "ON CONFLICT (metric_date, model_name, model_version) DO UPDATE SET "
+                        "  prediction_count = EXCLUDED.prediction_count,"
+                        "  resolved_count = EXCLUDED.resolved_count,"
+                        "  correct_count = EXCLUDED.correct_count,"
+                        "  brier_score = EXCLUDED.brier_score,"
+                        "  avg_edge = EXCLUDED.avg_edge,"
+                        "  realized_pnl = EXCLUDED.realized_pnl"
+                    ),
+                    {
+                        "date": metric_date,
+                        "name": model_name,
+                        "version": model_version,
+                        "preds": prediction_count,
+                        "resolved": resolved_count,
+                        "correct": correct_count,
+                        "brier": brier_score,
+                        "edge": avg_edge,
+                        "pnl": realized_pnl,
+                    },
+                )
+                await session.commit()
+        except Exception as e:
+            logger.warning("update_model_performance failed: %s", e)

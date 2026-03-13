@@ -163,12 +163,18 @@ class EventSourcingBus(EventBus):
             logger.debug("Event sourcing persist failed: %s", e)
 
     async def _retention_cleanup(self, retain_days: int = 30) -> None:
-        """Delete decision_events rows older than retain_days."""
+        """Delete decision_events and trade_events rows older than retain_days.
+
+        Uses GUC bypass (app.allow_retention_cleanup) to pass through
+        the immutability trigger on append-only tables (migration 043).
+        """
         if not self._db or not self._db.session_factory:
             return
         try:
             async with self._db.get_session() as session:
                 from sqlalchemy import text
+                # GUC bypass for immutability trigger
+                await session.execute(text("SET LOCAL app.allow_retention_cleanup = 'true'"))
                 result = await session.execute(
                     text("""
                         DELETE FROM decision_events
@@ -176,9 +182,23 @@ class EventSourcingBus(EventBus):
                     """),
                     {"retain_days": retain_days},
                 )
-                count = result.rowcount
+                de_count = result.rowcount
+                # Trade events: longer retention (365 days)
+                te_count = 0
+                try:
+                    te_result = await session.execute(
+                        text("""
+                            DELETE FROM trade_events
+                            WHERE recorded_at < NOW() - INTERVAL '365 days'
+                        """)
+                    )
+                    te_count = te_result.rowcount
+                except Exception:
+                    pass  # Table may not exist yet (pre-migration 043)
+                await session.execute(text("RESET app.allow_retention_cleanup"))
                 await session.commit()
-            logger.info("event_log_cleanup", deleted=count, retain_days=retain_days)
+            logger.info("event_log_cleanup", decision_events_deleted=de_count,
+                        trade_events_deleted=te_count, retain_days=retain_days)
         except Exception as e:
             logger.warning("event_log_cleanup_failed", error=str(e))
 

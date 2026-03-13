@@ -451,12 +451,29 @@ class PaperTradingEngine:
                 size=size,
                 realized_pnl=round(realized_pnl or 0, 4),
             )
+            # Emit EXIT event to trade_events audit trail
+            if self.db and hasattr(self.db, "insert_trade_event"):
+                try:
+                    await self.db.insert_trade_event(
+                        event_type="EXIT",
+                        bot_name=bot_name,
+                        market_id=market_id,
+                        token_id=token_id,
+                        side="SELL",
+                        size=size,
+                        price=price,
+                        realized_pnl=realized_pnl,
+                        correlation_id=correlation_id,
+                        order_id=trade_id,
+                    )
+                except Exception:
+                    pass  # Non-critical: trade_events is audit trail
         elif self.db and hasattr(self.db, "insert_paper_trade"):
             # H5/M9: Retry 3× with backoff to prevent ghost positions.
             # Most DB failures are transient (pool exhaustion, brief network blips).
             if getattr(self.db, "session_factory", None) is None:
-                logger.warning(
-                    "Paper trade NOT persisted: db.session_factory is None (DB not initialized yet?)",
+                logger.debug(
+                    "Paper trade NOT persisted: db.session_factory is None",
                     market_id=market_id, bot_name=bot_name,
                 )
             for _attempt in range(3):
@@ -478,6 +495,23 @@ class PaperTradingEngine:
                         submitted_at=_submitted_at,
                         filled_at=_filled_at,
                     )
+                    # Emit ENTRY event to trade_events audit trail
+                    if hasattr(self.db, "insert_trade_event"):
+                        try:
+                            await self.db.insert_trade_event(
+                                event_type="ENTRY",
+                                bot_name=bot_name,
+                                market_id=market_id,
+                                token_id=token_id,
+                                side=_db_side,
+                                size=size,
+                                price=price,
+                                confidence=confidence,
+                                correlation_id=correlation_id,
+                                order_id=trade_id,
+                            )
+                        except Exception:
+                            pass  # Non-critical: trade_events is audit trail
                     break  # Success — exit retry loop
                 except Exception as e:
                     err_str = str(e).lower()

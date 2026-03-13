@@ -224,7 +224,7 @@ async def run_resolution_backfill(
         # 2a: Markets WE traded on — fast lookup from traded_markets table (~100 rows)
         try:
             pt_result = await session.execute(text(
-                "SELECT market_id FROM traded_markets WHERE resolved = FALSE"
+                "SELECT market_id FROM traded_markets WHERE status = 'open' OR resolved = FALSE"
             ))
             paper_market_ids = [r[0] for r in pt_result.fetchall() if r[0]]
         except Exception:
@@ -321,6 +321,11 @@ async def run_resolution_backfill(
                     # Pass end_date as resolved_at; fallback to now() so resolved_at is never NULL
                     _resolved_at = _end_dt_parsed or datetime.now(timezone.utc).replace(tzinfo=None)
                     await db.save_market_resolution(mid, True, str(res).upper(), _source, _resolved_at)
+                    # Update traded_markets index + write RESOLUTION events
+                    try:
+                        await db.mark_market_resolved(mid, str(res).upper())
+                    except Exception:
+                        pass
                     updated += 1
                     if log_progress and updated % 50 == 0:
                         logger.info("Resolution backfill: updated %d resolutions", updated)
@@ -367,6 +372,38 @@ async def run_resolution_backfill(
             logger.info("Paper trades resolution backfill: %d rows updated", paper_updated)
     except Exception as e:
         logger.debug("Paper trades backfill failed (non-fatal): %s", e)
+
+    # Phase 4b: Emit RESOLUTION events to trade_events audit trail
+    if paper_updated > 0 and hasattr(db, "insert_trade_event"):
+        try:
+            async with db.get_session() as _te_sess:
+                from sqlalchemy import text as _te_text
+                _resolved = await _te_sess.execute(_te_text(
+                    "SELECT pt.market_id, pt.bot_name, pt.resolution, pt.realized_pnl, pt.side "
+                    "FROM paper_trades pt "
+                    "WHERE pt.resolution IN ('YES', 'NO') "
+                    "  AND pt.side IN ('YES', 'NO') "
+                    "  AND NOT EXISTS ("
+                    "    SELECT 1 FROM trade_events te "
+                    "    WHERE te.market_id = pt.market_id "
+                    "      AND te.bot_name = pt.bot_name "
+                    "      AND te.event_type = 'RESOLUTION'"
+                    "  ) "
+                    "LIMIT 100"
+                ))
+                for row in _resolved.fetchall():
+                    try:
+                        await db.insert_trade_event(
+                            event_type="RESOLUTION",
+                            bot_name=row[1],
+                            market_id=row[0],
+                            side=row[2],
+                            realized_pnl=float(row[3]) if row[3] is not None else None,
+                        )
+                    except Exception:
+                        pass
+        except Exception:
+            pass  # Non-critical: trade_events is audit trail
 
     # Phase 5: Backfill positions with unrealized_pnl from resolution data
     # CRITICAL: Fixes CLV, win rate, and Total P&L for resolution-based exits

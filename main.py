@@ -296,6 +296,8 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
     restart_counts = {name: 0 for name in bots}
     restart_backoff: dict = {name: 30.0 for name in bots}  # I15: per-bot backoff seconds
     _last_retention_cleanup: float = 0.0  # Session 51: P2-3
+    _last_snapshot: float = 0.0  # Session 83: daily position/equity snapshots
+    _last_reconciliation: float = 0.0  # Session 83: 6h integrity check
 
     while True:
         await asyncio.sleep(WATCHDOG_INTERVAL_SECONDS)
@@ -412,6 +414,30 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
                     logger.info("Watchdog: decision_events retention cleanup completed")
                 except Exception as e:
                     logger.debug("Retention cleanup failed: %s", e)
+
+        # Session 83: Daily position + equity snapshots
+        if _now_ts - _last_snapshot > 86400:
+            _db = getattr(base_engine, "db", None)
+            if _db and hasattr(_db, "take_position_snapshot"):
+                try:
+                    from datetime import date as _date_cls
+                    _today = _date_cls.today()
+                    await _db.take_position_snapshot(_today)
+                    await _db.take_equity_snapshot(_today)
+                    _last_snapshot = _now_ts
+                    logger.info("Watchdog: daily snapshots completed for %s", _today)
+                except Exception as e:
+                    logger.warning("Watchdog: daily snapshot failed: %s", e)
+
+        # Session 83: 6-hour reconciliation check
+        if _now_ts - _last_reconciliation > 21600:
+            _db = getattr(base_engine, "db", None)
+            if _db and hasattr(_db, "run_reconciliation"):
+                try:
+                    _breaks = await _db.run_reconciliation()
+                    _last_reconciliation = _now_ts
+                except Exception as e:
+                    logger.warning("Watchdog: reconciliation failed: %s", e)
 
         if alive_count == 0 and len(bots) > 0:
             logger.critical(

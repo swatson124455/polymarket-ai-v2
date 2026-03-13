@@ -146,6 +146,21 @@ class BaseBot(ABC):
         base_engine.stop() already calls order_gateway._flush_daily_exposure()."""
         pass
 
+    async def _rebuild_positions_from_events(self) -> Dict[str, Dict]:
+        """
+        Fallback: rebuild position state from trade_events if positions table is empty.
+        Returns dict of {market_id:side: {market_id, side, net_quantity, avg_price}}.
+        Subclasses call this from their _restore_state_on_startup() if needed.
+        """
+        db = getattr(self.base_engine, "db", None)
+        if not db or not hasattr(db, "rebuild_positions_from_events"):
+            return {}
+        try:
+            return await db.rebuild_positions_from_events(self.bot_name)
+        except Exception as e:
+            logger.warning("rebuild_positions_from_events failed for %s: %s", self.bot_name, e)
+            return {}
+
     def get_feature_importance(self) -> Dict[str, float]:
         """Get current global feature importance scores.
         Returns dict of {feature_name: importance_score}. Bots can use this
