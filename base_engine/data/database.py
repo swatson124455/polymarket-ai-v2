@@ -3104,25 +3104,8 @@ class Database:
                 except Exception:
                     pass  # Table may not exist yet (pre-migration)
                 await session.commit()
-            # Append immutable trade event (separate session, never blocks paper_trade)
-            try:
-                _evt_type = "EXIT" if side and side.upper() == "SELL" else "ENTRY"
-                await self.insert_trade_event(
-                    event_type=_evt_type,
-                    bot_name=bot_name,
-                    market_id=market_id,
-                    side=side,
-                    size=size,
-                    price=price,
-                    token_id=token_id,
-                    confidence=confidence,
-                    correlation_id=correlation_id,
-                    order_id=order_id,
-                    realized_pnl=realized_pnl,
-                    event_time=_naive_utc(filled_at) if filled_at else None,
-                )
-            except Exception:
-                logger.warning("trade_event persist failed for %s (non-blocking)", market_id)
+            # trade_event emission moved to paper_trading.py execution layer
+            # to avoid duplicate writes (both paths generated same idempotency_key)
         except Exception as e:
             logger.warning("Failed to write paper_trades: %s", e)
 
