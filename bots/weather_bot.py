@@ -549,14 +549,15 @@ class WeatherBot(BaseBot):
     async def scan_and_trade(self) -> None:
         self._scan_count += 1
 
-        # P1+P2: handle day boundary + calibration refresh
+        # P1+P2: handle day boundary (must run first — resets exposure on new day)
         await self._handle_daily_boundary()
-        await self._maybe_reload_calibration()
-        await self._load_category_params()
 
-        # Bug fix: refresh intra-day P&L every scan so daily loss limit
-        # reflects realized P&L from positions closed since last scan.
-        await self._restore_daily_pnl_from_db()
+        # Calibration + category params are independent — run in parallel
+        await asyncio.gather(
+            self._maybe_reload_calibration(),
+            self._load_category_params(),
+            self._restore_daily_pnl_from_db(),
+        )
 
         # W4: Monitoring thresholds — check Brier/drawdown and halt if needed
         await self._check_monitoring_thresholds()
@@ -3057,8 +3058,14 @@ class WeatherBot(BaseBot):
                 except Exception:
                     return sid, 1.0
 
+            _alert_sem = asyncio.Semaphore(5)
+
+            async def _bounded_fetch(sid: str, st: WeatherStation) -> Tuple[str, float]:
+                async with _alert_sem:
+                    return await _fetch_alert(sid, st)
+
             results = await asyncio.gather(
-                *[_fetch_alert(sid, st) for sid, st in us_stations.items()],
+                *[_bounded_fetch(sid, st) for sid, st in us_stations.items()],
                 return_exceptions=True,
             )
             for r in results:
