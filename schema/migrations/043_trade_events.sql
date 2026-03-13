@@ -53,23 +53,19 @@ BEGIN
     END IF;
     RAISE EXCEPTION 'Cannot % rows in append-only table %', TG_OP, TG_TABLE_NAME;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+;
 
 CREATE TRIGGER trg_trade_events_immutable
     BEFORE UPDATE OR DELETE ON trade_events
     FOR EACH ROW EXECUTE FUNCTION prevent_trade_event_mutation();
 
 -- Also protect decision_events (existing table from migration 020)
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_trigger WHERE tgname = 'trg_decision_events_immutable'
-    ) THEN
-        CREATE TRIGGER trg_decision_events_immutable
-            BEFORE UPDATE OR DELETE ON decision_events
-            FOR EACH ROW EXECUTE FUNCTION prevent_trade_event_mutation();
-    END IF;
-END $$;
+-- Uses DROP IF EXISTS + CREATE to avoid DO block dollar-quoting issues with asyncpg
+DROP TRIGGER IF EXISTS trg_decision_events_immutable ON decision_events;
+CREATE TRIGGER trg_decision_events_immutable
+    BEFORE UPDATE OR DELETE ON decision_events
+    FOR EACH ROW EXECUTE FUNCTION prevent_trade_event_mutation();
 
 -- Indexes
 CREATE INDEX idx_trade_events_time_brin ON trade_events USING BRIN (event_time) WITH (pages_per_range = 32);

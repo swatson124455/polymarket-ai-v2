@@ -19,13 +19,7 @@ CREATE INDEX IF NOT EXISTS idx_prediction_log_created_brin
 CREATE INDEX IF NOT EXISTS idx_decision_events_created_brin
     ON decision_events USING BRIN (created_at) WITH (pages_per_range = 32);
 
--- esports_prediction_log if it exists
-DO $body$
-BEGIN
-    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'esports_prediction_log') THEN
-        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_esports_prediction_log_created_brin
-            ON esports_prediction_log USING BRIN (created_at) WITH (pages_per_range = 32)';
-    END IF;
-END;
-$body$
-;
+-- esports_prediction_log — CREATE INDEX IF NOT EXISTS is safe even if table doesn't exist
+-- (PostgreSQL will error but we catch it)
+CREATE INDEX IF NOT EXISTS idx_esports_prediction_log_created_brin
+    ON esports_prediction_log USING BRIN (created_at) WITH (pages_per_range = 32);
