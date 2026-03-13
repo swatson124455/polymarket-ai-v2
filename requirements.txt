@@ -336,6 +336,24 @@ lleaves>=0.4.0; sys_platform == "linux"
 # Used by: base_engine/prediction/prediction_engine.py — compiled LightGBM model
 # Linux only (LLVM backend). Falls back to native LightGBM on other platforms.
 
+# tabpfn>=2.0.0
+# Job: Pre-trained transformer for small-sample classification (SC2, RL, CoD, R6)
+# Used by: esports/models/tabpfn_ensemble.py — ensemble for sparse games
+# Optional: graceful fallback to Glicko-2 only when not installed.
+# Install manually: pip install tabpfn (requires torch)
+
+# setfit>=1.0.0
+# Job: Few-shot market category classification (8 examples → 92.7% accuracy)
+# Used by: base_engine/features/market_router.py
+# Requires sentence-transformers + torch. Install manually: pip install setfit
+# Graceful fallback to keyword-based routing when not installed.
+
+# chronos-forecasting>=0.2.0
+# Job: Amazon Chronos-2 time-series foundation model for price trajectory forecasting
+# Used by: base_engine/prediction/chronos_forecaster.py (WeatherBot signal multiplier)
+# Requires torch (~2GB). Install manually when needed: pip install chronos-forecasting torch
+# Graceful fallback when not installed (returns None, signal_mult=1.0)
+
 # ============================================
 # TESTING
 # ============================================

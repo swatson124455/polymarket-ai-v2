@@ -111,10 +111,22 @@ class EsportsBot(BaseBot):
         self._edge_decay_data: Dict[str, Dict] = {}      # game → latest edge decay analysis
         self._game_kelly_mult: Dict[str, float] = {}     # game → Kelly multiplier (Brier-based)
 
-        # Session 82: Calibration pipeline (fitted in _check_monitoring_thresholds)
+        # Session 82-83: Calibration pipeline (fitted in _check_monitoring_thresholds)
         self._focal_calibrator: Any = None       # FocalTemperatureCalibrator instance
         self._bias_decomp: Any = None            # EsportsBiasDecomposition instance
+        self._horizon_calibrator: Any = None     # HorizonBiasCalibrator instance
         self._onnx_cross_game_session: Any = None  # ONNX InferenceSession for cross-game XGB
+        # Per-game ONNX sessions for faster inference (Session 83)
+        self._onnx_lol_session: Any = None
+        self._onnx_cs2_session: Any = None
+        self._onnx_dota2_session: Any = None
+        self._onnx_valorant_session: Any = None
+        # Session 83: Per-game EGM d, edge decay multiplier, conformal intervals
+        self._game_egm_d: Dict[str, float] = {}  # game → dynamic d (overrides _egm_d)
+        self._edge_decay_mult: Dict[str, float] = {}  # game → sizing multiplier from edge decay
+        self._conformal_predictor: Any = None  # ConformalPredictor (cross-game XGB)
+        self._tabpfn_predictor: Any = None  # TabPFN ensemble for sparse games
+        self._cot_validator: Any = None  # CoT LLM validator for high-edge trades
 
         # Parallel analysis (Item 6)
         _concurrency = int(getattr(settings, "ESPORTS_ANALYSIS_CONCURRENCY", 10))
@@ -276,6 +288,39 @@ class EsportsBot(BaseBot):
             logger.info("EsportsBot: EsportsBiasDecomposition initialized")
         except Exception as exc:
             logger.debug("EsportsBot: BiasDecomp not available", error=str(exc))
+
+        try:
+            from base_engine.features.calibration import HorizonBiasCalibrator
+            self._horizon_calibrator = HorizonBiasCalibrator(db=db)
+            logger.info("EsportsBot: HorizonBiasCalibrator initialized")
+        except Exception as exc:
+            logger.debug("EsportsBot: HorizonBias not available", error=str(exc))
+
+        # Session 83: Load per-game ONNX sessions
+        self._load_per_game_onnx_sessions()
+
+        # Session 83: Initialize conformal predictor for conservative Kelly
+        try:
+            from esports.models.conformal_wrapper import ConformalPredictor
+            self._conformal_predictor = ConformalPredictor(alpha=0.10)
+            logger.info("EsportsBot: ConformalPredictor initialized (alpha=0.10)")
+        except Exception as exc:
+            logger.debug("EsportsBot: ConformalPredictor not available", error=str(exc))
+
+        # Session 83: Initialize TabPFN for sparse games
+        try:
+            from esports.models.tabpfn_ensemble import TabPFNEnsemble
+            self._tabpfn_predictor = TabPFNEnsemble()
+            logger.info("EsportsBot: TabPFN ensemble initialized")
+        except Exception as exc:
+            logger.debug("EsportsBot: TabPFN not available", error=str(exc))
+
+        # Session 83: Initialize CoT validator for high-edge trades
+        try:
+            from esports.models.cot_validator import CoTValidator
+            self._cot_validator = CoTValidator()
+        except Exception as exc:
+            logger.debug("EsportsBot: CoT validator not available", error=str(exc))
 
         lol_trained = self._lol_model is not None and self._lol_model.is_trained
         cs2_trained = self._cs2_model is not None and self._cs2_model.is_trained
@@ -503,6 +548,8 @@ class EsportsBot(BaseBot):
         """
         self._scan_count += 1
         self._backfill_calls_this_scan = 0
+        if self._cot_validator is not None:
+            self._cot_validator.reset_scan_counter()
         if self._scan_count % 100 == 0:
             self._cleanup_caches()
         db = getattr(self.base_engine, "db", None)
@@ -1088,12 +1135,15 @@ class EsportsBot(BaseBot):
             if _wf: _wf["no_prediction"] += 1
             return None
 
-        # Session 82: Apply calibration pipeline (bias decomp → focal temp)
+        # Session 82-83: Apply calibration pipeline (bias decomp → focal temp → horizon bias)
         _raw_prob = model_prob
         if self._bias_decomp is not None:
             model_prob = self._bias_decomp.recalibrate(model_prob, game)
         if self._focal_calibrator is not None and self._focal_calibrator.is_fitted:
             model_prob = self._focal_calibrator.calibrate(model_prob)
+        if self._horizon_calibrator is not None and self._horizon_calibrator.is_fitted:
+            _ttr_days = self._compute_ttr_days(market_data)
+            model_prob = self._horizon_calibrator.calibrate(model_prob, "esports", _ttr_days)
 
         # Validate edge
         # YES side: model thinks YES is more likely than market price
@@ -1196,6 +1246,26 @@ class EsportsBot(BaseBot):
             if _wf: _wf["low_confluence"] += 1
             return None
 
+        # Session 83: CoT validation for high-edge trades (>15%)
+        if (self._cot_validator is not None
+                and self._cot_validator.is_available
+                and edge >= 0.15):
+            try:
+                question = str(market_data.get("question", ""))
+                cot_result = await self._cot_validator.validate_trade(
+                    question=question, game=game,
+                    model_prob=model_prob, market_price=price,
+                    edge=edge, side=side,
+                )
+                if not cot_result.get("approved", True):
+                    logger.info("esportsbot_cot_rejected", market_id=market_id,
+                                game=game, edge=round(edge, 4),
+                                reason=cot_result.get("reason", "")[:100])
+                    if _wf: _wf["cot_rejected"] = _wf.get("cot_rejected", 0) + 1
+                    return None
+            except Exception:
+                pass  # Fail open: approve on error
+
         if _wf: _wf["passed"] += 1
         return {
             "type": "esports_pregame" if not self._is_live(market_id) else "esports_live",
@@ -1286,9 +1356,13 @@ class EsportsBot(BaseBot):
                 if glicko2_prob is not None:
                     game_state = self._build_glicko2_game_state(market_data, game)
                     if game_state:
-                        prob = self._dota2_model.predict(game_state)
+                        prob = self._onnx_predict_game(
+                            self._onnx_dota2_session, game_state,
+                            self._dota2_model, "dota2",
+                        )
                         # Blend ML with Glicko-2: extremized geometric mean of odds
-                        prob = extremized_geometric_mean([prob, glicko2_prob], d=self._egm_d)
+                        _d = self._game_egm_d.get(game, self._egm_d)
+                        prob = extremized_geometric_mean([prob, glicko2_prob], d=_d)
                         prob = max(0.05, min(0.95, prob))
                         # OpenDota form adjustment (small ±3% based on recent form)
                         prob = await self._opendota_form_adjustment(market_data, prob)
@@ -1307,9 +1381,13 @@ class EsportsBot(BaseBot):
                 if glicko2_prob is not None:
                     game_state = self._build_glicko2_game_state(market_data, game)
                     if game_state:
-                        prob = self._valorant_model.predict(game_state)
+                        prob = self._onnx_predict_game(
+                            self._onnx_valorant_session, game_state,
+                            self._valorant_model, "valorant",
+                        )
                         # Blend ML with Glicko-2: extremized geometric mean of odds
-                        prob = extremized_geometric_mean([prob, glicko2_prob], d=self._egm_d)
+                        _d = self._game_egm_d.get(game, self._egm_d)
+                        prob = extremized_geometric_mean([prob, glicko2_prob], d=_d)
                         prob = max(0.05, min(0.95, prob))
                         self._prediction_cache[market_id] = {
                             "prob": prob, "ts": time.monotonic(), "game": game,
@@ -1346,6 +1424,17 @@ class EsportsBot(BaseBot):
                     glicko2_prob = await self._ballchasing_rl_adjustment(
                         market_data, glicko2_prob,
                     )
+                # Session 83: TabPFN blend for sparse games (SC2, RL, CoD, R6)
+                if (self._tabpfn_predictor is not None
+                        and self._tabpfn_predictor.is_available
+                        and game in ("sc2", "rl", "cod", "r6")):
+                    game_state_tabpfn = self._build_glicko2_game_state(market_data, game)
+                    if game_state_tabpfn and self._tabpfn_predictor.is_fitted(game):
+                        tabpfn_prob = self._tabpfn_predictor.predict(game, game_state_tabpfn)
+                        if tabpfn_prob is not None:
+                            w = self._tabpfn_predictor.get_blend_weight()
+                            glicko2_prob = w * tabpfn_prob + (1 - w) * glicko2_prob
+                            glicko2_prob = max(0.05, min(0.95, glicko2_prob))
                 # Cross-game XGB blend: augment Glicko-2 with meta-patterns
                 xgb_raw = None
                 if self._cross_game_model is not None and game in self._CROSS_GAME_IDS:
@@ -1382,8 +1471,9 @@ class EsportsBot(BaseBot):
                             )
                         # Blend: XGB + Glicko-2 (Glicko-2 anchored via weights)
                         xgb_raw = xgb_prob
+                        _d = self._game_egm_d.get(game, self._egm_d)
                         glicko2_prob = extremized_geometric_mean(
-                            [glicko2_prob, xgb_prob], weights=[0.6, 0.4], d=1.5
+                            [glicko2_prob, xgb_prob], weights=[0.6, 0.4], d=_d
                         )
                         glicko2_prob = max(0.05, min(0.95, glicko2_prob))
 
@@ -1853,9 +1943,33 @@ class EsportsBot(BaseBot):
         """Execute trade with maker-first, taker-fallback strategy.
 
         Includes A10 (pre-update exposure), A6 (uncertainty-scaled sizing),
-        A5 (near-expiry boost), A8 (drawdown Kelly reduction).
+        A5 (near-expiry boost), A8 (drawdown Kelly reduction),
+        Session 83: conformal conservative sizing.
         """
         confidence = opp["confidence"]
+
+        # Session 83: If conformal predictor is fitted, use conservative bound for sizing.
+        # This prevents oversizing when model uncertainty is high.
+        if (self._conformal_predictor is not None
+                and self._conformal_predictor.is_fitted
+                and self._cross_game_model is not None):
+            try:
+                game = opp.get("game", "")
+                cache = self._prediction_cache.get(opp.get("market_id", ""), {})
+                if cache.get("ml_raw") is not None and game in self._CROSS_GAME_IDS:
+                    # Use conservative_prob for sizing (narrows toward 0.5)
+                    import numpy as _np
+                    _p_mid = cache["prob"]
+                    _p_conservative = self._conformal_predictor.conservative_prob(
+                        _np.array([[_p_mid]], dtype=_np.float32)
+                    )[0]
+                    # Only use conservative bound if it's more conservative
+                    if opp["side"] == "YES" and _p_conservative < confidence:
+                        confidence = float(_p_conservative)
+                    elif opp["side"] == "NO" and (1.0 - _p_conservative) < confidence:
+                        confidence = float(1.0 - _p_conservative)
+            except Exception:
+                pass  # Conformal is optional enhancement
 
         # A5: Near-expiry confidence boost
         confidence = self._apply_expiry_boost(confidence, opp)
@@ -1872,9 +1986,10 @@ class EsportsBot(BaseBot):
         if size <= 0:
             return
 
-        # Apply A6 + A8 + per-game Kelly multiplier scaling after base sizing
+        # Apply A6 + A8 + per-game Kelly multiplier + edge decay scaling after base sizing
         _game_mult = self._game_kelly_mult.get(opp.get("game", ""), 1.0)
-        size = size * phi_factor * dd_factor * _game_mult
+        _decay_mult = self._get_edge_decay_sizing_mult(opp.get("game", ""))
+        size = size * phi_factor * dd_factor * _game_mult * _decay_mult
         if size < 1.0:
             return
 
@@ -1922,6 +2037,7 @@ class EsportsBot(BaseBot):
                 phi_factor=phi_factor,
                 dd_factor=dd_factor,
                 game_kelly_mult=_game_mult,
+                edge_decay_mult=_decay_mult,
             )
         else:
             # A10: Rollback exposure if order failed
@@ -2378,6 +2494,19 @@ class EsportsBot(BaseBot):
             except Exception as exc:
                 logger.debug("esportsbot_bias_decomp_fit_failed", error=str(exc))
 
+        # Session 83: Fit HorizonBiasCalibrator from paper_trades
+        if self._horizon_calibrator is not None:
+            try:
+                fitted = await self._horizon_calibrator.fit_from_paper_trades(n_days=180)
+                if fitted:
+                    logger.info("esportsbot_horizon_bias_fitted",
+                                buckets=len(self._horizon_calibrator._b_params))
+            except Exception as exc:
+                logger.debug("esportsbot_horizon_bias_fit_failed", error=str(exc))
+
+        # Session 83: Dynamic per-game EGM d tuning from Brier scores
+        self._update_per_game_egm_d()
+
         # Edge decay analysis per game
         try:
             from esports.data.esports_db import analyze_edge_decay
@@ -2600,6 +2729,36 @@ class EsportsBot(BaseBot):
                 team_a_id = self._match_team_name(ta)
                 team_b_id = self._match_team_name(tb)
 
+        # Pattern 5: "[Team] or [Team] — who will win?" / "who wins: [A] or [B]"
+        if not team_a_id or not team_b_id:
+            or_match = re.search(
+                r"(?:who\s+(?:will\s+)?win[s]?[:\s]+)?(.+?)\s+or\s+(.+?)(?:\?|$)",
+                question,
+            )
+            if or_match:
+                oa = or_match.group(1).strip()
+                ob = or_match.group(2).strip()
+                oa, ob = self._clean_team_names(oa, ob)
+                _clean_a, _clean_b = oa, ob
+                team_a_id = self._match_team_name(oa)
+                team_b_id = self._match_team_name(ob)
+
+        # Pattern 6: "[Team] - [Team]" (dash-separated, common in Asian markets)
+        if not team_a_id or not team_b_id:
+            dash_match = re.search(
+                r"(.+?)\s+-\s+(.+?)(?:\?|$)", question,
+            )
+            if dash_match:
+                da = dash_match.group(1).strip()
+                db = dash_match.group(2).strip()
+                for prefix in ("will ", "can ", "does "):
+                    if da.startswith(prefix):
+                        da = da[len(prefix):]
+                da, db = self._clean_team_names(da, db)
+                _clean_a, _clean_b = da, db
+                team_a_id = self._match_team_name(da)
+                team_b_id = self._match_team_name(db)
+
         if not team_a_id or not team_b_id:
             # On-demand backfill: try PandaScore lookup for missing team(s)
             if not team_a_id and _clean_a:
@@ -2650,6 +2809,115 @@ class EsportsBot(BaseBot):
         except Exception:
             pass
         return None
+
+    # ── Session 83: New helper methods ──────────────────────────────────
+
+    @staticmethod
+    def _compute_ttr_days(market_data: Dict) -> Optional[float]:
+        """Compute time-to-resolution in days from market end_date_iso."""
+        end_date = market_data.get("end_date_iso")
+        if not end_date:
+            return None
+        try:
+            if isinstance(end_date, str):
+                end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+            else:
+                end_dt = end_date
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            return max(0.0, (end_dt - now).total_seconds() / 86400.0)
+        except Exception:
+            return None
+
+    def _update_per_game_egm_d(self) -> None:
+        """Dynamic d tuning: adjust EGM extremization per game based on Brier score.
+
+        Games with low Brier (well-calibrated) get higher d (more extreme aggregation).
+        Games with high Brier (poor calibration) get lower d (more conservative).
+        Range: d ∈ [1.0, 2.5] (IARPA ACE range).
+        """
+        for game, mult in self._game_kelly_mult.items():
+            # Kelly mult encodes Brier quality: 1.2 = good (Brier < 0.20), 0.5 = bad (> 0.25)
+            if mult >= 1.2:
+                self._game_egm_d[game] = min(2.5, self._egm_d + 0.5)  # More extreme
+            elif mult <= 0.5:
+                self._game_egm_d[game] = max(1.0, self._egm_d - 0.3)  # More conservative
+            else:
+                self._game_egm_d[game] = self._egm_d  # Default
+
+    def _get_edge_decay_sizing_mult(self, game: str) -> float:
+        """Return sizing multiplier based on edge decay analysis.
+
+        If a game shows fast edge decay (top time-bin CLV < 0), reduce sizing.
+        If edge holds well (all bins CLV > 0), keep at 1.0.
+        """
+        decay = self._edge_decay_data.get(game)
+        if not decay:
+            return 1.0
+        bins = decay.get("bins", [])
+        if not bins:
+            return 1.0
+        top_bin_clv = bins[0].get("avg_clv", 0)
+        if top_bin_clv < -0.05:
+            return 0.6  # Significant negative CLV: heavy reduction
+        elif top_bin_clv < 0:
+            return 0.8  # Mild negative CLV: moderate reduction
+        return 1.0
+
+    def _onnx_predict_game(
+        self, onnx_session: Any, game_state: Dict, native_model: Any, game: str,
+    ) -> float:
+        """Predict via ONNX if session available, fallback to native model.predict()."""
+        if onnx_session is not None:
+            try:
+                import numpy as _np
+                from esports.models.onnx_compiler import OnnxCompiler
+                # Build feature array from game_state in model's FEATURE_NAMES order
+                feature_names = getattr(native_model, "FEATURE_NAMES", None)
+                if feature_names:
+                    feats = [float(game_state.get(f, 0.0)) for f in feature_names]
+                    _arr = _np.array([feats], dtype=_np.float32)
+                    probs = OnnxCompiler().predict_proba(onnx_session, _arr)
+                    return float(probs[0][1])
+            except Exception:
+                pass  # Fall through to native
+        return native_model.predict(game_state)
+
+    def _load_per_game_onnx_sessions(self) -> None:
+        """Load ONNX sessions for per-game models (LoL, CS2, Dota2, Valorant)."""
+        import os
+        try:
+            from esports.models.onnx_compiler import OnnxCompiler
+            compiler = OnnxCompiler()
+        except ImportError:
+            return
+
+        models_dir = os.path.join(os.path.dirname(__file__), "..", "saved_models")
+        models_dir = os.path.abspath(models_dir)
+        data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
+        data_dir = os.path.abspath(data_dir)
+
+        # Map: (attribute, onnx_filename, search_dirs)
+        _onnx_map = [
+            ("_onnx_lol_session", "lol_win_model.onnx", [models_dir, data_dir]),
+            ("_onnx_cs2_session", "cs2_economy_model.onnx", [models_dir, data_dir]),
+            ("_onnx_dota2_session", "dota2_xgb.onnx", [models_dir]),
+            ("_onnx_valorant_session", "valorant_xgb.onnx", [models_dir]),
+        ]
+
+        for attr, filename, dirs in _onnx_map:
+            for d in dirs:
+                path = os.path.join(d, filename)
+                if os.path.exists(path):
+                    try:
+                        session = compiler.load_session(path)
+                        if session is not None:
+                            setattr(self, attr, session)
+                            logger.info(f"EsportsBot: {filename} ONNX loaded", path=path)
+                    except Exception:
+                        pass
+                    break
 
     # Cross-game model: game → integer ID (must match esports_trainer.py _GAME_IDS)
     _CROSS_GAME_IDS = {"lol": 0, "cs2": 1, "dota2": 2, "valorant": 3,
@@ -2743,11 +3011,11 @@ class EsportsBot(BaseBot):
 
     @staticmethod
     def _clean_team_names(name_a: str, name_b: str) -> tuple:
-        """Strip game title prefixes and tournament/format suffixes from extracted team names.
+        """Strip game title prefixes, tournament/format suffixes, and normalize team names.
 
         Regex captures game titles (e.g. "counter-strike: themongolz") and
         tournament suffixes (e.g. "pain (bo3) - esl pro league stage 2").
-        This method cleans both before fuzzy matching.
+        Also normalizes common abbreviations and formatting artifacts.
         """
         import re as _re
         _game_prefixes = (
@@ -2766,20 +3034,58 @@ class EsportsBot(BaseBot):
             if name_b.startswith(gp):
                 name_b = name_b[len(gp):]
         # Strip tournament/format suffixes: "(bo3)", "- esl pro league ...", etc.
-        name_b = _re.sub(r"\s*\(bo\d+\).*$", "", name_b).strip()
-        name_b = _re.sub(
-            r"\s*-\s+(?:esl |blast |pgl |iem |dreamhack|faceit|weplay|rievent|major|champions|masters|challengers).*$",
-            "", name_b,
-        ).strip()
-        # Same cleanup for name_a (less common but possible)
-        name_a = _re.sub(r"\s*\(bo\d+\).*$", "", name_a).strip()
+        _suffix_re = r"\s*\(bo\d+\).*$"
+        _tourney_re = (
+            r"\s*-\s+(?:esl |blast |pgl |iem |dreamhack|faceit|weplay|rievent"
+            r"|major|champions|masters|challengers|lck|lpl|lec|lcs|vct|worlds"
+            r"|msi |msc |lcl|cblol|ljl|pcs|spring|summer|winter|fall|split"
+            r"|playoffs|qualifier|group|stage|round|final).*$"
+        )
+        for name_ref in ("name_a", "name_b"):
+            n = name_a if name_ref == "name_a" else name_b
+            n = _re.sub(_suffix_re, "", n).strip()
+            n = _re.sub(_tourney_re, "", n, flags=_re.IGNORECASE).strip()
+            # Strip trailing " map N", " game N" (e.g. "T1 map 3")
+            n = _re.sub(r"\s+(?:map|game)\s+\d+$", "", n, flags=_re.IGNORECASE).strip()
+            # Strip region tags in parens: "(KR)", "(CN)", "(EU)"
+            n = _re.sub(r"\s*\([A-Z]{2,4}\)\s*$", "", n).strip()
+            if name_ref == "name_a":
+                name_a = n
+            else:
+                name_b = n
         return name_a.strip(), name_b.strip()
+
+    # Common team name aliases: market_name → pandascore_name
+    _TEAM_ALIASES: Dict[str, str] = {
+        "jdg": "jd gaming", "edg": "edward gaming", "rng": "royal never give up",
+        "fpx": "funplus phoenix", "blg": "bilibili gaming", "lng": "lng esports",
+        "tes": "top esports", "we": "team we", "wbg": "weibo gaming",
+        "ig": "invictus gaming", "ra": "rare atom", "omg": "oh my god",
+        "gen": "gen.g", "geng": "gen.g", "dk": "dplus kia", "drx": "drx",
+        "kt": "kt rolster", "hle": "hanwha life esports", "bro": "fredit brion",
+        "ns": "nongshim redforce", "lsb": "liiv sandbox",
+        "g2": "g2 esports", "fnc": "fnatic", "mad": "mad lions",
+        "sk": "sk gaming", "xls": "excel esports", "msf": "misfits gaming",
+        "vit": "team vitality", "bds": "team bds", "koi": "koi",
+        "tl": "team liquid", "c9": "cloud9", "100t": "100 thieves",
+        "eg": "evil geniuses", "fly": "flyquest", "dig": "dignitas",
+        "tsm": "tsm", "clg": "counter logic gaming", "gg": "golden guardians",
+        "nrg": "nrg esports", "sr": "shopify rebellion",
+        "navi": "natus vincere", "na'vi": "natus vincere",
+        "faze": "faze clan", "col": "complexity gaming",
+        "og": "og", "nigma": "team nigma", "bb": "betboom team",
+        "spirit": "team spirit", "vp": "virtus.pro",
+        "prx": "paper rex", "drx": "drx", "zeta": "zeta division",
+        "loud": "loud", "lev": "leviatán",
+        "mouz": "mouz", "nip": "ninjas in pyjamas",
+    }
 
     def _match_team_name(self, name: str) -> Optional[str]:
         """Fuzzy match a team name to a PandaScore team ID.
 
-        Tries exact match first, then longest-substring-first match to prevent
-        short team names (e.g. "t1", "g2") from colliding inside longer strings.
+        Tries: exact match → alias lookup → longest-substring-first match →
+        reverse substring (name in known_name, for long market names) →
+        word-boundary match for short names (2-3 chars).
         """
         name = name.lower().strip()
         if not name:
@@ -2790,12 +3096,39 @@ class EsportsBot(BaseBot):
         if tid:
             return tid
 
+        # Alias lookup: e.g. "jdg" → "jd gaming" → team_id
+        alias = self._TEAM_ALIASES.get(name)
+        if alias:
+            tid = self._team_name_to_id.get(alias)
+            if tid:
+                return tid
+
         # Substring match: longest known name first to prevent short-name collision.
-        # Only check known_name in name (not bidirectional) to avoid "t1" matching "fnatic".
         for known_name, tid in sorted(
             self._team_name_to_id.items(), key=lambda kv: len(kv[0]), reverse=True
         ):
+            # Skip very short known names for substring (handled by word-boundary below)
+            if len(known_name) <= 3:
+                continue
             if known_name in name:
                 return tid
+
+        # Reverse substring: market name may contain the full team name
+        # e.g. name="hanwha life esports academy" contains known "hanwha life esports"
+        for known_name, tid in sorted(
+            self._team_name_to_id.items(), key=lambda kv: len(kv[0]), reverse=True
+        ):
+            if len(known_name) <= 3:
+                continue
+            if name in known_name:
+                return tid
+
+        # Word-boundary match for short names (2-3 chars): "t1", "g2", "og"
+        # Must match as whole word to avoid false positives
+        import re as _re
+        for known_name, tid in self._team_name_to_id.items():
+            if len(known_name) <= 3:
+                if _re.search(r'\b' + _re.escape(known_name) + r'\b', name):
+                    return tid
 
         return None

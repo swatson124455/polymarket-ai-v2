@@ -547,12 +547,41 @@ class PredictionEngine:
         except Exception as e:
             logger.debug("Calibrator not available: %s", e)
 
+        # Le (2026) horizon bias calibrator — domain x TTR power-law correction
+        try:
+            from base_engine.features.calibration import HorizonBiasCalibrator
+            self._horizon_calibrator = HorizonBiasCalibrator(db=self.db)
+            await self._horizon_calibrator.fit_from_paper_trades()
+        except Exception as e:
+            self._horizon_calibrator = None
+            logger.debug("HorizonBias calibrator not available: %s", e)
+
+        # Focal Temperature Scaling — pre-isotonic calibration step
+        try:
+            from base_engine.features.calibration import FocalTemperatureCalibrator
+            self._focal_temp_calibrator = FocalTemperatureCalibrator(db=self.db)
+            await self._focal_temp_calibrator.fit_from_prediction_log()
+        except Exception as e:
+            self._focal_temp_calibrator = None
+            logger.debug("FocalTemp calibrator not available: %s", e)
+
         # P5-03: LLM probability estimator
         try:
             from base_engine.features.llm_probability import LLMProbabilityEstimator
             self._llm_estimator = LLMProbabilityEstimator(db=self.db)
         except Exception as e:
             logger.debug("LLM probability estimator not available: %s", e)
+
+        # Chronos-2 price trajectory forecaster (Tier 3C)
+        try:
+            from base_engine.prediction.chronos_forecaster import ChronosForecaster
+            self._chronos_forecaster = ChronosForecaster(db=self.db)
+            if not self._chronos_forecaster.is_available:
+                self._chronos_forecaster = None
+                logger.debug("Chronos-2 not available (torch/chronos not installed)")
+        except Exception as e:
+            self._chronos_forecaster = None
+            logger.debug("Chronos-2 forecaster not available: %s", e)
 
         # I12: Mark elevation modules as ready — set AFTER all modules attempt init.
         # EnsembleBot and other callers can check _elevation_ready before using LLM/calibrator.
@@ -882,6 +911,23 @@ class PredictionEngine:
                 )
                 models_new["lightgbm"] = _wrap_model(base_lgb)
                 await asyncio.to_thread(models_new["lightgbm"].fit, train_scaled, train_l, sample_weight=train_w)
+                # lleaves: LLVM-compile LightGBM for 16x faster inference (Linux only)
+                try:
+                    import lleaves
+                    import tempfile, os
+                    _lgb_model = base_lgb  # unwrapped model for compilation
+                    _cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data")
+                    _lgb_path = os.path.join(_cache_dir, "lgbm_compiled.txt")
+                    _compiled_path = os.path.join(_cache_dir, "lgbm_compiled.so")
+                    _lgb_model.booster_.save_model(_lgb_path)
+                    _llvm_model = lleaves.Model(model_file=_lgb_path)
+                    _llvm_model.compile(cache=_compiled_path)
+                    self._lleaves_model = lleaves.Model(model_file=_compiled_path)
+                    logger.info("lleaves: LightGBM compiled for fast inference")
+                except ImportError:
+                    pass  # lleaves not installed — use native LightGBM
+                except Exception as e:
+                    logger.debug("lleaves compilation failed (non-fatal): %s", e)
             except ImportError:
                 logger.debug("lightgbm not installed; skipping LGBMClassifier")
 
@@ -2270,6 +2316,7 @@ class PredictionEngine:
         user_address: Optional[str] = None,
         correlation_id: Optional[str] = None,
         bot_name: Optional[str] = None,
+        aia_mode: bool = False,
     ) -> Dict:
         if not self.initialized or not self.models:
             raise RuntimeError("Prediction engine not initialized or models not trained. Train models first.")
@@ -2387,9 +2434,28 @@ class PredictionEngine:
                 weights = {k: v / total_w for k, v in weights.items()}
             else:
                 weights = {k: default_weight for k in predictions}
-            ensemble_prediction = sum(predictions[name] * weights[name] for name in predictions)
+            # Geometric mean of odds aggregation (Satopaa et al. 2014).
+            # Weighted sum in log-odds space = weighted geometric mean of odds ratios.
+            # Satisfies external Bayesianity — mathematically superior to arithmetic mean.
+            _eps = 1e-6
+            _log_odds_sum = 0.0
+            for name in predictions:
+                _p = max(_eps, min(1 - _eps, predictions[name]))
+                _log_odds_sum += weights[name] * math.log(_p / (1 - _p))
+            ensemble_prediction = 1.0 / (1.0 + math.exp(-_log_odds_sum))
         else:
-            ensemble_prediction = np.mean(list(predictions.values()))
+            # Fallback: unweighted geometric mean of odds
+            _eps = 1e-6
+            _preds = list(predictions.values())
+            _n = len(_preds)
+            if _n > 0:
+                _log_odds_sum = sum(
+                    math.log(max(_eps, min(1 - _eps, p)) / max(_eps, 1 - min(1 - _eps, p)))
+                    for p in _preds
+                ) / _n
+                ensemble_prediction = 1.0 / (1.0 + math.exp(-_log_odds_sum))
+            else:
+                ensemble_prediction = 0.5
         if math.isnan(ensemble_prediction) or math.isinf(ensemble_prediction):
             logger.warning("Ensemble prediction is NaN/Infinity, using 0.5")
             ensemble_prediction = 0.5
@@ -2428,8 +2494,28 @@ class PredictionEngine:
             _time_to_res,
         )
         
-        # P3-06: Apply favorite-longshot calibration to ensemble prediction before blending
-        # Calibrator is fitted on prediction_log.predicted_prob (= raw ensemble), so apply here
+        # Calibration chain: FocalTemp -> HorizonBias -> isotonic -> extremization
+        # Each stage is a no-op if not fitted (insufficient data).
+
+        # Step 1: Focal Temperature Scaling (scale + shape miscalibration correction)
+        if getattr(self, '_focal_temp_calibrator', None) and self._focal_temp_calibrator.is_fitted:
+            ensemble_prediction = self._focal_temp_calibrator.calibrate(ensemble_prediction)
+
+        # Step 2: Le (2026) horizon bias correction (domain x TTR power-law)
+        if getattr(self, '_horizon_calibrator', None) and self._horizon_calibrator.is_fitted:
+            _ttr_days = None
+            if _mkt_end_date is not None:
+                try:
+                    from datetime import datetime, timezone
+                    _ttr_td = _mkt_end_date - datetime.now(timezone.utc)
+                    _ttr_days = max(0.0, _ttr_td.total_seconds() / 86400.0)
+                except Exception:
+                    pass
+            ensemble_prediction = self._horizon_calibrator.calibrate(
+                ensemble_prediction, category=_mkt_category, ttr_days=_ttr_days,
+            )
+
+        # Step 3: P3-06 isotonic regression (favorite-longshot bias)
         if self._calibrator and self._calibrator.is_fitted:
             ensemble_prediction = self._calibrator.calibrate(ensemble_prediction)
 
@@ -2572,6 +2658,17 @@ class PredictionEngine:
                                         logger.debug("LLM time_to_resolution parsing failed: %s", e)
                     except Exception as e:
                         logger.debug("LLM market metadata fetch failed: %s", e)
+                # AIA ensemble (5 CoT variants) — only on trade candidates (aia_mode=True)
+                if aia_mode and getattr(settings, "LLM_AIA_ENSEMBLE", False):
+                    aia_result = await self._llm_estimator.estimate_aia_ensemble(
+                        market_question=question_text,
+                        current_price=price,
+                        category=category_text,
+                        time_to_resolution=time_to_res,
+                    )
+                    if aia_result:
+                        return aia_result
+
                 return await self._llm_estimator.estimate_probability(
                     market_question=question_text,
                     current_price=price,

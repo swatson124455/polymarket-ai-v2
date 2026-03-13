@@ -1043,6 +1043,13 @@ class Settings(BaseSettings):
     # --- Parallel analysis ---
     ESPORTS_ANALYSIS_CONCURRENCY: int = int(os.getenv("ESPORTS_ANALYSIS_CONCURRENCY", "10"))
 
+    # --- Conformal prediction (Session 83) ---
+    ESPORTS_CONFORMAL_ALPHA: float = float(os.getenv("ESPORTS_CONFORMAL_ALPHA", "0.10"))  # 90% prediction interval
+
+    # --- CoT validation (Session 83) ---
+    ESPORTS_COT_EDGE_THRESHOLD: float = float(os.getenv("ESPORTS_COT_EDGE_THRESHOLD", "0.15"))
+    ESPORTS_COT_MAX_PER_SCAN: int = int(os.getenv("ESPORTS_COT_MAX_PER_SCAN", "3"))
+
     # --- Pinnacle / cross-market (Phase 2 — deferred) ---
     ESPORTS_PINNACLE_ENABLED: bool = os.getenv("ESPORTS_PINNACLE_ENABLED", "false").lower() in ("true", "1", "yes")
 

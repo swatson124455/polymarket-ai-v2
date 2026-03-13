@@ -116,15 +116,18 @@ class BotBankrollManager:
         price: float,
         calibration_quality: Optional[Dict[str, float]] = None,
         category: str = "",
+        conformal_interval: Optional[tuple] = None,
     ) -> float:
         """
         Compute Kelly-sized bet in USD with per-bot capital, fraction, and caps.
 
         Args:
             confidence: Model's P(this side wins), after ensemble consensus + signal enhancements.
-            price:      Current market price (0–1).
+            price:      Current market price (0-1).
             calibration_quality: Optional dict with "brier" and "count" for calibration scaling.
             category:   Market category for category-specific Kelly fractions.
+            conformal_interval: Optional (p_low, p_high) from MAPIE conformal prediction.
+                When provided, Kelly uses p_low instead of point estimate for conservative sizing.
 
         Returns:
             Bet size in USD (0.0 means do not bet).
@@ -135,13 +138,24 @@ class BotBankrollManager:
         if confidence <= price:
             return 0.0  # No positive edge — don't bet
 
+        # Conformal-aware Kelly: use lower bound of prediction interval for sizing.
+        # The point estimate (confidence) is still used for edge detection above,
+        # but sizing uses the conservative lower bound to prevent blow-ups.
+        kelly_confidence = confidence
+        if conformal_interval is not None:
+            p_low, p_high = conformal_interval
+            if 0 < p_low < 1:
+                kelly_confidence = p_low
+                if kelly_confidence <= price:
+                    return 0.0  # Lower bound has no edge — skip
+
         # Kelly criterion: f* = (p*b - q) / b
-        #   p = confidence, b = (1 - price) / price, q = 1 - p
+        #   p = kelly_confidence, b = (1 - price) / price, q = 1 - p
         b = (1.0 - price) / price
         if b <= 0:
             return 0.0
-        q = 1.0 - confidence
-        kelly_full = (confidence * b - q) / b
+        q = 1.0 - kelly_confidence
+        kelly_full = (kelly_confidence * b - q) / b
         if kelly_full <= 0:
             return 0.0
 

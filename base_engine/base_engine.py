@@ -2234,8 +2234,9 @@ class BaseEngine:
         price: float,
         user_address: Optional[str] = None,
         correlation_id: Optional[str] = None,
+        aia_mode: bool = False,
     ) -> Dict[str, Any]:
-        result = await self.prediction_engine.predict(market_id, token_id, price, user_address, correlation_id=correlation_id)
+        result = await self.prediction_engine.predict(market_id, token_id, price, user_address, correlation_id=correlation_id, aia_mode=aia_mode)
         if self.calibration_tracker and result:
             pred = result.get("prediction") or result.get("confidence")
             if pred is not None:
