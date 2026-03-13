@@ -134,7 +134,7 @@ class Settings(BaseSettings):
     FV_CACHE_INVALIDATE_PRICE_MOVE: float = float(os.getenv("FV_CACHE_INVALIDATE_PRICE_MOVE", "0.03"))
     # Extremization factor: push ensemble predictions away from 0.5 via log-odds scaling.
     # 1.4 is the AIA/Pythia consensus value. 0.0 = disabled (old default), 1.4 = active.
-    EXTREMIZATION_FACTOR: float = float(os.getenv("EXTREMIZATION_FACTOR", "1.4"))
+    EXTREMIZATION_FACTOR: float = float(os.getenv("EXTREMIZATION_FACTOR", "1.8"))
     # Platt scaling (§9.3): shrink predictions toward 0.5 when rolling Brier > 0.15
     PLATT_SCALING_ENABLED: bool = os.getenv("PLATT_SCALING_ENABLED", "false").lower() in ("true", "1", "yes")
     PLATT_MIN_RESOLVED: int = int(os.getenv("PLATT_MIN_RESOLVED", "200"))
@@ -331,6 +331,15 @@ class Settings(BaseSettings):
     # RTDS: global trade feed (all trades on platform, not per-market)
     RTDS_WS_URL: str = os.getenv("RTDS_WS_URL", "wss://ws-live-data.polymarket.com")
     RTDS_PING_INTERVAL: int = int(os.getenv("RTDS_PING_INTERVAL", "5"))  # seconds — RTDS keep-alive requirement
+
+    # Session 82: Advanced calibration + RL scaffold feature flags (all off by default)
+    MIRROR_USE_CALIBRATION: bool = os.getenv("MIRROR_USE_CALIBRATION", "false").lower() in ("true", "1", "yes")
+    MIRROR_USE_CONFORMAL: bool = os.getenv("MIRROR_USE_CONFORMAL", "false").lower() in ("true", "1", "yes")
+    MIRROR_USE_GEOMEAN_CONSENSUS: bool = os.getenv("MIRROR_USE_GEOMEAN_CONSENSUS", "false").lower() in ("true", "1", "yes")
+    MIRROR_GEOMEAN_EXTREMIZE_D: float = float(os.getenv("MIRROR_GEOMEAN_EXTREMIZE_D", "2.0"))
+    MIRROR_ADAPTIVE_SAFETY: bool = os.getenv("MIRROR_ADAPTIVE_SAFETY", "false").lower() in ("true", "1", "yes")
+    MIRROR_SKIP_LIQUIDITY_RTDS: bool = os.getenv("MIRROR_SKIP_LIQUIDITY_RTDS", "false").lower() in ("true", "1", "yes")
+    MIRROR_CONFORMAL_MIN_RESOLVED: int = int(os.getenv("MIRROR_CONFORMAL_MIN_RESOLVED", "50"))
 
     MIRROR_STOP_LOSS_PCT: float = float(os.getenv("MIRROR_STOP_LOSS_PCT", "0.15"))
     MIRROR_MAX_HOLD_HOURS: float = float(os.getenv("MIRROR_MAX_HOLD_HOURS", "72"))
@@ -828,6 +837,11 @@ class Settings(BaseSettings):
     # LLM A/B testing
     LLM_AB_TEST_PROMPTS: bool = os.getenv("LLM_AB_TEST_PROMPTS", "false").lower() in ("true", "1", "yes")
 
+    # AIA-style independent CoT ensemble (5x LLM cost — only on trade candidates via aia_mode=True)
+    LLM_AIA_ENSEMBLE: bool = os.getenv("LLM_AIA_ENSEMBLE", "false").lower() in ("true", "1", "yes")
+    LLM_AIA_MIN_VOLUME: float = float(os.getenv("LLM_AIA_MIN_VOLUME", "10000"))  # min market volume to trigger
+    LLM_AIA_CACHE_TTL: int = int(os.getenv("LLM_AIA_CACHE_TTL", "21600"))  # 6h — weather questions are stable
+
     # Canary deployment: graduated capital rollout (5% → 25% → 50% → 100%)
     CANARY_STAGE: int = int(os.getenv("CANARY_STAGE", "0"))  # 0=off, 1=5%, 2=25%, 3=50%, 4=100%
     CANARY_MIN_SHARPE: float = float(os.getenv("CANARY_MIN_SHARPE", "0.5"))
@@ -925,6 +939,7 @@ class Settings(BaseSettings):
     # --- Edge / confidence thresholds ---
     ESPORTS_MIN_EDGE: float = float(os.getenv("ESPORTS_MIN_EDGE", "0.08"))
     ESPORTS_MIN_CONFIDENCE: float = float(os.getenv("ESPORTS_MIN_CONFIDENCE", "0.52"))
+    ESPORTS_EGM_D: float = float(os.getenv("ESPORTS_EGM_D", "1.5"))  # Extremization factor for EGM blend
     ESPORTS_SERIES_MIN_EDGE: float = float(os.getenv("ESPORTS_SERIES_MIN_EDGE", "0.10"))
     ESPORTS_SERIES_REVERSE_SWEEP_FLOOR: float = float(os.getenv("ESPORTS_SERIES_REVERSE_SWEEP_FLOOR", "0.05"))
     ESPORTS_SERIES_HEDGE_ENABLED: bool = os.getenv("ESPORTS_SERIES_HEDGE_ENABLED", "true").lower() not in ("false", "0", "no")

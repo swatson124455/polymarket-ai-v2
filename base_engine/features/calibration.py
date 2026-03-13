@@ -236,14 +236,14 @@ class FocalTemperatureCalibrator:
         try:
             from sqlalchemy import text
             async with self.db.get_session() as session:
-                r = await session.execute(text("""
-                    SELECT predicted_prob, resolution
-                    FROM prediction_log
-                    WHERE resolution IS NOT NULL
-                      AND prediction_time > NOW() - INTERVAL ':days days'
-                    ORDER BY prediction_time DESC
-                    LIMIT 5000
-                """.replace(":days", str(n_days))))
+                r = await session.execute(text(
+                    "SELECT predicted_prob, resolution"
+                    " FROM prediction_log"
+                    " WHERE resolution IS NOT NULL"
+                    " AND prediction_time > NOW() - INTERVAL :interval_days"
+                    " ORDER BY prediction_time DESC"
+                    " LIMIT 5000"
+                ), {"interval_days": f"{int(n_days)} days"})
                 rows = r.fetchall()
 
             if len(rows) < MIN_RESOLVED_FOR_CALIBRATION:
@@ -369,10 +369,10 @@ class HorizonBiasCalibrator:
                     " WHERE pt.realized_pnl IS NOT NULL"
                     " AND pt.side IN ('YES', 'NO')"
                     " AND LOWER(pt.side) != 'sell'"
-                    " AND pt.created_at > NOW() - INTERVAL '" + str(int(n_days)) + " days'"
+                    " AND pt.created_at > NOW() - INTERVAL :interval_days"
                     " AND m.end_date_iso IS NOT NULL"
                     " ORDER BY pt.created_at DESC LIMIT 10000"
-                ))
+                ), {"interval_days": f"{int(n_days)} days"})
                 rows = r.fetchall()
 
             if len(rows) < self.MIN_SAMPLES_PER_BUCKET:
@@ -401,6 +401,9 @@ class HorizonBiasCalibrator:
                     for bucket_name, lo, hi in self.TTR_BUCKETS:
                         if lo <= ttr_days < hi:
                             buckets[f"{domain}_{bucket_name}"].append((p, outcome))
+                            # Cross-domain TTR bucket — pools all domains for TTR-specific calibration
+                            # when per-domain data is sparse (e.g., 37 weather + 14 mirror)
+                            buckets[f"all_{bucket_name}"].append((p, outcome))
                             break
 
             from scipy.optimize import minimize_scalar
@@ -451,13 +454,16 @@ class HorizonBiasCalibrator:
         p = max(1e-6, min(1 - 1e-6, raw_prob))
 
         b = self._global_b
-        if category and ttr_days is not None:
-            domain = category.lower().strip()
+        if ttr_days is not None:
+            domain = (category.lower().strip()) if category else ""
             for bucket_name, lo, hi in self.TTR_BUCKETS:
                 if lo <= ttr_days < hi:
-                    key = f"{domain}_{bucket_name}"
-                    if key in self._b_params:
+                    # Priority: domain-specific → cross-domain TTR → global
+                    key = f"{domain}_{bucket_name}" if domain else ""
+                    if key and key in self._b_params:
                         b = self._b_params[key]
+                    elif f"all_{bucket_name}" in self._b_params:
+                        b = self._b_params[f"all_{bucket_name}"]
                     break
 
         if abs(b - 1.0) < 0.01:

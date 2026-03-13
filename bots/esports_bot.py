@@ -111,6 +111,11 @@ class EsportsBot(BaseBot):
         self._edge_decay_data: Dict[str, Dict] = {}      # game → latest edge decay analysis
         self._game_kelly_mult: Dict[str, float] = {}     # game → Kelly multiplier (Brier-based)
 
+        # Session 82: Calibration pipeline (fitted in _check_monitoring_thresholds)
+        self._focal_calibrator: Any = None       # FocalTemperatureCalibrator instance
+        self._bias_decomp: Any = None            # EsportsBiasDecomposition instance
+        self._onnx_cross_game_session: Any = None  # ONNX InferenceSession for cross-game XGB
+
         # Parallel analysis (Item 6)
         _concurrency = int(getattr(settings, "ESPORTS_ANALYSIS_CONCURRENCY", 10))
         self._analysis_semaphore = asyncio.Semaphore(_concurrency)
@@ -123,6 +128,7 @@ class EsportsBot(BaseBot):
         self._min_edge = float(getattr(settings, "ESPORTS_MIN_EDGE", 0.05))  # 5% easy mode
         self._min_confidence = float(getattr(settings, "ESPORTS_MIN_CONFIDENCE", 0.52))  # easy mode
         self._max_edge = float(getattr(settings, "ESPORTS_MAX_EDGE", 0.20))  # 20% sanity cap
+        self._egm_d = float(getattr(settings, "ESPORTS_EGM_D", 1.5))  # EGM extremization factor
         self._maker_timeout = float(
             getattr(settings, "ESPORTS_MAKER_FALLBACK_TIMEOUT_S", 3.0)
         )
@@ -255,6 +261,21 @@ class EsportsBot(BaseBot):
 
         # Load cross-game XGBoost meta model (if previously trained)
         self._load_cross_game_model()
+
+        # Initialize calibration pipeline (Session 82)
+        try:
+            from base_engine.features.calibration import FocalTemperatureCalibrator
+            self._focal_calibrator = FocalTemperatureCalibrator(db=db)
+            logger.info("EsportsBot: FocalTemperatureCalibrator initialized")
+        except Exception as exc:
+            logger.debug("EsportsBot: FocalTemp not available", error=str(exc))
+
+        try:
+            from esports.calibration.bias_decomposition import EsportsBiasDecomposition
+            self._bias_decomp = EsportsBiasDecomposition()
+            logger.info("EsportsBot: EsportsBiasDecomposition initialized")
+        except Exception as exc:
+            logger.debug("EsportsBot: BiasDecomp not available", error=str(exc))
 
         lol_trained = self._lol_model is not None and self._lol_model.is_trained
         cs2_trained = self._cs2_model is not None and self._cs2_model.is_trained
@@ -1067,6 +1088,13 @@ class EsportsBot(BaseBot):
             if _wf: _wf["no_prediction"] += 1
             return None
 
+        # Session 82: Apply calibration pipeline (bias decomp → focal temp)
+        _raw_prob = model_prob
+        if self._bias_decomp is not None:
+            model_prob = self._bias_decomp.recalibrate(model_prob, game)
+        if self._focal_calibrator is not None and self._focal_calibrator.is_fitted:
+            model_prob = self._focal_calibrator.calibrate(model_prob)
+
         # Validate edge
         # YES side: model thinks YES is more likely than market price
         # NO side: model thinks YES is less likely than market price
@@ -1260,7 +1288,7 @@ class EsportsBot(BaseBot):
                     if game_state:
                         prob = self._dota2_model.predict(game_state)
                         # Blend ML with Glicko-2: extremized geometric mean of odds
-                        prob = extremized_geometric_mean([prob, glicko2_prob], d=1.5)
+                        prob = extremized_geometric_mean([prob, glicko2_prob], d=self._egm_d)
                         prob = max(0.05, min(0.95, prob))
                         # OpenDota form adjustment (small ±3% based on recent form)
                         prob = await self._opendota_form_adjustment(market_data, prob)
@@ -1281,7 +1309,7 @@ class EsportsBot(BaseBot):
                     if game_state:
                         prob = self._valorant_model.predict(game_state)
                         # Blend ML with Glicko-2: extremized geometric mean of odds
-                        prob = extremized_geometric_mean([prob, glicko2_prob], d=1.5)
+                        prob = extremized_geometric_mean([prob, glicko2_prob], d=self._egm_d)
                         prob = max(0.05, min(0.95, prob))
                         self._prediction_cache[market_id] = {
                             "prob": prob, "ts": time.monotonic(), "game": game,
@@ -1335,11 +1363,23 @@ class EsportsBot(BaseBot):
                             float(self._CROSS_GAME_IDS[game]),
                             game_state.get("best_of", 1.0),
                         ]
-                        xgb_prob = float(
-                            self._cross_game_model.predict_proba(
-                                _np.array([feats], dtype=_np.float32)
-                            )[0][1]
-                        )
+                        _feat_arr = _np.array([feats], dtype=_np.float32)
+                        # ONNX inference (50-200x faster) with native fallback
+                        if self._onnx_cross_game_session is not None:
+                            try:
+                                from esports.models.onnx_compiler import OnnxCompiler
+                                _onnx_probs = OnnxCompiler().predict_proba(
+                                    self._onnx_cross_game_session, _feat_arr
+                                )
+                                xgb_prob = float(_onnx_probs[0][1])
+                            except Exception:
+                                xgb_prob = float(
+                                    self._cross_game_model.predict_proba(_feat_arr)[0][1]
+                                )
+                        else:
+                            xgb_prob = float(
+                                self._cross_game_model.predict_proba(_feat_arr)[0][1]
+                            )
                         # Blend: XGB + Glicko-2 (Glicko-2 anchored via weights)
                         xgb_raw = xgb_prob
                         glicko2_prob = extremized_geometric_mean(
@@ -2316,6 +2356,28 @@ class EsportsBot(BaseBot):
         except Exception as exc:
             logger.debug("esportsbot_calibration_failed", error=str(exc))
 
+        # Session 82: Fit FocalTemperatureCalibrator from prediction_log
+        if self._focal_calibrator is not None:
+            try:
+                fitted = await self._focal_calibrator.fit_from_prediction_log(n_days=90)
+                if fitted:
+                    logger.info("esportsbot_focal_temp_fitted",
+                                T=round(self._focal_calibrator.temperature, 2),
+                                gamma=round(self._focal_calibrator.gamma, 1))
+            except Exception as exc:
+                logger.debug("esportsbot_focal_temp_fit_failed", error=str(exc))
+
+        # Session 82: Fit EsportsBiasDecomposition per game
+        if self._bias_decomp is not None:
+            try:
+                bd_results = await self._bias_decomp.fit_from_db(db, days=90)
+                if bd_results:
+                    logger.info("esportsbot_bias_decomp_fitted",
+                                games=list(bd_results.keys()),
+                                params={g: round(v["b"], 3) for g, v in bd_results.items()})
+            except Exception as exc:
+                logger.debug("esportsbot_bias_decomp_fit_failed", error=str(exc))
+
         # Edge decay analysis per game
         try:
             from esports.data.esports_db import analyze_edge_decay
@@ -2608,6 +2670,18 @@ class EsportsBot(BaseBot):
             model.load_model(model_path)
             self._cross_game_model = model
             logger.info("EsportsBot: cross_game_xgb loaded", path=model_path)
+
+            # Session 82: Try loading ONNX compiled version for faster inference
+            try:
+                from esports.models.onnx_compiler import OnnxCompiler
+                onnx_path = model_path.replace(".json", ".onnx")
+                compiler = OnnxCompiler()
+                session = compiler.load_session(onnx_path)
+                if session is not None:
+                    self._onnx_cross_game_session = session
+                    logger.info("EsportsBot: cross_game ONNX session loaded", path=onnx_path)
+            except Exception:
+                pass  # ONNX is optional enhancement
         except Exception as exc:
             logger.warning("EsportsBot: cross_game_xgb load failed", error=str(exc))
 
