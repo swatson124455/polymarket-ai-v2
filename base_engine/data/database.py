@@ -5024,6 +5024,46 @@ class Database:
     # Reconciliation — 6h integrity check (migration 046)
     # ──────────────────────────────────────────────────────────────────
 
+    async def repair_orphaned_positions(self) -> int:
+        """
+        Auto-repair: create paper_trades rows for open positions that lack them.
+        Root cause: insert_paper_trade() can fail after 3 retries while
+        confirm_position() already wrote to positions table.
+        Returns number of repaired rows (-1 on error).
+        """
+        if self.session_factory is None:
+            return -1
+        try:
+            from sqlalchemy import text as _sa_text
+            async with self.get_session() as session:
+                result = await session.execute(
+                    _sa_text(
+                        "INSERT INTO paper_trades "
+                        "  (order_id, market_id, token_id, bot_name, side, size, price, "
+                        "   created_at, status, submitted_at, filled_at) "
+                        "SELECT "
+                        "  'repair-' || p.id::text, p.market_id, p.token_id, "
+                        "  COALESCE(p.source_bot, p.bot_id), COALESCE(p.side, 'YES'), "
+                        "  p.size, COALESCE(p.entry_price, p.current_price, 0.50), "
+                        "  COALESCE(p.opened_at, NOW()), 'filled', "
+                        "  COALESCE(p.opened_at, NOW()), COALESCE(p.opened_at, NOW()) "
+                        "FROM positions p "
+                        "LEFT JOIN paper_trades pt "
+                        "  ON pt.market_id = p.market_id "
+                        "  AND pt.bot_name = COALESCE(p.source_bot, p.bot_id) "
+                        "  AND LOWER(pt.side) != 'sell' "
+                        "WHERE p.status = 'open' AND pt.id IS NULL"
+                    )
+                )
+                repaired = result.rowcount
+                await session.commit()
+                if repaired > 0:
+                    logger.warning("repair_orphaned_positions: backfilled %d paper_trades", repaired)
+                return repaired
+        except Exception as e:
+            logger.warning("repair_orphaned_positions failed: %s", e)
+            return -1
+
     async def run_reconciliation(self) -> int:
         """
         Cross-validate positions vs paper_trades vs traded_markets.
@@ -5043,6 +5083,14 @@ class Database:
                 _active_bots.add(_bname)
         if not _active_bots:
             _active_bots = {"WeatherBot", "MirrorBot", "EsportsBot", "EsportsLiveBot", "EsportsSeriesBot"}
+
+        # Auto-repair orphaned positions before checking for mismatches
+        try:
+            _repaired = await self.repair_orphaned_positions()
+            if _repaired and _repaired > 0:
+                logger.info("reconciliation: auto-repaired %d orphaned positions", _repaired)
+        except Exception:
+            pass  # Repair failure doesn't block reconciliation
 
         try:
             from sqlalchemy import text as _sa_text

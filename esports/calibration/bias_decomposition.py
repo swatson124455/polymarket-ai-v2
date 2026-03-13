@@ -103,7 +103,7 @@ class EsportsBiasDecomposition:
         query = _text(
             "SELECT game, predicted_prob, actual_outcome, "
             "EXTRACT(EPOCH FROM (resolved_at - created_at))/3600 as hours_to_resolve "
-            "FROM esports_predictions "
+            "FROM esports_prediction_log "
             "WHERE actual_outcome IS NOT NULL "
             "AND created_at > NOW() - :days_int * INTERVAL '1 day' "
         )
