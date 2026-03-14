@@ -308,9 +308,8 @@ async def run_resolution_backfill(
                 _end_dt_parsed = None
                 if _end_raw:
                     try:
-                        from datetime import datetime as _dt
                         _ds = str(_end_raw)
-                        _end_dt_parsed = _dt.fromisoformat(_ds.replace("Z", "+00:00"))
+                        _end_dt_parsed = datetime.fromisoformat(_ds.replace("Z", "+00:00"))
                         _end_dt_parsed = _end_dt_parsed.replace(tzinfo=None)
                         async with db.get_session() as _s:
                             await _s.execute(
@@ -332,22 +331,21 @@ async def run_resolution_backfill(
                 if not res or str(res).upper() not in ("YES", "NO"):
                     _skipped_no_res += 1
                     continue
-                if True:  # resolution valid
-                    _source = "clob_api" if _from_clob else "gamma_api"
-                    # Pass end_date as resolved_at; fallback to now() so resolved_at is never NULL
-                    _resolved_at = _end_dt_parsed or datetime.now(timezone.utc).replace(tzinfo=None)
-                    await db.save_market_resolution(mid, True, str(res).upper(), _source, _resolved_at)
-                    # Update traded_markets index + write RESOLUTION events
-                    try:
-                        await db.mark_market_resolved(mid, str(res).upper())
-                    except Exception:
-                        pass
-                    updated += 1
-                    if log_progress and updated % 50 == 0:
-                        logger.info("Resolution backfill: updated %d resolutions", updated)
+                _source = "clob_api" if _from_clob else "gamma_api"
+                # Pass end_date as resolved_at; fallback to now() so resolved_at is never NULL
+                _resolved_at = _end_dt_parsed or datetime.now(timezone.utc).replace(tzinfo=None)
+                await db.save_market_resolution(mid, True, str(res).upper(), _source, _resolved_at)
+                # Update traded_markets index + write RESOLUTION events
+                try:
+                    await db.mark_market_resolved(mid, str(res).upper())
+                except Exception:
+                    pass
+                updated += 1
+                if log_progress and updated % 50 == 0:
+                    logger.info("Resolution backfill: updated %d resolutions", updated)
             except Exception as _e:
                 if log_progress:
-                    logger.debug("Resolution backfill: market %s error: %s", str(mid)[:20], _e)
+                    logger.warning("Resolution backfill: market %s error: %s", str(mid)[:20], _e, exc_info=True)
             await asyncio.sleep(delay_seconds)
 
     if log_progress:
