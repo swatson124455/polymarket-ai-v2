@@ -684,38 +684,19 @@ class EsportsSeriesBot(BaseBot):
             )
             new_series: Dict[str, Dict] = {}
             for match in (live or []):
-                best_of = int(match.get("number_of_games", 1))
+                # match is an EsportsMatch dataclass, not a dict
+                best_of = getattr(match, "best_of", 1)
                 if best_of < 3:
                     continue
-                mid = str(match.get("id", ""))
+                mid = str(getattr(match, "match_id", ""))
                 if not mid:
                     continue
 
-                # Extract series state
-                opponents = match.get("opponents", [])
-                team_a = ""
-                team_b = ""
-                if len(opponents) >= 2:
-                    team_a = (opponents[0].get("opponent", {}).get("name", "")
-                              if isinstance(opponents[0], dict) else "")
-                    team_b = (opponents[1].get("opponent", {}).get("name", "")
-                              if isinstance(opponents[1], dict) else "")
-
-                results = match.get("results", [])
-                score_a = 0
-                score_b = 0
-                if len(results) >= 2:
-                    score_a = int(results[0].get("score", 0))
-                    score_b = int(results[1].get("score", 0))
-
-                game_slug = str(match.get("videogame", {}).get("slug", ""))
-                game = {
-                    "league-of-legends": "lol",
-                    "cs-2": "cs2",
-                    "cs-go": "cs2",
-                    "dota-2": "dota2",
-                    "valorant": "valorant",
-                }.get(game_slug, "")
+                team_a = getattr(match, "team_a", "")
+                team_b = getattr(match, "team_b", "")
+                score_a = getattr(match, "score_a", 0)
+                score_b = getattr(match, "score_b", 0)
+                game = getattr(match, "game", "")
 
                 new_series[mid] = {
                     "match_id": mid,

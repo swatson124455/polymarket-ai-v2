@@ -3103,8 +3103,8 @@ class EsportsBot(BaseBot):
             n = name_a if name_ref == "name_a" else name_b
             n = _re.sub(_suffix_re, "", n).strip()
             n = _re.sub(_tourney_re, "", n, flags=_re.IGNORECASE).strip()
-            # Strip trailing " map N", " game N", " game N winner" (e.g. "T1 map 3")
-            n = _re.sub(r"\s+(?:map|game)\s+\d+(?:\s+winner)?$", "", n, flags=_re.IGNORECASE).strip()
+            # Strip trailing " map N", " game N", " game N winner", or bare "game N winner"
+            n = _re.sub(r"(?:^|\s+)(?:map|game)\s+\d+(?:\s+winner)?$", "", n, flags=_re.IGNORECASE).strip()
             # Strip region tags in parens: "(KR)", "(CN)", "(EU)"
             n = _re.sub(r"\s*\([A-Z]{2,4}\)\s*$", "", n).strip()
             if name_ref == "name_a":
