@@ -230,19 +230,23 @@ class MirrorBot(BaseBot):
         from sqlalchemy import text as _text
         try:
             async with db.get_session() as session:
-                # 1. Seed _daily_exposure from today's YES/NO paper_trades entries.
+                # 1. Seed _daily_exposure from today's trade_events (ENTRY - EXIT).
                 row = await session.execute(
                     _text(
-                        "SELECT COALESCE(SUM(size * price), 0.0) FROM paper_trades "
-                        "WHERE bot_name = :bot AND side IN ('YES', 'NO') "
-                        "AND created_at >= CURRENT_DATE"
+                        "SELECT "
+                        "  COALESCE(SUM(CASE WHEN event_type = 'ENTRY' "
+                        "    THEN CAST(size AS DOUBLE PRECISION) * CAST(price AS DOUBLE PRECISION) ELSE 0 END), 0) "
+                        "  - COALESCE(SUM(CASE WHEN event_type = 'EXIT' "
+                        "    THEN CAST(size AS DOUBLE PRECISION) * CAST(price AS DOUBLE PRECISION) ELSE 0 END), 0) "
+                        "FROM trade_events "
+                        "WHERE bot_name = :bot AND event_time >= CURRENT_DATE"
                     ),
                     {"bot": self.bot_name},
                 )
                 spent_today = float(row.scalar() or 0.0)
                 self._daily_exposure = spent_today
                 logger.info(
-                    "MirrorBot startup: seeded _daily_exposure=%.2f from today's paper_trades",
+                    "MirrorBot startup: seeded _daily_exposure=%.2f from today's trade_events",
                     spent_today,
                 )
 

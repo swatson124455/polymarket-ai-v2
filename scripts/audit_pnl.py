@@ -1,4 +1,4 @@
-"""P&L audit: cross-validate paper_trades vs positions, detect split states, report per-bot P&L."""
+"""P&L audit: cross-validate trade_events (authority) vs positions, detect split states."""
 import argparse
 import asyncio
 import io
@@ -35,48 +35,97 @@ async def run_audit(bot_filter: str | None, fix: bool, verbose: bool) -> None:
 
     try:
         async with db.get_session() as s:
-            # ── Section 1: Per-bot P&L from paper_trades ──────────────────
-            _hdr("PAPER TRADES P&L (hold-to-resolution)")
-            bot_clause = "AND pt.bot_name = :bot" if bot_filter else ""
+            # ── Section 1: Per-bot P&L from trade_events (AUTHORITY) ────
+            _hdr("TRADE EVENTS P&L (authority — EXIT + RESOLUTION)")
+            bot_clause_te = "AND te.bot_name = :bot" if bot_filter else ""
             params: dict = {"bot": bot_filter} if bot_filter else {}
+            r = await s.execute(text(f"""
+                SELECT te.bot_name,
+                       te.event_type,
+                       COUNT(*) as cnt,
+                       ROUND(COALESCE(SUM(CAST(te.realized_pnl AS DOUBLE PRECISION)), 0)::numeric, 2) as pnl,
+                       ROUND(COALESCE(SUM(CAST(te.fees AS DOUBLE PRECISION)), 0)::numeric, 2) as fees
+                FROM trade_events te
+                WHERE 1=1 {bot_clause_te}
+                GROUP BY te.bot_name, te.event_type
+                ORDER BY te.bot_name, te.event_type
+            """), params)
+            rows = r.fetchall()
+            print(f"{'Bot':<20s} {'Type':<12s} {'Count':>6s} {'P&L':>10s} {'Fees':>8s}")
+            print("-" * 60)
+            for row in rows:
+                print(f"{row[0]:<20s} {row[1]:<12s} {row[2]:>6d} ${row[3]:>9} ${row[4]:>7}")
+
+            # ── Section 2: Per-bot P&L from paper_trades (comparison) ───
+            _hdr("PAPER TRADES P&L (comparison — resolution only)")
+            bot_clause = "AND pt.bot_name = :bot" if bot_filter else ""
             r = await s.execute(text(f"""
                 SELECT pt.bot_name,
                        COUNT(*) as total,
                        COUNT(*) FILTER (WHERE pt.resolution IN ('YES','NO')) as resolved,
                        COUNT(*) FILTER (WHERE pt.realized_pnl > 0) as wins,
                        COUNT(*) FILTER (WHERE pt.realized_pnl <= 0 AND pt.realized_pnl IS NOT NULL) as losses,
-                       ROUND(COALESCE(SUM(pt.realized_pnl), 0)::numeric, 2) as pnl,
-                       ROUND(AVG(pt.realized_pnl) FILTER (WHERE pt.realized_pnl IS NOT NULL)::numeric, 2) as avg_pnl
+                       ROUND(COALESCE(SUM(pt.realized_pnl), 0)::numeric, 2) as pnl
                 FROM paper_trades pt
                 WHERE pt.side IN ('YES','NO') {bot_clause}
                 GROUP BY pt.bot_name ORDER BY pt.bot_name
             """), params)
             rows = r.fetchall()
-            print(f"{'Bot':<20s} {'Total':>6s} {'Rslvd':>6s} {'Wins':>5s} {'Loss':>5s} {'P&L':>10s} {'Avg':>8s}")
-            print("-" * 64)
+            print(f"{'Bot':<20s} {'Total':>6s} {'Rslvd':>6s} {'Wins':>5s} {'Loss':>5s} {'P&L':>10s}")
+            print("-" * 57)
             for row in rows:
-                print(f"{row[0]:<20s} {row[1]:>6d} {row[2]:>6d} {row[3]:>5d} {row[4]:>5d} ${row[5]:>9} ${row[6] or 0:>7}")
+                print(f"{row[0]:<20s} {row[1]:>6d} {row[2]:>6d} {row[3]:>5d} {row[4]:>5d} ${row[5]:>9}")
 
-            # ── Section 2: Per-bot P&L from positions ─────────────────────
-            _hdr("POSITIONS P&L (exit-based + resolution)")
+            # ── Section 3: Open positions unrealized ────────────────────
+            _hdr("OPEN POSITIONS UNREALIZED P&L")
             r = await s.execute(text(f"""
                 SELECT COALESCE(p.source_bot, p.bot_id) as bot,
-                       COUNT(*) as total,
-                       COUNT(*) FILTER (WHERE p.status = 'closed') as closed,
-                       COUNT(*) FILTER (WHERE p.unrealized_pnl > 0) as wins,
-                       COUNT(*) FILTER (WHERE p.unrealized_pnl < 0) as losses,
-                       ROUND(COALESCE(SUM(p.unrealized_pnl), 0)::numeric, 2) as pnl
+                       COUNT(*) as open_count,
+                       ROUND(COALESCE(SUM(p.size * (COALESCE(p.current_price, p.entry_price) - p.entry_price)), 0)::numeric, 2) as unrealized,
+                       ROUND(COALESCE(SUM(p.size * p.entry_price), 0)::numeric, 2) as cost_basis
                 FROM positions p
-                {"WHERE COALESCE(p.source_bot, p.bot_id) = :bot" if bot_filter else ""}
+                WHERE p.status = 'open'
+                {"AND COALESCE(p.source_bot, p.bot_id) = :bot" if bot_filter else ""}
                 GROUP BY COALESCE(p.source_bot, p.bot_id) ORDER BY 1
             """), params)
             rows = r.fetchall()
-            print(f"{'Bot':<20s} {'Total':>6s} {'Closed':>7s} {'Wins':>5s} {'Loss':>5s} {'P&L':>10s}")
-            print("-" * 57)
+            print(f"{'Bot':<20s} {'Open':>6s} {'Unrealized':>12s} {'Cost Basis':>12s}")
+            print("-" * 54)
             for row in rows:
-                print(f"{row[0]:<20s} {row[1]:>6d} {row[2]:>7d} {row[3]:>5d} {row[4]:>5d} ${row[5]:>9}")
+                print(f"{row[0]:<20s} {row[1]:>6d} ${row[2]:>11} ${row[3]:>11}")
 
-            # ── Section 3: Split state detection ──────────────────────────
+            # ── Section 4: ENTRY count cross-validation ─────────────────
+            _hdr("CROSS-VALIDATION (trade_events ENTRY vs paper_trades count)")
+            r = await s.execute(text(f"""
+                WITH te_counts AS (
+                    SELECT bot_name, COUNT(*) as te_entries
+                    FROM trade_events
+                    WHERE event_type = 'ENTRY' {bot_clause_te}
+                    GROUP BY bot_name
+                ), pt_counts AS (
+                    SELECT bot_name, COUNT(*) as pt_entries
+                    FROM paper_trades
+                    WHERE side IN ('YES','NO') {bot_clause}
+                    GROUP BY bot_name
+                )
+                SELECT COALESCE(t.bot_name, p.bot_name) as bot,
+                       COALESCE(t.te_entries, 0) as trade_events,
+                       COALESCE(p.pt_entries, 0) as paper_trades,
+                       ABS(COALESCE(t.te_entries, 0) - COALESCE(p.pt_entries, 0)) as diff
+                FROM te_counts t
+                FULL OUTER JOIN pt_counts p ON t.bot_name = p.bot_name
+                ORDER BY 1
+            """), params)
+            xval_rows = r.fetchall()
+            print(f"{'Bot':<20s} {'trade_events':>14s} {'paper_trades':>14s} {'Diff':>6s}")
+            print("-" * 58)
+            for row in xval_rows:
+                flag = " ⚠" if row[3] > 0 else ""
+                print(f"{row[0]:<20s} {row[1]:>14d} {row[2]:>14d} {row[3]:>6d}{flag}")
+                if row[3] > 0:
+                    issues_found += 1
+
+            # ── Section 5: Split state detection ────────────────────────
             _hdr("SPLIT STATES (resolution set, realized_pnl NULL)")
             r = await s.execute(text(f"""
                 SELECT pt.id, pt.bot_name, pt.market_id, pt.side, pt.resolution,
@@ -116,64 +165,7 @@ async def run_audit(bot_filter: str | None, fix: bool, verbose: bool) -> None:
             else:
                 print("  None found. OK.")
 
-            # ── Section 4: Orphaned positions ─────────────────────────────
-            _hdr("ORPHANED POSITIONS (closed, market resolved, no P&L)")
-            r = await s.execute(text(f"""
-                SELECT COALESCE(p.source_bot, p.bot_id) as bot,
-                       p.market_id, p.side, p.entry_price, p.size,
-                       m.resolution
-                FROM positions p
-                JOIN markets m ON p.market_id = m.id
-                WHERE m.resolution IN ('YES', 'NO')
-                  AND p.status = 'closed'
-                  AND (p.unrealized_pnl IS NULL OR p.unrealized_pnl = 0.0)
-                  {"AND COALESCE(p.source_bot, p.bot_id) = :bot" if bot_filter else ""}
-                ORDER BY 1
-                LIMIT 50
-            """), params)
-            orphan_rows = r.fetchall()
-            if orphan_rows:
-                issues_found += len(orphan_rows)
-                print(f"  FOUND {len(orphan_rows)} orphaned position(s):")
-                for row in orphan_rows:
-                    ep = float(row[3]) if row[3] else 0
-                    sz = float(row[4]) if row[4] else 0
-                    print(f"    bot={row[0]} market={str(row[1])[:20]}.. "
-                          f"side={row[2]} entry={ep:.4f} size={sz:.2f} resolution={row[5]}")
-            else:
-                print("  None found. OK.")
-
-            # ── Section 5: Cross-validation ───────────────────────────────
-            _hdr("CROSS-VALIDATION (paper_trades vs positions P&L)")
-            r = await s.execute(text(f"""
-                SELECT pt.bot_name, pt.market_id, pt.side,
-                       ROUND(pt.realized_pnl::numeric, 4) as paper_pnl,
-                       ROUND(p.unrealized_pnl::numeric, 4) as pos_pnl,
-                       ROUND(ABS(pt.realized_pnl - p.unrealized_pnl)::numeric, 4) as diff
-                FROM paper_trades pt
-                JOIN positions p ON pt.market_id = p.market_id
-                  AND pt.bot_name = COALESCE(p.source_bot, p.bot_id)
-                  AND UPPER(pt.side) = UPPER(p.side)
-                WHERE pt.resolution IN ('YES', 'NO')
-                  AND pt.realized_pnl IS NOT NULL
-                  AND p.unrealized_pnl IS NOT NULL
-                  AND ABS(pt.realized_pnl - p.unrealized_pnl) > 0.01
-                  {bot_clause}
-                ORDER BY ABS(pt.realized_pnl - p.unrealized_pnl) DESC
-                LIMIT 25
-            """), params)
-            xval_rows = r.fetchall()
-            if xval_rows:
-                issues_found += len(xval_rows)
-                print(f"  FOUND {len(xval_rows)} discrepancy(ies) > $0.01:")
-                print(f"  {'Bot':<15s} {'Side':>4s} {'Paper P&L':>10s} {'Pos P&L':>10s} {'Diff':>8s}")
-                print(f"  {'-'*51}")
-                for row in xval_rows:
-                    print(f"  {row[0]:<15s} {row[2]:>4s} ${row[3]:>9} ${row[4]:>9} ${row[5]:>7}")
-            else:
-                print("  All matching trades agree. OK.")
-
-            # ── Section 6: resolved_at NULL check ─────────────────────────
+            # ── Section 6: resolved_at NULL check ───────────────────────
             _hdr("RESOLVED_AT NULL CHECK")
             r = await s.execute(text(f"""
                 SELECT pt.bot_name, COUNT(*) as cnt
@@ -214,7 +206,7 @@ async def run_audit(bot_filter: str | None, fix: bool, verbose: bool) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="P&L audit: cross-validate paper_trades vs positions")
+    parser = argparse.ArgumentParser(description="P&L audit: trade_events (authority) vs paper_trades vs positions")
     parser.add_argument("--bot", type=str, default=None, help="Filter to specific bot (e.g. WeatherBot)")
     parser.add_argument("--fix", action="store_true", help="Repair split states (resolution set, realized_pnl NULL)")
     parser.add_argument("--verbose", action="store_true", help="Show individual trade details")

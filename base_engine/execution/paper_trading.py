@@ -466,8 +466,8 @@ class PaperTradingEngine:
                         correlation_id=correlation_id,
                         order_id=trade_id,
                     )
-                except Exception:
-                    pass  # Non-critical: trade_events is audit trail
+                except Exception as e:
+                    logger.warning("trade_event_exit_emit_failed", error=str(e), market_id=market_id)
         elif self.db and hasattr(self.db, "insert_paper_trade"):
             # H5/M9: Retry 3× with backoff to prevent ghost positions.
             # Most DB failures are transient (pool exhaustion, brief network blips).
@@ -510,14 +510,8 @@ class PaperTradingEngine:
                                 correlation_id=correlation_id,
                                 order_id=trade_id,
                             )
-                            # Link trade to its prediction for model attribution
-                            if _seq_num and correlation_id and hasattr(self.db, "insert_trade_model_linkage"):
-                                await self.db.insert_trade_model_linkage(
-                                    trade_event_seq=_seq_num,
-                                    correlation_id=correlation_id,
-                                )
-                        except Exception:
-                            pass  # Non-critical: trade_events is audit trail
+                        except Exception as e:
+                            logger.warning("trade_event_entry_emit_failed", error=str(e), market_id=market_id)
                     break  # Success — exit retry loop
                 except Exception as e:
                     err_str = str(e).lower()

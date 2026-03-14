@@ -1437,21 +1437,7 @@ class PredictionEngine:
                 _saved_versions[name] = (next_version, type(model).__name__, metrics)
             await session.commit()
         logger.info("Models saved to database")
-        # Register each model version in model_registry for lifecycle tracking
-        if hasattr(self.db, "register_model"):
-            _skv = getattr(sklearn, "__version__", None) or ""
-            for _name, (_ver, _mtype, _met) in _saved_versions.items():
-                try:
-                    await self.db.register_model(
-                        model_name=_name,
-                        model_version=_ver,
-                        model_type=_mtype,
-                        status="production",
-                        training_params={"framework": f"sklearn-{_skv}"},
-                        metrics=_met,
-                    )
-                except Exception:
-                    pass  # Non-critical: register_model has own guard
+        # model_registry registration removed — migration 052 drops table
 
     async def load_models_from_db(self) -> None:
         """Load active models and scaler from ml_models table. Validates sklearn version and runs test predict."""

@@ -296,9 +296,8 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
     restart_counts = {name: 0 for name in bots}
     restart_backoff: dict = {name: 30.0 for name in bots}  # I15: per-bot backoff seconds
     _last_retention_cleanup: float = 0.0  # Session 51: P2-3
-    _last_snapshot: float = 0.0  # Session 83: daily position/equity snapshots
+    _last_snapshot: float = 0.0  # Session 83: daily equity snapshots
     _last_reconciliation: float = 0.0  # Session 83: 6h integrity check
-    _last_model_perf: float = 0.0  # Session 83: daily model performance aggregation
     _last_partition_check: float = 0.0  # Session 83: monthly partition auto-creation
 
     while True:
@@ -417,17 +416,16 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
                 except Exception as e:
                     logger.debug("Retention cleanup failed: %s", e)
 
-        # Session 83: Daily position + equity snapshots
+        # Daily equity snapshots (position_snapshots removed in migration 052)
         if _now_ts - _last_snapshot > 86400:
             _db = getattr(base_engine, "db", None)
-            if _db and hasattr(_db, "take_position_snapshot"):
+            if _db and hasattr(_db, "take_equity_snapshot"):
                 try:
                     from datetime import date as _date_cls
                     _today = _date_cls.today()
-                    await _db.take_position_snapshot(_today)
                     await _db.take_equity_snapshot(_today)
                     _last_snapshot = _now_ts
-                    logger.info("Watchdog: daily snapshots completed for %s", _today)
+                    logger.info("Watchdog: daily equity snapshot completed for %s", _today)
                 except Exception as e:
                     logger.warning("Watchdog: daily snapshot failed: %s", e)
 
@@ -444,19 +442,7 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
                 finally:
                     _last_reconciliation = _now_ts
 
-        # Session 83: Daily model performance aggregation
-        if _now_ts - _last_model_perf > 86400:
-            _db = getattr(base_engine, "db", None)
-            if _db and hasattr(_db, "aggregate_model_performance"):
-                try:
-                    _rows = await _db.aggregate_model_performance()
-                    logger.info("Watchdog: model performance aggregation completed, %d rows", _rows)
-                except Exception as e:
-                    logger.warning("Watchdog: model performance aggregation failed: %s", e)
-                finally:
-                    _last_model_perf = _now_ts
-
-        # Session 83: Daily partition auto-creation (trade_events + position_snapshots)
+        # Daily partition auto-creation (trade_events only; position_snapshots removed in 052)
         if _now_ts - _last_partition_check > 86400:
             _db = getattr(base_engine, "db", None)
             if _db and hasattr(_db, "ensure_future_partitions"):

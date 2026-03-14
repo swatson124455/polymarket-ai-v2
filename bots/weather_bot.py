@@ -2552,7 +2552,7 @@ class WeatherBot(BaseBot):
         await self._maybe_update_calibration_actuals()
 
     async def _restore_daily_pnl_from_db(self) -> None:
-        """Query today's WeatherBot realized P&L from paper_trades DB."""
+        """Query today's WeatherBot realized P&L from trade_events DB."""
         db = getattr(self.base_engine, "db", None)
         if not db:
             return
@@ -2562,12 +2562,12 @@ class WeatherBot(BaseBot):
             async with db.get_session() as session:
                 from sqlalchemy import text
                 result = await session.execute(text("""
-                    SELECT COALESCE(SUM(realized_pnl), 0.0)
-                    FROM paper_trades
+                    SELECT COALESCE(SUM(CAST(realized_pnl AS DOUBLE PRECISION)), 0.0)
+                    FROM trade_events
                     WHERE bot_name = 'WeatherBot'
-                      AND side IN ('YES', 'NO')
+                      AND event_type IN ('EXIT', 'RESOLUTION')
                       AND realized_pnl IS NOT NULL
-                      AND created_at >= :today_start
+                      AND event_time >= :today_start
                 """), {"today_start": today_start})
                 row = result.fetchone()
                 if row and row[0] is not None:
