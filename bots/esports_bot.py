@@ -989,7 +989,7 @@ class EsportsBot(BaseBot):
                             async with _db.get_session() as _sess:
                                 await _sess.execute(
                                     _sa_text("""
-                                        UPDATE positions SET status = 'closed', updated_at = NOW()
+                                        UPDATE positions SET status = 'closed'
                                         WHERE market_id = :mid
                                           AND (bot_id = 'EsportsBot' OR source_bot = 'EsportsBot')
                                           AND status = 'open'
