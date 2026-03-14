@@ -233,8 +233,8 @@ class PatchDriftDetector:
                 if version and version != self._known_patches.get(game):
                     old = self._known_patches.get(game)
                     self._known_patches[game] = version
-                    self._patch_timestamps[game] = _dt.datetime.now(_dt.timezone.utc)
                     if old is not None:  # Don't trigger on first check
+                        self._patch_timestamps[game] = _dt.datetime.now(_dt.timezone.utc)
                         return version
             except Exception as exc:
                 logger.debug("PatchDriftDetector: LoL patch check failed", error=str(exc))
@@ -247,8 +247,8 @@ class PatchDriftDetector:
                     if version and version != self._known_patches.get(game):
                         old = self._known_patches.get(game)
                         self._known_patches[game] = version
-                        self._patch_timestamps[game] = _dt.datetime.now(_dt.timezone.utc)
                         if old is not None:
+                            self._patch_timestamps[game] = _dt.datetime.now(_dt.timezone.utc)
                             return version
             except Exception as exc:
                 logger.debug("PatchDriftDetector: CS2 patch check failed", error=str(exc))
