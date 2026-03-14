@@ -4,7 +4,7 @@ Callable from IngestionScheduler (optimal flow automation) or scripts/backfill_m
 """
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from structlog import get_logger
@@ -229,7 +229,8 @@ async def run_resolution_backfill(
         # 2a: Markets WE traded on — from traded_markets table
         try:
             pt_result = await session.execute(text(
-                "SELECT market_id FROM traded_markets WHERE status = 'open' OR resolved = FALSE LIMIT :lim"
+                "SELECT market_id FROM traded_markets WHERE status = 'open' OR resolved = FALSE "
+                "ORDER BY first_trade_at ASC NULLS LAST LIMIT :lim"
             ), {"lim": resolution_limit})
             paper_market_ids = [r[0] for r in pt_result.fetchall() if r[0]]
         except Exception:
@@ -488,8 +489,7 @@ async def run_resolution_backfill(
         try:
             learning_engine = kwargs.get("learning_engine")
             if learning_engine and hasattr(learning_engine, "learn_from_trades"):
-                from datetime import datetime, timedelta, timezone as _tz
-                since = datetime.now(_tz.utc) - timedelta(hours=1)
+                since = datetime.now(timezone.utc) - timedelta(hours=1)
                 recent_trades = await db.get_trades_since(since)
                 if recent_trades:
                     await learning_engine.learn_from_trades(recent_trades)
