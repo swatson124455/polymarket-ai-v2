@@ -51,7 +51,7 @@ class CombinedForecast:
 class WeatherForecastClient:
     """Fetch ensemble forecasts from Open-Meteo API."""
 
-    def __init__(self, cache_ttl: float = 900.0, rate_limit_per_min: int = 50):
+    def __init__(self, cache_ttl: float = 900.0, rate_limit_per_min: int = 120):
         self._session: Optional[aiohttp.ClientSession] = None
         self._cache: Dict[str, Tuple[float, CombinedForecast]] = {}
         self._precip_cache: Dict[str, Tuple[float, List[float]]] = {}

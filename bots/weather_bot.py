@@ -59,6 +59,7 @@ class WeatherBot(BaseBot):
         # Sub-components
         self._forecast_client = WeatherForecastClient(
             cache_ttl=float(getattr(settings, "WEATHER_FORECAST_CACHE_TTL", 900)),
+            rate_limit_per_min=int(getattr(settings, "WEATHER_RATE_LIMIT_PER_MIN", 120)),
         )
         # Phase 1: inject Redis cache so 429 cooldowns survive restarts
         redis_cache = getattr(base_engine, "cache", None)
@@ -650,8 +651,8 @@ class WeatherBot(BaseBot):
         _t_alerts = time.monotonic()
 
         # Phase 1: Analyze all groups (fetch forecasts, compute edges)
-        # Parallel with bounded concurrency — 5 concurrent Open-Meteo/NWS requests.
-        _group_sem = asyncio.Semaphore(5)
+        # Parallel with bounded concurrency — configurable concurrent Open-Meteo/NWS requests.
+        _group_sem = asyncio.Semaphore(int(getattr(settings, "WEATHER_GROUP_CONCURRENCY", 12)))
 
         async def _analyze_bounded(g: WeatherMarketGroup):
             async with _group_sem:
@@ -2057,6 +2058,11 @@ class WeatherBot(BaseBot):
             size=size,
             price=opp["price"],
             confidence=opp["confidence"],
+            event_data={
+                "city": group.city,
+                "date": group.target_date.isoformat(),
+                "market_type": opp.get("market_type", "temperature"),
+            },
         )
 
         if result.get("success"):

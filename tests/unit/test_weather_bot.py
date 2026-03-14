@@ -526,7 +526,7 @@ class TestWeatherForecastClient:
     def test_init_defaults(self):
         client = WeatherForecastClient()
         assert client._cache_ttl == 900.0
-        assert client._rate_limit == 50
+        assert client._rate_limit == 120
 
     @pytest.mark.asyncio
     async def test_get_nbm_forecast_success(self):
