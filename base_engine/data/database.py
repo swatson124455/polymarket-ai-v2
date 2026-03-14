@@ -3201,37 +3201,9 @@ class Database:
                 count = getattr(r, "rowcount", 0) or 0
                 await session.commit()
 
-                # Emit RESOLUTION events to trade_events for newly resolved rows
-                if count > 0:
-                    try:
-                        resolved_rows = await session.execute(text("""
-                            SELECT pt.market_id, pt.bot_name, pt.side, pt.size, pt.price,
-                                   pt.realized_pnl, pt.resolution, pt.token_id, pt.correlation_id
-                            FROM paper_trades pt
-                            JOIN markets m ON (pt.market_id = CAST(m.id AS TEXT) OR pt.market_id = m.condition_id)
-                            WHERE m.resolution IN ('YES', 'NO')
-                              AND pt.status = 'resolved'
-                              AND LOWER(pt.side) != 'sell'
-                              AND pt.resolved_at >= NOW() - INTERVAL '24 hours'
-                        """))
-                        for rr in resolved_rows.fetchall():
-                            try:
-                                await self.insert_trade_event(
-                                    event_type="RESOLUTION",
-                                    bot_name=rr[1],
-                                    market_id=rr[0],
-                                    side=rr[2],
-                                    size=float(rr[3] or 0),
-                                    price=float(rr[4] or 0),
-                                    realized_pnl=float(rr[5]) if rr[5] is not None else None,
-                                    token_id=rr[7],
-                                    correlation_id=rr[8],
-                                    event_data={"resolution": rr[6]},
-                                )
-                            except Exception as e:
-                                logger.warning("resolution_trade_event_emit_failed", market_id=rr[0], error=str(e))
-                    except Exception as e:
-                        logger.warning("resolution_trade_events_query_failed", error=str(e))
+                # RESOLUTION event emission removed — handled by resolution_backfill.py
+                # Phase 4b with NOT EXISTS dedup.  This path had no dedup and created
+                # duplicates on every call (event_time=now() bypassed ON CONFLICT).
 
                 return count
         except Exception as e:
@@ -4567,44 +4539,78 @@ class Database:
             from sqlalchemy import text as _sa_text
             async with self.get_session() as session:
                 await session.execute(_sa_text("SET LOCAL synchronous_commit = off"))
-                result = await session.execute(
-                    _sa_text(
-                        "INSERT INTO trade_events ("
-                        "  event_type, execution_mode, event_time, bot_name, market_id,"
-                        "  token_id, correlation_id, order_id, side, size, price, fees,"
-                        "  realized_pnl, confidence, predicted_probability,"
-                        "  model_version, model_name, idempotency_key, event_data"
-                        ") VALUES ("
-                        "  :event_type, :execution_mode, :event_time, :bot_name, :market_id,"
-                        "  :token_id, :correlation_id, :order_id, :side, :size, :price, :fees,"
-                        "  :realized_pnl, :confidence, :predicted_probability,"
-                        "  :model_version, :model_name, :idempotency_key, CAST(:event_data AS jsonb)"
-                        ") ON CONFLICT (idempotency_key, event_time)"
-                        " WHERE idempotency_key IS NOT NULL DO NOTHING"
-                        " RETURNING sequence_num"
-                    ),
-                    {
-                        "event_type": event_type,
-                        "execution_mode": execution_mode,
-                        "event_time": evt_time,
-                        "bot_name": bot_name,
-                        "market_id": market_id,
-                        "token_id": token_id,
-                        "correlation_id": correlation_id,
-                        "order_id": order_id,
-                        "side": side,
-                        "size": size,
-                        "price": price,
-                        "fees": fees,
-                        "realized_pnl": realized_pnl,
-                        "confidence": confidence,
-                        "predicted_probability": predicted_probability,
-                        "model_version": model_version,
-                        "model_name": model_name,
-                        "idempotency_key": idem_key,
-                        "event_data": json.dumps(event_data or {}),
-                    },
-                )
+                # RESOLUTION events: use atomic INSERT...SELECT to prevent duplicates.
+                # ON CONFLICT (idempotency_key, event_time) is broken on partitioned tables
+                # because different event_time = different row = no conflict detected.
+                # The WHERE NOT EXISTS guard makes RESOLUTION events truly idempotent
+                # regardless of event_time differences between backfill runs.
+                _params = {
+                    "event_type": event_type,
+                    "execution_mode": execution_mode,
+                    "event_time": evt_time,
+                    "bot_name": bot_name,
+                    "market_id": market_id,
+                    "token_id": token_id,
+                    "correlation_id": correlation_id,
+                    "order_id": order_id,
+                    "side": side,
+                    "size": size,
+                    "price": price,
+                    "fees": fees,
+                    "realized_pnl": realized_pnl,
+                    "confidence": confidence,
+                    "predicted_probability": predicted_probability,
+                    "model_version": model_version,
+                    "model_name": model_name,
+                    "idempotency_key": idem_key,
+                    "event_data": json.dumps(event_data or {}),
+                }
+                if event_type == "RESOLUTION":
+                    # Atomic INSERT...SELECT to prevent duplicates.
+                    # ON CONFLICT (idempotency_key, event_time) is broken on partitioned
+                    # tables because different event_time = no conflict detected.
+                    result = await session.execute(
+                        _sa_text(
+                            "INSERT INTO trade_events ("
+                            "  event_type, execution_mode, event_time, bot_name, market_id,"
+                            "  token_id, correlation_id, order_id, side, size, price, fees,"
+                            "  realized_pnl, confidence, predicted_probability,"
+                            "  model_version, model_name, idempotency_key, event_data"
+                            ") SELECT"
+                            "  :event_type, :execution_mode, :event_time, :bot_name, :market_id,"
+                            "  :token_id, :correlation_id, :order_id, :side, :size, :price, :fees,"
+                            "  :realized_pnl, :confidence, :predicted_probability,"
+                            "  :model_version, :model_name, :idempotency_key, CAST(:event_data AS jsonb)"
+                            " WHERE NOT EXISTS ("
+                            "   SELECT 1 FROM trade_events te"
+                            "   WHERE te.bot_name = :bot_name"
+                            "     AND te.market_id = :market_id"
+                            "     AND te.side = :side"
+                            "     AND te.event_type = 'RESOLUTION'"
+                            " )"
+                            " RETURNING sequence_num"
+                        ),
+                        _params,
+                    )
+                else:
+                    result = await session.execute(
+                        _sa_text(
+                            "INSERT INTO trade_events ("
+                            "  event_type, execution_mode, event_time, bot_name, market_id,"
+                            "  token_id, correlation_id, order_id, side, size, price, fees,"
+                            "  realized_pnl, confidence, predicted_probability,"
+                            "  model_version, model_name, idempotency_key, event_data"
+                            ") VALUES ("
+                            "  :event_type, :execution_mode, :event_time, :bot_name, :market_id,"
+                            "  :token_id, :correlation_id, :order_id, :side, :size, :price, :fees,"
+                            "  :realized_pnl, :confidence, :predicted_probability,"
+                            "  :model_version, :model_name, :idempotency_key, CAST(:event_data AS jsonb)"
+                            ") ON CONFLICT (idempotency_key, event_time)"
+                            " WHERE idempotency_key IS NOT NULL DO NOTHING"
+                            " RETURNING sequence_num"
+                        ),
+                        _params,
+                    )
                 row = result.fetchone()
                 await session.commit()
                 return row[0] if row else None
