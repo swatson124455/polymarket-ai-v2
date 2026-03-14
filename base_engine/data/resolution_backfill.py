@@ -273,6 +273,9 @@ async def run_resolution_backfill(
 
     updated = 0
     end_date_patched = 0
+    _skipped_open = 0
+    _skipped_no_res = 0
+    _clob_closed = 0
     async with client:
         for mid in market_ids:
             try:
@@ -286,8 +289,10 @@ async def run_resolution_backfill(
                     if _clob and _clob.get("closed"):
                         m = _clob_to_market_format(_clob, mid)
                         _from_clob = True
+                        _clob_closed += 1
                     else:
                         m = None  # Market not closed or CLOB unavailable
+                        _skipped_open += 1
                 else:
                     m = await client.get_market(mid, use_cache=False)
                 if not m or not isinstance(m, dict):
@@ -319,11 +324,15 @@ async def run_resolution_backfill(
 
                 closed = m.get("closed") or m.get("isResolved") or m.get("resolved")
                 if not closed:
+                    _skipped_open += 1
                     continue
                 res = m.get("resolution") or m.get("outcome") or m.get("resolutionPrice")
                 if res is None:
                     res = _infer_resolution_from_outcome_prices(m)
-                if res and str(res).upper() in ("YES", "NO"):
+                if not res or str(res).upper() not in ("YES", "NO"):
+                    _skipped_no_res += 1
+                    continue
+                if True:  # resolution valid
                     _source = "clob_api" if _from_clob else "gamma_api"
                     # Pass end_date as resolved_at; fallback to now() so resolved_at is never NULL
                     _resolved_at = _end_dt_parsed or datetime.now(timezone.utc).replace(tzinfo=None)
@@ -336,10 +345,14 @@ async def run_resolution_backfill(
                     updated += 1
                     if log_progress and updated % 50 == 0:
                         logger.info("Resolution backfill: updated %d resolutions", updated)
-            except Exception:
-                pass
+            except Exception as _e:
+                if log_progress:
+                    logger.debug("Resolution backfill: market %s error: %s", str(mid)[:20], _e)
             await asyncio.sleep(delay_seconds)
 
+    if log_progress:
+        logger.info("Resolution backfill phase 2 stats: clob_closed=%d skipped_open=%d skipped_no_res=%d updated=%d",
+                     _clob_closed, _skipped_open, _skipped_no_res, updated)
     if log_progress and end_date_patched:
         logger.info("Resolution backfill: patched end_date_iso for %d markets", end_date_patched)
 

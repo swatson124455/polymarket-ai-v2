@@ -4756,6 +4756,7 @@ class Database:
                             "  :daily_trades, :wins, :losses,"
                             "  :peak, :drawdown, :sharpe, 'paper')"
                             " ON CONFLICT (snapshot_date, bot_name) DO UPDATE SET"
+                            "  total_capital = EXCLUDED.total_capital,"
                             "  deployed_capital = EXCLUDED.deployed_capital,"
                             "  realized_pnl = EXCLUDED.realized_pnl,"
                             "  unrealized_pnl = EXCLUDED.unrealized_pnl,"
