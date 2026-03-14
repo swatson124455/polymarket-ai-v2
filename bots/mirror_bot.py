@@ -387,6 +387,10 @@ class MirrorBot(BaseBot):
         # Reset daily exposure at UTC day boundary
         self._check_daily_reset()
 
+        # S85: Reap positions on resolved markets (every 20 scans)
+        if self._scan_count % 20 == 1:
+            await self._reap_resolved_positions()
+
         # Check for exits from tracked positions
         if self._open_positions and getattr(settings, "MIRROR_EXIT_ENABLED", True):
             await self._check_and_execute_exits()
@@ -865,6 +869,38 @@ class MirrorBot(BaseBot):
             except Exception as e:
                 logger.warning("Failed to execute mirror exit for %s: %s", pos_key, e)
 
+    async def _reap_resolved_positions(self) -> None:
+        """S85: Delete positions on markets that have already resolved.
+
+        Without this, positions accumulate forever — resolved markets keep
+        phantom positions in the DB and in-memory, inflating exposure and
+        blocking new trades via the 200-position cap.
+        """
+        try:
+            db = getattr(self.base_engine, "db", None)
+            if not db or not db.session_factory:
+                return
+            from sqlalchemy import text as _text
+            async with db.get_session() as session:
+                result = await session.execute(_text(
+                    "DELETE FROM positions "
+                    "WHERE (bot_id = :bot OR source_bot = :bot) "
+                    "  AND is_paper = true "
+                    "  AND market_id IN ("
+                    "    SELECT CAST(id AS TEXT) FROM markets WHERE resolution IN ('YES','NO')"
+                    "  ) "
+                    "RETURNING market_id, token_id"
+                ), {"bot": self.bot_name})
+                reaped = result.fetchall()
+                await session.commit()
+                if reaped:
+                    for row in reaped:
+                        pos_key = f"{row[0]}:{row[1]}"
+                        self._open_positions.pop(pos_key, None)
+                    logger.info("mirror_reap_resolved: removed %d stale positions", len(reaped))
+        except Exception as exc:
+            logger.warning("mirror_reap_resolved failed: %s", exc)
+
     # ── Position & Exposure Tracking ────────────────────────────────
 
     def _track_open_position(self, trade_info: Dict):
@@ -1034,9 +1070,12 @@ class MirrorBot(BaseBot):
         source: str = "consensus",
     ) -> bool:
         """Execute a mirror trade with reliability weighting and exposure caps."""
-        # S48 FIX: Skip SELL consensus trades unless we hold that position.
-        # Elite SELLs mean they're closing positions — can't mirror if we never opened.
+        # S85 FIX: Enforce position cap for ALL paths (consensus + RTDS).
+        # Previously only consensus checked _can_open_position(); RTDS bypassed it,
+        # allowing 686 positions past the 200 cap.
         _is_sell = str(side).upper() == "SELL"
+        if not _is_sell and not self._can_open_position(price):
+            return False
         if _is_sell:
             pos_key = f"{market_id}:{token_id}"
             if pos_key not in self._open_positions:

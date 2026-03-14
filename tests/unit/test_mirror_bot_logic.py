@@ -1132,6 +1132,9 @@ class TestExecuteMirrorTrade:
             ms.MIRROR_MAX_DAILY_EXPOSURE_PCT = 0.15
             ms.MIRROR_SKIP_SIGNAL_ENHANCEMENTS = True
             ms.MIRROR_MIN_RELIABILITY = 0.45
+            ms.MIRROR_MAX_CONCURRENT_POSITIONS = 200
+            ms.MIRROR_ADAPTIVE_SAFETY = False
+            ms.TOTAL_CAPITAL = 10000.0
             await bot._execute_mirror_trade(
                 market_id="mkt1", token_id="tok-yes", side="YES",
                 price=0.50, confidence=0.70, trader_address="addr1",
@@ -1160,6 +1163,9 @@ class TestExecuteMirrorTrade:
             ms.MIRROR_MAX_PER_MARKET = 10000
             ms.MIRROR_SKIP_SIGNAL_ENHANCEMENTS = True
             ms.MIRROR_MIN_RELIABILITY = 0.45
+            ms.MIRROR_MAX_CONCURRENT_POSITIONS = 200
+            ms.MIRROR_ADAPTIVE_SAFETY = False
+            ms.TOTAL_CAPITAL = 10000.0
             await bot._execute_mirror_trade(
                 market_id="mkt1", token_id="tok-yes", side="YES",
                 price=0.50, confidence=0.70, trader_address="addr1",
@@ -1183,6 +1189,9 @@ class TestExecuteMirrorTrade:
             ms.MIRROR_MAX_PER_MARKET = 400
             ms.MIRROR_SKIP_SIGNAL_ENHANCEMENTS = True
             ms.MIRROR_MIN_RELIABILITY = 0.45
+            ms.MIRROR_MAX_CONCURRENT_POSITIONS = 200
+            ms.MIRROR_ADAPTIVE_SAFETY = False
+            ms.TOTAL_CAPITAL = 10000.0
             result = await bot._execute_mirror_trade(
                 market_id="mkt1", token_id="tok-yes", side="YES",
                 price=0.50, confidence=0.70, trader_address="addr1",
@@ -1208,6 +1217,9 @@ class TestExecuteMirrorTrade:
             ms.MIRROR_MAX_PER_MARKET = 400
             ms.MIRROR_SKIP_SIGNAL_ENHANCEMENTS = True
             ms.MIRROR_MIN_RELIABILITY = 0.45
+            ms.MIRROR_MAX_CONCURRENT_POSITIONS = 200
+            ms.MIRROR_ADAPTIVE_SAFETY = False
+            ms.TOTAL_CAPITAL = 10000.0
             result = await bot._execute_mirror_trade(
                 market_id="mkt1", token_id="tok-yes", side="YES",
                 price=0.50, confidence=0.70, trader_address="addr1",
