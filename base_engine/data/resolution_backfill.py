@@ -223,14 +223,14 @@ async def run_resolution_backfill(
     result["inserted"] = inserted
 
     # Phase 2: Backfill resolution — OUR paper trades first, then on-chain trades.
-    # Paper trade markets are always resolved first (no limit) since we have real
-    # capital at risk. Remaining slots filled from on-chain trades table.
+    # Paper trade markets get priority but still respect resolution_limit to avoid
+    # excessive API calls (1000+ unresolved markets × 2 API calls each = too slow).
     async with db.get_session() as session:
-        # 2a: Markets WE traded on — fast lookup from traded_markets table (~100 rows)
+        # 2a: Markets WE traded on — from traded_markets table
         try:
             pt_result = await session.execute(text(
-                "SELECT market_id FROM traded_markets WHERE status = 'open' OR resolved = FALSE"
-            ))
+                "SELECT market_id FROM traded_markets WHERE status = 'open' OR resolved = FALSE LIMIT :lim"
+            ), {"lim": resolution_limit})
             paper_market_ids = [r[0] for r in pt_result.fetchall() if r[0]]
         except Exception:
             # Fallback if traded_markets table doesn't exist yet (pre-migration)
@@ -276,18 +276,20 @@ async def run_resolution_backfill(
     async with client:
         for mid in market_ids:
             try:
-                m = await client.get_market(mid, use_cache=False)
                 _from_clob = False
-                # Gamma API returns nulls for condition_id (0x…) markets.
-                # Fall back to CLOB API which has correct closure/winner data.
-                _closed_gamma = (
-                    m.get("closed") or m.get("isResolved") or m.get("resolved")
-                ) if m and isinstance(m, dict) else None
-                if not _closed_gamma and str(mid).startswith("0x") and len(str(mid)) == 66:
+                _is_condition_id = str(mid).startswith("0x") and len(str(mid)) == 66
+                # S85 FIX: Skip Gamma entirely for condition_id markets — Gamma
+                # ALWAYS returns 422 for them, wasting an API call per market.
+                # Go straight to CLOB API which has correct closure/winner data.
+                if _is_condition_id:
                     _clob = await _fetch_market_by_condition_id(mid)
                     if _clob and _clob.get("closed"):
                         m = _clob_to_market_format(_clob, mid)
                         _from_clob = True
+                    else:
+                        m = None  # Market not closed or CLOB unavailable
+                else:
+                    m = await client.get_market(mid, use_cache=False)
                 if not m or not isinstance(m, dict):
                     continue
 
