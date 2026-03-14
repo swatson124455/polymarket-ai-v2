@@ -51,6 +51,9 @@ class MirrorBot(BaseBot):
         self._market_meta_cache: Dict[str, Tuple[str, str, float]] = {}
         self._MARKET_META_TTL = 900  # 15 minutes (markets don't change category mid-flight)
 
+        # M1: Per-category exposure tracking (USD deployed per category)
+        self._category_exposure: Dict[str, float] = {}
+
         # Signal enhancement cache: "market_id:side" -> (confidence_multiplier, expiry_monotonic)
         # Avoids calling 3 external services per trade when the same market appears 10-30x per scan.
         self._signal_cache: Dict[str, Tuple[float, float]] = {}
@@ -91,6 +94,8 @@ class MirrorBot(BaseBot):
 
         # Startup state restoration flag — run once on first scan.
         self._state_restored: bool = False
+        # M4: Startup leader reconciliation — run on scan 3 (after watchlist initialized)
+        self._recon_done: bool = False
 
         # Deprecation flag: MIRROR_MAX_DAILY_EXPOSURE_PCT fallback warning (log once)
         self._deprecation_warned: bool = False
@@ -284,6 +289,77 @@ class MirrorBot(BaseBot):
         except Exception as exc:
             logger.warning("MirrorBot _restore_state_on_startup failed: %s", exc)
 
+        # M5: Restore dedup dict from Redis
+        await self._restore_dedup_from_redis()
+
+    async def _reconcile_leader_positions(self) -> None:
+        """M4: Check if tracked leaders still hold positions we're mirroring.
+
+        On restart, leaders may have exited while the bot was down.
+        Positions where ALL tracked leaders have exited are flagged as orphans
+        and queued for exit on the next scan cycle.
+        """
+        if self._recon_done or not self._open_positions:
+            self._recon_done = True
+            return
+        self._recon_done = True
+
+        _orphans: List[str] = []
+        _checked = 0
+        _rate_limit = 0
+
+        try:
+            async with self.base_engine.client:
+                for pos_key, pos in list(self._open_positions.items()):
+                    traders = pos.get("traders", set())
+                    if not traders:
+                        continue
+
+                    market_id = pos_key.split(":")[0]
+                    _all_exited = True
+
+                    for addr in list(traders)[:3]:  # Cap at 3 leaders per position
+                        if _rate_limit >= 50:  # Max 50 API calls per reconciliation
+                            _all_exited = False  # Can't confirm — keep position
+                            break
+                        try:
+                            activity = await self.base_engine.client.get_user_activity(
+                                user_address=addr, limit=20, offset=0,
+                            )
+                            _rate_limit += 1
+                            _checked += 1
+
+                            # Check if leader still holds this market
+                            _still_holds = False
+                            for trade in (activity or []):
+                                if trade.get("marketId") == market_id:
+                                    if str(trade.get("side", "")).upper() != "SELL":
+                                        _still_holds = True
+                                    break
+
+                            if _still_holds:
+                                _all_exited = False
+                                break
+                        except Exception:
+                            _all_exited = False  # Can't verify — keep position
+                            break
+
+                    if _all_exited and traders:
+                        _orphans.append(pos_key)
+
+        except Exception as e:
+            logger.warning("mirror_leader_recon failed: %s", e)
+
+        if _orphans:
+            logger.info("mirror_leader_recon_orphans", orphans=len(_orphans),
+                        checked=_checked, positions=[k[:20] for k in _orphans[:5]])
+            # Queue orphans for exit — they'll be closed in the next _check_and_execute_exits call
+            for pos_key in _orphans:
+                if pos_key in self._open_positions:
+                    self._open_positions[pos_key]["traders"] = set()  # Clear traders → triggers exit
+        elif _checked > 0:
+            logger.info("mirror_leader_recon_clean", checked=_checked)
+
     # ── Main Scan Loop ──────────────────────────────────────────────
 
     async def scan_and_trade(self):
@@ -318,6 +394,24 @@ class MirrorBot(BaseBot):
                 await self._adaptive_safety.refresh(self._scan_count)
             except Exception as e:
                 logger.debug("MirrorBot adaptive safety refresh failed: %s", e)
+
+        # M4: Leader reconciliation on scan 3 (after watchlist initialized)
+        if self._scan_count == 3 and not self._recon_done:
+            try:
+                await asyncio.wait_for(self._reconcile_leader_positions(), timeout=30.0)
+            except asyncio.TimeoutError:
+                logger.warning("mirror_leader_recon timed out (30s)")
+                self._recon_done = True
+            except Exception as e:
+                logger.warning("mirror_leader_recon error: %s", e)
+                self._recon_done = True
+
+        # M5: Periodic dedup flush to Redis (every 100 scans ~75 min)
+        if self._scan_count % 100 == 0:
+            try:
+                await self._save_dedup_to_redis()
+            except Exception:
+                pass
 
         # Refresh elites on first scan or periodically
         # P3-2: Wrap with 10s timeout — elite refresh DB query can block scan 30s+ under pool pressure
@@ -866,9 +960,14 @@ class MirrorBot(BaseBot):
                         original_side=pos["side"],
                         size=f"{pos['size']:.2f}",
                     )
-                    # M1: Decrement daily exposure on exit (was never decremented, causing monotonic fill)
                     _exit_cost = pos["size"] * pos.get("current_price", pos["entry_price"])
                     self._daily_exposure = max(0.0, self._daily_exposure - _exit_cost)
+                    # M1: Decrement category exposure on exit
+                    _pos_cat = pos.get("category", "")
+                    if _pos_cat:
+                        self._category_exposure[_pos_cat] = max(
+                            0.0, self._category_exposure.get(_pos_cat, 0.0) - _exit_cost
+                        )
                     del self._open_positions[pos_key]
             except Exception as e:
                 logger.warning("Failed to execute mirror exit for %s: %s", pos_key, e)
@@ -921,6 +1020,7 @@ class MirrorBot(BaseBot):
                 "entry_price": trade_info["price"],
                 "traders": {trade_info["trader_address"]},
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "category": trade_info.get("category", ""),
             }
 
     async def _persist_trader_to_position(self, trade_info: Dict) -> None:
@@ -950,8 +1050,8 @@ class MirrorBot(BaseBot):
         except Exception as exc:
             logger.warning("MirrorBot: failed to persist trader address: %s", exc)
 
-    def _can_open_position(self, price: float) -> bool:
-        """Check concurrent position + daily exposure limits.
+    def _can_open_position(self, price: float, category: str = "") -> bool:
+        """Check concurrent position + daily exposure + category limits.
 
         Returns False with a specific INFO log identifying WHICH limit was hit.
         """
@@ -991,6 +1091,18 @@ class MirrorBot(BaseBot):
                         self._daily_exposure, _max_daily_usd)
             return False
 
+        # M1: Per-category exposure cap — prevent concentration in one category
+        if category:
+            _capital = float(getattr(self.bankroll, 'capital', 0) or 0) if self.bankroll else float(getattr(settings, "MIRROR_TOTAL_CAPITAL", 3000))
+            _capital = _capital or float(getattr(settings, "MIRROR_TOTAL_CAPITAL", 3000))
+            _cat_max_pct = float(getattr(settings, "MIRROR_MAX_CATEGORY_EXPOSURE_PCT", 0.40))
+            _cat_max_usd = _capital * _cat_max_pct
+            _cat_current = self._category_exposure.get(category, 0.0)
+            if _cat_current >= _cat_max_usd:
+                logger.info("Mirror CATEGORY CAP: %s $%.0f/$%.0f, skipping",
+                            category, _cat_current, _cat_max_usd)
+                return False
+
         return True
 
     def _check_daily_reset(self):
@@ -998,6 +1110,7 @@ class MirrorBot(BaseBot):
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if self._daily_reset_date != today:
             self._daily_exposure = 0.0
+            self._category_exposure.clear()
             self._daily_reset_date = today
 
     # ── Deduplication ───────────────────────────────────────────────
@@ -1019,6 +1132,34 @@ class MirrorBot(BaseBot):
                 old_len,
                 len(self.mirrored_trades),
             )
+
+    # ── M5: Dedup Redis Persistence ────────────────────────────────
+
+    async def _save_dedup_to_redis(self) -> None:
+        """Flush mirrored_trades keys to Redis for restart recovery."""
+        cache = getattr(self.base_engine, "cache", None)
+        if not cache or not getattr(cache, "redis", None):
+            return
+        try:
+            keys = list(self.mirrored_trades.keys())[-5000:]  # Keep newest 5k
+            await cache.set("mirrorbot:dedup", keys, ttl=86400)
+            logger.info("mirror_dedup_saved", n_keys=len(keys))
+        except Exception as e:
+            logger.debug("mirror_dedup_save failed: %s", e)
+
+    async def _restore_dedup_from_redis(self) -> None:
+        """Restore mirrored_trades from Redis on startup."""
+        cache = getattr(self.base_engine, "cache", None)
+        if not cache or not getattr(cache, "redis", None):
+            return
+        try:
+            keys = await cache.get("mirrorbot:dedup")
+            if keys and isinstance(keys, list):
+                for k in keys:
+                    self.mirrored_trades[k] = None
+                logger.info("mirror_dedup_restored", n_keys=len(keys))
+        except Exception as e:
+            logger.debug("mirror_dedup_restore failed: %s", e)
 
     # ── Elite Trader Management ─────────────────────────────────────
 
@@ -1074,11 +1215,19 @@ class MirrorBot(BaseBot):
         source: str = "consensus",
     ) -> bool:
         """Execute a mirror trade with reliability weighting and exposure caps."""
+        # Resolve category early (needed for M1 category cap + M3 domain tracking)
+        if not category:
+            try:
+                _meta_cat, _ = await self._get_market_meta(str(market_id))
+                category = _meta_cat or ""
+            except Exception:
+                category = ""
+
         # S85 FIX: Enforce position cap for ALL paths (consensus + RTDS).
         # Previously only consensus checked _can_open_position(); RTDS bypassed it,
         # allowing 686 positions past the 200 cap.
         _is_sell = str(side).upper() == "SELL"
-        if not _is_sell and not self._can_open_position(price):
+        if not _is_sell and not self._can_open_position(price, category=category):
             return False
         if _is_sell:
             pos_key = f"{market_id}:{token_id}"
@@ -1103,7 +1252,13 @@ class MirrorBot(BaseBot):
                 confidence=confidence,
             )
             if order.get("success"):
-                self._daily_exposure = max(0.0, self._daily_exposure - _exit_size * price)
+                _exit_usd = _exit_size * price
+                self._daily_exposure = max(0.0, self._daily_exposure - _exit_usd)
+                # M1: Decrement category exposure on exit
+                if category:
+                    self._category_exposure[category] = max(
+                        0.0, self._category_exposure.get(category, 0.0) - _exit_usd
+                    )
                 del self._open_positions[pos_key]
                 logger.info(
                     "MirrorBot: SELL exit executed market=%s size=%.2f",
@@ -1141,6 +1296,19 @@ class MirrorBot(BaseBot):
                 reliability_mult = min(lr, 2.0)  # Cap at 2x
             except Exception as e:
                 logger.debug("elite reliability lookup failed: %s", e)
+
+        # M3: Leader domain tracking — penalize unfamiliar categories
+        if category and self._reliability_tracker:
+            try:
+                _domain_min = 10  # minimum resolved trades to be "familiar"
+                _cat_trades = self._reliability_tracker.category_trade_count(trader_address, category)
+                if _cat_trades < _domain_min:
+                    confidence *= 0.50
+                    logger.info("leader_domain_drift", trader=trader_address[:10],
+                                category=category, cat_trades=_cat_trades,
+                                confidence_after=round(confidence, 3))
+            except Exception:
+                pass
 
         # PERF: MirrorBot is a pure trader-mirroring strategy — confidence comes from
         # elite trader consensus + reliability weighting, not from market signals.
@@ -1200,8 +1368,12 @@ class MirrorBot(BaseBot):
         )
         size *= reliability_mult
 
-        # Cap per-market exposure (convert USD cap to shares for correct comparison)
-        max_per_market_usd = float(getattr(settings, "MIRROR_MAX_PER_MARKET", 400))
+        # M9: Cap per-market exposure — percentage-based with absolute safety cap
+        _capital = float(getattr(self.bankroll, 'capital', 0) or 0) if self.bankroll else float(getattr(settings, "MIRROR_TOTAL_CAPITAL", 3000))
+        _capital = _capital or float(getattr(settings, "MIRROR_TOTAL_CAPITAL", 3000))
+        _pct_cap = _capital * float(getattr(settings, "MIRROR_MAX_PER_MARKET_PCT", 0.05))
+        _abs_cap = float(getattr(settings, "MIRROR_MAX_PER_MARKET", 400))
+        max_per_market_usd = min(_pct_cap, _abs_cap)
         max_per_market_shares = max_per_market_usd / price if price > 0 else 0
         size = min(size, max_per_market_shares)
 
@@ -1241,7 +1413,12 @@ class MirrorBot(BaseBot):
         )
 
         if order.get("success") and not order.get("idempotent"):
-            self._daily_exposure += size * price  # Track exposure in USD (skip idempotent dedup'd orders)
+            _trade_usd = size * price
+            self._daily_exposure += _trade_usd  # Track exposure in USD (skip idempotent dedup'd orders)
+
+            # M1: Track per-category exposure
+            if category:
+                self._category_exposure[category] = self._category_exposure.get(category, 0.0) + _trade_usd
 
             # Update position tracking with actual size
             pos_key = f"{market_id}:{token_id}"
@@ -1257,6 +1434,7 @@ class MirrorBot(BaseBot):
                 size=f"{size:.2f}",
                 open_positions=len(self._open_positions),
                 daily_exposure=f"{self._daily_exposure:.2f}",
+                category=category,
             )
 
             # R2: Store signal context for ML training (fire-and-forget).

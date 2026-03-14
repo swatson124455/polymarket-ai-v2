@@ -317,6 +317,8 @@ class Settings(BaseSettings):
     MIRROR_MIN_CONSENSUS: int = int(os.getenv("MIRROR_MIN_CONSENSUS", "2"))  # 3→2: with 500 elites, 3 was impossibly tight
     MIRROR_MIN_CONFIDENCE: float = float(os.getenv("MIRROR_MIN_CONFIDENCE", "0.55"))  # 0.10→0.55: elite must win >55% of trades
     MIRROR_MAX_PER_MARKET: float = float(os.getenv("MIRROR_MAX_PER_MARKET", "400"))
+    MIRROR_MAX_PER_MARKET_PCT: float = float(os.getenv("MIRROR_MAX_PER_MARKET_PCT", "0.05"))  # M9: 5% of capital per market
+    MIRROR_MAX_CATEGORY_EXPOSURE_PCT: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_PCT", "0.40"))  # M1: 40% of capital per category
     MIRROR_MAX_TRACKED_TRADES: int = int(os.getenv("MIRROR_MAX_TRACKED_TRADES", "10000"))
     MIRROR_EXIT_ENABLED: bool = os.getenv("MIRROR_EXIT_ENABLED", "true").lower() in ("true", "1", "yes")
     MIRROR_MAX_CONCURRENT_POSITIONS: int = int(os.getenv("MIRROR_MAX_CONCURRENT_POSITIONS", "50"))
@@ -638,6 +640,7 @@ class Settings(BaseSettings):
     # WeatherBot configuration
     SCAN_INTERVAL_WEATHER: int = int(os.getenv("SCAN_INTERVAL_WEATHER", "300"))
     WEATHER_MIN_EDGE: float = float(os.getenv("WEATHER_MIN_EDGE", "0.08"))
+    WEATHER_INTL_MIN_EDGE: float = float(os.getenv("WEATHER_INTL_MIN_EDGE", "0.12"))  # Floor for intl cities without local hi-res model
     WEATHER_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_MIN_CONFIDENCE", "0.10"))  # Multi-bucket: 9 outcomes → peak ~35-40%; lowered to 0.10 to not block boundary-risk trades
     WEATHER_MAX_POSITIONS: int = int(os.getenv("WEATHER_MAX_POSITIONS", "500"))  # Multi-bucket: 45 groups × up to 9 buckets = 405 max; raised from 200 (was hitting cap at 201)
     WEATHER_MAX_PER_GROUP_USD: float = float(os.getenv("WEATHER_MAX_PER_GROUP_USD", "1000"))
@@ -1054,6 +1057,9 @@ class Settings(BaseSettings):
     # --- CoT validation (Session 83) ---
     ESPORTS_COT_EDGE_THRESHOLD: float = float(os.getenv("ESPORTS_COT_EDGE_THRESHOLD", "0.15"))
     ESPORTS_COT_MAX_PER_SCAN: int = int(os.getenv("ESPORTS_COT_MAX_PER_SCAN", "3"))
+
+    # --- Stale match detection (E3) ---
+    ESPORTS_STALE_MATCH_SECONDS: int = int(os.getenv("ESPORTS_STALE_MATCH_SECONDS", "1800"))  # 30 min
 
     # --- Pinnacle / cross-market (Phase 2 — deferred) ---
     ESPORTS_PINNACLE_ENABLED: bool = os.getenv("ESPORTS_PINNACLE_ENABLED", "false").lower() in ("true", "1", "yes")

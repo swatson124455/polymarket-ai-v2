@@ -144,6 +144,17 @@ class EliteReliabilityTracker:
         a, b = self._get_beta(address, side, **kwargs)
         return max(0, a + b - 2)
 
+    def category_trade_count(self, address: str, category: str) -> int:
+        """Return total resolved trades for this trader in the given category."""
+        if not category or not self._cat_cache:
+            return 0
+        key = (address or "").strip().lower()
+        cat_key = (key, category.strip().lower())
+        rec = self._cat_cache.get(cat_key)
+        if not rec:
+            return 0
+        return rec.get("yes_total", 0) + rec.get("no_total", 0)
+
 
 def beta_mean(alpha: float, beta: float) -> float:
     """Posterior mean of Beta(alpha, beta)."""

@@ -14,7 +14,7 @@ import asyncio
 import time
 from collections import OrderedDict
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Set, Any, TYPE_CHECKING
+from typing import Dict, List, Optional, Set, Tuple, Any, TYPE_CHECKING
 
 from structlog import get_logger
 from config.settings import settings
@@ -52,6 +52,14 @@ class EliteWatchlist:
 
         # Dedup by transaction_hash (capped OrderedDict)
         self._seen_tx: OrderedDict = OrderedDict()
+
+        # M2: Leader activity tracking — last RTDS trade timestamp per trader
+        self._last_trade_time: Dict[str, float] = {}  # addr_lower -> monotonic time
+
+        # M6: Wash detection — track buy/sell round-trips per trader per market
+        # Key: (addr_lower, market_id) -> list of (side, monotonic_time)
+        self._trader_market_trades: Dict[Tuple[str, str], list] = {}
+        self._wash_flagged: Set[str] = set()  # addr_lower set of flagged wash traders
 
         # Refresh tracking
         self._last_refresh: float = 0.0
@@ -187,6 +195,28 @@ class EliteWatchlist:
                 "userName": t.get("userName", ""),
             }
 
+        # M2: Apply inactivity decay — demote leaders who haven't traded recently
+        _now_mono = time.monotonic()
+        _inactive_14d = 14 * 86400  # 14 days in seconds
+        _inactive_21d = 21 * 86400
+        _removed_inactive = 0
+        _decayed_inactive = 0
+        for addr_lower in list(new_addresses):
+            _last = self._last_trade_time.get(addr_lower)
+            if _last is None:
+                continue  # No RTDS data yet — keep as-is
+            _age_s = _now_mono - _last
+            if _age_s >= _inactive_21d:
+                new_addresses.discard(addr_lower)
+                new_data.pop(addr_lower, None)
+                _removed_inactive += 1
+            elif _age_s >= _inactive_14d:
+                if addr_lower in new_data:
+                    new_data[addr_lower]["efficiency"] *= 0.5
+                    _decayed_inactive += 1
+        if _removed_inactive or _decayed_inactive:
+            logger.info("leader_inactivity", removed=_removed_inactive, decayed=_decayed_inactive)
+
         self._watchlist_addresses = new_addresses
         self._watchlist_data = new_data
         self._last_refresh = time.monotonic()
@@ -314,6 +344,33 @@ class EliteWatchlist:
             # Fallback: use MirrorBot's token resolution
             resolved_side = await self._mirror_bot._get_token_side(market_id, token_id)
 
+        # 5b. M6: Wash detection — track buy/sell cycling per trader per market
+        _wash_key = (addr_lower, str(market_id))
+        _now_mono = time.monotonic()
+        if _wash_key not in self._trader_market_trades:
+            self._trader_market_trades[_wash_key] = []
+        _trades = self._trader_market_trades[_wash_key]
+        _trades.append((resolved_side, _now_mono))
+        # Prune trades older than 24h
+        _cutoff = _now_mono - 86400
+        self._trader_market_trades[_wash_key] = [t for t in _trades if t[1] > _cutoff]
+        _trades = self._trader_market_trades[_wash_key]
+        # Count round-trips (BUY+SELL pairs within 1h window)
+        _round_trips = 0
+        _buys = [t for t in _trades if t[0] in ("YES", "NO")]
+        _sells = [t for t in _trades if t[0] == "SELL"]
+        for _b_side, _b_time in _buys:
+            for _s_side, _s_time in _sells:
+                if abs(_b_time - _s_time) <= 3600:  # 1h window
+                    _round_trips += 1
+                    break
+        if _round_trips >= 3 and addr_lower not in self._wash_flagged:
+            self._wash_flagged.add(addr_lower)
+            logger.warning("wash_trader_flagged", trader=addr[:10],
+                           market=str(market_id)[:16], round_trips=_round_trips)
+        if addr_lower in self._wash_flagged:
+            return  # Skip wash traders entirely
+
         # 6. Check position + daily limits
         if resolved_side != "SELL" and not self._mirror_bot._can_open_position(price):
             return
@@ -356,6 +413,11 @@ class EliteWatchlist:
                 # Track the position
                 self._mirror_bot.mirrored_trades[tx_hash or f"ws_{market_id}_{token_id}_{addr[:10]}"] = None
                 if resolved_side != "SELL":
+                    # M1: Include category for per-category exposure tracking
+                    _cat = ""
+                    _meta = self._mirror_bot._market_meta_cache.get(str(market_id))
+                    if _meta:
+                        _cat = _meta[0]  # (category, ttr, expiry)
                     self._mirror_bot._track_open_position({
                         "market_id": market_id,
                         "token_id": token_id,
@@ -363,6 +425,7 @@ class EliteWatchlist:
                         "price": price,
                         "trader_address": addr,
                         "trade_id": tx_hash or f"ws_{int(time.time())}",
+                        "category": _cat,
                     })
                     # Fire-and-forget: non-financial metadata (trader address on position).
                     # Shaves ~50-200ms off copy latency by not awaiting DB write.
@@ -426,6 +489,9 @@ class EliteWatchlist:
         self._seen_tx[_dedup_key] = None
         while len(self._seen_tx) > _MAX_SEEN_TX:
             self._seen_tx.popitem(last=False)
+
+        # M2: Track last trade time per leader for inactivity detection
+        self._last_trade_time[addr.lower()] = time.monotonic()
 
         # Map RTDS fields → internal format used by on_trade_event
         # transaction_hash=None: dedup already handled above, skip on_trade_event's dedup check
