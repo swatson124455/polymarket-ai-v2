@@ -76,7 +76,7 @@ def _clob_to_market_format(clob: dict, condition_id: str) -> dict:
     closed = clob.get("closed", False)
     res = None
     if closed and tokens:
-        for t in tokens:
+        for idx, t in enumerate(tokens):
             if t.get("winner"):
                 o = (t.get("outcome") or "").upper()
                 if "YES" in o or o == "YES":
@@ -85,6 +85,10 @@ def _clob_to_market_format(clob: dict, condition_id: str) -> dict:
                 if "NO" in o or o == "NO":
                     res = "NO"
                     break
+                # S85 FIX: Non-YES/NO outcomes (team names in esports/sports).
+                # First token = YES outcome, second token = NO outcome.
+                res = "YES" if idx == 0 else "NO"
+                break
     # Volume: CLOB may provide volume or we leave 0.0 (refreshed later by EsportsMarketService)
     vol = 0.0
     for vk in ("volume", "volumeNum", "volume_num"):
@@ -103,6 +107,7 @@ def _clob_to_market_format(clob: dict, condition_id: str) -> dict:
         "category": _infer_category(clob.get("question", "") or ""),
         "liquidity": 0.0,  # CLOB markets have no AMM liquidity by design
         "volume": vol,
+        "closed": closed,  # S85 FIX: Phase 2 checks m.get("closed")
         "resolved": bool(res),
         "resolution": res,
         "yes_token_id": yes_tid,
