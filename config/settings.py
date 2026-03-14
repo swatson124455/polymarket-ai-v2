@@ -1061,6 +1061,13 @@ class Settings(BaseSettings):
     # --- Stale match detection (E3) ---
     ESPORTS_STALE_MATCH_SECONDS: int = int(os.getenv("ESPORTS_STALE_MATCH_SECONDS", "1800"))  # 30 min
 
+    # --- Live polling timeout ---
+    ESPORTS_LIVE_POLL_TIMEOUT: int = int(os.getenv("ESPORTS_LIVE_POLL_TIMEOUT", "10"))  # seconds
+
+    # --- Retention ---
+    ESPORTS_TRAINING_RETENTION_DAYS: int = int(os.getenv("ESPORTS_TRAINING_RETENTION_DAYS", "365"))
+    ESPORTS_PREDICTION_RETENTION_DAYS: int = int(os.getenv("ESPORTS_PREDICTION_RETENTION_DAYS", "180"))
+
     # --- Pinnacle / cross-market (Phase 2 — deferred) ---
     ESPORTS_PINNACLE_ENABLED: bool = os.getenv("ESPORTS_PINNACLE_ENABLED", "false").lower() in ("true", "1", "yes")
 

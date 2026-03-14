@@ -353,6 +353,64 @@ class WeatherForecastClient:
             logger.warning("open_meteo_ensemble_failed", model=model, error=str(exc))
             return None
 
+    async def _fetch_local_model_forecast(
+        self,
+        latitude: float,
+        longitude: float,
+        temp_unit: str,
+        model: str,
+        target_date: date,
+    ) -> Optional[float]:
+        """Fetch daily max temperature from a local hi-res model via Open-Meteo.
+
+        Same role as NBM for US stations — overrides GFS deterministic when available.
+        Uses start_date/end_date to request only the target date (less bandwidth).
+        Returns the daily max temperature as a float, or None on failure.
+        """
+        if time.monotonic() < self._model_429_until.get(model, 0.0):
+            return None
+        await self._rate_limit_wait()
+        session = await self._ensure_session()
+
+        target_iso = target_date.isoformat()
+        params = {
+            "latitude": latitude,
+            "longitude": longitude,
+            "daily": "temperature_2m_max,temperature_2m_min",
+            "models": model,
+            "start_date": target_iso,
+            "end_date": target_iso,
+            "timezone": "auto",
+        }
+        if temp_unit.upper() == "F":
+            params["temperature_unit"] = "fahrenheit"
+
+        try:
+            async with session.get(_DETERMINISTIC_URL, params=params) as resp:
+                if resp.status == 429:
+                    self._model_429_until[model] = time.monotonic() + 3600.0
+                    if self._redis:
+                        await self._redis.set(f"weatherbot:429:{model}", "1", ttl=3600)
+                    logger.warning("local_model_429_cooldown", model=model)
+                    return None
+                if resp.status != 200:
+                    logger.warning("local_model_fetch_error", model=model, status=resp.status)
+                    return None
+                data = await resp.json()
+            daily = data.get("daily", {})
+            dates = daily.get("time", [])
+            maxes = daily.get("temperature_2m_max", [])
+            if target_iso in dates:
+                idx = dates.index(target_iso)
+                if idx < len(maxes) and maxes[idx] is not None:
+                    val = float(maxes[idx])
+                    if math.isfinite(val):
+                        return val
+            return None
+        except Exception as exc:
+            logger.warning("local_model_fetch_failed", model=model, error=str(exc))
+            return None
+
     async def get_precipitation_ensemble(
         self,
         station: WeatherStation,
@@ -910,8 +968,17 @@ class WeatherForecastClient:
             if station.temp_unit.upper() == "F"
             else asyncio.sleep(0, result=None)  # no-op coroutine for non-US stations
         )
-        det_data, ens_data, nbm_high = await asyncio.gather(
-            det_task, ens_task, nbm_task, return_exceptions=True
+        # Local hi-res model override for international stations (same role as NBM for US)
+        local_task = (
+            self._fetch_local_model_forecast(
+                station.latitude, station.longitude, station.temp_unit,
+                station.local_model, target_date,
+            )
+            if station.local_model
+            else asyncio.sleep(0, result=None)
+        )
+        det_data, ens_data, nbm_high, local_high = await asyncio.gather(
+            det_task, ens_task, nbm_task, local_task, return_exceptions=True
         )
 
         if isinstance(det_data, Exception):
@@ -923,6 +990,9 @@ class WeatherForecastClient:
         if isinstance(nbm_high, Exception):
             logger.debug("forecast_nbm_exception", error=str(nbm_high))
             nbm_high = None
+        if isinstance(local_high, Exception):
+            logger.warning("forecast_local_model_exception", model=station.local_model, error=str(local_high))
+            local_high = None
 
         if det_data is None and ens_data is None:
             return None
@@ -950,6 +1020,15 @@ class WeatherForecastClient:
             if "gfs_seamless" in models_used:
                 models_used.remove("gfs_seamless")
             models_used.append("nbm")
+
+        # Local hi-res model override for international stations (same role as NBM).
+        # Priority: local_model > NBM > GFS (mutually exclusive by geography in practice).
+        if local_high is not None:
+            deterministic_high = local_high
+            if station.local_model and station.local_model not in models_used:
+                models_used.append(station.local_model)
+        elif station.local_model:
+            logger.warning("local_model_fetch_failed", station=station.station_id, model=station.local_model)
 
         # Extract ensemble members for target date
         ensemble_members = []

@@ -45,7 +45,6 @@ from base_engine.weather.precipitation_engine import PrecipitationProbabilityEng
 from base_engine.weather.probability_engine import WeatherProbabilityEngine
 from base_engine.weather.station_registry import (
     StationHealthMonitor,
-    US_CITY_NAMES,
     WeatherStation,
 )
 from config.settings import settings
@@ -66,6 +65,9 @@ class WeatherBot(BaseBot):
         if redis_cache:
             self._forecast_client.set_redis_cache(redis_cache)
         self._metar_client = MetarClient()
+        if getattr(settings, "ASOS_1MIN_ENABLED", False):
+            from base_engine.weather.asos_onemin_client import AsosOneMinClient
+            self._metar_client.set_asos_client(AsosOneMinClient())
         self._prob_engine = WeatherProbabilityEngine()
         self._precip_engine = PrecipitationProbabilityEngine()
         self._market_mapper = WeatherMarketMapper()
@@ -73,6 +75,7 @@ class WeatherBot(BaseBot):
 
         # Config
         self._min_edge = float(getattr(settings, "WEATHER_MIN_EDGE", 0.08))
+        self._intl_min_edge = float(getattr(settings, "WEATHER_INTL_MIN_EDGE", 0.12))
         self._max_per_group = float(getattr(settings, "WEATHER_MAX_PER_GROUP_USD", 200.0))
         self._daily_loss_limit = float(getattr(settings, "WEATHER_DAILY_LOSS_LIMIT", 500.0))
         self._max_correlated = float(getattr(settings, "WEATHER_MAX_CORRELATED_EXPOSURE", 500.0))
@@ -276,10 +279,18 @@ class WeatherBot(BaseBot):
         except Exception as exc:
             logger.debug("weatherbot_category_params_load_failed", error=str(exc))
 
-    def _get_min_edge(self, market_type: str) -> float:
-        """Return per-market-type min_edge, falling back to global setting."""
+    def _get_min_edge(self, market_type: str, station: Optional[WeatherStation] = None) -> float:
+        """Return per-market-type min_edge, falling back to global setting.
+
+        International cities without a local hi-res model have a data handicap
+        and use a higher floor (WEATHER_INTL_MIN_EDGE, default 0.12).
+        Cities WITH local_model (Paris, London, Berlin, etc.) trade at data parity.
+        """
         params = self._category_params.get(market_type, {})
-        return params.get("min_edge", self._min_edge)
+        base = params.get("min_edge", self._min_edge)
+        if station and station.temp_unit.upper() == "C" and station.local_model is None:
+            return max(base, self._intl_min_edge)
+        return base
 
     # ── Per-station reliability sizing (cross-bot from MirrorBot) ────────
 
@@ -772,7 +783,7 @@ class WeatherBot(BaseBot):
         model_prob = model_probs.get(bucket.market_id, 0.0)
         edge = model_prob - bucket.yes_price
 
-        if abs(edge) < self._min_edge:
+        if abs(edge) < self._get_min_edge("temperature", station):
             return None
 
         side = "YES" if edge > 0 else "NO"
@@ -956,7 +967,7 @@ class WeatherBot(BaseBot):
 
         # Find edges
         opps = self._precip_engine.compute_edges(
-            model_probs, engine_buckets, min_edge=self._get_min_edge("precipitation"),
+            model_probs, engine_buckets, min_edge=self._get_min_edge("precipitation", group.station),
         )
 
         # Compute actual lead time
@@ -1142,7 +1153,7 @@ class WeatherBot(BaseBot):
             return []
 
         opps = self._precip_engine.compute_edges(
-            model_probs, engine_buckets, min_edge=self._get_min_edge("snowfall"),
+            model_probs, engine_buckets, min_edge=self._get_min_edge("snowfall", group.station),
         )
 
         # Compute lead time
@@ -1323,7 +1334,7 @@ class WeatherBot(BaseBot):
             # Check NO side edge
             no_edge = (1.0 - model_prob) - (1.0 - market_prob)
 
-            if abs(yes_edge) >= self._get_min_edge("wind"):
+            if abs(yes_edge) >= self._get_min_edge("wind", group.station):
                 if yes_edge > 0:
                     opps.append({
                         "market_id": b.market_id,
@@ -1511,7 +1522,7 @@ class WeatherBot(BaseBot):
                 date=group.target_date.isoformat(),
                 n_edges=len(edges),
                 best_raw_edge=round(best_raw, 4),
-                edges_above_min=[round(e["abs_edge"], 4) for e in edges if e["abs_edge"] >= self._min_edge][:5],
+                edges_above_min=[round(e["abs_edge"], 4) for e in edges if e["abs_edge"] >= self._get_min_edge("temperature", group.station)][:5],
             )
 
         # Filter to tradeable
@@ -1519,7 +1530,7 @@ class WeatherBot(BaseBot):
         bucket_map = {b.market_id: b for b in group.buckets}
 
         for e in edges:
-            if e["abs_edge"] < self._get_min_edge("temperature"):
+            if e["abs_edge"] < self._get_min_edge("temperature", group.station):
                 continue
 
             # Lead-time-graduated edge cap: at short lead times, NOAA ensemble
@@ -1970,7 +1981,7 @@ class WeatherBot(BaseBot):
                 if liq_check:
                     _slippage_pct = liq_check.get("slippage", 0.0)
                     _effective_edge = opp["abs_edge"] - _slippage_pct
-                    if _effective_edge < self._min_edge:
+                    if _effective_edge < self._get_min_edge(opp.get("market_type", "temperature"), group.station):
                         logger.debug(
                             "weatherbot_slippage_skip",
                             market_id=opp["market_id"],
@@ -2137,9 +2148,9 @@ class WeatherBot(BaseBot):
     def _compute_regime_boost(
         analyzed: List[Tuple[List[Dict], "WeatherMarketGroup", Dict[str, float]]],
     ) -> float:
-        """Detect broad warm/cold front across ≥3 US cities → 1.2x Kelly boost.
+        """Detect broad warm/cold front across ≥3 cities → 1.2x Kelly boost.
 
-        If ≥3 US cities all show their best edge in the same direction (YES = warm,
+        If ≥3 cities all show their best edge in the same direction (YES = warm,
         NO = cold), a regime signal is present and all positions get a 1.2x boost.
         Returns 1.0 if no regime detected.
         """
@@ -2147,7 +2158,7 @@ class WeatherBot(BaseBot):
         cold_cities: Set[str] = set()
 
         for opps, group, _probs in analyzed:
-            if not opps or group.city not in US_CITY_NAMES:
+            if not opps:
                 continue
             # Best opportunity for this city
             best = max(opps, key=lambda o: o["abs_edge"])

@@ -31,6 +31,8 @@ class WeatherStation:
     temp_unit: str           # "F" or "C"
     aliases: tuple = ()      # lowercase aliases for matching market text
     resolution_source: str = ""
+    has_asos_1min: bool = False  # True for US ASOS stations (K-prefix ICAO)
+    local_model: Optional[str] = None  # Open-Meteo local hi-res model slug (e.g. "meteofrance_seamless")
 
 
 # ── Registry ─────────────────────────────────────────────────────────────
@@ -51,6 +53,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("nyc", "new york city", "new york"),
         resolution_source="Weather Underground / KLGA",
+        has_asos_1min=True,
     ),
     "atlanta": WeatherStation(
         city_name="Atlanta",
@@ -63,6 +66,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("atlanta",),
         resolution_source="Weather Underground / KATL",
+        has_asos_1min=True,
     ),
     "seattle": WeatherStation(
         city_name="Seattle",
@@ -75,6 +79,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("seattle",),
         resolution_source="Weather Underground / KSEA",
+        has_asos_1min=True,
     ),
     "dallas": WeatherStation(
         city_name="Dallas",
@@ -87,6 +92,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("dallas",),
         resolution_source="Weather Underground / KDFW",
+        has_asos_1min=True,
     ),
     "miami": WeatherStation(
         city_name="Miami",
@@ -99,6 +105,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("miami",),
         resolution_source="Weather Underground / KMIA",
+        has_asos_1min=True,
     ),
     "chicago": WeatherStation(
         city_name="Chicago",
@@ -111,6 +118,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("chicago",),
         resolution_source="Weather Underground / KORD",
+        has_asos_1min=True,
     ),
     "denver": WeatherStation(
         city_name="Denver",
@@ -123,6 +131,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("denver",),
         resolution_source="Weather Underground / KDEN",
+        has_asos_1min=True,
     ),
 
     # ── Expanded US cities ──────────────────────────────────────────────
@@ -137,6 +146,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("los angeles", "la", "lax"),
         resolution_source="Weather Underground / KLAX",
+        has_asos_1min=True,
     ),
     "phoenix": WeatherStation(
         city_name="Phoenix",
@@ -149,6 +159,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("phoenix",),
         resolution_source="Weather Underground / KPHX",
+        has_asos_1min=True,
     ),
     "houston": WeatherStation(
         city_name="Houston",
@@ -161,6 +172,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("houston",),
         resolution_source="Weather Underground / KIAH",
+        has_asos_1min=True,
     ),
     "philadelphia": WeatherStation(
         city_name="Philadelphia",
@@ -173,6 +185,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("philadelphia", "philly"),
         resolution_source="Weather Underground / KPHL",
+        has_asos_1min=True,
     ),
     "san_francisco": WeatherStation(
         city_name="San Francisco",
@@ -185,6 +198,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("san francisco", "sf"),
         resolution_source="Weather Underground / KSFO",
+        has_asos_1min=True,
     ),
     "boston": WeatherStation(
         city_name="Boston",
@@ -197,6 +211,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("boston",),
         resolution_source="Weather Underground / KBOS",
+        has_asos_1min=True,
     ),
     "washington_dc": WeatherStation(
         city_name="Washington D.C.",
@@ -209,6 +224,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("washington d.c.", "washington dc", "washington, d.c.", "washington, dc", "dc", "washington"),
         resolution_source="Weather Underground / KDCA",
+        has_asos_1min=True,
     ),
     "minneapolis": WeatherStation(
         city_name="Minneapolis",
@@ -221,6 +237,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("minneapolis", "minneapolis-saint paul", "twin cities"),
         resolution_source="Weather Underground / KMSP",
+        has_asos_1min=True,
     ),
     "detroit": WeatherStation(
         city_name="Detroit",
@@ -233,6 +250,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("detroit",),
         resolution_source="Weather Underground / KDTW",
+        has_asos_1min=True,
     ),
     "las_vegas": WeatherStation(
         city_name="Las Vegas",
@@ -245,6 +263,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("las vegas",),
         resolution_source="Weather Underground / KLAS",
+        has_asos_1min=True,
     ),
     "portland": WeatherStation(
         city_name="Portland",
@@ -257,6 +276,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("portland", "portland or", "portland oregon"),
         resolution_source="Weather Underground / KPDX",
+        has_asos_1min=True,
     ),
     "nashville": WeatherStation(
         city_name="Nashville",
@@ -269,6 +289,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("nashville",),
         resolution_source="Weather Underground / KBNA",
+        has_asos_1min=True,
     ),
     "salt_lake_city": WeatherStation(
         city_name="Salt Lake City",
@@ -281,6 +302,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("salt lake city", "slc"),
         resolution_source="Weather Underground / KSLC",
+        has_asos_1min=True,
     ),
     "kansas_city": WeatherStation(
         city_name="Kansas City",
@@ -293,6 +315,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("kansas city",),
         resolution_source="Weather Underground / KMCI",
+        has_asos_1min=True,
     ),
     "orlando": WeatherStation(
         city_name="Orlando",
@@ -305,6 +328,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("orlando",),
         resolution_source="Weather Underground / KMCO",
+        has_asos_1min=True,
     ),
     "tampa": WeatherStation(
         city_name="Tampa",
@@ -317,6 +341,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("tampa",),
         resolution_source="Weather Underground / KTPA",
+        has_asos_1min=True,
     ),
     "charlotte": WeatherStation(
         city_name="Charlotte",
@@ -329,6 +354,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("charlotte",),
         resolution_source="Weather Underground / KCLT",
+        has_asos_1min=True,
     ),
     "new_orleans": WeatherStation(
         city_name="New Orleans",
@@ -341,6 +367,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("new orleans",),
         resolution_source="Weather Underground / KMSY",
+        has_asos_1min=True,
     ),
     "indianapolis": WeatherStation(
         city_name="Indianapolis",
@@ -353,6 +380,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("indianapolis", "indy"),
         resolution_source="Weather Underground / KIND",
+        has_asos_1min=True,
     ),
     "columbus": WeatherStation(
         city_name="Columbus",
@@ -365,6 +393,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("columbus", "columbus oh", "columbus ohio"),
         resolution_source="Weather Underground / KCMH",
+        has_asos_1min=True,
     ),
     "memphis": WeatherStation(
         city_name="Memphis",
@@ -377,6 +406,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("memphis",),
         resolution_source="Weather Underground / KMEM",
+        has_asos_1min=True,
     ),
     "louisville": WeatherStation(
         city_name="Louisville",
@@ -389,6 +419,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("louisville",),
         resolution_source="Weather Underground / KSDF",
+        has_asos_1min=True,
     ),
     "austin": WeatherStation(
         city_name="Austin",
@@ -401,6 +432,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("austin",),
         resolution_source="Weather Underground / KAUS",
+        has_asos_1min=True,
     ),
     "san_antonio": WeatherStation(
         city_name="San Antonio",
@@ -413,6 +445,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("san antonio",),
         resolution_source="Weather Underground / KSAT",
+        has_asos_1min=True,
     ),
     "san_diego": WeatherStation(
         city_name="San Diego",
@@ -425,6 +458,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("san diego",),
         resolution_source="Weather Underground / KSAN",
+        has_asos_1min=True,
     ),
     "sacramento": WeatherStation(
         city_name="Sacramento",
@@ -437,6 +471,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("sacramento",),
         resolution_source="Weather Underground / KSMF",
+        has_asos_1min=True,
     ),
     "pittsburgh": WeatherStation(
         city_name="Pittsburgh",
@@ -449,6 +484,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("pittsburgh",),
         resolution_source="Weather Underground / KPIT",
+        has_asos_1min=True,
     ),
     "st_louis": WeatherStation(
         city_name="St. Louis",
@@ -461,6 +497,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("st. louis", "st louis", "saint louis"),
         resolution_source="Weather Underground / KSTL",
+        has_asos_1min=True,
     ),
     "baltimore": WeatherStation(
         city_name="Baltimore",
@@ -473,6 +510,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("baltimore",),
         resolution_source="Weather Underground / KBWI",
+        has_asos_1min=True,
     ),
     "raleigh": WeatherStation(
         city_name="Raleigh",
@@ -485,6 +523,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("raleigh", "raleigh-durham", "raleigh durham"),
         resolution_source="Weather Underground / KRDU",
+        has_asos_1min=True,
     ),
     "oklahoma_city": WeatherStation(
         city_name="Oklahoma City",
@@ -497,6 +536,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("oklahoma city", "okc"),
         resolution_source="Weather Underground / KOKC",
+        has_asos_1min=True,
     ),
     "omaha": WeatherStation(
         city_name="Omaha",
@@ -509,6 +549,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("omaha",),
         resolution_source="Weather Underground / KOMA",
+        has_asos_1min=True,
     ),
     "albuquerque": WeatherStation(
         city_name="Albuquerque",
@@ -521,6 +562,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("albuquerque",),
         resolution_source="Weather Underground / KABQ",
+        has_asos_1min=True,
     ),
     "tucson": WeatherStation(
         city_name="Tucson",
@@ -533,6 +575,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("tucson",),
         resolution_source="Weather Underground / KTUS",
+        has_asos_1min=True,
     ),
     "el_paso": WeatherStation(
         city_name="El Paso",
@@ -545,6 +588,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("el paso",),
         resolution_source="Weather Underground / KELP",
+        has_asos_1min=True,
     ),
     "jacksonville": WeatherStation(
         city_name="Jacksonville",
@@ -557,6 +601,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("jacksonville",),
         resolution_source="Weather Underground / KJAX",
+        has_asos_1min=True,
     ),
     "richmond": WeatherStation(
         city_name="Richmond",
@@ -569,6 +614,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("richmond",),
         resolution_source="Weather Underground / KRIC",
+        has_asos_1min=True,
     ),
     "buffalo": WeatherStation(
         city_name="Buffalo",
@@ -581,6 +627,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("buffalo",),
         resolution_source="Weather Underground / KBUF",
+        has_asos_1min=True,
     ),
     "reno": WeatherStation(
         city_name="Reno",
@@ -593,6 +640,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("reno",),
         resolution_source="Weather Underground / KRNO",
+        has_asos_1min=True,
     ),
     "tulsa": WeatherStation(
         city_name="Tulsa",
@@ -605,6 +653,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="F",
         aliases=("tulsa",),
         resolution_source="Weather Underground / KTUL",
+        has_asos_1min=True,
     ),
     "honolulu": WeatherStation(
         city_name="Honolulu",
@@ -643,6 +692,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("london",),
         resolution_source="Weather Underground / EGLC",
+        local_model="ukmo_seamless",
     ),
     "toronto": WeatherStation(
         city_name="Toronto",
@@ -655,6 +705,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("toronto",),
         resolution_source="Weather Underground / CYYZ",
+        local_model="gem_seamless",
     ),
     "seoul": WeatherStation(
         city_name="Seoul",
@@ -667,6 +718,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("seoul",),
         resolution_source="Weather Underground / RKSS",
+        local_model="jma_seamless",
     ),
     "buenos_aires": WeatherStation(
         city_name="Buenos Aires",
@@ -717,6 +769,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("tokyo",),
         resolution_source="Weather Underground / RJTT",
+        local_model="jma_seamless",
     ),
     "sydney": WeatherStation(
         city_name="Sydney",
@@ -753,6 +806,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("paris",),
         resolution_source="Weather Underground / LFPB",
+        local_model="meteofrance_seamless",
     ),
     "berlin": WeatherStation(
         city_name="Berlin",
@@ -765,6 +819,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("berlin",),
         resolution_source="Weather Underground / EDDB",
+        local_model="icon_d2",
     ),
     "dubai": WeatherStation(
         city_name="Dubai",
@@ -813,6 +868,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("amsterdam",),
         resolution_source="Weather Underground / EHAM",
+        local_model="knmi_seamless",
     ),
     "mumbai": WeatherStation(
         city_name="Mumbai",
@@ -837,6 +893,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("vienna", "wien"),
         resolution_source="Weather Underground / LOWW",
+        local_model="icon_d2",
     ),
     "stockholm": WeatherStation(
         city_name="Stockholm",
@@ -849,6 +906,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("stockholm",),
         resolution_source="Weather Underground / ESSA",
+        local_model="icon_d2",
     ),
     "oslo": WeatherStation(
         city_name="Oslo",
@@ -861,6 +919,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("oslo",),
         resolution_source="Weather Underground / ENGM",
+        local_model="icon_d2",
     ),
     "copenhagen": WeatherStation(
         city_name="Copenhagen",
@@ -873,6 +932,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("copenhagen",),
         resolution_source="Weather Underground / EKCH",
+        local_model="dmi_seamless",
     ),
     "warsaw": WeatherStation(
         city_name="Warsaw",
@@ -885,6 +945,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("warsaw",),
         resolution_source="Weather Underground / EPWA",
+        local_model="icon_d2",
     ),
     "prague": WeatherStation(
         city_name="Prague",
@@ -897,6 +958,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("prague",),
         resolution_source="Weather Underground / LKPR",
+        local_model="icon_d2",
     ),
     "zurich": WeatherStation(
         city_name="Zurich",
@@ -909,6 +971,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("zurich", "zürich"),
         resolution_source="Weather Underground / LSZH",
+        local_model="icon_d2",
     ),
     "brussels": WeatherStation(
         city_name="Brussels",
@@ -921,6 +984,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("brussels", "bruxelles"),
         resolution_source="Weather Underground / EBBR",
+        local_model="icon_d2",
     ),
     "madrid": WeatherStation(
         city_name="Madrid",
@@ -933,6 +997,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("madrid",),
         resolution_source="Weather Underground / LEMD",
+        local_model="icon_d2",
     ),
     "rome": WeatherStation(
         city_name="Rome",
@@ -945,6 +1010,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("rome", "roma"),
         resolution_source="Weather Underground / LIRF",
+        local_model="icon_d2",
     ),
     "singapore": WeatherStation(
         city_name="Singapore",
@@ -1005,6 +1071,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("vancouver",),
         resolution_source="Weather Underground / CYVR",
+        local_model="gem_seamless",
     ),
     "montreal": WeatherStation(
         city_name="Montreal",
@@ -1017,6 +1084,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("montreal", "montréal"),
         resolution_source="Weather Underground / CYUL",
+        local_model="gem_seamless",
     ),
     "auckland": WeatherStation(
         city_name="Auckland",
@@ -1101,6 +1169,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("dublin",),
         resolution_source="Weather Underground / EIDW",
+        local_model="ukmo_seamless",
     ),
     "helsinki": WeatherStation(
         city_name="Helsinki",
@@ -1113,6 +1182,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("helsinki",),
         resolution_source="Weather Underground / EFHK",
+        local_model="icon_d2",
     ),
     "beijing": WeatherStation(
         city_name="Beijing",

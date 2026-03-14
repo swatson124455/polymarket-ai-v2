@@ -1037,8 +1037,8 @@ class TestWeatherBotOpportunities:
         boost = WeatherBot._compute_regime_boost(analyzed)
         assert boost == 1.0
 
-    def test_regime_boost_no_us_cities(self):
-        """Only international cities → no regime signal."""
+    def test_regime_boost_international_cities(self):
+        """International cities now participate in regime detection (US-only filter removed)."""
         from bots.weather_bot import WeatherBot
         analyzed = [
             ([self._make_opp("London", "YES")], self._make_group("london"), {}),
@@ -1046,7 +1046,7 @@ class TestWeatherBotOpportunities:
             ([self._make_opp("Toronto", "YES")], self._make_group("toronto"), {}),
         ]
         boost = WeatherBot._compute_regime_boost(analyzed)
-        assert boost == 1.0
+        assert boost == 1.2  # 3 cities same direction → warm regime detected
 
     @pytest.mark.asyncio
     async def test_near_expiry_kelly_boost(self, weather_bot):
@@ -1528,3 +1528,194 @@ class TestMetarResolutionDayOverride:
 
         # m1 is at_or_below 72°F; running_max=75 > 72.5 → ruled out
         assert result["m1"] < 0.01
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Local Model Forecast (Commit 2)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestFetchLocalModelForecast:
+    """Test _fetch_local_model_forecast for international hi-res model integration."""
+
+    @pytest.mark.asyncio
+    async def test_successful_fetch_returns_temperature(self):
+        """Local model returns daily max temperature for target date."""
+        client = WeatherForecastClient()
+
+        mock_resp = MagicMock()
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={
+            "daily": {
+                "time": ["2026-03-15"],
+                "temperature_2m_max": [18.5],
+                "temperature_2m_min": [7.2],
+            }
+        })
+        mock_sess = MagicMock()
+        mock_sess.get = MagicMock(return_value=mock_resp)
+
+        with patch.object(client, "_ensure_session", new_callable=AsyncMock, return_value=mock_sess):
+            result = await client._fetch_local_model_forecast(
+                48.8566, 2.3522, "C", "meteofrance_seamless", date(2026, 3, 15),
+            )
+
+        assert result == pytest.approx(18.5, abs=0.01)
+
+    @pytest.mark.asyncio
+    async def test_api_error_returns_none(self):
+        """Non-200 response returns None and logs warning."""
+        client = WeatherForecastClient()
+
+        mock_resp = MagicMock()
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_resp.status = 500
+        mock_sess = MagicMock()
+        mock_sess.get = MagicMock(return_value=mock_resp)
+
+        with patch.object(client, "_ensure_session", new_callable=AsyncMock, return_value=mock_sess):
+            result = await client._fetch_local_model_forecast(
+                48.8566, 2.3522, "C", "meteofrance_seamless", date(2026, 3, 15),
+            )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_429_sets_cooldown(self):
+        """429 response sets 1-hour cooldown for the model."""
+        client = WeatherForecastClient()
+        client._redis = None
+
+        mock_resp = MagicMock()
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_resp.status = 429
+        mock_sess = MagicMock()
+        mock_sess.get = MagicMock(return_value=mock_resp)
+
+        with patch.object(client, "_ensure_session", new_callable=AsyncMock, return_value=mock_sess):
+            result = await client._fetch_local_model_forecast(
+                48.8566, 2.3522, "C", "meteofrance_seamless", date(2026, 3, 15),
+            )
+
+        assert result is None
+        assert "meteofrance_seamless" in client._model_429_until
+
+    @pytest.mark.asyncio
+    async def test_missing_target_date_returns_none(self):
+        """Returns None when target date not in response data."""
+        client = WeatherForecastClient()
+
+        mock_resp = MagicMock()
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={
+            "daily": {
+                "time": ["2026-03-14"],  # Different date
+                "temperature_2m_max": [20.0],
+            }
+        })
+        mock_sess = MagicMock()
+        mock_sess.get = MagicMock(return_value=mock_resp)
+
+        with patch.object(client, "_ensure_session", new_callable=AsyncMock, return_value=mock_sess):
+            result = await client._fetch_local_model_forecast(
+                48.8566, 2.3522, "C", "meteofrance_seamless", date(2026, 3, 15),
+            )
+
+        assert result is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# International Min Edge (Commit 4)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestIntlMinEdge:
+    """Test _get_min_edge with station-aware international edge floor."""
+
+    def _make_bot(self):
+        """Create a minimal WeatherBot mock with _get_min_edge wired up."""
+        from bots.weather_bot import WeatherBot
+        bot = MagicMock(spec=WeatherBot)
+        bot._min_edge = 0.08
+        bot._intl_min_edge = 0.12
+        bot._category_params = {}
+        bot._get_min_edge = WeatherBot._get_min_edge.__get__(bot, WeatherBot)
+        return bot
+
+    def test_us_station_gets_base_edge(self):
+        """NYC (temp_unit=F) gets base edge 0.08."""
+        bot = self._make_bot()
+        nyc = lookup_station("NYC")
+        assert bot._get_min_edge("temperature", nyc) == pytest.approx(0.08)
+
+    def test_intl_with_local_model_gets_base_edge(self):
+        """Paris (has meteofrance_seamless) gets base edge 0.08 — data parity."""
+        bot = self._make_bot()
+        paris = lookup_station("Paris")
+        assert paris.local_model is not None  # meteofrance_seamless
+        assert bot._get_min_edge("temperature", paris) == pytest.approx(0.08)
+
+    def test_intl_without_local_model_gets_higher_edge(self):
+        """Buenos Aires (no local_model) gets 0.12 floor — data handicap."""
+        bot = self._make_bot()
+        ba = lookup_station("Buenos Aires")
+        assert ba.local_model is None
+        assert bot._get_min_edge("temperature", ba) == pytest.approx(0.12)
+
+    def test_no_station_gets_base_edge(self):
+        """No station passed → base edge (backwards compatible)."""
+        bot = self._make_bot()
+        assert bot._get_min_edge("temperature") == pytest.approx(0.08)
+
+    def test_category_params_override_respected(self):
+        """Category-specific min_edge still works with intl floor."""
+        bot = self._make_bot()
+        bot._category_params = {"precipitation": {"min_edge": 0.10}}
+        ba = lookup_station("Buenos Aires")
+        # 0.10 < 0.12, so intl floor (0.12) wins
+        assert bot._get_min_edge("precipitation", ba) == pytest.approx(0.12)
+        # But for US station, category param wins
+        nyc = lookup_station("NYC")
+        assert bot._get_min_edge("precipitation", nyc) == pytest.approx(0.10)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Local Model Station Registry (Commit 1)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestLocalModelStationRegistry:
+    """Verify local_model field is correctly populated in station registry."""
+
+    def test_paris_has_meteofrance(self):
+        assert STATION_REGISTRY["paris"].local_model == "meteofrance_seamless"
+
+    def test_london_has_ukmo(self):
+        assert STATION_REGISTRY["london"].local_model == "ukmo_seamless"
+
+    def test_berlin_has_icon_d2(self):
+        assert STATION_REGISTRY["berlin"].local_model == "icon_d2"
+
+    def test_tokyo_has_jma(self):
+        assert STATION_REGISTRY["tokyo"].local_model == "jma_seamless"
+
+    def test_toronto_has_gem(self):
+        assert STATION_REGISTRY["toronto"].local_model == "gem_seamless"
+
+    def test_buenos_aires_has_no_local_model(self):
+        assert STATION_REGISTRY["buenos_aires"].local_model is None
+
+    def test_dubai_has_no_local_model(self):
+        assert STATION_REGISTRY["dubai"].local_model is None
+
+    def test_us_cities_have_no_local_model(self):
+        """US cities use NBM, not local models — local_model should be None."""
+        for key, station in STATION_REGISTRY.items():
+            if station.temp_unit == "F":
+                assert station.local_model is None, f"US station {key} should not have local_model"

@@ -24,6 +24,9 @@ PROGRESS_LOG_INTERVAL_SECONDS = 60
 
 # I51: configurable ingest timeout — override INGESTION_TIMEOUT_SECONDS in .env
 _INGESTION_TIMEOUT_SECONDS: float = float(getattr(settings, "INGESTION_TIMEOUT_SECONDS", 600.0))
+# Timeout for auxiliary tasks (top_users, elite_activity, health check, backfill).
+# These MUST have timeouts — without them a hung API call kills the scheduler loop.
+_AUX_TIMEOUT_SECONDS: float = float(getattr(settings, "INGESTION_AUX_TIMEOUT_SECONDS", 300.0))
 
 
 class IngestionScheduler:
@@ -183,28 +186,9 @@ class IngestionScheduler:
             return
         except Exception as e:
             logger.warning("Scheduled ingestion failed: %s", e)
-        try:
-            if RESOLUTION_BACKFILL_ENABLED and RESOLUTION_BACKFILL_AFTER_DAILY and run_full:
-                try:
-                    async with acquire_lock(db, "resolution_backfill", timeout_seconds=30):
-                        bf = await self.data_ingestion.run_resolution_backfill(
-                            log_progress=True,
-                            performance_tracker=self.performance_tracker,
-                        )
-                        if bf.get("inserted", 0) > 0 or bf.get("updated", 0) > 0:
-                            logger.info("Resolution backfill: %d inserted, %d updated", bf.get("inserted", 0), bf.get("updated", 0))
-                        if getattr(settings, "PIPELINE_CANARY_AFTER_INGESTION", True):
-                            try:
-                                from base_engine.data.pipeline_canary import run_canary_after_resolution_backfill
-                                await run_canary_after_resolution_backfill(db)
-                            except Exception as ca:
-                                logger.debug("Canary after resolution backfill: %s", ca)
-                except LockAcquisitionError:
-                    logger.debug("Resolution backfill lock busy, skipping")
-                except Exception as eb:
-                    logger.warning("Resolution backfill failed (non-fatal): %s", eb)
-        except Exception:
-            pass
+        # Resolution queue: run independently every cycle, not gated on ingestion success
+        if RESOLUTION_BACKFILL_ENABLED:
+            await self._do_resolution_queue(db)
         if run_full and getattr(settings, "RUN_ORPHAN_CLEANUP_AFTER_INGESTION", False):
             try:
                 from base_engine.data.orphan_cleanup import run_orphan_cleanup
@@ -226,34 +210,13 @@ class IngestionScheduler:
         if _mini_due and RESOLUTION_BACKFILL_ENABLED:
             try:
                 async with acquire_lock(db, "resolution_backfill", timeout_seconds=10):
-                    # Phase 1: Insert missing markets + update resolutions from Gamma API
-                    _rb_inserted = 0
-                    try:
-                        bf = await self.data_ingestion.run_resolution_backfill(
-                            log_progress=False,
-                            performance_tracker=self.performance_tracker,
-                        )
-                        _rb_inserted = bf.get("inserted", 0) + bf.get("updated", 0)
-                    except Exception as exc:
-                        logger.debug("mini_backfill_resolution_failed", error=str(exc))
-                    # Phase 2: Propagate resolutions to prediction_log + paper_trades
-                    pred_updated = await db.backfill_prediction_log_resolution()
-                    pseudo_updated = 0
-                    try:
-                        pseudo_updated = await db.backfill_prediction_log_from_closed_trades()
-                    except Exception:
-                        pass
-                    paper_updated = 0
-                    try:
-                        paper_updated = await db.backfill_paper_trades_resolution()
-                    except Exception:
-                        pass
-                    if _rb_inserted > 0 or pred_updated > 0 or pseudo_updated > 0 or paper_updated > 0:
-                        logger.info(
-                            "Mini backfill: %d markets_resolved, %d prediction_log, %d pseudo-labels, %d paper_trades",
-                            _rb_inserted, pred_updated, pseudo_updated, paper_updated,
-                        )
-                    self._last_mini_backfill = _now
+                    await asyncio.wait_for(
+                        self._do_mini_backfill(db, _now),
+                        timeout=_AUX_TIMEOUT_SECONDS,
+                    )
+            except asyncio.TimeoutError:
+                logger.error("Mini backfill timed out after %ss", _AUX_TIMEOUT_SECONDS)
+                self._last_mini_backfill = _now  # prevent tight retry loop
             except Exception as mb_err:
                 logger.debug("Mini backfill (non-fatal): %s", mb_err)
 
@@ -267,7 +230,7 @@ class IngestionScheduler:
             try:
                 from base_engine.monitoring.health_runner import HealthRunner
                 runner = HealthRunner(db, settings)
-                report = await runner.run()
+                report = await asyncio.wait_for(runner.run(), timeout=_AUX_TIMEOUT_SECONDS)
                 self._last_health_check = _now
                 # Surface critical issues as alerts
                 if self.alerting:
@@ -283,24 +246,90 @@ class IngestionScheduler:
                             )
                         except Exception:
                             pass
+            except asyncio.TimeoutError:
+                logger.error("Health check timed out after %ss", _AUX_TIMEOUT_SECONDS)
+                self._last_health_check = _now  # prevent tight retry loop
             except Exception as hc_err:
                 logger.debug("Health check (non-fatal): %s", hc_err)
         try:
-            await self.data_ingestion.ingest_top_users()
+            await asyncio.wait_for(
+                self.data_ingestion.ingest_top_users(),
+                timeout=_AUX_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.error("ingest_top_users() timed out after %ss", _AUX_TIMEOUT_SECONDS)
         except Exception as eu:
             logger.warning("Top users ingest failed (non-fatal): %s", eu)
         try:
-            await self.data_ingestion.ingest_elite_trader_activity()
+            await asyncio.wait_for(
+                self.data_ingestion.ingest_elite_trader_activity(),
+                timeout=_AUX_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.error("ingest_elite_trader_activity() timed out after %ss", _AUX_TIMEOUT_SECONDS)
         except Exception as ea:
             logger.warning("Elite trader activity ingest failed (non-fatal): %s", ea)
         if self.elite_detector is not None:
             try:
                 async with acquire_lock(db, "elite_update", timeout_seconds=30):
-                    await self.elite_detector.update_elite_status()
+                    await asyncio.wait_for(
+                        self.elite_detector.update_elite_status(),
+                        timeout=_AUX_TIMEOUT_SECONDS,
+                    )
+            except asyncio.TimeoutError:
+                logger.error("Elite status update timed out after %ss", _AUX_TIMEOUT_SECONDS)
             except LockAcquisitionError:
                 logger.debug("Elite update lock busy, skipping")
             except Exception as e:
                 logger.warning("Elite status update failed (non-fatal): %s", e)
+
+    async def _do_resolution_queue(self, db) -> None:
+        """Process resolution backlog: oldest unresolved traded markets, independent of ingestion."""
+        from base_engine.data.database_lock import acquire_lock, LockAcquisitionError
+        _batch_size = int(getattr(settings, "RESOLUTION_QUEUE_BATCH_SIZE", 20))
+        try:
+            async with acquire_lock(db, "resolution_backfill", timeout_seconds=10):
+                try:
+                    bf = await asyncio.wait_for(
+                        self.data_ingestion.run_resolution_backfill(
+                            log_progress=False,
+                            performance_tracker=self.performance_tracker,
+                            resolution_limit=_batch_size,
+                        ),
+                        timeout=_AUX_TIMEOUT_SECONDS,
+                    )
+                    _resolved = bf.get("inserted", 0) + bf.get("updated", 0)
+                    if _resolved > 0:
+                        logger.info("Resolution queue: %d markets resolved (batch=%d)", _resolved, _batch_size)
+                except asyncio.TimeoutError:
+                    logger.error("Resolution queue timed out after %ss", _AUX_TIMEOUT_SECONDS)
+                except Exception as exc:
+                    logger.warning("Resolution queue failed: %s", exc)
+        except LockAcquisitionError:
+            logger.debug("Resolution queue lock busy, skipping")
+        except Exception as e:
+            logger.warning("Resolution queue outer error: %s", e)
+
+    async def _do_mini_backfill(self, db, _now: datetime) -> None:
+        """Mini backfill: resolution + prediction_log + paper_trades. Called inside lock + timeout."""
+        _rb_inserted = 0  # Resolution now handled by _do_resolution_queue()
+        pred_updated = await db.backfill_prediction_log_resolution()
+        pseudo_updated = 0
+        try:
+            pseudo_updated = await db.backfill_prediction_log_from_closed_trades()
+        except Exception as e:
+            logger.warning("mini_backfill_pseudo_labels_failed: %s", e)
+        paper_updated = 0
+        try:
+            paper_updated = await db.backfill_paper_trades_resolution()
+        except Exception as e:
+            logger.warning("mini_backfill_paper_trades_failed: %s", e)
+        if pred_updated > 0 or pseudo_updated > 0 or paper_updated > 0:
+            logger.info(
+                "Mini backfill: %d prediction_log, %d pseudo-labels, %d paper_trades",
+                pred_updated, pseudo_updated, paper_updated,
+            )
+        self._last_mini_backfill = _now
 
     async def _do_ingestion(self, run_full: bool, run_weekly_full: bool, use_incremental: bool, now: datetime) -> None:
         """Execute ingestion (markets + optional prices). Called inside ingestion lock."""
