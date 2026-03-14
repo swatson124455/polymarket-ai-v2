@@ -310,6 +310,7 @@ class BaseBot(ABC):
         price: float,
         confidence: float,
         prediction: Optional[float] = None,
+        event_data: Optional[Dict] = None,
     ) -> Dict[str, Any]:
         """Place order via base_engine. Returns early if bot was stopped (graceful shutdown)."""
         if not self.running:
@@ -327,6 +328,7 @@ class BaseBot(ABC):
             confidence=confidence,
             prediction=prediction,
             correlation_id=getattr(self, "_current_correlation_id", None),
+            event_data=event_data,
         )
         _order_ms = (time.monotonic() - _order_t0) * 1000
         self.mark_latency("order_done")

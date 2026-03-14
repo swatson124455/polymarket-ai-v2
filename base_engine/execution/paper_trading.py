@@ -216,17 +216,20 @@ class PaperTradingEngine:
         latency_ms: Optional[float] = None,
         bid: float = 0.0,
         ask: float = 0.0,
+        model_version: Optional[int] = None,
+        model_name: Optional[str] = None,
+        event_data: Optional[dict] = None,
     ) -> Dict:
         """
         Place a paper trade order.
-        
+
         Args:
             market_id: Market ID
             token_id: Token ID
             side: "BUY" or "SELL"
             size: Order size in shares
             price: Order price
-        
+
         Returns:
             Dict with order result
         """
@@ -241,7 +244,7 @@ class PaperTradingEngine:
         async with self._trade_lock:
             return await self._place_order_locked(
                 market_id, token_id, side, size, price, bot_name, confidence, original_side, order_type, correlation_id, latency_ms,
-                bid=bid, ask=ask,
+                bid=bid, ask=ask, model_version=model_version, model_name=model_name,
             )
 
     async def _place_order_locked(
@@ -259,6 +262,8 @@ class PaperTradingEngine:
         latency_ms: Optional[float] = None,
         bid: float = 0.0,
         ask: float = 0.0,
+        model_version: Optional[int] = None,
+        model_name: Optional[str] = None,
     ) -> Dict:
         """Inner order handler — called under self._trade_lock."""
         # Auto-reset daily P&L at day boundary (UTC)
@@ -465,6 +470,9 @@ class PaperTradingEngine:
                         realized_pnl=realized_pnl,
                         correlation_id=correlation_id,
                         order_id=trade_id,
+                        model_version=model_version,
+                        model_name=model_name,
+                        event_data=event_data,
                     )
                 except Exception as e:
                     logger.warning("trade_event_exit_emit_failed", error=str(e), market_id=market_id)
@@ -509,6 +517,9 @@ class PaperTradingEngine:
                                 confidence=confidence,
                                 correlation_id=correlation_id,
                                 order_id=trade_id,
+                                model_version=model_version,
+                                model_name=model_name,
+                                event_data=event_data,
                             )
                         except Exception as e:
                             logger.warning("trade_event_entry_emit_failed", error=str(e), market_id=market_id)

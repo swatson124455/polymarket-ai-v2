@@ -329,6 +329,7 @@ class OrderGateway:
         correlation_id: Optional[str] = None,
         bid: float = 0.0,
         ask: float = 0.0,
+        event_data: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """
         Place order through kill switch, risk, and coordinator. Returns same shape as execution_engine.place_order.
@@ -668,6 +669,7 @@ class OrderGateway:
                     latency_ms=None,  # placeholder — set after timing
                     bid=bid,
                     ask=ask,
+                    event_data=event_data,
                 )
                 latency_ms = (time.monotonic() - t0) * 1000
                 if not result.get("success"):
