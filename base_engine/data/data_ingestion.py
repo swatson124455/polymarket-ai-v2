@@ -288,8 +288,8 @@ class DataIngestionService:
         result = await run_resolution_backfill(
             self.db,
             self.client,
-            missing_limit=500,
-            resolution_limit=500,
+            missing_limit=kwargs.pop("missing_limit", 500),
+            resolution_limit=kwargs.pop("resolution_limit", 500),
             log_progress=log_progress,
             **kwargs,
         )
@@ -2218,7 +2218,9 @@ class DataIngestionService:
         try:
             logger.info("Testing Polymarket API connectivity...")
             test_result = await self.client.check_gamma_connectivity()
-            is_connected, connection_msg = test_result
+            if not isinstance(test_result, (tuple, list)) or len(test_result) < 2:
+                return (False, f"CRITICAL: API connectivity check returned unexpected result: {test_result!r}")
+            is_connected, connection_msg = test_result[0], test_result[1]
             if not is_connected:
                 return (False, f"CRITICAL: Cannot connect to Polymarket API - {connection_msg}")
             logger.info("API connectivity check passed: %s", connection_msg)
@@ -2619,6 +2621,8 @@ class DataIngestionService:
                 price_interval = getattr(settings, "PRICE_HISTORY_INTERVAL", "1h")
                 max_concurrent = getattr(settings, "PRICE_HISTORY_MAX_CONCURRENT_MARKETS", 8)
                 semaphore = asyncio.Semaphore(max(1, max_concurrent))
+                _rate_limit_count = 0
+                _RATE_LIMIT_ABORT_THRESHOLD = int(getattr(settings, "PRICE_HISTORY_429_ABORT_THRESHOLD", 5))
 
                 def _effective_from_ts(mid: str, tid: str) -> Optional[int]:
                     key = (str(mid), str(tid))
@@ -2669,7 +2673,11 @@ class DataIngestionService:
                             tasks.append(fetch_token_history(market_id, str(token_id), side))
                     if not tasks:
                         continue
-                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    _per_market_timeout = float(getattr(settings, "PRICE_HISTORY_PER_MARKET_TIMEOUT", 60))
+                    results = await asyncio.gather(
+                        *[asyncio.wait_for(t, timeout=_per_market_timeout) for t in tasks],
+                        return_exceptions=True,
+                    )
                     for r in results:
                         if isinstance(r, Exception):
                             logger.warning("Price history failed: %s", r)
@@ -2694,6 +2702,15 @@ class DataIngestionService:
                                 continue
                         if history:
                             logger.info("Market %s %s: %s points", _market_id, _side, len(history))
+                    for r in results:
+                        if isinstance(r, Exception) and "429" in str(r):
+                            _rate_limit_count += 1
+                    if _rate_limit_count >= _RATE_LIMIT_ABORT_THRESHOLD:
+                        logger.warning(
+                            "Phase 2 aborted: %d rate-limit (429) errors exceeded threshold %d at market %d/%d",
+                            _rate_limit_count, _RATE_LIMIT_ABORT_THRESHOLD, idx + 1, len(db_markets),
+                        )
+                        break
                     # P4: track empty vs successful price fetch so we can skip/deprioritize repeat empties
                     points_this_market = sum(
                         len(r[3]) for r in results
