@@ -996,10 +996,16 @@ class EsportsBot(BaseBot):
                                     """),
                                     {"mid": mid},
                                 )
+                                await _sess.commit()
+                            # Also clean in-memory exposure tracker so position doesn't count
+                            _og = getattr(self.base_engine, "order_gateway", None)
+                            if _og is not None:
+                                _og._track_position_close(self.bot_name, mid)
                             logger.info("esportsbot_orphan_position_closed", market_id=mid)
                         except Exception as _close_err:
                             logger.warning("esportsbot_orphan_close_failed", market_id=mid,
                                            error=str(_close_err))
+                    self._market_game.pop(mid, None)
                     continue  # Skip exposure decrement — position was orphaned
                 # B3: Decrement game exposure on exit
                 # Primary: _market_game (populated on entry, survives cache expiry)
