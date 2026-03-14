@@ -3099,9 +3099,12 @@ class EsportsBot(BaseBot):
             r"|playoffs|qualifier|group|stage|round|final"
             r"|aorus |emea |nacl |lta |game changers|winner).*$"
         )
+        # " - game N winner" / " - map N winner" suffix (must run before _tourney_re)
+        _game_winner_re = r"\s*-\s+(?:game|map)\s+\d+\s+winner$"
         for name_ref in ("name_a", "name_b"):
             n = name_a if name_ref == "name_a" else name_b
             n = _re.sub(_suffix_re, "", n).strip()
+            n = _re.sub(_game_winner_re, "", n, flags=_re.IGNORECASE).strip()
             n = _re.sub(_tourney_re, "", n, flags=_re.IGNORECASE).strip()
             # Strip trailing " map N", " game N", " game N winner", or bare "game N winner"
             n = _re.sub(r"(?:^|\s+)(?:map|game)\s+\d+(?:\s+winner)?$", "", n, flags=_re.IGNORECASE).strip()
