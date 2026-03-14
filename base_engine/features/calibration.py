@@ -269,8 +269,9 @@ class FocalTemperatureCalibrator:
         best_t = 1.0
         best_gamma = 0.0
 
-        # T in [0.5, 3.0] step 0.1, gamma in [0.0, 5.0] step 0.5
-        t_values = np.arange(0.5, 3.05, 0.1)
+        # T in [0.5, 2.0] step 0.1, gamma in [0.0, 5.0] step 0.5
+        # T > 2.0 over-flattens prediction market confidences toward 0.5
+        t_values = np.arange(0.5, 2.05, 0.1)
         gamma_values = np.arange(0.0, 5.5, 0.5)
 
         for t in t_values:

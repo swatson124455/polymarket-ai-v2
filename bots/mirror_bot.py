@@ -395,16 +395,20 @@ class MirrorBot(BaseBot):
             except Exception as e:
                 logger.debug("MirrorBot adaptive safety refresh failed: %s", e)
 
-        # M4: Leader reconciliation on scan 3 (after watchlist initialized)
+        # M4/B4: Leader reconciliation on scan 3 — run in background to avoid
+        # blocking the scan loop for 30s while Gamma API calls complete
         if self._scan_count == 3 and not self._recon_done:
-            try:
-                await asyncio.wait_for(self._reconcile_leader_positions(), timeout=30.0)
-            except asyncio.TimeoutError:
-                logger.warning("mirror_leader_recon timed out (30s)")
-                self._recon_done = True
-            except Exception as e:
-                logger.warning("mirror_leader_recon error: %s", e)
-                self._recon_done = True
+            self._recon_done = True  # Set immediately to prevent re-launch
+
+            async def _bg_recon():
+                try:
+                    await asyncio.wait_for(self._reconcile_leader_positions(), timeout=60.0)
+                except asyncio.TimeoutError:
+                    logger.warning("mirror_leader_recon timed out (60s, background)")
+                except Exception as e:
+                    logger.warning("mirror_leader_recon error: %s", e)
+
+            asyncio.create_task(_bg_recon())
 
         # M5: Periodic dedup flush to Redis (every 100 scans ~75 min)
         if self._scan_count % 100 == 0:
@@ -852,14 +856,46 @@ class MirrorBot(BaseBot):
 
     # ── Exit Monitoring ─────────────────────────────────────────────
 
+    async def _sync_prices_from_db(self):
+        """B2: Sync current_price and size from positions table into _open_positions.
+
+        position_manager updates positions.current_price every 10s from market data.
+        Without this sync, stop-loss uses stale entry prices and never fires.
+        Also syncs size — _track_open_position creates entries with size=0.0,
+        and if _execute_mirror_trade's size update is missed, exits fail with zero size.
+        """
+        if not self._open_positions or not self.base_engine or not self.base_engine.db:
+            return
+        try:
+            from sqlalchemy import text
+            async with self.base_engine.db.get_session() as session:
+                rows = await session.execute(text(
+                    "SELECT market_id, token_id, current_price, size "
+                    "FROM positions "
+                    "WHERE COALESCE(source_bot, bot_id) = 'MirrorBot' "
+                    "  AND status = 'open'"
+                ))
+                for r in rows.fetchall():
+                    pos_key = f"{r.market_id}:{r.token_id}"
+                    if pos_key in self._open_positions:
+                        if r.current_price is not None:
+                            self._open_positions[pos_key]["current_price"] = float(r.current_price)
+                        if r.size is not None and float(r.size) > 0:
+                            self._open_positions[pos_key]["size"] = float(r.size)
+        except Exception as e:
+            logger.debug("mirror_sync_prices_from_db failed: %s", e)
+
     async def _check_and_execute_exits(self):
         """Mirror exits when tracked traders close their positions."""
         if not self._open_positions:
             return
 
+        # B2: Sync DB prices into in-memory dict so stop-loss sees real prices
+        await self._sync_prices_from_db()
+
         positions_to_close: List[str] = []
 
-        # Autonomous stop-loss and max hold time (no network call needed)
+        # Autonomous stop-loss and max hold time
         _stop_pct = getattr(settings, "MIRROR_STOP_LOSS_PCT", 0.15)
         _max_hold_h = getattr(settings, "MIRROR_MAX_HOLD_HOURS", 72)
         _now_utc = datetime.now(timezone.utc)
@@ -944,11 +980,33 @@ class MirrorBot(BaseBot):
                 if exit_price is None:
                     exit_price = pos["entry_price"]
 
+                # B2b: Use DB size as fallback if in-memory size is zero
+                exit_size = pos["size"]
+                if exit_size <= 0:
+                    try:
+                        from sqlalchemy import text as _t
+                        async with self.base_engine.db.get_session() as _s:
+                            _r = await _s.execute(_t(
+                                "SELECT size FROM positions "
+                                "WHERE market_id = :mid AND token_id = :tid "
+                                "  AND COALESCE(source_bot, bot_id) = 'MirrorBot' "
+                                "  AND status = 'open'"
+                            ), {"mid": market_id, "tid": token_id})
+                            _row = _r.fetchone()
+                            if _row and _row.size:
+                                exit_size = float(_row.size)
+                                logger.info("mirror_exit_size_from_db", market=market_id[:20], size=exit_size)
+                    except Exception:
+                        pass
+                if exit_size <= 0:
+                    logger.warning("mirror_exit_skip_zero_size", market=market_id[:20])
+                    continue
+
                 order = await self.place_order(
                     market_id=market_id,
                     token_id=token_id,
                     side=exit_side,
-                    size=pos["size"],
+                    size=exit_size,
                     price=exit_price,
                     confidence=0.80,
                 )
@@ -1229,6 +1287,21 @@ class MirrorBot(BaseBot):
         _is_sell = str(side).upper() == "SELL"
         if not _is_sell and not self._can_open_position(price, category=category):
             return False
+
+        # Opposing-side dedup: reject BUY if we already hold the opposite side on this market.
+        # Different elite traders can take YES vs NO on the same market — opening both
+        # creates a hedged position that bleeds fees with zero edge.
+        if not _is_sell:
+            _side_upper = str(side).upper()
+            _opposite = "NO" if _side_upper == "YES" else "YES"
+            _market_prefix = f"{market_id}:"
+            for _pk, _pv in self._open_positions.items():
+                if _pk.startswith(_market_prefix) and str(_pv.get("side", "")).upper() == _opposite:
+                    logger.info(
+                        "mirror_opposing_side_blocked market=%s side=%s existing=%s",
+                        str(market_id)[:16], side, _opposite,
+                    )
+                    return False
         if _is_sell:
             pos_key = f"{market_id}:{token_id}"
             if pos_key not in self._open_positions:

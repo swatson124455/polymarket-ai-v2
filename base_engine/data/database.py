@@ -4903,10 +4903,38 @@ class Database:
                     )
                 )
                 repaired = result.rowcount
+                # Also backfill trade_events ENTRY records for orphans.
+                # trade_events is the P&L authority — without an ENTRY event,
+                # resolution backfill can't compute realized P&L.
+                te_result = await session.execute(
+                    _sa_text(
+                        "INSERT INTO trade_events "
+                        "  (event_type, execution_mode, event_time, bot_name, market_id, "
+                        "   token_id, side, size, price, idempotency_key) "
+                        "SELECT "
+                        "  'ENTRY', 'paper', COALESCE(p.opened_at, NOW()), "
+                        "  COALESCE(p.source_bot, p.bot_id), p.market_id, p.token_id, "
+                        "  COALESCE(p.side, 'YES'), p.size, "
+                        "  COALESCE(p.entry_price, p.current_price, 0.50), "
+                        "  'repair-entry-' || p.id::text "
+                        "FROM positions p "
+                        "WHERE p.status = 'open' "
+                        "  AND NOT EXISTS ("
+                        "    SELECT 1 FROM trade_events te "
+                        "    WHERE te.bot_name = COALESCE(p.source_bot, p.bot_id) "
+                        "      AND te.market_id = p.market_id "
+                        "      AND te.event_type = 'ENTRY'"
+                        "  )"
+                    )
+                )
+                te_repaired = te_result.rowcount
                 await session.commit()
-                if repaired > 0:
-                    logger.warning("repair_orphaned_positions: backfilled %d paper_trades", repaired)
-                return repaired
+                if repaired > 0 or te_repaired > 0:
+                    logger.warning(
+                        "repair_orphaned_positions: backfilled %d paper_trades, %d trade_events",
+                        repaired, te_repaired,
+                    )
+                return repaired + te_repaired
         except Exception as e:
             logger.warning("repair_orphaned_positions failed: %s", e)
             return -1

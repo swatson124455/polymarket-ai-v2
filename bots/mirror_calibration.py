@@ -117,11 +117,17 @@ class MirrorCalibrationStack:
 
             self._conformal_residuals = sorted(residuals)
             self._conformal_fitted = True
+            _alpha = getattr(settings, "MIRROR_CONFORMAL_ALPHA", 0.50)
+            _q_idx = int(np.ceil((1 - _alpha) * (len(residuals) + 1))) - 1
+            _q_idx = min(_q_idx, len(residuals) - 1)
+            _q_at_alpha = self._conformal_residuals[_q_idx]
             logger.info(
                 "mirror_conformal_fitted",
                 n_residuals=len(residuals),
                 median_residual=round(float(np.median(residuals)), 3),
                 p90_residual=round(float(np.percentile(residuals, 90)), 3),
+                alpha=_alpha,
+                q_at_alpha=round(float(_q_at_alpha), 3),
             )
             return True
 
@@ -152,7 +158,7 @@ class MirrorCalibrationStack:
         return float(np.clip(conf, 0.01, 0.99))
 
     def get_conformal_interval(
-        self, confidence: float, alpha: float = 0.10
+        self, confidence: float, alpha: Optional[float] = None
     ) -> Optional[Tuple[float, float]]:
         """
         Compute conformal prediction interval at (1-alpha) coverage.
@@ -162,6 +168,9 @@ class MirrorCalibrationStack:
         """
         if not self._conformal_fitted or not getattr(settings, "MIRROR_USE_CONFORMAL", False):
             return None
+
+        if alpha is None:
+            alpha = getattr(settings, "MIRROR_CONFORMAL_ALPHA", 0.50)
 
         n = len(self._conformal_residuals)
         if n < 10:
