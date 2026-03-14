@@ -110,6 +110,19 @@ class IngestionScheduler:
                 self.initial_delay_seconds,
             )
             await asyncio.sleep(self.initial_delay_seconds)
+        # Clear any orphaned sync_log entries from a previous process that died mid-run.
+        # Without this, restarts within SYNC_LOG_STALE_HOURS block ingestion permanently.
+        try:
+            db = getattr(self.data_ingestion, "db", None)
+            if db and getattr(db, "session_factory", None):
+                cleared = await db.mark_stale_sync_logs_failed(
+                    component="data_ingestion", sync_type="full",
+                    older_than_hours=0.0,
+                )
+                if cleared:
+                    logger.info("IngestionScheduler: cleared %s orphaned sync_log entries on startup", cleared)
+        except Exception as e:
+            logger.warning("IngestionScheduler: startup sync_log cleanup failed (non-fatal): %s", e)
         while self.running:
             try:
                 await self._run_ingestion()
@@ -333,6 +346,17 @@ class IngestionScheduler:
                     timeout_s=_INGESTION_TIMEOUT_SECONDS,
                 )
                 res = {"success": False, "error": f"ingest_everything timeout after {_INGESTION_TIMEOUT_SECONDS}s", "phase1_count": 0}
+                # Clean up orphaned sync_log entry left by cancelled ingest_everything()
+                try:
+                    db = getattr(self.data_ingestion, "db", None)
+                    if db:
+                        await db.mark_stale_sync_logs_failed(
+                            component="data_ingestion", sync_type="full",
+                            older_than_hours=0.0,  # Force-clear ALL running entries
+                        )
+                        logger.info("IngestionScheduler: cleaned up stale sync_log after timeout")
+                except Exception as _cleanup_err:
+                    logger.warning("IngestionScheduler: sync_log cleanup failed: %s", _cleanup_err)
             self._last_full_run = now
             if run_weekly_full:
                 self._last_weekly_full_run = now
