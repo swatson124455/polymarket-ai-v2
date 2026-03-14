@@ -292,6 +292,17 @@ class EsportsLiveBot(BaseBot):
                 events_detected=events_detected,
                 active_games=len(self._game_monitor.active_games) if self._game_monitor else 0,
             )
+        elif processed == 0:
+            # Heartbeat: log monitor health when idle (rate-limited to once per 60s)
+            _now = _time.monotonic()
+            if _now - getattr(self, "_last_idle_log", 0.0) > 60.0:
+                self._last_idle_log = _now
+                logger.info(
+                    "EsportsLiveBot: idle (empty queue)",
+                    monitor_active=bool(self._game_monitor and self._game_monitor._running),
+                    active_games=len(self._game_monitor.active_games) if self._game_monitor else 0,
+                    monitor_failures=getattr(self._game_monitor, "_consecutive_failures", -1) if self._game_monitor else -1,
+                )
 
     async def analyze_opportunity(self, market_data: Dict) -> Optional[Dict]:
         """Required by BaseBot ABC. EsportsLiveBot is event-driven."""

@@ -747,6 +747,7 @@ class EsportsBot(BaseBot):
                      "exposure_cap": 0, "observation": 0, "no_prediction": 0,
                      "low_edge": 0, "edge_cap": 0, "low_confidence": 0,
                      "low_confluence": 0, "passed": 0}
+        self._exposure_cap_logged: set = set()  # per-scan: games already logged for cap hit
         og = getattr(self.base_engine, "order_gateway", None)
 
         # Pre-compute per-game counts (sync, before parallel analysis)
@@ -1145,6 +1146,13 @@ class EsportsBot(BaseBot):
         max_game = float(getattr(settings, "ESPORTS_MAX_GAME_EXPOSURE", 300.0))
         if self._game_exposure.get(game, 0.0) >= max_game:
             if _wf: _wf["exposure_cap"] += 1
+            _ecl = getattr(self, "_exposure_cap_logged", None)
+            if _ecl is not None and game not in _ecl:
+                _ecl.add(game)
+                logger.info("esportsbot_exposure_cap_hit",
+                            game=game,
+                            exposure=round(self._game_exposure.get(game, 0.0), 2),
+                            cap=max_game)
             return None
 
         # Check observation mode for this game
@@ -1907,7 +1915,11 @@ class EsportsBot(BaseBot):
         q = question.lower()
         if any(kw in q for kw in ("map ", "game 1", "game 2", "game 3", "game 4", "game 5")):
             return "map_winner"
-        if any(kw in q for kw in ("tournament", "championship", "champion", "split winner", "season")):
+        if any(kw in q for kw in (
+            "tournament", "championship", "champion", "split winner", "season",
+            "win msi", "win worlds", "msi 20", "worlds 20",
+            "league winner", "win lpl", "win lck", "win lec", "win lcs", "win vct",
+        )):
             return "tournament_winner"
         if any(kw in q for kw in ("total maps", "over", "under", "maps played")):
             return "total_maps"
@@ -3084,14 +3096,15 @@ class EsportsBot(BaseBot):
             r"\s*-\s+(?:esl |blast |pgl |iem |dreamhack|faceit|weplay|rievent"
             r"|major|champions|masters|challengers|lck|lpl|lec|lcs|vct|worlds"
             r"|msi |msc |lcl|cblol|ljl|pcs|spring|summer|winter|fall|split"
-            r"|playoffs|qualifier|group|stage|round|final).*$"
+            r"|playoffs|qualifier|group|stage|round|final"
+            r"|aorus |emea |nacl |lta |game changers|winner).*$"
         )
         for name_ref in ("name_a", "name_b"):
             n = name_a if name_ref == "name_a" else name_b
             n = _re.sub(_suffix_re, "", n).strip()
             n = _re.sub(_tourney_re, "", n, flags=_re.IGNORECASE).strip()
-            # Strip trailing " map N", " game N" (e.g. "T1 map 3")
-            n = _re.sub(r"\s+(?:map|game)\s+\d+$", "", n, flags=_re.IGNORECASE).strip()
+            # Strip trailing " map N", " game N", " game N winner" (e.g. "T1 map 3")
+            n = _re.sub(r"\s+(?:map|game)\s+\d+(?:\s+winner)?$", "", n, flags=_re.IGNORECASE).strip()
             # Strip region tags in parens: "(KR)", "(CN)", "(EU)"
             n = _re.sub(r"\s*\([A-Z]{2,4}\)\s*$", "", n).strip()
             if name_ref == "name_a":

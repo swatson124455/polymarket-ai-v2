@@ -680,7 +680,7 @@ class EsportsSeriesBot(BaseBot):
 
         try:
             live = await asyncio.wait_for(
-                self._pandascore.get_live_matches(), timeout=10.0
+                self._pandascore.get_live_matches(), timeout=30.0
             )
             new_series: Dict[str, Dict] = {}
             for match in (live or []):
@@ -738,7 +738,7 @@ class EsportsSeriesBot(BaseBot):
 
             self._active_series = new_series
         except (asyncio.TimeoutError, Exception) as exc:
-            logger.debug("EsportsSeriesBot: refresh failed", error=str(exc))
+            logger.info("EsportsSeriesBot: refresh failed", error=str(exc))
 
     async def _execute_series_trade(self, opp: Dict) -> None:
         """Execute series trade using own bankroll manager.

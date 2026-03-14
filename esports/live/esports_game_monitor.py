@@ -147,7 +147,7 @@ class EsportsGameMonitor:
                             self._cs2_prev_scores.pop(state.match_id, None)
                             self._cs2_loss_streaks.pop(state.match_id, None)
             except Exception as exc:
-                logger.debug("EsportsGameMonitor: poll error", game=game, error=str(exc))
+                logger.info("EsportsGameMonitor: poll error", game=game, error=str(exc))
 
         if self._active_games:
             logger.debug(
