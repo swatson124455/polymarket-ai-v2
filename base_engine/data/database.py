@@ -3416,9 +3416,9 @@ class Database:
                     FROM markets m
                     WHERE p.market_id = m.id
                       AND m.resolution IN ('YES', 'NO')
+                      AND p.status = 'open'
                       AND p.size > 0
                       AND p.entry_price IS NOT NULL
-                      AND (p.unrealized_pnl IS NULL OR p.unrealized_pnl = 0.0)
                 """), {"fee_rate": _fee_rate})
                 count = getattr(r, "rowcount", 0) or 0
                 await session.commit()
