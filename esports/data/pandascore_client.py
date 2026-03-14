@@ -122,6 +122,11 @@ class PandaScoreClient:
         self._consecutive_failures = 0
 
     @classmethod
+    def get_remaining_budget(cls) -> int:
+        """Return approximate remaining requests in the current hour window."""
+        return max(0, 950 - cls._shared_req_count)
+
+    @classmethod
     def _get_shared_lock(cls) -> asyncio.Lock:
         """Lazy-init class-level lock (must be called inside asyncio event loop)."""
         if cls._shared_lock is None:

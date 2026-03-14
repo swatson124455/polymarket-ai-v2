@@ -23,28 +23,6 @@ logger = get_logger()
 # Module-level TTL cache for per-team map rates: "team:game" → (rates_dict, mono_ts)
 _map_rates_cache: Dict[str, Tuple[Dict[str, float], float]] = {}
 
-# One-shot flag: ensure tournament_phase column exists in esports_prediction_log
-_phase_column_ensured = False
-
-
-async def _ensure_phase_column(db) -> None:
-    """Add tournament_phase column to esports_prediction_log if not present (one-shot)."""
-    global _phase_column_ensured
-    if _phase_column_ensured:
-        return
-    try:
-        async with db.get_session() as session:
-            await session.execute(
-                _text(
-                    "ALTER TABLE esports_prediction_log "
-                    "ADD COLUMN IF NOT EXISTS tournament_phase VARCHAR(50) DEFAULT ''"
-                )
-            )
-            await session.commit()
-        _phase_column_ensured = True
-    except Exception:
-        _phase_column_ensured = True  # Don't retry endlessly
-
 
 async def upsert_esports_team(db, team_data: Dict[str, Any]) -> None:
     """Insert or update an esports team in esports_teams table."""
@@ -202,7 +180,7 @@ async def log_prediction(
         logger.warning("esports_db: log_prediction skipped — db is None")
         return
     try:
-        await _ensure_phase_column(db)
+
         async with db.get_session() as session:
             await session.execute(
                 _text("""
@@ -324,7 +302,7 @@ async def get_phase_accuracy(
     if db is None:
         return None
     try:
-        await _ensure_phase_column(db)
+
         async with db.get_session() as session:
             result = await session.execute(
                 _text("""
@@ -659,7 +637,7 @@ async def analyze_edge_decay(
 async def compute_pnl_summary(db) -> Optional[Dict[str, Any]]:
     """Compute P&L summary for all Esports bots, grouped by game.
 
-    Joins paper_trades with esports_prediction_log to get per-game breakdown.
+    Joins trade_events with esports_prediction_log to get per-game breakdown.
     Returns dict with per_game stats, total_pnl, total_trades, win_rate.
     """
     if db is None:
@@ -676,15 +654,16 @@ async def compute_pnl_summary(db) -> Optional[Dict[str, Any]]:
                 SELECT
                     COALESCE(gm.game, 'unknown') as game,
                     COUNT(*) as total_trades,
-                    SUM(CASE WHEN pt.realized_pnl > 0 THEN 1 ELSE 0 END) as wins,
-                    COALESCE(SUM(pt.realized_pnl), 0) as total_pnl,
+                    SUM(CASE WHEN te.realized_pnl > 0 THEN 1 ELSE 0 END) as wins,
+                    COALESCE(SUM(te.realized_pnl), 0) as total_pnl,
                     COALESCE(AVG(ABS(gm.edge)), 0) as avg_edge
-                FROM paper_trades pt
-                LEFT JOIN game_map gm ON pt.market_id = gm.market_id
-                    AND UPPER(gm.side) = UPPER(pt.side)
-                WHERE pt.bot_name LIKE 'Esports%'
-                  AND pt.realized_pnl IS NOT NULL
-                  AND pt.side IN ('YES', 'NO')
+                FROM trade_events te
+                LEFT JOIN game_map gm ON te.market_id = gm.market_id
+                    AND UPPER(gm.side) = UPPER(te.side)
+                WHERE te.bot_name LIKE 'Esports%'
+                  AND te.event_type IN ('EXIT', 'RESOLUTION')
+                  AND te.realized_pnl IS NOT NULL
+                  AND te.side IN ('YES', 'NO')
                 GROUP BY COALESCE(gm.game, 'unknown')
                 """)
             )

@@ -351,8 +351,8 @@ class HorizonBiasCalibrator:
         self._global_b: float = 1.0
         self._fitted = False
 
-    async def fit_from_paper_trades(self, n_days: int = 180) -> bool:
-        """Fit b parameters from resolved paper_trades."""
+    async def fit_from_trade_events(self, n_days: int = 180) -> bool:
+        """Fit b parameters from trade_events (ENTRY + RESOLUTION join)."""
         if not self.db or not getattr(self.db, "session_factory", None):
             return False
 
@@ -360,18 +360,31 @@ class HorizonBiasCalibrator:
             from sqlalchemy import text
             async with self.db.get_session() as session:
                 r = await session.execute(text(
-                    "SELECT pt.bot_name,"
+                    "WITH entries AS ("
+                    "  SELECT te.market_id, te.bot_name, te.side,"
+                    "    te.price AS entry_price,"
+                    "    te.predicted_probability AS predicted_prob,"
+                    "    te.event_time AS created_at"
+                    "  FROM trade_events te"
+                    "  WHERE te.event_type = 'ENTRY'"
+                    "    AND te.side IN ('YES', 'NO')"
+                    "    AND te.event_time > NOW() - INTERVAL '1 day' * :interval_days"
+                    "), resolutions AS ("
+                    "  SELECT te.market_id, te.bot_name, te.side, te.realized_pnl"
+                    "  FROM trade_events te"
+                    "  WHERE te.event_type = 'RESOLUTION'"
+                    "    AND te.realized_pnl IS NOT NULL"
+                    ")"
+                    " SELECT e.bot_name,"
                     " LOWER(COALESCE(m.market_category, 'unknown')) AS domain,"
-                    " pt.predicted_prob, pt.entry_price, pt.realized_pnl,"
-                    " EXTRACT(EPOCH FROM (m.end_date_iso - pt.created_at)) / 86400.0 AS ttr_days"
-                    " FROM paper_trades pt"
-                    " JOIN markets m ON pt.market_id = m.id"
-                    " WHERE pt.realized_pnl IS NOT NULL"
-                    " AND pt.side IN ('YES', 'NO')"
-                    " AND LOWER(pt.side) != 'sell'"
-                    " AND pt.created_at > NOW() - INTERVAL '1 day' * :interval_days"
-                    " AND m.end_date_iso IS NOT NULL"
-                    " ORDER BY pt.created_at DESC LIMIT 10000"
+                    " e.predicted_prob, e.entry_price, r.realized_pnl,"
+                    " EXTRACT(EPOCH FROM (m.end_date_iso - e.created_at)) / 86400.0 AS ttr_days"
+                    " FROM entries e"
+                    " JOIN resolutions r ON e.market_id = r.market_id"
+                    "   AND e.bot_name = r.bot_name AND e.side = r.side"
+                    " JOIN markets m ON e.market_id = m.id"
+                    " WHERE m.end_date_iso IS NOT NULL"
+                    " ORDER BY e.created_at DESC LIMIT 10000"
                 ), {"interval_days": int(n_days)})
                 rows = r.fetchall()
 
@@ -445,6 +458,9 @@ class HorizonBiasCalibrator:
         except Exception as e:
             logger.debug("HorizonBias fit failed: %s", e)
             return False
+
+    # Backward-compat alias (callers may still reference the old name)
+    fit_from_paper_trades = fit_from_trade_events
 
     def calibrate(self, raw_prob: float, category: str = "", ttr_days: Optional[float] = None) -> float:
         """Apply Le (2026) power-law recalibration."""

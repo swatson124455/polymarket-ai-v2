@@ -225,6 +225,18 @@ class EsportsLiveBot(BaseBot):
         max_per_scan = int(getattr(settings, "ESPORTS_LIVE_MAX_EVENTS_PER_SCAN", 50))
         max_age = float(getattr(settings, "ESPORTS_LIVE_EVENT_MAX_AGE_SECONDS", 60.0))
 
+        # E4: Drain canceled-match queue and log (positions handled by backfill)
+        if self._game_monitor and hasattr(self._game_monitor, '_canceled_matches') and isinstance(self._game_monitor._canceled_matches, asyncio.Queue):
+            while True:
+                try:
+                    canceled_mid = self._game_monitor._canceled_matches.get_nowait()
+                    logger.info(
+                        "EsportsLiveBot: match canceled",
+                        match_id=canceled_mid,
+                    )
+                except asyncio.QueueEmpty:
+                    break
+
         # Prune expired cooldowns
         if self._live_trigger:
             self._live_trigger.prune_cooldowns()
@@ -239,6 +251,17 @@ class EsportsLiveBot(BaseBot):
             # Skip stale events — game state has changed since queuing
             age = _time.monotonic() - getattr(game_state, "last_updated", _time.monotonic())
             if age > max_age:
+                skipped_stale += 1
+                processed += 1
+                continue
+
+            # E3: Skip matches with no score update for ESPORTS_STALE_MATCH_SECONDS
+            if self._game_monitor and self._game_monitor.is_stale(game_state.match_id):
+                logger.info(
+                    "EsportsLiveBot: stale match — skipping",
+                    match_id=game_state.match_id,
+                    game=game_state.game,
+                )
                 skipped_stale += 1
                 processed += 1
                 continue

@@ -489,8 +489,8 @@ class EsportsDataCollector:
                     return  # Can't determine winner
 
             tracker.process_match(team_a_id, team_b_id, winner=winner)
-        except Exception:
-            pass  # Glicko-2 update is best-effort
+        except Exception as e:
+            logger.warning("glicko2_update_failed", error=str(e))
 
     # -- DB persistence ------------------------------------------------------
 

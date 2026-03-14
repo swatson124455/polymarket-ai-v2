@@ -253,7 +253,65 @@ class PatchDriftDetector:
             except Exception as exc:
                 logger.debug("PatchDriftDetector: CS2 patch check failed", error=str(exc))
 
+        elif game == "dota2":
+            try:
+                version = await self._fetch_dota2_patch_version()
+                if version and version != self._known_patches.get(game):
+                    old = self._known_patches.get(game)
+                    self._known_patches[game] = version
+                    if old is not None:
+                        self._patch_timestamps[game] = _dt.datetime.now(_dt.timezone.utc)
+                        return version
+            except Exception as exc:
+                logger.debug("PatchDriftDetector: Dota2 patch check failed", error=str(exc))
+
+        elif game == "valorant":
+            try:
+                version = await self._fetch_valorant_patch_version()
+                if version and version != self._known_patches.get(game):
+                    old = self._known_patches.get(game)
+                    self._known_patches[game] = version
+                    if old is not None:
+                        self._patch_timestamps[game] = _dt.datetime.now(_dt.timezone.utc)
+                        return version
+            except Exception as exc:
+                logger.debug("PatchDriftDetector: Valorant patch check failed", error=str(exc))
+
         return None
+
+    async def _fetch_dota2_patch_version(self) -> Optional[str]:
+        """Fetch current Dota2 patch version from Steam News API."""
+        import httpx
+        url = (
+            "https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/"
+            "?appid=570&count=5&feeds=steam_community_announcements"
+        )
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+        items = data.get("appnews", {}).get("newsitems", [])
+        for item in items:
+            title = str(item.get("title", "")).lower()
+            # Dota2 patch notes typically have "gameplay update" or version in title
+            if "gameplay update" in title or "patch" in title or "update" in title:
+                # Use the gid (unique news ID) as version identifier
+                gid = str(item.get("gid", ""))
+                if gid:
+                    return gid
+        return None
+
+    async def _fetch_valorant_patch_version(self) -> Optional[str]:
+        """Fetch current Valorant patch version from valorant-api.com."""
+        import httpx
+        url = "https://valorant-api.com/v1/version"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+        version_data = data.get("data", {})
+        version = str(version_data.get("riotClientVersion", ""))
+        return version if version else None
 
     def _check_calibration(self, game: str) -> Optional[float]:
         """

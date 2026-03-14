@@ -86,6 +86,11 @@ class EsportsGameMonitor:
         # CS2 loss streak tracking between polls
         self._cs2_prev_scores: Dict[str, tuple] = {}   # match_id → (score_a, score_b)
         self._cs2_loss_streaks: Dict[str, tuple] = {}   # match_id → (streak_a, streak_b)
+        # E3: Stale match detection — track last score change per match
+        self._last_score_update: Dict[str, float] = {}  # match_id → monotonic timestamp
+        self._prev_scores: Dict[str, tuple] = {}         # match_id → (maps_a, maps_b)
+        # E4: Cancel queue — match_ids of canceled matches for position exit
+        self._canceled_matches: asyncio.Queue = asyncio.Queue(maxsize=100)
 
     @property
     def active_games(self) -> Dict[str, EsportsGameState]:
@@ -127,25 +132,67 @@ class EsportsGameMonitor:
 
     async def _poll_live_matches(self) -> None:
         """Poll PandaScore for live matches across all games."""
-        for game in ("lol", "cs2", "dota2", "valorant"):
+        # E5: Adaptive polling — reduce frequency when API budget is low
+        try:
+            from esports.data.pandascore_client import PandaScoreClient
+            remaining = PandaScoreClient.get_remaining_budget()
+        except Exception:
+            remaining = 999  # fail-open
+
+        if remaining < 100:
+            poll_sleep = 60
+        elif remaining < 200:
+            poll_sleep = 30
+        else:
+            poll_sleep = _POLL_INTERVAL
+
+        # When budget is tight, only poll games with active matches
+        games_to_poll = ("lol", "cs2", "dota2", "valorant")
+        if remaining < 200 and self._active_games:
+            active_game_titles = {s.game for s in self._active_games.values()}
+            if active_game_titles:
+                games_to_poll = tuple(active_game_titles)
+
+        _poll_timeout = int(getattr(settings, "ESPORTS_LIVE_POLL_TIMEOUT", 10))
+        for game in games_to_poll:
             try:
-                matches = await self._ps.get_live_matches(game=game)
+                matches = await asyncio.wait_for(
+                    self._ps.get_live_matches(game=game), timeout=_poll_timeout
+                )
                 for match in matches:
                     state = self._parse_match_to_state(match, game)
                     if state and state.status == "running":
-                        self._active_games[state.match_id] = state
+                        # E3: Track score changes for stale detection
+                        mid = state.match_id
+                        cur_score = (state.score_maps_a, state.score_maps_b)
+                        prev_score = self._prev_scores.get(mid)
+                        if prev_score is None or cur_score != prev_score:
+                            self._last_score_update[mid] = time.monotonic()
+                        self._prev_scores[mid] = cur_score
+
+                        self._active_games[mid] = state
                         try:
                             self._queue.put_nowait(state)
                         except asyncio.QueueFull:
                             logger.debug(
                                 "EsportsGameMonitor: queue full — dropping",
-                                match_id=state.match_id,
+                                match_id=mid,
                             )
                     elif state and state.match_id in self._active_games:
                         if state.status in ("finished", "canceled"):
+                            # E4: Push canceled matches for position exit
+                            if state.status == "canceled":
+                                try:
+                                    self._canceled_matches.put_nowait(state.match_id)
+                                except asyncio.QueueFull:
+                                    pass
                             del self._active_games[state.match_id]
                             self._cs2_prev_scores.pop(state.match_id, None)
                             self._cs2_loss_streaks.pop(state.match_id, None)
+                            self._last_score_update.pop(state.match_id, None)
+                            self._prev_scores.pop(state.match_id, None)
+            except asyncio.TimeoutError:
+                logger.info("EsportsGameMonitor: poll timeout", game=game, timeout_s=_poll_timeout)
             except Exception as exc:
                 logger.info("EsportsGameMonitor: poll error", game=game, error=str(exc))
 
@@ -156,7 +203,7 @@ class EsportsGameMonitor:
                 match_ids=list(self._active_games.keys())[:10],
             )
 
-        await asyncio.sleep(_POLL_INTERVAL)
+        await asyncio.sleep(poll_sleep)
 
     def _parse_match_to_state(self, match, game: str) -> Optional[EsportsGameState]:
         """Convert PandaScore EsportsMatch to EsportsGameState."""
@@ -314,6 +361,15 @@ class EsportsGameMonitor:
         wr_a = self._team_strength_cache.get(f"{game}:{team_a_id}", 0.5)
         wr_b = self._team_strength_cache.get(f"{game}:{team_b_id}", 0.5)
         return wr_a - wr_b
+
+    def is_stale(self, match_id: str, threshold_s: int = 0) -> bool:
+        """Return True if a running match has had no score change for threshold_s seconds."""
+        if threshold_s <= 0:
+            threshold_s = int(getattr(settings, "ESPORTS_STALE_MATCH_SECONDS", 1800))
+        last = self._last_score_update.get(match_id)
+        if last is None:
+            return False  # Unknown match — not stale
+        return (time.monotonic() - last) > threshold_s
 
     def set_glicko2_tracker(self, game: str, tracker) -> None:
         """Inject a Glicko2Tracker for live inference (called by bot after training)."""

@@ -369,6 +369,7 @@ class TestScanAndTrade:
         bot._event_detector.detect = MagicMock(return_value=[])
         bot._game_monitor = MagicMock()
         bot._game_monitor.active_games = {}
+        bot._game_monitor.is_stale = MagicMock(return_value=False)
 
         # Put 3 game states in queue
         for i in range(3):
@@ -390,6 +391,7 @@ class TestScanAndTrade:
         bot._event_detector.detect = MagicMock(return_value=[])
         bot._game_monitor = MagicMock()
         bot._game_monitor.active_games = {}
+        bot._game_monitor.is_stale = MagicMock(return_value=False)
 
         # Put 60 game states in queue (default max=50)
         for i in range(60):
@@ -413,6 +415,7 @@ class TestScanAndTrade:
         bot._live_trigger.process_event = AsyncMock(return_value=None)
         bot._game_monitor = MagicMock()
         bot._game_monitor.active_games = {}
+        bot._game_monitor.is_stale = MagicMock(return_value=False)
 
         game_state = _make_game_state()
         live_event = _make_live_event()
@@ -434,6 +437,7 @@ class TestScanAndTrade:
         bot._live_trigger.process_event = AsyncMock(return_value=None)
         bot._game_monitor = MagicMock()
         bot._game_monitor.active_games = {}
+        bot._game_monitor.is_stale = MagicMock(return_value=False)
 
         event_1 = _make_live_event(event_type="economy_break")
         event_2 = _make_live_event(event_type="round_streak")
@@ -455,6 +459,7 @@ class TestScanAndTrade:
         bot._live_trigger.process_event = AsyncMock(return_value={"trade": "placed"})
         bot._game_monitor = MagicMock()
         bot._game_monitor.active_games = {}
+        bot._game_monitor.is_stale = MagicMock(return_value=False)
 
         bot._event_detector = MagicMock()
         bot._event_detector.detect = MagicMock(return_value=[_make_live_event()])
@@ -473,6 +478,7 @@ class TestScanAndTrade:
         bot._live_trigger.process_event = AsyncMock(side_effect=asyncio.TimeoutError)
         bot._game_monitor = MagicMock()
         bot._game_monitor.active_games = {}
+        bot._game_monitor.is_stale = MagicMock(return_value=False)
 
         bot._event_detector = MagicMock()
         bot._event_detector.detect = MagicMock(return_value=[_make_live_event()])
@@ -494,6 +500,7 @@ class TestScanAndTrade:
         )
         bot._game_monitor = MagicMock()
         bot._game_monitor.active_games = {}
+        bot._game_monitor.is_stale = MagicMock(return_value=False)
 
         bot._event_detector = MagicMock()
         bot._event_detector.detect = MagicMock(return_value=[_make_live_event()])
@@ -523,6 +530,7 @@ class TestScanAndTrade:
         bot._live_trigger.process_event = flaky_process_event
         bot._game_monitor = MagicMock()
         bot._game_monitor.active_games = {}
+        bot._game_monitor.is_stale = MagicMock(return_value=False)
 
         event_1 = _make_live_event(event_type="economy_break")
         event_2 = _make_live_event(event_type="round_streak")
@@ -544,6 +552,7 @@ class TestScanAndTrade:
         bot._live_trigger.process_event = AsyncMock(return_value={"trade": "done"})
         bot._game_monitor = MagicMock()
         bot._game_monitor.active_games = {}
+        bot._game_monitor.is_stale = MagicMock(return_value=False)
 
         # 2 game states, each producing 1 event, all trades succeed
         bot._event_detector = MagicMock()
@@ -566,6 +575,7 @@ class TestScanAndTrade:
         bot._event_detector = None
         bot._game_monitor = MagicMock()
         bot._game_monitor.active_games = {}
+        bot._game_monitor.is_stale = MagicMock(return_value=False)
 
         await bot._game_update_queue.put(_make_game_state())
         await bot.scan_and_trade()
@@ -580,6 +590,7 @@ class TestScanAndTrade:
         bot._live_trigger = None
         bot._game_monitor = MagicMock()
         bot._game_monitor.active_games = {}
+        bot._game_monitor.is_stale = MagicMock(return_value=False)
 
         bot._event_detector = MagicMock()
         bot._event_detector.detect = MagicMock(return_value=[_make_live_event()])
@@ -600,6 +611,7 @@ class TestScanAndTrade:
         bot._event_detector.detect = MagicMock(return_value=[])
         bot._game_monitor = MagicMock()
         bot._game_monitor.active_games = {}
+        bot._game_monitor.is_stale = MagicMock(return_value=False)
         # Should not raise
         await bot.scan_and_trade()
 

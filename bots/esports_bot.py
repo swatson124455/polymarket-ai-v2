@@ -1070,7 +1070,7 @@ class EsportsBot(BaseBot):
                              current_price=round(current_price, 4))
 
     async def _backfill_esports_outcomes(self, db) -> None:
-        """Backfill actual_outcome in esports_prediction_log from settled paper_trades.
+        """Backfill actual_outcome in esports_prediction_log from trade_events RESOLUTION.
 
         Runs every 10 scans. Idempotent — resolve_predictions() only updates
         rows where actual_outcome IS NULL. YES win → outcome=1, NO win → outcome=0.
@@ -1080,13 +1080,14 @@ class EsportsBot(BaseBot):
         async with db.get_session() as _sess:
             result = await _sess.execute(
                 _sa_text("""
-                    SELECT DISTINCT pt.market_id, pt.side,
-                        CASE WHEN pt.realized_pnl > 0 THEN 1 ELSE 0 END AS won
-                    FROM paper_trades pt
-                    WHERE pt.bot_name IN ('EsportsBot', 'EsportsSeriesBot', 'EsportsLiveBot')
-                      AND pt.realized_pnl IS NOT NULL
-                      AND pt.side IN ('YES', 'NO')
-                      AND pt.created_at > NOW() - INTERVAL '7 days'
+                    SELECT DISTINCT te.market_id, te.side,
+                        CASE WHEN te.realized_pnl > 0 THEN 1 ELSE 0 END AS won
+                    FROM trade_events te
+                    WHERE te.bot_name IN ('EsportsBot', 'EsportsSeriesBot', 'EsportsLiveBot')
+                      AND te.event_type = 'RESOLUTION'
+                      AND te.realized_pnl IS NOT NULL
+                      AND te.side IN ('YES', 'NO')
+                      AND te.event_time > NOW() - INTERVAL '7 days'
                 """)
             )
             resolved = result.fetchall()
@@ -2551,13 +2552,18 @@ class EsportsBot(BaseBot):
             except Exception as exc:
                 logger.debug("esportsbot_bias_decomp_fit_failed", error=str(exc))
 
-        # Session 83: Fit HorizonBiasCalibrator from paper_trades
+        # Session 83: Fit HorizonBiasCalibrator from trade_events
         if self._horizon_calibrator is not None:
             try:
-                fitted = await self._horizon_calibrator.fit_from_paper_trades(n_days=180)
+                fitted = await asyncio.wait_for(
+                    self._horizon_calibrator.fit_from_trade_events(n_days=180),
+                    timeout=10.0,
+                )
                 if fitted:
                     logger.info("esportsbot_horizon_bias_fitted",
                                 buckets=len(self._horizon_calibrator._b_params))
+            except asyncio.TimeoutError:
+                logger.warning("esportsbot_horizon_bias_timeout")
             except Exception as exc:
                 logger.debug("esportsbot_horizon_bias_fit_failed", error=str(exc))
 
@@ -2617,6 +2623,35 @@ class EsportsBot(BaseBot):
                         logger.info("pinnacle_clv_backfill_done", rows_updated=updated)
                 except Exception as exc:
                     logger.debug("pinnacle_clv_backfill_failed", error=str(exc))
+
+        # Retention cleanup — once daily
+        await self._cleanup_old_esports_data(db)
+
+    async def _cleanup_old_esports_data(self, db) -> None:
+        """Delete old esports data beyond retention window. Called once daily."""
+        import datetime as _dt_mod
+        today = _dt_mod.date.today()
+        if getattr(self, "_last_cleanup_date", None) == today:
+            return
+        self._last_cleanup_date = today
+        try:
+            from sqlalchemy import text as _sa_text
+            train_days = int(getattr(settings, "ESPORTS_TRAINING_RETENTION_DAYS", 365))
+            pred_days = int(getattr(settings, "ESPORTS_PREDICTION_RETENTION_DAYS", 180))
+            async with db.get_session() as session:
+                r1 = await session.execute(
+                    _sa_text("DELETE FROM esports_training_data WHERE created_at < NOW() - INTERVAL '1 day' * :days"),
+                    {"days": train_days},
+                )
+                r2 = await session.execute(
+                    _sa_text("DELETE FROM esports_prediction_log WHERE created_at < NOW() - INTERVAL '1 day' * :days"),
+                    {"days": pred_days},
+                )
+                await session.commit()
+            logger.info("esports_data_cleanup",
+                        training_deleted=r1.rowcount, prediction_deleted=r2.rowcount)
+        except Exception as exc:
+            logger.warning("esports_data_cleanup_failed", error=str(exc))
 
     async def _backfill_unknown_team(self, name: str, game: str) -> Optional[str]:
         """On-demand PandaScore lookup for a team missing from Glicko-2 DB.
