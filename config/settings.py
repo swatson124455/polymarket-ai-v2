@@ -944,6 +944,9 @@ class Settings(BaseSettings):
     ESPORTS_SERIES_REVERSE_SWEEP_FLOOR: float = float(os.getenv("ESPORTS_SERIES_REVERSE_SWEEP_FLOOR", "0.05"))
     ESPORTS_SERIES_HEDGE_ENABLED: bool = os.getenv("ESPORTS_SERIES_HEDGE_ENABLED", "true").lower() not in ("false", "0", "no")
 
+    # --- Exposure cap (bot-specific, same pattern as WEATHER_MAX_TOTAL_EXPOSURE_USD) ---
+    ESPORTS_MAX_TOTAL_EXPOSURE_USD: float = float(os.getenv("ESPORTS_MAX_TOTAL_EXPOSURE_USD", "15000"))
+
     # --- Bankroll / sizing (separate Kelly pool) ---
     ESPORTS_TOTAL_CAPITAL: float = float(os.getenv("ESPORTS_TOTAL_CAPITAL", "5000.0"))
     ESPORTS_MAX_BET_USD: float = float(os.getenv("ESPORTS_MAX_BET_USD", "100.0"))

@@ -314,6 +314,10 @@ class RiskManager:
             if bot_name == "WeatherBot":
                 total_exposure = og.get_bot_exposure_usd(bot_name)
                 max_total = getattr(settings, "WEATHER_MAX_TOTAL_EXPOSURE_USD", max_total)
+            # EsportsBot variants: same pattern — isolate from MirrorBot/WeatherBot exposure.
+            elif bot_name in ("EsportsBot", "EsportsLiveBot", "EsportsSeriesBot"):
+                total_exposure = og.get_bot_exposure_usd(bot_name)
+                max_total = getattr(settings, "ESPORTS_MAX_TOTAL_EXPOSURE_USD", max_total)
             if total_exposure + position_value > max_total:
                 checks["allowed"] = False
                 checks["reasons"].append(

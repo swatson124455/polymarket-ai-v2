@@ -972,10 +972,35 @@ class EsportsBot(BaseBot):
                 if size <= 0 or not token_id:
                     continue
                 # Exit by SELL order — bypasses risk_manager confidence check (line 448 order_gateway.py)
-                await self.place_order(
+                _exit_result = await self.place_order(
                     market_id=mid, token_id=token_id, side="SELL",
                     size=size, price=current, confidence=0.0,
                 )
+                # If SELL failed (e.g. paper_trading_engine lost position on restart),
+                # close the orphaned DB position directly to stop infinite stop-loss loop.
+                if not _exit_result.get("success"):
+                    logger.warning("esportsbot_exit_sell_failed", market_id=mid,
+                                   error=_exit_result.get("error", "unknown"),
+                                   reason=reason, size=round(size, 2))
+                    _db = getattr(self.base_engine, "db", None)
+                    if _db is not None:
+                        try:
+                            from sqlalchemy import text as _sa_text
+                            async with _db.get_session() as _sess:
+                                await _sess.execute(
+                                    _sa_text("""
+                                        UPDATE positions SET status = 'closed', updated_at = NOW()
+                                        WHERE market_id = :mid
+                                          AND (bot_id = 'EsportsBot' OR source_bot = 'EsportsBot')
+                                          AND status = 'open'
+                                    """),
+                                    {"mid": mid},
+                                )
+                            logger.info("esportsbot_orphan_position_closed", market_id=mid)
+                        except Exception as _close_err:
+                            logger.warning("esportsbot_orphan_close_failed", market_id=mid,
+                                           error=str(_close_err))
+                    continue  # Skip exposure decrement — position was orphaned
                 # B3: Decrement game exposure on exit
                 # Primary: _market_game (populated on entry, survives cache expiry)
                 # Fallback: prediction_cache (1h TTL, may be stale)
