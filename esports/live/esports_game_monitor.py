@@ -162,12 +162,12 @@ class EsportsGameMonitor:
                 for match in matches:
                     state = self._parse_match_to_state(match, game)
                     if state and state.status == "running":
-                        # E3: Track score changes for stale detection
+                        # E3: Track freshness for stale detection
                         mid = state.match_id
                         cur_score = (state.score_maps_a, state.score_maps_b)
-                        prev_score = self._prev_scores.get(mid)
-                        if prev_score is None or cur_score != prev_score:
-                            self._last_score_update[mid] = time.monotonic()
+                        # Always update — match returned as "running" by PandaScore
+                        # means it's live. Stale = PandaScore stopped returning it.
+                        self._last_score_update[mid] = time.monotonic()
                         self._prev_scores[mid] = cur_score
 
                         self._active_games[mid] = state

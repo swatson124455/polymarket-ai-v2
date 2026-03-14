@@ -704,35 +704,33 @@ class EsportsBot(BaseBot):
         except Exception as exc:
             logger.warning("esportsbot_accuracy_check_failed", error=str(exc))
 
-        # Step 1: Patch drift check — skip live trading during observation mode
-        if self._patch_drift:
-            try:
-                drift_status = await asyncio.wait_for(
-                    self._patch_drift.check_all_games(), timeout=10.0
-                )
-                for game, status in drift_status.items():
-                    if status.get("halted"):
-                        logger.warning(
-                            "EsportsBot: game halted (calibration failure)",
-                            game=game,
-                        )
-            except (asyncio.TimeoutError, Exception) as exc:
-                logger.debug("EsportsBot: patch drift check failed", error=str(exc))
+        # Steps 1-3 run in parallel — they are fully independent
+        async def _step_patch_drift():
+            if self._patch_drift:
+                try:
+                    drift_status = await asyncio.wait_for(
+                        self._patch_drift.check_all_games(), timeout=10.0
+                    )
+                    for game, status in drift_status.items():
+                        if status.get("halted"):
+                            logger.warning(
+                                "EsportsBot: game halted (calibration failure)",
+                                game=game,
+                            )
+                except (asyncio.TimeoutError, Exception) as exc:
+                    logger.debug("EsportsBot: patch drift check failed", error=str(exc))
 
-        # Step 2: Refresh live match data from PandaScore
-        await self._refresh_live_matches()
+        async def _step_get_markets():
+            if self._market_service:
+                return await self._market_service.get_tradeable_esports_markets()
+            m = await self.base_engine.get_markets(active=True, limit=200)
+            return self.base_engine.filter_markets_for_trading(m, categories=["esports"])
 
-        # Step 3: Get esports markets via dedicated EsportsMarketService.
-        # Bypasses broken Gamma API path (get_markets returns 0 esports).
-        # Queries DB directly for category='esports', no liquidity filter.
-        if self._market_service:
-            esports_markets = await self._market_service.get_tradeable_esports_markets()
-        else:
-            # Fallback if market service failed to init (shouldn't happen)
-            markets = await self.base_engine.get_markets(active=True, limit=200)
-            esports_markets = self.base_engine.filter_markets_for_trading(
-                markets, categories=["esports"]
-            )
+        _, _, esports_markets = await asyncio.gather(
+            _step_patch_drift(),
+            self._refresh_live_matches(),
+            _step_get_markets(),
+        )
         self._last_scan_markets = len(esports_markets) if esports_markets else 0
         if not esports_markets:
             return
@@ -803,11 +801,16 @@ class EsportsBot(BaseBot):
         )
 
         # P1.2: Backfill actual_outcome for settled esports paper_trades every 10 scans
+        # Non-financial bookkeeping — safe for fire-and-forget (updates prediction_log metadata)
         if self._scan_count % 10 == 0 and db is not None:
-            try:
-                await self._backfill_esports_outcomes(db)
-            except Exception as _exc:
-                logger.debug("esportsbot_outcome_backfill_failed", error=str(_exc))
+            asyncio.create_task(self._safe_backfill_outcomes(db))
+
+    async def _safe_backfill_outcomes(self, db) -> None:
+        """Background outcome backfill — non-blocking."""
+        try:
+            await self._backfill_esports_outcomes(db)
+        except Exception as _exc:
+            logger.debug("esportsbot_outcome_backfill_failed", error=str(_exc))
 
     async def _restore_exposure_from_db(self, db) -> None:
         """Seed _game_exposure from daily_counters on startup.

@@ -316,9 +316,9 @@ class Settings(BaseSettings):
     MIRROR_MAX_DELAY_MINUTES: int = int(os.getenv("MIRROR_MAX_DELAY_MINUTES", "30"))
     MIRROR_MIN_CONSENSUS: int = int(os.getenv("MIRROR_MIN_CONSENSUS", "2"))  # 3→2: with 500 elites, 3 was impossibly tight
     MIRROR_MIN_CONFIDENCE: float = float(os.getenv("MIRROR_MIN_CONFIDENCE", "0.55"))  # 0.10→0.55: elite must win >55% of trades
-    MIRROR_MAX_PER_MARKET: float = float(os.getenv("MIRROR_MAX_PER_MARKET", "400"))
-    MIRROR_MAX_PER_MARKET_PCT: float = float(os.getenv("MIRROR_MAX_PER_MARKET_PCT", "0.05"))  # M9: 5% of capital per market
-    MIRROR_MAX_CATEGORY_EXPOSURE_PCT: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_PCT", "0.40"))  # M1: 40% of capital per category
+    MIRROR_MAX_PER_MARKET: float = float(os.getenv("MIRROR_MAX_PER_MARKET", "800"))
+    MIRROR_MAX_PER_MARKET_PCT: float = float(os.getenv("MIRROR_MAX_PER_MARKET_PCT", "0.10"))  # M9: 10% of capital per market
+    MIRROR_MAX_CATEGORY_EXPOSURE_PCT: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_PCT", "0.80"))  # M1: 80% of capital per category
     MIRROR_MAX_TRACKED_TRADES: int = int(os.getenv("MIRROR_MAX_TRACKED_TRADES", "10000"))
     MIRROR_EXIT_ENABLED: bool = os.getenv("MIRROR_EXIT_ENABLED", "true").lower() in ("true", "1", "yes")
     MIRROR_MAX_CONCURRENT_POSITIONS: int = int(os.getenv("MIRROR_MAX_CONCURRENT_POSITIONS", "50"))
@@ -342,6 +342,7 @@ class Settings(BaseSettings):
     MIRROR_ADAPTIVE_SAFETY: bool = os.getenv("MIRROR_ADAPTIVE_SAFETY", "false").lower() in ("true", "1", "yes")
     MIRROR_SKIP_LIQUIDITY_RTDS: bool = os.getenv("MIRROR_SKIP_LIQUIDITY_RTDS", "false").lower() in ("true", "1", "yes")
     MIRROR_CONFORMAL_MIN_RESOLVED: int = int(os.getenv("MIRROR_CONFORMAL_MIN_RESOLVED", "50"))
+    MIRROR_CONFORMAL_ALPHA: float = float(os.getenv("MIRROR_CONFORMAL_ALPHA", "0.50"))  # B1: 0.50 = 50% coverage (was 0.10 = 90%)
 
     MIRROR_STOP_LOSS_PCT: float = float(os.getenv("MIRROR_STOP_LOSS_PCT", "0.15"))
     MIRROR_MAX_HOLD_HOURS: float = float(os.getenv("MIRROR_MAX_HOLD_HOURS", "72"))
@@ -641,6 +642,8 @@ class Settings(BaseSettings):
     SCAN_INTERVAL_WEATHER: int = int(os.getenv("SCAN_INTERVAL_WEATHER", "300"))
     WEATHER_MIN_EDGE: float = float(os.getenv("WEATHER_MIN_EDGE", "0.08"))
     WEATHER_INTL_MIN_EDGE: float = float(os.getenv("WEATHER_INTL_MIN_EDGE", "0.12"))  # Floor for intl cities without local hi-res model
+    WEATHER_GROUP_CONCURRENCY: int = int(os.getenv("WEATHER_GROUP_CONCURRENCY", "12"))  # Max concurrent group analyses per scan
+    WEATHER_RATE_LIMIT_PER_MIN: int = int(os.getenv("WEATHER_RATE_LIMIT_PER_MIN", "120"))  # Open-Meteo API rate limit (free tier burst-tolerant to 600/min)
     WEATHER_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_MIN_CONFIDENCE", "0.10"))  # Multi-bucket: 9 outcomes → peak ~35-40%; lowered to 0.10 to not block boundary-risk trades
     WEATHER_MAX_POSITIONS: int = int(os.getenv("WEATHER_MAX_POSITIONS", "500"))  # Multi-bucket: 45 groups × up to 9 buckets = 405 max; raised from 200 (was hitting cap at 201)
     WEATHER_MAX_PER_GROUP_USD: float = float(os.getenv("WEATHER_MAX_PER_GROUP_USD", "1000"))
@@ -1049,7 +1052,7 @@ class Settings(BaseSettings):
     ESPORTS_KELLY_DEGRADE_BRIER: float = float(os.getenv("ESPORTS_KELLY_DEGRADE_BRIER", "0.28"))
 
     # --- Parallel analysis ---
-    ESPORTS_ANALYSIS_CONCURRENCY: int = int(os.getenv("ESPORTS_ANALYSIS_CONCURRENCY", "10"))
+    ESPORTS_ANALYSIS_CONCURRENCY: int = int(os.getenv("ESPORTS_ANALYSIS_CONCURRENCY", "25"))
 
     # --- Conformal prediction (Session 83) ---
     ESPORTS_CONFORMAL_ALPHA: float = float(os.getenv("ESPORTS_CONFORMAL_ALPHA", "0.10"))  # 90% prediction interval
