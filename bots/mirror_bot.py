@@ -49,7 +49,7 @@ class MirrorBot(BaseBot):
 
         # Market metadata cache: market_id -> (category, time_to_res, expiry_monotonic)
         self._market_meta_cache: Dict[str, Tuple[str, str, float]] = {}
-        self._MARKET_META_TTL = 300  # 5 minutes
+        self._MARKET_META_TTL = 900  # 15 minutes (markets don't change category mid-flight)
 
         # Signal enhancement cache: "market_id:side" -> (confidence_multiplier, expiry_monotonic)
         # Avoids calling 3 external services per trade when the same market appears 10-30x per scan.
@@ -1180,6 +1180,14 @@ class MirrorBot(BaseBot):
 
             # Conformal prediction interval for conservative Kelly sizing
             _conformal_interval = self._calibration_stack.get_conformal_interval(confidence)
+            if _conformal_interval:
+                logger.info(
+                    "mirror_conformal_applied",
+                    confidence=round(confidence, 3),
+                    p_low=round(_conformal_interval[0], 3),
+                    p_high=round(_conformal_interval[1], 3),
+                    market_id=market_id,
+                )
 
         # S48 FIX: Use per-bot BotBankrollManager (Session 47) instead of deprecated
         # risk_manager.calculate_position_size() which divides Kelly by KELLY_ACTIVE_BOTS.

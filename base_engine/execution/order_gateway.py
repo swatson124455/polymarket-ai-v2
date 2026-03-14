@@ -505,6 +505,10 @@ class OrderGateway:
             async def _cascade_check():
                 if not _cascade_enabled:
                     return None
+                # Skip cascade API call for RTDS fast-copy trades (saves 50-100ms).
+                if (correlation_id and str(correlation_id).startswith("rtds:")
+                        and getattr(settings, "MIRROR_SKIP_LIQUIDITY_RTDS", False)):
+                    return None
                 return await self.cascade_detector.detect(market_id, window_hours=6)
 
             async def _liquidity_check():

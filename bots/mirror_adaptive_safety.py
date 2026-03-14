@@ -52,11 +52,11 @@ class MirrorAdaptiveSafety:
             async with self._db.get_session() as session:
                 # Last 50 resolved trades
                 rows = await session.execute(text(
-                    "SELECT realized_pnl FROM paper_trades "
+                    "SELECT realized_pnl FROM trade_events "
                     "WHERE bot_name = 'MirrorBot' "
+                    "  AND event_type IN ('EXIT', 'RESOLUTION') "
                     "  AND realized_pnl IS NOT NULL "
-                    "  AND side IN ('YES', 'NO') "
-                    "ORDER BY created_at DESC LIMIT 50"
+                    "ORDER BY event_time DESC LIMIT 50"
                 ))
                 pnls = [float(r[0]) for r in rows.fetchall()]
 

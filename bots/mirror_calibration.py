@@ -81,13 +81,17 @@ class MirrorCalibrationStack:
             from sqlalchemy import text
             async with self._db.get_session() as session:
                 rows = await session.execute(text(
-                    "SELECT confidence, price, realized_pnl "
-                    "FROM paper_trades "
-                    "WHERE bot_name = 'MirrorBot' "
-                    "  AND realized_pnl IS NOT NULL "
-                    "  AND side IN ('YES', 'NO') "
-                    "  AND LOWER(side) != 'sell' "
-                    "ORDER BY created_at DESC LIMIT 2000"
+                    "SELECT e.confidence, e.price, r.realized_pnl "
+                    "FROM trade_events r "
+                    "JOIN trade_events e "
+                    "  ON e.market_id = r.market_id "
+                    "  AND e.bot_name = r.bot_name "
+                    "  AND e.event_type = 'ENTRY' "
+                    "WHERE r.bot_name = 'MirrorBot' "
+                    "  AND r.event_type = 'RESOLUTION' "
+                    "  AND r.realized_pnl IS NOT NULL "
+                    "  AND e.confidence IS NOT NULL "
+                    "ORDER BY r.event_time DESC LIMIT 2000"
                 ))
                 data = rows.fetchall()
 
@@ -101,7 +105,7 @@ class MirrorCalibrationStack:
             # Compute non-conformity scores: |confidence - outcome|
             residuals = []
             for row in data:
-                prob = float(row[1]) if row[1] else float(row[0]) if row[0] else None
+                prob = float(row[0]) if row[0] else None
                 pnl = float(row[2])
                 if prob is None or prob <= 0 or prob >= 1:
                     continue
