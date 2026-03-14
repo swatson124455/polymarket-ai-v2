@@ -393,22 +393,28 @@ async def run_resolution_backfill(
         logger.debug("Paper trades backfill failed (non-fatal): %s", e)
 
     # Phase 4b: Emit RESOLUTION events to trade_events audit trail
+    # Aggregate per (market_id, bot_name, side) to avoid duplicates from multiple paper_trades.
+    # Uses deterministic correlation_id + resolved_at so ON CONFLICT catches re-runs.
     if paper_updated > 0 and hasattr(db, "insert_trade_event"):
         try:
             async with db.get_session() as _te_sess:
                 from sqlalchemy import text as _te_text
                 _resolved = await _te_sess.execute(_te_text(
-                    "SELECT pt.market_id, pt.bot_name, pt.resolution, pt.realized_pnl, pt.side "
+                    "SELECT pt.market_id, pt.bot_name, pt.side, "
+                    "       SUM(pt.realized_pnl) AS total_pnl, "
+                    "       MIN(pt.resolved_at) AS resolved_at "
                     "FROM paper_trades pt "
                     "WHERE pt.resolution IN ('YES', 'NO') "
                     "  AND pt.side IN ('YES', 'NO') "
+                    "  AND pt.resolved_at IS NOT NULL "
                     "  AND NOT EXISTS ("
                     "    SELECT 1 FROM trade_events te "
                     "    WHERE te.market_id = pt.market_id "
                     "      AND te.bot_name = pt.bot_name "
                     "      AND te.event_type = 'RESOLUTION'"
                     "  ) "
-                    "LIMIT 100"
+                    "GROUP BY pt.market_id, pt.bot_name, pt.side "
+                    "LIMIT 500"
                 ))
                 for row in _resolved.fetchall():
                     try:
@@ -416,10 +422,12 @@ async def run_resolution_backfill(
                             event_type="RESOLUTION",
                             bot_name=row[1],
                             market_id=row[0],
-                            side=row[4],       # pt.side (YES/NO position direction)
-                            size=0.0,          # Symbolic — resolution is an event, not a trade
-                            price=0.0,         # No trade price on resolution
+                            side=row[2],
+                            size=0.0,
+                            price=0.0,
                             realized_pnl=float(row[3]) if row[3] is not None else None,
+                            correlation_id=f"resolution:{row[0]}",
+                            event_time=row[4],
                         )
                     except Exception:
                         pass
