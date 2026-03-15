@@ -371,9 +371,9 @@ python scripts/bot_pnl.py WeatherBot 720  # last 30 days
 
 ## KEY CONFIG (live VPS values)
 ```
-WeatherBot:  capital=$5000, kelly=0.25, max_bet=$500, max_daily=$2000, MAX_POSITIONS=500
-MirrorBot:   capital=$3000, kelly=0.30, max_bet=$250, max_daily=$10000
-EsportsBot:  capital=$5000, kelly=0.25, max_bet=$100, max_daily=$500
+WeatherBot:  capital=$20000, kelly=0.25, max_bet=$300, max_daily=$10000, MAX_POSITIONS=500
+MirrorBot:   capital=$20000, kelly=0.30, max_bet=$300, max_daily=$10000
+EsportsBot:  capital=$20000, kelly=0.25, max_bet=$300, max_daily=$10000
 SIMULATION_MODE=true (paper trading)
 RESOLUTION_QUEUE_BATCH_SIZE=100
 RUN_INGESTION_MAX_SECONDS=2400
@@ -467,6 +467,8 @@ KEY="C:/Users/samwa/.ssh/LightsailDefaultKey-eu-west-1.pem" VPS="ubuntu@34.251.2
 ### Session 89 — EsportsBot E2-E5 Features (DEPLOYED)
 - Team name matching, LiveBot retry, SeriesBot Glicko-2 fallback.
 
-### Session 90 (THIS SESSION) — WeatherBot P0-P4 Fixes
+### Session 90 (THIS SESSION) — WeatherBot P0-P4 Fixes (DEPLOYED)
 - Advisory lock shield, master timeout, batch size increase, exception logging.
 - Scope Lock rule established after unauthorized blacklist feature was caught and reverted.
+- All 4 fixes committed (`46f565e`, `a39e0b5`, `6fe26e3`), tested (1676 pass), deployed (`20260314_220707`).
+- Post-deploy: 1 orphaned sync_log cleared, manual backfill resolved 30 markets, scheduler running healthy.
