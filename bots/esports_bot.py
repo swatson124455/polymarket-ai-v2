@@ -154,6 +154,14 @@ class EsportsBot(BaseBot):
         self._series_glicko2_cache: Dict[str, float] = {}
         self._hltv = None
 
+        # Recent form cache: (team_id, game) → (win_rate, mono_timestamp)
+        self._team_form_cache: Dict[tuple, tuple] = {}
+        self._team_form_ttl: float = 1800.0  # 30min TTL
+
+        # Roster change detection: team_id → (roster_hash, change_timestamp)
+        self._roster_cache: Dict[str, tuple] = {}
+        self._roster_change_cache: Dict[str, float] = {}  # team_id → mono_time of change
+
         # Settings
         # "Easy mode": relaxed thresholds until models graduate, then tighten.
         # Graduation = accuracy >= 55% + brier <= 0.24 on holdout.
@@ -1248,6 +1256,19 @@ class EsportsBot(BaseBot):
             _ttr_days = self._compute_ttr_days(market_data)
             model_prob = self._horizon_calibrator.calibrate(model_prob, "esports", _ttr_days)
 
+        # RFLB correction [T1-B]: favorites systematically overbetted.
+        # Nudge model_prob toward 0.50 when market prices a heavy favorite
+        # and model agrees with the favorite. Pre-game only.
+        _rflb_strength = float(getattr(settings, "ESPORTS_RFLB_STRENGTH", 0.03))
+        if _rflb_strength > 0 and price > 0.70 and model_prob > 0.60:
+            _rflb_adj = _rflb_strength * (price - 0.50)
+            model_prob = max(0.05, model_prob - _rflb_adj)
+            logger.debug(
+                "esportsbot_rflb_adjustment", market_id=market_id, game=game,
+                raw_prob=round(_raw_prob, 4), adjusted_prob=round(model_prob, 4),
+                rflb_adj=round(_rflb_adj, 4), market_price=round(price, 4),
+            )
+
         # Validate edge
         # YES side: model thinks YES is more likely than market price
         # NO side: model thinks YES is less likely than market price
@@ -1263,13 +1284,20 @@ class EsportsBot(BaseBot):
         edge_yes = model_prob - price
         edge_no = (1.0 - model_prob) - (1.0 - price)  # simplifies to price - model_prob
 
-        if edge_yes >= self._min_edge:
+        # Market-price fallback trades require higher edge threshold
+        _cached = self._prediction_cache.get(market_id, {})
+        _effective_min_edge = (
+            float(getattr(settings, "ESPORTS_MARKET_FALLBACK_MIN_EDGE", 0.15))
+            if _cached.get("fallback") else self._min_edge
+        )
+
+        if edge_yes >= _effective_min_edge:
             side = "YES"
             trade_token_id = token_id
             trade_price = price
             edge = edge_yes
             confidence = model_prob
-        elif -edge_yes >= self._min_edge and no_token_id:
+        elif -edge_yes >= _effective_min_edge and no_token_id:
             side = "NO"
             trade_token_id = no_token_id
             trade_price = 1.0 - price
@@ -1370,6 +1398,11 @@ class EsportsBot(BaseBot):
                 pass  # Fail open: approve on error
 
         if _wf: _wf["passed"] += 1
+
+        # Cap confidence for fallback (unknown team) markets
+        if _cached.get("fallback"):
+            confidence = min(confidence, 0.55)
+
         return {
             "type": "esports_pregame" if not self._is_live(market_id) else "esports_live",
             "market_id": market_id,
@@ -1511,11 +1544,28 @@ class EsportsBot(BaseBot):
             if glicko2_prob is None:
                 logger.info("esportsbot_glicko2_miss", game=game,
                             market_id=market_id, question=str(market_data.get("question",""))[:80])
+                # Market-price fallback: naive 50/50 for unknown teams.
+                # Edge comes from market mispricing vs neutral prior.
+                # Only trades when market price deviates >15% from even odds.
+                if getattr(settings, "ESPORTS_MARKET_FALLBACK_ENABLED", True):
+                    _fallback_prob = 0.50
+                    logger.info("esportsbot_market_price_fallback", game=game,
+                                market_id=market_id, fallback_prob=_fallback_prob)
+                    self._prediction_cache[market_id] = {
+                        "prob": _fallback_prob, "ts": time.monotonic(), "game": game,
+                        "ml_raw": None, "glicko2_est": None, "fallback": True,
+                    }
+                    return _fallback_prob
             if glicko2_prob is not None:
                 # OpenDota form adjustment for dota2 (small ±3%)
                 if game == "dota2":
                     glicko2_prob = await self._opendota_form_adjustment(
                         market_data, glicko2_prob,
+                    )
+                # PandaScore form adjustment for non-dota2 games [T1-Q]
+                if game != "dota2":
+                    glicko2_prob = await self._pandascore_form_adjustment(
+                        market_data, glicko2_prob, game,
                     )
                 # Aligulac blend for SC2 (50/50 with established Elo)
                 if game == "sc2":
@@ -1580,9 +1630,47 @@ class EsportsBot(BaseBot):
                         )
                         glicko2_prob = max(0.05, min(0.95, glicko2_prob))
 
+                # LAN adjustment [T1-C]: favorites lose edge under LAN pressure
+                if (getattr(settings, "ESPORTS_LAN_ADJUSTMENT_ENABLED", True)
+                        and game in ("cs2", "valorant")):
+                    _is_lan = self._is_lan_event(market_data)
+                    if _is_lan:
+                        if glicko2_prob > 0.55:
+                            glicko2_prob = max(0.05, glicko2_prob - 0.02)
+                        elif glicko2_prob < 0.45:
+                            glicko2_prob = min(0.95, glicko2_prob + 0.01)
+                        logger.debug(
+                            "esportsbot_lan_adjustment", game=game,
+                            market_id=market_id, prob=round(glicko2_prob, 4),
+                        )
+
+                # LoL blue side bonus [T2-E]: +1.9% average advantage
+                if game == "lol":
+                    _blue_bonus = float(getattr(
+                        settings, "ESPORTS_LOL_BLUE_SIDE_BONUS", 0.019,
+                    ))
+                    if _blue_bonus > 0:
+                        # PandaScore: opponents[0] = blue side (team_a)
+                        glicko2_prob = max(0.05, min(0.95,
+                            glicko2_prob + _blue_bonus))
+                        logger.debug(
+                            "esportsbot_blue_side_applied", game=game,
+                            market_id=market_id, bonus=_blue_bonus,
+                            prob=round(glicko2_prob, 4),
+                        )
+
+                # Build event_data for ENTRY trade_event (E1/E7 training data)
+                _event_data = {"game": game, "model_prob": round(glicko2_prob, 4)}
+                _gs = self._build_glicko2_game_state(market_data, game) if game else None
+                if _gs:
+                    for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
+                                "team_a_volatility", "team_b_volatility", "best_of"):
+                        _event_data[_fk] = round(float(_gs.get(_fk, 0.0)), 6)
+
                 self._prediction_cache[market_id] = {
                     "prob": glicko2_prob, "ts": time.monotonic(), "game": game,
                     "ml_raw": xgb_raw, "glicko2_est": glicko2_prob,
+                    "event_data": _event_data,
                 }
                 return glicko2_prob
         except Exception as exc:
@@ -1738,6 +1826,109 @@ class EsportsBot(BaseBot):
                 pass
 
         return static_mult
+
+    async def _get_recent_form(
+        self, team_id: str, game: str,
+    ) -> Optional[float]:
+        """Get multi-window recent form (win rate) for a team via PandaScore.
+
+        Returns weighted win rate (5/10/20 match windows, weights 0.5/0.3/0.2).
+        Cached for 30 minutes per (team_id, game). Returns None if unavailable.
+        """
+        cache_key = (team_id, game)
+        cached = self._team_form_cache.get(cache_key)
+        if cached and (time.monotonic() - cached[1]) < self._team_form_ttl:
+            return cached[0]
+
+        if not self._pandascore:
+            return None
+
+        try:
+            ps_id = int(team_id)
+            matches = await asyncio.wait_for(
+                self._pandascore.get_team_matches(ps_id, game, per_page=20),
+                timeout=5.0,
+            )
+            if not matches or len(matches) < 5:
+                return None
+
+            wins = []
+            for m in matches:
+                if m.team_a_id == ps_id:
+                    wins.append(1 if m.score_a > m.score_b else 0)
+                elif m.team_b_id == ps_id:
+                    wins.append(1 if m.score_b > m.score_a else 0)
+
+            if len(wins) < 5:
+                return None
+
+            w5 = sum(wins[:5]) / 5.0
+            w10 = sum(wins[:min(10, len(wins))]) / min(10, len(wins))
+            w20 = sum(wins) / len(wins)
+            form = 0.5 * w5 + 0.3 * w10 + 0.2 * w20
+
+            self._team_form_cache[cache_key] = (form, time.monotonic())
+            return form
+        except (ValueError, asyncio.TimeoutError):
+            return None
+        except Exception:
+            return None
+
+    async def _pandascore_form_adjustment(
+        self, market_data: Dict, base_prob: float, game: str,
+    ) -> float:
+        """Adjust probability using PandaScore multi-window recent form [T1-Q].
+
+        Applies ±3% adjustment based on form differential between teams.
+        Skips dota2 (uses OpenDota instead). Returns base_prob if unavailable.
+        """
+        if game == "dota2":
+            return base_prob  # dota2 uses OpenDota form
+
+        import re
+
+        question = str(market_data.get("question", "")).lower()
+        vs_match = re.search(r"(.+?)\s+(?:vs\.?|versus|v)\s+(.+?)(?:\?|$)", question)
+        if not vs_match:
+            return base_prob
+
+        name_a = vs_match.group(1).strip().rstrip(":")
+        name_b = vs_match.group(2).strip().rstrip("?").strip()
+        for prefix in ("will ", "can ", "does "):
+            if name_a.startswith(prefix):
+                name_a = name_a[len(prefix):]
+        name_a, name_b = self._clean_team_names(name_a, name_b)
+
+        team_a_id = self._match_team_name(name_a)
+        team_b_id = self._match_team_name(name_b)
+        if not team_a_id or not team_b_id:
+            return base_prob
+
+        try:
+            form_a, form_b = await asyncio.gather(
+                self._get_recent_form(team_a_id, game),
+                self._get_recent_form(team_b_id, game),
+                return_exceptions=True,
+            )
+            if isinstance(form_a, Exception) or isinstance(form_b, Exception):
+                return base_prob
+            if form_a is None or form_b is None:
+                return base_prob
+
+            form_diff = form_a - form_b
+            form_adj = max(-0.03, min(0.03, form_diff * 0.05))
+            adjusted = max(0.05, min(0.95, base_prob + form_adj))
+
+            if abs(form_adj) >= 0.005:
+                logger.debug(
+                    "esportsbot_form_adjustment", game=game,
+                    team_a=name_a, team_b=name_b,
+                    form_a=round(form_a, 3), form_b=round(form_b, 3),
+                    adj=round(form_adj, 4),
+                )
+            return adjusted
+        except Exception:
+            return base_prob
 
     async def _opendota_form_adjustment(
         self, market_data: Dict, base_prob: float,
@@ -2055,6 +2246,10 @@ class EsportsBot(BaseBot):
         Session 83: conformal conservative sizing.
         Series: S-T size override for correlated series bets.
         """
+        # Retrieve event_data from prediction cache for ENTRY persistence
+        _cached_pred = self._prediction_cache.get(opp.get("market_id", ""), {})
+        _event_data = _cached_pred.get("event_data")
+
         # Series S-T allocation override — size already computed by
         # _series_smoczynski_tomkins_allocate(), skip Kelly sizing
         st_override = opp.pop("_st_size_override", None)
@@ -2070,6 +2265,7 @@ class EsportsBot(BaseBot):
                 size=st_override,
                 price=opp["price"],
                 confidence=opp["confidence"],
+                event_data=_event_data,
             )
             if order and order.get("success"):
                 if game:
@@ -2139,6 +2335,28 @@ class EsportsBot(BaseBot):
         _game_mult = self._game_kelly_mult.get(opp.get("game", ""), 1.0)
         _decay_mult = self._get_edge_decay_sizing_mult(opp.get("game", ""))
         size = size * phi_factor * dd_factor * _game_mult * _decay_mult
+
+        # Upset risk scaling [T1-D]: reduce sizing for volatile favorites
+        if getattr(settings, "ESPORTS_UPSET_RISK_ENABLED", True):
+            _cache = self._prediction_cache.get(opp.get("market_id", ""), {})
+            _ed = _cache.get("event_data", {})
+            if confidence > 0.60:
+                # Favored team — check its volatility
+                _vol = _ed.get("team_a_volatility", 1.0) if opp["side"] == "YES" else _ed.get("team_b_volatility", 1.0)
+                if _vol > 1.5:
+                    _upset_factor = max(0.5, 1.0 - (_vol - 1.0) * 0.25)
+                    size *= _upset_factor
+                    logger.debug(
+                        "esportsbot_upset_risk_scaling", market_id=opp.get("market_id"),
+                        volatility=round(_vol, 3), factor=round(_upset_factor, 3),
+                        side=opp["side"],
+                    )
+            elif confidence < 0.55:
+                # Underdog — boost stable underdogs
+                _vol = _ed.get("team_a_volatility", 1.0) if opp["side"] == "YES" else _ed.get("team_b_volatility", 1.0)
+                if _vol < 0.8:
+                    size *= 1.10
+
         if size < 1.0:
             return
 
@@ -2156,6 +2374,7 @@ class EsportsBot(BaseBot):
             size=size,
             price=opp["price"],
             confidence=confidence,
+            event_data=_event_data,
         )
 
         if order and order.get("success"):
@@ -2718,6 +2937,12 @@ class EsportsBot(BaseBot):
                 except Exception as exc:
                     logger.debug("pinnacle_clv_backfill_failed", error=str(exc))
 
+        # Fit TabPFN for sparse games (SC2, RL, CoD, R6)
+        await self._fit_tabpfn_models(db)
+
+        # Fit conformal prediction intervals from resolved trades
+        await self._fit_conformal_predictor(db)
+
         # Retention cleanup — once daily
         await self._cleanup_old_esports_data(db)
 
@@ -2746,6 +2971,119 @@ class EsportsBot(BaseBot):
                         training_deleted=r1.rowcount, prediction_deleted=r2.rowcount)
         except Exception as exc:
             logger.warning("esports_data_cleanup_failed", error=str(exc))
+
+    async def _fit_tabpfn_models(self, db) -> None:
+        """Fit TabPFN classifiers for sparse games using resolved trade data.
+
+        Queries ENTRY event_data (Glicko-2 features) joined with RESOLUTION
+        outcomes. Gracefully degrades when data < 20 or tabpfn not installed.
+        """
+        if self._tabpfn_predictor is None or not self._tabpfn_predictor.is_available:
+            return
+        if not db:
+            return
+
+        try:
+            from sqlalchemy import text as _sa_text
+            import numpy as _np
+
+            _FEATURES = [
+                "team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
+                "team_a_volatility", "team_b_volatility", "best_of",
+            ]
+
+            for game in ("sc2", "rl", "cod", "r6"):
+                async with db.get_session() as session:
+                    rows = await session.execute(_sa_text(
+                        "SELECT e.event_data, r.realized_pnl "
+                        "FROM trade_events r "
+                        "JOIN trade_events e "
+                        "  ON e.market_id = r.market_id "
+                        "  AND e.bot_name = r.bot_name "
+                        "  AND e.event_type = 'ENTRY' "
+                        "WHERE r.bot_name = 'EsportsBot' "
+                        "  AND r.event_type = 'RESOLUTION' "
+                        "  AND r.realized_pnl IS NOT NULL "
+                        "  AND e.event_data IS NOT NULL "
+                        "  AND e.event_data->>'game' = :game "
+                        "ORDER BY r.event_time DESC LIMIT 500"
+                    ), {"game": game})
+                    data = rows.fetchall()
+
+                if len(data) < 20:
+                    continue
+
+                X_list, y_list = [], []
+                for row in data:
+                    ed = row[0] if isinstance(row[0], dict) else {}
+                    pnl = float(row[1])
+                    feats = [float(ed.get(f, 0.0)) for f in _FEATURES]
+                    if all(v == 0.0 for v in feats):
+                        continue
+                    X_list.append(feats)
+                    y_list.append(1 if pnl > 0 else 0)
+
+                if len(X_list) < 20:
+                    continue
+
+                X = _np.array(X_list, dtype=_np.float32)
+                y = _np.array(y_list, dtype=_np.int32)
+                fitted = self._tabpfn_predictor.fit_game(game, X, y)
+                if fitted:
+                    logger.info("esportsbot_tabpfn_fitted", game=game, n_samples=len(X))
+        except Exception as exc:
+            logger.debug("esportsbot_tabpfn_fit_failed", error=str(exc))
+
+    async def _fit_conformal_predictor(self, db) -> None:
+        """Fit conformal prediction intervals from resolved EsportsBot trades.
+
+        Uses (predicted_prob, outcome) pairs from esports_prediction_log + trade_events.
+        Logit-space residual approach (matches MirrorBot pattern).
+        """
+        if self._conformal_predictor is None:
+            return
+        if not getattr(settings, "ESPORTS_USE_CONFORMAL", False):
+            return
+        if not db:
+            return
+
+        _min_resolved = int(getattr(settings, "ESPORTS_CONFORMAL_MIN_RESOLVED", 50))
+
+        try:
+            from sqlalchemy import text as _sa_text
+            import numpy as _np
+
+            async with db.get_session() as session:
+                rows = await session.execute(_sa_text(
+                    "SELECT DISTINCT ON (r.market_id) p.predicted_prob, r.realized_pnl "
+                    "FROM trade_events r "
+                    "JOIN esports_prediction_log p "
+                    "  ON p.market_id = r.market_id "
+                    "WHERE r.bot_name = 'EsportsBot' "
+                    "  AND r.event_type = 'RESOLUTION' "
+                    "  AND r.realized_pnl IS NOT NULL "
+                    "  AND p.predicted_prob IS NOT NULL "
+                    "  AND p.bot_name = 'EsportsBot' "
+                    "ORDER BY r.market_id, r.event_time DESC "
+                    "LIMIT 2000"
+                ), {})
+                data = rows.fetchall()
+
+            if len(data) < _min_resolved:
+                logger.debug("esportsbot_conformal_insufficient",
+                             samples=len(data), required=_min_resolved)
+                return
+
+            probs = _np.array([float(row[0]) for row in data], dtype=_np.float64)
+            outcomes = _np.array(
+                [1 if float(row[1]) > 0 else 0 for row in data], dtype=_np.int32
+            )
+
+            fitted = self._conformal_predictor.fit_from_predictions(probs, outcomes)
+            if fitted:
+                logger.info("esportsbot_conformal_fitted", n_samples=len(probs))
+        except Exception as exc:
+            logger.debug("esportsbot_conformal_fit_failed", error=str(exc))
 
     async def _backfill_unknown_team(self, name: str, game: str) -> Optional[str]:
         """On-demand PandaScore lookup for a team missing from Glicko-2 DB.
@@ -2991,12 +3329,123 @@ class EsportsBot(BaseBot):
                 prob = prior_weight * 0.50 + (1.0 - prior_weight) * prob
 
             if 0.05 < prob < 0.95:
+                # Roster stability [T2-D]: penalize teams with recent roster changes
+                try:
+                    _roster_a = await self._check_roster_stability(team_a_id)
+                    _roster_b = await self._check_roster_stability(team_b_id)
+                    if _roster_a < 1.0 or _roster_b < 1.0:
+                        # Nudge prob toward 0.50 proportional to penalty
+                        _roster_factor = min(_roster_a, _roster_b)
+                        prob = _roster_factor * prob + (1.0 - _roster_factor) * 0.50
+                        prob = max(0.05, min(0.95, prob))
+                except Exception:
+                    pass
                 return prob
         except Exception:
             pass
         return None
 
     # ── Session 83: New helper methods ──────────────────────────────────
+
+    async def _check_roster_stability(self, team_id: str) -> float:
+        """Return confidence multiplier based on roster stability [T2-D].
+
+        Returns 1.0 if no change detected, or (1 - penalty * decay) if recent change.
+        Checks PandaScore team roster hash, caches with 24h TTL.
+        """
+        if not self._pandascore:
+            return 1.0
+
+        try:
+            ps_id = int(team_id)
+            now = time.monotonic()
+
+            # Check if roster was already fetched
+            cached = self._roster_cache.get(team_id)
+            if cached:
+                old_hash, fetch_time = cached
+                # Refresh every 24h
+                if now - fetch_time < 86400.0:
+                    # Check for known change
+                    change_time = self._roster_change_cache.get(team_id)
+                    if change_time:
+                        decay_days = float(getattr(
+                            settings, "ESPORTS_ROSTER_CHANGE_DECAY_DAYS", 7,
+                        ))
+                        elapsed_days = (now - change_time) / 86400.0
+                        if elapsed_days >= decay_days:
+                            self._roster_change_cache.pop(team_id, None)
+                            return 1.0
+                        penalty = float(getattr(
+                            settings, "ESPORTS_ROSTER_CHANGE_PENALTY", 0.15,
+                        ))
+                        decay = 1.0 - (elapsed_days / decay_days)
+                        return max(0.5, 1.0 - penalty * decay)
+                    return 1.0
+
+            # Fetch roster
+            roster = await asyncio.wait_for(
+                self._pandascore.get_team_roster(ps_id), timeout=5.0,
+            )
+            if not roster:
+                return 1.0
+
+            import hashlib
+            roster_hash = hashlib.md5(
+                "|".join(roster).encode()
+            ).hexdigest()[:8]
+
+            if cached:
+                old_hash, _ = cached
+                if old_hash != roster_hash:
+                    logger.info(
+                        "esportsbot_roster_change", team_id=team_id,
+                        old_hash=old_hash, new_hash=roster_hash,
+                    )
+                    self._roster_change_cache[team_id] = now
+                    self._roster_cache[team_id] = (roster_hash, now)
+                    penalty = float(getattr(
+                        settings, "ESPORTS_ROSTER_CHANGE_PENALTY", 0.15,
+                    ))
+                    return max(0.5, 1.0 - penalty)
+                else:
+                    self._roster_cache[team_id] = (roster_hash, now)
+            else:
+                self._roster_cache[team_id] = (roster_hash, now)
+
+            # Check for pending change
+            change_time = self._roster_change_cache.get(team_id)
+            if change_time:
+                decay_days = float(getattr(
+                    settings, "ESPORTS_ROSTER_CHANGE_DECAY_DAYS", 7,
+                ))
+                elapsed_days = (now - change_time) / 86400.0
+                if elapsed_days >= decay_days:
+                    self._roster_change_cache.pop(team_id, None)
+                    return 1.0
+                penalty = float(getattr(
+                    settings, "ESPORTS_ROSTER_CHANGE_PENALTY", 0.15,
+                ))
+                decay = 1.0 - (elapsed_days / decay_days)
+                return max(0.5, 1.0 - penalty * decay)
+
+            return 1.0
+        except (ValueError, asyncio.TimeoutError):
+            return 1.0
+        except Exception:
+            return 1.0
+
+    @staticmethod
+    def _is_lan_event(market_data: Dict) -> bool:
+        """Detect LAN events from market question keywords [T1-C]."""
+        q = str(market_data.get("question", "")).lower()
+        _lan_keywords = (
+            " lan ", "lan final", "major ", "finals ", "playoff",
+            "world championship", "champions tour", "masters ",
+            "blast premier", "iem ", "esl pro league",
+            "pgl major", "copenhagen", "shanghai", "rio ",
+        )
+        return any(kw in q for kw in _lan_keywords)
 
     @staticmethod
     def _compute_ttr_days(market_data: Dict) -> Optional[float]:

@@ -56,6 +56,7 @@ class EsportsModelTrainer:
         self._train_results: Dict[str, Dict] = {}     # game → last training result
         # Smart retrain state (set at training time)
         self._last_train_brier: Dict[str, float] = {}      # game → brier at last training
+        self._last_train_ece: Dict[str, float] = {}        # game → ECE at last training
         self._last_train_row_count: Dict[str, int] = {}    # game → row count at last training
         self._last_train_patch: Dict[str, str] = {}        # game → patch at last training
         self._min_retrain_interval: float = 7200.0          # 2h minimum between retrains
@@ -70,6 +71,7 @@ class EsportsModelTrainer:
         game: str,
         *,
         current_brier: Optional[float] = None,
+        current_ece: Optional[float] = None,
         current_row_count: Optional[int] = None,
         current_patch: Optional[str] = None,
         recent_loss_streak: int = 0,
@@ -79,6 +81,7 @@ class EsportsModelTrainer:
         Smart triggers (any fires → retrain):
           1. 24h interval (original)
           2. Brier degradation >0.05 since last training
+          2b. ECE degradation >0.04 since last training [T1-A]
           3. ≥50 new training rows since last training
           4. Patch change (LoL only)
           5. ≥4 consecutive losing trades
@@ -106,6 +109,19 @@ class EsportsModelTrainer:
                     last_brier=round(self._last_train_brier[game], 4),
                     current_brier=round(current_brier, 4),
                     delta=round(brier_delta, 4),
+                )
+                return True
+
+        # Trigger 2b: ECE degradation [T1-A] — calibration drift matters more than accuracy
+        if current_ece is not None and game in self._last_train_ece:
+            ece_delta = current_ece - self._last_train_ece[game]
+            if ece_delta > 0.04:
+                logger.info(
+                    "EsportsModelTrainer: retrain trigger — ECE degradation",
+                    game=game,
+                    last_ece=round(self._last_train_ece[game], 4),
+                    current_ece=round(current_ece, 4),
+                    delta=round(ece_delta, 4),
                 )
                 return True
 
@@ -272,6 +288,7 @@ class EsportsModelTrainer:
             self._train_results[game] = result
             # Smart retrain state — snapshot at training time
             self._last_train_brier[game] = brier
+            self._last_train_ece[game] = ece
             self._last_train_row_count[game] = len(training_data)
             if game == "lol":
                 for row in reversed(training_data):
@@ -528,6 +545,7 @@ class EsportsModelTrainer:
             self._last_train_time["cross_game"] = time.monotonic()
             self._train_results["cross_game"] = result
             self._last_train_brier["cross_game"] = brier
+            self._last_train_ece["cross_game"] = ece
             self._last_train_row_count["cross_game"] = len(pooled)
 
             logger.info(

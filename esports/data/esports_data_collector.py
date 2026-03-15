@@ -198,6 +198,12 @@ class EsportsDataCollector:
                 "team_strength_diff": team_str_diff,
             }
 
+            # Extract draft data (picks/bans) from game-level raw data
+            from esports.data.pandascore_client import PandaScoreClient
+            draft = PandaScoreClient.extract_draft(g, match.team_a_id, match.team_b_id)
+            if draft:
+                game_state["draft"] = draft
+
             rows.append({
                 "match_id": f"{match.match_id}_g{g.get('position', 0)}",
                 "game": "lol",
@@ -359,6 +365,14 @@ class EsportsDataCollector:
                 "team_b_volatility": glicko2_meta["team_b_volatility"],
                 "best_of": int(getattr(match, "best_of", 1) or 1),
             }
+
+            # Extract draft data for games with picks/bans (dota2, valorant, r6)
+            if game in ("dota2", "valorant", "r6", "lol"):
+                from esports.data.pandascore_client import PandaScoreClient
+                draft = PandaScoreClient.extract_draft(g, match.team_a_id, match.team_b_id)
+                if draft:
+                    game_state["draft"] = draft
+
             rows.append({
                 "match_id": f"{match.match_id}_g{g_idx}",
                 "game": game,

@@ -353,6 +353,19 @@ class EsportsGameMonitor:
                 state["team_a_alive"] = 5.0
                 state["team_b_alive"] = 5.0
 
+        # Extract draft data for all games with picks/bans
+        if game in ("lol", "dota2", "valorant", "r6"):
+            # Determine team IDs from match opponents
+            opponents = raw.get("opponents", [])
+            if len(opponents) >= 2:
+                _ta_id = opponents[0].get("opponent", {}).get("id", 0) if isinstance(opponents[0], dict) else 0
+                _tb_id = opponents[1].get("opponent", {}).get("id", 0) if isinstance(opponents[1], dict) else 0
+                if _ta_id and _tb_id:
+                    from esports.data.pandascore_client import PandaScoreClient
+                    draft = PandaScoreClient.extract_draft(current_game, _ta_id, _tb_id)
+                    if draft:
+                        state["draft"] = draft
+
         return state
 
     def _get_cached_team_strength_diff(

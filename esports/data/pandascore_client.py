@@ -355,6 +355,23 @@ class PandaScoreClient:
                 return team
         return data[0] if isinstance(data[0], dict) else None
 
+    async def get_team_roster(self, team_id: int) -> Optional[List[str]]:
+        """Get sorted player slugs for a team. Costs 1 API request (cached)."""
+        cache_key = f"roster:{team_id}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        data = await self._get(f"/teams/{team_id}")
+        if not data or not isinstance(data, dict):
+            return None
+        players = data.get("players", [])
+        if not players or not isinstance(players, list):
+            return None
+        slugs = sorted(p.get("slug", "") for p in players if isinstance(p, dict))
+        self._cache.set(cache_key, slugs)
+        return slugs
+
     async def get_team_matches(
         self, team_id: int, game: str, per_page: int = 20
     ) -> List[EsportsMatch]:
@@ -469,6 +486,96 @@ class PandaScoreClient:
                     await asyncio.sleep(backoff + jitter)
 
         return None
+
+    @staticmethod
+    def extract_draft(game_data: Dict[str, Any], team_a_id: int, team_b_id: int) -> Optional[Dict[str, Any]]:
+        """Extract picks/bans from a PandaScore game-level dict.
+
+        PandaScore game objects contain a 'teams' array with picks/bans per team.
+        Also checks for 'players' array which contains per-player champion/agent.
+
+        Returns:
+            Dict with team_a_picks, team_a_bans, team_b_picks, team_b_bans
+            (each a list of champion/agent/hero name strings), or None.
+        """
+        if not isinstance(game_data, dict):
+            return None
+
+        draft: Dict[str, list] = {
+            "team_a_picks": [], "team_a_bans": [],
+            "team_b_picks": [], "team_b_bans": [],
+        }
+
+        # Method 1: teams array with picks/bans (LoL, Dota2, R6)
+        teams = game_data.get("teams", [])
+        if isinstance(teams, list) and len(teams) >= 2:
+            for team_obj in teams:
+                if not isinstance(team_obj, dict):
+                    continue
+                tid = team_obj.get("team", {}).get("id") if isinstance(team_obj.get("team"), dict) else team_obj.get("team_id")
+                prefix = "team_a" if tid == team_a_id else "team_b" if tid == team_b_id else None
+                if not prefix:
+                    continue
+                # picks
+                picks = team_obj.get("picks", [])
+                if isinstance(picks, list):
+                    for p in picks:
+                        name = None
+                        if isinstance(p, dict):
+                            ch = p.get("champion", p.get("hero", p.get("agent", {})))
+                            if isinstance(ch, dict):
+                                name = ch.get("name", ch.get("localized_name", ""))
+                            elif isinstance(ch, str):
+                                name = ch
+                            elif isinstance(p.get("name"), str):
+                                name = p["name"]
+                        if name:
+                            draft[f"{prefix}_picks"].append(name)
+                # bans
+                bans = team_obj.get("bans", [])
+                if isinstance(bans, list):
+                    for b in bans:
+                        name = None
+                        if isinstance(b, dict):
+                            ch = b.get("champion", b.get("hero", b.get("agent", {})))
+                            if isinstance(ch, dict):
+                                name = ch.get("name", ch.get("localized_name", ""))
+                            elif isinstance(ch, str):
+                                name = ch
+                            elif isinstance(b.get("name"), str):
+                                name = b["name"]
+                        if name:
+                            draft[f"{prefix}_bans"].append(name)
+
+        # Method 2: players array (Valorant agents, LoL champions per player)
+        if not draft["team_a_picks"] and not draft["team_b_picks"]:
+            players = game_data.get("players", [])
+            if isinstance(players, list):
+                for pl in players:
+                    if not isinstance(pl, dict):
+                        continue
+                    tid = pl.get("team", {}).get("id") if isinstance(pl.get("team"), dict) else pl.get("team_id")
+                    prefix = "team_a" if tid == team_a_id else "team_b" if tid == team_b_id else None
+                    if not prefix:
+                        continue
+                    # champion / agent / hero
+                    for key in ("champion", "agent", "hero"):
+                        ch = pl.get(key)
+                        if isinstance(ch, dict):
+                            name = ch.get("name", ch.get("localized_name", ""))
+                            if name:
+                                draft[f"{prefix}_picks"].append(name)
+                                break
+                        elif isinstance(ch, str) and ch:
+                            draft[f"{prefix}_picks"].append(ch)
+                            break
+
+        # Only return if we got at least some picks
+        total_picks = len(draft["team_a_picks"]) + len(draft["team_b_picks"])
+        if total_picks == 0:
+            return None
+
+        return draft
 
     def _parse_match(self, raw: Dict[str, Any], hint_game: Optional[str] = None) -> Optional[EsportsMatch]:
         """Parse a PandaScore match JSON into normalised EsportsMatch."""

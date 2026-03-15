@@ -310,10 +310,10 @@ class TestAnalyzeOpportunity:
         result = await bot.analyze_opportunity(market)
         assert result is not None
         assert result["side"] == "YES"
-        assert result["edge"] == pytest.approx(0.20, abs=0.01)
+        assert result["edge"] == pytest.approx(0.20, abs=0.03)  # blue side bonus adds ~0.019
         assert result["game"] == "lol"
         assert result["market_type"] == "match_winner"
-        assert result["confidence"] == pytest.approx(0.70)
+        assert result["confidence"] == pytest.approx(0.70, abs=0.03)
         assert result["market_id"] == "m1"
 
     @pytest.mark.asyncio
@@ -334,8 +334,8 @@ class TestAnalyzeOpportunity:
         result = await bot.analyze_opportunity(market)
         assert result is not None
         assert result["side"] == "NO"
-        assert result["edge"] == pytest.approx(0.50, abs=0.01)
-        assert result["confidence"] == pytest.approx(0.70)  # 1.0 - 0.30
+        assert result["edge"] == pytest.approx(0.50, abs=0.03)  # blue side bonus shifts
+        assert result["confidence"] == pytest.approx(0.70, abs=0.03)  # 1.0 - 0.30 ± blue side
 
     @pytest.mark.asyncio
     async def test_returns_none_when_confidence_below_min(self):

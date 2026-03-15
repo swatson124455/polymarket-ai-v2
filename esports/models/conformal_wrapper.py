@@ -73,6 +73,53 @@ class ConformalPredictor:
             logger.debug("ConformalPredictor: fit failed: %s", e)
             return False
 
+    def fit_from_predictions(
+        self, predicted_probs: np.ndarray, outcomes: np.ndarray,
+    ) -> bool:
+        """Fit conformal predictor from historical (prediction, outcome) pairs.
+
+        Logit-space residual approach — no sklearn model needed.
+        Mirrors MirrorBot's mirror_calibration.py pattern.
+
+        Args:
+            predicted_probs: Array of predicted probabilities (0-1).
+            outcomes: Array of binary outcomes (0 or 1).
+
+        Returns:
+            True if fitting succeeded.
+        """
+        if len(predicted_probs) < 30:
+            logger.debug("ConformalPredictor: insufficient data (%d)", len(predicted_probs))
+            return False
+
+        try:
+            _LOGIT_CAP = 3.0  # ~95.3%, prevents +-inf
+            residuals = []
+            for prob, outcome in zip(predicted_probs, outcomes):
+                prob = float(prob)
+                if prob <= 0.01 or prob >= 0.99:
+                    continue
+                logit_pred = float(np.log(prob / (1.0 - prob)))
+                logit_outcome = _LOGIT_CAP if outcome > 0.5 else -_LOGIT_CAP
+                residuals.append(abs(logit_pred - logit_outcome))
+
+            if len(residuals) < 30:
+                return False
+
+            self._residuals = sorted(residuals)
+            self._fitted = True
+            logger.info(
+                "ConformalPredictor: fitted from predictions (%d residuals, "
+                "median=%.3f, p90=%.3f)",
+                len(residuals),
+                float(np.median(self._residuals)),
+                float(np.percentile(self._residuals, 90)),
+            )
+            return True
+        except Exception as e:
+            logger.debug("ConformalPredictor: fit_from_predictions failed: %s", e)
+            return False
+
     def predict_interval(
         self, X: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -80,18 +127,37 @@ class ConformalPredictor:
 
         Args:
             X: Feature array (n_samples, n_features).
+               For residual-based path, X[:, 0] is treated as probability.
 
         Returns:
             (p_low, p_mid, p_high) — each shape (n_samples,).
             p_low/p_high are bounds of the (1-alpha) prediction interval.
             If not fitted, all three are the point estimate.
         """
-        if not self._fitted or self._mapie_clf is None:
-            # Fallback: no intervals, just point estimate
+        if not self._fitted:
+            # Not fitted at all — identity
             try:
                 p_mid = self._mapie_clf.estimator_.predict_proba(X)[:, 1]
             except Exception:
                 p_mid = np.full(len(X), 0.5)
+            return p_mid, p_mid, p_mid
+
+        # Residual-based intervals (from fit_from_predictions)
+        if hasattr(self, '_residuals') and self._residuals and self._mapie_clf is None:
+            n_res = len(self._residuals)
+            idx = int(np.ceil((1 - self.alpha) * (n_res + 1))) - 1
+            idx = min(idx, n_res - 1)
+            q = self._residuals[idx]
+
+            # X[:, 0] contains probabilities (passed by caller)
+            p_mid = np.clip(X[:, 0].astype(np.float64), 0.02, 0.98)
+            logit_mid = np.log(p_mid / (1.0 - p_mid))
+            p_low = np.clip(1.0 / (1.0 + np.exp(-(logit_mid - q))), 0.01, 0.99)
+            p_high = np.clip(1.0 / (1.0 + np.exp(-(logit_mid + q))), 0.01, 0.99)
+            return p_low, p_mid, p_high
+
+        if self._mapie_clf is None:
+            p_mid = np.full(len(X), 0.5)
             return p_mid, p_mid, p_mid
 
         try:
