@@ -1549,18 +1549,19 @@ class EsportsBot(BaseBot):
         try:
             glicko2_prob = await self._get_glicko2_prediction(market_data, game)
             if glicko2_prob is None:
-                # Include extracted team names for diagnosis
-                _cached_pred = self._prediction_cache.get(market_id, {})
-                logger.info("esportsbot_glicko2_miss", game=game,
-                            market_id=market_id,
-                            question=str(market_data.get("question",""))[:80])
+                # Rate-limit: only log once per market per session (same pattern as team_match_fail)
+                if market_id not in self._team_fail_logged:
+                    self._team_fail_logged.add(market_id)
+                    logger.info("esportsbot_glicko2_miss", game=game,
+                                market_id=market_id,
+                                question=str(market_data.get("question",""))[:80])
                 # Market-price fallback: naive 50/50 for unknown teams.
                 # Edge comes from market mispricing vs neutral prior.
                 # Only trades when market price deviates >15% from even odds.
                 if getattr(settings, "ESPORTS_MARKET_FALLBACK_ENABLED", True):
                     _fallback_prob = 0.50
-                    logger.info("esportsbot_market_price_fallback", game=game,
-                                market_id=market_id, fallback_prob=_fallback_prob)
+                    logger.debug("esportsbot_market_price_fallback", game=game,
+                                 market_id=market_id, fallback_prob=_fallback_prob)
                     self._prediction_cache[market_id] = {
                         "prob": _fallback_prob, "ts": time.monotonic(), "game": game,
                         "ml_raw": None, "glicko2_est": None, "fallback": True,
