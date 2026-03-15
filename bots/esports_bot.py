@@ -3122,6 +3122,7 @@ class EsportsBot(BaseBot):
             "rainbow six siege: ", "rainbow six: ", "r6: ",
             "starcraft ii: ", "starcraft 2: ", "starcraft: ",
             "rocket league: ",
+            "overwatch 2: ", "overwatch: ",
         )
         for gp in _game_prefixes:
             if name_a.startswith(gp):
@@ -3135,10 +3136,15 @@ class EsportsBot(BaseBot):
             r"|major|champions|masters|challengers|lck|lpl|lec|lcs|vct|worlds"
             r"|msi |msc |lcl|cblol|ljl|pcs|spring|summer|winter|fall|split"
             r"|playoffs|qualifier|group|stage|round|final"
-            r"|aorus |emea |nacl |lta |game changers|winner).*$"
+            r"|aorus |emea |nacl |lta |game changers|winner"
+            r"|cct |gamers8|betboom|perfect\s*world|thunderpick|elisa |skyesports"
+            r"|yalla|esea |open\s+qual|closed\s+qual|regular\s+season"
+            r"|upper\s+bracket|lower\s+bracket|grand\s+final|elimination"
+            r"|decider|promotion|relegation|showmatch|invitational"
+            r"|lan\s+final|rmr |asia\s+league|americas|pacific|emea\s+league).*$"
         )
         # " - game N winner" / " - map N winner" suffix (must run before _tourney_re)
-        _game_winner_re = r"\s*-\s+(?:game|map)\s+\d+\s+winner$"
+        _game_winner_re = r"\s*-\s+(?:game|map|match)\s+\d+\s+winner$"
         for name_ref in ("name_a", "name_b"):
             n = name_a if name_ref == "name_a" else name_b
             n = _re.sub(_suffix_re, "", n).strip()
@@ -3156,13 +3162,17 @@ class EsportsBot(BaseBot):
 
     # Common team name aliases: market_name → pandascore_name
     _TEAM_ALIASES: Dict[str, str] = {
+        # China (LPL)
         "jdg": "jd gaming", "edg": "edward gaming", "rng": "royal never give up",
         "fpx": "funplus phoenix", "blg": "bilibili gaming", "lng": "lng esports",
         "tes": "top esports", "we": "team we", "wbg": "weibo gaming",
         "ig": "invictus gaming", "ra": "rare atom", "omg": "oh my god",
-        "gen": "gen.g", "geng": "gen.g", "dk": "dplus kia", "drx": "drx",
-        "kt": "kt rolster", "hle": "hanwha life esports", "bro": "fredit brion",
-        "ns": "nongshim redforce", "lsb": "liiv sandbox",
+        # Korea (LCK)
+        "gen": "gen.g", "geng": "gen.g", "dk": "dplus kia", "dplus": "dplus kia",
+        "drx": "drx", "kt": "kt rolster", "hle": "hanwha life esports",
+        "bro": "fredit brion", "ns": "nongshim redforce", "lsb": "liiv sandbox",
+        "fox": "foxx esports",
+        # EU/West (LEC/LCS)
         "g2": "g2 esports", "fnc": "fnatic", "mad": "mad lions",
         "sk": "sk gaming", "xls": "excel esports", "msf": "misfits gaming",
         "vit": "team vitality", "bds": "team bds", "koi": "koi",
@@ -3170,13 +3180,33 @@ class EsportsBot(BaseBot):
         "eg": "evil geniuses", "fly": "flyquest", "dig": "dignitas",
         "tsm": "tsm", "clg": "counter logic gaming", "gg": "golden guardians",
         "nrg": "nrg esports", "sr": "shopify rebellion",
+        # CS2
         "navi": "natus vincere", "na'vi": "natus vincere",
         "faze": "faze clan", "col": "complexity gaming",
+        "mouz": "mouz", "mousesports": "mouz", "nip": "ninjas in pyjamas",
+        "heroic": "heroic", "ence": "ence", "ef": "eternal fire",
+        "saw": "saw", "gl": "gamerlegion", "gamerlegion": "gamerlegion",
+        "big": "big", "apeks": "apeks", "aurora": "aurora gaming",
+        "3dmax": "3dmax", "imp": "imperial esports", "imperial": "imperial esports",
+        "pain": "pain gaming", "mibr": "mibr", "furia": "furia",
+        "9z": "9z team", "wildcard": "wildcard gaming",
+        "grayhound": "grayhound gaming", "tyloo": "tyloo",
+        "lynn vision": "lynn vision gaming", "mongols": "the mongolz",
+        "the mongolz": "the mongolz",
+        # Dota 2
         "og": "og", "nigma": "team nigma", "bb": "betboom team",
         "spirit": "team spirit", "vp": "virtus.pro",
-        "prx": "paper rex", "drx": "drx", "zeta": "zeta division",
-        "loud": "loud", "lev": "leviatán",
-        "mouz": "mouz", "nip": "ninjas in pyjamas",
+        "tundra": "tundra esports", "gaimin": "gaimin gladiators",
+        "xtreme": "xtreme gaming", "nouns": "nouns esports",
+        # Valorant
+        "prx": "paper rex", "zeta": "zeta division",
+        "loud": "loud", "lev": "leviatán", "sen": "sentinels",
+        "rrq": "rex regum qeon", "th": "team heretics",
+        "kcorp": "karmine corp", "fut": "fut esports",
+        "bleed": "bleed esports", "dfm": "detonation focusme",
+        "geng": "gen.g",  # Valorant also uses geng
+        # Multi-game
+        "weibo": "weibo gaming",
     }
 
     def _match_team_name(self, name: str) -> Optional[str]:
@@ -3184,7 +3214,8 @@ class EsportsBot(BaseBot):
 
         Tries: exact match → alias lookup → longest-substring-first match →
         reverse substring (name in known_name, for long market names) →
-        word-boundary match for short names (2-3 chars).
+        word-boundary match for short names (2-3 chars) →
+        difflib fuzzy match (0.85 threshold, last resort for typos).
         """
         name = name.lower().strip()
         if not name:
@@ -3229,5 +3260,17 @@ class EsportsBot(BaseBot):
             if len(known_name) <= 3:
                 if _re.search(r'\b' + _re.escape(known_name) + r'\b', name):
                     return tid
+
+        # Tier 6: fuzzy match via difflib (stdlib) — last resort for typos/transliterations
+        from difflib import SequenceMatcher as _SM
+        best_ratio, best_tid = 0.0, None
+        for known_name, tid in self._team_name_to_id.items():
+            if len(known_name) <= 2:
+                continue
+            ratio = _SM(None, name, known_name).ratio()
+            if ratio > best_ratio:
+                best_ratio, best_tid = ratio, tid
+        if best_ratio >= 0.85 and best_tid is not None:
+            return best_tid
 
         return None
