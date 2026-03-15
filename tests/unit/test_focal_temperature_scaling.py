@@ -76,7 +76,7 @@ class TestFTSFitGridSearch:
     """Mock DB data and verify fitting produces reasonable T."""
 
     def test_grid_search_well_calibrated_data(self):
-        """Well-calibrated data should fit successfully and produce finite loss."""
+        """Well-calibrated data: FTS auto-disables because it can't improve Brier score."""
         cal = FocalTemperatureCalibrator(db=None)
         np.random.seed(42)
         n = 500
@@ -85,11 +85,10 @@ class TestFTSFitGridSearch:
         outcomes = (np.random.random(n) < predictions).astype(float)
 
         cal._fit_grid_search(predictions, outcomes)
-        assert cal.is_fitted
-        # T should be within the grid range
-        assert 0.5 <= cal.temperature <= 3.0
-        # Calibrated output should still be reasonable
-        assert 0.01 <= cal.calibrate(0.7) <= 0.99
+        # S90: Well-calibrated data means FTS is unnecessary — auto-disable fires
+        assert not cal.is_fitted, "FTS should auto-disable for already-calibrated data"
+        # calibrate() returns identity when not fitted
+        assert cal.calibrate(0.7) == 0.7
 
     def test_grid_search_overconfident_data(self):
         """Overconfident predictions (too sharp) should produce T > 1."""
@@ -146,13 +145,13 @@ class TestFTSFitGridSearch:
 
     @pytest.mark.asyncio
     async def test_fit_from_prediction_log_success(self):
-        """Should fit successfully with sufficient resolved predictions."""
+        """Should fit successfully with overconfident predictions (FTS genuinely helps)."""
         db = MagicMock()
         db.session_factory = True
         session_mock = AsyncMock()
         result_mock = MagicMock()
-        # 100 rows: 60 YES at prob 0.7, 40 NO at prob 0.3
-        rows = [(0.7, "YES")] * 60 + [(0.3, "NO")] * 40
+        # 100 rows: overconfident — predict 0.85 but actual ~50/50
+        rows = [(0.85, "YES")] * 50 + [(0.85, "NO")] * 50
         result_mock.fetchall.return_value = rows
         session_mock.execute = AsyncMock(return_value=result_mock)
 
@@ -165,7 +164,7 @@ class TestFTSFitGridSearch:
         result = await cal.fit_from_prediction_log(n_days=90)
         assert result is True
         assert cal.is_fitted
-        assert 0.5 <= cal.temperature <= 3.0
+        assert 0.5 <= cal.temperature <= 2.0
 
 
 class TestFTSExtremeInputs:

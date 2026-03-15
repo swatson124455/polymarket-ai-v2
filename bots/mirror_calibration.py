@@ -29,8 +29,8 @@ class MirrorCalibrationStack:
         self._horizon = None  # HorizonBiasCalibrator
         self._fitted = False
         self._conformal_fitted = False
-        # Conformal prediction: simple Venn-ABERS style from resolved trades
-        self._conformal_residuals: list = []  # |predicted - outcome| for resolved trades
+        # Conformal prediction: logit-space residuals from resolved trades (S90)
+        self._conformal_residuals: list = []  # |logit(predicted) - logit(outcome)| for resolved trades
 
     async def fit(self) -> Dict[str, bool]:
         """Fit all calibrators from DB. Call on first scan, re-fit daily."""
@@ -102,15 +102,21 @@ class MirrorCalibrationStack:
                 )
                 return False
 
-            # Compute non-conformity scores: |confidence - outcome|
+            # S90: Logit-space non-conformity scores.
+            # Probability-space |prob - outcome| with binary outcomes (0/1) and
+            # predictions near 0.55 always clusters residuals at 0.45-0.55, making
+            # conformal intervals [~0.01, ~0.99] — useless.  Logit space spreads
+            # residuals meaningfully and gives tighter, confidence-dependent intervals.
+            _LOGIT_CAP = 3.0  # ~95.3%, prevents +-inf from binary outcomes
             residuals = []
             for row in data:
                 prob = float(row[0]) if row[0] else None
                 pnl = float(row[2])
-                if prob is None or prob <= 0 or prob >= 1:
+                if prob is None or prob <= 0.01 or prob >= 0.99:
                     continue
-                outcome = 1.0 if pnl > 0 else 0.0
-                residuals.append(abs(prob - outcome))
+                logit_pred = float(np.log(prob / (1.0 - prob)))
+                logit_outcome = _LOGIT_CAP if pnl > 0 else -_LOGIT_CAP
+                residuals.append(abs(logit_pred - logit_outcome))
 
             if len(residuals) < min_resolved:
                 return False
@@ -181,7 +187,9 @@ class MirrorCalibrationStack:
         idx = min(idx, n - 1)
         q = self._conformal_residuals[idx]
 
-        p_low = max(0.01, confidence - q)
-        p_high = min(0.99, confidence + q)
+        # S90: Transform back from logit space to probability space
+        logit_conf = float(np.log(confidence / (1.0 - confidence)))
+        p_low = max(0.01, float(1.0 / (1.0 + np.exp(-(logit_conf - q)))))
+        p_high = min(0.99, float(1.0 / (1.0 + np.exp(-(logit_conf + q)))))
 
         return (p_low, p_high)

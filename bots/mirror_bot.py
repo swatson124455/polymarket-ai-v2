@@ -289,6 +289,39 @@ class MirrorBot(BaseBot):
         except Exception as exc:
             logger.warning("MirrorBot _restore_state_on_startup failed: %s", exc)
 
+        # S90: Clean opposing YES/NO pairs — mark smaller side for exit
+        try:
+            _markets_seen: dict = {}
+            for pk in list(self._open_positions.keys()):
+                mid = pk.split(":")[0]
+                _markets_seen.setdefault(mid, []).append(pk)
+
+            _pairs_cleaned = 0
+            for mid, pkeys in _markets_seen.items():
+                if len(pkeys) < 2:
+                    continue
+                sides: dict = {}
+                for pk in pkeys:
+                    s = str(self._open_positions[pk].get("side", "")).upper()
+                    sides.setdefault(s, []).append(pk)
+                if "YES" in sides and "NO" in sides:
+                    yes_total = sum(self._open_positions[k].get("size", 0) for k in sides["YES"])
+                    no_total = sum(self._open_positions[k].get("size", 0) for k in sides["NO"])
+                    to_exit = sides["NO"] if no_total <= yes_total else sides["YES"]
+                    for pk in to_exit:
+                        self._open_positions[pk]["traders"] = set()
+                        _pairs_cleaned += 1
+                    logger.warning(
+                        "mirror_opposing_pair_marked_for_exit market=%s exit_side=%s exit_size=%.2f",
+                        mid[:16],
+                        "NO" if no_total <= yes_total else "YES",
+                        min(yes_total, no_total),
+                    )
+            if _pairs_cleaned:
+                logger.info("mirror_startup_opposing_pairs=%d marked for exit", _pairs_cleaned)
+        except Exception as _e:
+            logger.debug("mirror opposing pair cleanup failed: %s", _e)
+
         # M5: Restore dedup dict from Redis
         await self._restore_dedup_from_redis()
 
@@ -524,6 +557,15 @@ class MirrorBot(BaseBot):
             len(self.elite_traders), len(consensus_trades), _buy_ct, _sell_ct,
             len(self._open_positions),
         )
+
+        # S90: Batch pre-warm risk caches to avoid O(N) sequential DB queries
+        if consensus_trades:
+            try:
+                _mids = list({t["market_id"] for t in consensus_trades if t.get("market_id")})
+                if _mids and hasattr(self.base_engine, "risk_manager") and self.base_engine.risk_manager:
+                    await self.base_engine.risk_manager.pre_warm_risk_caches(_mids)
+            except Exception as _e:
+                logger.debug("mirror_pre_warm_risk_caches failed (non-blocking): %s", _e)
 
         for trade_info in consensus_trades:
             if not self._can_open_position(trade_info.get("price", 0.5)):

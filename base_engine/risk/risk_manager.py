@@ -96,6 +96,91 @@ class RiskManager:
         self._market_vol_cache[market_id] = (result, now + 3600.0)
         return result
 
+    async def pre_warm_risk_caches(self, market_ids: List[str]) -> None:
+        """Batch-populate oracle manipulation and volume caches for a set of market IDs.
+
+        Called once before a scan loop to avoid O(N) sequential DB queries when
+        per-market caches expire.  Falls back silently on any error — individual
+        check_risk_limits() calls will still hit the DB per-market as before.
+        """
+        if not market_ids or not self.db or not getattr(self.db, "session_factory", None):
+            return
+
+        now = time.monotonic()
+
+        # --- Oracle manipulation cache: warm expired keys -----------------
+        if not hasattr(self, "_oracle_risk_cache"):
+            self._oracle_risk_cache: Dict[str, Tuple[Optional[Dict], float]] = {}
+        expired_oracle = [
+            mid for mid in market_ids
+            if mid not in self._oracle_risk_cache or now >= self._oracle_risk_cache[mid][1]
+        ]
+        if expired_oracle:
+            try:
+                from sqlalchemy import text as _text
+                async with self.db.get_session() as session:
+                    rows = await session.execute(
+                        _text(
+                            "SELECT market_id, "
+                            "COALESCE(SUM(size * entry_price), 0), "
+                            "COUNT(*) "
+                            "FROM positions "
+                            "WHERE market_id = ANY(:mids) AND status = 'open' "
+                            "GROUP BY market_id"
+                        ),
+                        {"mids": expired_oracle},
+                    )
+                    found = {}
+                    uma_bond_cost = 5000.0
+                    for row in rows.fetchall():
+                        mid, oi, cnt = str(row[0]), float(row[1]), int(row[2])
+                        risk_ratio = (oi / uma_bond_cost) / 10 if oi > 0 else 0
+                        risk_score = min(1.0, risk_ratio)
+                        result = {
+                            "market_id": mid,
+                            "open_interest": oi,
+                            "position_count": cnt,
+                            "manipulation_cost": uma_bond_cost,
+                            "risk_score": risk_score,
+                            "is_risky": risk_score > 0.5,
+                        } if oi > 0 else None
+                        self._oracle_risk_cache[mid] = (result, now + 60.0)
+                        found[mid] = True
+                    # Markets with no open positions → cache None
+                    for mid in expired_oracle:
+                        if mid not in found:
+                            self._oracle_risk_cache[mid] = (None, now + 60.0)
+            except Exception as e:
+                logger.debug("pre_warm oracle cache failed (non-blocking): %s", e)
+
+        # --- Market volume cache: warm expired keys -----------------------
+        expired_vol = [
+            mid for mid in market_ids
+            if mid not in self._market_vol_cache or now >= self._market_vol_cache[mid][1]
+        ]
+        if expired_vol:
+            try:
+                from sqlalchemy import text as _text
+                async with self.db.get_session() as session:
+                    rows = await session.execute(
+                        _text(
+                            "SELECT id, COALESCE(volume, 0) + COALESCE(liquidity, 0) "
+                            "FROM markets WHERE id = ANY(:mids)"
+                        ),
+                        {"mids": expired_vol},
+                    )
+                    found_vol = {}
+                    for row in rows.fetchall():
+                        mid, vol = str(row[0]), float(row[1])
+                        self._market_vol_cache[mid] = (vol, now + 3600.0)
+                        found_vol[mid] = True
+                    # Markets not in DB → fail open (inf)
+                    for mid in expired_vol:
+                        if mid not in found_vol:
+                            self._market_vol_cache[mid] = (float("inf"), now + 3600.0)
+            except Exception as e:
+                logger.debug("pre_warm volume cache failed (non-blocking): %s", e)
+
     async def _get_open_positions_for_cvar(self) -> List[Dict[str, Any]]:
         """Fetch open positions formatted for CVaR computation.
         FAST PATH: Uses OrderGateway in-memory snapshot when available.

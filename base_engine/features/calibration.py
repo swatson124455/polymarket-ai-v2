@@ -282,13 +282,32 @@ class FocalTemperatureCalibrator:
                     best_t = float(t)
                     best_gamma = float(g)
 
+        # S90: Brier score diagnostic + auto-disable at grid cap.
+        raw_brier = float(np.mean((predictions - outcomes) ** 2))
+        cal_probs = self._calibrate_array(predictions, best_t)
+        cal_brier = float(np.mean((cal_probs - outcomes) ** 2))
+        brier_delta = raw_brier - cal_brier
+
+        # Auto-disable when T hits the grid cap (>=1.9) and Brier doesn't improve.
+        # T at cap suggests FTS is fighting well-calibrated raw confidences.
+        _T_CAP_THRESHOLD = 1.9
+        _BRIER_THRESHOLD = 0.005
+        if best_t >= _T_CAP_THRESHOLD and brier_delta < _BRIER_THRESHOLD:
+            self._fitted = False
+            logger.warning(
+                "FocalTemp auto-disabled: T=%.2f at cap, no Brier improvement "
+                "(raw=%.4f cal=%.4f delta=%.4f)",
+                best_t, raw_brier, cal_brier, brier_delta,
+            )
+            return
+
         self._temperature = best_t
         self._gamma = best_gamma
         self._fitted = True
 
         logger.info(
-            "FocalTemp fitted: T=%.2f, gamma=%.1f, focal_loss=%.4f on %d samples",
-            best_t, best_gamma, best_loss, len(predictions),
+            "FocalTemp fitted: T=%.2f, gamma=%.1f, focal_loss=%.4f brier_delta=%.4f on %d samples",
+            best_t, best_gamma, best_loss, brier_delta, len(predictions),
         )
 
     def calibrate(self, raw_prob: float) -> float:

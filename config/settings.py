@@ -340,7 +340,7 @@ class Settings(BaseSettings):
     MIRROR_USE_GEOMEAN_CONSENSUS: bool = os.getenv("MIRROR_USE_GEOMEAN_CONSENSUS", "false").lower() in ("true", "1", "yes")
     MIRROR_GEOMEAN_EXTREMIZE_D: float = float(os.getenv("MIRROR_GEOMEAN_EXTREMIZE_D", "2.0"))
     MIRROR_ADAPTIVE_SAFETY: bool = os.getenv("MIRROR_ADAPTIVE_SAFETY", "false").lower() in ("true", "1", "yes")
-    MIRROR_SKIP_LIQUIDITY_RTDS: bool = os.getenv("MIRROR_SKIP_LIQUIDITY_RTDS", "false").lower() in ("true", "1", "yes")
+    MIRROR_SKIP_LIQUIDITY_RTDS: bool = os.getenv("MIRROR_SKIP_LIQUIDITY_RTDS", "true").lower() in ("true", "1", "yes")
     MIRROR_CONFORMAL_MIN_RESOLVED: int = int(os.getenv("MIRROR_CONFORMAL_MIN_RESOLVED", "50"))
     MIRROR_CONFORMAL_ALPHA: float = float(os.getenv("MIRROR_CONFORMAL_ALPHA", "0.50"))  # B1: 0.50 = 50% coverage (was 0.10 = 90%)
 
@@ -562,9 +562,14 @@ class Settings(BaseSettings):
     PRICE_FETCH_EMPTY_MAX_ATTEMPTS: int = int(os.getenv("PRICE_FETCH_EMPTY_MAX_ATTEMPTS", "5"))
     BACKTEST_LATENCY_SIMULATION_MS: float = float(os.getenv("BACKTEST_LATENCY_SIMULATION_MS", "0"))
     RESOLUTION_BACKFILL_AFTER_DAILY: bool = os.getenv("RESOLUTION_BACKFILL_AFTER_DAILY", "true").lower() in ("true", "1", "yes")
+    # Markets to resolve per scheduler cycle (every ~285s). Higher = faster backlog clearance.
+    RESOLUTION_QUEUE_BATCH_SIZE: int = int(os.getenv("RESOLUTION_QUEUE_BATCH_SIZE", "100"))
 
     # I51: Hard timeout for ingest_everything() — raise to 1800s for slow VPS DB
     INGESTION_TIMEOUT_SECONDS: float = float(os.getenv("INGESTION_TIMEOUT_SECONDS", "600"))
+    # Master timeout for entire _run_ingestion() cycle — prevents silent scheduler death
+    # when a sub-task hangs (e.g. corrupted asyncpg connection after cancellation)
+    RUN_INGESTION_MAX_SECONDS: float = float(os.getenv("RUN_INGESTION_MAX_SECONDS", "2400"))
 
     # Archival/retention: days to keep market_prices before archival (0=disabled)
     MARKET_PRICES_RETENTION_DAYS: int = int(os.getenv("MARKET_PRICES_RETENTION_DAYS", "730"))  # 2 years
@@ -654,7 +659,7 @@ class Settings(BaseSettings):
     WEATHER_FORECAST_CACHE_TTL: int = int(os.getenv("WEATHER_FORECAST_CACHE_TTL", "1800"))
     WEATHER_MAX_LEAD_TIME_HOURS: int = int(os.getenv("WEATHER_MAX_LEAD_TIME_HOURS", "168"))
     WEATHER_MAX_TOTAL_EXPOSURE_USD: float = float(os.getenv("WEATHER_MAX_TOTAL_EXPOSURE_USD", "50000"))
-    WEATHER_TOTAL_CAPITAL: float = float(os.getenv("WEATHER_TOTAL_CAPITAL", "5000"))
+    WEATHER_TOTAL_CAPITAL: float = float(os.getenv("WEATHER_TOTAL_CAPITAL", "25000"))
 
     # Scan intervals (seconds)
     SCAN_INTERVAL_ENSEMBLE: int = int(os.getenv("SCAN_INTERVAL_ENSEMBLE", "60"))
