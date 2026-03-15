@@ -1,0 +1,131 @@
+# Grafana Alert Rules for Polymarket AI V2
+# Import via: Grafana UI → Alerting → Import
+#
+# Priority tiers:
+#   P1 (Critical): Kill switch, exposure breach, bot offline >5min — page immediately
+#   P2 (Warning): API degraded, memory high, task stale — Slack notification
+#   P3 (Info): Daily P&L summary, win rate changes — dashboard only
+#
+# Start with P1 only. Add P2/P3 after 2 weeks of baseline data.
+
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: P1 - Critical Alerts
+    folder: Polymarket
+    interval: 30s
+    rules:
+      # Kill switch activated
+      - uid: p1-kill-switch
+        title: "Kill Switch Activated"
+        condition: polymarket_kill_switch_active == 1
+        for: 0s
+        annotations:
+          summary: "Kill switch is ACTIVE — all trading halted"
+          description: "The kill switch has been engaged. Check system_config table."
+        labels:
+          severity: critical
+
+      # Bot offline >5 minutes (no heartbeat)
+      - uid: p1-bot-offline
+        title: "Bot Offline >5min"
+        condition: polymarket_task_heartbeat_age_seconds > 300
+        for: 60s
+        annotations:
+          summary: "Bot {{ $labels.bot_name }} has not sent heartbeat in >5 minutes"
+        labels:
+          severity: critical
+
+      # Exposure exceeds per-bot limit
+      - uid: p1-exposure-breach
+        title: "Exposure Limit Breach"
+        condition: polymarket_exposure_usd > 15000
+        for: 0s
+        annotations:
+          summary: "Bot {{ $labels.bot_name }} exposure ${{ $value }} exceeds $15,000 limit"
+        labels:
+          severity: critical
+
+      # Database unhealthy
+      - uid: p1-db-unhealthy
+        title: "Database Unhealthy"
+        condition: polymarket_health_status{component="database"} == 0
+        for: 60s
+        annotations:
+          summary: "Database health check failing for >60s"
+        labels:
+          severity: critical
+
+  - orgId: 1
+    name: P2 - Warning Alerts (enable after 2 weeks baseline)
+    folder: Polymarket
+    interval: 60s
+    rules:
+      # RSS memory high (>1.5GB per process)
+      - uid: p2-memory-high
+        title: "High Memory Usage"
+        condition: polymarket_rss_bytes > 1610612736  # 1.5GB
+        for: 300s
+        annotations:
+          summary: "Bot {{ $labels.bot_name }} RSS at {{ $value | humanize1024 }}"
+        labels:
+          severity: warning
+
+      # API degraded
+      - uid: p2-api-degraded
+        title: "API Degraded"
+        condition: polymarket_health_status{component="api"} < 1
+        for: 300s
+        annotations:
+          summary: "API health degraded for >5min"
+        labels:
+          severity: warning
+
+      # Task watchdog stale heartbeat
+      - uid: p2-task-stale
+        title: "Task Heartbeat Stale"
+        condition: polymarket_task_heartbeat_age_seconds > 180
+        for: 60s
+        annotations:
+          summary: "Task {{ $labels.task_name }} in {{ $labels.bot_name }} stale for {{ $value }}s"
+        labels:
+          severity: warning
+
+      # Rate limiter denying >20% of requests
+      - uid: p2-rate-limited
+        title: "High Rate Limit Denial"
+        condition: >
+          rate(polymarket_api_requests_total{status="denied"}[5m])
+          / rate(polymarket_api_requests_total[5m]) > 0.20
+        for: 300s
+        annotations:
+          summary: "{{ $labels.endpoint }} rate limit denial rate >20%"
+        labels:
+          severity: warning
+
+      # DB connection pool near capacity
+      - uid: p2-db-pool
+        title: "DB Pool Near Capacity"
+        condition: polymarket_db_pool_active > 250
+        for: 60s
+        annotations:
+          summary: "DB connection pool at {{ $value }}/300 active connections"
+        labels:
+          severity: warning
+
+  - orgId: 1
+    name: P3 - Info (dashboard only, no notifications)
+    folder: Polymarket
+    interval: 300s
+    rules:
+      # Scan duration anomaly (>10x normal)
+      - uid: p3-scan-slow
+        title: "Scan Duration Anomaly"
+        condition: >
+          polymarket_scan_duration_seconds{quantile="0.99"} > 30
+        for: 600s
+        annotations:
+          summary: "{{ $labels.bot_name }} p99 scan taking >30s"
+        labels:
+          severity: info

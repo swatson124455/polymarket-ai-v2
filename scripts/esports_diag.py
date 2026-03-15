@@ -12,8 +12,8 @@ async def diag():
     async with db.get_session() as s:
         from sqlalchemy import text
 
-        BOTS = ["EsportsBot", "EsportsLiveBot", "EsportsSeriesBot"]
-        BOTS_CLAUSE = "('EsportsBot','EsportsLiveBot','EsportsSeriesBot')"
+        BOTS = ["EsportsBot", "EsportsLiveBot"]
+        BOTS_CLAUSE = "('EsportsBot','EsportsLiveBot')"
 
         # 1. trade_events last 16h per bot
         for bot in BOTS:

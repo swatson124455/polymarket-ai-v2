@@ -128,48 +128,59 @@ class PositionReconciler:
             return []
 
     async def _reconcile_paper_positions(self, internal: List[Dict]) -> List[Dict[str, Any]]:
-        """Paper-trading reconciliation: compare positions table vs paper_trades net.
+        """Paper-trading reconciliation: compare positions table vs trade_events net.
 
-        For each open position in `internal`, compute the net size from paper_trades
-        (BUY-side shares accumulated, minus SELL-side shares closed).  A discrepancy
-        of > 1% triggers a WARNING log.  Read-only — no position mutations.
+        For each open position in `internal`, compute the net size from trade_events
+        (ENTRY size accumulated, minus EXIT size closed).  Uses trade_events as the
+        P&L authority (not paper_trades which is legacy).
+
+        A discrepancy of > 1% triggers a WARNING log.  Read-only — no position mutations.
         """
         results: List[Dict[str, Any]] = []
         if not internal:
             return results
         try:
-            from sqlalchemy import text as _text, bindparam
+            from sqlalchemy import text as _text
             market_ids = [p["market_id"] for p in internal]
             async with self.db.get_session() as session:
-                pt_rows = await session.execute(
+                te_rows = await session.execute(
                     _text(
                         "SELECT market_id,"
-                        " SUM(CASE WHEN side IN ('YES', 'BUY') THEN size ELSE -size END) AS net_size"
-                        " FROM paper_trades"
+                        "  SUM(CASE WHEN event_type = 'ENTRY'"
+                        "    THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END)"
+                        "  - SUM(CASE WHEN event_type = 'EXIT'"
+                        "    THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END)"
+                        "  AS net_size"
+                        " FROM trade_events"
                         " WHERE market_id = ANY(:ids)"
+                        "   AND event_type IN ('ENTRY', 'EXIT')"
                         " GROUP BY market_id"
+                        " HAVING SUM(CASE WHEN event_type = 'ENTRY'"
+                        "   THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END)"
+                        "  - SUM(CASE WHEN event_type = 'EXIT'"
+                        "   THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) > 0.001"
                     ),
                     {"ids": market_ids},
                 )
-                pt_map: Dict[str, float] = {
-                    row.market_id: float(row.net_size or 0.0) for row in pt_rows.fetchall()
+                te_map: Dict[str, float] = {
+                    row.market_id: float(row.net_size or 0.0) for row in te_rows.fetchall()
                 }
         except Exception as exc:
-            logger.debug("paper_reconcile_query_failed", error=str(exc))
+            logger.debug("trade_events_reconcile_query_failed", error=str(exc))
             # Fall back to all-matched on DB error to avoid blocking
             return [
                 {"market_id": p["market_id"], "type": DiscrepancyType.MATCHED.value,
-                 "internal_size": p["size"], "paper_net_size": p["size"]}
+                 "internal_size": p["size"], "trade_events_net_size": p["size"]}
                 for p in internal
             ]
         for pos in internal:
             mid = pos["market_id"]
             internal_size = pos["size"]
-            paper_net = pt_map.get(mid, 0.0)
+            te_net = te_map.get(mid, 0.0)
             tolerance = max(0.01, internal_size * 0.01)  # 1% tolerance
-            if abs(internal_size - paper_net) <= tolerance:
+            if abs(internal_size - te_net) <= tolerance:
                 dtype = DiscrepancyType.MATCHED
-            elif internal_size > paper_net:
+            elif internal_size > te_net:
                 dtype = DiscrepancyType.OVER_INTERNAL
             else:
                 dtype = DiscrepancyType.UNDER_INTERNAL
@@ -179,14 +190,14 @@ class PositionReconciler:
                     market_id=mid,
                     type=dtype.value,
                     positions_table_size=internal_size,
-                    paper_trades_net=paper_net,
-                    difference=round(internal_size - paper_net, 6),
+                    trade_events_net=te_net,
+                    difference=round(internal_size - te_net, 6),
                 )
             results.append({
                 "market_id": mid,
                 "type": dtype.value,
                 "internal_size": internal_size,
-                "paper_net_size": paper_net,
+                "trade_events_net_size": te_net,
             })
         return results
 

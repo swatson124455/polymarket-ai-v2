@@ -244,7 +244,7 @@ class PaperTradingEngine:
         async with self._trade_lock:
             return await self._place_order_locked(
                 market_id, token_id, side, size, price, bot_name, confidence, original_side, order_type, correlation_id, latency_ms,
-                bid=bid, ask=ask, model_version=model_version, model_name=model_name,
+                bid=bid, ask=ask, model_version=model_version, model_name=model_name, event_data=event_data,
             )
 
     async def _place_order_locked(
@@ -264,6 +264,7 @@ class PaperTradingEngine:
         ask: float = 0.0,
         model_version: Optional[int] = None,
         model_name: Optional[str] = None,
+        event_data: Optional[dict] = None,
     ) -> Dict:
         """Inner order handler — called under self._trade_lock."""
         # Auto-reset daily P&L at day boundary (UTC)

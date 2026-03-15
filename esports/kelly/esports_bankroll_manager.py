@@ -144,7 +144,7 @@ class EsportsBankrollManager:
             return 0.0
         daily_exposure = getattr(self._gw, "_daily_exposure_usd", {})
         total = 0.0
-        for bot_name in ("EsportsBot", "EsportsLiveBot", "EsportsSeriesBot"):
+        for bot_name in ("EsportsBot", "EsportsLiveBot"):
             total += float(daily_exposure.get(bot_name, 0.0))
         return total
 

@@ -1,6 +1,6 @@
 """
-Rigorous tests verifying that all 5 active bots (WeatherBot, MirrorBot, EsportsBot,
-EsportsLiveBot, EsportsSeriesBot) operate identically in paper and live modes.
+Rigorous tests verifying that all 4 active bots (WeatherBot, MirrorBot, EsportsBot,
+EsportsLiveBot) operate identically in paper and live modes.
 
 Session 83: After SIMULATION_MODE branching was removed from risk_manager, bankroll_manager,
 order_gateway (liquidity), and ensemble_bot, these tests verify:
@@ -18,7 +18,7 @@ import time
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
-ACTIVE_BOTS = ["WeatherBot", "MirrorBot", "EsportsBot", "EsportsLiveBot", "EsportsSeriesBot"]
+ACTIVE_BOTS = ["WeatherBot", "MirrorBot", "EsportsBot", "EsportsLiveBot"]
 
 # Default mock settings values needed by check_risk_limits past pipeline gate
 _RISK_SETTINGS_DEFAULTS = dict(
@@ -464,7 +464,6 @@ class TestNoSimulationModeBranching:
         ("bots.mirror_bot", "MirrorBot"),
         ("bots.esports_bot", "EsportsBot"),
         ("bots.esports_live_bot", "EsportsLiveBot"),
-        ("bots.esports_series_bot", "EsportsSeriesBot"),
     ])
     def test_no_simulation_mode_in_bot_source(self, bot_module, bot_class):
         """No active bot file references SIMULATION_MODE."""

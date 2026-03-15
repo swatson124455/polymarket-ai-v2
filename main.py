@@ -99,7 +99,6 @@ from bots.sports_live_bot import SportsLiveBot
 from bots.sports_arb_bot import SportsArbBot
 from bots.esports_bot import EsportsBot
 from bots.esports_live_bot import EsportsLiveBot
-from bots.esports_series_bot import EsportsSeriesBot
 from bots.logical_arb_bot import LogicalArbBot
 
 logger = get_logger()
@@ -136,7 +135,6 @@ BOT_REGISTRY = {
     # Esports bots — Migration 024 (all disabled by default)
     "EsportsBot":       (EsportsBot,       "BOT_ENABLED_ESPORTS"),
     "EsportsLiveBot":   (EsportsLiveBot,   "BOT_ENABLED_ESPORTS_LIVE"),
-    "EsportsSeriesBot": (EsportsSeriesBot, "BOT_ENABLED_ESPORTS_SERIES"),
     # Logical arbitrage bot — cross-market constraint violations
     "LogicalArbBot":    (LogicalArbBot,    "BOT_ENABLED_LOGICAL_ARB"),
 }
@@ -359,7 +357,6 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
                     "WeatherBot": "BOT_ENABLED_WEATHER",
                     "EsportsBot": "BOT_ENABLED_ESPORTS",
                     "EsportsLiveBot": "BOT_ENABLED_ESPORTS_LIVE",
-                    "EsportsSeriesBot": "BOT_ENABLED_ESPORTS_SERIES",
                 }
                 async with _db.get_session() as _hb_sess:
                     _hb_result = await _hb_sess.execute(

@@ -93,9 +93,9 @@ class PandaScoreClient:
     """
     Async PandaScore REST API client.
 
-    Rate counter is CLASS-LEVEL: all instances (EsportsBot, EsportsLiveBot,
-    EsportsSeriesBot) share one request counter per hour, preventing aggregate
-    overrun of the 1000 req/hr free-tier quota.
+    Rate counter is CLASS-LEVEL: all instances (EsportsBot, EsportsLiveBot)
+    share one request counter per hour, preventing aggregate overrun of the
+    1000 req/hr free-tier quota.
 
     Usage::
         client = PandaScoreClient(api_key="your-key")
@@ -106,9 +106,8 @@ class PandaScoreClient:
     """
 
     # Shared rate-limit counter across ALL PandaScoreClient instances.
-    # EsportsBot + EsportsLiveBot + EsportsSeriesBot each create their own
-    # PandaScoreClient, so the aggregate quota is 3× any single bot's count.
-    # Class-level state ensures all 3 bots share one 1000 req/hr budget.
+    # EsportsBot + EsportsLiveBot each create their own PandaScoreClient,
+    # so class-level state ensures both share one 1000 req/hr budget.
     _shared_req_count: int = 0
     _shared_req_window_start: float = 0.0  # set to time.monotonic() on first use
     _shared_lock: Optional[asyncio.Lock] = None  # lazy-init in asyncio context

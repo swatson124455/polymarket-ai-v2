@@ -47,6 +47,11 @@ class MetarClient:
         # Cache: "{station_id}:{date_iso}" → (expiry_monotonic, daily_max_celsius)
         self._daily_max_cache: Dict[str, Tuple[float, Optional[float]]] = {}
         self._cache_ttl = cache_ttl
+        self._asos_client = None  # Set via set_asos_client() for 1-min resolution-day data
+
+    def set_asos_client(self, asos_client) -> None:
+        """Wire ASOS 1-minute client for enhanced resolution-day tracking."""
+        self._asos_client = asos_client
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -145,6 +150,17 @@ class MetarClient:
             if val is None:
                 return None
             return (val * 9.0 / 5.0 + 32.0) if temp_unit.upper() == "F" else val
+
+        # Try 1-minute ASOS data on resolution day for US stations (higher granularity)
+        is_resolution_day = target_date == datetime.now(timezone.utc).date()
+        if is_resolution_day and self._asos_client and station_id.upper().startswith("K"):
+            try:
+                asos_max = await self._asos_client.get_running_daily_max(station_id, target_date, temp_unit)
+                if asos_max is not None:
+                    logger.debug("metar_using_asos_1min", station=station_id, max=round(asos_max, 1))
+                    return asos_max
+            except Exception as exc:
+                logger.debug("asos_1min_fallback_to_metar", station=station_id, error=str(exc))
 
         session = await self._ensure_session()
         target_iso = target_date.isoformat()

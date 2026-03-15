@@ -42,7 +42,6 @@ from bots.sports_live_bot import SportsLiveBot
 from bots.sports_arb_bot import SportsArbBot
 from bots.esports_bot import EsportsBot
 from bots.esports_live_bot import EsportsLiveBot
-from bots.esports_series_bot import EsportsSeriesBot
 from bots.logical_arb_bot import LogicalArbBot
 from config.settings import settings
 
@@ -363,7 +362,7 @@ async def init_system(wallet_private_key: str = "", wallet_address: str = ""):
             "LogicalArbBot": LogicalArbBot(base_engine),
         }
         # Esports bots fail fast if PANDASCORE_API_KEY not set — add only if available
-        for _name, _cls in [("EsportsBot", EsportsBot), ("EsportsLiveBot", EsportsLiveBot), ("EsportsSeriesBot", EsportsSeriesBot)]:
+        for _name, _cls in [("EsportsBot", EsportsBot), ("EsportsLiveBot", EsportsLiveBot)]:
             try:
                 bots[_name] = _cls(base_engine)
             except (ValueError, Exception):
@@ -3392,10 +3391,9 @@ def show_settings():
     _gcols2[1].metric("Weather Hold hrs", str(getattr(settings, "WEATHER_HOLD_HOURS_BEFORE_RESOLUTION", 48.0)))
     _gcols2[2].metric("LogicalArbBot", "✅ ON" if getattr(settings, "BOT_ENABLED_LOGICAL_ARB", False) else "⭕ OFF")
     st.caption("Esports")
-    _ecols = st.columns(3)
+    _ecols = st.columns(2)
     _ecols[0].metric("EsportsBot", "✅" if getattr(settings, "BOT_ENABLED_ESPORTS", False) else "⭕")
     _ecols[1].metric("EsportsLiveBot", "✅" if getattr(settings, "BOT_ENABLED_ESPORTS_LIVE", False) else "⭕")
-    _ecols[2].metric("EsportsSeriesBot", "✅" if getattr(settings, "BOT_ENABLED_ESPORTS_SERIES", False) else "⭕")
 
     if st.button("💾 Save Settings", type="primary"):
         st.success("Settings saved! (Note: Some settings require restart to take effect)")

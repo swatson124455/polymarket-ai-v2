@@ -571,7 +571,7 @@ class TestBotRegistry:
             # Sports betting bots — Migration 022
             "SportsInjuryBot", "SportsLiveBot", "SportsArbBot",
             # Esports bots — Migration 024
-            "EsportsBot", "EsportsLiveBot", "EsportsSeriesBot",
+            "EsportsBot", "EsportsLiveBot",
             # Logical arbitrage bot
             "LogicalArbBot",
         }

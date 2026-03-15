@@ -43,6 +43,12 @@ class RiskManager:
         # Consecutive loss tracking: bot_name → count of consecutive losing closed trades.
         # Reset to 0 on any winning trade. Used by MAX_CONSECUTIVE_LOSSES guardrail.
         self._consecutive_losses: Dict[str, int] = {}
+        # S91: CVaR base cache — caches existing-position CVaR result (30s TTL).
+        # compute_marginal_cvar() was calling compute_cvar() 2x per trade (3x total
+        # including check_risk_limits), each doing 10k Monte Carlo sims on ~200 positions.
+        self._cvar_base_cache: Optional[Dict[str, Any]] = None
+        self._cvar_base_positions_hash: Optional[int] = None
+        self._cvar_base_cache_until: float = 0.0
 
     def set_kill_switch(self, kill_switch: Any) -> None:
         """Wire kill switch after init (avoids circular init order)."""
@@ -400,7 +406,7 @@ class RiskManager:
                 total_exposure = og.get_bot_exposure_usd(bot_name)
                 max_total = getattr(settings, "WEATHER_MAX_TOTAL_EXPOSURE_USD", max_total)
             # EsportsBot variants: same pattern — isolate from MirrorBot/WeatherBot exposure.
-            elif bot_name in ("EsportsBot", "EsportsLiveBot", "EsportsSeriesBot"):
+            elif bot_name in ("EsportsBot", "EsportsLiveBot"):
                 total_exposure = og.get_bot_exposure_usd(bot_name)
                 max_total = getattr(settings, "ESPORTS_MAX_TOTAL_EXPOSURE_USD", max_total)
             if total_exposure + position_value > max_total:
@@ -538,10 +544,15 @@ class RiskManager:
 
         # DEAD-1 fix: CVaR tail-risk gate via CorrelationRiskManager
         # Only runs when allowed so far and correlation_risk is available
+        # S91: Cache existing-positions snapshot + base CVaR (30s TTL).
+        # Previously: compute_marginal_cvar did 2x compute_cvar (10k MC sims each)
+        # + check_risk_limits did 1x more = 3x 10k sims per trade = 3-13s.
+        # Now: cache base CVaR, only 1x compute_cvar(existing+new) per trade.
+        _existing_positions = None
         if checks["allowed"] and self._correlation_risk is not None:
             try:
                 max_cvar = getattr(settings, "RISK_MAX_PORTFOLIO_CVAR_USD", 200.0)
-                existing_positions = await self._get_open_positions_for_cvar()
+                _existing_positions = await self._get_open_positions_for_cvar()
                 new_pos = {
                     "market_id": market_id,
                     "side": "YES",
@@ -549,9 +560,24 @@ class RiskManager:
                     "price": price,
                     "predicted_prob": prediction if prediction is not None else 0.5,
                 }
-                marginal = self._correlation_risk.compute_marginal_cvar(existing_positions, new_pos)
-                cvar_after = self._correlation_risk.compute_cvar(existing_positions + [new_pos])
+
+                # S91: Use cached base CVaR when positions haven't changed
+                now = time.monotonic()
+                _pos_hash = len(_existing_positions)  # cheap proxy — count changes on trade
+                if (self._cvar_base_cache is not None
+                        and now < self._cvar_base_cache_until
+                        and self._cvar_base_positions_hash == _pos_hash):
+                    cvar_before = self._cvar_base_cache
+                else:
+                    cvar_before = self._correlation_risk.compute_cvar(_existing_positions)
+                    self._cvar_base_cache = cvar_before
+                    self._cvar_base_positions_hash = _pos_hash
+                    self._cvar_base_cache_until = now + 30.0
+
+                cvar_after = self._correlation_risk.compute_cvar(_existing_positions + [new_pos])
                 portfolio_cvar = cvar_after.get("cvar", 0)
+                marginal = cvar_after.get("cvar", 0) - cvar_before.get("cvar", 0)
+
                 if portfolio_cvar > max_cvar:
                     checks["allowed"] = False
                     checks["reasons"].append(
@@ -569,15 +595,16 @@ class RiskManager:
 
         # PCA factor exposure gate: prevent over-concentration in correlated clusters
         # Runs after CVaR when correlation_risk provides PCA factor data
+        # S91: Reuse _existing_positions from CVaR check above (avoids 2nd fetch)
         if checks["allowed"] and self._correlation_risk is not None:
             try:
                 _max_factor_usd = float(getattr(settings, "RISK_MAX_FACTOR_EXPOSURE_USD", 500.0))
                 if _max_factor_usd > 0:
                     _corr_strat = getattr(self._correlation_risk, "_correlation_strategy", None)
                     if _corr_strat is not None and hasattr(_corr_strat, "compute_factor_exposure"):
-                        existing_positions = await self._get_open_positions_for_cvar()
-                        # Add proposed position
-                        all_positions = existing_positions + [{
+                        if _existing_positions is None:
+                            _existing_positions = await self._get_open_positions_for_cvar()
+                        all_positions = _existing_positions + [{
                             "market_id": market_id, "size": size, "price": price,
                         }]
                         market_factor_map = getattr(self._correlation_risk, "_market_factor_map", None)

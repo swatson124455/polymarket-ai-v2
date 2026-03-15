@@ -73,6 +73,7 @@ from base_engine.data.mempool_monitor import MempoolMonitor
 
 # Coordination and lifecycle (mandatory for multi-bot)
 from base_engine.coordination import KillSwitch, TradeCoordinator
+from base_engine.monitoring.dead_man_switch import DeadManSwitch
 from base_engine.learning.scheduler import LearningScheduler
 from base_engine.learning.elite_detector import EliteUserDetector
 from base_engine.learning.calibration_tracker import CalibrationTracker
@@ -279,6 +280,9 @@ class BaseEngine:
         self.degradation_manager: Optional[DegradationManager] = None
         self.health_scheduler: Optional[HealthScheduler] = None
 
+        # Dead man's switch — heartbeat writer for external watchdog
+        self.dead_man_switch: Optional[DeadManSwitch] = None
+
         # In-memory market index for millisecond-latency reactive trading
         # Populated by scan loops, consumed by on_price_update() handlers
         self._market_index: Dict[str, Dict[str, Any]] = {}
@@ -291,6 +295,21 @@ class BaseEngine:
         self._shared_feature_stats: Dict[str, Any] = {}
 
         self.running = False
+
+        # A1: Startup hold period — bots must wait until critical state is restored
+        self._ready_to_trade: bool = False
+        self._positions_seeded: bool = False
+        self._exposure_restored: bool = False
+        self._reconciliation_passed: bool = False
+        self._startup_hold_timeout: float = 120.0  # seconds
+
+        # A4: RSS memory monitoring
+        self._rss_psutil_available: Optional[bool] = None  # None = not yet checked
+
+        # A5: Asyncio task watchdog
+        self._task_heartbeats: Dict[str, float] = {}
+        self._task_restart_counts: Dict[str, int] = {}
+        self._task_restart_timestamps: Dict[str, list] = {}
 
     # ── In-memory market index for ms-latency reactive trading ────────
 
@@ -1013,6 +1032,9 @@ class BaseEngine:
             if self.execution_engine is not None:
                 self.execution_engine.set_kill_switch(self.kill_switch)
             self.trade_coordinator = TradeCoordinator(self.db, bot_id)
+
+            # A9: Dead man's switch — writes heartbeats for external watchdog
+            self.dead_man_switch = DeadManSwitch(db=self.db)
             adverse_tracker = None
             if self.db is not None:
                 try:
@@ -1214,6 +1236,127 @@ class BaseEngine:
         exc = task.exception()
         if exc:
             logger.critical("Background task '%s' crashed: %s", name, exc, exc_info=exc)
+
+    # ── A1: Startup hold period ─────────────────────────────────────────
+
+    def _check_all_ready(self) -> None:
+        """If all three startup prerequisites are met, mark ready to trade."""
+        if self._positions_seeded and self._exposure_restored and self._reconciliation_passed:
+            self.mark_ready_to_trade()
+
+    def mark_positions_seeded(self) -> None:
+        self._positions_seeded = True
+        logger.info("startup_hold: positions seeded")
+        self._check_all_ready()
+
+    def mark_exposure_restored(self) -> None:
+        self._exposure_restored = True
+        logger.info("startup_hold: exposure restored")
+        self._check_all_ready()
+
+    def mark_reconciliation_passed(self) -> None:
+        self._reconciliation_passed = True
+        logger.info("startup_hold: reconciliation passed")
+        self._check_all_ready()
+
+    def mark_ready_to_trade(self) -> None:
+        if not self._ready_to_trade:
+            self._ready_to_trade = True
+            logger.info("startup_hold: engine ready to trade")
+
+    def is_ready_to_trade(self) -> bool:
+        return self._ready_to_trade
+
+    async def _periodic_startup_hold_watchdog(self) -> None:
+        """After _startup_hold_timeout seconds, force ready if still not ready (degraded mode)."""
+        await asyncio.sleep(self._startup_hold_timeout)
+        if not self._ready_to_trade:
+            _missing = []
+            if not self._positions_seeded:
+                _missing.append("positions_seeded")
+            if not self._exposure_restored:
+                _missing.append("exposure_restored")
+            if not self._reconciliation_passed:
+                _missing.append("reconciliation_passed")
+            logger.warning(
+                "startup_hold: timeout reached, entering degraded mode",
+                timeout_s=self._startup_hold_timeout,
+                missing=_missing,
+            )
+            self.mark_ready_to_trade()
+
+    # ── A4: RSS memory monitoring ────────────────────────────────────────
+
+    async def _periodic_rss_monitor(self) -> None:
+        """Monitor process RSS. Warn at 1.5GB, critical at 2.0GB. INFO log every 5 min."""
+        try:
+            import psutil
+            self._rss_psutil_available = True
+        except ImportError:
+            self._rss_psutil_available = False
+            logger.info("rss_monitor: psutil not available, skipping RSS monitoring")
+            return
+
+        _WARNING_BYTES = 1.5 * 1024 ** 3   # 1.5 GB
+        _CRITICAL_BYTES = 2.0 * 1024 ** 3   # 2.0 GB
+        _process = psutil.Process()
+        _tick = 0  # counts 60s intervals; log INFO every 5 (=300s)
+
+        while self.running:
+            await asyncio.sleep(60)
+            try:
+                _rss = _process.memory_info().rss
+                _rss_mb = _rss / (1024 ** 2)
+
+                if _rss >= _CRITICAL_BYTES:
+                    logger.critical("rss_monitor: CRITICAL memory usage", rss_mb=round(_rss_mb, 1))
+                elif _rss >= _WARNING_BYTES:
+                    logger.warning("rss_monitor: high memory usage", rss_mb=round(_rss_mb, 1))
+
+                _tick += 1
+                if _tick % 5 == 0:
+                    logger.info("rss_monitor: current RSS", rss_mb=round(_rss_mb, 1))
+            except Exception as _e:
+                logger.debug("rss_monitor: check failed (non-critical): %s", _e)
+
+    # ── A5: Asyncio task watchdog ────────────────────────────────────────
+
+    def record_task_heartbeat(self, name: str) -> None:
+        """Record a heartbeat for a named task (monotonic timestamp)."""
+        self._task_heartbeats[name] = time.monotonic()
+
+    async def _periodic_task_watchdog(self) -> None:
+        """Every 60s, check registered heartbeats for stale tasks (>180s)."""
+        _STALE_THRESHOLD = 180.0
+        _CIRCUIT_BREAKER_MAX = 3
+        _CIRCUIT_BREAKER_WINDOW = 600.0  # 10 minutes
+
+        while self.running:
+            await asyncio.sleep(60)
+            _now = time.monotonic()
+            for _name, _last_beat in list(self._task_heartbeats.items()):
+                _age = _now - _last_beat
+                if _age > _STALE_THRESHOLD:
+                    # Check circuit breaker
+                    _timestamps = self._task_restart_timestamps.get(_name, [])
+                    # Prune old timestamps outside the window
+                    _timestamps = [t for t in _timestamps if (_now - t) < _CIRCUIT_BREAKER_WINDOW]
+                    self._task_restart_timestamps[_name] = _timestamps
+
+                    _restart_count = len(_timestamps)
+                    if _restart_count >= _CIRCUIT_BREAKER_MAX:
+                        logger.critical(
+                            "task_watchdog: circuit breaker open — task stale, not restarting",
+                            task=_name,
+                            stale_seconds=round(_age, 1),
+                            restarts_in_window=_restart_count,
+                        )
+                    else:
+                        logger.critical(
+                            "task_watchdog: stale heartbeat detected",
+                            task=_name,
+                            stale_seconds=round(_age, 1),
+                        )
 
     async def start(self):
         self.running = True
@@ -1512,6 +1655,13 @@ class BaseEngine:
                         await _gw._flush_daily_exposure()
                     except Exception as _e:
                         logger.debug("Periodic exposure flush error (non-critical): %s", _e)
+                    # A9: Dead man's switch heartbeat — piggybacks on 60s flush
+                    if self.dead_man_switch:
+                        try:
+                            for _bn in (_gw._bot_names_used or {"system"}):
+                                await self.dead_man_switch.write_heartbeat(_bn)
+                        except Exception as _he:
+                            logger.debug("Heartbeat write error (non-critical): %s", _he)
 
             self._periodic_tasks.append(asyncio.ensure_future(_periodic_exposure_flush()))
 
@@ -1538,6 +1688,15 @@ class BaseEngine:
                     await asyncio.sleep(1800)
 
             self._periodic_tasks.append(asyncio.ensure_future(_periodic_reconcile()))
+
+        # A1: Startup hold timeout — force ready after 120s if prerequisites not met
+        self._periodic_tasks.append(asyncio.ensure_future(self._periodic_startup_hold_watchdog()))
+
+        # A4: RSS memory monitoring — warn at 1.5GB, critical at 2.0GB
+        self._periodic_tasks.append(asyncio.ensure_future(self._periodic_rss_monitor()))
+
+        # A5: Asyncio task watchdog — detect stale heartbeats every 60s
+        self._periodic_tasks.append(asyncio.ensure_future(self._periodic_task_watchdog()))
 
     async def stop(self):
         self.running = False
@@ -2274,6 +2433,7 @@ class BaseEngine:
         prediction: Optional[float] = None,
         order_type: str = "market",
         correlation_id: Optional[str] = None,
+        event_data: Optional[dict] = None,
     ):
         # Single path: OrderGateway (kill switch, risk, liquidity, coordinator).
         # When SIMULATION_MODE=true it uses paper_trading; else execution_engine.
@@ -2281,6 +2441,7 @@ class BaseEngine:
             return await self.order_gateway.place_order(
                 bot_name, market_id, token_id, side, size, price, confidence,
                 prediction=prediction, order_type=order_type, correlation_id=correlation_id,
+                event_data=event_data,
             )
         raise RuntimeError("OrderGateway not initialized — cannot place orders without gateway")
     

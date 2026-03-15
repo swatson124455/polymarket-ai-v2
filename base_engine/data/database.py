@@ -4717,7 +4717,6 @@ class Database:
                         "MirrorBot": float(getattr(_settings, "MIRROR_TOTAL_CAPITAL", 3000)),
                         "EsportsBot": float(getattr(_settings, "ESPORTS_TOTAL_CAPITAL", 5000)),
                         "EsportsLiveBot": float(getattr(_settings, "ESPORTS_TOTAL_CAPITAL", 5000)),
-                        "EsportsSeriesBot": float(getattr(_settings, "ESPORTS_TOTAL_CAPITAL", 5000)),
                     }
                     total_capital = _bot_capitals.get(bot_name, 1000.0)
                     current_equity = total_capital + realized + unrealized_pnl
@@ -4952,12 +4951,12 @@ class Database:
         # Only recon active bots — skip disabled bots and archived EnsembleBot
         import os as _os
         _active_bots = set()
-        for _bname in ("WeatherBot", "MirrorBot", "EsportsBot", "EsportsLiveBot", "EsportsSeriesBot"):
+        for _bname in ("WeatherBot", "MirrorBot", "EsportsBot", "EsportsLiveBot"):
             _env_key = f"BOT_ENABLED_{_bname.upper()}"
             if _os.getenv(_env_key, "true").lower() != "false":
                 _active_bots.add(_bname)
         if not _active_bots:
-            _active_bots = {"WeatherBot", "MirrorBot", "EsportsBot", "EsportsLiveBot", "EsportsSeriesBot"}
+            _active_bots = {"WeatherBot", "MirrorBot", "EsportsBot", "EsportsLiveBot"}
 
         # Auto-repair orphaned positions before checking for mismatches
         try:

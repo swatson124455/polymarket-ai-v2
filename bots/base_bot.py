@@ -50,7 +50,6 @@ _SCAN_INTERVAL_KEYS = {
     # Esports bots — Migration 024
     "EsportsBot":       "ESPORTS",
     "EsportsLiveBot":   "ESPORTS_LIVE",
-    "EsportsSeriesBot": "ESPORTS_SERIES",
     # Logical arbitrage bot
     "LogicalArbBot":    "LOGICAL_ARB",
 }

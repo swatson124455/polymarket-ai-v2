@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Polymarket Dead Man's Switch Watchdog every 60s
+
+[Timer]
+OnBootSec=300
+OnUnitActiveSec=60
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target

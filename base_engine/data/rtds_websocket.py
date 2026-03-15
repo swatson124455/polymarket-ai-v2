@@ -40,8 +40,6 @@ class RTDSWebSocket:
         self._message_loop_task: Optional[asyncio.Task] = None
         self._events_total: int = 0
         self._events_dispatched: int = 0
-        self._debug_samples: int = 0
-        self._MAX_DEBUG_SAMPLES: int = 0  # Session 83: disabled diagnostic logging
 
     async def connect(self) -> None:
         """Connect to RTDS and subscribe to activity/trades."""
@@ -176,19 +174,6 @@ class RTDSWebSocket:
         """
         # Unwrap RTDS envelope: trade data is in "payload"
         payload = data.get("payload", data)
-
-        # Log first N raw events for payload verification (then stop)
-        if self._debug_samples < self._MAX_DEBUG_SAMPLES:
-            self._debug_samples += 1
-            _keys = sorted(data.keys()) if isinstance(data, dict) else []
-            _p_keys = sorted(payload.keys()) if isinstance(payload, dict) else []
-            logger.info("rtds_raw_sample", sample_num=self._debug_samples,
-                        envelope_keys=_keys,
-                        payload_keys=_p_keys,
-                        has_proxyWallet=bool(payload.get("proxyWallet") if isinstance(payload, dict) else False),
-                        has_asset=bool(payload.get("asset") if isinstance(payload, dict) else False),
-                        side=payload.get("side") if isinstance(payload, dict) else None,
-                        outcome=payload.get("outcome") if isinstance(payload, dict) else None)
 
         # Handle payload: could be a single dict or a list of dicts
         if isinstance(payload, list):

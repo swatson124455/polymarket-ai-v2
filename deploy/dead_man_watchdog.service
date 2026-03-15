@@ -1,0 +1,9 @@
+[Unit]
+Description=Polymarket Dead Man's Switch Watchdog
+After=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/polymarket-ai-v2/deploy/dead_man_watchdog.sh
+User=ubuntu
+Environment=DEAD_MAN_WEBHOOK_URL=

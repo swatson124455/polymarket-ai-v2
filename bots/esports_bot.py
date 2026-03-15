@@ -137,6 +137,23 @@ class EsportsBot(BaseBot):
         self._analysis_semaphore = asyncio.Semaphore(_concurrency)
         self._trade_lock = asyncio.Lock()  # serializes exposure-mutating trade execution
 
+        # Series trading state (always on — merged from EsportsSeriesBot)
+        self._series_min_edge = float(getattr(settings, "ESPORTS_SERIES_MIN_EDGE", 0.10))
+        self._series_reverse_sweep_floor = float(
+            getattr(settings, "ESPORTS_SERIES_REVERSE_SWEEP_FLOOR", 0.05)
+        )
+        self._series_hedge_enabled = bool(
+            getattr(settings, "ESPORTS_SERIES_HEDGE_ENABLED", True)
+        )
+        self._series_refresh_interval = int(
+            getattr(settings, "ESPORTS_SERIES_REFRESH_INTERVAL", 30)
+        )
+        self._active_series: Dict[str, Dict] = {}
+        self._series_prediction_cache: Dict[str, Dict] = {}
+        self._series_last_refresh: float = 0.0
+        self._series_glicko2_cache: Dict[str, float] = {}
+        self._hltv = None
+
         # Settings
         # "Easy mode": relaxed thresholds until models graduate, then tighten.
         # Graduation = accuracy >= 55% + brier <= 0.24 on holdout.
@@ -230,6 +247,14 @@ class EsportsBot(BaseBot):
                 logger.warning("EsportsBot: Ballchasing client not available", error=str(exc))
         else:
             self._ballchasing = None
+
+        # HLTV scraper — CS2 per-team map win rates for series analysis
+        try:
+            from esports.data.hltv_scraper import HLTVScraper
+            self._hltv = HLTVScraper()
+            logger.info("EsportsBot: HLTV scraper initialized")
+        except Exception:
+            logger.debug("EsportsBot: HLTV scraper not available")
 
         db = getattr(self.base_engine, "db", None)
         # market_service passed below after initialization (if successful)
@@ -397,6 +422,9 @@ class EsportsBot(BaseBot):
         # This MUST come before super() to avoid processing all 26K markets.
         cached = self._prediction_cache.get(market_id)
         if not cached:
+            # Fallback: check series prediction cache for BO3/BO5 markets
+            if self._series_prediction_cache.get(market_id):
+                await self._series_on_price_update(event)
             return  # Skip super() for non-esports markets — avoids latency overhead
 
         # Only call super() for esports markets we care about
@@ -537,9 +565,15 @@ class EsportsBot(BaseBot):
         # _market_token_map: cap at 1000 entries — bulk clear when oversized
         if len(self._market_token_map) > 1000:
             self._market_token_map.clear()
-        if stale or stale_log:
+        # _series_prediction_cache: evict > 30 min old
+        stale_series = [k for k, v in self._series_prediction_cache.items()
+                        if now - v.get("ts", 0) > 1800]
+        for k in stale_series:
+            del self._series_prediction_cache[k]
+        if stale or stale_log or stale_series:
             logger.debug("esports_cache_cleanup", prediction_evicted=len(stale),
-                         log_evicted=len(stale_log), token_map_size=len(self._market_token_map))
+                         log_evicted=len(stale_log), series_evicted=len(stale_series),
+                         token_map_size=len(self._market_token_map))
 
     async def scan_and_trade(self) -> None:
         """
@@ -800,6 +834,19 @@ class EsportsBot(BaseBot):
             backfills_this_scan=self._backfill_calls_this_scan,
         )
 
+        # Series analysis — analyze live BO3/BO5 matches for conditional probability edge
+        try:
+            series_opps, series_trades = await self._series_scan()
+            if series_opps or series_trades:
+                logger.info(
+                    "esports_series_scan",
+                    active_series=len(self._active_series),
+                    opportunities=series_opps,
+                    trades=series_trades,
+                )
+        except Exception as exc:
+            logger.debug("esports_series_scan_failed", error=str(exc))
+
         # P1.2: Backfill actual_outcome for settled esports paper_trades every 10 scans
         # Non-financial bookkeeping — safe for fire-and-forget (updates prediction_log metadata)
         if self._scan_count % 10 == 0 and db is not None:
@@ -857,7 +904,7 @@ class EsportsBot(BaseBot):
                 result = await session.execute(text("""
                     SELECT COALESCE(SUM(CAST(realized_pnl AS DOUBLE PRECISION)), 0.0)
                     FROM trade_events
-                    WHERE bot_name IN ('EsportsBot', 'EsportsLiveBot', 'EsportsSeriesBot')
+                    WHERE bot_name IN ('EsportsBot', 'EsportsLiveBot')
                       AND event_type IN ('EXIT', 'RESOLUTION')
                       AND realized_pnl IS NOT NULL
                       AND event_time >= :today_start
@@ -1086,7 +1133,7 @@ class EsportsBot(BaseBot):
                     SELECT DISTINCT te.market_id, te.side,
                         CASE WHEN te.realized_pnl > 0 THEN 1 ELSE 0 END AS won
                     FROM trade_events te
-                    WHERE te.bot_name IN ('EsportsBot', 'EsportsSeriesBot', 'EsportsLiveBot')
+                    WHERE te.bot_name IN ('EsportsBot', 'EsportsLiveBot')
                       AND te.event_type = 'RESOLUTION'
                       AND te.realized_pnl IS NOT NULL
                       AND te.side IN ('YES', 'NO')
@@ -2006,7 +2053,48 @@ class EsportsBot(BaseBot):
         Includes A10 (pre-update exposure), A6 (uncertainty-scaled sizing),
         A5 (near-expiry boost), A8 (drawdown Kelly reduction),
         Session 83: conformal conservative sizing.
+        Series: S-T size override for correlated series bets.
         """
+        # Series S-T allocation override — size already computed by
+        # _series_smoczynski_tomkins_allocate(), skip Kelly sizing
+        st_override = opp.pop("_st_size_override", None)
+        if st_override is not None and st_override >= 1.0:
+            game = opp.get("game", "")
+            self._game_exposure[game] = self._game_exposure.get(game, 0.0) + st_override
+            if game:
+                self._market_game[opp["market_id"]] = game
+            order = await self.place_order(
+                market_id=opp["market_id"],
+                token_id=opp["token_id"],
+                side=opp["side"],
+                size=st_override,
+                price=opp["price"],
+                confidence=opp["confidence"],
+            )
+            if order and order.get("success"):
+                if game:
+                    _db = getattr(self.base_engine, "db", None)
+                    if _db is not None:
+                        try:
+                            await _inc_daily(_db, "EsportsBot", f"game_{game}", st_override)
+                        except Exception:
+                            pass
+                logger.info(
+                    "esports_series_trade_executed",
+                    type=opp.get("type"),
+                    game=game,
+                    market_id=opp["market_id"],
+                    side=opp["side"],
+                    size=round(st_override, 2),
+                    edge=opp.get("edge"),
+                    series_score=opp.get("series_score"),
+                )
+            else:
+                self._game_exposure[game] = max(
+                    0.0, self._game_exposure.get(game, 0.0) - st_override
+                )
+            return
+
         confidence = opp["confidence"]
 
         # Session 83: If conformal predictor is fitted, use conservative bound for sizing.
@@ -3277,3 +3365,567 @@ class EsportsBot(BaseBot):
             return best_tid
 
         return None
+
+    # ── Series Analysis (merged from EsportsSeriesBot) ────────────────────
+
+    async def _series_scan(self) -> tuple:
+        """Orchestrate series analysis: refresh, analyze, allocate, execute.
+
+        Returns (opportunities_count, trades_count).
+        """
+        db = getattr(self.base_engine, "db", None)
+
+        # Prune stale series prediction cache (>30 min)
+        now = time.monotonic()
+        stale = [k for k, v in self._series_prediction_cache.items()
+                 if now - v.get("ts", 0) > 1800]
+        for k in stale:
+            del self._series_prediction_cache[k]
+
+        self._series_refresh()
+
+        if not self._active_series:
+            return (0, 0)
+
+        all_opps: List[Dict] = []
+        for match_id, series_data in list(self._active_series.items()):
+            try:
+                opps = await self._series_analyze(match_id, series_data, db)
+                all_opps.extend(opps)
+            except Exception as exc:
+                logger.debug(
+                    "esports_series_analysis_error",
+                    match_id=match_id,
+                    error=str(exc),
+                )
+
+        _trades = 0
+
+        if len(all_opps) >= 2:
+            max_daily = float(getattr(settings, "ESPORTS_MAX_DAILY_USD", 500.0))
+            daily_spent = 0.0
+            gw = getattr(self.base_engine, "order_gateway", None)
+            if gw:
+                daily_exposure = getattr(gw, "_daily_exposure_usd", {})
+                daily_spent = float(daily_exposure.get(self.bot_name, 0.0))
+            group_budget = max(0.0, max_daily * 0.5 - daily_spent)
+
+            st_sizes = self._series_smoczynski_tomkins_allocate(all_opps, group_budget)
+            if st_sizes:
+                logger.info(
+                    "esports_series_st_allocation",
+                    n_opps=len(st_sizes),
+                    total_usd=round(sum(st_sizes.values()), 2),
+                    budget=round(group_budget, 2),
+                )
+            for opp in all_opps:
+                st_size = st_sizes.get(opp["market_id"])
+                if st_size and st_size >= 1.0:
+                    opp["_st_size_override"] = st_size
+                    await self._execute_esports_trade(opp)
+                    _trades += 1
+        else:
+            for opp in all_opps:
+                await self._execute_esports_trade(opp)
+                _trades += 1
+
+        return (len(all_opps), _trades)
+
+    def _series_refresh(self) -> None:
+        """Filter _live_matches for BO3+ series. No API call — reuses existing data."""
+        now = time.monotonic()
+        if now - self._series_last_refresh < self._series_refresh_interval:
+            return
+        self._series_last_refresh = now
+
+        new_series: Dict[str, Dict] = {}
+        for mid, match in self._live_matches.items():
+            best_of = 1
+            if isinstance(match, dict):
+                best_of = int(match.get("best_of", 1))
+            else:
+                best_of = int(getattr(match, "best_of", 1))
+            if best_of < 3:
+                continue
+
+            if isinstance(match, dict):
+                team_a = match.get("team_a", "")
+                team_b = match.get("team_b", "")
+                score_a = match.get("score_a", 0)
+                score_b = match.get("score_b", 0)
+                game = match.get("game", "")
+            else:
+                team_a = getattr(match, "team_a", "")
+                team_b = getattr(match, "team_b", "")
+                score_a = getattr(match, "score_a", 0)
+                score_b = getattr(match, "score_b", 0)
+                game = getattr(match, "game", "")
+
+            new_series[mid] = {
+                "match_id": mid,
+                "game": game,
+                "team_a": team_a,
+                "team_b": team_b,
+                "score_maps_a": int(score_a),
+                "score_maps_b": int(score_b),
+                "best_of": best_of,
+            }
+
+        stale = set(self._active_series) - set(new_series)
+        if stale:
+            logger.debug(
+                "esports_series_pruned",
+                pruned=len(stale),
+                match_ids=list(stale)[:5],
+            )
+
+        self._active_series = new_series
+
+    async def _series_analyze(
+        self, match_id: str, series_data: Dict, db=None
+    ) -> List[Dict]:
+        """Compute conditional match probability and compare to market."""
+        from esports.models.series_model import (
+            bo3_match_prob,
+            bo5_match_prob,
+            series_prob_with_map_veto,
+        )
+
+        best_of = int(series_data.get("best_of", 1))
+        if best_of < 3:
+            return []
+
+        maps_a = int(series_data.get("score_maps_a", 0))
+        maps_b = int(series_data.get("score_maps_b", 0))
+        game = series_data.get("game", "")
+        team_a = series_data.get("team_a", "")
+        team_b = series_data.get("team_b", "")
+
+        needed = (best_of + 1) // 2
+        if maps_a >= needed or maps_b >= needed:
+            return []
+
+        # Get per-map win rates: DB first, HLTV fallback (CS2 only)
+        map_rates_a: Dict[str, float] = {}
+        map_rates_b: Dict[str, float] = {}
+        if game == "cs2":
+            if db:
+                try:
+                    from esports.data.esports_db import get_team_map_rates
+                    map_rates_a = await get_team_map_rates(db, team_a, game="cs2")
+                    map_rates_b = await get_team_map_rates(db, team_b, game="cs2")
+                except Exception:
+                    pass
+            if not map_rates_a and self._hltv:
+                try:
+                    map_rates_a = await self._hltv.get_map_win_rates(team_a)
+                except Exception:
+                    pass
+            if not map_rates_b and self._hltv:
+                try:
+                    map_rates_b = await self._hltv.get_map_win_rates(team_b)
+                except Exception:
+                    pass
+
+        # Compute conditional probability
+        if map_rates_a and map_rates_b:
+            veto_order = self._series_derive_veto_order(
+                map_rates_a, map_rates_b, best_of
+            )
+            if veto_order:
+                try:
+                    model_prob = series_prob_with_map_veto(
+                        team_a_map_rates=map_rates_a,
+                        team_b_map_rates=map_rates_b,
+                        veto_order=veto_order,
+                        maps_won_a=maps_a,
+                        maps_won_b=maps_b,
+                    )
+                except Exception:
+                    model_prob = self._series_simple_prob(
+                        maps_a, maps_b, best_of
+                    )
+            else:
+                model_prob = self._series_simple_prob(maps_a, maps_b, best_of)
+        else:
+            glicko_prob = await self._series_get_glicko2_expected_score(
+                game, team_a, team_b, db
+            )
+            model_prob = self._series_simple_prob(
+                maps_a, maps_b, best_of, per_map_prob=glicko_prob
+            )
+
+        if model_prob is None or not (0.01 < model_prob < 0.99):
+            return []
+
+        market_info = await self._series_find_market(
+            match_id, game, team_a, team_b, db
+        )
+        if not market_info:
+            return []
+
+        market_price = market_info.get("price", 0.5)
+        market_id = market_info.get("market_id")
+        token_id = market_info.get("token_id")
+
+        if not market_id or not token_id:
+            return []
+
+        edge_yes = model_prob - market_price
+        edge_no = market_price - model_prob
+
+        side = None
+        trade_token_id = token_id
+        trade_price = market_price
+        edge = 0.0
+
+        if edge_yes >= self._series_min_edge:
+            side = "YES"
+            edge = edge_yes
+        elif edge_no >= self._series_min_edge:
+            side = "NO"
+            trade_price = 1.0 - market_price
+            edge = edge_no
+            no_token_id = market_info.get("no_token_id")
+            if no_token_id:
+                trade_token_id = no_token_id
+
+        if not side:
+            return []
+
+        # Don't trade if market already prices in reverse sweep
+        if (maps_a > maps_b and side == "NO") or (maps_b > maps_a and side == "YES"):
+            trailing_price = market_price if side == "NO" else (1.0 - market_price)
+            if trailing_price > self._series_reverse_sweep_floor:
+                logger.debug(
+                    "esports_series_reverse_sweep_priced_in",
+                    match_id=match_id,
+                    trailing_price=round(trailing_price, 3),
+                    floor=self._series_reverse_sweep_floor,
+                )
+
+        confidence = model_prob if side == "YES" else (1.0 - model_prob)
+
+        # Cache prediction for WS reactive path
+        self._series_prediction_cache[market_id] = {
+            "prob": model_prob, "ts": time.monotonic(), "game": game,
+        }
+
+        # Log prediction
+        try:
+            from esports.data.esports_db import log_prediction
+            await log_prediction(
+                db=db,
+                match_id=match_id,
+                game=game,
+                market_id=market_id,
+                bot_name="EsportsBot",
+                predicted_prob=model_prob,
+                market_price=market_price,
+                side=side,
+                edge=round(edge, 4),
+            )
+        except Exception as exc:
+            logger.warning("esports_series_prediction_log_failed", error=str(exc))
+
+        match_opp = {
+            "type": "esports_series",
+            "market_id": market_id,
+            "token_id": str(trade_token_id),
+            "side": side,
+            "price": trade_price,
+            "confidence": confidence,
+            "prediction": model_prob,
+            "edge": round(edge, 4),
+            "game": game,
+            "market_type": "match_winner",
+            "series_score": f"{maps_a}-{maps_b}",
+            "best_of": best_of,
+        }
+        result = [match_opp]
+
+        # Hedge: current map market
+        if self._series_hedge_enabled:
+            current_map = maps_a + maps_b + 1
+            map_market = await self._series_find_map_market(
+                match_id, game, team_a, team_b, current_map, db
+            )
+            if map_market:
+                map_price = float(map_market.get("price") or 0.5)
+                map_edge_yes = model_prob - map_price
+                map_edge_no = map_price - model_prob
+                map_side = None
+                map_trade_price = map_price
+                map_edge_val = 0.0
+                if side == "YES" and map_edge_yes >= self._series_min_edge:
+                    map_side = "YES"
+                    map_edge_val = map_edge_yes
+                elif side == "NO" and map_edge_no >= self._series_min_edge:
+                    map_side = "NO"
+                    map_trade_price = 1.0 - map_price
+                    map_edge_val = map_edge_no
+                if map_side:
+                    map_conf = model_prob if map_side == "YES" else (1.0 - model_prob)
+                    result.append({
+                        "type": "esports_series_hedge",
+                        "market_id": map_market["market_id"],
+                        "token_id": str(map_market["token_id"]),
+                        "side": map_side,
+                        "price": map_trade_price,
+                        "confidence": map_conf,
+                        "prediction": model_prob,
+                        "edge": round(map_edge_val, 4),
+                        "game": game,
+                        "market_type": "map_winner",
+                        "series_score": f"{maps_a}-{maps_b}",
+                        "map_number": current_map,
+                    })
+
+        return result
+
+    async def _series_get_glicko2_expected_score(
+        self, game: str, team_a: str, team_b: str, db,
+    ) -> Optional[float]:
+        """Glicko-2 expected score for series per-map probability fallback."""
+        cache_key = f"{game}:{team_a.lower()}:{team_b.lower()}"
+        if cache_key in self._series_glicko2_cache:
+            return self._series_glicko2_cache[cache_key]
+
+        if not db:
+            return None
+
+        try:
+            rows = await db.fetch(
+                "SELECT team_key, mu, phi, sigma, match_count "
+                "FROM glicko2_ratings WHERE game = :game "
+                "AND team_key IN (:ta, :tb)",
+                {"game": game, "ta": team_a.lower().strip(),
+                 "tb": team_b.lower().strip()},
+            )
+            if len(rows) < 2:
+                return None
+
+            from esports.models.glicko2 import Glicko2Rating, expected_score
+            ratings = {}
+            for r in rows:
+                if int(r.get("match_count", 0) or 0) < 10:
+                    return None
+                ratings[r["team_key"]] = Glicko2Rating(
+                    mu=float(r["mu"]), phi=float(r["phi"]),
+                    sigma=float(r.get("sigma", 0.06) or 0.06),
+                )
+
+            ra = ratings.get(team_a.lower().strip())
+            rb = ratings.get(team_b.lower().strip())
+            if ra is None or rb is None:
+                return None
+
+            prob = expected_score(ra, rb)
+            if prob < 0.05 or prob > 0.95:
+                return None
+
+            self._series_glicko2_cache[cache_key] = prob
+            return prob
+        except Exception:
+            return None
+
+    def _series_simple_prob(
+        self, maps_a: int, maps_b: int, best_of: int,
+        per_map_prob: Optional[float] = None,
+    ) -> Optional[float]:
+        """Fallback: use Glicko-2 expected score (or 0.50) for series probability."""
+        from esports.models.series_model import bo3_match_prob, bo5_match_prob
+
+        p = per_map_prob if per_map_prob is not None else 0.50
+        if best_of == 3:
+            return bo3_match_prob(p, maps_a, maps_b)
+        elif best_of == 5:
+            return bo5_match_prob(p, maps_a, maps_b)
+        return None
+
+    @staticmethod
+    def _series_smoczynski_tomkins_allocate(
+        opps: List[Dict], group_budget: float, kelly_mult: float = 0.25,
+    ) -> Dict[str, float]:
+        """Optimal Kelly allocation for correlated series bets."""
+        if not opps or group_budget <= 0:
+            return {}
+
+        edges: Dict[str, float] = {}
+        for opp in opps:
+            p = opp.get("confidence", 0.5)
+            price = opp.get("price", 0.5)
+            if price <= 0.02 or price >= 0.98 or p <= price:
+                continue
+            b = (1.0 - price) / price
+            if b <= 0:
+                continue
+            q = 1.0 - p
+            f_i = (p * b - q) / b
+            if f_i > 0:
+                edges[opp["market_id"]] = f_i
+
+        if not edges:
+            return {}
+
+        total_edge = sum(edges.values())
+        if total_edge <= 0:
+            return {}
+
+        allocations = {}
+        for mid, f_i in edges.items():
+            share = (f_i / total_edge) * kelly_mult * group_budget
+            allocations[mid] = round(max(1.0, share), 2)
+
+        total = sum(allocations.values())
+        if total > group_budget:
+            scale = group_budget / total
+            allocations = {mid: round(v * scale, 2) for mid, v in allocations.items()}
+
+        return allocations
+
+    @staticmethod
+    def _series_derive_veto_order(
+        rates_a: Dict[str, float],
+        rates_b: Dict[str, float],
+        best_of: int,
+    ) -> List[str]:
+        """Derive plausible map veto order from team map preferences."""
+        pool = set(rates_a.keys()) | set(rates_b.keys())
+        if len(pool) < best_of:
+            return []
+
+        picks_per_team = 1 if best_of == 3 else 2
+        veto_order: List[str] = []
+        remaining = set(pool)
+
+        a_sorted = sorted(remaining, key=lambda m: rates_a.get(m, 0.5), reverse=True)
+        for m in a_sorted[:picks_per_team]:
+            veto_order.append(m)
+            remaining.discard(m)
+
+        b_sorted = sorted(remaining, key=lambda m: rates_b.get(m, 0.5), reverse=True)
+        for m in b_sorted[:picks_per_team]:
+            veto_order.append(m)
+            remaining.discard(m)
+
+        if remaining:
+            decider = max(
+                remaining,
+                key=lambda m: rates_a.get(m, 0.5) + rates_b.get(m, 0.5),
+            )
+            veto_order.append(decider)
+
+        return veto_order[:best_of]
+
+    async def _series_find_market(
+        self, match_id: str, game: str, team_a: str, team_b: str, db=None,
+    ) -> Optional[Dict]:
+        """Find matching Polymarket match-winner market for this series."""
+        if not self._market_scanner:
+            return None
+        try:
+            team_names = [n for n in (team_a, team_b) if n]
+            markets = await asyncio.wait_for(
+                self._market_scanner.find_markets_for_match(
+                    match_id, game, db=db, team_names=team_names or None,
+                ),
+                timeout=5.0,
+            )
+            if markets:
+                return markets[0]
+        except (asyncio.TimeoutError, Exception):
+            pass
+        return None
+
+    async def _series_find_map_market(
+        self, match_id: str, game: str, team_a: str, team_b: str,
+        current_map: int, db=None,
+    ) -> Optional[Dict]:
+        """Find Polymarket map-winner market for the current map being played."""
+        if not self._market_scanner:
+            return None
+        try:
+            team_names = [n for n in (team_a, team_b) if n]
+            markets = await asyncio.wait_for(
+                self._market_scanner.find_markets_for_match(
+                    match_id, game, db=db, team_names=team_names or None,
+                ),
+                timeout=5.0,
+            )
+            map_patterns = [f"map {current_map}", f"game {current_map}"]
+            for m in (markets or []):
+                if m.get("market_type") != "map_winner":
+                    continue
+                q = str(m.get("question", "")).lower()
+                if any(p in q for p in map_patterns):
+                    return m
+        except (asyncio.TimeoutError, Exception):
+            pass
+        return None
+
+    async def _series_on_price_update(self, event: dict) -> None:
+        """WS reactive path for series predictions."""
+        market_id = event.get("market_id", "")
+        token_id = event.get("token_id", "")
+        new_price = float(event.get("price", 0))
+        if not market_id or new_price <= 0:
+            return
+
+        cached = self._series_prediction_cache.get(market_id)
+        if not cached:
+            return
+
+        # Significance threshold
+        threshold = float(getattr(settings, "ESPORTS_SERIES_WS_PRICE_CHANGE_PCT", 0.01))
+        if not hasattr(self, "_series_ws_prev_prices"):
+            self._series_ws_prev_prices: dict = {}
+        old_price = self._series_ws_prev_prices.get(market_id)
+        self._series_ws_prev_prices[market_id] = new_price
+        if old_price is None or abs(new_price - old_price) / max(old_price, 0.01) < threshold:
+            return
+
+        # Cooldown
+        now = time.monotonic()
+        if not hasattr(self, "_series_ws_cooldowns"):
+            self._series_ws_cooldowns: dict = {}
+        cooldown = int(getattr(settings, "ESPORTS_SERIES_WS_COOLDOWN_SECONDS", 10))
+        if now - self._series_ws_cooldowns.get(market_id, 0) < cooldown:
+            return
+        self._series_ws_cooldowns[market_id] = now
+
+        model_prob = cached["prob"]
+        edge = model_prob - new_price
+        if abs(edge) < self._series_min_edge:
+            return
+
+        side = "YES" if edge > 0 else "NO"
+
+        og = getattr(self.base_engine, "order_gateway", None)
+        if og is not None and og.has_open_position(self.bot_name, str(market_id)):
+            return
+
+        try:
+            confidence = model_prob if side == "YES" else (1.0 - model_prob)
+            trade_price = new_price if side == "YES" else (1.0 - new_price)
+            opp = {
+                "type": "esports_series_ws",
+                "market_id": market_id,
+                "token_id": token_id,
+                "side": side,
+                "price": trade_price,
+                "confidence": confidence,
+                "prediction": model_prob,
+                "edge": round(abs(edge), 4),
+                "game": cached.get("game", ""),
+                "market_type": "match_winner",
+            }
+            logger.info(
+                "esports_series_ws_reactive",
+                market_id=market_id,
+                price_move=f"{old_price:.4f}→{new_price:.4f}",
+                edge=round(abs(edge), 4),
+            )
+            await self._execute_esports_trade(opp)
+        except Exception as exc:
+            logger.debug("esports_series_ws_failed", error=str(exc))

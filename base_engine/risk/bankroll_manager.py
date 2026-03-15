@@ -37,11 +37,10 @@ _DEFAULT_BOT_CONFIGS: Dict[str, Dict[str, Any]] = {
     "CrossPlatformArbBot": {"capital": 500,  "kelly_fraction": 0.20, "max_bet_usd": 50,  "max_daily_usd": 200},
     "OracleBot":           {"capital": 500,  "kelly_fraction": 0.20, "max_bet_usd": 50,  "max_daily_usd": 200},
     "LLMForecasterBot":    {"capital": 500,  "kelly_fraction": 0.20, "max_bet_usd": 50,  "max_daily_usd": 200},
-    "WeatherBot":          {"capital": 5000, "kelly_fraction": 0.25, "max_bet_usd": 500, "max_daily_usd": 2000},
+    "WeatherBot":          {"capital": 25000, "kelly_fraction": 0.25, "max_bet_usd": 2500, "max_daily_usd": 10000},
     "LogicalArbBot":       {"capital": 500,  "kelly_fraction": 0.20, "max_bet_usd": 200, "max_daily_usd": 500},
     "EsportsBot":          {"capital": 5000, "kelly_fraction": 0.25, "max_bet_usd": 100, "max_daily_usd": 500},
     "EsportsLiveBot":      {"capital": 5000, "kelly_fraction": 0.25, "max_bet_usd": 100, "max_daily_usd": 500},
-    "EsportsSeriesBot":    {"capital": 5000, "kelly_fraction": 0.25, "max_bet_usd": 100, "max_daily_usd": 500},
 }
 
 _FALLBACK_CONFIG: Dict[str, Any] = {
@@ -138,24 +137,27 @@ class BotBankrollManager:
         if confidence <= price:
             return 0.0  # No positive edge — don't bet
 
-        # Conformal-aware Kelly: use lower bound of prediction interval for sizing.
-        # The point estimate (confidence) is still used for edge detection above,
-        # but sizing uses the conservative lower bound to prevent blow-ups.
-        kelly_confidence = confidence
+        # S91: Conformal-aware Kelly via width-based dampening.
+        # Old approach: used p_low as kelly_confidence. With binary outcomes and
+        # predictions near 0.55, p_low ≈ 0.05 (logit-space residuals ~3.0), which
+        # blocked ALL trades at prices above $0.05.
+        # New approach: keep point estimate for Kelly edge. Use interval WIDTH to
+        # dampen the Kelly fraction. Wide interval = more uncertainty = smaller bet.
+        _conformal_dampener = 1.0
         if conformal_interval is not None:
             p_low, p_high = conformal_interval
-            if 0 < p_low < 1:
-                kelly_confidence = p_low
-                if kelly_confidence <= price:
-                    return 0.0  # Lower bound has no edge — skip
+            if 0 < p_low < 1 and 0 < p_high < 1:
+                width = p_high - p_low
+                # Width 0.0→1.0x, Width 0.5→0.50x, Width≥0.9→0.25x floor
+                _conformal_dampener = max(0.25, 1.0 - width)
 
         # Kelly criterion: f* = (p*b - q) / b
-        #   p = kelly_confidence, b = (1 - price) / price, q = 1 - p
+        #   p = confidence (point estimate), b = (1 - price) / price, q = 1 - p
         b = (1.0 - price) / price
         if b <= 0:
             return 0.0
-        q = 1.0 - kelly_confidence
-        kelly_full = (kelly_confidence * b - q) / b
+        q = 1.0 - confidence
+        kelly_full = (confidence * b - q) / b
         if kelly_full <= 0:
             return 0.0
 
@@ -191,6 +193,9 @@ class BotBankrollManager:
                 fraction *= compress
         except Exception:
             pass
+
+        # S91: Apply conformal width-based dampener to fraction
+        fraction *= _conformal_dampener
 
         # Compute USD size
         size_usd = kelly_full * fraction * self.capital

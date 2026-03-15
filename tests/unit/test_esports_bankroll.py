@@ -291,16 +291,15 @@ class TestMinimumBetSize:
 
 
 class TestGetDailySpent:
-    def test_sums_all_three_bot_names(self):
-        """_get_daily_spent sums EsportsBot + EsportsLiveBot + EsportsSeriesBot."""
+    def test_sums_all_esports_bot_names(self):
+        """_get_daily_spent sums EsportsBot + EsportsLiveBot."""
         mgr = make_manager(daily_exposure={
             "EsportsBot": 100.0,
             "EsportsLiveBot": 50.0,
-            "EsportsSeriesBot": 25.0,
             "ArbitrageBot": 999.0,  # Not included
         })
         total = mgr._get_daily_spent()
-        assert total == pytest.approx(175.0, abs=0.01)
+        assert total == pytest.approx(150.0, abs=0.01)
 
     def test_missing_bots_treated_as_zero(self):
         """Missing bot names default to 0."""
