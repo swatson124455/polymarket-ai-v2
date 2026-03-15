@@ -1178,6 +1178,8 @@ class EsportsBot(BaseBot):
 
         # Skip market types that can't produce Glicko-2 predictions (no team matchup)
         if market_type in ("props", "first_blood", "tournament_winner"):
+            logger.info("esportsbot_skip_market_type", game=game, market_type=market_type,
+                        question=str(question)[:80])
             if _wf: _wf["no_prediction"] += 1
             return None
 
@@ -1460,8 +1462,8 @@ class EsportsBot(BaseBot):
         try:
             glicko2_prob = await self._get_glicko2_prediction(market_data, game)
             if glicko2_prob is None:
-                logger.debug("esportsbot_glicko2_miss", game=game,
-                             market_id=market_id, question=str(market_data.get("question",""))[:80])
+                logger.info("esportsbot_glicko2_miss", game=game,
+                            market_id=market_id, question=str(market_data.get("question",""))[:80])
             if glicko2_prob is not None:
                 # OpenDota form adjustment for dota2 (small ±3%)
                 if game == "dota2":
@@ -1923,6 +1925,7 @@ class EsportsBot(BaseBot):
             "tournament", "championship", "champion", "split winner", "season",
             "win msi", "win worlds", "msi 20", "worlds 20",
             "league winner", "win lpl", "win lck", "win lec", "win lcs", "win vct",
+            "qualify", "advance to", "make it to",
         )):
             return "tournament_winner"
         if any(kw in q for kw in ("total maps", "over", "under", "maps played")):
