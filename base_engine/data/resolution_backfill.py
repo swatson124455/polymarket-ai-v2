@@ -22,8 +22,8 @@ async def _fetch_market_by_condition_id(condition_id: str) -> Optional[Dict[str,
             r = await h.get(url)
             if r.status_code == 200:
                 return r.json()
-    except Exception:
-        pass
+    except Exception as _clob_err:
+        logger.debug("CLOB condition_id fetch failed for %s: %s", condition_id[:20], _clob_err)
     return None
 
 
@@ -184,8 +184,8 @@ async def run_resolution_backfill(
                     m = None
                     try:
                         m = await client.get_market(mid, use_cache=False)
-                    except Exception:
-                        pass
+                    except Exception as _gamma_err:
+                        logger.debug("Resolution backfill: Gamma fetch failed for %s: %s", str(mid)[:20], _gamma_err)
                     if m and isinstance(m, dict):
                         parsed = MarketParserV2.parse_market(m)
                         if parsed:
@@ -319,8 +319,8 @@ async def run_resolution_backfill(
                             )
                             await _s.commit()
                         end_date_patched += 1
-                    except Exception:
-                        pass
+                    except Exception as _ed_err:
+                        logger.debug("Resolution backfill: end_date patch failed for %s: %s", str(mid)[:20], _ed_err)
 
                 closed = m.get("closed") or m.get("isResolved") or m.get("resolved")
                 if not closed:
@@ -339,8 +339,8 @@ async def run_resolution_backfill(
                 # Update traded_markets index + write RESOLUTION events
                 try:
                     await db.mark_market_resolved(mid, str(res).upper())
-                except Exception:
-                    pass
+                except Exception as _mark_err:
+                    logger.warning("mark_market_resolved failed for %s: %s", str(mid)[:20], _mark_err)
                 updated += 1
                 if log_progress and updated % 50 == 0:
                     logger.info("Resolution backfill: updated %d resolutions", updated)
@@ -429,10 +429,10 @@ async def run_resolution_backfill(
                             correlation_id=f"resolution:{row[0]}",
                             event_time=row[4],
                         )
-                    except Exception:
-                        pass
-        except Exception:
-            pass  # Non-critical: trade_events is audit trail
+                    except Exception as _te_err:
+                        logger.debug("Resolution backfill: trade_event emission failed for market %s: %s", str(row[0])[:20], _te_err)
+        except Exception as _te_outer_err:
+            logger.warning("Resolution backfill: Phase 4b trade_event emission failed: %s", _te_outer_err)
 
     # Phase 5: Backfill positions with unrealized_pnl from resolution data
     # CRITICAL: Fixes CLV, win rate, and Total P&L for resolution-based exits
@@ -483,8 +483,8 @@ async def run_resolution_backfill(
                             profit=pnl,
                         )
                         perf_scored += 1
-                    except Exception:
-                        pass
+                    except Exception as _perf_err:
+                        logger.debug("Resolution backfill: perf scoring failed for market %s: %s", str(row[0])[:20], _perf_err)
             result["performance_scored"] = perf_scored
             if log_progress and perf_scored > 0:
                 logger.info("PerformanceTracker: scored %d resolved paper trades", perf_scored)
