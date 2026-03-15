@@ -27,6 +27,9 @@ _INGESTION_TIMEOUT_SECONDS: float = float(getattr(settings, "INGESTION_TIMEOUT_S
 # Timeout for auxiliary tasks (top_users, elite_activity, health check, backfill).
 # These MUST have timeouts — without them a hung API call kills the scheduler loop.
 _AUX_TIMEOUT_SECONDS: float = float(getattr(settings, "INGESTION_AUX_TIMEOUT_SECONDS", 300.0))
+# Master timeout for entire _run_ingestion() cycle.  If ANY sub-task hangs
+# (e.g. corrupted asyncpg connection after wait_for cancellation), the loop recovers.
+_RUN_INGESTION_MAX_SECONDS: float = float(getattr(settings, "RUN_INGESTION_MAX_SECONDS", 2400.0))
 
 
 class IngestionScheduler:
@@ -126,13 +129,31 @@ class IngestionScheduler:
                     logger.info("IngestionScheduler: cleared %s orphaned sync_log entries on startup", cleared)
         except Exception as e:
             logger.warning("IngestionScheduler: startup sync_log cleanup failed (non-fatal): %s", e)
+        cycle = 0
         while self.running:
+            cycle += 1
+            cycle_start = time.monotonic()
+            logger.info("IngestionScheduler: cycle %d starting", cycle)
             try:
-                await self._run_ingestion()
+                # Master timeout: if _run_ingestion() hangs (e.g. corrupted DB
+                # connection after asyncio.wait_for cancellation), the loop recovers
+                # instead of silently dying.
+                await asyncio.wait_for(
+                    self._run_ingestion(),
+                    timeout=_RUN_INGESTION_MAX_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "IngestionScheduler: _run_ingestion() timed out after %ss — recovering",
+                    _RUN_INGESTION_MAX_SECONDS,
+                )
             except asyncio.CancelledError:
+                logger.info("IngestionScheduler: loop cancelled (shutdown)")
                 break
             except Exception as e:
                 logger.error("Scheduled ingestion failed: %s", e, exc_info=True)
+            elapsed = time.monotonic() - cycle_start
+            logger.info("IngestionScheduler: cycle %d finished in %.1fs", cycle, elapsed)
             # Heartbeat: sleep in 60s chunks and log so long idle periods show activity
             remaining = self.interval_seconds
             logger.info("IngestionScheduler: next run in %s s", remaining)
@@ -142,6 +163,7 @@ class IngestionScheduler:
                 remaining -= chunk
                 if remaining > 0 and self.running:
                     logger.info("IngestionScheduler: idle, next run in %s s", remaining)
+        logger.warning("IngestionScheduler: _loop() exited (running=%s, cycle=%d)", self.running, cycle)
 
     async def _run_ingestion(self) -> None:
         """Run one ingestion cycle: daily full (markets + prices) if due, else markets only; then elite update."""
@@ -286,7 +308,7 @@ class IngestionScheduler:
     async def _do_resolution_queue(self, db) -> None:
         """Process resolution backlog: oldest unresolved traded markets, independent of ingestion."""
         from base_engine.data.database_lock import acquire_lock, LockAcquisitionError
-        _batch_size = int(getattr(settings, "RESOLUTION_QUEUE_BATCH_SIZE", 20))
+        _batch_size = int(getattr(settings, "RESOLUTION_QUEUE_BATCH_SIZE", 100))
         try:
             async with acquire_lock(db, "resolution_backfill", timeout_seconds=10):
                 try:
