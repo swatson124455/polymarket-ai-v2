@@ -3,11 +3,11 @@
 
 **Predecessor**: Session 89 (E2-E5 scaling + 9 audit fixes), Session 88 (observation mode fix)
 **Scope**: Esports subsystem only (EsportsBot, EsportsLiveBot, EsportsSeriesBot)
-**Status**: All changes uncommitted, tests passing (144/144 esports + paper_is_production)
+**Status**: All changes committed and deployed. 3 deploys (20260314_211437, 20260314_212540, 20260314_212933). All esports bots healthy.
 
 ---
 
-## WHAT WAS DONE (6 code changes + 1 doc)
+## WHAT WAS DONE (7 code changes + 1 doc)
 
 ### Change 1: Fix test_paper_is_production failure (P5)
 **File**: `tests/unit/test_paper_is_production.py`
@@ -53,6 +53,35 @@
 - `_simple_series_prob()` now accepts `per_map_prob=None` kwarg
 - Falls back to 0.50 if Glicko-2 unavailable (no regression)
 
+### Change 7: Classify "qualify" markets + diagnostic log elevation
+**File**: `bots/esports_bot.py`
+- Added "qualify", "advance to", "make it to" to `_classify_market_type()` tournament_winner keywords
+- Elevated `esportsbot_glicko2_miss` and `esportsbot_skip_market_type` from debug→info
+- Result: 8 `no_prediction` per scan = 5 correctly skipped (props/tournament_winner) + 3 minor/amateur teams without Glicko-2 data
+
+---
+
+## DEPLOY VERIFICATION (post-deploy 20260314_212933)
+
+### no_prediction breakdown (8 total per scan cycle):
+| Type | Count | Markets |
+|------|-------|---------|
+| `skip_market_type` (props) | 3 | Valorant "will X be said" props |
+| `skip_market_type` (tournament_winner) | 2 | T1 LCK playoffs, BIG qualify to IEM |
+| `glicko2_miss` (minor teams) | 3 | Berlin Int'l Gaming vs The Otter Side, G2 NORD vs Witchcraft, SemperFi vs Arcade |
+
+**Genuine team name failures: 3** (down from 12). All 3 are amateur/minor regional teams without PandaScore training data. Not fixable without external data source.
+
+### EsportsLiveBot: ALIVE
+- Tracking 1 active live game
+- Detecting significant price moves across multiple markets
+- Poll retry mechanism deployed (no timeout errors observed)
+
+### EsportsSeriesBot: SCANNING
+- Scanning every ~30s with 0.5-4.5s cycle times
+- No series markets currently available to trade
+- Glicko-2 fallback wired in and ready
+
 ---
 
 ## DEFERRED ITEMS — STATUS & OPERATOR ACTIONS
@@ -92,7 +121,7 @@
 | File | Changes |
 |------|---------|
 | `tests/unit/test_paper_is_production.py` | +1 line: `ESPORTS_MAX_TOTAL_EXPOSURE_USD` |
-| `bots/esports_bot.py` | Tournament regex (+20 patterns), aliases (57→85), fuzzy Tier 6, overwatch prefix, match winner re |
+| `bots/esports_bot.py` | Tournament regex (+20 patterns), aliases (57→85), fuzzy Tier 6, overwatch prefix, match winner re, qualify classifier, diagnostic logs |
 | `esports/live/esports_game_monitor.py` | Retry loop: 1 retry with 2x timeout on poll TimeoutError |
 | `bots/esports_series_bot.py` | `_get_glicko2_expected_score()` method, `_simple_series_prob()` per_map_prob kwarg, `_glicko2_cache` |
 
@@ -140,12 +169,25 @@ ssh -i "$KEY" ubuntu@34.251.224.21 "grep -E 'ESPORTS_(LIVE|SERIES)' /opt/polymar
 
 | Priority | Item | Status |
 |----------|------|--------|
-| P2 | Team name matching (12→<5 expected) | Fixed this session |
-| P3 | PandaScore timeout (LiveBot) | Retry added this session |
-| P3 | EsportsSeriesBot 0 trades | Glicko-2 fallback added this session |
+| P2 | Team name matching (12→3 genuine failures) | Fixed this session — verified in production |
+| P3 | PandaScore timeout (LiveBot) | Retry added — LiveBot alive, tracking live games |
+| P3 | EsportsSeriesBot 0 trades | Glicko-2 fallback added — scanning, awaiting series markets |
 | P3 | 604 unresolved markets | Naturally resolving via backfill |
 | P5 | Test failure | Fixed this session |
-| P5 | Remaining `no_prediction` (~3-5/scan) | Diminishing returns — mostly games with <10 Glicko matches |
+| P5 | Remaining `no_prediction` (3/scan) | Minor/amateur teams without Glicko-2 data — unfixable without new data source |
 | Deferred | E1 TabPFN | Operator: `pip install tabpfn` |
 | Deferred | E6 Map-veto | Needs HLTV scraper session |
 | Deferred | E7 Conformal | Auto-activates at 30 samples/game |
+
+---
+
+## COMMITS (this session)
+
+```
+acf2c24 fix(esports): classify qualify/advance markets as tournament_winner + elevate diagnostic logs
+33dddbd docs(esports): Session 90 handoff — team names, LiveBot retry, SeriesBot Glicko-2
+a3aeb2b feat(esports): SeriesBot Glicko-2 fallback replaces hardcoded p=0.50
+f30f575 fix(esports): add retry with 2x backoff to EsportsGameMonitor poll
+0c4da1b feat(esports): improve team name matching — expanded regex, 85 aliases, fuzzy Tier 6
+4cea1ee fix(esports): add ESPORTS_MAX_TOTAL_EXPOSURE_USD to test mock defaults
+```
