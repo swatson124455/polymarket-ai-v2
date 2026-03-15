@@ -305,10 +305,28 @@ class IngestionScheduler:
             except Exception as e:
                 logger.warning("Elite status update failed (non-fatal): %s", e)
 
+    async def _get_priority_bot(self, db) -> Optional[str]:
+        """S94: Return bot with most unresolved traded markets (dynamic rotation)."""
+        try:
+            from sqlalchemy import text
+            async with db.get_session() as session:
+                row = await session.execute(text(
+                    "SELECT unnest(string_to_array(bot_names, '|')) AS bot, COUNT(*) AS cnt "
+                    "FROM traded_markets WHERE resolved_at IS NULL AND bot_names IS NOT NULL "
+                    "GROUP BY bot ORDER BY cnt DESC LIMIT 1"
+                ))
+                result = row.fetchone()
+                if result:
+                    return result[0]
+        except Exception:
+            pass
+        return None
+
     async def _do_resolution_queue(self, db) -> None:
         """Process resolution backlog: oldest unresolved traded markets, independent of ingestion."""
         from base_engine.data.database_lock import acquire_lock, LockAcquisitionError
         _batch_size = int(getattr(settings, "RESOLUTION_QUEUE_BATCH_SIZE", 100))
+        _priority_bot = await self._get_priority_bot(db)
         try:
             async with acquire_lock(db, "resolution_backfill", timeout_seconds=10):
                 try:
@@ -317,7 +335,7 @@ class IngestionScheduler:
                             log_progress=False,
                             performance_tracker=self.performance_tracker,
                             resolution_limit=_batch_size,
-                            priority_bot="MirrorBot",
+                            priority_bot=_priority_bot,
                         ),
                         timeout=_AUX_TIMEOUT_SECONDS,
                     )

@@ -38,25 +38,63 @@ _CATEGORY_KEYWORDS: Dict[str, List[str]] = {
                "token","coin","defi","nft"],
     # CRITICAL: esports MUST come before sports — dict iteration is insertion-order.
     # "league", "championship" in sports would match "League of Legends Championship" first.
+    # "baron nashor", "total kills" etc. are LoL-specific and must match before sports.
     "esports": ["esports","league of legends","lol ","cs2","counter-strike","csgo","dota",
                 "valorant","overwatch","rainbow six","call of duty","worlds","msi",
-                "lck","lec","lpl","lcs","blast premier","esl ","pgl ","iem ","vct"],
+                "lck","lec","lpl","lcs","blast premier","esl ","pgl ","iem ","vct",
+                "baron nashor","total kills over/under","slay baron","map handicap"],
     "sports": ["nfl","nba","mlb","nhl","fifa","soccer","football","basketball","baseball",
                "hockey","tennis","ufc","mma","golf","f1","racing","league","championship",
                "playoffs","world cup","super bowl","bundesliga","la liga","serie a",
-               "premier league","ligue 1","eredivisie"],
+               "premier league","ligue 1","eredivisie",
+               # Polymarket format patterns: "Spread:", "O/U", "vs.", team matchups
+               "spread:","o/u ","over/under",": o/u","moneyline",
+               " vs. "," vs ",
+               # Team/player stat lines
+               "rebounds o/u","assists o/u","points o/u","both teams to score",
+               # "Will X win on DATE" pattern — club names with FC/CF/SC/Utd
+               " fc "," cf "," sc "," utd ",
+               # Major leagues/tournaments not already covered
+               "champions league","europa league","copa america","afc","concacaf",
+               "masters tournament","pga","atp","wta","grand slam","open:",
+               # S94: additional sports patterns from unknown-market analysis
+               "ncaa","world series","invitational","goalscorer","exact score:",
+               "go the distance","finish in the top","win the 202","ppa:",
+               "pickleball"," reds "," bengals "," yankees ",
+               " lakers "," celtics "," warriors "," eagles "," chiefs "],
     "politics": ["trump","biden","election","president","congress","senate","democrat",
-                 "republican","vote","campaign","governor","minister","parliament","referendum"],
+                 "republican","vote","campaign","governor","minister","parliament","referendum",
+                 "khamenei","elon musk",
+                 # S94: additional politics patterns
+                 "head of state","state of the union","nobel peace","supreme court",
+                 "executive order","impeach","veto","cabinet","secretary of"],
     "weather": ["temperature","rain","snow","hurricane","storm","degrees","fahrenheit",
                 "celsius","precipitation","forecast","drought"],
     "finance": ["stock","s&p","nasdaq","dow","fed","interest rate","inflation","gdp",
-                "cpi","earnings","ipo","bond"],
+                "cpi","earnings","ipo","bond",
+                # Ticker patterns: "(TSLA)", "(GOOGL)", "(OPEN)" etc.
+                "(tsla)","(googl)","(aapl)","(amzn)","(msft)","(nvda)","(meta)",
+                "(open)","settle over","settle at","close above","close at",
+                "gold (gc)","silver (si)","crude oil",
+                # S94: additional finance patterns
+                "market cap","richest person","tsa passengers","price of xrp",
+                "price of btc","price of eth","tariff"],
     "science": ["nasa","spacex","asteroid","comet","launch","rocket","scientific",
-                "discovery","research"],
+                "discovery","research","anthropic","openai"," ai model"],
     "entertainment": ["oscar","grammy","emmy","award","movie","album","tv show",
-                      "music","artist","actor"],
+                      "music","artist","actor","box office","spotify","#1 song",
+                      "#1 paid app","mrbeast","views on day",
+                      # S94: additional entertainment patterns
+                      "netflix show","netflix ","#1 us","#2 us","#1 global","#2 global",
+                      "youtube","tiktok","instagram followers","bachelorette","bachelor ",
+                      "reality tv","survivor"],
     "geopolitical": ["war","invasion","ceasefire","sanctions","nato","un ","united nations",
-                     "treaty","conflict","troops"],
+                     "treaty","conflict","troops","strike gaza","strike on us",
+                     "independence from","declares independence",
+                     # S94: additional geopolitical patterns
+                     "strike lebanon","strike iran","strike yemen","capture ",
+                     "armed forces","military","airstrike","missile","nuclear",
+                     "territorial","annex"],
 }
 
 
