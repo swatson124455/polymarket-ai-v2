@@ -72,11 +72,20 @@ async def acquire_lock(db, lock_name: str, timeout_seconds: int = 300):
                 try:
                     yield
                 finally:
+                    # Shield unlock from task cancellation — CancelledError
+                    # (BaseException in Python 3.13) must not prevent lock release.
+                    # Without shield, asyncio.wait_for cancellation propagates here
+                    # and leaves a zombie advisory lock that blocks all subsequent cycles.
                     try:
-                        await session.execute(text("SELECT pg_advisory_unlock(:id)"), {"id": lock_id})
-                        await session.commit()
-                    except Exception:
-                        pass  # Session closing will release advisory locks anyway
+                        await asyncio.shield(
+                            session.execute(text("SELECT pg_advisory_unlock(:id)"), {"id": lock_id})
+                        )
+                        await asyncio.shield(session.commit())
+                    except BaseException as _unlock_err:
+                        logger.warning(
+                            "Advisory lock %s unlock failed (session close will release): %s",
+                            lock_name, _unlock_err,
+                        )
                     logger.debug("Released lock %s", lock_name)
                 return
             await asyncio.sleep(1)
