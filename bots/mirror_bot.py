@@ -1009,8 +1009,8 @@ class MirrorBot(BaseBot):
             _entry = float(_pos.get("entry_price", 0.5) or 0.5)
             _current = float(_pos.get("current_price", _entry) or _entry)
             _side = (_pos.get("side") or "YES").upper()
-            # C2: positions now store YES/NO (post-C1); remove stale "BUY" check
-            _pnl_pct = (_current - _entry) / max(_entry, 1e-6) if _side == "YES" else (_entry - _current) / max(_entry, 1e-6)
+            # Prices are token-specific — (current - entry) is correct for BOTH YES and NO
+            _pnl_pct = (_current - _entry) / max(_entry, 1e-6)
             if _pnl_pct <= -_stop_pct:
                 logger.info("MirrorBot autonomous stop-loss", market=_pos_key, pnl_pct=f"{_pnl_pct:.2%}")
                 positions_to_close.append(_pos_key)
@@ -1561,16 +1561,14 @@ class MirrorBot(BaseBot):
             if abs(_raw_conf - confidence) > 0.01:
                 logger.info("mirror_calibrated", raw=round(_raw_conf, 3), cal=round(confidence, 3))
 
-            # Conformal prediction interval for conservative Kelly sizing
-            _conformal_interval = self._calibration_stack.get_conformal_interval(confidence)
-            if _conformal_interval:
-                logger.info(
-                    "mirror_conformal_applied",
-                    confidence=round(confidence, 3),
-                    p_low=round(_conformal_interval[0], 3),
-                    p_high=round(_conformal_interval[1], 3),
-                    market_id=market_id,
-                )
+            # S93: Conformal dampening DISABLED for MirrorBot.
+            # Logit-space residuals with binary outcomes always produce median=3.0 (the cap),
+            # yielding intervals of width ~0.90 at ALL confidence levels. Dampener floors at
+            # 0.25 on 100% of trades, providing zero discrimination. This quartered Kelly
+            # (0.25 → 0.0625) with no informational value. Existing guardrails (max_bet=$250,
+            # daily=$10k, capital=$3k, quarter-Kelly, MIN_CONFIDENCE=0.55) are sufficient.
+            # Conformal fitting still runs for logging/monitoring.
+            _conformal_interval = None  # was: self._calibration_stack.get_conformal_interval(confidence)
 
         # S48 FIX: Use per-bot BotBankrollManager (Session 47) instead of deprecated
         # risk_manager.calculate_position_size() which divides Kelly by KELLY_ACTIVE_BOTS.
