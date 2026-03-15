@@ -327,6 +327,65 @@ class MirrorBot(BaseBot):
         except Exception as _e:
             logger.debug("mirror opposing pair cleanup failed: %s", _e)
 
+        # S92: Pre-populate _token_side_cache + _market_meta_cache from DB on startup
+        # Eliminates 10-500ms DB queries on first RTDS trade per market.
+        try:
+            if db and getattr(db, "session_factory", None):
+                from sqlalchemy import text as _text
+                import time as _time
+                async with db.get_session() as session:
+                    # Token side cache: bulk-load all markets with YES/NO tokens
+                    tk_rows = await session.execute(
+                        _text(
+                            "SELECT condition_id, yes_token_id, no_token_id "
+                            "FROM markets WHERE yes_token_id IS NOT NULL "
+                            "AND no_token_id IS NOT NULL LIMIT 5000"
+                        )
+                    )
+                    _tk_count = 0
+                    for tk in tk_rows.fetchall():
+                        cid = str(tk[0]) if tk[0] else None
+                        yes_tid = str(tk[1])
+                        no_tid = str(tk[2])
+                        if cid:
+                            self._token_side_cache[f"{cid}:{yes_tid}"] = "YES"
+                            self._token_side_cache[f"{cid}:{no_tid}"] = "NO"
+                            _tk_count += 1
+                    logger.info("S92: pre-populated _token_side_cache with %d markets (%d entries)",
+                                _tk_count, len(self._token_side_cache))
+
+                    # Market meta cache: bulk-load categories for traded markets
+                    _now_mono = _time.monotonic()
+                    meta_rows = await session.execute(
+                        _text(
+                            "SELECT m.id, m.category, m.end_date_iso "
+                            "FROM markets m "
+                            "INNER JOIN traded_markets tm ON tm.market_id = CAST(m.id AS TEXT) "
+                            "WHERE tm.status = 'open' OR tm.resolved = FALSE "
+                            "LIMIT 2000"
+                        )
+                    )
+                    _meta_count = 0
+                    for mr in meta_rows.fetchall():
+                        mid_str = str(mr[0])
+                        cat = str(mr[1] or "")
+                        ttr = ""
+                        end_raw = mr[2]
+                        if end_raw:
+                            h = self.hours_until_resolution({"end_date_iso": end_raw})
+                            if h is not None:
+                                if h < 24:
+                                    ttr = "hours"
+                                elif h < 168:
+                                    ttr = "days"
+                                else:
+                                    ttr = "weeks"
+                        self._market_meta_cache[mid_str] = (cat, ttr, _now_mono + self._MARKET_META_TTL)
+                        _meta_count += 1
+                    logger.info("S92: pre-populated _market_meta_cache with %d markets", _meta_count)
+        except Exception as _cache_err:
+            logger.debug("S92: cache pre-population failed (non-critical): %s", _cache_err)
+
         # M5: Restore dedup dict from Redis
         await self._restore_dedup_from_redis()
 

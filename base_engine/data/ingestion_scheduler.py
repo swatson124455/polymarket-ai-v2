@@ -317,6 +317,7 @@ class IngestionScheduler:
                             log_progress=False,
                             performance_tracker=self.performance_tracker,
                             resolution_limit=_batch_size,
+                            priority_bot="MirrorBot",
                         ),
                         timeout=_AUX_TIMEOUT_SECONDS,
                     )

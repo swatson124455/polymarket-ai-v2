@@ -141,8 +141,9 @@ async def run_resolution_backfill(
     *,
     missing_limit: int = 200,
     resolution_limit: int = 500,
-    delay_seconds: float = 0.1,
+    delay_seconds: float = 0.03,
     log_progress: bool = True,
+    priority_bot: Optional[str] = None,
     **kwargs,
 ) -> Dict[str, Any]:
     """
@@ -227,11 +228,22 @@ async def run_resolution_backfill(
     # excessive API calls (1000+ unresolved markets × 2 API calls each = too slow).
     async with db.get_session() as session:
         # 2a: Markets WE traded on — from traded_markets table
+        # S92: priority_bot puts that bot's markets first via ORDER BY
         try:
+            _priority_order = ""
+            _params: dict = {"lim": resolution_limit}
+            if priority_bot:
+                _priority_order = (
+                    "ORDER BY CASE WHEN bot_names LIKE :pbot THEN 0 ELSE 1 END, "
+                    "first_trade_at ASC NULLS LAST "
+                )
+                _params["pbot"] = f"%{priority_bot}%"
+            else:
+                _priority_order = "ORDER BY first_trade_at ASC NULLS LAST "
             pt_result = await session.execute(text(
                 "SELECT market_id FROM traded_markets WHERE status = 'open' OR resolved = FALSE "
-                "ORDER BY first_trade_at ASC NULLS LAST LIMIT :lim"
-            ), {"lim": resolution_limit})
+                + _priority_order + "LIMIT :lim"
+            ), _params)
             paper_market_ids = [r[0] for r in pt_result.fetchall() if r[0]]
         except Exception:
             # Fallback if traded_markets table doesn't exist yet (pre-migration)

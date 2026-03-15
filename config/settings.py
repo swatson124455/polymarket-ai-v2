@@ -205,14 +205,14 @@ class Settings(BaseSettings):
     # Health check interval (minutes). HealthRunner fires this often inside IngestionScheduler.
     HEALTH_CHECK_INTERVAL_MINUTES: int = int(os.getenv("HEALTH_CHECK_INTERVAL_MINUTES", "60"))
     # Mini backfill interval (minutes). prediction_log + pseudo-label labeling between daily runs.
-    MINI_BACKFILL_INTERVAL_MINUTES: int = int(os.getenv("MINI_BACKFILL_INTERVAL_MINUTES", "30"))
+    MINI_BACKFILL_INTERVAL_MINUTES: int = int(os.getenv("MINI_BACKFILL_INTERVAL_MINUTES", "15"))  # S92: 30→15 for faster resolution clearing
     # Transaction cost model (for dynamic edge threshold)
     TAKER_FEE_BPS: int = int(os.getenv("TAKER_FEE_BPS", "150"))  # 1.5%
     MAKER_FEE_BPS: int = int(os.getenv("MAKER_FEE_BPS", "0"))
     GAS_COST_USD: float = float(os.getenv("GAS_COST_USD", "0.01"))
     FIXED_SLIPPAGE_BPS: int = int(os.getenv("FIXED_SLIPPAGE_BPS", "0"))  # 0=use tiered model; >0=flat override
     # S91: Realistic paper fill modeling — fill probability, partial fills, latency drift
-    PAPER_REALISTIC_FILLS: bool = os.getenv("PAPER_REALISTIC_FILLS", "false").lower() in ("true", "1", "yes")
+    PAPER_REALISTIC_FILLS: bool = os.getenv("PAPER_REALISTIC_FILLS", "true").lower() in ("true", "1", "yes")
     PAPER_DEFAULT_SPREAD: float = float(os.getenv("PAPER_DEFAULT_SPREAD", "0.04"))  # 4% when bid/ask unavailable
     PAPER_LATENCY_DRIFT_BPS_PER_SEC: int = int(os.getenv("PAPER_LATENCY_DRIFT_BPS_PER_SEC", "10"))  # 0.1%/sec
 
@@ -767,6 +767,12 @@ class Settings(BaseSettings):
     POLITICS_EXIT_MIN_PROFIT_USD: float = float(os.getenv("POLITICS_EXIT_MIN_PROFIT_USD", "2.0"))
 
     # Weather hold-to-resolution: boost near-expiry sizing window (NOAA edge widens).
+    # P1: Model-run jump detection — sizing boost when ensemble mean shifts ≥ threshold between model runs
+    WEATHER_JUMP_THRESHOLD_F: float = float(os.getenv("WEATHER_JUMP_THRESHOLD_F", "3.0"))  # °F shift to trigger boost
+    WEATHER_JUMP_MAX_BOOST: float = float(os.getenv("WEATHER_JUMP_MAX_BOOST", "1.5"))  # Max sizing multiplier from jump
+    # P2: NBM CDF benchmark — flag high-conviction when NBM disagrees with market by ≥ threshold
+    WEATHER_NBM_DISAGREE_THRESHOLD: float = float(os.getenv("WEATHER_NBM_DISAGREE_THRESHOLD", "0.15"))  # 15pp
+
     # WEATHER_HOLD_HOURS_BEFORE_RESOLUTION: hours before resolution where expiry boost is applied.
     # 48 = boost starts 48h before market resolves (2× boost at <12h, 1.5× at <24h, 1.2× at <48h).
     WEATHER_HOLD_HOURS_BEFORE_RESOLUTION: float = float(os.getenv("WEATHER_HOLD_HOURS_BEFORE_RESOLUTION", "48.0"))
@@ -1098,6 +1104,33 @@ class Settings(BaseSettings):
     # --- Retention ---
     ESPORTS_TRAINING_RETENTION_DAYS: int = int(os.getenv("ESPORTS_TRAINING_RETENTION_DAYS", "365"))
     ESPORTS_PREDICTION_RETENTION_DAYS: int = int(os.getenv("ESPORTS_PREDICTION_RETENTION_DAYS", "180"))
+
+    # --- Draft feature engineering (Session B) ---
+    ESPORTS_DRAFT_FEATURES_ENABLED: bool = os.getenv("ESPORTS_DRAFT_FEATURES_ENABLED", "true").lower() in ("true", "1", "yes")
+    ESPORTS_DRAFT_MIN_SAMPLES: int = int(os.getenv("ESPORTS_DRAFT_MIN_SAMPLES", "20"))
+    ESPORTS_DRAFT_SYNERGY_MIN_COOCCUR: int = int(os.getenv("ESPORTS_DRAFT_SYNERGY_MIN_COOCCUR", "5"))
+
+    # --- CatBoost draft model (Session C) ---
+    ESPORTS_CATBOOST_ENABLED: bool = os.getenv("ESPORTS_CATBOOST_ENABLED", "false").lower() in ("true", "1", "yes")
+    ESPORTS_CATBOOST_MIN_SAMPLES: int = int(os.getenv("ESPORTS_CATBOOST_MIN_SAMPLES", "200"))
+    ESPORTS_CATBOOST_BLEND_WEIGHT: float = float(os.getenv("ESPORTS_CATBOOST_BLEND_WEIGHT", "0.4"))
+    ESPORTS_CATBOOST_RETRAIN_HOURS: int = int(os.getenv("ESPORTS_CATBOOST_RETRAIN_HOURS", "24"))
+
+    # --- CLV-gated position scaling (WS2) ---
+    ESPORTS_CLV_SCALING_ENABLED: bool = os.getenv("ESPORTS_CLV_SCALING_ENABLED", "false").lower() in ("true", "1", "yes")
+    ESPORTS_SCALE_CONSERVATIVE_MAX_BET: float = float(os.getenv("ESPORTS_SCALE_CONSERVATIVE_MAX_BET", "100.0"))
+    ESPORTS_SCALE_MODERATE_MAX_BET: float = float(os.getenv("ESPORTS_SCALE_MODERATE_MAX_BET", "200.0"))
+    ESPORTS_SCALE_AGGRESSIVE_MAX_BET: float = float(os.getenv("ESPORTS_SCALE_AGGRESSIVE_MAX_BET", "300.0"))
+    ESPORTS_SCALE_CONSERVATIVE_DAILY: float = float(os.getenv("ESPORTS_SCALE_CONSERVATIVE_DAILY", "500.0"))
+    ESPORTS_SCALE_MODERATE_DAILY: float = float(os.getenv("ESPORTS_SCALE_MODERATE_DAILY", "2000.0"))
+    ESPORTS_SCALE_AGGRESSIVE_DAILY: float = float(os.getenv("ESPORTS_SCALE_AGGRESSIVE_DAILY", "5000.0"))
+
+    # --- Series draft adjustment (Session D) ---
+    ESPORTS_SERIES_DRAFT_ADJUST_ENABLED: bool = os.getenv("ESPORTS_SERIES_DRAFT_ADJUST_ENABLED", "false").lower() in ("true", "1", "yes")
+    ESPORTS_SERIES_DRAFT_BLEND_WEIGHT: float = float(os.getenv("ESPORTS_SERIES_DRAFT_BLEND_WEIGHT", "0.3"))
+
+    # --- Unknown team backfill budget (WS7) ---
+    ESPORTS_MAX_BACKFILLS_PER_SCAN: int = int(os.getenv("ESPORTS_MAX_BACKFILLS_PER_SCAN", "10"))
 
     # --- Pinnacle / cross-market (Phase 2 — deferred) ---
     ESPORTS_PINNACLE_ENABLED: bool = os.getenv("ESPORTS_PINNACLE_ENABLED", "false").lower() in ("true", "1", "yes")
