@@ -76,13 +76,14 @@ class MirrorAdaptiveSafety:
                     break
             self._consecutive_losses = streak
 
-            # Drawdown: cumulative P&L curve
+            # Drawdown: cumulative P&L curve, clamped to [0, 1]
             cum = 0.0
             peak = 0.0
             for p in reversed(pnls):  # oldest first
                 cum += p
                 peak = max(peak, cum)
-            self._drawdown_pct = (peak - cum) / max(peak, 1.0) if peak > 0 else 0.0
+            raw_dd = (peak - cum) / max(peak, 1.0) if peak > 0 else 0.0
+            self._drawdown_pct = min(raw_dd, 1.0)  # S94: clamp — raw dollars can exceed 1.0
 
             self._fitted = True
             logger.info(
@@ -119,8 +120,9 @@ class MirrorAdaptiveSafety:
 
         adjusted = max(10, int(base * mult))
 
+        # S94: log at debug — this fires on every RTDS trade; refresh() already logs metrics
         if adjusted != base:
-            logger.info(
+            logger.debug(
                 "mirror_adaptive_max_positions",
                 base=base,
                 adjusted=adjusted,
