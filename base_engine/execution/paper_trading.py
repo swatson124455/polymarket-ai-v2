@@ -62,6 +62,39 @@ def _apply_slippage(price: float, side: str, slippage_bps: int) -> float:
     return max(0.001, min(0.999, adjusted))
 
 
+def _fill_probability(
+    price: float,
+    order_size_usd: float,
+    spread: float,
+    volume_24h: float,
+) -> float:
+    """Estimate probability of order fill based on market microstructure.
+
+    Three independent factors (multiplicative):
+    1. Price-depth: books thin at extremes (0.05, 0.95), deep at 0.50
+    2. Size-impact: larger orders relative to volume are harder to fill
+    3. Spread: wider spread = less likely to fill at your price
+
+    Returns float in [0.05, 1.0]. The 5% floor ensures no order is
+    completely unfillable (real CLOB always has some crossing chance).
+    """
+    # Price-depth: parabola peaks at 0.50, zero at 0/1
+    depth_at_price = 4.0 * price * (1.0 - price)
+    price_factor = 0.3 + 0.7 * depth_at_price
+
+    # Size-impact: ratio of order to daily volume
+    if volume_24h <= 0:
+        volume_24h = 1000.0  # conservative fallback
+    size_ratio = order_size_usd / max(volume_24h, 1.0)
+    size_factor = max(0.1, 1.0 - 2.0 * size_ratio)
+
+    # Spread: wider spread = less fill probability
+    spread_factor = max(0.2, 1.0 - spread * 5.0)
+
+    fill_prob = price_factor * size_factor * spread_factor
+    return max(0.05, min(1.0, fill_prob))
+
+
 class PaperTrade:
     """Simulated trade"""
     def __init__(
@@ -216,6 +249,7 @@ class PaperTradingEngine:
         latency_ms: Optional[float] = None,
         bid: float = 0.0,
         ask: float = 0.0,
+        volume: float = 0.0,
         model_version: Optional[int] = None,
         model_name: Optional[str] = None,
         event_data: Optional[dict] = None,
@@ -244,7 +278,7 @@ class PaperTradingEngine:
         async with self._trade_lock:
             return await self._place_order_locked(
                 market_id, token_id, side, size, price, bot_name, confidence, original_side, order_type, correlation_id, latency_ms,
-                bid=bid, ask=ask, model_version=model_version, model_name=model_name, event_data=event_data,
+                bid=bid, ask=ask, volume=volume, model_version=model_version, model_name=model_name, event_data=event_data,
             )
 
     async def _place_order_locked(
@@ -262,6 +296,7 @@ class PaperTradingEngine:
         latency_ms: Optional[float] = None,
         bid: float = 0.0,
         ask: float = 0.0,
+        volume: float = 0.0,
         model_version: Optional[int] = None,
         model_name: Optional[str] = None,
         event_data: Optional[dict] = None,
@@ -305,6 +340,19 @@ class PaperTradingEngine:
         if bid > 0.0 and ask > 0.0:
             price = ask if side == "BUY" else bid
 
+        # S91: Latency price deterioration — RTDS copy trades lose edge during signal delay
+        _realistic = getattr(settings, "PAPER_REALISTIC_FILLS", False) is True
+        if _realistic and latency_ms is not None and latency_ms > 500:
+            _latency_sec = latency_ms / 1000.0
+            _drift_rate = getattr(settings, "PAPER_LATENCY_DRIFT_BPS_PER_SEC", 10) / 10000.0
+            _drift = _latency_sec * _drift_rate * (0.5 + random.random())
+            if side == "BUY":
+                price = min(0.999, price + _drift)
+            else:
+                price = max(0.001, price - _drift)
+            logger.info("paper_latency_drift", latency_ms=round(latency_ms, 0),
+                        drift_bps=round(_drift * 10000, 1), market_id=market_id)
+
         # Apply size-dependent slippage. Set FIXED_SLIPPAGE_BPS>0 in env to override.
         _order_size_usd = size * price
         _fixed = getattr(settings, "FIXED_SLIPPAGE_BPS", 0)
@@ -312,6 +360,34 @@ class PaperTradingEngine:
         original_price = price
         _submitted_at = datetime.now(timezone.utc).replace(tzinfo=None)
         price = _apply_slippage(price, side, slippage_bps)
+
+        # S91: Fill probability + partial fills — BUY only (SELLs must always close positions)
+        if _realistic and side == "BUY":
+            _spread = (ask - bid) if (bid > 0 and ask > 0) else getattr(settings, "PAPER_DEFAULT_SPREAD", 0.04)
+            _fill_prob = _fill_probability(price, _order_size_usd, _spread, volume)
+
+            if random.random() > _fill_prob:
+                logger.info("paper_no_fill", fill_prob=round(_fill_prob, 3),
+                            market_id=market_id, price=round(price, 4),
+                            size_usd=round(_order_size_usd, 2))
+                return {
+                    "success": False,
+                    "error": f"Order not filled (fill probability {_fill_prob:.0%})",
+                    "fill_probability": _fill_prob,
+                }
+
+            # Partial fill: fraction drawn from [fill_prob, 1.0] range
+            _fill_frac = min(1.0, _fill_prob + random.random() * (1.0 - _fill_prob) * 0.5)
+            _filled_size = round(size * _fill_frac, 4)
+            if _filled_size < 0.01:
+                _filled_size = 0.0
+            if _filled_size <= 0:
+                return {"success": False, "error": "Partial fill too small"}
+            if _filled_size < size:
+                logger.info("paper_partial_fill", fill_pct=round(_fill_frac * 100, 1),
+                            fill_prob=round(_fill_prob, 3), market_id=market_id,
+                            requested=round(size, 2), filled=round(_filled_size, 2))
+                size = _filled_size
 
         # Apply maker/taker fee (Polymarket: maker=0%, taker=1.5%)
         if order_type == "limit":

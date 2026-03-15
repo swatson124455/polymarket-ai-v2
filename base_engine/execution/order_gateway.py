@@ -655,6 +655,12 @@ class OrderGateway:
             try:
                 _t_coord_end = time.monotonic()
                 t0 = time.monotonic()
+                # S91: Look up 24h volume for fill probability model
+                _paper_volume = 0.0
+                if self._market_index:
+                    _mdata_vol = self._market_index.get(str(market_id))
+                    if _mdata_vol:
+                        _paper_volume = float(_mdata_vol.get("volume") or _mdata_vol.get("volume24hr") or 0)
                 result = await self.paper_trading_engine.place_order(
                     market_id=market_id,
                     token_id=token_id,
@@ -669,6 +675,7 @@ class OrderGateway:
                     latency_ms=None,  # placeholder — set after timing
                     bid=bid,
                     ask=ask,
+                    volume=_paper_volume,
                     event_data=event_data,
                 )
                 latency_ms = (time.monotonic() - t0) * 1000

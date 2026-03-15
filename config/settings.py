@@ -211,6 +211,10 @@ class Settings(BaseSettings):
     MAKER_FEE_BPS: int = int(os.getenv("MAKER_FEE_BPS", "0"))
     GAS_COST_USD: float = float(os.getenv("GAS_COST_USD", "0.01"))
     FIXED_SLIPPAGE_BPS: int = int(os.getenv("FIXED_SLIPPAGE_BPS", "0"))  # 0=use tiered model; >0=flat override
+    # S91: Realistic paper fill modeling — fill probability, partial fills, latency drift
+    PAPER_REALISTIC_FILLS: bool = os.getenv("PAPER_REALISTIC_FILLS", "false").lower() in ("true", "1", "yes")
+    PAPER_DEFAULT_SPREAD: float = float(os.getenv("PAPER_DEFAULT_SPREAD", "0.04"))  # 4% when bid/ask unavailable
+    PAPER_LATENCY_DRIFT_BPS_PER_SEC: int = int(os.getenv("PAPER_LATENCY_DRIFT_BPS_PER_SEC", "10"))  # 0.1%/sec
 
     # Learning Settings
     # Per-bot model training (Session 47): when enabled, each bot trains on its own prediction_log entries.
@@ -967,8 +971,8 @@ class Settings(BaseSettings):
 
     # --- Bankroll / sizing (separate Kelly pool) ---
     ESPORTS_TOTAL_CAPITAL: float = float(os.getenv("ESPORTS_TOTAL_CAPITAL", "5000.0"))
-    ESPORTS_MAX_BET_USD: float = float(os.getenv("ESPORTS_MAX_BET_USD", "100.0"))
-    ESPORTS_MAX_DAILY_USD: float = float(os.getenv("ESPORTS_MAX_DAILY_USD", "500.0"))
+    ESPORTS_MAX_BET_USD: float = float(os.getenv("ESPORTS_MAX_BET_USD", "300.0"))
+    ESPORTS_MAX_DAILY_USD: float = float(os.getenv("ESPORTS_MAX_DAILY_USD", "10000.0"))
     ESPORTS_KELLY_DEFAULT_FRACTION: float = float(os.getenv("ESPORTS_KELLY_DEFAULT_FRACTION", "0.25"))
 
     # --- Execution ---
