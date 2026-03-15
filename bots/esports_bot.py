@@ -108,8 +108,10 @@ class EsportsBot(BaseBot):
         self._glicko2_trackers: Dict[str, Any] = {}  # game → Glicko2Tracker
         self._team_name_to_id: Dict[str, str] = {}    # lowercased team name → PandaScore ID
         self._backfill_attempted: set = set()            # "game:name" keys already queried this session
-        self._backfill_calls_this_scan: int = 0          # reset each scan; capped at 5
-        self._max_backfills_per_scan: int = 5
+        self._backfill_calls_this_scan: int = 0          # reset each scan; capped
+        self._max_backfills_per_scan: int = int(
+            getattr(settings, "ESPORTS_MAX_BACKFILLS_PER_SCAN", 10)
+        )
         self._team_fail_logged: set = set()              # rate-limit team_match_fail logs (per session)
         self._calibration_ece: Dict[str, float] = {}     # game → latest ECE (updated every 10 min)
         self._edge_decay_data: Dict[str, Dict] = {}      # game → latest edge decay analysis
@@ -161,6 +163,14 @@ class EsportsBot(BaseBot):
         # Roster change detection: team_id → (roster_hash, change_timestamp)
         self._roster_cache: Dict[str, tuple] = {}
         self._roster_change_cache: Dict[str, float] = {}  # team_id → mono_time of change
+
+        # CatBoost draft models (Session C): game → CatBoostDraftModel
+        self._catboost_models: Dict[str, Any] = {}
+        self._draft_feature_builder: Any = None  # DraftFeatureBuilder instance
+        self._catboost_last_train: Dict[str, float] = {}  # game → monotonic timestamp
+
+        # CLV-gated position scaling (WS2)
+        self._clv_scaling_tier: str = "conservative"
 
         # Settings
         # "Easy mode": relaxed thresholds until models graduate, then tighten.
@@ -990,11 +1000,8 @@ class EsportsBot(BaseBot):
             if size <= 0 or not token_id:
                 continue
 
-            # P&L percentage using DB current_price (updated every 10s)
-            if side == "YES":
-                pnl_pct = (current - entry) / max(entry, 1e-6)
-            else:
-                pnl_pct = (entry - current) / max(entry, 1e-6)
+            # Prices are token-specific — (current - entry) is correct for BOTH YES and NO
+            pnl_pct = (current - entry) / max(entry, 1e-6)
 
             if pnl_pct <= -stop_pct:
                 logger.info("esportsbot_stop_loss", market_id=mid,
@@ -1542,8 +1549,11 @@ class EsportsBot(BaseBot):
         try:
             glicko2_prob = await self._get_glicko2_prediction(market_data, game)
             if glicko2_prob is None:
+                # Include extracted team names for diagnosis
+                _cached_pred = self._prediction_cache.get(market_id, {})
                 logger.info("esportsbot_glicko2_miss", game=game,
-                            market_id=market_id, question=str(market_data.get("question",""))[:80])
+                            market_id=market_id,
+                            question=str(market_data.get("question",""))[:80])
                 # Market-price fallback: naive 50/50 for unknown teams.
                 # Edge comes from market mispricing vs neutral prior.
                 # Only trades when market price deviates >15% from even odds.
@@ -1629,6 +1639,51 @@ class EsportsBot(BaseBot):
                             [glicko2_prob, xgb_prob], weights=[0.6, 0.4], d=_d
                         )
                         glicko2_prob = max(0.05, min(0.95, glicko2_prob))
+
+                # CatBoost draft model blend [Session C]: augment with draft composition
+                if (getattr(settings, "ESPORTS_CATBOOST_ENABLED", False)
+                        and game in self._catboost_models
+                        and self._catboost_models[game].is_fitted
+                        and self._draft_feature_builder is not None):
+                    _draft_data = None
+                    # Get draft from live match data or market data
+                    _live = self._live_matches.get(market_id, {})
+                    if isinstance(_live, dict):
+                        _draft_data = _live.get("draft")
+                    if not _draft_data and isinstance(market_data, dict):
+                        _draft_data = market_data.get("draft")
+                    if _draft_data and isinstance(_draft_data, dict):
+                        try:
+                            _draft_feats = self._draft_feature_builder.build_features(
+                                _draft_data, game,
+                            )
+                            # Merge Glicko-2 features
+                            _gs = self._build_glicko2_game_state(market_data, game)
+                            if _gs:
+                                for _fk in ("team_strength_diff", "matchup_uncertainty",
+                                             "rd_asymmetry", "team_a_volatility",
+                                             "team_b_volatility", "best_of"):
+                                    _draft_feats[_fk] = float(_gs.get(_fk, 0.0))
+                            _cb_prob = self._catboost_models[game].predict_proba(_draft_feats)
+                            if 0.05 < _cb_prob < 0.95:
+                                _cb_weight = float(getattr(
+                                    settings, "ESPORTS_CATBOOST_BLEND_WEIGHT", 0.4,
+                                ))
+                                _d = self._game_egm_d.get(game, self._egm_d)
+                                glicko2_prob = extremized_geometric_mean(
+                                    [glicko2_prob, _cb_prob],
+                                    weights=[1.0 - _cb_weight, _cb_weight], d=_d,
+                                )
+                                glicko2_prob = max(0.05, min(0.95, glicko2_prob))
+                                logger.debug(
+                                    "esportsbot_catboost_blend", game=game,
+                                    market_id=market_id,
+                                    catboost_prob=round(_cb_prob, 4),
+                                    blended_prob=round(glicko2_prob, 4),
+                                )
+                        except Exception as _cb_exc:
+                            logger.debug("esportsbot_catboost_blend_failed",
+                                         game=game, error=str(_cb_exc))
 
                 # LAN adjustment [T1-C]: favorites lose edge under LAN pressure
                 if (getattr(settings, "ESPORTS_LAN_ADJUSTMENT_ENABLED", True)
@@ -2325,11 +2380,26 @@ class EsportsBot(BaseBot):
         # A8: Drawdown Kelly reduction
         dd_factor = self._get_drawdown_kelly_factor()
 
+        # CLV-gated sizing override [WS2]: scale max_bet based on CLV tier
+        _clv_max_override = None
+        if getattr(settings, "ESPORTS_CLV_SCALING_ENABLED", False):
+            _tier = self._clv_scaling_tier
+            if _tier == "aggressive":
+                _clv_max_override = float(getattr(settings, "ESPORTS_SCALE_AGGRESSIVE_MAX_BET", 300.0))
+            elif _tier == "moderate":
+                _clv_max_override = float(getattr(settings, "ESPORTS_SCALE_MODERATE_MAX_BET", 200.0))
+            else:
+                _clv_max_override = float(getattr(settings, "ESPORTS_SCALE_CONSERVATIVE_MAX_BET", 100.0))
+
         size = await self.calculate_bot_position_size(
             confidence, opp["price"], category="esports"
         )
         if size <= 0:
             return
+
+        # Apply CLV max override after base sizing
+        if _clv_max_override is not None and size > _clv_max_override:
+            size = _clv_max_override
 
         # Apply A6 + A8 + per-game Kelly multiplier + edge decay scaling after base sizing
         _game_mult = self._game_kelly_mult.get(opp.get("game", ""), 1.0)
@@ -2943,6 +3013,15 @@ class EsportsBot(BaseBot):
         # Fit conformal prediction intervals from resolved trades
         await self._fit_conformal_predictor(db)
 
+        # Fit CatBoost draft models (per game, if enough data) [Session C]
+        await self._fit_catboost_draft_models(db)
+
+        # Update draft feature stats [Session B]
+        await self._update_draft_feature_stats(db)
+
+        # CLV scaling tier [WS2]
+        self._clv_scaling_tier = await self._compute_clv_scaling_tier(db)
+
         # Retention cleanup — once daily
         await self._cleanup_old_esports_data(db)
 
@@ -2971,6 +3050,133 @@ class EsportsBot(BaseBot):
                         training_deleted=r1.rowcount, prediction_deleted=r2.rowcount)
         except Exception as exc:
             logger.warning("esports_data_cleanup_failed", error=str(exc))
+
+    async def _fit_catboost_draft_models(self, db) -> None:
+        """Train/reload CatBoost draft models for games with sufficient data.
+
+        Gated behind ESPORTS_CATBOOST_ENABLED. Per-game models for LoL, Dota2,
+        Valorant, R6. Respects retrain interval (default 24h).
+        """
+        if not getattr(settings, "ESPORTS_CATBOOST_ENABLED", False):
+            return
+        if not db:
+            return
+
+        _retrain_hours = int(getattr(settings, "ESPORTS_CATBOOST_RETRAIN_HOURS", 24))
+        _retrain_interval = _retrain_hours * 3600.0
+
+        for game in ("lol", "dota2", "valorant", "r6"):
+            last_train = self._catboost_last_train.get(game, 0.0)
+            if (time.monotonic() - last_train) < _retrain_interval:
+                continue
+
+            try:
+                # Try to load existing model first (on first check)
+                if game not in self._catboost_models:
+                    import os as _os
+                    from esports.models.catboost_draft_model import CatBoostDraftModel
+                    _model_path = _os.path.join(
+                        _os.path.dirname(__file__), "..", "saved_models",
+                        f"catboost_{game}.cbm",
+                    )
+                    _model_path = _os.path.abspath(_model_path)
+                    _model = CatBoostDraftModel(game)
+                    if _model.load(_model_path):
+                        self._catboost_models[game] = _model
+                        self._catboost_last_train[game] = time.monotonic()
+                        logger.info("esportsbot_catboost_loaded", game=game)
+                        continue
+
+                # Train new model
+                if hasattr(self, "_trainer") and self._trainer is not None:
+                    metrics = await self._trainer.train_catboost_draft(game, db)
+                    if metrics and metrics.get("graduated", False):
+                        # Reload the saved model
+                        import os as _os
+                        from esports.models.catboost_draft_model import CatBoostDraftModel
+                        _model_path = _os.path.join(
+                            _os.path.dirname(__file__), "..", "saved_models",
+                            f"catboost_{game}.cbm",
+                        )
+                        _model_path = _os.path.abspath(_model_path)
+                        _model = CatBoostDraftModel(game)
+                        if _model.load(_model_path):
+                            self._catboost_models[game] = _model
+                    self._catboost_last_train[game] = time.monotonic()
+            except Exception as exc:
+                logger.debug("esportsbot_catboost_fit_failed", game=game, error=str(exc))
+
+    async def _update_draft_feature_stats(self, db) -> None:
+        """Refresh DraftFeatureBuilder stats from training data.
+
+        Initializes builder on first call, then refreshes hourly per game.
+        """
+        if not getattr(settings, "ESPORTS_DRAFT_FEATURES_ENABLED", True):
+            return
+        if not db:
+            return
+
+        try:
+            if self._draft_feature_builder is None:
+                from esports.models.draft_features import DraftFeatureBuilder
+                self._draft_feature_builder = DraftFeatureBuilder()
+
+            for game in ("lol", "dota2", "valorant", "r6"):
+                if self._draft_feature_builder.needs_refit(game, interval_seconds=3600.0):
+                    await self._draft_feature_builder.fit_stats(db, game)
+        except Exception as exc:
+            logger.debug("esportsbot_draft_features_update_failed", error=str(exc))
+
+    async def _compute_clv_scaling_tier(self, db) -> str:
+        """Compute CLV-based scaling tier for position limits.
+
+        Uses existing compute_clv_stats() from esports_db.py.
+        Returns: "conservative" / "moderate" / "aggressive"
+        """
+        if not getattr(settings, "ESPORTS_CLV_SCALING_ENABLED", False):
+            return "conservative"
+        if not db:
+            return "conservative"
+
+        try:
+            from esports.data.esports_db import compute_clv_stats
+
+            # Aggregate CLV across all games
+            total_samples = 0
+            total_clv_sum = 0.0
+            total_clv_positive = 0
+
+            for game in ("lol", "cs2", "dota2", "valorant"):
+                clv = await compute_clv_stats(db, game, days=30)
+                if clv and clv["total"] > 0:
+                    total_samples += clv["total"]
+                    total_clv_sum += clv["avg_clv"] * clv["total"]
+                    total_clv_positive += clv["clv_positive_count"]
+
+            if total_samples < 30:
+                tier = "conservative"
+            else:
+                avg_clv = total_clv_sum / total_samples
+                hit_rate = total_clv_positive / total_samples
+
+                if hit_rate >= 0.55 and avg_clv > 0.02 and total_samples >= 100:
+                    tier = "aggressive"
+                elif hit_rate >= 0.52 and avg_clv > 0.01 and total_samples >= 50:
+                    tier = "moderate"
+                else:
+                    tier = "conservative"
+
+            logger.info(
+                "esportsbot_clv_scaling_tier",
+                tier=tier,
+                total_samples=total_samples,
+                avg_clv=round(total_clv_sum / total_samples, 4) if total_samples > 0 else 0.0,
+                hit_rate=round(total_clv_positive / total_samples, 4) if total_samples > 0 else 0.0,
+            )
+            return tier
+        except Exception as exc:
+            logger.debug("esportsbot_clv_scaling_failed", error=str(exc))
+            return "conservative"
 
     async def _fit_tabpfn_models(self, db) -> None:
         """Fit TabPFN classifiers for sparse games using resolved trade data.
@@ -4004,6 +4210,37 @@ class EsportsBot(BaseBot):
                 maps_a, maps_b, best_of, per_map_prob=glicko_prob
             )
 
+        # Series draft adjustment [Session D]: blend CatBoost draft prob into series model
+        if (getattr(settings, "ESPORTS_SERIES_DRAFT_ADJUST_ENABLED", False)
+                and model_prob is not None
+                and game in self._catboost_models
+                and self._catboost_models[game].is_fitted
+                and self._draft_feature_builder is not None):
+            _series_draft = self._get_series_latest_draft(match_id)
+            if _series_draft:
+                try:
+                    _draft_feats = self._draft_feature_builder.build_features(
+                        _series_draft, game, team_a, team_b,
+                    )
+                    # Add Glicko-2 features
+                    _g_cache = self._series_glicko2_cache.get(f"{game}:{team_a}:{team_b}")
+                    if _g_cache:
+                        _draft_feats["team_strength_diff"] = _g_cache - 0.5
+                    _cb_prob = self._catboost_models[game].predict_proba(_draft_feats)
+                    if 0.05 < _cb_prob < 0.95:
+                        _blend_w = float(getattr(
+                            settings, "ESPORTS_SERIES_DRAFT_BLEND_WEIGHT", 0.3,
+                        ))
+                        model_prob = (1.0 - _blend_w) * model_prob + _blend_w * _cb_prob
+                        logger.debug(
+                            "esportsbot_series_draft_adjust",
+                            match_id=match_id, game=game,
+                            catboost_prob=round(_cb_prob, 4),
+                            blended_prob=round(model_prob, 4),
+                        )
+                except Exception as _sd_exc:
+                    logger.debug("esportsbot_series_draft_failed", error=str(_sd_exc))
+
         if model_prob is None or not (0.01 < model_prob < 0.99):
             return []
 
@@ -4131,6 +4368,36 @@ class EsportsBot(BaseBot):
                     })
 
         return result
+
+    def _get_series_latest_draft(self, match_id: str) -> Optional[Dict]:
+        """Extract draft data from the most recent game in an active series.
+
+        Returns draft dict if available, None otherwise.
+        """
+        series_data = self._active_series.get(match_id)
+        if not series_data or not isinstance(series_data, dict):
+            return None
+
+        # Check live match data for this match_id
+        live_match = self._live_matches.get(match_id)
+        if isinstance(live_match, dict):
+            draft = live_match.get("draft")
+            if isinstance(draft, dict) and (
+                draft.get("team_a_picks") or draft.get("team_b_picks")
+            ):
+                return draft
+
+        # Check game state from the series prediction cache
+        cache = self._series_prediction_cache.get(match_id, {})
+        game_state = cache.get("game_state", {})
+        if isinstance(game_state, dict):
+            draft = game_state.get("draft")
+            if isinstance(draft, dict) and (
+                draft.get("team_a_picks") or draft.get("team_b_picks")
+            ):
+                return draft
+
+        return None
 
     async def _series_get_glicko2_expected_score(
         self, game: str, team_a: str, team_b: str, db,

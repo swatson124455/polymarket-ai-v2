@@ -571,6 +571,138 @@ class EsportsModelTrainer:
             return False
         return bool(r.get("graduated", False))
 
+    # ── CatBoost draft model training ─────────────────────────────────
+
+    async def train_catboost_draft(
+        self, game: str, db=None
+    ) -> Optional[Dict[str, Any]]:
+        """Train CatBoost draft model for a specific game.
+
+        Queries esports_training_data for rows with draft data,
+        builds features via DraftFeatureBuilder, trains CatBoostDraftModel.
+
+        Args:
+            game: Game slug (lol, dota2, valorant, r6).
+            db: Database session provider.
+
+        Returns:
+            Metrics dict or None if insufficient data.
+        """
+        if db is None:
+            return None
+
+        min_samples = int(getattr(settings, "ESPORTS_CATBOOST_MIN_SAMPLES", 200))
+
+        try:
+            from esports.models.draft_features import DraftFeatureBuilder
+            from esports.models.catboost_draft_model import CatBoostDraftModel
+
+            # Step 1: Fit draft feature stats from training data
+            builder = DraftFeatureBuilder()
+            fit_summary = await builder.fit_stats(db, game)
+            if fit_summary.get("rows_with_draft", 0) < min_samples:
+                logger.info(
+                    "EsportsModelTrainer: insufficient draft data for CatBoost",
+                    game=game,
+                    rows_with_draft=fit_summary.get("rows_with_draft", 0),
+                    min_needed=min_samples,
+                )
+                return None
+
+            # Step 2: Load training data with draft + Glicko-2 features
+            from esports.data.esports_data_collector import EsportsDataCollector
+            collector = EsportsDataCollector(pandascore_client=self._ps)
+            training_data = await collector.get_training_data(db, game)
+
+            # Filter to rows that have draft data
+            draft_rows = []
+            for row in training_data:
+                gs = row if isinstance(row, dict) else {}
+                draft = gs.get("draft")
+                if not isinstance(draft, dict):
+                    continue
+                a_picks = draft.get("team_a_picks", [])
+                b_picks = draft.get("team_b_picks", [])
+                if a_picks or b_picks:
+                    draft_rows.append(row)
+
+            if len(draft_rows) < min_samples:
+                logger.info(
+                    "EsportsModelTrainer: insufficient filtered draft rows",
+                    game=game,
+                    draft_rows=len(draft_rows),
+                    min_needed=min_samples,
+                )
+                return None
+
+            # Step 3: Build features + labels (oldest-first for temporal split)
+            draft_rows = list(reversed(draft_rows))
+
+            # Glicko-2 feature keys to merge
+            _GLICKO_KEYS = (
+                "team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
+                "team_a_volatility", "team_b_volatility", "best_of",
+            )
+
+            X_dicts = []
+            y_labels = []
+            for row in draft_rows:
+                draft = row.get("draft", {})
+                team_a = str(row.get("team_a", row.get("team_a_name", ""))).strip()
+                team_b = str(row.get("team_b", row.get("team_b_name", ""))).strip()
+
+                feats = builder.build_features(draft, game, team_a, team_b)
+                # Merge Glicko-2 features from training row
+                for gk in _GLICKO_KEYS:
+                    feats[gk] = float(row.get(gk, 0.0))
+
+                X_dicts.append(feats)
+
+                # Label: team_a won
+                if row.get("_game") == "lol":
+                    y_labels.append(int(row.get("blue_win", 0)))
+                elif row.get("_game") == "cs2":
+                    y_labels.append(int(row.get("team_a_won_round", 0)))
+                else:
+                    y_labels.append(int(row.get("team_a_won", row.get("outcome", 0))))
+
+            if len(X_dicts) < min_samples:
+                return None
+
+            # Step 4: Train
+            all_feature_names = builder.get_all_feature_names() + list(_GLICKO_KEYS)
+            cat_feature_names = builder.get_cat_feature_names()
+
+            model = CatBoostDraftModel(game)
+            metrics = model.fit(
+                X_dicts, y_labels,
+                cat_feature_names=cat_feature_names,
+                all_feature_names=all_feature_names,
+            )
+
+            # Step 5: Save if graduated
+            if metrics.get("graduated", False):
+                model_dir = os.path.join(
+                    os.path.dirname(__file__), "..", "..", "saved_models",
+                )
+                model_dir = os.path.abspath(model_dir)
+                os.makedirs(model_dir, exist_ok=True)
+                model_path = os.path.join(model_dir, f"catboost_{game}.cbm")
+                model.save(model_path)
+
+            # Track training state
+            self._last_train_time[f"catboost_{game}"] = time.monotonic()
+            self._train_results[f"catboost_{game}"] = metrics
+
+            return metrics
+
+        except Exception as exc:
+            logger.error(
+                "EsportsModelTrainer: CatBoost draft training failed",
+                game=game, error=str(exc),
+            )
+            return {"error": str(exc), "graduated": False}
+
     # ── Game-specific training ──────────────────────────────────────────
 
     async def _train_lol(
