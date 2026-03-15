@@ -155,46 +155,63 @@ class EsportsGameMonitor:
 
         _poll_timeout = int(getattr(settings, "ESPORTS_LIVE_POLL_TIMEOUT", 10))
         for game in games_to_poll:
-            try:
-                matches = await asyncio.wait_for(
-                    self._ps.get_live_matches(game=game), timeout=_poll_timeout
-                )
-                for match in matches:
-                    state = self._parse_match_to_state(match, game)
-                    if state and state.status == "running":
-                        # E3: Track freshness for stale detection
-                        mid = state.match_id
-                        cur_score = (state.score_maps_a, state.score_maps_b)
-                        # Always update — match returned as "running" by PandaScore
-                        # means it's live. Stale = PandaScore stopped returning it.
-                        self._last_score_update[mid] = time.monotonic()
-                        self._prev_scores[mid] = cur_score
+            _attempt = 0
+            _cur_timeout = _poll_timeout
+            while _attempt <= 1:
+                try:
+                    matches = await asyncio.wait_for(
+                        self._ps.get_live_matches(game=game), timeout=_cur_timeout
+                    )
+                    for match in matches:
+                        state = self._parse_match_to_state(match, game)
+                        if state and state.status == "running":
+                            # E3: Track freshness for stale detection
+                            mid = state.match_id
+                            cur_score = (state.score_maps_a, state.score_maps_b)
+                            # Always update — match returned as "running" by PandaScore
+                            # means it's live. Stale = PandaScore stopped returning it.
+                            self._last_score_update[mid] = time.monotonic()
+                            self._prev_scores[mid] = cur_score
 
-                        self._active_games[mid] = state
-                        try:
-                            self._queue.put_nowait(state)
-                        except asyncio.QueueFull:
-                            logger.debug(
-                                "EsportsGameMonitor: queue full — dropping",
-                                match_id=mid,
-                            )
-                    elif state and state.match_id in self._active_games:
-                        if state.status in ("finished", "canceled"):
-                            # E4: Push canceled matches for position exit
-                            if state.status == "canceled":
-                                try:
-                                    self._canceled_matches.put_nowait(state.match_id)
-                                except asyncio.QueueFull:
-                                    pass
-                            del self._active_games[state.match_id]
-                            self._cs2_prev_scores.pop(state.match_id, None)
-                            self._cs2_loss_streaks.pop(state.match_id, None)
-                            self._last_score_update.pop(state.match_id, None)
-                            self._prev_scores.pop(state.match_id, None)
-            except asyncio.TimeoutError:
-                logger.info("EsportsGameMonitor: poll timeout", game=game, timeout_s=_poll_timeout)
-            except Exception as exc:
-                logger.info("EsportsGameMonitor: poll error", game=game, error=str(exc))
+                            self._active_games[mid] = state
+                            try:
+                                self._queue.put_nowait(state)
+                            except asyncio.QueueFull:
+                                logger.debug(
+                                    "EsportsGameMonitor: queue full — dropping",
+                                    match_id=mid,
+                                )
+                        elif state and state.match_id in self._active_games:
+                            if state.status in ("finished", "canceled"):
+                                # E4: Push canceled matches for position exit
+                                if state.status == "canceled":
+                                    try:
+                                        self._canceled_matches.put_nowait(state.match_id)
+                                    except asyncio.QueueFull:
+                                        pass
+                                del self._active_games[state.match_id]
+                                self._cs2_prev_scores.pop(state.match_id, None)
+                                self._cs2_loss_streaks.pop(state.match_id, None)
+                                self._last_score_update.pop(state.match_id, None)
+                                self._prev_scores.pop(state.match_id, None)
+                    break  # success — exit retry loop
+                except asyncio.TimeoutError:
+                    if _attempt == 0:
+                        _attempt += 1
+                        _cur_timeout = _poll_timeout * 2
+                        logger.info(
+                            "EsportsGameMonitor: poll timeout, retrying",
+                            game=game, retry_timeout_s=_cur_timeout,
+                        )
+                        continue
+                    logger.info(
+                        "EsportsGameMonitor: poll timeout after retry",
+                        game=game, timeout_s=_cur_timeout,
+                    )
+                    break
+                except Exception as exc:
+                    logger.info("EsportsGameMonitor: poll error", game=game, error=str(exc))
+                    break
 
         if self._active_games:
             logger.debug(
