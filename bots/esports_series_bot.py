@@ -53,6 +53,8 @@ class EsportsSeriesBot(BaseBot):
         self._hltv = None
         self._scanner = None
         self._bankroll_mgr = None
+        # Glicko-2 expected score cache for per-map probability fallback
+        self._glicko2_cache: Dict[str, float] = {}  # "game:teamA:teamB" → expected_score
 
         # Settings
         self._min_edge = float(getattr(settings, "ESPORTS_SERIES_MIN_EDGE", 0.10))
@@ -339,7 +341,13 @@ class EsportsSeriesBot(BaseBot):
             else:
                 model_prob = self._simple_series_prob(maps_a, maps_b, best_of)
         else:
-            model_prob = self._simple_series_prob(maps_a, maps_b, best_of)
+            # Use Glicko-2 expected score as per-map win probability (better than 0.50)
+            glicko_prob = await self._get_glicko2_expected_score(
+                game, team_a, team_b, db
+            )
+            model_prob = self._simple_series_prob(
+                maps_a, maps_b, best_of, per_map_prob=glicko_prob
+            )
 
         if model_prob is None or not (0.01 < model_prob < 0.99):
             return []
@@ -495,16 +503,78 @@ class EsportsSeriesBot(BaseBot):
 
     # ── Helpers ────────────────────────────────────────────────────────────
 
-    def _simple_series_prob(
-        self, maps_a: int, maps_b: int, best_of: int
+    async def _get_glicko2_expected_score(
+        self, game: str, team_a: str, team_b: str, db,
     ) -> Optional[float]:
-        """Fallback: use uniform game win rate (0.50) for series probability."""
+        """Query glicko2_ratings for two teams and return P(a beats b).
+
+        Returns None if either team is unrated or has fewer than 10 matches.
+        Results are cached for the session to avoid repeated DB queries.
+        """
+        cache_key = f"{game}:{team_a.lower()}:{team_b.lower()}"
+        if cache_key in self._glicko2_cache:
+            return self._glicko2_cache[cache_key]
+
+        if not db:
+            return None
+
+        try:
+            rows = await db.fetch(
+                "SELECT team_key, mu, phi, sigma, match_count "
+                "FROM glicko2_ratings WHERE game = :game "
+                "AND team_key IN (:ta, :tb)",
+                {"game": game, "ta": team_a.lower().strip(),
+                 "tb": team_b.lower().strip()},
+            )
+            if len(rows) < 2:
+                return None
+
+            from esports.models.glicko2 import Glicko2Rating, expected_score
+            ratings = {}
+            for r in rows:
+                if int(r.get("match_count", 0) or 0) < 10:
+                    return None
+                ratings[r["team_key"]] = Glicko2Rating(
+                    mu=float(r["mu"]), phi=float(r["phi"]),
+                    sigma=float(r.get("sigma", 0.06) or 0.06),
+                )
+
+            ra = ratings.get(team_a.lower().strip())
+            rb = ratings.get(team_b.lower().strip())
+            if ra is None or rb is None:
+                return None
+
+            prob = expected_score(ra, rb)
+            # Sanity: reject extreme probabilities (likely data issue)
+            if prob < 0.05 or prob > 0.95:
+                return None
+
+            self._glicko2_cache[cache_key] = prob
+            logger.debug(
+                "EsportsSeriesBot: glicko2 fallback",
+                game=game, team_a=team_a, team_b=team_b,
+                expected_score=round(prob, 4),
+            )
+            return prob
+        except Exception as exc:
+            logger.debug(
+                "EsportsSeriesBot: glicko2 lookup failed",
+                error=str(exc),
+            )
+            return None
+
+    def _simple_series_prob(
+        self, maps_a: int, maps_b: int, best_of: int,
+        per_map_prob: Optional[float] = None,
+    ) -> Optional[float]:
+        """Fallback: use Glicko-2 expected score (or 0.50) for series probability."""
         from esports.models.series_model import bo3_match_prob, bo5_match_prob
 
+        p = per_map_prob if per_map_prob is not None else 0.50
         if best_of == 3:
-            return bo3_match_prob(0.50, maps_a, maps_b)
+            return bo3_match_prob(p, maps_a, maps_b)
         elif best_of == 5:
-            return bo5_match_prob(0.50, maps_a, maps_b)
+            return bo5_match_prob(p, maps_a, maps_b)
         return None
 
     @staticmethod
