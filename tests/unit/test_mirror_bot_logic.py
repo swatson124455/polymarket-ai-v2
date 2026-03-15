@@ -1047,6 +1047,7 @@ class TestExecuteMirrorTrade:
         """Successful entry trade increments _daily_exposure and updates position size."""
         bot, engine = _make_bot()
         bot.bankroll = MagicMock()
+        bot.bankroll.capital = 3000.0
         bot.bankroll.max_daily_usd = 10000
         bot.calculate_bot_position_size = AsyncMock(return_value=100.0)
         bot.place_order = AsyncMock(return_value={"success": True, "order_id": "ord1"})

@@ -348,6 +348,11 @@ class Settings(BaseSettings):
     MIRROR_MAX_HOLD_HOURS: float = float(os.getenv("MIRROR_MAX_HOLD_HOURS", "72"))
     MIRROR_MAX_POSITIONS: int = int(os.getenv("MIRROR_MAX_POSITIONS", "200"))  # 51 pre-fix BUY positions exceed global 50 cap; 200 matches WeatherBot
     MIRROR_TOTAL_CAPITAL: float = float(os.getenv("MIRROR_TOTAL_CAPITAL", "3000"))
+    # S91: Tier 0 pre-trade filters — in-memory short-circuit before any DB/cache hit
+    MIRROR_CATEGORY_BLOCKLIST: str = os.getenv("MIRROR_CATEGORY_BLOCKLIST", "15-minute,speed")  # comma-separated substrings
+    MIRROR_MARKET_COOLDOWN_SECONDS: int = int(os.getenv("MIRROR_MARKET_COOLDOWN_SECONDS", "1800"))  # 30 min per-market re-entry cooldown
+    MIRROR_MIN_TRADE_USD: float = float(os.getenv("MIRROR_MIN_TRADE_USD", "10.0"))  # skip dust trades
+    MIRROR_MAX_SLIPPAGE_PCT: float = float(os.getenv("MIRROR_MAX_SLIPPAGE_PCT", "0.08"))  # 8% max price drift from whale's fill
 
     # Bot Settings
     BOT_SCAN_INTERVAL_SECONDS: int = int(os.getenv("BOT_SCAN_INTERVAL_SECONDS", "60"))
@@ -1071,6 +1076,20 @@ class Settings(BaseSettings):
 
     # --- Live polling timeout ---
     ESPORTS_LIVE_POLL_TIMEOUT: int = int(os.getenv("ESPORTS_LIVE_POLL_TIMEOUT", "10"))  # seconds
+
+    # --- Market-price fallback for unknown teams ---
+    ESPORTS_MARKET_FALLBACK_ENABLED: bool = os.getenv("ESPORTS_MARKET_FALLBACK_ENABLED", "true").lower() in ("true", "1", "yes")
+    ESPORTS_MARKET_FALLBACK_MIN_EDGE: float = float(os.getenv("ESPORTS_MARKET_FALLBACK_MIN_EDGE", "0.15"))
+
+    # --- Conformal prediction ---
+    ESPORTS_USE_CONFORMAL: bool = os.getenv("ESPORTS_USE_CONFORMAL", "false").lower() in ("true", "1", "yes")
+    ESPORTS_CONFORMAL_MIN_RESOLVED: int = int(os.getenv("ESPORTS_CONFORMAL_MIN_RESOLVED", "50"))
+    ESPORTS_RFLB_STRENGTH: float = float(os.getenv("ESPORTS_RFLB_STRENGTH", "0.03"))
+    ESPORTS_LAN_ADJUSTMENT_ENABLED: bool = os.getenv("ESPORTS_LAN_ADJUSTMENT_ENABLED", "true").lower() in ("true", "1", "yes")
+    ESPORTS_LOL_BLUE_SIDE_BONUS: float = float(os.getenv("ESPORTS_LOL_BLUE_SIDE_BONUS", "0.019"))
+    ESPORTS_UPSET_RISK_ENABLED: bool = os.getenv("ESPORTS_UPSET_RISK_ENABLED", "true").lower() in ("true", "1", "yes")
+    ESPORTS_ROSTER_CHANGE_PENALTY: float = float(os.getenv("ESPORTS_ROSTER_CHANGE_PENALTY", "0.15"))
+    ESPORTS_ROSTER_CHANGE_DECAY_DAYS: int = int(os.getenv("ESPORTS_ROSTER_CHANGE_DECAY_DAYS", "7"))
 
     # --- Retention ---
     ESPORTS_TRAINING_RETENTION_DAYS: int = int(os.getenv("ESPORTS_TRAINING_RETENTION_DAYS", "365"))

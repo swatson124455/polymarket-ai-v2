@@ -1,5 +1,6 @@
 import asyncio
 import math
+import time as _time
 from collections import defaultdict, OrderedDict
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple, Any
@@ -99,6 +100,10 @@ class MirrorBot(BaseBot):
 
         # Deprecation flag: MIRROR_MAX_DAILY_EXPOSURE_PCT fallback warning (log once)
         self._deprecation_warned: bool = False
+
+        # S91: Tier 0 pre-trade filters (in-memory, <0.01ms)
+        self._market_blocklist: set = set()  # market_ids to reject instantly
+        self._market_cooldown: Dict[str, float] = {}  # market_id -> cooldown_expiry_monotonic
 
         # Session 82: Calibration stack (FTS + Le2026 + conformal)
         self._calibration_stack = None
@@ -1315,6 +1320,22 @@ class MirrorBot(BaseBot):
         source: str = "consensus",
     ) -> bool:
         """Execute a mirror trade with reliability weighting and exposure caps."""
+        # ── S91: Tier 0 in-memory filters (<0.01ms) ─────────────────────
+        # Short-circuit garbage trades before any DB/cache/API hit.
+        _is_sell = str(side).upper() == "SELL"
+
+        if not _is_sell:
+            # Market blocklist — closed/expired/speed markets
+            if market_id in self._market_blocklist:
+                return False
+
+            # Per-market cooldown — prevent re-entry on same signal
+            _cooldown_secs = int(getattr(settings, "MIRROR_MARKET_COOLDOWN_SECONDS", 1800))
+            if _cooldown_secs > 0:
+                _cd_exp = self._market_cooldown.get(market_id, 0)
+                if _time.monotonic() < _cd_exp:
+                    return False
+
         # Resolve category early (needed for M1 category cap + M3 domain tracking)
         if not category:
             try:
@@ -1323,10 +1344,22 @@ class MirrorBot(BaseBot):
             except Exception:
                 category = ""
 
+        # Category blocklist — skip bot-dominated speed markets (e.g., 15-min crypto)
+        if not _is_sell and category:
+            _cat_bl = getattr(settings, "MIRROR_CATEGORY_BLOCKLIST", "")
+            if _cat_bl:
+                _cat_lower = category.lower()
+                for _bl in _cat_bl.lower().split(","):
+                    _bl = _bl.strip()
+                    if _bl and _bl in _cat_lower:
+                        self._market_blocklist.add(market_id)  # cache for future fast-reject
+                        logger.info("mirror_category_blocked", category=category,
+                                    market_id=str(market_id)[:16])
+                        return False
+
         # S85 FIX: Enforce position cap for ALL paths (consensus + RTDS).
         # Previously only consensus checked _can_open_position(); RTDS bypassed it,
         # allowing 686 positions past the 200 cap.
-        _is_sell = str(side).upper() == "SELL"
         if not _is_sell and not self._can_open_position(price, category=category):
             return False
 
@@ -1385,16 +1418,24 @@ class MirrorBot(BaseBot):
         # The trader may have traded hours ago at a different price. Entering at their
         # stale price produces fake P&L (buying at yesterday's prices, selling at today's).
         _market_data = self.base_engine.get_market_from_index(str(market_id))
+        _old_price = price  # S91: preserve trader's fill price for slippage check
         if _market_data:
             _side_upper = str(side).upper()
             if _side_upper in ("YES", "NO"):
                 _current = float(_market_data.get(f"{_side_upper.lower()}_price", 0) or 0)
                 if 0.01 <= _current <= 0.99:
-                    _old_price = price
                     price = _current
                     if abs(_old_price - price) > 0.05:
                         logger.info("mirror_price_corrected", market=str(market_id)[:16],
                                     trader_price=round(_old_price, 4), market_price=round(price, 4))
+
+        # S91: Slippage cap — reject when market has moved too far from whale's fill price
+        _max_slip = float(getattr(settings, "MIRROR_MAX_SLIPPAGE_PCT", 0.08))
+        if _old_price > 0.01 and abs(price - _old_price) / _old_price > _max_slip:
+            logger.info("mirror_slippage_blocked", market=str(market_id)[:16],
+                        trader_price=round(_old_price, 4), market_price=round(price, 4),
+                        slippage_pct=round(abs(price - _old_price) / _old_price, 3))
+            return False
 
         # Apply elite reliability multiplier
         reliability_mult = 1.0
@@ -1512,6 +1553,14 @@ class MirrorBot(BaseBot):
                         max_per_market_usd, remaining_daily_usd)
             return False
 
+        # S91: Min trade USD — skip dust trades (testing, rebalancing, airdrop farming)
+        _min_trade_usd = float(getattr(settings, "MIRROR_MIN_TRADE_USD", 10.0))
+        _trade_value_usd = size * price
+        if _trade_value_usd < _min_trade_usd:
+            logger.info("mirror_dust_skipped", trade_usd=round(_trade_value_usd, 2),
+                        min_usd=_min_trade_usd, market_id=str(market_id)[:16])
+            return False
+
         # Session 82: Tag RTDS trades so order_gateway can skip liquidity check (saves 100-300ms).
         if source == "rtds":
             self._current_correlation_id = f"rtds:{trader_address[:10]}"
@@ -1530,6 +1579,11 @@ class MirrorBot(BaseBot):
         if order.get("success") and not order.get("idempotent"):
             _trade_usd = size * price
             self._daily_exposure += _trade_usd  # Track exposure in USD (skip idempotent dedup'd orders)
+
+            # S91: Set per-market cooldown to prevent re-entry on same signal
+            _cd_secs = int(getattr(settings, "MIRROR_MARKET_COOLDOWN_SECONDS", 1800))
+            if _cd_secs > 0:
+                self._market_cooldown[market_id] = _time.monotonic() + _cd_secs
 
             # M1: Track per-category exposure
             if category:
