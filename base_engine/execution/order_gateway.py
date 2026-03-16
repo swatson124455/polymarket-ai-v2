@@ -461,8 +461,11 @@ class OrderGateway:
         # exposure caps, daily caps in _execute_mirror_trade + _can_open_position)
         if self.risk_manager is not None and not _is_sell and not _rtds_fast:
             try:
+                # S97: WeatherBot skips CVaR Monte Carlo — has own group/city exposure limits
+                _skip_cvar = (bot_name == "WeatherBot")
                 risk_check = await self.risk_manager.check_risk_limits(
-                    bot_name, market_id, size, price, confidence, prediction=prediction
+                    bot_name, market_id, size, price, confidence, prediction=prediction,
+                    skip_cvar=_skip_cvar,
                 )
                 if not risk_check.get("allowed", True):
                     reasons = risk_check.get("reasons", [])
@@ -488,7 +491,8 @@ class OrderGateway:
                             size = clamped_size
                             # Re-check with clamped size
                             risk_check2 = await self.risk_manager.check_risk_limits(
-                                bot_name, market_id, size, price, confidence, prediction=prediction
+                                bot_name, market_id, size, price, confidence, prediction=prediction,
+                                skip_cvar=_skip_cvar,
                             )
                             if not risk_check2.get("allowed", True):
                                 reasons2 = risk_check2.get("reasons", [])
@@ -521,6 +525,9 @@ class OrderGateway:
                 # Skip cascade API call for RTDS fast-copy trades (saves 50-100ms).
                 if (correlation_id and str(correlation_id).startswith("rtds:")
                         and getattr(settings, "MIRROR_SKIP_LIQUIDITY_RTDS", False)):
+                    return None
+                # S97: Skip cascade for WeatherBot — sole weather trader, no cascade risk
+                if bot_name == "WeatherBot":
                     return None
                 return await self.cascade_detector.detect(market_id, window_hours=6)
 
@@ -599,6 +606,9 @@ class OrderGateway:
             and str(correlation_id).startswith("rtds:")
             and getattr(settings, "MIRROR_SKIP_COORDINATOR_BUY", False)
         )
+        # S97: Skip coordinator for WeatherBot BUYs — sole weather trader, no contention
+        if not _is_sell and bot_name == "WeatherBot" and getattr(settings, "WEATHER_SKIP_COORDINATOR_BUY", True):
+            _skip_coord = True
         if self.trade_coordinator is not None and not _skip_coord:
             try:
                 _reserved = await asyncio.wait_for(

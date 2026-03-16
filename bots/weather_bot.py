@@ -44,9 +44,12 @@ from base_engine.weather.market_mapper import (
 from base_engine.weather.precipitation_engine import PrecipitationProbabilityEngine
 from base_engine.weather.probability_engine import WeatherProbabilityEngine
 from base_engine.weather.station_registry import (
+    STATION_REGISTRY,
     StationHealthMonitor,
     WeatherStation,
 )
+from base_engine.weather.model_run_monitor import ModelRunMonitor
+from base_engine.weather.metar_monitor import MetarMonitor
 from config.settings import settings
 
 logger = get_logger()
@@ -91,6 +94,38 @@ class WeatherBot(BaseBot):
         self._city_exposure: Dict[str, float] = {}     # city → total USD deployed
         self._recently_exited: Dict[str, float] = {}   # market_id → mono time
         self._known_open_markets: Set[str] = set()     # snapshot for PM exit detection
+
+        # S97: Liquidity cache (3-min TTL) — fail-closed on check_liquidity() exception
+        self._liquidity_cache: Dict[str, Tuple[float, Dict]] = {}  # market_id → (mono_time, result)
+        self._liquidity_cache_ttl: float = 180.0  # 3 minutes
+
+        # S97: Discovery cache (5-min TTL) — avoid Gamma API call every scan
+        self._discovery_cache: Optional[Tuple[float, List, List]] = None  # (mono_time, markets, groups)
+        self._discovery_cache_ttl: float = 300.0  # 5 minutes
+
+        # S97: Exposure lock for parallel trade execution
+        self._exposure_lock = asyncio.Lock()
+
+        # S97: Sizing factor caches (avoid recomputing every trade)
+        self._regime_boost_cache: Optional[Tuple[float, float]] = None  # (mono_time, value) — 1h TTL
+        self._calibration_cache: Optional[Tuple[float, float]] = None   # (mono_time, scaling) — 1h TTL
+        self._drawdown_cache: Optional[Tuple[float, float]] = None      # (mono_time, compression) — 5min TTL
+
+        # S97: Priority queue for jump detection + METAR boundary events
+        self._priority_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+
+        # S97: Model-run monitor + METAR monitor (started on first scan)
+        _all_stations = list(STATION_REGISTRY.values())
+        self._model_run_monitor = ModelRunMonitor(
+            forecast_client=self._forecast_client,
+            stations=_all_stations,
+            priority_queue=self._priority_queue,
+        )
+        self._metar_monitor = MetarMonitor(
+            stations=_all_stations,
+            priority_queue=self._priority_queue,
+        )
+        self._monitors_started = False
 
         # P1: calibration state
         self._calibration_last_loaded: float = 0.0
@@ -603,47 +638,74 @@ class WeatherBot(BaseBot):
             await self._close_stale_positions()
             self._cache_warmed = True
 
+        # S97: Start background monitors on first scan
+        if not self._monitors_started:
+            self._model_run_monitor.start()
+            self._metar_monitor.start()
+            self._monitors_started = True
+
         # One-time startup observability check (logs DB state + Gamma API probe)
         if not self._startup_check_done:
             await self._check_weather_market_availability()
 
+        # S97: Reset per-scan API call counter
+        self._forecast_client.api_calls_this_scan = 0
+
         # Phase timing — track where scan time is spent
         _t0 = time.monotonic()
 
-        # 1. Fetch weather markets via Gamma API tag_slug=temperature (PRIMARY).
-        #    The standard ingestion pipeline misses weather events — they have
-        #    event IDs > 249000, far beyond the ingestion's pagination reach.
-        #    tag_slug=temperature returns all live temperature events with prices
-        #    pre-populated from outcomePrices (no CLOB enrichment needed).
-        weather_markets = await self._fetch_weather_events_by_tag()
+        # S97: Check priority queue for jump/METAR events — evaluate immediately
+        _priority_items: List[Dict] = []
+        while not self._priority_queue.empty():
+            try:
+                _priority_items.append(self._priority_queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        if _priority_items:
+            logger.info("weatherbot_priority_events", count=len(_priority_items))
 
-        if not weather_markets:
-            # Fallback: DB-based discovery (for markets already ingested)
-            weather_markets = await self.base_engine.get_all_tradeable_markets(
-                min_liquidity=0, categories=["weather"]
-            )
-            if weather_markets:
-                # DB markets lack prices — enrich via CLOB midpoint
-                weather_markets = await self._enrich_with_live_prices(weather_markets)
+        # S97: Discovery cache — reuse markets+groups for 5 min to skip Gamma API call
+        _now_mono = time.monotonic()
+        if (self._discovery_cache is not None
+                and (_now_mono - self._discovery_cache[0]) < self._discovery_cache_ttl):
+            weather_markets, groups = self._discovery_cache[1], self._discovery_cache[2]
+        else:
+            # 1. Fetch weather markets via Gamma API tag_slug=temperature (PRIMARY).
+            #    The standard ingestion pipeline misses weather events — they have
+            #    event IDs > 249000, far beyond the ingestion's pagination reach.
+            #    tag_slug=temperature returns all live temperature events with prices
+            #    pre-populated from outcomePrices (no CLOB enrichment needed).
+            weather_markets = await self._fetch_weather_events_by_tag()
 
-        if not weather_markets:
-            # Last resort: direct Gamma API probe (rate-limited)
-            now_mono = time.monotonic()
-            if now_mono - self._last_direct_probe >= self._direct_probe_interval:
-                self._last_direct_probe = now_mono
-                weather_markets = await self._fetch_weather_markets_direct()
             if not weather_markets:
-                logger.info("weatherbot_no_weather_markets")
+                # Fallback: DB-based discovery (for markets already ingested)
+                weather_markets = await self.base_engine.get_all_tradeable_markets(
+                    min_liquidity=0, categories=["weather"]
+                )
+                if weather_markets:
+                    # DB markets lack prices — enrich via CLOB midpoint
+                    weather_markets = await self._enrich_with_live_prices(weather_markets)
+
+            if not weather_markets:
+                # Last resort: direct Gamma API probe (rate-limited)
+                if _now_mono - self._last_direct_probe >= self._direct_probe_interval:
+                    self._last_direct_probe = _now_mono
+                    weather_markets = await self._fetch_weather_markets_direct()
+                if not weather_markets:
+                    logger.info("weatherbot_no_weather_markets")
+                    return
+
+            scan_limit = getattr(settings, "SCAN_MARKET_LIMIT", 800)
+            weather_markets = weather_markets[:scan_limit]
+
+            # 2. Group by (city, date)
+            groups = self._market_mapper.group_markets(weather_markets)
+            if not groups:
+                logger.info("weatherbot_no_groups_parsed", weather_markets=len(weather_markets))
                 return
 
-        scan_limit = getattr(settings, "SCAN_MARKET_LIMIT", 800)
-        weather_markets = weather_markets[:scan_limit]
-
-        # 2. Group by (city, date)
-        groups = self._market_mapper.group_markets(weather_markets)
-        if not groups:
-            logger.info("weatherbot_no_groups_parsed", weather_markets=len(weather_markets))
-            return
+            # Cache discovery result
+            self._discovery_cache = (time.monotonic(), weather_markets, groups)
 
         _t_discovery = time.monotonic()
 
@@ -684,28 +746,44 @@ class WeatherBot(BaseBot):
         if regime_boost > 1.0:
             logger.info("weatherbot_regime_boost", boost=regime_boost)
 
-        # Phase 3: Execute trades — W3+W5 laddered via Smoczynski-Tomkins.
+        # Phase 3: Execute trades — S97 parallel with semaphore + exposure lock.
         # Groups with >=2 buckets showing edge use S-T multi-bucket allocation.
         # Single-bucket groups fall through to independent Kelly sizing.
         _traded = 0
         _groups_with_edge = 0
         _best_edge = 0.0
 
+        # Pre-compute read-only aggregation before parallel dispatch
         for opps, group, _probs in analyzed:
             if opps:
                 _groups_with_edge += 1
             for opp in opps:
                 if abs(opp["edge"]) > abs(_best_edge):
                     _best_edge = opp["edge"]
-            if len(opps) >= 2:
-                # W3+W5: Multi-bucket laddering with S-T sizing
-                _traded += await self._execute_group_trades(opps, group, regime_boost)
-            else:
-                # Single bucket — standard independent sizing
-                for opp in opps:
-                    opp["regime_boost"] = regime_boost
-                    if await self._execute_weather_trade(opp, group):
-                        _traded += 1
+
+        # S97: Parallel trade execution with bounded concurrency
+        _trade_sem = asyncio.Semaphore(int(getattr(settings, "WEATHER_TRADE_CONCURRENCY", 8)))
+
+        async def _exec_group(opps, group):
+            async with _trade_sem:
+                if len(opps) >= 2:
+                    return await self._execute_group_trades(opps, group, regime_boost)
+                else:
+                    _count = 0
+                    for opp in opps:
+                        opp["regime_boost"] = regime_boost
+                        if await self._execute_weather_trade(opp, group):
+                            _count += 1
+                    return _count
+
+        _trade_tasks = [_exec_group(opps, group) for opps, group, _probs in analyzed if opps]
+        if _trade_tasks:
+            _trade_results = await asyncio.gather(*_trade_tasks, return_exceptions=True)
+            for r in _trade_results:
+                if isinstance(r, int):
+                    _traded += r
+                elif isinstance(r, Exception):
+                    logger.warning("weatherbot_parallel_trade_error", error=str(r))
 
         # Phase 4: Re-evaluate open positions with fresh model probabilities
         # Feeds position_manager's model-reversal exit logic with current forecasts.
@@ -754,6 +832,8 @@ class WeatherBot(BaseBot):
             ms_analysis=round((_t_analysis - _t_alerts) * 1000),
             ms_trades=round((_t_trades - _t_analysis) * 1000),
             ms_precip_snow_wind=round((_t_end - _t_trades) * 1000),
+            api_calls=self._forecast_client.api_calls_this_scan,
+            priority_events=len(_priority_items),
         )
 
     async def analyze_opportunity(self, market_data: Dict) -> Optional[Dict]:
@@ -1456,6 +1536,40 @@ class WeatherBot(BaseBot):
         # P3: Persist forecast to DB (async, non-blocking on failure)
         await self._save_forecast_to_db(group.station, group.target_date, forecast)
 
+        # S97: Pre-screen — skip EMOS if raw ensemble mean is too close to market price
+        # (no chance of clearing min_edge after calibration) + check exposure caps early
+        if forecast.ensemble_members:
+            _ens_mean = sum(forecast.ensemble_members) / len(forecast.ensemble_members)
+            # Find the bucket closest to ensemble mean and compare to market price
+            _best_bucket = None
+            _best_dist = float("inf")
+            for b in group.buckets:
+                _mid = (b.low + b.high) / 2.0 if b.high < 999 else b.low + 5.0
+                if abs(_ens_mean - _mid) < _best_dist:
+                    _best_dist = abs(_ens_mean - _mid)
+                    _best_bucket = b
+            if _best_bucket:
+                # Rough estimate: modal bucket gets ~40-60% probability mass
+                # If |0.50 - market_price| < 0.04, no bucket can clear 0.08 min_edge
+                _min_edge = float(getattr(settings, "WEATHER_MIN_EDGE", 0.08))
+                _rough_delta = abs(0.50 - _best_bucket.yes_price)
+                if _rough_delta < _min_edge * 0.5:
+                    # Check all buckets — if ALL are within the dead zone, skip
+                    _any_edge = False
+                    for b in group.buckets:
+                        if abs(0.50 - b.yes_price) >= _min_edge * 0.5:
+                            _any_edge = True
+                            break
+                    if not _any_edge:
+                        return [], {}
+
+        # S97: Early exposure cap check — skip EMOS if group/city at cap
+        _group_key = f"{group.city}:{group.target_date.isoformat()}"
+        if self._group_exposure.get(_group_key, 0.0) >= self._max_per_group:
+            return [], {}
+        if self._city_exposure.get(group.city, 0.0) >= self._max_correlated:
+            return [], {}
+
         # Fit distribution
         try:
             loc, scale, shape = self._prob_engine.fit_distribution(
@@ -1490,10 +1604,11 @@ class WeatherBot(BaseBot):
             loc, scale, shape, group.buckets, forecast.lead_time_hours,
         )
 
-        # Resolution-day METAR override: if within 6h of resolution, fetch the
+        # Resolution-day METAR override: if within 12h of resolution, fetch the
         # running daily max from METAR T-groups and override model probabilities
         # for buckets that are already definitively ruled in or out.
-        if lead_time < 6.0:
+        # S97: Expanded from 6h to 12h — METAR continuous monitor provides fresh data.
+        if lead_time < 12.0:
             model_probs = await self._apply_metar_resolution_day_override(
                 group, model_probs, lead_time,
             )
@@ -1917,13 +2032,11 @@ class WeatherBot(BaseBot):
                 )
             return False
 
-        # Per-group exposure limit
+        # Per-group + city exposure limit — early check (unlocked, for fast rejection)
         group_key = f"{group.city}:{group.target_date.isoformat()}"
         current_group_exp = self._group_exposure.get(group_key, 0.0)
         if current_group_exp >= self._max_per_group:
             return False
-
-        # Correlated city exposure limit
         current_city_exp = self._city_exposure.get(group.city, 0.0)
         if current_city_exp >= self._max_correlated:
             return False
@@ -2056,7 +2169,24 @@ class WeatherBot(BaseBot):
                     if max_safe > 0:
                         _slippage_size_cap = max_safe * max(opp["price"], 0.01)
             except Exception as exc:
-                logger.debug("weatherbot_liquidity_check_failed", error=str(exc))
+                # S97: Fail-CLOSED — use cached result or conservative default (50 bps slippage)
+                logger.warning("weatherbot_liquidity_check_failed", error=str(exc), market_id=opp["market_id"])
+                _cached_liq = self._liquidity_cache.get(opp["market_id"])
+                if _cached_liq and (time.monotonic() - _cached_liq[0]) < self._liquidity_cache_ttl:
+                    liq_check = _cached_liq[1]
+                    _slippage_pct = liq_check.get("slippage", 0.0)
+                    _effective_edge = opp["abs_edge"] - _slippage_pct
+                    if _effective_edge < self._get_min_edge(opp.get("market_type", "temperature"), group.station):
+                        return False
+                else:
+                    # No cache — apply conservative 50 bps slippage penalty
+                    _effective_edge = opp["abs_edge"] - 0.005
+                    if _effective_edge < self._get_min_edge(opp.get("market_type", "temperature"), group.station):
+                        return False
+            else:
+                # Cache successful liquidity result
+                if liq_check:
+                    self._liquidity_cache[opp["market_id"]] = (time.monotonic(), liq_check)
 
         # W3+W5: Use Smoczynski-Tomkins group-level allocation when available.
         # S-T sizes are pre-computed by _execute_group_trades() and passed via
@@ -2075,13 +2205,18 @@ class WeatherBot(BaseBot):
                 logger.warning("weatherbot_kelly_sizing_failed", error=str(exc))
                 size = max(1.0, self._default_size)
 
-        # Cap to remaining group/city budget + liquidity cap
-        remaining_group = self._max_per_group - current_group_exp
-        remaining_city = self._max_correlated - current_city_exp
-        size = min(size, remaining_group, remaining_city, _slippage_size_cap)
-
-        if size < 1.0:
-            return False
+        # S97: Lock-guarded exposure reservation — re-read under lock for parallel safety
+        async with self._exposure_lock:
+            current_group_exp = self._group_exposure.get(group_key, 0.0)
+            current_city_exp = self._city_exposure.get(group.city, 0.0)
+            remaining_group = self._max_per_group - current_group_exp
+            remaining_city = self._max_correlated - current_city_exp
+            size = min(size, remaining_group, remaining_city, _slippage_size_cap)
+            if size < 1.0:
+                return False
+            # Reserve exposure atomically under lock
+            self._group_exposure[group_key] = current_group_exp + size
+            self._city_exposure[group.city] = current_city_exp + size
 
         logger.info(
             "weatherbot_trade_signal",
@@ -2101,12 +2236,6 @@ class WeatherBot(BaseBot):
             forecast_delta=_forecast_delta,
             nbm_boost=nbm_boost,
         )
-
-        # M4: Pre-update exposure trackers BEFORE placing order to prevent
-        # race condition where multiple orders pass the exposure check
-        # simultaneously. Revert on failure.
-        self._group_exposure[group_key] = current_group_exp + size
-        self._city_exposure[group.city] = current_city_exp + size
 
         result = await self.place_order(
             market_id=opp["market_id"],

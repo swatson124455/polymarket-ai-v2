@@ -61,6 +61,10 @@ class WeatherForecastClient:
         self._snowfall_cache: Dict[str, Tuple[float, List[float]]] = {}
         self._wind_cache: Dict[str, Tuple[float, List[float]]] = {}
         self._cache_ttl = cache_ttl
+        # S97: Model-run cache — populated by ModelRunMonitor, checked before API call
+        self._model_run_cache: Dict[str, CombinedForecast] = {}  # same key format: "station:date"
+        # S97: API call counter — tracks how many HTTP calls per scan
+        self.api_calls_this_scan: int = 0
         self._rate_limit = rate_limit_per_min
         self._request_times: List[float] = []
         # NWS grid forecast URLs per station: station_id → (expiry_mono, forecast_url)
@@ -956,11 +960,18 @@ class WeatherForecastClient:
         cache_key = f"{station.station_id}:{target_date.isoformat()}"
         now_mono = time.monotonic()
 
-        # Check cache
+        # S97: Check model-run cache first (populated by ModelRunMonitor)
+        _mr_cached = self._model_run_cache.get(cache_key)
+        if _mr_cached is not None:
+            return _mr_cached
+
+        # Check cache (reduced TTL: 900s → 300s when model_run_cache is active)
+        _effective_ttl = 300.0 if self._model_run_cache else self._cache_ttl
         cached = self._cache.get(cache_key)
-        if cached and now_mono < cached[0]:
+        if cached and now_mono < (cached[0] - self._cache_ttl + _effective_ttl):
             return cached[1]
 
+        self.api_calls_this_scan += 1
         # Fetch deterministic, ensemble, and (for US stations) NBM in parallel
         det_task = self.get_deterministic_forecast(
             station.latitude, station.longitude, station.temp_unit,

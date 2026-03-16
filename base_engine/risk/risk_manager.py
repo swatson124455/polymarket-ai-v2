@@ -231,6 +231,7 @@ class RiskManager:
         price: float,
         confidence: float,
         prediction: Optional[float] = None,
+        skip_cvar: bool = False,
     ) -> Dict[str, Any]:
         checks = {
             "allowed": True,
@@ -551,8 +552,9 @@ class RiskManager:
         # Only runs when allowed so far and correlation_risk is available
         # S91: Cache existing-positions snapshot + base CVaR (120s TTL).
         # S94: Reduced sims 10k→2k, added cvar_after cache (5s TTL), extended base TTL 30→120s.
+        # S97: skip_cvar=True bypasses Monte Carlo for bots with own exposure limits (WeatherBot)
         _existing_positions = None
-        if checks["allowed"] and self._correlation_risk is not None:
+        if checks["allowed"] and self._correlation_risk is not None and not skip_cvar:
             try:
                 max_cvar = getattr(settings, "RISK_MAX_PORTFOLIO_CVAR_USD", 200.0)
                 _n_sims = int(getattr(settings, "CVAR_N_SIMULATIONS", 2000))
