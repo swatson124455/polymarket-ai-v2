@@ -2119,6 +2119,7 @@ class WeatherBot(BaseBot):
                 "city": group.city,
                 "date": group.target_date.isoformat(),
                 "market_type": opp.get("market_type", "temperature"),
+                "lead_time_hours": lead_time,
             },
         )
 

@@ -215,7 +215,12 @@ class Settings(BaseSettings):
     # S91: Realistic paper fill modeling — fill probability, partial fills, latency drift
     PAPER_REALISTIC_FILLS: bool = os.getenv("PAPER_REALISTIC_FILLS", "true").lower() in ("true", "1", "yes")
     PAPER_DEFAULT_SPREAD: float = float(os.getenv("PAPER_DEFAULT_SPREAD", "0.04"))  # 4% when bid/ask unavailable
-    PAPER_LATENCY_DRIFT_BPS_PER_SEC: int = int(os.getenv("PAPER_LATENCY_DRIFT_BPS_PER_SEC", "10"))  # 0.1%/sec
+    PAPER_LATENCY_DRIFT_BPS_PER_SEC: int = int(os.getenv("PAPER_LATENCY_DRIFT_BPS_PER_SEC", "10"))  # 0.1%/sec (legacy, replaced by alpha decay)
+    # S95: Paper trading realism elevations
+    PAPER_KYLE_LAMBDA_ENABLED: bool = os.getenv("PAPER_KYLE_LAMBDA_ENABLED", "true").lower() in ("true", "1", "yes")
+    PAPER_CROSS_SCAN_IMPACT_ENABLED: bool = os.getenv("PAPER_CROSS_SCAN_IMPACT_ENABLED", "true").lower() in ("true", "1", "yes")
+    PAPER_ALPHA_DECAY_HALF_LIFE_S: float = float(os.getenv("PAPER_ALPHA_DECAY_HALF_LIFE_S", "300"))  # 5 min half-life
+    PAPER_RESOLUTION_PROXIMITY_ENABLED: bool = os.getenv("PAPER_RESOLUTION_PROXIMITY_ENABLED", "true").lower() in ("true", "1", "yes")
 
     # Learning Settings
     # Per-bot model training (Session 47): when enabled, each bot trains on its own prediction_log entries.

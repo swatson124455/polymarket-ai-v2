@@ -8,10 +8,12 @@ When db is provided, each trade is persisted to paper_trades for resolution back
 import asyncio
 import math
 import random
-from typing import Dict, List, Optional, Any
+import time
+from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone
 from structlog import get_logger
 from config.settings import settings
+from base_engine.features.market_impact import MarketImpactEstimator, DEFAULT_LAMBDA
 
 logger = get_logger()
 
@@ -166,6 +168,40 @@ def _fill_probability(
     return max(0.05, min(1.0, fill_prob))
 
 
+def _alpha_decay_factor(latency_ms: Optional[float], half_life_s: float = 300.0) -> float:
+    """S95: Exponential alpha decay — signal degrades with latency.
+
+    Replaces the S91 linear latency drift (10 bps/sec, 500ms threshold) with
+    a more realistic exponential model: decay = exp(-ln2 * t / half_life).
+
+    No threshold — applies proportionally to ALL latencies.
+    Returns decay factor in [0, 1] where 1.0 = no decay, 0.0 = full decay.
+    """
+    if latency_ms is None or latency_ms <= 0 or half_life_s <= 0:
+        return 1.0
+    latency_s = latency_ms / 1000.0
+    return math.exp(-math.log(2) * latency_s / half_life_s)
+
+
+def _resolution_proximity_penalty(hours_to_resolution: Optional[float]) -> Tuple[float, float]:
+    """S95: Resolution-proximity adverse selection.
+
+    Near market resolution, informed flow dominates — wider spreads and
+    lower fill rates as market makers widen to protect against insiders.
+
+    Returns (slippage_multiplier, fill_probability_multiplier).
+    """
+    if hours_to_resolution is None or hours_to_resolution < 0:
+        return (1.0, 1.0)
+    if hours_to_resolution > 6.0:
+        return (1.0, 1.0)
+    if hours_to_resolution > 2.0:
+        return (1.5, 0.9)
+    if hours_to_resolution > 0.5:
+        return (2.0, 0.7)
+    return (3.0, 0.5)
+
+
 class PaperTrade:
     """Simulated trade"""
     def __init__(
@@ -216,7 +252,27 @@ class PaperTradingEngine:
         self._pending_correlation_ids: set = set()
         # S94: DB write tasks queued under lock, executed after lock release
         self._pending_db_writes: list = []
+        # S95: Kyle's lambda — wire existing MarketImpactEstimator for AS penalty
+        self._market_impact_estimator: Optional[MarketImpactEstimator] = None
+        self._kyle_lambda_cache: Dict[str, Tuple[float, float]] = {}  # market_id -> (lambda, mono_ts)
+        # S95: Cross-scan cumulative impact tracker
+        self._scan_impact: Dict[str, Tuple[float, float]] = {}  # market_id -> (cumulative_bps, mono_ts)
     
+    async def _get_kyle_lambda(self, market_id: str) -> float:
+        """S95: Cached Kyle's lambda lookup (1h TTL). DEFAULT_LAMBDA on miss."""
+        _now = time.monotonic()
+        _cached = self._kyle_lambda_cache.get(market_id)
+        if _cached and (_now - _cached[1]) < 3600.0:
+            return _cached[0]
+        if self._market_impact_estimator is None:
+            self._market_impact_estimator = MarketImpactEstimator(db=self.db)
+        try:
+            lam = await self._market_impact_estimator.estimate_kyle_lambda(market_id)
+        except Exception:
+            lam = DEFAULT_LAMBDA
+        self._kyle_lambda_cache[market_id] = (lam, _now)
+        return lam
+
     async def seed_positions_from_db(self) -> int:
         """Sync open positions from DB into in-memory paper portfolio.
 
@@ -440,17 +496,23 @@ class PaperTradingEngine:
         # S94 bypassed this for speed, but it inflated P&L with 100% fills.
         _realistic = getattr(settings, "PAPER_REALISTIC_FILLS", False) is True
 
-        # S91: Latency price deterioration — RTDS copy trades lose edge during signal delay
-        if _realistic and latency_ms is not None and latency_ms > 500:
-            _latency_sec = latency_ms / 1000.0
-            _drift_rate = getattr(settings, "PAPER_LATENCY_DRIFT_BPS_PER_SEC", 10) / 10000.0
-            _drift = _latency_sec * _drift_rate * (0.5 + random.random())
+        # S95: Alpha decay — exponential signal deterioration replaces S91 linear drift.
+        # No threshold: applies proportionally to ALL latencies via exp(-ln2 * t / half_life).
+        _event = event_data or {}
+        if _realistic and latency_ms is not None and latency_ms > 0:
+            _half_life = _event.get("alpha_decay_half_life_s",
+                                    getattr(settings, "PAPER_ALPHA_DECAY_HALF_LIFE_S", 300))
+            _decay = _alpha_decay_factor(latency_ms, _half_life)
+            _decay_slip_bps = (1.0 - _decay) * 100  # max 100 bps at full decay
+            _decay_slip = _decay_slip_bps / 10000.0 * (0.5 + random.random())
             if side == "BUY":
-                price = min(0.999, price + _drift)
+                price = min(0.999, price + _decay_slip)
             else:
-                price = max(0.001, price - _drift)
-            logger.info("paper_latency_drift", latency_ms=round(latency_ms, 0),
-                        drift_bps=round(_drift * 10000, 1), market_id=market_id)
+                price = max(0.001, price - _decay_slip)
+            if _decay_slip_bps > 1.0:
+                logger.info("paper_alpha_decay", latency_ms=round(latency_ms, 0),
+                            decay_factor=round(_decay, 4), slip_bps=round(_decay_slip * 10000, 1),
+                            market_id=market_id)
 
         # Apply size-dependent slippage. Set FIXED_SLIPPAGE_BPS>0 in env to override.
         # S95: Pass price for boundary multiplier + add square-root market impact
@@ -463,6 +525,39 @@ class PaperTradingEngine:
             # S95: Square-root market impact — significant for large orders on thin markets
             _sqrt_impact = _sqrt_market_impact_bps(_order_size_usd, volume, price)
             slippage_bps = int(slippage_bps + _sqrt_impact)
+
+        # S95: Kyle's lambda adverse selection — high lambda markets get extra slippage
+        _kyle_lambda = DEFAULT_LAMBDA
+        if _realistic and side == "BUY" and getattr(settings, "PAPER_KYLE_LAMBDA_ENABLED", True):
+            _kyle_lambda = await self._get_kyle_lambda(market_id)
+            _lambda_slip_bps = int(_kyle_lambda * 15)  # lambda=0.5→+7bps, lambda=2.0→+30bps
+            slippage_bps += _lambda_slip_bps
+
+        # S95: Cross-scan cumulative impact — 2nd+ BUY on same market within 60s gets worse fills
+        if _realistic and side == "BUY" and getattr(settings, "PAPER_CROSS_SCAN_IMPACT_ENABLED", True):
+            _now_mono = time.monotonic()
+            _scan_entry = self._scan_impact.get(market_id)
+            if _scan_entry is not None:
+                _cum_bps, _scan_ts = _scan_entry
+                if (_now_mono - _scan_ts) < 60.0:
+                    _cum_add = min(200, int(_cum_bps))  # cap at 200 bps
+                    slippage_bps += _cum_add
+                    if _cum_add > 5:
+                        logger.info("paper_cross_scan_impact", market_id=market_id,
+                                    cumulative_bps=_cum_add)
+
+        # S95: Resolution proximity — escalating slippage near market resolution
+        _hours_to_res = _event.get("lead_time_hours")
+        _res_slip_mult = 1.0
+        _res_fill_mult = 1.0
+        if _realistic and side == "BUY" and getattr(settings, "PAPER_RESOLUTION_PROXIMITY_ENABLED", True):
+            _res_slip_mult, _res_fill_mult = _resolution_proximity_penalty(_hours_to_res)
+            if _res_slip_mult > 1.0:
+                slippage_bps = int(slippage_bps * _res_slip_mult)
+                logger.info("paper_resolution_proximity_slippage", market_id=market_id,
+                            hours_to_res=round(_hours_to_res or 0, 1),
+                            slip_mult=_res_slip_mult, fill_mult=_res_fill_mult)
+
         original_price = price
         _submitted_at = datetime.now(timezone.utc).replace(tzinfo=None)
         price = _apply_slippage(price, side, slippage_bps)
@@ -471,6 +566,17 @@ class PaperTradingEngine:
         if _realistic and side == "BUY":
             _spread = (ask - bid) if (bid > 0 and ask > 0) else getattr(settings, "PAPER_DEFAULT_SPREAD", 0.04)
             _fill_prob = _fill_probability(price, _order_size_usd, _spread, volume)
+
+            # S95: Kyle's lambda fill penalty — high AS markets harder to fill
+            if getattr(settings, "PAPER_KYLE_LAMBDA_ENABLED", True):
+                _as_penalty = max(0.3, 1.0 - _kyle_lambda * 0.3)
+                _fill_prob *= _as_penalty
+
+            # S95: Resolution proximity fill penalty
+            if _res_fill_mult < 1.0:
+                _fill_prob *= _res_fill_mult
+
+            _fill_prob = max(0.05, min(1.0, _fill_prob))
 
             if random.random() > _fill_prob:
                 logger.info("paper_no_fill", fill_prob=round(_fill_prob, 3),
@@ -494,6 +600,20 @@ class PaperTradingEngine:
                             fill_prob=round(_fill_prob, 3), market_id=market_id,
                             requested=round(size, 2), filled=round(_filled_size, 2))
                 size = _filled_size
+
+            # S95: Cross-scan tracker update — record this BUY's impact for subsequent orders
+            if getattr(settings, "PAPER_CROSS_SCAN_IMPACT_ENABLED", True):
+                _impact_bps = _sqrt_market_impact_bps(_order_size_usd, volume, price)
+                _now_mono = time.monotonic()
+                _prev = self._scan_impact.get(market_id)
+                if _prev and (_now_mono - _prev[1]) < 60.0:
+                    self._scan_impact[market_id] = (_prev[0] + _impact_bps, _now_mono)
+                else:
+                    self._scan_impact[market_id] = (_impact_bps, _now_mono)
+                # Lazy cleanup: prune stale entries when dict gets large
+                if len(self._scan_impact) > 100:
+                    _cutoff = _now_mono - 60.0
+                    self._scan_impact = {k: v for k, v in self._scan_impact.items() if v[1] > _cutoff}
 
         # S95: Most Polymarket markets charge 0% taker fee. Exceptions:
         # 15-min/5-min crypto markets (up to 156 bps), some sports (up to 88 bps).
