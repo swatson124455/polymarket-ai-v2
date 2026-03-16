@@ -402,6 +402,65 @@ class WeatherProbabilityEngine:
         self._emos = emos_data
         logger.info("weather_emos_calibration_loaded", stations=len(emos_data))
 
+    def compute_nbm_benchmark(
+        self,
+        nbm_high: float,
+        buckets: list,
+        market_prices: Dict[str, float],
+        lead_time_hours: float = 48.0,
+        disagree_threshold: float = 0.15,
+    ) -> Dict[str, Dict]:
+        """P2: Compute NBM CDF per bucket and flag high-conviction disagreements.
+
+        NBM provides a calibrated point forecast (MAE 0.8-1.5°F at day 1-3).
+        We model it as N(nbm_high, sigma) where sigma scales with lead time:
+          - Day 1 (≤24h):  sigma = 1.5°F
+          - Day 2 (24-48h): sigma = 2.5°F
+          - Day 3 (48-72h): sigma = 3.5°F
+          - Day 4+ (>72h):  sigma = 5.0°F
+
+        Returns {market_id: {"nbm_prob": float, "market_price": float,
+                 "nbm_edge": float, "high_conviction": bool}}
+        for buckets where |nbm_prob - market_price| >= disagree_threshold.
+        """
+        # Lead-time-dependent sigma (NBM MAE grows with forecast range)
+        if lead_time_hours <= 24.0:
+            sigma = 1.5
+        elif lead_time_hours <= 48.0:
+            sigma = 2.5
+        elif lead_time_hours <= 72.0:
+            sigma = 3.5
+        else:
+            sigma = 5.0
+
+        # Compute NBM-implied probabilities using normal CDF
+        nbm_probs: Dict[str, float] = {}
+        for b in buckets:
+            p = self._normal_cdf_bucket(nbm_high, sigma, b)
+            nbm_probs[b.market_id] = max(0.001, min(0.999, p))
+
+        # Normalize
+        total = sum(nbm_probs.values())
+        if total > 0.01 and abs(total - 1.0) > 0.01:
+            for mid in nbm_probs:
+                nbm_probs[mid] /= total
+
+        # Compare against market prices, flag disagreements
+        signals: Dict[str, Dict] = {}
+        for market_id, nbm_prob in nbm_probs.items():
+            mkt_price = market_prices.get(market_id, 0.0)
+            if mkt_price <= 0.0 or mkt_price >= 1.0:
+                continue
+            nbm_edge = nbm_prob - mkt_price
+            if abs(nbm_edge) >= disagree_threshold:
+                signals[market_id] = {
+                    "nbm_prob": round(nbm_prob, 4),
+                    "market_price": round(mkt_price, 4),
+                    "nbm_edge": round(nbm_edge, 4),
+                    "high_conviction": True,
+                }
+        return signals
+
     @staticmethod
     def apply_climate_prior(
         loc: float,

@@ -46,6 +46,9 @@ class CombinedForecast:
     lead_time_hours: float           # Hours from now until target date noon
     fetch_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     models_used: List[str] = field(default_factory=list)
+    # P1: Model-run jump detection — delta (°F/°C) vs previous model run's ensemble mean.
+    # Positive = warmer shift, negative = cooler shift. None = no prior run to compare.
+    forecast_delta: Optional[float] = None
 
 
 class WeatherForecastClient:
@@ -67,6 +70,11 @@ class WeatherForecastClient:
         self._climate_cache: Dict[str, Tuple[float, Optional[Tuple[float, float]]]] = {}
         self._climate_computed_this_cycle: int = 0
         self._climate_max_per_cycle: int = 3
+        # P1: Model-run jump detection — store prior ensemble mean per (station, date).
+        # Key: "station_id:date_iso", Value: (ensemble_mean, monotonic_ts).
+        # Compared on each new fetch to compute forecast_delta (°F/°C shift).
+        # TTL: entries older than 24h are pruned on access.
+        self._prior_forecasts: Dict[str, Tuple[float, float]] = {}
         # Fix A: per-model 429 backoff. When a model returns 429, skip it until
         # this timestamp passes (1-hour cooldown). Prevents retry storms after
         # quota exhaustion — all 3 models share this dict.
@@ -1089,12 +1097,42 @@ class WeatherForecastClient:
         else:
             model_spread = 2.0 if station.temp_unit == "F" else 1.1
 
+        # P1: Model-run jump detection — compare current ensemble mean against
+        # the prior model run's ensemble mean for the same (station, date).
+        # A ≥3°F (1.7°C) shift indicates markets are likely lagging the new run.
+        forecast_delta = None
+        current_mean = sum(ensemble_members) / len(ensemble_members) if ensemble_members else deterministic_high
+        if current_mean is not None:
+            prior = self._prior_forecasts.get(cache_key)
+            if prior is not None:
+                prior_mean, prior_ts = prior
+                # Only compare if prior is from a different cache cycle (stale = new model run)
+                if now_mono - prior_ts > 60.0:
+                    forecast_delta = round(current_mean - prior_mean, 2)
+                    if abs(forecast_delta) >= 1.0:
+                        logger.info(
+                            "weatherbot_model_run_jump",
+                            station=station.station_id,
+                            date=target_iso,
+                            delta=forecast_delta,
+                            prior_mean=round(prior_mean, 1),
+                            current_mean=round(current_mean, 1),
+                        )
+            # Update prior with current (for next model run comparison)
+            self._prior_forecasts[cache_key] = (current_mean, now_mono)
+            # Prune entries older than 24h to prevent unbounded growth
+            _cutoff = now_mono - 86400.0
+            self._prior_forecasts = {
+                k: v for k, v in self._prior_forecasts.items() if v[1] > _cutoff
+            }
+
         result = CombinedForecast(
             ensemble_members=ensemble_members,
             deterministic_high=deterministic_high,
             model_spread=model_spread,
             lead_time_hours=lead_time_hours,
             models_used=models_used,
+            forecast_delta=forecast_delta,
         )
 
         # Cache — Fix B: jitter expiry so all stations don't expire simultaneously
