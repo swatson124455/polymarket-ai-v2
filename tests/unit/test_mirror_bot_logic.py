@@ -7,9 +7,6 @@ Coverage targets:
   M1  - _daily_exposure decremented on successful exit; never goes below 0
   Stop-loss - pnl_pct calculation for YES and NO positions
   _can_open_position() - position limit and daily cap guards
-  _get_consensus_min() - per-category and global fallback
-  _parse_and_validate_trade() - dedup, missing fields, freshness, hot-trade
-  Consensus aggregation - enough vs. not enough unique traders
   Stop-loss exit detection in _check_and_execute_exits() (S96: API polling removed)
 """
 import asyncio
@@ -211,6 +208,13 @@ class TestDailyExposureDecrement:
 
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_STOP_LOSS_PCT = 0.15
+            ms.MIRROR_TAKE_PROFIT_PCT = 0.25
+            ms.MIRROR_STOP_LOSS_TIGHTEN_48H = -0.10
+            ms.MIRROR_STOP_LOSS_TIGHTEN_72H = -0.05
+            ms.MIRROR_FORCE_EXIT_HOURS = 96
+            ms.MIRROR_CIRCUIT_BREAKER_THRESHOLD = -0.20
+            ms.MIRROR_CIRCUIT_BREAKER_PAUSE_MINUTES = 15
+            ms.MIRROR_EXIT_ENABLED = True
             await bot._check_and_execute_exits()
 
         # After exit: exposure = 200 - (50 * 0.40) = 180
@@ -238,6 +242,13 @@ class TestDailyExposureDecrement:
 
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_STOP_LOSS_PCT = 0.15
+            ms.MIRROR_TAKE_PROFIT_PCT = 0.25
+            ms.MIRROR_STOP_LOSS_TIGHTEN_48H = -0.10
+            ms.MIRROR_STOP_LOSS_TIGHTEN_72H = -0.05
+            ms.MIRROR_FORCE_EXIT_HOURS = 96
+            ms.MIRROR_CIRCUIT_BREAKER_THRESHOLD = -0.20
+            ms.MIRROR_CIRCUIT_BREAKER_PAUSE_MINUTES = 15
+            ms.MIRROR_EXIT_ENABLED = True
             await bot._check_and_execute_exits()
 
         assert bot._daily_exposure == 0.0
@@ -263,6 +274,13 @@ class TestDailyExposureDecrement:
 
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_STOP_LOSS_PCT = 0.15
+            ms.MIRROR_TAKE_PROFIT_PCT = 0.25
+            ms.MIRROR_STOP_LOSS_TIGHTEN_48H = -0.10
+            ms.MIRROR_STOP_LOSS_TIGHTEN_72H = -0.05
+            ms.MIRROR_FORCE_EXIT_HOURS = 96
+            ms.MIRROR_CIRCUIT_BREAKER_THRESHOLD = -0.20
+            ms.MIRROR_CIRCUIT_BREAKER_PAUSE_MINUTES = 15
+            ms.MIRROR_EXIT_ENABLED = True
             await bot._check_and_execute_exits()
 
         assert bot._daily_exposure == 200.0
@@ -278,6 +296,8 @@ class TestCanOpenPosition:
             ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
             ms.MIRROR_MAX_DAILY_EXPOSURE_PCT = 0.15
             ms.TOTAL_CAPITAL = 10_000.0
+            ms.MIRROR_MIN_PRICE = 0.07
+            ms.MIRROR_MAX_PRICE = 0.93
             assert bot._can_open_position(0.50) is True
 
     def test_blocks_when_position_limit_reached(self):
@@ -289,6 +309,8 @@ class TestCanOpenPosition:
             ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
             ms.MIRROR_MAX_DAILY_EXPOSURE_PCT = 0.15
             ms.TOTAL_CAPITAL = 10_000.0
+            ms.MIRROR_MIN_PRICE = 0.07
+            ms.MIRROR_MAX_PRICE = 0.93
             assert bot._can_open_position(0.50) is False
 
     def test_blocks_when_daily_cap_reached(self):
@@ -299,6 +321,8 @@ class TestCanOpenPosition:
             ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
             ms.MIRROR_MAX_DAILY_EXPOSURE_PCT = 0.15
             ms.TOTAL_CAPITAL = 10_000.0
+            ms.MIRROR_MIN_PRICE = 0.07
+            ms.MIRROR_MAX_PRICE = 0.93
             assert bot._can_open_position(0.50) is False
 
     def test_blocks_exactly_at_cap(self):
@@ -308,6 +332,8 @@ class TestCanOpenPosition:
             ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
             ms.MIRROR_MAX_DAILY_EXPOSURE_PCT = 0.15
             ms.TOTAL_CAPITAL = 10_000.0
+            ms.MIRROR_MIN_PRICE = 0.07
+            ms.MIRROR_MAX_PRICE = 0.93
             assert bot._can_open_position(0.50) is False
 
     def test_allows_at_one_below_cap(self):
@@ -317,248 +343,10 @@ class TestCanOpenPosition:
             ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
             ms.MIRROR_MAX_DAILY_EXPOSURE_PCT = 0.15
             ms.TOTAL_CAPITAL = 10_000.0
+            ms.MIRROR_MIN_PRICE = 0.07
+            ms.MIRROR_MAX_PRICE = 0.93
             assert bot._can_open_position(0.50) is True
 
-
-# ── _get_consensus_min() ──────────────────────────────────────────────────────
-
-class TestGetConsensusMin:
-    def test_returns_global_min_for_unknown_category(self):
-        bot, _ = _make_bot()
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_MIN_CONSENSUS = 2
-            result = bot._get_consensus_min("unknown_category")
-        assert result == 2
-
-    def test_returns_per_category_threshold(self):
-        bot, _ = _make_bot()
-        bot._category_consensus_min["politics"] = 3
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_MIN_CONSENSUS = 2
-            result = bot._get_consensus_min("politics")
-        assert result == 3
-
-    def test_case_insensitive_lookup(self):
-        bot, _ = _make_bot()
-        bot._category_consensus_min["crypto"] = 4
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_MIN_CONSENSUS = 2
-            result = bot._get_consensus_min("CRYPTO")
-        assert result == 4
-
-    def test_empty_category_uses_global(self):
-        bot, _ = _make_bot()
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_MIN_CONSENSUS = 2
-            result = bot._get_consensus_min("")
-        assert result == 2
-
-
-# ── _parse_and_validate_trade() ───────────────────────────────────────────────
-
-class TestParseAndValidateTrade:
-    def _fresh_trade(self, **overrides):
-        base = {
-            "type": "trade",
-            "id": "trade-001",
-            "marketId": "mkt1",
-            "tokenId": "tok-yes",
-            "side": "BUY",
-            "price": 0.65,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        base.update(overrides)
-        return base
-
-    def _bot(self):
-        bot, _ = _make_bot()
-        bot.validate_price = MagicMock(return_value=0.65)
-        return bot
-
-    def test_returns_none_for_non_trade_type(self):
-        bot = self._bot()
-        trade = self._fresh_trade(type="position")
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_HOT_TRADE_MAX_SECONDS = 300
-            result = bot._parse_and_validate_trade(trade, "addr1", max_delay_minutes=60)
-        assert result is None
-
-    def test_returns_none_for_duplicate_trade_id(self):
-        bot = self._bot()
-        bot.mirrored_trades["trade-001"] = None
-        trade = self._fresh_trade()
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_HOT_TRADE_MAX_SECONDS = 300
-            result = bot._parse_and_validate_trade(trade, "addr1", max_delay_minutes=60)
-        assert result is None
-
-    def test_returns_none_when_market_id_missing(self):
-        bot = self._bot()
-        trade = self._fresh_trade(marketId=None)
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_HOT_TRADE_MAX_SECONDS = 300
-            result = bot._parse_and_validate_trade(trade, "addr1", max_delay_minutes=60)
-        assert result is None
-
-    def test_returns_none_when_token_id_missing(self):
-        bot = self._bot()
-        trade = self._fresh_trade(tokenId=None)
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_HOT_TRADE_MAX_SECONDS = 300
-            result = bot._parse_and_validate_trade(trade, "addr1", max_delay_minutes=60)
-        assert result is None
-
-    def test_returns_none_when_price_invalid(self):
-        bot = self._bot()
-        bot.validate_price = MagicMock(return_value=None)  # invalid price
-        trade = self._fresh_trade()
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_HOT_TRADE_MAX_SECONDS = 300
-            result = bot._parse_and_validate_trade(trade, "addr1", max_delay_minutes=60)
-        assert result is None
-
-    def test_returns_none_for_stale_trade(self):
-        bot = self._bot()
-        old_time = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
-        trade = self._fresh_trade(timestamp=old_time)
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_HOT_TRADE_MAX_SECONDS = 300
-            result = bot._parse_and_validate_trade(trade, "addr1", max_delay_minutes=60)
-        assert result is None
-
-    def test_returns_none_for_mid_market_hot_trade(self):
-        """Mid-market price (0.20-0.80) + older than MIRROR_HOT_TRADE_MAX_SECONDS → reject."""
-        bot = self._bot()
-        bot.validate_price = MagicMock(return_value=0.50)  # mid-market
-        old_time = (datetime.now(timezone.utc) - timedelta(seconds=400)).isoformat()
-        trade = self._fresh_trade(price=0.50, timestamp=old_time)
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_HOT_TRADE_MAX_SECONDS = 300
-            result = bot._parse_and_validate_trade(trade, "addr1", max_delay_minutes=60)
-        assert result is None
-
-    def test_allows_extreme_price_past_hot_window(self):
-        """Extreme price (< 0.20 or > 0.80) older than hot window is still valid."""
-        bot = self._bot()
-        bot.validate_price = MagicMock(return_value=0.90)  # not mid-market
-        old_time = (datetime.now(timezone.utc) - timedelta(seconds=400)).isoformat()
-        trade = self._fresh_trade(price=0.90, timestamp=old_time)
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_HOT_TRADE_MAX_SECONDS = 300
-            result = bot._parse_and_validate_trade(trade, "addr1", max_delay_minutes=60)
-        assert result is not None
-
-    def test_fresh_valid_trade_returns_dict(self):
-        bot = self._bot()
-        trade = self._fresh_trade()
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_HOT_TRADE_MAX_SECONDS = 300
-            result = bot._parse_and_validate_trade(trade, "addr1", max_delay_minutes=60)
-        assert result is not None
-        assert result["market_id"] == "mkt1"
-        assert result["token_id"] == "tok-yes"
-        assert result["side"] == "BUY"
-
-
-# ── Consensus aggregation ────────────────────────────────────────────────────
-
-class TestConsensusAggregation:
-    """Tests for the consensus filter inside _collect_and_aggregate_elite_trades()."""
-
-    def _make_group(self, n_traders, market_id="mkt1", token_id="tok-yes", side="YES"):
-        """Create a list of n trade dicts from distinct traders for the same position."""
-        return [
-            {
-                "trader_address": f"addr{i}",
-                "market_id": market_id,
-                "token_id": token_id,
-                "side": side,
-                "price": 0.65,
-                "confidence": 0.70,
-                "category": "crypto",
-            }
-            for i in range(n_traders)
-        ]
-
-    def _run_consensus(self, bot, groups_by_key):
-        """Replicate the consensus filter from _collect_and_aggregate_elite_trades()."""
-        result = []
-        for key, items in groups_by_key.items():
-            unique_traders = {t["trader_address"] for t in items}
-            _n = len(unique_traders)
-            best = max(items, key=lambda t: t["confidence"])
-            _category = (best.get("category") or "").lower()
-            _required = bot._get_consensus_min(_category)
-            if _n < _required:
-                continue
-            result.append(best)
-        return result
-
-    def test_no_consensus_below_threshold(self):
-        bot, _ = _make_bot()
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_MIN_CONSENSUS = 2
-            groups = {"mkt1:tok-yes:YES": self._make_group(1)}
-            result = self._run_consensus(bot, groups)
-        assert result == []
-
-    def test_consensus_reached_at_threshold(self):
-        bot, _ = _make_bot()
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_MIN_CONSENSUS = 2
-            groups = {"mkt1:tok-yes:YES": self._make_group(2)}
-            result = self._run_consensus(bot, groups)
-        assert len(result) == 1
-
-    def test_consensus_above_threshold(self):
-        bot, _ = _make_bot()
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_MIN_CONSENSUS = 2
-            groups = {"mkt1:tok-yes:YES": self._make_group(5)}
-            result = self._run_consensus(bot, groups)
-        assert len(result) == 1
-
-    def test_per_category_threshold_overrides_global(self):
-        bot, _ = _make_bot()
-        bot._category_consensus_min["politics"] = 4
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_MIN_CONSENSUS = 2
-            items = self._make_group(3)
-            for item in items:
-                item["category"] = "politics"
-            groups = {"mkt1:tok-yes:YES": items}
-            result = self._run_consensus(bot, groups)
-        # 3 traders < 4 required → no consensus
-        assert result == []
-
-    def test_best_confidence_selected_from_group(self):
-        bot, _ = _make_bot()
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_MIN_CONSENSUS = 2
-            items = self._make_group(3)
-            items[0]["confidence"] = 0.90  # highest
-            items[1]["confidence"] = 0.70
-            items[2]["confidence"] = 0.60
-            groups = {"mkt1:tok-yes:YES": items}
-            result = self._run_consensus(bot, groups)
-        assert len(result) == 1
-        assert result[0]["confidence"] == 0.90
-
-    def test_duplicate_trader_does_not_double_count(self):
-        """Same trader address in two entries counts as 1 unique trader."""
-        bot, _ = _make_bot()
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_MIN_CONSENSUS = 2
-            items = [
-                {"trader_address": "addr1", "market_id": "mkt1", "token_id": "tok-yes",
-                 "side": "YES", "price": 0.65, "confidence": 0.70, "category": "crypto"},
-                {"trader_address": "addr1", "market_id": "mkt1", "token_id": "tok-yes",
-                 "side": "YES", "price": 0.65, "confidence": 0.80, "category": "crypto"},
-            ]
-            groups = {"mkt1:tok-yes:YES": items}
-            result = self._run_consensus(bot, groups)
-        # Only 1 unique trader, required = 2 → no consensus
-        assert result == []
 
 
 # ── C2 trader-SELL exit detection ────────────────────────────────────────────
@@ -587,6 +375,13 @@ class TestTraderSellExitDetection:
 
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_STOP_LOSS_PCT = 0.15
+            ms.MIRROR_TAKE_PROFIT_PCT = 0.25
+            ms.MIRROR_STOP_LOSS_TIGHTEN_48H = -0.10
+            ms.MIRROR_STOP_LOSS_TIGHTEN_72H = -0.05
+            ms.MIRROR_FORCE_EXIT_HOURS = 96
+            ms.MIRROR_CIRCUIT_BREAKER_THRESHOLD = -0.20
+            ms.MIRROR_CIRCUIT_BREAKER_PAUSE_MINUTES = 15
+            ms.MIRROR_EXIT_ENABLED = True
             await bot._check_and_execute_exits()
 
         assert pos_key not in bot._open_positions
@@ -612,6 +407,13 @@ class TestTraderSellExitDetection:
 
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_STOP_LOSS_PCT = 0.15
+            ms.MIRROR_TAKE_PROFIT_PCT = 0.25
+            ms.MIRROR_STOP_LOSS_TIGHTEN_48H = -0.10
+            ms.MIRROR_STOP_LOSS_TIGHTEN_72H = -0.05
+            ms.MIRROR_FORCE_EXIT_HOURS = 96
+            ms.MIRROR_CIRCUIT_BREAKER_THRESHOLD = -0.20
+            ms.MIRROR_CIRCUIT_BREAKER_PAUSE_MINUTES = 15
+            ms.MIRROR_EXIT_ENABLED = True
             await bot._check_and_execute_exits()
 
         assert pos_key in bot._open_positions
@@ -625,6 +427,13 @@ class TestTraderSellExitDetection:
 
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_STOP_LOSS_PCT = 0.15
+            ms.MIRROR_TAKE_PROFIT_PCT = 0.25
+            ms.MIRROR_STOP_LOSS_TIGHTEN_48H = -0.10
+            ms.MIRROR_STOP_LOSS_TIGHTEN_72H = -0.05
+            ms.MIRROR_FORCE_EXIT_HOURS = 96
+            ms.MIRROR_CIRCUIT_BREAKER_THRESHOLD = -0.20
+            ms.MIRROR_CIRCUIT_BREAKER_PAUSE_MINUTES = 15
+            ms.MIRROR_EXIT_ENABLED = True
             await bot._check_and_execute_exits()
 
 
@@ -792,68 +601,6 @@ class TestRestoreStateOnStartup:
         assert bot._state_restored is True
         assert bot._daily_exposure == 0.0
 
-
-# ── _load_consensus_from_db() ──────────────────────────────────────────────
-
-
-class TestLoadConsensusFromDB:
-    @pytest.mark.asyncio
-    async def test_loads_thresholds(self):
-        """Loads per-category consensus thresholds from bot_category_params."""
-        bot, engine = _make_bot()
-        bot._db_consensus_loaded = False
-
-        mock_ctx = AsyncMock()
-        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
-        mock_ctx.__aexit__ = AsyncMock(return_value=False)
-        row1 = MagicMock(category="politics", param_value="3")
-        row2 = MagicMock(category="crypto", param_value="4")
-        mock_ctx.execute = AsyncMock(
-            return_value=MagicMock(fetchall=MagicMock(return_value=[row1, row2]))
-        )
-        engine.db.get_session = MagicMock(return_value=mock_ctx)
-
-        await bot._load_consensus_from_db()
-
-        assert bot._db_consensus_loaded is True
-        assert bot._category_consensus_min["politics"] == 3
-        assert bot._category_consensus_min["crypto"] == 4
-
-    @pytest.mark.asyncio
-    async def test_only_runs_once(self):
-        """Guard: _db_consensus_loaded prevents double execution."""
-        bot, engine = _make_bot()
-        bot._db_consensus_loaded = True
-        await bot._load_consensus_from_db()
-        engine.db.get_session.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_handles_db_failure_gracefully(self):
-        """DB exception is caught — consensus thresholds remain default."""
-        bot, engine = _make_bot()
-        bot._db_consensus_loaded = False
-        engine.db.get_session.side_effect = Exception("DB down")
-        await bot._load_consensus_from_db()
-        assert bot._db_consensus_loaded is True
-        assert bot._category_consensus_min == {}
-
-    @pytest.mark.asyncio
-    async def test_enforces_minimum_of_2(self):
-        """Category threshold is clamped to at least 2."""
-        bot, engine = _make_bot()
-        bot._db_consensus_loaded = False
-
-        mock_ctx = AsyncMock()
-        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
-        mock_ctx.__aexit__ = AsyncMock(return_value=False)
-        row = MagicMock(category="politics", param_value="1")
-        mock_ctx.execute = AsyncMock(
-            return_value=MagicMock(fetchall=MagicMock(return_value=[row]))
-        )
-        engine.db.get_session = MagicMock(return_value=mock_ctx)
-
-        await bot._load_consensus_from_db()
-        assert bot._category_consensus_min["politics"] == 2  # clamped to 2
 
 
 # ── _track_open_position() ─────────────────────────────────────────────────
@@ -1058,6 +805,8 @@ class TestExecuteMirrorTrade:
         bot, engine = _make_bot()
         bot.bankroll = MagicMock()
         bot.bankroll.max_daily_usd = 10000
+        bot.bankroll.capital = 3000.0
+        bot._reliability_tracker = None  # disable to avoid domain drift halving confidence
         bot.calculate_bot_position_size = AsyncMock(return_value=10000.0)  # huge raw size
         bot.place_order = AsyncMock(return_value={"success": True, "order_id": "ord1"})
         bot.store_pending_trade_signals = AsyncMock()
@@ -1074,6 +823,14 @@ class TestExecuteMirrorTrade:
             ms.MIRROR_MAX_CONCURRENT_POSITIONS = 200
             ms.MIRROR_ADAPTIVE_SAFETY = False
             ms.TOTAL_CAPITAL = 10000.0
+            ms.MIRROR_MIN_PRICE = 0.07
+            ms.MIRROR_MAX_PRICE = 0.93
+            ms.MIRROR_CATEGORY_BLOCKLIST = ""
+            ms.MIRROR_MARKET_COOLDOWN_SECONDS = 0
+            ms.MIRROR_MAX_SLIPPAGE_PCT = 0.08
+            ms.MIRROR_MIN_TRADE_USD = 1.0
+            ms.MIRROR_MAX_PER_MARKET_PCT = 0.05
+            ms.MIRROR_MIN_HOURS_TO_RESOLUTION = 4
             await bot._execute_mirror_trade(
                 market_id="mkt1", token_id="tok-yes", side="YES",
                 price=0.50, confidence=0.70, trader_address="addr1",
@@ -1089,7 +846,9 @@ class TestExecuteMirrorTrade:
         bot, engine = _make_bot()
         bot.bankroll = MagicMock()
         bot.bankroll.max_daily_usd = 100.0  # only $100 daily
+        bot.bankroll.capital = 3000.0
         bot._daily_exposure = 90.0  # already spent $90
+        bot._reliability_tracker = None  # disable to avoid domain drift halving confidence
         bot.calculate_bot_position_size = AsyncMock(return_value=1000.0)
         bot.place_order = AsyncMock(return_value={"success": True, "order_id": "ord1"})
         bot.store_pending_trade_signals = AsyncMock()
@@ -1105,6 +864,14 @@ class TestExecuteMirrorTrade:
             ms.MIRROR_MAX_CONCURRENT_POSITIONS = 200
             ms.MIRROR_ADAPTIVE_SAFETY = False
             ms.TOTAL_CAPITAL = 10000.0
+            ms.MIRROR_MIN_PRICE = 0.07
+            ms.MIRROR_MAX_PRICE = 0.93
+            ms.MIRROR_CATEGORY_BLOCKLIST = ""
+            ms.MIRROR_MARKET_COOLDOWN_SECONDS = 0
+            ms.MIRROR_MAX_SLIPPAGE_PCT = 0.08
+            ms.MIRROR_MIN_TRADE_USD = 1.0
+            ms.MIRROR_MAX_PER_MARKET_PCT = 0.05
+            ms.MIRROR_MIN_HOURS_TO_RESOLUTION = 4
             await bot._execute_mirror_trade(
                 market_id="mkt1", token_id="tok-yes", side="YES",
                 price=0.50, confidence=0.70, trader_address="addr1",
@@ -1276,6 +1043,8 @@ class TestCanOpenPositionBankroll:
             # This setting should be IGNORED when bankroll is set
             ms.MIRROR_MAX_DAILY_EXPOSURE_PCT = 0.01
             ms.TOTAL_CAPITAL = 10000.0
+            ms.MIRROR_MIN_PRICE = 0.07
+            ms.MIRROR_MAX_PRICE = 0.93
             assert bot._can_open_position(0.50) is True
 
     def test_blocks_at_bankroll_cap(self):
@@ -1287,6 +1056,8 @@ class TestCanOpenPositionBankroll:
 
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
+            ms.MIRROR_MIN_PRICE = 0.07
+            ms.MIRROR_MAX_PRICE = 0.93
             assert bot._can_open_position(0.50) is False
 
 
@@ -1303,6 +1074,8 @@ class TestDeprecationWarning:
             ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
             ms.MIRROR_MAX_DAILY_EXPOSURE_PCT = 0.15
             ms.TOTAL_CAPITAL = 10000.0
+            ms.MIRROR_MIN_PRICE = 0.07
+            ms.MIRROR_MAX_PRICE = 0.93
             with patch("bots.mirror_bot.logger") as mock_logger:
                 bot._can_open_position(0.50)
                 mock_logger.warning.assert_called_once()
@@ -1318,6 +1091,8 @@ class TestDeprecationWarning:
             ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
             ms.MIRROR_MAX_DAILY_EXPOSURE_PCT = 0.15
             ms.TOTAL_CAPITAL = 10000.0
+            ms.MIRROR_MIN_PRICE = 0.07
+            ms.MIRROR_MAX_PRICE = 0.93
             with patch("bots.mirror_bot.logger") as mock_logger:
                 bot._can_open_position(0.50)
                 mock_logger.warning.assert_not_called()

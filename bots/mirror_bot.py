@@ -60,12 +60,6 @@ class MirrorBot(BaseBot):
         self._signal_cache: Dict[str, Tuple[float, float]] = {}
         self._SIGNAL_CACHE_TTL = 60.0  # seconds
 
-        # Per-trader activity cache: addr -> (activity_list, expiry_monotonic)
-        # Skips the API call for traders whose activity hasn't changed within the TTL window.
-        # At TTL=90s and scan_interval=~15s: ~50/500 traders expire per scan → ~2s vs 14s.
-        self._trader_activity_cache: Dict[str, Tuple[List, float]] = {}
-        self._TRADER_CACHE_TTL: float = float(getattr(settings, "MIRROR_TRADER_CACHE_TTL", 90))
-
         # Periodic elite refresh (avoid stale list)
         self._scan_count: int = 0
         self._elite_refresh_every_n_scans: int = 480  # S96: ~6h at 45s interval (was 40/~30min)
@@ -82,12 +76,6 @@ class MirrorBot(BaseBot):
         except Exception as e:
             logger.debug("elite reliability tracker init failed: %s", e)
 
-        # R5b: Per-category adaptive consensus threshold.
-        # Key: category string (e.g. "politics", "crypto") → consensus_min int.
-        # Loaded from bot_category_params on first scan.
-        # Falls back to MIRROR_MIN_CONSENSUS (global default) for unknown categories.
-        self._category_consensus_min: Dict[str, int] = {}
-        self._db_consensus_loaded: bool = False
 
         # C1: YES/NO resolution cache. Key: "market_id:token_id" → "YES"/"NO".
         # Avoids repeated DB queries for the same token across scan cycles.
@@ -104,6 +92,9 @@ class MirrorBot(BaseBot):
         # S91: Tier 0 pre-trade filters (in-memory, <0.01ms)
         self._market_blocklist: set = set()  # market_ids to reject instantly
         self._market_cooldown: Dict[str, float] = {}  # market_id -> cooldown_expiry_monotonic
+
+        # S99: Portfolio circuit breaker — pause entries when unrealized P&L < threshold
+        self._circuit_breaker_until: float = 0.0  # monotonic time when pause expires
 
         # Session 82: Calibration stack (FTS + Le2026 + conformal)
         self._calibration_stack = None
@@ -128,7 +119,6 @@ class MirrorBot(BaseBot):
         self._watchlist_started: bool = False
         self._rtds_ws = None
         self._rtds_started: bool = False
-        self._consensus_relaxed: bool = False
         if getattr(settings, "WATCHLIST_ENABLED", False):
             try:
                 from bots.elite_watchlist import EliteWatchlist
@@ -142,44 +132,6 @@ class MirrorBot(BaseBot):
         exc = task.exception()
         if exc:
             logger.warning("bg_task_failed", task_name=name, error=str(exc))
-
-    # ── R5b: Adaptive consensus threshold per category ──────────────
-
-    async def _load_consensus_from_db(self) -> None:
-        """Load per-category consensus thresholds from bot_category_params on startup."""
-        if self._db_consensus_loaded:
-            return
-        self._db_consensus_loaded = True
-        try:
-            db = getattr(self.base_engine, "db", None)
-            if db is None:
-                return
-            from sqlalchemy import text
-            # M3: Use bot_category_params (not bot_market_params.market_id which is a UUID column)
-            sql = text(
-                "SELECT category, param_value FROM bot_category_params "
-                "WHERE bot_name = :bot AND param_name = 'consensus_min'"
-            )
-            async with db.get_session() as session:
-                result = await session.execute(sql, {"bot": self.bot_name})
-                rows = result.fetchall()
-            for row in rows:
-                self._category_consensus_min[str(row.category)] = max(2, int(row.param_value))
-            if rows:
-                logger.info("R5b: Loaded %d consensus thresholds from DB for MirrorBot", len(rows))
-        except Exception as exc:
-            logger.debug("R5b: _load_consensus_from_db failed (non-critical): %s", exc)
-
-    def _get_consensus_min(self, category: str) -> int:
-        """Return per-category consensus threshold, falling back to global setting.
-
-        When RTDS watchlist is active (primary copy path), consensus relaxes to 1
-        so the scan loop serves as a secondary source for traders outside the top-1k.
-        """
-        if getattr(self, "_consensus_relaxed", False):
-            return self._category_consensus_min.get((category or "").lower(), 1)
-        global_min = getattr(settings, "MIRROR_MIN_CONSENSUS", 2)
-        return self._category_consensus_min.get((category or "").lower(), global_min)
 
     async def _get_token_side(self, market_id: str, token_id: str) -> str:
         """
@@ -467,9 +419,6 @@ class MirrorBot(BaseBot):
         # Restore _daily_exposure + _open_positions from DB on first scan after restart.
         await self._restore_state_on_startup()
 
-        # R5b: Load per-category consensus thresholds from DB on first scan.
-        await self._load_consensus_from_db()
-
         # Session 82: Fit calibration stack on first scan; Session 83: re-fit daily
         _today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if self._calibration_fit_date and self._calibration_fit_date != _today:
@@ -645,272 +594,8 @@ class MirrorBot(BaseBot):
         self._market_meta_cache[market_id] = (category, time_to_res, now + self._MARKET_META_TTL)
         return category, time_to_res
 
-    # ── Trade Collection & Consensus ────────────────────────────────
-
-    async def _collect_and_aggregate_elite_trades(self) -> List[Dict[str, Any]]:
-        """
-        Collect recent trades from all elites inside a single client session,
-        aggregate by (market_id, token_id, side), return trades with consensus.
-
-        M1: Parallelized elite fetches with asyncio.gather + Semaphore(5)
-        to reduce scan time from ~7s (sequential) to ~1-2s (5 concurrent).
-        """
-        min_consensus = getattr(settings, "MIRROR_MIN_CONSENSUS", 2)
-        max_delay = getattr(settings, "MIRROR_MAX_DELAY_MINUTES", 30)
-        max_concurrent = getattr(settings, "MIRROR_MAX_CONCURRENT_FETCHES", 20)
-
-        groups: Dict[Tuple[str, str, str], List[Dict]] = defaultdict(list)
-        sem = asyncio.Semaphore(max_concurrent)
-        import time as _time
-        # S48: Waterfall counters for diagnosing 0-trade scans
-        _wf_raw = 0        # Raw trades fetched
-        _wf_parsed = 0     # Passed parse + freshness
-        _wf_conf = 0       # Passed confidence gate
-        _wf_rel = 0        # Passed reliability gate (final)
-        _wf_api_fail = 0   # API failures
-        _wf_cache_hit = 0  # Served from per-trader cache (no API call)
-
-        async def _fetch_one_elite(trader: Dict) -> List[Dict]:
-            """Fetch and process trades for a single elite trader.
-
-            Per-trader cache: skips the API call if activity was fetched within
-            MIRROR_TRADER_CACHE_TTL seconds (default 90s). Semaphore only gates
-            the API call itself — processing runs concurrently outside the lock.
-            """
-            nonlocal _wf_raw, _wf_parsed, _wf_conf, _wf_rel, _wf_api_fail, _wf_cache_hit
-            addr = trader.get("address")
-            if not addr:
-                return []
-
-            # Gate: elite must have 100+ trades OR $10k+ volume on Polymarket
-            _min_trades = getattr(settings, "MIRROR_MIN_ELITE_TRADES", 250)
-            _min_volume = getattr(settings, "ELITE_MIN_VOLUME_USD", 10000.0)
-            _trader_trades = int(trader.get("total_trades", 0) or 0)
-            _trader_volume = float(trader.get("total_volume", 0) or 0)
-            if _trader_trades < _min_trades and _trader_volume < _min_volume:
-                return []
-
-            # Check per-trader cache before acquiring semaphore
-            _now = _time.monotonic()
-            _cached = self._trader_activity_cache.get(addr)
-            if _cached and _now < _cached[1]:
-                activity = _cached[0]
-                _wf_cache_hit += 1
-            else:
-                async with sem:
-                    try:
-                        activity = await self.base_engine.client.get_user_activity(
-                            user_address=addr,
-                            limit=25,
-                            offset=0,
-                        )
-                    except Exception as e:
-                        logger.info("get_user_activity failed for %s: %s", addr[:10], e)
-                        _wf_api_fail += 1
-                        return []
-                # Store in cache outside semaphore (no need to hold lock during write)
-                self._trader_activity_cache[addr] = (activity or [], _now + self._TRADER_CACHE_TTL)
-
-            # Process activity outside semaphore — DB/cache calls, not rate-limited
-            items = []
-            _wf_raw += len(activity) if activity else 0
-            for trade in activity:
-                parsed = self._parse_and_validate_trade(
-                    trade, addr, max_delay
-                )
-                if parsed is None:
-                    continue
-                _wf_parsed += 1
-
-                _cat, _ttr = await self._get_market_meta(str(parsed["market_id"]))
-                # S48 FIX: Use elite trader's own win_rate as confidence, not
-                # learning engine's bet-type confidence (which returns ~0.03 with
-                # only 242 resolved labels). Elites have >= 55% win rate by definition.
-                _elite_wr = float(trader.get("win_rate", 0) or 0)
-                confidence = _elite_wr if _elite_wr > 0 else 0.55
-                if confidence < self.min_confidence:
-                    continue
-                _wf_conf += 1
-
-                # C1: Resolve BUY→YES/NO using markets table (place_order requires YES/NO).
-                # SELL stays as SELL (exit signal handled separately in _check_and_execute_exits).
-                _raw_side = str(parsed.get("side", "BUY")).upper()
-                if _raw_side == "SELL":
-                    _resolved_side = "SELL"
-                else:
-                    _resolved_side = await self._get_token_side(
-                        str(parsed["market_id"]), str(parsed["token_id"])
-                    )
-
-                # Reliability gate: skip traders with poor Bayesian win rate
-                # Uses per-category Beta when enough data exists; falls back to overall.
-                if self._reliability_tracker and self._reliability_tracker._cache:
-                    _alpha, _beta = self._reliability_tracker._get_beta(addr, _resolved_side, category=_cat)
-                    if _alpha + _beta > 2:  # Only filter if we have actual data (not just prior)
-                        _mean_rel = _alpha / (_alpha + _beta)
-                        if _mean_rel < getattr(settings, "MIRROR_MIN_RELIABILITY", 0.45):
-                            logger.info("MirrorBot reliability gate: addr=%s mean=%.3f", addr[:10], _mean_rel)
-                            continue
-                _wf_rel += 1
-
-                items.append({
-                    "trade_id": parsed["trade_id"],
-                    "market_id": parsed["market_id"],
-                    "token_id": parsed["token_id"],
-                    "side": _resolved_side,  # C1: YES/NO (not BUY/SELL)
-                    "price": parsed["price"],
-                    "confidence": confidence,
-                    "trader_address": addr,
-                    "category": _cat,  # P2-2: propagate so _get_consensus_min() uses per-category threshold
-                })
-            return items
-
-        try:
-            # Single client session for all traders — no per-trader reconnect
-            async with self.base_engine.client:
-                # Parallel fetch: up to max_concurrent elites at once
-                results = await asyncio.gather(
-                    *[_fetch_one_elite(trader) for trader in self.elite_traders],
-                    return_exceptions=True,
-                )
-                for result in results:
-                    if isinstance(result, Exception):
-                        logger.debug("Elite fetch task failed: %s", result)
-                        continue
-                    for item in result:
-                        key = (
-                            str(item["market_id"]),
-                            str(item["token_id"]),
-                            str(item["side"]),
-                        )
-                        groups[key].append(item)
-        except Exception as e:
-            logger.error("Failed to collect elite trades", error=str(e))
-            return []
-
-        # S48: Log waterfall diagnostic
-        if _wf_raw > 0 or _wf_api_fail > 0:
-            logger.info(
-                "MirrorBot waterfall: raw=%d parsed=%d conf_pass=%d rel_pass=%d "
-                "groups=%d api_fail=%d cache_hits=%d/%d (min_conf=%.2f)",
-                _wf_raw, _wf_parsed, _wf_conf, _wf_rel,
-                len(groups), _wf_api_fail, _wf_cache_hit, len(self.elite_traders),
-                self.min_confidence,
-            )
-
-        # Consensus filter: require min unique elites agreeing.
-        # R5b: Use per-category threshold when available, otherwise global min_consensus.
-        # Session 82: When MIRROR_USE_GEOMEAN_CONSENSUS=true, aggregate confidence via
-        # extremized geometric mean of odds (Satopää et al. 2014) instead of max-confidence.
-        _use_geomean = getattr(settings, "MIRROR_USE_GEOMEAN_CONSENSUS", False)
-        _extremize_d = float(getattr(settings, "MIRROR_GEOMEAN_EXTREMIZE_D", 2.0))
-        result = []
-        _max_unique = 0
-        _groups_checked = 0
-        for key, items in groups.items():
-            unique_traders = {t["trader_address"] for t in items}
-            _n = len(unique_traders)
-            _max_unique = max(_max_unique, _n)
-            _groups_checked += 1
-
-            if _use_geomean and _n >= 2:
-                # Extremized geometric mean of odds:
-                # 1. Convert each confidence p_i to odds o_i = p_i / (1 - p_i)
-                # 2. Geometric mean: o_geo = (prod(o_i))^(1/n)
-                # 3. Extremize: o_ext = o_geo^d  (d=2.0 corrects hedging toward 50%)
-                # 4. Convert back: p_agg = o_ext / (1 + o_ext)
-                _confidences = [t["confidence"] for t in items]
-                _log_odds_sum = 0.0
-                for _c in _confidences:
-                    _c_clip = max(0.01, min(0.99, _c))
-                    _log_odds_sum += math.log(_c_clip / (1.0 - _c_clip))
-                _geo_log_odds = _log_odds_sum / len(_confidences)
-                _ext_log_odds = _geo_log_odds * _extremize_d
-                # Stable sigmoid: avoid overflow
-                if _ext_log_odds > 10:
-                    _agg_conf = 0.99
-                elif _ext_log_odds < -10:
-                    _agg_conf = 0.01
-                else:
-                    _agg_conf = 1.0 / (1.0 + math.exp(-_ext_log_odds))
-                best = max(items, key=lambda t: t["confidence"])
-                best = {**best, "confidence": _agg_conf}
-            else:
-                best = max(items, key=lambda t: t["confidence"])
-
-            # Determine per-category consensus requirement
-            _category = (best.get("category") or "").lower()
-            _required = self._get_consensus_min(_category)
-            if _n < _required:
-                continue
-            result.append(best)
-
-        if _groups_checked > 0 and not result:
-            logger.info(
-                "MirrorBot consensus: %d groups checked, max_unique_traders=%d, "
-                "required=%d — 0 passed",
-                _groups_checked, _max_unique,
-                getattr(settings, "MIRROR_MIN_CONSENSUS", 2),
-            )
-
-        return result
-
-    def _parse_and_validate_trade(
-        self,
-        trade: Dict,
-        addr: str,
-        max_delay_minutes: int,
-    ) -> Optional[Dict]:
-        """Parse a raw trade dict; return normalised dict or None if invalid/stale/duplicate."""
-        if trade.get("type") != "trade":
-            return None
-
-        trade_id = trade.get("id")
-        if trade_id in self.mirrored_trades:
-            return None
-
-        market_id = trade.get("marketId")
-        token_id = trade.get("tokenId")
-        side = trade.get("side")
-        if not all([market_id, token_id, side]):
-            return None
-
-        price = self.validate_price(trade.get("price", 0), str(market_id))
-        if price is None:
-            return None
-
-        # Freshness check
-        try:
-            ts = trade.get("timestamp")
-            if ts is not None:
-                if isinstance(ts, (int, float)):
-                    trade_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-                elif isinstance(ts, str):
-                    trade_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                    if trade_dt.tzinfo is None:
-                        trade_dt = trade_dt.replace(tzinfo=timezone.utc)
-                else:
-                    trade_dt = None
-                if trade_dt:
-                    age_min = (datetime.now(timezone.utc) - trade_dt).total_seconds() / 60
-                    if age_min > max_delay_minutes:
-                        return None
-                    # Hot-trade filter: mid-market prices reprice within minutes of news
-                    _is_mid = 0.20 <= price <= 0.80
-                    _hot_max_s = getattr(settings, "MIRROR_HOT_TRADE_MAX_SECONDS", 300)
-                    if _is_mid and (age_min * 60) > _hot_max_s:
-                        return None  # Market has likely already repriced
-        except Exception as e:
-            logger.info("trade freshness check failed: %s", e)
-            return None
-
-        return {
-            "trade_id": trade_id,
-            "market_id": market_id,
-            "token_id": token_id,
-            "side": side,
-            "price": price,
-        }
+    # S98: _collect_and_aggregate_elite_trades + _parse_and_validate_trade deleted
+    # RTDS is sole entry path — consensus scan no longer used
 
     # ── Exit Monitoring ─────────────────────────────────────────────
 
@@ -953,17 +638,73 @@ class MirrorBot(BaseBot):
 
         positions_to_close: List[str] = []
 
-        # S96: Stop-loss only — RTDS handles trader-driven exits in real-time,
-        # max-hold removed (stop-loss is the safety net).
-        _stop_pct = getattr(settings, "MIRROR_STOP_LOSS_PCT", 0.15)
+        # S99: Stop-loss (with graduated tightening) + take-profit + circuit breaker
+        _base_stop_pct = float(getattr(settings, "MIRROR_STOP_LOSS_PCT", 0.15))
+        _tp_pct = float(getattr(settings, "MIRROR_TAKE_PROFIT_PCT", 0.25))
+        _stop_48h = float(getattr(settings, "MIRROR_STOP_LOSS_TIGHTEN_48H", -0.10))
+        _stop_72h = float(getattr(settings, "MIRROR_STOP_LOSS_TIGHTEN_72H", -0.05))
+        _force_exit_hours = float(getattr(settings, "MIRROR_FORCE_EXIT_HOURS", 96))
+        _now_utc = datetime.now(timezone.utc)
+        _total_unrealized = 0.0
+
         for _pos_key, _pos in list(self._open_positions.items()):
             _entry = float(_pos.get("entry_price", 0.5) or 0.5)
             _current = float(_pos.get("current_price", _entry) or _entry)
             # Prices are token-specific — (current - entry) is correct for BOTH YES and NO
             _pnl_pct = (_current - _entry) / max(_entry, 1e-6)
-            if _pnl_pct <= -_stop_pct:
-                logger.info("MirrorBot autonomous stop-loss", market=_pos_key, pnl_pct=f"{_pnl_pct:.2%}")
+            _size = float(_pos.get("size", 0) or 0)
+            _total_unrealized += (_current - _entry) * _size
+
+            # S99: Take-profit — capture the move, free capital
+            if _pnl_pct >= _tp_pct:
+                logger.info("mirror_take_profit", market=_pos_key, pnl_pct=f"{_pnl_pct:.2%}")
                 positions_to_close.append(_pos_key)
+                continue
+
+            # S99: Graduated exit pressure — tighten stop-loss by hold duration
+            _ts_str = _pos.get("timestamp")
+            _hours_held = 0.0
+            if _ts_str:
+                try:
+                    _opened = datetime.fromisoformat(_ts_str)
+                    if _opened.tzinfo is None:
+                        _opened = _opened.replace(tzinfo=timezone.utc)
+                    _hours_held = (_now_utc - _opened).total_seconds() / 3600.0
+                except (ValueError, TypeError):
+                    pass
+
+            # Force exit at 96h regardless of P&L
+            if _hours_held >= _force_exit_hours:
+                logger.info("mirror_force_exit", market=_pos_key, hours=round(_hours_held, 1),
+                            pnl_pct=f"{_pnl_pct:.2%}")
+                positions_to_close.append(_pos_key)
+                continue
+
+            # Graduated stop-loss threshold
+            if _hours_held >= 72:
+                _effective_stop = abs(_stop_72h)
+            elif _hours_held >= 48:
+                _effective_stop = abs(_stop_48h)
+            else:
+                _effective_stop = _base_stop_pct
+
+            if _pnl_pct <= -_effective_stop:
+                logger.info("MirrorBot autonomous stop-loss", market=_pos_key,
+                            pnl_pct=f"{_pnl_pct:.2%}", hours_held=round(_hours_held, 1),
+                            threshold=f"-{_effective_stop:.0%}")
+                positions_to_close.append(_pos_key)
+
+        # S99: Circuit breaker — if total unrealized P&L breaches threshold, pause entries
+        _cb_threshold_pct = float(getattr(settings, "MIRROR_CIRCUIT_BREAKER_THRESHOLD", -0.20))
+        _cb_pause_min = float(getattr(settings, "MIRROR_CIRCUIT_BREAKER_PAUSE_MINUTES", 15))
+        _capital = float(getattr(self.bankroll, 'capital', 3000) or 3000) if self.bankroll else 3000.0
+        _cb_threshold_usd = _capital * _cb_threshold_pct  # negative number
+        if _total_unrealized <= _cb_threshold_usd and _total_unrealized < 0:
+            self._circuit_breaker_until = _time.monotonic() + (_cb_pause_min * 60)
+            logger.warning("mirror_circuit_breaker_tripped",
+                           unrealized=round(_total_unrealized, 2),
+                           threshold=round(_cb_threshold_usd, 2),
+                           pause_minutes=_cb_pause_min)
 
         # Execute the exits
         for pos_key in set(positions_to_close):
@@ -1112,10 +853,23 @@ class MirrorBot(BaseBot):
             logger.warning("MirrorBot: failed to persist trader address: %s", exc)
 
     def _can_open_position(self, price: float, category: str = "") -> bool:
-        """Check concurrent position + daily exposure + category limits.
+        """Check concurrent position + daily exposure + category + price limits.
 
         Returns False with a specific INFO log identifying WHICH limit was hit.
         """
+        # S99: MirrorBot-specific price bounds (tighter than global 0.05-0.95)
+        _min_price = float(getattr(settings, "MIRROR_MIN_PRICE", 0.07))
+        _max_price = float(getattr(settings, "MIRROR_MAX_PRICE", 0.93))
+        if price < _min_price or price > _max_price:
+            logger.info("mirror_price_bounds: %.3f outside [%.2f, %.2f], skipping",
+                        price, _min_price, _max_price)
+            return False
+
+        # S99: Circuit breaker — pause entries when portfolio is bleeding
+        if _time.monotonic() < self._circuit_breaker_until:
+            logger.info("mirror_circuit_breaker: paused until breaker expires")
+            return False
+
         # Session 82: Adaptive safety overrides static max_positions when enabled.
         # Gate on MIRROR_ADAPTIVE_SAFETY + _fitted to avoid reading wrong settings in tests.
         if (self._adaptive_safety
@@ -1154,10 +908,7 @@ class MirrorBot(BaseBot):
 
         # M1: Per-category exposure cap — prevent concentration in one category
         if category:
-            _capital = float(getattr(self.bankroll, 'capital', 0) or 0) if self.bankroll else float(getattr(settings, "MIRROR_TOTAL_CAPITAL", 3000))
-            _capital = _capital or float(getattr(settings, "MIRROR_TOTAL_CAPITAL", 3000))
-            _cat_max_pct = float(getattr(settings, "MIRROR_MAX_CATEGORY_EXPOSURE_PCT", 0.40))
-            _cat_max_usd = _capital * _cat_max_pct
+            _cat_max_usd = float(getattr(settings, "MIRROR_MAX_CATEGORY_EXPOSURE_USD", 4000))
             _cat_current = self._category_exposure.get(category, 0.0)
             if _cat_current >= _cat_max_usd:
                 logger.info("Mirror CATEGORY CAP: %s $%.0f/$%.0f, skipping",
@@ -1376,6 +1127,22 @@ class MirrorBot(BaseBot):
         _market_data = self.base_engine.get_market_from_index(str(market_id))
         _old_price = price  # S91: preserve trader's fill price for slippage check
         if _market_data:
+            # S99: Reject inactive/closed markets — prevents 400s from CLOB
+            if not _market_data.get("active", True):
+                logger.info("mirror_market_inactive", market=str(market_id)[:16])
+                self._market_blocklist.add(market_id)
+                return False
+
+            # S99: Hours-to-resolution filter — skip insider-territory markets
+            _min_hours = float(getattr(settings, "MIRROR_MIN_HOURS_TO_RESOLUTION", 4))
+            _end_date = _market_data.get("end_date_iso")
+            if _end_date:
+                _h = self.hours_until_resolution({"end_date_iso": _end_date})
+                if _h is not None and _h < _min_hours:
+                    logger.info("mirror_near_resolution", market=str(market_id)[:16],
+                                hours=round(_h, 1), min_hours=_min_hours)
+                    return False
+
             _side_upper = str(side).upper()
             if _side_upper in ("YES", "NO"):
                 _current = float(_market_data.get(f"{_side_upper.lower()}_price", 0) or 0)
