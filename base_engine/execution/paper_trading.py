@@ -365,8 +365,15 @@ class PaperTradingEngine:
         if bid > 0.0 and ask > 0.0:
             price = ask if side == "BUY" else bid
 
+        # S94: RTDS fast-path skips fill model entirely (speed > fill realism for copy trades)
+        _rtds_fast = (
+            correlation_id
+            and str(correlation_id).startswith("rtds:")
+            and getattr(settings, "MIRROR_RTDS_FAST_PATH", False)
+        )
+
         # S91: Latency price deterioration — RTDS copy trades lose edge during signal delay
-        _realistic = getattr(settings, "PAPER_REALISTIC_FILLS", False) is True
+        _realistic = getattr(settings, "PAPER_REALISTIC_FILLS", False) is True and not _rtds_fast
         if _realistic and latency_ms is not None and latency_ms > 500:
             _latency_sec = latency_ms / 1000.0
             _drift_rate = getattr(settings, "PAPER_LATENCY_DRIFT_BPS_PER_SEC", 10) / 10000.0

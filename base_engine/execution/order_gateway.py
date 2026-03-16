@@ -369,8 +369,17 @@ class OrderGateway:
             )
             return {"success": False, "error": "SELL order size is 0 — no position to close"}
 
+        # S94: RTDS fast-path flag — skip heavyweight checks for copy trades
+        _rtds_fast = (
+            not _is_sell
+            and correlation_id
+            and str(correlation_id).startswith("rtds:")
+            and getattr(settings, "MIRROR_RTDS_FAST_PATH", False)
+        )
+
         # Drawdown controller: graduated position reduction during losing streaks
-        if self.drawdown_controller is not None and not _is_sell:
+        # S94: Skip for RTDS fast-path (MirrorBot has own daily caps + position limits)
+        if self.drawdown_controller is not None and not _is_sell and not _rtds_fast:
             try:
                 paper_engine = self.paper_trading_engine
                 portfolio = {}
@@ -401,7 +410,8 @@ class OrderGateway:
                 logger.warning("Drawdown check failed (non-blocking, trade proceeds without drawdown guard): %s", e)
 
         # L4: Adverse selection sizing — reduce position size for markets with high adverse selection
-        if not _is_sell and getattr(settings, "L4_ADVERSE_SIZING_ENABLED", True):
+        # S94: Skip for RTDS fast-path
+        if not _is_sell and not _rtds_fast and getattr(settings, "L4_ADVERSE_SIZING_ENABLED", True):
             try:
                 adverse_mult = await self._get_adverse_sizing_mult(market_id)
                 if adverse_mult < 1.0:
@@ -447,7 +457,9 @@ class OrderGateway:
         _t_risk_start = time.monotonic()
 
         # Skip risk limits for SELL orders (closing positions) — they need to exit regardless
-        if self.risk_manager is not None and not _is_sell:
+        # S94: Skip for RTDS fast-path (MirrorBot has own risk: position caps, category caps,
+        # exposure caps, daily caps in _execute_mirror_trade + _can_open_position)
+        if self.risk_manager is not None and not _is_sell and not _rtds_fast:
             try:
                 risk_check = await self.risk_manager.check_risk_limits(
                     bot_name, market_id, size, price, confidence, prediction=prediction
