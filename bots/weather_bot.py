@@ -357,8 +357,9 @@ class WeatherBot(BaseBot):
                     "SELECT station_id, ABS(forecast_temp - actual_temp) AS abs_error "
                     "FROM weather_calibration "
                     "WHERE actual_temp IS NOT NULL "
-                    "AND created_at >= NOW() - INTERVAL '7 days' "
-                    "ORDER BY created_at"
+                    "AND created_at >= NOW() - INTERVAL '24 hours' "
+                    "ORDER BY created_at "
+                    "LIMIT 5000"
                 ))
                 for row in result.fetchall():
                     sid = str(row[0])
@@ -456,7 +457,8 @@ class WeatherBot(BaseBot):
                     "  opened_at < NOW() - INTERVAL '20 hours' "
                     "  OR market_id IN ("
                     "    SELECT pt.market_id FROM paper_trades pt "
-                    "    WHERE pt.realized_pnl IS NOT NULL"
+                    "    WHERE pt.realized_pnl IS NOT NULL "
+                    "    AND pt.created_at > NOW() - INTERVAL '24 hours'"
                     "  )"
                     ") "
                     "RETURNING market_id"
@@ -710,10 +712,15 @@ class WeatherBot(BaseBot):
         await self._reevaluate_open_positions(analyzed)
 
         # Phase 4b: Outcome backfill + drift detection + cleanup — every 10 scans
+        # All three are independent (different tables, no shared mutable state) —
+        # run in parallel to cut periodic scan from sum(16-80s) to max(10-50s).
         if self._scan_count % 10 == 0:
-            await self._backfill_weather_outcomes()
-            await self._check_emos_drift()
-            await self._close_stale_positions()
+            await asyncio.gather(
+                self._backfill_weather_outcomes(),
+                self._check_emos_drift(),
+                self._close_stale_positions(),
+                return_exceptions=True,
+            )
 
         _t_trades = time.monotonic()
 
@@ -1491,6 +1498,29 @@ class WeatherBot(BaseBot):
                 group, model_probs, lead_time,
             )
 
+        # P2: NBM CDF benchmark — when NBM disagrees with market by ≥15pp,
+        # flag as high-conviction. Only available for US stations (NBM in models_used).
+        _nbm_signals: Dict[str, Dict] = {}
+        if "nbm" in forecast.models_used:
+            market_prices_for_nbm = {b.market_id: b.yes_price for b in group.buckets}
+            _nbm_disagree = float(getattr(settings, "WEATHER_NBM_DISAGREE_THRESHOLD", 0.15))
+            _nbm_signals = self._prob_engine.compute_nbm_benchmark(
+                nbm_high=forecast.deterministic_high,
+                buckets=group.buckets,
+                market_prices=market_prices_for_nbm,
+                lead_time_hours=forecast.lead_time_hours,
+                disagree_threshold=_nbm_disagree,
+            )
+            if _nbm_signals:
+                logger.info(
+                    "weatherbot_nbm_benchmark",
+                    city=group.city,
+                    date=group.target_date.isoformat(),
+                    nbm_high=round(forecast.deterministic_high, 1),
+                    signals=len(_nbm_signals),
+                    best_nbm_edge=round(max(abs(s["nbm_edge"]) for s in _nbm_signals.values()), 4),
+                )
+
         # M7: Multi-outcome coherence check — reject if >50% of buckets lack prices.
         # Trading on partial data breaks the sum-to-1 probability assumption.
         market_prices = {b.market_id: b.yes_price for b in group.buckets}
@@ -1619,6 +1649,8 @@ class WeatherBot(BaseBot):
                 "ensemble_count": len(forecast.ensemble_members),
                 "resolution_boundary_risk": boundary_risk,
                 "market_type": "temperature",
+                "forecast_delta": forecast.forecast_delta,
+                "nbm_high_conviction": e["market_id"] in _nbm_signals,
             })
             await self._log_weather_prediction(
                 e["market_id"], e["model_prob"], price,
@@ -1927,11 +1959,33 @@ class WeatherBot(BaseBot):
         # Severe weather boost (hurricane/tornado/blizzard near station)
         severe_boost = await self._get_severe_weather_boost(group.station)
 
+        # P1: Model-run jump boost — when ensemble mean shifts ≥ threshold between
+        # model runs, markets lag. Scale boost linearly by delta magnitude.
+        _forecast_delta = opp.get("forecast_delta")
+        _jump_threshold = float(getattr(settings, "WEATHER_JUMP_THRESHOLD_F", 3.0))
+        _jump_max_boost = float(getattr(settings, "WEATHER_JUMP_MAX_BOOST", 1.5))
+        if _forecast_delta is not None and abs(_forecast_delta) >= _jump_threshold:
+            # Linear scale: at threshold → 1.0 extra, at 2× threshold → max_boost extra
+            _jump_ratio = min(abs(_forecast_delta) / _jump_threshold, 2.0)
+            jump_boost = 1.0 + (_jump_max_boost - 1.0) * (_jump_ratio / 2.0)
+            logger.info(
+                "weatherbot_jump_boost",
+                market_id=opp["market_id"],
+                delta=_forecast_delta,
+                jump_boost=round(jump_boost, 2),
+            )
+        else:
+            jump_boost = 1.0
+
+        # P2: NBM high-conviction boost — when NBM CDF disagrees with market by ≥15pp
+        # for US stations, apply a 1.3× sizing multiplier (calibrated benchmark signal).
+        nbm_boost = 1.3 if opp.get("nbm_high_conviction") else 1.0
+
         # C4: Combined boost — additive with diminishing returns to prevent
         # multiplicative stacking (was 2.0×1.2×2.0=4.8→cap 3.0 = 0.75 Kelly).
         # New: each boost contributes its excess independently; capped at 2.0×
         # to keep effective Kelly ≤ 0.5 (quarter-Kelly × 2.0).
-        combined_boost = 1.0 + (expiry_boost - 1.0) + (regime_boost - 1.0) * 0.5 + (severe_boost - 1.0) * 0.5
+        combined_boost = 1.0 + (expiry_boost - 1.0) + (regime_boost - 1.0) * 0.5 + (severe_boost - 1.0) * 0.5 + (jump_boost - 1.0) * 0.5 + (nbm_boost - 1.0) * 0.5
         combined_boost = min(combined_boost, 2.0)
 
         # W7: Baker-McHale uncertainty-scaled sizing.
@@ -2043,6 +2097,9 @@ class WeatherBot(BaseBot):
             expiry_boost=expiry_boost,
             regime_boost=regime_boost,
             ensemble_count=opp.get("ensemble_count", 0),
+            jump_boost=jump_boost,
+            forecast_delta=_forecast_delta,
+            nbm_boost=nbm_boost,
         )
 
         # M4: Pre-update exposure trackers BEFORE placing order to prevent
@@ -3075,7 +3132,7 @@ class WeatherBot(BaseBot):
                 except Exception:
                     return sid, 1.0
 
-            _alert_sem = asyncio.Semaphore(5)
+            _alert_sem = asyncio.Semaphore(20)
 
             async def _bounded_fetch(sid: str, st: WeatherStation) -> Tuple[str, float]:
                 async with _alert_sem:
