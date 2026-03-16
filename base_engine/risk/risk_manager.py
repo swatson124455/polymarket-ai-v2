@@ -43,12 +43,17 @@ class RiskManager:
         # Consecutive loss tracking: bot_name → count of consecutive losing closed trades.
         # Reset to 0 on any winning trade. Used by MAX_CONSECUTIVE_LOSSES guardrail.
         self._consecutive_losses: Dict[str, int] = {}
-        # S91: CVaR base cache — caches existing-position CVaR result (30s TTL).
+        # S91: CVaR base cache — caches existing-position CVaR result (120s TTL).
         # compute_marginal_cvar() was calling compute_cvar() 2x per trade (3x total
         # including check_risk_limits), each doing 10k Monte Carlo sims on ~200 positions.
+        # S94: Extended TTL 30s→120s, added cvar_after cache (5s TTL), reduced sims 10k→2k.
         self._cvar_base_cache: Optional[Dict[str, Any]] = None
         self._cvar_base_positions_hash: Optional[int] = None
         self._cvar_base_cache_until: float = 0.0
+        # S94: Cache cvar_after to avoid recomputing per-trade MC sims within a scan
+        self._cvar_after_cache: Optional[Dict[str, Any]] = None
+        self._cvar_after_cache_key: Optional[tuple] = None
+        self._cvar_after_cache_until: float = 0.0
 
     def set_kill_switch(self, kill_switch: Any) -> None:
         """Wire kill switch after init (avoids circular init order)."""
@@ -544,14 +549,13 @@ class RiskManager:
 
         # DEAD-1 fix: CVaR tail-risk gate via CorrelationRiskManager
         # Only runs when allowed so far and correlation_risk is available
-        # S91: Cache existing-positions snapshot + base CVaR (30s TTL).
-        # Previously: compute_marginal_cvar did 2x compute_cvar (10k MC sims each)
-        # + check_risk_limits did 1x more = 3x 10k sims per trade = 3-13s.
-        # Now: cache base CVaR, only 1x compute_cvar(existing+new) per trade.
+        # S91: Cache existing-positions snapshot + base CVaR (120s TTL).
+        # S94: Reduced sims 10k→2k, added cvar_after cache (5s TTL), extended base TTL 30→120s.
         _existing_positions = None
         if checks["allowed"] and self._correlation_risk is not None:
             try:
                 max_cvar = getattr(settings, "RISK_MAX_PORTFOLIO_CVAR_USD", 200.0)
+                _n_sims = int(getattr(settings, "CVAR_N_SIMULATIONS", 2000))
                 _existing_positions = await self._get_open_positions_for_cvar()
                 new_pos = {
                     "market_id": market_id,
@@ -569,12 +573,27 @@ class RiskManager:
                         and self._cvar_base_positions_hash == _pos_hash):
                     cvar_before = self._cvar_base_cache
                 else:
-                    cvar_before = self._correlation_risk.compute_cvar(_existing_positions)
+                    cvar_before = self._correlation_risk.compute_cvar(
+                        _existing_positions, n_simulations=_n_sims
+                    )
                     self._cvar_base_cache = cvar_before
                     self._cvar_base_positions_hash = _pos_hash
-                    self._cvar_base_cache_until = now + 30.0
+                    self._cvar_base_cache_until = now + 120.0
 
-                cvar_after = self._correlation_risk.compute_cvar(_existing_positions + [new_pos])
+                # S94: Cache cvar_after per (position_count, market_id) — 5s TTL
+                _after_key = (_pos_hash, market_id)
+                if (self._cvar_after_cache is not None
+                        and now < self._cvar_after_cache_until
+                        and self._cvar_after_cache_key == _after_key):
+                    cvar_after = self._cvar_after_cache
+                else:
+                    cvar_after = self._correlation_risk.compute_cvar(
+                        _existing_positions + [new_pos], n_simulations=_n_sims
+                    )
+                    self._cvar_after_cache = cvar_after
+                    self._cvar_after_cache_key = _after_key
+                    self._cvar_after_cache_until = now + 5.0
+
                 portfolio_cvar = cvar_after.get("cvar", 0)
                 marginal = cvar_after.get("cvar", 0) - cvar_before.get("cvar", 0)
 

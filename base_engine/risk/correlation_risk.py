@@ -74,7 +74,7 @@ class CorrelationRiskManager:
         self,
         positions: List[Dict[str, Any]],
         confidence_level: float = 0.95,
-        n_simulations: int = 10000,
+        n_simulations: int = 2000,
     ) -> Dict[str, Any]:
         """
         Compute CVaR (Expected Shortfall) for the portfolio.
