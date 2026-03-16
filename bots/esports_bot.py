@@ -1394,7 +1394,7 @@ class EsportsBot(BaseBot):
 
         # Edge sanity cap — reject unrealistically large edges
         if edge > self._max_edge:
-            logger.debug(
+            logger.info(
                 "esportsbot_edge_cap", market_id=market_id, game=game,
                 edge=round(edge, 4), max_edge=self._max_edge, side=side,
                 model_prob=round(model_prob, 4), price=round(price, 4),
@@ -1411,9 +1411,9 @@ class EsportsBot(BaseBot):
 
         if confidence < self._min_confidence:
             if _wf: _wf["low_confidence"] += 1
-            logger.debug("esportsbot_low_confidence", game=game, market_id=market_id,
-                         confidence=round(confidence, 4), model_prob=round(model_prob, 4),
-                         edge=round(edge, 4), side=side, price=round(price, 4))
+            logger.info("esportsbot_low_confidence", game=game, market_id=market_id,
+                        confidence=round(confidence, 4), model_prob=round(model_prob, 4),
+                        edge=round(edge, 4), side=side, price=round(price, 4))
             return None
 
         # Log prediction for accuracy tracking (dedup: skip if unchanged within 10 min)
@@ -1573,7 +1573,7 @@ class EsportsBot(BaseBot):
         # Dota2/Valorant: use ML model with Glicko-2 features (pre-match only)
         if game == "dota2" and self._dota2_model and self._dota2_model.is_trained:
             try:
-                glicko2_prob = await self._get_glicko2_prediction(market_data, game)
+                glicko2_prob = await self._get_glicko2_prediction(market_data, game, price)
                 if glicko2_prob is not None:
                     game_state = self._build_glicko2_game_state(market_data, game)
                     if game_state:
@@ -1598,7 +1598,7 @@ class EsportsBot(BaseBot):
 
         if game == "valorant" and self._valorant_model and self._valorant_model.is_trained:
             try:
-                glicko2_prob = await self._get_glicko2_prediction(market_data, game)
+                glicko2_prob = await self._get_glicko2_prediction(market_data, game, price)
                 if glicko2_prob is not None:
                     game_state = self._build_glicko2_game_state(market_data, game)
                     if game_state:
@@ -1625,7 +1625,7 @@ class EsportsBot(BaseBot):
         # Graduation: once ML models pass accuracy >= 55% + brier <= 0.24,
         # they take over and Glicko-2 becomes just one blend component.
         try:
-            glicko2_prob = await self._get_glicko2_prediction(market_data, game)
+            glicko2_prob = await self._get_glicko2_prediction(market_data, game, price)
             if glicko2_prob is None:
                 # Rate-limit: only log once per market per session (same pattern as team_match_fail)
                 if market_id not in self._team_fail_logged:
@@ -1633,18 +1633,12 @@ class EsportsBot(BaseBot):
                     logger.info("esportsbot_glicko2_miss", game=game,
                                 market_id=market_id,
                                 question=str(market_data.get("question",""))[:80])
-                # Market-price fallback: naive 50/50 for unknown teams.
-                # Edge comes from market mispricing vs neutral prior.
-                # Only trades when market price deviates >15% from even odds.
-                if getattr(settings, "ESPORTS_MARKET_FALLBACK_ENABLED", True):
-                    _fallback_prob = 0.50
-                    logger.debug("esportsbot_market_price_fallback", game=game,
-                                 market_id=market_id, fallback_prob=_fallback_prob)
-                    self._prediction_cache[market_id] = {
-                        "prob": _fallback_prob, "ts": time.monotonic(), "game": game,
-                        "ml_raw": None, "glicko2_est": None, "fallback": True,
-                    }
-                    return _fallback_prob
+                # S94-P3: DISABLED fallback 0.50 — was creating huge fake edges
+                # (0.50 vs market price 0.85-0.92 = 35-42% "edge") that flooded
+                # the waterfall with edge_cap rejections.  A coin-flip guess has
+                # zero informational value; returning None lets the waterfall
+                # count it correctly as no_prediction instead.
+                return None
             if glicko2_prob is not None:
                 # OpenDota form adjustment for dota2 (small ±3%)
                 if game == "dota2":
@@ -2430,28 +2424,9 @@ class EsportsBot(BaseBot):
 
         confidence = opp["confidence"]
 
-        # Session 83: If conformal predictor is fitted, use conservative bound for sizing.
-        # This prevents oversizing when model uncertainty is high.
-        if (self._conformal_predictor is not None
-                and self._conformal_predictor.is_fitted
-                and self._cross_game_model is not None):
-            try:
-                game = opp.get("game", "")
-                cache = self._prediction_cache.get(opp.get("market_id", ""), {})
-                if cache.get("ml_raw") is not None and game in self._CROSS_GAME_IDS:
-                    # Use conservative_prob for sizing (narrows toward 0.5)
-                    import numpy as _np
-                    _p_mid = cache["prob"]
-                    _p_conservative = self._conformal_predictor.conservative_prob(
-                        _np.array([[_p_mid]], dtype=_np.float32)
-                    )[0]
-                    # Only use conservative bound if it's more conservative
-                    if opp["side"] == "YES" and _p_conservative < confidence:
-                        confidence = float(_p_conservative)
-                    elif opp["side"] == "NO" and (1.0 - _p_conservative) < confidence:
-                        confidence = float(1.0 - _p_conservative)
-            except Exception:
-                pass  # Conformal is optional enhancement
+        # S94: Conformal sizing handled by BotBankrollManager width-based dampening (S91).
+        # The old conservative_prob() approach here pushed confidence from ~0.52 to ~0.02,
+        # killing ALL trades. Removed — bankroll_manager handles conformal correctly.
 
         # A5: Near-expiry confidence boost
         confidence = self._apply_expiry_boost(confidence, opp)
@@ -2477,6 +2452,16 @@ class EsportsBot(BaseBot):
             confidence, opp["price"], category="esports"
         )
         if size <= 0:
+            logger.warning(
+                "esportsbot_sizing_killed_at_bankroll",
+                market_id=opp.get("market_id"),
+                game=opp.get("game", ""),
+                confidence_after_conformal=round(confidence, 4),
+                price=round(opp["price"], 4),
+                edge_after_conformal=round(confidence - opp["price"], 4),
+                phi_factor=round(phi_factor, 4),
+                dd_factor=round(dd_factor, 4),
+            )
             return False
 
         # Apply CLV max override after base sizing
@@ -2509,7 +2494,7 @@ class EsportsBot(BaseBot):
                 if _vol < 0.8:
                     size *= 1.10
 
-        if size < 1.0:
+        if size < 0.10:
             return False
 
         # A10: Pre-update exposure BEFORE placing order (race condition fix)
@@ -2929,11 +2914,14 @@ class EsportsBot(BaseBot):
 
                 # Priority: teams from live matches
                 for _mid, match_data in list(self._live_matches.items()):
-                    game = match_data.get("game", "")
+                    game = getattr(match_data, "game", "") if not isinstance(match_data, dict) else match_data.get("game", "")
                     if game == "dota2":
                         continue
                     for tkey in ("team_a", "team_b"):
-                        tid = str(match_data.get(f"{tkey}_id", match_data.get(tkey, "")))
+                        if isinstance(match_data, dict):
+                            tid = str(match_data.get(f"{tkey}_id", match_data.get(tkey, "")))
+                        else:
+                            tid = str(getattr(match_data, f"{tkey}_id", 0) or getattr(match_data, tkey, ""))
                         if tid and (tid, game) not in seen:
                             seen.add((tid, game))
                             priority_pairs.append((tid, game))
@@ -3614,12 +3602,15 @@ class EsportsBot(BaseBot):
             return None
 
     async def _get_glicko2_prediction(
-        self, market_data: Dict, game: str
+        self, market_data: Dict, game: str, market_price: float = 0.50
     ) -> Optional[float]:
         """Extract team names from market question and return Glicko-2 expected score.
 
         Returns P(team_a wins) based on Glicko-2 ratings, or None if we can't
         identify both teams or don't have ratings for them.
+
+        S94-P3: market_price used as Bayesian prior instead of 0.50 — anchors
+        uncertain predictions on market consensus rather than coin-flip.
         """
         import re
 
@@ -3756,6 +3747,9 @@ class EsportsBot(BaseBot):
                 return None
 
             # E5: Bayesian prior blend — dampen predictions for uncertain teams
+            # S94-P3: Use market_price as prior instead of 0.50.  When model is
+            # uncertain (high phi), predictions stay close to market → small
+            # realistic edges.  When confident (low phi), Glicko-2 dominates.
             max_phi = max(rating_a.phi, rating_b.phi)
             if max_phi >= 350.0:
                 prior_weight = 0.80
@@ -3767,7 +3761,8 @@ class EsportsBot(BaseBot):
                 prior_weight = 0.0
 
             if prior_weight > 0:
-                prob = prior_weight * 0.50 + (1.0 - prior_weight) * prob
+                _prior = max(0.05, min(0.95, market_price))
+                prob = prior_weight * _prior + (1.0 - prior_weight) * prob
 
             if 0.05 < prob < 0.95:
                 # Roster stability [T2-D]: penalize teams with recent roster changes
@@ -3775,9 +3770,10 @@ class EsportsBot(BaseBot):
                     _roster_a = await self._check_roster_stability(team_a_id)
                     _roster_b = await self._check_roster_stability(team_b_id)
                     if _roster_a < 1.0 or _roster_b < 1.0:
-                        # Nudge prob toward 0.50 proportional to penalty
+                        # Nudge prob toward market_price proportional to penalty
                         _roster_factor = min(_roster_a, _roster_b)
-                        prob = _roster_factor * prob + (1.0 - _roster_factor) * 0.50
+                        _roster_prior = max(0.05, min(0.95, market_price))
+                        prob = _roster_factor * prob + (1.0 - _roster_factor) * _roster_prior
                         prob = max(0.05, min(0.95, prob))
                 except Exception:
                     pass
