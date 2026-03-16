@@ -326,12 +326,12 @@ class Settings(BaseSettings):
     MIRROR_MAX_DELAY_MINUTES: int = int(os.getenv("MIRROR_MAX_DELAY_MINUTES", "30"))
     MIRROR_MIN_CONSENSUS: int = int(os.getenv("MIRROR_MIN_CONSENSUS", "2"))  # 3→2: with 500 elites, 3 was impossibly tight
     MIRROR_MIN_CONFIDENCE: float = float(os.getenv("MIRROR_MIN_CONFIDENCE", "0.55"))  # 0.10→0.55: elite must win >55% of trades
-    MIRROR_MAX_PER_MARKET: float = float(os.getenv("MIRROR_MAX_PER_MARKET", "800"))
+    MIRROR_MAX_PER_MARKET: float = float(os.getenv("MIRROR_MAX_PER_MARKET", "500"))  # S96: 800→500
     MIRROR_MAX_PER_MARKET_PCT: float = float(os.getenv("MIRROR_MAX_PER_MARKET_PCT", "0.10"))  # M9: 10% of capital per market
     MIRROR_MAX_CATEGORY_EXPOSURE_PCT: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_PCT", "0.80"))  # M1: 80% of capital per category
     MIRROR_MAX_TRACKED_TRADES: int = int(os.getenv("MIRROR_MAX_TRACKED_TRADES", "10000"))
     MIRROR_EXIT_ENABLED: bool = os.getenv("MIRROR_EXIT_ENABLED", "true").lower() in ("true", "1", "yes")
-    MIRROR_MAX_CONCURRENT_POSITIONS: int = int(os.getenv("MIRROR_MAX_CONCURRENT_POSITIONS", "400"))  # S96: 50→200→400 to clear position cap bottleneck
+    MIRROR_MAX_CONCURRENT_POSITIONS: int = int(os.getenv("MIRROR_MAX_CONCURRENT_POSITIONS", "1000"))  # S96: 400→1000
     MIRROR_MAX_DAILY_EXPOSURE_PCT: float = float(os.getenv("MIRROR_MAX_DAILY_EXPOSURE_PCT", "0.15"))
     # Phase 4: MirrorBot structural hardening
     MIRROR_HOT_TRADE_MAX_SECONDS: int = int(os.getenv("MIRROR_HOT_TRADE_MAX_SECONDS", "900"))  # 300→900: 5min was too aggressive, 15min allows more trades
@@ -339,7 +339,7 @@ class Settings(BaseSettings):
     MIRROR_MIN_ELITE_TRADES: int = int(os.getenv("MIRROR_MIN_ELITE_TRADES", "100"))  # 100 trades OR $10k volume (checked with ELITE_MIN_VOLUME_USD)
     # Watchlist: real-time WebSocket copy trading (monthly leaderboard top 1k)
     WATCHLIST_ENABLED: bool = os.getenv("WATCHLIST_ENABLED", "false").lower() in ("true", "1", "yes")
-    WATCHLIST_SIZE: int = int(os.getenv("WATCHLIST_SIZE", "1000"))  # Monthly top 1k (API caps at ~1050)
+    WATCHLIST_SIZE: int = int(os.getenv("WATCHLIST_SIZE", "500"))  # S96: 1000→500 single list
     # RTDS: global trade feed (all trades on platform, not per-market)
     RTDS_WS_URL: str = os.getenv("RTDS_WS_URL", "wss://ws-live-data.polymarket.com")
     RTDS_PING_INTERVAL: int = int(os.getenv("RTDS_PING_INTERVAL", "5"))  # seconds — RTDS keep-alive requirement
@@ -357,8 +357,8 @@ class Settings(BaseSettings):
     MIRROR_CONFORMAL_ALPHA: float = float(os.getenv("MIRROR_CONFORMAL_ALPHA", "0.50"))  # B1: 0.50 = 50% coverage (was 0.10 = 90%)
 
     MIRROR_STOP_LOSS_PCT: float = float(os.getenv("MIRROR_STOP_LOSS_PCT", "0.15"))
-    MIRROR_MAX_HOLD_HOURS: float = float(os.getenv("MIRROR_MAX_HOLD_HOURS", "72"))
-    MIRROR_MAX_POSITIONS: int = int(os.getenv("MIRROR_MAX_POSITIONS", "400"))  # S96: 200→400 to clear position cap bottleneck
+    MIRROR_MAX_HOLD_HOURS: float = float(os.getenv("MIRROR_MAX_HOLD_HOURS", "99999"))  # S96: disabled — stop-loss is safety net
+    MIRROR_MAX_POSITIONS: int = int(os.getenv("MIRROR_MAX_POSITIONS", "1000"))  # S96: 400→1000
     MIRROR_TOTAL_CAPITAL: float = float(os.getenv("MIRROR_TOTAL_CAPITAL", "3000"))
     # S91: Tier 0 pre-trade filters — in-memory short-circuit before any DB/cache hit
     MIRROR_CATEGORY_BLOCKLIST: str = os.getenv("MIRROR_CATEGORY_BLOCKLIST", "15-minute,speed")  # comma-separated substrings

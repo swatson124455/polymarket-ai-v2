@@ -68,7 +68,7 @@ class MirrorBot(BaseBot):
 
         # Periodic elite refresh (avoid stale list)
         self._scan_count: int = 0
-        self._elite_refresh_every_n_scans: int = 40  # ~30 min at 45s interval
+        self._elite_refresh_every_n_scans: int = 480  # S96: ~6h at 45s interval (was 40/~30min)
 
         # Wire elite reliability if available
         try:
@@ -597,61 +597,13 @@ class MirrorBot(BaseBot):
         # Prune deduplication set if oversized
         self._prune_mirrored_trades()
 
-        # Collect and filter trades by consensus
-        # When RTDS watchlist is active AND healthy (dispatching events), relax consensus to 1
-        # so the scan loop acts as a fallback for traders outside the top-1k watchlist.
-        # If RTDS stops dispatching (disconnect/error), revert to consensus=2.
-        _rtds_healthy = (
-            self._rtds_ws is not None
-            and getattr(self._rtds_ws, "_events_dispatched", 0) > 0
-        )
-        if _rtds_healthy and not self._consensus_relaxed:
-            self._consensus_relaxed = True
-            logger.info("MirrorBot: RTDS healthy, consensus relaxed to 1")
-        elif not _rtds_healthy and self._consensus_relaxed:
-            self._consensus_relaxed = False
-            logger.info("MirrorBot: RTDS unhealthy, consensus restored to 2")
-        consensus_trades = await self._collect_and_aggregate_elite_trades()
-
-        # P5b: Diagnostic — log elite count and consensus trades for visibility
-        _buy_ct = sum(1 for t in consensus_trades if str(t.get("side", "")).upper() != "SELL")
-        _sell_ct = len(consensus_trades) - _buy_ct
+        # S96: Consensus scan-path removed — RTDS handles all entries in real-time.
+        # Scan loop is now: stop-loss exits + periodic housekeeping only.
+        _rtds_dispatched = getattr(self._rtds_ws, "_events_dispatched", 0) if self._rtds_ws else 0
         logger.info(
-            "MirrorBot scan: elites=%d consensus_trades=%d (buy=%d sell=%d) open_positions=%d",
-            len(self.elite_traders), len(consensus_trades), _buy_ct, _sell_ct,
-            len(self._open_positions),
+            "MirrorBot scan: elites=%d open_positions=%d rtds_dispatched=%d",
+            len(self.elite_traders), len(self._open_positions), _rtds_dispatched,
         )
-
-        # S90: Batch pre-warm risk caches to avoid O(N) sequential DB queries
-        if consensus_trades:
-            try:
-                _mids = list({t["market_id"] for t in consensus_trades if t.get("market_id")})
-                if _mids and hasattr(self.base_engine, "risk_manager") and self.base_engine.risk_manager:
-                    await self.base_engine.risk_manager.pre_warm_risk_caches(_mids)
-            except Exception as _e:
-                logger.debug("mirror_pre_warm_risk_caches failed (non-blocking): %s", _e)
-
-        for trade_info in consensus_trades:
-            if not self._can_open_position(trade_info.get("price", 0.5)):
-                continue  # _can_open_position() logs the specific reason
-
-            try:
-                executed = await self._execute_mirror_trade(
-                    market_id=trade_info["market_id"],
-                    token_id=trade_info["token_id"],
-                    side=trade_info["side"],
-                    price=trade_info["price"],
-                    confidence=trade_info["confidence"],
-                    trader_address=trade_info["trader_address"],
-                    category=trade_info.get("category"),
-                )
-                if executed:
-                    self.mirrored_trades[trade_info["trade_id"]] = None
-                    self._track_open_position(trade_info)
-                    await self._persist_trader_to_position(trade_info)
-            except Exception as e:
-                logger.warning("Error mirroring consensus trade", error=str(e))
-                continue
 
     # ── Market metadata cache (category + time-to-resolution) ──────
 
@@ -1001,72 +953,17 @@ class MirrorBot(BaseBot):
 
         positions_to_close: List[str] = []
 
-        # Autonomous stop-loss and max hold time
+        # S96: Stop-loss only — RTDS handles trader-driven exits in real-time,
+        # max-hold removed (stop-loss is the safety net).
         _stop_pct = getattr(settings, "MIRROR_STOP_LOSS_PCT", 0.15)
-        _max_hold_h = getattr(settings, "MIRROR_MAX_HOLD_HOURS", 72)
-        _now_utc = datetime.now(timezone.utc)
         for _pos_key, _pos in list(self._open_positions.items()):
             _entry = float(_pos.get("entry_price", 0.5) or 0.5)
             _current = float(_pos.get("current_price", _entry) or _entry)
-            _side = (_pos.get("side") or "YES").upper()
             # Prices are token-specific — (current - entry) is correct for BOTH YES and NO
             _pnl_pct = (_current - _entry) / max(_entry, 1e-6)
             if _pnl_pct <= -_stop_pct:
                 logger.info("MirrorBot autonomous stop-loss", market=_pos_key, pnl_pct=f"{_pnl_pct:.2%}")
                 positions_to_close.append(_pos_key)
-                continue
-            try:
-                _opened_str = _pos.get("timestamp")
-                if _opened_str:
-                    _opened_at = datetime.fromisoformat(_opened_str)
-                    if _opened_at.tzinfo is None:
-                        _opened_at = _opened_at.replace(tzinfo=timezone.utc)
-                    if (_now_utc - _opened_at).total_seconds() / 3600 >= _max_hold_h:
-                        logger.info("MirrorBot max hold time exit", market=_pos_key,
-                                    hold_h=f"{(_now_utc - _opened_at).total_seconds()/3600:.1f}h")
-                        positions_to_close.append(_pos_key)
-            except Exception as e:
-                logger.warning("MirrorBot exit: timestamp parse failed for %s: %s", _pos_key, e)
-
-        # Gather all trader addresses we're tracking
-        tracked_traders: set = set()
-        for pos_data in self._open_positions.values():
-            tracked_traders.update(pos_data.get("traders", set()))
-
-        try:
-            async with self.base_engine.client:
-                for addr in tracked_traders:
-                    try:
-                        activity = await self.base_engine.client.get_user_activity(
-                            user_address=addr,
-                            limit=50,
-                            offset=0,
-                        )
-                    except Exception as e:
-                        logger.warning("MirrorBot exit: activity fetch failed for %s: %s", addr[:10], e)
-                        continue
-
-                    for trade in activity:
-                        if trade.get("type") != "trade":
-                            continue
-                        market_id = trade.get("marketId")
-                        token_id = trade.get("tokenId")
-                        side = trade.get("side")
-                        if not all([market_id, token_id, side]):
-                            continue
-
-                        pos_key = f"{market_id}:{token_id}"
-                        if pos_key not in self._open_positions:
-                            continue
-
-                        pos = self._open_positions[pos_key]
-                        # C2: pos_key match already confirms same market+token;
-                        # trader's SELL of same token = exit regardless of our stored side (YES/NO)
-                        is_exit = side.upper() == "SELL"
-                        if is_exit and addr in pos.get("traders", set()):
-                            positions_to_close.append(pos_key)
-        except Exception as e:
-            logger.debug("Exit check failed: %s", e)
 
         # Execute the exits
         for pos_key in set(positions_to_close):

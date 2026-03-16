@@ -1,7 +1,7 @@
 """
 Unit tests for bots/mirror_bot.py — MirrorBot core logic.
 
-Coverage targets (all previously untested):
+Coverage targets:
   C1  - _get_token_side(): YES/NO resolution from cache and DB
   C2  - Exit side computation: all exits use SELL (bypasses risk price bounds)
   M1  - _daily_exposure decremented on successful exit; never goes below 0
@@ -10,7 +10,7 @@ Coverage targets (all previously untested):
   _get_consensus_min() - per-category and global fallback
   _parse_and_validate_trade() - dedup, missing fields, freshness, hot-trade
   Consensus aggregation - enough vs. not enough unique traders
-  C2 trader-SELL exit detection in _check_and_execute_exits()
+  Stop-loss exit detection in _check_and_execute_exits() (S96: API polling removed)
 """
 import asyncio
 from datetime import datetime, timedelta, timezone
@@ -53,7 +53,6 @@ def _make_bot(**kwargs):
         ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
         ms.MIRROR_MAX_DAILY_EXPOSURE_PCT = 0.15
         ms.MIRROR_STOP_LOSS_PCT = 0.15
-        ms.MIRROR_MAX_HOLD_HOURS = 72
         ms.MIRROR_MAX_TRACKED_TRADES = 10_000
         ms.MIRROR_TRADER_CACHE_TTL = 90
         ms.MIRROR_HOT_TRADE_MAX_SECONDS = 300
@@ -152,13 +151,11 @@ class TestExitSideComputation:
 # ── Stop-loss pnl_pct ────────────────────────────────────────────────────────
 
 class TestStopLossPnl:
-    """_pnl_pct is calculated differently for YES vs NO positions."""
+    """_pnl_pct uses uniform (current - entry) for both YES and NO (token-specific prices)."""
 
     def _pnl(self, side, entry, current):
-        if side == "YES":
-            return (current - entry) / max(entry, 1e-6)
-        else:
-            return (entry - current) / max(entry, 1e-6)
+        # Prices are token-specific — uniform formula for both YES and NO
+        return (current - entry) / max(entry, 1e-6)
 
     def test_yes_position_loss(self):
         """YES position: price drops → negative pnl."""
@@ -170,15 +167,15 @@ class TestStopLossPnl:
         pnl = self._pnl("YES", entry=0.40, current=0.60)
         assert pnl > 0
 
-    def test_no_position_loss(self):
-        """NO position: price rises (against us) → negative pnl."""
-        pnl = self._pnl("NO", entry=0.40, current=0.60)
-        assert pnl < 0
-
     def test_no_position_gain(self):
-        """NO position: price drops (for us) → positive pnl."""
-        pnl = self._pnl("NO", entry=0.60, current=0.40)
+        """NO token: price rises → token worth more → positive pnl."""
+        pnl = self._pnl("NO", entry=0.40, current=0.60)
         assert pnl > 0
+
+    def test_no_position_loss(self):
+        """NO token: price drops → token worth less → negative pnl."""
+        pnl = self._pnl("NO", entry=0.60, current=0.40)
+        assert pnl < 0
 
     def test_stop_loss_triggered_at_threshold(self):
         """At -15%, stop-loss fires (use approx for floating-point safety)."""
@@ -202,29 +199,18 @@ class TestDailyExposureDecrement:
             "side": "YES",
             "size": 50.0,
             "entry_price": 0.60,
-            "current_price": 0.55,
+            "current_price": 0.40,  # -33% → triggers stop-loss
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "traders": {"addr1"},
         }
         bot._daily_exposure = 200.0
 
-        # Mock place_order to succeed
         bot.place_order = AsyncMock(return_value={"success": True})
-        bot.validate_price = MagicMock(return_value=0.55)
-
-        # No tracked trader activity needed (no client call for autonomous exits only)
-        # Trigger stop-loss manually: set current_price low enough
-        bot._open_positions[pos_key]["current_price"] = 0.40  # -33% → triggers stop-loss
-
-        mock_client_ctx = MagicMock()
-        mock_client_ctx.__aenter__ = AsyncMock(return_value=mock_client_ctx)
-        mock_client_ctx.__aexit__ = AsyncMock(return_value=False)
-        mock_client_ctx.get_user_activity = AsyncMock(return_value=[])
-        engine.client = mock_client_ctx
+        bot.validate_price = MagicMock(return_value=0.40)
+        bot._sync_prices_from_db = AsyncMock()
 
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_STOP_LOSS_PCT = 0.15
-            ms.MIRROR_MAX_HOLD_HOURS = 72
             await bot._check_and_execute_exits()
 
         # After exit: exposure = 200 - (50 * 0.40) = 180
@@ -248,16 +234,10 @@ class TestDailyExposureDecrement:
 
         bot.place_order = AsyncMock(return_value={"success": True})
         bot.validate_price = MagicMock(return_value=0.10)
-
-        mock_client_ctx = MagicMock()
-        mock_client_ctx.__aenter__ = AsyncMock(return_value=mock_client_ctx)
-        mock_client_ctx.__aexit__ = AsyncMock(return_value=False)
-        mock_client_ctx.get_user_activity = AsyncMock(return_value=[])
-        engine.client = mock_client_ctx
+        bot._sync_prices_from_db = AsyncMock()
 
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_STOP_LOSS_PCT = 0.15
-            ms.MIRROR_MAX_HOLD_HOURS = 72
             await bot._check_and_execute_exits()
 
         assert bot._daily_exposure == 0.0
@@ -279,16 +259,10 @@ class TestDailyExposureDecrement:
 
         bot.place_order = AsyncMock(return_value={"success": False})
         bot.validate_price = MagicMock(return_value=0.10)
-
-        mock_client_ctx = MagicMock()
-        mock_client_ctx.__aenter__ = AsyncMock(return_value=mock_client_ctx)
-        mock_client_ctx.__aexit__ = AsyncMock(return_value=False)
-        mock_client_ctx.get_user_activity = AsyncMock(return_value=[])
-        engine.client = mock_client_ctx
+        bot._sync_prices_from_db = AsyncMock()
 
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_STOP_LOSS_PCT = 0.15
-            ms.MIRROR_MAX_HOLD_HOURS = 72
             await bot._check_and_execute_exits()
 
         assert bot._daily_exposure == 200.0
@@ -590,104 +564,68 @@ class TestConsensusAggregation:
 # ── C2 trader-SELL exit detection ────────────────────────────────────────────
 
 class TestTraderSellExitDetection:
+    """S96: API polling removed — trader exits handled by RTDS via _execute_mirror_trade(side='SELL').
+    These tests verify the SELL path in _execute_mirror_trade and stop-loss in _check_and_execute_exits."""
+
     @pytest.mark.asyncio
-    async def test_trader_sell_triggers_exit(self):
-        """C2: When a tracked trader SELLs our token, position gets closed."""
+    async def test_stop_loss_triggers_exit(self):
+        """Stop-loss fires when position drops below threshold."""
         bot, engine = _make_bot()
         pos_key = "mkt1:tok-yes"
         bot._open_positions[pos_key] = {
             "side": "YES",
             "size": 50.0,
             "entry_price": 0.60,
-            "current_price": 0.60,
+            "current_price": 0.50,  # -16.7% loss
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "traders": {"addr1"},
         }
 
-        # Trader activity: addr1 issued a SELL on mkt1:tok-yes
-        sell_trade = {
-            "type": "trade",
-            "marketId": "mkt1",
-            "tokenId": "tok-yes",
-            "side": "SELL",
-        }
-        mock_client = MagicMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get_user_activity = AsyncMock(return_value=[sell_trade])
-        engine.client = mock_client
-
         bot.place_order = AsyncMock(return_value={"success": True})
-        bot.validate_price = MagicMock(return_value=0.60)
+        bot.validate_price = MagicMock(return_value=0.50)
+        bot._sync_prices_from_db = AsyncMock()
 
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_STOP_LOSS_PCT = 0.15
-            ms.MIRROR_MAX_HOLD_HOURS = 72
             await bot._check_and_execute_exits()
 
-        # Position must have been closed
         assert pos_key not in bot._open_positions
-        # place_order called with exit_side="SELL" (bypasses risk price bounds)
         call_kwargs = bot.place_order.call_args.kwargs
         assert call_kwargs["side"] == "SELL"
 
     @pytest.mark.asyncio
-    async def test_non_tracked_trader_sell_does_not_exit(self):
-        """A SELL from an address NOT in pos['traders'] is ignored."""
+    async def test_no_exit_above_stop_loss(self):
+        """Position NOT closed when loss is above stop-loss threshold."""
         bot, engine = _make_bot()
         pos_key = "mkt1:tok-yes"
         bot._open_positions[pos_key] = {
             "side": "YES",
             "size": 50.0,
             "entry_price": 0.60,
-            "current_price": 0.60,
+            "current_price": 0.55,  # -8.3% loss, above -15% threshold
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "traders": {"addr_tracked"},
+            "traders": {"addr1"},
         }
-
-        sell_trade = {
-            "type": "trade",
-            "marketId": "mkt1",
-            "tokenId": "tok-yes",
-            "side": "SELL",
-        }
-        mock_client = MagicMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get_user_activity = AsyncMock(return_value=[sell_trade])
-        engine.client = mock_client
 
         bot.place_order = AsyncMock(return_value={"success": True})
-        bot.validate_price = MagicMock(return_value=0.60)
+        bot._sync_prices_from_db = AsyncMock()
 
-        # Loop iterates over tracked_traders (pos['traders'] set) — addr_untracked is NOT there
-        # So get_user_activity is called for "addr_tracked", but returns a sell from addr_untracked.
-        # The sell_trade doesn't carry "addr", so the check is: addr in pos.get("traders")
-        # Since the loop uses `for addr in tracked_traders` and checks `addr in pos["traders"]`:
-        # addr_tracked's activity contains the sell → addr_tracked IS in pos["traders"] → EXIT fires.
-        # So this actually DOES exit. Let's test the opposite: no traders tracked at all.
-        bot._open_positions[pos_key]["traders"] = set()  # no tracked traders
+        with patch("bots.mirror_bot.settings") as ms:
+            ms.MIRROR_STOP_LOSS_PCT = 0.15
+            await bot._check_and_execute_exits()
 
-        await bot._check_and_execute_exits()
-
-        # No tracked traders → no API calls → position stays open
         assert pos_key in bot._open_positions
+        bot.place_order.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_empty_positions_returns_early(self):
         """_check_and_execute_exits() is a no-op when _open_positions is empty."""
         bot, engine = _make_bot()
         bot._open_positions = {}
-        engine.client = MagicMock()
 
-        # Should return immediately without touching client
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_STOP_LOSS_PCT = 0.15
-            ms.MIRROR_MAX_HOLD_HOURS = 72
             await bot._check_and_execute_exits()
-
-        engine.client.__aenter__ = AsyncMock()
-        engine.client.__aenter__.assert_not_called()
 
 
 # ── Deduplication / pruning ───────────────────────────────────────────────────

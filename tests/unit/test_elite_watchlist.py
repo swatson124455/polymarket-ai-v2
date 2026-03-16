@@ -10,6 +10,7 @@ Tests:
 - Stats tracking
 """
 import asyncio
+import time
 from collections import OrderedDict
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -250,13 +251,13 @@ async def test_get_stats(watchlist):
 
 @pytest.mark.asyncio
 async def test_needs_refresh_on_new_day(watchlist):
-    """needs_refresh should return True when date changes."""
+    """S96: needs_refresh returns True when 6h elapsed (was daily)."""
     assert watchlist.needs_refresh() is True  # Never refreshed
     with patch.object(watchlist, "_fetch_monthly_leaderboard", new_callable=AsyncMock) as mock_lb:
         mock_lb.return_value = _make_leaderboard_data()
         await watchlist.refresh_watchlist()
-    assert watchlist.needs_refresh() is False  # Just refreshed today
-    watchlist._last_refresh_date = "2020-01-01"  # Fake old date
+    assert watchlist.needs_refresh() is False  # Just refreshed
+    watchlist._last_refresh = time.monotonic() - 21601  # Fake 6h+ ago
     assert watchlist.needs_refresh() is True
 
 

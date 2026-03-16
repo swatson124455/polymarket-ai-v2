@@ -236,11 +236,10 @@ class EliteWatchlist:
         return len(new_addresses)
 
     def needs_refresh(self) -> bool:
-        """Check if watchlist needs daily refresh."""
-        if not self._last_refresh_date:
+        """S96: Check if watchlist needs refresh (every 6h, was daily)."""
+        if not self._last_refresh:
             return True
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        return today != self._last_refresh_date
+        return (time.monotonic() - self._last_refresh) >= 21600  # 6 hours
 
     async def _fetch_from_db(self, limit: int) -> list:
         """Last resort fallback: fetch elite users from DB."""
