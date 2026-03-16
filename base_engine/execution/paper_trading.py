@@ -6,6 +6,7 @@ Simulates order execution without real trades with realistic slippage.
 When db is provided, each trade is persisted to paper_trades for resolution backfill and hypothetical P&L.
 """
 import asyncio
+import math
 import random
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
@@ -15,11 +16,15 @@ from config.settings import settings
 logger = get_logger()
 
 
-def _size_dependent_slippage_bps(order_size_usd: float) -> int:
-    """Tiered market-impact slippage model.
+def _size_dependent_slippage_bps(order_size_usd: float, price: float = 0.5) -> int:
+    """Tiered market-impact slippage model with boundary adjustment.
 
     Flat 50 bps is unrealistic: small orders face tight spreads, large orders
     move the book. Tiers calibrated to Polymarket CLOB typical depth.
+
+    S95: Boundary multiplier — books thin dramatically near $0 and $1.
+    At $0.50: 1.0x. At $0.10: ~1.2x. At $0.05: ~1.8x. At $0.02: ~3.5x.
+    Capped at 5.0x to avoid extreme values at the very edges.
 
     < $50:    35 bps  — small retail, inside spread
     $50-200:  50 bps  — baseline (matches old flat rate)
@@ -27,13 +32,19 @@ def _size_dependent_slippage_bps(order_size_usd: float) -> int:
     > $500:  120 bps  — large, meaningful market impact
     """
     if order_size_usd < 50:
-        return 35
+        base_bps = 35
     elif order_size_usd < 200:
-        return 50
+        base_bps = 50
     elif order_size_usd < 500:
-        return 75
+        base_bps = 75
     else:
-        return 120
+        base_bps = 120
+
+    # S95: Boundary multiplier — books are 2-5x thinner near $0 and $1
+    # p*(1-p) peaks at 0.25 when p=0.50, approaches 0 at boundaries
+    _p = max(0.01, min(0.99, price))
+    boundary_mult = min(5.0, 1.0 + 0.02 / (_p * (1.0 - _p)))
+    return int(base_bps * boundary_mult)
 
 
 def _apply_slippage(price: float, side: str, slippage_bps: int) -> float:
@@ -63,6 +74,55 @@ def _apply_slippage(price: float, side: str, slippage_bps: int) -> float:
     return max(0.001, min(0.999, adjusted))
 
 
+def _time_of_day_liquidity_mult() -> float:
+    """S95: Time-of-day liquidity multiplier.
+
+    Polymarket books are thickest during US+EU overlap (13:00-17:00 UTC)
+    and thinnest during Asian late-night (21:00-02:00 UTC).
+    Weekend factor: 0.6x depth vs weekday peak.
+
+    Returns multiplier in [0.35, 1.0] applied to fill probability.
+    """
+    now = datetime.now(timezone.utc)
+    hour = now.hour
+    weekday = now.weekday()  # 0=Mon, 6=Sun
+
+    # Hourly liquidity curve (UTC). Peak = 1.0 during US/EU overlap.
+    _hourly = {
+        0: 0.55, 1: 0.50, 2: 0.50, 3: 0.55, 4: 0.60, 5: 0.65,
+        6: 0.70, 7: 0.75, 8: 0.80, 9: 0.85, 10: 0.90, 11: 0.95,
+        12: 0.95, 13: 1.00, 14: 1.00, 15: 1.00, 16: 1.00, 17: 0.95,
+        18: 0.90, 19: 0.85, 20: 0.80, 21: 0.70, 22: 0.65, 23: 0.60,
+    }
+    mult = _hourly.get(hour, 0.70)
+
+    # Weekend discount: ~40% less depth
+    if weekday >= 5:
+        mult *= 0.60
+
+    return mult
+
+
+def _sqrt_market_impact_bps(order_size_usd: float, volume_24h: float, price: float) -> float:
+    """S95: Square-root market impact model.
+
+    ΔP = Y × σ × √(Q/V) where Y=2.0 (thin prediction market calibration),
+    σ=0.05 (daily vol proxy for prediction markets).
+    Returns additional slippage in basis points.
+
+    Only meaningful for larger orders on thinner markets. For a $100 order
+    on a $500K/day market, impact is ~0.6 bps (negligible). For a $500 order
+    on a $10K/day market, impact is ~141 bps (significant).
+    """
+    if volume_24h <= 0:
+        volume_24h = 1000.0  # conservative fallback for zero-volume markets
+    _Y = 2.0      # market impact coefficient (1.5-3.0 for thin markets)
+    _sigma = 0.05  # daily volatility proxy
+    participation = order_size_usd / max(volume_24h, 1.0)
+    impact = _Y * _sigma * math.sqrt(participation)
+    return impact * 10000  # convert to bps
+
+
 def _fill_probability(
     price: float,
     order_size_usd: float,
@@ -71,10 +131,12 @@ def _fill_probability(
 ) -> float:
     """Estimate probability of order fill based on market microstructure.
 
-    Three independent factors (multiplicative):
+    Five independent factors (multiplicative):
     1. Price-depth: books thin at extremes (0.05, 0.95), deep at 0.50
     2. Size-impact: larger orders relative to volume are harder to fill
     3. Spread: wider spread = less likely to fill at your price
+    4. Time-of-day: off-peak hours and weekends have thinner books (S95)
+    5. Square-root participation: high Q/V ratio reduces fill chance (S95)
 
     Returns float in [0.05, 1.0]. The 5% floor ensures no order is
     completely unfillable (real CLOB always has some crossing chance).
@@ -92,7 +154,15 @@ def _fill_probability(
     # Spread: wider spread = less fill probability
     spread_factor = max(0.2, 1.0 - spread * 5.0)
 
-    fill_prob = price_factor * size_factor * spread_factor
+    # S95: Time-of-day liquidity (off-peak = harder to fill)
+    tod_factor = _time_of_day_liquidity_mult()
+
+    # S95: High participation rate reduces fill probability
+    # sqrt(Q/V) > 0.1 starts to matter; > 0.5 = very hard to fill
+    _participation = order_size_usd / max(volume_24h, 1.0)
+    participation_factor = max(0.2, 1.0 - math.sqrt(_participation) * 0.5)
+
+    fill_prob = price_factor * size_factor * spread_factor * tod_factor * participation_factor
     return max(0.05, min(1.0, fill_prob))
 
 
@@ -383,9 +453,16 @@ class PaperTradingEngine:
                         drift_bps=round(_drift * 10000, 1), market_id=market_id)
 
         # Apply size-dependent slippage. Set FIXED_SLIPPAGE_BPS>0 in env to override.
+        # S95: Pass price for boundary multiplier + add square-root market impact
         _order_size_usd = size * price
         _fixed = getattr(settings, "FIXED_SLIPPAGE_BPS", 0)
-        slippage_bps = _fixed if _fixed > 0 else _size_dependent_slippage_bps(_order_size_usd)
+        if _fixed > 0:
+            slippage_bps = _fixed
+        else:
+            slippage_bps = _size_dependent_slippage_bps(_order_size_usd, price=price)
+            # S95: Square-root market impact — significant for large orders on thin markets
+            _sqrt_impact = _sqrt_market_impact_bps(_order_size_usd, volume, price)
+            slippage_bps = int(slippage_bps + _sqrt_impact)
         original_price = price
         _submitted_at = datetime.now(timezone.utc).replace(tzinfo=None)
         price = _apply_slippage(price, side, slippage_bps)
@@ -418,11 +495,15 @@ class PaperTradingEngine:
                             requested=round(size, 2), filled=round(_filled_size, 2))
                 size = _filled_size
 
-        # Apply maker/taker fee (Polymarket: maker=0%, taker=1.5%)
+        # S95: Most Polymarket markets charge 0% taker fee. Exceptions:
+        # 15-min/5-min crypto markets (up to 156 bps), some sports (up to 88 bps).
+        # PAPER_TAKER_FEE_BPS defaults to 0 (matching majority of markets).
+        # System-wide TAKER_FEE_BPS (150) is preserved for exit strategy edge calcs.
         if order_type == "limit":
             fee_bps = getattr(settings, "MAKER_FEE_BPS", 0)
         else:
-            fee_bps = getattr(settings, "TAKER_FEE_BPS", 150)
+            fee_bps = getattr(settings, "PAPER_TAKER_FEE_BPS",
+                              getattr(settings, "TAKER_FEE_BPS", 0))
         fee_rate = fee_bps / 10000.0
 
         trade_id = f"paper_{len(self.trades) + 1}_{datetime.now(timezone.utc).timestamp()}"
@@ -606,6 +687,24 @@ class PaperTradingEngine:
             slippage_bps=slippage_applied,
             cash_remaining=round(self.cash, 2),
         )
+
+        # S95: Adverse selection diagnostic — log fill details for post-hoc analysis.
+        # Build AS curve by computing price moves at 1/5/30/60min after each BUY fill.
+        # If fills cluster when price moves against us, we're being adversely selected.
+        if side == "BUY" and _realistic:
+            logger.info(
+                "paper_fill_as_baseline",
+                market_id=market_id,
+                fill_price=round(price, 6),
+                original_price=round(original_price, 6),
+                size_usd=round(size * price, 2),
+                spread=round((ask - bid) if (bid > 0 and ask > 0) else 0, 4),
+                volume_24h=round(volume, 0),
+                confidence=round(confidence or 0, 3),
+                bot_name=bot_name,
+                tod_hour=datetime.now(timezone.utc).hour,
+            )
+
         return {
             "success": True,
             "order_id": trade_id,

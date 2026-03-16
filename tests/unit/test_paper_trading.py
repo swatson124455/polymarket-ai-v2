@@ -8,10 +8,15 @@ from base_engine.execution.paper_trading import PaperTradingEngine
 def _disable_slippage():
     """Disable slippage and fees in paper trading tests for deterministic assertions."""
     with patch("base_engine.execution.paper_trading.settings") as mock_settings, \
-         patch("base_engine.execution.paper_trading._size_dependent_slippage_bps", return_value=0):
+         patch("base_engine.execution.paper_trading._size_dependent_slippage_bps", return_value=0), \
+         patch("base_engine.execution.paper_trading._sqrt_market_impact_bps", return_value=0):
         mock_settings.FIXED_SLIPPAGE_BPS = 0
         mock_settings.TAKER_FEE_BPS = 0
         mock_settings.MAKER_FEE_BPS = 0
+        mock_settings.PAPER_TAKER_FEE_BPS = 0
+        mock_settings.PAPER_REALISTIC_FILLS = False
+        mock_settings.PAPER_LATENCY_DRIFT_BPS_PER_SEC = 10
+        mock_settings.PAPER_DEFAULT_SPREAD = 0.04
         yield
 
 
@@ -89,6 +94,10 @@ async def test_paper_trading_slippage_applied():
         mock_settings.FIXED_SLIPPAGE_BPS = 100  # 1% slippage
         mock_settings.TAKER_FEE_BPS = 0
         mock_settings.MAKER_FEE_BPS = 0
+        mock_settings.PAPER_TAKER_FEE_BPS = 0
+        mock_settings.PAPER_REALISTIC_FILLS = False
+        mock_settings.PAPER_LATENCY_DRIFT_BPS_PER_SEC = 10
+        mock_settings.PAPER_DEFAULT_SPREAD = 0.04
         engine = PaperTradingEngine(initial_capital=10000.0)
         engine.enable()
 

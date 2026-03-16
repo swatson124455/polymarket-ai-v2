@@ -207,8 +207,9 @@ class Settings(BaseSettings):
     # Mini backfill interval (minutes). prediction_log + pseudo-label labeling between daily runs.
     MINI_BACKFILL_INTERVAL_MINUTES: int = int(os.getenv("MINI_BACKFILL_INTERVAL_MINUTES", "15"))  # S92: 30→15 for faster resolution clearing
     # Transaction cost model (for dynamic edge threshold)
-    TAKER_FEE_BPS: int = int(os.getenv("TAKER_FEE_BPS", "150"))  # 1.5%
+    TAKER_FEE_BPS: int = int(os.getenv("TAKER_FEE_BPS", "150"))  # 1.5% — used by exit strategy, position manager edge calcs
     MAKER_FEE_BPS: int = int(os.getenv("MAKER_FEE_BPS", "0"))
+    PAPER_TAKER_FEE_BPS: int = int(os.getenv("PAPER_TAKER_FEE_BPS", "0"))  # S95: Most Polymarket markets are 0% fee. Override for 15-min crypto (156 bps) or sports (88 bps).
     GAS_COST_USD: float = float(os.getenv("GAS_COST_USD", "0.01"))
     FIXED_SLIPPAGE_BPS: int = int(os.getenv("FIXED_SLIPPAGE_BPS", "0"))  # 0=use tiered model; >0=flat override
     # S91: Realistic paper fill modeling — fill probability, partial fills, latency drift

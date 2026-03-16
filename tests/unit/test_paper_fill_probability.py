@@ -18,9 +18,10 @@ class TestFillProbability:
         assert prob < 0.30, f"Expected <0.30, got {prob:.3f}"
 
     def test_midprice_normal_volume(self):
-        """Mid-price (0.50) with $50 on $10k volume → high probability."""
+        """Mid-price (0.50) with $50 on $10k volume → moderate-high probability.
+        S95: time-of-day + participation factors reduce from pre-S95 baseline."""
         prob = _fill_probability(price=0.50, order_size_usd=50, spread=0.01, volume_24h=10000)
-        assert prob > 0.85, f"Expected >0.85, got {prob:.3f}"
+        assert prob > 0.40, f"Expected >0.40, got {prob:.3f}"
 
     def test_floor_never_below_5pct(self):
         """Even extreme conditions never return below 5%."""
@@ -74,6 +75,7 @@ class TestPartialFill:
             ms.FIXED_SLIPPAGE_BPS = 0
             ms.TAKER_FEE_BPS = 150
             ms.MAKER_FEE_BPS = 0
+            ms.PAPER_TAKER_FEE_BPS = 0
             result = await engine.place_order(
                 market_id="mkt1", token_id="tok1", side="BUY",
                 size=100.0, price=0.50, bid=0.49, ask=0.51,
@@ -96,6 +98,7 @@ class TestPartialFill:
             ms.FIXED_SLIPPAGE_BPS = 0
             ms.TAKER_FEE_BPS = 150
             ms.MAKER_FEE_BPS = 0
+            ms.PAPER_TAKER_FEE_BPS = 0
             result = await engine.place_order(
                 market_id="mkt1", token_id="tok1", side="SELL",
                 size=50.0, price=0.50, bid=0.49, ask=0.51,
@@ -116,6 +119,7 @@ class TestPartialFill:
             ms.FIXED_SLIPPAGE_BPS = 0
             ms.TAKER_FEE_BPS = 0
             ms.MAKER_FEE_BPS = 0
+            ms.PAPER_TAKER_FEE_BPS = 0
             for i in range(n_trials):
                 engine.cash = 10000.0  # reset cash each trial
                 result = await engine.place_order(
@@ -145,6 +149,7 @@ class TestPartialFill:
             ms.FIXED_SLIPPAGE_BPS = 50  # fixed to isolate latency effect
             ms.TAKER_FEE_BPS = 0
             ms.MAKER_FEE_BPS = 0
+            ms.PAPER_TAKER_FEE_BPS = 0
 
             for i in range(20):
                 engine.cash = 10000.0
@@ -181,6 +186,7 @@ class TestPartialFill:
             ms.FIXED_SLIPPAGE_BPS = 0
             ms.TAKER_FEE_BPS = 0
             ms.MAKER_FEE_BPS = 0
+            ms.PAPER_TAKER_FEE_BPS = 0
 
             # With 200ms latency (below 500ms threshold), should not see drift log
             result = await engine.place_order(
