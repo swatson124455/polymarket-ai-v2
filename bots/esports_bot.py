@@ -184,8 +184,8 @@ class EsportsBot(BaseBot):
         # Graduation = accuracy >= 55% + brier <= 0.24 on holdout.
         self._models_graduated = False
         self._min_edge = float(getattr(settings, "ESPORTS_MIN_EDGE", 0.05))  # 5% easy mode
-        self._min_confidence = float(getattr(settings, "ESPORTS_MIN_CONFIDENCE", 0.52))  # easy mode
-        self._max_edge = float(getattr(settings, "ESPORTS_MAX_EDGE", 0.20))  # 20% sanity cap
+        self._min_confidence = float(getattr(settings, "ESPORTS_MIN_CONFIDENCE", 0.50))  # easy mode
+        self._max_edge = float(getattr(settings, "ESPORTS_MAX_EDGE", 0.25))  # 25% sanity cap
         self._egm_d = float(getattr(settings, "ESPORTS_EGM_D", 1.5))  # EGM extremization factor
         self._maker_timeout = float(
             getattr(settings, "ESPORTS_MAKER_FALLBACK_TIMEOUT_S", 3.0)
@@ -251,7 +251,10 @@ class EsportsBot(BaseBot):
             riot_client = RiotApiClient(api_key=riot_key)
             await riot_client.init()
 
-        self._patch_drift = PatchDriftDetector(riot_client=riot_client)
+        _obs_hours = int(getattr(settings, "ESPORTS_OBSERVATION_HOURS", 48))
+        self._patch_drift = PatchDriftDetector(
+            riot_client=riot_client, observation_hours=_obs_hours,
+        )
 
         # OpenDota client — free Dota2 hero + team form data (no auth needed)
         try:
@@ -572,7 +575,7 @@ class EsportsBot(BaseBot):
             market_id=market_id,
             prediction_ts=cached.get("ts", 0),
         )
-        confluence_min = float(getattr(settings, "ESPORTS_CONFLUENCE_MIN", 0.60))
+        confluence_min = float(getattr(settings, "ESPORTS_CONFLUENCE_MIN", 0.55))
         if confluence < confluence_min:
             return
 
@@ -868,7 +871,7 @@ class EsportsBot(BaseBot):
             _by_game[_g] = _by_game.get(_g, 0) + 1
 
         # S94: WS health check — fall back to scan trading if WS is stale
-        _ws_threshold = float(getattr(settings, "ESPORTS_WS_STALE_THRESHOLD_S", 30.0))
+        _ws_threshold = float(getattr(settings, "ESPORTS_WS_STALE_THRESHOLD_S", 15.0))
         _ws_healthy = (self._last_ws_price_ts > 0
                        and (time.monotonic() - self._last_ws_price_ts) < _ws_threshold)
         if _ws_healthy != self._ws_trading_active:
@@ -878,6 +881,18 @@ class EsportsBot(BaseBot):
             else:
                 logger.warning("esportsbot_ws_trading_fallback",
                                last_ws_age_s=round(time.monotonic() - self._last_ws_price_ts, 1))
+        # S97: One-time WS diagnostic — log prediction_cache size so we can
+        # tell if WS events are being filtered by the empty-cache early exit
+        if self._scan_count == 1 and not _ws_healthy:
+            _cache_sz = len(self._prediction_cache)
+            logger.info("esportsbot_ws_diag",
+                        prediction_cache_size=_cache_sz,
+                        last_ws_ts=round(self._last_ws_price_ts, 1),
+                        esports_markets=len(esports_markets))
+
+        # Position re-entry config
+        _reentry_min_edge = float(getattr(settings, "ESPORTS_REENTRY_MIN_EDGE", 0.12))
+        _per_market_cap = float(getattr(settings, "MIRROR_MAX_PER_MARKET", 400))
 
         # Parallel market analysis with bounded concurrency
         async def _analyze_one(m: Dict) -> tuple:
@@ -885,6 +900,41 @@ class EsportsBot(BaseBot):
             async with self._analysis_semaphore:
                 mid = str(m.get("id", ""))
                 if og and mid and og.has_open_position(self.bot_name, mid):
+                    # Position re-entry: allow if same direction + room under cap
+                    _pos_key = f"{self.bot_name}:{mid}"
+                    _pos = getattr(og, "_position_details", {}).get(_pos_key, {})
+                    _existing_size = float(_pos.get("size", 0))
+                    if _existing_size >= _per_market_cap:
+                        return (0, 0, 1)  # Already at cap
+                    # Let analyze_opportunity run; we'll validate direction + edge after
+                    opp = await self.analyze_opportunity(m)
+                    if opp:
+                        _opp_side = opp.get("side", "")
+                        _pos_side = _pos.get("side", "")
+                        # Direction must match (no hedging against ourselves)
+                        if _opp_side != _pos_side:
+                            return (0, 0, 1)
+                        # Edge must meet higher re-entry bar
+                        if opp.get("edge", 0) < _reentry_min_edge:
+                            return (0, 0, 1)
+                        # Cap size at remaining room
+                        _remaining = _per_market_cap - _existing_size
+                        if _remaining <= 0:
+                            return (0, 0, 1)
+                        opp["max_size_override"] = _remaining
+                        opp["is_reentry"] = True
+                        logger.info(
+                            "esportsbot_position_reentry", market_id=mid,
+                            game=opp.get("game", ""), side=_opp_side,
+                            existing_size=round(_existing_size, 2),
+                            remaining_cap=round(_remaining, 2),
+                            edge=round(opp.get("edge", 0), 4),
+                        )
+                        if not self._ws_trading_active:
+                            async with self._trade_lock:
+                                success = await self._execute_esports_trade(opp)
+                            return (1, 1 if success else 0, 0)
+                        return (1, 0, 0)
                     return (0, 0, 1)
                 opp = await self.analyze_opportunity(m)
                 if opp and not self._ws_trading_active:
@@ -1348,10 +1398,18 @@ class EsportsBot(BaseBot):
         if _rflb_strength > 0 and price > 0.70 and model_prob > 0.60:
             _rflb_adj = _rflb_strength * (price - 0.50)
             model_prob = max(0.05, model_prob - _rflb_adj)
+            # A/B logging: compute hypothetical adjustments at 0.03/0.05/0.08
+            _price_diff = price - 0.50
+            _rflb_ab = {
+                "adj_003": round(0.03 * _price_diff, 6),
+                "adj_005": round(0.05 * _price_diff, 6),
+                "adj_008": round(0.08 * _price_diff, 6),
+            }
             logger.debug(
                 "esportsbot_rflb_adjustment", market_id=market_id, game=game,
                 raw_prob=round(_raw_prob, 4), adjusted_prob=round(model_prob, 4),
                 rflb_adj=round(_rflb_adj, 4), market_price=round(price, 4),
+                rflb_ab=_rflb_ab,
             )
 
         # Validate edge
@@ -1392,14 +1450,32 @@ class EsportsBot(BaseBot):
             if _wf: _wf["low_edge"] += 1
             return None
 
-        # Edge sanity cap — reject unrealistically large edges
-        if edge > self._max_edge:
+        # Edge sanity cap — per-game: thin markets (SC2/CoD/R6/RL) allow
+        # wider edges because low liquidity creates genuine inefficiency
+        _THIN_MARKET_GAMES = {"sc2", "cod", "r6", "rl"}
+        _game_max_edge = 0.35 if game in _THIN_MARKET_GAMES else self._max_edge
+        if edge > _game_max_edge:
             logger.info(
                 "esportsbot_edge_cap", market_id=market_id, game=game,
-                edge=round(edge, 4), max_edge=self._max_edge, side=side,
+                edge=round(edge, 4), max_edge=_game_max_edge, side=side,
                 model_prob=round(model_prob, 4), price=round(price, 4),
             )
             if _wf: _wf["edge_cap"] += 1
+            return None
+
+        # High-uncertainty filter: both teams near-unrated + thin edge + BO1 → skip.
+        # matchup_uncertainty = (phi_a + phi_b) / 700; >= 0.857 means both phi >= 300.
+        _cached_pred = self._prediction_cache.get(market_id, {})
+        _ed = _cached_pred.get("event_data", {})
+        _mu = _ed.get("matchup_uncertainty", 0.0)
+        _bo_cached = _ed.get("best_of", 1)
+        if _mu >= 0.857 and _bo_cached == 1 and edge < 0.10:
+            logger.info(
+                "esportsbot_high_uncertainty_skip", market_id=market_id,
+                game=game, edge=round(edge, 4),
+                matchup_uncertainty=round(_mu, 3), best_of=_bo_cached,
+            )
+            if _wf: _wf["high_uncertainty"] = _wf.get("high_uncertainty", 0) + 1
             return None
 
         # Tournament phase detection and confidence boost
@@ -1451,7 +1527,7 @@ class EsportsBot(BaseBot):
             market_id=market_id,
             prediction_ts=pred_ts,
         )
-        confluence_min = float(getattr(settings, "ESPORTS_CONFLUENCE_MIN", 0.60))
+        confluence_min = float(getattr(settings, "ESPORTS_CONFLUENCE_MIN", 0.55))
         if confluence < confluence_min:
             logger.debug(
                 "EsportsBot: confluence below threshold",
@@ -1462,10 +1538,10 @@ class EsportsBot(BaseBot):
             if _wf: _wf["low_confluence"] += 1
             return None
 
-        # Session 83: CoT validation for high-edge trades (>15%)
+        # Session 83: CoT validation for high-edge trades (>=20%)
         if (self._cot_validator is not None
                 and self._cot_validator.is_available
-                and edge >= 0.15):
+                and edge >= 0.20):
             try:
                 question = str(market_data.get("question", ""))
                 cot_result = await self._cot_validator.validate_trade(
@@ -1479,14 +1555,10 @@ class EsportsBot(BaseBot):
                                 reason=cot_result.get("reason", "")[:100])
                     if _wf: _wf["cot_rejected"] = _wf.get("cot_rejected", 0) + 1
                     return None
-            except Exception:
-                pass  # Fail open: approve on error
+            except Exception as exc:
+                logger.debug("esportsbot_cot_error", error=str(exc))
 
         if _wf: _wf["passed"] += 1
-
-        # Cap confidence for fallback (unknown team) markets
-        if _cached.get("fallback"):
-            confidence = min(confidence, 0.55)
 
         return {
             "type": "esports_pregame" if not self._is_live(market_id) else "esports_live",
@@ -1787,6 +1859,37 @@ class EsportsBot(BaseBot):
                             prob=round(glicko2_prob, 4),
                         )
 
+                # BO format adjustment: BO3/BO5 favorites get binomial boost,
+                # BO1 underdogs get mean-reversion (single-map variance)
+                _bo = 1
+                if live_data is not None:
+                    try:
+                        _bo = int(getattr(live_data, "best_of", 1) if not isinstance(live_data, dict) else live_data.get("best_of", 1))
+                    except (ValueError, TypeError):
+                        _bo = 1
+                if _bo > 1:
+                    _pre_bo = glicko2_prob
+                    from esports.models.series_model import bo3_match_prob, bo5_match_prob
+                    if _bo == 3:
+                        glicko2_prob = bo3_match_prob(glicko2_prob, 0, 0)
+                    elif _bo >= 5:
+                        glicko2_prob = bo5_match_prob(glicko2_prob, 0, 0)
+                    logger.debug(
+                        "esportsbot_bo_adjustment", market_id=market_id, game=game,
+                        best_of=_bo, raw_prob=round(_pre_bo, 4),
+                        adjusted_prob=round(glicko2_prob, 4),
+                    )
+                elif _bo == 1:
+                    _pre_bo = glicko2_prob
+                    from esports.models.series_model import bo1_underdog_adjustment
+                    glicko2_prob = bo1_underdog_adjustment(glicko2_prob)
+                    if abs(glicko2_prob - _pre_bo) > 0.001:
+                        logger.debug(
+                            "esportsbot_bo_adjustment", market_id=market_id, game=game,
+                            best_of=1, raw_prob=round(_pre_bo, 4),
+                            adjusted_prob=round(glicko2_prob, 4),
+                        )
+
                 # Build event_data for ENTRY trade_event (E1/E7 training data)
                 _event_data = {"game": game, "model_prob": round(glicko2_prob, 4)}
                 _gs = self._build_glicko2_game_state(market_data, game) if game else None
@@ -1794,6 +1897,7 @@ class EsportsBot(BaseBot):
                     for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
                                 "team_a_volatility", "team_b_volatility", "best_of"):
                         _event_data[_fk] = round(float(_gs.get(_fk, 0.0)), 6)
+                _event_data["best_of"] = _bo  # Override with actual BO from live_data
 
                 self._prediction_cache[market_id] = {
                     "prob": glicko2_prob, "ts": time.monotonic(), "game": game,
@@ -1857,18 +1961,35 @@ class EsportsBot(BaseBot):
         tracker = self._glicko2_trackers.get(game)
         if tracker is None:
             return
-        # Try to find team IDs from live_data opponents
+        # Try to find team names from live_data opponents
+        # S97 FIX: Use team NAME (lowercased) not numeric ID — glicko2_ratings
+        # keys are lowercased team names (e.g. "bilibili gaming"), not PandaScore
+        # numeric IDs (e.g. "128947"). Every lookup by ID returned default 1500/350.
         opponents = live_data.get("opponents", [])
-        team_a_id = team_b_id = None
+        team_a_key = team_b_key = None
         if len(opponents) >= 2:
-            team_a_id = str(opponents[0].get("opponent", {}).get("id", "")
-                           if isinstance(opponents[0], dict) else "")
-            team_b_id = str(opponents[1].get("opponent", {}).get("id", "")
-                           if isinstance(opponents[1], dict) else "")
-        if not team_a_id or not team_b_id:
+            if isinstance(opponents[0], dict):
+                team_a_key = str(opponents[0].get("opponent", {}).get("name", "")).lower().strip()
+            if isinstance(opponents[1], dict):
+                team_b_key = str(opponents[1].get("opponent", {}).get("name", "")).lower().strip()
+        if not team_a_key or not team_b_key:
             return
-        rating_a = tracker.get_rating(team_a_id)
-        rating_b = tracker.get_rating(team_b_id)
+        rating_a = tracker.get_rating(team_a_key)
+        rating_b = tracker.get_rating(team_b_key)
+        # S97-P2: Guard against both teams being unrated defaults (phi=350).
+        # Injecting garbage metadata (TSD=0, uncertainty=1.0) is worse than
+        # no metadata — the model anchors on noise.
+        if rating_a.phi >= 349.0 and rating_b.phi >= 349.0:
+            _dflt_key = f"{game}:{team_a_key}:{team_b_key}"
+            if _dflt_key not in self._team_fail_logged:
+                self._team_fail_logged.add(_dflt_key)
+                logger.info("esportsbot_glicko2_default_ratings",
+                            game=game, team_a=team_a_key, team_b=team_b_key)
+            return
+        # S97: Also compute team_strength_diff — without this, LoL ML model
+        # anchors on glicko2_est=0.50 because game_state has no TSD signal.
+        expected = tracker.expected_score(team_a_key, team_b_key)
+        game_state["team_strength_diff"] = expected - 0.5
         game_state["matchup_uncertainty"] = (rating_a.phi + rating_b.phi) / 700.0
         game_state["rd_asymmetry"] = (rating_a.phi - rating_b.phi) / 350.0
         game_state["team_a_volatility"] = rating_a.sigma / 0.06
@@ -2313,25 +2434,23 @@ class EsportsBot(BaseBot):
         """
         Compute confluence score (0.0-1.0) from active signals.
 
-        Weights (3-factor, all live):
-          - Model prediction edge: 55%
-          - Prediction freshness: 30%
-          - Model agreement (Glicko-2 vs ML): 15%
+        Weights (2-factor — agreement zeroed out, redistributed):
+          - Model prediction edge: 65%
+          - Prediction freshness: 35%
+          - Model agreement: 0% (frozen at 0.5 — whale/orderbook services down)
 
-        Whale direction (23%) and orderbook imbalance (18%) removed — both
-        always returned neutral 0.5 (whale_alerts service not running,
-        orderbook cache empty for CLOB esports tokens). This inflated
-        confluence by a fixed +0.205, making the 0.60 gate too easy to pass.
-        TODO: re-enable when whale_alerts service and orderbook refresh are active.
+        Agreement contributed a fixed 0.15*0.5=0.075 to every score, making
+        the 0.60 gate miscalibrated. Zeroed out until services are restored.
+        Threshold lowered from 0.60→0.55 to compensate.
 
-        Only trades when score > ESPORTS_CONFLUENCE_MIN (default 0.60).
+        Only trades when score > ESPORTS_CONFLUENCE_MIN (default 0.55).
         """
         import math
 
-        # Configurable weights (P4.2-A)
-        w_edge = float(getattr(settings, "ESPORTS_CONFLUENCE_WEIGHT_EDGE", 0.55))
-        w_fresh = float(getattr(settings, "ESPORTS_CONFLUENCE_WEIGHT_FRESHNESS", 0.30))
-        w_agree = float(getattr(settings, "ESPORTS_CONFLUENCE_WEIGHT_AGREEMENT", 0.15))
+        # Configurable weights — 2-factor mode (agreement zeroed)
+        w_edge = float(getattr(settings, "ESPORTS_CONFLUENCE_WEIGHT_EDGE", 0.65))
+        w_fresh = float(getattr(settings, "ESPORTS_CONFLUENCE_WEIGHT_FRESHNESS", 0.35))
+        w_agree = float(getattr(settings, "ESPORTS_CONFLUENCE_WEIGHT_AGREEMENT", 0.0))
 
         # 1. Model edge signal — normalized to 0-1
         edge_score = min(abs(model_edge) / self._min_edge, 1.0)
@@ -2493,6 +2612,11 @@ class EsportsBot(BaseBot):
                 _vol = _ed.get("team_a_volatility", 1.0) if opp["side"] == "YES" else _ed.get("team_b_volatility", 1.0)
                 if _vol < 0.8:
                     size *= 1.10
+
+        # Position re-entry: cap size at remaining room under per-market cap
+        _max_size_override = opp.get("max_size_override")
+        if _max_size_override is not None and size > _max_size_override:
+            size = _max_size_override
 
         if size < 0.10:
             return False
@@ -2722,7 +2846,7 @@ class EsportsBot(BaseBot):
                 for row in rows.fetchall():
                     tid, name = str(row[0]).strip(), str(row[1]).strip()
                     if tid and name:
-                        self._team_name_to_id[name.lower()] = tid
+                        self._team_name_to_id[name.lower()] = name.lower()
 
             # 2. Fast path: load persisted Glicko-2 ratings from DB
             all_games = ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl")
@@ -3062,7 +3186,7 @@ class EsportsBot(BaseBot):
             _acc_all = await self._get_cached_rolling_accuracy(db)
             for game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
                 acc_data = _acc_all.get(game)
-                if not acc_data or acc_data["total"] < 20:
+                if not acc_data or acc_data["total"] < 30:
                     continue
 
                 brier = acc_data["brier_score"]
@@ -3612,8 +3736,6 @@ class EsportsBot(BaseBot):
         S94-P3: market_price used as Bayesian prior instead of 0.50 — anchors
         uncertain predictions on market consensus rather than coin-flip.
         """
-        import re
-
         tracker = self._glicko2_trackers.get(game)
         if tracker is None or tracker.match_count < 10:
             return None
@@ -3622,98 +3744,9 @@ class EsportsBot(BaseBot):
         if not question:
             return None
 
-        # Try to extract team names from question patterns:
-        # "Will [Team A] beat [Team B]?"
-        # "Will [Team A] win [vs/against] [Team B]?"
-        # "[Team A] vs [Team B]"
-        team_a_id = team_b_id = None
-        _clean_a = _clean_b = ""  # Best cleaned team names (for backfill)
-
-        # Pattern 1: "Team A vs Team B" or "Team A versus Team B"
-        vs_match = re.search(r"(.+?)\s+(?:vs\.?|versus|v)\s+(.+?)(?:\?|$)", question)
-        if vs_match:
-            name_a = vs_match.group(1).strip().rstrip(":")
-            name_b = vs_match.group(2).strip().rstrip("?").strip()
-            # Remove leading "will" etc
-            for prefix in ("will ", "can ", "does "):
-                if name_a.startswith(prefix):
-                    name_a = name_a[len(prefix):]
-            name_a, name_b = self._clean_team_names(name_a, name_b)
-            _clean_a, _clean_b = name_a, name_b
-            team_a_id = self._match_team_name(name_a)
-            team_b_id = self._match_team_name(name_b)
-
-        # Pattern 2: "Will [Team] beat/defeat [Team]?"
-        if not team_a_id or not team_b_id:
-            beat_match = re.search(
-                r"(?:will\s+)?(.+?)\s+(?:beat|defeat|win against|win over)\s+(.+?)(?:\?|$)",
-                question,
-            )
-            if beat_match:
-                ba = beat_match.group(1).strip()
-                bb = beat_match.group(2).strip()
-                ba, bb = self._clean_team_names(ba, bb)
-                _clean_a, _clean_b = ba, bb
-                team_a_id = self._match_team_name(ba)
-                team_b_id = self._match_team_name(bb)
-
-        # Pattern 3: "Will [Team] win against/over/vs [Team]?"
-        if not team_a_id or not team_b_id:
-            win_match = re.search(
-                r"(?:will\s+)?(.+?)\s+win\s+(?:against|over|vs\.?)\s+(.+?)(?:\?|$)",
-                question,
-            )
-            if win_match:
-                wa = win_match.group(1).strip()
-                wb = win_match.group(2).strip()
-                wa, wb = self._clean_team_names(wa, wb)
-                _clean_a, _clean_b = wa, wb
-                team_a_id = self._match_team_name(wa)
-                team_b_id = self._match_team_name(wb)
-
-        # Pattern 4: "[Team] to win against/over/vs [Team]"
-        if not team_a_id or not team_b_id:
-            to_win_match = re.search(
-                r"(.+?)\s+to\s+win\s+(?:against|over|vs\.?)\s+(.+?)(?:\?|$)",
-                question,
-            )
-            if to_win_match:
-                ta = to_win_match.group(1).strip()
-                tb = to_win_match.group(2).strip()
-                ta, tb = self._clean_team_names(ta, tb)
-                _clean_a, _clean_b = ta, tb
-                team_a_id = self._match_team_name(ta)
-                team_b_id = self._match_team_name(tb)
-
-        # Pattern 5: "[Team] or [Team] — who will win?" / "who wins: [A] or [B]"
-        if not team_a_id or not team_b_id:
-            or_match = re.search(
-                r"(?:who\s+(?:will\s+)?win[s]?[:\s]+)?(.+?)\s+or\s+(.+?)(?:\?|$)",
-                question,
-            )
-            if or_match:
-                oa = or_match.group(1).strip()
-                ob = or_match.group(2).strip()
-                oa, ob = self._clean_team_names(oa, ob)
-                _clean_a, _clean_b = oa, ob
-                team_a_id = self._match_team_name(oa)
-                team_b_id = self._match_team_name(ob)
-
-        # Pattern 6: "[Team] - [Team]" (dash-separated, common in Asian markets)
-        if not team_a_id or not team_b_id:
-            dash_match = re.search(
-                r"(.+?)\s+-\s+(.+?)(?:\?|$)", question,
-            )
-            if dash_match:
-                da = dash_match.group(1).strip()
-                db = dash_match.group(2).strip()
-                for prefix in ("will ", "can ", "does "):
-                    if da.startswith(prefix):
-                        da = da[len(prefix):]
-                da, db = self._clean_team_names(da, db)
-                _clean_a, _clean_b = da, db
-                team_a_id = self._match_team_name(da)
-                team_b_id = self._match_team_name(db)
+        # S97-P2: Use shared 6-pattern extraction (was inline, now shared with
+        # _build_glicko2_game_state to fix single-pattern gap)
+        team_a_id, team_b_id, _clean_a, _clean_b = self._extract_team_ids_from_question(question)
 
         if not team_a_id or not team_b_id:
             # On-demand backfill: try PandaScore lookup for missing team(s)
@@ -3742,6 +3775,11 @@ class EsportsBot(BaseBot):
         try:
             rating_a = tracker.get_rating(team_a_id)
             rating_b = tracker.get_rating(team_b_id)
+            # S97-P2: Log when both teams are unrated defaults
+            if rating_a.phi >= 349.0 and rating_b.phi >= 349.0:
+                logger.debug("esportsbot_glicko2_high_phi",
+                             game=game, team_a=team_a_id, team_b=team_b_id,
+                             phi_a=round(rating_a.phi, 1), phi_b=round(rating_b.phi, 1))
             prob = tracker.expected_score(team_a_id, team_b_id)
             if not (0.01 < prob < 0.99):
                 return None
@@ -3778,8 +3816,8 @@ class EsportsBot(BaseBot):
                 except Exception:
                     pass
                 return prob
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("esportsbot_glicko2_rating_error", error=str(exc), game=game)
         return None
 
     # ── Session 83: New helper methods ──────────────────────────────────
@@ -4025,25 +4063,21 @@ class EsportsBot(BaseBot):
         except Exception as exc:
             logger.warning("EsportsBot: cross_game_xgb load failed", error=str(exc))
 
-    def _build_glicko2_game_state(
-        self, market_data: Dict, game: str
-    ) -> Optional[Dict[str, float]]:
-        """Build a feature dict from Glicko-2 ratings for dota2/valorant ML models.
+    def _extract_team_ids_from_question(
+        self, question: str,
+    ) -> tuple:
+        """Extract team IDs from a market question using 6 regex patterns.
 
-        Extracts team names from market question, looks up Glicko-2 ratings,
-        and returns the 6-feature dict expected by Dota2Model/ValorantModel.
+        Returns (team_a_id, team_b_id, clean_name_a, clean_name_b).
+        Any of the returned values may be None/empty if extraction fails.
+        Shared by _get_glicko2_prediction() and _build_glicko2_game_state().
         """
         import re
 
-        tracker = self._glicko2_trackers.get(game)
-        if tracker is None:
-            return None
-
-        question = str(market_data.get("question", "")).lower()
-        if not question:
-            return None
-
         team_a_id = team_b_id = None
+        _clean_a = _clean_b = ""
+
+        # Pattern 1: "Team A vs Team B" or "Team A versus Team B"
         vs_match = re.search(r"(.+?)\s+(?:vs\.?|versus|v)\s+(.+?)(?:\?|$)", question)
         if vs_match:
             name_a = vs_match.group(1).strip().rstrip(":")
@@ -4052,8 +4086,101 @@ class EsportsBot(BaseBot):
                 if name_a.startswith(prefix):
                     name_a = name_a[len(prefix):]
             name_a, name_b = self._clean_team_names(name_a, name_b)
+            _clean_a, _clean_b = name_a, name_b
             team_a_id = self._match_team_name(name_a)
             team_b_id = self._match_team_name(name_b)
+
+        # Pattern 2: "Will [Team] beat/defeat [Team]?"
+        if not team_a_id or not team_b_id:
+            beat_match = re.search(
+                r"(?:will\s+)?(.+?)\s+(?:beat|defeat|win against|win over)\s+(.+?)(?:\?|$)",
+                question,
+            )
+            if beat_match:
+                ba = beat_match.group(1).strip()
+                bb = beat_match.group(2).strip()
+                ba, bb = self._clean_team_names(ba, bb)
+                _clean_a, _clean_b = ba, bb
+                team_a_id = self._match_team_name(ba)
+                team_b_id = self._match_team_name(bb)
+
+        # Pattern 3: "Will [Team] win against/over/vs [Team]?"
+        if not team_a_id or not team_b_id:
+            win_match = re.search(
+                r"(?:will\s+)?(.+?)\s+win\s+(?:against|over|vs\.?)\s+(.+?)(?:\?|$)",
+                question,
+            )
+            if win_match:
+                wa = win_match.group(1).strip()
+                wb = win_match.group(2).strip()
+                wa, wb = self._clean_team_names(wa, wb)
+                _clean_a, _clean_b = wa, wb
+                team_a_id = self._match_team_name(wa)
+                team_b_id = self._match_team_name(wb)
+
+        # Pattern 4: "[Team] to win against/over/vs [Team]"
+        if not team_a_id or not team_b_id:
+            to_win_match = re.search(
+                r"(.+?)\s+to\s+win\s+(?:against|over|vs\.?)\s+(.+?)(?:\?|$)",
+                question,
+            )
+            if to_win_match:
+                ta = to_win_match.group(1).strip()
+                tb = to_win_match.group(2).strip()
+                ta, tb = self._clean_team_names(ta, tb)
+                _clean_a, _clean_b = ta, tb
+                team_a_id = self._match_team_name(ta)
+                team_b_id = self._match_team_name(tb)
+
+        # Pattern 5: "[Team] or [Team] — who will win?"
+        if not team_a_id or not team_b_id:
+            or_match = re.search(
+                r"(?:who\s+(?:will\s+)?win[s]?[:\s]+)?(.+?)\s+or\s+(.+?)(?:\?|$)",
+                question,
+            )
+            if or_match:
+                oa = or_match.group(1).strip()
+                ob = or_match.group(2).strip()
+                oa, ob = self._clean_team_names(oa, ob)
+                _clean_a, _clean_b = oa, ob
+                team_a_id = self._match_team_name(oa)
+                team_b_id = self._match_team_name(ob)
+
+        # Pattern 6: "[Team] - [Team]" (dash-separated)
+        if not team_a_id or not team_b_id:
+            dash_match = re.search(
+                r"(.+?)\s+-\s+(.+?)(?:\?|$)", question,
+            )
+            if dash_match:
+                da = dash_match.group(1).strip()
+                db = dash_match.group(2).strip()
+                for prefix in ("will ", "can ", "does "):
+                    if da.startswith(prefix):
+                        da = da[len(prefix):]
+                da, db = self._clean_team_names(da, db)
+                _clean_a, _clean_b = da, db
+                team_a_id = self._match_team_name(da)
+                team_b_id = self._match_team_name(db)
+
+        return team_a_id, team_b_id, _clean_a, _clean_b
+
+    def _build_glicko2_game_state(
+        self, market_data: Dict, game: str
+    ) -> Optional[Dict[str, float]]:
+        """Build a feature dict from Glicko-2 ratings for dota2/valorant ML models.
+
+        Extracts team names from market question, looks up Glicko-2 ratings,
+        and returns the 6-feature dict expected by Dota2Model/ValorantModel.
+        """
+        tracker = self._glicko2_trackers.get(game)
+        if tracker is None:
+            return None
+
+        question = str(market_data.get("question", "")).lower()
+        if not question:
+            return None
+
+        team_a_id, team_b_id, _, _ = self._extract_team_ids_from_question(question)
 
         if not team_a_id or not team_b_id:
             return None
@@ -4182,8 +4309,18 @@ class EsportsBot(BaseBot):
         "kcorp": "karmine corp", "fut": "fut esports",
         "bleed": "bleed esports", "dfm": "detonation focusme",
         "geng": "gen.g",  # Valorant also uses geng
+        # SC2
+        "serral": "serral", "clem": "clem", "maru": "maru", "hero": "hero",
+        "reynor": "reynor", "maxpax": "maxpax", "oliveira": "oliveira",
+        "dark": "dark", "byun": "byun", "trap": "trap",
         # Multi-game
         "weibo": "weibo gaming",
+        "t1": "t1", "skt": "t1", "skt1": "t1", "sk telecom": "t1",
+        "drx": "drx", "kwangdong freecs": "kwangdong freecs", "kdf": "kwangdong freecs",
+        "al": "anyone's legend", "anyone's legend": "anyone's legend",
+        "tt": "thunder talk gaming", "ttg": "thunder talk gaming",
+        "lgd": "lgd gaming", "psg": "lgd gaming",
+        "nip": "ninjas in pyjamas",
     }
 
     def _match_team_name(self, name: str) -> Optional[str]:
@@ -4247,7 +4384,7 @@ class EsportsBot(BaseBot):
             ratio = _SM(None, name, known_name).ratio()
             if ratio > best_ratio:
                 best_ratio, best_tid = ratio, tid
-        if best_ratio >= 0.85 and best_tid is not None:
+        if best_ratio >= 0.78 and best_tid is not None:
             return best_tid
 
         return None

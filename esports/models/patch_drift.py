@@ -42,9 +42,10 @@ class PatchDriftDetector:
     and flags when models need retraining or observation mode.
     """
 
-    def __init__(self, riot_client=None, hltv_scraper=None) -> None:
+    def __init__(self, riot_client=None, hltv_scraper=None, observation_hours: int = 48) -> None:
         self._riot_client = riot_client
         self._hltv_scraper = hltv_scraper
+        self._observation_hours = observation_hours
 
         # Per-game state
         self._known_patches: Dict[str, str] = {}        # game → last known patch version
@@ -121,7 +122,7 @@ class PatchDriftDetector:
         """
         Check if a game is in observation mode (paper-only after new patch).
 
-        Returns True for 48h after a new patch is detected.
+        Returns True for observation_hours after a new patch is detected.
         """
         ts = self._patch_timestamps.get(game)
         if ts is None:
@@ -129,7 +130,7 @@ class PatchDriftDetector:
 
         now = _dt.datetime.now(_dt.timezone.utc)
         hours_since = (now - ts).total_seconds() / 3600.0
-        return hours_since < _OBSERVATION_HOURS
+        return hours_since < self._observation_hours
 
     def should_retrain(self, game: str) -> bool:
         """Check if model should be retrained for this game."""

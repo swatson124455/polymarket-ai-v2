@@ -328,7 +328,8 @@ class Settings(BaseSettings):
     MIRROR_MIN_CONFIDENCE: float = float(os.getenv("MIRROR_MIN_CONFIDENCE", "0.55"))  # 0.10→0.55: elite must win >55% of trades
     MIRROR_MAX_PER_MARKET: float = float(os.getenv("MIRROR_MAX_PER_MARKET", "500"))  # S96: 800→500
     MIRROR_MAX_PER_MARKET_PCT: float = float(os.getenv("MIRROR_MAX_PER_MARKET_PCT", "0.10"))  # M9: 10% of capital per market
-    MIRROR_MAX_CATEGORY_EXPOSURE_PCT: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_PCT", "0.80"))  # M1: 80% of capital per category
+    MIRROR_MAX_CATEGORY_EXPOSURE_PCT: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_PCT", "0.80"))  # M1: DEPRECATED — use MIRROR_MAX_CATEGORY_EXPOSURE_USD
+    MIRROR_MAX_CATEGORY_EXPOSURE_USD: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_USD", "4000"))  # S98: absolute $4k per category
     MIRROR_MAX_TRACKED_TRADES: int = int(os.getenv("MIRROR_MAX_TRACKED_TRADES", "10000"))
     MIRROR_EXIT_ENABLED: bool = os.getenv("MIRROR_EXIT_ENABLED", "true").lower() in ("true", "1", "yes")
     MIRROR_MAX_CONCURRENT_POSITIONS: int = int(os.getenv("MIRROR_MAX_CONCURRENT_POSITIONS", "1000"))  # S96: 400→1000
@@ -664,7 +665,7 @@ class Settings(BaseSettings):
     SCAN_INTERVAL_WEATHER: int = int(os.getenv("SCAN_INTERVAL_WEATHER", "300"))
     WEATHER_MIN_EDGE: float = float(os.getenv("WEATHER_MIN_EDGE", "0.08"))
     WEATHER_INTL_MIN_EDGE: float = float(os.getenv("WEATHER_INTL_MIN_EDGE", "0.12"))  # Floor for intl cities without local hi-res model
-    WEATHER_GROUP_CONCURRENCY: int = int(os.getenv("WEATHER_GROUP_CONCURRENCY", "12"))  # Max concurrent group analyses per scan
+    WEATHER_GROUP_CONCURRENCY: int = int(os.getenv("WEATHER_GROUP_CONCURRENCY", "16"))  # S97: raised 12→16. Max concurrent group analyses per scan
     WEATHER_RATE_LIMIT_PER_MIN: int = int(os.getenv("WEATHER_RATE_LIMIT_PER_MIN", "120"))  # Open-Meteo API rate limit (free tier burst-tolerant to 600/min)
     WEATHER_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_MIN_CONFIDENCE", "0.10"))  # Multi-bucket: 9 outcomes → peak ~35-40%; lowered to 0.10 to not block boundary-risk trades
     WEATHER_MAX_POSITIONS: int = int(os.getenv("WEATHER_MAX_POSITIONS", "500"))  # Multi-bucket: 45 groups × up to 9 buckets = 405 max; raised from 200 (was hitting cap at 201)
@@ -675,6 +676,8 @@ class Settings(BaseSettings):
     WEATHER_DEFAULT_SIZE: float = float(os.getenv("WEATHER_DEFAULT_SIZE", "25"))
     WEATHER_FORECAST_CACHE_TTL: int = int(os.getenv("WEATHER_FORECAST_CACHE_TTL", "1800"))
     WEATHER_MAX_LEAD_TIME_HOURS: int = int(os.getenv("WEATHER_MAX_LEAD_TIME_HOURS", "168"))
+    WEATHER_SKIP_COORDINATOR_BUY: bool = os.getenv("WEATHER_SKIP_COORDINATOR_BUY", "true").lower() in ("true", "1", "yes")
+    WEATHER_TRADE_CONCURRENCY: int = int(os.getenv("WEATHER_TRADE_CONCURRENCY", "8"))
     WEATHER_MAX_TOTAL_EXPOSURE_USD: float = float(os.getenv("WEATHER_MAX_TOTAL_EXPOSURE_USD", "50000"))
     WEATHER_TOTAL_CAPITAL: float = float(os.getenv("WEATHER_TOTAL_CAPITAL", "25000"))
 
@@ -973,8 +976,9 @@ class Settings(BaseSettings):
     SCAN_INTERVAL_ESPORTS_SERIES: int = int(os.getenv("SCAN_INTERVAL_ESPORTS_SERIES", "30"))
 
     # --- Edge / confidence thresholds ---
-    ESPORTS_MIN_EDGE: float = float(os.getenv("ESPORTS_MIN_EDGE", "0.08"))
+    ESPORTS_MIN_EDGE: float = float(os.getenv("ESPORTS_MIN_EDGE", "0.05"))
     ESPORTS_MIN_CONFIDENCE: float = float(os.getenv("ESPORTS_MIN_CONFIDENCE", "0.52"))
+    ESPORTS_MAX_EDGE: float = float(os.getenv("ESPORTS_MAX_EDGE", "0.25"))
     ESPORTS_EGM_D: float = float(os.getenv("ESPORTS_EGM_D", "1.5"))  # Extremization factor for EGM blend
     ESPORTS_SERIES_MIN_EDGE: float = float(os.getenv("ESPORTS_SERIES_MIN_EDGE", "0.10"))
     ESPORTS_SERIES_REVERSE_SWEEP_FLOOR: float = float(os.getenv("ESPORTS_SERIES_REVERSE_SWEEP_FLOOR", "0.05"))
@@ -1017,10 +1021,11 @@ class Settings(BaseSettings):
     BALLCHASING_API_KEY: str = os.getenv("BALLCHASING_API_KEY", "")
 
     # --- Signal confluence ---
-    ESPORTS_CONFLUENCE_MIN: float = float(os.getenv("ESPORTS_CONFLUENCE_MIN", "0.60"))
-    ESPORTS_CONFLUENCE_WEIGHT_EDGE: float = float(os.getenv("ESPORTS_CONFLUENCE_WEIGHT_EDGE", "0.55"))
-    ESPORTS_CONFLUENCE_WEIGHT_FRESHNESS: float = float(os.getenv("ESPORTS_CONFLUENCE_WEIGHT_FRESHNESS", "0.30"))
-    ESPORTS_CONFLUENCE_WEIGHT_AGREEMENT: float = float(os.getenv("ESPORTS_CONFLUENCE_WEIGHT_AGREEMENT", "0.15"))
+    ESPORTS_CONFLUENCE_MIN: float = float(os.getenv("ESPORTS_CONFLUENCE_MIN", "0.55"))
+    ESPORTS_CONFLUENCE_WEIGHT_EDGE: float = float(os.getenv("ESPORTS_CONFLUENCE_WEIGHT_EDGE", "0.65"))
+    ESPORTS_CONFLUENCE_WEIGHT_FRESHNESS: float = float(os.getenv("ESPORTS_CONFLUENCE_WEIGHT_FRESHNESS", "0.35"))
+    ESPORTS_CONFLUENCE_WEIGHT_AGREEMENT: float = float(os.getenv("ESPORTS_CONFLUENCE_WEIGHT_AGREEMENT", "0.0"))
+    ESPORTS_REENTRY_MIN_EDGE: float = float(os.getenv("ESPORTS_REENTRY_MIN_EDGE", "0.12"))
     ESPORTS_FRESHNESS_DECAY_SECONDS: float = float(os.getenv("ESPORTS_FRESHNESS_DECAY_SECONDS", "120.0"))
     ESPORTS_FRESHNESS_DECAY_PREGAME_SECONDS: float = float(os.getenv("ESPORTS_FRESHNESS_DECAY_PREGAME_SECONDS", "600.0"))
     ESPORTS_WHALE_SMART_MONEY_THRESHOLD: float = float(os.getenv("ESPORTS_WHALE_SMART_MONEY_THRESHOLD", "0.60"))

@@ -28,13 +28,13 @@ class CoTValidator:
     Cost-controlled: only called for edge > EDGE_THRESHOLD (default 15%).
     """
 
-    EDGE_THRESHOLD = 0.15  # Only validate trades with edge > 15%
+    EDGE_THRESHOLD = 0.20  # Only validate trades with edge >= 20%
 
     def __init__(self):
         self._api_key = os.getenv("ANTHROPIC_API_KEY", "")
         self._available = bool(self._api_key)
         self._call_count = 0
-        self._max_calls_per_scan = 3  # Rate limit per scan cycle
+        self._max_calls_per_scan = 8  # Rate limit per scan cycle
 
         if self._available:
             logger.info("CoTValidator: initialized (API key present)")
