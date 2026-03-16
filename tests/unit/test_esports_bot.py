@@ -821,16 +821,17 @@ class TestDynamicKellyGraduation:
         bot.bankroll = MagicMock()
         bot.bankroll.kelly_fraction = 0.25
 
-        # Mock: 60 resolved trades, avg brier=0.18
+        # Mock: 60 resolved trades, avg brier=0.18 per game
         acc_return = {"total": 60, "correct": 39, "accuracy": 0.65, "brier_score": 0.18}
+        batch_return = {g: acc_return for g in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl")}
         db = MagicMock()
 
         with patch("bots.esports_bot.settings") as ms:
             ms.ESPORTS_KELLY_DEFAULT_FRACTION = 0.25
             ms.ESPORTS_KELLY_DEGRADE_BRIER = 0.28
             ms.ESPORTS_KELLY_MAX_FRACTION = 0.35
-            with patch("esports.data.esports_db.get_rolling_accuracy", new_callable=AsyncMock) as mock_acc:
-                mock_acc.return_value = acc_return
+            with patch("esports.data.esports_db.get_rolling_accuracy_batch", new_callable=AsyncMock) as mock_acc:
+                mock_acc.return_value = batch_return
                 await bot._check_kelly_graduation(db)
 
         # scale = clamp(2.0 - 0.18/0.25, 0.80, 1.30) = clamp(1.28, 0.80, 1.30) = 1.28
@@ -845,14 +846,15 @@ class TestDynamicKellyGraduation:
         bot.bankroll.kelly_fraction = 0.30
 
         acc_return = {"total": 60, "correct": 30, "accuracy": 0.50, "brier_score": 0.26}
+        batch_return = {g: acc_return for g in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl")}
         db = MagicMock()
 
         with patch("bots.esports_bot.settings") as ms:
             ms.ESPORTS_KELLY_DEFAULT_FRACTION = 0.25
             ms.ESPORTS_KELLY_DEGRADE_BRIER = 0.28
             ms.ESPORTS_KELLY_MAX_FRACTION = 0.35
-            with patch("esports.data.esports_db.get_rolling_accuracy", new_callable=AsyncMock) as mock_acc:
-                mock_acc.return_value = acc_return
+            with patch("esports.data.esports_db.get_rolling_accuracy_batch", new_callable=AsyncMock) as mock_acc:
+                mock_acc.return_value = batch_return
                 await bot._check_kelly_graduation(db)
 
         # scale = clamp(2.0 - 0.26/0.25, 0.80, 1.30) = clamp(0.96, 0.80, 1.30) = 0.96
@@ -868,14 +870,15 @@ class TestDynamicKellyGraduation:
 
         # Extremely good Brier → would push scale to 1.30
         acc_return = {"total": 100, "correct": 70, "accuracy": 0.70, "brier_score": 0.10}
+        batch_return = {g: acc_return for g in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl")}
         db = MagicMock()
 
         with patch("bots.esports_bot.settings") as ms:
             ms.ESPORTS_KELLY_DEFAULT_FRACTION = 0.25
             ms.ESPORTS_KELLY_DEGRADE_BRIER = 0.28
             ms.ESPORTS_KELLY_MAX_FRACTION = 0.35
-            with patch("esports.data.esports_db.get_rolling_accuracy", new_callable=AsyncMock) as mock_acc:
-                mock_acc.return_value = acc_return
+            with patch("esports.data.esports_db.get_rolling_accuracy_batch", new_callable=AsyncMock) as mock_acc:
+                mock_acc.return_value = batch_return
                 await bot._check_kelly_graduation(db)
 
         assert bot.bankroll.kelly_fraction <= 0.35
@@ -888,14 +891,15 @@ class TestDynamicKellyGraduation:
         bot.bankroll.kelly_fraction = 0.25
 
         acc_return = {"total": 5, "correct": 3, "accuracy": 0.60, "brier_score": 0.20}
+        batch_return = {g: acc_return for g in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl")}
         db = MagicMock()
 
         with patch("bots.esports_bot.settings") as ms:
             ms.ESPORTS_KELLY_DEFAULT_FRACTION = 0.25
             ms.ESPORTS_KELLY_DEGRADE_BRIER = 0.28
             ms.ESPORTS_KELLY_MAX_FRACTION = 0.35
-            with patch("esports.data.esports_db.get_rolling_accuracy", new_callable=AsyncMock) as mock_acc:
-                mock_acc.return_value = acc_return
+            with patch("esports.data.esports_db.get_rolling_accuracy_batch", new_callable=AsyncMock) as mock_acc:
+                mock_acc.return_value = batch_return
                 await bot._check_kelly_graduation(db)
 
         # 5 trades per game × 8 games = 40 total < 50 threshold

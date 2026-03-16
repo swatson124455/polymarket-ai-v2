@@ -186,6 +186,19 @@ class EsportsBot(BaseBot):
         self._scan_count: int = 0  # P1.2: periodic outcome backfill counter
         self._exposure_restored: bool = False  # P0: seed exposure dicts from DB on first scan
 
+        # S94: Rolling accuracy cache (batch all 8 games, 5-min TTL)
+        # Keyed by last_n so we can cache both last_n=50 and last_n=20
+        self._rolling_accuracy_cache: Dict[int, Dict[str, Dict]] = {}
+        self._rolling_accuracy_cache_ts: Dict[int, float] = {}
+
+        # S94: Time-based guards (replace scan-count modulo guards for zero-sleep scanning)
+        self._last_cache_cleanup: float = 0.0       # was: _scan_count % 100 (~3.3h)
+        self._last_pnl_refresh: float = 0.0         # was: _scan_count % 10 (~20min)
+        self._last_reevaluate: float = 0.0           # was: _scan_count % 5 (~10min)
+        self._last_kelly_check: float = 0.0          # was: _scan_count % 10 (~20min)
+        self._last_outcome_backfill: float = 0.0     # was: _scan_count % 10 (~20min)
+        self._last_clv_backfill: float = 0.0         # was: _clv_backfill_counter >= 10
+
         # A1+A8: Daily loss limit + drawdown halt
         self._daily_pnl: float = 0.0
         self._daily_pnl_date: Optional[str] = None
@@ -198,10 +211,12 @@ class EsportsBot(BaseBot):
     def _get_scan_interval_seconds(self) -> float:
         """A4: Tournament-aware scan intervals.
 
-        10s during live matches, 60s during active tournaments, 120s otherwise.
+        0s during live matches (rescan immediately), 60s with open positions,
+        120s otherwise. Safe because all periodic operations use time-based
+        guards (monotonic clock) instead of scan-count modulo.
         """
         if self._live_matches:
-            return float(getattr(settings, "SCAN_INTERVAL_ESPORTS_LIVE", 10))
+            return float(getattr(settings, "SCAN_INTERVAL_ESPORTS_LIVE", 0))
         # A4: Tighter scan when we have open positions (for stop-loss monitoring)
         try:
             og = getattr(self.base_engine, "order_gateway", None)
@@ -606,7 +621,10 @@ class EsportsBot(BaseBot):
         self._backfill_calls_this_scan = 0
         if self._cot_validator is not None:
             self._cot_validator.reset_scan_counter()
-        if self._scan_count % 100 == 0:
+        _now = time.monotonic()
+        # S94: Time-based guards (safe with zero-sleep scanning)
+        if _now - self._last_cache_cleanup >= 3600:  # 1 hour
+            self._last_cache_cleanup = _now
             self._cleanup_caches()
         db = getattr(self.base_engine, "db", None)
 
@@ -615,16 +633,26 @@ class EsportsBot(BaseBot):
             await self._restore_exposure_from_db(db)
 
         # A1: Restore daily P&L + reset at UTC midnight
-        # Refresh every 10 scans to capture mid-day resolutions
-        if self._scan_count % 10 == 0:
+        # Refresh every 10 min to capture mid-day resolutions
+        if _now - self._last_pnl_refresh >= 600:  # 10 min
+            self._last_pnl_refresh = _now
             self._daily_pnl_date = None
         await self._restore_daily_pnl_from_db(db)
 
         # Fetch positions once for stop-loss + re-evaluation (avoids duplicate DB query)
+        # S94: Run in parallel with monitoring thresholds (independent tables)
         _positions = None
+        _pos_and_monitor = []
         try:
             if db:
-                _positions = await db.get_open_positions_for_bot(self.bot_name)
+                async def _fetch_positions():
+                    return await db.get_open_positions_for_bot(self.bot_name)
+                _pos_and_monitor = await asyncio.gather(
+                    _fetch_positions(),
+                    self._check_monitoring_thresholds(db),
+                    return_exceptions=True,
+                )
+                _positions = _pos_and_monitor[0] if not isinstance(_pos_and_monitor[0], Exception) else None
         except Exception:
             _positions = None
 
@@ -640,16 +668,15 @@ class EsportsBot(BaseBot):
         # B1: Check stop-loss and max hold time exits
         await self._check_and_execute_exits(db, positions=_positions)
 
-        # A2: Re-evaluate open positions (every 5 scans, ~10 min)
-        if self._scan_count % 5 == 0:
+        # A2: Re-evaluate open positions (every 10 min)
+        if _now - self._last_reevaluate >= 600:  # 10 min
+            self._last_reevaluate = _now
             await self._reevaluate_open_positions(db, positions=_positions)
 
-        # A3: Dynamic Kelly graduation check (every 10 scans)
-        if self._scan_count % 10 == 0:
+        # A3: Dynamic Kelly graduation check (every 20 min)
+        if _now - self._last_kelly_check >= 1200:  # 20 min
+            self._last_kelly_check = _now
             await self._check_kelly_graduation(db)
-
-        # E4: Monitoring thresholds — check per-game Brier and emit alerts
-        await self._check_monitoring_thresholds(db)
 
         # Step 0: Auto-retrain models in background (non-blocking)
         # Clean up completed background training tasks — retrieve exceptions to
@@ -668,9 +695,9 @@ class EsportsBot(BaseBot):
         _smart_brier: Dict[str, float] = {}
         _smart_row_count: Dict[str, int] = {}
         try:
-            from esports.data.esports_db import get_rolling_accuracy
+            _acc_cache = await self._get_cached_rolling_accuracy(db)
             for _rg in ("lol", "cs2"):
-                _acc = await get_rolling_accuracy(db, _rg, bot_name="EsportsBot")
+                _acc = _acc_cache.get(_rg)
                 if _acc and _acc["total"] >= 10:
                     _smart_brier[_rg] = _acc["brier_score"]
         except Exception as _e:
@@ -740,9 +767,9 @@ class EsportsBot(BaseBot):
         # Step 0b: Check rolling accuracy — auto-disable if below threshold
         min_acc = float(getattr(settings, "ESPORTS_MIN_ACCURACY_TO_TRADE", 0.52))
         try:
-            from esports.data.esports_db import get_rolling_accuracy
+            _acc_all = await self._get_cached_rolling_accuracy(db)
             for game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
-                acc_data = await get_rolling_accuracy(db, game, bot_name="EsportsBot")
+                acc_data = _acc_all.get(game)
                 if acc_data and acc_data["total"] >= 30 and acc_data["accuracy"] < min_acc:
                     logger.warning(
                         "EsportsBot: accuracy below threshold — triggering retrain",
@@ -865,9 +892,10 @@ class EsportsBot(BaseBot):
         except Exception as exc:
             logger.debug("esports_series_scan_failed", error=str(exc))
 
-        # P1.2: Backfill actual_outcome for settled esports paper_trades every 10 scans
+        # P1.2: Backfill actual_outcome for settled esports paper_trades (every 20 min)
         # Non-financial bookkeeping — safe for fire-and-forget (updates prediction_log metadata)
-        if self._scan_count % 10 == 0 and db is not None:
+        if _now - self._last_outcome_backfill >= 1200 and db is not None:
+            self._last_outcome_backfill = _now
             asyncio.create_task(self._safe_backfill_outcomes(db))
 
     async def _safe_backfill_outcomes(self, db) -> None:
@@ -2570,12 +2598,12 @@ class EsportsBot(BaseBot):
         if db is None:
             return
         try:
-            from esports.data.esports_db import get_rolling_accuracy
+            _acc_50 = await self._get_cached_rolling_accuracy(db, last_n=50)
             total_resolved = 0
             weighted_brier = 0.0
 
             for game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
-                acc = await get_rolling_accuracy(db, game, bot_name="EsportsBot")
+                acc = _acc_50.get(game)
                 if acc and acc["total"] > 0:
                     total_resolved += acc["total"]
                     weighted_brier += acc["brier_score"] * acc["total"]
@@ -2595,10 +2623,11 @@ class EsportsBot(BaseBot):
             # De-graduation: recent 20-trade Brier too high → floor
             _degrade_brier = float(getattr(settings, "ESPORTS_KELLY_DEGRADE_BRIER", 0.28))
             # Use per-game data to compute recent aggregate (most recent 20 across all games)
+            _acc_20 = await self._get_cached_rolling_accuracy(db, last_n=20)
             recent_total = 0
             recent_brier_sum = 0.0
             for game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
-                acc = await get_rolling_accuracy(db, game, bot_name="EsportsBot", last_n=20)
+                acc = _acc_20.get(game)
                 if acc and acc["total"] > 0:
                     recent_total += acc["total"]
                     recent_brier_sum += acc["brier_score"] * acc["total"]
@@ -2814,6 +2843,28 @@ class EsportsBot(BaseBot):
         except (asyncio.TimeoutError, Exception) as exc:
             logger.warning("EsportsBot: bg retrain failed", game=game, error=str(exc))
 
+    async def _get_cached_rolling_accuracy(self, db, last_n: int = 50) -> Dict[str, Dict]:
+        """S94: Batch rolling accuracy with 5-min cache.
+
+        Returns {game: {total, correct, accuracy, brier_score}}.
+        One SQL query for all 8 games instead of 8 sequential queries.
+        Cached per last_n value (e.g. 50 for monitoring, 20 for de-graduation).
+        """
+        now = time.monotonic()
+        cached_ts = self._rolling_accuracy_cache_ts.get(last_n, 0.0)
+        if now - cached_ts < 300.0:  # 5 min TTL
+            return self._rolling_accuracy_cache.get(last_n, {})
+        try:
+            from esports.data.esports_db import get_rolling_accuracy_batch
+            _all_games = ["lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"]
+            result = await get_rolling_accuracy_batch(db, _all_games, bot_name="EsportsBot", last_n=last_n)
+            self._rolling_accuracy_cache[last_n] = result
+            self._rolling_accuracy_cache_ts[last_n] = now
+            return result
+        except Exception as exc:
+            logger.debug("esportsbot_rolling_accuracy_cache_failed", error=str(exc), last_n=last_n)
+            return self._rolling_accuracy_cache.get(last_n, {})
+
     async def _check_monitoring_thresholds(self, db) -> None:
         """E4: Check per-game Brier scores and emit structured alerts.
 
@@ -2834,9 +2885,9 @@ class EsportsBot(BaseBot):
         alerting = getattr(self.base_engine, "alerting_system", None)
 
         try:
-            from esports.data.esports_db import get_rolling_accuracy
+            _acc_all = await self._get_cached_rolling_accuracy(db)
             for game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
-                acc_data = await get_rolling_accuracy(db, game, bot_name="EsportsBot")
+                acc_data = _acc_all.get(game)
                 if not acc_data or acc_data["total"] < 20:
                     continue
 
@@ -2990,12 +3041,9 @@ class EsportsBot(BaseBot):
         except Exception as exc:
             logger.debug("esportsbot_pnl_summary_failed", error=str(exc))
 
-        # Pinnacle CLV backfill (every 10th scan cycle, ~20 min)
-        if not hasattr(self, "_clv_backfill_counter"):
-            self._clv_backfill_counter = 0
-        self._clv_backfill_counter += 1
-        if self._clv_backfill_counter >= 10:
-            self._clv_backfill_counter = 0
+        # Pinnacle CLV backfill (every 20 min)
+        if now - self._last_clv_backfill >= 1200:
+            self._last_clv_backfill = now
             oddspapi_key = getattr(settings, "ODDSPAPI_API_KEY", "")
             if oddspapi_key:
                 try:

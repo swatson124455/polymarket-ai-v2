@@ -290,6 +290,74 @@ async def get_rolling_accuracy(
         return None
 
 
+async def get_rolling_accuracy_batch(
+    db, games: List[str], bot_name: str = "EsportsBot", last_n: int = 50
+) -> Dict[str, Dict[str, Any]]:
+    """Compute rolling accuracy for multiple games in one query.
+
+    Returns {game: {total, correct, accuracy, brier_score}} for each game
+    that has data. Games with no data are omitted from the result.
+
+    Uses ROW_NUMBER() window function to get last_n per game efficiently.
+    """
+    if db is None or not games:
+        return {}
+    try:
+        async with db.get_session() as session:
+            bot_filter = "AND bot_name = :bot_name" if bot_name else ""
+            params: Dict[str, Any] = {"last_n": last_n}
+            if bot_name:
+                params["bot_name"] = bot_name
+            # Build game list for IN clause (parameterized)
+            game_placeholders = ", ".join(f":g{i}" for i in range(len(games)))
+            for i, g in enumerate(games):
+                params[f"g{i}"] = g
+            result = await session.execute(
+                _text(f"""
+                SELECT game, predicted_prob, actual_outcome, side
+                FROM (
+                    SELECT game, predicted_prob, actual_outcome, side,
+                           ROW_NUMBER() OVER (PARTITION BY game ORDER BY created_at DESC) AS rn
+                    FROM esports_prediction_log
+                    WHERE game IN ({game_placeholders})
+                      AND actual_outcome IS NOT NULL
+                      {bot_filter}
+                ) sub
+                WHERE rn <= :last_n
+                """),
+                params,
+            )
+            rows = result.fetchall()
+        if not rows:
+            return {}
+        # Group by game and compute metrics
+        from collections import defaultdict
+        game_rows: Dict[str, list] = defaultdict(list)
+        for row in rows:
+            game_rows[row.game].append(row)
+        out: Dict[str, Dict[str, Any]] = {}
+        for game, g_rows in game_rows.items():
+            total = len(g_rows)
+            correct = 0
+            brier_sum = 0.0
+            for r in g_rows:
+                pred = float(r.predicted_prob)
+                actual = int(r.actual_outcome)
+                if (1 if pred > 0.5 else 0) == actual:
+                    correct += 1
+                brier_sum += (pred - actual) ** 2
+            out[game] = {
+                "total": total,
+                "correct": correct,
+                "accuracy": correct / total if total > 0 else 0.0,
+                "brier_score": brier_sum / total if total > 0 else 1.0,
+            }
+        return out
+    except Exception as exc:
+        logger.debug("esports_db: get_rolling_accuracy_batch failed", error=str(exc))
+        return {}
+
+
 async def get_phase_accuracy(
     db, game: str, phase: str, bot_name: str = "EsportsBot",
 ) -> Optional[Dict[str, Any]]:
