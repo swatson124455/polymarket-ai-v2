@@ -167,6 +167,10 @@ class EsportsBot(BaseBot):
         # S94: Background form prefetch task
         self._form_prefetch_task: Optional[asyncio.Task] = None
 
+        # S94: WS-primary trading mode (scan becomes cache-warmer)
+        self._ws_trading_active: bool = True
+        self._last_ws_price_ts: float = 0.0
+
         # CatBoost draft models (Session C): game → CatBoostDraftModel
         self._catboost_models: Dict[str, Any] = {}
         self._draft_feature_builder: Any = None  # DraftFeatureBuilder instance
@@ -476,6 +480,7 @@ class EsportsBot(BaseBot):
 
         # Only call super() for esports markets we care about
         await super().on_price_update(event)
+        self._last_ws_price_ts = time.monotonic()
 
         token_id = event.get("token_id", "")
         new_price = float(event.get("price", 0))
@@ -526,6 +531,20 @@ class EsportsBot(BaseBot):
         # Recalculate edge with correctly-identified YES price
         model_prob = cached["prob"]  # Always P(YES)
         game = cached.get("game", "")
+
+        # S94: WS guards matching scan path (were missing — race/safety fix)
+        if self._check_daily_loss_limit():
+            return
+        if game in self._monitoring_halted_games:
+            return
+        if self._patch_drift and self._patch_drift.is_observation_mode(game):
+            return
+        if self._patch_drift and self._patch_drift.is_halted(game):
+            return
+        _max_game_exp = float(getattr(settings, "ESPORTS_MAX_GAME_EXPOSURE", 300.0))
+        if self._game_exposure.get(game, 0.0) >= _max_game_exp:
+            return
+
         edge = model_prob - yes_price
 
         if abs(edge) < self._min_edge:
@@ -588,7 +607,8 @@ class EsportsBot(BaseBot):
                 edge=round(abs(edge), 4),
                 confluence=confluence,
             )
-            await self._execute_esports_trade(opp)
+            async with self._trade_lock:
+                await self._execute_esports_trade(opp)
             # After successful execution, extend cooldown to one full scan cycle
             # to prevent re-triggering on the same market before next scan
             self._ws_cooldowns[market_id] = time.monotonic() + 110  # +110 so total ~120s
@@ -847,6 +867,18 @@ class EsportsBot(BaseBot):
             _g = self._detect_game(_q) or "other"
             _by_game[_g] = _by_game.get(_g, 0) + 1
 
+        # S94: WS health check — fall back to scan trading if WS is stale
+        _ws_threshold = float(getattr(settings, "ESPORTS_WS_STALE_THRESHOLD_S", 30.0))
+        _ws_healthy = (self._last_ws_price_ts > 0
+                       and (time.monotonic() - self._last_ws_price_ts) < _ws_threshold)
+        if _ws_healthy != self._ws_trading_active:
+            self._ws_trading_active = _ws_healthy
+            if _ws_healthy:
+                logger.info("esportsbot_ws_trading_resumed")
+            else:
+                logger.warning("esportsbot_ws_trading_fallback",
+                               last_ws_age_s=round(time.monotonic() - self._last_ws_price_ts, 1))
+
         # Parallel market analysis with bounded concurrency
         async def _analyze_one(m: Dict) -> tuple:
             """Analyze one market; returns (opps, trades, skips)."""
@@ -855,10 +887,13 @@ class EsportsBot(BaseBot):
                 if og and mid and og.has_open_position(self.bot_name, mid):
                     return (0, 0, 1)
                 opp = await self.analyze_opportunity(m)
-                if opp:
+                if opp and not self._ws_trading_active:
+                    # Fallback: scan trades when WS is stale
                     async with self._trade_lock:
-                        await self._execute_esports_trade(opp)
-                    return (1, 1, 0)
+                        success = await self._execute_esports_trade(opp)
+                    return (1, 1 if success else 0, 0)
+                elif opp:
+                    return (1, 0, 0)  # Opportunity found; WS will trade it
                 return (0, 0, 0)
 
         results = await asyncio.gather(
@@ -891,6 +926,7 @@ class EsportsBot(BaseBot):
             min_edge=self._min_edge,
             waterfall=_wf_nonzero or None,
             backfills_this_scan=self._backfill_calls_this_scan,
+            ws_trading=self._ws_trading_active,
         )
 
         # Series analysis — analyze live BO3/BO5 matches for conditional probability edge
@@ -2336,8 +2372,10 @@ class EsportsBot(BaseBot):
 
         return round(confluence, 4)
 
-    async def _execute_esports_trade(self, opp: Dict) -> None:
+    async def _execute_esports_trade(self, opp: Dict) -> bool:
         """Execute trade with maker-first, taker-fallback strategy.
+
+        Returns True if a trade was successfully placed, False otherwise.
 
         Includes A10 (pre-update exposure), A6 (uncertainty-scaled sizing),
         A5 (near-expiry boost), A8 (drawdown Kelly reduction),
@@ -2383,11 +2421,12 @@ class EsportsBot(BaseBot):
                     edge=opp.get("edge"),
                     series_score=opp.get("series_score"),
                 )
+                return True
             else:
                 self._game_exposure[game] = max(
                     0.0, self._game_exposure.get(game, 0.0) - st_override
                 )
-            return
+                return False
 
         confidence = opp["confidence"]
 
@@ -2438,7 +2477,7 @@ class EsportsBot(BaseBot):
             confidence, opp["price"], category="esports"
         )
         if size <= 0:
-            return
+            return False
 
         # Apply CLV max override after base sizing
         if _clv_max_override is not None and size > _clv_max_override:
@@ -2471,7 +2510,7 @@ class EsportsBot(BaseBot):
                     size *= 1.10
 
         if size < 1.0:
-            return
+            return False
 
         # A10: Pre-update exposure BEFORE placing order (race condition fix)
         game = opp.get("game", "")
@@ -2523,11 +2562,13 @@ class EsportsBot(BaseBot):
                 game_kelly_mult=_game_mult,
                 edge_decay_mult=_decay_mult,
             )
+            return True
         else:
             # A10: Rollback exposure if order failed
             self._game_exposure[game] = max(
                 0.0, self._game_exposure.get(game, 0.0) - size
             )
+            return False
 
     # ── Sizing + confidence helpers ─────────────────────────────────────
 
@@ -4271,11 +4312,13 @@ class EsportsBot(BaseBot):
                 st_size = st_sizes.get(opp["market_id"])
                 if st_size and st_size >= 1.0:
                     opp["_st_size_override"] = st_size
-                    await self._execute_esports_trade(opp)
+                    async with self._trade_lock:
+                        await self._execute_esports_trade(opp)
                     _trades += 1
         else:
             for opp in all_opps:
-                await self._execute_esports_trade(opp)
+                async with self._trade_lock:
+                    await self._execute_esports_trade(opp)
                 _trades += 1
 
         return (len(all_opps), _trades)
@@ -4836,6 +4879,7 @@ class EsportsBot(BaseBot):
                 price_move=f"{old_price:.4f}→{new_price:.4f}",
                 edge=round(abs(edge), 4),
             )
-            await self._execute_esports_trade(opp)
+            async with self._trade_lock:
+                await self._execute_esports_trade(opp)
         except Exception as exc:
             logger.debug("esports_series_ws_failed", error=str(exc))
