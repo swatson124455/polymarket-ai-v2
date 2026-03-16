@@ -1043,6 +1043,11 @@ class Settings(BaseSettings):
     ESPORTS_PANDASCORE_TIMEOUT: float = float(os.getenv("ESPORTS_PANDASCORE_TIMEOUT", "5.0"))
     ESPORTS_SERIES_REFRESH_INTERVAL: int = int(os.getenv("ESPORTS_SERIES_REFRESH_INTERVAL", "30"))
 
+    # --- PandaScore rate limits (configurable for paid tier upgrade) ---
+    PANDASCORE_RATE_LIMIT_PER_HOUR: int = int(os.getenv("PANDASCORE_RATE_LIMIT_PER_HOUR", "1000"))
+    PANDASCORE_CIRCUIT_BREAKER_BUFFER: int = int(os.getenv("PANDASCORE_CIRCUIT_BREAKER_BUFFER", "50"))
+    PANDASCORE_USE_WEBSOCKET: bool = os.getenv("PANDASCORE_USE_WEBSOCKET", "false").lower() in ("true", "1", "yes")
+
     # --- API keys (PANDASCORE required — bots fail fast if missing) ---
     PANDASCORE_API_KEY: Optional[str] = os.getenv("PANDASCORE_API_KEY")
     RIOT_API_KEY: Optional[str] = os.getenv("RIOT_API_KEY")

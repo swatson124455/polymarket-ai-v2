@@ -32,6 +32,20 @@ _CACHE_MAX = 500
 _BASE_BACKOFF = 1.0
 _MAX_BACKOFF = 30.0
 
+# Rate limit — configurable for paid tier upgrade (env: PANDASCORE_RATE_LIMIT_PER_HOUR)
+def _get_rate_config():
+    """Read rate limit config from settings (lazy, avoids circular import)."""
+    try:
+        from config.settings import settings
+        _limit = int(getattr(settings, "PANDASCORE_RATE_LIMIT_PER_HOUR", 1000))
+        _buffer = int(getattr(settings, "PANDASCORE_CIRCUIT_BREAKER_BUFFER", 50))
+    except Exception:
+        _limit, _buffer = 1000, 50
+    return _limit, _buffer
+
+_RATE_LIMIT, _CB_BUFFER = _get_rate_config()
+_HARD_LIMIT = _RATE_LIMIT - _CB_BUFFER
+
 # PandaScore game slug mapping
 GAME_SLUGS = {
     "lol": "lol",
@@ -123,7 +137,7 @@ class PandaScoreClient:
     @classmethod
     def get_remaining_budget(cls) -> int:
         """Return approximate remaining requests in the current hour window."""
-        return max(0, 950 - cls._shared_req_count)
+        return max(0, _HARD_LIMIT - cls._shared_req_count)
 
     @classmethod
     def _get_shared_lock(cls) -> asyncio.Lock:
@@ -401,8 +415,7 @@ class PandaScoreClient:
             logger.warning("PandaScoreClient: not initialised — call init() first")
             return None
 
-        # Hard circuit breaker: refuse requests above 950/hr to avoid 429s
-        _HARD_LIMIT = 950
+        # Hard circuit breaker: refuse requests above limit to avoid 429s
         async with self._get_shared_lock():
             now = time.monotonic()
             if PandaScoreClient._shared_req_window_start == 0.0:
@@ -416,6 +429,7 @@ class PandaScoreClient:
                     "pandascore_circuit_breaker_open",
                     requests_this_hour=PandaScoreClient._shared_req_count,
                     hard_limit=_HARD_LIMIT,
+                    budget=_RATE_LIMIT,
                     window_resets_in_s=round(_remaining, 0),
                 )
                 return None
@@ -431,7 +445,7 @@ class PandaScoreClient:
                         "pandascore_rate_limited",
                         retry_after=retry_after,
                         requests_this_hour=PandaScoreClient._shared_req_count,
-                        budget=1000,
+                        budget=_RATE_LIMIT,
                     )
                     await asyncio.sleep(retry_after)
                     continue
@@ -452,18 +466,19 @@ class PandaScoreClient:
                         PandaScoreClient._shared_req_window_start = now
                     PandaScoreClient._shared_req_count += 1
                     _cur = PandaScoreClient._shared_req_count
-                if _cur in (500, 750, 900, 950, 990):
+                _milestones = {int(_RATE_LIMIT * p) for p in (0.50, 0.75, 0.90, 0.95, 0.99)}
+                if _cur in _milestones:
                     logger.warning(
                         "pandascore_rate_limit_budget",
                         requests_this_hour=_cur,
-                        budget=1000,
-                        pct_used=round(_cur / 10, 1),
+                        budget=_RATE_LIMIT,
+                        pct_used=round(_cur / _RATE_LIMIT * 100, 1),
                     )
                 elif _cur % 100 == 0:
                     logger.info(
                         "pandascore_request_count",
                         requests_this_hour=_cur,
-                        budget=1000,
+                        budget=_RATE_LIMIT,
                     )
                 return resp.json()
 
@@ -641,3 +656,23 @@ class PandaScoreClient:
         except Exception as exc:
             logger.debug("PandaScoreClient: parse error", error=str(exc))
             return None
+
+
+# ── WebSocket Upgrade Path ──────────────────────────────────────────
+#
+# PandaScore WebSocket API (paid tier only) provides real-time match
+# events without polling. Upgrade path:
+#
+# 1. Set PANDASCORE_USE_WEBSOCKET=true in .env
+# 2. Implement PandaScoreWebSocketClient class:
+#    - Connect to wss://live.pandascore.co/...
+#    - Subscribe to match events (kills, objectives, round ends)
+#    - Parse events into EsportsMatch updates
+#    - Feed into EsportsBot._live_matches directly
+# 3. Replace get_live_matches() polling in esports_game_monitor.py
+#    with WebSocket event stream
+# 4. Estimated impact: ~300-400 fewer req/hr, <1s event latency
+#    (vs current 10-15s polling interval)
+#
+# Current free-tier workaround: REST polling at 10-15s intervals
+# with adaptive backoff when budget is low (E5 in Session 89).

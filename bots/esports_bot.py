@@ -158,11 +158,14 @@ class EsportsBot(BaseBot):
 
         # Recent form cache: (team_id, game) → (win_rate, mono_timestamp)
         self._team_form_cache: Dict[tuple, tuple] = {}
-        self._team_form_ttl: float = 1800.0  # 30min TTL
+        self._team_form_ttl: float = 5400.0  # 90min TTL (form changes once per match, ~2-4h)
 
         # Roster change detection: team_id → (roster_hash, change_timestamp)
         self._roster_cache: Dict[str, tuple] = {}
         self._roster_change_cache: Dict[str, float] = {}  # team_id → mono_time of change
+
+        # S94: Background form prefetch task
+        self._form_prefetch_task: Optional[asyncio.Task] = None
 
         # CatBoost draft models (Session C): game → CatBoostDraftModel
         self._catboost_models: Dict[str, Any] = {}
@@ -391,6 +394,11 @@ class EsportsBot(BaseBot):
         # These provide real signal (63% accuracy per EsportsBench) while ML models train.
         await self._init_glicko2_trackers(db)
 
+        # S94: Warm form cache to avoid cold-start API burst on first scan
+        await self._warm_form_cache()
+        # S94: Background form prefetch — keeps form data cached between scans
+        self._form_prefetch_task = asyncio.create_task(self._background_form_prefetch())
+
         # Initialize dedicated esports market service — bypasses broken Gamma API.
         # Queries DB directly for esports markets + background CLOB price refresh.
         try:
@@ -422,7 +430,13 @@ class EsportsBot(BaseBot):
         await super().start()
 
     async def stop(self) -> None:
-        """Clean up HTTP clients and market service."""
+        """Clean up HTTP clients, market service, and prefetch task."""
+        if self._form_prefetch_task and not self._form_prefetch_task.done():
+            self._form_prefetch_task.cancel()
+            try:
+                await self._form_prefetch_task
+            except asyncio.CancelledError:
+                pass
         if self._market_service:
             await self._market_service.close()
         if self._pandascore:
@@ -2810,6 +2824,137 @@ class EsportsBot(BaseBot):
                         games=len(self._glicko2_trackers))
         except Exception as exc:
             logger.debug("EsportsBot: Glicko-2 save failed (non-fatal)", error=str(exc))
+
+    # ── S94: Form prefetch (startup warmup + background refresh) ────────
+
+    async def _warm_form_cache(self) -> None:
+        """Pre-fetch form data for rated teams on startup.
+
+        Eliminates cold-start API burst on the first scan cycle.
+        Rate-limited: 0.5s between calls, stops if budget < 700.
+        Capped at 50 teams (~25s startup cost).
+        """
+        if not self._pandascore:
+            return
+        from esports.data.pandascore_client import PandaScoreClient
+
+        pairs: list = []
+        seen: set = set()
+        for game, tracker in self._glicko2_trackers.items():
+            if game == "dota2":
+                continue
+            for team_key in tracker.get_all_ratings():
+                pair = (team_key, game)
+                if pair not in seen:
+                    seen.add(pair)
+                    pairs.append(pair)
+
+        pairs = pairs[:50]
+        warmed = 0
+        for team_id, game in pairs:
+            if PandaScoreClient.get_remaining_budget() < 700:
+                logger.info("esportsbot_form_warmup_budget_stop",
+                            warmed=warmed, budget_remaining=PandaScoreClient.get_remaining_budget())
+                break
+            try:
+                await self._get_recent_form(team_id, game)
+                warmed += 1
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+
+        if warmed > 0:
+            logger.info("esportsbot_form_cache_warmed",
+                        teams_warmed=warmed, total_candidates=len(pairs))
+
+    async def _background_form_prefetch(self) -> None:
+        """Continuously refresh form data for known teams in the background.
+
+        Cycles through all (team_id, game) pairs from Glicko2 trackers.
+        Priority: live match teams first, then all rated teams.
+        Skips entries still 80%+ fresh (< 80% of TTL elapsed).
+        Rate: ~1 req per 18s = ~200 req/hr. Pauses if budget < 500.
+        Target cycle: 20 minutes.
+        """
+        from esports.data.pandascore_client import PandaScoreClient
+
+        logger.info("esportsbot_form_prefetch_started")
+
+        while self.running:
+            try:
+                priority_pairs: list = []
+                normal_pairs: list = []
+                seen: set = set()
+
+                # Priority: teams from live matches
+                for _mid, match_data in list(self._live_matches.items()):
+                    game = match_data.get("game", "")
+                    if game == "dota2":
+                        continue
+                    for tkey in ("team_a", "team_b"):
+                        tid = str(match_data.get(f"{tkey}_id", match_data.get(tkey, "")))
+                        if tid and (tid, game) not in seen:
+                            seen.add((tid, game))
+                            priority_pairs.append((tid, game))
+
+                # Normal: all rated teams
+                for game, tracker in self._glicko2_trackers.items():
+                    if game == "dota2":
+                        continue
+                    for team_key in tracker.get_all_ratings():
+                        pair = (team_key, game)
+                        if pair not in seen:
+                            seen.add(pair)
+                            normal_pairs.append(pair)
+
+                all_pairs = priority_pairs + normal_pairs
+                if not all_pairs:
+                    await asyncio.sleep(60)
+                    continue
+
+                cycle_start = time.monotonic()
+                refreshed = 0
+
+                for team_id, game in all_pairs:
+                    if not self.running:
+                        break
+
+                    budget = PandaScoreClient.get_remaining_budget()
+                    if budget < 500:
+                        logger.debug("esportsbot_prefetch_budget_pause",
+                                     budget=budget, refreshed=refreshed)
+                        await asyncio.sleep(120)
+                        continue
+
+                    # Skip if still 80%+ fresh
+                    cached = self._team_form_cache.get((team_id, game))
+                    if cached and (time.monotonic() - cached[1]) < self._team_form_ttl * 0.8:
+                        continue
+
+                    try:
+                        await self._get_recent_form(team_id, game)
+                        refreshed += 1
+                    except Exception:
+                        pass
+
+                    await asyncio.sleep(18.0)
+
+                cycle_time = time.monotonic() - cycle_start
+                logger.info("esportsbot_prefetch_cycle_complete",
+                            refreshed=refreshed, total_teams=len(all_pairs),
+                            cycle_seconds=round(cycle_time, 0))
+
+                # Sleep remainder of 20-min target cycle
+                remaining = 1200.0 - cycle_time
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+
+            except asyncio.CancelledError:
+                logger.info("esportsbot_form_prefetch_stopped")
+                return
+            except Exception as exc:
+                logger.warning("esportsbot_prefetch_error", error=str(exc))
+                await asyncio.sleep(60)
 
     async def _train_in_background(
         self, game: str, db, init_glicko: bool = False
