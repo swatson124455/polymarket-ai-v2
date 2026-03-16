@@ -331,7 +331,7 @@ class Settings(BaseSettings):
     MIRROR_MAX_CATEGORY_EXPOSURE_PCT: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_PCT", "0.80"))  # M1: 80% of capital per category
     MIRROR_MAX_TRACKED_TRADES: int = int(os.getenv("MIRROR_MAX_TRACKED_TRADES", "10000"))
     MIRROR_EXIT_ENABLED: bool = os.getenv("MIRROR_EXIT_ENABLED", "true").lower() in ("true", "1", "yes")
-    MIRROR_MAX_CONCURRENT_POSITIONS: int = int(os.getenv("MIRROR_MAX_CONCURRENT_POSITIONS", "50"))
+    MIRROR_MAX_CONCURRENT_POSITIONS: int = int(os.getenv("MIRROR_MAX_CONCURRENT_POSITIONS", "400"))  # S96: 50→200→400 to clear position cap bottleneck
     MIRROR_MAX_DAILY_EXPOSURE_PCT: float = float(os.getenv("MIRROR_MAX_DAILY_EXPOSURE_PCT", "0.15"))
     # Phase 4: MirrorBot structural hardening
     MIRROR_HOT_TRADE_MAX_SECONDS: int = int(os.getenv("MIRROR_HOT_TRADE_MAX_SECONDS", "900"))  # 300→900: 5min was too aggressive, 15min allows more trades
@@ -358,7 +358,7 @@ class Settings(BaseSettings):
 
     MIRROR_STOP_LOSS_PCT: float = float(os.getenv("MIRROR_STOP_LOSS_PCT", "0.15"))
     MIRROR_MAX_HOLD_HOURS: float = float(os.getenv("MIRROR_MAX_HOLD_HOURS", "72"))
-    MIRROR_MAX_POSITIONS: int = int(os.getenv("MIRROR_MAX_POSITIONS", "200"))  # 51 pre-fix BUY positions exceed global 50 cap; 200 matches WeatherBot
+    MIRROR_MAX_POSITIONS: int = int(os.getenv("MIRROR_MAX_POSITIONS", "400"))  # S96: 200→400 to clear position cap bottleneck
     MIRROR_TOTAL_CAPITAL: float = float(os.getenv("MIRROR_TOTAL_CAPITAL", "3000"))
     # S91: Tier 0 pre-trade filters — in-memory short-circuit before any DB/cache hit
     MIRROR_CATEGORY_BLOCKLIST: str = os.getenv("MIRROR_CATEGORY_BLOCKLIST", "15-minute,speed")  # comma-separated substrings
