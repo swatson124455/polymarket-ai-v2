@@ -5,6 +5,7 @@ Test strategies with real data, fake money.
 Simulates order execution without real trades with realistic slippage.
 When db is provided, each trade is persisted to paper_trades for resolution backfill and hypothetical P&L.
 """
+import asyncio
 import random
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
