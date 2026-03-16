@@ -140,6 +140,11 @@ class PaperTradingEngine:
         # Protect cash/positions/pnl from concurrent bot updates (race condition fix)
         import asyncio
         self._trade_lock = asyncio.Lock()
+        # S94: In-memory idempotency set — checked under lock to prevent gap
+        # between lock release and DB idempotency check on next trade
+        self._pending_correlation_ids: set = set()
+        # S94: DB write tasks queued under lock, executed after lock release
+        self._pending_db_writes: list = []
     
     async def seed_positions_from_db(self) -> int:
         """Sync open positions from DB into in-memory paper portfolio.
@@ -274,12 +279,26 @@ class PaperTradingEngine:
                 "error": "Paper trading not enabled"
             }
 
-        # Lock protects cash, positions, and realized_pnl from concurrent bot updates
+        # S94: Lock protects cash, positions, and realized_pnl from concurrent bot updates.
+        # DB writes are queued under lock but EXECUTED after lock release so retry sleeps
+        # don't block other bots.  ~200-1500ms latency reduction per trade.
         async with self._trade_lock:
-            return await self._place_order_locked(
+            result = await self._place_order_locked(
                 market_id, token_id, side, size, price, bot_name, confidence, original_side, order_type, correlation_id, latency_ms,
                 bid=bid, ask=ask, volume=volume, model_version=model_version, model_name=model_name, event_data=event_data,
             )
+            # Drain pending DB writes (populated by _place_order_locked)
+            _db_writes = list(self._pending_db_writes)
+            self._pending_db_writes.clear()
+
+        # Execute DB persistence OUTSIDE the lock — retries won't block other bots
+        for _write_coro in _db_writes:
+            try:
+                await _write_coro
+            except Exception as _db_err:
+                logger.warning("post_lock_db_write_failed", error=str(_db_err), market_id=market_id)
+
+        return result
 
     async def _place_order_locked(
         self,
@@ -309,6 +328,11 @@ class PaperTradingEngine:
                 logger.info("Daily P&L reset", previous_pnl=round(self.realized_pnl_today, 2))
             self.realized_pnl_today = 0.0
             self._pnl_reset_date = today
+
+        # S94: In-memory idempotency fast-check (covers gap between lock release and DB write)
+        if correlation_id and correlation_id in self._pending_correlation_ids:
+            logger.info("paper_trade_idempotent_memory", correlation_id=correlation_id, market_id=market_id)
+            return {"success": True, "idempotent": True, "order_id": "pending", "filled": 0, "price": price}
 
         # H1: Idempotency guard — reject if correlation_id already executed (prevents double-fill
         # on timeout + retry). Checks DB before any cash/position mutation.
@@ -520,6 +544,15 @@ class PaperTradingEngine:
         )
         self.trades.append(trade)
 
+        # S94: Queue DB writes for execution AFTER lock release.
+        # In-memory state (cash, positions, pnl) is already mutated above.
+        # DB persistence can happen without holding the lock, so retry sleeps
+        # don't block other bots.  Saves 200-1500ms per trade.
+
+        # Track correlation_id in memory to prevent double-fill during lock gap
+        if correlation_id:
+            self._pending_correlation_ids.add(correlation_id)
+
         # SELL trades are position exits (stop-loss, take-profit, model reversal).
         # Do NOT persist to paper_trades DB — exit P&L is already tracked on the
         # positions table (unrealized_pnl) by position_manager._execute_exit/stop_loss/
@@ -533,100 +566,29 @@ class PaperTradingEngine:
                 size=size,
                 realized_pnl=round(realized_pnl or 0, 4),
             )
-            # Emit EXIT event to trade_events audit trail
+            # Queue EXIT event for post-lock execution
             if self.db and hasattr(self.db, "insert_trade_event"):
-                try:
-                    await self.db.insert_trade_event(
-                        event_type="EXIT",
-                        bot_name=bot_name,
-                        market_id=market_id,
-                        token_id=token_id,
-                        side="SELL",
-                        size=size,
-                        price=price,
-                        realized_pnl=realized_pnl,
-                        correlation_id=correlation_id,
-                        order_id=trade_id,
-                        model_version=model_version,
-                        model_name=model_name,
-                        event_data=event_data,
+                self._pending_db_writes.append(
+                    self._persist_exit_event(
+                        bot_name, market_id, token_id, size, price, realized_pnl,
+                        correlation_id, trade_id, model_version, model_name, event_data,
                     )
-                except Exception as e:
-                    logger.warning("trade_event_exit_emit_failed", error=str(e), market_id=market_id)
+                )
         elif self.db and hasattr(self.db, "insert_paper_trade"):
-            # H5/M9: Retry 3× with backoff to prevent ghost positions.
-            # Most DB failures are transient (pool exhaustion, brief network blips).
             if getattr(self.db, "session_factory", None) is None:
                 logger.debug(
                     "Paper trade NOT persisted: db.session_factory is None",
                     market_id=market_id, bot_name=bot_name,
                 )
-            for _attempt in range(3):
-                try:
-                    _filled_at = datetime.now(timezone.utc).replace(tzinfo=None)
-                    await self.db.insert_paper_trade(
-                        order_id=trade_id,
-                        market_id=market_id,
-                        token_id=token_id,
-                        bot_name=bot_name,
-                        side=_db_side,
-                        size=size,
-                        price=price,
-                        confidence=confidence,
-                        correlation_id=correlation_id,
-                        realized_pnl=None,  # Entry trades have no realized P&L
-                        latency_ms=latency_ms,
-                        status="filled",
-                        submitted_at=_submitted_at,
-                        filled_at=_filled_at,
+            else:
+                # Queue BUY persistence (paper_trade + ENTRY event) for post-lock execution
+                self._pending_db_writes.append(
+                    self._persist_buy_entry(
+                        trade_id, market_id, token_id, bot_name, _db_side, size, price,
+                        confidence, correlation_id, latency_ms, _submitted_at,
+                        model_version, model_name, event_data,
                     )
-                    # Emit ENTRY event to trade_events audit trail
-                    if hasattr(self.db, "insert_trade_event"):
-                        try:
-                            _seq_num = await self.db.insert_trade_event(
-                                event_type="ENTRY",
-                                bot_name=bot_name,
-                                market_id=market_id,
-                                token_id=token_id,
-                                side=_db_side,
-                                size=size,
-                                price=price,
-                                confidence=confidence,
-                                correlation_id=correlation_id,
-                                order_id=trade_id,
-                                model_version=model_version,
-                                model_name=model_name,
-                                event_data=event_data,
-                            )
-                        except Exception as e:
-                            logger.warning("trade_event_entry_emit_failed", error=str(e), market_id=market_id)
-                    break  # Success — exit retry loop
-                except Exception as e:
-                    err_str = str(e).lower()
-                    if "unique" in err_str or "duplicate" in err_str or "uq_paper_trades" in err_str:
-                        logger.info(
-                            "Paper trade already exists (duplicate skipped)",
-                            market_id=market_id,
-                            side=_db_side,
-                            bot_name=bot_name,
-                        )
-                        break  # Not an error — constraint working as intended
-                    if _attempt < 2:
-                        await asyncio.sleep(0.5 * (_attempt + 1))
-                        logger.warning(
-                            "Paper trade persist retry %d/3",
-                            _attempt + 1,
-                            market_id=market_id,
-                            error=str(e),
-                        )
-                    else:
-                        logger.warning(
-                            "Paper trade persist FAILED after 3 attempts — "
-                            "position may reappear on restart",
-                            market_id=market_id,
-                            side=side,
-                            error=str(e),
-                        )
+                )
         slippage_applied = round(abs(price - original_price) * 10000, 1)  # bps
         logger.info(
             "Paper trade executed",
@@ -650,10 +612,123 @@ class PaperTradingEngine:
             "cash_remaining": self.cash,
         }
     
+    async def _persist_exit_event(
+        self, bot_name, market_id, token_id, size, price, realized_pnl,
+        correlation_id, trade_id, model_version, model_name, event_data,
+    ):
+        """S94: Emit EXIT trade_event — called AFTER lock release."""
+        try:
+            await self.db.insert_trade_event(
+                event_type="EXIT",
+                bot_name=bot_name,
+                market_id=market_id,
+                token_id=token_id,
+                side="SELL",
+                size=size,
+                price=price,
+                realized_pnl=realized_pnl,
+                correlation_id=correlation_id,
+                order_id=trade_id,
+                model_version=model_version,
+                model_name=model_name,
+                event_data=event_data,
+            )
+        except Exception as e:
+            logger.warning("trade_event_exit_emit_failed", error=str(e), market_id=market_id)
+        finally:
+            if correlation_id:
+                self._pending_correlation_ids.discard(correlation_id)
+
+    async def _persist_buy_entry(
+        self, trade_id, market_id, token_id, bot_name, db_side, size, price,
+        confidence, correlation_id, latency_ms, submitted_at,
+        model_version, model_name, event_data,
+    ):
+        """S94: Persist paper_trade + ENTRY event — called AFTER lock release.
+
+        H5/M9: Retry 3x with backoff to prevent ghost positions.
+        Both writes run in parallel via asyncio.gather (Change 2).
+        """
+        try:
+            for _attempt in range(3):
+                try:
+                    _filled_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
+                    # S94 Change 2: Run paper_trade + trade_event writes in parallel
+                    _paper_coro = self.db.insert_paper_trade(
+                        order_id=trade_id,
+                        market_id=market_id,
+                        token_id=token_id,
+                        bot_name=bot_name,
+                        side=db_side,
+                        size=size,
+                        price=price,
+                        confidence=confidence,
+                        correlation_id=correlation_id,
+                        realized_pnl=None,
+                        latency_ms=latency_ms,
+                        status="filled",
+                        submitted_at=submitted_at,
+                        filled_at=_filled_at,
+                    )
+
+                    _event_coro = None
+                    if hasattr(self.db, "insert_trade_event"):
+                        _event_coro = self.db.insert_trade_event(
+                            event_type="ENTRY",
+                            bot_name=bot_name,
+                            market_id=market_id,
+                            token_id=token_id,
+                            side=db_side,
+                            size=size,
+                            price=price,
+                            confidence=confidence,
+                            correlation_id=correlation_id,
+                            order_id=trade_id,
+                            model_version=model_version,
+                            model_name=model_name,
+                            event_data=event_data,
+                        )
+
+                    if _event_coro is not None:
+                        _results = await asyncio.gather(_paper_coro, _event_coro, return_exceptions=True)
+                        # Check paper_trade result — if it raised, re-raise for retry logic
+                        if isinstance(_results[0], BaseException):
+                            raise _results[0]
+                        if isinstance(_results[1], BaseException):
+                            logger.warning("trade_event_entry_emit_failed", error=str(_results[1]), market_id=market_id)
+                    else:
+                        await _paper_coro
+
+                    break  # Success — exit retry loop
+                except Exception as e:
+                    err_str = str(e).lower()
+                    if "unique" in err_str or "duplicate" in err_str or "uq_paper_trades" in err_str:
+                        logger.info(
+                            "Paper trade already exists (duplicate skipped)",
+                            market_id=market_id, side=db_side, bot_name=bot_name,
+                        )
+                        break
+                    if _attempt < 2:
+                        await asyncio.sleep(0.5 * (_attempt + 1))
+                        logger.warning(
+                            "Paper trade persist retry %d/3", _attempt + 1,
+                            market_id=market_id, error=str(e),
+                        )
+                    else:
+                        logger.warning(
+                            "Paper trade persist FAILED after 3 attempts — "
+                            "position may reappear on restart",
+                            market_id=market_id, side=db_side, error=str(e),
+                        )
+        finally:
+            if correlation_id:
+                self._pending_correlation_ids.discard(correlation_id)
+
     def get_portfolio_value(self, current_prices: Dict[str, float]) -> Dict:
         """
         Calculate current portfolio value.
-        
+
         Args:
             current_prices: Dict mapping market_id to current price
         

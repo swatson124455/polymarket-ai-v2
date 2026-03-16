@@ -50,7 +50,7 @@ class MirrorBot(BaseBot):
 
         # Market metadata cache: market_id -> (category, time_to_res, expiry_monotonic)
         self._market_meta_cache: Dict[str, Tuple[str, str, float]] = {}
-        self._MARKET_META_TTL = 900  # 15 minutes (markets don't change category mid-flight)
+        self._MARKET_META_TTL = 3600  # 1 hour (categories/end_dates don't change during trading)
 
         # M1: Per-category exposure tracking (USD deployed per category)
         self._category_exposure: Dict[str, float] = {}

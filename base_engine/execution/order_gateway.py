@@ -576,9 +576,18 @@ class OrderGateway:
         # Reserve under bot_name so CryptoBot/PoliticalBot are separate entities (each can hold same market+side).
         # SELLs (exits) get a longer timeout — failing to exit is worse than failing to enter.
         # On resource-constrained VPS (high CPU steal), DB advisory locks can take >5s to acquire.
+        # S94: RTDS BUY trades skip coordinator — MirrorBot has in-memory dedup via _open_positions,
+        # and the 9 other bots are disabled. Saves 72-464ms coord_ms per BUY.
+        # IMPORTANT: Re-enable when other bots are activated (set MIRROR_SKIP_COORDINATOR_BUY=false).
         _t_coord_start = time.monotonic()
         _coord_timeout = 15.0 if _is_sell else 5.0
-        if self.trade_coordinator is not None:
+        _skip_coord = (
+            not _is_sell
+            and correlation_id
+            and str(correlation_id).startswith("rtds:")
+            and getattr(settings, "MIRROR_SKIP_COORDINATOR_BUY", False)
+        )
+        if self.trade_coordinator is not None and not _skip_coord:
             try:
                 _reserved = await asyncio.wait_for(
                     self.trade_coordinator.reserve_position(market_id, side, token_id, reserving_bot_id=bot_name),
