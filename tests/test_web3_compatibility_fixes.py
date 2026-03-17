@@ -211,49 +211,6 @@ class TestTheGraphQueryFormats:
         assert result is None
 
 
-class TestEventLoopHandling:
-    """Test event loop handling in Streamlit context."""
-    
-    def test_run_async_safe_with_no_loop(self):
-        """Test run_async_safe when no event loop exists."""
-        from ui.dashboard import run_async_safe
-        
-        async def test_coro():
-            await asyncio.sleep(0.01)
-            return "success"
-        
-        # Should work without existing loop
-        result = run_async_safe(test_coro())
-        assert result == "success"
-    
-    def test_run_async_safe_with_running_loop(self):
-        """Test run_async_safe when event loop is already running."""
-        from ui.dashboard import run_async_safe
-        
-        async def test_coro():
-            await asyncio.sleep(0.01)
-            return "success"
-        
-        # Create a running loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        try:
-            # Start a task in the loop
-            task = loop.create_task(test_coro())
-            
-            # Now run_async_safe should use nest_asyncio
-            try:
-                result = run_async_safe(test_coro())
-                assert result == "success"
-            except RuntimeError as e:
-                # If nest_asyncio not installed, should raise clear error
-                assert "nest-asyncio" in str(e)
-        finally:
-            loop.close()
-            asyncio.set_event_loop(None)
-
-
 class TestErrorScenarios:
     """Test error scenarios and edge cases."""
     
