@@ -103,6 +103,27 @@ class WeatherBot(BaseBot):
         self._discovery_cache: Optional[Tuple[float, List, List]] = None  # (mono_time, markets, groups)
         self._discovery_cache_ttl: float = 300.0  # 5 minutes
 
+        # S99: Fill-failure cooldown — market_id → (consecutive_fails, last_attempt_mono)
+        self._fill_fail_tracker: Dict[str, Tuple[int, float]] = {}
+        self._fill_fail_max_consec = int(getattr(settings, "WEATHER_FILL_FAIL_COOLDOWN_SCANS", 2))
+        self._fill_fail_cooldown_secs = float(getattr(settings, "WEATHER_FILL_FAIL_COOLDOWN_SECS", 900.0))
+
+        # S99: Fill probability floor — skip trades where price-depth alone predicts <threshold
+        self._min_fill_prob_estimate = float(getattr(settings, "WEATHER_MIN_FILL_PROB_ESTIMATE", 0.25))
+
+        # S99: PSW every-other-scan divisor
+        self._psw_scan_divisor = int(getattr(settings, "WEATHER_PSW_SCAN_DIVISOR", 2))
+
+        # S99: Adaptive scan backoff
+        self._consecutive_no_edge: int = 0
+        self._backoff_threshold = int(getattr(settings, "WEATHER_ADAPTIVE_BACKOFF_THRESHOLD", 6))
+        self._max_scan_interval = float(getattr(settings, "WEATHER_MAX_SCAN_INTERVAL", 600.0))
+
+        # S99: Discovery caches for precip/snow/wind (10-20 min TTL)
+        self._precip_discovery_cache: Optional[Tuple[float, list]] = None
+        self._snow_discovery_cache: Optional[Tuple[float, list]] = None
+        self._wind_discovery_cache: Optional[Tuple[float, list]] = None
+
         # S97: Exposure lock for parallel trade execution
         self._exposure_lock = asyncio.Lock()
 
@@ -563,6 +584,16 @@ class WeatherBot(BaseBot):
         (5, 15, 6, 0), (17, 15, 18, 0),  # GFS
     ]
 
+    def _effective_discovery_ttl(self) -> float:
+        """S99: Time-of-day aware discovery cache TTL.
+        Overnight (00-12 UTC): 900s. Daytime (12-00 UTC): 300s."""
+        return 900.0 if datetime.now(timezone.utc).hour < 12 else 300.0
+
+    def _effective_psw_discovery_ttl(self) -> float:
+        """S99: Precip/snow/wind discovery cache TTL.
+        Overnight: 1200s. Daytime: 600s."""
+        return 1200.0 if datetime.now(timezone.utc).hour < 12 else 600.0
+
     def _get_scan_interval_seconds(self) -> float:
         """Override base: scan aggressively during NWP model update windows.
 
@@ -591,7 +622,13 @@ class WeatherBot(BaseBot):
             return 120.0
 
         # Default: use configured SCAN_INTERVAL_WEATHER (normally 300s)
-        return super()._get_scan_interval_seconds()
+        # S99: Adaptive backoff — extend interval after consecutive zero-edge scans
+        base = super()._get_scan_interval_seconds()
+        if self._consecutive_no_edge >= self._backoff_threshold * 2:
+            return min(base * 2.0, self._max_scan_interval)
+        elif self._consecutive_no_edge >= self._backoff_threshold:
+            return min(base * 1.5, self._max_scan_interval)
+        return base
 
     # ── Main scan loop ────────────────────────────────────────────────────
 
@@ -663,11 +700,12 @@ class WeatherBot(BaseBot):
                 break
         if _priority_items:
             logger.info("weatherbot_priority_events", count=len(_priority_items))
+            self._consecutive_no_edge = 0  # S99: Priority event resets backoff
 
         # S97: Discovery cache — reuse markets+groups for 5 min to skip Gamma API call
         _now_mono = time.monotonic()
         if (self._discovery_cache is not None
-                and (_now_mono - self._discovery_cache[0]) < self._discovery_cache_ttl):
+                and (_now_mono - self._discovery_cache[0]) < self._effective_discovery_ttl()):
             weather_markets, groups = self._discovery_cache[1], self._discovery_cache[2]
         else:
             # 1. Fetch weather markets via Gamma API tag_slug=temperature (PRIMARY).
@@ -729,11 +767,12 @@ class WeatherBot(BaseBot):
         analyzed: List[Tuple[List[Dict], WeatherMarketGroup, Dict[str, float]]] = []
         for group, result in zip(groups, _results):
             if isinstance(result, Exception):
-                logger.debug(
+                logger.warning(
                     "weatherbot_group_error",
                     city=group.city,
                     date=group.target_date.isoformat(),
                     error=str(result),
+                    error_type=type(result).__name__,
                 )
             else:
                 opps, model_probs = result
@@ -803,11 +842,15 @@ class WeatherBot(BaseBot):
         _t_trades = time.monotonic()
 
         # Phases 5-7: Precip/Snow/Wind — independent market types, run in parallel
-        _precip_traded, _snow_traded, _wind_traded = await asyncio.gather(
-            self._scan_precipitation_markets(),
-            self._scan_snowfall_markets(),
-            self._scan_wind_markets(),
-        )
+        # S99: Run every Nth scan to reduce overhead (these markets move slower)
+        if self._psw_scan_divisor <= 1 or self._scan_count % self._psw_scan_divisor == 0:
+            _precip_traded, _snow_traded, _wind_traded = await asyncio.gather(
+                self._scan_precipitation_markets(),
+                self._scan_snowfall_markets(),
+                self._scan_wind_markets(),
+            )
+        else:
+            _precip_traded = _snow_traded = _wind_traded = 0
 
         # Wire Session 51 heartbeat counters so watchdog can detect silent WeatherBot
         self._last_scan_markets = len(weather_markets)
@@ -835,6 +878,13 @@ class WeatherBot(BaseBot):
             api_calls=self._forecast_client.api_calls_this_scan,
             priority_events=len(_priority_items),
         )
+
+        # S99: Track consecutive zero-edge scans for adaptive backoff
+        _total_activity = _groups_with_edge + _precip_traded + _snow_traded + _wind_traded
+        if _total_activity == 0:
+            self._consecutive_no_edge += 1
+        else:
+            self._consecutive_no_edge = 0
 
     async def analyze_opportunity(self, market_data: Dict) -> Optional[Dict]:
         """Required by BaseBot. Analyzes a single market in isolation.
@@ -902,26 +952,33 @@ class WeatherBot(BaseBot):
         """
         import httpx
 
-        # Discover precipitation markets via tag_slug
-        try:
-            url = "https://gamma-api.polymarket.com/events"
-            params = {
-                "active": "true",
-                "closed": "false",
-                "tag_slug": "precipitation",
-                "limit": "100",
-            }
-            async with httpx.AsyncClient(timeout=15.0) as http:
-                resp = await http.get(url, params=params)
-                if resp.status_code != 200:
-                    return 0
-                events = resp.json()
-        except Exception as exc:
-            logger.debug("weatherbot_precip_tag_fetch_error", error=str(exc))
-            return 0
+        # S99: Discovery cache for precipitation (10-20 min TTL)
+        _now_mono = time.monotonic()
+        _ttl = self._effective_psw_discovery_ttl()
+        if (self._precip_discovery_cache is not None
+                and (_now_mono - self._precip_discovery_cache[0]) < _ttl):
+            events = self._precip_discovery_cache[1]
+        else:
+            try:
+                url = "https://gamma-api.polymarket.com/events"
+                params = {
+                    "active": "true",
+                    "closed": "false",
+                    "tag_slug": "precipitation",
+                    "limit": "100",
+                }
+                async with httpx.AsyncClient(timeout=15.0) as http:
+                    resp = await http.get(url, params=params)
+                    if resp.status_code != 200:
+                        return 0
+                    events = resp.json()
+            except Exception as exc:
+                logger.debug("weatherbot_precip_tag_fetch_error", error=str(exc))
+                return 0
 
-        if not isinstance(events, list):
-            return 0
+            if not isinstance(events, list):
+                return 0
+            self._precip_discovery_cache = (time.monotonic(), events)
 
         # Extract markets from events (same pattern as temperature)
         markets: List[Dict] = []
@@ -1116,25 +1173,33 @@ class WeatherBot(BaseBot):
         """
         import httpx
 
-        try:
-            url = "https://gamma-api.polymarket.com/events"
-            params = {
-                "active": "true",
-                "closed": "false",
-                "tag_slug": "snowfall",
-                "limit": "100",
-            }
-            async with httpx.AsyncClient(timeout=15.0) as http:
-                resp = await http.get(url, params=params)
-                if resp.status_code != 200:
-                    return 0
-                events = resp.json()
-        except Exception as exc:
-            logger.debug("weatherbot_snow_tag_fetch_error", error=str(exc))
-            return 0
+        # S99: Discovery cache for snowfall
+        _now_mono = time.monotonic()
+        _ttl = self._effective_psw_discovery_ttl()
+        if (self._snow_discovery_cache is not None
+                and (_now_mono - self._snow_discovery_cache[0]) < _ttl):
+            events = self._snow_discovery_cache[1]
+        else:
+            try:
+                url = "https://gamma-api.polymarket.com/events"
+                params = {
+                    "active": "true",
+                    "closed": "false",
+                    "tag_slug": "snowfall",
+                    "limit": "100",
+                }
+                async with httpx.AsyncClient(timeout=15.0) as http:
+                    resp = await http.get(url, params=params)
+                    if resp.status_code != 200:
+                        return 0
+                    events = resp.json()
+            except Exception as exc:
+                logger.debug("weatherbot_snow_tag_fetch_error", error=str(exc))
+                return 0
 
-        if not isinstance(events, list):
-            return 0
+            if not isinstance(events, list):
+                return 0
+            self._snow_discovery_cache = (time.monotonic(), events)
 
         # Extract markets from events (same pattern as precipitation)
         markets: List[Dict] = []
@@ -1286,25 +1351,33 @@ class WeatherBot(BaseBot):
         """
         import httpx
 
-        try:
-            url = "https://gamma-api.polymarket.com/events"
-            params = {
-                "active": "true",
-                "closed": "false",
-                "tag_slug": "wind",
-                "limit": "100",
-            }
-            async with httpx.AsyncClient(timeout=15.0) as http:
-                resp = await http.get(url, params=params)
-                if resp.status_code != 200:
-                    return 0
-                events = resp.json()
-        except Exception as exc:
-            logger.debug("weatherbot_wind_tag_fetch_error", error=str(exc))
-            return 0
+        # S99: Discovery cache for wind
+        _now_mono = time.monotonic()
+        _ttl = self._effective_psw_discovery_ttl()
+        if (self._wind_discovery_cache is not None
+                and (_now_mono - self._wind_discovery_cache[0]) < _ttl):
+            events = self._wind_discovery_cache[1]
+        else:
+            try:
+                url = "https://gamma-api.polymarket.com/events"
+                params = {
+                    "active": "true",
+                    "closed": "false",
+                    "tag_slug": "wind",
+                    "limit": "100",
+                }
+                async with httpx.AsyncClient(timeout=15.0) as http:
+                    resp = await http.get(url, params=params)
+                    if resp.status_code != 200:
+                        return 0
+                    events = resp.json()
+            except Exception as exc:
+                logger.debug("weatherbot_wind_tag_fetch_error", error=str(exc))
+                return 0
 
-        if not isinstance(events, list):
-            return 0
+            if not isinstance(events, list):
+                return 0
+            self._wind_discovery_cache = (time.monotonic(), events)
 
         markets: List[Dict] = []
         for evt in events:
@@ -1544,7 +1617,7 @@ class WeatherBot(BaseBot):
             _best_bucket = None
             _best_dist = float("inf")
             for b in group.buckets:
-                _mid = (b.low + b.high) / 2.0 if b.high < 999 else b.low + 5.0
+                _mid = (b.low_bound + b.high_bound) / 2.0 if b.high_bound is not None and b.high_bound < 999 else (b.low_bound + 5.0 if b.low_bound is not None else 50.0)
                 if abs(_ens_mean - _mid) < _best_dist:
                     _best_dist = abs(_ens_mean - _mid)
                     _best_bucket = b
@@ -1578,7 +1651,7 @@ class WeatherBot(BaseBot):
                 group.station.station_id,
             )
         except ValueError as exc:
-            logger.debug("weatherbot_fit_failed", error=str(exc))
+            logger.debug("weatherbot_fit_failed", station=group.station.station_id, city=group.city, error=str(exc))
             return [], {}
 
         # T3B: Climate normal Bayesian prior — blend toward climatology at long lead times.
@@ -2013,8 +2086,26 @@ class WeatherBot(BaseBot):
 
         # Skip recently exited markets (15-min cooldown)
         _mono_now = time.monotonic()
-        _exited_at = self._recently_exited.get(opp.get("market_id", ""))
+        _mid = opp.get("market_id", "")
+        _exited_at = self._recently_exited.get(_mid)
         if _exited_at and _mono_now - _exited_at < 900.0:
+            return False
+
+        # S99: Fill-failure cooldown — skip markets that failed N consecutive times
+        _fail_entry = self._fill_fail_tracker.get(_mid)
+        if _fail_entry:
+            _consec, _last_mono = _fail_entry
+            if _consec >= self._fill_fail_max_consec:
+                if _mono_now - _last_mono < self._fill_fail_cooldown_secs:
+                    return False
+                else:
+                    del self._fill_fail_tracker[_mid]
+
+        # S99: Fill probability floor — skip if price-depth predicts <threshold
+        _price = opp.get("price", 0.5)
+        _est_fill = 0.3 + 0.7 * 4.0 * _price * (1.0 - _price)
+        if _est_fill < self._min_fill_prob_estimate:
+            logger.debug("weatherbot_low_fill_prob_skip", market_id=_mid, price=_price, est_fill=round(_est_fill, 3))
             return False
 
         # Daily loss limit
@@ -2271,11 +2362,17 @@ class WeatherBot(BaseBot):
             # so without this the dict stays empty and the cooldown never fires.
             self._recently_exited[opp["market_id"]] = time.monotonic()
             await self._save_exit_to_redis(opp["market_id"])
+            # S99: Clear fill-failure tracker on success
+            self._fill_fail_tracker.pop(opp["market_id"], None)
             return True
         else:
             # Revert exposure trackers on failure
             self._group_exposure[group_key] = current_group_exp
             self._city_exposure[group.city] = current_city_exp
+            # S99: Track consecutive fill failures
+            _prev = self._fill_fail_tracker.get(opp["market_id"])
+            _prev_count = _prev[0] if _prev else 0
+            self._fill_fail_tracker[opp["market_id"]] = (_prev_count + 1, _mono_now)
             logger.debug(
                 "weatherbot_trade_failed",
                 market_id=opp["market_id"],
