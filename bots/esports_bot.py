@@ -3333,6 +3333,17 @@ class EsportsBot(BaseBot):
                 accuracy = acc_data["accuracy"]
 
                 if brier > 0.30:
+                    # S100: Don't halt when BetaCalibrator has no clean data yet.
+                    # Old accuracy is from stale 3-stage pipeline — meaningless.
+                    # Once BetaCalibrator fits (30+ clean post-fix predictions),
+                    # halting resumes with valid metrics.
+                    _cal = self._beta_calibrators.get(game)
+                    if _cal and not _cal._fitted:
+                        if game in self._monitoring_halted_games:
+                            logger.info("esportsbot_monitoring_halt_suspended_no_cal",
+                                        game=game, brier=round(brier, 4))
+                            self._monitoring_halted_games.discard(game)
+                        continue
                     self._monitoring_halted_games.add(game)
                     if alerting:
                         await alerting.send_alert(
