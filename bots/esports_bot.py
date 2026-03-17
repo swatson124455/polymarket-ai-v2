@@ -11,6 +11,7 @@ Scan interval: 120s default, 10s during live matches.
 from __future__ import annotations
 
 import asyncio
+import math
 import re
 import time
 from datetime import datetime, timezone
@@ -25,6 +26,126 @@ from base_engine.monitoring.alerting import AlertSeverity
 from config.settings import settings
 
 logger = get_logger()
+
+
+# ---------------------------------------------------------------------------
+# S100: Beta calibration (Kull et al., AISTATS 2017) with Bayesian identity
+# priors.  Replaces the old 3-stage sequential pipeline (bias_decomp →
+# focal_temp → horizon_bias) which compounded estimation variance and was
+# trained on stale pre-S97 data.
+#
+# Calibration function:
+#     calibrated = sigmoid(a·ln(p) − b·ln(1−p) + c)
+#
+# Identity at a=1, b=1, c=0.  Regularized toward identity via:
+#     loss = NLL(a, b, c) + λ(a−1)² + λ(b−1)² + λc²
+#
+# With high λ and few samples the calibrator stays at identity — raw model
+# probs pass through untouched.  As resolved predictions accumulate the
+# corrections grow gradually under Bayesian shrinkage.
+# ---------------------------------------------------------------------------
+class BetaCalibrator:
+    """Per-game beta calibrator with Bayesian identity priors."""
+
+    __slots__ = ("a", "b", "c", "lambda_reg", "min_samples", "_fitted",
+                 "_n_samples")
+
+    def __init__(self, lambda_reg: float = 10.0, min_samples: int = 30):
+        self.a: float = 1.0
+        self.b: float = 1.0
+        self.c: float = 0.0
+        self.lambda_reg = lambda_reg
+        self.min_samples = min_samples
+        self._fitted: bool = False
+        self._n_samples: int = 0
+
+    # -- inference ----------------------------------------------------------
+
+    def calibrate(self, p: float) -> float:
+        """Apply beta calibration.  Returns *p* unchanged when not fitted."""
+        if not self._fitted:
+            return p
+        p = max(1e-6, min(1.0 - 1e-6, p))
+        logit_cal = self.a * math.log(p) - self.b * math.log(1.0 - p) + self.c
+        # numerically-stable sigmoid
+        if logit_cal >= 0:
+            result = 1.0 / (1.0 + math.exp(-logit_cal))
+        else:
+            ez = math.exp(logit_cal)
+            result = ez / (1.0 + ez)
+        return max(0.01, min(0.99, result))
+
+    # -- fitting ------------------------------------------------------------
+
+    async def fit_from_db(self, db, game: str, days: int = 90) -> bool:
+        """Fit from ``esports_prediction_log`` resolved predictions.
+
+        Returns ``True`` when fitting succeeds, ``False`` when there is
+        insufficient data (calibrator stays at / reverts to identity).
+        """
+        if db is None:
+            return False
+
+        try:
+            from sqlalchemy import text as _text
+            async with db.get_session() as session:
+                result = await session.execute(
+                    _text(
+                        "SELECT predicted_prob, actual_outcome "
+                        "FROM esports_prediction_log "
+                        "WHERE actual_outcome IS NOT NULL "
+                        "AND game = :game "
+                        "AND created_at > NOW() - :days_int * INTERVAL '1 day' "
+                        "ORDER BY created_at DESC LIMIT 5000"
+                    ),
+                    {"game": game, "days_int": int(days)},
+                )
+                rows = result.fetchall()
+        except Exception as exc:
+            logger.debug("beta_cal_query_failed", game=game, error=str(exc))
+            return False
+
+        if len(rows) < self.min_samples:
+            self._fitted = False
+            self._n_samples = len(rows)
+            return False
+
+        import numpy as np
+        from scipy.optimize import minimize as _minimize
+
+        preds = np.clip(
+            np.array([float(r[0]) for r in rows]), 1e-6, 1.0 - 1e-6
+        )
+        outcomes = np.array([float(r[1]) for r in rows])
+        ln_p = np.log(preds)
+        ln_1mp = np.log(1.0 - preds)
+        lam = self.lambda_reg
+
+        def _loss(params):
+            a, b, c_ = params
+            logits = a * ln_p - b * ln_1mp + c_
+            # stable log-sigmoid: -log(sigmoid(x)) = softplus(-x)
+            nll = np.mean(
+                outcomes * np.logaddexp(0.0, -logits)
+                + (1.0 - outcomes) * np.logaddexp(0.0, logits)
+            )
+            reg = lam * ((a - 1.0) ** 2 + (b - 1.0) ** 2 + c_ ** 2)
+            return nll + reg
+
+        res = _minimize(
+            _loss,
+            x0=[1.0, 1.0, 0.0],
+            method="L-BFGS-B",
+            bounds=[(0.1, 5.0), (0.1, 5.0), (-2.0, 2.0)],
+        )
+        self.a, self.b, self.c = float(res.x[0]), float(res.x[1]), float(res.x[2])
+        self._fitted = True
+        self._n_samples = len(rows)
+        return True
+
+    @property
+    def is_fitted(self) -> bool:
+        return self._fitted
 
 
 class EsportsBot(BaseBot):
@@ -113,14 +234,20 @@ class EsportsBot(BaseBot):
             getattr(settings, "ESPORTS_MAX_BACKFILLS_PER_SCAN", 10)
         )
         self._team_fail_logged: set = set()              # rate-limit team_match_fail logs (per session)
+        self._last_glicko2_miss_reason: str = ""         # S100: diagnostic reason for last glicko2 miss
         self._calibration_ece: Dict[str, float] = {}     # game → latest ECE (updated every 10 min)
         self._edge_decay_data: Dict[str, Dict] = {}      # game → latest edge decay analysis
         self._game_kelly_mult: Dict[str, float] = {}     # game → Kelly multiplier (Brier-based)
 
         # Session 82-83: Calibration pipeline (fitted in _check_monitoring_thresholds)
-        self._focal_calibrator: Any = None       # FocalTemperatureCalibrator instance
-        self._bias_decomp: Any = None            # EsportsBiasDecomposition instance
-        self._horizon_calibrator: Any = None     # HorizonBiasCalibrator instance
+        self._focal_calibrator: Any = None       # DEPRECATED (S100) — kept for compat
+        self._bias_decomp: Any = None            # DEPRECATED (S100) — kept for compat
+        self._horizon_calibrator: Any = None     # DEPRECATED (S100) — kept for compat
+        # S100: Single-stage beta calibrators per game (replaces 3-stage pipeline)
+        self._beta_calibrators: Dict[str, BetaCalibrator] = {
+            g: BetaCalibrator(lambda_reg=10.0, min_samples=30)
+            for g in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl")
+        }
         self._onnx_cross_game_session: Any = None  # ONNX InferenceSession for cross-game XGB
         # Per-game ONNX sessions for faster inference (Session 83)
         self._onnx_lol_session: Any = None
@@ -346,27 +473,13 @@ class EsportsBot(BaseBot):
         # Load cross-game XGBoost meta model (if previously trained)
         self._load_cross_game_model()
 
-        # Initialize calibration pipeline (Session 82)
-        try:
-            from base_engine.features.calibration import FocalTemperatureCalibrator
-            self._focal_calibrator = FocalTemperatureCalibrator(db=db)
-            logger.info("EsportsBot: FocalTemperatureCalibrator initialized")
-        except Exception as exc:
-            logger.debug("EsportsBot: FocalTemp not available", error=str(exc))
-
-        try:
-            from esports.calibration.bias_decomposition import EsportsBiasDecomposition
-            self._bias_decomp = EsportsBiasDecomposition()
-            logger.info("EsportsBot: EsportsBiasDecomposition initialized")
-        except Exception as exc:
-            logger.debug("EsportsBot: BiasDecomp not available", error=str(exc))
-
-        try:
-            from base_engine.features.calibration import HorizonBiasCalibrator
-            self._horizon_calibrator = HorizonBiasCalibrator(db=db)
-            logger.info("EsportsBot: HorizonBiasCalibrator initialized")
-        except Exception as exc:
-            logger.debug("EsportsBot: HorizonBias not available", error=str(exc))
+        # S100: Old 3-stage calibration pipeline removed. BetaCalibrators
+        # initialized in __init__ (per-game, identity priors).  The old classes
+        # (FocalTemperatureCalibrator, EsportsBiasDecomposition, HorizonBias-
+        # Calibrator) still exist in their modules but are no longer used by
+        # EsportsBot.
+        logger.info("EsportsBot: BetaCalibrator initialized for %d games",
+                     len(self._beta_calibrators))
 
         # Session 83: Load per-game ONNX sessions
         self._load_per_game_onnx_sessions()
@@ -476,6 +589,11 @@ class EsportsBot(BaseBot):
         # This MUST come before super() to avoid processing all 26K markets.
         cached = self._prediction_cache.get(market_id)
         if not cached:
+            # S100: Update WS liveness even without prediction cache — fixes
+            # bootstrap where _last_ws_price_ts never updates because cache
+            # is empty on startup (populated after first scan completes).
+            if market_id in self._market_token_map:
+                self._last_ws_price_ts = time.monotonic()
             # Fallback: check series prediction cache for BO3/BO5 markets
             if self._series_prediction_cache.get(market_id):
                 await self._series_on_price_update(event)
@@ -876,7 +994,7 @@ class EsportsBot(BaseBot):
         self._wf = {"no_game": 0, "no_price": 0, "no_token": 0, "halted": 0,
                      "exposure_cap": 0, "observation": 0, "no_prediction": 0,
                      "low_edge": 0, "edge_cap": 0, "low_confidence": 0,
-                     "low_confluence": 0, "passed": 0}
+                     "low_confluence": 0, "passed": 0, "reentry_rejected": 0}
         self._exposure_cap_logged: set = set()  # per-scan: games already logged for cap hit
         og = getattr(self.base_engine, "order_gateway", None)
 
@@ -921,6 +1039,7 @@ class EsportsBot(BaseBot):
                     _pos = getattr(og, "_position_details", {}).get(_pos_key, {})
                     _existing_size = float(_pos.get("size", 0))
                     if _existing_size >= _per_market_cap:
+                        self._wf["reentry_rejected"] += 1
                         return (0, 0, 1)  # Already at cap
                     # Let analyze_opportunity run; we'll validate direction + edge after
                     opp = await self.analyze_opportunity(m)
@@ -929,13 +1048,16 @@ class EsportsBot(BaseBot):
                         _pos_side = _pos.get("side", "")
                         # Direction must match (no hedging against ourselves)
                         if _opp_side != _pos_side:
+                            self._wf["reentry_rejected"] += 1
                             return (0, 0, 1)
                         # Edge must meet higher re-entry bar
                         if opp.get("edge", 0) < _reentry_min_edge:
+                            self._wf["reentry_rejected"] += 1
                             return (0, 0, 1)
                         # Cap size at remaining room
                         _remaining = _per_market_cap - _existing_size
                         if _remaining <= 0:
+                            self._wf["reentry_rejected"] += 1
                             return (0, 0, 1)
                         opp["max_size_override"] = _remaining
                         opp["is_reentry"] = True
@@ -1397,15 +1519,11 @@ class EsportsBot(BaseBot):
             if _wf: _wf["no_prediction"] += 1
             return None
 
-        # Session 82-83: Apply calibration pipeline (bias decomp → focal temp → horizon bias)
+        # S100: Single-stage beta calibration (replaces 3-stage sequential pipeline)
         _raw_prob = model_prob
-        if self._bias_decomp is not None:
-            model_prob = self._bias_decomp.recalibrate(model_prob, game)
-        if self._focal_calibrator is not None and self._focal_calibrator.is_fitted:
-            model_prob = self._focal_calibrator.calibrate(model_prob)
-        if self._horizon_calibrator is not None and self._horizon_calibrator.is_fitted:
-            _ttr_days = self._compute_ttr_days(market_data)
-            model_prob = self._horizon_calibrator.calibrate(model_prob, "esports", _ttr_days)
+        _beta_cal = self._beta_calibrators.get(game)
+        if _beta_cal is not None and _beta_cal.is_fitted:
+            model_prob = _beta_cal.calibrate(model_prob)
 
         # RFLB correction [T1-B]: favorites systematically overbetted.
         # Nudge model_prob toward 0.50 when market prices a heavy favorite
@@ -1710,6 +1828,7 @@ class EsportsBot(BaseBot):
         # Graduation: once ML models pass accuracy >= 55% + brier <= 0.24,
         # they take over and Glicko-2 becomes just one blend component.
         try:
+            self._last_glicko2_miss_reason = ""
             glicko2_prob = await self._get_glicko2_prediction(market_data, game, price)
             if glicko2_prob is None:
                 # Rate-limit: only log once per market per session (same pattern as team_match_fail)
@@ -1717,6 +1836,7 @@ class EsportsBot(BaseBot):
                     self._team_fail_logged.add(market_id)
                     logger.info("esportsbot_glicko2_miss", game=game,
                                 market_id=market_id,
+                                reason=self._last_glicko2_miss_reason or "unknown",
                                 question=str(market_data.get("question",""))[:80])
                 # S94-P3: DISABLED fallback 0.50 — was creating huge fake edges
                 # (0.50 vs market price 0.85-0.92 = 35-42% "edge") that flooded
@@ -3200,6 +3320,13 @@ class EsportsBot(BaseBot):
             for game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
                 acc_data = _acc_all.get(game)
                 if not acc_data or acc_data["total"] < 30:
+                    # S100: Clear halt when data is insufficient to justify it.
+                    # Prevents catch-22 where halted games never accumulate data.
+                    if game in self._monitoring_halted_games:
+                        logger.info("esportsbot_monitoring_halt_cleared_insufficient_data",
+                                    game=game,
+                                    total=acc_data["total"] if acc_data else 0)
+                        self._monitoring_halted_games.discard(game)
                     continue
 
                 brier = acc_data["brier_score"]
@@ -3276,42 +3403,22 @@ class EsportsBot(BaseBot):
         except Exception as exc:
             logger.debug("esportsbot_calibration_failed", error=str(exc))
 
-        # Session 82: Fit FocalTemperatureCalibrator from prediction_log
-        if self._focal_calibrator is not None:
+        # S100: Fit BetaCalibrators per game.  Training window starts from the
+        # S97 Glicko2 fix date (2026-03-16) so stale pre-fix data never enters.
+        _GLICKO2_FIX_DATE = datetime(2026, 3, 16, tzinfo=timezone.utc)
+        _days_since_fix = max(1, (datetime.now(timezone.utc) - _GLICKO2_FIX_DATE).days)
+        _cal_days = min(_days_since_fix, 90)
+        for _cal_game, _cal in self._beta_calibrators.items():
             try:
-                fitted = await self._focal_calibrator.fit_from_prediction_log(n_days=90)
-                if fitted:
-                    logger.info("esportsbot_focal_temp_fitted",
-                                T=round(self._focal_calibrator.temperature, 2),
-                                gamma=round(self._focal_calibrator.gamma, 1))
+                _cal_fitted = await _cal.fit_from_db(db, _cal_game, days=_cal_days)
+                if _cal_fitted:
+                    logger.info("esportsbot_beta_cal_fitted", game=_cal_game,
+                                a=round(_cal.a, 4), b=round(_cal.b, 4),
+                                c=round(_cal.c, 4), n=_cal._n_samples,
+                                window_days=_cal_days)
             except Exception as exc:
-                logger.debug("esportsbot_focal_temp_fit_failed", error=str(exc))
-
-        # Session 82: Fit EsportsBiasDecomposition per game
-        if self._bias_decomp is not None:
-            try:
-                bd_results = await self._bias_decomp.fit_from_db(db, days=90)
-                if bd_results:
-                    logger.info("esportsbot_bias_decomp_fitted",
-                                games=list(bd_results.keys()),
-                                params={g: round(v["b"], 3) for g, v in bd_results.items()})
-            except Exception as exc:
-                logger.debug("esportsbot_bias_decomp_fit_failed", error=str(exc))
-
-        # Session 83: Fit HorizonBiasCalibrator from trade_events
-        if self._horizon_calibrator is not None:
-            try:
-                fitted = await asyncio.wait_for(
-                    self._horizon_calibrator.fit_from_trade_events(n_days=180),
-                    timeout=10.0,
-                )
-                if fitted:
-                    logger.info("esportsbot_horizon_bias_fitted",
-                                buckets=len(self._horizon_calibrator._b_params))
-            except asyncio.TimeoutError:
-                logger.warning("esportsbot_horizon_bias_timeout")
-            except Exception as exc:
-                logger.debug("esportsbot_horizon_bias_fit_failed", error=str(exc))
+                logger.debug("esportsbot_beta_cal_fit_failed",
+                             game=_cal_game, error=str(exc))
 
         # Session 83: Dynamic per-game EGM d tuning from Brier scores
         self._update_per_game_egm_d()
@@ -3751,10 +3858,12 @@ class EsportsBot(BaseBot):
         """
         tracker = self._glicko2_trackers.get(game)
         if tracker is None or tracker.match_count < 10:
+            self._last_glicko2_miss_reason = "tracker_missing"
             return None
 
         question = str(market_data.get("question", "")).lower()
         if not question:
+            self._last_glicko2_miss_reason = "empty_question"
             return None
 
         # S97-P2: Use shared 6-pattern extraction (was inline, now shared with
@@ -3768,6 +3877,12 @@ class EsportsBot(BaseBot):
             if not team_b_id and _clean_b:
                 team_b_id = await self._backfill_unknown_team(_clean_b, game)
             if not team_a_id or not team_b_id:
+                # S100: Distinguish extraction vs match failure
+                if not _clean_a or not _clean_b:
+                    self._last_glicko2_miss_reason = f"extraction_failed"
+                else:
+                    _failed = _clean_a if not team_a_id else _clean_b
+                    self._last_glicko2_miss_reason = f"match_failed:{_failed}"
                 _fail_key = f"{game}:{_clean_a}:{_clean_b}"
                 if _fail_key not in self._team_fail_logged:
                     self._team_fail_logged.add(_fail_key)
@@ -3775,7 +3890,8 @@ class EsportsBot(BaseBot):
                                 question=question[:80],
                                 name_a=_clean_a or "?",
                                 name_b=_clean_b or "?",
-                                team_a_id=team_a_id, team_b_id=team_b_id)
+                                team_a_id=team_a_id, team_b_id=team_b_id,
+                                reason=self._last_glicko2_miss_reason)
                 return None
 
         # Get Glicko-2 expected score with Bayesian prior blending (E5).
