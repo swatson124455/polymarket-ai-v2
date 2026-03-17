@@ -298,6 +298,9 @@ class TestCanOpenPosition:
             ms.TOTAL_CAPITAL = 10_000.0
             ms.MIRROR_MIN_PRICE = 0.07
             ms.MIRROR_MAX_PRICE = 0.93
+            ms.MIRROR_HARD_MIN_PRICE = 0.05
+            ms.MIRROR_HARD_MAX_PRICE = 0.95
+            ms.MIRROR_EXTREME_PRICE_DAMPENER = 0.25
             assert bot._can_open_position(0.50) is True
 
     def test_blocks_when_position_limit_reached(self):
@@ -311,6 +314,9 @@ class TestCanOpenPosition:
             ms.TOTAL_CAPITAL = 10_000.0
             ms.MIRROR_MIN_PRICE = 0.07
             ms.MIRROR_MAX_PRICE = 0.93
+            ms.MIRROR_HARD_MIN_PRICE = 0.05
+            ms.MIRROR_HARD_MAX_PRICE = 0.95
+            ms.MIRROR_EXTREME_PRICE_DAMPENER = 0.25
             assert bot._can_open_position(0.50) is False
 
     def test_blocks_when_daily_cap_reached(self):
@@ -323,6 +329,9 @@ class TestCanOpenPosition:
             ms.TOTAL_CAPITAL = 10_000.0
             ms.MIRROR_MIN_PRICE = 0.07
             ms.MIRROR_MAX_PRICE = 0.93
+            ms.MIRROR_HARD_MIN_PRICE = 0.05
+            ms.MIRROR_HARD_MAX_PRICE = 0.95
+            ms.MIRROR_EXTREME_PRICE_DAMPENER = 0.25
             assert bot._can_open_position(0.50) is False
 
     def test_blocks_exactly_at_cap(self):
@@ -334,6 +343,9 @@ class TestCanOpenPosition:
             ms.TOTAL_CAPITAL = 10_000.0
             ms.MIRROR_MIN_PRICE = 0.07
             ms.MIRROR_MAX_PRICE = 0.93
+            ms.MIRROR_HARD_MIN_PRICE = 0.05
+            ms.MIRROR_HARD_MAX_PRICE = 0.95
+            ms.MIRROR_EXTREME_PRICE_DAMPENER = 0.25
             assert bot._can_open_position(0.50) is False
 
     def test_allows_at_one_below_cap(self):
@@ -345,6 +357,9 @@ class TestCanOpenPosition:
             ms.TOTAL_CAPITAL = 10_000.0
             ms.MIRROR_MIN_PRICE = 0.07
             ms.MIRROR_MAX_PRICE = 0.93
+            ms.MIRROR_HARD_MIN_PRICE = 0.05
+            ms.MIRROR_HARD_MAX_PRICE = 0.95
+            ms.MIRROR_EXTREME_PRICE_DAMPENER = 0.25
             assert bot._can_open_position(0.50) is True
 
 
@@ -825,6 +840,9 @@ class TestExecuteMirrorTrade:
             ms.TOTAL_CAPITAL = 10000.0
             ms.MIRROR_MIN_PRICE = 0.07
             ms.MIRROR_MAX_PRICE = 0.93
+            ms.MIRROR_HARD_MIN_PRICE = 0.05
+            ms.MIRROR_HARD_MAX_PRICE = 0.95
+            ms.MIRROR_EXTREME_PRICE_DAMPENER = 0.25
             ms.MIRROR_CATEGORY_BLOCKLIST = ""
             ms.MIRROR_MARKET_COOLDOWN_SECONDS = 0
             ms.MIRROR_MAX_SLIPPAGE_PCT = 0.08
@@ -866,6 +884,9 @@ class TestExecuteMirrorTrade:
             ms.TOTAL_CAPITAL = 10000.0
             ms.MIRROR_MIN_PRICE = 0.07
             ms.MIRROR_MAX_PRICE = 0.93
+            ms.MIRROR_HARD_MIN_PRICE = 0.05
+            ms.MIRROR_HARD_MAX_PRICE = 0.95
+            ms.MIRROR_EXTREME_PRICE_DAMPENER = 0.25
             ms.MIRROR_CATEGORY_BLOCKLIST = ""
             ms.MIRROR_MARKET_COOLDOWN_SECONDS = 0
             ms.MIRROR_MAX_SLIPPAGE_PCT = 0.08
@@ -1045,6 +1066,9 @@ class TestCanOpenPositionBankroll:
             ms.TOTAL_CAPITAL = 10000.0
             ms.MIRROR_MIN_PRICE = 0.07
             ms.MIRROR_MAX_PRICE = 0.93
+            ms.MIRROR_HARD_MIN_PRICE = 0.05
+            ms.MIRROR_HARD_MAX_PRICE = 0.95
+            ms.MIRROR_EXTREME_PRICE_DAMPENER = 0.25
             assert bot._can_open_position(0.50) is True
 
     def test_blocks_at_bankroll_cap(self):
@@ -1058,6 +1082,9 @@ class TestCanOpenPositionBankroll:
             ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
             ms.MIRROR_MIN_PRICE = 0.07
             ms.MIRROR_MAX_PRICE = 0.93
+            ms.MIRROR_HARD_MIN_PRICE = 0.05
+            ms.MIRROR_HARD_MAX_PRICE = 0.95
+            ms.MIRROR_EXTREME_PRICE_DAMPENER = 0.25
             assert bot._can_open_position(0.50) is False
 
 
@@ -1076,6 +1103,9 @@ class TestDeprecationWarning:
             ms.TOTAL_CAPITAL = 10000.0
             ms.MIRROR_MIN_PRICE = 0.07
             ms.MIRROR_MAX_PRICE = 0.93
+            ms.MIRROR_HARD_MIN_PRICE = 0.05
+            ms.MIRROR_HARD_MAX_PRICE = 0.95
+            ms.MIRROR_EXTREME_PRICE_DAMPENER = 0.25
             with patch("bots.mirror_bot.logger") as mock_logger:
                 bot._can_open_position(0.50)
                 mock_logger.warning.assert_called_once()
@@ -1093,6 +1123,9 @@ class TestDeprecationWarning:
             ms.TOTAL_CAPITAL = 10000.0
             ms.MIRROR_MIN_PRICE = 0.07
             ms.MIRROR_MAX_PRICE = 0.93
+            ms.MIRROR_HARD_MIN_PRICE = 0.05
+            ms.MIRROR_HARD_MAX_PRICE = 0.95
+            ms.MIRROR_EXTREME_PRICE_DAMPENER = 0.25
             with patch("bots.mirror_bot.logger") as mock_logger:
                 bot._can_open_position(0.50)
                 mock_logger.warning.assert_not_called()

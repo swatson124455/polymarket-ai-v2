@@ -886,12 +886,12 @@ class MirrorBot(BaseBot):
         if _time.monotonic() < self._daily_reset_cooldown:
             return False
 
-        # S99: MirrorBot-specific price bounds (tighter than global 0.05-0.95)
-        _min_price = float(getattr(settings, "MIRROR_MIN_PRICE", 0.07))
-        _max_price = float(getattr(settings, "MIRROR_MAX_PRICE", 0.93))
-        if price < _min_price or price > _max_price:
+        # S99b: Hard reject at 5/95, gray zone 5-7 / 93-95 gets 0.25x sizing (Option C)
+        _hard_min = float(getattr(settings, "MIRROR_HARD_MIN_PRICE", 0.05))
+        _hard_max = float(getattr(settings, "MIRROR_HARD_MAX_PRICE", 0.95))
+        if price < _hard_min or price > _hard_max:
             logger.info("mirror_price_bounds: %.3f outside [%.2f, %.2f], skipping",
-                        price, _min_price, _max_price)
+                        price, _hard_min, _hard_max)
             return False
 
         # S99: Circuit breaker — pause entries when portfolio is bleeding
@@ -1276,6 +1276,14 @@ class MirrorBot(BaseBot):
             conformal_interval=_conformal_interval,
         )
         size *= reliability_mult
+
+        # S99b Option C: Dampen sizing in gray zone (5-7¢ / 93-95¢) — 0.25x normal size
+        _soft_min = float(getattr(settings, "MIRROR_MIN_PRICE", 0.07))
+        _soft_max = float(getattr(settings, "MIRROR_MAX_PRICE", 0.93))
+        if price < _soft_min or price > _soft_max:
+            _dampen = float(getattr(settings, "MIRROR_EXTREME_PRICE_DAMPENER", 0.25))
+            size *= _dampen
+            logger.info("mirror_price_dampened: %.3f in gray zone, size *= %.2f", price, _dampen)
 
         # M9: Cap per-market exposure — percentage-based with absolute safety cap
         _capital = float(getattr(self.bankroll, 'capital', 0) or 0) if self.bankroll else float(getattr(settings, "MIRROR_TOTAL_CAPITAL", 3000))
