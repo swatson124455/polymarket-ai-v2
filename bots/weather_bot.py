@@ -633,6 +633,7 @@ class WeatherBot(BaseBot):
     # ── Main scan loop ────────────────────────────────────────────────────
 
     async def scan_and_trade(self) -> None:
+        self._scan_start_mono = time.monotonic()  # S100: for alpha decay latency
         self._scan_count += 1
 
         # P1+P2: handle day boundary (must run first — resets exposure on new day)
@@ -671,6 +672,7 @@ class WeatherBot(BaseBot):
             db = getattr(self.base_engine, "db", None)
             await self._forecast_client.warm_cache_from_db(db)
             await self._restore_exits_from_redis()
+            await self._restore_backoff_from_redis()
             await self._restore_exposure_from_db()
             await self._close_stale_positions()
             self._cache_warmed = True
@@ -885,6 +887,7 @@ class WeatherBot(BaseBot):
             self._consecutive_no_edge += 1
         else:
             self._consecutive_no_edge = 0
+        await self._save_backoff_to_redis()
 
     async def analyze_opportunity(self, market_data: Dict) -> Optional[Dict]:
         """Required by BaseBot. Analyzes a single market in isolation.
@@ -2340,6 +2343,7 @@ class WeatherBot(BaseBot):
                 "date": group.target_date.isoformat(),
                 "market_type": opp.get("market_type", "temperature"),
                 "lead_time_hours": lead_time,
+                "scan_start_mono": getattr(self, "_scan_start_mono", None),
             },
         )
 
@@ -2713,6 +2717,29 @@ class WeatherBot(BaseBot):
             skipped=len(enriched) - enriched_count,
         )
         return list(enriched)
+
+    async def _save_backoff_to_redis(self) -> None:
+        """Persist adaptive backoff counter to Redis so it survives restarts."""
+        try:
+            cache = getattr(getattr(self, "base_engine", None), "cache", None)
+            if cache is None or not getattr(cache, "redis", None):
+                return
+            await cache.set("weatherbot:consecutive_no_edge", self._consecutive_no_edge, ttl=3600)
+        except Exception as exc:
+            logger.debug("weatherbot_redis_backoff_save_failed", error=str(exc))
+
+    async def _restore_backoff_from_redis(self) -> None:
+        """Reload adaptive backoff counter from Redis on startup."""
+        try:
+            cache = getattr(getattr(self, "base_engine", None), "cache", None)
+            if cache is None or not getattr(cache, "redis", None):
+                return
+            val = await cache.get("weatherbot:consecutive_no_edge")
+            if val is not None:
+                self._consecutive_no_edge = int(val)
+                logger.info("weatherbot_backoff_restored", consecutive_no_edge=self._consecutive_no_edge)
+        except Exception as exc:
+            logger.debug("weatherbot_redis_backoff_restore_failed", error=str(exc))
 
     async def _save_exit_to_redis(self, market_id: str) -> None:
         """Persist a recent-exit event to Redis with 15-min TTL so it survives restarts."""

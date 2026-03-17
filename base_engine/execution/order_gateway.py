@@ -692,6 +692,11 @@ class OrderGateway:
                     _mdata_vol = self._market_index.get(str(market_id))
                     if _mdata_vol:
                         _paper_volume = float(_mdata_vol.get("volume") or _mdata_vol.get("volume24hr") or 0)
+                # S100: Extract signal latency from event_data for alpha decay
+                _scan_start = (event_data or {}).get("scan_start_mono")
+                _signal_latency_ms = None
+                if _scan_start is not None:
+                    _signal_latency_ms = (time.monotonic() - _scan_start) * 1000
                 result = await self.paper_trading_engine.place_order(
                     market_id=market_id,
                     token_id=token_id,
@@ -703,7 +708,7 @@ class OrderGateway:
                     original_side=str(side).upper(),
                     order_type=order_type,
                     correlation_id=correlation_id,
-                    latency_ms=None,  # placeholder — set after timing
+                    latency_ms=_signal_latency_ms,
                     bid=bid,
                     ask=ask,
                     volume=_paper_volume,
