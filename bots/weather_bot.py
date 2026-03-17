@@ -1788,11 +1788,10 @@ class WeatherBot(BaseBot):
                 continue
 
             price = bucket.yes_price if side == "YES" else (1.0 - bucket.yes_price)
-            # Penny-bet filter: skip markets below 5¢ (deep tail buckets).
-            # At <5¢, spreads are 50-90% of position value and position_manager
-            # exits destroy capital. Hold-to-resolution is the only viable strategy
-            # at these prices, but PM exits mid-trade. Better to skip entirely.
-            if price <= 0.05 or price >= 0.95:
+            # S101: Penny-bet filter widened (0.05→0.04, 0.95→0.97) for tail buckets.
+            # At 4¢+, CLOB spreads are 25-50% — fillable with IOC. Below 3¢, spreads
+            # exceed price itself. Live-ready at 0.04; verify before lowering to 0.03.
+            if price <= 0.04 or price >= 0.97:
                 continue
 
             # Check position already open
@@ -2145,8 +2144,15 @@ class WeatherBot(BaseBot):
         #   otherwise → 1.0× (standard)
         lead_time = opp.get("lead_time_hours", 48.0)
         _hold_h = getattr(settings, "WEATHER_HOLD_HOURS_BEFORE_RESOLUTION", 48.0)
-        if lead_time < 12.0:
-            expiry_boost = 2.0   # NOAA final-call: maximum certainty
+        # S101: Graduated expiry boost — cap near resolution to avoid compounding
+        # with paper_trading.py's 3.0x slippage + 0.5x fill penalty at <30min.
+        # 2.0x boost at <1h meets 3.0x penalty = net negative; cap to 1.2x.
+        if lead_time < 1.0:
+            expiry_boost = 1.2   # <1h: resolution penalty dominates, cap boost
+        elif lead_time < 6.0:
+            expiry_boost = 1.5   # 1-6h: METAR override window, moderate boost
+        elif lead_time < 12.0:
+            expiry_boost = 2.0   # 6-12h: NOAA final-call, maximum certainty
         elif lead_time < 24.0:
             expiry_boost = 1.5   # NOAA day-of: strong convergence
         elif lead_time < _hold_h:
@@ -2344,6 +2350,7 @@ class WeatherBot(BaseBot):
                 "market_type": opp.get("market_type", "temperature"),
                 "lead_time_hours": lead_time,
                 "scan_start_mono": getattr(self, "_scan_start_mono", None),
+                "alpha_decay_half_life_s": 1800,  # S101: weather signal valid ~6h (NOAA cycle), not 5min
             },
         )
 

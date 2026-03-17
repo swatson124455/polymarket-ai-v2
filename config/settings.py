@@ -221,6 +221,8 @@ class Settings(BaseSettings):
     PAPER_CROSS_SCAN_IMPACT_ENABLED: bool = os.getenv("PAPER_CROSS_SCAN_IMPACT_ENABLED", "true").lower() in ("true", "1", "yes")
     PAPER_ALPHA_DECAY_HALF_LIFE_S: float = float(os.getenv("PAPER_ALPHA_DECAY_HALF_LIFE_S", "300"))  # 5 min half-life
     PAPER_RESOLUTION_PROXIMITY_ENABLED: bool = os.getenv("PAPER_RESOLUTION_PROXIMITY_ENABLED", "true").lower() in ("true", "1", "yes")
+    # S100: L2 book walk — use real order book depth for fill simulation (replaces heuristic slippage)
+    PAPER_BOOK_WALK_ENABLED: bool = os.getenv("PAPER_BOOK_WALK_ENABLED", "false").lower() in ("true", "1", "yes")
 
     # Learning Settings
     # Per-bot model training (Session 47): when enabled, each bot trains on its own prediction_log entries.
@@ -329,7 +331,7 @@ class Settings(BaseSettings):
     MIRROR_MAX_PER_MARKET: float = float(os.getenv("MIRROR_MAX_PER_MARKET", "500"))  # S96: 800→500
     MIRROR_MAX_PER_MARKET_PCT: float = float(os.getenv("MIRROR_MAX_PER_MARKET_PCT", "0.10"))  # M9: 10% of capital per market
     MIRROR_MAX_CATEGORY_EXPOSURE_PCT: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_PCT", "0.80"))  # M1: DEPRECATED — use MIRROR_MAX_CATEGORY_EXPOSURE_USD
-    MIRROR_MAX_CATEGORY_EXPOSURE_USD: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_USD", "10000"))  # S99b: $4k→$10k per category
+    MIRROR_MAX_CATEGORY_EXPOSURE_USD: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_USD", "40000"))  # S100: $10k→$40k per category
     MIRROR_MAX_TRACKED_TRADES: int = int(os.getenv("MIRROR_MAX_TRACKED_TRADES", "10000"))
     MIRROR_EXIT_ENABLED: bool = os.getenv("MIRROR_EXIT_ENABLED", "true").lower() in ("true", "1", "yes")
     MIRROR_MAX_CONCURRENT_POSITIONS: int = int(os.getenv("MIRROR_MAX_CONCURRENT_POSITIONS", "500"))  # S99b: 1000→500
@@ -682,9 +684,9 @@ class Settings(BaseSettings):
     WEATHER_TOTAL_CAPITAL: float = float(os.getenv("WEATHER_TOTAL_CAPITAL", "25000"))
     # S99: Fill-failure cooldown
     WEATHER_FILL_FAIL_COOLDOWN_SCANS: int = int(os.getenv("WEATHER_FILL_FAIL_COOLDOWN_SCANS", "2"))
-    WEATHER_FILL_FAIL_COOLDOWN_SECS: float = float(os.getenv("WEATHER_FILL_FAIL_COOLDOWN_SECS", "900"))
+    WEATHER_FILL_FAIL_COOLDOWN_SECS: float = float(os.getenv("WEATHER_FILL_FAIL_COOLDOWN_SECS", "120"))  # S101: 900→120s — IOC gas negligible, 2min = 1 scan cycle
     # S99: Fill probability floor (price-depth factor)
-    WEATHER_MIN_FILL_PROB_ESTIMATE: float = float(os.getenv("WEATHER_MIN_FILL_PROB_ESTIMATE", "0.25"))
+    WEATHER_MIN_FILL_PROB_ESTIMATE: float = float(os.getenv("WEATHER_MIN_FILL_PROB_ESTIMATE", "0.15"))  # S101: 0.25→0.15 — pre-flight only, full model still gates
     # S99: PSW every-other-scan
     WEATHER_PSW_SCAN_DIVISOR: int = int(os.getenv("WEATHER_PSW_SCAN_DIVISOR", "2"))
     # S99: Adaptive backoff
@@ -1018,9 +1020,10 @@ class Settings(BaseSettings):
     ESPORTS_TOURNAMENT_PHASE_MIN_SAMPLES: int = int(os.getenv("ESPORTS_TOURNAMENT_PHASE_MIN_SAMPLES", "20"))
 
     # --- Exposure limits (per-game/tournament/team concentration caps) ---
-    ESPORTS_MAX_GAME_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_GAME_EXPOSURE", "300.0"))
-    ESPORTS_MAX_TOURNAMENT_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_TOURNAMENT_EXPOSURE", "200.0"))
-    ESPORTS_MAX_TEAM_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_TEAM_EXPOSURE", "150.0"))
+    # S99: doubled with capital 2x (was 300/200/150)
+    ESPORTS_MAX_GAME_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_GAME_EXPOSURE", "600.0"))
+    ESPORTS_MAX_TOURNAMENT_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_TOURNAMENT_EXPOSURE", "400.0"))
+    ESPORTS_MAX_TEAM_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_TEAM_EXPOSURE", "300.0"))
 
     # --- External API keys (esports data enrichment) ---
     ALIGULAC_API_KEY: str = os.getenv("ALIGULAC_API_KEY", "")
