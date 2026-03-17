@@ -148,6 +148,49 @@ class BetaCalibrator:
         return self._fitted
 
 
+class OnlinePlattCalibrator:
+    """Streaming Platt scaling — updates calibration on every resolved prediction.
+
+    Uses River LogisticRegression for online logistic calibration.
+    Identity at <30 samples. Supplements batch BetaCalibrator with
+    streaming adaptation between refits.
+    """
+    __slots__ = ("_model", "_n", "_min_samples", "_available")
+
+    def __init__(self, lr: float = 0.01, min_samples: int = 30):
+        self._n: int = 0
+        self._min_samples = min_samples
+        self._available = False
+        try:
+            from river.linear_model import LogisticRegression
+            from river.optim import SGD
+            self._model = LogisticRegression(optimizer=SGD(lr))
+            self._available = True
+        except ImportError:
+            self._model = None
+
+    def update(self, predicted: float, actual: int) -> None:
+        """Feed one resolved prediction into the streaming model."""
+        if not self._available:
+            return
+        predicted = max(1e-6, min(1.0 - 1e-6, predicted))
+        logit = math.log(predicted / (1.0 - predicted))
+        self._model.learn_one({"logit": logit}, actual)
+        self._n += 1
+
+    def calibrate(self, p: float) -> float:
+        """Apply online Platt scaling. Returns p unchanged if <min_samples."""
+        if not self._available or self._n < self._min_samples:
+            return p
+        p = max(1e-6, min(1.0 - 1e-6, p))
+        logit = math.log(p / (1.0 - p))
+        return self._model.predict_proba_one({"logit": logit}).get(1, p)
+
+    @property
+    def is_fitted(self) -> bool:
+        return self._available and self._n >= self._min_samples
+
+
 class EsportsBot(BaseBot):
     """
     Pre-game + live in-play esports trading bot.
@@ -260,6 +303,14 @@ class EsportsBot(BaseBot):
         self._conformal_predictor: Any = None  # ConformalPredictor (cross-game XGB)
         self._tabpfn_predictor: Any = None  # TabPFN ensemble for sparse games
         self._cot_validator: Any = None  # CoT LLM validator for high-edge trades
+        # S100b: Per-game conformal predictors for Kelly sizing (Phase 3)
+        self._conformal_per_game: Dict[str, Any] = {}
+        # S100b: Per-game ADWIN drift detectors (Phase 4)
+        self._adwin_per_game: Dict[str, Any] = {}
+        # S100b: Per-game Online Platt calibrators (Phase 2)
+        self._online_platt_per_game: Dict[str, Any] = {
+            g: OnlinePlattCalibrator() for g in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl")
+        }
 
         # Parallel analysis (Item 6)
         _concurrency = int(getattr(settings, "ESPORTS_ANALYSIS_CONCURRENCY", 10))
@@ -1428,6 +1479,28 @@ class EsportsBot(BaseBot):
             outcome = int(r.won) if r.side == "YES" else (1 - int(r.won))
             await _resolve(db, r.market_id, outcome)
 
+        # S100b: Feed newly resolved predictions into streaming calibrators (ADWIN + OnlinePlatt)
+        try:
+            from sqlalchemy import text as _sa_text2
+            async with db.get_session() as _sess2:
+                _newly = await _sess2.execute(
+                    _sa_text2(
+                        "SELECT game, predicted_prob, actual_outcome "
+                        "FROM esports_prediction_log "
+                        "WHERE actual_outcome IS NOT NULL "
+                        "AND updated_at > NOW() - INTERVAL '15 minutes' "
+                        "LIMIT 500"
+                    )
+                )
+                for _nr in _newly.fetchall():
+                    _g = _nr.game if hasattr(_nr, 'game') else _nr[0]
+                    _pp = float(_nr.predicted_prob if hasattr(_nr, 'predicted_prob') else _nr[1])
+                    _ao = float(_nr.actual_outcome if hasattr(_nr, 'actual_outcome') else _nr[2])
+                    if _g:
+                        self._update_streaming_on_resolution(_g, _pp, _ao)
+        except Exception as exc:
+            logger.debug("esportsbot_streaming_feed_failed", error=str(exc))
+
     async def analyze_opportunity(self, market_data: Dict) -> Optional[Dict]:
         """
         Analyze a single esports market for trading opportunity.
@@ -1524,6 +1597,10 @@ class EsportsBot(BaseBot):
         _beta_cal = self._beta_calibrators.get(game)
         if _beta_cal is not None and _beta_cal.is_fitted:
             model_prob = _beta_cal.calibrate(model_prob)
+        # S100b (Phase 2): Online Platt override when available (fresher than batch Beta)
+        _online_platt = self._online_platt_per_game.get(game)
+        if _online_platt and _online_platt.is_fitted:
+            model_prob = _online_platt.calibrate(model_prob)
 
         # RFLB correction [T1-B]: favorites systematically overbetted.
         # Nudge model_prob toward 0.50 when market prices a heavy favorite
@@ -1585,10 +1662,16 @@ class EsportsBot(BaseBot):
             return None
 
         # Edge sanity cap — universal 0.35 for all games
-        if edge > self._max_edge:
+        # S100b: Widen cap while BetaCalibrator unfitted (raw probs produce
+        # legitimate 35-40% edges for strong team differentials)
+        _effective_max_edge = self._max_edge
+        _beta_cal_edge = self._beta_calibrators.get(game)
+        if _beta_cal_edge and not _beta_cal_edge._fitted:
+            _effective_max_edge = 0.45
+        if edge > _effective_max_edge:
             logger.info(
                 "esportsbot_edge_cap", market_id=market_id, game=game,
-                edge=round(edge, 4), max_edge=self._max_edge, side=side,
+                edge=round(edge, 4), max_edge=_effective_max_edge, side=side,
                 model_prob=round(model_prob, 4), price=round(price, 4),
             )
             if _wf: _wf["edge_cap"] += 1
@@ -1610,11 +1693,18 @@ class EsportsBot(BaseBot):
             return None
 
         # Tournament phase detection and confidence boost
+        # S100b: Suspend phase penalty while BetaCalibrator unfitted — raw Glicko2
+        # probs already encode uncertainty via phi-based Bayesian blending.
         db = getattr(self.base_engine, "db", None)
-        _tournament_phase = self._detect_tournament_phase(market_data)
-        confidence *= await self._get_tournament_phase_mult(
-            market_data, game, _tournament_phase, db
-        )
+        _beta_cal = self._beta_calibrators.get(game)
+        if _beta_cal and not _beta_cal._fitted:
+            _phase_mult = 1.0
+        else:
+            _tournament_phase = self._detect_tournament_phase(market_data)
+            _phase_mult = await self._get_tournament_phase_mult(
+                market_data, game, _tournament_phase, db
+            )
+        confidence *= _phase_mult
 
         if confidence < self._min_confidence:
             if _wf: _wf["low_confidence"] += 1
@@ -2684,7 +2774,16 @@ class EsportsBot(BaseBot):
         confidence = self._apply_expiry_boost(confidence, opp)
 
         # A6: Uncertainty-scaled sizing — dampen when Glicko-2 phi is high
-        phi_factor = self._get_phi_sizing_factor(opp)
+        # S100b (Phase 3): Use conformal conservative bounds when available
+        cp = self._conformal_per_game.get(opp.get("game", ""))
+        if cp and cp.is_fitted:
+            import numpy as np
+            _prob_arr = np.array([[opp["prediction"]]])
+            _conservative = float(cp.conservative_prob(_prob_arr)[0])
+            _conservative_edge = abs(_conservative - opp["price"])
+            phi_factor = min(1.0, _conservative_edge / max(opp["edge"], 0.01))
+        else:
+            phi_factor = self._get_phi_sizing_factor(opp)
 
         # A8: Drawdown Kelly reduction
         dd_factor = self._get_drawdown_kelly_factor()
@@ -2884,6 +2983,36 @@ class EsportsBot(BaseBot):
         if edge >= 0.06:
             return 0.7   # Medium certainty
         return 0.5        # Low certainty (barely above min_edge)
+
+    def _update_streaming_on_resolution(
+        self, game: str, predicted: float, actual: float,
+    ) -> None:
+        """S100b: Feed resolved prediction into streaming calibrators (ADWIN + OnlinePlatt).
+
+        Called from resolution/accuracy tracking. Updates:
+        1. Per-game ADWIN drift detector with Brier contribution
+        2. Per-game Online Platt calibrator with (predicted, outcome) pair
+        """
+        # ADWIN drift detection (Phase 4)
+        try:
+            from river.drift import ADWIN
+            if game not in self._adwin_per_game:
+                self._adwin_per_game[game] = ADWIN(delta=0.002)
+            brier_contribution = (predicted - actual) ** 2
+            self._adwin_per_game[game].update(brier_contribution)
+            if self._adwin_per_game[game].drift_detected:
+                logger.warning("esportsbot_adwin_drift", game=game,
+                               estimation=round(self._adwin_per_game[game].estimation, 4),
+                               width=self._adwin_per_game[game].width)
+        except ImportError:
+            pass
+        except Exception as exc:
+            logger.debug("esportsbot_adwin_update_failed", game=game, error=str(exc))
+
+        # Online Platt update (Phase 2)
+        _platt = self._online_platt_per_game.get(game)
+        if _platt:
+            _platt.update(predicted, int(actual))
 
     async def _check_kelly_graduation(self, db) -> None:
         """A3: Continuous Kelly scaling with de-graduation.
@@ -3430,6 +3559,40 @@ class EsportsBot(BaseBot):
             except Exception as exc:
                 logger.debug("esportsbot_beta_cal_fit_failed",
                              game=_cal_game, error=str(exc))
+
+        # S100b: Fit per-game conformal predictors (Phase 3) from same data window.
+        # Reuses BetaCalibrator's query pattern — (predicted_prob, actual_outcome).
+        try:
+            from esports.models.conformal_wrapper import ConformalPredictor
+            from sqlalchemy import text as _text
+            import numpy as np
+            async with db.get_session() as session:
+                for _cf_game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
+                    _cf_result = await session.execute(
+                        _text(
+                            "SELECT predicted_prob, actual_outcome "
+                            "FROM esports_prediction_log "
+                            "WHERE actual_outcome IS NOT NULL "
+                            "AND game = :game "
+                            "AND created_at > NOW() - :days_int * INTERVAL '1 day' "
+                            "ORDER BY created_at DESC LIMIT 5000"
+                        ),
+                        {"game": _cf_game, "days_int": int(_cal_days)},
+                    )
+                    _cf_rows = _cf_result.fetchall()
+                    if len(_cf_rows) >= 30:
+                        _cf_preds = np.array([float(r[0]) for r in _cf_rows])
+                        _cf_outcomes = np.array([float(r[1]) for r in _cf_rows])
+                        cp = self._conformal_per_game.get(_cf_game)
+                        if cp is None:
+                            cp = ConformalPredictor(alpha=0.10)
+                            self._conformal_per_game[_cf_game] = cp
+                        _cf_ok = cp.fit_from_predictions(_cf_preds, _cf_outcomes)
+                        if _cf_ok:
+                            logger.info("esportsbot_conformal_fitted",
+                                        game=_cf_game, n=len(_cf_rows))
+        except Exception as exc:
+            logger.debug("esportsbot_conformal_fit_failed", error=str(exc))
 
         # Session 83: Dynamic per-game EGM d tuning from Brier scores
         self._update_per_game_egm_d()
@@ -4213,6 +4376,24 @@ class EsportsBot(BaseBot):
         Shared by _get_glicko2_prediction() and _build_glicko2_game_state().
         """
         import re
+
+        # S100b: Strip game prefixes + format suffixes BEFORE extraction.
+        # Prevents "lol: teamA vs teamB - game 1 winner" regex confusion
+        # where Pattern 6 (" - " dash separator) matches the suffix instead
+        # of Pattern 1 ("vs") matching the team separator.
+        for _gp in (
+            "counter-strike 2: ", "counter-strike: ", "cs2: ", "csgo: ",
+            "league of legends: ", "lol: ", "dota 2: ", "dota: ",
+            "valorant: ", "call of duty: ", "cod: ",
+            "rainbow six siege: ", "rainbow six: ", "r6: ",
+            "starcraft ii: ", "starcraft 2: ", "starcraft: ",
+            "rocket league: ", "overwatch 2: ", "overwatch: ",
+        ):
+            if question.startswith(_gp):
+                question = question[len(_gp):]
+                break
+        question = re.sub(r"\s*-\s+(?:game|map|match)\s+\d+\s+winner$", "", question).strip()
+        question = re.sub(r"\s*\(bo\d+\).*$", "", question).strip()
 
         team_a_id = team_b_id = None
         _clean_a = _clean_b = ""
