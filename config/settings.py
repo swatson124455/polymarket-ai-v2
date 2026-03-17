@@ -978,17 +978,14 @@ class Settings(BaseSettings):
     # --- Bot enable flags (all disabled by default) ---
     BOT_ENABLED_ESPORTS: bool = os.getenv("BOT_ENABLED_ESPORTS", "false").lower() in ("true", "1", "yes")
     BOT_ENABLED_ESPORTS_LIVE: bool = os.getenv("BOT_ENABLED_ESPORTS_LIVE", "false").lower() in ("true", "1", "yes")
-    BOT_ENABLED_ESPORTS_SERIES: bool = os.getenv("BOT_ENABLED_ESPORTS_SERIES", "false").lower() in ("true", "1", "yes")
-
     # --- Scan intervals (seconds) ---
     SCAN_INTERVAL_ESPORTS: int = int(os.getenv("SCAN_INTERVAL_ESPORTS", "120"))
     SCAN_INTERVAL_ESPORTS_LIVE: int = int(os.getenv("SCAN_INTERVAL_ESPORTS_LIVE", "10"))
-    SCAN_INTERVAL_ESPORTS_SERIES: int = int(os.getenv("SCAN_INTERVAL_ESPORTS_SERIES", "30"))
 
     # --- Edge / confidence thresholds ---
     ESPORTS_MIN_EDGE: float = float(os.getenv("ESPORTS_MIN_EDGE", "0.05"))
     ESPORTS_MIN_CONFIDENCE: float = float(os.getenv("ESPORTS_MIN_CONFIDENCE", "0.52"))
-    ESPORTS_MAX_EDGE: float = float(os.getenv("ESPORTS_MAX_EDGE", "0.25"))
+    ESPORTS_MAX_EDGE: float = float(os.getenv("ESPORTS_MAX_EDGE", "0.35"))
     ESPORTS_EGM_D: float = float(os.getenv("ESPORTS_EGM_D", "1.5"))  # Extremization factor for EGM blend
     ESPORTS_SERIES_MIN_EDGE: float = float(os.getenv("ESPORTS_SERIES_MIN_EDGE", "0.10"))
     ESPORTS_SERIES_REVERSE_SWEEP_FLOOR: float = float(os.getenv("ESPORTS_SERIES_REVERSE_SWEEP_FLOOR", "0.05"))

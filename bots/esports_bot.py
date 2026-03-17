@@ -1466,14 +1466,11 @@ class EsportsBot(BaseBot):
             if _wf: _wf["low_edge"] += 1
             return None
 
-        # Edge sanity cap — per-game: thin markets (SC2/CoD/R6/RL) allow
-        # wider edges because low liquidity creates genuine inefficiency
-        _THIN_MARKET_GAMES = {"sc2", "cod", "r6", "rl"}
-        _game_max_edge = 0.35 if game in _THIN_MARKET_GAMES else self._max_edge
-        if edge > _game_max_edge:
+        # Edge sanity cap — universal 0.35 for all games
+        if edge > self._max_edge:
             logger.info(
                 "esportsbot_edge_cap", market_id=market_id, game=game,
-                edge=round(edge, 4), max_edge=_game_max_edge, side=side,
+                edge=round(edge, 4), max_edge=self._max_edge, side=side,
                 model_prob=round(model_prob, 4), price=round(price, 4),
             )
             if _wf: _wf["edge_cap"] += 1

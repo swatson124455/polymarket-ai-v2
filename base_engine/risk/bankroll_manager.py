@@ -37,10 +37,10 @@ _DEFAULT_BOT_CONFIGS: Dict[str, Dict[str, Any]] = {
     "CrossPlatformArbBot": {"capital": 500,  "kelly_fraction": 0.20, "max_bet_usd": 50,  "max_daily_usd": 200},
     "OracleBot":           {"capital": 500,  "kelly_fraction": 0.20, "max_bet_usd": 50,  "max_daily_usd": 200},
     "LLMForecasterBot":    {"capital": 500,  "kelly_fraction": 0.20, "max_bet_usd": 50,  "max_daily_usd": 200},
-    "WeatherBot":          {"capital": 25000, "kelly_fraction": 0.25, "max_bet_usd": 2500, "max_daily_usd": 10000},
+    "WeatherBot":          {"capital": 50000, "kelly_fraction": 0.30, "max_bet_usd": 1000, "max_daily_usd": 10000},
     "LogicalArbBot":       {"capital": 500,  "kelly_fraction": 0.20, "max_bet_usd": 200, "max_daily_usd": 500},
-    "EsportsBot":          {"capital": 5000, "kelly_fraction": 0.25, "max_bet_usd": 100, "max_daily_usd": 500},
-    "EsportsLiveBot":      {"capital": 5000, "kelly_fraction": 0.25, "max_bet_usd": 100, "max_daily_usd": 500},
+    "EsportsBot":          {"capital": 10000, "kelly_fraction": 0.25, "max_bet_usd": 200, "max_daily_usd": 1000},
+    "EsportsLiveBot":      {"capital": 10000, "kelly_fraction": 0.25, "max_bet_usd": 200, "max_daily_usd": 1000},
 }
 
 _FALLBACK_CONFIG: Dict[str, Any] = {

@@ -99,7 +99,23 @@ class EsportsLiveBot(BaseBot):
             logger.debug("EsportsLiveBot: ML model loading skipped", error=str(exc))
 
         self._live_trigger = EsportsLiveTrigger()
-        self._scanner = EsportsMarketScanner(db=db)
+
+        # Wire market scanner with EsportsMarketService (DB-backed market discovery).
+        # Without this, find_markets_for_match() always returns [] — zero trades ever.
+        _poly_client = getattr(self.base_engine, "client", None)
+        try:
+            from esports.markets.esports_market_service import EsportsMarketService
+            self._market_service = EsportsMarketService(db=db, polymarket_client=_poly_client)
+            self._market_service.start_background_refresh()
+        except Exception as exc:
+            logger.warning("EsportsLiveBot: market service init failed", error=str(exc))
+            self._market_service = None
+
+        self._scanner = EsportsMarketScanner(
+            db=db,
+            polymarket_client=_poly_client,
+            market_service=self._market_service,
+        )
         self._bankroll_mgr = EsportsBankrollManager(order_gateway=gw)
 
         # Start game monitor as background task
