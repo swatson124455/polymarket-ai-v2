@@ -752,10 +752,14 @@ class OrderGateway:
                     ORDER_PIPELINE_LATENCY.labels(bot_name=bot_name, component="exec").observe(_exec_ms / 1000.0)
                 except Exception:
                     pass  # Metrics are best-effort
+                # Use actual filled size (may differ from requested size on
+                # partial fills in paper trading).  Falls back to requested
+                # size when result has no "filled" key.
+                _filled_size = result.get("filled", size) if result.get("success") else size
                 if self.trade_coordinator is not None:
                     if result.get("success"):
                         try:
-                            await self.trade_coordinator.confirm_position(market_id, side, size, effective_price, source_bot=bot_name, bot_id=bot_name)
+                            await self.trade_coordinator.confirm_position(market_id, side, _filled_size, effective_price, source_bot=bot_name, bot_id=bot_name)
                         except Exception as _conf_err:
                             # Theoretical hardening: paper trade succeeded (cash deducted) but DB
                             # confirmation failed. In-memory position exists; 5-min reconcile will
@@ -768,7 +772,7 @@ class OrderGateway:
                         if _is_sell:
                             self._track_position_close(bot_name, market_id)  # C3 FIX
                         else:
-                            self._track_position_open(bot_name, market_id, size, effective_price, side=side)
+                            self._track_position_open(bot_name, market_id, _filled_size, effective_price, side=side)
                     else:
                         try:
                             await self.trade_coordinator.release_reservation(market_id, side, bot_id=bot_name)
@@ -778,7 +782,7 @@ class OrderGateway:
                     if _is_sell:
                         self._track_position_close(bot_name, market_id)  # C3 FIX
                     else:
-                        self._track_position_open(bot_name, market_id, size, effective_price, side=side)
+                        self._track_position_open(bot_name, market_id, _filled_size, effective_price, side=side)
                 return result
             except Exception as e:
                 if self.trade_coordinator is not None:

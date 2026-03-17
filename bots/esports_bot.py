@@ -802,12 +802,28 @@ class EsportsBot(BaseBot):
                 )
 
         # Step 0b: Check rolling accuracy — auto-disable if below threshold
+        # Guard: skip retrain trigger for halted games and games where
+        # training data hasn't changed since last retrain (prevents thrash
+        # loop where 7-day rolling accuracy stays low but retraining produces
+        # identical model every 10s).
         min_acc = float(getattr(settings, "ESPORTS_MIN_ACCURACY_TO_TRADE", 0.52))
         try:
             _acc_all = await self._get_cached_rolling_accuracy(db)
             for game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
                 acc_data = _acc_all.get(game)
                 if acc_data and acc_data["total"] >= 30 and acc_data["accuracy"] < min_acc:
+                    # Skip retrain for halted games — no point retraining
+                    # a game we won't trade
+                    if game in self._monitoring_halted_games:
+                        continue
+                    # Skip retrain if trainer already ran recently — the 2h
+                    # cooldown in needs_retrain() is the right gate.  Popping
+                    # _last_train_time bypasses it and causes a thrash loop
+                    # where the same model is rebuilt every 10s.
+                    if (self._trainer
+                            and game in self._trainer._last_train_time
+                            and (time.monotonic() - self._trainer._last_train_time[game]) < 1800):
+                        continue
                     logger.warning(
                         "EsportsBot: accuracy below threshold — triggering retrain",
                         game=game,
@@ -1405,7 +1421,7 @@ class EsportsBot(BaseBot):
                 "adj_005": round(0.05 * _price_diff, 6),
                 "adj_008": round(0.08 * _price_diff, 6),
             }
-            logger.debug(
+            logger.info(
                 "esportsbot_rflb_adjustment", market_id=market_id, game=game,
                 raw_prob=round(_raw_prob, 4), adjusted_prob=round(model_prob, 4),
                 rflb_adj=round(_rflb_adj, 4), market_price=round(price, 4),
@@ -1463,13 +1479,13 @@ class EsportsBot(BaseBot):
             if _wf: _wf["edge_cap"] += 1
             return None
 
-        # High-uncertainty filter: both teams near-unrated + thin edge + BO1 → skip.
-        # matchup_uncertainty = (phi_a + phi_b) / 700; >= 0.857 means both phi >= 300.
+        # High-uncertainty filter: unrated/weakly-rated teams + thin edge + BO1 → skip.
+        # matchup_uncertainty = (phi_a + phi_b) / 700; >= 0.70 means avg phi >= 245.
         _cached_pred = self._prediction_cache.get(market_id, {})
         _ed = _cached_pred.get("event_data", {})
         _mu = _ed.get("matchup_uncertainty", 0.0)
         _bo_cached = _ed.get("best_of", 1)
-        if _mu >= 0.857 and _bo_cached == 1 and edge < 0.10:
+        if _mu >= 0.70 and _bo_cached == 1 and edge < 0.10:
             logger.info(
                 "esportsbot_high_uncertainty_skip", market_id=market_id,
                 game=game, edge=round(edge, 4),
@@ -1874,7 +1890,7 @@ class EsportsBot(BaseBot):
                         glicko2_prob = bo3_match_prob(glicko2_prob, 0, 0)
                     elif _bo >= 5:
                         glicko2_prob = bo5_match_prob(glicko2_prob, 0, 0)
-                    logger.debug(
+                    logger.info(
                         "esportsbot_bo_adjustment", market_id=market_id, game=game,
                         best_of=_bo, raw_prob=round(_pre_bo, 4),
                         adjusted_prob=round(glicko2_prob, 4),
@@ -1884,7 +1900,7 @@ class EsportsBot(BaseBot):
                     from esports.models.series_model import bo1_underdog_adjustment
                     glicko2_prob = bo1_underdog_adjustment(glicko2_prob)
                     if abs(glicko2_prob - _pre_bo) > 0.001:
-                        logger.debug(
+                        logger.info(
                             "esportsbot_bo_adjustment", market_id=market_id, game=game,
                             best_of=1, raw_prob=round(_pre_bo, 4),
                             adjusted_prob=round(glicko2_prob, 4),
