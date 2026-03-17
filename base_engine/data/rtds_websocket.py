@@ -30,16 +30,24 @@ class RTDSWebSocket:
         handler: Callable[[Dict[str, Any]], Awaitable[None]],
         ws_url: str = _DEFAULT_URL,
         ping_interval: int = _PING_INTERVAL,
+        recv_timeout: int = 120,
     ):
         self._handler = handler
         self._ws_url = ws_url
         self._ping_interval = ping_interval
+        self._recv_timeout = recv_timeout
         self.ws: Optional[Any] = None
         self.running = False
         self._ping_task: Optional[asyncio.Task] = None
         self._message_loop_task: Optional[asyncio.Task] = None
         self._events_total: int = 0
         self._events_dispatched: int = 0
+        self._last_recv_mono: float = time.monotonic()
+
+    @property
+    def last_recv_age(self) -> float:
+        """Seconds since last successful recv()."""
+        return time.monotonic() - self._last_recv_mono
 
     async def connect(self) -> None:
         """Connect to RTDS and subscribe to activity/trades."""
@@ -127,7 +135,8 @@ class RTDSWebSocket:
                     await asyncio.sleep(1)
                     continue
 
-                raw = await self.ws.recv()
+                raw = await asyncio.wait_for(self.ws.recv(), timeout=self._recv_timeout)
+                self._last_recv_mono = time.monotonic()
                 reconnect_attempts = 0  # Reset on successful recv
 
                 # Skip PONG responses and non-JSON
@@ -154,6 +163,13 @@ class RTDSWebSocket:
                     logger.info("rtds_throughput", events_total=self._events_total,
                                 events_dispatched=self._events_dispatched)
 
+            except asyncio.TimeoutError:
+                reconnect_attempts += 1
+                backoff = min(2 ** reconnect_attempts, max_backoff)
+                logger.warning("rtds_recv_timeout", timeout_s=self._recv_timeout,
+                               attempt=reconnect_attempts, backoff_s=backoff)
+                await asyncio.sleep(backoff)
+                await self._reconnect()
             except websockets.exceptions.ConnectionClosed:
                 reconnect_attempts += 1
                 backoff = min(2 ** reconnect_attempts, max_backoff)

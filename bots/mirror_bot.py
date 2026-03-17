@@ -95,6 +95,8 @@ class MirrorBot(BaseBot):
 
         # S99: Portfolio circuit breaker — pause entries when unrealized P&L < threshold
         self._circuit_breaker_until: float = 0.0  # monotonic time when pause expires
+        # S99b: Post-reset cooldown — prevent burst of trades after daily exposure reset
+        self._daily_reset_cooldown: float = 0.0
 
         # Session 82: Calibration stack (FTS + Le2026 + conformal)
         self._calibration_stack = None
@@ -119,6 +121,9 @@ class MirrorBot(BaseBot):
         self._watchlist_started: bool = False
         self._rtds_ws = None
         self._rtds_started: bool = False
+        # S99b: Stale dispatch detection — reconnect if RTDS feed silently hangs
+        self._prev_rtds_dispatched: int = 0
+        self._rtds_stale_count: int = 0
         if getattr(settings, "WATCHLIST_ENABLED", False):
             try:
                 from bots.elite_watchlist import EliteWatchlist
@@ -554,6 +559,26 @@ class MirrorBot(BaseBot):
             len(self.elite_traders), len(self._open_positions), _rtds_dispatched,
         )
 
+        # S99b: Stale dispatch detection — reconnect if RTDS feed silently hangs
+        if self._rtds_ws and self._rtds_started:
+            if _rtds_dispatched == self._prev_rtds_dispatched:
+                self._rtds_stale_count += 1
+            else:
+                self._rtds_stale_count = 0
+            self._prev_rtds_dispatched = _rtds_dispatched
+            if self._rtds_stale_count >= 4 and self._rtds_ws.last_recv_age > 120:
+                logger.warning(
+                    "rtds_stale_dispatch: %d scans unchanged, last_recv %.0fs ago — reconnecting",
+                    self._rtds_stale_count, self._rtds_ws.last_recv_age,
+                )
+                try:
+                    await self._rtds_ws.disconnect()
+                    await self._rtds_ws.connect()
+                    self._rtds_stale_count = 0
+                    logger.info("rtds_stale_reconnected")
+                except Exception as e:
+                    logger.warning("rtds_stale_reconnect_failed: %s", e)
+
     # ── Market metadata cache (category + time-to-resolution) ──────
 
     async def _get_market_meta(self, market_id: str) -> Tuple[str, str]:
@@ -857,6 +882,10 @@ class MirrorBot(BaseBot):
 
         Returns False with a specific INFO log identifying WHICH limit was hit.
         """
+        # S99b: Post-reset cooldown — spread trades after midnight reset
+        if _time.monotonic() < self._daily_reset_cooldown:
+            return False
+
         # S99: MirrorBot-specific price bounds (tighter than global 0.05-0.95)
         _min_price = float(getattr(settings, "MIRROR_MIN_PRICE", 0.07))
         _max_price = float(getattr(settings, "MIRROR_MAX_PRICE", 0.93))
@@ -921,9 +950,12 @@ class MirrorBot(BaseBot):
         """Reset daily exposure counter at UTC day boundary."""
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if self._daily_reset_date != today:
+            logger.info("Daily P&L reset", previous_pnl=round(self._daily_exposure, 2))
             self._daily_exposure = 0.0
             self._category_exposure.clear()
             self._daily_reset_date = today
+            # S99b: 60s cooldown to prevent burst of 30+ trades at midnight
+            self._daily_reset_cooldown = _time.monotonic() + 60
 
     # ── Deduplication ───────────────────────────────────────────────
 

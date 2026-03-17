@@ -329,7 +329,7 @@ class Settings(BaseSettings):
     MIRROR_MAX_PER_MARKET: float = float(os.getenv("MIRROR_MAX_PER_MARKET", "500"))  # S96: 800→500
     MIRROR_MAX_PER_MARKET_PCT: float = float(os.getenv("MIRROR_MAX_PER_MARKET_PCT", "0.10"))  # M9: 10% of capital per market
     MIRROR_MAX_CATEGORY_EXPOSURE_PCT: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_PCT", "0.80"))  # M1: DEPRECATED — use MIRROR_MAX_CATEGORY_EXPOSURE_USD
-    MIRROR_MAX_CATEGORY_EXPOSURE_USD: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_USD", "4000"))  # S98: absolute $4k per category
+    MIRROR_MAX_CATEGORY_EXPOSURE_USD: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_USD", "10000"))  # S99b: $4k→$10k per category
     MIRROR_MAX_TRACKED_TRADES: int = int(os.getenv("MIRROR_MAX_TRACKED_TRADES", "10000"))
     MIRROR_EXIT_ENABLED: bool = os.getenv("MIRROR_EXIT_ENABLED", "true").lower() in ("true", "1", "yes")
     MIRROR_MAX_CONCURRENT_POSITIONS: int = int(os.getenv("MIRROR_MAX_CONCURRENT_POSITIONS", "1000"))  # S96: 400→1000
@@ -680,6 +680,16 @@ class Settings(BaseSettings):
     WEATHER_TRADE_CONCURRENCY: int = int(os.getenv("WEATHER_TRADE_CONCURRENCY", "8"))
     WEATHER_MAX_TOTAL_EXPOSURE_USD: float = float(os.getenv("WEATHER_MAX_TOTAL_EXPOSURE_USD", "50000"))
     WEATHER_TOTAL_CAPITAL: float = float(os.getenv("WEATHER_TOTAL_CAPITAL", "25000"))
+    # S99: Fill-failure cooldown
+    WEATHER_FILL_FAIL_COOLDOWN_SCANS: int = int(os.getenv("WEATHER_FILL_FAIL_COOLDOWN_SCANS", "2"))
+    WEATHER_FILL_FAIL_COOLDOWN_SECS: float = float(os.getenv("WEATHER_FILL_FAIL_COOLDOWN_SECS", "900"))
+    # S99: Fill probability floor (price-depth factor)
+    WEATHER_MIN_FILL_PROB_ESTIMATE: float = float(os.getenv("WEATHER_MIN_FILL_PROB_ESTIMATE", "0.25"))
+    # S99: PSW every-other-scan
+    WEATHER_PSW_SCAN_DIVISOR: int = int(os.getenv("WEATHER_PSW_SCAN_DIVISOR", "2"))
+    # S99: Adaptive backoff
+    WEATHER_ADAPTIVE_BACKOFF_THRESHOLD: int = int(os.getenv("WEATHER_ADAPTIVE_BACKOFF_THRESHOLD", "6"))
+    WEATHER_MAX_SCAN_INTERVAL: float = float(os.getenv("WEATHER_MAX_SCAN_INTERVAL", "600"))
 
     # Scan intervals (seconds)
     SCAN_INTERVAL_ENSEMBLE: int = int(os.getenv("SCAN_INTERVAL_ENSEMBLE", "60"))
