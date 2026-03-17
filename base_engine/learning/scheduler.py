@@ -61,6 +61,8 @@ class LearningScheduler:
         self._consecutive_retrain_failures = 0
         # M7 FIX: Guard against concurrent retrain (degradation check + scheduled can overlap)
         self._retrain_in_progress: bool = False
+        # S100: Restore canary stage from DB on first transition check
+        self._canary_restored: bool = False
 
     async def start(self) -> None:
         """Start the scheduled retraining loop."""
@@ -618,6 +620,20 @@ class LearningScheduler:
         """Auto-advance or reset canary stage based on Brier + accuracy metrics.
         get_recent_brier_from_prediction_log returns {count, brier, accuracy}.
         Accuracy is used as directional quality signal (sharpe not available from prediction_log)."""
+        # S100: Restore persisted canary stage from DB on first call
+        if not self._canary_restored:
+            self._canary_restored = True
+            try:
+                from sqlalchemy import text as _txt
+                async with self.db.get_session() as _sess:
+                    _row = (await _sess.execute(
+                        _txt("SELECT value FROM system_kv WHERE key = 'canary_stage'")
+                    )).scalar_one_or_none()
+                    if _row is not None:
+                        settings.CANARY_STAGE = int(_row)
+                        logger.info("canary_stage_restored_from_db", stage=int(_row))
+            except Exception:
+                pass  # Fall back to env var
         current_stage = getattr(settings, "CANARY_STAGE", 0)
         if current_stage >= 4:
             return  # Already at full capital
@@ -651,6 +667,18 @@ class LearningScheduler:
                 capital_pct=_pcts.get(new_stage, "unknown"),
                 brier=round(brier, 4), accuracy=round(accuracy, 4),
             )
+            # S100: Persist canary stage to DB
+            try:
+                from sqlalchemy import text as _txt2
+                async with self.db.get_session() as _sess2:
+                    await _sess2.execute(_txt2(
+                        "INSERT INTO system_kv (key, value, updated_at) "
+                        "VALUES ('canary_stage', :val, NOW()) "
+                        "ON CONFLICT (key) DO UPDATE SET value = :val, updated_at = NOW()"
+                    ), {"val": str(new_stage)})
+                    await _sess2.commit()
+            except Exception as _pe:
+                logger.debug("canary_stage_persist_failed", error=str(_pe))
             if self.alerting:
                 try:
                     from base_engine.monitoring.alerting import AlertSeverity
