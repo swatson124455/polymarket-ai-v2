@@ -179,8 +179,8 @@ class ModelRunMonitor:
 
                     cache_key = f"{station.station_id}:{target_date.isoformat()}"
 
-                    # Store in model_run_cache
-                    self._fc._model_run_cache[cache_key] = forecast
+                    # Store in model_run_cache with timestamp for TTL
+                    self._fc._model_run_cache[cache_key] = (time.monotonic(), forecast)
                     _refreshed += 1
 
                     # Jump detection: compare to prior ensemble mean

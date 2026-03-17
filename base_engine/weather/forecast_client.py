@@ -62,7 +62,9 @@ class WeatherForecastClient:
         self._wind_cache: Dict[str, Tuple[float, List[float]]] = {}
         self._cache_ttl = cache_ttl
         # S97: Model-run cache — populated by ModelRunMonitor, checked before API call
-        self._model_run_cache: Dict[str, CombinedForecast] = {}  # same key format: "station:date"
+        # S99: Now stores (mono_time, forecast) with 30-min TTL to prevent stale data
+        self._model_run_cache: Dict[str, Tuple[float, CombinedForecast]] = {}  # "station:date" → (mono, forecast)
+        self._model_run_cache_ttl: float = 300.0  # 5 min — just long enough to dedupe ModelRunMonitor burst
         # S97: API call counter — tracks how many HTTP calls per scan
         self.api_calls_this_scan: int = 0
         self._rate_limit = rate_limit_per_min
@@ -961,14 +963,16 @@ class WeatherForecastClient:
         now_mono = time.monotonic()
 
         # S97: Check model-run cache first (populated by ModelRunMonitor)
+        # S99: Added 30-min TTL — stale entries fall through to API call
         _mr_cached = self._model_run_cache.get(cache_key)
         if _mr_cached is not None:
-            return _mr_cached
+            _mr_time, _mr_forecast = _mr_cached
+            if now_mono - _mr_time < self._model_run_cache_ttl:
+                return _mr_forecast
 
-        # Check cache (reduced TTL: 900s → 300s when model_run_cache is active)
-        _effective_ttl = 300.0 if self._model_run_cache else self._cache_ttl
+        # Check regular cache — cached[0] is expiry_mono (not start time)
         cached = self._cache.get(cache_key)
-        if cached and now_mono < (cached[0] - self._cache_ttl + _effective_ttl):
+        if cached and now_mono < cached[0]:
             return cached[1]
 
         self.api_calls_this_scan += 1

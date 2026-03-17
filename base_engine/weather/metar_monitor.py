@@ -14,6 +14,7 @@ Architecture:
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -77,13 +78,18 @@ class MetarMonitor:
     async def _monitor_loop(self) -> None:
         """Main polling loop — fetches METAR for all active stations."""
         while self._running:
+            _t0 = time.monotonic()
             try:
-                await self._poll_all_stations()
+                # S99: Hard timeout prevents indefinite blocking under event loop saturation
+                await asyncio.wait_for(self._poll_all_stations(), timeout=30.0)
+            except asyncio.TimeoutError:
+                logger.warning("metar_poll_timeout", elapsed_ms=round((time.monotonic() - _t0) * 1000))
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 logger.warning("metar_monitor_error", error=str(exc))
-            await asyncio.sleep(self._poll_interval)
+            # S99: Jitter avoids collision with scan loop
+            await asyncio.sleep(self._poll_interval + random.uniform(0, 30))
 
     async def _poll_all_stations(self) -> None:
         """Fetch METAR for all stations with same-day markets."""
@@ -94,31 +100,38 @@ class MetarMonitor:
         if not us_stations:
             return
 
-        # Batch METAR request — AWC supports comma-separated ICAO codes
-        icao_ids = ",".join(s.station_id for s in us_stations[:20])  # Cap at 20
+        # S99: Batch METAR requests in groups of 20 (AWC limit per request)
+        _batch_size = 20
+        data: List[Dict] = []
+        session = await self._get_session()
+        _poll_t0 = time.monotonic()
+        _batches_sent = 0
 
-        try:
-            session = await self._get_session()
-            params = {
-                "ids": icao_ids,
-                "format": "json",
-                "hours": "1",  # Last hour only
-            }
-            async with session.get(
-                _AWC_METAR_URL,
-                params=params,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status != 200:
-                    logger.debug("metar_api_error", status=resp.status)
-                    return
-                data = await resp.json()
+        for i in range(0, len(us_stations), _batch_size):
+            batch = us_stations[i:i + _batch_size]
+            icao_ids = ",".join(s.station_id for s in batch)
+            try:
+                params = {
+                    "ids": icao_ids,
+                    "format": "json",
+                    "hours": "1",
+                }
+                async with session.get(
+                    _AWC_METAR_URL,
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    _batches_sent += 1
+                    if resp.status == 200:
+                        batch_data = await resp.json()
+                        if isinstance(batch_data, list):
+                            data.extend(batch_data)
+                    else:
+                        logger.debug("metar_api_error", status=resp.status, batch=i)
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                logger.debug("metar_batch_fetch_failed", batch=i, error=str(exc))
 
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            logger.debug("metar_fetch_failed", error=str(exc))
-            return
-
-        if not isinstance(data, list):
+        if not data:
             return
 
         _updates = 0
@@ -176,14 +189,16 @@ class MetarMonitor:
             except (ValueError, TypeError, KeyError):
                 continue
 
-        if _updates > 0 or _boundary_crosses > 0:
-            logger.info(
-                "metar_poll_done",
-                stations_polled=len(us_stations),
-                observations=len(data),
-                updates=_updates,
-                boundary_crosses=_boundary_crosses,
-            )
+        _poll_ms = round((time.monotonic() - _poll_t0) * 1000)
+        logger.info(
+            "metar_poll_done",
+            stations_polled=len(us_stations),
+            batches=_batches_sent,
+            observations=len(data),
+            updates=_updates,
+            boundary_crosses=_boundary_crosses,
+            poll_ms=_poll_ms,
+        )
 
     def get_running_max(self, station_id: str) -> Optional[float]:
         """Get today's running max temperature for a station."""
