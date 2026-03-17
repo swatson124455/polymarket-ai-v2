@@ -9,6 +9,7 @@ set -euo pipefail
 
 KEY="${SSH_KEY:-$HOME/.ssh/LightsailDefaultKey-eu-west-1.pem}"
 VPS="${VPS_HOST:-ubuntu@34.251.224.21}"
+SSH_OPTS="-o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no"
 RELEASES="/opt/pa2-releases"
 CURRENT="/opt/polymarket-ai-v2"
 
@@ -16,7 +17,7 @@ echo ""
 echo "=== Polymarket AI V2 — ROLLBACK ==="
 
 # Find previous release (second-most-recent dir, sorted by modification time)
-PREV_DIR=$(ssh -i "$KEY" "$VPS" \
+PREV_DIR=$(ssh $SSH_OPTS -i "$KEY" "$VPS" \
     "ls -1dt $RELEASES/*/ 2>/dev/null | sed -n '2p' | sed 's|/$||'" || true)
 
 if [ -z "$PREV_DIR" ]; then
@@ -26,12 +27,12 @@ if [ -z "$PREV_DIR" ]; then
 fi
 
 PREV_NAME=$(basename "$PREV_DIR")
-echo "Current  : $(ssh -i "$KEY" "$VPS" "readlink $CURRENT 2>/dev/null || echo '(unknown)'")"
+echo "Current  : $(ssh $SSH_OPTS -i "$KEY" "$VPS" "readlink $CURRENT 2>/dev/null || echo '(unknown)'")"
 echo "Rollback : $PREV_DIR"
 echo ""
 
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-ssh -i "$KEY" "$VPS" bash <<REMOTE
+ssh $SSH_OPTS -i "$KEY" "$VPS" bash <<REMOTE
 set -euo pipefail
 SWAP_TMP="${CURRENT}_rollback_$TIMESTAMP"
 sudo ln -s "$PREV_DIR" "\$SWAP_TMP"

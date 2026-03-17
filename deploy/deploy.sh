@@ -20,6 +20,7 @@ set -euo pipefail
 
 KEY="${SSH_KEY:-$HOME/.ssh/LightsailDefaultKey-eu-west-1.pem}"
 VPS="${VPS_HOST:-ubuntu@34.251.224.21}"
+SSH_OPTS="-o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no"
 RELEASES="/opt/pa2-releases"
 SHARED="/opt/pa2-shared"
 CURRENT="/opt/polymarket-ai-v2"
@@ -70,14 +71,14 @@ echo "  Archive: $TMPTAR ($ARCHIVE_SIZE)"
 # ── 3. Upload ─────────────────────────────────────────────────────────────────
 echo ""
 echo "[3/7] Uploading to VPS..."
-scp -i "$KEY" -o StrictHostKeyChecking=no "$TMPTAR" "$VPS:/tmp/"
+scp $SSH_OPTS -i "$KEY" "$TMPTAR" "$VPS:/tmp/"
 rm -f "$TMPTAR"
 echo "  Upload done"
 
 # ── 4. Extract, symlink shared dirs, run migrations ──────────────────────────
 echo ""
 echo "[4/7] Extracting + running migrations..."
-ssh -i "$KEY" "$VPS" bash <<REMOTE
+ssh $SSH_OPTS -i "$KEY" "$VPS" bash <<REMOTE
 set -euo pipefail
 
 TARFILE="/tmp/pa2-$TIMESTAMP.tar.gz"
@@ -114,7 +115,7 @@ REMOTE
 # ── 5. Atomic symlink swap ────────────────────────────────────────────────────
 echo ""
 echo "[5/7] Atomic symlink swap..."
-ssh -i "$KEY" "$VPS" bash <<REMOTE
+ssh $SSH_OPTS -i "$KEY" "$VPS" bash <<REMOTE
 set -euo pipefail
 SWAP_TMP="${CURRENT}_swap_$TIMESTAMP"
 sudo ln -s "$NEW_RELEASE" "\$SWAP_TMP"
@@ -125,7 +126,7 @@ REMOTE
 # ── 6. Restart service ────────────────────────────────────────────────────────
 echo ""
 echo "[6/7] Restarting service..."
-ssh -i "$KEY" "$VPS" "sudo systemctl restart polymarket-ai"
+ssh $SSH_OPTS -i "$KEY" "$VPS" "sudo systemctl restart polymarket-ai"
 echo "  Restarting..."
 
 # ── 7. Health check ───────────────────────────────────────────────────────────
@@ -135,7 +136,7 @@ HEALTH_OK=false
 for i in $(seq 1 18); do
     sleep 5
     ELAPSED=$((i * 5))
-    if ssh -i "$KEY" "$VPS" \
+    if ssh $SSH_OPTS -i "$KEY" "$VPS" \
         "journalctl -u polymarket-ai --since '-${ELAPSED}s' --no-pager 2>/dev/null | grep -q 'scan_ms'" 2>/dev/null; then
         HEALTH_OK=true
         echo "  Health OK at ${ELAPSED}s — bots scanning"
@@ -152,7 +153,7 @@ if [ "$HEALTH_OK" = false ]; then
 fi
 
 # ── Prune old releases (keep last 5) ─────────────────────────────────────────
-ssh -i "$KEY" "$VPS" \
+ssh $SSH_OPTS -i "$KEY" "$VPS" \
     "ls -1dt $RELEASES/*/ 2>/dev/null | tail -n +6 | xargs -r sudo rm -rf" || true
 
 echo ""
