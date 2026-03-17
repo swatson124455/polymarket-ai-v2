@@ -332,7 +332,7 @@ class Settings(BaseSettings):
     MIRROR_MAX_CATEGORY_EXPOSURE_USD: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_USD", "10000"))  # S99b: $4k→$10k per category
     MIRROR_MAX_TRACKED_TRADES: int = int(os.getenv("MIRROR_MAX_TRACKED_TRADES", "10000"))
     MIRROR_EXIT_ENABLED: bool = os.getenv("MIRROR_EXIT_ENABLED", "true").lower() in ("true", "1", "yes")
-    MIRROR_MAX_CONCURRENT_POSITIONS: int = int(os.getenv("MIRROR_MAX_CONCURRENT_POSITIONS", "1000"))  # S96: 400→1000
+    MIRROR_MAX_CONCURRENT_POSITIONS: int = int(os.getenv("MIRROR_MAX_CONCURRENT_POSITIONS", "500"))  # S99b: 1000→500
     MIRROR_MAX_DAILY_EXPOSURE_PCT: float = float(os.getenv("MIRROR_MAX_DAILY_EXPOSURE_PCT", "0.15"))
     # Phase 4: MirrorBot structural hardening
     MIRROR_HOT_TRADE_MAX_SECONDS: int = int(os.getenv("MIRROR_HOT_TRADE_MAX_SECONDS", "900"))  # 300→900: 5min was too aggressive, 15min allows more trades
