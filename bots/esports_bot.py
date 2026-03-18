@@ -1183,8 +1183,14 @@ class EsportsBot(BaseBot):
 
         # P1.2: Backfill actual_outcome for settled esports paper_trades (every 20 min)
         # Non-financial bookkeeping — safe for fire-and-forget (updates prediction_log metadata)
-        if _now - self._last_outcome_backfill >= 1200 and db is not None:
+        _bf_elapsed = _now - self._last_outcome_backfill
+        _bf_ready = _bf_elapsed >= 1200
+        _bf_db_ok = db is not None
+        if not _bf_ready or not _bf_db_ok:
+            logger.info("esportsbot_backfill_skip", elapsed=round(_bf_elapsed, 1), ready=_bf_ready, db_ok=_bf_db_ok)
+        if _bf_ready and _bf_db_ok:
             self._last_outcome_backfill = _now
+            logger.info("esportsbot_outcome_backfill_triggered")
             asyncio.create_task(self._safe_backfill_outcomes(db))
 
     async def _safe_backfill_outcomes(self, db) -> None:
@@ -1192,7 +1198,7 @@ class EsportsBot(BaseBot):
         try:
             await self._backfill_esports_outcomes(db)
         except Exception as _exc:
-            logger.debug("esportsbot_outcome_backfill_failed", error=str(_exc))
+            logger.warning("esportsbot_outcome_backfill_failed", error=str(_exc))
 
     async def _restore_exposure_from_db(self, db) -> None:
         """Seed _game_exposure from daily_counters on startup.
@@ -1453,12 +1459,153 @@ class EsportsBot(BaseBot):
                              model_prob=round(model_prob, 4),
                              current_price=round(current_price, 4))
 
+    async def _resolve_esports_from_clob(self, db) -> int:
+        """S104: Directly resolve esports markets via CLOB API.
+
+        Bypasses the shared resolution_backfill queue which is permanently starved
+        by 1500+ MirrorBot markets ahead of EsportsBot's ~38 markets.
+
+        Checks ALL unresolved esports markets per cycle (~20 min).
+        Uses same resolution pathway as resolution_backfill.py:
+        save_market_resolution() + mark_market_resolved() + insert RESOLUTION trade_event.
+        """
+        _resolved_count = 0
+        try:
+            import httpx
+            from sqlalchemy import text as _clob_text
+
+            # 1. Get ALL unresolved esports market_ids (typically <50)
+            async with db.get_session() as _s:
+                _rows = await _s.execute(
+                    _clob_text(
+                        "SELECT market_id FROM traded_markets "
+                        "WHERE (bot_names LIKE '%EsportsBot%' OR bot_names LIKE '%EsportsLiveBot%' "
+                        "OR bot_names LIKE '%EsportsSeriesBot%') "
+                        "AND resolved = FALSE "
+                        "ORDER BY first_trade_at ASC"
+                    )
+                )
+                _market_ids = [r[0] for r in _rows.fetchall()]
+
+            if not _market_ids:
+                return 0
+
+            logger.info("esportsbot_clob_resolution_start", unresolved=len(_market_ids))
+
+            # 2. Check each market on CLOB API
+            async with httpx.AsyncClient(timeout=15.0) as _http:
+                for _mid in _market_ids:
+                    try:
+                        _resp = await _http.get(f"https://clob.polymarket.com/markets/{_mid}")
+                        if _resp.status_code != 200:
+                            continue
+                        _clob = _resp.json()
+                        if not _clob.get("closed"):
+                            continue
+
+                        # 3. Determine resolution (YES/NO) from token winners
+                        _tokens = _clob.get("tokens") or []
+                        _resolution = None
+                        for _idx, _tok in enumerate(_tokens):
+                            if _tok.get("winner"):
+                                _resolution = "YES" if _idx == 0 else "NO"
+                                break
+                        if not _resolution:
+                            continue
+
+                        # 4. Parse resolved_at from end_date
+                        from datetime import datetime as _dt, timezone as _tz
+                        _end_raw = _clob.get("end_date_iso") or _clob.get("game_start_time")
+                        _resolved_at = _dt.now(_tz.utc).replace(tzinfo=None)
+                        if _end_raw:
+                            try:
+                                _resolved_at = _dt.fromisoformat(
+                                    str(_end_raw).replace("Z", "+00:00")
+                                ).replace(tzinfo=None)
+                            except Exception:
+                                pass
+
+                        # 5. Save resolution (updates markets table + traded_markets)
+                        await db.save_market_resolution(
+                            _mid, True, _resolution, "clob_api_esports", _resolved_at
+                        )
+                        await db.mark_market_resolved(_mid, _resolution)
+
+                        # 6. Compute realized_pnl from paper_trades and emit RESOLUTION trade_event
+                        async with db.get_session() as _ps:
+                            _pts = await _ps.execute(
+                                _clob_text(
+                                    "SELECT bot_name, side, price, size "
+                                    "FROM paper_trades "
+                                    "WHERE market_id = :mid "
+                                    "AND bot_name IN ('EsportsBot', 'EsportsLiveBot', 'EsportsSeriesBot') "
+                                    "AND LOWER(side) != 'sell'"
+                                ),
+                                {"mid": _mid},
+                            )
+                            for _pt in _pts.fetchall():
+                                _bn = _pt[0]
+                                _side = _pt[1]
+                                _entry = float(_pt[2]) if _pt[2] else 0.0
+                                _size = float(_pt[3]) if _pt[3] else 0.0
+                                _won = (_side == _resolution)
+                                _pnl = (1.0 - _entry) * _size if _won else -_entry * _size
+                                try:
+                                    await db.insert_trade_event(
+                                        event_type="RESOLUTION",
+                                        bot_name=_bn,
+                                        market_id=_mid,
+                                        side=_side,
+                                        size=_size,
+                                        price=0.0,
+                                        realized_pnl=_pnl,
+                                        correlation_id=f"resolution:{_mid}",
+                                        event_time=_resolved_at,
+                                    )
+                                except Exception:
+                                    pass  # Idempotent — may already exist
+                            # Also update paper_trades resolution
+                            try:
+                                await _ps.execute(
+                                    _clob_text(
+                                        "UPDATE paper_trades SET resolution = :res, resolved_at = :rat "
+                                        "WHERE market_id = :mid AND resolution IS NULL"
+                                    ),
+                                    {"res": _resolution, "rat": _resolved_at, "mid": _mid},
+                                )
+                                await _ps.commit()
+                            except Exception:
+                                pass
+
+                        _resolved_count += 1
+                        logger.info(
+                            "esportsbot_clob_resolved",
+                            market_id=_mid[:20],
+                            resolution=_resolution,
+                            question=str(_clob.get("question", ""))[:60],
+                        )
+
+                        await asyncio.sleep(0.5)  # Rate limit CLOB calls
+                    except Exception as _e:
+                        logger.warning("esportsbot_clob_resolve_failed", market_id=str(_mid)[:20], error=str(_e))
+        except Exception as _outer:
+            logger.warning("esportsbot_clob_resolution_outer_error", error=str(_outer))
+        return _resolved_count
+
     async def _backfill_esports_outcomes(self, db) -> None:
         """Backfill actual_outcome in esports_prediction_log from trade_events RESOLUTION.
 
         Runs every 10 scans. Idempotent — resolve_predictions() only updates
         rows where actual_outcome IS NULL. YES win → outcome=1, NO win → outcome=0.
         """
+        # S104: Resolve esports markets directly from CLOB (bypass starved shared queue)
+        try:
+            _clob_resolved = await self._resolve_esports_from_clob(db)
+            if _clob_resolved > 0:
+                logger.info("esportsbot_clob_resolution_pass", resolved=_clob_resolved)
+        except Exception as _clob_err:
+            logger.warning("esportsbot_clob_resolution_pass_failed", error=str(_clob_err))
+
         from sqlalchemy import text as _sa_text
         from esports.data.esports_db import resolve_predictions as _resolve
         async with db.get_session() as _sess:

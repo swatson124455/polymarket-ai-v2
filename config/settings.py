@@ -350,15 +350,11 @@ class Settings(BaseSettings):
 
     # Session 82: Advanced calibration + RL scaffold feature flags (all off by default)
     MIRROR_USE_CALIBRATION: bool = os.getenv("MIRROR_USE_CALIBRATION", "false").lower() in ("true", "1", "yes")
-    MIRROR_USE_CONFORMAL: bool = os.getenv("MIRROR_USE_CONFORMAL", "false").lower() in ("true", "1", "yes")
-    MIRROR_USE_GEOMEAN_CONSENSUS: bool = os.getenv("MIRROR_USE_GEOMEAN_CONSENSUS", "false").lower() in ("true", "1", "yes")
-    MIRROR_GEOMEAN_EXTREMIZE_D: float = float(os.getenv("MIRROR_GEOMEAN_EXTREMIZE_D", "2.0"))
-    MIRROR_ADAPTIVE_SAFETY: bool = os.getenv("MIRROR_ADAPTIVE_SAFETY", "false").lower() in ("true", "1", "yes")
+    # S103: MIRROR_USE_CONFORMAL, MIRROR_CONFORMAL_MIN_RESOLVED, MIRROR_CONFORMAL_ALPHA removed (dead since S93)
+    # S103: MIRROR_ADAPTIVE_SAFETY, MIRROR_USE_GEOMEAN_CONSENSUS, MIRROR_GEOMEAN_EXTREMIZE_D removed (dead since S94/S102)
     MIRROR_SKIP_LIQUIDITY_RTDS: bool = os.getenv("MIRROR_SKIP_LIQUIDITY_RTDS", "true").lower() in ("true", "1", "yes")
     MIRROR_SKIP_COORDINATOR_BUY: bool = os.getenv("MIRROR_SKIP_COORDINATOR_BUY", "true").lower() in ("true", "1", "yes")  # S94: skip coordinator for RTDS BUY (saves 72-464ms). Set false when other bots enabled.
     MIRROR_RTDS_FAST_PATH: bool = os.getenv("MIRROR_RTDS_FAST_PATH", "true").lower() in ("true", "1", "yes")  # S94: skip risk/drawdown/fill model for RTDS copies (~20-30ms). MirrorBot has own limits.
-    MIRROR_CONFORMAL_MIN_RESOLVED: int = int(os.getenv("MIRROR_CONFORMAL_MIN_RESOLVED", "50"))
-    MIRROR_CONFORMAL_ALPHA: float = float(os.getenv("MIRROR_CONFORMAL_ALPHA", "0.50"))  # B1: 0.50 = 50% coverage (was 0.10 = 90%)
 
     MIRROR_STOP_LOSS_PCT: float = float(os.getenv("MIRROR_STOP_LOSS_PCT", "0.15"))
     MIRROR_MAX_HOLD_HOURS: float = float(os.getenv("MIRROR_MAX_HOLD_HOURS", "99999"))  # S96: disabled — stop-loss is safety net
@@ -368,6 +364,7 @@ class Settings(BaseSettings):
     MIRROR_CATEGORY_BLOCKLIST: str = os.getenv("MIRROR_CATEGORY_BLOCKLIST", "15-minute,speed")  # comma-separated substrings
     MIRROR_MARKET_COOLDOWN_SECONDS: int = int(os.getenv("MIRROR_MARKET_COOLDOWN_SECONDS", "1800"))  # 30 min per-market re-entry cooldown
     MIRROR_MIN_TRADE_USD: float = float(os.getenv("MIRROR_MIN_TRADE_USD", "10.0"))  # skip dust trades
+    MIRROR_MIN_HOURS_TO_RESOLUTION: float = float(os.getenv("MIRROR_MIN_HOURS_TO_RESOLUTION", "24"))  # S103: was 4h hardcoded. <24h holds lose -$2,923 on 188 trades
     MIRROR_MAX_SLIPPAGE_PCT: float = float(os.getenv("MIRROR_MAX_SLIPPAGE_PCT", "0.08"))  # 8% max price drift from whale's fill
 
     # Bot Settings

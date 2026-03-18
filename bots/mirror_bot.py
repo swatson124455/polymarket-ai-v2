@@ -431,7 +431,6 @@ class MirrorBot(BaseBot):
         if self._calibration_stack and not self._calibration_fitted:
             try:
                 _cal_results = await self._calibration_stack.fit()
-                await self._calibration_stack.fit_conformal()
                 self._calibration_fitted = True
                 self._calibration_fit_date = _today
                 if _cal_results:
@@ -1257,14 +1256,7 @@ class MirrorBot(BaseBot):
             if abs(_raw_conf - confidence) > 0.01:
                 logger.info("mirror_calibrated", raw=round(_raw_conf, 3), cal=round(confidence, 3))
 
-            # S93: Conformal dampening DISABLED for MirrorBot.
-            # Logit-space residuals with binary outcomes always produce median=3.0 (the cap),
-            # yielding intervals of width ~0.90 at ALL confidence levels. Dampener floors at
-            # 0.25 on 100% of trades, providing zero discrimination. This quartered Kelly
-            # (0.25 → 0.0625) with no informational value. Existing guardrails (max_bet=$250,
-            # daily=$10k, capital=$3k, quarter-Kelly, MIN_CONFIDENCE=0.55) are sufficient.
-            # Conformal fitting still runs for logging/monitoring.
-            _conformal_interval = None  # was: self._calibration_stack.get_conformal_interval(confidence)
+            _conformal_interval = None  # S103: conformal removed (dead since S93, code stripped from calibration.py)
 
         # S48 FIX: Use per-bot BotBankrollManager (Session 47) instead of deprecated
         # risk_manager.calculate_position_size() which divides Kelly by KELLY_ACTIVE_BOTS.

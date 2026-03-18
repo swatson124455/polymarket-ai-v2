@@ -1,18 +1,17 @@
 """
-MirrorBot Calibration Integration — Session 82.
+MirrorBot Calibration Integration — Session 82, cleaned S103.
 
-Wires existing FocalTemperatureCalibrator, HorizonBiasCalibrator, and
-conformal prediction into MirrorBot's confidence/sizing pipeline.
+Wires existing FocalTemperatureCalibrator and HorizonBiasCalibrator
+into MirrorBot's confidence/sizing pipeline.
 
-All features gated behind env vars (default off):
+Gated behind env var (default off):
   MIRROR_USE_CALIBRATION=true  — apply FTS + Le(2026) domain bias to confidence
-  MIRROR_USE_CONFORMAL=true    — pass conformal interval to Kelly sizing
 
 Calibrators are already implemented in base_engine/features/calibration.py.
 This module provides the MirrorBot-specific init + apply helpers.
 """
 import numpy as np
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from structlog import get_logger
 from config.settings import settings
@@ -21,16 +20,13 @@ logger = get_logger()
 
 
 class MirrorCalibrationStack:
-    """Manages calibration + conformal prediction for MirrorBot."""
+    """Manages FTS + horizon bias calibration for MirrorBot."""
 
     def __init__(self, db: Any = None):
         self._db = db
         self._fts = None  # FocalTemperatureCalibrator
         self._horizon = None  # HorizonBiasCalibrator
         self._fitted = False
-        self._conformal_fitted = False
-        # Conformal prediction: logit-space residuals from resolved trades (S90)
-        self._conformal_residuals: list = []  # |logit(predicted) - logit(outcome)| for resolved trades
 
     async def fit(self) -> Dict[str, bool]:
         """Fit all calibrators from DB. Call on first scan, re-fit daily."""
@@ -68,79 +64,6 @@ class MirrorCalibrationStack:
 
         return results
 
-    async def fit_conformal(self) -> bool:
-        """Fit conformal prediction residuals from resolved MirrorBot trades."""
-        if not getattr(settings, "MIRROR_USE_CONFORMAL", False):
-            return False
-        if not self._db or not getattr(self._db, "session_factory", None):
-            return False
-
-        min_resolved = getattr(settings, "MIRROR_CONFORMAL_MIN_RESOLVED", 50)
-
-        try:
-            from sqlalchemy import text
-            async with self._db.get_session() as session:
-                rows = await session.execute(text(
-                    "SELECT e.confidence, e.price, r.realized_pnl "
-                    "FROM trade_events r "
-                    "JOIN trade_events e "
-                    "  ON e.market_id = r.market_id "
-                    "  AND e.bot_name = r.bot_name "
-                    "  AND e.event_type = 'ENTRY' "
-                    "WHERE r.bot_name = 'MirrorBot' "
-                    "  AND r.event_type = 'RESOLUTION' "
-                    "  AND r.realized_pnl IS NOT NULL "
-                    "  AND e.confidence IS NOT NULL "
-                    "ORDER BY r.event_time DESC LIMIT 2000"
-                ))
-                data = rows.fetchall()
-
-            if len(data) < min_resolved:
-                logger.info(
-                    "mirror_conformal: insufficient data (%d/%d)",
-                    len(data), min_resolved,
-                )
-                return False
-
-            # S90: Logit-space non-conformity scores.
-            # Probability-space |prob - outcome| with binary outcomes (0/1) and
-            # predictions near 0.55 always clusters residuals at 0.45-0.55, making
-            # conformal intervals [~0.01, ~0.99] — useless.  Logit space spreads
-            # residuals meaningfully and gives tighter, confidence-dependent intervals.
-            _LOGIT_CAP = 3.0  # ~95.3%, prevents +-inf from binary outcomes
-            residuals = []
-            for row in data:
-                prob = float(row[0]) if row[0] else None
-                pnl = float(row[2])
-                if prob is None or prob <= 0.01 or prob >= 0.99:
-                    continue
-                logit_pred = float(np.log(prob / (1.0 - prob)))
-                logit_outcome = _LOGIT_CAP if pnl > 0 else -_LOGIT_CAP
-                residuals.append(abs(logit_pred - logit_outcome))
-
-            if len(residuals) < min_resolved:
-                return False
-
-            self._conformal_residuals = sorted(residuals)
-            self._conformal_fitted = True
-            _alpha = getattr(settings, "MIRROR_CONFORMAL_ALPHA", 0.50)
-            _q_idx = int(np.ceil((1 - _alpha) * (len(residuals) + 1))) - 1
-            _q_idx = min(_q_idx, len(residuals) - 1)
-            _q_at_alpha = self._conformal_residuals[_q_idx]
-            logger.info(
-                "mirror_conformal_fitted",
-                n_residuals=len(residuals),
-                median_residual=round(float(np.median(residuals)), 3),
-                p90_residual=round(float(np.percentile(residuals, 90)), 3),
-                alpha=_alpha,
-                q_at_alpha=round(float(_q_at_alpha), 3),
-            )
-            return True
-
-        except Exception as e:
-            logger.warning("mirror_conformal_fit_error", error=str(e))
-            return False
-
     def calibrate_confidence(
         self,
         raw_confidence: float,
@@ -162,34 +85,3 @@ class MirrorCalibrationStack:
             conf = self._horizon.calibrate(conf, category=category, ttr_days=ttr_days)
 
         return float(np.clip(conf, 0.01, 0.99))
-
-    def get_conformal_interval(
-        self, confidence: float, alpha: Optional[float] = None
-    ) -> Optional[Tuple[float, float]]:
-        """
-        Compute conformal prediction interval at (1-alpha) coverage.
-
-        Returns (p_low, p_high) or None if not fitted.
-        Uses split conformal prediction with historical residuals.
-        """
-        if not self._conformal_fitted or not getattr(settings, "MIRROR_USE_CONFORMAL", False):
-            return None
-
-        if alpha is None:
-            alpha = getattr(settings, "MIRROR_CONFORMAL_ALPHA", 0.50)
-
-        n = len(self._conformal_residuals)
-        if n < 10:
-            return None
-
-        # Quantile of residuals at (1-alpha) level
-        idx = int(np.ceil((1 - alpha) * (n + 1))) - 1
-        idx = min(idx, n - 1)
-        q = self._conformal_residuals[idx]
-
-        # S90: Transform back from logit space to probability space
-        logit_conf = float(np.log(confidence / (1.0 - confidence)))
-        p_low = max(0.01, float(1.0 / (1.0 + np.exp(-(logit_conf - q)))))
-        p_high = min(0.99, float(1.0 / (1.0 + np.exp(-(logit_conf + q)))))
-
-        return (p_low, p_high)
