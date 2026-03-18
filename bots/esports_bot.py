@@ -1390,19 +1390,21 @@ class EsportsBot(BaseBot):
                                            error=str(_close_err))
                     self._market_game.pop(mid, None)
                     continue  # Skip exposure decrement — position was orphaned
-                # B3: Decrement game exposure on exit
+                # B3: Decrement game exposure (USD) on exit
                 # Primary: _market_game (populated on entry, survives cache expiry)
                 # Fallback: prediction_cache (1h TTL, may be stale)
                 game = self._market_game.get(mid, "")
                 if not game:
                     game = self._prediction_cache.get(mid, {}).get("game", "")
                 if game and game in self._game_exposure:
-                    self._game_exposure[game] = max(0.0, self._game_exposure.get(game, 0.0) - size)
+                    # S103: Use entry_price * size (USD) to match entry-time increment
+                    _exit_cost = entry * size
+                    self._game_exposure[game] = max(0.0, self._game_exposure.get(game, 0.0) - _exit_cost)
                     # Write-through decrement so daily_counters stays accurate across restarts
                     _db = getattr(self.base_engine, "db", None)
                     if _db is not None:
                         try:
-                            await _inc_daily(_db, "EsportsBot", f"game_{game}", -size)
+                            await _inc_daily(_db, "EsportsBot", f"game_{game}", -_exit_cost)
                         except Exception:
                             pass  # Non-critical: in-memory is authoritative intra-day
                 # Clean up market→game mapping for exited position
@@ -1833,10 +1835,17 @@ class EsportsBot(BaseBot):
                         game_state, glicko2_est,
                     )
                     if 0.0 < prob < 1.0:
+                        _ed_lol = {"game": game, "model_prob": round(prob, 4)}
+                        _gs_lol = self._build_glicko2_game_state(market_data, game)
+                        if _gs_lol:
+                            for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
+                                        "team_a_volatility", "team_b_volatility"):
+                                _ed_lol[_fk] = round(float(_gs_lol.get(_fk, 0.0)), 6)
                         self._prediction_cache[market_id] = {
                             "prob": prob, "ts": time.monotonic(), "game": game,
                             "ml_raw": self._lol_model.predict(game_state),
                             "glicko2_est": glicko2_est,
+                            "event_data": _ed_lol,
                         }
                         return prob
             except Exception as _e:
@@ -1855,9 +1864,15 @@ class EsportsBot(BaseBot):
                     if 0.0 < prob < 1.0:
                         tsd = float(game_state.get("team_strength_diff", 0.0))
                         glicko2_est = max(0.05, min(0.95, 0.5 + tsd / 2))
+                        _ed_cs2 = {"game": game, "model_prob": round(prob, 4)}
+                        if game_state:
+                            for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
+                                        "team_a_volatility", "team_b_volatility"):
+                                _ed_cs2[_fk] = round(float(game_state.get(_fk, 0.0)), 6)
                         self._prediction_cache[market_id] = {
                             "prob": prob, "ts": time.monotonic(), "game": game,
                             "ml_raw": prob, "glicko2_est": glicko2_est,
+                            "event_data": _ed_cs2,
                         }
                         return prob
             except Exception as _e:
@@ -1880,10 +1895,16 @@ class EsportsBot(BaseBot):
                         prob = max(0.05, min(0.95, prob))
                         # OpenDota form adjustment (small ±3% based on recent form)
                         prob = await self._opendota_form_adjustment(market_data, prob)
+                        _ed_d2 = {"game": game, "model_prob": round(prob, 4)}
+                        if game_state:
+                            for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
+                                        "team_a_volatility", "team_b_volatility"):
+                                _ed_d2[_fk] = round(float(game_state.get(_fk, 0.0)), 6)
                         self._prediction_cache[market_id] = {
                             "prob": prob, "ts": time.monotonic(), "game": game,
                             "ml_raw": self._dota2_model.predict(game_state),
                             "glicko2_est": glicko2_prob,
+                            "event_data": _ed_d2,
                         }
                         return prob
             except Exception as _e:
@@ -1903,10 +1924,16 @@ class EsportsBot(BaseBot):
                         _d = self._game_egm_d.get(game, self._egm_d)
                         prob = extremized_geometric_mean([prob, glicko2_prob], d=_d)
                         prob = max(0.05, min(0.95, prob))
+                        _ed_val = {"game": game, "model_prob": round(prob, 4)}
+                        if game_state:
+                            for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
+                                        "team_a_volatility", "team_b_volatility"):
+                                _ed_val[_fk] = round(float(game_state.get(_fk, 0.0)), 6)
                         self._prediction_cache[market_id] = {
                             "prob": prob, "ts": time.monotonic(), "game": game,
                             "ml_raw": self._valorant_model.predict(game_state),
                             "glicko2_est": glicko2_prob,
+                            "event_data": _ed_val,
                         }
                         return prob
             except Exception as _e:
@@ -2727,7 +2754,9 @@ class EsportsBot(BaseBot):
         st_override = opp.pop("_st_size_override", None)
         if st_override is not None and st_override >= 1.0:
             game = opp.get("game", "")
-            self._game_exposure[game] = self._game_exposure.get(game, 0.0) + st_override
+            # S103: Track USD cost, not shares
+            _st_cost = opp["price"] * st_override
+            self._game_exposure[game] = self._game_exposure.get(game, 0.0) + _st_cost
             if game:
                 self._market_game[opp["market_id"]] = game
             order = await self.place_order(
@@ -2744,7 +2773,7 @@ class EsportsBot(BaseBot):
                     _db = getattr(self.base_engine, "db", None)
                     if _db is not None:
                         try:
-                            await _inc_daily(_db, "EsportsBot", f"game_{game}", st_override)
+                            await _inc_daily(_db, "EsportsBot", f"game_{game}", _st_cost)
                         except Exception:
                             pass
                 logger.info(
@@ -2760,7 +2789,7 @@ class EsportsBot(BaseBot):
                 return True
             else:
                 self._game_exposure[game] = max(
-                    0.0, self._game_exposure.get(game, 0.0) - st_override
+                    0.0, self._game_exposure.get(game, 0.0) - _st_cost
                 )
                 return False
 
@@ -2850,12 +2879,20 @@ class EsportsBot(BaseBot):
         if _max_size_override is not None and size > _max_size_override:
             size = _max_size_override
 
+        # P6: Enforce ESPORTS_MAX_BET_USD cap (cost = price * size in shares)
+        _max_bet = float(getattr(settings, "ESPORTS_MAX_BET_USD", 300.0))
+        _cost = price * size
+        if _cost > _max_bet:
+            size = _max_bet / max(price, 0.01)
+
         if size < 0.10:
             return False
 
         # A10: Pre-update exposure BEFORE placing order (race condition fix)
+        # S103: Track USD cost (price * size), not shares — units must match ESPORTS_MAX_GAME_EXPOSURE (USD)
         game = opp.get("game", "")
-        self._game_exposure[game] = self._game_exposure.get(game, 0.0) + size
+        _entry_cost = price * size
+        self._game_exposure[game] = self._game_exposure.get(game, 0.0) + _entry_cost
         # Persist market→game for reliable exit decrement (outlives prediction_cache 1h TTL)
         if game:
             self._market_game[opp["market_id"]] = game
@@ -2877,12 +2914,12 @@ class EsportsBot(BaseBot):
                 self._tournament_exposure[tournament] = (
                     self._tournament_exposure.get(tournament, 0.0) + size
                 )
-            # Write-through: persist game exposure to daily_counters for restart recovery
+            # Write-through: persist game exposure (USD) to daily_counters for restart recovery
             if game:
                 _db = getattr(self.base_engine, "db", None)
                 if _db is not None:
                     try:
-                        await _inc_daily(_db, "EsportsBot", f"game_{game}", size)
+                        await _inc_daily(_db, "EsportsBot", f"game_{game}", _entry_cost)
                     except Exception as _exc:
                         logger.warning("esports_game_counter_write_failed", error=str(_exc))
 
@@ -2905,9 +2942,9 @@ class EsportsBot(BaseBot):
             )
             return True
         else:
-            # A10: Rollback exposure if order failed
+            # A10: Rollback exposure (USD) if order failed
             self._game_exposure[game] = max(
-                0.0, self._game_exposure.get(game, 0.0) - size
+                0.0, self._game_exposure.get(game, 0.0) - _entry_cost
             )
             return False
 

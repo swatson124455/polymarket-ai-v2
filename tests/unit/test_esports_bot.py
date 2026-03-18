@@ -318,23 +318,25 @@ class TestAnalyzeOpportunity:
 
     @pytest.mark.asyncio
     async def test_returns_trade_dict_when_no_edge(self):
-        """Model predicts much lower than market -> NO trade with edge."""
+        """Model predicts lower than market -> NO trade with edge."""
         bot = make_bot()
         bot._patch_drift = None
         bot._min_edge = 0.08
         bot._min_confidence = 0.55
-        # Market price = 0.80, model predicts 0.30 -> edge_no = 0.50
+        # Market price = 0.60, model predicts 0.30 -> edge_no ≈ 0.30
+        # S103: edge must stay under 0.45 edge cap (unfitted BetaCalibrator) and
+        # under 0.35 normal cap to avoid edge_cap rejection.
         market = _make_market(
             question="Will Team A win the LoL match?",
-            yes_price=0.80,
-            no_price=0.20,
+            yes_price=0.60,
+            no_price=0.40,
         )
         # Mock Glicko-2 prediction (replaced base_engine.get_predictions fallback)
         bot._get_glicko2_prediction = AsyncMock(return_value=0.30)
         result = await bot.analyze_opportunity(market)
         assert result is not None
         assert result["side"] == "NO"
-        assert result["edge"] == pytest.approx(0.50, abs=0.03)  # blue side bonus shifts
+        assert result["edge"] == pytest.approx(0.30, abs=0.03)  # blue side bonus shifts
         assert result["confidence"] == pytest.approx(0.70, abs=0.03)  # 1.0 - 0.30 ± blue side
 
     @pytest.mark.asyncio

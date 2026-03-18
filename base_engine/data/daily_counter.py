@@ -35,6 +35,7 @@ async def increment_counter(db, bot_id: str, name: str, amount: float) -> None:
             """),
             {"bot_id": bot_id, "name": name, "amount": amount},
         )
+        await sess.commit()
 
 
 async def restore_counters(db, bot_id: str) -> Dict[str, float]:
