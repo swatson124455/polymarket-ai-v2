@@ -53,6 +53,7 @@ class OrderGateway:
         self.rl_agent = rl_agent
         self.db = db  # optional Database handle for daily_counters persistence
         self._market_index: Optional[Dict[str, Dict[str, Any]]] = None  # Set by base_engine after construction
+        self._market_index_by_cid: Dict[str, Dict[str, Any]] = {}  # S100: condition_id index, set by base_engine
         self._bot_names_used: Set[str] = set()  # For shutdown: release reservations for all bots in this process
         # In-memory position tracker for ms-latency reactive path
         self._open_position_markets: Dict[str, Set[str]] = {}  # bot_name -> set of market_ids
@@ -539,6 +540,11 @@ class OrderGateway:
                 if (correlation_id and str(correlation_id).startswith("rtds:")
                         and getattr(settings, "MIRROR_SKIP_LIQUIDITY_RTDS", False)):
                     return None
+                # S100b: Skip liquidity check for EsportsBot — esports orderbooks are
+                # chronically thin. Paper fill model handles slippage independently.
+                # In live mode the CLOB order itself rejects if truly illiquid.
+                if bot_name in ("EsportsBot", "EsportsLiveBot", "EsportsSeriesBot"):
+                    return None
                 # Look up condition_id from market index for CLOB API order book query
                 _cid = ""
                 if self._market_index:
@@ -687,11 +693,35 @@ class OrderGateway:
                 _t_coord_end = time.monotonic()
                 t0 = time.monotonic()
                 # S91: Look up 24h volume for fill probability model
+                # S100: Look up bestBid/bestAsk for realistic spread in fill model
                 _paper_volume = 0.0
+                _paper_bid = bid      # preserve caller-supplied values if nonzero
+                _paper_ask = ask
                 if self._market_index:
-                    _mdata_vol = self._market_index.get(str(market_id))
+                    # S100: check both numeric id and condition_id (MirrorBot uses 0x hashes)
+                    _mdata_vol = (
+                        self._market_index.get(str(market_id))
+                        or self._market_index_by_cid.get(str(market_id))
+                    )
                     if _mdata_vol:
                         _paper_volume = float(_mdata_vol.get("volume") or _mdata_vol.get("volume24hr") or 0)
+                        if _paper_bid <= 0.0:
+                            _paper_bid = float(_mdata_vol.get("bestBid") or _mdata_vol.get("best_bid") or 0)
+                        if _paper_ask <= 0.0:
+                            _paper_ask = float(_mdata_vol.get("bestAsk") or _mdata_vol.get("best_ask") or 0)
+                        # S100: fallback — derive spread from tokens array (API scan data)
+                        if _paper_bid <= 0.0 and _paper_ask <= 0.0:
+                            try:
+                                _tokens = _mdata_vol.get("tokens") or []
+                                if len(_tokens) >= 2:
+                                    _p0 = float(_tokens[0].get("price") or 0)
+                                    _p1 = float(_tokens[1].get("price") or 0)
+                                    if _p0 > 0 and _p1 > 0:
+                                        _spread = abs(1.0 - _p0 - _p1)
+                                        _paper_bid = effective_price - _spread / 2
+                                        _paper_ask = effective_price + _spread / 2
+                            except (ValueError, TypeError, IndexError):
+                                pass
                 # S100: Extract signal latency from event_data for alpha decay
                 _scan_start = (event_data or {}).get("scan_start_mono")
                 _signal_latency_ms = None
@@ -709,8 +739,8 @@ class OrderGateway:
                     order_type=order_type,
                     correlation_id=correlation_id,
                     latency_ms=_signal_latency_ms,
-                    bid=bid,
-                    ask=ask,
+                    bid=_paper_bid,
+                    ask=_paper_ask,
                     volume=_paper_volume,
                     event_data=event_data,
                 )

@@ -1697,10 +1697,10 @@ class EsportsBot(BaseBot):
         # probs already encode uncertainty via phi-based Bayesian blending.
         db = getattr(self.base_engine, "db", None)
         _beta_cal = self._beta_calibrators.get(game)
+        _tournament_phase = self._detect_tournament_phase(market_data)
         if _beta_cal and not _beta_cal._fitted:
             _phase_mult = 1.0
         else:
-            _tournament_phase = self._detect_tournament_phase(market_data)
             _phase_mult = await self._get_tournament_phase_mult(
                 market_data, game, _tournament_phase, db
             )
@@ -2975,14 +2975,20 @@ class EsportsBot(BaseBot):
         edge = opp.get("edge", 0.0)
         confidence = opp.get("confidence", 0.5)
 
+        # S100b: While BetaCalibrator unfitted, use generous floor (0.8) — raw
+        # Glicko2 probs produce legitimate high-phi edges; don't penalize sizing
+        # based on stale accuracy data.
+        _cal_phi = self._beta_calibrators.get(game)
+        _phi_floor = 0.8 if (_cal_phi and not _cal_phi._fitted) else 0.5
+
         # Map edge magnitude to phi proxy: >0.15 edge → phi<100, <0.06 → phi>300
         if edge >= 0.15 and confidence >= 0.65:
             return 1.0   # High certainty
         if edge >= 0.10 and confidence >= 0.58:
             return 0.8   # Medium-high certainty
         if edge >= 0.06:
-            return 0.7   # Medium certainty
-        return 0.5        # Low certainty (barely above min_edge)
+            return max(0.7, _phi_floor)   # Medium certainty
+        return _phi_floor  # Low certainty (barely above min_edge)
 
     def _update_streaming_on_resolution(
         self, game: str, predicted: float, actual: float,
@@ -3059,7 +3065,13 @@ class EsportsBot(BaseBot):
                     recent_brier_sum += acc["brier_score"] * acc["total"]
             if recent_total >= 20:
                 recent_brier = recent_brier_sum / recent_total
-                if recent_brier > _degrade_brier:
+                # S100b: Suspend kelly degradation while any BetaCalibrator is
+                # unfitted — aggregate Brier is polluted by stale pre-greenfield data.
+                _any_unfitted = any(
+                    cal and not cal._fitted
+                    for cal in self._beta_calibrators.values()
+                )
+                if recent_brier > _degrade_brier and not _any_unfitted:
                     new_kelly = min(new_kelly, 0.20)
                     logger.warning("esportsbot_kelly_degraded",
                                    recent_brier=round(recent_brier, 4),
@@ -3513,14 +3525,20 @@ class EsportsBot(BaseBot):
                     self._monitoring_halted_games.discard(game)
 
                 # Per-game Kelly multiplier based on Brier score
-                _brier_penalty = float(getattr(settings, "ESPORTS_KELLY_BRIER_PENALTY", 0.25))
-                _brier_boost = float(getattr(settings, "ESPORTS_KELLY_BRIER_BOOST", 0.20))
-                if brier > _brier_penalty:
-                    self._game_kelly_mult[game] = 0.5
-                elif brier < _brier_boost:
-                    self._game_kelly_mult[game] = 1.2
-                else:
+                # S100b: Suspend penalties while BetaCalibrator unfitted — stale
+                # accuracy data from pre-greenfield pipeline is not actionable.
+                _cal_game = self._beta_calibrators.get(game)
+                if _cal_game and not _cal_game._fitted:
                     self._game_kelly_mult[game] = 1.0
+                else:
+                    _brier_penalty = float(getattr(settings, "ESPORTS_KELLY_BRIER_PENALTY", 0.25))
+                    _brier_boost = float(getattr(settings, "ESPORTS_KELLY_BRIER_BOOST", 0.20))
+                    if brier > _brier_penalty:
+                        self._game_kelly_mult[game] = 0.5
+                    elif brier < _brier_boost:
+                        self._game_kelly_mult[game] = 1.2
+                    else:
+                        self._game_kelly_mult[game] = 1.0
         except Exception as exc:
             logger.debug("esportsbot_monitoring_check_failed", error=str(exc))
 
