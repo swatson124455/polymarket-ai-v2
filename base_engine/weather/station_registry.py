@@ -1321,6 +1321,21 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         resolution_source="Weather Underground / EDDM",
         local_model="icon_d2",
     ),
+    # S101b: Added — discovered via city discovery logging (Polymarket active)
+    "milan": WeatherStation(
+        city_name="Milan",
+        station_id="LIML",
+        ghcnd_id="GHCND:IT000160590",
+        latitude=45.4454,
+        longitude=9.2743,
+        elevation_m=103.0,
+        timezone="Europe/Rome",
+        temp_unit="C",
+        aliases=("milan", "milano"),
+        resolution_source="Weather Underground / LIML (Linate)",
+        local_model="meteofrance_seamless",
+    ),
+
     "tel_aviv": WeatherStation(
         city_name="Tel Aviv",
         station_id="LLBG",

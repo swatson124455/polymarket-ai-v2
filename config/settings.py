@@ -343,6 +343,7 @@ class Settings(BaseSettings):
     # Watchlist: real-time WebSocket copy trading (monthly leaderboard top 1k)
     WATCHLIST_ENABLED: bool = os.getenv("WATCHLIST_ENABLED", "false").lower() in ("true", "1", "yes")
     WATCHLIST_SIZE: int = int(os.getenv("WATCHLIST_SIZE", "500"))  # S96: 1000→500 single list
+    WHALE_TRADE_LOG_ENABLED: bool = os.getenv("WHALE_TRADE_LOG_ENABLED", "true").lower() in ("true", "1", "yes")  # S100: persist whale trades
     # RTDS: global trade feed (all trades on platform, not per-market)
     RTDS_WS_URL: str = os.getenv("RTDS_WS_URL", "wss://ws-live-data.polymarket.com")
     RTDS_PING_INTERVAL: int = int(os.getenv("RTDS_PING_INTERVAL", "5"))  # seconds — RTDS keep-alive requirement
@@ -404,7 +405,7 @@ class Settings(BaseSettings):
     ENSEMBLE_DISAGREEMENT_THRESHOLD: float = float(os.getenv("ENSEMBLE_DISAGREEMENT_THRESHOLD", "0.20"))
     ENSEMBLE_DISAGREEMENT_PENALTY: float = float(os.getenv("ENSEMBLE_DISAGREEMENT_PENALTY", "0.15"))
     MIN_MARKET_LIQUIDITY: float = float(os.getenv("MIN_MARKET_LIQUIDITY", "100"))
-    SCAN_MARKET_LIMIT: int = int(os.getenv("SCAN_MARKET_LIMIT", "800"))  # B5: Max markets per scan cycle (covers full ~800 tradeable universe)
+    SCAN_MARKET_LIMIT: int = int(os.getenv("SCAN_MARKET_LIMIT", "1500"))  # S101b: raised from 800 — pagination found 1139 markets (114 events)
     USE_GOOGLE_TRENDS: bool = os.getenv("USE_GOOGLE_TRENDS", "true").lower() in ("true", "1", "yes")
     CALIBRATION_TRACKING_ENABLED: bool = os.getenv("CALIBRATION_TRACKING_ENABLED", "true").lower() in ("true", "1", "yes")
     PREDICTION_LOG_ENABLED: bool = os.getenv("PREDICTION_LOG_ENABLED", "true").lower() in ("true", "1", "yes")
