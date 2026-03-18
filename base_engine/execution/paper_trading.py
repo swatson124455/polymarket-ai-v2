@@ -334,6 +334,9 @@ class PaperTradingEngine:
         self._scan_impact: Dict[str, Tuple[float, float]] = {}  # market_id -> (cumulative_bps, mono_ts)
         # S100: L2 order book tracker for book walk fills (set by base_engine)
         self._orderbook_tracker = None
+        # S106: Fill-failure cooldown — back off markets with consecutive fill rejections.
+        # Dict[market_id -> (consecutive_failures, last_failure_monotonic)]
+        self._fill_failure_tracker: Dict[str, Tuple[int, float]] = {}
     
     async def _get_kyle_lambda(self, market_id: str) -> float:
         """S95: Cached Kyle's lambda lookup (1h TTL). DEFAULT_LAMBDA on miss."""
@@ -593,6 +596,27 @@ class PaperTradingEngine:
         # S94 bypassed this for speed, but it inflated P&L with 100% fills.
         _realistic = getattr(settings, "PAPER_REALISTIC_FILLS", False) is True
 
+        # S106: Fill-failure cooldown — skip markets that keep failing fills.
+        # Ported from WeatherBot's consecutive-failure tracking pattern.
+        if _realistic and side == "BUY":
+            try:
+                _cooldown_s = int(getattr(settings, "PAPER_FILL_FAILURE_COOLDOWN_S", 300))
+            except (TypeError, ValueError):
+                _cooldown_s = 300
+            _ff_entry = self._fill_failure_tracker.get(market_id)
+            if _ff_entry and _ff_entry[0] >= 3:
+                _elapsed = time.monotonic() - _ff_entry[1]
+                if _elapsed < _cooldown_s:
+                    logger.info("paper_fill_cooldown", market_id=market_id,
+                                failures=_ff_entry[0], remaining_s=round(_cooldown_s - _elapsed))
+                    return {
+                        "success": False,
+                        "error": f"Fill cooldown: {_ff_entry[0]} consecutive failures, {_cooldown_s - _elapsed:.0f}s remaining",
+                    }
+                else:
+                    # Cooldown expired, reset tracker
+                    del self._fill_failure_tracker[market_id]
+
         # S95: Alpha decay — exponential signal deterioration replaces S91 linear drift.
         # No threshold: applies proportionally to ALL latencies via exp(-ln2 * t / half_life).
         _event = event_data or {}
@@ -691,6 +715,27 @@ class PaperTradingEngine:
         _submitted_at = datetime.now(timezone.utc).replace(tzinfo=None)
         price = _apply_slippage(price, side, slippage_bps)
 
+        # S106: Slippage-eats-edge rejection — if estimated fill price erases the edge, skip.
+        # Ported from WeatherBot's liquidity_guardian pattern. Applies to BUY orders only.
+        # Edge = confidence - price. If slipped price >= confidence, no positive expectation.
+        _slippage_edge_check = getattr(settings, "PAPER_SLIPPAGE_EDGE_CHECK", True)
+        if (_realistic and side == "BUY"
+                and _slippage_edge_check is True
+                and confidence is not None and confidence > 0):
+            _slipped_edge = confidence - price
+            if _slipped_edge <= 0:
+                logger.info("paper_slippage_eats_edge", market_id=market_id,
+                            confidence=round(confidence, 4), slipped_price=round(price, 4),
+                            original_price=round(original_price, 4),
+                            slippage_bps=slippage_bps)
+                # Track fill failure for cooldown
+                _ff = self._fill_failure_tracker.get(market_id, (0, 0.0))
+                self._fill_failure_tracker[market_id] = (_ff[0] + 1, time.monotonic())
+                return {
+                    "success": False,
+                    "error": f"Slippage eats edge: conf={confidence:.4f} <= slipped_price={price:.4f}",
+                }
+
         # S91: Fill probability + partial fills — BUY only (SELLs must always close positions)
         if _realistic and side == "BUY":
             _spread = (ask - bid) if (bid > 0 and ask > 0) else getattr(settings, "PAPER_DEFAULT_SPREAD", 0.04)
@@ -720,9 +765,13 @@ class PaperTradingEngine:
             _fill_prob = max(0.05, min(1.0, _fill_prob))
 
             if random.random() > _fill_prob:
+                # S106: Track fill failure for cooldown
+                _ff = self._fill_failure_tracker.get(market_id, (0, 0.0))
+                self._fill_failure_tracker[market_id] = (_ff[0] + 1, time.monotonic())
                 logger.info("paper_no_fill", fill_prob=round(_fill_prob, 3),
                             market_id=market_id, price=round(price, 4),
-                            size_usd=round(_order_size_usd, 2))
+                            size_usd=round(_order_size_usd, 2),
+                            consecutive_failures=_ff[0] + 1)
                 return {
                     "success": False,
                     "error": f"Order not filled (fill probability {_fill_prob:.0%})",
@@ -829,6 +878,9 @@ class PaperTradingEngine:
             if _other_bots:
                 logger.info("paper_cross_bot_overlap", market_id=market_id,
                             bot_name=bot_name, other_bots=_other_bots)
+
+            # S106: Reset fill-failure tracker on successful fill
+            self._fill_failure_tracker.pop(market_id, None)
 
         else:  # SELL
             pos_key = (bot_name, market_id)

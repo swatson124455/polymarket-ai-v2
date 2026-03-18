@@ -56,9 +56,9 @@ def make_manager(bot_name="EnsembleBot", daily_exposure=None, bankroll_config=No
 
 class TestConfigLoading:
     def test_ensemble_bot_default_capital(self):
-        """EnsembleBot gets 8000 capital by default."""
+        """EnsembleBot gets 20000 capital by default (S105 alignment)."""
         mgr = make_manager("EnsembleBot")
-        assert mgr.capital == 8000.0
+        assert mgr.capital == 20000.0
 
     def test_arbitrage_bot_default_capital(self):
         """ArbitrageBot gets 1000 capital by default."""
@@ -79,9 +79,9 @@ class TestConfigLoading:
         mgr = make_manager("EnsembleBot", bankroll_config=override)
         assert mgr.capital == 5000.0
         assert mgr.kelly_fraction == 0.15
-        # Non-overridden values remain from built-in defaults
-        assert mgr.max_bet_usd == 100.0
-        assert mgr.max_daily_usd == 2000.0
+        # Non-overridden values remain from built-in defaults (S105: $300/$10K)
+        assert mgr.max_bet_usd == 300.0
+        assert mgr.max_daily_usd == 10000.0
 
     def test_cross_platform_arb_bot_config(self):
         """CrossPlatformArbBot gets correct non-default config."""
@@ -94,16 +94,16 @@ class TestConfigLoading:
     def test_invalid_json_config_uses_defaults(self):
         """Invalid JSON in BOT_BANKROLL_CONFIG falls back gracefully."""
         mgr = make_manager("EnsembleBot", bankroll_config="not-valid-json")
-        assert mgr.capital == 8000.0  # still uses built-in default
+        assert mgr.capital == 20000.0  # still uses built-in default
 
     def test_per_bot_isolation(self):
         """Different bots get different capital pools (no sharing)."""
         ensemble = make_manager("EnsembleBot")
         arb = make_manager("ArbitrageBot")
         mirror = make_manager("MirrorBot")
-        assert ensemble.capital == 8000.0
+        assert ensemble.capital == 20000.0
         assert arb.capital == 1000.0
-        assert mirror.capital == 3000.0
+        assert mirror.capital == 20000.0
         # Sizes are independent — no KELLY_ACTIVE_BOTS divisor
         assert ensemble.capital != arb.capital
 
@@ -219,10 +219,10 @@ class TestPositiveEdge:
             # b = (1-0.50)/0.50 = 1.0
             # q = 1.0 - 0.65 = 0.35
             # kelly_full = (0.65 * 1.0 - 0.35) / 1.0 = 0.30
-            # size_usd = 0.30 * 0.25 * 8000 = 600.0
-            # Capped at max_bet_usd = 100.0
+            # size_usd = 0.30 * 0.25 * 20000 = 1500.0
+            # Capped at max_bet_usd = 300.0
             result = await mgr.get_bet_size(confidence=0.65, price=0.50)
-        assert result == pytest.approx(100.0, abs=0.01)
+        assert result == pytest.approx(300.0, abs=0.01)
 
     @pytest.mark.asyncio
     async def test_small_edge_uncapped(self):
@@ -235,11 +235,11 @@ class TestPositiveEdge:
             # confidence=0.52, price=0.50
             # b = 1.0, q = 0.48
             # kelly_full = (0.52*1.0 - 0.48) / 1.0 = 0.04
-            # size_usd = 0.04 * 0.25 * 8000 = 80.0
-            # Under max_bet_usd (100) -> uncapped
+            # size_usd = 0.04 * 0.25 * 20000 = 200.0
+            # Under max_bet_usd (300) -> uncapped
             result = await mgr.get_bet_size(confidence=0.52, price=0.50)
-        assert result == pytest.approx(80.0, abs=1.0)
-        assert result < 100.0
+        assert result == pytest.approx(200.0, abs=1.0)
+        assert result < 300.0
 
     @pytest.mark.asyncio
     async def test_asymmetric_price_kelly(self):
@@ -253,9 +253,9 @@ class TestPositiveEdge:
             # b = (1-0.70)/0.70 = 0.4286
             # q = 0.20
             # kelly_full = (0.80 * 0.4286 - 0.20) / 0.4286 = (0.3429 - 0.20) / 0.4286 = 0.3333
-            # size_usd = 0.3333 * 0.25 * 8000 = 666.67 -> capped at 100
+            # size_usd = 0.3333 * 0.25 * 20000 = 1666.67 -> capped at 300
             result = await mgr.get_bet_size(confidence=0.80, price=0.70)
-        assert result == pytest.approx(100.0, abs=0.01)
+        assert result == pytest.approx(300.0, abs=0.01)
 
 
 # =========================================================================
@@ -296,12 +296,12 @@ class TestDailyCap:
     @pytest.mark.asyncio
     async def test_respects_daily_cap(self):
         """Partially spent daily cap limits the bet."""
-        # EnsembleBot: daily cap $2000, already spent $1990
-        mgr = make_manager("EnsembleBot", daily_exposure={"EnsembleBot": 1990.0})
+        # EnsembleBot: daily cap $10000, already spent $9990
+        mgr = make_manager("EnsembleBot", daily_exposure={"EnsembleBot": 9990.0})
         with patch("base_engine.risk.bankroll_manager.settings") as ms:
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
             ms.SIMULATION_MODE = False
-            # Kelly would give ~$100 but only $10 remaining
+            # Kelly would give ~$300 but only $10 remaining
             result = await mgr.get_bet_size(confidence=0.65, price=0.50)
         assert result <= 10.0
         assert result > 0.0
@@ -309,7 +309,7 @@ class TestDailyCap:
     @pytest.mark.asyncio
     async def test_zero_when_daily_cap_exhausted(self):
         """Daily cap fully spent -> returns 0."""
-        mgr = make_manager("EnsembleBot", daily_exposure={"EnsembleBot": 2000.0})
+        mgr = make_manager("EnsembleBot", daily_exposure={"EnsembleBot": 10000.0})
         with patch("base_engine.risk.bankroll_manager.settings") as ms:
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
             ms.SIMULATION_MODE = False
@@ -319,7 +319,7 @@ class TestDailyCap:
     @pytest.mark.asyncio
     async def test_zero_when_daily_overspent(self):
         """Daily exposure exceeds cap -> returns 0."""
-        mgr = make_manager("EnsembleBot", daily_exposure={"EnsembleBot": 3000.0})
+        mgr = make_manager("EnsembleBot", daily_exposure={"EnsembleBot": 15000.0})
         with patch("base_engine.risk.bankroll_manager.settings") as ms:
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
             ms.SIMULATION_MODE = False
@@ -553,19 +553,18 @@ class TestGetState:
 class TestPerBotKellyIndependence:
     @pytest.mark.asyncio
     async def test_ensemble_bot_uses_own_capital(self):
-        """EnsembleBot Kelly uses $8000 capital, not global_capital / n_bots."""
+        """EnsembleBot Kelly uses $20000 capital, not global_capital / n_bots."""
         mgr = make_manager("EnsembleBot")
-        assert mgr.capital == 8000.0
+        assert mgr.capital == 20000.0
         with patch("base_engine.risk.bankroll_manager.settings") as ms:
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
             ms.SIMULATION_MODE = False
             # confidence=0.52, price=0.50
             # kelly_full = 0.04
-            # size = 0.04 * 0.25 * 8000 = $80.0
+            # size = 0.04 * 0.25 * 20000 = $200.0
             result = await mgr.get_bet_size(confidence=0.52, price=0.50)
-        # With old system: $100k / 10 bots = $10k per bot, but divisor was buggy
-        # New system: $8k capital, no divisor
-        assert result == pytest.approx(80.0, abs=1.0)
+        # Each bot uses own capital, no divisor
+        assert result == pytest.approx(200.0, abs=1.0)
 
     @pytest.mark.asyncio
     async def test_arb_bot_independent_capital(self):
@@ -591,6 +590,6 @@ class TestPerBotKellyIndependence:
         """
         mgr = make_manager("EnsembleBot")
         # The capital should be exactly 8000, not 8000/N
-        assert mgr.capital == 8000.0
+        assert mgr.capital == 20000.0
         # Kelly fraction should be 0.25, not 0.25/N
         assert mgr.kelly_fraction == 0.25

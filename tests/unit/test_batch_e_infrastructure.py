@@ -266,6 +266,7 @@ class TestPaperTradingSkipZeroEntryPrice:
         # Fake DB row with NULL (0) avg_price
         bad_pos = MagicMock()
         bad_pos.market_id = "bad_market"
+        bad_pos.bot_id = "test"
         bad_pos.size = 10.0
         bad_pos.entry_price = None   # NULL → float(None or 0) = 0.0
         bad_pos.token_id = "tok1"
@@ -273,6 +274,7 @@ class TestPaperTradingSkipZeroEntryPrice:
 
         good_pos = MagicMock()
         good_pos.market_id = "good_market"
+        good_pos.bot_id = "test"
         good_pos.size = 5.0
         good_pos.entry_price = 0.55
         good_pos.token_id = "tok2"
@@ -296,8 +298,8 @@ class TestPaperTradingSkipZeroEntryPrice:
 
         # Only the good position should be seeded
         assert count == 1
-        assert "good_market" in engine.positions
-        assert "bad_market" not in engine.positions
+        assert ("test", "good_market") in engine.positions
+        assert ("test", "bad_market") not in engine.positions
         # A WARNING should have been logged for the bad row
         mock_log.warning.assert_called()
 
@@ -314,6 +316,7 @@ class TestPaperTradingSkipZeroEntryPrice:
 
         pos = MagicMock()
         pos.market_id = "m1"
+        pos.bot_id = "test"
         pos.size = 10.0
         pos.entry_price = 0.60
         pos.token_id = "tok"
@@ -332,8 +335,8 @@ class TestPaperTradingSkipZeroEntryPrice:
 
         count = await engine.seed_positions_from_db()
         assert count == 1
-        assert "m1" in engine.positions
-        assert engine.positions["m1"]["avg_price"] == pytest.approx(0.60)
+        assert ("test", "m1") in engine.positions
+        assert engine.positions[("test", "m1")]["avg_price"] == pytest.approx(0.60)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

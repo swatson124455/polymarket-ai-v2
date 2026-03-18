@@ -39,8 +39,8 @@ async def test_paper_trading_place_order_buy():
     assert engine.cash == 10000.0 - (10.0 * 0.55)
     assert len(engine.get_trades()) == 1
     assert len(engine.get_positions()) == 1
-    assert engine.get_positions()["m1"]["size"] == 10.0
-    assert engine.get_positions()["m1"]["avg_price"] == 0.55
+    assert engine.get_positions()[("test", "m1")]["size"] == 10.0
+    assert engine.get_positions()[("test", "m1")]["avg_price"] == 0.55
 
 
 @pytest.mark.asyncio

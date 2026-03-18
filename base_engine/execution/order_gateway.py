@@ -387,7 +387,7 @@ class OrderGateway:
                 if paper_engine and paper_engine.enabled:
                     portfolio = {
                         "starting_capital": getattr(settings, "TOTAL_CAPITAL", 10000.0),
-                        "realized_pnl_today": getattr(paper_engine, "realized_pnl_today", 0.0),
+                        "realized_pnl_today": getattr(paper_engine, "realized_pnl_today", {}).get(bot_name, 0.0),
                     }
                 dd_status = await self.drawdown_controller.check_drawdown_status(portfolio)
                 dd_multiplier = dd_status.get("position_multiplier", 1.0)

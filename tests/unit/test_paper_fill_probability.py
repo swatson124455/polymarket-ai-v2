@@ -92,7 +92,7 @@ class TestPartialFill:
         """SELL orders always fill fully even with PAPER_REALISTIC_FILLS=true."""
         engine = self._make_engine()
         # Seed a position to sell
-        engine.positions["mkt1"] = {
+        engine.positions[("paper_trader", "mkt1")] = {
             "size": 50.0, "avg_price": 0.50, "token_id": "tok1",
             "side": "YES", "entry_fee": 0.0,
         }
@@ -476,7 +476,7 @@ class TestResolutionProximity:
         """SELL orders always fill — resolution proximity doesn't apply."""
         engine = PaperTradingEngine(initial_capital=10000.0, db=None)
         engine.enable()
-        engine.positions["mkt1"] = {
+        engine.positions[("paper_trader", "mkt1")] = {
             "size": 50.0, "avg_price": 0.50, "token_id": "tok1",
             "side": "YES", "entry_fee": 0.0,
         }
