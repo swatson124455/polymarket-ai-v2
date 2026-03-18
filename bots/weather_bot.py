@@ -1620,7 +1620,7 @@ class WeatherBot(BaseBot):
             _best_bucket = None
             _best_dist = float("inf")
             for b in group.buckets:
-                _mid = (b.low_bound + b.high_bound) / 2.0 if b.high_bound is not None and b.high_bound < 999 else (b.low_bound + 5.0 if b.low_bound is not None else 50.0)
+                _mid = (b.low_bound + b.high_bound) / 2.0 if b.low_bound is not None and b.high_bound is not None and b.high_bound < 999 else (b.high_bound - 5.0 if b.high_bound is not None and b.low_bound is None else (b.low_bound + 5.0 if b.low_bound is not None else 50.0))
                 if abs(_ens_mean - _mid) < _best_dist:
                     _best_dist = abs(_ens_mean - _mid)
                     _best_bucket = b
