@@ -148,15 +148,14 @@ class TradeCoordinator:
                     ).limit(1).with_for_update()
                 )
                 pos = r.scalar_one_or_none()
+                _cost_rate = (
+                    getattr(settings, "FIXED_SLIPPAGE_BPS", 50)
+                    + getattr(settings, "TAKER_FEE_BPS", 150)
+                ) / 10000.0
                 if pos:
                     pos.size = size
                     pos.entry_price = entry_price
                     pos.current_price = entry_price
-                    # Session 45: Compute entry cost + breakeven for cost-aware exits
-                    _cost_rate = (
-                        getattr(settings, "FIXED_SLIPPAGE_BPS", 50)
-                        + getattr(settings, "TAKER_FEE_BPS", 150)
-                    ) / 10000.0
                     pos.entry_cost = size * entry_price * _cost_rate
                     pos.breakeven_price = entry_price * (1.0 + 2 * _cost_rate)
                     if source_bot is not None:
@@ -203,6 +202,45 @@ class TradeCoordinator:
                     else:
                         pos.status = "open"
                     await session.commit()
+                elif not _is_sell:
+                    # S103 FIX: No reserving row found — reserve was skipped
+                    # (e.g. WEATHER_SKIP_COORDINATOR_BUY). Insert directly as open.
+                    now = datetime.now(timezone.utc).replace(tzinfo=None)
+                    _is_paper = bool(getattr(settings, "SIMULATION_MODE", False))
+                    await session.execute(
+                        text("""
+                            INSERT INTO positions (bot_id, source_bot, market_id, token_id, side, size,
+                                entry_price, current_price, unrealized_pnl, opened_at, status, is_paper,
+                                entry_cost, breakeven_price)
+                            VALUES (:bot_id, :source_bot, :market_id, '', :side, :size,
+                                :entry_price, :entry_price, 0, :opened_at, 'open', :is_paper,
+                                :entry_cost, :breakeven_price)
+                            ON CONFLICT (bot_id, market_id, side) DO UPDATE
+                                SET status = 'open', size = :size, entry_price = :entry_price,
+                                    current_price = :entry_price, unrealized_pnl = 0,
+                                    opened_at = :opened_at, is_paper = :is_paper,
+                                    source_bot = :source_bot,
+                                    entry_cost = :entry_cost, breakeven_price = :breakeven_price
+                                WHERE positions.status = 'closed'
+                        """),
+                        {
+                            "bot_id": which_bot,
+                            "source_bot": source_bot or which_bot,
+                            "market_id": market_id,
+                            "side": side,
+                            "size": size,
+                            "entry_price": entry_price,
+                            "opened_at": now,
+                            "is_paper": _is_paper,
+                            "entry_cost": size * entry_price * _cost_rate,
+                            "breakeven_price": entry_price * (1.0 + 2 * _cost_rate),
+                        },
+                    )
+                    await session.commit()
+                    logger.info(
+                        "confirm_position: inserted directly (reserve skipped)",
+                        market_id=market_id, bot=which_bot, side=side, size=size,
+                    )
         except Exception as e:
             logger.warning("confirm_position failed: %s", e)
 
