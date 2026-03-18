@@ -392,6 +392,8 @@ class WeatherMarketMapper:
         self._snow_parse_cache: Dict[str, Tuple[str, Optional[float], Optional[float], str]] = {}
         # Same pattern for wind gust buckets
         self._wind_parse_cache: Dict[str, Tuple[str, Optional[float], Optional[float], str]] = {}
+        # S101b: Unmatched cities from last group_markets() call
+        self._last_unmatched_cities: set = set()
 
     @staticmethod
     def is_weather_market(market_data: Dict) -> bool:
@@ -508,6 +510,11 @@ class WeatherMarketMapper:
         Bucket bounds and type are immutable per market; only prices change.
         """
         groups: Dict[str, WeatherMarketGroup] = {}
+        # S101b: Track grouping drops for observability
+        _city_parse_fail = 0
+        _no_station = 0
+        _bucket_parse_fail = 0
+        _unmatched_cities: set = set()
 
         for mkt in weather_markets:
             mid = str(mkt.get("id", ""))
@@ -520,9 +527,12 @@ class WeatherMarketMapper:
                 bucket_type, low, high, unit = cached
                 city_text, target_date = self._extract_city_and_date(q)
                 if not city_text or not target_date:
+                    _city_parse_fail += 1
                     continue
                 station = lookup_station(city_text)
                 if not station:
+                    _no_station += 1
+                    _unmatched_cities.add(city_text)
                     continue
                 # Rebuild bucket with fresh price + token IDs
                 yes_token = mkt.get("yes_token_id") or ""
@@ -550,13 +560,17 @@ class WeatherMarketMapper:
             else:
                 city_text, target_date = self._extract_city_and_date(q)
                 if not city_text or not target_date:
+                    _city_parse_fail += 1
                     continue
                 station = lookup_station(city_text)
                 if not station:
+                    _no_station += 1
+                    _unmatched_cities.add(city_text)
                     logger.debug("weather_no_station_match", city=city_text)
                     continue
                 bucket = self.parse_market(mkt)
                 if not bucket:
+                    _bucket_parse_fail += 1
                     continue
                 # Cache the immutable bucket metadata
                 if cache_key:
@@ -581,6 +595,22 @@ class WeatherMarketMapper:
         # Sort buckets within each group by bound values
         for g in result:
             g.buckets.sort(key=lambda b: (b.low_bound or float("-inf")))
+
+        # S101b: Store unmatched cities for WeatherBot alert consumption
+        self._last_unmatched_cities = _unmatched_cities
+
+        # S101b: Log grouping drops at INFO level for observability
+        if _no_station or _city_parse_fail or _bucket_parse_fail:
+            logger.info(
+                "weather_grouping_drops",
+                input_markets=len(weather_markets),
+                output_groups=len(result),
+                city_parse_fail=_city_parse_fail,
+                no_station=_no_station,
+                bucket_parse_fail=_bucket_parse_fail,
+                unmatched_cities=sorted(_unmatched_cities) if _unmatched_cities else [],
+            )
+
         return result
 
     # ── Precipitation market parsing ──────────────────────────────────────

@@ -176,6 +176,10 @@ class WeatherBot(BaseBot):
         self._prediction_log_cache: Dict[str, Tuple[float, float]] = {}
         self._scan_count: int = 0
 
+        # S101b: City discovery tracking
+        self._alerted_unmatched_cities: Set[str] = set()  # dedup alerts per session
+        self._last_city_digest_date: Optional[str] = None  # "YYYY-MM-DD" for daily digest
+
         # Cross-bot transfer: per-market-type consecutive loss tracking (from EsportsBot)
         self._consecutive_losses: Dict[str, int] = {}  # market_type → streak count
 
@@ -747,6 +751,48 @@ class WeatherBot(BaseBot):
             # Cache discovery result
             self._discovery_cache = (time.monotonic(), weather_markets, groups)
 
+            # S101b: City universe log + unmatched city alert + daily digest
+            _active_cities = sorted(set(g.city for g in groups))
+            logger.info("weatherbot_city_universe", cities=_active_cities, n=len(_active_cities))
+
+            # Alert on new unmatched cities (deduped per session)
+            _unmatched = self._market_mapper._last_unmatched_cities
+            _new_unmatched = _unmatched - self._alerted_unmatched_cities
+            if _new_unmatched:
+                logger.warning(
+                    "weatherbot_unmatched_cities",
+                    cities=sorted(_new_unmatched),
+                    n=len(_new_unmatched),
+                )
+                _alerting = getattr(self.base_engine, "alerting_system", None)
+                if _alerting:
+                    try:
+                        from base_engine.monitoring.alerting import AlertSeverity
+                        await _alerting.send_alert(
+                            title="WeatherBot: New Unmatched Cities",
+                            message=f"Polymarket has weather markets for cities not in station registry: {sorted(_new_unmatched)}. Add to station_registry.py to trade them.",
+                            severity=AlertSeverity.WARNING,
+                            source="WeatherBot",
+                            metadata={"cities": sorted(_new_unmatched)},
+                        )
+                    except Exception:
+                        pass  # Alert failure is non-fatal
+                self._alerted_unmatched_cities.update(_new_unmatched)
+
+            # Daily digest — once per UTC day
+            _today_str = date.today().isoformat()
+            if self._last_city_digest_date != _today_str:
+                self._last_city_digest_date = _today_str
+                logger.info(
+                    "weatherbot_daily_city_digest",
+                    active_cities=_active_cities,
+                    active_count=len(_active_cities),
+                    unmatched_cities=sorted(_unmatched) if _unmatched else [],
+                    unmatched_count=len(_unmatched),
+                    registry_size=len(STATION_REGISTRY),
+                    total_markets=len(weather_markets),
+                )
+
         _t_discovery = time.monotonic()
 
         # Pre-fetch NWS severe weather alerts for all US stations in one pass
@@ -865,6 +911,7 @@ class WeatherBot(BaseBot):
             "weatherbot_scan_done",
             weather_markets=len(weather_markets),
             groups=len(groups),
+            active_cities=len(set(g.city for g in groups)),
             groups_with_edge=_groups_with_edge,
             trades=_traded,
             precip_trades=_precip_traded,
@@ -2559,36 +2606,48 @@ class WeatherBot(BaseBot):
 
         try:
             # Gamma API supports tag_slug filter on /events endpoint
+            # S101b: Paginate to fetch ALL events (was limit=100, missing overflow)
             import httpx
             url = f"{client.gamma_api}/events"
-            params = {
-                "active": "true",
-                "closed": "false",
-                "tag_slug": "temperature",
-                "limit": "100",
-            }
+            _MAX_PAGES = 5  # Safety valve: 500 events max
+            events: list = []
+            _pages_fetched = 0
             async with httpx.AsyncClient(timeout=15.0) as http:
-                resp = await http.get(url, params=params)
-                if resp.status_code != 200:
-                    logger.warning("weatherbot_tag_fetch_failed", status=resp.status_code)
-                    # B4: Alert on tag API failure
-                    _alerting = getattr(self.base_engine, "alerting_system", None)
-                    if _alerting:
-                        await _alerting.send_alert(
-                            title="WeatherBot Tag Fetch Failed",
-                            message=f"Gamma API tag_slug=temperature returned {resp.status_code}.",
-                            severity=AlertSeverity.WARNING,
-                            source="WeatherBot",
-                            metadata={"status_code": resp.status_code},
-                        )
-                    return []
-                events = resp.json()
+                for _page in range(_MAX_PAGES):
+                    params = {
+                        "active": "true",
+                        "closed": "false",
+                        "tag_slug": "temperature",
+                        "limit": "100",
+                        "offset": str(_page * 100),
+                    }
+                    resp = await http.get(url, params=params)
+                    if resp.status_code != 200:
+                        if _page == 0:
+                            logger.warning("weatherbot_tag_fetch_failed", status=resp.status_code)
+                            _alerting = getattr(self.base_engine, "alerting_system", None)
+                            if _alerting:
+                                await _alerting.send_alert(
+                                    title="WeatherBot Tag Fetch Failed",
+                                    message=f"Gamma API tag_slug=temperature returned {resp.status_code}.",
+                                    severity=AlertSeverity.WARNING,
+                                    source="WeatherBot",
+                                    metadata={"status_code": resp.status_code},
+                                )
+                            return []
+                        break  # Non-first page failure — use what we have
+                    page_data = resp.json()
+                    if not isinstance(page_data, list) or len(page_data) == 0:
+                        break
+                    events.extend(page_data)
+                    _pages_fetched = _page + 1
+                    if len(page_data) < 100:
+                        break  # Last page (partial)
         except Exception as exc:
             logger.warning("weatherbot_tag_fetch_error", error=str(exc))
-            return []
-
-        if not isinstance(events, list):
-            return []
+            if not events:
+                return []
+            # Use partial results if we have any
 
         markets: List[Dict] = []
         for evt in events:
@@ -2664,6 +2723,7 @@ class WeatherBot(BaseBot):
                 events=len(events),
                 markets=len(markets),
                 priced=sum(1 for m in markets if 0 < m["yes_price"] < 1),
+                pages_fetched=_pages_fetched,
             )
         return markets
 
