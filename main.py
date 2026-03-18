@@ -357,6 +357,7 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
                     "WeatherBot": "BOT_ENABLED_WEATHER",
                     "EsportsBot": "BOT_ENABLED_ESPORTS",
                     "EsportsLiveBot": "BOT_ENABLED_ESPORTS_LIVE",
+                    "EsportsSeriesBot": "BOT_ENABLED_ESPORTS_SERIES",  # merged into EsportsBot; suppress stale heartbeat
                 }
                 async with _db.get_session() as _hb_sess:
                     _hb_result = await _hb_sess.execute(
