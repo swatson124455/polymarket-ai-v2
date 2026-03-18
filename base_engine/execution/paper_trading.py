@@ -117,7 +117,7 @@ def _sqrt_market_impact_bps(order_size_usd: float, volume_24h: float, price: flo
     on a $10K/day market, impact is ~141 bps (significant).
     """
     if volume_24h <= 0:
-        volume_24h = 1000.0  # conservative fallback for zero-volume markets
+        volume_24h = 50000.0  # S100: realistic fallback (median Polymarket market) for zero-volume markets
     _Y = 2.0      # market impact coefficient (1.5-3.0 for thin markets)
     _sigma = 0.05  # daily volatility proxy
     participation = order_size_usd / max(volume_24h, 1.0)
@@ -149,7 +149,7 @@ def _fill_probability(
 
     # Size-impact: ratio of order to daily volume
     if volume_24h <= 0:
-        volume_24h = 1000.0  # conservative fallback
+        volume_24h = 50000.0  # S100: realistic fallback (median Polymarket market)
     size_ratio = order_size_usd / max(volume_24h, 1.0)
     size_factor = max(0.1, 1.0 - 2.0 * size_ratio)
 
@@ -202,6 +202,81 @@ def _resolution_proximity_penalty(hours_to_resolution: Optional[float]) -> Tuple
     return (3.0, 0.5)
 
 
+def _vwap_from_book(
+    asks: List[Dict],
+    order_size_shares: float,
+    whale_size_shares: float = 0.0,
+) -> Optional[Tuple[float, float, float]]:
+    """S100: Walk L2 order book to compute VWAP fill price.
+
+    Subtracts whale's consumed liquidity first (the whale bought before us,
+    depleting the ask side), then fills the copier from remaining depth.
+
+    Args:
+        asks: List of {"price": str|float, "size": str|float} sorted ascending by price.
+        order_size_shares: Copier's order size in shares.
+        whale_size_shares: Whale's trade size in shares (subtracted from book first).
+
+    Returns:
+        (vwap_price, fill_fraction, slippage_vs_best_ask) or None if no depth.
+    """
+    if not asks or order_size_shares <= 0:
+        return None
+
+    # Parse and sort ascending by price
+    levels: List[Tuple[float, float]] = []
+    for level in asks:
+        try:
+            p = float(level.get("price", level.get("p", 0)))
+            s = float(level.get("size", level.get("s", 0)))
+            if p > 0 and s > 0:
+                levels.append((p, s))
+        except (ValueError, TypeError, AttributeError):
+            continue
+    if not levels:
+        return None
+    levels.sort(key=lambda x: x[0])
+
+    best_ask = levels[0][0]
+
+    # Phase 1: Subtract whale's consumed shares from the book
+    remaining_whale = max(0.0, whale_size_shares)
+    post_whale_levels: List[Tuple[float, float]] = []
+    for price, size in levels:
+        if remaining_whale > 0:
+            consumed = min(remaining_whale, size)
+            remaining_whale -= consumed
+            leftover = size - consumed
+            if leftover > 0.001:  # skip dust
+                post_whale_levels.append((price, leftover))
+        else:
+            post_whale_levels.append((price, size))
+
+    if not post_whale_levels:
+        return None
+
+    # Phase 2: Walk remaining book to fill copier's order
+    remaining_order = order_size_shares
+    filled_shares = 0.0
+    total_cost = 0.0
+    for price, size in post_whale_levels:
+        fill_at_level = min(remaining_order, size)
+        filled_shares += fill_at_level
+        total_cost += fill_at_level * price
+        remaining_order -= fill_at_level
+        if remaining_order <= 0.001:
+            break
+
+    if filled_shares <= 0:
+        return None
+
+    vwap = total_cost / filled_shares
+    fill_fraction = filled_shares / order_size_shares
+    slippage = vwap - best_ask
+
+    return (vwap, min(1.0, fill_fraction), slippage)
+
+
 class PaperTrade:
     """Simulated trade"""
     def __init__(
@@ -234,7 +309,7 @@ class PaperTradingEngine:
     def __init__(self, initial_capital: float = 10000.0, db: Optional[Any] = None):
         self.initial_capital = initial_capital
         self.cash = initial_capital
-        self.positions: Dict[str, Dict] = {}  # market_id -> position
+        self.positions: Dict[Tuple[str, str], Dict] = {}  # (bot_name, market_id) -> position
         self.trades: List[PaperTrade] = []
         self.pnl_history: List[Dict] = []
         self.enabled = False
@@ -257,6 +332,8 @@ class PaperTradingEngine:
         self._kyle_lambda_cache: Dict[str, Tuple[float, float]] = {}  # market_id -> (lambda, mono_ts)
         # S95: Cross-scan cumulative impact tracker
         self._scan_impact: Dict[str, Tuple[float, float]] = {}  # market_id -> (cumulative_bps, mono_ts)
+        # S100: L2 order book tracker for book walk fills (set by base_engine)
+        self._orderbook_tracker = None
     
     async def _get_kyle_lambda(self, market_id: str) -> float:
         """S95: Cached Kyle's lambda lookup (1h TTL). DEFAULT_LAMBDA on miss."""
@@ -321,9 +398,11 @@ class PaperTradingEngine:
                                 market_id=mid, size=size,
                             )
                             continue
-                        # Only seed if not already in positions (don't overwrite active trades)
-                        if mid not in self.positions:
-                            self.positions[mid] = {
+                        # Seed per (bot_name, market_id) — prevents cross-bot contamination
+                        _bot_id = str(getattr(pos, 'bot_id', '') or 'unknown')
+                        pos_key = (_bot_id, mid)
+                        if pos_key not in self.positions:
+                            self.positions[pos_key] = {
                                 "size": size,
                                 "avg_price": entry_price,
                                 "token_id": pos.token_id or "",
@@ -346,6 +425,15 @@ class PaperTradingEngine:
                 cumulative_realized_pnl: float = float(pnl_row.scalar() or 0.0)
                 if cumulative_realized_pnl != 0.0:
                     self.cash += cumulative_realized_pnl
+
+                # Reconciliation: detect markets with multiple bots
+                _markets: Dict[str, list] = {}
+                for (bn, mid) in self.positions:
+                    _markets.setdefault(mid, []).append(bn)
+                _overlaps = {mid: bots for mid, bots in _markets.items() if len(bots) > 1}
+                if _overlaps:
+                    logger.info("paper_position_overlaps_seeded", overlap_count=len(_overlaps),
+                                overlaps={mid[:20]: bots for mid, bots in list(_overlaps.items())[:5]})
 
                 logger.info(
                     "Paper trading: seeded %d open positions (value $%.2f, realized_pnl $%.2f, cash $%.2f)",
@@ -448,6 +536,15 @@ class PaperTradingEngine:
         event_data: Optional[dict] = None,
     ) -> Dict:
         """Inner order handler — called under self._trade_lock."""
+        # S104: Default fill quality metrics — overwritten by BUY path when realistic fills enabled.
+        # These must be initialized here because the BUY path sets them inside conditional blocks.
+        _fill_prob = 1.0
+        _fill_frac = 1.0
+        _decay_slip_bps = 0
+        _lambda_slip_bps = 0
+        _cum_add = 0
+        _res_slip_mult = 1.0
+
         # Auto-reset daily P&L at day boundary (UTC)
         today = datetime.now(timezone.utc).date()
         if self._pnl_reset_date is None or self._pnl_reset_date != today:
@@ -514,11 +611,43 @@ class PaperTradingEngine:
                             decay_factor=round(_decay, 4), slip_bps=round(_decay_slip * 10000, 1),
                             market_id=market_id)
 
-        # Apply size-dependent slippage. Set FIXED_SLIPPAGE_BPS>0 in env to override.
-        # S95: Pass price for boundary multiplier + add square-root market impact
+        # S100: L2 Book Walk — use real order book depth when available.
+        # Subtracts whale's consumed liquidity, then walks remaining asks to compute VWAP.
+        # When successful, replaces heuristic slippage tiers (those are approximations of this).
+        _book_walk_used = False
+        _book_walk_fill_frac = 1.0
         _order_size_usd = size * price
+        if (_realistic and side == "BUY"
+                and getattr(settings, "PAPER_BOOK_WALK_ENABLED", False)
+                and self._orderbook_tracker and token_id):
+            _whale_usd = _event.get("whale_size_usd", 0)
+            _whale_shares = _whale_usd / price if price > 0 else 0
+            try:
+                _book = await self._orderbook_tracker.snapshot_order_book(
+                    token_id=token_id, condition_id=str(market_id))
+                if _book and not _book.get("error"):
+                    _asks = _book.get("asks", [])
+                    _bw_result = _vwap_from_book(_asks, size, _whale_shares)
+                    if _bw_result:
+                        _bw_vwap, _bw_fill_frac, _bw_slip = _bw_result
+                        price = max(0.001, min(0.999, _bw_vwap))
+                        _book_walk_used = True
+                        _book_walk_fill_frac = _bw_fill_frac
+                        logger.info("paper_book_walk", market_id=market_id,
+                                    vwap=round(_bw_vwap, 4), fill_frac=round(_bw_fill_frac, 3),
+                                    slippage_cents=round(_bw_slip * 100, 2),
+                                    whale_shares=round(_whale_shares, 1),
+                                    ask_levels=len(_asks), bot_name=bot_name)
+            except Exception as _bw_err:
+                logger.debug("paper_book_walk_failed", error=str(_bw_err), market_id=market_id)
+
+        # Apply size-dependent slippage. Set FIXED_SLIPPAGE_BPS>0 in env to override.
+        # S100: Skip heuristic slippage when book walk already computed VWAP fill price.
+        # S95: Pass price for boundary multiplier + add square-root market impact
         _fixed = getattr(settings, "FIXED_SLIPPAGE_BPS", 0)
-        if _fixed > 0:
+        if _book_walk_used:
+            slippage_bps = 0  # book walk already accounts for slippage
+        elif _fixed > 0:
             slippage_bps = _fixed
         else:
             slippage_bps = _size_dependent_slippage_bps(_order_size_usd, price=price)
@@ -576,6 +705,18 @@ class PaperTradingEngine:
             if _res_fill_mult < 1.0:
                 _fill_prob *= _res_fill_mult
 
+            # S105 Fix 6: Taker-side filter — if the most recent trade's taker side
+            # matches our order side, our resting order wouldn't have been hit.
+            # For market/taker orders this is a softer penalty (0.5x) rather than a hard block,
+            # since we're crossing the spread, not resting. Gated behind setting.
+            if getattr(settings, "PAPER_TAKER_SIDE_FILTER", False):
+                _taker_side = (_event.get("taker_side") or "").upper()
+                _our_side = side.upper() if side else ""
+                if _taker_side and _taker_side == _our_side:
+                    _fill_prob *= 0.5
+                    logger.debug("paper_taker_side_penalty", taker=_taker_side,
+                                 ours=_our_side, fill_prob=round(_fill_prob, 3))
+
             _fill_prob = max(0.05, min(1.0, _fill_prob))
 
             if random.random() > _fill_prob:
@@ -588,8 +729,12 @@ class PaperTradingEngine:
                     "fill_probability": _fill_prob,
                 }
 
-            # Partial fill: fraction drawn from [fill_prob, 1.0] range
-            _fill_frac = min(1.0, _fill_prob + random.random() * (1.0 - _fill_prob) * 0.5)
+            # Partial fill: S100 book walk gives deterministic fill fraction from real depth;
+            # heuristic path draws from [fill_prob, 1.0] range.
+            if _book_walk_used and _book_walk_fill_frac < 1.0:
+                _fill_frac = _book_walk_fill_frac
+            else:
+                _fill_frac = min(1.0, _fill_prob + random.random() * (1.0 - _fill_prob) * 0.5)
             _filled_size = round(size * _fill_frac, 4)
             if _filled_size < 0.01:
                 _filled_size = 0.0
@@ -644,14 +789,15 @@ class PaperTradingEngine:
             # Execute buy (notional + fee)
             self.cash -= total_cost
             
-            # Update position
-            if market_id in self.positions:
-                pos = self.positions[market_id]
+            # Update position — keyed by (bot_name, market_id) to prevent cross-bot contamination
+            pos_key = (bot_name, market_id)
+            if pos_key in self.positions:
+                pos = self.positions[pos_key]
                 # B5 FIX: if residual size is essentially zero (float leftover from prior close),
                 # treat as a fresh open so entry_fee doesn't accumulate across BUY/SELL cycles.
                 if pos.get("size", 0) <= 1e-6:
                     _token_side = original_side if original_side in ("YES", "NO") else ("YES" if side == "BUY" else "NO")
-                    self.positions[market_id] = {
+                    self.positions[pos_key] = {
                         "size": size, "avg_price": price,
                         "token_id": token_id, "side": _token_side, "entry_fee": fee,
                     }
@@ -666,17 +812,23 @@ class PaperTradingEngine:
             else:
                 # Use original_side (YES/NO) if available, else infer from side
                 _token_side = original_side if original_side in ("YES", "NO") else ("YES" if side == "BUY" else "NO")
-                self.positions[market_id] = {
+                self.positions[pos_key] = {
                     "size": size,
                     "avg_price": price,
                     "token_id": token_id,
                     "side": _token_side,
                     "entry_fee": fee,  # Track entry fee so restart cash restoration is accurate
                 }
-        
+            # Cross-bot overlap detection
+            _other_bots = [k[0] for k in self.positions if k[1] == market_id and k[0] != bot_name]
+            if _other_bots:
+                logger.info("paper_cross_bot_overlap", market_id=market_id,
+                            bot_name=bot_name, other_bots=_other_bots)
+
         else:  # SELL
-            held = self.positions.get(market_id, {}).get("size", 0)
-            if market_id not in self.positions or held < size:
+            pos_key = (bot_name, market_id)
+            held = self.positions.get(pos_key, {}).get("size", 0)
+            if pos_key not in self.positions or held < size:
                 # Float tolerance: if sizes match within 0.01%, treat as full close
                 if held > 0 and abs(held - size) / max(held, size) < 1e-4:
                     size = held  # snap to actual position size
@@ -693,7 +845,7 @@ class PaperTradingEngine:
             # Track realized P&L (feeds DrawdownController and cash restoration on restart).
             # Include both exit fee AND cumulative entry fees so cumulative_realized_pnl
             # correctly restores cash after restart (entry fees were already deducted from cash at BUY).
-            pos = self.positions[market_id]
+            pos = self.positions[pos_key]
             avg_price = pos.get("avg_price") or 0.0
             _entry_fee_total = pos.get("entry_fee", 0.0)
             realized_pnl = (price - avg_price) * size - fee - _entry_fee_total
@@ -733,7 +885,7 @@ class PaperTradingEngine:
             # cause entry_fee to accumulate across BUY/SELL cycles → realized_pnl grows -$0.70 →
             # -$20+ over 100+ trades on the same market (confirmed on market 572469, Feb 2026).
             if pos["size"] <= 1e-6:
-                del self.positions[market_id]
+                del self.positions[pos_key]
         
         # Record trade — store token-outcome side (YES/NO) not order direction (BUY)
         # so downstream PnL queries correctly distinguish YES vs NO bets.
@@ -787,6 +939,19 @@ class PaperTradingEngine:
                     market_id=market_id, bot_name=bot_name,
                 )
             else:
+                # S104: Enrich event_data with fill quality metrics before DB write.
+                # event_data is the same dict object passed by the caller — mutating in-place
+                # ensures these keys land in the trade_events JSONB column.
+                if event_data is not None and side == "BUY":
+                    event_data["slippage_bps"] = round(abs(price - original_price) * 10000, 1)
+                    event_data["fill_prob"] = round(_fill_prob, 4)
+                    event_data["fill_frac"] = round(_fill_frac, 4)
+                    event_data["book_walk"] = _book_walk_used
+                    event_data["alpha_decay_bps"] = round(_decay_slip_bps, 1)
+                    event_data["kyle_lambda_bps"] = _lambda_slip_bps
+                    event_data["cross_scan_bps"] = _cum_add
+                    event_data["res_prox_mult"] = round(_res_slip_mult, 2)
+
                 # Queue BUY persistence (paper_trade + ENTRY event) for post-lock execution
                 self._pending_db_writes.append(
                     self._persist_buy_entry(
@@ -825,7 +990,7 @@ class PaperTradingEngine:
                 tod_hour=datetime.now(timezone.utc).hour,
             )
 
-        return {
+        _result = {
             "success": True,
             "order_id": trade_id,
             "trade_id": trade_id,  # R2: explicit trade_id for signal storage downstream
@@ -835,6 +1000,14 @@ class PaperTradingEngine:
             "slippage_bps": slippage_applied,
             "cash_remaining": self.cash,
         }
+        # S104: Surface fill quality metrics for caller diagnostics
+        if side == "BUY":
+            _result["fill_probability"] = _fill_prob
+            _result["fill_fraction"] = _fill_frac
+            _result["book_walk_used"] = _book_walk_used
+            _result["alpha_decay_bps"] = round(_decay_slip_bps, 1)
+            _result["kyle_lambda_bps"] = _lambda_slip_bps
+        return _result
     
     async def _persist_exit_event(
         self, bot_name, market_id, token_id, size, price, realized_pnl,
@@ -961,7 +1134,7 @@ class PaperTradingEngine:
         """
         positions_value = 0.0
         
-        for market_id, position in self.positions.items():
+        for (_, market_id), position in self.positions.items():
             current_price = current_prices.get(market_id, position["avg_price"])
             positions_value += position["size"] * current_price
         
