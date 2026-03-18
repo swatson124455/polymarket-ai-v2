@@ -6,6 +6,10 @@ at all active same-day stations. Tracks running daily max temperature per
 station and pushes to priority queue when observed temp crosses bracket
 boundaries.
 
+S102: Daily max observations persisted to Redis with 24h TTL so they survive
+restarts. Without this, boundary crossing detection resets to zero on restart
+and may miss events until a new observation exceeds the (lost) prior max.
+
 Architecture:
   - Started as background asyncio task by WeatherBot alongside ModelRunMonitor
   - Shares priority_queue with ModelRunMonitor
@@ -14,6 +18,7 @@ Architecture:
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import time
 from datetime import date, datetime, timezone
@@ -23,6 +28,8 @@ import aiohttp
 from structlog import get_logger
 
 logger = get_logger()
+
+_REDIS_KEY_PREFIX = "metar:daily_max:"
 
 # AWC METAR API endpoint
 _AWC_METAR_URL = "https://aviationweather.gov/api/data/metar"
@@ -36,6 +43,7 @@ class MetarMonitor:
         stations: List[Any],
         priority_queue: asyncio.Queue,
         poll_interval: float = 300.0,  # 5 minutes
+        redis_cache: Any = None,
     ):
         self._stations = stations
         self._priority_queue = priority_queue
@@ -43,6 +51,7 @@ class MetarMonitor:
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._session: Optional[aiohttp.ClientSession] = None
+        self._redis_cache = redis_cache  # S102: optional Redis for persistence
 
         # Running daily observations: station_id → (date, max_temp_observed)
         self._observations: Dict[str, Tuple[str, float]] = {}
@@ -200,6 +209,10 @@ class MetarMonitor:
             poll_ms=_poll_ms,
         )
 
+        # S102: Persist daily max observations to Redis after each poll
+        if _updates > 0:
+            await self._save_observations_to_redis()
+
     def get_running_max(self, station_id: str) -> Optional[float]:
         """Get today's running max temperature for a station."""
         today_str = date.today().isoformat()
@@ -207,6 +220,60 @@ class MetarMonitor:
         if obs and obs[0] == today_str:
             return obs[1]
         return None
+
+    async def _save_observations_to_redis(self) -> None:
+        """Persist daily max observations to Redis with 24h TTL.
+
+        S102: Each station's daily max is stored as a separate key so TTL
+        naturally expires stale data. Only saves today's observations.
+        """
+        if self._redis_cache is None or not getattr(self._redis_cache, "redis", None):
+            return
+        today_str = date.today().isoformat()
+        saved = 0
+        for station_id, (obs_date, max_temp) in self._observations.items():
+            if obs_date != today_str:
+                continue
+            try:
+                key = f"{_REDIS_KEY_PREFIX}{station_id}"
+                value = json.dumps({"date": obs_date, "max_temp": max_temp})
+                await self._redis_cache.set(key, value, ttl=86400)
+                saved += 1
+            except Exception:
+                pass  # Non-fatal: best-effort persistence
+        if saved:
+            logger.debug("metar_redis_saved", stations=saved)
+
+    async def restore_from_redis(self) -> None:
+        """Reload daily max observations from Redis on startup.
+
+        S102: Prevents boundary crossing detection from resetting after restart.
+        Only restores today's observations (stale keys auto-expire via TTL).
+        """
+        if self._redis_cache is None or not getattr(self._redis_cache, "redis", None):
+            return
+        try:
+            keys = await self._redis_cache.redis.keys(f"{_REDIS_KEY_PREFIX}*")
+            today_str = date.today().isoformat()
+            restored = 0
+            for key in keys:
+                try:
+                    raw = await self._redis_cache.get(key)
+                    if raw is None:
+                        continue
+                    data = json.loads(raw)
+                    obs_date = data.get("date", "")
+                    max_temp = data.get("max_temp")
+                    if obs_date == today_str and max_temp is not None:
+                        station_id = key.split(_REDIS_KEY_PREFIX, 1)[-1]
+                        self._observations[station_id] = (obs_date, float(max_temp))
+                        restored += 1
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    continue
+            if restored:
+                logger.info("metar_redis_restored", stations=restored)
+        except Exception as exc:
+            logger.warning("metar_redis_restore_failed", error=str(exc))
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create aiohttp session."""

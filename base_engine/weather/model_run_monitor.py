@@ -27,9 +27,12 @@ logger = get_logger()
 
 # Model run schedule (UTC hours when new runs become available)
 # GFS: 00z, 06z, 12z, 18z — available ~3.5h after init time
-# HRRR: hourly — available ~1h after init time
+# HRRR: hourly — but only 00z/06z/12z/18z have 48h forecast horizon.
+#        Intermediate runs (01-05, 07-11, ...) are 18h only.
+#        We track 4x daily extended runs for jump detection on US stations.
 # ECMWF: 00z, 12z — available ~6h after init time (via Open-Meteo)
 _GFS_INIT_HOURS = [0, 6, 12, 18]
+_HRRR_EXTENDED_HOURS = [0, 6, 12, 18]  # 48h runs only
 _ECMWF_INIT_HOURS = [0, 12]
 
 
@@ -92,9 +95,10 @@ class ModelRunMonitor:
             await asyncio.sleep(self._poll_interval)
 
     async def _check_for_new_runs(self) -> None:
-        """Check NOMADS for new GFS/ECMWF model runs."""
+        """Check NOMADS for new GFS/ECMWF/HRRR model runs."""
         now_utc = datetime.now(timezone.utc)
         new_run_detected = False
+        hrrr_only = False
 
         # Check GFS — poll NOMADS index
         gfs_run = await self._check_gfs_availability(now_utc)
@@ -110,8 +114,21 @@ class ModelRunMonitor:
             self._last_ecmwf_run = ecmwf_run
             new_run_detected = True
 
+        # Check HRRR — US-only 3km model, 4x daily extended runs
+        hrrr_run = await self._check_hrrr_availability(now_utc)
+        if hrrr_run and hrrr_run != self._last_hrrr_run:
+            logger.info("model_run_new_hrrr", run=hrrr_run, prev=self._last_hrrr_run)
+            self._last_hrrr_run = hrrr_run
+            if not new_run_detected:
+                hrrr_only = True
+            new_run_detected = True
+
         if new_run_detected:
-            await self._refresh_forecasts()
+            if hrrr_only:
+                # HRRR is US-only — only refresh US stations
+                await self._refresh_forecasts(us_only=True)
+            else:
+                await self._refresh_forecasts()
 
     async def _check_gfs_availability(self, now_utc: datetime) -> Optional[str]:
         """Check NOMADS for latest available GFS run.
@@ -156,24 +173,68 @@ class ModelRunMonitor:
             prev = (now_utc - timedelta(days=1)).strftime("%Y%m%d")
             return f"{prev}12"
 
-    async def _refresh_forecasts(self) -> None:
-        """Re-fetch forecasts for all active stations on new model run.
+    async def _check_hrrr_availability(self, now_utc: datetime) -> Optional[str]:
+        """Check AWS for latest available HRRR extended run (00z/06z/12z/18z).
+
+        HRRR is US-only, 3km resolution. Extended runs (48h) happen at 00/06/12/18z,
+        available ~1.5h after init. Probes for wrfsfcf02 (surface field, hour 2).
+        """
+        try:
+            session = await self._get_session()
+            for hours_back in range(0, 24, 6):
+                check_time = now_utc - timedelta(hours=hours_back)
+                run_date = check_time.strftime("%Y%m%d")
+                init_hour = max(
+                    h for h in _HRRR_EXTENDED_HOURS if h <= check_time.hour
+                ) if check_time.hour >= 0 else 18
+                run_id = f"{run_date}{init_hour:02d}"
+
+                # HRRR data on AWS Open Data — check if f02 surface file exists
+                url = (
+                    f"https://noaa-hrrr-bdp-pds.s3.amazonaws.com/"
+                    f"hrrr.{run_date}/conus/"
+                    f"hrrr.t{init_hour:02d}z.wrfsfcf02.grib2"
+                )
+                try:
+                    async with session.head(
+                        url, timeout=aiohttp.ClientTimeout(total=5)
+                    ) as resp:
+                        if resp.status == 200:
+                            return run_id
+                except (aiohttp.ClientError, asyncio.TimeoutError):
+                    continue
+        except Exception as exc:
+            logger.debug("model_run_hrrr_check_failed", error=str(exc))
+        return None
+
+    async def _refresh_forecasts(self, us_only: bool = False) -> None:
+        """Re-fetch forecasts for active stations on new model run.
 
         S101: Parallelized — batches of 20 station×date pairs via asyncio.gather()
         instead of serial iteration. Reduces sweep from ~7s to ~2-3s while staying
         within Open-Meteo's 600/min burst tolerance.
 
+        S102: us_only=True restricts to US stations (temp_unit="F") for HRRR-triggered
+        refreshes. HRRR is a US-only model, so international stations don't benefit.
+
         Populates _model_run_cache and checks for forecast jumps.
         """
         today = date.today()
-        target_dates = [today + timedelta(days=d) for d in range(0, 8)]
+        # HRRR only has 48h horizon on extended runs — limit dates for HRRR-only refreshes
+        max_days = 3 if us_only else 8
+        target_dates = [today + timedelta(days=d) for d in range(0, max_days)]
 
         _refreshed = 0
         _jumps = 0
         _start = time.monotonic()
 
+        # Filter stations: US-only for HRRR, all for GFS/ECMWF
+        stations = self._stations
+        if us_only:
+            stations = [s for s in self._stations if getattr(s, "temp_unit", "C") == "F"]
+
         # Build all (station, date) pairs
-        pairs = [(station, td) for station in self._stations for td in target_dates]
+        pairs = [(station, td) for station in stations for td in target_dates]
 
         # Process in batches of 20 to limit concurrent API calls
         _BATCH_SIZE = 20
@@ -197,11 +258,12 @@ class ModelRunMonitor:
         _elapsed_ms = (time.monotonic() - _start) * 1000
         logger.info(
             "model_run_refresh_done",
-            stations=len(self._stations),
+            stations=len(stations),
             dates=len(target_dates),
             refreshed=_refreshed,
             jumps=_jumps,
             elapsed_ms=round(_elapsed_ms),
+            us_only=us_only,
         )
 
     async def _refresh_single(

@@ -142,9 +142,12 @@ class WeatherBot(BaseBot):
             stations=_all_stations,
             priority_queue=self._priority_queue,
         )
+        # S102: Pass Redis cache to MetarMonitor for daily max persistence
+        _redis_cache = getattr(base_engine, "cache", None) if base_engine else None
         self._metar_monitor = MetarMonitor(
             stations=_all_stations,
             priority_queue=self._priority_queue,
+            redis_cache=_redis_cache,
         )
         self._monitors_started = False
 
@@ -677,6 +680,7 @@ class WeatherBot(BaseBot):
             await self._forecast_client.warm_cache_from_db(db)
             await self._restore_exits_from_redis()
             await self._restore_backoff_from_redis()
+            await self._metar_monitor.restore_from_redis()
             await self._restore_exposure_from_db()
             await self._close_stale_positions()
             self._cache_warmed = True

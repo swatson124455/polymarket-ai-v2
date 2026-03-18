@@ -1055,6 +1055,7 @@ class WeatherForecastClient:
 
         # Extract ensemble members for target date
         ensemble_members = []
+        _gefs_count = 0  # S102: track model boundaries for lead-time weighting
         if ens_data and "daily" in ens_data:
             daily = ens_data["daily"]
             dates = daily.get("time", [])
@@ -1070,6 +1071,9 @@ class WeatherForecastClient:
                             if math.isfinite(val):
                                 ensemble_members.append(val)
                 if ensemble_members:
+                    # S102: GEFS always comes first (31 members max).
+                    # Merged order: GEFS → IFS → AIFS. Count GEFS before IFS starts.
+                    _gefs_count = min(31, len(ensemble_members))
                     models_used.append("gfs025_ensemble")
                     # P5: If member count exceeds GEFS-only count (31), ECMWF IFS was also merged
                     if len(ensemble_members) > 31:
@@ -1103,6 +1107,26 @@ class WeatherForecastClient:
         # Target date noon local ≈ 18:00 UTC for US Eastern, 12:00 UTC for London
         target_noon_utc = datetime(target_date.year, target_date.month, target_date.day, 18, 0, tzinfo=timezone.utc)
         lead_time_hours = max(0.0, (target_noon_utc - now_utc).total_seconds() / 3600.0)
+
+        # S102: Lead-time ensemble weighting — subsample GEFS at long lead times.
+        # ECMWF (IFS + AIFS) has lower CRPS than GFS beyond 72h. At 72h+ GFS error
+        # grows ~40% faster than ECMWF. Subsampling GEFS reduces its influence on the
+        # fitted skew-normal distribution, biasing toward higher-skill ECMWF members.
+        # Only applies when ECMWF members are present (member count > 31).
+        if _gefs_count > 0 and len(ensemble_members) > _gefs_count and lead_time_hours >= 48:
+            gefs_members = ensemble_members[:_gefs_count]
+            ecmwf_members = ensemble_members[_gefs_count:]
+            # Deterministic subsample: keep evenly-spaced GEFS members
+            if lead_time_hours >= 120:
+                keep = 8   # ~6:1 ECMWF:GEFS ratio
+            elif lead_time_hours >= 72:
+                keep = 16  # ~3:1 ECMWF:GEFS ratio
+            else:  # 48-72h
+                keep = 24  # ~2:1 ECMWF:GEFS ratio
+            keep = min(keep, len(gefs_members))
+            step = len(gefs_members) / keep
+            gefs_subsampled = [gefs_members[int(i * step)] for i in range(keep)]
+            ensemble_members = gefs_subsampled + ecmwf_members
 
         # Model spread
         if len(ensemble_members) > 1:
