@@ -315,7 +315,7 @@ class PaperTradingEngine:
         self.enabled = False
         self.db = db  # Database instance for persisting to paper_trades
         # BUG-3 fix: Track realized P&L for DrawdownController integration
-        self.realized_pnl_today: float = 0.0  # Accumulated realized P&L for current day
+        self.realized_pnl_today: Dict[str, float] = {}  # Per-bot realized P&L for current day
         self._pnl_reset_date: Optional[datetime] = None  # Date of last reset
         # RL Trade Timing: callback fired on realized P&L (sell trades)
         self._rl_outcome_callback = None
@@ -549,8 +549,8 @@ class PaperTradingEngine:
         today = datetime.now(timezone.utc).date()
         if self._pnl_reset_date is None or self._pnl_reset_date != today:
             if self._pnl_reset_date is not None:
-                logger.info("Daily P&L reset", previous_pnl=round(self.realized_pnl_today, 2))
-            self.realized_pnl_today = 0.0
+                logger.info("Daily P&L reset", previous_pnl=self.realized_pnl_today)
+            self.realized_pnl_today = {}
             self._pnl_reset_date = today
 
         # S94: In-memory idempotency fast-check (covers gap between lock release and DB write)
@@ -596,7 +596,7 @@ class PaperTradingEngine:
         # S95: Alpha decay — exponential signal deterioration replaces S91 linear drift.
         # No threshold: applies proportionally to ALL latencies via exp(-ln2 * t / half_life).
         _event = event_data or {}
-        if _realistic and latency_ms is not None and latency_ms > 0:
+        if _realistic and side == "BUY" and latency_ms is not None and latency_ms > 0:
             _half_life = _event.get("alpha_decay_half_life_s",
                                     getattr(settings, "PAPER_ALPHA_DECAY_HALF_LIFE_S", 300))
             _decay = _alpha_decay_factor(latency_ms, _half_life)
@@ -755,9 +755,11 @@ class PaperTradingEngine:
                     self._scan_impact[market_id] = (_prev[0] + _impact_bps, _now_mono)
                 else:
                     self._scan_impact[market_id] = (_impact_bps, _now_mono)
-                # Lazy cleanup: prune stale entries when dict gets large
-                if len(self._scan_impact) > 100:
-                    _cutoff = _now_mono - 60.0
+                # Prune stale entries (>60s old) every time we update
+                _cutoff = _now_mono - 60.0
+                if _prev and _prev[1] <= _cutoff:
+                    pass  # Already replaced above (stale entry overwritten)
+                if len(self._scan_impact) > 50:
                     self._scan_impact = {k: v for k, v in self._scan_impact.items() if v[1] > _cutoff}
 
         # S95: Most Polymarket markets charge 0% taker fee. Exceptions:
@@ -812,6 +814,9 @@ class PaperTradingEngine:
             else:
                 # Use original_side (YES/NO) if available, else infer from side
                 _token_side = original_side if original_side in ("YES", "NO") else ("YES" if side == "BUY" else "NO")
+                if original_side not in ("YES", "NO"):
+                    logger.warning("paper_side_inferred", market_id=market_id, side=side,
+                                   inferred=_token_side, bot_name=bot_name)
                 self.positions[pos_key] = {
                     "size": size,
                     "avg_price": price,
@@ -848,8 +853,14 @@ class PaperTradingEngine:
             pos = self.positions[pos_key]
             avg_price = pos.get("avg_price") or 0.0
             _entry_fee_total = pos.get("entry_fee", 0.0)
-            realized_pnl = (price - avg_price) * size - fee - _entry_fee_total
-            self.realized_pnl_today += realized_pnl
+            # Prorate entry fee by exit fraction so partial exits don't over-deduct
+            _pos_size = pos.get("size", size)
+            _exit_frac = min(1.0, size / _pos_size) if _pos_size > 1e-9 else 1.0
+            _prorated_entry_fee = _entry_fee_total * _exit_frac
+            realized_pnl = (price - avg_price) * size - fee - _prorated_entry_fee
+            # Reduce remaining entry_fee so future exits get their fair share
+            pos["entry_fee"] = _entry_fee_total - _prorated_entry_fee
+            self.realized_pnl_today[bot_name] = self.realized_pnl_today.get(bot_name, 0.0) + realized_pnl
 
             # K7 FIX: Feed PerformanceTracker with trade outcomes
             if hasattr(self, "_performance_tracker") and self._performance_tracker is not None:
@@ -1184,6 +1195,6 @@ class PaperTradingEngine:
         self.positions = {}
         self.trades = []
         self.pnl_history = []
-        self.realized_pnl_today = 0.0
+        self.realized_pnl_today = {}
         self._pnl_reset_date = None
         logger.info("Paper trading account reset")

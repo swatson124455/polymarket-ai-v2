@@ -570,6 +570,7 @@ class WeatherBot(BaseBot):
                     bot_set = gw._open_position_markets.get("WeatherBot", set())
                     for mid in all_closed:
                         bot_set.discard(mid)
+                        self._market_group_cache.pop(mid, None)  # S104: clear stale mappings
         except Exception as exc:
             logger.debug("weatherbot_stale_position_cleanup_failed", error=str(exc))
 
@@ -3000,6 +3001,7 @@ class WeatherBot(BaseBot):
         self._daily_pnl_date = today
         self._group_exposure.clear()
         self._city_exposure.clear()
+        self._market_group_cache.clear()  # S104: stale date mappings from yesterday
 
         # P2: Restore today's realized P&L from paper_trades so restarts
         # don't reset the daily loss limit check to $0.
