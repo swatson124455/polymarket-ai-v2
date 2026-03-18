@@ -2428,9 +2428,12 @@ class WeatherBot(BaseBot):
             self._fill_fail_tracker.pop(opp["market_id"], None)
             return True
         else:
-            # Revert exposure trackers on failure
-            self._group_exposure[group_key] = current_group_exp
-            self._city_exposure[group.city] = current_city_exp
+            # S102 fix: revert under lock with decrement to avoid race condition.
+            # Prior code used snapshot assignment outside lock — could overwrite
+            # another coroutine's reservation under WEATHER_TRADE_CONCURRENCY=8.
+            async with self._exposure_lock:
+                self._group_exposure[group_key] = max(0.0, self._group_exposure.get(group_key, 0.0) - size)
+                self._city_exposure[group.city] = max(0.0, self._city_exposure.get(group.city, 0.0) - size)
             # S99: Track consecutive fill failures
             _prev = self._fill_fail_tracker.get(opp["market_id"])
             _prev_count = _prev[0] if _prev else 0

@@ -177,9 +177,23 @@ class WeatherForecastClient:
                     used = models_raw if isinstance(models_raw, list) else []
                     if not members or deterministic_high is None:
                         continue
-                    # Approximate lead_time_hours from target_date
+                    # Approximate lead_time_hours from target_date + station timezone
                     td = target_date_val.date() if hasattr(target_date_val, 'date') else datetime.strptime(str(target_date_val)[:10], "%Y-%m-%d").date()
-                    target_noon_utc = datetime(td.year, td.month, td.day, 18, 0, tzinfo=timezone.utc)
+                    # S102 fix: use station timezone for local noon
+                    _tz_resolved = None
+                    try:
+                        from zoneinfo import ZoneInfo
+                        from base_engine.weather.station_registry import STATION_REGISTRY
+                        _stn = next((s for s in STATION_REGISTRY.values() if s.station_id == station_id), None)
+                        if _stn:
+                            _tz_resolved = ZoneInfo(_stn.timezone)
+                    except Exception:
+                        pass
+                    if _tz_resolved:
+                        _local_noon = datetime(td.year, td.month, td.day, 12, 0, tzinfo=_tz_resolved)
+                        target_noon_utc = _local_noon.astimezone(timezone.utc)
+                    else:
+                        target_noon_utc = datetime(td.year, td.month, td.day, 18, 0, tzinfo=timezone.utc)
                     lead_time_hours = max(0.0, (target_noon_utc - now_utc).total_seconds() / 3600.0)
 
                     fc = CombinedForecast(
@@ -1062,8 +1076,11 @@ class WeatherForecastClient:
             if target_iso in dates:
                 idx = dates.index(target_iso)
                 # Open-Meteo ensemble returns temperature_2m_max_member01..31
-                for key in sorted(daily.keys()):
-                    if key.startswith("temperature_2m_max_member"):
+                # S102 fix: numeric sort — lexicographic puts member100 before member20
+                _prefix = "temperature_2m_max_member"
+                member_keys = [k for k in daily.keys() if k.startswith(_prefix)]
+                member_keys.sort(key=lambda k: int(k[len(_prefix):]))
+                for key in member_keys:
                         vals = daily[key]
                         if idx < len(vals) and vals[idx] is not None:
                             val = float(vals[idx])
@@ -1102,10 +1119,17 @@ class WeatherForecastClient:
         if deterministic_high is None and ensemble_members:
             deterministic_high = sum(ensemble_members) / len(ensemble_members)
 
-        # Calculate lead time
+        # Calculate lead time using station's actual timezone
         now_utc = datetime.now(timezone.utc)
-        # Target date noon local ≈ 18:00 UTC for US Eastern, 12:00 UTC for London
-        target_noon_utc = datetime(target_date.year, target_date.month, target_date.day, 18, 0, tzinfo=timezone.utc)
+        # S102 fix: use station timezone for local noon instead of hardcoded 18:00 UTC
+        try:
+            from zoneinfo import ZoneInfo
+            _tz_info = ZoneInfo(station.timezone)
+            _local_noon = datetime(target_date.year, target_date.month, target_date.day, 12, 0, tzinfo=_tz_info)
+            target_noon_utc = _local_noon.astimezone(timezone.utc)
+        except Exception:
+            # Fallback to 18:00 UTC if timezone lookup fails
+            target_noon_utc = datetime(target_date.year, target_date.month, target_date.day, 18, 0, tzinfo=timezone.utc)
         lead_time_hours = max(0.0, (target_noon_utc - now_utc).total_seconds() / 3600.0)
 
         # S102: Lead-time ensemble weighting — subsample GEFS at long lead times.

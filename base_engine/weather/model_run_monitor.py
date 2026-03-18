@@ -256,6 +256,15 @@ class ModelRunMonitor:
             await asyncio.sleep(0.1)
 
         _elapsed_ms = (time.monotonic() - _start) * 1000
+
+        # S102 fix: prune stale entries from _prior_forecasts to prevent unbounded growth.
+        # Keys are "station_id:YYYY-MM-DD" — drop entries for past dates.
+        _today_iso = today.isoformat()
+        self._prior_forecasts = {
+            k: v for k, v in self._prior_forecasts.items()
+            if k.split(":")[1] >= _today_iso
+        }
+
         logger.info(
             "model_run_refresh_done",
             stations=len(stations),
