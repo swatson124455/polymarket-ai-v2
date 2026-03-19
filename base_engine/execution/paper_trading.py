@@ -557,9 +557,12 @@ class PaperTradingEngine:
             self._pnl_reset_date = today
 
         # S94: In-memory idempotency fast-check (covers gap between lock release and DB write)
+        # S107: Return success=False so order_gateway does NOT call confirm_position
+        # again (the original trade already created the position). Previous behavior
+        # returned success=True + filled=0, which created ghost positions (size=0).
         if correlation_id and correlation_id in self._pending_correlation_ids:
             logger.info("paper_trade_idempotent_memory", correlation_id=correlation_id, market_id=market_id)
-            return {"success": True, "idempotent": True, "order_id": "pending", "filled": 0, "price": price}
+            return {"success": False, "idempotent": True, "order_id": "pending", "error": "duplicate: already pending"}
 
         # H1: Idempotency guard — reject if correlation_id already executed (prevents double-fill
         # on timeout + retry). Checks DB before any cash/position mutation.

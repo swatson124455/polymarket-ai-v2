@@ -792,7 +792,7 @@ class OrderGateway:
                 # size when result has no "filled" key.
                 _filled_size = result.get("filled", size) if result.get("success") else size
                 if self.trade_coordinator is not None:
-                    if result.get("success"):
+                    if result.get("success") and _filled_size > 0:
                         try:
                             await self.trade_coordinator.confirm_position(market_id, side, _filled_size, effective_price, source_bot=bot_name, bot_id=bot_name)
                         except Exception as _conf_err:
@@ -808,12 +808,21 @@ class OrderGateway:
                             self._track_position_close(bot_name, market_id)  # C3 FIX
                         else:
                             self._track_position_open(bot_name, market_id, _filled_size, effective_price, side=side)
+                    elif result.get("success") and _filled_size <= 0:
+                        # S107: Paper engine returned success but filled 0 tokens (e.g. idempotent
+                        # duplicate). Do NOT create a position — release reservation instead.
+                        logger.warning("Paper trade success but filled_size=0, skipping position creation",
+                                       bot_name=bot_name, market_id=market_id, side=side)
+                        try:
+                            await self.trade_coordinator.release_reservation(market_id, side, bot_id=bot_name)
+                        except Exception:
+                            pass
                     else:
                         try:
                             await self.trade_coordinator.release_reservation(market_id, side, bot_id=bot_name)
                         except Exception as _rel_err:  # H2 FIX: release_reservation itself can raise
                             logger.warning("Failed to release coordinator reservation: %s", _rel_err)
-                elif result.get("success"):
+                elif result.get("success") and _filled_size > 0:
                     if _is_sell:
                         self._track_position_close(bot_name, market_id)  # C3 FIX
                     else:

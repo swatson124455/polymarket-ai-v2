@@ -1,9 +1,9 @@
 # AGENT HANDOFF — WeatherBot Session 107 (2026-03-19)
 
 ## Session Summary
-**Focus**: Munich investigation + bet sizing pipeline fix + re-entry cooldown
-**Bot scope**: WeatherBot only (no cross-bot changes)
-**Tests**: 1641 passed, 0 failed
+**Focus**: Munich investigation + bet sizing pipeline fix + re-entry cooldown + ghost position bug fix
+**Bot scope**: WeatherBot only (cross-bot fix in order_gateway + paper_trading — shared modules)
+**Tests**: 1054 passed, 0 failed (1 pre-existing mirror test failure from unstaged local changes)
 
 ## Changes Made
 
@@ -18,13 +18,18 @@
 6. **R3A: Min trade floor $1→$5** — `WEATHER_MIN_TRADE_USD=5.0`. Eliminates dust positions (67% of entries were <10 cents). Applied to S-T override path, Kelly path, and exposure-clamped size check.
 7. **R3B: Baker-McHale floor 0.50** — `WEATHER_BM_FLOOR=0.50`. High ensemble spread (>3°F) was crushing sizing to 0.26x. Floor prevents extreme shrinkage while preserving uncertainty signal.
 8. **R3C: Drawdown compression removed from combined_boost** — Was already applied in BotBankrollManager via `compress` factor. Double-counting produced 0.25x on 3-loss streaks (0.50×0.50). `_compute_weather_drawdown_factor()` retained for monitoring.
+9. **R4: Ghost position bug fix (CRITICAL)** — `paper_trade_idempotent_memory` returned `{"success": True, "filled": 0}`, causing `confirm_position` to insert positions with `size=0`. These ghost positions blocked re-entry on 137 markets. **Two fixes**:
+   - `paper_trading.py:562`: Idempotent memory now returns `success: False` (duplicate = no-op, no position created)
+   - `order_gateway.py:795`: Guard `_filled_size > 0` before calling `confirm_position`. Zero-fill successes release reservation instead.
+   - **DB cleanup**: 137 ghost positions (status='open', size=0) closed via `UPDATE positions SET status='closed'`
 
 ## Files Modified
 | File | Change |
 |------|--------|
 | `config/settings.py` | +3 settings: WEATHER_EXIT_COOLDOWN_SECS, WEATHER_BM_FLOOR, WEATHER_MIN_TRADE_USD |
 | `bots/weather_bot.py` | R2: cooldown configurable (5 locations), R3A: min trade (3 locations), R3B: BM floor (1 location), R3C: drawdown removal (1 location) |
-| `base_engine/execution/paper_trading.py` | S106: taker-side flat factor |
+| `base_engine/execution/paper_trading.py` | S106: taker-side flat factor; R4: idempotent memory returns success=False |
+| `base_engine/execution/order_gateway.py` | R4: guard _filled_size>0 before confirm_position; zero-fill releases reservation |
 | `base_engine/weather/probability_engine.py` | S106: degenerate distribution returns empty |
 
 ## Munich Investigation (TABLED FOR REVIEW)
@@ -126,7 +131,9 @@ GROUP BY 1 ORDER BY 1;"
 ```
 
 ## Outstanding Items
+- ~~**P1**: Ghost position bug~~ — **RESOLVED**: R4. 137 ghosts closed, idempotent memory + order gateway fixed.
 - **P3 (REVIEW)**: Munich city P&L — monitor 2 weeks, revisit if still negative after 30+ exits
+- **P3**: `volume_24h=0.0` passed to fill probability model — causes overly conservative fills (9-27%). Needs investigation.
 - **P4**: Fill quality monitoring — verify partial fill distribution post-deploy
 - **P5**: NO vs YES asymmetry (72% vs 39% WR) — monitor, no config change yet
 - **P5**: Unit test for probability_engine degenerate fallback
