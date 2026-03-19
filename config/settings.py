@@ -1121,7 +1121,8 @@ class Settings(BaseSettings):
     # S109: Post-exit cooldown (seconds) — prevents stop-loss churn (RC1)
     ESPORTS_EXIT_COOLDOWN_SECONDS: float = float(os.getenv("ESPORTS_EXIT_COOLDOWN_SECONDS", "900.0"))
     # S109: Max entries per market per UTC day — hard backstop against churn (RC3)
-    ESPORTS_MAX_ENTRIES_PER_MARKET_PER_DAY: int = int(os.getenv("ESPORTS_MAX_ENTRIES_PER_MARKET_PER_DAY", "3"))
+    ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW: int = int(os.getenv("ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW", "2"))
+    ESPORTS_ENTRY_WINDOW_HOURS: float = float(os.getenv("ESPORTS_ENTRY_WINDOW_HOURS", "12.0"))
 
     # --- Per-game Kelly multiplier thresholds ---
     ESPORTS_KELLY_BRIER_PENALTY: float = float(os.getenv("ESPORTS_KELLY_BRIER_PENALTY", "0.25"))

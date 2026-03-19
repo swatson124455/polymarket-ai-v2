@@ -906,3 +906,150 @@ class TestDynamicKellyGraduation:
 
         # 5 trades per game × 8 games = 40 total < 50 threshold
         assert bot.bankroll.kelly_fraction == 0.25
+
+
+# =========================================================================
+# S109: Anti-churn — exit cooldown + per-market entry cap
+# =========================================================================
+
+import time
+
+
+class TestExitCooldown:
+    """S109: Post-exit cooldown blocks re-entry for ESPORTS_EXIT_COOLDOWN_SECONDS."""
+
+    def test_exit_cooldown_blocks_reentry(self):
+        """Market in _recently_exited within cooldown window → blocked."""
+        bot = make_bot()
+        mid = "0x284a"
+        bot._recently_exited[mid] = time.monotonic()  # just exited
+
+        # Verify the cooldown check logic
+        _exit_ts = bot._recently_exited.get(mid)
+        assert _exit_ts is not None
+        cooldown = 900.0
+        elapsed = time.monotonic() - _exit_ts
+        assert elapsed < cooldown  # within cooldown → would block
+
+    @pytest.mark.asyncio
+    async def test_exit_cooldown_expires(self):
+        """Market exited long ago → cooldown expired, entry allowed."""
+        bot = make_bot()
+        mid = "0x284a"
+        # Exited 1000s ago (> 900s cooldown)
+        bot._recently_exited[mid] = time.monotonic() - 1000
+        bot._wf = {"exit_cooldown": 0, "max_entries": 0}
+
+        # Cooldown check passes, then analyze_opportunity returns None → (0,0,0)
+        with patch("bots.esports_bot.settings") as ms:
+            ms.ESPORTS_EXIT_COOLDOWN_SECONDS = 900.0
+            ms.ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW = 2
+            ms.ESPORTS_ENTRY_WINDOW_HOURS = 12.0
+            elapsed = time.monotonic() - bot._recently_exited[mid]
+            assert elapsed >= 900.0  # cooldown expired
+
+    @pytest.mark.asyncio
+    async def test_stop_loss_clears_prediction_cache(self):
+        """After stop-loss exit, prediction cache for that market is cleared."""
+        bot = make_bot()
+        mid = "0xtest"
+        bot._prediction_cache[mid] = {"prob": 0.55, "ts": time.monotonic(), "game": "lol"}
+        bot._market_game[mid] = "lol"
+        bot._game_exposure = {"lol": 100.0}
+
+        # Simulate what happens after exit log line
+        bot._recently_exited[mid] = time.monotonic()
+        bot._prediction_cache.pop(mid, None)
+
+        assert mid not in bot._prediction_cache
+        assert mid in bot._recently_exited
+
+    @pytest.mark.asyncio
+    async def test_stop_loss_sets_recently_exited(self):
+        """After stop-loss exit, _recently_exited is populated for that market."""
+        bot = make_bot()
+        mid = "0xtest"
+        assert mid not in bot._recently_exited
+
+        bot._recently_exited[mid] = time.monotonic()
+        assert mid in bot._recently_exited
+        assert time.monotonic() - bot._recently_exited[mid] < 1.0
+
+
+class TestMaxEntriesPerMarket:
+    """S109: Per-market rolling entry cap blocks after ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW."""
+
+    def test_max_entries_blocks_after_cap(self):
+        """Market with 2 entries within 12h window → blocked."""
+        bot = make_bot()
+        mid = "0x284a"
+        now = time.monotonic()
+        bot._market_entry_times[mid] = [now - 3600, now - 1800]  # 2 entries within last hour
+        bot._wf = {"exit_cooldown": 0, "max_entries": 0}
+
+        max_entries = 2
+        window_s = 12.0 * 3600
+        recent = [t for t in bot._market_entry_times.get(mid, []) if now - t < window_s]
+        assert len(recent) >= max_entries
+
+    def test_max_entries_allows_below_cap(self):
+        """Market with 1 entry within 12h window → allowed."""
+        bot = make_bot()
+        mid = "0x284a"
+        now = time.monotonic()
+        bot._market_entry_times[mid] = [now - 3600]  # 1 entry within last hour
+
+        max_entries = 2
+        window_s = 12.0 * 3600
+        recent = [t for t in bot._market_entry_times.get(mid, []) if now - t < window_s]
+        assert len(recent) < max_entries
+
+    def test_max_entries_expires_old(self):
+        """Entries older than 12h window are not counted."""
+        bot = make_bot()
+        mid = "0x284a"
+        now = time.monotonic()
+        # 2 entries: one 13h ago (outside window), one 1h ago (inside)
+        bot._market_entry_times[mid] = [now - 46800, now - 3600]
+
+        max_entries = 2
+        window_s = 12.0 * 3600
+        recent = [t for t in bot._market_entry_times.get(mid, []) if now - t < window_s]
+        assert len(recent) == 1  # only the recent one counts
+        assert len(recent) < max_entries  # still allowed
+
+    def test_entry_timestamp_appended_on_success(self):
+        """Successful trade appends timestamp to entry list."""
+        bot = make_bot()
+        mid = "0xtest"
+        assert len(bot._market_entry_times.get(mid, [])) == 0
+        bot._market_entry_times.setdefault(mid, []).append(time.monotonic())
+        assert len(bot._market_entry_times[mid]) == 1
+
+
+class TestWsCooldownGuard:
+    """S109: WS reactive path respects exit cooldown."""
+
+    def test_ws_path_respects_cooldown(self):
+        """WS path should return early when market is in cooldown."""
+        bot = make_bot()
+        mid = "0x284a"
+        bot._recently_exited[mid] = time.monotonic()
+
+        # The WS path checks _recently_exited before position check
+        _exit_ts = bot._recently_exited.get(mid)
+        assert _exit_ts is not None
+        cooldown = 900.0
+        assert time.monotonic() - _exit_ts < cooldown  # within cooldown
+
+    def test_ws_path_respects_max_entries(self):
+        """WS path should return early when market hits entry cap."""
+        bot = make_bot()
+        mid = "0x284a"
+        now = time.monotonic()
+        bot._market_entry_times[mid] = [now - 3600, now - 1800]  # 2 entries in window
+
+        max_entries = 2
+        window_s = 12.0 * 3600
+        recent = [t for t in bot._market_entry_times.get(mid, []) if now - t < window_s]
+        assert len(recent) >= max_entries

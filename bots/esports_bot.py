@@ -281,6 +281,10 @@ class EsportsBot(BaseBot):
         self._calibration_ece: Dict[str, float] = {}     # game → latest ECE (updated every 10 min)
         self._edge_decay_data: Dict[str, Dict] = {}      # game → latest edge decay analysis
         self._game_kelly_mult: Dict[str, float] = {}     # game → Kelly multiplier (Brier-based)
+        # S109: Post-exit cooldown — prevents stop-loss churn (RC1)
+        self._recently_exited: Dict[str, float] = {}     # market_id → monotonic time of exit
+        # S109: Per-market rolling entry cap — hard backstop against churn (RC3)
+        self._market_entry_times: Dict[str, list] = {}    # market_id → [monotonic timestamps]
 
         # Session 82-83: Calibration pipeline (fitted in _check_monitoring_thresholds)
         self._focal_calibrator: Any = None       # DEPRECATED (S100) — kept for compat
@@ -588,6 +592,9 @@ class EsportsBot(BaseBot):
         if _sched is not None and self._trainer is not None:
             _sched.esports_trainer = self._trainer
 
+        # S109: Restore exit cooldowns from Redis (survives restarts)
+        await self._restore_exit_cooldowns_from_redis()
+
         logger.info(
             "EsportsBot: initialized",
             pandascore=True,
@@ -748,6 +755,21 @@ class EsportsBot(BaseBot):
         if confluence < confluence_min:
             return
 
+        # S109: Post-exit cooldown — block WS re-entry within cooldown window
+        _exit_ts = self._recently_exited.get(market_id)
+        if _exit_ts is not None:
+            _cooldown = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 900.0))
+            if time.monotonic() - _exit_ts < _cooldown:
+                return
+
+        # S109: Per-market rolling entry cap — hard backstop against churn
+        _max_entries = int(getattr(settings, "ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW", 2))
+        _window_s = float(getattr(settings, "ESPORTS_ENTRY_WINDOW_HOURS", 12.0)) * 3600
+        _now_mono = time.monotonic()
+        _recent = [t for t in self._market_entry_times.get(market_id, []) if _now_mono - t < _window_s]
+        if len(_recent) >= _max_entries:
+            return
+
         # Position check + pending trade guard (race condition prevention)
         if market_id in self._ws_pending_trades:
             return
@@ -780,7 +802,9 @@ class EsportsBot(BaseBot):
                 confluence=confluence,
             )
             async with self._trade_lock:
-                await self._execute_esports_trade(opp)
+                _ws_success = await self._execute_esports_trade(opp)
+            if _ws_success:
+                self._market_entry_times.setdefault(market_id, []).append(time.monotonic())
             # After successful execution, extend cooldown to one full scan cycle
             # to prevent re-triggering on the same market before next scan
             self._ws_cooldowns[market_id] = time.monotonic() + 110  # +110 so total ~120s
@@ -809,9 +833,25 @@ class EsportsBot(BaseBot):
                         if now - v.get("ts", 0) > 1800]
         for k in stale_series:
             del self._series_prediction_cache[k]
-        if stale or stale_log or stale_series:
+        # S109: Evict expired exit cooldowns
+        _cooldown = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 900.0))
+        stale_exits = [k for k, v in self._recently_exited.items() if now - v >= _cooldown]
+        for k in stale_exits:
+            del self._recently_exited[k]
+        # S109: Evict expired entry timestamps from rolling window
+        _window_s = float(getattr(settings, "ESPORTS_ENTRY_WINDOW_HOURS", 12.0)) * 3600
+        _now_mono = time.monotonic()
+        _stale_markets = []
+        for _mk, _times in self._market_entry_times.items():
+            self._market_entry_times[_mk] = [t for t in _times if _now_mono - t < _window_s]
+            if not self._market_entry_times[_mk]:
+                _stale_markets.append(_mk)
+        for _mk in _stale_markets:
+            del self._market_entry_times[_mk]
+        if stale or stale_log or stale_series or stale_exits:
             logger.debug("esports_cache_cleanup", prediction_evicted=len(stale),
                          log_evicted=len(stale_log), series_evicted=len(stale_series),
+                         exit_cooldown_evicted=len(stale_exits),
                          token_map_size=len(self._market_token_map))
 
     async def scan_and_trade(self) -> None:
@@ -1045,7 +1085,8 @@ class EsportsBot(BaseBot):
         self._wf = {"no_game": 0, "no_price": 0, "no_token": 0, "halted": 0,
                      "exposure_cap": 0, "observation": 0, "no_prediction": 0,
                      "low_edge": 0, "edge_cap": 0, "low_confidence": 0,
-                     "low_confluence": 0, "passed": 0, "reentry_rejected": 0}
+                     "low_confluence": 0, "passed": 0, "reentry_rejected": 0,
+                     "exit_cooldown": 0, "max_entries": 0}
         self._exposure_cap_logged: set = set()  # per-scan: games already logged for cap hit
         og = getattr(self.base_engine, "order_gateway", None)
 
@@ -1084,6 +1125,21 @@ class EsportsBot(BaseBot):
             """Analyze one market; returns (opps, trades, skips)."""
             async with self._analysis_semaphore:
                 mid = str(m.get("id", ""))
+                # S109: Post-exit cooldown — block re-entry within cooldown window
+                _exit_ts = self._recently_exited.get(mid)
+                if _exit_ts is not None:
+                    _cooldown = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 900.0))
+                    if time.monotonic() - _exit_ts < _cooldown:
+                        self._wf["exit_cooldown"] += 1
+                        return (0, 0, 1)
+                # S109: Per-market rolling entry cap — hard backstop against churn
+                _max_entries = int(getattr(settings, "ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW", 2))
+                _window_s = float(getattr(settings, "ESPORTS_ENTRY_WINDOW_HOURS", 12.0)) * 3600
+                _now_mono = time.monotonic()
+                _recent = [t for t in self._market_entry_times.get(mid, []) if _now_mono - t < _window_s]
+                if len(_recent) >= _max_entries:
+                    self._wf["max_entries"] += 1
+                    return (0, 0, 1)
                 if og and mid and og.has_open_position(self.bot_name, mid):
                     # Position re-entry: allow if same direction + room under cap
                     _pos_key = f"{self.bot_name}:{mid}"
@@ -1122,6 +1178,8 @@ class EsportsBot(BaseBot):
                         if not self._ws_trading_active:
                             async with self._trade_lock:
                                 success = await self._execute_esports_trade(opp)
+                            if success:
+                                self._market_entry_times.setdefault(mid, []).append(time.monotonic())
                             return (1, 1 if success else 0, 0)
                         return (1, 0, 0)
                     return (0, 0, 1)
@@ -1130,6 +1188,8 @@ class EsportsBot(BaseBot):
                     # Fallback: scan trades when WS is stale
                     async with self._trade_lock:
                         success = await self._execute_esports_trade(opp)
+                    if success:
+                        self._market_entry_times.setdefault(mid, []).append(time.monotonic())
                     logger.info(
                         "esportsbot_trade_attempt",
                         market_id=mid, game=opp.get("game", ""),
@@ -1264,6 +1324,45 @@ class EsportsBot(BaseBot):
                 logger.info("esports_daily_pnl_restored", pnl=round(self._daily_pnl, 2))
         except Exception as exc:
             logger.debug("esports_daily_pnl_restore_failed", error=str(exc))
+
+    async def _save_exit_cooldown_to_redis(self, market_id: str) -> None:
+        """S109: Persist exit cooldown to Redis so it survives restarts."""
+        try:
+            cache = getattr(getattr(self, "base_engine", None), "cache", None)
+            if cache is None or not getattr(cache, "redis", None):
+                return
+            ttl = int(float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 900.0)))
+            expire_at = time.time() + ttl
+            await cache.set(f"esportsbot:exit:{market_id}", expire_at, ttl=ttl)
+        except Exception as exc:
+            logger.debug("esportsbot_redis_exit_save_failed", error=str(exc))
+
+    async def _restore_exit_cooldowns_from_redis(self) -> None:
+        """S109: Reload exit cooldowns from Redis on startup."""
+        try:
+            cache = getattr(getattr(self, "base_engine", None), "cache", None)
+            if cache is None or not getattr(cache, "redis", None):
+                return
+            keys = await cache.redis.keys("esportsbot:exit:*")
+            now_wall = time.time()
+            now_mono = time.monotonic()
+            cooldown = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 900.0))
+            count = 0
+            for key in keys:
+                raw = await cache.get(key)
+                if raw is None:
+                    continue
+                expire_at = float(raw)
+                if expire_at <= now_wall:
+                    continue  # cooldown already expired
+                elapsed = cooldown - (expire_at - now_wall)
+                mid = key.split("esportsbot:exit:", 1)[-1]
+                self._recently_exited[mid] = now_mono - elapsed
+                count += 1
+            if count:
+                logger.info("esportsbot_exit_cooldowns_restored", count=count)
+        except Exception as exc:
+            logger.warning("esportsbot_restore_exits_failed", error=str(exc))
 
     def _check_daily_loss_limit(self) -> bool:
         """A1+A8: Return True if trading should be blocked (loss limit or drawdown halt)."""
@@ -1424,6 +1523,10 @@ class EsportsBot(BaseBot):
                 self._market_game.pop(mid, None)
                 logger.info("esportsbot_exit_executed", market_id=mid, reason=reason,
                             exit_side="SELL", size=round(size, 2), game=game)
+                # S109: Set cooldown + invalidate prediction cache to prevent churn
+                self._recently_exited[mid] = time.monotonic()
+                self._prediction_cache.pop(mid, None)
+                await self._save_exit_cooldown_to_redis(mid)
             except Exception as exc:
                 logger.debug("esportsbot_exit_failed", market_id=mid, error=str(exc))
 
