@@ -2155,9 +2155,17 @@ class WeatherBot(BaseBot):
 
     async def _execute_weather_trade(self, opp: Dict, group: WeatherMarketGroup) -> bool:
         """Execute a weather trade with risk checks. Returns True if trade was placed."""
-        # Skip if position already open (prevents re-entry on same market every scan)
         gw = self.base_engine.order_gateway
-        if gw and hasattr(gw, "_open_position_markets"):
+
+        # S107 Fix 4: Same-side dedup — check _position_details (side-aware) instead of
+        # _open_position_markets (market_id only). 700 duplicate entries found without side check.
+        if gw and hasattr(gw, "_position_details"):
+            _key = f"WeatherBot:{opp.get('market_id', '')}"
+            _existing = gw._position_details.get(_key)
+            if _existing and str(_existing.get("side", "")).upper() == str(opp.get("side", "")).upper():
+                return False
+        elif gw and hasattr(gw, "_open_position_markets"):
+            # Fallback: market_id-only check if _position_details not available
             bot_positions = gw._open_position_markets.get("WeatherBot", set())
             if str(opp.get("market_id", "")) in bot_positions:
                 return False
@@ -2178,6 +2186,40 @@ class WeatherBot(BaseBot):
                     return False
                 else:
                     del self._fill_fail_tracker[_mid]
+
+        # S107 Fix 2: bestAsk pre-filter — skip trades where the actual ask price
+        # exceeds our confidence (no edge after book depth). Also grab volume for Fix 3.
+        _best_ask = 0.0
+        _clob_volume = 0.0
+        if gw:
+            try:
+                _midx = getattr(gw, "_market_index", None)
+                _midx_cid = getattr(gw, "_market_index_by_cid", None)
+                _mdata = None
+                if _midx and isinstance(_midx, dict):
+                    _mdata = _midx.get(str(_mid))
+                if not _mdata and _midx_cid and isinstance(_midx_cid, dict):
+                    _mdata = _midx_cid.get(str(_mid))
+                if _mdata and isinstance(_mdata, dict):
+                    _best_ask = float(_mdata.get("bestAsk") or _mdata.get("best_ask") or 0)
+                    _clob_volume = float(_mdata.get("volume") or _mdata.get("volume24hr") or 0)
+            except (TypeError, ValueError, AttributeError):
+                pass  # Fail open: proceed without pre-filter
+        if _best_ask > 0:
+            _conf = opp.get("confidence", 0)
+            if _conf <= _best_ask:
+                logger.debug(
+                    "weatherbot_bestask_skip",
+                    market_id=_mid,
+                    confidence=round(_conf, 4),
+                    best_ask=round(_best_ask, 4),
+                )
+                return False
+            # Store effective entry price for downstream logging
+            opp["_effective_price"] = max(opp.get("price", 0), _best_ask)
+        # Store volume for event_data (Fix 3)
+        if _clob_volume > 0:
+            opp["_clob_volume"] = _clob_volume
 
         # S99: Fill probability floor — skip if price-depth predicts <threshold
         _price = opp.get("price", 0.5)
@@ -2428,6 +2470,7 @@ class WeatherBot(BaseBot):
                 "lead_time_hours": lead_time,
                 "scan_start_mono": getattr(self, "_scan_start_mono", None),
                 "alpha_decay_half_life_s": 1800,  # S101: weather signal valid ~6h (NOAA cycle), not 5min
+                "volume_24h": opp.get("_clob_volume", 0.0),  # S107 Fix 3: pass CLOB volume for fill model
             },
         )
 

@@ -228,8 +228,9 @@ class Settings(BaseSettings):
     # S106: Enabled by default. Shadow trading guide: "the single most important implementation detail".
     PAPER_TAKER_SIDE_FILTER: bool = os.getenv("PAPER_TAKER_SIDE_FILTER", "true").lower() in ("true", "1", "yes")
     # S105b: Flat taker-side discount when no taker_side data is available in event_data.
-    # ~45% of trades have taker on same side → statistically reduces fill rate by this factor.
-    PAPER_TAKER_SIDE_FACTOR: float = float(os.getenv("PAPER_TAKER_SIDE_FACTOR", "0.55"))
+    # S107: Raised from 0.55→0.85. 0.55 modeled resting limit orders (45% same-side taker
+    # chance). All bots are taker-style in paper trading — 0.85 reflects only queue/timing risk.
+    PAPER_TAKER_SIDE_FACTOR: float = float(os.getenv("PAPER_TAKER_SIDE_FACTOR", "0.85"))
     # S106: Slippage-eats-edge rejection — reject trade when estimated slippage exceeds the edge.
     # Ported from WeatherBot's liquidity_guardian pattern. Applies to ALL bots.
     PAPER_SLIPPAGE_EDGE_CHECK: bool = os.getenv("PAPER_SLIPPAGE_EDGE_CHECK", "true").lower() in ("true", "1", "yes")

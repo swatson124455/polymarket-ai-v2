@@ -722,6 +722,9 @@ class OrderGateway:
                                         _paper_ask = effective_price + _spread / 2
                             except (ValueError, TypeError, IndexError):
                                 pass
+                # S107 Fix 3: fallback volume from event_data when market_index has no data
+                if _paper_volume <= 0.0:
+                    _paper_volume = float((event_data or {}).get("volume_24h") or 0)
                 # S100: Extract signal latency from event_data for alpha decay
                 _scan_start = (event_data or {}).get("scan_start_mono")
                 _signal_latency_ms = None
