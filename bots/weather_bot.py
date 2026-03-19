@@ -94,6 +94,7 @@ class WeatherBot(BaseBot):
         self._group_exposure: Dict[str, float] = {}   # "city:date" → USD deployed
         self._city_exposure: Dict[str, float] = {}     # city → total USD deployed
         self._recently_exited: Dict[str, float] = {}   # market_id → mono time
+        self._exit_cooldown_secs = float(getattr(settings, "WEATHER_EXIT_COOLDOWN_SECS", 14400.0))
         self._known_open_markets: Set[str] = set()     # snapshot for PM exit detection
         # S104: market_id → (group_key, city, cost_usd) — survives cache expiry, used for exit exposure decrement
         self._market_group_cache: Dict[str, Tuple[str, str, float]] = {}
@@ -1849,7 +1850,7 @@ class WeatherBot(BaseBot):
             # Skip recently exited markets
             mono_now = time.monotonic()
             exited_at = self._recently_exited.get(e["market_id"])
-            if exited_at and mono_now - exited_at < 900.0:  # 15 min cooldown
+            if exited_at and mono_now - exited_at < self._exit_cooldown_secs:  # S107: 4hr cooldown
                 continue
 
             # Skip if no token ID
@@ -2165,7 +2166,7 @@ class WeatherBot(BaseBot):
         _mono_now = time.monotonic()
         _mid = opp.get("market_id", "")
         _exited_at = self._recently_exited.get(_mid)
-        if _exited_at and _mono_now - _exited_at < 900.0:
+        if _exited_at and _mono_now - _exited_at < self._exit_cooldown_secs:  # S107: 4hr
             return False
 
         # S99: Fill-failure cooldown — skip markets that failed N consecutive times
@@ -2284,15 +2285,15 @@ class WeatherBot(BaseBot):
         _spread = opp.get("model_spread", 3.0)
         _typical_spread = 3.0  # °F baseline
         _sigma_norm = _spread / _typical_spread  # normalized: 1.0 = average
-        _bm_factor = 1.0 / (1.0 + _sigma_norm ** 2)  # 0.5 at sigma=1, 0.8 at sigma=0.5
+        _bm_floor = float(getattr(settings, "WEATHER_BM_FLOOR", 0.50))
+        _bm_factor = max(_bm_floor, 1.0 / (1.0 + _sigma_norm ** 2))  # S107: floored at 0.50
         # Scale combined_boost by Baker-McHale factor
         combined_boost *= _bm_factor
 
-        # Drawdown compression: reduce sizing during losing streaks per market type
-        _mtype = opp.get("market_type", "temperature")
-        _dd_factor = self._compute_weather_drawdown_factor(_mtype)
-        if _dd_factor < 1.0:
-            combined_boost *= _dd_factor
+        # S107: Drawdown compression REMOVED from combined_boost — already applied
+        # in BotBankrollManager.get_bet_size() via `compress` factor. Keeping both
+        # double-counted the penalty (0.50 × 0.50 = 0.25x on a 3-loss streak).
+        # _compute_weather_drawdown_factor() retained for monitoring/logging only.
 
         # Per-station reliability: well-calibrated stations get larger size
         _station_id = getattr(getattr(group, "station", None), "station_id", None)
@@ -2366,19 +2367,20 @@ class WeatherBot(BaseBot):
         # W3+W5: Use Smoczynski-Tomkins group-level allocation when available.
         # S-T sizes are pre-computed by _execute_group_trades() and passed via
         # _st_size_override. Fall back to independent Kelly if not set.
+        _min_trade = float(getattr(settings, "WEATHER_MIN_TRADE_USD", 5.0))  # S107: was $1
         _st_override = opp.pop("_st_size_override", None)
         if _st_override is not None:
-            size = max(1.0, _st_override * combined_boost)
+            size = max(_min_trade, _st_override * combined_boost)
         else:
             # Size via central risk_manager Kelly (same as all other bots)
             try:
                 kelly_shares = await self.calculate_bot_position_size(
                     opp["confidence"], opp["price"],
                 )
-                size = max(1.0, kelly_shares * opp["price"] * combined_boost)
+                size = max(_min_trade, kelly_shares * opp["price"] * combined_boost)
             except Exception as exc:
                 logger.warning("weatherbot_kelly_sizing_failed", error=str(exc))
-                size = max(1.0, self._default_size)
+                size = max(_min_trade, self._default_size)
 
         # S97: Lock-guarded exposure reservation — re-read under lock for parallel safety
         async with self._exposure_lock:
@@ -2387,7 +2389,7 @@ class WeatherBot(BaseBot):
             remaining_group = self._max_per_group - current_group_exp
             remaining_city = self._max_correlated - current_city_exp
             size = min(size, remaining_group, remaining_city, _slippage_size_cap)
-            if size < 1.0:
+            if size < _min_trade:  # S107: was $1, now $5
                 return False
             # Reserve exposure atomically under lock
             self._group_exposure[group_key] = current_group_exp + size
@@ -2858,13 +2860,14 @@ class WeatherBot(BaseBot):
             logger.debug("weatherbot_redis_backoff_restore_failed", error=str(exc))
 
     async def _save_exit_to_redis(self, market_id: str) -> None:
-        """Persist a recent-exit event to Redis with 15-min TTL so it survives restarts."""
+        """Persist a recent-exit event to Redis with configurable TTL so it survives restarts."""
         try:
             cache = getattr(getattr(self, "base_engine", None), "cache", None)
             if cache is None or not getattr(cache, "redis", None):
                 return
-            expire_at = time.time() + 900.0
-            await cache.set(f"weatherbot:exit:{market_id}", expire_at, ttl=900)
+            _ttl = int(self._exit_cooldown_secs)
+            expire_at = time.time() + float(_ttl)
+            await cache.set(f"weatherbot:exit:{market_id}", expire_at, ttl=_ttl)
         except Exception as exc:
             logger.debug("weatherbot_redis_exit_save_failed", error=str(exc))
 
@@ -2885,7 +2888,7 @@ class WeatherBot(BaseBot):
                 expire_at = float(raw)
                 if expire_at <= now_wall:
                     continue  # cooldown already expired
-                elapsed = 900.0 - (expire_at - now_wall)
+                elapsed = self._exit_cooldown_secs - (expire_at - now_wall)
                 mid = key.split("weatherbot:exit:", 1)[-1]
                 self._recently_exited[mid] = now_mono - elapsed
                 count += 1

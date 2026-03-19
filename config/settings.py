@@ -346,7 +346,7 @@ class Settings(BaseSettings):
     MIRROR_MAX_CATEGORY_EXPOSURE_USD: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_USD", "40000"))  # S100: $10k→$40k per category
     MIRROR_MAX_TRACKED_TRADES: int = int(os.getenv("MIRROR_MAX_TRACKED_TRADES", "10000"))
     MIRROR_EXIT_ENABLED: bool = os.getenv("MIRROR_EXIT_ENABLED", "true").lower() in ("true", "1", "yes")
-    MIRROR_MAX_CONCURRENT_POSITIONS: int = int(os.getenv("MIRROR_MAX_CONCURRENT_POSITIONS", "500"))  # S99b: 1000→500
+    MIRROR_MAX_CONCURRENT_POSITIONS: int = int(os.getenv("MIRROR_MAX_CONCURRENT_POSITIONS", "200"))  # S107: 500→200 align with VPS .env
     MIRROR_MAX_DAILY_EXPOSURE_PCT: float = float(os.getenv("MIRROR_MAX_DAILY_EXPOSURE_PCT", "0.15"))
     # Phase 4: MirrorBot structural hardening
     MIRROR_HOT_TRADE_MAX_SECONDS: int = int(os.getenv("MIRROR_HOT_TRADE_MAX_SECONDS", "900"))  # 300→900: 5min was too aggressive, 15min allows more trades
@@ -375,7 +375,7 @@ class Settings(BaseSettings):
     MIRROR_STOP_LOSS_PCT: float = float(os.getenv("MIRROR_STOP_LOSS_PCT", "0.15"))
     MIRROR_MAX_HOLD_HOURS: float = float(os.getenv("MIRROR_MAX_HOLD_HOURS", "99999"))  # S96: disabled — stop-loss is safety net
     MIRROR_MAX_POSITIONS: int = int(os.getenv("MIRROR_MAX_POSITIONS", "1000"))  # S96: 400→1000
-    MIRROR_TOTAL_CAPITAL: float = float(os.getenv("MIRROR_TOTAL_CAPITAL", "3000"))
+    MIRROR_TOTAL_CAPITAL: float = float(os.getenv("MIRROR_TOTAL_CAPITAL", "20000"))  # S107: 3000→20000 align with CLAUDE.md/$20K
     # S91: Tier 0 pre-trade filters — in-memory short-circuit before any DB/cache hit
     MIRROR_CATEGORY_BLOCKLIST: str = os.getenv("MIRROR_CATEGORY_BLOCKLIST", "15-minute,speed")  # comma-separated substrings
     MIRROR_MARKET_COOLDOWN_SECONDS: int = int(os.getenv("MIRROR_MARKET_COOLDOWN_SECONDS", "1800"))  # 30 min per-market re-entry cooldown
@@ -702,6 +702,12 @@ class Settings(BaseSettings):
     WEATHER_TRADE_CONCURRENCY: int = int(os.getenv("WEATHER_TRADE_CONCURRENCY", "8"))
     WEATHER_MAX_TOTAL_EXPOSURE_USD: float = float(os.getenv("WEATHER_MAX_TOTAL_EXPOSURE_USD", "50000"))
     WEATHER_TOTAL_CAPITAL: float = float(os.getenv("WEATHER_TOTAL_CAPITAL", "20000"))  # S105: aligned to $20K
+    # S107: Re-entry cooldown per market_id after exit (was 15min, now 4hr)
+    WEATHER_EXIT_COOLDOWN_SECS: float = float(os.getenv("WEATHER_EXIT_COOLDOWN_SECS", "14400"))
+    # S107: Baker-McHale uncertainty floor (prevents 0.26x crush on high-spread forecasts)
+    WEATHER_BM_FLOOR: float = float(os.getenv("WEATHER_BM_FLOOR", "0.50"))
+    # S107: Minimum trade size in USD (was $1, now $5 — eliminates dust positions)
+    WEATHER_MIN_TRADE_USD: float = float(os.getenv("WEATHER_MIN_TRADE_USD", "5.0"))
     # S99: Fill-failure cooldown
     WEATHER_FILL_FAIL_COOLDOWN_SCANS: int = int(os.getenv("WEATHER_FILL_FAIL_COOLDOWN_SCANS", "2"))
     WEATHER_FILL_FAIL_COOLDOWN_SECS: float = float(os.getenv("WEATHER_FILL_FAIL_COOLDOWN_SECS", "120"))  # S101: 900→120s — IOC gas negligible, 2min = 1 scan cycle
@@ -1112,6 +1118,10 @@ class Settings(BaseSettings):
     # 25% stop-loss + 96h hold — esports resolve fast (24-48h), these are safety nets.
     ESPORTS_STOP_LOSS_PCT: float = float(os.getenv("ESPORTS_STOP_LOSS_PCT", "0.25"))
     ESPORTS_MAX_HOLD_HOURS: float = float(os.getenv("ESPORTS_MAX_HOLD_HOURS", "96"))
+    # S109: Post-exit cooldown (seconds) — prevents stop-loss churn (RC1)
+    ESPORTS_EXIT_COOLDOWN_SECONDS: float = float(os.getenv("ESPORTS_EXIT_COOLDOWN_SECONDS", "900.0"))
+    # S109: Max entries per market per UTC day — hard backstop against churn (RC3)
+    ESPORTS_MAX_ENTRIES_PER_MARKET_PER_DAY: int = int(os.getenv("ESPORTS_MAX_ENTRIES_PER_MARKET_PER_DAY", "3"))
 
     # --- Per-game Kelly multiplier thresholds ---
     ESPORTS_KELLY_BRIER_PENALTY: float = float(os.getenv("ESPORTS_KELLY_BRIER_PENALTY", "0.25"))
