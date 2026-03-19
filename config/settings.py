@@ -227,6 +227,9 @@ class Settings(BaseSettings):
     # S105: Taker-side filter — soft 0.5x fill penalty when taker side matches order side.
     # S106: Enabled by default. Shadow trading guide: "the single most important implementation detail".
     PAPER_TAKER_SIDE_FILTER: bool = os.getenv("PAPER_TAKER_SIDE_FILTER", "true").lower() in ("true", "1", "yes")
+    # S105b: Flat taker-side discount when no taker_side data is available in event_data.
+    # ~45% of trades have taker on same side → statistically reduces fill rate by this factor.
+    PAPER_TAKER_SIDE_FACTOR: float = float(os.getenv("PAPER_TAKER_SIDE_FACTOR", "0.55"))
     # S106: Slippage-eats-edge rejection — reject trade when estimated slippage exceeds the edge.
     # Ported from WeatherBot's liquidity_guardian pattern. Applies to ALL bots.
     PAPER_SLIPPAGE_EDGE_CHECK: bool = os.getenv("PAPER_SLIPPAGE_EDGE_CHECK", "true").lower() in ("true", "1", "yes")

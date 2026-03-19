@@ -464,7 +464,7 @@ class WeatherBot(BaseBot):
         Three criteria (OR):
         1. Target date has passed — parsed from market question (date-aware)
         2. Age > 20h — fallback when question parsing fails
-        3. Corresponding paper_trade has realized_pnl (market already settled)
+        3. Corresponding trade_events EXIT record exists (position was exited)
 
         Without this, stale 'open' positions block re-entry on the same market_id
         via the position-already-open filter in _execute_weather_trade().
@@ -513,7 +513,8 @@ class WeatherBot(BaseBot):
                     ), {"ids": stale_ids})
                     await session.commit()
 
-            # Step 4: Age fallback (20h) + resolved paper_trade for remaining
+            # Step 4: Age fallback (20h) + exited via trade_events for remaining
+            # S105b: Changed from paper_trades (no SELL records) to trade_events EXIT.
             async with db.get_session() as session:
                 result = await session.execute(sa_text(
                     "UPDATE positions SET status = 'closed' "
@@ -522,9 +523,10 @@ class WeatherBot(BaseBot):
                     "AND ("
                     "  opened_at < NOW() - INTERVAL '20 hours' "
                     "  OR market_id IN ("
-                    "    SELECT pt.market_id FROM paper_trades pt "
-                    "    WHERE pt.realized_pnl IS NOT NULL "
-                    "    AND pt.created_at > NOW() - INTERVAL '24 hours'"
+                    "    SELECT te.market_id FROM trade_events te "
+                    "    WHERE te.bot_name = 'WeatherBot' "
+                    "    AND te.event_type = 'EXIT' "
+                    "    AND te.event_time > NOW() - INTERVAL '24 hours'"
                     "  )"
                     ") "
                     "RETURNING market_id"
@@ -2898,6 +2900,8 @@ class WeatherBot(BaseBot):
         Replaces the old paper_trades JOIN + question parsing approach with
         EsportsBot's proven daily_counter pattern (<10ms vs 50-200ms).
         Called once on startup (inside the _cache_warmed block).
+        S105b: Clamp negative counters to 0 in DB — they occur when exits from
+        yesterday's positions decrement today's counters (which start at 0).
         Fail-open: any error logs at debug level and continues with empty dicts.
         """
         db = getattr(self.base_engine, "db", None)
@@ -2906,14 +2910,32 @@ class WeatherBot(BaseBot):
         try:
             counters = await _restore_daily(db, "WeatherBot")
             rebuilt_groups = 0
+            negative_clamped = 0
             for name, value in counters.items():
-                if value <= 0:
+                if value < 0:
+                    negative_clamped += 1
+                    continue
+                if value == 0:
                     continue
                 if name.startswith("group_"):
                     self._group_exposure[name[6:]] = value
                     rebuilt_groups += 1
                 elif name.startswith("city_"):
                     self._city_exposure[name[5:]] = value
+            # S105b: Clamp negative counters in DB so table stays clean for auditing
+            if negative_clamped > 0:
+                try:
+                    from sqlalchemy import text as sa_text
+                    async with db.get_session() as session:
+                        await session.execute(sa_text(
+                            "UPDATE daily_counters SET counter_value = 0 "
+                            "WHERE bot_id = 'WeatherBot' AND counter_date = CURRENT_DATE "
+                            "AND counter_value < 0"
+                        ))
+                        await session.commit()
+                    logger.info("weatherbot_negative_counters_clamped", count=negative_clamped)
+                except Exception:
+                    pass  # Non-critical: cosmetic fix
             if rebuilt_groups or self._city_exposure:
                 logger.info(
                     "weatherbot_exposure_restored",

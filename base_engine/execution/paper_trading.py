@@ -754,6 +754,9 @@ class PaperTradingEngine:
             # matches our order side, our resting order wouldn't have been hit.
             # For market/taker orders this is a softer penalty (0.5x) rather than a hard block,
             # since we're crossing the spread, not resting. Gated behind setting.
+            # S105b: When taker_side data is NOT available, apply a flat statistical
+            # discount (PAPER_TAKER_SIDE_FACTOR, default 0.55). ~45% of the time the
+            # taker is on the same side as our order, reducing effective fill rate.
             if getattr(settings, "PAPER_TAKER_SIDE_FILTER", False):
                 _taker_side = (_event.get("taker_side") or "").upper()
                 _our_side = side.upper() if side else ""
@@ -761,6 +764,10 @@ class PaperTradingEngine:
                     _fill_prob *= 0.5
                     logger.debug("paper_taker_side_penalty", taker=_taker_side,
                                  ours=_our_side, fill_prob=round(_fill_prob, 3))
+                elif not _taker_side:
+                    # No taker-side data — apply flat statistical discount
+                    _tsf = float(getattr(settings, "PAPER_TAKER_SIDE_FACTOR", 0.55))
+                    _fill_prob *= _tsf
 
             _fill_prob = max(0.05, min(1.0, _fill_prob))
 

@@ -212,9 +212,9 @@ class WeatherProbabilityEngine:
             for mid in probs:
                 probs[mid] /= total
         elif total <= 0.01 and probs:
-            uniform = 1.0 / len(probs)
-            for mid in probs:
-                probs[mid] = uniform
+            # M1 parity: degenerate distribution — return empty rather than
+            # uniform to avoid fake 45%+ edges on tail markets.
+            return {}
         return probs
 
     @staticmethod
