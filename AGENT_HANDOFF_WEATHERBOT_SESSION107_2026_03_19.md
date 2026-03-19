@@ -61,6 +61,49 @@ WEATHER_BM_FLOOR=0.50              # Baker-McHale minimum factor
 WEATHER_MIN_TRADE_USD=5.0          # Minimum position size (was $1)
 ```
 
+## Rollback Guide
+
+### Full rollback (revert entire S107)
+```bash
+git revert 1f60153   # Reverts all S107 changes, keeps S106
+sudo systemctl restart polymarket-ai
+```
+
+### Partial rollback via env vars (no code change, just restart)
+Each S107 change can be independently reverted to pre-S107 behavior:
+
+| Change | Revert command | Effect |
+|--------|----------------|--------|
+| R2: 4hr cooldown → 15min | `export WEATHER_EXIT_COOLDOWN_SECS=900` | Restore fast re-entry (15min) |
+| R3A: $5 min → $1 min | `export WEATHER_MIN_TRADE_USD=1.0` | Allow dust positions again |
+| R3B: BM floor → uncapped | `export WEATHER_BM_FLOOR=0.0` | Restore aggressive BM shrinkage |
+| R3C: Drawdown dedup | **Code revert required** | Re-enable double drawdown compression |
+
+**To apply partial rollback**: edit `/opt/polymarket-ai-v2/.env` (or `export` in systemd override), then:
+```bash
+sudo systemctl restart polymarket-ai
+```
+
+### S106 rollback (if S106 changes cause issues)
+```bash
+git revert 10c5f23   # Reverts taker-side factor + probability engine + stale cleanup
+sudo systemctl restart polymarket-ai
+```
+
+### Parameter change log (before → after)
+| Parameter | Before (S106) | After (S107) | Location |
+|-----------|---------------|--------------|----------|
+| Re-entry cooldown | 900s (hardcoded) | 14400s (configurable) | weather_bot.py ×5, settings.py |
+| Min trade size | $1 (hardcoded) | $5 (configurable) | weather_bot.py ×3, settings.py |
+| Baker-McHale floor | none (uncapped, min ~0.10) | 0.50 (configurable) | weather_bot.py ×1, settings.py |
+| Drawdown in combined_boost | applied (0.25-1.0x multiplier) | removed (comment only) | weather_bot.py ×1 |
+| Redis exit TTL | 900s (hardcoded) | matches WEATHER_EXIT_COOLDOWN_SECS | weather_bot.py ×1 |
+| Redis restore elapsed calc | hardcoded 900.0 | uses self._exit_cooldown_secs | weather_bot.py ×1 |
+| PAPER_TAKER_SIDE_FACTOR | (new, S106) | 0.55 default | settings.py, paper_trading.py |
+| Prob engine degenerate | uniform distribution | empty dict `{}` | probability_engine.py |
+| Stale cleanup query | paper_trades.realized_pnl | trade_events EXIT | weather_bot.py |
+| Negative counter clamp | no clamp | clamp to 0 on startup | weather_bot.py |
+
 ## Post-Deploy Monitoring
 ```bash
 # Verify WeatherBot scanning and trading
