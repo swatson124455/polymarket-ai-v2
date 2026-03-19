@@ -1130,6 +1130,13 @@ class EsportsBot(BaseBot):
                     # Fallback: scan trades when WS is stale
                     async with self._trade_lock:
                         success = await self._execute_esports_trade(opp)
+                    logger.info(
+                        "esportsbot_trade_attempt",
+                        market_id=mid, game=opp.get("game", ""),
+                        side=opp.get("side", ""), edge=opp.get("edge"),
+                        confidence=round(opp.get("confidence", 0), 4),
+                        success=success,
+                    )
                     return (1, 1 if success else 0, 0)
                 elif opp:
                     return (1, 0, 0)  # Opportunity found; WS will trade it
@@ -1141,7 +1148,7 @@ class EsportsBot(BaseBot):
         )
         for r in results:
             if isinstance(r, Exception):
-                logger.debug("EsportsBot scan error: %s", r)
+                logger.warning("esportsbot_scan_error", error=str(r), error_type=type(r).__name__)
             else:
                 _opps += r[0]
                 _trades += r[1]
@@ -3027,12 +3034,24 @@ class EsportsBot(BaseBot):
             size = _max_size_override
 
         # P6: Enforce ESPORTS_MAX_BET_USD cap (cost = price * size in shares)
+        price = opp["price"]
         _max_bet = float(getattr(settings, "ESPORTS_MAX_BET_USD", 300.0))
         _cost = price * size
         if _cost > _max_bet:
             size = _max_bet / max(price, 0.01)
 
         if size < 0.10:
+            logger.info(
+                "esportsbot_size_crushed",
+                market_id=opp.get("market_id"),
+                game=opp.get("game", ""),
+                base_size_usd=round(confidence * 200, 2),
+                final_size_shares=round(size, 4),
+                phi_factor=round(phi_factor, 4),
+                dd_factor=round(dd_factor, 4),
+                game_kelly_mult=round(_game_mult, 4),
+                edge_decay_mult=round(_decay_mult, 4),
+            )
             return False
 
         # A10: Pre-update exposure BEFORE placing order (race condition fix)
