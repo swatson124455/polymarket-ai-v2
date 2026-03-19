@@ -752,10 +752,11 @@ class TestExecuteMirrorTrade:
         bot.calculate_bot_position_size = AsyncMock(return_value=100.0)
         bot.place_order = AsyncMock(return_value={"success": True, "order_id": "ord1"})
         bot.store_pending_trade_signals = AsyncMock()
-        bot._open_positions["mkt1:tok-yes"] = {
-            "side": "YES", "size": 0.0, "entry_price": 0.60,
-            "traders": {"addr1"}, "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
+        # S103: Mock reliability tracker so domain drift doesn't halve confidence below gate
+        bot._reliability_tracker = MagicMock()
+        bot._reliability_tracker.likelihood_ratio = MagicMock(return_value=1.0)
+        bot._reliability_tracker.category_trade_count = MagicMock(return_value=50)
+        # S109: No pre-existing position on same market+side — same-side dedup blocks re-entry.
 
         result = await bot._execute_mirror_trade(
             market_id="mkt1", token_id="tok-yes", side="YES",
@@ -765,7 +766,26 @@ class TestExecuteMirrorTrade:
         assert result is True
         # Size capped at MIRROR_MAX_PER_MARKET/price
         assert bot._daily_exposure > 0
-        assert bot._open_positions["mkt1:tok-yes"]["size"] > 0
+        # place_order was called with correct params
+        bot.place_order.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_same_side_dedup_blocks_reentry(self):
+        """S109: Re-entry on same market+side is blocked by same-side dedup."""
+        bot, engine = _make_bot()
+        bot._reliability_tracker = MagicMock()
+        bot._reliability_tracker.likelihood_ratio = MagicMock(return_value=1.0)
+        bot._reliability_tracker.category_trade_count = MagicMock(return_value=50)
+        # Pre-existing YES position on mkt1
+        bot._open_positions["mkt1:tok-yes"] = {
+            "side": "YES", "size": 50.0, "entry_price": 0.60,
+            "traders": {"addr1"}, "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        result = await bot._execute_mirror_trade(
+            market_id="mkt1", token_id="tok-yes", side="YES",
+            price=0.60, confidence=0.70, trader_address="addr2",
+        )
+        assert result is False  # Blocked by same-side dedup
 
     @pytest.mark.asyncio
     async def test_sell_skipped_when_no_position(self):
@@ -825,10 +845,7 @@ class TestExecuteMirrorTrade:
         bot.calculate_bot_position_size = AsyncMock(return_value=10000.0)  # huge raw size
         bot.place_order = AsyncMock(return_value={"success": True, "order_id": "ord1"})
         bot.store_pending_trade_signals = AsyncMock()
-        bot._open_positions["mkt1:tok-yes"] = {
-            "side": "YES", "size": 0.0, "entry_price": 0.50,
-            "traders": set(), "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
+        # S109: No pre-existing same-side position — same-side dedup blocks re-entry.
 
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_MAX_PER_MARKET = 400
@@ -870,10 +887,7 @@ class TestExecuteMirrorTrade:
         bot.calculate_bot_position_size = AsyncMock(return_value=1000.0)
         bot.place_order = AsyncMock(return_value={"success": True, "order_id": "ord1"})
         bot.store_pending_trade_signals = AsyncMock()
-        bot._open_positions["mkt1:tok-yes"] = {
-            "side": "YES", "size": 0.0, "entry_price": 0.50,
-            "traders": set(), "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
+        # S109: No pre-existing same-side position — same-side dedup blocks re-entry.
 
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_MAX_PER_MARKET = 10000
@@ -933,12 +947,12 @@ class TestExecuteMirrorTrade:
         bot, engine = _make_bot()
         bot.bankroll = MagicMock()
         bot.bankroll.max_daily_usd = 10000
+        bot.bankroll.capital = 3000.0
+        bot._reliability_tracker = None
         bot.calculate_bot_position_size = AsyncMock(return_value=100.0)
         bot.place_order = AsyncMock(return_value={"success": False})
-        bot._open_positions["mkt1:tok-yes"] = {
-            "side": "YES", "size": 0.0, "entry_price": 0.50,
-            "traders": set(), "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
+        bot.store_pending_trade_signals = AsyncMock()
+        # S109: No pre-existing same-side position — same-side dedup blocks re-entry.
 
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_MAX_PER_MARKET = 400
@@ -947,6 +961,17 @@ class TestExecuteMirrorTrade:
             ms.MIRROR_MAX_CONCURRENT_POSITIONS = 200
             ms.MIRROR_ADAPTIVE_SAFETY = False
             ms.TOTAL_CAPITAL = 10000.0
+            ms.MIRROR_MIN_PRICE = 0.07
+            ms.MIRROR_MAX_PRICE = 0.93
+            ms.MIRROR_HARD_MIN_PRICE = 0.05
+            ms.MIRROR_HARD_MAX_PRICE = 0.95
+            ms.MIRROR_EXTREME_PRICE_DAMPENER = 0.25
+            ms.MIRROR_CATEGORY_BLOCKLIST = ""
+            ms.MIRROR_MARKET_COOLDOWN_SECONDS = 0
+            ms.MIRROR_MAX_SLIPPAGE_PCT = 0.08
+            ms.MIRROR_MIN_TRADE_USD = 1.0
+            ms.MIRROR_MAX_PER_MARKET_PCT = 0.05
+            ms.MIRROR_MIN_HOURS_TO_RESOLUTION = 4
             result = await bot._execute_mirror_trade(
                 market_id="mkt1", token_id="tok-yes", side="YES",
                 price=0.50, confidence=0.70, trader_address="addr1",
@@ -954,7 +979,6 @@ class TestExecuteMirrorTrade:
 
         assert result is False
         assert bot._daily_exposure == 0.0
-        assert bot._open_positions["mkt1:tok-yes"]["size"] == 0.0
 
 
 # ── _update_elite_traders() ────────────────────────────────────────────────

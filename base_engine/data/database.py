@@ -3053,17 +3053,22 @@ class Database:
                         "filled_at": filled_at,
                     },
                 )
-                # Upsert traded_markets so resolution backfill can find our markets fast
+                # S109: Upsert traded_markets with condition_id enrichment from markets table.
+                # Previously inserted without condition_id → 275/276 resolved markets had NULL
+                # condition_id → resolution backfill couldn't emit RESOLUTION events.
                 try:
                     await session.execute(
                         _sa_text(
-                            "INSERT INTO traded_markets (market_id, bot_names, first_trade_at) "
-                            "VALUES (:market_id, :bot_name, NOW()) "
+                            "INSERT INTO traded_markets (market_id, condition_id, bot_names, first_trade_at) "
+                            "SELECT :market_id, m.condition_id, :bot_name, NOW() "
+                            "FROM (SELECT 1) dummy "
+                            "LEFT JOIN markets m ON m.condition_id = :market_id OR CAST(m.id AS TEXT) = :market_id "
                             "ON CONFLICT (market_id) DO UPDATE SET "
                             "  bot_names = CASE "
                             "    WHEN traded_markets.bot_names NOT LIKE '%%' || :bot_name || '%%' "
                             "    THEN traded_markets.bot_names || ',' || :bot_name "
-                            "    ELSE traded_markets.bot_names END"
+                            "    ELSE traded_markets.bot_names END, "
+                            "  condition_id = COALESCE(traded_markets.condition_id, EXCLUDED.condition_id)"
                         ),
                         {"market_id": market_id, "bot_name": bot_name},
                     )
@@ -3421,9 +3426,19 @@ class Database:
                       AND p.entry_price IS NOT NULL
                 """), {"fee_rate": _fee_rate})
                 count = getattr(r, "rowcount", 0) or 0
+                # S109: Zero out stale unrealized_pnl on ALL closed positions.
+                # Closed positions should have unrealized_pnl=0 by definition — any nonzero
+                # value is phantom data from the last price update before close.
+                r2 = await session.execute(text(
+                    "UPDATE positions SET unrealized_pnl = 0 "
+                    "WHERE status = 'closed' AND unrealized_pnl != 0"
+                ))
+                stale_cleaned = getattr(r2, "rowcount", 0) or 0
                 await session.commit()
                 if count:
                     logger.info("Backfilled unrealized_pnl for %d resolved positions", count)
+                if stale_cleaned:
+                    logger.info("Zeroed stale unrealized_pnl on %d closed positions", stale_cleaned)
                 return count
         except Exception as e:
             logger.debug("positions resolution backfill failed: %s", e)
@@ -4714,7 +4729,7 @@ class Database:
                     from config.settings import settings as _settings
                     _bot_capitals = {
                         "WeatherBot": float(getattr(_settings, "WEATHER_TOTAL_CAPITAL", 5000)),
-                        "MirrorBot": float(getattr(_settings, "MIRROR_TOTAL_CAPITAL", 3000)),
+                        "MirrorBot": float(getattr(_settings, "MIRROR_TOTAL_CAPITAL", 20000)),
                         "EsportsBot": float(getattr(_settings, "ESPORTS_TOTAL_CAPITAL", 5000)),
                         "EsportsLiveBot": float(getattr(_settings, "ESPORTS_TOTAL_CAPITAL", 5000)),
                     }

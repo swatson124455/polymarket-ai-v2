@@ -38,7 +38,7 @@ class MirrorBot(BaseBot):
         super().__init__("MirrorBot", base_engine)
         self.elite_traders: List[Dict] = []
         self.mirrored_trades: OrderedDict = OrderedDict()
-        self.min_confidence: float = getattr(settings, "MIRROR_MIN_CONFIDENCE", 0.50)
+        self.min_confidence: float = getattr(settings, "MIRROR_MIN_CONFIDENCE", 0.45)
         self._reliability_tracker = None
 
         # Exit tracking: "market_id:token_id" -> position metadata
@@ -889,8 +889,8 @@ class MirrorBot(BaseBot):
         _hard_min = float(getattr(settings, "MIRROR_HARD_MIN_PRICE", 0.05))
         _hard_max = float(getattr(settings, "MIRROR_HARD_MAX_PRICE", 0.95))
         if price < _hard_min or price > _hard_max:
-            logger.info("mirror_price_bounds: %.3f outside [%.2f, %.2f], skipping",
-                        price, _hard_min, _hard_max)
+            logger.debug("mirror_price_bounds: %.3f outside [%.2f, %.2f], skipping",
+                         price, _hard_min, _hard_max)
             return False
 
         # S99: Circuit breaker — pause entries when portfolio is bleeding
@@ -1115,10 +1115,25 @@ class MirrorBot(BaseBot):
                         str(market_id)[:16], side, _opposite,
                     )
                     return False
+
+        # S109 Same-side dedup: reject BUY if we already hold the SAME side on this market.
+        # Multiple RTDS whale signals for same market should NOT create duplicate positions.
+        # DATA: 455 markets had 2-9x duplicate entries, 716 excess ENTRY events.
+        if not _is_sell:
+            _side_upper = str(side).upper()
+            _market_prefix = f"{market_id}:"
+            for _pk, _pv in self._open_positions.items():
+                if _pk.startswith(_market_prefix) and str(_pv.get("side", "")).upper() == _side_upper:
+                    logger.debug(
+                        "mirror_same_side_blocked market=%s side=%s",
+                        str(market_id)[:16], side,
+                    )
+                    return False
+
         if _is_sell:
             pos_key = f"{market_id}:{token_id}"
             if pos_key not in self._open_positions:
-                logger.info(
+                logger.debug(
                     "MirrorBot: skipping SELL (no position to close) market=%s",
                     str(market_id)[:16],
                 )
@@ -1236,7 +1251,6 @@ class MirrorBot(BaseBot):
 
         # Session 82: Apply calibration stack (FTS + Le2026 domain bias) to confidence.
         # Gated by MIRROR_USE_CALIBRATION=true. When off, confidence passes through unchanged.
-        _conformal_interval = None
         if self._calibration_stack:
             # Calibrate confidence (domain + horizon aware)
             _ttr_days = None
@@ -1256,7 +1270,15 @@ class MirrorBot(BaseBot):
             if abs(_raw_conf - confidence) > 0.01:
                 logger.info("mirror_calibrated", raw=round(_raw_conf, 3), cal=round(confidence, 3))
 
-            _conformal_interval = None  # S103: conformal removed (dead since S93, code stripped from calibration.py)
+
+        # S103 Bug Fix: Enforce min_confidence AFTER all adjustments (domain drift,
+        # calibration). Without this gate, self.min_confidence was dead code — trades
+        # executed at 38% confidence despite configured threshold.
+        # DATA: <40% = 9% WR (-$157/pos), 40-50% = 18% WR (-$53/pos), 50%+ = profitable.
+        if confidence < self.min_confidence:
+            logger.info("mirror_low_confidence", confidence=round(confidence, 3),
+                        min_required=self.min_confidence, market=str(market_id)[:16])
+            return False
 
         # S48 FIX: Use per-bot BotBankrollManager (Session 47) instead of deprecated
         # risk_manager.calculate_position_size() which divides Kelly by KELLY_ACTIVE_BOTS.
@@ -1265,7 +1287,7 @@ class MirrorBot(BaseBot):
         size = await self.calculate_bot_position_size(
             confidence=confidence,
             price=price,
-            conformal_interval=_conformal_interval,
+            conformal_interval=None,
         )
         size *= reliability_mult
 
@@ -1278,8 +1300,8 @@ class MirrorBot(BaseBot):
             logger.info("mirror_price_dampened: %.3f in gray zone, size *= %.2f", price, _dampen)
 
         # M9: Cap per-market exposure — percentage-based with absolute safety cap
-        _capital = float(getattr(self.bankroll, 'capital', 0) or 0) if self.bankroll else float(getattr(settings, "MIRROR_TOTAL_CAPITAL", 3000))
-        _capital = _capital or float(getattr(settings, "MIRROR_TOTAL_CAPITAL", 3000))
+        _capital = float(getattr(self.bankroll, 'capital', 0) or 0) if self.bankroll else float(getattr(settings, "MIRROR_TOTAL_CAPITAL", 20000))
+        _capital = _capital or float(getattr(settings, "MIRROR_TOTAL_CAPITAL", 20000))
         _pct_cap = _capital * float(getattr(settings, "MIRROR_MAX_PER_MARKET_PCT", 0.05))
         _abs_cap = float(getattr(settings, "MIRROR_MAX_PER_MARKET", 400))
         max_per_market_usd = min(_pct_cap, _abs_cap)
@@ -1353,6 +1375,7 @@ class MirrorBot(BaseBot):
                 side=side,
                 trader=trader_address[:10],
                 confidence=f"{confidence:.2%}",
+                entry_confidence=round(confidence, 3),
                 size=f"{size:.2f}",
                 open_positions=len(self._open_positions),
                 daily_exposure=f"{self._daily_exposure:.2f}",

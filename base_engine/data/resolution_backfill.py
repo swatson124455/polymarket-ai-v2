@@ -407,14 +407,18 @@ async def run_resolution_backfill(
     # Phase 4b: Emit RESOLUTION events to trade_events audit trail
     # Aggregate per (market_id, bot_name, side) to avoid duplicates from multiple paper_trades.
     # Uses deterministic correlation_id + resolved_at so ON CONFLICT catches re-runs.
-    if paper_updated > 0 and hasattr(db, "insert_trade_event"):
+    # S109: Widen gate — emit when ANY market resolved (updated > 0), not just when
+    # paper_trades were updated. Fixes 276 markets where condition_id mismatch caused
+    # paper_updated=0 even though traded_markets was resolved.
+    if (paper_updated > 0 or updated > 0) and hasattr(db, "insert_trade_event"):
         try:
             async with db.get_session() as _te_sess:
                 from sqlalchemy import text as _te_text
                 _resolved = await _te_sess.execute(_te_text(
                     "SELECT pt.market_id, pt.bot_name, pt.side, "
                     "       SUM(pt.realized_pnl) AS total_pnl, "
-                    "       MIN(pt.resolved_at) AS resolved_at "
+                    "       MIN(pt.resolved_at) AS resolved_at, "
+                    "       SUM(pt.size) AS total_size "
                     "FROM paper_trades pt "
                     "WHERE pt.resolution IN ('YES', 'NO') "
                     "  AND pt.side IN ('YES', 'NO') "
@@ -435,7 +439,7 @@ async def run_resolution_backfill(
                             bot_name=row[1],
                             market_id=row[0],
                             side=row[2],
-                            size=0.0,
+                            size=float(row[5]) if len(row) > 5 and row[5] is not None else 0.0,
                             price=0.0,
                             realized_pnl=float(row[3]) if row[3] is not None else None,
                             correlation_id=f"resolution:{row[0]}",
