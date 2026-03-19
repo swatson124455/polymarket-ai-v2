@@ -1216,6 +1216,28 @@ class EsportsBot(BaseBot):
         self._last_scan_opportunities = _opps
         self._last_scan_trades = _trades
 
+        # S109: Subscribe esports tokens to WS for real-time price updates.
+        # _market_token_map is populated during analyze_opportunity; subscribe
+        # any tokens not yet in the WS subscription set.
+        _ws_mgr = getattr(self.base_engine, "websocket_manager", None)
+        if _ws_mgr and self._market_token_map:
+            _new_tokens = []
+            for _mid, _tmap in self._market_token_map.items():
+                for _role in ("yes", "no"):
+                    _tid = _tmap.get(_role, "")
+                    if _tid and f"price:{_tid}" not in _ws_mgr.subscriptions:
+                        _new_tokens.append(_tid)
+            if _new_tokens:
+                try:
+                    await _ws_mgr.subscribe_price_stream(_new_tokens)
+                    logger.info("esportsbot_ws_subscribed",
+                                new_tokens=len(_new_tokens),
+                                total_esports_tokens=sum(
+                                    1 for _tm in self._market_token_map.values()
+                                    for _t in _tm.values() if _t))
+                except Exception as _ws_exc:
+                    logger.warning("esportsbot_ws_subscribe_failed", error=str(_ws_exc))
+
         # Diagnostic log every scan — helps diagnose low trade rate
         # B4: Include waterfall funnel for pipeline visibility
         _wf_nonzero = {k: v for k, v in self._wf.items() if v > 0}
