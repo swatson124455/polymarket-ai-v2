@@ -2456,11 +2456,14 @@ class WeatherBot(BaseBot):
             nbm_boost=nbm_boost,
         )
 
+        # S109: Convert USD to shares for place_order (paper engine expects shares).
+        # All upstream sizing, exposure tracking, and floor checks remain in USD.
+        _size_shares = size / opp["price"]
         result = await self.place_order(
             market_id=opp["market_id"],
             token_id=opp["token_id"],
             side=opp["side"],
-            size=size,
+            size=_size_shares,
             price=opp["price"],
             confidence=opp["confidence"],
             event_data={
@@ -2479,7 +2482,8 @@ class WeatherBot(BaseBot):
                 "weatherbot_trade_filled",
                 market_id=opp["market_id"],
                 side=opp["side"],
-                size=round(size, 2),
+                size_usd=round(size, 2),
+                size_shares=round(_size_shares, 2),
             )
             # S104: Cache market→group mapping for exit exposure decrement
             self._market_group_cache[opp["market_id"]] = (group_key, group.city, size)
