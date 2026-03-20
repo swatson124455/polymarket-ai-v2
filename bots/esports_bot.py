@@ -868,6 +868,7 @@ class EsportsBot(BaseBot):
         if self._cot_validator is not None:
             self._cot_validator.reset_scan_counter()
         _now = time.monotonic()
+        _t0 = _now  # S110: scan timing instrumentation
         # S94: Time-based guards (safe with zero-sleep scanning)
         if _now - self._last_cache_cleanup >= 3600:  # 1 hour
             self._last_cache_cleanup = _now
@@ -924,128 +925,134 @@ class EsportsBot(BaseBot):
             self._last_kelly_check = _now
             await self._check_kelly_graduation(db)
 
-        # Step 0: Auto-retrain models in background (non-blocking)
-        # Clean up completed background training tasks — retrieve exceptions to
-        # prevent "Task exception was never retrieved" warnings.
-        for game_key in list(self._bg_train_tasks):
-            task = self._bg_train_tasks[game_key]
-            if task.done():
-                if not task.cancelled():
-                    exc = task.exception()
-                    if exc:
-                        logger.error("bg_train_task_failed", game=game_key,
-                                     error=str(exc), task_name=task.get_name())
-                del self._bg_train_tasks[game_key]
+        _t1 = time.monotonic()  # S110: after Phase A (pre-scan housekeeping)
+        # S110: Retrain/accuracy checks wrapped in async function to run
+        # concurrently with PandaScore + market fetch (OPT-4).  Internal
+        # sequencing preserved — only the await points yield to other branches.
+        async def _step_retrain_and_accuracy():
+            # Step 0: Auto-retrain models in background (non-blocking)
+            # Clean up completed background training tasks — retrieve exceptions to
+            # prevent "Task exception was never retrieved" warnings.
+            for game_key in list(self._bg_train_tasks):
+                task = self._bg_train_tasks[game_key]
+                if task.done():
+                    if not task.cancelled():
+                        exc = task.exception()
+                        if exc:
+                            logger.error("bg_train_task_failed", game=game_key,
+                                         error=str(exc), task_name=task.get_name())
+                    del self._bg_train_tasks[game_key]
 
-        # Gather smart retrain trigger data (lightweight, degrades gracefully)
-        _smart_brier: Dict[str, float] = {}
-        _smart_row_count: Dict[str, int] = {}
-        try:
-            _acc_cache = await self._get_cached_rolling_accuracy(db)
-            for _rg in ("lol", "cs2"):
-                _acc = _acc_cache.get(_rg)
-                if _acc and _acc["total"] >= 10:
-                    _smart_brier[_rg] = _acc["brier_score"]
-        except Exception as _e:
-            logger.debug("esportsbot_smart_retrain_brier_failed", error=str(_e))
-        try:
-            from sqlalchemy import text as _sa_text
-            async with db.get_session() as _sess:
+            # Gather smart retrain trigger data (lightweight, degrades gracefully)
+            _smart_brier: Dict[str, float] = {}
+            _smart_row_count: Dict[str, int] = {}
+            try:
+                _acc_cache = await self._get_cached_rolling_accuracy(db)
                 for _rg in ("lol", "cs2"):
-                    _cnt = await _sess.execute(
-                        _sa_text("SELECT COUNT(*) FROM esports_training_data WHERE game = :game"),
-                        {"game": _rg},
-                    )
-                    _smart_row_count[_rg] = int(_cnt.scalar() or 0)
-        except Exception as _e:
-            logger.debug("esportsbot_training_data_count_failed", error=str(_e))
-        _lol_patch = ""
-        if self._patch_drift:
-            _lol_patch = self._patch_drift._known_patches.get("lol", "")
+                    _acc = _acc_cache.get(_rg)
+                    if _acc and _acc["total"] >= 10:
+                        _smart_brier[_rg] = _acc["brier_score"]
+            except Exception as _e:
+                logger.debug("esportsbot_smart_retrain_brier_failed", error=str(_e))
+            try:
+                from sqlalchemy import text as _sa_text
+                async with db.get_session() as _sess:
+                    for _rg in ("lol", "cs2"):
+                        _cnt = await _sess.execute(
+                            _sa_text("SELECT COUNT(*) FROM esports_training_data WHERE game = :game"),
+                            {"game": _rg},
+                        )
+                        _smart_row_count[_rg] = int(_cnt.scalar() or 0)
+            except Exception as _e:
+                logger.debug("esportsbot_training_data_count_failed", error=str(_e))
+            _lol_patch = ""
+            if self._patch_drift:
+                _lol_patch = self._patch_drift._known_patches.get("lol", "")
 
-        for _retrain_game in ("lol", "cs2"):
+            for _retrain_game in ("lol", "cs2"):
+                if (self._trainer
+                        and self._trainer.needs_retrain(
+                            _retrain_game,
+                            current_brier=_smart_brier.get(_retrain_game),
+                            current_row_count=_smart_row_count.get(_retrain_game),
+                            current_patch=_lol_patch if _retrain_game == "lol" else None,
+                        )
+                        and _retrain_game not in self._bg_train_tasks):
+                    # Rebuild Glicko-2 trackers after training if this game
+                    # has no tracker yet (e.g. LoL on first data collection)
+                    _needs_glicko = self._glicko2_trackers.get(_retrain_game) is None
+                    self._bg_train_tasks[_retrain_game] = asyncio.create_task(
+                        self._train_in_background(_retrain_game, db, init_glicko=_needs_glicko),
+                        name=f"retrain_{_retrain_game}",
+                    )
+
+            # E7: Cross-game XGBoost retrain (pools all 8 games)
             if (self._trainer
-                    and self._trainer.needs_retrain(
-                        _retrain_game,
-                        current_brier=_smart_brier.get(_retrain_game),
-                        current_row_count=_smart_row_count.get(_retrain_game),
-                        current_patch=_lol_patch if _retrain_game == "lol" else None,
-                    )
-                    and _retrain_game not in self._bg_train_tasks):
-                # Rebuild Glicko-2 trackers after training if this game
-                # has no tracker yet (e.g. LoL on first data collection)
-                _needs_glicko = self._glicko2_trackers.get(_retrain_game) is None
-                self._bg_train_tasks[_retrain_game] = asyncio.create_task(
-                    self._train_in_background(_retrain_game, db, init_glicko=_needs_glicko),
-                    name=f"retrain_{_retrain_game}",
+                    and self._trainer.needs_retrain("cross_game")
+                    and "cross_game" not in self._bg_train_tasks):
+                _cg_task = asyncio.create_task(
+                    self._train_in_background("cross_game", db),
+                    name="retrain_cross_game",
                 )
 
-        # E7: Cross-game XGBoost retrain (pools all 8 games)
-        if (self._trainer
-                and self._trainer.needs_retrain("cross_game")
-                and "cross_game" not in self._bg_train_tasks):
-            _cg_task = asyncio.create_task(
-                self._train_in_background("cross_game", db),
-                name="retrain_cross_game",
-            )
+                def _on_retrain_done(t: asyncio.Task) -> None:
+                    if t.cancelled():
+                        logger.warning("esports_cross_game_retrain_cancelled")
+                    elif t.exception():
+                        logger.error("esports_cross_game_retrain_failed", error=str(t.exception()))
 
-            def _on_retrain_done(t: asyncio.Task) -> None:
-                if t.cancelled():
-                    logger.warning("esports_cross_game_retrain_cancelled")
-                elif t.exception():
-                    logger.error("esports_cross_game_retrain_failed", error=str(t.exception()))
+                _cg_task.add_done_callback(_on_retrain_done)
+                self._bg_train_tasks["cross_game"] = _cg_task
 
-            _cg_task.add_done_callback(_on_retrain_done)
-            self._bg_train_tasks["cross_game"] = _cg_task
-
-        # Step 0a: Collect historical data for games missing Glicko-2 trackers (one-shot)
-        for _game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
-            if (_game not in self._glicko2_trackers
-                    and self._collection_attempted.get(_game, 0) < 3
-                    and self._trainer
-                    and _game not in self._bg_train_tasks):
-                self._collection_attempted[_game] = self._collection_attempted.get(_game, 0) + 1
-                self._bg_train_tasks[_game] = asyncio.create_task(
-                    self._train_in_background(_game, db, init_glicko=True),
-                    name=f"collect_{_game}",
-                )
-
-        # Step 0b: Check rolling accuracy — auto-disable if below threshold
-        # Guard: skip retrain trigger for halted games and games where
-        # training data hasn't changed since last retrain (prevents thrash
-        # loop where 7-day rolling accuracy stays low but retraining produces
-        # identical model every 10s).
-        min_acc = float(getattr(settings, "ESPORTS_MIN_ACCURACY_TO_TRADE", 0.52))
-        try:
-            _acc_all = await self._get_cached_rolling_accuracy(db)
-            for game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
-                acc_data = _acc_all.get(game)
-                if acc_data and acc_data["total"] >= 30 and acc_data["accuracy"] < min_acc:
-                    # Skip retrain for halted games — no point retraining
-                    # a game we won't trade
-                    if game in self._monitoring_halted_games:
-                        continue
-                    # Skip retrain if trainer already ran recently — the 2h
-                    # cooldown in needs_retrain() is the right gate.  Popping
-                    # _last_train_time bypasses it and causes a thrash loop
-                    # where the same model is rebuilt every 10s.
-                    if (self._trainer
-                            and game in self._trainer._last_train_time
-                            and (time.monotonic() - self._trainer._last_train_time[game]) < 1800):
-                        continue
-                    logger.warning(
-                        "EsportsBot: accuracy below threshold — triggering retrain",
-                        game=game,
-                        accuracy=round(acc_data["accuracy"], 3),
-                        threshold=min_acc,
-                        brier=round(acc_data["brier_score"], 4),
+            # Step 0a: Collect historical data for games missing Glicko-2 trackers (one-shot)
+            for _game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
+                if (_game not in self._glicko2_trackers
+                        and self._collection_attempted.get(_game, 0) < 3
+                        and self._trainer
+                        and _game not in self._bg_train_tasks):
+                    self._collection_attempted[_game] = self._collection_attempted.get(_game, 0) + 1
+                    self._bg_train_tasks[_game] = asyncio.create_task(
+                        self._train_in_background(_game, db, init_glicko=True),
+                        name=f"collect_{_game}",
                     )
-                    if self._trainer:
-                        self._trainer._last_train_time.pop(game, None)
-        except Exception as exc:
-            logger.warning("esportsbot_accuracy_check_failed", error=str(exc))
 
-        # Steps 1-3 run in parallel — they are fully independent
+            # Step 0b: Check rolling accuracy — auto-disable if below threshold
+            # Guard: skip retrain trigger for halted games and games where
+            # training data hasn't changed since last retrain (prevents thrash
+            # loop where 7-day rolling accuracy stays low but retraining produces
+            # identical model every 10s).
+            min_acc = float(getattr(settings, "ESPORTS_MIN_ACCURACY_TO_TRADE", 0.52))
+            try:
+                _acc_all = await self._get_cached_rolling_accuracy(db)
+                for game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
+                    acc_data = _acc_all.get(game)
+                    if acc_data and acc_data["total"] >= 30 and acc_data["accuracy"] < min_acc:
+                        # Skip retrain for halted games — no point retraining
+                        # a game we won't trade
+                        if game in self._monitoring_halted_games:
+                            continue
+                        # Skip retrain if trainer already ran recently — the 2h
+                        # cooldown in needs_retrain() is the right gate.  Popping
+                        # _last_train_time bypasses it and causes a thrash loop
+                        # where the same model is rebuilt every 10s.
+                        if (self._trainer
+                                and game in self._trainer._last_train_time
+                                and (time.monotonic() - self._trainer._last_train_time[game]) < 1800):
+                            continue
+                        logger.warning(
+                            "EsportsBot: accuracy below threshold — triggering retrain",
+                            game=game,
+                            accuracy=round(acc_data["accuracy"], 3),
+                            threshold=min_acc,
+                            brier=round(acc_data["brier_score"], 4),
+                        )
+                        if self._trainer:
+                            self._trainer._last_train_time.pop(game, None)
+            except Exception as exc:
+                logger.warning("esportsbot_accuracy_check_failed", error=str(exc))
+
+        # Steps 0-3 run in parallel — retrain/accuracy DB queries overlap
+        # with PandaScore + market fetch (S110 OPT-4)
         async def _step_patch_drift():
             if self._patch_drift:
                 try:
@@ -1067,11 +1074,13 @@ class EsportsBot(BaseBot):
             m = await self.base_engine.get_markets(active=True, limit=200)
             return self.base_engine.filter_markets_for_trading(m, categories=["esports"])
 
-        _, _, esports_markets = await asyncio.gather(
+        _, _, _, esports_markets = await asyncio.gather(
+            _step_retrain_and_accuracy(),
             _step_patch_drift(),
             self._refresh_live_matches(),
             _step_get_markets(),
         )
+        _t2 = time.monotonic()  # S110: after Phase B (parallel gather)
         self._last_scan_markets = len(esports_markets) if esports_markets else 0
         if not esports_markets:
             return
@@ -1215,6 +1224,7 @@ class EsportsBot(BaseBot):
                 _skipped_position += r[2]
         self._last_scan_opportunities = _opps
         self._last_scan_trades = _trades
+        _t3 = time.monotonic()  # S110: after Phase C (market analysis)
 
         # S109: Subscribe esports tokens to WS for real-time price updates.
         # _market_token_map is populated during analyze_opportunity; subscribe
@@ -1255,6 +1265,12 @@ class EsportsBot(BaseBot):
             waterfall=_wf_nonzero or None,
             backfills_this_scan=self._backfill_calls_this_scan,
             ws_trading=self._ws_trading_active,
+            timing_ms={
+                "phase_a": round((_t1 - _t0) * 1000),
+                "phase_b": round((_t2 - _t1) * 1000),
+                "phase_c": round((_t3 - _t2) * 1000),
+                "total": round((time.monotonic() - _t0) * 1000),
+            },
         )
 
         # Series analysis — analyze live BO3/BO5 matches for conditional probability edge
@@ -1523,6 +1539,10 @@ class EsportsBot(BaseBot):
                             logger.warning("esportsbot_orphan_close_failed", market_id=mid,
                                            error=str(_close_err))
                     self._market_game.pop(mid, None)
+                    # S110: Set cooldown even on failed exit — prevents churn re-entry
+                    self._recently_exited[mid] = time.monotonic()
+                    self._prediction_cache.pop(mid, None)
+                    await self._save_exit_cooldown_to_redis(mid)
                     continue  # Skip exposure decrement — position was orphaned
                 # B3: Decrement game exposure (USD) on exit
                 # Primary: _market_game (populated on entry, survives cache expiry)
@@ -1551,6 +1571,13 @@ class EsportsBot(BaseBot):
                 await self._save_exit_cooldown_to_redis(mid)
             except Exception as exc:
                 logger.debug("esportsbot_exit_failed", market_id=mid, error=str(exc))
+                # S110: Set cooldown even on unexpected exit failure — prevents churn
+                self._recently_exited[mid] = time.monotonic()
+                self._prediction_cache.pop(mid, None)
+                try:
+                    await self._save_exit_cooldown_to_redis(mid)
+                except Exception:
+                    pass  # Best-effort; in-memory cooldown is primary
 
     async def _reevaluate_open_positions(self, db, positions=None) -> None:
         """A2: Re-evaluate open positions with fresh Glicko-2 predictions.
@@ -5091,6 +5118,26 @@ class EsportsBot(BaseBot):
 
         _trades = 0
 
+        # S110: Apply the same anti-churn gates as _analyze_one and WS path.
+        # Without these, _series_scan was an unguarded backdoor that bypassed
+        # exit cooldown and per-market entry caps — root cause of Mar 19 churn.
+        _cooldown_s = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 900.0))
+        _max_entries = int(getattr(settings, "ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW", 2))
+        _window_s = float(getattr(settings, "ESPORTS_ENTRY_WINDOW_HOURS", 12.0)) * 3600
+        _now_mono = time.monotonic()
+
+        def _churn_blocked(mid: str) -> bool:
+            """Return True if market is blocked by anti-churn gates."""
+            # Gate 1: Post-exit cooldown
+            _exit_ts = self._recently_exited.get(mid)
+            if _exit_ts is not None and _now_mono - _exit_ts < _cooldown_s:
+                return True
+            # Gate 2: Per-market rolling entry cap
+            _recent = [t for t in self._market_entry_times.get(mid, []) if _now_mono - t < _window_s]
+            if len(_recent) >= _max_entries:
+                return True
+            return False
+
         if len(all_opps) >= 2:
             max_daily = float(getattr(settings, "ESPORTS_MAX_DAILY_USD", 500.0))
             daily_spent = 0.0
@@ -5109,16 +5156,26 @@ class EsportsBot(BaseBot):
                     budget=round(group_budget, 2),
                 )
             for opp in all_opps:
-                st_size = st_sizes.get(opp["market_id"])
+                mid = opp.get("market_id", "")
+                if _churn_blocked(mid):
+                    continue
+                st_size = st_sizes.get(mid)
                 if st_size and st_size >= 1.0:
                     opp["_st_size_override"] = st_size
                     async with self._trade_lock:
-                        await self._execute_esports_trade(opp)
+                        _ok = await self._execute_esports_trade(opp)
+                    if _ok:
+                        self._market_entry_times.setdefault(mid, []).append(time.monotonic())
                     _trades += 1
         else:
             for opp in all_opps:
+                mid = opp.get("market_id", "")
+                if _churn_blocked(mid):
+                    continue
                 async with self._trade_lock:
-                    await self._execute_esports_trade(opp)
+                    _ok = await self._execute_esports_trade(opp)
+                if _ok:
+                    self._market_entry_times.setdefault(mid, []).append(time.monotonic())
                 _trades += 1
 
         return (len(all_opps), _trades)
