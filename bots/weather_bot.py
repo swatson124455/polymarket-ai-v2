@@ -686,12 +686,42 @@ class WeatherBot(BaseBot):
                         try:
                             await _inc_daily(db, "WeatherBot", f"group_{group_key}", -exit_cost)
                             await _inc_daily(db, "WeatherBot", f"city_{city}", -exit_cost)
-                        except Exception:
-                            pass  # Non-critical: in-memory is authoritative intra-day
+                        except Exception as exc:
+                            logger.warning("weatherbot_exposure_db_write_failed", market_id=mid, group_key=group_key, city=city, exc=str(exc))
                     logger.info("weatherbot_exposure_decremented", market_id=mid,
                                 group_key=group_key, city=city, cost_usd=round(exit_cost, 2))
                 else:
-                    logger.debug("weatherbot_pm_exit_no_cache", market_id=mid)
+                    # S111: Fallback — reconstruct group/city/cost from DB so
+                    # exposure still decrements even after a restart clears cache.
+                    _fb_ok = False
+                    db = getattr(self.base_engine, "db", None)
+                    if db is not None:
+                        try:
+                            async with db.get_session() as _fb_sess:
+                                from sqlalchemy import text as _fb_text
+                                _fb_row = (await _fb_sess.execute(_fb_text("""
+                                    SELECT m.question, p.size, p.entry_price
+                                    FROM positions p
+                                    JOIN markets m ON p.market_id = m.condition_id
+                                    WHERE p.market_id = :mid
+                                      AND (p.source_bot = 'WeatherBot' OR p.bot_id = 'WeatherBot')
+                                    LIMIT 1
+                                """), {"mid": mid})).first()
+                            if _fb_row and _fb_row[0]:
+                                _fb_city, _fb_date = self._market_mapper._extract_city_and_date(_fb_row[0])
+                                if _fb_city and _fb_date:
+                                    _fb_gk = f"{_fb_city}:{_fb_date.isoformat()}"
+                                    _fb_cost = float(_fb_row[1] or 0) * float(_fb_row[2] or 0)
+                                    async with self._exposure_lock:
+                                        self._group_exposure[_fb_gk] = max(0.0, self._group_exposure.get(_fb_gk, 0.0) - _fb_cost)
+                                        self._city_exposure[_fb_city] = max(0.0, self._city_exposure.get(_fb_city, 0.0) - _fb_cost)
+                                    logger.info("weatherbot_exposure_decremented_fallback", market_id=mid,
+                                                group_key=_fb_gk, city=_fb_city, cost_usd=round(_fb_cost, 2))
+                                    _fb_ok = True
+                        except Exception as exc:
+                            logger.warning("weatherbot_exposure_fallback_failed", market_id=mid, exc=str(exc))
+                    if not _fb_ok:
+                        logger.warning("weatherbot_pm_exit_no_cache", market_id=mid)
             self._known_open_markets = set(current_open)
 
         # Reset per-scan climate normal computation limiter (T3B)
@@ -1844,7 +1874,7 @@ class WeatherBot(BaseBot):
             else:
                 _max_edge = 0.25
             if e["abs_edge"] > _max_edge:
-                logger.debug("weatherbot_edge_cap", market_id=e["market_id"], edge=round(e["abs_edge"], 4), max_edge=_max_edge, lead_time_h=round(lead_time, 1))
+                logger.info("weatherbot_edge_cap", market_id=e["market_id"], edge=round(e["abs_edge"], 4), max_edge=_max_edge, lead_time_h=round(lead_time, 1))
                 continue
 
             # Skip recently exited markets
@@ -2009,6 +2039,14 @@ class WeatherBot(BaseBot):
                 if running_max > bucket.high_bound + unit_margin:
                     # Already exceeded the exact value — cannot resolve YES
                     updated[market_id] = 0.001
+
+        # S111: Guard against degenerate METAR override — if ALL buckets were
+        # set to 0.001 (running_max outside every range), renormalization would
+        # give each ~14% and create artificial edges.  Return original probs.
+        if updated and max(updated.values()) <= 0.001:
+            logger.info("weatherbot_metar_renorm_skip", running_max=running_max,
+                        n_buckets=len(updated), reason="all_buckets_outside_range")
+            return model_probs
 
         # Renormalize so probabilities sum to 1.0
         total = sum(updated.values())
@@ -2964,7 +3002,7 @@ class WeatherBot(BaseBot):
             for name, value in counters.items():
                 if value < 0:
                     negative_clamped += 1
-                    continue
+                    value = 0.0  # 2E: treat negative as 0 so in-memory dict gets the entry
                 if value == 0:
                     continue
                 if name.startswith("group_"):
@@ -2984,8 +3022,8 @@ class WeatherBot(BaseBot):
                         ))
                         await session.commit()
                     logger.info("weatherbot_negative_counters_clamped", count=negative_clamped)
-                except Exception:
-                    pass  # Non-critical: cosmetic fix
+                except Exception as exc:
+                    logger.warning("weatherbot_negative_counter_clamp_failed", count=negative_clamped, exc=str(exc))
             if rebuilt_groups or self._city_exposure:
                 logger.info(
                     "weatherbot_exposure_restored",

@@ -106,8 +106,11 @@ class PrecipitationProbabilityEngine:
         beta = var_wet / mean_wet  # scale parameter
 
         # Clamp alpha to avoid degenerate distributions
+        raw_alpha, raw_beta = alpha, beta
         alpha = max(0.1, min(alpha, 50.0))
         beta = max(0.01, beta)
+        if alpha != raw_alpha or beta != raw_beta:
+            logger.warning("precip_gamma_clamped", raw_alpha=round(raw_alpha, 4), raw_beta=round(raw_beta, 4), clamped_alpha=round(alpha, 4), clamped_beta=round(beta, 4))
 
         # Step 3: Integrate over each bucket
         probs: Dict[str, float] = {}

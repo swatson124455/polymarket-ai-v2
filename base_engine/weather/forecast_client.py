@@ -509,7 +509,7 @@ class WeatherForecastClient:
 
         # Cache — Fix B: jitter expiry to spread API refreshes
         self._precip_cache[cache_key] = (
-            time.monotonic() + self._cache_ttl + random.uniform(0, self._cache_ttl * 0.5),
+            time.monotonic() + self._cache_ttl - random.uniform(0, self._cache_ttl * 0.1),
             all_members,
         )
         logger.debug(
@@ -584,7 +584,7 @@ class WeatherForecastClient:
         if today > month_end:
             result = [actual_total]
             self._precip_cache[cache_key] = (
-                time.monotonic() + self._cache_ttl + random.uniform(0, self._cache_ttl * 0.5),
+                time.monotonic() + self._cache_ttl - random.uniform(0, self._cache_ttl * 0.1),
                 result,
             )
             return result
@@ -675,7 +675,7 @@ class WeatherForecastClient:
             return None
 
         self._precip_cache[cache_key] = (
-            time.monotonic() + self._cache_ttl + random.uniform(0, self._cache_ttl * 0.5),
+            time.monotonic() + self._cache_ttl - random.uniform(0, self._cache_ttl * 0.1),
             member_sums,
         )
         logger.debug(
@@ -754,7 +754,7 @@ class WeatherForecastClient:
             return None
 
         self._snowfall_cache[cache_key] = (
-            time.monotonic() + self._cache_ttl + random.uniform(0, self._cache_ttl * 0.5),
+            time.monotonic() + self._cache_ttl - random.uniform(0, self._cache_ttl * 0.1),
             all_members,
         )
         logger.debug(
@@ -832,7 +832,7 @@ class WeatherForecastClient:
             return None
 
         self._wind_cache[cache_key] = (
-            time.monotonic() + self._cache_ttl + random.uniform(0, self._cache_ttl * 0.5),
+            time.monotonic() + self._cache_ttl - random.uniform(0, self._cache_ttl * 0.1),
             all_members,
         )
         logger.debug(
@@ -1200,7 +1200,7 @@ class WeatherForecastClient:
 
         # Cache — Fix B: jitter expiry so all stations don't expire simultaneously
         self._cache[cache_key] = (
-            now_mono + self._cache_ttl + random.uniform(0, self._cache_ttl * 0.5),
+            now_mono + self._cache_ttl - random.uniform(0, self._cache_ttl * 0.1),
             result,
         )
         return result
