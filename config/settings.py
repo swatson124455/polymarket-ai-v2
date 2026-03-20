@@ -1125,6 +1125,9 @@ class Settings(BaseSettings):
     ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW: int = int(os.getenv("ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW", "2"))
     ESPORTS_ENTRY_WINDOW_HOURS: float = float(os.getenv("ESPORTS_ENTRY_WINDOW_HOURS", "12.0"))
 
+    # --- Monitoring halt threshold (Brier score above this → halt trading for game) ---
+    ESPORTS_BRIER_HALT_THRESHOLD: float = float(os.getenv("ESPORTS_BRIER_HALT_THRESHOLD", "1.0"))
+
     # --- Per-game Kelly multiplier thresholds ---
     ESPORTS_KELLY_BRIER_PENALTY: float = float(os.getenv("ESPORTS_KELLY_BRIER_PENALTY", "0.25"))
     ESPORTS_KELLY_BRIER_BOOST: float = float(os.getenv("ESPORTS_KELLY_BRIER_BOOST", "0.20"))

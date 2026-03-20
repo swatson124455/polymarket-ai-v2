@@ -3828,7 +3828,8 @@ class EsportsBot(BaseBot):
                 brier = acc_data["brier_score"]
                 accuracy = acc_data["accuracy"]
 
-                if brier > 0.30:
+                _halt_thresh = float(getattr(settings, "ESPORTS_BRIER_HALT_THRESHOLD", 1.0))
+                if brier > _halt_thresh:
                     # S100: Don't halt when BetaCalibrator has no clean data yet.
                     # Old accuracy is from stale 3-stage pipeline — meaningless.
                     # Once BetaCalibrator fits (30+ clean post-fix predictions),
