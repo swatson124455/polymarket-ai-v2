@@ -36,8 +36,8 @@ async def main():
     from base_engine.data.database import Database
     from config.settings import settings
 
-    db = Database(settings.DATABASE_URL)
-    await db.initialize()
+    db = Database()
+    await db.init()
 
     try:
         from sqlalchemy import text

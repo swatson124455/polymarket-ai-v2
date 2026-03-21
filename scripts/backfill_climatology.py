@@ -97,8 +97,8 @@ async def main():
     from base_engine.weather.station_registry import STATION_REGISTRY
     from config.settings import settings
 
-    db = Database(settings.DATABASE_URL)
-    await db.initialize()
+    db = Database()
+    await db.init()
     client = WeatherForecastClient()
 
     current_year = date.today().year
