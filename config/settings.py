@@ -1026,7 +1026,7 @@ class Settings(BaseSettings):
     # --- Bankroll / sizing (separate Kelly pool) ---
     ESPORTS_TOTAL_CAPITAL: float = float(os.getenv("ESPORTS_TOTAL_CAPITAL", "20000.0"))  # S105: aligned to $20K
     ESPORTS_MAX_BET_USD: float = float(os.getenv("ESPORTS_MAX_BET_USD", "300.0"))
-    ESPORTS_MAX_DAILY_USD: float = float(os.getenv("ESPORTS_MAX_DAILY_USD", "10000.0"))
+    ESPORTS_MAX_DAILY_USD: float = float(os.getenv("ESPORTS_MAX_DAILY_USD", "20000.0"))
     ESPORTS_KELLY_DEFAULT_FRACTION: float = float(os.getenv("ESPORTS_KELLY_DEFAULT_FRACTION", "0.25"))
 
     # --- Execution ---
@@ -1048,9 +1048,9 @@ class Settings(BaseSettings):
 
     # --- Exposure limits (per-game/tournament/team concentration caps) ---
     # S99: doubled with capital 2x (was 300/200/150)
-    ESPORTS_MAX_GAME_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_GAME_EXPOSURE", "600.0"))
-    ESPORTS_MAX_TOURNAMENT_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_TOURNAMENT_EXPOSURE", "400.0"))
-    ESPORTS_MAX_TEAM_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_TEAM_EXPOSURE", "300.0"))
+    ESPORTS_MAX_GAME_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_GAME_EXPOSURE", "3000.0"))
+    ESPORTS_MAX_TOURNAMENT_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_TOURNAMENT_EXPOSURE", "5000.0"))
+    ESPORTS_MAX_TEAM_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_TEAM_EXPOSURE", "1000.0"))
 
     # --- External API keys (esports data enrichment) ---
     ALIGULAC_API_KEY: str = os.getenv("ALIGULAC_API_KEY", "")
@@ -1122,7 +1122,7 @@ class Settings(BaseSettings):
     # S109: Post-exit cooldown (seconds) — prevents stop-loss churn (RC1)
     ESPORTS_EXIT_COOLDOWN_SECONDS: float = float(os.getenv("ESPORTS_EXIT_COOLDOWN_SECONDS", "900.0"))
     # S109: Max entries per market per UTC day — hard backstop against churn (RC3)
-    ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW: int = int(os.getenv("ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW", "2"))
+    ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW: int = int(os.getenv("ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW", "3"))
     ESPORTS_ENTRY_WINDOW_HOURS: float = float(os.getenv("ESPORTS_ENTRY_WINDOW_HOURS", "12.0"))
 
     # --- Monitoring halt threshold (Brier score above this → halt trading for game) ---
