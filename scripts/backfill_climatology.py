@@ -92,6 +92,7 @@ async def main():
     from dotenv import load_dotenv
     load_dotenv()
 
+    from sqlalchemy import text
     from base_engine.data.database import Database
     from base_engine.weather.forecast_client import WeatherForecastClient
     from base_engine.weather.station_registry import STATION_REGISTRY
@@ -116,13 +117,30 @@ async def main():
     total_inserted = 0
     failed = []
 
+    # Check which stations already have climatology data — skip those
+    done_stations = set()
+    async with db.get_session() as session:
+        from sqlalchemy import text
+        rows = await session.execute(text(
+            "SELECT station_id, COUNT(*) FROM weather_climatology GROUP BY station_id HAVING COUNT(*) >= 360"
+        ))
+        for row in rows:
+            done_stations.add(row[0])
+    if done_stations:
+        print(f"Skipping {len(done_stations)} stations already backfilled")
+
     try:
+        fetch_count = 0
         for i, (sid, station) in enumerate(sorted(stations.items())):
+            if sid in done_stations:
+                continue
+
+            fetch_count += 1
             print(f"  [{i+1}/{len(stations)}] {sid} ({station.city_name})...", end=" ", flush=True)
 
-            # Respect Open-Meteo rate limit: 10-year fetches are large, throttle to ~1/sec
-            if i > 0:
-                await asyncio.sleep(1.5)
+            # Respect Open-Meteo rate limit: 10-year fetches are large, throttle
+            if fetch_count > 1:
+                await asyncio.sleep(2.0)
 
             records = await client.fetch_climate_archive(
                 latitude=station.latitude,
@@ -146,7 +164,6 @@ async def main():
             # Upsert into weather_climatology
             inserted = 0
             async with db.get_session() as session:
-                from sqlalchemy import text
                 for doy, (c_mean, c_std, n_yr) in clim.items():
                     await session.execute(text("""
                         INSERT INTO weather_climatology (station_id, day_of_year, clim_mean, clim_std, n_years, updated_at)
