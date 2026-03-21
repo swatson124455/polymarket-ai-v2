@@ -218,6 +218,16 @@ class WeatherBot(BaseBot):
         self._severe_weather_batch: Dict[str, float] = {}
         self._severe_weather_batch_time: float = 0.0
 
+        # S114: Cold-start mitigation
+        # Item 1 — Spread confidence gate: rolling 14-day model_spread per station
+        from collections import deque
+        self._spread_history: Dict[str, deque] = {}  # station_id → deque(maxlen=14)
+        # Item 2 — Bühlmann sizing ramp: resolved pairs per station (refreshed with calibration)
+        self._station_n_resolved: Dict[str, int] = {}
+        self._buhlmann_kappa: float = 30.0  # shrinkage strength
+        # Item 4 — Historical bias bootstrap: stations already bootstrapped this session
+        self._bootstrapped_stations: Set[str] = set()
+
     # ── Prediction logging (cross-bot transfer from EsportsBot) ────────────
 
     async def _log_weather_prediction(
@@ -347,18 +357,132 @@ class WeatherBot(BaseBot):
         except Exception as exc:
             logger.debug("weatherbot_category_params_load_failed", error=str(exc))
 
-    def _get_min_edge(self, market_type: str, station: Optional[WeatherStation] = None) -> float:
+    def _get_min_edge(
+        self, market_type: str, station: Optional[WeatherStation] = None,
+        model_spread: Optional[float] = None,
+    ) -> float:
         """Return per-market-type min_edge, falling back to global setting.
 
         International cities without a local hi-res model have a data handicap
         and use a higher floor (WEATHER_INTL_MIN_EDGE, default 0.12).
         Cities WITH local_model (Paris, London, Berlin, etc.) trade at data parity.
+
+        S114 Item 1: Spread confidence gate — scale min_edge by spread_ratio
+        when model_spread is provided. Tight spread → lower edge required,
+        wide spread → higher edge required. Clamped to [0.7, 1.5].
         """
         params = self._category_params.get(market_type, {})
         base = params.get("min_edge", self._min_edge)
         if station and station.temp_unit.upper() == "C" and station.local_model is None:
-            return max(base, self._intl_min_edge)
+            base = max(base, self._intl_min_edge)
+
+        # S114: Apply spread confidence gate
+        if model_spread is not None and station is not None:
+            history = self._spread_history.get(station.station_id)
+            if history and len(history) >= 3:
+                typical = sum(history) / len(history)
+                if typical > 0.1:  # avoid division by near-zero
+                    spread_ratio = max(0.7, min(1.5, model_spread / typical))
+                    base *= spread_ratio
+
         return base
+
+    # ── S114: Cold-start calibration confidence ─────────────────────────
+
+    def _calibration_confidence(self, station_id: str) -> float:
+        """Bühlmann credibility weight: w = n / (n + κ), κ=30.
+
+        Returns 0.0–1.0 scaling factor for position sizing.
+        Hard floor: n < 5 → 0.0 (no trading).
+        At n=15: 0.33, n=30: 0.50, n=120: 0.80.
+
+        Returns 1.0 (full confidence) if calibration hasn't been loaded yet
+        (pre-first-reload), to avoid blocking trades before we have DB state.
+        """
+        if not self._station_n_resolved:
+            # Calibration not loaded yet — don't gate on missing data
+            return 1.0
+        n = self._station_n_resolved.get(station_id, 0)
+        if n < 5:
+            return 0.0
+        return n / (n + self._buhlmann_kappa)
+
+    async def _maybe_bootstrap_cold_station(self, station: WeatherStation) -> None:
+        """S114 Item 4: Pre-compute EMOS for cold stations via historical forecast+actuals.
+
+        Fetches 90 days of GFS deterministic forecasts and ERA5 reanalysis actuals
+        from Open-Meteo, computes (forecast, actual) pairs, and inserts them into
+        weather_calibration so that EMOS can activate on next calibration reload.
+        Only runs once per station per session.
+        """
+        if station.station_id in self._bootstrapped_stations:
+            return
+        # Only bootstrap if station has < 5 resolved pairs (truly cold)
+        n = self._station_n_resolved.get(station.station_id, 0)
+        if n >= 5:
+            self._bootstrapped_stations.add(station.station_id)
+            return
+
+        self._bootstrapped_stations.add(station.station_id)
+        logger.info(
+            "weatherbot_cold_start_bootstrap",
+            station=station.station_id,
+            city=station.city_name,
+            n_existing=n,
+        )
+
+        try:
+            pairs = await self._forecast_client.fetch_historical_bias(
+                latitude=station.latitude,
+                longitude=station.longitude,
+                temp_unit=station.temp_unit,
+                days=90,
+            )
+            if not pairs or len(pairs) < 10:
+                logger.info("weatherbot_bootstrap_insufficient_data", station=station.station_id, pairs=len(pairs) if pairs else 0)
+                return
+
+            # Insert into weather_calibration for EMOS fitting on next reload
+            db = getattr(self.base_engine, "db", None)
+            if not db:
+                return
+
+            inserted = 0
+            async with db.get_session() as session:
+                from sqlalchemy import text
+                for forecast_temp, actual_temp, target_date_str, lead_hours in pairs:
+                    bias = forecast_temp - actual_temp
+                    try:
+                        await session.execute(text("""
+                            INSERT INTO weather_calibration
+                                (station_id, target_date, forecast_temp, actual_temp, lead_time_hours, bias, model_name, created_at)
+                            VALUES
+                                (:sid, :td, :ft, :at, :lt, :bias, 'bootstrap_gfs', NOW())
+                            ON CONFLICT (station_id, target_date, lead_time_hours) DO NOTHING
+                        """), {
+                            "sid": station.station_id,
+                            "td": target_date_str,
+                            "ft": forecast_temp,
+                            "at": actual_temp,
+                            "lt": lead_hours,
+                            "bias": round(bias, 2),
+                        })
+                        inserted += 1
+                    except Exception:
+                        pass  # ON CONFLICT or other — skip row
+                await session.commit()
+
+            if inserted > 0:
+                logger.info(
+                    "weatherbot_bootstrap_complete",
+                    station=station.station_id,
+                    inserted=inserted,
+                    total_pairs=len(pairs),
+                )
+                # Force calibration reload on next scan to pick up new data
+                self._calibration_last_loaded = 0.0
+        except Exception as exc:
+            logger.warning("weatherbot_bootstrap_failed", station=station.station_id, error=str(exc))
 
     # ── Per-station reliability sizing (cross-bot from MirrorBot) ────────
 
@@ -1030,7 +1154,7 @@ class WeatherBot(BaseBot):
         model_prob = model_probs.get(bucket.market_id, 0.0)
         edge = model_prob - bucket.yes_price
 
-        if abs(edge) < self._get_min_edge("temperature", station):
+        if abs(edge) < self._get_min_edge("temperature", station, forecast.model_spread):
             return None
 
         side = "YES" if edge > 0 else "NO"
@@ -1718,6 +1842,17 @@ class WeatherBot(BaseBot):
         # P3: Persist forecast to DB (async, non-blocking on failure)
         await self._save_forecast_to_db(group.station, group.target_date, forecast)
 
+        # S114 Item 1: Track model_spread for spread confidence gate
+        sid = group.station.station_id
+        if forecast.model_spread > 0:
+            from collections import deque
+            if sid not in self._spread_history:
+                self._spread_history[sid] = deque(maxlen=14)
+            self._spread_history[sid].append(forecast.model_spread)
+
+        # S114 Item 4: Bootstrap historical bias for cold stations
+        await self._maybe_bootstrap_cold_station(group.station)
+
         # S97: Pre-screen — skip EMOS if raw ensemble mean is too close to market price
         # (no chance of clearing min_edge after calibration) + check exposure caps early
         if forecast.ensemble_members:
@@ -1850,15 +1985,16 @@ class WeatherBot(BaseBot):
                 date=group.target_date.isoformat(),
                 n_edges=len(edges),
                 best_raw_edge=round(best_raw, 4),
-                edges_above_min=[round(e["abs_edge"], 4) for e in edges if e["abs_edge"] >= self._get_min_edge("temperature", group.station)][:5],
+                edges_above_min=[round(e["abs_edge"], 4) for e in edges if e["abs_edge"] >= self._get_min_edge("temperature", group.station, forecast.model_spread)][:5],
             )
 
         # Filter to tradeable
         tradeable = []
         bucket_map = {b.market_id: b for b in group.buckets}
+        _effective_min = self._get_min_edge("temperature", group.station, forecast.model_spread)
 
         for e in edges:
-            if e["abs_edge"] < self._get_min_edge("temperature", group.station):
+            if e["abs_edge"] < _effective_min:
                 continue
 
             # Lead-time-graduated edge cap: at short lead times, NOAA ensemble
@@ -2381,6 +2517,21 @@ class WeatherBot(BaseBot):
             _station_factor = await self._get_station_reliability_factor(_station_id)
             if _station_factor != 1.0:
                 combined_boost *= _station_factor
+
+        # S114 Item 2: Bühlmann calibration confidence ramp
+        # Scale position size by w = n/(n+κ) where n = resolved pairs for station.
+        # Prevents overbetting on uncalibrated stations (Baker & McHale 2013).
+        if _station_id:
+            _cal_conf = self._calibration_confidence(_station_id)
+            if _cal_conf <= 0.0:
+                logger.info(
+                    "weatherbot_cold_start_skip",
+                    station=_station_id,
+                    n_resolved=self._station_n_resolved.get(_station_id, 0),
+                    market_id=opp["market_id"],
+                )
+                return False
+            combined_boost *= _cal_conf
 
         # H1: Slippage-adjusted edge — query order book depth and skip if
         # estimated slippage eats the edge. Cap size to max safe fill.
@@ -3973,11 +4124,29 @@ class WeatherBot(BaseBot):
             except Exception as tail_exc:
                 logger.debug("weatherbot_tail_calibration_failed", error=str(tail_exc))
 
+            # S114 Item 3: Fit global EMOS from pooled data across all stations
+            _all_pairs: List[Tuple[float, float]] = []
+            for sid, buckets_data in raw.items():
+                for bucket, data in buckets_data.items():
+                    _all_pairs.extend(data["pairs"])
+            if len(_all_pairs) >= _MIN_EMOS_SAMPLES:
+                _global_a, _global_b, _global_sigma = WeatherBot._fit_emos(_all_pairs)
+                self._prob_engine.load_global_emos((_global_a, _global_b, _global_sigma))
+                logger.info(
+                    "weatherbot_global_emos_fitted",
+                    n_pairs=len(_all_pairs),
+                    a=round(_global_a, 4),
+                    b=round(_global_b, 4),
+                    sigma=round(_global_sigma, 4),
+                )
+
             self._calibration_last_loaded = now_mono
             _sc: Dict[str, int] = {
                 sid: sum(len(data["pairs"]) for data in buckets.values())
                 for sid, buckets in raw.items()
             }
+            # S114 Item 2: Expose resolved pair counts for Bühlmann sizing ramp
+            self._station_n_resolved = _sc
             _emos_ready = sorted(s for s, c in _sc.items() if c >= _MIN_EMOS_SAMPLES)
             _emos_pending = {s: c for s, c in _sc.items() if c < _MIN_EMOS_SAMPLES}
             logger.info(

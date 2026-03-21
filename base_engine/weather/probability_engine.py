@@ -39,6 +39,10 @@ class WeatherProbabilityEngine:
         # Identity fallback: (a=0, b=1, sigma=None) ≡ no correction.
         # Requires ≥20 resolved pairs per bucket before activating.
         self._emos: Dict[str, Dict[int, Tuple[float, float, Optional[float]]]] = {}
+        # S114: Global EMOS baseline — pooled from all stations' data.
+        # Used as fallback for cold stations with no local EMOS.
+        # Bühlmann blending: params = w*local + (1-w)*global where w = n/(n+κ).
+        self._global_emos: Optional[Tuple[float, float, float]] = None
         # Isotonic tail calibration: (bucket_type, lead_bucket) → List[(model_prob, actual_freq)]
         # Replaces fixed 15% tail discount with data-driven calibration.
         # Requires ≥50 resolved tail events per cell; falls back to 0.85 multiplier until then.
@@ -376,8 +380,11 @@ class WeatherProbabilityEngine:
             b     — slope (multiplicative mean correction; b≠1 corrects slope bias)
             sigma — spread correction (°F/°C); None = use raw ensemble spread
 
-        Falls back to simple bias offset (a=bias, b=1, sigma=None) when no EMOS
-        params exist. Cold start identity: (a=0, b=1, sigma=None) = no correction.
+        Fallback chain (S114):
+          1. Local EMOS (station-specific, ≥20 pairs per bucket)
+          2. Global EMOS (pooled from all stations)
+          3. Simple bias offset (a=bias, b=1, sigma=None)
+          4. Identity (a=0, b=1, sigma=None) = no correction
         """
         station_emos = self._emos.get(station_id)
         if station_emos:
@@ -385,6 +392,10 @@ class WeatherProbabilityEngine:
             params = station_emos.get(bucket)
             if params is not None:
                 return params
+
+        # S114 Item 3: Fall back to global EMOS baseline
+        if self._global_emos is not None:
+            return self._global_emos
 
         # Fall back to simple bias offset (backward compat)
         bias = self._get_bias_offset(station_id, lead_time_hours)
@@ -401,6 +412,16 @@ class WeatherProbabilityEngine:
         """
         self._emos = emos_data
         logger.info("weather_emos_calibration_loaded", stations=len(emos_data))
+
+    def load_global_emos(
+        self,
+        global_params: Tuple[float, float, float],
+    ) -> None:
+        """S114: Load global EMOS baseline (pooled from all stations).
+
+        Used as fallback for cold stations with no local EMOS data.
+        """
+        self._global_emos = global_params
 
     def compute_nbm_benchmark(
         self,

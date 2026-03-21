@@ -272,6 +272,98 @@ class WeatherForecastClient:
             logger.warning("open_meteo_deterministic_failed", error=str(exc))
             return None
 
+    async def fetch_historical_bias(
+        self,
+        latitude: float,
+        longitude: float,
+        temp_unit: str = "F",
+        days: int = 90,
+    ) -> Optional[List[Tuple[float, float, str, float]]]:
+        """S114 Item 4: Fetch historical forecast-vs-actual pairs for cold-start EMOS.
+
+        Uses Open-Meteo deterministic forecast API (previous runs) and ERA5 archive
+        for actuals. Returns list of (forecast_temp, actual_temp, target_date, lead_hours).
+        """
+        session = await self._ensure_session()
+        end_date = date.today() - timedelta(days=1)
+        start_date = end_date - timedelta(days=days)
+        temp_var = "temperature_2m_max"
+        unit_param = "fahrenheit" if temp_unit.upper() == "F" else "celsius"
+
+        # Fetch ERA5 reanalysis actuals
+        try:
+            params = {
+                "latitude": latitude,
+                "longitude": longitude,
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "daily": temp_var,
+                "temperature_unit": unit_param,
+                "timezone": "UTC",
+            }
+            async with session.get(_HISTORICAL_URL, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                if resp.status != 200:
+                    logger.debug("historical_actuals_fetch_failed", status=resp.status)
+                    return None
+                actual_data = await resp.json()
+        except Exception as exc:
+            logger.debug("historical_actuals_exception", error=str(exc))
+            return None
+
+        # Fetch GFS deterministic forecasts for same period
+        try:
+            params = {
+                "latitude": latitude,
+                "longitude": longitude,
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "daily": temp_var,
+                "temperature_unit": unit_param,
+                "timezone": "UTC",
+                "past_days": 0,
+            }
+            async with session.get(_DETERMINISTIC_URL, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                if resp.status != 200:
+                    logger.debug("historical_forecast_fetch_failed", status=resp.status)
+                    return None
+                forecast_data = await resp.json()
+        except Exception as exc:
+            logger.debug("historical_forecast_exception", error=str(exc))
+            return None
+
+        # Pair forecast with actual by date
+        actual_daily = actual_data.get("daily", {})
+        forecast_daily = forecast_data.get("daily", {})
+        actual_dates = actual_daily.get("time", [])
+        actual_temps = actual_daily.get(temp_var, [])
+        forecast_dates = forecast_daily.get("time", [])
+        forecast_temps = forecast_daily.get(temp_var, [])
+
+        # Build date→value maps
+        actual_map = {}
+        for d, t in zip(actual_dates, actual_temps):
+            if t is not None and math.isfinite(t):
+                actual_map[d] = t
+
+        pairs = []
+        for d, ft in zip(forecast_dates, forecast_temps):
+            if ft is None or not math.isfinite(ft):
+                continue
+            at = actual_map.get(d)
+            if at is None:
+                continue
+            # Estimate lead time as 24h (day-ahead forecast)
+            pairs.append((ft, at, d, 24.0))
+
+        logger.info(
+            "weatherbot_historical_bias_fetched",
+            lat=latitude,
+            lon=longitude,
+            days=days,
+            pairs=len(pairs),
+        )
+        return pairs if pairs else None
+
     async def get_ensemble_forecast(
         self,
         latitude: float,
