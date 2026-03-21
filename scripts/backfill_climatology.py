@@ -117,8 +117,12 @@ async def main():
     failed = []
 
     try:
-        for sid, station in sorted(stations.items()):
-            print(f"  {sid} ({station.city_name})...", end=" ", flush=True)
+        for i, (sid, station) in enumerate(sorted(stations.items())):
+            print(f"  [{i+1}/{len(stations)}] {sid} ({station.city_name})...", end=" ", flush=True)
+
+            # Respect Open-Meteo rate limit: 10-year fetches are large, throttle to ~1/sec
+            if i > 0:
+                await asyncio.sleep(1.5)
 
             records = await client.fetch_climate_archive(
                 latitude=station.latitude,
