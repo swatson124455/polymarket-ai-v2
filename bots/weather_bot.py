@@ -123,10 +123,9 @@ class WeatherBot(BaseBot):
         self._backoff_threshold = int(getattr(settings, "WEATHER_ADAPTIVE_BACKOFF_THRESHOLD", 6))
         self._max_scan_interval = float(getattr(settings, "WEATHER_MAX_SCAN_INTERVAL", 600.0))
 
-        # S99: Discovery caches for precip/snow/wind (10-20 min TTL)
-        self._precip_discovery_cache: Optional[Tuple[float, list]] = None
-        self._snow_discovery_cache: Optional[Tuple[float, list]] = None
-        self._wind_discovery_cache: Optional[Tuple[float, list]] = None
+        # S99/S115: Unified discovery cache for precip/snow/wind (10-20 min TTL)
+        # key → (monotonic_time, events_list)
+        self._psw_discovery_cache: Dict[str, Tuple[float, list]] = {}
 
         # S97: Exposure lock for parallel trade execution
         self._exposure_lock = asyncio.Lock()
@@ -157,7 +156,7 @@ class WeatherBot(BaseBot):
 
         # P1: calibration state
         self._calibration_last_loaded: float = 0.0
-        self._calibration_reload_interval: float = 3600.0 * 6  # 6 hours
+        self._calibration_reload_interval: float = float(getattr(settings, "WEATHER_CALIBRATION_RELOAD_SECS", 21600.0))
 
         # W4: Monitoring thresholds — structured Brier/drawdown alerts
         self._monitoring_halt: bool = False  # True = stop trading until Brier improves
@@ -217,6 +216,8 @@ class WeatherBot(BaseBot):
         # station_id → boost_factor
         self._severe_weather_batch: Dict[str, float] = {}
         self._severe_weather_batch_time: float = 0.0
+        # S115: Also store alert event names for hard halt check
+        self._severe_weather_events: Dict[str, List[str]] = {}  # station_id → [event_names]
 
         # S114: Cold-start mitigation
         # Item 1 — Spread confidence gate: rolling 14-day model_spread per station
@@ -224,7 +225,7 @@ class WeatherBot(BaseBot):
         self._spread_history: Dict[str, deque] = {}  # station_id → deque(maxlen=14)
         # Item 2 — Bühlmann sizing ramp: resolved pairs per station (refreshed with calibration)
         self._station_n_resolved: Dict[str, int] = {}
-        self._buhlmann_kappa: float = 30.0  # shrinkage strength
+        self._buhlmann_kappa: float = float(getattr(settings, "WEATHER_BUHLMANN_KAPPA", 30.0))
         # Item 4 — Historical bias bootstrap: stations already bootstrapped this session
         self._bootstrapped_stations: Set[str] = set()
 
@@ -382,7 +383,9 @@ class WeatherBot(BaseBot):
             if history and len(history) >= 3:
                 typical = sum(history) / len(history)
                 if typical > 0.1:  # avoid division by near-zero
-                    spread_ratio = max(0.7, min(1.5, model_spread / typical))
+                    _sr_min = float(getattr(settings, "WEATHER_SPREAD_RATIO_MIN", 0.7))
+                    _sr_max = float(getattr(settings, "WEATHER_SPREAD_RATIO_MAX", 1.5))
+                    spread_ratio = max(_sr_min, min(_sr_max, model_spread / typical))
                     base *= spread_ratio
 
         return base
@@ -447,6 +450,8 @@ class WeatherBot(BaseBot):
             if not db:
                 return
 
+            # S115: Climatology comes from weather_climatology table (backfill_climatology.py),
+            # NOT from bootstrap data. Bootstrap only inserts (forecast, actual) pairs.
             inserted = 0
             async with db.get_session() as session:
                 from sqlalchemy import text
@@ -455,7 +460,8 @@ class WeatherBot(BaseBot):
                     try:
                         await session.execute(text("""
                             INSERT INTO weather_calibration
-                                (station_id, target_date, forecast_temp, actual_temp, lead_time_hours, bias, model_name, created_at)
+                                (station_id, target_date, forecast_temp, actual_temp, lead_time_hours,
+                                 bias, model_name, created_at)
                             VALUES
                                 (:sid, :td, :ft, :at, :lt, :bias, 'bootstrap_gfs', NOW())
                             ON CONFLICT (station_id, target_date, lead_time_hours) DO NOTHING
@@ -1172,32 +1178,39 @@ class WeatherBot(BaseBot):
             "city": station.city_name,
         }
 
-    # ── Precipitation scanning ───────────────────────────────────────────
+    # ── Shared PSW (Precip/Snow/Wind) scanning ──────────────────────────
 
-    async def _scan_precipitation_markets(self) -> int:
-        """M1: Scan and trade precipitation markets.
+    async def _scan_psw_markets(
+        self,
+        market_type: str,
+        tag_slug: str,
+        grouper_func,
+        analyzer_func,
+    ) -> int:
+        """S115 DRY: Shared scan template for precipitation/snowfall/wind markets.
 
-        Uses Gamma API tag_slug=precipitation to discover markets,
-        parses into PrecipitationMarketGroup, fetches ensemble precip
-        data, and executes trades with edge.
+        1. Fetch events from Gamma API (cached per tag_slug)
+        2. Extract markets from JSON events
+        3. Group with the provided grouper
+        4. Analyze each group and execute trades
 
         Returns number of trades executed.
         """
         import httpx
 
-        # S99: Discovery cache for precipitation (10-20 min TTL)
+        # S99/S115: Unified discovery cache (keyed by tag_slug)
         _now_mono = time.monotonic()
         _ttl = self._effective_psw_discovery_ttl()
-        if (self._precip_discovery_cache is not None
-                and (_now_mono - self._precip_discovery_cache[0]) < _ttl):
-            events = self._precip_discovery_cache[1]
+        _cached = self._psw_discovery_cache.get(tag_slug)
+        if _cached is not None and (_now_mono - _cached[0]) < _ttl:
+            events = _cached[1]
         else:
             try:
                 url = "https://gamma-api.polymarket.com/events"
                 params = {
                     "active": "true",
                     "closed": "false",
-                    "tag_slug": "precipitation",
+                    "tag_slug": tag_slug,
                     "limit": "100",
                 }
                 async with httpx.AsyncClient(timeout=15.0) as http:
@@ -1206,14 +1219,14 @@ class WeatherBot(BaseBot):
                         return 0
                     events = resp.json()
             except Exception as exc:
-                logger.debug("weatherbot_precip_tag_fetch_error", error=str(exc))
+                logger.debug(f"weatherbot_{market_type}_tag_fetch_error", error=str(exc))
                 return 0
 
             if not isinstance(events, list):
                 return 0
-            self._precip_discovery_cache = (time.monotonic(), events)
+            self._psw_discovery_cache[tag_slug] = (time.monotonic(), events)
 
-        # Extract markets from events (same pattern as temperature)
+        # Extract markets from events
         markets: List[Dict] = []
         for evt in events:
             if not isinstance(evt, dict):
@@ -1251,41 +1264,49 @@ class WeatherBot(BaseBot):
                 elif isinstance(clobTokenIds, list) and len(clobTokenIds) >= 2:
                     mkt["yes_token_id"] = clobTokenIds[0]
                     mkt["no_token_id"] = clobTokenIds[1]
-
                 mkt["id"] = mkt.get("id") or mkt.get("conditionId", "")
                 markets.append(mkt)
 
         if not markets:
             return 0
 
-        # Group by (city, date/period)
-        precip_groups = self._market_mapper.group_precipitation_markets(markets)
-        if not precip_groups:
-            logger.debug("weatherbot_precip_no_groups", markets=len(markets))
+        groups = grouper_func(markets)
+        if not groups:
+            logger.debug(f"weatherbot_{market_type}_no_groups", markets=len(markets))
             return 0
 
-        # Analyze and trade each group
         traded = 0
-        for group in precip_groups:
+        for group in groups:
             try:
-                opps = await self._analyze_precipitation_group(group)
+                opps = await analyzer_func(group)
                 for opp in opps:
                     if await self._execute_weather_trade(opp, self._precip_to_temp_group(group)):
                         traded += 1
             except Exception as exc:
                 logger.debug(
-                    "weatherbot_precip_group_error",
+                    f"weatherbot_{market_type}_group_error",
                     city=group.city, error=str(exc),
                 )
 
-        if traded > 0 or precip_groups:
+        if traded > 0 or groups:
             logger.info(
-                "weatherbot_precip_scan_done",
+                f"weatherbot_{market_type}_scan_done",
                 markets=len(markets),
-                groups=len(precip_groups),
+                groups=len(groups),
                 trades=traded,
             )
         return traded
+
+    # ── Precipitation scanning ───────────────────────────────────────────
+
+    async def _scan_precipitation_markets(self) -> int:
+        """M1: Scan and trade precipitation markets."""
+        return await self._scan_psw_markets(
+            market_type="precip",
+            tag_slug="precipitation",
+            grouper_func=self._market_mapper.group_precipitation_markets,
+            analyzer_func=self._analyze_precipitation_group,
+        )
 
     async def _analyze_precipitation_group(
         self,
@@ -1398,110 +1419,13 @@ class WeatherBot(BaseBot):
     # ── Snowfall scanning ─────────────────────────────────────────────────
 
     async def _scan_snowfall_markets(self) -> int:
-        """M2: Scan and trade snowfall markets.
-
-        Uses Gamma API tag_slug=snowfall to discover markets.
-        Reuses PrecipitationProbabilityEngine (Gamma distribution works for snowfall).
-        Returns number of trades executed.
-        """
-        import httpx
-
-        # S99: Discovery cache for snowfall
-        _now_mono = time.monotonic()
-        _ttl = self._effective_psw_discovery_ttl()
-        if (self._snow_discovery_cache is not None
-                and (_now_mono - self._snow_discovery_cache[0]) < _ttl):
-            events = self._snow_discovery_cache[1]
-        else:
-            try:
-                url = "https://gamma-api.polymarket.com/events"
-                params = {
-                    "active": "true",
-                    "closed": "false",
-                    "tag_slug": "snowfall",
-                    "limit": "100",
-                }
-                async with httpx.AsyncClient(timeout=15.0) as http:
-                    resp = await http.get(url, params=params)
-                    if resp.status_code != 200:
-                        return 0
-                    events = resp.json()
-            except Exception as exc:
-                logger.debug("weatherbot_snow_tag_fetch_error", error=str(exc))
-                return 0
-
-            if not isinstance(events, list):
-                return 0
-            self._snow_discovery_cache = (time.monotonic(), events)
-
-        # Extract markets from events (same pattern as precipitation)
-        markets: List[Dict] = []
-        for evt in events:
-            if not isinstance(evt, dict):
-                continue
-            for mkt in evt.get("markets", []):
-                if not isinstance(mkt, dict):
-                    continue
-                q = mkt.get("question", "")
-                if not q:
-                    continue
-                prices = mkt.get("outcomePrices")
-                if isinstance(prices, str):
-                    try:
-                        price_list = json.loads(prices)
-                        if isinstance(price_list, list) and len(price_list) >= 1:
-                            mkt["yes_price"] = float(price_list[0])
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-                elif isinstance(prices, list) and len(prices) >= 1:
-                    try:
-                        mkt["yes_price"] = float(prices[0])
-                    except (ValueError, TypeError):
-                        pass
-                clobTokenIds = mkt.get("clobTokenIds")
-                if isinstance(clobTokenIds, str):
-                    try:
-                        token_list = json.loads(clobTokenIds)
-                        if isinstance(token_list, list) and len(token_list) >= 2:
-                            mkt["yes_token_id"] = token_list[0]
-                            mkt["no_token_id"] = token_list[1]
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-                elif isinstance(clobTokenIds, list) and len(clobTokenIds) >= 2:
-                    mkt["yes_token_id"] = clobTokenIds[0]
-                    mkt["no_token_id"] = clobTokenIds[1]
-                mkt["id"] = mkt.get("id") or mkt.get("conditionId", "")
-                markets.append(mkt)
-
-        if not markets:
-            return 0
-
-        snow_groups = self._market_mapper.group_snowfall_markets(markets)
-        if not snow_groups:
-            logger.debug("weatherbot_snow_no_groups", markets=len(markets))
-            return 0
-
-        traded = 0
-        for group in snow_groups:
-            try:
-                opps = await self._analyze_snowfall_group(group)
-                for opp in opps:
-                    if await self._execute_weather_trade(opp, self._precip_to_temp_group(group)):
-                        traded += 1
-            except Exception as exc:
-                logger.debug(
-                    "weatherbot_snow_group_error",
-                    city=group.city, error=str(exc),
-                )
-
-        if traded > 0 or snow_groups:
-            logger.info(
-                "weatherbot_snow_scan_done",
-                markets=len(markets),
-                groups=len(snow_groups),
-                trades=traded,
-            )
-        return traded
+        """M2: Scan and trade snowfall markets."""
+        return await self._scan_psw_markets(
+            market_type="snow",
+            tag_slug="snowfall",
+            grouper_func=self._market_mapper.group_snowfall_markets,
+            analyzer_func=self._analyze_snowfall_group,
+        )
 
     async def _analyze_snowfall_group(self, group) -> List[Dict]:
         """Analyze a snowfall market group: fetch ensemble, compute edges.
@@ -1576,109 +1500,13 @@ class WeatherBot(BaseBot):
     # ── Wind gust scanning ────────────────────────────────────────────────
 
     async def _scan_wind_markets(self) -> int:
-        """M3: Scan and trade wind gust markets.
-
-        Uses Gamma API tag_slug=wind to discover markets.
-        Uses normal CDF for bucket probabilities (wind gusts are ~normally distributed).
-        Returns number of trades executed.
-        """
-        import httpx
-
-        # S99: Discovery cache for wind
-        _now_mono = time.monotonic()
-        _ttl = self._effective_psw_discovery_ttl()
-        if (self._wind_discovery_cache is not None
-                and (_now_mono - self._wind_discovery_cache[0]) < _ttl):
-            events = self._wind_discovery_cache[1]
-        else:
-            try:
-                url = "https://gamma-api.polymarket.com/events"
-                params = {
-                    "active": "true",
-                    "closed": "false",
-                    "tag_slug": "wind",
-                    "limit": "100",
-                }
-                async with httpx.AsyncClient(timeout=15.0) as http:
-                    resp = await http.get(url, params=params)
-                    if resp.status_code != 200:
-                        return 0
-                    events = resp.json()
-            except Exception as exc:
-                logger.debug("weatherbot_wind_tag_fetch_error", error=str(exc))
-                return 0
-
-            if not isinstance(events, list):
-                return 0
-            self._wind_discovery_cache = (time.monotonic(), events)
-
-        markets: List[Dict] = []
-        for evt in events:
-            if not isinstance(evt, dict):
-                continue
-            for mkt in evt.get("markets", []):
-                if not isinstance(mkt, dict):
-                    continue
-                q = mkt.get("question", "")
-                if not q:
-                    continue
-                prices = mkt.get("outcomePrices")
-                if isinstance(prices, str):
-                    try:
-                        price_list = json.loads(prices)
-                        if isinstance(price_list, list) and len(price_list) >= 1:
-                            mkt["yes_price"] = float(price_list[0])
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-                elif isinstance(prices, list) and len(prices) >= 1:
-                    try:
-                        mkt["yes_price"] = float(prices[0])
-                    except (ValueError, TypeError):
-                        pass
-                clobTokenIds = mkt.get("clobTokenIds")
-                if isinstance(clobTokenIds, str):
-                    try:
-                        token_list = json.loads(clobTokenIds)
-                        if isinstance(token_list, list) and len(token_list) >= 2:
-                            mkt["yes_token_id"] = token_list[0]
-                            mkt["no_token_id"] = token_list[1]
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-                elif isinstance(clobTokenIds, list) and len(clobTokenIds) >= 2:
-                    mkt["yes_token_id"] = clobTokenIds[0]
-                    mkt["no_token_id"] = clobTokenIds[1]
-                mkt["id"] = mkt.get("id") or mkt.get("conditionId", "")
-                markets.append(mkt)
-
-        if not markets:
-            return 0
-
-        wind_groups = self._market_mapper.group_wind_markets(markets)
-        if not wind_groups:
-            logger.debug("weatherbot_wind_no_groups", markets=len(markets))
-            return 0
-
-        traded = 0
-        for group in wind_groups:
-            try:
-                opps = await self._analyze_wind_group(group)
-                for opp in opps:
-                    if await self._execute_weather_trade(opp, self._precip_to_temp_group(group)):
-                        traded += 1
-            except Exception as exc:
-                logger.debug(
-                    "weatherbot_wind_group_error",
-                    city=group.city, error=str(exc),
-                )
-
-        if traded > 0 or wind_groups:
-            logger.info(
-                "weatherbot_wind_scan_done",
-                markets=len(markets),
-                groups=len(wind_groups),
-                trades=traded,
-            )
-        return traded
+        """M3: Scan and trade wind gust markets."""
+        return await self._scan_psw_markets(
+            market_type="wind",
+            tag_slug="wind",
+            grouper_func=self._market_mapper.group_wind_markets,
+            analyzer_func=self._analyze_wind_group,
+        )
 
     async def _analyze_wind_group(self, group) -> List[Dict]:
         """Analyze a wind gust market group: fetch ensemble, compute edges.
@@ -2461,6 +2289,17 @@ class WeatherBot(BaseBot):
         # Cross-city regime boost (P-Opportunity)
         regime_boost = opp.get("regime_boost", 1.0)
 
+        # S115: Severe weather hard halt — skip ALL trades if halt-category alert active
+        _halt_event = self._should_halt_severe_weather(group.station)
+        if _halt_event:
+            logger.info(
+                "weatherbot_severe_weather_halt",
+                station=getattr(group.station, "station_id", "?"),
+                event=_halt_event,
+                market_id=opp["market_id"],
+            )
+            return False
+
         # Severe weather boost (hurricane/tornado/blizzard near station)
         severe_boost = await self._get_severe_weather_boost(group.station)
 
@@ -2491,15 +2330,16 @@ class WeatherBot(BaseBot):
         # New: each boost contributes its excess independently; capped at 2.0×
         # to keep effective Kelly ≤ 0.5 (quarter-Kelly × 2.0).
         combined_boost = 1.0 + (expiry_boost - 1.0) + (regime_boost - 1.0) * 0.5 + (severe_boost - 1.0) * 0.5 + (jump_boost - 1.0) * 0.5 + (nbm_boost - 1.0) * 0.5
-        combined_boost = min(combined_boost, 2.0)
+        # NOTE: 2.0 cap moved AFTER BM/station/calibration (fix 2D — S115)
 
         # W7: Baker-McHale uncertainty-scaled sizing.
         # When ensemble members agree (low spread), k* ≈ 1.0 → full size.
         # When members disagree (high spread), k* < 1.0 → reduce size.
         # k* = 1 / (1 + sigma²) where sigma = model_spread / typical_spread.
         # Typical spread: ~3°F (1.7°C). Values below get boosted, above get shrunk.
-        _spread = opp.get("model_spread", 3.0)
-        _typical_spread = 3.0  # °F baseline
+        _default_spread = float(getattr(settings, "WEATHER_DEFAULT_MODEL_SPREAD", 3.0))
+        _spread = opp.get("model_spread", _default_spread)
+        _typical_spread = _default_spread  # °F baseline
         _sigma_norm = _spread / _typical_spread  # normalized: 1.0 = average
         _bm_floor = float(getattr(settings, "WEATHER_BM_FLOOR", 0.50))
         _bm_factor = max(_bm_floor, 1.0 / (1.0 + _sigma_norm ** 2))  # S107: floored at 0.50
@@ -2532,6 +2372,11 @@ class WeatherBot(BaseBot):
                 )
                 return False
             combined_boost *= _cal_conf
+
+        # Fix 2D (S115): Cap AFTER BM, station reliability, and calibration confidence
+        # so pre-cap boost differences are preserved through the uncertainty scaling chain.
+        # Previous: cap was at line 2494 BEFORE these factors, losing granularity.
+        combined_boost = min(combined_boost, 2.0)
 
         # H1: Slippage-adjusted edge — query order book depth and skip if
         # estimated slippage eats the edge. Cap size to max safe fill.
@@ -3637,6 +3482,49 @@ class WeatherBot(BaseBot):
 
         return (a, b, sigma)
 
+    @staticmethod
+    def _fit_samos(
+        pairs: List[Tuple[float, float, float, float]],
+    ) -> Optional[Tuple[float, float, float]]:
+        """S115: SAMOS (Standardized Anomaly MOS) fitting.
+
+        Input: list of (forecast_temp, actual_temp, clim_mean, clim_std) tuples.
+        Normalizes: anomaly = (x - clim_mean) / clim_std before OLS.
+        Returns (a, b, sigma) in ANOMALY SPACE (caller must de-normalize).
+
+        Returns None if < 2 valid pairs (insufficient data for SAMOS).
+        Raw EMOS fallback should be used instead.
+        """
+        # Filter to pairs with valid climatology (clim_std > 0)
+        valid = [(f, a, cm, cs) for f, a, cm, cs in pairs if cs and cs > 0.5]
+        if len(valid) < 2:
+            return None
+
+        # Normalize to anomalies
+        x_anom = [(f - cm) / cs for f, _, cm, cs in valid]
+        y_anom = [(a - cm) / cs for _, a, cm, cs in valid]
+
+        n = len(valid)
+        sx = sum(x_anom)
+        sy = sum(y_anom)
+        sxx = sum(x * x for x in x_anom)
+        sxy = sum(x * y for x, y in zip(x_anom, y_anom))
+
+        denom = n * sxx - sx * sx
+        if abs(denom) < 1e-10:
+            mean_bias = (sy - sx) / n
+            return (mean_bias, 1.0, 1.0)
+
+        b = (n * sxy - sx * sy) / denom
+        a = (sy - b * sx) / n
+
+        residuals = [y - (a + b * x) for x, y in zip(x_anom, y_anom)]
+        mean_res = sum(residuals) / n
+        var_res = sum((r - mean_res) ** 2 for r in residuals) / max(n - 1, 1)
+        sigma = max(var_res ** 0.5, 0.3)  # Floor at 0.3 anomaly units
+
+        return (a, b, sigma)
+
     async def _get_enso_regime(self) -> str:
         """Fetch current ENSO regime from NOAA PSL Nino 3.4 SST anomaly data.
 
@@ -3749,7 +3637,7 @@ class WeatherBot(BaseBot):
         try:
             session = await self._forecast_client.get_session()
 
-            async def _fetch_alert(sid: str, station: WeatherStation) -> Tuple[str, float]:
+            async def _fetch_alert(sid: str, station: WeatherStation) -> Tuple[str, float, List[str]]:
                 url = f"https://api.weather.gov/alerts/active?point={station.latitude:.4f},{station.longitude:.4f}"
                 try:
                     async with session.get(
@@ -3761,11 +3649,14 @@ class WeatherBot(BaseBot):
                         },
                     ) as resp:
                         if resp.status != 200:
-                            return sid, 1.0
+                            return sid, 1.0, []
                         data = await resp.json(content_type=None)
                     boost = 1.0
+                    events_found: List[str] = []
                     for feat in data.get("features", []):
                         event = feat.get("properties", {}).get("event", "")
+                        if event:
+                            events_found.append(event)
                         if event in _HIGH_IMPACT:
                             boost = max(boost, 2.0)
                         elif event in _MED_IMPACT:
@@ -3773,11 +3664,11 @@ class WeatherBot(BaseBot):
                     if boost > 1.0:
                         logger.info(
                             "weatherbot_severe_weather_boost",
-                            station=sid, boost=boost,
+                            station=sid, boost=boost, events=events_found,
                         )
-                    return sid, boost
+                    return sid, boost, events_found
                 except Exception:
-                    return sid, 1.0
+                    return sid, 1.0, []
 
             _alert_sem = asyncio.Semaphore(20)
 
@@ -3789,14 +3680,18 @@ class WeatherBot(BaseBot):
                 *[_bounded_fetch(sid, st) for sid, st in us_stations.items()],
                 return_exceptions=True,
             )
+            events_map: Dict[str, List[str]] = {}
             for r in results:
                 if isinstance(r, Exception):
                     continue
                 batch[r[0]] = r[1]
+                events_map[r[0]] = r[2]
         except Exception as exc:
             logger.debug("nws_alerts_batch_failed", error=str(exc))
+            events_map = {}
 
         self._severe_weather_batch = batch
+        self._severe_weather_events = events_map
         self._severe_weather_batch_time = now_mono
 
     async def _get_severe_weather_boost(self, station: WeatherStation) -> float:
@@ -3808,6 +3703,30 @@ class WeatherBot(BaseBot):
         if station.temp_unit.upper() != "F":
             return 1.0
         return self._severe_weather_batch.get(station.station_id, 1.0)
+
+    def _should_halt_severe_weather(self, station: WeatherStation) -> Optional[str]:
+        """S115: Check if active alerts require halting trades for this station.
+
+        Returns the halt-triggering event name if trading should be suspended,
+        or None if trading can proceed. Configurable via WEATHER_SEVERE_HALT_EVENTS.
+
+        Default halt events: Hurricane Warning, Tornado Warning, Extreme Wind Warning.
+        These events make forecasts unreliable — sizing UP is wrong; halting is correct.
+        """
+        if station.temp_unit.upper() != "F":
+            return None  # NWS alerts are US-only
+
+        _halt_events_str = getattr(
+            settings, "WEATHER_SEVERE_HALT_EVENTS",
+            "Hurricane Warning,Tornado Warning,Extreme Wind Warning",
+        )
+        _halt_events = {e.strip() for e in _halt_events_str.split(",") if e.strip()}
+
+        station_events = self._severe_weather_events.get(station.station_id, [])
+        for event in station_events:
+            if event in _halt_events:
+                return event
+        return None
 
     async def _get_afd_spread_factor(self, station: WeatherStation) -> float:
         """Parse latest NWS Area Forecast Discussion for uncertainty signals.
@@ -3990,7 +3909,8 @@ class WeatherBot(BaseBot):
             async with db.get_session() as session:
                 from sqlalchemy import text
                 rows = await session.execute(text("""
-                    SELECT station_id, lead_time_hours, bias, forecast_temp, actual_temp, regime
+                    SELECT station_id, lead_time_hours, bias, forecast_temp, actual_temp, regime,
+                           target_date
                     FROM weather_calibration
                     WHERE bias IS NOT NULL AND actual_temp IS NOT NULL
                 """))
@@ -4000,6 +3920,20 @@ class WeatherBot(BaseBot):
                 self._calibration_last_loaded = now_mono
                 return
 
+            # S115: Load climatology from weather_climatology table (proper ERA5 normals)
+            # for SAMOS normalization. Keyed by (station_id, day_of_year).
+            _clim_lookup: Dict[Tuple[str, int], Tuple[float, float]] = {}
+            try:
+                async with db.get_session() as clim_session:
+                    clim_rows = await clim_session.execute(text("""
+                        SELECT station_id, day_of_year, clim_mean, clim_std
+                        FROM weather_climatology
+                    """))
+                    for sid, doy, cm, cs in clim_rows.fetchall():
+                        _clim_lookup[(sid, int(doy))] = (float(cm), float(cs))
+            except Exception as clim_exc:
+                logger.debug("weatherbot_climatology_load_failed", error=str(clim_exc))
+
             # Aggregate: station_id → {lead_bucket → {"biases": [...], "pairs": [(x, y)]}}
             # pairs = (forecast_temp, actual_temp) for EMOS OLS fitting
             raw: Dict[str, Dict[int, Dict[str, Any]]] = {}
@@ -4007,7 +3941,7 @@ class WeatherBot(BaseBot):
             raw_regime: Dict[Tuple[str, str], Dict[int, Dict[str, Any]]] = {}
             current_regime = await self._get_enso_regime()
 
-            for station_id, lt_hours, bias, forecast_temp, actual_temp, regime in all_rows:
+            for station_id, lt_hours, bias, forecast_temp, actual_temp, regime, target_date in all_rows:
                 bucket = int(float(lt_hours) // 6) * 6
                 if station_id not in raw:
                     raw[station_id] = {}
@@ -4018,6 +3952,20 @@ class WeatherBot(BaseBot):
                     raw[station_id][bucket]["pairs"].append(
                         (float(forecast_temp), float(actual_temp))
                     )
+                    # S115 SAMOS: look up real ERA5 climatology by (station, DOY)
+                    if target_date is not None and _clim_lookup:
+                        try:
+                            _doy = target_date.timetuple().tm_yday
+                            _clim = _clim_lookup.get((station_id, _doy))
+                            if _clim is not None:
+                                _cm, _cs = _clim
+                                if "samos_pairs" not in raw[station_id][bucket]:
+                                    raw[station_id][bucket]["samos_pairs"] = []
+                                raw[station_id][bucket]["samos_pairs"].append(
+                                    (float(forecast_temp), float(actual_temp), _cm, _cs)
+                                )
+                        except (AttributeError, ValueError):
+                            pass  # target_date might not have timetuple if string
                     # Regime-conditioned grouping (only rows with regime tag)
                     if regime:
                         rkey = (station_id, regime)
@@ -4124,12 +4072,42 @@ class WeatherBot(BaseBot):
             except Exception as tail_exc:
                 logger.debug("weatherbot_tail_calibration_failed", error=str(tail_exc))
 
-            # S114 Item 3: Fit global EMOS from pooled data across all stations
+            # S114/S115: Fit global EMOS from pooled data across all stations.
+            # Prefer SAMOS (Standardized Anomaly MOS) when climatology is available:
+            # normalizes by ERA5 climate normals before fitting → eliminates station-specific
+            # effects (tropical vs polar temperatures become comparable anomalies).
             _all_pairs: List[Tuple[float, float]] = []
+            _samos_pairs: List[Tuple[float, float, float, float]] = []
             for sid, buckets_data in raw.items():
                 for bucket, data in buckets_data.items():
                     _all_pairs.extend(data["pairs"])
-            if len(_all_pairs) >= _MIN_EMOS_SAMPLES:
+                    _samos_pairs.extend(data.get("samos_pairs", []))
+
+            _global_method = "raw_emos"
+            if len(_samos_pairs) >= _MIN_EMOS_SAMPLES:
+                _samos_result = WeatherBot._fit_samos(_samos_pairs)
+                if _samos_result is not None:
+                    # Convert SAMOS (anomaly space) back to raw space using avg climatology:
+                    # a_raw = μ_c*(1 - b_s) + σ_c*a_s, b_raw = b_s, σ_raw = σ_c * σ_s
+                    _clim_means = [p[2] for p in _samos_pairs]
+                    _clim_stds = [p[3] for p in _samos_pairs if p[3] > 0.5]
+                    _avg_cm = sum(_clim_means) / len(_clim_means)
+                    _avg_cs = sum(_clim_stds) / len(_clim_stds) if _clim_stds else 3.0
+                    _sa, _sb, _ss = _samos_result
+                    _raw_a = _avg_cm * (1.0 - _sb) + _avg_cs * _sa
+                    _raw_b = _sb
+                    _raw_sigma = _avg_cs * _ss
+                    self._prob_engine.load_global_emos((_raw_a, _raw_b, _raw_sigma))
+                    _global_method = "samos"
+                    logger.info(
+                        "weatherbot_global_samos_fitted",
+                        n_pairs=len(_samos_pairs),
+                        samos_a=round(_sa, 4), samos_b=round(_sb, 4), samos_sigma=round(_ss, 4),
+                        raw_a=round(_raw_a, 4), raw_b=round(_raw_b, 4), raw_sigma=round(_raw_sigma, 4),
+                        avg_clim_mean=round(_avg_cm, 1), avg_clim_std=round(_avg_cs, 2),
+                    )
+
+            if _global_method != "samos" and len(_all_pairs) >= _MIN_EMOS_SAMPLES:
                 _global_a, _global_b, _global_sigma = WeatherBot._fit_emos(_all_pairs)
                 self._prob_engine.load_global_emos((_global_a, _global_b, _global_sigma))
                 logger.info(
@@ -4197,7 +4175,8 @@ class WeatherBot(BaseBot):
                     # For monitoring, use raw MSE as the metric (lower = better)
                     brier_proxy = mse_7d
 
-                    if brier_proxy > 25.0:  # MSE > 25 = avg error > 5°F
+                    _brier_halt_mse = float(getattr(settings, "WEATHER_BRIER_HALT_MSE", 25.0))
+                    if brier_proxy > _brier_halt_mse:  # MSE > threshold = avg error too high
                         self._monitoring_halt = True
                         if alerting:
                             await alerting.send_alert(

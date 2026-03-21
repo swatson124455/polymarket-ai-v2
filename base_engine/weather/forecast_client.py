@@ -1447,6 +1447,59 @@ class WeatherForecastClient:
         except Exception:
             return []
 
+    async def fetch_climate_archive(
+        self,
+        latitude: float,
+        longitude: float,
+        temp_unit: str = "celsius",
+        years: int = 10,
+    ) -> Optional[List[Tuple[str, float, int]]]:
+        """S115: Fetch multi-year ERA5 daily max temps for climatology computation.
+
+        Single API call for full date range (e.g., 2016-01-01 to 2025-12-31).
+        Returns list of (date_iso, temp, year) tuples with NaN/null filtered out.
+        Caller computes DOY grouping and recency-weighted stats.
+        """
+        await self._rate_limit_wait()
+        session = await self._ensure_session()
+
+        end = date.today() - timedelta(days=5)  # ERA5 has ~5 day lag
+        start = date(end.year - years, 1, 1)
+
+        params = {
+            "latitude": latitude,
+            "longitude": longitude,
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+            "daily": "temperature_2m_max",
+            "timezone": "auto",
+        }
+        if temp_unit.upper() == "F":
+            params["temperature_unit"] = "fahrenheit"
+
+        try:
+            async with session.get(_HISTORICAL_URL, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                if resp.status != 200:
+                    logger.warning("climate_archive_fetch_failed", status=resp.status, lat=latitude, lon=longitude)
+                    return None
+                data = await resp.json()
+
+            dates = data.get("daily", {}).get("time", [])
+            temps = data.get("daily", {}).get("temperature_2m_max", [])
+
+            results: List[Tuple[str, float, int]] = []
+            for d_str, t in zip(dates, temps):
+                if t is not None:
+                    try:
+                        yr = int(d_str[:4])
+                        results.append((d_str, float(t), yr))
+                    except (ValueError, TypeError):
+                        pass
+            return results
+        except Exception as exc:
+            logger.warning("climate_archive_fetch_error", error=str(exc), lat=latitude, lon=longitude)
+            return None
+
     async def get_ndfd_pop(
         self,
         station: WeatherStation,
