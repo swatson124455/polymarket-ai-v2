@@ -367,7 +367,7 @@ class EsportsBot(BaseBot):
         self._models_graduated = False
         self._min_edge = float(getattr(settings, "ESPORTS_MIN_EDGE", 0.05))  # 5% easy mode
         self._min_confidence = float(getattr(settings, "ESPORTS_MIN_CONFIDENCE", 0.50))  # easy mode
-        self._max_edge = float(getattr(settings, "ESPORTS_MAX_EDGE", 0.25))  # 25% sanity cap
+        # S112: edge cap removed — all edges trade. High edges logged for monitoring.
         self._egm_d = float(getattr(settings, "ESPORTS_EGM_D", 1.5))  # EGM extremization factor
         self._maker_timeout = float(
             getattr(settings, "ESPORTS_MAKER_FALLBACK_TIMEOUT_S", 3.0)
@@ -729,15 +729,12 @@ class EsportsBot(BaseBot):
         if abs(edge) < self._min_edge:
             return
 
-        # Edge sanity cap — Glicko-2 producing >20% edge is suspicious
-        if abs(edge) > self._max_edge:
-            logger.debug(
-                "EsportsBot WS: edge exceeds sanity cap",
-                market_id=market_id,
+        # S112: Edge cap removed. Log high edges for monitoring.
+        if abs(edge) > 0.40:
+            logger.info(
+                "esportsbot_ws_high_edge", market_id=market_id,
                 edge=round(edge, 4),
-                max_edge=self._max_edge,
             )
-            return
 
         side = "YES" if edge > 0 else "NO"
         trade_token_id = yes_token_id if side == "YES" else no_token_id
@@ -1093,7 +1090,7 @@ class EsportsBot(BaseBot):
         # B4: Waterfall diagnostic counters (cross-pollinated from MirrorBot S48)
         self._wf = {"no_game": 0, "no_price": 0, "no_token": 0, "halted": 0,
                      "exposure_cap": 0, "observation": 0, "no_prediction": 0,
-                     "low_edge": 0, "edge_cap": 0, "low_confidence": 0,
+                     "low_edge": 0, "low_confidence": 0,
                      "low_confluence": 0, "passed": 0, "reentry_rejected": 0,
                      "exit_cooldown": 0, "max_entries": 0}
         self._exposure_cap_logged: set = set()  # per-scan: games already logged for cap hit
@@ -1969,21 +1966,14 @@ class EsportsBot(BaseBot):
             if _wf: _wf["low_edge"] += 1
             return None
 
-        # Edge sanity cap — universal 0.35 for all games
-        # S100b: Widen cap while BetaCalibrator unfitted (raw probs produce
-        # legitimate 35-40% edges for strong team differentials)
-        _effective_max_edge = self._max_edge
-        _beta_cal_edge = self._beta_calibrators.get(game)
-        if _beta_cal_edge and not _beta_cal_edge._fitted:
-            _effective_max_edge = 0.45
-        if edge > _effective_max_edge:
+        # S112: Edge cap REMOVED — all edges trade through.
+        # Log high-edge entries for handoff monitoring (negative trend at edge>0.40).
+        if edge > 0.40:
             logger.info(
-                "esportsbot_edge_cap", market_id=market_id, game=game,
-                edge=round(edge, 4), max_edge=_effective_max_edge, side=side,
+                "esportsbot_high_edge", market_id=market_id, game=game,
+                edge=round(edge, 4), side=side,
                 model_prob=round(model_prob, 4), price=round(price, 4),
             )
-            if _wf: _wf["edge_cap"] += 1
-            return None
 
         # High-uncertainty filter: unrated/weakly-rated teams + thin edge + BO1 → skip.
         # matchup_uncertainty = (phi_a + phi_b) / 700; >= 0.70 means avg phi >= 245.

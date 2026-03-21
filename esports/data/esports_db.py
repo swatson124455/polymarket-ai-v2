@@ -188,7 +188,13 @@ async def log_prediction(
                     (match_id, game, market_id, bot_name, predicted_prob, market_price, side, edge, tournament_phase)
                 VALUES
                     (:match_id, :game, :market_id, :bot_name, :predicted_prob, :market_price, :side, :edge, :tournament_phase)
-                """),
+                ON CONFLICT (market_id, bot_name) DO UPDATE SET
+                    predicted_prob = EXCLUDED.predicted_prob,
+                    market_price = EXCLUDED.market_price,
+                    side = EXCLUDED.side,
+                    edge = EXCLUDED.edge,
+                    created_at = now()
+"""),
                 {
                     "match_id": match_id,
                     "game": game,
