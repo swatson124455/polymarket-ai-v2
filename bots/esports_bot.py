@@ -50,7 +50,7 @@ class BetaCalibrator:
     __slots__ = ("a", "b", "c", "lambda_reg", "min_samples", "_fitted",
                  "_n_samples")
 
-    def __init__(self, lambda_reg: float = 10.0, min_samples: int = 30):
+    def __init__(self, lambda_reg: float = 10.0, min_samples: int = 15):
         self.a: float = 1.0
         self.b: float = 1.0
         self.c: float = 0.0
@@ -292,7 +292,7 @@ class EsportsBot(BaseBot):
         self._horizon_calibrator: Any = None     # DEPRECATED (S100) — kept for compat
         # S100: Single-stage beta calibrators per game (replaces 3-stage pipeline)
         self._beta_calibrators: Dict[str, BetaCalibrator] = {
-            g: BetaCalibrator(lambda_reg=10.0, min_samples=30)
+            g: BetaCalibrator(lambda_reg=10.0, min_samples=15)
             for g in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl")
         }
         self._onnx_cross_game_session: Any = None  # ONNX InferenceSession for cross-game XGB
@@ -866,6 +866,7 @@ class EsportsBot(BaseBot):
             self._cot_validator.reset_scan_counter()
         _now = time.monotonic()
         _t0 = _now  # S110: scan timing instrumentation
+        self._scan_start_mono = _now  # S115: for shadow fill latency tracking
         # S94: Time-based guards (safe with zero-sleep scanning)
         if _now - self._last_cache_cleanup >= 3600:  # 1 hour
             self._last_cache_cleanup = _now
@@ -2437,7 +2438,8 @@ class EsportsBot(BaseBot):
                         )
 
                 # Build event_data for ENTRY trade_event (E1/E7 training data)
-                _event_data = {"game": game, "model_prob": round(glicko2_prob, 4)}
+                _event_data = {"game": game, "model_prob": round(glicko2_prob, 4),
+                              "scan_start_mono": getattr(self, "_scan_start_mono", None)}
                 _gs = self._build_glicko2_game_state(market_data, game) if game else None
                 if _gs:
                     for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
@@ -3920,6 +3922,10 @@ class EsportsBot(BaseBot):
                                 a=round(_cal.a, 4), b=round(_cal.b, 4),
                                 c=round(_cal.c, 4), n=_cal._n_samples,
                                 window_days=_cal_days)
+                else:
+                    logger.info("esportsbot_beta_cal_insufficient_data",
+                                game=_cal_game, n_samples=_cal._n_samples,
+                                min_required=_cal.min_samples)
             except Exception as exc:
                 logger.debug("esportsbot_beta_cal_fit_failed",
                              game=_cal_game, error=str(exc))
