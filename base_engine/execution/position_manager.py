@@ -361,7 +361,7 @@ class AutomatedPositionManager:
             _stale_threshold = 3600  # 1 hour
             _now = datetime.now(timezone.utc)
             for r in result.fetchall():
-                if r[1] is not None:
+                if r[1] is not None and float(r[1]) > 0:
                     latest_prices[str(r[0])] = float(r[1])
                     if r[2] is not None:
                         try:

@@ -347,7 +347,7 @@ class Settings(BaseSettings):
     MIRROR_MAX_CATEGORY_EXPOSURE_USD: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_USD", "40000"))  # S100: $10k→$40k per category
     MIRROR_MAX_TRACKED_TRADES: int = int(os.getenv("MIRROR_MAX_TRACKED_TRADES", "10000"))
     MIRROR_EXIT_ENABLED: bool = os.getenv("MIRROR_EXIT_ENABLED", "true").lower() in ("true", "1", "yes")
-    MIRROR_MAX_CONCURRENT_POSITIONS: int = int(os.getenv("MIRROR_MAX_CONCURRENT_POSITIONS", "200"))  # S107: 500→200 align with VPS .env
+    MIRROR_MAX_CONCURRENT_POSITIONS: int = int(os.getenv("MIRROR_MAX_CONCURRENT_POSITIONS", "600"))  # S114: 200→600 — 400 legacy positions restored from DB were blocking all entries
     MIRROR_MAX_DAILY_EXPOSURE_PCT: float = float(os.getenv("MIRROR_MAX_DAILY_EXPOSURE_PCT", "0.15"))
     # Phase 4: MirrorBot structural hardening
     MIRROR_HOT_TRADE_MAX_SECONDS: int = int(os.getenv("MIRROR_HOT_TRADE_MAX_SECONDS", "900"))  # 300→900: 5min was too aggressive, 15min allows more trades
@@ -604,7 +604,7 @@ class Settings(BaseSettings):
     BACKTEST_LATENCY_SIMULATION_MS: float = float(os.getenv("BACKTEST_LATENCY_SIMULATION_MS", "0"))
     RESOLUTION_BACKFILL_AFTER_DAILY: bool = os.getenv("RESOLUTION_BACKFILL_AFTER_DAILY", "true").lower() in ("true", "1", "yes")
     # Markets to resolve per scheduler cycle (every ~285s). Higher = faster backlog clearance.
-    RESOLUTION_QUEUE_BATCH_SIZE: int = int(os.getenv("RESOLUTION_QUEUE_BATCH_SIZE", "100"))
+    RESOLUTION_QUEUE_BATCH_SIZE: int = int(os.getenv("RESOLUTION_QUEUE_BATCH_SIZE", "200"))
 
     # I51: Hard timeout for ingest_everything() — raise to 1800s for slow VPS DB
     INGESTION_TIMEOUT_SECONDS: float = float(os.getenv("INGESTION_TIMEOUT_SECONDS", "600"))
@@ -709,6 +709,12 @@ class Settings(BaseSettings):
     WEATHER_BM_FLOOR: float = float(os.getenv("WEATHER_BM_FLOOR", "0.50"))
     # S107: Minimum trade size in USD (was $1, now $5 — eliminates dust positions)
     WEATHER_MIN_TRADE_USD: float = float(os.getenv("WEATHER_MIN_TRADE_USD", "5.0"))
+    # S115: Bühlmann credibility denominator — higher k = slower sizing ramp for new stations
+    WEATHER_BUHLMANN_KAPPA: float = float(os.getenv("WEATHER_BUHLMANN_KAPPA", "30.0"))
+    # S116: YES-side confidence gate threshold (disabled at 0.0, enable at e.g. 0.55)
+    WEATHER_YES_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_YES_MIN_CONFIDENCE", "0.0"))
+    # S115: Combined sizing boost cap (expiry * regime * jump * nbm * bm * station * calibration)
+    WEATHER_COMBINED_BOOST_CAP: float = float(os.getenv("WEATHER_COMBINED_BOOST_CAP", "2.0"))
     # S99: Fill-failure cooldown
     WEATHER_FILL_FAIL_COOLDOWN_SCANS: int = int(os.getenv("WEATHER_FILL_FAIL_COOLDOWN_SCANS", "2"))
     WEATHER_FILL_FAIL_COOLDOWN_SECS: float = float(os.getenv("WEATHER_FILL_FAIL_COOLDOWN_SECS", "120"))  # S101: 900→120s — IOC gas negligible, 2min = 1 scan cycle
@@ -1047,10 +1053,11 @@ class Settings(BaseSettings):
     ESPORTS_TOURNAMENT_PHASE_MIN_SAMPLES: int = int(os.getenv("ESPORTS_TOURNAMENT_PHASE_MIN_SAMPLES", "20"))
 
     # --- Exposure limits (per-game/tournament/team concentration caps) ---
-    # S99: doubled with capital 2x (was 300/200/150)
-    ESPORTS_MAX_GAME_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_GAME_EXPOSURE", "3000.0"))
-    ESPORTS_MAX_TOURNAMENT_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_TOURNAMENT_EXPOSURE", "5000.0"))
-    ESPORTS_MAX_TEAM_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_TEAM_EXPOSURE", "1000.0"))
+    # S116: raised — CS2 hitting $3K cap constantly (4 markets blocked/scan).
+    # Hierarchy: team ($2K) < game ($5K) < tournament ($8K) < total ($15K) < capital ($20K)
+    ESPORTS_MAX_GAME_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_GAME_EXPOSURE", "5000.0"))
+    ESPORTS_MAX_TOURNAMENT_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_TOURNAMENT_EXPOSURE", "8000.0"))
+    ESPORTS_MAX_TEAM_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_TEAM_EXPOSURE", "2000.0"))
 
     # --- External API keys (esports data enrichment) ---
     ALIGULAC_API_KEY: str = os.getenv("ALIGULAC_API_KEY", "")

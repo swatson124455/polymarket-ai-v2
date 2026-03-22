@@ -55,6 +55,8 @@ class OrderGateway:
         self._market_index: Optional[Dict[str, Dict[str, Any]]] = None  # Set by base_engine after construction
         self._market_index_by_cid: Dict[str, Dict[str, Any]] = {}  # S100: condition_id index, set by base_engine
         self._bot_names_used: Set[str] = set()  # For shutdown: release reservations for all bots in this process
+        # S115: OrderBookTracker for pre-trade book walk (wired by base_engine)
+        self._orderbook_tracker = None
         # In-memory position tracker for ms-latency reactive path
         self._open_position_markets: Dict[str, Set[str]] = {}  # bot_name -> set of market_ids
         # In-memory exposure tracker: avoids 3 DB queries in risk_manager.check_risk_limits()
@@ -682,6 +684,115 @@ class OrderGateway:
         # Round price to nearest valid tick to prevent invalid orders in live mode.
         effective_price = round(effective_price, 2)
 
+        # S115: Pre-trade book walk + edge check — applies to BOTH paper and live.
+        # Snapshots real L2 book, computes VWAP, rejects if edge eroded.
+        # Records every signal to shadow_fills for retroactive P&L analysis.
+        _is_buy = str(side).upper() != "SELL"
+        _shadow_book_snapshot = None
+        _shadow_best_ask = None
+        _shadow_best_bid = None
+        _shadow_spread = 0.0
+        _shadow_depth_best = 0.0
+        _shadow_total_depth = 0.0
+        _shadow_vwap = effective_price
+        _shadow_slippage = 0.0
+        _shadow_fill_frac = 1.0
+        _shadow_book_walk_used = False
+
+        if _is_buy and self._orderbook_tracker and token_id:
+            try:
+                from base_engine.execution.paper_trading import _vwap_from_book
+                _book = await self._orderbook_tracker.snapshot_order_book(
+                    token_id=token_id, condition_id=str(market_id))
+                if _book and not _book.get("error"):
+                    _raw_asks = _book.get("asks", [])
+                    _raw_bids = _book.get("bids", [])
+                    _shadow_book_snapshot = _raw_asks[:20]
+                    if _raw_asks:
+                        try:
+                            _shadow_best_ask = float(_raw_asks[0].get("price", 0))
+                        except (ValueError, TypeError):
+                            pass
+                    if _raw_bids:
+                        try:
+                            _shadow_best_bid = float(_raw_bids[0].get("price", 0))
+                        except (ValueError, TypeError):
+                            pass
+                    if _shadow_best_ask and _shadow_best_bid:
+                        _shadow_spread = _shadow_best_ask - _shadow_best_bid
+                    for _lvl in _raw_asks:
+                        try:
+                            _shadow_total_depth += float(_lvl.get("price", 0)) * float(_lvl.get("size", 0))
+                        except (ValueError, TypeError):
+                            pass
+                    if _raw_asks:
+                        try:
+                            _shadow_depth_best = float(_raw_asks[0].get("price", 0)) * float(_raw_asks[0].get("size", 0))
+                        except (ValueError, TypeError):
+                            pass
+                    _event = event_data or {}
+                    _whale_usd = _event.get("whale_size_usd", 0)
+                    _whale_shares = _whale_usd / effective_price if effective_price > 0 else 0
+                    _bw = _vwap_from_book(_raw_asks, size, _whale_shares)
+                    if _bw:
+                        _shadow_vwap, _shadow_fill_frac, _shadow_slippage = _bw
+                        _shadow_book_walk_used = True
+            except Exception as _bw_err:
+                logger.debug("order_gateway_book_walk_failed", error=str(_bw_err), market_id=market_id)
+
+        # S115: Edge-at-VWAP gate — reject if real book price erases edge (paper AND live).
+        # S116: Also reject dead markets where spread > 80% (bid=0.001, ask=0.999).
+        if _is_buy and confidence is not None and confidence > 0 and _shadow_book_walk_used:
+            _edge_at_vwap = confidence - _shadow_vwap
+            if _shadow_spread > 0.80:
+                _edge_at_vwap = -1.0  # force rejection — dead/illiquid market
+                logger.info("order_dead_market_spread", market_id=market_id,
+                            spread=round(_shadow_spread, 4),
+                            best_bid=_shadow_best_bid, best_ask=_shadow_best_ask,
+                            bot_name=bot_name)
+            if _edge_at_vwap <= 0:
+                logger.info("order_edge_eroded", market_id=market_id,
+                            confidence=round(confidence, 4),
+                            vwap_price=round(_shadow_vwap, 4),
+                            signal_price=round(effective_price, 4),
+                            edge_at_vwap=round(_edge_at_vwap, 4),
+                            bot_name=bot_name,
+                            mode="paper" if getattr(settings, "SIMULATION_MODE", False) else "live")
+                # Record shadow fill for rejected trade
+                _db = self.db or (self.paper_trading_engine.db if self.paper_trading_engine else None)
+                if _db and hasattr(_db, "insert_shadow_fill"):
+                    _scan_start = (event_data or {}).get("scan_start_mono")
+                    _latency = (time.monotonic() - _scan_start) * 1000 if _scan_start else None
+                    try:
+                        await _db.insert_shadow_fill(
+                            bot_name=bot_name, market_id=market_id, token_id=token_id,
+                            side="BUY", order_size_shares=size,
+                            order_size_usd=size * effective_price,
+                            signal_price=effective_price, confidence=confidence,
+                            edge_at_signal=(confidence - effective_price),
+                            latency_ms=_latency,
+                            book_snapshot=_shadow_book_snapshot,
+                            best_ask=_shadow_best_ask, best_bid=_shadow_best_bid,
+                            spread=_shadow_spread,
+                            depth_at_best_usd=_shadow_depth_best,
+                            total_depth_usd=_shadow_total_depth,
+                            vwap_fill_price=_shadow_vwap,
+                            book_walk_slippage=_shadow_slippage,
+                            fill_fraction=_shadow_fill_frac,
+                            edge_at_vwap=_edge_at_vwap,
+                            trade_executed=False, execution_price=None,
+                            correlation_id=correlation_id,
+                            model_name=None, event_data=event_data,
+                        )
+                    except Exception:
+                        pass
+                if self.trade_coordinator is not None:
+                    try:
+                        await self.trade_coordinator.release_reservation(market_id, side, bot_id=bot_name)
+                    except Exception:
+                        pass
+                return {"success": False, "error": f"Edge eroded: conf={confidence:.4f} <= vwap={_shadow_vwap:.4f}"}
+
         # Paper trading: full pipeline (risk, coordinator) then record order instead of CLOB
         if getattr(settings, "SIMULATION_MODE", False) and self.paper_trading_engine and self.paper_trading_engine.enabled:
             # In binary prediction markets, YES/NO indicate which token to buy, not trade direction.
@@ -689,6 +800,20 @@ class OrderGateway:
             # SELL only happens when closing an existing position.
             paper_side = "SELL" if str(side).upper() == "SELL" else "BUY"
             logger.info("Paper trade attempt", market_id=market_id, side=paper_side, size=round(size, 2), price=round(effective_price, 6), bot_name=bot_name, cash=round(self.paper_trading_engine.cash, 2))
+            # S115: Pass book walk results to paper engine so it fills at VWAP
+            if _shadow_book_walk_used:
+                if event_data is None:
+                    event_data = {}
+                event_data["_shadow_book_walk_used"] = True
+                event_data["_shadow_vwap"] = _shadow_vwap
+                event_data["_shadow_fill_frac"] = _shadow_fill_frac
+                event_data["_shadow_slippage"] = _shadow_slippage
+                event_data["_shadow_book_snapshot"] = _shadow_book_snapshot
+                event_data["_shadow_best_ask"] = _shadow_best_ask
+                event_data["_shadow_best_bid"] = _shadow_best_bid
+                event_data["_shadow_spread"] = _shadow_spread
+                event_data["_shadow_depth_best"] = _shadow_depth_best
+                event_data["_shadow_total_depth"] = _shadow_total_depth
             try:
                 _t_coord_end = time.monotonic()
                 t0 = time.monotonic()
@@ -922,6 +1047,38 @@ class OrderGateway:
                     self._track_position_close(bot_name, market_id)  # C3 FIX
                 else:
                     self._track_position_open(bot_name, market_id, size, effective_price)
+
+            # S115: Record shadow fill for live executed BUY trades
+            if result.get("success") and _is_buy and _shadow_book_walk_used:
+                _db = self.db or (self.paper_trading_engine.db if self.paper_trading_engine else None)
+                if _db and hasattr(_db, "insert_shadow_fill"):
+                    _scan_start = (event_data or {}).get("scan_start_mono")
+                    _latency = (time.monotonic() - _scan_start) * 1000 if _scan_start else None
+                    _live_fill_price = float(result.get("price", effective_price))
+                    try:
+                        await _db.insert_shadow_fill(
+                            bot_name=bot_name, market_id=market_id, token_id=token_id,
+                            side="BUY", order_size_shares=size,
+                            order_size_usd=size * _live_fill_price,
+                            signal_price=effective_price, confidence=confidence,
+                            edge_at_signal=(confidence - effective_price) if confidence else None,
+                            latency_ms=_latency,
+                            book_snapshot=_shadow_book_snapshot,
+                            best_ask=_shadow_best_ask, best_bid=_shadow_best_bid,
+                            spread=_shadow_spread,
+                            depth_at_best_usd=_shadow_depth_best,
+                            total_depth_usd=_shadow_total_depth,
+                            vwap_fill_price=_shadow_vwap,
+                            book_walk_slippage=_shadow_slippage,
+                            fill_fraction=_shadow_fill_frac,
+                            edge_at_vwap=(confidence - _shadow_vwap) if confidence else None,
+                            trade_executed=True, execution_price=_live_fill_price,
+                            correlation_id=correlation_id,
+                            model_name=None, event_data=event_data,
+                        )
+                    except Exception:
+                        pass
+
             return result
         except Exception as e:
             if self.trade_coordinator is not None:
