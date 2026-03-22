@@ -1069,7 +1069,8 @@ class Settings(BaseSettings):
     ESPORTS_CONFLUENCE_WEIGHT_EDGE: float = float(os.getenv("ESPORTS_CONFLUENCE_WEIGHT_EDGE", "0.65"))
     ESPORTS_CONFLUENCE_WEIGHT_FRESHNESS: float = float(os.getenv("ESPORTS_CONFLUENCE_WEIGHT_FRESHNESS", "0.35"))
     ESPORTS_CONFLUENCE_WEIGHT_AGREEMENT: float = float(os.getenv("ESPORTS_CONFLUENCE_WEIGHT_AGREEMENT", "0.0"))
-    ESPORTS_REENTRY_MIN_EDGE: float = float(os.getenv("ESPORTS_REENTRY_MIN_EDGE", "0.12"))
+    ESPORTS_REENTRY_MIN_EDGE: float = float(os.getenv("ESPORTS_REENTRY_MIN_EDGE", "0.08"))
+    ESPORTS_PER_MARKET_CAP: float = float(os.getenv("ESPORTS_PER_MARKET_CAP", "600"))
     ESPORTS_FRESHNESS_DECAY_SECONDS: float = float(os.getenv("ESPORTS_FRESHNESS_DECAY_SECONDS", "120.0"))
     ESPORTS_FRESHNESS_DECAY_PREGAME_SECONDS: float = float(os.getenv("ESPORTS_FRESHNESS_DECAY_PREGAME_SECONDS", "600.0"))
     ESPORTS_WHALE_SMART_MONEY_THRESHOLD: float = float(os.getenv("ESPORTS_WHALE_SMART_MONEY_THRESHOLD", "0.60"))
@@ -1127,9 +1128,9 @@ class Settings(BaseSettings):
     ESPORTS_STOP_LOSS_PCT: float = float(os.getenv("ESPORTS_STOP_LOSS_PCT", "0.25"))
     ESPORTS_MAX_HOLD_HOURS: float = float(os.getenv("ESPORTS_MAX_HOLD_HOURS", "96"))
     # S109: Post-exit cooldown (seconds) — prevents stop-loss churn (RC1)
-    ESPORTS_EXIT_COOLDOWN_SECONDS: float = float(os.getenv("ESPORTS_EXIT_COOLDOWN_SECONDS", "900.0"))
-    # S109: Max entries per market per UTC day — hard backstop against churn (RC3)
-    ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW: int = int(os.getenv("ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW", "3"))
+    ESPORTS_EXIT_COOLDOWN_SECONDS: float = float(os.getenv("ESPORTS_EXIT_COOLDOWN_SECONDS", "300.0"))
+    # S109: Max entries per market per rolling window — backstop against churn (RC3)
+    ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW: int = int(os.getenv("ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW", "5"))
     ESPORTS_ENTRY_WINDOW_HOURS: float = float(os.getenv("ESPORTS_ENTRY_WINDOW_HOURS", "12.0"))
 
     # --- Monitoring halt threshold (Brier score above this → halt trading for game) ---

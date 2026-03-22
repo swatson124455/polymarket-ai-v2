@@ -1125,7 +1125,7 @@ class EsportsBot(BaseBot):
 
         # Position re-entry config
         _reentry_min_edge = float(getattr(settings, "ESPORTS_REENTRY_MIN_EDGE", 0.12))
-        _per_market_cap = float(getattr(settings, "MIRROR_MAX_PER_MARKET", 400))
+        _per_market_cap = float(getattr(settings, "ESPORTS_PER_MARKET_CAP", 600))
 
         # Parallel market analysis with bounded concurrency
         async def _analyze_one(m: Dict) -> tuple:
