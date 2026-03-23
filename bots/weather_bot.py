@@ -81,9 +81,9 @@ class WeatherBot(BaseBot):
         # Config
         self._min_edge = float(getattr(settings, "WEATHER_MIN_EDGE", 0.08))
         self._intl_min_edge = float(getattr(settings, "WEATHER_INTL_MIN_EDGE", 0.12))
-        self._max_per_group = float(getattr(settings, "WEATHER_MAX_PER_GROUP_USD", 200.0))
-        self._daily_loss_limit = float(getattr(settings, "WEATHER_DAILY_LOSS_LIMIT", 500.0))
-        self._max_correlated = float(getattr(settings, "WEATHER_MAX_CORRELATED_EXPOSURE", 500.0))
+        self._max_per_group = float(getattr(settings, "WEATHER_MAX_PER_GROUP_USD", 10000.0))  # S122: 1000→10000
+        self._daily_loss_limit = float(getattr(settings, "WEATHER_DAILY_LOSS_LIMIT", 10000.0))
+        self._max_correlated = float(getattr(settings, "WEATHER_MAX_CORRELATED_EXPOSURE", 5000.0))  # S122: 2000→5000
         self._kelly_mult = float(getattr(settings, "WEATHER_KELLY_FRACTION", 0.25))
         self._default_size = float(getattr(settings, "WEATHER_DEFAULT_SIZE", 100.0))
         self._max_lead_time = float(getattr(settings, "WEATHER_MAX_LEAD_TIME_HOURS", 168.0))
@@ -1889,15 +1889,14 @@ class WeatherBot(BaseBot):
                 pass  # fail-open: if DB unreachable, fall through to trade
 
             # WU vs NWS resolution-source uncertainty:
-            # When the ensemble mean (loc) is within 0.5°F/°C of a bucket boundary,
-            # a small discrepancy between WU hourly max and NWS official daily high
-            # can flip the resolution outcome. Reduce confidence by 50% in these cases.
+            # S121: boundary_risk tracked for logging but NO LONGER discounts confidence.
+            # Let Kelly self-regulate — the 50% discount was crushing profitable trades.
             boundary_risk = WeatherBot._near_boundary(loc, bucket)
             # YES: confidence = model_prob (P of outcome)
             # NO:  confidence = 1 - model_prob (P of NOT outcome) — correct for Kelly + risk manager
             _raw_conf = e["model_prob"] if side == "YES" else (1.0 - e["model_prob"])
             base_confidence = min(0.95, _raw_conf)
-            effective_confidence = base_confidence * 0.5 if boundary_risk else base_confidence
+            effective_confidence = base_confidence  # S121: removed 0.5x boundary penalty
 
             if boundary_risk:
                 logger.debug(
@@ -1916,13 +1915,10 @@ class WeatherBot(BaseBot):
             if len(tradeable) >= _max_buckets:
                 break
 
-            # S118 Fix 4: High-confidence NO discount — reduce Kelly sizing for
-            # expensive NO tokens. Data: 90-95% conf NO lost -$3,412 from 133 trades.
-            # Avg win=$4.20, avg loss=-$20.83. Discount confidence so Kelly sizes smaller.
-            _no_disc_threshold = float(getattr(settings, "WEATHER_NO_CONFIDENCE_DISCOUNT_THRESHOLD", 0.70))
-            _no_disc_factor = float(getattr(settings, "WEATHER_NO_CONFIDENCE_DISCOUNT", 0.80))
-            if side == "NO" and price > _no_disc_threshold:
-                effective_confidence *= _no_disc_factor
+            # S121: NO confidence discount REMOVED — let Kelly self-regulate.
+            # Data showed NO 60-80¢ had 58.8% WR (positive!) but negative P&L because
+            # the 0.80x discount shrank bets below break-even threshold. Kelly already
+            # accounts for payoff asymmetry via (p*b - q)/b formula.
 
             tradeable.append({
                 "market_id": e["market_id"],
@@ -2404,9 +2400,6 @@ class WeatherBot(BaseBot):
                 return False
             combined_boost *= _cal_conf
 
-        # Fix 2D (S115): Cap AFTER BM, station reliability, and calibration confidence
-        # so pre-cap boost differences are preserved through the uncertainty scaling chain.
-        # Previous: cap was at line 2494 BEFORE these factors, losing granularity.
         combined_boost = min(combined_boost, getattr(settings, "WEATHER_COMBINED_BOOST_CAP", 2.0))
 
         # H1: Slippage-adjusted edge — query order book depth and skip if
@@ -2474,20 +2467,21 @@ class WeatherBot(BaseBot):
         # W3+W5: Use Smoczynski-Tomkins group-level allocation when available.
         # S-T sizes are pre-computed by _execute_group_trades() and passed via
         # _st_size_override. Fall back to independent Kelly if not set.
-        _min_trade = float(getattr(settings, "WEATHER_MIN_TRADE_USD", 5.0))  # S107: was $1
+        _min_trade = float(getattr(settings, "WEATHER_MIN_TRADE_USD", 5.0))
         _st_override = opp.pop("_st_size_override", None)
         if _st_override is not None:
-            size = max(_min_trade, _st_override * combined_boost)
+            _raw_size = _st_override * combined_boost
         else:
             # Size via central risk_manager Kelly (same as all other bots)
             try:
                 kelly_shares = await self.calculate_bot_position_size(
                     opp["confidence"], opp["price"],
                 )
-                size = max(_min_trade, kelly_shares * opp["price"] * combined_boost)
+                _raw_size = kelly_shares * opp["price"] * combined_boost
             except Exception as exc:
                 logger.warning("weatherbot_kelly_sizing_failed", error=str(exc))
-                size = max(_min_trade, self._default_size)
+                _raw_size = self._default_size
+        size = max(_min_trade, _raw_size)
 
         # S97: Lock-guarded exposure reservation — re-read under lock for parallel safety
         async with self._exposure_lock:
@@ -2496,7 +2490,39 @@ class WeatherBot(BaseBot):
             remaining_group = self._max_per_group - current_group_exp
             remaining_city = self._max_correlated - current_city_exp
             size = min(size, remaining_group, remaining_city, _slippage_size_cap)
-            if size < _min_trade:  # S107: was $1, now $5
+            if size < _min_trade:
+                # S122: Log shadow entry for sub-$5 trades (data collection)
+                if _raw_size > 0:
+                    logger.info(
+                        "weatherbot_shadow_entry",
+                        market_id=opp["market_id"],
+                        side=opp["side"],
+                        price=round(opp["price"], 4),
+                        confidence=round(opp["confidence"], 4),
+                        edge=round(opp.get("edge", 0), 4),
+                        raw_size_usd=round(_raw_size, 2),
+                        combined_boost=round(combined_boost, 3),
+                        city=opp.get("city", ""),
+                        reason="sub_min_trade" if _raw_size < _min_trade else "exposure_cap",
+                    )
+                    try:
+                        await self.base_engine.db.insert_trade_event(
+                            bot_name=self.bot_name,
+                            event_type="SHADOW_ENTRY",
+                            market_id=opp["market_id"],
+                            side=opp["side"],
+                            price=opp["price"],
+                            size=_raw_size / max(opp["price"], 0.01),
+                            confidence=opp["confidence"],
+                            event_data={
+                                "city": opp.get("city", ""),
+                                "raw_size_usd": round(_raw_size, 2),
+                                "combined_boost": round(combined_boost, 3),
+                                "reason": "sub_min_trade" if _raw_size < _min_trade else "exposure_cap",
+                            },
+                        )
+                    except Exception:
+                        pass  # best-effort, don't block
                 return False
             # Reserve exposure atomically under lock
             self._group_exposure[group_key] = current_group_exp + size

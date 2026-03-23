@@ -165,7 +165,7 @@ class Settings(BaseSettings):
     RISK_MAX_DAILY_LOSS_USD: float = float(os.getenv("RISK_MAX_DAILY_LOSS_USD", "10000"))  # S105: aligned to $10K (matching per-bot max_daily_usd)
     RISK_MAX_WEEKLY_LOSS_USD: float = float(os.getenv("RISK_MAX_WEEKLY_LOSS_USD", "25000"))  # S105: 2.5x daily
     RISK_MAX_DRAWDOWN_PCT: float = float(os.getenv("RISK_MAX_DRAWDOWN_PCT", "20"))
-    RISK_MAX_PORTFOLIO_CVAR_USD: float = float(os.getenv("RISK_MAX_PORTFOLIO_CVAR_USD", "5000"))  # CVaR tail-risk cap
+    RISK_MAX_PORTFOLIO_CVAR_USD: float = float(os.getenv("RISK_MAX_PORTFOLIO_CVAR_USD", "10000"))  # CVaR tail-risk cap (S120: 5000→10000)
     RISK_MIN_EDGE_PCT: float = float(os.getenv("RISK_MIN_EDGE_PCT", "2"))
     RISK_MAX_PRICE: float = float(os.getenv("RISK_MAX_PRICE", "0.95"))
     RISK_MIN_PRICE: float = float(os.getenv("RISK_MIN_PRICE", "0.05"))
@@ -685,10 +685,10 @@ class Settings(BaseSettings):
     WEATHER_GROUP_CONCURRENCY: int = int(os.getenv("WEATHER_GROUP_CONCURRENCY", "16"))  # S97: raised 12→16. Max concurrent group analyses per scan
     WEATHER_RATE_LIMIT_PER_MIN: int = int(os.getenv("WEATHER_RATE_LIMIT_PER_MIN", "120"))  # Open-Meteo API rate limit (free tier burst-tolerant to 600/min)
     WEATHER_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_MIN_CONFIDENCE", "0.10"))  # Multi-bucket: 9 outcomes → peak ~35-40%; lowered to 0.10 to not block boundary-risk trades
-    WEATHER_MAX_POSITIONS: int = int(os.getenv("WEATHER_MAX_POSITIONS", "500"))  # Multi-bucket: 45 groups × up to 9 buckets = 405 max; raised from 200 (was hitting cap at 201)
-    WEATHER_MAX_PER_GROUP_USD: float = float(os.getenv("WEATHER_MAX_PER_GROUP_USD", "1000"))
-    WEATHER_DAILY_LOSS_LIMIT: float = float(os.getenv("WEATHER_DAILY_LOSS_LIMIT", "10000"))  # S105: aligned to $10K (matching max_daily_usd)
-    WEATHER_MAX_CORRELATED_EXPOSURE: float = float(os.getenv("WEATHER_MAX_CORRELATED_EXPOSURE", "2000"))
+    WEATHER_MAX_POSITIONS: int = int(os.getenv("WEATHER_MAX_POSITIONS", "1000"))  # S122: 500→1000
+    WEATHER_MAX_PER_GROUP_USD: float = float(os.getenv("WEATHER_MAX_PER_GROUP_USD", "10000"))  # S122: 1000→10000
+    WEATHER_DAILY_LOSS_LIMIT: float = float(os.getenv("WEATHER_DAILY_LOSS_LIMIT", "10000"))
+    WEATHER_MAX_CORRELATED_EXPOSURE: float = float(os.getenv("WEATHER_MAX_CORRELATED_EXPOSURE", "5000"))  # S122: 2000→5000
     WEATHER_KELLY_FRACTION: float = float(os.getenv("WEATHER_KELLY_FRACTION", "0.25"))
     WEATHER_DEFAULT_SIZE: float = float(os.getenv("WEATHER_DEFAULT_SIZE", "25"))
     WEATHER_FORECAST_CACHE_TTL: int = int(os.getenv("WEATHER_FORECAST_CACHE_TTL", "1800"))
@@ -708,13 +708,12 @@ class Settings(BaseSettings):
     # S116: YES-side confidence gate threshold (disabled at 0.0, enable at e.g. 0.55)
     WEATHER_YES_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_YES_MIN_CONFIDENCE", "0.0"))
     # S115: Combined sizing boost cap (expiry * regime * jump * nbm * bm * station * calibration)
-    WEATHER_COMBINED_BOOST_CAP: float = float(os.getenv("WEATHER_COMBINED_BOOST_CAP", "2.0"))
+    WEATHER_COMBINED_BOOST_CAP: float = float(os.getenv("WEATHER_COMBINED_BOOST_CAP", "1.5"))  # S122: 2.0→1.5
     # S118: NO entry price cap — NO trades with entry price above this are skipped.
     # Data: 70-80¢ bucket is -$484 (76.4% WR, 0.24x win/loss). <60¢ is +$1,836.
-    WEATHER_NO_MAX_ENTRY_PRICE: float = float(os.getenv("WEATHER_NO_MAX_ENTRY_PRICE", "0.65"))
+    WEATHER_NO_MAX_ENTRY_PRICE: float = float(os.getenv("WEATHER_NO_MAX_ENTRY_PRICE", "1.0"))  # S122: removed (was 0.65). Set to 1.0 = no cap.
     # S118: Max buckets per city+date group — limits correlated blowup risk.
-    # Data: Miami lost -$976 in one day from 12 positions on same resolution.
-    WEATHER_MAX_BUCKETS_PER_GROUP: int = int(os.getenv("WEATHER_MAX_BUCKETS_PER_GROUP", "3"))
+    WEATHER_MAX_BUCKETS_PER_GROUP: int = int(os.getenv("WEATHER_MAX_BUCKETS_PER_GROUP", "5"))  # S122: 3→5
     # S118: Confidence discount for high-price NO trades — reduces Kelly sizing.
     # Applied when NO entry price > NO_CONFIDENCE_DISCOUNT_THRESHOLD.
     # Data: 90-95% confidence NO trades lost -$3,412 from 133 trades.
@@ -1047,6 +1046,7 @@ class Settings(BaseSettings):
     # --- Bankroll / sizing (separate Kelly pool) ---
     ESPORTS_TOTAL_CAPITAL: float = float(os.getenv("ESPORTS_TOTAL_CAPITAL", "20000.0"))  # S105: aligned to $20K
     ESPORTS_MAX_BET_USD: float = float(os.getenv("ESPORTS_MAX_BET_USD", "300.0"))
+    ESPORTS_MIN_TRADE_USD: float = float(os.getenv("ESPORTS_MIN_TRADE_USD", "10.0"))
     ESPORTS_MAX_DAILY_USD: float = float(os.getenv("ESPORTS_MAX_DAILY_USD", "20000.0"))
     ESPORTS_KELLY_DEFAULT_FRACTION: float = float(os.getenv("ESPORTS_KELLY_DEFAULT_FRACTION", "0.25"))
 

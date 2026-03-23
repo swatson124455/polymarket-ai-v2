@@ -39,7 +39,7 @@ _DEFAULT_BOT_CONFIGS: Dict[str, Dict[str, Any]] = {
     "CrossPlatformArbBot": {"capital": 500,  "kelly_fraction": 0.20, "max_bet_usd": 50,  "max_daily_usd": 200},
     "OracleBot":           {"capital": 500,  "kelly_fraction": 0.20, "max_bet_usd": 50,  "max_daily_usd": 200},
     "LLMForecasterBot":    {"capital": 500,  "kelly_fraction": 0.20, "max_bet_usd": 50,  "max_daily_usd": 200},
-    "WeatherBot":          {"capital": 20000, "kelly_fraction": 0.25, "max_bet_usd": 300, "max_daily_usd": 10000},
+    "WeatherBot":          {"capital": 20000, "kelly_fraction": 0.25, "max_bet_usd": 600, "max_daily_usd": 20000},  # S122: 300→600, 10k→20k
     "LogicalArbBot":       {"capital": 500,  "kelly_fraction": 0.20, "max_bet_usd": 200, "max_daily_usd": 500},
     "EsportsBot":          {"capital": 20000, "kelly_fraction": 0.25, "max_bet_usd": 300, "max_daily_usd": 10000},
     "EsportsLiveBot":      {"capital": 20000, "kelly_fraction": 0.25, "max_bet_usd": 300, "max_daily_usd": 10000},
