@@ -327,6 +327,56 @@ class ContractManager:
             logger.error(f"USDCe approval check failed: {str(e)}", exc_info=True)
             return {"success": False, "error": str(e)}
     
+    async def get_usdce_balance(self) -> Dict:
+        """Query on-chain USDCe balance for the configured wallet.
+
+        Returns:
+            {"success": True, "balance_usd": float, "balance_wei": int}
+            or {"success": False, "error": str}
+        """
+        if not self.account:
+            return {"success": False, "error": "No wallet configured"}
+
+        await self.ensure_client()
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                abi = [
+                    {
+                        "constant": True,
+                        "inputs": [{"name": "_owner", "type": "address"}],
+                        "name": "balanceOf",
+                        "outputs": [{"name": "balance", "type": "uint256"}],
+                        "type": "function"
+                    }
+                ]
+
+                if ASYNC_WEB3_AVAILABLE and AsyncWeb3 is not None:
+                    checksum_token = AsyncWeb3.to_checksum_address(USDCe_CONTRACT)
+                    checksum_owner = AsyncWeb3.to_checksum_address(self.account.address)
+                else:
+                    checksum_token = Web3.to_checksum_address(USDCe_CONTRACT)
+                    checksum_owner = Web3.to_checksum_address(self.account.address)
+
+                contract = self.w3.eth.contract(address=checksum_token, abi=abi)
+                balance_wei = await contract.functions.balanceOf(checksum_owner).call()
+
+                return {
+                    "success": True,
+                    "balance_usd": self._from_wei(balance_wei, USDCe_DECIMALS),
+                    "balance_wei": balance_wei,
+                }
+            except Exception as e:
+                if attempt < MAX_RETRIES - 1:
+                    logger.warning("Balance query failed (attempt %d/%d): %s", attempt + 1, MAX_RETRIES, e)
+                    await asyncio.sleep(RETRY_DELAY * (attempt + 1))
+                    continue
+                else:
+                    logger.error("Failed to query balance after %d attempts: %s", MAX_RETRIES, e)
+                    return {"success": False, "error": str(e)}
+
+        return {"success": False, "error": "Max retries exceeded"}
+
     async def ensure_outcome_token_approved(
         self,
         token_address: str,

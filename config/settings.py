@@ -209,13 +209,16 @@ class Settings(BaseSettings):
     # Transaction cost model (for dynamic edge threshold)
     TAKER_FEE_BPS: int = int(os.getenv("TAKER_FEE_BPS", "150"))  # 1.5% — used by exit strategy, position manager edge calcs
     MAKER_FEE_BPS: int = int(os.getenv("MAKER_FEE_BPS", "0"))
-    PAPER_TAKER_FEE_BPS: int = int(os.getenv("PAPER_TAKER_FEE_BPS", "0"))  # S95: Most Polymarket markets are 0% fee. Override for 15-min crypto (156 bps) or sports (88 bps).
+    PAPER_TAKER_FEE_BPS: int = int(os.getenv("PAPER_TAKER_FEE_BPS", "150"))  # S120: Default 150 bps (1.5%) for realistic paper P&L. Override per market: 0 for weather, 156 for 15-min crypto.
     GAS_COST_USD: float = float(os.getenv("GAS_COST_USD", "0.01"))
     FIXED_SLIPPAGE_BPS: int = int(os.getenv("FIXED_SLIPPAGE_BPS", "0"))  # 0=use tiered model; >0=flat override
     # S91: Realistic paper fill modeling — fill probability, partial fills, latency drift
     PAPER_REALISTIC_FILLS: bool = os.getenv("PAPER_REALISTIC_FILLS", "true").lower() in ("true", "1", "yes")
     PAPER_DEFAULT_SPREAD: float = float(os.getenv("PAPER_DEFAULT_SPREAD", "0.04"))  # 4% when bid/ask unavailable
-    PAPER_LATENCY_DRIFT_BPS_PER_SEC: int = int(os.getenv("PAPER_LATENCY_DRIFT_BPS_PER_SEC", "10"))  # 0.1%/sec (legacy, replaced by alpha decay)
+    PAPER_LATENCY_DRIFT_BPS_PER_SEC: int = int(os.getenv("PAPER_LATENCY_DRIFT_BPS_PER_SEC", "0"))  # S121: disabled by default. Models adverse price movement during execution delay. Set to 10 to enable (~0.1%/sec).
+    # S121: Live order retry settings (only active when SIMULATION_MODE=false)
+    LIVE_ORDER_MAX_RETRIES: int = int(os.getenv("LIVE_ORDER_MAX_RETRIES", "3"))
+    LIVE_ORDER_RETRY_BASE_S: float = float(os.getenv("LIVE_ORDER_RETRY_BASE_S", "1.0"))
     # S95: Paper trading realism elevations
     PAPER_KYLE_LAMBDA_ENABLED: bool = os.getenv("PAPER_KYLE_LAMBDA_ENABLED", "true").lower() in ("true", "1", "yes")
     PAPER_CROSS_SCAN_IMPACT_ENABLED: bool = os.getenv("PAPER_CROSS_SCAN_IMPACT_ENABLED", "true").lower() in ("true", "1", "yes")
@@ -337,58 +340,44 @@ class Settings(BaseSettings):
     # Market-maker heuristic: users trading both sides on >60% of markets
     ELITE_MARKET_MAKER_BOTH_SIDES_RATIO: float = float(os.getenv("ELITE_MARKET_MAKER_BOTH_SIDES_RATIO", "0.6"))
     SOFTEST_MARKETS_COUNT: int = 25
-    # MirrorBot
-    MIRROR_MAX_DELAY_MINUTES: int = int(os.getenv("MIRROR_MAX_DELAY_MINUTES", "30"))
-    MIRROR_MIN_CONSENSUS: int = int(os.getenv("MIRROR_MIN_CONSENSUS", "2"))  # 3→2: with 500 elites, 3 was impossibly tight
-    MIRROR_MIN_CONFIDENCE: float = float(os.getenv("MIRROR_MIN_CONFIDENCE", "0.55"))  # 0.10→0.55: elite must win >55% of trades
-    MIRROR_MAX_PER_MARKET: float = float(os.getenv("MIRROR_MAX_PER_MARKET", "500"))  # S96: 800→500
-    MIRROR_MAX_PER_MARKET_PCT: float = float(os.getenv("MIRROR_MAX_PER_MARKET_PCT", "0.10"))  # M9: 10% of capital per market
-    MIRROR_MAX_CATEGORY_EXPOSURE_PCT: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_PCT", "0.80"))  # M1: DEPRECATED — use MIRROR_MAX_CATEGORY_EXPOSURE_USD
-    MIRROR_MAX_CATEGORY_EXPOSURE_USD: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_USD", "40000"))  # S100: $10k→$40k per category
+    # MirrorBot — RTDS real-time copy trading (S96+)
+    MIRROR_MIN_CONFIDENCE: float = float(os.getenv("MIRROR_MIN_CONFIDENCE", "0.55"))
+    MIRROR_MAX_PER_MARKET: float = float(os.getenv("MIRROR_MAX_PER_MARKET", "500"))
+    MIRROR_MAX_PER_MARKET_PCT: float = float(os.getenv("MIRROR_MAX_PER_MARKET_PCT", "0.10"))
+    MIRROR_MAX_CATEGORY_EXPOSURE_USD: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_USD", "40000"))
     MIRROR_MAX_TRACKED_TRADES: int = int(os.getenv("MIRROR_MAX_TRACKED_TRADES", "10000"))
     MIRROR_EXIT_ENABLED: bool = os.getenv("MIRROR_EXIT_ENABLED", "true").lower() in ("true", "1", "yes")
-    MIRROR_MAX_CONCURRENT_POSITIONS: int = int(os.getenv("MIRROR_MAX_CONCURRENT_POSITIONS", "600"))  # S114: 200→600 — 400 legacy positions restored from DB were blocking all entries
-    MIRROR_MAX_DAILY_EXPOSURE_PCT: float = float(os.getenv("MIRROR_MAX_DAILY_EXPOSURE_PCT", "0.15"))
-    # Phase 4: MirrorBot structural hardening
-    MIRROR_HOT_TRADE_MAX_SECONDS: int = int(os.getenv("MIRROR_HOT_TRADE_MAX_SECONDS", "900"))  # 300→900: 5min was too aggressive, 15min allows more trades
-    MIRROR_MIN_RELIABILITY: float = float(os.getenv("MIRROR_MIN_RELIABILITY", "0.52"))  # 0.45→0.52: Bayesian posterior must beat coin-flip
-    MIRROR_MIN_ELITE_TRADES: int = int(os.getenv("MIRROR_MIN_ELITE_TRADES", "100"))  # 100 trades OR $10k volume (checked with ELITE_MIN_VOLUME_USD)
+    MIRROR_MAX_CONCURRENT_POSITIONS: int = int(os.getenv("MIRROR_MAX_CONCURRENT_POSITIONS", "600"))
+    MIRROR_MAX_DAILY_EXPOSURE_PCT: float = float(os.getenv("MIRROR_MAX_DAILY_EXPOSURE_PCT", "0.15"))  # deprecated fallback, tests use
+    MIRROR_MIN_RELIABILITY: float = float(os.getenv("MIRROR_MIN_RELIABILITY", "0.52"))
+    MIRROR_MIN_ELITE_TRADES: int = int(os.getenv("MIRROR_MIN_ELITE_TRADES", "100"))
     # Watchlist: real-time WebSocket copy trading (monthly leaderboard top 1k)
     WATCHLIST_ENABLED: bool = os.getenv("WATCHLIST_ENABLED", "false").lower() in ("true", "1", "yes")
-    WATCHLIST_SIZE: int = int(os.getenv("WATCHLIST_SIZE", "500"))  # S96: 1000→500 single list
-    WHALE_TRADE_LOG_ENABLED: bool = os.getenv("WHALE_TRADE_LOG_ENABLED", "true").lower() in ("true", "1", "yes")  # S100: persist whale trades
-    # RTDS: global trade feed (all trades on platform, not per-market)
+    WATCHLIST_SIZE: int = int(os.getenv("WATCHLIST_SIZE", "500"))
+    WHALE_TRADE_LOG_ENABLED: bool = os.getenv("WHALE_TRADE_LOG_ENABLED", "true").lower() in ("true", "1", "yes")
+    # RTDS: global trade feed
     RTDS_WS_URL: str = os.getenv("RTDS_WS_URL", "wss://ws-live-data.polymarket.com")
-    RTDS_PING_INTERVAL: int = int(os.getenv("RTDS_PING_INTERVAL", "5"))  # seconds — RTDS keep-alive requirement
+    RTDS_PING_INTERVAL: int = int(os.getenv("RTDS_PING_INTERVAL", "5"))
 
-    # Session 82: Advanced calibration + RL scaffold feature flags (all off by default)
+    # Calibration + safety feature flags (all off by default)
     MIRROR_USE_CALIBRATION: bool = os.getenv("MIRROR_USE_CALIBRATION", "false").lower() in ("true", "1", "yes")
-    MIRROR_USE_CONFORMAL: bool = os.getenv("MIRROR_USE_CONFORMAL", "false").lower() in ("true", "1", "yes")
-    MIRROR_USE_GEOMEAN_CONSENSUS: bool = os.getenv("MIRROR_USE_GEOMEAN_CONSENSUS", "false").lower() in ("true", "1", "yes")
-    MIRROR_GEOMEAN_EXTREMIZE_D: float = float(os.getenv("MIRROR_GEOMEAN_EXTREMIZE_D", "2.0"))
     MIRROR_ADAPTIVE_SAFETY: bool = os.getenv("MIRROR_ADAPTIVE_SAFETY", "false").lower() in ("true", "1", "yes")
     MIRROR_SKIP_LIQUIDITY_RTDS: bool = os.getenv("MIRROR_SKIP_LIQUIDITY_RTDS", "true").lower() in ("true", "1", "yes")
-    MIRROR_SKIP_COORDINATOR_BUY: bool = os.getenv("MIRROR_SKIP_COORDINATOR_BUY", "true").lower() in ("true", "1", "yes")  # S94: skip coordinator for RTDS BUY (saves 72-464ms). Set false when other bots enabled.
-    MIRROR_RTDS_FAST_PATH: bool = os.getenv("MIRROR_RTDS_FAST_PATH", "true").lower() in ("true", "1", "yes")  # S94: skip risk/drawdown/fill model for RTDS copies (~20-30ms). MirrorBot has own limits.
-    MIRROR_CONFORMAL_MIN_RESOLVED: int = int(os.getenv("MIRROR_CONFORMAL_MIN_RESOLVED", "50"))
-    MIRROR_CONFORMAL_ALPHA: float = float(os.getenv("MIRROR_CONFORMAL_ALPHA", "0.50"))  # B1: 0.50 = 50% coverage (was 0.10 = 90%)
+    MIRROR_SKIP_COORDINATOR_BUY: bool = os.getenv("MIRROR_SKIP_COORDINATOR_BUY", "true").lower() in ("true", "1", "yes")
+    MIRROR_RTDS_FAST_PATH: bool = os.getenv("MIRROR_RTDS_FAST_PATH", "true").lower() in ("true", "1", "yes")
 
+    # Exit logic
     MIRROR_STOP_LOSS_PCT: float = float(os.getenv("MIRROR_STOP_LOSS_PCT", "0.15"))
-    MIRROR_MAX_HOLD_HOURS: float = float(os.getenv("MIRROR_MAX_HOLD_HOURS", "99999"))  # S96: disabled — stop-loss is safety net
-    MIRROR_MAX_POSITIONS: int = int(os.getenv("MIRROR_MAX_POSITIONS", "1000"))  # S96: 400→1000
-    MIRROR_TOTAL_CAPITAL: float = float(os.getenv("MIRROR_TOTAL_CAPITAL", "20000"))  # S107: 3000→20000 align with CLAUDE.md/$20K
-    # S91: Tier 0 pre-trade filters — in-memory short-circuit before any DB/cache hit
-    MIRROR_CATEGORY_BLOCKLIST: str = os.getenv("MIRROR_CATEGORY_BLOCKLIST", "15-minute,speed")  # comma-separated substrings
-    MIRROR_MARKET_COOLDOWN_SECONDS: int = int(os.getenv("MIRROR_MARKET_COOLDOWN_SECONDS", "1800"))  # 30 min per-market re-entry cooldown
-    MIRROR_MIN_TRADE_USD: float = float(os.getenv("MIRROR_MIN_TRADE_USD", "50.0"))  # S102: $50 min position size
-    MIRROR_MAX_SLIPPAGE_PCT: float = float(os.getenv("MIRROR_MAX_SLIPPAGE_PCT", "0.08"))  # 8% max price drift from whale's fill
-    # S101: Bucket-based entry filters (from all-time P&L bucket analysis)
-    MIRROR_MAX_ENTRIES_PER_MARKET: int = int(os.getenv("MIRROR_MAX_ENTRIES_PER_MARKET", "2"))  # cap stacking on same market
-    MIRROR_FAVORITE_PRICE_THRESHOLD: float = float(os.getenv("MIRROR_FAVORITE_PRICE_THRESHOLD", "0.70"))  # favorite dampening starts here
-    MIRROR_FAVORITE_DAMPENER: float = float(os.getenv("MIRROR_FAVORITE_DAMPENER", "0.40"))  # 0.40x sizing above threshold
-    MIRROR_DEAD_ZONE_LOW: float = float(os.getenv("MIRROR_DEAD_ZONE_LOW", "0.30"))  # dead zone lower bound
-    MIRROR_DEAD_ZONE_HIGH: float = float(os.getenv("MIRROR_DEAD_ZONE_HIGH", "0.50"))  # dead zone upper bound
-    MIRROR_DEAD_ZONE_DAMPENER: float = float(os.getenv("MIRROR_DEAD_ZONE_DAMPENER", "0.50"))  # 0.50x sizing in dead zone
+    MIRROR_MAX_POSITIONS: int = int(os.getenv("MIRROR_MAX_POSITIONS", "1000"))
+    MIRROR_TOTAL_CAPITAL: float = float(os.getenv("MIRROR_TOTAL_CAPITAL", "20000"))
+    # Tier 0 pre-trade filters
+    MIRROR_CATEGORY_BLOCKLIST: str = os.getenv("MIRROR_CATEGORY_BLOCKLIST", "15-minute,speed")
+    MIRROR_MARKET_COOLDOWN_SECONDS: int = int(os.getenv("MIRROR_MARKET_COOLDOWN_SECONDS", "1800"))
+    MIRROR_MIN_TRADE_USD: float = float(os.getenv("MIRROR_MIN_TRADE_USD", "50.0"))
+    MIRROR_MAX_SLIPPAGE_PCT: float = float(os.getenv("MIRROR_MAX_SLIPPAGE_PCT", "0.08"))
+    # Dampeners (S119: set to 1.0 = no-op for data collection phase)
+    MIRROR_FAVORITE_PRICE_THRESHOLD: float = float(os.getenv("MIRROR_FAVORITE_PRICE_THRESHOLD", "0.70"))
+    MIRROR_FAVORITE_DAMPENER: float = float(os.getenv("MIRROR_FAVORITE_DAMPENER", "1.0"))  # S119: 0.40→1.0 for data collection
 
     # Bot Settings
     BOT_SCAN_INTERVAL_SECONDS: int = int(os.getenv("BOT_SCAN_INTERVAL_SECONDS", "60"))
@@ -479,7 +468,9 @@ class Settings(BaseSettings):
     USE_PIPELINE_GATE: bool = os.getenv("USE_PIPELINE_GATE", "true").lower() in ("true", "1", "yes")
     # Paper trading (SIMULATION_MODE): full pipeline runs (scan → predict → risk check) but orders go to PaperTradingEngine and paper_trades table, not CLOB. Set SIMULATION_MODE=false for real money.
     SIMULATION_MODE: bool = os.getenv("SIMULATION_MODE", "true").lower() in ("true", "1", "yes")
-    PAPER_TRADING_CAPITAL: float = float(os.getenv("PAPER_TRADING_CAPITAL", "100000"))
+    # S120: Raised to $10M so shared paper cash pool is never the bottleneck.
+    # Real sizing limits come from BotBankrollManager ($300 max bet, $10K daily cap per bot).
+    PAPER_TRADING_CAPITAL: float = float(os.getenv("PAPER_TRADING_CAPITAL", "10000000"))
     
     # Execution Settings (Maximum Speed)
     ORDER_TIMEOUT_SECONDS: int = 5
@@ -525,6 +516,9 @@ class Settings(BaseSettings):
     USER_ORDER_WS_ENABLED: bool = os.getenv("USER_ORDER_WS_ENABLED", "false").lower() in ("true", "1", "yes")
     # Phase 1: Run USDCe pre-approval (MAX_UINT256) once at engine start to populate ApprovalCache and skip per-order checks
     PREAPPROVE_ON_STARTUP: bool = os.getenv("PREAPPROVE_ON_STARTUP", "true").lower() in ("true", "1", "yes")
+    # S120: Balance & fill confirmation settings (live trading)
+    BALANCE_WARNING_THRESHOLD_USD: float = float(os.getenv("BALANCE_WARNING_THRESHOLD_USD", "100.0"))
+    ORDER_FILL_TIMEOUT_S: float = float(os.getenv("ORDER_FILL_TIMEOUT_S", "60.0"))
     
     # Price Ingestion Configuration
     # Polymarket moved to CLOB (order book) system - blockchain pricing is outdated
@@ -715,6 +709,17 @@ class Settings(BaseSettings):
     WEATHER_YES_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_YES_MIN_CONFIDENCE", "0.0"))
     # S115: Combined sizing boost cap (expiry * regime * jump * nbm * bm * station * calibration)
     WEATHER_COMBINED_BOOST_CAP: float = float(os.getenv("WEATHER_COMBINED_BOOST_CAP", "2.0"))
+    # S118: NO entry price cap — NO trades with entry price above this are skipped.
+    # Data: 70-80¢ bucket is -$484 (76.4% WR, 0.24x win/loss). <60¢ is +$1,836.
+    WEATHER_NO_MAX_ENTRY_PRICE: float = float(os.getenv("WEATHER_NO_MAX_ENTRY_PRICE", "0.65"))
+    # S118: Max buckets per city+date group — limits correlated blowup risk.
+    # Data: Miami lost -$976 in one day from 12 positions on same resolution.
+    WEATHER_MAX_BUCKETS_PER_GROUP: int = int(os.getenv("WEATHER_MAX_BUCKETS_PER_GROUP", "3"))
+    # S118: Confidence discount for high-price NO trades — reduces Kelly sizing.
+    # Applied when NO entry price > NO_CONFIDENCE_DISCOUNT_THRESHOLD.
+    # Data: 90-95% confidence NO trades lost -$3,412 from 133 trades.
+    WEATHER_NO_CONFIDENCE_DISCOUNT: float = float(os.getenv("WEATHER_NO_CONFIDENCE_DISCOUNT", "0.80"))
+    WEATHER_NO_CONFIDENCE_DISCOUNT_THRESHOLD: float = float(os.getenv("WEATHER_NO_CONFIDENCE_DISCOUNT_THRESHOLD", "0.70"))
     # S99: Fill-failure cooldown
     WEATHER_FILL_FAIL_COOLDOWN_SCANS: int = int(os.getenv("WEATHER_FILL_FAIL_COOLDOWN_SCANS", "2"))
     WEATHER_FILL_FAIL_COOLDOWN_SECS: float = float(os.getenv("WEATHER_FILL_FAIL_COOLDOWN_SECS", "120"))  # S101: 900→120s — IOC gas negligible, 2min = 1 scan cycle
@@ -725,6 +730,17 @@ class Settings(BaseSettings):
     # S99: Adaptive backoff
     WEATHER_ADAPTIVE_BACKOFF_THRESHOLD: int = int(os.getenv("WEATHER_ADAPTIVE_BACKOFF_THRESHOLD", "6"))
     WEATHER_MAX_SCAN_INTERVAL: float = float(os.getenv("WEATHER_MAX_SCAN_INTERVAL", "600"))
+    # S120: EMOS calibration rolling window (days). Prevents seasonal contamination.
+    WEATHER_EMOS_WINDOW_DAYS: int = int(os.getenv("WEATHER_EMOS_WINDOW_DAYS", "90"))
+    # S121: Externalized hardcoded values
+    WEATHER_ALPHA_DECAY_HALF_LIFE_S: float = float(os.getenv("WEATHER_ALPHA_DECAY_HALF_LIFE_S", "1800"))
+    WEATHER_NBM_BOOST: float = float(os.getenv("WEATHER_NBM_BOOST", "1.3"))
+    WEATHER_COMBINED_BOOST_CAP: float = float(os.getenv("WEATHER_COMBINED_BOOST_CAP", "2.0"))
+    # S121: Model freshness sizing — scale by NWP model age (hours since last init)
+    WEATHER_MODEL_FRESH_HOURS: float = float(os.getenv("WEATHER_MODEL_FRESH_HOURS", "2.0"))
+    WEATHER_MODEL_STALE_HOURS: float = float(os.getenv("WEATHER_MODEL_STALE_HOURS", "8.0"))
+    WEATHER_MODEL_FRESH_BOOST: float = float(os.getenv("WEATHER_MODEL_FRESH_BOOST", "1.2"))
+    WEATHER_MODEL_STALE_DISCOUNT: float = float(os.getenv("WEATHER_MODEL_STALE_DISCOUNT", "0.8"))
 
     # Scan intervals (seconds)
     SCAN_INTERVAL_ENSEMBLE: int = int(os.getenv("SCAN_INTERVAL_ENSEMBLE", "60"))
@@ -1020,7 +1036,6 @@ class Settings(BaseSettings):
     # --- Edge / confidence thresholds ---
     ESPORTS_MIN_EDGE: float = float(os.getenv("ESPORTS_MIN_EDGE", "0.05"))
     ESPORTS_MIN_CONFIDENCE: float = float(os.getenv("ESPORTS_MIN_CONFIDENCE", "0.52"))
-    ESPORTS_MAX_EDGE: float = float(os.getenv("ESPORTS_MAX_EDGE", "0.35"))
     ESPORTS_EGM_D: float = float(os.getenv("ESPORTS_EGM_D", "1.5"))  # Extremization factor for EGM blend
     ESPORTS_SERIES_MIN_EDGE: float = float(os.getenv("ESPORTS_SERIES_MIN_EDGE", "0.10"))
     ESPORTS_SERIES_REVERSE_SWEEP_FLOOR: float = float(os.getenv("ESPORTS_SERIES_REVERSE_SWEEP_FLOOR", "0.05"))
@@ -1064,11 +1079,6 @@ class Settings(BaseSettings):
     ODDSPAPI_API_KEY: str = os.getenv("ODDSPAPI_API_KEY", "")
     BALLCHASING_API_KEY: str = os.getenv("BALLCHASING_API_KEY", "")
 
-    # --- Signal confluence ---
-    ESPORTS_CONFLUENCE_MIN: float = float(os.getenv("ESPORTS_CONFLUENCE_MIN", "0.55"))
-    ESPORTS_CONFLUENCE_WEIGHT_EDGE: float = float(os.getenv("ESPORTS_CONFLUENCE_WEIGHT_EDGE", "0.65"))
-    ESPORTS_CONFLUENCE_WEIGHT_FRESHNESS: float = float(os.getenv("ESPORTS_CONFLUENCE_WEIGHT_FRESHNESS", "0.35"))
-    ESPORTS_CONFLUENCE_WEIGHT_AGREEMENT: float = float(os.getenv("ESPORTS_CONFLUENCE_WEIGHT_AGREEMENT", "0.0"))
     ESPORTS_REENTRY_MIN_EDGE: float = float(os.getenv("ESPORTS_REENTRY_MIN_EDGE", "0.08"))
     ESPORTS_PER_MARKET_CAP: float = float(os.getenv("ESPORTS_PER_MARKET_CAP", "600"))
     ESPORTS_FRESHNESS_DECAY_SECONDS: float = float(os.getenv("ESPORTS_FRESHNESS_DECAY_SECONDS", "120.0"))
@@ -1115,8 +1125,6 @@ class Settings(BaseSettings):
 
     # --- Per-game thresholds (CS2) ---
     ESPORTS_CS2_ROUND_DIFF_THRESHOLD: int = int(os.getenv("ESPORTS_CS2_ROUND_DIFF_THRESHOLD", "5"))
-    ESPORTS_CS2_ECONOMY_BREAK_THRESHOLD: int = int(os.getenv("ESPORTS_CS2_ECONOMY_BREAK_THRESHOLD", "10000"))
-
     # --- Risk guardrails (A1+A8: daily loss limit + drawdown halt) ---
     # Paper-trading defaults — loose enough for training. Tighten via env for live.
     ESPORTS_DAILY_LOSS_LIMIT: float = float(os.getenv("ESPORTS_DAILY_LOSS_LIMIT", "10000.0"))  # S105: aligned to $10K (matching max_daily_usd)

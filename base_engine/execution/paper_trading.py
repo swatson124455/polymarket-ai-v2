@@ -2,204 +2,18 @@
 Paper Trading Mode
 ==================
 Test strategies with real data, fake money.
-Simulates order execution without real trades with realistic slippage.
-When db is provided, each trade is persisted to paper_trades for resolution backfill and hypothetical P&L.
+Fills at VWAP from real L2 orderbook when available, signal price otherwise.
+Records every trade signal to shadow_fills for retroactive P&L analysis.
+When db is provided, each trade is persisted to paper_trades for resolution backfill.
 """
 import asyncio
-import math
-import random
 import time
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone
 from structlog import get_logger
 from config.settings import settings
-from base_engine.features.market_impact import MarketImpactEstimator, DEFAULT_LAMBDA
 
 logger = get_logger()
-
-
-def _size_dependent_slippage_bps(order_size_usd: float, price: float = 0.5) -> int:
-    """Tiered market-impact slippage model with boundary adjustment.
-
-    Flat 50 bps is unrealistic: small orders face tight spreads, large orders
-    move the book. Tiers calibrated to Polymarket CLOB typical depth.
-
-    S95: Boundary multiplier — books thin dramatically near $0 and $1.
-    At $0.50: 1.0x. At $0.10: ~1.2x. At $0.05: ~1.8x. At $0.02: ~3.5x.
-    Capped at 5.0x to avoid extreme values at the very edges.
-
-    < $50:    35 bps  — small retail, inside spread
-    $50-200:  50 bps  — baseline (matches old flat rate)
-    $200-500: 75 bps  — medium, liquidity thins
-    > $500:  120 bps  — large, meaningful market impact
-    """
-    if order_size_usd < 50:
-        base_bps = 35
-    elif order_size_usd < 200:
-        base_bps = 50
-    elif order_size_usd < 500:
-        base_bps = 75
-    else:
-        base_bps = 120
-
-    # S95: Boundary multiplier — books are 2-5x thinner near $0 and $1
-    # p*(1-p) peaks at 0.25 when p=0.50, approaches 0 at boundaries
-    _p = max(0.01, min(0.99, price))
-    boundary_mult = min(5.0, 1.0 + 0.02 / (_p * (1.0 - _p)))
-    return int(base_bps * boundary_mult)
-
-
-def _apply_slippage(price: float, side: str, slippage_bps: int) -> float:
-    """
-    Apply realistic slippage to a paper trade price.
-
-    BUY orders get a worse (higher) price, SELL orders get a worse (lower) price.
-    Adds random jitter (0-50% of slippage) to simulate variable market conditions.
-
-    Args:
-        price: Requested order price.
-        side: 'BUY' or 'SELL'.
-        slippage_bps: Slippage in basis points (e.g. 50 = 0.5%).
-
-    Returns:
-        Adjusted price clamped to [0.001, 0.999] (valid Polymarket range).
-    """
-    if slippage_bps <= 0:
-        return price
-    base_slip = slippage_bps / 10000.0
-    # Random jitter: 50%-150% of base slippage to simulate variable conditions
-    jitter = base_slip * (0.5 + random.random())
-    if side == "BUY":
-        adjusted = price + jitter
-    else:
-        adjusted = price - jitter
-    return max(0.001, min(0.999, adjusted))
-
-
-def _time_of_day_liquidity_mult() -> float:
-    """S95: Time-of-day liquidity multiplier.
-
-    Polymarket books are thickest during US+EU overlap (13:00-17:00 UTC)
-    and thinnest during Asian late-night (21:00-02:00 UTC).
-    Weekend factor: 0.6x depth vs weekday peak.
-
-    Returns multiplier in [0.35, 1.0] applied to fill probability.
-    """
-    now = datetime.now(timezone.utc)
-    hour = now.hour
-    weekday = now.weekday()  # 0=Mon, 6=Sun
-
-    # Hourly liquidity curve (UTC). Peak = 1.0 during US/EU overlap.
-    _hourly = {
-        0: 0.55, 1: 0.50, 2: 0.50, 3: 0.55, 4: 0.60, 5: 0.65,
-        6: 0.70, 7: 0.75, 8: 0.80, 9: 0.85, 10: 0.90, 11: 0.95,
-        12: 0.95, 13: 1.00, 14: 1.00, 15: 1.00, 16: 1.00, 17: 0.95,
-        18: 0.90, 19: 0.85, 20: 0.80, 21: 0.70, 22: 0.65, 23: 0.60,
-    }
-    mult = _hourly.get(hour, 0.70)
-
-    # Weekend discount: ~40% less depth
-    if weekday >= 5:
-        mult *= 0.60
-
-    return mult
-
-
-def _sqrt_market_impact_bps(order_size_usd: float, volume_24h: float, price: float) -> float:
-    """S95: Square-root market impact model.
-
-    ΔP = Y × σ × √(Q/V) where Y=2.0 (thin prediction market calibration),
-    σ=0.05 (daily vol proxy for prediction markets).
-    Returns additional slippage in basis points.
-
-    Only meaningful for larger orders on thinner markets. For a $100 order
-    on a $500K/day market, impact is ~0.6 bps (negligible). For a $500 order
-    on a $10K/day market, impact is ~141 bps (significant).
-    """
-    if volume_24h <= 0:
-        volume_24h = 50000.0  # S100: realistic fallback (median Polymarket market) for zero-volume markets
-    _Y = 2.0      # market impact coefficient (1.5-3.0 for thin markets)
-    _sigma = 0.05  # daily volatility proxy
-    participation = order_size_usd / max(volume_24h, 1.0)
-    impact = _Y * _sigma * math.sqrt(participation)
-    return impact * 10000  # convert to bps
-
-
-def _fill_probability(
-    price: float,
-    order_size_usd: float,
-    spread: float,
-    volume_24h: float,
-) -> float:
-    """Estimate probability of order fill based on market microstructure.
-
-    Five independent factors (multiplicative):
-    1. Price-depth: books thin at extremes (0.05, 0.95), deep at 0.50
-    2. Size-impact: larger orders relative to volume are harder to fill
-    3. Spread: wider spread = less likely to fill at your price
-    4. Time-of-day: off-peak hours and weekends have thinner books (S95)
-    5. Square-root participation: high Q/V ratio reduces fill chance (S95)
-
-    Returns float in [0.05, 1.0]. The 5% floor ensures no order is
-    completely unfillable (real CLOB always has some crossing chance).
-    """
-    # Price-depth: parabola peaks at 0.50, zero at 0/1
-    depth_at_price = 4.0 * price * (1.0 - price)
-    price_factor = 0.3 + 0.7 * depth_at_price
-
-    # Size-impact: ratio of order to daily volume
-    if volume_24h <= 0:
-        volume_24h = 50000.0  # S100: realistic fallback (median Polymarket market)
-    size_ratio = order_size_usd / max(volume_24h, 1.0)
-    size_factor = max(0.1, 1.0 - 2.0 * size_ratio)
-
-    # Spread: wider spread = less fill probability
-    spread_factor = max(0.2, 1.0 - spread * 5.0)
-
-    # S95: Time-of-day liquidity (off-peak = harder to fill)
-    tod_factor = _time_of_day_liquidity_mult()
-
-    # S95: High participation rate reduces fill probability
-    # sqrt(Q/V) > 0.1 starts to matter; > 0.5 = very hard to fill
-    _participation = order_size_usd / max(volume_24h, 1.0)
-    participation_factor = max(0.2, 1.0 - math.sqrt(_participation) * 0.5)
-
-    fill_prob = price_factor * size_factor * spread_factor * tod_factor * participation_factor
-    return max(0.05, min(1.0, fill_prob))
-
-
-def _alpha_decay_factor(latency_ms: Optional[float], half_life_s: float = 300.0) -> float:
-    """S95: Exponential alpha decay — signal degrades with latency.
-
-    Replaces the S91 linear latency drift (10 bps/sec, 500ms threshold) with
-    a more realistic exponential model: decay = exp(-ln2 * t / half_life).
-
-    No threshold — applies proportionally to ALL latencies.
-    Returns decay factor in [0, 1] where 1.0 = no decay, 0.0 = full decay.
-    """
-    if latency_ms is None or latency_ms <= 0 or half_life_s <= 0:
-        return 1.0
-    latency_s = latency_ms / 1000.0
-    return math.exp(-math.log(2) * latency_s / half_life_s)
-
-
-def _resolution_proximity_penalty(hours_to_resolution: Optional[float]) -> Tuple[float, float]:
-    """S95: Resolution-proximity adverse selection.
-
-    Near market resolution, informed flow dominates — wider spreads and
-    lower fill rates as market makers widen to protect against insiders.
-
-    Returns (slippage_multiplier, fill_probability_multiplier).
-    """
-    if hours_to_resolution is None or hours_to_resolution < 0:
-        return (1.0, 1.0)
-    if hours_to_resolution > 6.0:
-        return (1.0, 1.0)
-    if hours_to_resolution > 2.0:
-        return (1.5, 0.9)
-    if hours_to_resolution > 0.5:
-        return (2.0, 0.7)
-    return (3.0, 0.5)
 
 
 def _vwap_from_book(
@@ -277,6 +91,64 @@ def _vwap_from_book(
     return (vwap, min(1.0, fill_fraction), slippage)
 
 
+def _vwap_from_bids(
+    bids: List[Dict],
+    order_size_shares: float,
+) -> Optional[Tuple[float, float, float]]:
+    """S121: Walk L2 bid side to compute VWAP fill price for SELL orders.
+
+    Mirror of _vwap_from_book but walks bids descending (best bid first).
+    Models realistic exit slippage — live SELLs walk down the bid side.
+
+    Args:
+        bids: List of {"price": str|float, "size": str|float}.
+        order_size_shares: Order size in shares to sell.
+
+    Returns:
+        (vwap_price, fill_fraction, slippage_vs_best_bid) or None if no depth.
+        slippage is always >= 0 (best_bid - vwap, since VWAP <= best_bid).
+    """
+    if not bids or order_size_shares <= 0:
+        return None
+
+    # Parse and sort descending by price (best bid first)
+    levels: List[Tuple[float, float]] = []
+    for level in bids:
+        try:
+            p = float(level.get("price", level.get("p", 0)))
+            s = float(level.get("size", level.get("s", 0)))
+            if p > 0 and s > 0:
+                levels.append((p, s))
+        except (ValueError, TypeError, AttributeError):
+            continue
+    if not levels:
+        return None
+    levels.sort(key=lambda x: x[0], reverse=True)
+
+    best_bid = levels[0][0]
+
+    # Walk bid side top-down to fill sell order
+    remaining_order = order_size_shares
+    filled_shares = 0.0
+    total_proceeds = 0.0
+    for price, size in levels:
+        fill_at_level = min(remaining_order, size)
+        filled_shares += fill_at_level
+        total_proceeds += fill_at_level * price
+        remaining_order -= fill_at_level
+        if remaining_order <= 0.001:
+            break
+
+    if filled_shares <= 0:
+        return None
+
+    vwap = total_proceeds / filled_shares
+    fill_fraction = filled_shares / order_size_shares
+    slippage = best_bid - vwap  # >= 0 since VWAP <= best_bid
+
+    return (vwap, min(1.0, fill_fraction), slippage)
+
+
 class PaperTrade:
     """Simulated trade"""
     def __init__(
@@ -327,31 +199,13 @@ class PaperTradingEngine:
         self._pending_correlation_ids: set = set()
         # S94: DB write tasks queued under lock, executed after lock release
         self._pending_db_writes: list = []
-        # S95: Kyle's lambda — wire existing MarketImpactEstimator for AS penalty
-        self._market_impact_estimator: Optional[MarketImpactEstimator] = None
-        self._kyle_lambda_cache: Dict[str, Tuple[float, float]] = {}  # market_id -> (lambda, mono_ts)
-        # S95: Cross-scan cumulative impact tracker
-        self._scan_impact: Dict[str, Tuple[float, float]] = {}  # market_id -> (cumulative_bps, mono_ts)
-        # S100: L2 order book tracker for book walk fills (set by base_engine)
+        # S115: L2 order book tracker for VWAP fills (wired by base_engine)
         self._orderbook_tracker = None
-        # S106: Fill-failure cooldown — back off markets with consecutive fill rejections.
-        # Dict[market_id -> (consecutive_failures, last_failure_monotonic)]
-        self._fill_failure_tracker: Dict[str, Tuple[int, float]] = {}
-    
-    async def _get_kyle_lambda(self, market_id: str) -> float:
-        """S95: Cached Kyle's lambda lookup (1h TTL). DEFAULT_LAMBDA on miss."""
-        _now = time.monotonic()
-        _cached = self._kyle_lambda_cache.get(market_id)
-        if _cached and (_now - _cached[1]) < 3600.0:
-            return _cached[0]
-        if self._market_impact_estimator is None:
-            self._market_impact_estimator = MarketImpactEstimator(db=self.db)
-        try:
-            lam = await self._market_impact_estimator.estimate_kyle_lambda(market_id)
-        except Exception:
-            lam = DEFAULT_LAMBDA
-        self._kyle_lambda_cache[market_id] = (lam, _now)
-        return lam
+        # S121: Per-scan book depletion — tracks consumed liquidity so consecutive
+        # fills on same token see progressively worse depth. Auto-expires after 60s.
+        # Key: (token_id, "ask"|"bid") -> (depleted_levels: List[Tuple[price, size]], mono_time)
+        self._scan_book_state: Dict[tuple, tuple] = {}
+        self._BOOK_DEPLETION_TTL_S = 60.0
 
     async def seed_positions_from_db(self) -> int:
         """Sync open positions from DB into in-memory paper portfolio.
@@ -539,14 +393,8 @@ class PaperTradingEngine:
         event_data: Optional[dict] = None,
     ) -> Dict:
         """Inner order handler — called under self._trade_lock."""
-        # S104: Default fill quality metrics — overwritten by BUY path when realistic fills enabled.
-        # These must be initialized here because the BUY path sets them inside conditional blocks.
-        _fill_prob = 1.0
+        # S115: Fill fraction from book walk (1.0 = full fill, <1.0 = thin book)
         _fill_frac = 1.0
-        _decay_slip_bps = 0
-        _lambda_slip_bps = 0
-        _cum_add = 0
-        _res_slip_mult = 1.0
 
         # Auto-reset daily P&L at day boundary (UTC)
         today = datetime.now(timezone.utc).date()
@@ -555,6 +403,7 @@ class PaperTradingEngine:
                 logger.info("Daily P&L reset", previous_pnl=self.realized_pnl_today)
             self.realized_pnl_today = {}
             self._pnl_reset_date = today
+            self._scan_book_state = {}  # S121: clear depletion state at day boundary
 
         # S94: In-memory idempotency fast-check (covers gap between lock release and DB write)
         # S107: Return success=False so order_gateway does NOT call confirm_position
@@ -594,234 +443,107 @@ class PaperTradingEngine:
         if bid > 0.0 and ask > 0.0:
             price = ask if side == "BUY" else bid
 
-        # S95: Realistic fills apply to ALL trades including RTDS fast-path.
-        # Fill probability is pure math (no DB/API) — zero latency impact.
-        # S94 bypassed this for speed, but it inflated P&L with 100% fills.
-        _realistic = getattr(settings, "PAPER_REALISTIC_FILLS", False) is True
-
-        # S106: Fill-failure cooldown — skip markets that keep failing fills.
-        # Ported from WeatherBot's consecutive-failure tracking pattern.
-        if _realistic and side == "BUY":
-            try:
-                _cooldown_s = int(getattr(settings, "PAPER_FILL_FAILURE_COOLDOWN_S", 300))
-            except (TypeError, ValueError):
-                _cooldown_s = 300
-            _ff_entry = self._fill_failure_tracker.get(market_id)
-            if _ff_entry and _ff_entry[0] >= 3:
-                _elapsed = time.monotonic() - _ff_entry[1]
-                if _elapsed < _cooldown_s:
-                    logger.info("paper_fill_cooldown", market_id=market_id,
-                                failures=_ff_entry[0], remaining_s=round(_cooldown_s - _elapsed))
-                    return {
-                        "success": False,
-                        "error": f"Fill cooldown: {_ff_entry[0]} consecutive failures, {_cooldown_s - _elapsed:.0f}s remaining",
-                    }
-                else:
-                    # Cooldown expired, reset tracker
-                    del self._fill_failure_tracker[market_id]
-
-        # S95: Alpha decay — exponential signal deterioration replaces S91 linear drift.
-        # No threshold: applies proportionally to ALL latencies via exp(-ln2 * t / half_life).
+        # S115: Use VWAP from order_gateway's book walk (passed via event_data)
+        # to set realistic fill price. Edge check already done by order_gateway.
         _event = event_data or {}
-        if _realistic and side == "BUY" and latency_ms is not None and latency_ms > 0:
-            _half_life = _event.get("alpha_decay_half_life_s",
-                                    getattr(settings, "PAPER_ALPHA_DECAY_HALF_LIFE_S", 300))
-            _decay = _alpha_decay_factor(latency_ms, _half_life)
-            _decay_slip_bps = (1.0 - _decay) * 100  # max 100 bps at full decay
-            _decay_slip = _decay_slip_bps / 10000.0 * (0.5 + random.random())
-            if side == "BUY":
-                price = min(0.999, price + _decay_slip)
-            else:
-                price = max(0.001, price - _decay_slip)
-            if _decay_slip_bps > 1.0:
-                logger.info("paper_alpha_decay", latency_ms=round(latency_ms, 0),
-                            decay_factor=round(_decay, 4), slip_bps=round(_decay_slip * 10000, 1),
-                            market_id=market_id)
-
-        # S100: L2 Book Walk — use real order book depth when available.
-        # Subtracts whale's consumed liquidity, then walks remaining asks to compute VWAP.
-        # When successful, replaces heuristic slippage tiers (those are approximations of this).
-        _book_walk_used = False
-        _book_walk_fill_frac = 1.0
         _order_size_usd = size * price
-        if (_realistic and side == "BUY"
-                and getattr(settings, "PAPER_BOOK_WALK_ENABLED", False)
-                and self._orderbook_tracker and token_id):
-            _whale_usd = _event.get("whale_size_usd", 0)
-            _whale_shares = _whale_usd / price if price > 0 else 0
-            try:
-                _book = await self._orderbook_tracker.snapshot_order_book(
-                    token_id=token_id, condition_id=str(market_id))
-                if _book and not _book.get("error"):
-                    _asks = _book.get("asks", [])
-                    _bw_result = _vwap_from_book(_asks, size, _whale_shares)
-                    if _bw_result:
-                        _bw_vwap, _bw_fill_frac, _bw_slip = _bw_result
-                        price = max(0.001, min(0.999, _bw_vwap))
-                        _book_walk_used = True
-                        _book_walk_fill_frac = _bw_fill_frac
-                        logger.info("paper_book_walk", market_id=market_id,
-                                    vwap=round(_bw_vwap, 4), fill_frac=round(_bw_fill_frac, 3),
-                                    slippage_cents=round(_bw_slip * 100, 2),
-                                    whale_shares=round(_whale_shares, 1),
-                                    ask_levels=len(_asks), bot_name=bot_name)
-            except Exception as _bw_err:
-                logger.debug("paper_book_walk_failed", error=str(_bw_err), market_id=market_id)
-
-        # Apply size-dependent slippage. Set FIXED_SLIPPAGE_BPS>0 in env to override.
-        # S100: Skip heuristic slippage when book walk already computed VWAP fill price.
-        # S95: Pass price for boundary multiplier + add square-root market impact
-        _fixed = getattr(settings, "FIXED_SLIPPAGE_BPS", 0)
-        if _book_walk_used:
-            slippage_bps = 0  # book walk already accounts for slippage
-        elif _fixed > 0:
-            slippage_bps = _fixed
-        else:
-            slippage_bps = _size_dependent_slippage_bps(_order_size_usd, price=price)
-            # S95: Square-root market impact — significant for large orders on thin markets
-            _sqrt_impact = _sqrt_market_impact_bps(_order_size_usd, volume, price)
-            slippage_bps = int(slippage_bps + _sqrt_impact)
-
-        # S95: Kyle's lambda adverse selection — high lambda markets get extra slippage
-        _kyle_lambda = DEFAULT_LAMBDA
-        if _realistic and side == "BUY" and getattr(settings, "PAPER_KYLE_LAMBDA_ENABLED", True):
-            _kyle_lambda = await self._get_kyle_lambda(market_id)
-            _lambda_slip_bps = int(_kyle_lambda * 15)  # lambda=0.5→+7bps, lambda=2.0→+30bps
-            slippage_bps += _lambda_slip_bps
-
-        # S95: Cross-scan cumulative impact — 2nd+ BUY on same market within 60s gets worse fills
-        if _realistic and side == "BUY" and getattr(settings, "PAPER_CROSS_SCAN_IMPACT_ENABLED", True):
-            _now_mono = time.monotonic()
-            _scan_entry = self._scan_impact.get(market_id)
-            if _scan_entry is not None:
-                _cum_bps, _scan_ts = _scan_entry
-                if (_now_mono - _scan_ts) < 60.0:
-                    _cum_add = min(200, int(_cum_bps))  # cap at 200 bps
-                    slippage_bps += _cum_add
-                    if _cum_add > 5:
-                        logger.info("paper_cross_scan_impact", market_id=market_id,
-                                    cumulative_bps=_cum_add)
-
-        # S95: Resolution proximity — escalating slippage near market resolution
-        _hours_to_res = _event.get("lead_time_hours")
-        _res_slip_mult = 1.0
-        _res_fill_mult = 1.0
-        if _realistic and side == "BUY" and getattr(settings, "PAPER_RESOLUTION_PROXIMITY_ENABLED", True):
-            _res_slip_mult, _res_fill_mult = _resolution_proximity_penalty(_hours_to_res)
-            if _res_slip_mult > 1.0:
-                slippage_bps = int(slippage_bps * _res_slip_mult)
-                logger.info("paper_resolution_proximity_slippage", market_id=market_id,
-                            hours_to_res=round(_hours_to_res or 0, 1),
-                            slip_mult=_res_slip_mult, fill_mult=_res_fill_mult)
-
         original_price = price
         _submitted_at = datetime.now(timezone.utc).replace(tzinfo=None)
-        price = _apply_slippage(price, side, slippage_bps)
 
-        # S106: Slippage-eats-edge rejection — if estimated fill price erases the edge, skip.
-        # Ported from WeatherBot's liquidity_guardian pattern. Applies to BUY orders only.
-        # Edge = confidence - price. If slipped price >= confidence, no positive expectation.
-        _slippage_edge_check = getattr(settings, "PAPER_SLIPPAGE_EDGE_CHECK", True)
-        if (_realistic and side == "BUY"
-                and _slippage_edge_check is True
-                and confidence is not None and confidence > 0):
-            _slipped_edge = confidence - price
-            if _slipped_edge <= 0:
-                logger.info("paper_slippage_eats_edge", market_id=market_id,
-                            confidence=round(confidence, 4), slipped_price=round(price, 4),
-                            original_price=round(original_price, 4),
-                            slippage_bps=slippage_bps)
-                # Track fill failure for cooldown
-                _ff = self._fill_failure_tracker.get(market_id, (0, 0.0))
-                self._fill_failure_tracker[market_id] = (_ff[0] + 1, time.monotonic())
-                return {
-                    "success": False,
-                    "error": f"Slippage eats edge: conf={confidence:.4f} <= slipped_price={price:.4f}",
-                }
+        _book_walk_used = False
+        _fill_frac = 1.0
+        _book_walk_slippage = 0.0
+        _book_snapshot = _event.get("_shadow_book_snapshot")
+        _best_ask = _event.get("_shadow_best_ask")
+        _best_bid = _event.get("_shadow_best_bid")
+        _spread = _event.get("_shadow_spread", 0.0)
+        _depth_at_best_usd = _event.get("_shadow_depth_best", 0.0)
+        _total_depth_usd = _event.get("_shadow_total_depth", 0.0)
 
-        # S91: Fill probability + partial fills — BUY only (SELLs must always close positions)
-        if _realistic and side == "BUY":
-            _spread = (ask - bid) if (bid > 0 and ask > 0) else getattr(settings, "PAPER_DEFAULT_SPREAD", 0.04)
-            _fill_prob = _fill_probability(price, _order_size_usd, _spread, volume)
+        # Use VWAP from order_gateway if available (BUY walks asks, SELL walks bids)
+        # S121: Check for depleted book state from prior fills in this scan cycle.
+        # If a prior fill consumed liquidity on this token, re-walk the depleted book
+        # instead of using the gateway's VWAP (which saw the original snapshot).
+        _book_side = "ask" if side == "BUY" else "bid"
+        _depletion_key = (token_id, _book_side) if token_id else None
+        _used_depleted_book = False
 
-            # S95: Kyle's lambda fill penalty — high AS markets harder to fill
-            if getattr(settings, "PAPER_KYLE_LAMBDA_ENABLED", True):
-                _as_penalty = max(0.3, 1.0 - _kyle_lambda * 0.3)
-                _fill_prob *= _as_penalty
+        if _event.get("_shadow_book_walk_used") and _book_snapshot and _depletion_key:
+            _depleted = self._scan_book_state.get(_depletion_key)
+            if _depleted and (time.monotonic() - _depleted[1]) < self._BOOK_DEPLETION_TTL_S:
+                # Re-walk the depleted book instead of using gateway's VWAP
+                _depleted_levels = _depleted[0]
+                if side == "BUY":
+                    _bw = _vwap_from_book(
+                        [{"price": p, "size": s} for p, s in _depleted_levels],
+                        size,
+                    )
+                else:
+                    _bw = _vwap_from_bids(
+                        [{"price": p, "size": s} for p, s in _depleted_levels],
+                        size,
+                    )
+                if _bw:
+                    price = max(0.001, min(0.999, _bw[0]))
+                    _book_walk_used = True
+                    _fill_frac = _bw[1]
+                    _book_walk_slippage = _bw[2]
+                    _used_depleted_book = True
+                    logger.info("paper_book_walk_depleted", market_id=market_id,
+                                vwap=round(price, 4), fill_frac=round(_fill_frac, 3),
+                                slippage_cents=round(_book_walk_slippage * 100, 2),
+                                bot_name=bot_name, walk_side=_book_side)
+                else:
+                    # Depleted book has no remaining depth
+                    return {"success": False, "error": "Insufficient book depth (depleted by prior fills)"}
 
-            # S95: Resolution proximity fill penalty
-            if _res_fill_mult < 1.0:
-                _fill_prob *= _res_fill_mult
+        if not _used_depleted_book and _event.get("_shadow_book_walk_used"):
+            _shadow_vwap = _event.get("_shadow_vwap")
+            _shadow_fill_frac = _event.get("_shadow_fill_frac", 1.0)
+            _shadow_slippage = _event.get("_shadow_slippage", 0.0)
+            if _shadow_vwap is not None:
+                price = max(0.001, min(0.999, _shadow_vwap))
+                _book_walk_used = True
+                _fill_frac = _shadow_fill_frac
+                _book_walk_slippage = _shadow_slippage
+                logger.info("paper_book_walk", market_id=market_id,
+                            vwap=round(price, 4), fill_frac=round(_fill_frac, 3),
+                            slippage_cents=round(_book_walk_slippage * 100, 2),
+                            bot_name=bot_name, walk_side=_book_side)
 
-            # S105 Fix 6: Taker-side filter — if the most recent trade's taker side
-            # matches our order side, our resting order wouldn't have been hit.
-            # For market/taker orders this is a softer penalty (0.5x) rather than a hard block,
-            # since we're crossing the spread, not resting. Gated behind setting.
-            # S105b: When taker_side data is NOT available, apply a flat statistical
-            # discount (PAPER_TAKER_SIDE_FACTOR, default 0.55). ~45% of the time the
-            # taker is on the same side as our order, reducing effective fill rate.
-            if getattr(settings, "PAPER_TAKER_SIDE_FILTER", False):
-                _taker_side = (_event.get("taker_side") or "").upper()
-                _our_side = side.upper() if side else ""
-                if _taker_side and _taker_side == _our_side:
-                    _fill_prob *= 0.5
-                    logger.debug("paper_taker_side_penalty", taker=_taker_side,
-                                 ours=_our_side, fill_prob=round(_fill_prob, 3))
-                elif not _taker_side:
-                    # No taker-side data — apply flat statistical discount
-                    _tsf = float(getattr(settings, "PAPER_TAKER_SIDE_FACTOR", 0.55))
-                    _fill_prob *= _tsf
-
-            _fill_prob = max(0.05, min(1.0, _fill_prob))
-
-            if random.random() > _fill_prob:
-                # S106: Track fill failure for cooldown
-                _ff = self._fill_failure_tracker.get(market_id, (0, 0.0))
-                self._fill_failure_tracker[market_id] = (_ff[0] + 1, time.monotonic())
-                logger.info("paper_no_fill", fill_prob=round(_fill_prob, 3),
-                            market_id=market_id, price=round(price, 4),
-                            size_usd=round(_order_size_usd, 2),
-                            consecutive_failures=_ff[0] + 1)
-                return {
-                    "success": False,
-                    "error": f"Order not filled (fill probability {_fill_prob:.0%})",
-                    "fill_probability": _fill_prob,
-                }
-
-            # Partial fill: S100 book walk gives deterministic fill fraction from real depth;
-            # heuristic path draws from [fill_prob, 1.0] range.
-            if _book_walk_used and _book_walk_fill_frac < 1.0:
-                _fill_frac = _book_walk_fill_frac
+        # S121: Latency drift penalty — models adverse price movement during execution delay.
+        # BUY: price drifts up (worse). SELL: price drifts down (worse).
+        # Only applies when latency_ms is provided and PAPER_LATENCY_DRIFT_BPS_PER_SEC > 0.
+        _drift_bps_per_sec = getattr(settings, "PAPER_LATENCY_DRIFT_BPS_PER_SEC", 0)
+        if latency_ms is not None and _drift_bps_per_sec > 0:
+            _latency_s = latency_ms / 1000.0
+            _drift = _latency_s * _drift_bps_per_sec / 10000.0
+            _price_before_drift = price
+            if side == "BUY":
+                price = min(0.999, price + _drift)
             else:
-                _fill_frac = min(1.0, _fill_prob + random.random() * (1.0 - _fill_prob) * 0.5)
+                price = max(0.001, price - _drift)
+            if abs(price - _price_before_drift) > 0.00001:
+                logger.info("paper_latency_drift", market_id=market_id,
+                            latency_ms=round(latency_ms, 1),
+                            drift_bps=round(_drift * 10000, 1),
+                            price_before=round(_price_before_drift, 6),
+                            price_after=round(price, 6), side=side)
+
+        # Partial fill from book depth
+        if _fill_frac < 1.0:
             _filled_size = round(size * _fill_frac, 4)
             if _filled_size < 0.01:
                 _filled_size = 0.0
             if _filled_size <= 0:
-                return {"success": False, "error": "Partial fill too small"}
+                return {"success": False, "error": "Insufficient book depth for fill"}
             if _filled_size < size:
                 logger.info("paper_partial_fill", fill_pct=round(_fill_frac * 100, 1),
-                            fill_prob=round(_fill_prob, 3), market_id=market_id,
-                            requested=round(size, 2), filled=round(_filled_size, 2))
+                            market_id=market_id, requested=round(size, 2),
+                            filled=round(_filled_size, 2))
                 size = _filled_size
 
-            # S95: Cross-scan tracker update — record this BUY's impact for subsequent orders
-            if getattr(settings, "PAPER_CROSS_SCAN_IMPACT_ENABLED", True):
-                _impact_bps = _sqrt_market_impact_bps(_order_size_usd, volume, price)
-                _now_mono = time.monotonic()
-                _prev = self._scan_impact.get(market_id)
-                if _prev and (_now_mono - _prev[1]) < 60.0:
-                    self._scan_impact[market_id] = (_prev[0] + _impact_bps, _now_mono)
-                else:
-                    self._scan_impact[market_id] = (_impact_bps, _now_mono)
-                # Prune stale entries (>60s old) every time we update
-                _cutoff = _now_mono - 60.0
-                if _prev and _prev[1] <= _cutoff:
-                    pass  # Already replaced above (stale entry overwritten)
-                if len(self._scan_impact) > 50:
-                    self._scan_impact = {k: v for k, v in self._scan_impact.items() if v[1] > _cutoff}
-
-        # S95: Most Polymarket markets charge 0% taker fee. Exceptions:
+        # Most Polymarket markets charge 0% taker fee. Exceptions:
         # 15-min/5-min crypto markets (up to 156 bps), some sports (up to 88 bps).
         # PAPER_TAKER_FEE_BPS defaults to 0 (matching majority of markets).
         # System-wide TAKER_FEE_BPS (150) is preserved for exit strategy edge calcs.
@@ -888,9 +610,6 @@ class PaperTradingEngine:
             if _other_bots:
                 logger.info("paper_cross_bot_overlap", market_id=market_id,
                             bot_name=bot_name, other_bots=_other_bots)
-
-            # S106: Reset fill-failure tracker on successful fill
-            self._fill_failure_tracker.pop(market_id, None)
 
         else:  # SELL
             pos_key = (bot_name, market_id)
@@ -990,6 +709,15 @@ class PaperTradingEngine:
         # take_profit, and consecutive loss tracking uses risk_manager.record_trade_outcome()
         # directly. SELL paper_trades corrupted P&L queries across all bots.
         if side == "SELL":
+            # S121: Enrich SELL event_data with book walk metrics (mirrors BUY enrichment)
+            if event_data is not None and _book_walk_used:
+                event_data["slippage_bps"] = round(abs(price - original_price) * 10000, 1)
+                event_data["fill_frac"] = round(_fill_frac, 4)
+                event_data["book_walk"] = True
+                event_data["book_walk_slippage"] = round(_book_walk_slippage, 6)
+                event_data["best_bid"] = round(_best_bid, 4) if _best_bid else None
+                event_data["spread"] = round(_spread, 4)
+                event_data["depth_at_best_usd"] = round(_depth_at_best_usd, 2)
             logger.info(
                 "Paper exit executed (no DB record)",
                 trade_id=trade_id,
@@ -1012,18 +740,18 @@ class PaperTradingEngine:
                     market_id=market_id, bot_name=bot_name,
                 )
             else:
-                # S104: Enrich event_data with fill quality metrics before DB write.
-                # event_data is the same dict object passed by the caller — mutating in-place
-                # ensures these keys land in the trade_events JSONB column.
-                if event_data is not None and side == "BUY":
+                # S115/S121: Enrich event_data with real book data before DB write.
+                if event_data is not None:
                     event_data["slippage_bps"] = round(abs(price - original_price) * 10000, 1)
-                    event_data["fill_prob"] = round(_fill_prob, 4)
                     event_data["fill_frac"] = round(_fill_frac, 4)
                     event_data["book_walk"] = _book_walk_used
-                    event_data["alpha_decay_bps"] = round(_decay_slip_bps, 1)
-                    event_data["kyle_lambda_bps"] = _lambda_slip_bps
-                    event_data["cross_scan_bps"] = _cum_add
-                    event_data["res_prox_mult"] = round(_res_slip_mult, 2)
+                    event_data["book_walk_slippage"] = round(_book_walk_slippage, 6)
+                    if side == "BUY":
+                        event_data["best_ask"] = round(_best_ask, 4) if _best_ask else None
+                    else:
+                        event_data["best_bid"] = round(_best_bid, 4) if _best_bid else None
+                    event_data["spread"] = round(_spread, 4)
+                    event_data["depth_at_best_usd"] = round(_depth_at_best_usd, 2)
 
                 # Queue BUY persistence (paper_trade + ENTRY event) for post-lock execution
                 self._pending_db_writes.append(
@@ -1046,22 +774,25 @@ class PaperTradingEngine:
             cash_remaining=round(self.cash, 2),
         )
 
-        # S95: Adverse selection diagnostic — log fill details for post-hoc analysis.
-        # Build AS curve by computing price moves at 1/5/30/60min after each BUY fill.
-        # If fills cluster when price moves against us, we're being adversely selected.
-        if side == "BUY" and _realistic:
-            logger.info(
-                "paper_fill_as_baseline",
-                market_id=market_id,
-                fill_price=round(price, 6),
-                original_price=round(original_price, 6),
-                size_usd=round(size * price, 2),
-                spread=round((ask - bid) if (bid > 0 and ask > 0) else 0, 4),
-                volume_24h=round(volume, 0),
-                confidence=round(confidence or 0, 3),
-                bot_name=bot_name,
-                tod_hour=datetime.now(timezone.utc).hour,
+        # S115: Record shadow fill for every executed BUY trade
+        if side == "BUY":
+            await self._record_shadow_fill(
+                bot_name=bot_name, market_id=market_id, token_id=token_id,
+                side=side, order_size_shares=size, order_size_usd=size * price,
+                signal_price=original_price, confidence=confidence,
+                latency_ms=latency_ms, book_snapshot=_book_snapshot,
+                best_ask=_best_ask, best_bid=_best_bid, spread=_spread,
+                depth_at_best_usd=_depth_at_best_usd, total_depth_usd=_total_depth_usd,
+                vwap_fill_price=price, book_walk_slippage=_book_walk_slippage,
+                fill_fraction=_fill_frac, trade_executed=True,
+                execution_price=price, correlation_id=correlation_id,
+                model_name=model_name, event_data=event_data,
             )
+
+        # S121: Update book depletion state — subtract filled shares from book
+        # so the next fill on same token in this scan sees reduced depth.
+        if _book_walk_used and _depletion_key and _book_snapshot:
+            self._update_book_depletion(_depletion_key, _book_snapshot, size, _book_side)
 
         _result = {
             "success": True,
@@ -1073,15 +804,56 @@ class PaperTradingEngine:
             "slippage_bps": slippage_applied,
             "cash_remaining": self.cash,
         }
-        # S104: Surface fill quality metrics for caller diagnostics
+        # S115: Surface fill quality metrics for caller diagnostics
         if side == "BUY":
-            _result["fill_probability"] = _fill_prob
             _result["fill_fraction"] = _fill_frac
             _result["book_walk_used"] = _book_walk_used
-            _result["alpha_decay_bps"] = round(_decay_slip_bps, 1)
-            _result["kyle_lambda_bps"] = _lambda_slip_bps
         return _result
     
+    async def _record_shadow_fill(
+        self, *, bot_name, market_id, token_id, side,
+        order_size_shares, order_size_usd, signal_price, confidence,
+        latency_ms, book_snapshot, best_ask, best_bid, spread,
+        depth_at_best_usd, total_depth_usd, vwap_fill_price,
+        book_walk_slippage, fill_fraction, trade_executed,
+        execution_price, correlation_id, model_name, event_data,
+    ):
+        """S115: Record shadow fill row for retroactive P&L analysis."""
+        if not self.db or not hasattr(self.db, "insert_shadow_fill"):
+            return
+        try:
+            _edge_at_signal = (confidence - signal_price) if confidence else None
+            _edge_at_vwap = (confidence - vwap_fill_price) if confidence else None
+            await self.db.insert_shadow_fill(
+                bot_name=bot_name,
+                market_id=market_id,
+                token_id=token_id,
+                side=side,
+                order_size_shares=order_size_shares,
+                order_size_usd=order_size_usd,
+                signal_price=signal_price,
+                confidence=confidence,
+                edge_at_signal=_edge_at_signal,
+                latency_ms=latency_ms,
+                book_snapshot=book_snapshot,
+                best_ask=best_ask,
+                best_bid=best_bid,
+                spread=spread,
+                depth_at_best_usd=depth_at_best_usd,
+                total_depth_usd=total_depth_usd,
+                vwap_fill_price=vwap_fill_price,
+                book_walk_slippage=book_walk_slippage,
+                fill_fraction=fill_fraction,
+                edge_at_vwap=_edge_at_vwap,
+                trade_executed=trade_executed,
+                execution_price=execution_price,
+                correlation_id=correlation_id,
+                model_name=model_name,
+                event_data=event_data,
+            )
+        except Exception as _sf_err:
+            logger.debug("shadow_fill_record_failed", error=str(_sf_err), market_id=market_id)
+
     async def _persist_exit_event(
         self, bot_name, market_id, token_id, size, price, realized_pnl,
         correlation_id, trade_id, model_version, model_name, event_data,
@@ -1251,6 +1023,55 @@ class PaperTradingEngine:
         """
         self._rl_outcome_callback = callback
 
+    def _update_book_depletion(
+        self,
+        depletion_key: tuple,
+        book_snapshot: list,
+        filled_shares: float,
+        book_side: str,
+    ) -> None:
+        """S121: Subtract filled shares from book and store depleted state.
+
+        After a fill, the next fill on the same token within 60s will see
+        the depleted book instead of the original snapshot.
+        """
+        # Get current depleted levels or parse from snapshot
+        existing = self._scan_book_state.get(depletion_key)
+        if existing and (time.monotonic() - existing[1]) < self._BOOK_DEPLETION_TTL_S:
+            levels = list(existing[0])  # copy
+        else:
+            # Parse snapshot into (price, size) tuples
+            levels = []
+            for lvl in book_snapshot:
+                try:
+                    p = float(lvl.get("price", lvl.get("p", 0)))
+                    s = float(lvl.get("size", lvl.get("s", 0)))
+                    if p > 0 and s > 0:
+                        levels.append((p, s))
+                except (ValueError, TypeError, AttributeError):
+                    continue
+
+        # Sort: ascending for asks, descending for bids
+        if book_side == "ask":
+            levels.sort(key=lambda x: x[0])
+        else:
+            levels.sort(key=lambda x: x[0], reverse=True)
+
+        # Subtract filled shares from levels (consume from best price first)
+        remaining = filled_shares
+        new_levels = []
+        for p, s in levels:
+            if remaining > 0:
+                consumed = min(remaining, s)
+                remaining -= consumed
+                leftover = s - consumed
+                if leftover > 0.001:
+                    new_levels.append((p, leftover))
+            else:
+                new_levels.append((p, s))
+
+        self._scan_book_state[depletion_key] = (new_levels, time.monotonic())
+
     def reset(self):
         """Reset paper trading account"""
         self.cash = self.initial_capital
@@ -1259,4 +1080,5 @@ class PaperTradingEngine:
         self.pnl_history = []
         self.realized_pnl_today = {}
         self._pnl_reset_date = None
+        self._scan_book_state = {}
         logger.info("Paper trading account reset")

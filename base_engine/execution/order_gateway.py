@@ -52,6 +52,9 @@ class OrderGateway:
         self.multi_kill_switch = multi_kill_switch
         self.rl_agent = rl_agent
         self.db = db  # optional Database handle for daily_counters persistence
+        # S120: Pending order tracker for live fill confirmation via UserOrderWebSocket
+        self._pending_orders: Dict[str, Dict[str, Any]] = {}  # order_id -> {market_id, token_id, side, size, price, bot_name, submitted_at, correlation_id}
+        self._pending_order_timeout_s: float = float(getattr(settings, "ORDER_FILL_TIMEOUT_S", 60.0))
         self._market_index: Optional[Dict[str, Dict[str, Any]]] = None  # Set by base_engine after construction
         self._market_index_by_cid: Dict[str, Dict[str, Any]] = {}  # S100: condition_id index, set by base_engine
         self._bot_names_used: Set[str] = set()  # For shutdown: release reservations for all bots in this process
@@ -155,6 +158,61 @@ class OrderGateway:
             self._total_exposure_usd = max(0.0, self._total_exposure_usd - removed_value)
         if hasattr(self, "_position_details"):
             self._position_details.pop(f"{bot_name}:{mid}", None)
+
+    async def _on_order_filled(self, payload: Dict[str, Any]) -> None:
+        """S120: Handle order_filled event from UserOrderWebSocket via EventBus.
+        Confirms actual fill size/price and logs latency. Position already tracked
+        optimistically at submission time — this validates the fill."""
+        order_id = payload.get("id")
+        if not order_id or order_id not in self._pending_orders:
+            return
+        pending = self._pending_orders.pop(order_id)
+        filled_size = float(payload.get("size") or pending["size"])
+        filled_price = float(payload.get("price") or pending["price"])
+        latency_ms = round((time.monotonic() - pending["submitted_at"]) * 1000, 1)
+        logger.info(
+            "order_fill_confirmed",
+            order_id=order_id,
+            bot_name=pending["bot_name"],
+            market_id=pending["market_id"],
+            side=pending["side"],
+            requested_size=pending["size"],
+            filled_size=filled_size,
+            filled_price=filled_price,
+            fill_latency_ms=latency_ms,
+        )
+        if filled_size < pending["size"] * 0.99:
+            logger.info(
+                "partial_fill_detected",
+                order_id=order_id,
+                filled=filled_size,
+                requested=pending["size"],
+                remaining=round(pending["size"] - filled_size, 6),
+            )
+
+    async def _reap_stale_orders(self) -> None:
+        """S120: Cancel orders that exceeded fill timeout. Called periodically from BaseEngine."""
+        now = time.monotonic()
+        stale = [
+            (oid, info) for oid, info in self._pending_orders.items()
+            if now - info["submitted_at"] > self._pending_order_timeout_s
+        ]
+        for order_id, info in stale:
+            logger.warning(
+                "order_fill_timeout",
+                order_id=order_id,
+                bot_name=info["bot_name"],
+                market_id=info["market_id"],
+                age_s=round(now - info["submitted_at"], 1),
+            )
+            if self.execution_engine and hasattr(self.execution_engine, "clob_adapter") and self.execution_engine.clob_adapter:
+                try:
+                    cancelled = await self.execution_engine.clob_adapter.cancel_order(order_id)
+                    if cancelled:
+                        logger.info("order_cancelled_stale", order_id=order_id)
+                except Exception as e:
+                    logger.warning("cancel_stale_order_failed", order_id=order_id, error=str(e))
+            self._pending_orders.pop(order_id, None)
 
     async def mark_positions_halted(self) -> int:
         """B1: Mark all open positions as halted when kill switch engages.
@@ -699,15 +757,13 @@ class OrderGateway:
         _shadow_fill_frac = 1.0
         _shadow_book_walk_used = False
 
-        if _is_buy and self._orderbook_tracker and token_id:
+        if self._orderbook_tracker and token_id:
             try:
-                from base_engine.execution.paper_trading import _vwap_from_book
                 _book = await self._orderbook_tracker.snapshot_order_book(
                     token_id=token_id, condition_id=str(market_id))
                 if _book and not _book.get("error"):
                     _raw_asks = _book.get("asks", [])
                     _raw_bids = _book.get("bids", [])
-                    _shadow_book_snapshot = _raw_asks[:20]
                     if _raw_asks:
                         try:
                             _shadow_best_ask = float(_raw_asks[0].get("price", 0))
@@ -720,42 +776,69 @@ class OrderGateway:
                             pass
                     if _shadow_best_ask and _shadow_best_bid:
                         _shadow_spread = _shadow_best_ask - _shadow_best_bid
-                    for _lvl in _raw_asks:
-                        try:
-                            _shadow_total_depth += float(_lvl.get("price", 0)) * float(_lvl.get("size", 0))
-                        except (ValueError, TypeError):
-                            pass
-                    if _raw_asks:
-                        try:
-                            _shadow_depth_best = float(_raw_asks[0].get("price", 0)) * float(_raw_asks[0].get("size", 0))
-                        except (ValueError, TypeError):
-                            pass
-                    _event = event_data or {}
-                    _whale_usd = _event.get("whale_size_usd", 0)
-                    _whale_shares = _whale_usd / effective_price if effective_price > 0 else 0
-                    _bw = _vwap_from_book(_raw_asks, size, _whale_shares)
-                    if _bw:
-                        _shadow_vwap, _shadow_fill_frac, _shadow_slippage = _bw
-                        _shadow_book_walk_used = True
+
+                    if _is_buy:
+                        # BUY: walk ask side
+                        from base_engine.execution.paper_trading import _vwap_from_book
+                        _shadow_book_snapshot = _raw_asks[:20]
+                        for _lvl in _raw_asks:
+                            try:
+                                _shadow_total_depth += float(_lvl.get("price", 0)) * float(_lvl.get("size", 0))
+                            except (ValueError, TypeError):
+                                pass
+                        if _raw_asks:
+                            try:
+                                _shadow_depth_best = float(_raw_asks[0].get("price", 0)) * float(_raw_asks[0].get("size", 0))
+                            except (ValueError, TypeError):
+                                pass
+                        _event = event_data or {}
+                        _whale_usd = _event.get("whale_size_usd", 0)
+                        _whale_shares = _whale_usd / effective_price if effective_price > 0 else 0
+                        _bw = _vwap_from_book(_raw_asks, size, _whale_shares)
+                        if _bw:
+                            _shadow_vwap, _shadow_fill_frac, _shadow_slippage = _bw
+                            _shadow_book_walk_used = True
+                    else:
+                        # S121: SELL — walk bid side for realistic exit slippage
+                        from base_engine.execution.paper_trading import _vwap_from_bids
+                        _shadow_book_snapshot = _raw_bids[:20]
+                        for _lvl in _raw_bids:
+                            try:
+                                _shadow_total_depth += float(_lvl.get("price", 0)) * float(_lvl.get("size", 0))
+                            except (ValueError, TypeError):
+                                pass
+                        if _raw_bids:
+                            try:
+                                _shadow_depth_best = float(_raw_bids[0].get("price", 0)) * float(_raw_bids[0].get("size", 0))
+                            except (ValueError, TypeError):
+                                pass
+                        _bw = _vwap_from_bids(_raw_bids, size)
+                        if _bw:
+                            _shadow_vwap, _shadow_fill_frac, _shadow_slippage = _bw
+                            _shadow_book_walk_used = True
             except Exception as _bw_err:
                 logger.debug("order_gateway_book_walk_failed", error=str(_bw_err), market_id=market_id)
 
-        # S115: Edge-at-VWAP gate — reject if real book price erases edge (paper AND live).
-        # S116: Also reject dead markets where spread > 80% (bid=0.001, ask=0.999).
-        if _is_buy and confidence is not None and confidence > 0 and _shadow_book_walk_used:
-            _edge_at_vwap = confidence - _shadow_vwap
+        # S120: Edge-at-VWAP gate — reject if real book price erases edge.
+        # Skip for WeatherBot: weather CLOB books have structural 99¢ asks with
+        # real depth at 5-30¢. The confidence-vs-price check (designed for markets
+        # where best_ask ≈ fair value) doesn't work when best_ask is an outlier.
+        # WeatherBot's own edge checks in _analyze_group() + compute_edges() are
+        # the real gate. The paper engine's VWAP fill gives realistic execution.
+        if _is_buy and confidence is not None and confidence > 0 and _shadow_book_walk_used and bot_name != "WeatherBot":
+            _edge_at_fill = confidence - _shadow_vwap
             if _shadow_spread > 0.80:
-                _edge_at_vwap = -1.0  # force rejection — dead/illiquid market
+                _edge_at_fill = -1.0  # force rejection — dead/illiquid market
                 logger.info("order_dead_market_spread", market_id=market_id,
                             spread=round(_shadow_spread, 4),
                             best_bid=_shadow_best_bid, best_ask=_shadow_best_ask,
                             bot_name=bot_name)
-            if _edge_at_vwap <= 0:
+            if _edge_at_fill <= 0:
                 logger.info("order_edge_eroded", market_id=market_id,
                             confidence=round(confidence, 4),
-                            vwap_price=round(_shadow_vwap, 4),
+                            best_ask=round(_check_price, 4),
                             signal_price=round(effective_price, 4),
-                            edge_at_vwap=round(_edge_at_vwap, 4),
+                            edge_at_fill=round(_edge_at_fill, 4),
                             bot_name=bot_name,
                             mode="paper" if getattr(settings, "SIMULATION_MODE", False) else "live")
                 # Record shadow fill for rejected trade
@@ -779,7 +862,7 @@ class OrderGateway:
                             vwap_fill_price=_shadow_vwap,
                             book_walk_slippage=_shadow_slippage,
                             fill_fraction=_shadow_fill_frac,
-                            edge_at_vwap=_edge_at_vwap,
+                            edge_at_vwap=_edge_at_fill,
                             trade_executed=False, execution_price=None,
                             correlation_id=correlation_id,
                             model_name=None, event_data=event_data,
@@ -968,7 +1051,8 @@ class OrderGateway:
         try:
             _t_coord_end = time.monotonic()
             t0 = time.monotonic()
-            result = await self.execution_engine.place_order(
+            # S121: Retry transient CLOB failures (rate limits, nonce, timeouts)
+            result = await self._execute_with_retry(
                 bot_name=bot_name,
                 market_id=market_id,
                 token_id=token_id,
@@ -976,7 +1060,7 @@ class OrderGateway:
                 size=size,
                 price=effective_price,
                 confidence=confidence,
-                skip_position_update=True,
+                correlation_id=correlation_id,
             )
             latency_ms = (time.monotonic() - t0) * 1000
 
@@ -992,6 +1076,7 @@ class OrderGateway:
                     market_id=market_id,
                     latency_ms=round(latency_ms, 1),
                     success=result.get("success", False),
+                    canary_stage=_canary,
                 )
                 logger.info(
                     "Order latency breakdown",
@@ -1001,6 +1086,7 @@ class OrderGateway:
                     coord_ms=_coord_ms,
                     exec_ms=_exec_ms,
                     total_ms=_total_ms,
+                    canary_stage=_canary,
                 )
                 alert_ms = getattr(settings, "ORDER_LATENCY_ALERT_MS", 5000)
                 if latency_ms > alert_ms:
@@ -1027,7 +1113,7 @@ class OrderGateway:
                     if _is_sell:
                         self._track_position_close(bot_name, market_id)  # C3 FIX
                     else:
-                        self._track_position_open(bot_name, market_id, size, effective_price)
+                        self._track_position_open(bot_name, market_id, size, effective_price, side=side)
                     if self.adverse_selection_tracker:
                         self.adverse_selection_tracker.record_fill(
                             market_id=market_id,
@@ -1037,6 +1123,19 @@ class OrderGateway:
                             order_type=order_type or "market",
                             source_bot=bot_name,
                         )
+                    # S120: Track pending order for fill confirmation via WebSocket
+                    _order_id = result.get("order_id")
+                    if _order_id and not _is_sell:
+                        self._pending_orders[_order_id] = {
+                            "market_id": market_id,
+                            "token_id": token_id,
+                            "side": side,
+                            "size": size,
+                            "price": effective_price,
+                            "bot_name": bot_name,
+                            "submitted_at": time.monotonic(),
+                            "correlation_id": correlation_id,
+                        }
                 else:
                     try:
                         await self.trade_coordinator.release_reservation(market_id, side, bot_id=bot_name)
@@ -1088,6 +1187,92 @@ class OrderGateway:
                     logger.warning("Failed to release coordinator reservation after execution error: %s", _rel_err)
             logger.error("Order execution failed", bot_name=bot_name, market_id=market_id, error=str(e), exc_info=True)
             return {"success": False, "error": str(e)}
+
+    # ── S121: Live order retry with exponential backoff ────────────
+
+    # Transient error patterns — safe to retry
+    _TRANSIENT_PATTERNS = ("rate limit", "429", "503", "timeout", "nonce", "too many requests", "service unavailable")
+    # Permanent error patterns — fail immediately
+    _PERMANENT_PATTERNS = ("market closed", "delisted", "invalid", "insufficient", "not found", "expired", "cancelled")
+
+    async def _execute_with_retry(
+        self,
+        bot_name: str,
+        market_id: str,
+        token_id: str,
+        side: str,
+        size: float,
+        price: float,
+        confidence: float,
+        correlation_id: Optional[str] = None,
+    ) -> dict:
+        """Execute a live CLOB order with retry for transient failures.
+
+        Retries up to LIVE_ORDER_MAX_RETRIES times with exponential backoff
+        (1s, 2s, 4s by default) for transient errors (rate limits, nonce,
+        timeouts). Fails immediately for permanent errors (market closed,
+        delisted, insufficient balance).
+        """
+        max_retries = getattr(settings, "LIVE_ORDER_MAX_RETRIES", 3)
+        base_s = getattr(settings, "LIVE_ORDER_RETRY_BASE_S", 1.0)
+
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                result = await self.execution_engine.place_order(
+                    bot_name=bot_name,
+                    market_id=market_id,
+                    token_id=token_id,
+                    side=side,
+                    size=size,
+                    price=price,
+                    confidence=confidence,
+                    skip_position_update=True,
+                    correlation_id=correlation_id,
+                )
+                # Check for soft failure (success=False in result, not exception)
+                if result.get("success"):
+                    return result
+
+                err_str = str(result.get("error", "")).lower()
+                if any(p in err_str for p in self._PERMANENT_PATTERNS):
+                    logger.info("live_order_permanent_reject",
+                                bot_name=bot_name, market_id=market_id,
+                                error=result.get("error"), attempt=attempt + 1)
+                    return result
+
+                last_error = result.get("error", "unknown")
+                if attempt < max_retries - 1:
+                    delay = base_s * (2 ** attempt)
+                    logger.warning("live_order_retry",
+                                   bot_name=bot_name, market_id=market_id,
+                                   attempt=attempt + 1, max_retries=max_retries,
+                                   error=last_error, delay_s=delay)
+                    await asyncio.sleep(delay)
+                else:
+                    return result
+
+            except Exception as e:
+                err_str = str(e).lower()
+                if any(p in err_str for p in self._PERMANENT_PATTERNS):
+                    logger.info("live_order_permanent_exception",
+                                bot_name=bot_name, market_id=market_id,
+                                error=str(e), attempt=attempt + 1)
+                    raise
+
+                last_error = str(e)
+                if attempt < max_retries - 1:
+                    delay = base_s * (2 ** attempt)
+                    logger.warning("live_order_retry_exception",
+                                   bot_name=bot_name, market_id=market_id,
+                                   attempt=attempt + 1, max_retries=max_retries,
+                                   error=last_error, delay_s=delay)
+                    await asyncio.sleep(delay)
+                else:
+                    raise
+
+        # Should not reach here, but safety net
+        return {"success": False, "error": f"All {max_retries} retries exhausted: {last_error}"}
 
     # ── RL Trade Timing helpers (lightweight, no DB calls) ────────────
 

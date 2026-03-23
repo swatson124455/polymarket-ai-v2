@@ -761,6 +761,9 @@ class BaseEngine:
             # K7 FIX: Wire PerformanceTracker into PaperTradingEngine for outcome tracking
             if hasattr(self, 'performance_tracker') and self.performance_tracker:
                 self.paper_trading._performance_tracker = self.performance_tracker
+            # S115: Wire OrderBookTracker for VWAP book walk fills
+            if self.orderbook_tracker:
+                self.paper_trading._orderbook_tracker = self.orderbook_tracker
             
             self.ab_testing = ABTestingFramework(db=self.db)
             # ModelVersionManager: in-memory model versioning and A/B testing
@@ -1093,6 +1096,9 @@ class BaseEngine:
             )
             # Share market index with order gateway for condition_id lookups (order book API)
             self.order_gateway._market_index = self._market_index
+            # S115: Wire OrderBookTracker for pre-trade book walk (paper AND live)
+            if self.orderbook_tracker:
+                self.order_gateway._orderbook_tracker = self.orderbook_tracker
             if self.advanced_order_manager and hasattr(self.advanced_order_manager, "set_order_gateway"):
                 self.advanced_order_manager.set_order_gateway(self.order_gateway)
             if self.smart_order_router and hasattr(self.smart_order_router, "set_order_gateway"):
@@ -1399,6 +1405,18 @@ class BaseEngine:
             except Exception as e:
                 logger.debug("Pre-approval at startup failed (non-critical): %s", e)
 
+        # S120: Log wallet USDC balance at startup
+        if self.execution_engine and getattr(self.execution_engine, "contract_manager", None):
+            try:
+                _bal = await self.execution_engine.contract_manager.get_usdce_balance()
+                if _bal.get("success"):
+                    logger.info("wallet_balance_usd", balance=_bal["balance_usd"])
+                    _threshold = getattr(settings, "BALANCE_WARNING_THRESHOLD_USD", 100.0)
+                    if _bal["balance_usd"] < _threshold:
+                        logger.warning("wallet_balance_low", balance=_bal["balance_usd"], threshold=_threshold)
+            except Exception as _bal_err:
+                logger.debug("Startup balance query failed (non-critical): %s", _bal_err)
+
         # Initialize oracle monitor (P5-06)
         if self.oracle_monitor:
             try:
@@ -1451,6 +1469,10 @@ class BaseEngine:
                     await self.user_order_websocket.connect()
                 except Exception as e:
                     logger.debug("UserOrderWebSocket connect failed (non-critical): %s", e)
+                # S120: Wire fill confirmation handler to EventBus
+                if self.event_bus and self.order_gateway and hasattr(self.order_gateway, "_on_order_filled"):
+                    self.event_bus.on("order_filled", self.order_gateway._on_order_filled)
+                    logger.info("S120: Fill confirmation handler wired to EventBus")
             if self.streaming_persister:
                 try:
                     await self.streaming_persister.start()
@@ -1697,6 +1719,17 @@ class BaseEngine:
 
         # A5: Asyncio task watchdog — detect stale heartbeats every 60s
         self._periodic_tasks.append(asyncio.ensure_future(self._periodic_task_watchdog()))
+
+        # S120: Stale order reaper — cancel unfilled live orders after timeout
+        if self.order_gateway and hasattr(self.order_gateway, "_reap_stale_orders") and not getattr(settings, "SIMULATION_MODE", True):
+            async def _periodic_stale_order_reap():
+                while self.running:
+                    await asyncio.sleep(15)
+                    try:
+                        await self.order_gateway._reap_stale_orders()
+                    except Exception as _e:
+                        logger.debug("Stale order reaper error: %s", _e)
+            self._periodic_tasks.append(asyncio.ensure_future(_periodic_stale_order_reap()))
 
     async def stop(self):
         self.running = False

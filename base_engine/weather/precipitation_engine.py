@@ -171,10 +171,10 @@ class PrecipitationProbabilityEngine:
                 if bucket.bucket_type == "at_or_below":
                     if bucket.high_bound is not None and val <= bucket.high_bound:
                         count += 1
-                elif bucket.bucket_type == "at_or_higher":
+                if bucket.bucket_type == "at_or_higher":
                     if bucket.low_bound is not None and val >= bucket.low_bound:
                         count += 1
-                elif bucket.bucket_type == "range":
+                if bucket.bucket_type == "range":
                     if (bucket.low_bound is not None and bucket.high_bound is not None
                             and bucket.low_bound <= val <= bucket.high_bound):
                         count += 1

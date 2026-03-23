@@ -174,6 +174,20 @@ class ExecutionEngine:
             }
         
         try:
+            # S120: Pre-trade USDC balance check (live path only, non-blocking on failure)
+            if self.contract_manager and not getattr(settings, "SIMULATION_MODE", True):
+                try:
+                    _bal = await self.contract_manager.get_usdce_balance()
+                    if _bal.get("success"):
+                        _cost = size * price
+                        if _bal["balance_usd"] < _cost:
+                            return {
+                                "success": False,
+                                "error": f"Insufficient USDC: need ${_cost:.2f}, have ${_bal['balance_usd']:.2f}",
+                            }
+                except Exception as _bal_err:
+                    logger.debug("Pre-trade balance check failed (non-blocking): %s", _bal_err)
+
             # Phase 6: approval timeout (colocated = shorter)
             approval_timeout = (
                 getattr(settings, "ORDER_EXECUTION_TIMEOUT_COLOCATED", 10)

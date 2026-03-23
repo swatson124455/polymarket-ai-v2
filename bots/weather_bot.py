@@ -327,6 +327,30 @@ class WeatherBot(BaseBot):
                     kelly_factor=self._compute_weather_drawdown_factor(market_type),
                 )
 
+    def _get_model_age_hours(self) -> Optional[float]:
+        """S121: Return the age (in hours) of the freshest NWP model run.
+
+        Reads _last_gfs_run and _last_ecmwf_run from ModelRunMonitor.
+        Format: "YYYYMMDDHH" (e.g. "2026031612" = Mar 16 12Z).
+        Returns None if no model run is known yet (cold start).
+        """
+        # datetime and timezone already imported at module level (line 26)
+        ages = []
+        now = datetime.now(timezone.utc)
+        for attr in ("_last_gfs_run", "_last_ecmwf_run"):
+            run_str = getattr(self._model_run_monitor, attr, None)
+            if not run_str or len(run_str) < 10:
+                continue
+            try:
+                # Parse "2026031612" → datetime
+                run_dt = datetime.strptime(run_str[:10], "%Y%m%d%H").replace(tzinfo=timezone.utc)
+                age_h = (now - run_dt).total_seconds() / 3600.0
+                if age_h >= 0:
+                    ages.append(age_h)
+            except (ValueError, TypeError):
+                continue
+        return min(ages) if ages else None
+
     # ── Per-market-type adaptive parameters (cross-bot from MirrorBot) ─────
 
     async def _load_category_params(self) -> None:
@@ -709,25 +733,6 @@ class WeatherBot(BaseBot):
 
     # ── Adaptive scan interval ─────────────────────────────────────────────
 
-    def _in_model_window(self) -> bool:
-        """Check if current time falls within an NWP model update window."""
-        now_utc = datetime.now(timezone.utc)
-        h, m = now_utc.hour, now_utc.minute
-        for wh, wm, eh, em in self._MODEL_WINDOWS:
-            if (h, m) >= (wh, wm) and (h, m) < (eh, em):
-                return True
-        return False
-
-    # NWP model availability windows (UTC):
-    #   07:00-08:00  ECMWF 00Z ENS (highest-alpha)
-    #   18:00-19:00  ECMWF 12Z ENS
-    #   05:15-06:00  GFS 00Z (~05:30)
-    #   17:15-18:00  GFS 12Z (~17:30)
-    _MODEL_WINDOWS = [
-        (7, 0, 8, 0), (18, 0, 19, 0),   # ECMWF
-        (5, 15, 6, 0), (17, 15, 18, 0),  # GFS
-    ]
-
     def _effective_discovery_ttl(self) -> float:
         """S99: Time-of-day aware discovery cache TTL.
         Overnight (00-12 UTC): 900s. Daytime (12-00 UTC): 300s."""
@@ -784,10 +789,11 @@ class WeatherBot(BaseBot):
         await self._handle_daily_boundary()
 
         # Calibration + category params are independent — run in parallel
+        # S120: _restore_daily_pnl_from_db removed — already called inside
+        # _handle_daily_boundary() at L784 which runs first every scan.
         await asyncio.gather(
             self._maybe_reload_calibration(),
             self._load_category_params(),
-            self._restore_daily_pnl_from_db(),
         )
 
         # W4: Monitoring thresholds — check Brier/drawdown and halt if needed
@@ -1825,21 +1831,9 @@ class WeatherBot(BaseBot):
             if e["abs_edge"] < _effective_min:
                 continue
 
-            # Lead-time-graduated edge cap: at short lead times, NOAA ensemble
-            # convergence and METAR data produce legitimately large edges.
-            if lead_time < 6.0:
-                _max_edge = 0.70
-            elif lead_time < 12.0:
-                _max_edge = 0.50
-            elif lead_time < 24.0:
-                _max_edge = 0.40
-            elif lead_time < 48.0:
-                _max_edge = 0.30
-            else:
-                _max_edge = 0.25
-            if e["abs_edge"] > _max_edge:
-                logger.info("weatherbot_edge_cap", market_id=e["market_id"], edge=round(e["abs_edge"], 4), max_edge=_max_edge, lead_time_h=round(lead_time, 1))
-                continue
+            # S118: Edge cap REMOVED. Data analysis (7,886 resolved signals) showed
+            # 0.70+ edge bucket had HIGHEST win rate (87.3%). Larger edges are more
+            # reliable, not less. The cap was blocking the bot's strongest signals.
 
             # Skip recently exited markets
             mono_now = time.monotonic()
@@ -1864,12 +1858,35 @@ class WeatherBot(BaseBot):
             if price <= 0.04 or price >= 0.97:
                 continue
 
-            # Check position already open
+            # S118 Fix 2: NO entry price cap — skip expensive NO tokens.
+            # Data: 70-80¢ NO bucket is -$484 (76.4% WR, 0.24x win/loss ratio).
+            # At 75¢ entry: risk $75, win $25. Need >75% WR to break even.
+            # <60¢ bucket is +$1,836 — that's where real NO edge lives.
+            _no_max_price = float(getattr(settings, "WEATHER_NO_MAX_ENTRY_PRICE", 0.65))
+            if side == "NO" and price > _no_max_price:
+                continue
+
+            # Check position already open — fast path via in-memory set
             gw = self.base_engine.order_gateway
             if gw and hasattr(gw, "_open_position_markets"):
                 bot_positions = gw._open_position_markets.get("WeatherBot", set())
                 if str(e["market_id"]) in bot_positions:
                     continue
+
+            # S118 Fix 1: DB-backed re-entry guard — prevents position stacking.
+            # Data: 55% of markets had 2+ entries, Miami had 12 entries on one market.
+            # The in-memory check above misses paper positions. DB is ground truth.
+            try:
+                db = getattr(self.base_engine, "db", None)
+                if db:
+                    _existing = await db.fetch_one(
+                        "SELECT 1 FROM positions WHERE market_id = :mid AND bot_id = 'WeatherBot' AND status = 'open' LIMIT 1",
+                        {"mid": str(e["market_id"])},
+                    )
+                    if _existing:
+                        continue
+            except Exception:
+                pass  # fail-open: if DB unreachable, fall through to trade
 
             # WU vs NWS resolution-source uncertainty:
             # When the ensemble mean (loc) is within 0.5°F/°C of a bucket boundary,
@@ -1891,6 +1908,21 @@ class WeatherBot(BaseBot):
                     high_bound=bucket.high_bound,
                     low_bound=bucket.low_bound,
                 )
+
+            # S118 Fix 3: Max buckets per group — limit correlated blowup risk.
+            # Data: Miami lost -$976 from 12 positions on same city+date resolution.
+            # Keep only the top N by edge magnitude; skip the rest.
+            _max_buckets = int(getattr(settings, "WEATHER_MAX_BUCKETS_PER_GROUP", 3))
+            if len(tradeable) >= _max_buckets:
+                break
+
+            # S118 Fix 4: High-confidence NO discount — reduce Kelly sizing for
+            # expensive NO tokens. Data: 90-95% conf NO lost -$3,412 from 133 trades.
+            # Avg win=$4.20, avg loss=-$20.83. Discount confidence so Kelly sizes smaller.
+            _no_disc_threshold = float(getattr(settings, "WEATHER_NO_CONFIDENCE_DISCOUNT_THRESHOLD", 0.70))
+            _no_disc_factor = float(getattr(settings, "WEATHER_NO_CONFIDENCE_DISCOUNT", 0.80))
+            if side == "NO" and price > _no_disc_threshold:
+                effective_confidence *= _no_disc_factor
 
             tradeable.append({
                 "market_id": e["market_id"],
@@ -2189,9 +2221,11 @@ class WeatherBot(BaseBot):
                 else:
                     del self._fill_fail_tracker[_mid]
 
-        # S107 Fix 2: bestAsk pre-filter — skip trades where the actual ask price
-        # exceeds our confidence (no edge after book depth). Also grab volume for Fix 3.
-        _best_ask = 0.0
+        # S120: bestAsk pre-filter REMOVED. It was redundant with compute_edges()
+        # which already ensures model_prob > market_price + min_edge. The market
+        # index bestAsk is staler than the prices used in edge computation, so the
+        # filter could only reject valid trades, never catch invalid ones.
+        # Volume passthrough kept for event_data logging (L2537).
         _clob_volume = 0.0
         if gw:
             try:
@@ -2203,23 +2237,9 @@ class WeatherBot(BaseBot):
                 if not _mdata and _midx_cid and isinstance(_midx_cid, dict):
                     _mdata = _midx_cid.get(str(_mid))
                 if _mdata and isinstance(_mdata, dict):
-                    _best_ask = float(_mdata.get("bestAsk") or _mdata.get("best_ask") or 0)
                     _clob_volume = float(_mdata.get("volume") or _mdata.get("volume24hr") or 0)
             except (TypeError, ValueError, AttributeError):
-                pass  # Fail open: proceed without pre-filter
-        if _best_ask > 0:
-            _conf = opp.get("confidence", 0)
-            if _conf <= _best_ask:
-                logger.debug(
-                    "weatherbot_bestask_skip",
-                    market_id=_mid,
-                    confidence=round(_conf, 4),
-                    best_ask=round(_best_ask, 4),
-                )
-                return False
-            # Store effective entry price for downstream logging
-            opp["_effective_price"] = max(opp.get("price", 0), _best_ask)
-        # Store volume for event_data (Fix 3)
+                pass
         if _clob_volume > 0:
             opp["_clob_volume"] = _clob_volume
 
@@ -2323,13 +2343,24 @@ class WeatherBot(BaseBot):
 
         # P2: NBM high-conviction boost — when NBM CDF disagrees with market by ≥15pp
         # for US stations, apply a 1.3× sizing multiplier (calibrated benchmark signal).
-        nbm_boost = 1.3 if opp.get("nbm_high_conviction") else 1.0
+        nbm_boost = getattr(settings, "WEATHER_NBM_BOOST", 1.3) if opp.get("nbm_high_conviction") else 1.0
+
+        # S121: Model freshness factor — scale by NWP model age
+        _model_age_h = self._get_model_age_hours()
+        _fresh_h = getattr(settings, "WEATHER_MODEL_FRESH_HOURS", 2.0)
+        _stale_h = getattr(settings, "WEATHER_MODEL_STALE_HOURS", 8.0)
+        if _model_age_h is not None and _model_age_h < _fresh_h:
+            model_freshness = getattr(settings, "WEATHER_MODEL_FRESH_BOOST", 1.2)
+        elif _model_age_h is not None and _model_age_h > _stale_h:
+            model_freshness = getattr(settings, "WEATHER_MODEL_STALE_DISCOUNT", 0.8)
+        else:
+            model_freshness = 1.0
 
         # C4: Combined boost — additive with diminishing returns to prevent
         # multiplicative stacking (was 2.0×1.2×2.0=4.8→cap 3.0 = 0.75 Kelly).
         # New: each boost contributes its excess independently; capped at 2.0×
         # to keep effective Kelly ≤ 0.5 (quarter-Kelly × 2.0).
-        combined_boost = 1.0 + (expiry_boost - 1.0) + (regime_boost - 1.0) * 0.5 + (severe_boost - 1.0) * 0.5 + (jump_boost - 1.0) * 0.5 + (nbm_boost - 1.0) * 0.5
+        combined_boost = 1.0 + (expiry_boost - 1.0) + (regime_boost - 1.0) * 0.5 + (severe_boost - 1.0) * 0.5 + (jump_boost - 1.0) * 0.5 + (nbm_boost - 1.0) * 0.5 + (model_freshness - 1.0) * 0.5
         # NOTE: 2.0 cap moved AFTER BM/station/calibration (fix 2D — S115)
 
         # W7: Baker-McHale uncertainty-scaled sizing.
@@ -2376,7 +2407,7 @@ class WeatherBot(BaseBot):
         # Fix 2D (S115): Cap AFTER BM, station reliability, and calibration confidence
         # so pre-cap boost differences are preserved through the uncertainty scaling chain.
         # Previous: cap was at line 2494 BEFORE these factors, losing granularity.
-        combined_boost = min(combined_boost, 2.0)
+        combined_boost = min(combined_boost, getattr(settings, "WEATHER_COMBINED_BOOST_CAP", 2.0))
 
         # H1: Slippage-adjusted edge — query order book depth and skip if
         # estimated slippage eats the edge. Cap size to max safe fill.
@@ -2488,6 +2519,8 @@ class WeatherBot(BaseBot):
             jump_boost=jump_boost,
             forecast_delta=_forecast_delta,
             nbm_boost=nbm_boost,
+            model_freshness=model_freshness,
+            model_age_h=round(_model_age_h, 1) if _model_age_h is not None else None,
         )
 
         # S109: Convert USD to shares for place_order (paper engine expects shares).
@@ -2505,8 +2538,9 @@ class WeatherBot(BaseBot):
                 "date": group.target_date.isoformat(),
                 "market_type": opp.get("market_type", "temperature"),
                 "lead_time_hours": lead_time,
+                "boundary_risk": opp.get("resolution_boundary_risk", False),
                 "scan_start_mono": getattr(self, "_scan_start_mono", None),
-                "alpha_decay_half_life_s": 1800,  # S101: weather signal valid ~6h (NOAA cycle), not 5min
+                "alpha_decay_half_life_s": getattr(settings, "WEATHER_ALPHA_DECAY_HALF_LIFE_S", 1800),
                 "volume_24h": opp.get("_clob_volume", 0.0),  # S107 Fix 3: pass CLOB volume for fill model
             },
         )
@@ -3908,11 +3942,15 @@ class WeatherBot(BaseBot):
         try:
             async with db.get_session() as session:
                 from sqlalchemy import text
-                rows = await session.execute(text("""
+                # S120: Rolling window — only use recent calibration data so
+                # winter EMOS coefficients don't contaminate spring forecasts.
+                _emos_window_days = int(getattr(settings, "WEATHER_EMOS_WINDOW_DAYS", 90))
+                rows = await session.execute(text(f"""
                     SELECT station_id, lead_time_hours, bias, forecast_temp, actual_temp, regime,
                            target_date
                     FROM weather_calibration
                     WHERE bias IS NOT NULL AND actual_temp IS NOT NULL
+                      AND created_at >= NOW() - INTERVAL '{_emos_window_days} days'
                 """))
                 all_rows = rows.fetchall()
 

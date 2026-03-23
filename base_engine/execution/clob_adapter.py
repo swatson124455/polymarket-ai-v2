@@ -108,6 +108,19 @@ def _get_order_book_sync(token_id: str) -> Dict[str, Any]:
         return {}
 
 
+def _cancel_order_sync(order_id: str) -> bool:
+    """Sync cancel order via py-clob-client (run in executor)."""
+    client = _get_clob_client()
+    if not client:
+        return False
+    try:
+        client.cancel(order_id)
+        return True
+    except Exception as e:
+        logger.warning("py-clob-client cancel_order failed: %s (order_id=%s)", e, order_id)
+        return False
+
+
 class ClobAdapter:
     """
     Async CLOB adapter: uses AsyncClobClient (httpx, direct) when available,
@@ -151,6 +164,11 @@ class ClobAdapter:
             None,
             lambda: _place_order_sync(market_id, token_id, side, size, price),
         )
+
+    async def cancel_order(self, order_id: str) -> bool:
+        """Cancel an open order on the CLOB. Returns True if cancelled successfully."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, lambda: _cancel_order_sync(order_id))
 
     async def get_order_book(self, token_id: str) -> Dict[str, Any]:
         """Get order book via AsyncClobClient or sync client in thread."""
