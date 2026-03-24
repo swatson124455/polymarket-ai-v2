@@ -712,6 +712,16 @@ class AutomatedPositionManager:
 
     async def _execute_stop_loss(self, position: Position, pnl_pct: float):
         """Execute stop-loss for a position."""
+        # Cooldown: don't retry if recently failed (same pattern as _execute_exit)
+        now = time.monotonic()
+        cooldown_until = self._exit_cooldowns.get(position.id, 0)
+        if now < cooldown_until:
+            return  # Still in cooldown, skip silently
+        # Skip zero-size positions (avoids fee-only SELL with no tokens)
+        _exit_size = position.size or 0
+        if _exit_size <= 0:
+            logger.warning("Skipping stop-loss for position %s: size=%.6f (zero/negative)", position.id, _exit_size)
+            return
         logger.info(
             f"Executing stop-loss for position {position.id}",
             pnl_pct=pnl_pct,
@@ -721,18 +731,18 @@ class AutomatedPositionManager:
         try:
             # ALL exits are SELL — selling the token you hold (YES or NO)
             exit_side = "SELL"
-            
+
             place = (self.order_gateway or self.execution_engine).place_order
             result = await place(
                 bot_name=position.bot_id or position.bot_name,
                 market_id=position.market_id,
                 token_id=position.token_id,
                 side=exit_side,
-                size=position.size,
+                size=_exit_size,
                 price=position.current_price or position.entry_price,
                 confidence=1.0
             )
-            
+
             if result.get("success"):
                 # Mark position as closed (re-select in session so update is persisted)
                 if self.db.session_factory:
@@ -746,7 +756,7 @@ class AutomatedPositionManager:
                             # Same formula as _execute_exit — correct for both YES and NO tokens.
                             _exit_price = float(position.current_price or position.entry_price or 0.5)
                             _entry_price = float(position.entry_price or 0.5)
-                            _size = float(position.size or 0)
+                            _size = float(_exit_size)
                             _taker_fee_rate = getattr(settings, "TAKER_FEE_BPS", 150) / 10000.0
                             _exit_fee = _taker_fee_rate * _size * _exit_price
                             pos.unrealized_pnl = (_exit_price - _entry_price) * _size - _exit_fee
@@ -757,11 +767,46 @@ class AutomatedPositionManager:
                     _bot = getattr(position, "bot_id", None) or getattr(position, "bot_name", None)
                     if _bot:
                         self.risk_manager.record_trade_outcome(_bot, was_profitable=(pnl_pct > 0))
+                # Clear cooldown on success
+                self._exit_cooldowns.pop(position.id, None)
+            else:
+                err_msg = result.get("error", "")
+                # Ghost position: DB says open but paper engine has no position → close in DB
+                if "Insufficient position" in str(err_msg):
+                    logger.warning(
+                        "Ghost position %s (stop-loss, no paper position) — marking closed in DB",
+                        position.id, market_id=position.market_id,
+                    )
+                    if self.db.session_factory:
+                        async with self.db.get_session() as session:
+                            from sqlalchemy import select as sel
+                            r = await session.execute(sel(Position).where(Position.id == position.id).with_for_update())
+                            pos = r.scalar_one_or_none()
+                            if pos:
+                                pos.status = "closed"
+                                pos.unrealized_pnl = 0.0
+                                await session.commit()
+                    self._exit_cooldowns.pop(position.id, None)
+                else:
+                    # Other failure — set cooldown to prevent spam
+                    self._exit_cooldowns[position.id] = time.monotonic() + _EXIT_RETRY_COOLDOWN
+                    logger.debug("Stop-loss failed for position %s, cooldown %ds", position.id, _EXIT_RETRY_COOLDOWN)
         except Exception as e:
+            self._exit_cooldowns[position.id] = time.monotonic() + _EXIT_RETRY_COOLDOWN
             logger.error("Error executing stop-loss: %s", e, exc_info=True)
 
     async def _execute_take_profit(self, position: Position, pnl_pct: float):
         """Execute take-profit for a position."""
+        # Cooldown: don't retry if recently failed (same pattern as _execute_exit)
+        now = time.monotonic()
+        cooldown_until = self._exit_cooldowns.get(position.id, 0)
+        if now < cooldown_until:
+            return  # Still in cooldown, skip silently
+        # Skip zero-size positions (avoids fee-only SELL with no tokens)
+        _exit_size = position.size or 0
+        if _exit_size <= 0:
+            logger.warning("Skipping take-profit for position %s: size=%.6f (zero/negative)", position.id, _exit_size)
+            return
         logger.info(
             f"Executing take-profit for position {position.id}",
             pnl_pct=pnl_pct,
@@ -771,18 +816,18 @@ class AutomatedPositionManager:
         try:
             # ALL exits are SELL — selling the token you hold (YES or NO)
             exit_side = "SELL"
-            
+
             place = (self.order_gateway or self.execution_engine).place_order
             result = await place(
                 bot_name=position.bot_id or position.bot_name,
                 market_id=position.market_id,
                 token_id=position.token_id,
                 side=exit_side,
-                size=position.size,
+                size=_exit_size,
                 price=position.current_price or position.entry_price,
                 confidence=1.0
             )
-            
+
             if result.get("success"):
                 # Mark position as closed (re-select in session so update is persisted)
                 if self.db.session_factory:
@@ -796,7 +841,7 @@ class AutomatedPositionManager:
                             # Same formula as _execute_exit — correct for both YES and NO tokens.
                             _exit_price = float(position.current_price or position.entry_price or 0.5)
                             _entry_price = float(position.entry_price or 0.5)
-                            _size = float(position.size or 0)
+                            _size = float(_exit_size)
                             _taker_fee_rate = getattr(settings, "TAKER_FEE_BPS", 150) / 10000.0
                             _exit_fee = _taker_fee_rate * _size * _exit_price
                             pos.unrealized_pnl = (_exit_price - _entry_price) * _size - _exit_fee
@@ -807,7 +852,32 @@ class AutomatedPositionManager:
                     _bot = getattr(position, "bot_id", None) or getattr(position, "bot_name", None)
                     if _bot:
                         self.risk_manager.record_trade_outcome(_bot, was_profitable=(pnl_pct > 0))
+                # Clear cooldown on success
+                self._exit_cooldowns.pop(position.id, None)
+            else:
+                err_msg = result.get("error", "")
+                # Ghost position: DB says open but paper engine has no position → close in DB
+                if "Insufficient position" in str(err_msg):
+                    logger.warning(
+                        "Ghost position %s (take-profit, no paper position) — marking closed in DB",
+                        position.id, market_id=position.market_id,
+                    )
+                    if self.db.session_factory:
+                        async with self.db.get_session() as session:
+                            from sqlalchemy import select as sel
+                            r = await session.execute(sel(Position).where(Position.id == position.id).with_for_update())
+                            pos = r.scalar_one_or_none()
+                            if pos:
+                                pos.status = "closed"
+                                pos.unrealized_pnl = 0.0
+                                await session.commit()
+                    self._exit_cooldowns.pop(position.id, None)
+                else:
+                    # Other failure — set cooldown to prevent spam
+                    self._exit_cooldowns[position.id] = time.monotonic() + _EXIT_RETRY_COOLDOWN
+                    logger.debug("Take-profit failed for position %s, cooldown %ds", position.id, _EXIT_RETRY_COOLDOWN)
         except Exception as e:
+            self._exit_cooldowns[position.id] = time.monotonic() + _EXIT_RETRY_COOLDOWN
             logger.error("Error executing take-profit: %s", e, exc_info=True)
 
     async def set_position_limits(
