@@ -400,7 +400,8 @@ class Settings(BaseSettings):
     # Prevents churning the same market after model_reversal exits.
     ENSEMBLE_EXIT_COOLDOWN_SECONDS: int = int(os.getenv("ENSEMBLE_EXIT_COOLDOWN_SECONDS", "300"))  # Session 47: was 1800 (30 min) — 5 min base, doubles per exit, 1h cap
 
-    # Position manager adaptive exit thresholds (applies to ALL bots)
+    # Position manager adaptive exit thresholds (applies to ALL bots except excluded)
+    PM_EXCLUDE_BOTS: list = [b.strip() for b in os.getenv("PM_EXCLUDE_BOTS", "EsportsBot,MirrorBot,WeatherBot").split(",") if b.strip()]
     PM_STOP_LOSS_PCT: float = float(os.getenv("PM_STOP_LOSS_PCT", "0.30"))           # 30% — wide for prediction markets
     PM_TAKE_PROFIT_PCT: float = float(os.getenv("PM_TAKE_PROFIT_PCT", "0.60"))       # 60% — let winners run
     PM_ADAPTIVE_EXITS: bool = os.getenv("PM_ADAPTIVE_EXITS", "true").lower() in ("true", "1", "yes")
@@ -604,7 +605,8 @@ class Settings(BaseSettings):
     BACKTEST_LATENCY_SIMULATION_MS: float = float(os.getenv("BACKTEST_LATENCY_SIMULATION_MS", "0"))
     RESOLUTION_BACKFILL_AFTER_DAILY: bool = os.getenv("RESOLUTION_BACKFILL_AFTER_DAILY", "true").lower() in ("true", "1", "yes")
     # Markets to resolve per scheduler cycle (every ~285s). Higher = faster backlog clearance.
-    RESOLUTION_QUEUE_BATCH_SIZE: int = int(os.getenv("RESOLUTION_QUEUE_BATCH_SIZE", "200"))
+    # S125: Bumped 200→500 to clear 1900-market backlog from queue starvation.
+    RESOLUTION_QUEUE_BATCH_SIZE: int = int(os.getenv("RESOLUTION_QUEUE_BATCH_SIZE", "500"))
 
     # I51: Hard timeout for ingest_everything() — raise to 1800s for slow VPS DB
     INGESTION_TIMEOUT_SECONDS: float = float(os.getenv("INGESTION_TIMEOUT_SECONDS", "600"))

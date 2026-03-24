@@ -507,6 +507,11 @@ class AutomatedPositionManager:
         Session 45: Uses ExitStrategy for dynamic, cost-aware thresholds (replaces fixed 30%/60%).
         When PM_COST_AWARE_EXITS=false (kill switch), falls back to static defaults.
         """
+        # S125: Bot exclusion — bots with their own exit logic opt out of PM exits
+        _bot = getattr(position, "bot_id", None) or getattr(position, "bot_name", None) or ""
+        if _bot in getattr(settings, "PM_EXCLUDE_BOTS", []):
+            return
+
         if not position.current_price:
             position.current_price = position.entry_price
         entry_price = float(position.entry_price or 0.5)
