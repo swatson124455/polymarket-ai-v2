@@ -341,7 +341,7 @@ class Settings(BaseSettings):
     ELITE_MARKET_MAKER_BOTH_SIDES_RATIO: float = float(os.getenv("ELITE_MARKET_MAKER_BOTH_SIDES_RATIO", "0.6"))
     SOFTEST_MARKETS_COUNT: int = 25
     # MirrorBot — RTDS real-time copy trading (S96+)
-    MIRROR_MIN_CONFIDENCE: float = float(os.getenv("MIRROR_MIN_CONFIDENCE", "0.55"))
+    MIRROR_MIN_CONFIDENCE: float = float(os.getenv("MIRROR_MIN_CONFIDENCE", "0.50"))
     MIRROR_MAX_PER_MARKET: float = float(os.getenv("MIRROR_MAX_PER_MARKET", "500"))
     MIRROR_MAX_PER_MARKET_PCT: float = float(os.getenv("MIRROR_MAX_PER_MARKET_PCT", "0.10"))
     MIRROR_MAX_CATEGORY_EXPOSURE_USD: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_USD", "40000"))
@@ -365,6 +365,12 @@ class Settings(BaseSettings):
     MIRROR_SKIP_LIQUIDITY_RTDS: bool = os.getenv("MIRROR_SKIP_LIQUIDITY_RTDS", "true").lower() in ("true", "1", "yes")
     MIRROR_SKIP_COORDINATOR_BUY: bool = os.getenv("MIRROR_SKIP_COORDINATOR_BUY", "true").lower() in ("true", "1", "yes")
     MIRROR_RTDS_FAST_PATH: bool = os.getenv("MIRROR_RTDS_FAST_PATH", "true").lower() in ("true", "1", "yes")
+    # S124: ML trade selector (three-way shadow race: XGBoost / Q-learning / combo)
+    MIRROR_USE_ML_SELECTOR: bool = os.getenv("MIRROR_USE_ML_SELECTOR", "false").lower() in ("true", "1", "yes")
+    MIRROR_ML_STRATEGY: str = os.getenv("MIRROR_ML_STRATEGY", "xgb")  # xgb | ql | combo
+    MIRROR_ML_MIN_SCORE: float = float(os.getenv("MIRROR_ML_MIN_SCORE", "0.45"))
+    MIRROR_ML_MODEL_PATH: str = os.getenv("MIRROR_ML_MODEL_PATH", "models/mirror_ml_selector.pkl")
+    MIRROR_ML_MAX_AGE_DAYS: int = int(os.getenv("MIRROR_ML_MAX_AGE_DAYS", "14"))
 
     # Exit logic
     MIRROR_STOP_LOSS_PCT: float = float(os.getenv("MIRROR_STOP_LOSS_PCT", "0.15"))
@@ -740,6 +746,16 @@ class Settings(BaseSettings):
     WEATHER_MODEL_STALE_HOURS: float = float(os.getenv("WEATHER_MODEL_STALE_HOURS", "8.0"))
     WEATHER_MODEL_FRESH_BOOST: float = float(os.getenv("WEATHER_MODEL_FRESH_BOOST", "1.2"))
     WEATHER_MODEL_STALE_DISCOUNT: float = float(os.getenv("WEATHER_MODEL_STALE_DISCOUNT", "0.8"))
+
+    # S123: Platt + Isotonic confidence calibration for Kelly sizing
+    WEATHER_CONFIDENCE_CAL_ENABLED: bool = os.getenv("WEATHER_CONFIDENCE_CAL_ENABLED", "true").lower() == "true"
+    WEATHER_CONFIDENCE_CAL_WINDOW_DAYS: int = int(os.getenv("WEATHER_CONFIDENCE_CAL_WINDOW_DAYS", "30"))
+    WEATHER_CONFIDENCE_CAL_MIN_SAMPLES: int = int(os.getenv("WEATHER_CONFIDENCE_CAL_MIN_SAMPLES", "200"))
+
+    # S124: Lead-time spread inflation for probability engine (default OFF)
+    # Widens effective_std at longer lead times to reduce overconfidence.
+    # With 0.10: 24h→×1.00, 48h→×1.04, 72h→×1.07, 120h→×1.12, 168h→×1.16
+    WEATHER_SPREAD_INFLATION_FACTOR: float = float(os.getenv("WEATHER_SPREAD_INFLATION_FACTOR", "0.0"))
 
     # Scan intervals (seconds)
     SCAN_INTERVAL_ENSEMBLE: int = int(os.getenv("SCAN_INTERVAL_ENSEMBLE", "60"))

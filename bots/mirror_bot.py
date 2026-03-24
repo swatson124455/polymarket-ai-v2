@@ -1,9 +1,11 @@
 import asyncio
-import math
+import math as _math
 import time as _time
-from collections import defaultdict, OrderedDict
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple, Any
+
+_math_isfinite = _math.isfinite
 
 from structlog import get_logger
 
@@ -16,17 +18,19 @@ logger = get_logger()
 
 class MirrorBot(BaseBot):
     """
-    MirrorBot - Mirrors trades from top N elite traders (TOP_TRADER_COUNT).
+    MirrorBot - Real-time copy trading from top N elite traders via RTDS WebSocket.
 
-    Consensus: aggregates elite trades per (market_id, token_id, side) and mirrors
-    only when >= MIRROR_MIN_CONSENSUS elites agree on the same side.
+    Architecture (S96+): RTDS global trade feed → EliteWatchlist O(1) lookup →
+    _execute_mirror_trade() with 16 rejection gates → paper trading engine.
+    Scan loop handles housekeeping only (exits, reaping, stats).
 
     Features:
-    - Trade deduplication with automatic pruning (capped set)
-    - Exit mirroring: closes positions when source traders exit
-    - Reliability-weighted sizing via EliteReliabilityTracker
-    - Daily exposure + concurrent position limits
-    - Single client session per scan cycle (no per-trader reconnect)
+    - RTDS real-time copy trading (sub-100ms latency)
+    - Multi-factor confidence: category win rate + price edge + whale conviction
+    - Opposing-side guard + same-side dedup (prevents hedged/duplicate positions)
+    - Graduated stop-loss (15%→10%→5% by hold duration) + 96h force exit
+    - Reliability-weighted sizing via EliteReliabilityTracker (Bayesian Beta)
+    - Daily + category + per-market exposure caps
     """
 
     # Defaults (overridable via settings)
@@ -54,11 +58,6 @@ class MirrorBot(BaseBot):
 
         # M1: Per-category exposure tracking (USD deployed per category)
         self._category_exposure: Dict[str, float] = {}
-
-        # Signal enhancement cache: "market_id:side" -> (confidence_multiplier, expiry_monotonic)
-        # Avoids calling 3 external services per trade when the same market appears 10-30x per scan.
-        self._signal_cache: Dict[str, Tuple[float, float]] = {}
-        self._SIGNAL_CACHE_TTL = 60.0  # seconds
 
         # Periodic elite refresh (avoid stale list)
         self._scan_count: int = 0
@@ -91,12 +90,18 @@ class MirrorBot(BaseBot):
 
         # S91: Tier 0 pre-trade filters (in-memory, <0.01ms)
         self._market_blocklist: set = set()  # market_ids to reject instantly
+        self._entered_market_sides: set = set()  # {(market_id, side)} for opposing-side guard across restarts
         self._market_cooldown: Dict[str, float] = {}  # market_id -> cooldown_expiry_monotonic
 
         # S99: Portfolio circuit breaker — pause entries when unrealized P&L < threshold
         self._circuit_breaker_until: float = 0.0  # monotonic time when pause expires
         # S99b: Post-reset cooldown — prevent burst of trades after daily exposure reset
         self._daily_reset_cooldown: float = 0.0
+
+        # S113 P2: Multi-whale consensus counter — tracks how many unique whales
+        # attempted the same (market_id, side) even though same-side dedup blocks re-entry.
+        # Used for future F4 (consensus signal) analysis. Resets daily.
+        self._whale_consensus: Dict[str, int] = {}  # "market_id:side" -> whale count
 
         # Session 82: Calibration stack (FTS + Le2026 + conformal)
         self._calibration_stack = None
@@ -115,6 +120,15 @@ class MirrorBot(BaseBot):
             self._adaptive_safety = MirrorAdaptiveSafety(db=base_engine.db)
         except Exception as e:
             logger.debug("MirrorAdaptiveSafety init skipped: %s", e)
+
+        # S124: ML trade selector (three-way shadow race: XGBoost / Q-learning / combo)
+        self._ml_selector = None
+        self._ml_selector_loaded: bool = False
+        try:
+            from bots.mirror_ml_selector import MirrorMLSelector
+            self._ml_selector = MirrorMLSelector()
+        except Exception as e:
+            logger.debug("MirrorMLSelector init skipped: %s", e)
 
         # Real-time WebSocket copy trading via EliteWatchlist + RTDS global feed
         self._watchlist = None
@@ -217,6 +231,30 @@ class MirrorBot(BaseBot):
                     spent_today,
                 )
 
+                # S119: Seed _category_exposure from today's ENTRY events.
+                # Without this, mid-day restarts reset category exposure to 0,
+                # allowing the bot to exceed the $40k category cap.
+                try:
+                    _cat_rows = await session.execute(
+                        _text(
+                            "SELECT COALESCE(event_data->>'category', '') AS cat, "
+                            "  SUM(CAST(size AS DOUBLE PRECISION) * CAST(price AS DOUBLE PRECISION)) AS spent "
+                            "FROM trade_events "
+                            "WHERE bot_name = :bot AND event_type = 'ENTRY' AND event_time >= CURRENT_DATE "
+                            "GROUP BY COALESCE(event_data->>'category', '')"
+                        ),
+                        {"bot": self.bot_name},
+                    )
+                    for _cr in _cat_rows.fetchall():
+                        _cat_name = str(_cr[0] or "")
+                        if _cat_name:
+                            self._category_exposure[_cat_name] = float(_cr[1] or 0.0)
+                    if self._category_exposure:
+                        logger.info("MirrorBot startup: seeded _category_exposure from trade_events: %s",
+                                    {k: round(v, 0) for k, v in self._category_exposure.items()})
+                except Exception as _cat_err:
+                    logger.debug("Category exposure seed failed (non-critical): %s", _cat_err)
+
                 # 2. Rebuild _open_positions from positions table (YES/NO only).
                 # trader_addresses column added by migration 035 — falls back to '{}' on older rows.
                 rows = await session.execute(
@@ -250,6 +288,24 @@ class MirrorBot(BaseBot):
                 )
         except Exception as exc:
             logger.warning("MirrorBot _restore_state_on_startup failed: %s", exc)
+
+        # S117: Build _entered_market_sides from ALL trade_events ENTRY records.
+        # Prevents opposing-side entries on markets where the first side already resolved.
+        # The in-memory _open_positions guard only catches currently-open positions.
+        try:
+            async with db.get_session() as session:
+                _ms_rows = await session.execute(
+                    _text(
+                        "SELECT DISTINCT market_id, side FROM trade_events "
+                        "WHERE bot_name = :bot AND event_type = 'ENTRY' AND side IN ('YES', 'NO')"
+                    ),
+                    {"bot": self.bot_name},
+                )
+                for _mr in _ms_rows.fetchall():
+                    self._entered_market_sides.add((_mr.market_id, _mr.side))
+                logger.info("mirror_entered_sides_restored n=%d", len(self._entered_market_sides))
+        except Exception as _exc:
+            logger.warning("mirror_entered_sides_restore failed: %s", _exc)
 
         # S90: Clean opposing YES/NO pairs — mark smaller side for exit
         try:
@@ -343,6 +399,15 @@ class MirrorBot(BaseBot):
         except Exception as _cache_err:
             logger.debug("S92: cache pre-population failed (non-critical): %s", _cache_err)
 
+        # S117: Pre-load reliability cache for instant F1 on startup
+        if self._reliability_tracker:
+            try:
+                loaded = await self._reliability_tracker.load_from_cache()
+                if loaded:
+                    logger.info("reliability_cache_loaded_on_startup")
+            except Exception:
+                pass
+
         # M5: Restore dedup dict from Redis
         await self._restore_dedup_from_redis()
 
@@ -418,6 +483,7 @@ class MirrorBot(BaseBot):
 
     async def scan_and_trade(self):
         """Main scan: refresh elites, check exits, collect consensus trades, execute."""
+        self._scan_start_mono = _time.monotonic()  # S115: for shadow fill latency tracking
         self._scan_count += 1
         self._cap_logged_this_scan = False
 
@@ -437,6 +503,15 @@ class MirrorBot(BaseBot):
                     logger.info("MirrorBot calibration stack fitted", results=_cal_results)
             except Exception as e:
                 logger.debug("MirrorBot calibration fit failed: %s", e)
+
+        # S124: Load ML selector models on first scan
+        if self._ml_selector and not self._ml_selector_loaded:
+            try:
+                _ml_status = self._ml_selector.load_all()
+                self._ml_selector_loaded = True
+                logger.info("mirror_ml_selector_loaded", **_ml_status)
+            except Exception as e:
+                logger.debug("mirror_ml_selector load failed: %s", e)
 
         # Session 82: Refresh adaptive safety metrics periodically
         if self._adaptive_safety:
@@ -476,6 +551,14 @@ class MirrorBot(BaseBot):
                 logger.warning("MirrorBot elite refresh timed out (10s) — continuing with stale list")
             except Exception as _elite_err:
                 logger.debug("MirrorBot elite refresh failed: %s", _elite_err)
+            # S115: Refresh reliability tracker independently — elite timeout must not kill F1
+            if self._reliability_tracker:
+                try:
+                    await asyncio.wait_for(self._reliability_tracker.refresh(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    logger.warning("MirrorBot reliability refresh timed out (30s)")
+                except Exception as _rel_err:
+                    logger.warning("Elite reliability refresh failed: %s", _rel_err)
 
         # Start WebSocket watchlist on first scan (register handler once)
         if self._watchlist and not self._watchlist_started:
@@ -589,7 +672,7 @@ class MirrorBot(BaseBot):
             cat, ttr, expiry = cached
             if now < expiry:
                 return cat, ttr
-        # Fetch from DB or API
+        # Fetch from DB, fall back to CLOB API for markets outside top-500
         category, time_to_res = "", ""
         try:
             db = getattr(self.base_engine, "db", None)
@@ -597,7 +680,7 @@ class MirrorBot(BaseBot):
                 from sqlalchemy import text as _text
                 async with db.get_session() as session:
                     row = await session.execute(
-                        _text("SELECT category, end_date_iso FROM markets WHERE id = :mid LIMIT 1"),
+                        _text("SELECT category, end_date_iso FROM markets WHERE condition_id = :mid OR id::text = :mid LIMIT 1"),
                         {"mid": market_id},
                     )
                     r = row.fetchone()
@@ -613,10 +696,70 @@ class MirrorBot(BaseBot):
                                     time_to_res = "days"
                                 else:
                                     time_to_res = "weeks"
+            # S112: CLOB API fallback — whales trade markets outside top-500 ingestion
+            if not category:
+                try:
+                    import httpx
+                    async with httpx.AsyncClient(timeout=5.0) as _hc:
+                        resp = await _hc.get(f"https://clob.polymarket.com/markets/{market_id}")
+                        if resp.status_code == 200:
+                            clob = resp.json()
+                            q = clob.get("question") or ""
+                            if q:
+                                from base_engine.data.data_ingestion import _infer_category
+                                category = _infer_category(q)
+                                logger.info("mirror_clob_category_resolve",
+                                            market=market_id[:16], category=category,
+                                            question=q[:60])
+                                # S113: Persist to market_categories for tracker F1
+                                _tokens = clob.get("tokens") or []
+                                _yes_tid = ""
+                                _no_tid = ""
+                                _resolved = bool(clob.get("closed"))
+                                _resolution = None
+                                for _ti, _tok in enumerate(_tokens):
+                                    if _tok.get("outcome", "").upper() == "YES":
+                                        _yes_tid = _tok.get("token_id", "")
+                                    elif _tok.get("outcome", "").upper() == "NO":
+                                        _no_tid = _tok.get("token_id", "")
+                                    if _tok.get("winner"):
+                                        _resolution = "YES" if _ti == 0 else "NO"
+                                asyncio.create_task(self._persist_market_category(
+                                    market_id, category, q,
+                                    _yes_tid, _no_tid, _resolved, _resolution))
+                except Exception as _clob_err:
+                    logger.debug("CLOB category fallback failed for %s: %s",
+                                 market_id[:16], _clob_err)
         except Exception as e:
             logger.debug("Market meta lookup failed for %s: %s", market_id, e)
         self._market_meta_cache[market_id] = (category, time_to_res, now + self._MARKET_META_TTL)
         return category, time_to_res
+
+    async def _persist_market_category(
+        self, condition_id: str, category: str, question: str,
+        yes_token_id: str, no_token_id: str,
+        resolved: bool, resolution: Optional[str],
+    ) -> None:
+        """S113: Persist CLOB-resolved category to market_categories table.
+
+        Fire-and-forget from _get_market_meta() CLOB fallback.
+        Populates data needed by elite_reliability tracker for F1.
+        """
+        db = getattr(self.base_engine, "db", None)
+        if db is None:
+            return
+        try:
+            await db.upsert_market_category(
+                condition_id=condition_id,
+                category=category,
+                question=question,
+                yes_token_id=yes_token_id,
+                no_token_id=no_token_id,
+                resolved=resolved,
+                resolution=resolution,
+            )
+        except Exception as exc:
+            logger.debug("_persist_market_category failed: %s", exc)
 
     # S98: _collect_and_aggregate_elite_trades + _parse_and_validate_trade deleted
     # RTDS is sole entry path — consensus scan no longer used
@@ -721,7 +864,9 @@ class MirrorBot(BaseBot):
         # S99: Circuit breaker — if total unrealized P&L breaches threshold, pause entries
         _cb_threshold_pct = float(getattr(settings, "MIRROR_CIRCUIT_BREAKER_THRESHOLD", -0.20))
         _cb_pause_min = float(getattr(settings, "MIRROR_CIRCUIT_BREAKER_PAUSE_MINUTES", 15))
-        _capital = float(getattr(self.bankroll, 'capital', 3000) or 3000) if self.bankroll else 3000.0
+        # S119 FIX: fallback was $3k — should match MIRROR_TOTAL_CAPITAL ($20k)
+        _fallback_capital = float(getattr(settings, "MIRROR_TOTAL_CAPITAL", 20000))
+        _capital = float(getattr(self.bankroll, 'capital', _fallback_capital) or _fallback_capital) if self.bankroll else _fallback_capital
         _cb_threshold_usd = _capital * _cb_threshold_pct  # negative number
         if _total_unrealized <= _cb_threshold_usd and _total_unrealized < 0:
             self._circuit_breaker_until = _time.monotonic() + (_cb_pause_min * 60)
@@ -823,10 +968,26 @@ class MirrorBot(BaseBot):
                 reaped = result.fetchall()
                 await session.commit()
                 if reaped:
+                    _reaped_usd = 0.0
                     for row in reaped:
                         pos_key = f"{row[0]}:{row[1]}"
-                        self._open_positions.pop(pos_key, None)
-                    logger.info("mirror_reap_resolved: removed %d stale positions", len(reaped))
+                        _pos = self._open_positions.pop(pos_key, None)
+                        # S113 P7: Decrement daily exposure for resolved positions —
+                        # without this, resolved positions inflate _daily_exposure
+                        # and block new trades via the daily cap.
+                        if _pos:
+                            _pos_cost = _pos.get("size", 0.0) * _pos.get("entry_price", 0.0)
+                            _reaped_usd += _pos_cost
+                            # Also decrement category exposure
+                            _pos_cat = _pos.get("category", "")
+                            if _pos_cat:
+                                self._category_exposure[_pos_cat] = max(
+                                    0.0, self._category_exposure.get(_pos_cat, 0.0) - _pos_cost
+                                )
+                    if _reaped_usd > 0:
+                        self._daily_exposure = max(0.0, self._daily_exposure - _reaped_usd)
+                    logger.info("mirror_reap_resolved: removed %d stale positions, freed $%.2f daily exposure",
+                                len(reaped), _reaped_usd)
         except Exception as exc:
             logger.warning("mirror_reap_resolved failed: %s", exc)
 
@@ -952,6 +1113,7 @@ class MirrorBot(BaseBot):
             logger.info("Daily P&L reset", previous_pnl=round(self._daily_exposure, 2))
             self._daily_exposure = 0.0
             self._category_exposure.clear()
+            self._whale_consensus.clear()  # S113 P2: reset consensus counter daily
             self._daily_reset_date = today
             # S99b: 60s cooldown to prevent burst of 30+ trades at midnight
             self._daily_reset_cooldown = _time.monotonic() + 60
@@ -1030,15 +1192,10 @@ class MirrorBot(BaseBot):
             # M2: Keep stale list on error (clearing causes ~30min blackout until next refresh)
             logger.warning("Failed to update elite traders — retaining stale list", error=str(e))
 
-        # Refresh elite reliability posteriors
-        if self._reliability_tracker:
-            try:
-                await self._reliability_tracker.refresh()
-            except Exception as e:
-                # N2: Raised from debug to warning — DB failures are not silent in production
-                logger.warning("Elite reliability refresh failed: %s", e)
+        # S119: reliability refresh removed — scan loop at line 516 already refreshes
+        # independently with 30s timeout (S115 separated elite + reliability refresh).
 
-    # ── Opportunity Hook (unused by mirror — consensus in scan) ────
+    # ── Opportunity Hook (unused — RTDS is sole entry path since S96) ────
 
     async def analyze_opportunity(self, market_data: Dict) -> Optional[Dict]:
         """MirrorBot uses consensus-based scan, not per-market analysis."""
@@ -1056,6 +1213,7 @@ class MirrorBot(BaseBot):
         trader_address: str,
         category: Optional[str] = None,
         source: str = "consensus",
+        whale_trade_usd: float = 0.0,
     ) -> bool:
         """Execute a mirror trade with reliability weighting and exposure caps."""
         # ── S91: Tier 0 in-memory filters (<0.01ms) ─────────────────────
@@ -1101,12 +1259,14 @@ class MirrorBot(BaseBot):
         if not _is_sell and not self._can_open_position(price, category=category):
             return False
 
-        # Opposing-side dedup: reject BUY if we already hold the opposite side on this market.
+        # Opposing-side dedup: reject BUY if we already hold OR ever entered the opposite side.
         # Different elite traders can take YES vs NO on the same market — opening both
         # creates a hedged position that bleeds fees with zero edge.
+        # S117: Also checks _entered_market_sides (survives restarts via trade_events query).
         if not _is_sell:
             _side_upper = str(side).upper()
             _opposite = "NO" if _side_upper == "YES" else "YES"
+            # Check 1: in-memory open positions (fast path)
             _market_prefix = f"{market_id}:"
             for _pk, _pv in self._open_positions.items():
                 if _pk.startswith(_market_prefix) and str(_pv.get("side", "")).upper() == _opposite:
@@ -1115,6 +1275,13 @@ class MirrorBot(BaseBot):
                         str(market_id)[:16], side, _opposite,
                     )
                     return False
+            # Check 2: historical entries (catches resolved positions missed after restart)
+            if (market_id, _opposite) in self._entered_market_sides:
+                logger.info(
+                    "mirror_opposing_side_blocked_historical market=%s side=%s prior_entry=%s",
+                    str(market_id)[:16], side, _opposite,
+                )
+                return False
 
         # S109 Same-side dedup: reject BUY if we already hold the SAME side on this market.
         # Multiple RTDS whale signals for same market should NOT create duplicate positions.
@@ -1124,9 +1291,15 @@ class MirrorBot(BaseBot):
             _market_prefix = f"{market_id}:"
             for _pk, _pv in self._open_positions.items():
                 if _pk.startswith(_market_prefix) and str(_pv.get("side", "")).upper() == _side_upper:
+                    # S113 P2: Track multi-whale consensus (don't re-enter, just count)
+                    _cons_key = f"{market_id}:{_side_upper}"
+                    self._whale_consensus[_cons_key] = self._whale_consensus.get(_cons_key, 1) + 1
+                    # Also record the whale in the position's traders set
+                    self._open_positions[_pk]["traders"].add(trader_address)
                     logger.debug(
-                        "mirror_same_side_blocked market=%s side=%s",
+                        "mirror_same_side_blocked market=%s side=%s consensus=%d",
                         str(market_id)[:16], side,
+                        self._whale_consensus[_cons_key],
                     )
                     return False
 
@@ -1198,6 +1371,17 @@ class MirrorBot(BaseBot):
                         logger.info("mirror_price_corrected", market=str(market_id)[:16],
                                     trader_price=round(_old_price, 4), market_price=round(price, 4))
 
+        # R4: Price direction pre-filter — skip if market already moved >5% toward
+        # the trade direction since whale's fill. Edge likely consumed by other copiers.
+        _dir_thresh = float(getattr(settings, "MIRROR_PRICE_DIRECTION_THRESH", 0.05))
+        if _old_price > 0.01 and not _is_sell:
+            _move_pct = (price - _old_price) / _old_price
+            if _move_pct > _dir_thresh:
+                logger.info("mirror_price_direction_skip", market=str(market_id)[:16],
+                            trader_price=round(_old_price, 4), market_price=round(price, 4),
+                            move_pct=round(_move_pct, 3))
+                return False
+
         # S91: Slippage cap — reject when market has moved too far from whale's fill price
         _max_slip = float(getattr(settings, "MIRROR_MAX_SLIPPAGE_PCT", 0.08))
         if _old_price > 0.01 and abs(price - _old_price) / _old_price > _max_slip:
@@ -1219,21 +1403,110 @@ class MirrorBot(BaseBot):
                     )
                     return False
                 reliability_mult = min(lr, 2.0)  # Cap at 2x
+                # R2: Sample-size ramp — don't trust high LR on tiny samples.
+                # 0 trades → 0x, 25 trades → 0.5x, 50+ trades → 1.0x (no change).
+                _eq_n = self._reliability_tracker.total_trade_count(trader_address)
+                _sample_ramp = min(1.0, _eq_n / 50)
+                reliability_mult *= _sample_ramp
             except Exception as e:
                 logger.debug("elite reliability lookup failed: %s", e)
 
-        # M3: Leader domain tracking — penalize unfamiliar categories
-        if category and self._reliability_tracker:
+        # ── S110: Multi-factor confidence (replaces flat 0.55 base) ──────
+        # Factor 1: Category-specific Bayesian base.
+        # Uses per-whale per-category win rate with shrinkage toward 0.50.
+        # Low sample count → confidence stays near 0.50 (replaces domain drift).
+        if self._reliability_tracker:
             try:
-                _domain_min = 10  # minimum resolved trades to be "familiar"
-                _cat_trades = self._reliability_tracker.category_trade_count(trader_address, category)
-                if _cat_trades < _domain_min:
-                    confidence *= 0.50
-                    logger.info("leader_domain_drift", trader=trader_address[:10],
-                                category=category, cat_trades=_cat_trades,
-                                confidence_after=round(confidence, 3))
+                _cat_wr = self._reliability_tracker.mean(
+                    trader_address, side, category=category) if category else 0.50
+                _cat_n = (self._reliability_tracker.category_trade_count(
+                    trader_address, category) if category else 0)
+                _shrinkage = _cat_n / (_cat_n + 20)  # pseudocount=20
+                _base = 0.50 + _shrinkage * (_cat_wr - 0.50)
+                # Safety net: cap unfamiliar categories (double-conservative)
+                if category and _cat_n < 10:
+                    _base = min(_base, 0.52)
             except Exception:
-                pass
+                _base = 0.50
+                _cat_wr = 0.50
+                _cat_n = 0
+        else:
+            _base = 0.50
+            _cat_wr = 0.50
+            _cat_n = 0
+
+        # Factor 2: Price-implied edge.
+        # Contrarian bets (YES at low price, NO at high price) → boost.
+        # Consensus bets → slight penalty.
+        _price_dev = abs(price - 0.50)
+        _side_upper = str(side).upper()
+        # S119 FIX: NO contrarian was inverted. Buying NO cheap (<0.45) = market disagrees = contrarian.
+        # Buying NO expensive (>0.55) = market agrees = consensus. Was backwards since S110.
+        _is_contrarian = ((_side_upper == "YES" and price < 0.45)
+                          or (_side_upper == "NO" and price < 0.45))
+        if _is_contrarian:
+            _price_adj = _price_dev * 0.15
+        else:
+            _price_adj = -(_price_dev * 0.15 * 0.3)
+
+        # Factor 3: Trade size conviction — whale betting larger than usual = higher conviction.
+        # Uses whale_trade_usd from RTDS payload vs whale's avg trade size from watchlist.
+        _conv_adj = 0.0
+        if whale_trade_usd > 0 and self._watchlist:
+            _wdata = getattr(self._watchlist, "_watchlist_data", {})
+            _wd = _wdata.get(trader_address.lower(), {})
+            _whale_vol = _wd.get("vol", 0)
+            _whale_n = _wd.get("num_trades", 0)
+            if _whale_vol > 0 and _whale_n > 0:
+                _avg_trade = _whale_vol / _whale_n
+                _size_ratio = whale_trade_usd / max(_avg_trade, 1.0)
+                if _size_ratio > 2.0:
+                    _conv_adj = 0.04  # big position for this whale
+                elif _size_ratio < 0.3:
+                    _conv_adj = -0.03  # small/exploratory
+
+        # Compose final confidence (overrides upstream flat 0.55)
+        _raw_upstream = confidence
+        confidence = max(0.35, min(0.75, _base + _price_adj + _conv_adj))
+
+        logger.info("mirror_multifactor", trader=trader_address[:10],
+                    category=category or "", cat_wr=round(_cat_wr, 3),
+                    cat_n=_cat_n, base=round(_base, 3),
+                    price_adj=round(_price_adj, 3),
+                    conv_adj=round(_conv_adj, 3),
+                    whale_usd=round(whale_trade_usd, 0),
+                    upstream=round(_raw_upstream, 3),
+                    final=round(confidence, 3),
+                    rel_mult=round(reliability_mult, 3))
+
+        # S124: ML selector — score trade with all three strategies (shadow + optional live gate)
+        _ml_scores = None
+        if self._ml_selector and self._ml_selector.loaded:
+            _ml_features = {
+                "conf_base": _base,
+                "conf_price_adj": _price_adj,
+                "conf_conv_adj": _conv_adj,
+                "rel_mult": reliability_mult,
+                "price": price,
+                "whale_trade_usd": whale_trade_usd,
+                "category_encoded": self._ml_selector.encode_category(category),
+                "consensus": self._whale_consensus.get(f"{market_id}:{_side_upper}", 1),
+                "hour_utc": float(datetime.now(timezone.utc).hour),
+                "side_is_no": 1.0 if _side_upper == "NO" else 0.0,
+                "price_extremity": abs(price - 0.50),
+                "conf_composite": confidence,
+            }
+            _ml_scores = self._ml_selector.score_trade(_ml_features)
+
+            # Live gate: only block when MIRROR_USE_ML_SELECTOR=true
+            if getattr(settings, "MIRROR_USE_ML_SELECTOR", False) and self._ml_selector.should_block(_ml_scores):
+                logger.info("mirror_ml_rejected",
+                            strategy=getattr(settings, "MIRROR_ML_STRATEGY", "xgb"),
+                            xgb=_ml_scores.get("ml_score_xgb"),
+                            ql=_ml_scores.get("ml_score_ql"),
+                            confidence=round(confidence, 3),
+                            market=str(market_id)[:16])
+                return False
 
         # PERF: MirrorBot is a pure trader-mirroring strategy — confidence comes from
         # elite trader consensus + reliability weighting, not from market signals.
@@ -1251,6 +1524,8 @@ class MirrorBot(BaseBot):
 
         # Session 82: Apply calibration stack (FTS + Le2026 domain bias) to confidence.
         # Gated by MIRROR_USE_CALIBRATION=true. When off, confidence passes through unchanged.
+        # S121: Always compute shadow calibrated score for dual-ledger comparison.
+        _conf_cal_shadow = None
         if self._calibration_stack:
             # Calibrate confidence (domain + horizon aware)
             _ttr_days = None
@@ -1263,6 +1538,11 @@ class MirrorBot(BaseBot):
                     _ttr_days = _ttr_map.get(_meta_ttr)
                 except Exception:
                     pass
+            # S121: Shadow ledger — always compute calibrated score (does not affect trade)
+            _conf_cal_shadow = self._calibration_stack.shadow_calibrate(
+                confidence, category=_cat, ttr_days=_ttr_days,
+            )
+            # Live calibration — only modifies confidence when MIRROR_USE_CALIBRATION=true
             _raw_conf = confidence
             confidence = self._calibration_stack.calibrate_confidence(
                 confidence, category=_cat, ttr_days=_ttr_days,
@@ -1291,13 +1571,29 @@ class MirrorBot(BaseBot):
         )
         size *= reliability_mult
 
-        # S99b Option C: Dampen sizing in gray zone (5-7¢ / 93-95¢) — 0.25x normal size
+        # S124: NaN/inf guard — defense-in-depth against corrupted Kelly output
+        if not _math_isfinite(size) or size < 0:
+            size = 0.0
+
+        # S99b Option C: Dampen sizing in gray zone (5-7¢ / 93-95¢)
+        # S119: Set to 1.0 (no-op) for data collection. Re-evaluate ~Mar 29.
         _soft_min = float(getattr(settings, "MIRROR_MIN_PRICE", 0.07))
         _soft_max = float(getattr(settings, "MIRROR_MAX_PRICE", 0.93))
         if price < _soft_min or price > _soft_max:
-            _dampen = float(getattr(settings, "MIRROR_EXTREME_PRICE_DAMPENER", 0.25))
+            _dampen = float(getattr(settings, "MIRROR_EXTREME_PRICE_DAMPENER", 1.0))
             size *= _dampen
-            logger.info("mirror_price_dampened: %.3f in gray zone, size *= %.2f", price, _dampen)
+            if _dampen < 1.0:
+                logger.info("mirror_price_dampened: %.3f in gray zone, size *= %.2f", price, _dampen)
+
+        # S110: Favorite dampener — reduce sizing on heavy favorites (low edge)
+        # S119: Set to 1.0 (no-op) for data collection. Re-evaluate ~Mar 29.
+        _fav_thresh = float(getattr(settings, "MIRROR_FAVORITE_PRICE_THRESHOLD", 0.70))
+        if price > _fav_thresh:
+            _fav_damp = float(getattr(settings, "MIRROR_FAVORITE_DAMPENER", 1.0))
+            size *= _fav_damp
+            if _fav_damp < 1.0:
+                logger.info("mirror_favorite_dampened: price=%.3f, size *= %.2f",
+                            price, _fav_damp)
 
         # M9: Cap per-market exposure — percentage-based with absolute safety cap
         _capital = float(getattr(self.bankroll, 'capital', 0) or 0) if self.bankroll else float(getattr(settings, "MIRROR_TOTAL_CAPITAL", 20000))
@@ -1342,6 +1638,25 @@ class MirrorBot(BaseBot):
         else:
             self._current_correlation_id = None
 
+        # S113 P5: Persist trade context in event_data for retroactive analysis
+        _event_data = {
+            "category": category or "",
+            "source": source,
+            "whale_trade_usd": round(whale_trade_usd, 2),
+            "conf_base": round(_base, 3),
+            "conf_price_adj": round(_price_adj, 3),
+            "conf_conv_adj": round(_conv_adj, 3),
+            "conf_upstream": round(_raw_upstream, 3),
+            "conf_cal_shadow": round(_conf_cal_shadow, 3) if _conf_cal_shadow is not None else None,
+            "rel_mult": round(reliability_mult, 3),
+            "trader": trader_address[:10],
+            "consensus": self._whale_consensus.get(f"{market_id}:{str(side).upper()}", 1),
+            "scan_start_mono": getattr(self, "_scan_start_mono", None),  # S115
+        }
+        # S124: Merge ML selector scores into event_data for shadow ledger analysis
+        if _ml_scores:
+            _event_data.update(_ml_scores)
+
         order = await self.place_order(
             market_id=market_id,
             token_id=token_id,
@@ -1349,6 +1664,7 @@ class MirrorBot(BaseBot):
             size=size,
             price=price,
             confidence=confidence,
+            event_data=_event_data,
         )
 
         if order.get("success") and not order.get("idempotent"):
@@ -1368,6 +1684,9 @@ class MirrorBot(BaseBot):
             pos_key = f"{market_id}:{token_id}"
             if pos_key in self._open_positions:
                 self._open_positions[pos_key]["size"] += size
+
+            # S117: Track entry for opposing-side guard across restarts
+            self._entered_market_sides.add((market_id, str(side).upper()))
 
             logger.info(
                 "Mirror trade executed",
