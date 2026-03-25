@@ -289,14 +289,14 @@ class HealthScheduler:
                 result = await session.execute(
                     text(
                         "SELECT "
-                        "  COALESCE(metadata->>'sport', 'unknown') as sport, "
-                        "  COALESCE(metadata->>'market_type', 'moneyline') as market_type, "
+                        "  COALESCE(event_data->>'sport', 'unknown') as sport, "
+                        "  COALESCE(event_data->>'market_type', 'moneyline') as market_type, "
                         "  COUNT(*) as bet_count, "
                         "  SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) as correct_count, "
                         "  AVG(POWER(confidence - CASE WHEN realized_pnl > 0 THEN 1.0 ELSE 0.0 END, 2)) as brier_score "
-                        "FROM paper_trades "
+                        "FROM trade_events "
                         "WHERE bot_name IN ('SportsInjuryBot', 'SportsLiveBot', 'SportsArbBot') "
-                        "  AND status = 'closed' "
+                        "  AND event_type = 'RESOLUTION' "
                         "  AND confidence IS NOT NULL "
                         "GROUP BY sport, market_type "
                         "HAVING COUNT(*) >= 10"  # minimum 10 bets for statistical validity

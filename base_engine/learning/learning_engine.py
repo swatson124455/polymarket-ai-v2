@@ -468,9 +468,10 @@ class LearningEngine:
             # Without eviction, self.patterns grows unbounded (one key per market_id, never removed).
             # With 2700+ markets and growing, this leaks memory monotonically.
             _MAX_PATTERNS = getattr(settings, "LEARNING_ENGINE_MAX_PATTERNS", 5000) if hasattr(self, '_settings_checked') else 5000
+            _STRUCTURAL_KEYS = {"user_performance", "market_types", "price_ranges", "time_to_resolution"}
             if len(self.patterns) >= _MAX_PATTERNS:
                 _evict_count = max(1, len(self.patterns) // 5)  # evict 20%
-                _oldest_keys = list(self.patterns.keys())[:_evict_count]
+                _oldest_keys = [k for k in list(self.patterns.keys()) if k not in _STRUCTURAL_KEYS][:_evict_count]
                 for _k in _oldest_keys:
                     del self.patterns[_k]
                 logger.debug("LearningEngine: evicted %d stale pattern keys (dict was at %d)", _evict_count, _MAX_PATTERNS)

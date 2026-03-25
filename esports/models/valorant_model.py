@@ -44,6 +44,8 @@ MODEL_PATH = os.path.join(
 class ValorantModel:
     """XGBoost binary classifier for Valorant match winner prediction."""
 
+    FEATURE_NAMES = FEATURE_NAMES
+
     def __init__(self) -> None:
         self._model = None
         self._is_trained = False

@@ -65,23 +65,23 @@ sudo -u postgres psql -c "CREATE USER polymarket WITH PASSWORD '$PG_PASSWORD';" 
 sudo -u postgres psql -c "CREATE DATABASE polymarket OWNER polymarket;" 2>/dev/null || true
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE polymarket TO polymarket;" 2>/dev/null || true
 
-# Tune PostgreSQL for 2GB Lightsail instance
+# Tune PostgreSQL for 16GB/4vCPU Lightsail instance
 PG_CONF_DIR=$(find /etc/postgresql -name "conf.d" -type d 2>/dev/null | head -1)
 if [ -z "$PG_CONF_DIR" ]; then
     PG_CONF_DIR="/etc/postgresql/16/main/conf.d"
     mkdir -p "$PG_CONF_DIR"
 fi
 cat > "$PG_CONF_DIR/polymarket.conf" << 'PGCONF'
-# Polymarket AI tuning (2GB Lightsail)
-shared_buffers = 512MB
-effective_cache_size = 1536MB
-work_mem = 8MB
-maintenance_work_mem = 128MB
-max_connections = 50
+# Polymarket AI tuning (16GB/4vCPU Lightsail)
+shared_buffers = 4GB
+effective_cache_size = 12GB
+work_mem = 32MB
+maintenance_work_mem = 512MB
+max_connections = 200
 random_page_cost = 1.1
 effective_io_concurrency = 200
-max_worker_processes = 2
-max_parallel_workers_per_gather = 1
+max_worker_processes = 4
+max_parallel_workers_per_gather = 2
 PGCONF
 
 systemctl restart postgresql
@@ -90,7 +90,7 @@ systemctl restart postgresql
 echo "[4/8] Configuring Redis..."
 sed -i "s/^# requirepass .*/requirepass $REDIS_PASS/" /etc/redis/redis.conf
 sed -i "s/^requirepass .*/requirepass $REDIS_PASS/" /etc/redis/redis.conf
-sed -i 's/^maxmemory .*/maxmemory 128mb/' /etc/redis/redis.conf
+sed -i 's/^maxmemory .*/maxmemory 512mb/' /etc/redis/redis.conf
 grep -q "^maxmemory-policy" /etc/redis/redis.conf && \
     sed -i 's/^maxmemory-policy .*/maxmemory-policy allkeys-lru/' /etc/redis/redis.conf || \
     echo "maxmemory-policy allkeys-lru" >> /etc/redis/redis.conf

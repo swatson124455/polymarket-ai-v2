@@ -6,7 +6,7 @@ Prior: Beta(1, 1) = "I know nothing" for users with no history.
 """
 from __future__ import annotations
 
-import math
+import json
 from typing import Any, Dict, List, Optional, Tuple
 
 from structlog import get_logger
@@ -72,10 +72,70 @@ class EliteReliabilityTracker:
                         continue
                     self._cat_cache[(addr.lower(), cat)] = self._build_beta_rec(r)
             except Exception as e:
-                logger.debug("Category reliability load failed: %s", e)
+                logger.warning("Category reliability load failed: %s", e)
 
-        logger.debug("Elite reliability refreshed", n_users=len(self._cache),
-                     n_category_entries=len(self._cat_cache))
+        logger.info("Elite reliability refreshed", n_users=len(self._cache),
+                    n_category_entries=len(self._cat_cache))
+
+        # S117: Persist to system_kv for instant startup next restart
+        await self.save_to_cache()
+
+    async def save_to_cache(self) -> None:
+        """S117: Persist _cache and _cat_cache to system_kv for instant startup."""
+        if not self.db or not getattr(self.db, "get_session", None):
+            return
+        try:
+            from sqlalchemy import text as _txt
+            # Convert tuple keys in _cat_cache to string keys for JSON serialization
+            cat_serializable = {f"{k[0]}|{k[1]}": v for k, v in self._cat_cache.items()}
+            payload = json.dumps({"cache": self._cache, "cat_cache": cat_serializable})
+            async with self.db.get_session() as sess:
+                await sess.execute(_txt(
+                    "INSERT INTO system_kv (key, value, updated_at) "
+                    "VALUES ('reliability_cache', :val, NOW()) "
+                    "ON CONFLICT (key) DO UPDATE SET value = :val, updated_at = NOW()"
+                ), {"val": payload})
+                await sess.commit()
+            logger.debug("reliability_cache_saved", n_users=len(self._cache),
+                         n_cat=len(self._cat_cache))
+        except Exception as e:
+            logger.debug("reliability_cache_save_failed", error=str(e))
+
+    async def load_from_cache(self, max_age_hours: int = 24) -> bool:
+        """S117: Load _cache and _cat_cache from system_kv. Returns True if loaded."""
+        if not self.db or not getattr(self.db, "get_session", None):
+            return False
+        try:
+            from sqlalchemy import text as _txt
+            async with self.db.get_session() as sess:
+                row = (await sess.execute(_txt(
+                    "SELECT value, updated_at FROM system_kv WHERE key = 'reliability_cache'"
+                ))).first()
+            if row is None:
+                return False
+            # Check staleness
+            from datetime import datetime, timezone, timedelta
+            updated_at = row[1]
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) - updated_at > timedelta(hours=max_age_hours):
+                logger.info("reliability_cache_stale", age_hours=(datetime.now(timezone.utc) - updated_at).total_seconds() / 3600)
+                return False
+            data = json.loads(row[0])
+            self._cache = data.get("cache", {})
+            # Restore tuple keys in _cat_cache
+            raw_cat = data.get("cat_cache", {})
+            self._cat_cache = {}
+            for k, v in raw_cat.items():
+                parts = k.split("|", 1)
+                if len(parts) == 2:
+                    self._cat_cache[(parts[0], parts[1])] = v
+            logger.info("reliability_cache_loaded", n_users=len(self._cache),
+                        n_cat=len(self._cat_cache))
+            return True
+        except Exception as e:
+            logger.debug("reliability_cache_load_failed", error=str(e))
+            return False
 
     def _get_beta(self, address: str, side: str,
                   category: Optional[str] = None,
@@ -132,17 +192,13 @@ class EliteReliabilityTracker:
             return 1.0
         return mean / (1 - mean)
 
-    def log_likelihood_ratio(self, address: str, side: str, **kwargs: Any) -> float:
-        """Log-odds for Bayesian belief update: log(likelihood_ratio)."""
-        lr = self.likelihood_ratio(address, side, **kwargs)
-        if lr <= 0:
-            return 0.0
-        return math.log(lr)
-
-    def equivalent_samples(self, address: str, side: str, **kwargs: Any) -> float:
-        """Alpha + beta - 2 = effective sample count (for width / confidence)."""
-        a, b = self._get_beta(address, side, **kwargs)
-        return max(0, a + b - 2)
+    def total_trade_count(self, address: str) -> int:
+        """Return total resolved trades for this trader across all categories."""
+        key = (address or "").strip().lower()
+        rec = self._cache.get(key)
+        if not rec:
+            return 0
+        return rec.get("yes_total", 0) + rec.get("no_total", 0)
 
     def category_trade_count(self, address: str, category: str) -> int:
         """Return total resolved trades for this trader in the given category."""
@@ -154,10 +210,3 @@ class EliteReliabilityTracker:
         if not rec:
             return 0
         return rec.get("yes_total", 0) + rec.get("no_total", 0)
-
-
-def beta_mean(alpha: float, beta: float) -> float:
-    """Posterior mean of Beta(alpha, beta)."""
-    if alpha + beta <= 0:
-        return 0.5
-    return alpha / (alpha + beta)

@@ -35,7 +35,11 @@ logger = get_logger()
 # Category inference keywords — used when Polymarket API returns no category.
 _CATEGORY_KEYWORDS: Dict[str, List[str]] = {
     "crypto": ["bitcoin","btc","eth","ethereum","solana","sol","crypto","blockchain",
-               "token","coin","defi","nft"],
+               "token","coin","defi","nft",
+               # S113: expanded crypto coverage
+               "cardano","ada ","polkadot","dogecoin","doge ","ripple","xrp ",
+               "avalanche","polygon","matic","chainlink","uniswap","aave",
+               "staking","altcoin","memecoin","meme coin","web3"],
     # CRITICAL: esports MUST come before sports — dict iteration is insertion-order.
     # "league", "championship" in sports would match "League of Legends Championship" first.
     # "baron nashor", "total kills" etc. are LoL-specific and must match before sports.
@@ -69,7 +73,10 @@ _CATEGORY_KEYWORDS: Dict[str, List[str]] = {
                  "head of state","state of the union","nobel peace","supreme court",
                  "executive order","impeach","veto","cabinet","secretary of"],
     "weather": ["temperature","rain","snow","hurricane","storm","degrees","fahrenheit",
-                "celsius","precipitation","forecast","drought"],
+                "celsius","precipitation","forecast","drought",
+                # S113: expanded weather coverage
+                "humidity","wind speed","heat wave","cold front","tornado","wildfire",
+                "flood","highest temp","lowest temp","weather"],
     "finance": ["stock","s&p","nasdaq","dow","fed","interest rate","inflation","gdp",
                 "cpi","earnings","ipo","bond",
                 # Ticker patterns: "(TSLA)", "(GOOGL)", "(OPEN)" etc.
@@ -95,6 +102,15 @@ _CATEGORY_KEYWORDS: Dict[str, List[str]] = {
                      "strike lebanon","strike iran","strike yemen","capture ",
                      "armed forces","military","airstrike","missile","nuclear",
                      "territorial","annex"],
+    # S113: new categories for previously-uncovered domains
+    "healthcare": ["fda","drug approval","clinical trial","vaccine","pharmaceutical",
+                   "pfizer","moderna","johnson & johnson","medical","health care",
+                   "healthcare","pandemic","epidemic","cdc","who ","disease",
+                   "medication","therapy","diagnosis","hospital"],
+    "legal": ["lawsuit","settlement","court ruling","indictment","trial verdict",
+              "jury","prosecution","defendant","plaintiff","appeals court",
+              "district court","arbitration","class action","antitrust",
+              "regulatory","sec ","ftc ","doj "],
 }
 
 
@@ -2197,10 +2213,15 @@ class DataIngestionService:
                 await self.ingest_elite_trader_activity()
             except Exception as ea:
                 logger.warning("Elite trader activity ingest failed (non-fatal): %s", ea)
-        except Exception as e:
+        except BaseException as e:
             logger.exception("ingest_everything failed")
             result["error"] = str(e)
-            await self._log_sync_run("full", started_at, "failure", error_message=str(e))
+            try:
+                await self._log_sync_run("full", started_at, "failure", error_message=str(e))
+            except Exception:
+                pass  # Best-effort sync_log cleanup on cancellation
+            if not isinstance(e, Exception):
+                raise  # Re-raise CancelledError/KeyboardInterrupt after cleanup
         return result
 
     async def _log_sync_run(

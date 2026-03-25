@@ -125,6 +125,7 @@ class ExecutionEngine:
         price: float,
         confidence: float,
         skip_position_update: bool = False,
+        correlation_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         # NOTE: Kill switch + risk limits are checked in OrderGateway *before* this.
         # We only keep input validation and wallet check here to avoid duplicate DB queries.

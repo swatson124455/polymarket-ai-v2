@@ -34,7 +34,7 @@ def make_bot():
         mock_settings.PANDASCORE_API_KEY = "test-key"
         mock_settings.RIOT_API_KEY = None
         mock_settings.ESPORTS_MIN_EDGE = 0.08
-        mock_settings.ESPORTS_MIN_CONFIDENCE = 0.52
+        mock_settings.ESPORTS_MIN_CONFIDENCE = 0.35  # S127: lowered for signal_quality dampening
         mock_settings.ESPORTS_MAKER_FALLBACK_TIMEOUT_S = 3.0
         mock_settings.SCAN_INTERVAL_ESPORTS = 120
         mock_settings.SCAN_INTERVAL_ESPORTS_LIVE = 10
@@ -92,7 +92,7 @@ class TestEsportsBotInit:
     def test_settings_stored_correctly(self):
         bot = make_bot()
         assert bot._min_edge == pytest.approx(0.08)
-        assert bot._min_confidence == pytest.approx(0.52)
+        assert bot._min_confidence == pytest.approx(0.35)
         assert bot._maker_timeout == pytest.approx(3.0)
 
 
@@ -299,7 +299,7 @@ class TestAnalyzeOpportunity:
         bot = make_bot()
         bot._patch_drift = None
         bot._min_edge = 0.08
-        bot._min_confidence = 0.55
+        bot._min_confidence = 0.20  # S127: lowered for signal_quality dampening
         # Market price = 0.50, model predicts 0.70 -> edge = 0.20
         market = _make_market(
             question="Will Team A win the LoL match?",
@@ -313,7 +313,9 @@ class TestAnalyzeOpportunity:
         assert result["edge"] == pytest.approx(0.20, abs=0.03)  # blue side bonus adds ~0.019
         assert result["game"] == "lol"
         assert result["market_type"] == "match_winner"
-        assert result["confidence"] == pytest.approx(0.70, abs=0.03)
+        # S127: confidence = side_prob * signal_quality (< side_prob)
+        assert result["confidence"] < 0.70  # dampened by signal_quality
+        assert result["confidence"] > 0.20  # floor 0.30 * side_prob ~0.70
         assert result["market_id"] == "m1"
 
     @pytest.mark.asyncio
@@ -322,7 +324,7 @@ class TestAnalyzeOpportunity:
         bot = make_bot()
         bot._patch_drift = None
         bot._min_edge = 0.08
-        bot._min_confidence = 0.55
+        bot._min_confidence = 0.20  # S127: lowered for signal_quality dampening
         # Market price = 0.60, model predicts 0.30 -> edge_no ≈ 0.30
         # S103: edge must stay under 0.45 edge cap (unfitted BetaCalibrator) and
         # under 0.35 normal cap to avoid edge_cap rejection.
@@ -337,7 +339,9 @@ class TestAnalyzeOpportunity:
         assert result is not None
         assert result["side"] == "NO"
         assert result["edge"] == pytest.approx(0.30, abs=0.03)  # blue side bonus shifts
-        assert result["confidence"] == pytest.approx(0.70, abs=0.03)  # 1.0 - 0.30 ± blue side
+        # S127: confidence = side_prob * signal_quality (< side_prob)
+        assert result["confidence"] < 0.70
+        assert result["confidence"] > 0.20
 
     @pytest.mark.asyncio
     async def test_returns_none_when_confidence_below_min(self):
@@ -345,9 +349,9 @@ class TestAnalyzeOpportunity:
         bot = make_bot()
         bot._patch_drift = None
         bot._min_edge = 0.08
-        bot._min_confidence = 0.55
+        bot._min_confidence = 0.40  # S127: adjusted for signal_quality dampening
         # Market price = 0.42, model predicts 0.51 -> edge = 0.09 (>0.08)
-        # but confidence = 0.51 < 0.55
+        # but confidence = 0.51 * signal_quality (~0.45) ≈ 0.23 < 0.40
         market = _make_market(
             question="Will Team A win the LoL match?",
             yes_price=0.42,
@@ -375,7 +379,7 @@ class TestAnalyzeOpportunity:
         bot._patch_drift = None
         bot._live_matches = {}
         bot._min_edge = 0.05
-        bot._min_confidence = 0.50
+        bot._min_confidence = 0.20  # S127: lowered for signal_quality dampening
         market = _make_market(
             question="Will Team A win the LoL match?",
             yes_price=0.40,
@@ -393,7 +397,7 @@ class TestAnalyzeOpportunity:
         bot._patch_drift = None
         bot._live_matches = {"m1": {"id": "m1", "game_state": {}}}
         bot._min_edge = 0.05
-        bot._min_confidence = 0.50
+        bot._min_confidence = 0.20  # S127: lowered for signal_quality dampening
         market = _make_market(
             market_id="m1",
             question="Will Team A win the LoL match?",
@@ -708,19 +712,24 @@ class TestCalibrationCurve:
         """Verify ECE computation with known data."""
         from esports.data.esports_db import compute_calibration_curve
 
-        # Mock DB returning predictions with known calibration
+        # Mock DB returning predictions with known calibration (tuple rows)
         rows = []
         # 20 predictions at ~0.60 confidence, 50% win rate → miscalibrated by 0.10
         for i in range(20):
-            rows.append({"predicted_prob": 0.60, "side": "YES",
-                         "actual_outcome": 1 if i < 10 else 0})
+            rows.append((0.60, "YES", 1 if i < 10 else 0))
         # 10 predictions at ~0.80, 80% win rate → perfectly calibrated
         for i in range(10):
-            rows.append({"predicted_prob": 0.80, "side": "YES",
-                         "actual_outcome": 1 if i < 8 else 0})
+            rows.append((0.80, "YES", 1 if i < 8 else 0))
 
+        mock_result = MagicMock()
+        mock_result.fetchall.return_value = rows
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
         db = MagicMock()
-        db.fetch_all = AsyncMock(return_value=rows)
+        db.get_session.return_value = mock_ctx
 
         result = await compute_calibration_curve(db, game="cs2", days=90)
         assert result is not None
@@ -732,10 +741,15 @@ class TestCalibrationCurve:
         """Returns None with < 20 rows."""
         from esports.data.esports_db import compute_calibration_curve
 
+        mock_result = MagicMock()
+        mock_result.fetchall.return_value = [(0.60, "YES", 1)] * 10
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
         db = MagicMock()
-        db.fetch_all = AsyncMock(return_value=[
-            {"predicted_prob": 0.60, "side": "YES", "actual_outcome": 1}
-        ] * 10)
+        db.get_session.return_value = mock_ctx
 
         result = await compute_calibration_curve(db, game="lol", days=90)
         assert result is None

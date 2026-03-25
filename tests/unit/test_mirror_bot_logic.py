@@ -46,13 +46,10 @@ def _make_bot(**kwargs):
     engine = _make_engine(**kwargs)
     with patch("bots.mirror_bot.settings") as ms:
         ms.MIRROR_MIN_CONFIDENCE = 0.50
-        ms.MIRROR_MIN_CONSENSUS = 2
         ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
         ms.MIRROR_MAX_DAILY_EXPOSURE_PCT = 0.15
         ms.MIRROR_STOP_LOSS_PCT = 0.15
         ms.MIRROR_MAX_TRACKED_TRADES = 10_000
-        ms.MIRROR_TRADER_CACHE_TTL = 90
-        ms.MIRROR_HOT_TRADE_MAX_SECONDS = 300
         ms.TOP_TRADER_COUNT = 10
         ms.TOTAL_CAPITAL = 10_000.0
         ms.ORDER_LATENCY_ALERT_MS = 5000
@@ -560,7 +557,11 @@ class TestRestoreStateOnStartup:
         scalar_result = MagicMock()
         scalar_result.scalar = MagicMock(return_value=0.0)
 
-        # Second execute: positions table rows
+        # Second execute: category exposure seed (S119)
+        cat_result = MagicMock()
+        cat_result.fetchall = MagicMock(return_value=[])
+
+        # Third execute: positions table rows
         pos_row = MagicMock()
         pos_row.market_id = "mkt1"
         pos_row.token_id = "tok-yes"
@@ -573,7 +574,7 @@ class TestRestoreStateOnStartup:
         positions_result = MagicMock()
         positions_result.fetchall = MagicMock(return_value=[pos_row])
 
-        mock_ctx.execute = AsyncMock(side_effect=[scalar_result, positions_result])
+        mock_ctx.execute = AsyncMock(side_effect=[scalar_result, cat_result, positions_result])
         engine.db.get_session = MagicMock(return_value=mock_ctx)
 
         await bot._restore_state_on_startup()
@@ -752,10 +753,11 @@ class TestExecuteMirrorTrade:
         bot.calculate_bot_position_size = AsyncMock(return_value=100.0)
         bot.place_order = AsyncMock(return_value={"success": True, "order_id": "ord1"})
         bot.store_pending_trade_signals = AsyncMock()
-        # S103: Mock reliability tracker so domain drift doesn't halve confidence below gate
+        # S103: Mock reliability tracker so multi-factor confidence produces valid value
         bot._reliability_tracker = MagicMock()
         bot._reliability_tracker.likelihood_ratio = MagicMock(return_value=1.0)
         bot._reliability_tracker.category_trade_count = MagicMock(return_value=50)
+        bot._reliability_tracker.mean = MagicMock(return_value=0.60)
         # S109: No pre-existing position on same market+side — same-side dedup blocks re-entry.
 
         result = await bot._execute_mirror_trade(
@@ -776,6 +778,7 @@ class TestExecuteMirrorTrade:
         bot._reliability_tracker = MagicMock()
         bot._reliability_tracker.likelihood_ratio = MagicMock(return_value=1.0)
         bot._reliability_tracker.category_trade_count = MagicMock(return_value=50)
+        bot._reliability_tracker.mean = MagicMock(return_value=0.60)
         # Pre-existing YES position on mkt1
         bot._open_positions["mkt1:tok-yes"] = {
             "side": "YES", "size": 50.0, "entry_price": 0.60,

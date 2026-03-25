@@ -124,6 +124,29 @@ async def bot_pnl(bot_name: str, hours: int = 24):
             print(f"  {st[0]:<12} count={st[1]:<5} realized=${rpnl:>+10.2f}  fees=${fees:>8.2f}")
         print(f"  {'TOTAL':<12} {'':5} realized=${total_realized:>+10.2f}  fees=${total_fees:>8.2f}")
 
+        # 4. Data integrity check — detect impossible states (S120 guardrail)
+        r4 = await s.execute(text("""
+            SELECT market_id, side,
+                   SUM(CASE WHEN event_type = 'ENTRY' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS entry_sz,
+                   SUM(CASE WHEN event_type = 'EXIT' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS exit_sz,
+                   SUM(CASE WHEN event_type = 'RESOLUTION' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS res_sz
+            FROM trade_events
+            WHERE bot_name = :bot
+            GROUP BY market_id, side
+            HAVING SUM(CASE WHEN event_type IN ('EXIT', 'RESOLUTION') THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END)
+                 > SUM(CASE WHEN event_type = 'ENTRY' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) * 1.001
+        """), {"bot": bot_name})
+        violations = r4.fetchall()
+        if violations:
+            print(f"\n{'!'*50}")
+            print(f"DATA INTEGRITY WARNINGS ({len(violations)}):")
+            print(f"{'!'*50}")
+            for v in violations:
+                mid = v[0][:14] + ".." if len(v[0]) > 14 else v[0]
+                print(f"  {mid} {v[1]}: entry={float(v[2]):.1f} exit={float(v[3]):.1f} res={float(v[4]):.1f} "
+                      f"(disposal {float(v[3]) + float(v[4]):.1f} > entry {float(v[2]):.1f})")
+            print(f"{'!'*50}")
+
         # Summary
         print(f"\n{'='*50}")
         print(f"SUMMARY")

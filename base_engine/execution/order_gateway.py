@@ -836,7 +836,7 @@ class OrderGateway:
             if _edge_at_fill <= 0:
                 logger.info("order_edge_eroded", market_id=market_id,
                             confidence=round(confidence, 4),
-                            best_ask=round(_check_price, 4),
+                            best_ask=round(_shadow_best_ask, 4),
                             signal_price=round(effective_price, 4),
                             edge_at_fill=round(_edge_at_fill, 4),
                             bot_name=bot_name,

@@ -318,7 +318,7 @@ class SignalIngestionService:
             try:
                 if self.intl_elections:
                     await asyncio.wait_for(
-                        self.intl_elections.fetch_elections(), timeout=30.0
+                        self.intl_elections.fetch_upcoming_elections(), timeout=30.0
                     )
                     # Match elections to active markets
                     markets = await self._get_active_markets()
@@ -1053,12 +1053,14 @@ class SignalIngestionService:
                         for t in entities.get("topics", [])[:1]:
                             topics.add(t)
                     if topics:
-                        divergences = await self.sentiment_velocity.get_divergences(list(topics)[:10])
+                        # get_divergences expects {topic: price_change_pct} dict
+                        topics_prices = {t: 0.0 for t in list(topics)[:10]}
+                        divergences = await self.sentiment_velocity.get_divergences(topics_prices)
                         for div in divergences:
-                            if div.get("divergence_type"):
+                            if div.get("type"):
                                 for market in markets:
                                     if div["topic"].lower() in market.get("question", "").lower():
-                                        direction = "YES" if div["divergence_type"] == "bullish" else "NO"
+                                        direction = "YES" if div["type"] == "bullish_divergence" else "NO"
                                         signal = {
                                             "market_id": market.get("id"),
                                             "source_type": "sentiment_velocity",
@@ -1164,7 +1166,7 @@ class SignalIngestionService:
                     sentiment = self.sentiment_analyzer.analyze_text_sentiment(text[:500], text_type="social")
                     await self.sentiment_velocity.record_sentiment(
                         topic=topic,
-                        score=sentiment.get("compound", 0.0),
+                        sentiment_score=sentiment.get("compound", 0.0),
                         timestamp=time.time(),
                     )
 
@@ -1193,7 +1195,7 @@ class SignalIngestionService:
                     sentiment = self.sentiment_analyzer.analyze_text_sentiment(text[:500], text_type="social")
                     await self.sentiment_velocity.record_sentiment(
                         topic=chat,
-                        score=sentiment.get("compound", 0.0),
+                        sentiment_score=sentiment.get("compound", 0.0),
                         timestamp=time.time(),
                     )
 
@@ -1222,7 +1224,7 @@ class SignalIngestionService:
                     sentiment = self.sentiment_analyzer.analyze_text_sentiment(text[:500], text_type="social")
                     await self.sentiment_velocity.record_sentiment(
                         topic=channel,
-                        score=sentiment.get("compound", 0.0),
+                        sentiment_score=sentiment.get("compound", 0.0),
                         timestamp=time.time(),
                     )
 

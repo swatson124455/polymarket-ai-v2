@@ -230,18 +230,25 @@ async def run_resolution_backfill(
         # 2a: Markets WE traded on — from traded_markets table
         # S92: priority_bot puts that bot's markets first via ORDER BY
         try:
-            _priority_order = ""
             _params: dict = {"lim": resolution_limit}
-            if priority_bot:
-                _priority_order = (
-                    "ORDER BY CASE WHEN bot_names LIKE :pbot THEN 0 ELSE 1 END, "
-                    "first_trade_at ASC NULLS LAST "
-                )
-                _params["pbot"] = f"%{priority_bot}%"
-            else:
-                _priority_order = "ORDER BY first_trade_at ASC NULLS LAST "
+            # S125: Expired-first ordering to prevent queue starvation.
+            # Root cause: priority_bot gave one bot (e.g. MirrorBot, 953 markets)
+            # all batch slots. Most were still-open (end-of-month), consuming the
+            # batch and starving other bots (WeatherBot) whose markets were
+            # already closed. Fix: order by end_date_iso ASC (expired first),
+            # then first_trade_at ASC. No more priority_bot preference — the
+            # 500-batch with fair ordering resolves all bots proportionally.
+            _priority_order = (
+                "ORDER BY CASE WHEN m.end_date_iso < NOW() THEN 0 "
+                "              WHEN m.end_date_iso IS NULL THEN 1 "
+                "              ELSE 2 END, "
+                "m.end_date_iso ASC NULLS LAST, "
+                "tm.first_trade_at ASC NULLS LAST "
+            )
             pt_result = await session.execute(text(
-                "SELECT market_id FROM traded_markets WHERE status = 'open' OR resolved = FALSE "
+                "SELECT tm.market_id FROM traded_markets tm "
+                "LEFT JOIN markets m ON m.id = tm.market_id "
+                "WHERE tm.status = 'open' OR tm.resolved = FALSE "
                 + _priority_order + "LIMIT :lim"
             ), _params)
             paper_market_ids = [r[0] for r in pt_result.fetchall() if r[0]]
@@ -306,6 +313,21 @@ async def run_resolution_backfill(
                     else:
                         m = None  # Market not closed or CLOB unavailable
                         _skipped_open += 1
+                        # S125-mirror: If CLOB confirms market is still open but DB has
+                        # a bogus end_date_iso in the past (e.g. 2020-11-04 from CLOB
+                        # import without endDateISO), clear it so this market stops
+                        # consuming priority-0 backfill slots every cycle.
+                        if _clob and not _clob.get("closed"):
+                            try:
+                                async with db.get_session() as _ed_sess:
+                                    await _ed_sess.execute(
+                                        text("UPDATE markets SET end_date_iso = NULL "
+                                             "WHERE id = :mid AND end_date_iso < NOW() - INTERVAL '30 days'"),
+                                        {"mid": mid},
+                                    )
+                                    await _ed_sess.commit()
+                            except Exception:
+                                pass  # best-effort, non-fatal
                 else:
                     m = await client.get_market(mid, use_cache=False)
                 if not m or not isinstance(m, dict):
@@ -410,6 +432,9 @@ async def run_resolution_backfill(
     # S109: Widen gate — emit when ANY market resolved (updated > 0), not just when
     # paper_trades were updated. Fixes 276 markets where condition_id mismatch caused
     # paper_updated=0 even though traded_markets was resolved.
+    # S120: Skip fully-exited positions — if total EXIT size >= total ENTRY size,
+    # the position was closed before resolution. P&L already captured by EXIT events.
+    # Emitting a RESOLUTION would double-count the loss/gain.
     if (paper_updated > 0 or updated > 0) and hasattr(db, "insert_trade_event"):
         try:
             async with db.get_session() as _te_sess:
@@ -418,7 +443,15 @@ async def run_resolution_backfill(
                     "SELECT pt.market_id, pt.bot_name, pt.side, "
                     "       SUM(pt.realized_pnl) AS total_pnl, "
                     "       MIN(pt.resolved_at) AS resolved_at, "
-                    "       SUM(pt.size) AS total_size "
+                    "       SUM(pt.size) - COALESCE(("
+                    "         SELECT SUM(te_exit.size) FROM trade_events te_exit "
+                    "         WHERE te_exit.market_id = pt.market_id "
+                    "           AND te_exit.bot_name = pt.bot_name "
+                    "           AND te_exit.event_type = 'EXIT'"
+                    "       ), 0) AS remaining_size, "
+                    "       CASE WHEN SUM(pt.size) > 0 "
+                    "            THEN SUM(pt.price * pt.size) / SUM(pt.size) "
+                    "            ELSE 0.0 END AS avg_entry_price "
                     "FROM paper_trades pt "
                     "WHERE pt.resolution IN ('YES', 'NO') "
                     "  AND pt.side IN ('YES', 'NO') "
@@ -429,18 +462,32 @@ async def run_resolution_backfill(
                     "      AND te.bot_name = pt.bot_name "
                     "      AND te.event_type = 'RESOLUTION'"
                     "  ) "
+                    "  AND EXISTS ("
+                    "    SELECT 1 FROM trade_events te2 "
+                    "    WHERE te2.market_id = pt.market_id "
+                    "      AND te2.bot_name = pt.bot_name "
+                    "      AND te2.side = pt.side "
+                    "      AND te2.event_type = 'ENTRY'"
+                    "  ) "
                     "GROUP BY pt.market_id, pt.bot_name, pt.side "
+                    "HAVING SUM(pt.size) - COALESCE(("
+                    "  SELECT SUM(te_exit2.size) FROM trade_events te_exit2 "
+                    "  WHERE te_exit2.market_id = pt.market_id "
+                    "    AND te_exit2.bot_name = pt.bot_name "
+                    "    AND te_exit2.event_type = 'EXIT'"
+                    "), 0) > 0 "
                     "LIMIT 500"
                 ))
                 for row in _resolved.fetchall():
                     try:
+                        _entry_price = float(row[6]) if len(row) > 6 and row[6] is not None else 0.0
                         await db.insert_trade_event(
                             event_type="RESOLUTION",
                             bot_name=row[1],
                             market_id=row[0],
                             side=row[2],
                             size=float(row[5]) if len(row) > 5 and row[5] is not None else 0.0,
-                            price=0.0,
+                            price=_entry_price,
                             realized_pnl=float(row[3]) if row[3] is not None else None,
                             correlation_id=f"resolution:{row[0]}",
                             event_time=row[4],
@@ -449,6 +496,95 @@ async def run_resolution_backfill(
                         logger.debug("Resolution backfill: trade_event emission failed for market %s: %s", str(row[0])[:20], _te_err)
         except Exception as _te_outer_err:
             logger.warning("Resolution backfill: Phase 4b trade_event emission failed: %s", _te_outer_err)
+
+    # Phase 4b-alt: Position-based RESOLUTION events for positions not covered by Phase 4b.
+    # Phase 4b joins paper_trades → trade_events, but positions.market_id may differ from
+    # paper_trades.market_id (condition_id vs Gamma ID mismatch). This path queries the
+    # positions table directly for closed positions on resolved markets that still lack
+    # a RESOLUTION event. Subtracts already-captured EXIT P&L to avoid double-counting.
+    _pos_res_emitted = 0
+    if hasattr(db, "insert_trade_event"):
+        try:
+            _fee_rate = getattr(
+                __import__("base_engine.config.settings", fromlist=["settings"]),
+                "TAKER_FEE_BPS", 150,
+            ) / 10000.0
+            async with db.get_session() as _pr_sess:
+                from sqlalchemy import text as _pr_text
+                _pos_resolved = await _pr_sess.execute(_pr_text(
+                    "SELECT p.market_id, p.source_bot, p.side, p.size, p.entry_price, "
+                    "       m.resolution, "
+                    "       COALESCE(m.resolved_at, m.end_date_iso) AS resolved_at, "
+                    "       COALESCE(("
+                    "         SELECT SUM(te_x.realized_pnl) FROM trade_events te_x "
+                    "         WHERE te_x.market_id = p.market_id "
+                    "           AND te_x.bot_name = p.source_bot "
+                    "           AND te_x.event_type = 'EXIT'"
+                    "       ), 0) AS exit_pnl_already "
+                    "FROM positions p "
+                    "JOIN markets m ON (p.market_id = CAST(m.id AS TEXT) "
+                    "                   OR p.market_id = m.condition_id) "
+                    "WHERE p.status = 'closed' "
+                    "  AND m.resolution IN ('YES', 'NO') "
+                    "  AND NOT EXISTS ("
+                    "    SELECT 1 FROM trade_events te "
+                    "    WHERE te.market_id = p.market_id "
+                    "      AND te.bot_name = p.source_bot "
+                    "      AND te.event_type = 'RESOLUTION'"
+                    "  ) "
+                    "ORDER BY p.id "
+                    "LIMIT 500"
+                ))
+                for row in _pos_resolved.fetchall():
+                    try:
+                        _mid, _bot, _side, _size, _entry, _res, _res_at, _exit_pnl = row
+                        _side_upper = str(_side).upper() if _side else ""
+                        _res_upper = str(_res).upper()
+                        if _side_upper == _res_upper:
+                            _payout = 1.0
+                        else:
+                            _payout = 0.0
+                        _gross_pnl = (_payout - float(_entry)) * float(_size)
+                        _fee = _payout * float(_size) * _fee_rate
+                        _net_pnl = _gross_pnl - _fee
+                        # Subtract EXIT P&L already captured to avoid double-counting
+                        _remaining_pnl = _net_pnl - float(_exit_pnl)
+                        await db.insert_trade_event(
+                            event_type="RESOLUTION",
+                            bot_name=_bot,
+                            market_id=_mid,
+                            side=_side_upper,
+                            size=float(_size),
+                            price=float(_entry),
+                            realized_pnl=round(_remaining_pnl, 4),
+                            correlation_id=f"resolution:{_mid}",
+                            event_time=_res_at,
+                        )
+                        _pos_res_emitted += 1
+                    except Exception as _pr_err:
+                        logger.debug(
+                            "Resolution backfill 4b-alt: emission failed for %s/%s: %s",
+                            str(row[0])[:20], row[1], _pr_err,
+                        )
+            if _pos_res_emitted and log_progress:
+                logger.info(
+                    "Resolution backfill Phase 4b-alt: emitted %d RESOLUTION events from positions",
+                    _pos_res_emitted,
+                )
+            result["pos_resolution_emitted"] = _pos_res_emitted
+        except Exception as _pr_outer_err:
+            logger.warning("Resolution backfill: Phase 4b-alt failed: %s", _pr_outer_err)
+
+    # Phase 4c: Backfill shadow_fills with resolution data
+    shadow_updated = 0
+    try:
+        if hasattr(db, "backfill_shadow_resolution"):
+            shadow_updated = await db.backfill_shadow_resolution()
+            result["shadow_fills_updated"] = shadow_updated
+            if log_progress and shadow_updated > 0:
+                logger.info("Shadow fills resolution backfill: %d rows updated", shadow_updated)
+    except Exception as e:
+        logger.debug("Shadow fills backfill failed (non-fatal): %s", e)
 
     # Phase 5: Backfill positions with unrealized_pnl from resolution data
     # CRITICAL: Fixes CLV, win rate, and Total P&L for resolution-based exits
@@ -528,4 +664,13 @@ async def run_resolution_backfill(
             "Resolution backfill complete: %d inserted, %d updated, %d prediction_log, %d paper_trades, %d positions_pnl",
             inserted, updated, pred_updated, paper_updated, pos_updated,
         )
+
+    # Phase 8: Audit trade_events for impossible states (read-only, non-fatal)
+    try:
+        from base_engine.data.trade_event_audit import audit_trade_events
+        audit_result = await audit_trade_events(db)
+        result["audit"] = audit_result
+    except Exception as e:
+        logger.debug("Trade event audit failed (non-fatal): %s", e)
+
     return result

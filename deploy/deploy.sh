@@ -38,13 +38,18 @@ echo ""
 # ── 1. Local preflight ────────────────────────────────────────────────────────
 echo "[1/7] Preflight checks..."
 cd "$LOCAL_DIR"
-python -m compileall bots/ base_engine/ scripts/ -q 2>&1 || {
+python -m compileall bots/ base_engine/ scripts/ esports/ -q 2>&1 || {
     echo "ABORT: Python syntax error found — deploy cancelled"
+    exit 1
+}
+# Run unit tests — block deploy if any fail
+python -m pytest tests/unit/ --tb=short -q 2>&1 || {
+    echo "ABORT: Unit tests failed — deploy cancelled"
     exit 1
 }
 # Verify SSH key exists
 [ -f "$KEY" ] || { echo "ABORT: SSH key not found at $KEY"; exit 1; }
-echo "  OK — syntax clean, SSH key present"
+echo "  OK — syntax clean, tests passed, SSH key present"
 
 # ── 2. Build archive ──────────────────────────────────────────────────────────
 echo ""

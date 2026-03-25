@@ -1199,6 +1199,29 @@ class Database:
         from sqlalchemy.dialects.postgresql import insert as pg_insert
         processed_count = 0
 
+        # S120: Nullify slugs that collide with EXISTING rows under a different id.
+        # Without this, new markets reusing old slugs cause UniqueViolation on ix_markets_slug,
+        # failing the entire bulk INSERT (which uses ON CONFLICT on PK 'id', not 'slug').
+        _batch_slugs = {d["slug"]: d["id"] for d in valid_dicts if d.get("slug")}
+        if _batch_slugs:
+            try:
+                from sqlalchemy import text as _sa_text
+                async with self.get_session() as _slug_sess:
+                    _slug_rows = await _slug_sess.execute(
+                        _sa_text("SELECT id, slug FROM markets WHERE slug = ANY(:slugs)"),
+                        {"slugs": list(_batch_slugs.keys())},
+                    )
+                    for _row in _slug_rows.all():
+                        _existing_id, _existing_slug = str(_row[0]), _row[1]
+                        _batch_id = str(_batch_slugs.get(_existing_slug, ""))
+                        if _existing_slug and _batch_id != _existing_id:
+                            # Slug belongs to a different id — nullify in batch to avoid collision
+                            for _d in valid_dicts:
+                                if _d.get("slug") == _existing_slug and str(_d["id"]) != _existing_id:
+                                    _d["slug"] = None
+            except Exception as _slug_err:
+                logger.debug("Slug collision pre-check failed (non-critical): %s", _slug_err)
+
         async with self.get_session() as session:
             try:
                 async with session.begin():
@@ -2182,6 +2205,10 @@ class Database:
         """Per-user per-category resolution counts for category-aware elite reliability.
 
         Returns list of { user_address, category, yes_correct, yes_total, no_correct, no_total }.
+
+        S113: LEFT JOIN market_categories for markets outside top-1000 ingestion.
+        Uses COALESCE(m.category, mc.category, 'unknown') to provide category data
+        for whale trades on markets not in the markets table.
         """
         if self.session_factory is None:
             return []
@@ -2189,22 +2216,36 @@ class Database:
             q = text("""
                 SELECT
                     t.user_address,
-                    LOWER(COALESCE(m.category, 'unknown')) AS category,
-                    SUM(CASE WHEN (t.side IN ('YES','BUY') OR t.token_id = m.yes_token_id)
-                             AND m.resolution = 'YES' THEN 1 ELSE 0 END) as yes_correct,
-                    SUM(CASE WHEN (t.side IN ('YES','BUY') OR t.token_id = m.yes_token_id)
-                             AND m.resolution IN ('YES','NO') THEN 1 ELSE 0 END) as yes_total,
-                    SUM(CASE WHEN (t.side IN ('NO','SELL') OR t.token_id = m.no_token_id)
-                             AND m.resolution = 'NO' THEN 1 ELSE 0 END) as no_correct,
-                    SUM(CASE WHEN (t.side IN ('NO','SELL') OR t.token_id = m.no_token_id)
-                             AND m.resolution IN ('YES','NO') THEN 1 ELSE 0 END) as no_total
+                    LOWER(COALESCE(m.category, mc.category, 'unknown')) AS category,
+                    SUM(CASE WHEN (t.side IN ('YES','BUY')
+                                   OR t.token_id = m.yes_token_id
+                                   OR t.token_id = mc.yes_token_id)
+                             AND COALESCE(m.resolution, mc.resolution) = 'YES'
+                             THEN 1 ELSE 0 END) as yes_correct,
+                    SUM(CASE WHEN (t.side IN ('YES','BUY')
+                                   OR t.token_id = m.yes_token_id
+                                   OR t.token_id = mc.yes_token_id)
+                             AND COALESCE(m.resolution, mc.resolution) IN ('YES','NO')
+                             THEN 1 ELSE 0 END) as yes_total,
+                    SUM(CASE WHEN (t.side IN ('NO','SELL')
+                                   OR t.token_id = m.no_token_id
+                                   OR t.token_id = mc.no_token_id)
+                             AND COALESCE(m.resolution, mc.resolution) = 'NO'
+                             THEN 1 ELSE 0 END) as no_correct,
+                    SUM(CASE WHEN (t.side IN ('NO','SELL')
+                                   OR t.token_id = m.no_token_id
+                                   OR t.token_id = mc.no_token_id)
+                             AND COALESCE(m.resolution, mc.resolution) IN ('YES','NO')
+                             THEN 1 ELSE 0 END) as no_total
                 FROM trades t
-                JOIN markets m ON t.market_id = m.id
+                LEFT JOIN markets m ON t.market_id = m.id
+                LEFT JOIN market_categories mc ON t.market_id = mc.condition_id
                 WHERE t.user_address IS NOT NULL
                 AND t.market_id IS NOT NULL
-                AND m.resolved = TRUE AND m.resolution IN ('YES', 'NO')
+                AND (m.resolved = TRUE OR mc.resolved = TRUE)
+                AND COALESCE(m.resolution, mc.resolution) IN ('YES', 'NO')
                 AND t.timestamp >= NOW() - INTERVAL '1 day' * :days
-                GROUP BY t.user_address, LOWER(COALESCE(m.category, 'unknown'))
+                GROUP BY t.user_address, LOWER(COALESCE(m.category, mc.category, 'unknown'))
             """)
             result = await session.execute(q, {"days": lookback_days})
             rows = result.mappings().all()
@@ -2219,6 +2260,85 @@ class Database:
                 }
                 for r in rows
             ]
+
+    async def upsert_market_category(
+        self,
+        condition_id: str,
+        category: str,
+        question: str = "",
+        yes_token_id: str = "",
+        no_token_id: str = "",
+        resolved: bool = False,
+        resolution: Optional[str] = None,
+    ) -> None:
+        """S113: Upsert market category for markets outside top-1000 ingestion.
+
+        Populates market_categories table used by elite_reliability tracker
+        to provide per-whale per-category win rates (Factor 1).
+        """
+        if self.session_factory is None or not condition_id:
+            return
+        try:
+            async with self.get_session() as session:
+                await session.execute(
+                    text(
+                        "INSERT INTO market_categories "
+                        "(condition_id, category, question, yes_token_id, no_token_id, resolved, resolution) "
+                        "VALUES (:cid, :cat, :q, :yes_tid, :no_tid, :resolved, :resolution) "
+                        "ON CONFLICT (condition_id) DO UPDATE SET "
+                        "category = EXCLUDED.category, "
+                        "question = COALESCE(NULLIF(EXCLUDED.question, ''), market_categories.question), "
+                        "yes_token_id = COALESCE(NULLIF(EXCLUDED.yes_token_id, ''), market_categories.yes_token_id), "
+                        "no_token_id = COALESCE(NULLIF(EXCLUDED.no_token_id, ''), market_categories.no_token_id), "
+                        "resolved = EXCLUDED.resolved OR market_categories.resolved, "
+                        "resolution = COALESCE(EXCLUDED.resolution, market_categories.resolution)"
+                    ),
+                    {
+                        "cid": condition_id,
+                        "cat": category or "unknown",
+                        "q": question or "",
+                        "yes_tid": yes_token_id or "",
+                        "no_tid": no_token_id or "",
+                        "resolved": resolved,
+                        "resolution": resolution,
+                    },
+                )
+                await session.commit()
+        except Exception as e:
+            logger.debug("upsert_market_category failed for %s: %s", condition_id[:16], e)
+
+    async def get_user_trade_counts(
+        self, addresses: List[str], lookback_days: int = 90
+    ) -> List[Dict[str, Any]]:
+        """S113: Get trade counts per user for F3 conviction signal.
+
+        Returns list of { user_address, num_trades } for the given addresses.
+        Used to supplement watchlist data when Data API doesn't return totalTrades.
+        """
+        if self.session_factory is None or not addresses:
+            return []
+        try:
+            async with self.get_session() as session:
+                result = await session.execute(
+                    text(
+                        "SELECT user_address, COUNT(*) as num_trades "
+                        "FROM trades "
+                        "WHERE user_address = ANY(:addrs) "
+                        "AND timestamp >= NOW() - INTERVAL '1 day' * :days "
+                        "GROUP BY user_address"
+                    ),
+                    {"addrs": addresses, "days": lookback_days},
+                )
+                return [
+                    {
+                        "user_address": r["user_address"],
+                        "num_trades": r["num_trades"] or 0,
+                    }
+                    for r in result.mappings().all()
+                ]
+        except Exception as e:
+            logger.debug("get_user_trade_counts failed: %s", e)
+            return []
 
     async def upsert_users(self, users: List[Dict[str, Any]]) -> int:
         """
@@ -3190,13 +3310,13 @@ class Database:
                         status = 'resolved',
                         realized_pnl = (
                             CASE
-                                WHEN m.resolution = 'YES' AND LOWER(pt.side) = 'yes' THEN pt.size * (1.0 - pt.price)
-                                WHEN m.resolution = 'YES' AND LOWER(pt.side) = 'no' THEN pt.size * (0.0 - pt.price)
-                                WHEN m.resolution = 'NO' AND LOWER(pt.side) = 'yes' THEN pt.size * (0.0 - pt.price)
-                                WHEN m.resolution = 'NO' AND LOWER(pt.side) = 'no' THEN pt.size * (1.0 - pt.price)
+                                WHEN m.resolution = 'YES' AND LOWER(pt.side) = 'yes' THEN pt.size * (1.0 - pt.price) - (pt.size * 1.0 * :fee_rate)
+                                WHEN m.resolution = 'YES' AND LOWER(pt.side) = 'no' THEN pt.size * (0.0 - pt.price) - (pt.size * 0.0 * :fee_rate)
+                                WHEN m.resolution = 'NO' AND LOWER(pt.side) = 'yes' THEN pt.size * (0.0 - pt.price) - (pt.size * 0.0 * :fee_rate)
+                                WHEN m.resolution = 'NO' AND LOWER(pt.side) = 'no' THEN pt.size * (1.0 - pt.price) - (pt.size * 1.0 * :fee_rate)
                                 ELSE NULL
                             END
-                        ) - (pt.size * pt.price * :fee_rate)
+                        )
                     FROM markets m
                     WHERE (pt.market_id = CAST(m.id AS TEXT) OR pt.market_id = m.condition_id)
                     AND m.resolution IN ('YES', 'NO')
@@ -3409,6 +3529,14 @@ class Database:
         try:
             from sqlalchemy import text
             async with self.get_session() as session:
+                # S109: Zero out stale unrealized_pnl on already-closed positions FIRST.
+                # Must run BEFORE resolution update — otherwise we zero the fresh
+                # resolution P&L we just computed (P1-19 from S128 audit).
+                r2 = await session.execute(text(
+                    "UPDATE positions SET unrealized_pnl = 0 "
+                    "WHERE status = 'closed' AND unrealized_pnl != 0"
+                ))
+                stale_cleaned = getattr(r2, "rowcount", 0) or 0
                 r = await session.execute(text("""
                     UPDATE positions p
                     SET unrealized_pnl = (
@@ -3419,21 +3547,13 @@ class Database:
                     ) - (p.entry_price * p.size * :fee_rate),
                     status = 'closed'
                     FROM markets m
-                    WHERE p.market_id = m.id
+                    WHERE (p.market_id = m.id OR p.market_id = m.condition_id)
                       AND m.resolution IN ('YES', 'NO')
                       AND p.status = 'open'
                       AND p.size > 0
                       AND p.entry_price IS NOT NULL
                 """), {"fee_rate": _fee_rate})
                 count = getattr(r, "rowcount", 0) or 0
-                # S109: Zero out stale unrealized_pnl on ALL closed positions.
-                # Closed positions should have unrealized_pnl=0 by definition — any nonzero
-                # value is phantom data from the last price update before close.
-                r2 = await session.execute(text(
-                    "UPDATE positions SET unrealized_pnl = 0 "
-                    "WHERE status = 'closed' AND unrealized_pnl != 0"
-                ))
-                stale_cleaned = getattr(r2, "rowcount", 0) or 0
                 await session.commit()
                 if count:
                     logger.info("Backfilled unrealized_pnl for %d resolved positions", count)
@@ -4584,6 +4704,8 @@ class Database:
                     # Atomic INSERT...SELECT to prevent duplicates.
                     # ON CONFLICT (idempotency_key, event_time) is broken on partitioned
                     # tables because different event_time = no conflict detected.
+                    # S120: Also reject RESOLUTION if position was fully exited — P&L
+                    # already captured by EXIT events; emitting RESOLUTION would double-count.
                     result = await session.execute(
                         _sa_text(
                             "INSERT INTO trade_events ("
@@ -4602,6 +4724,19 @@ class Database:
                             "     AND te.market_id = :market_id"
                             "     AND te.side = :side"
                             "     AND te.event_type = 'RESOLUTION'"
+                            " )"
+                            " AND NOT EXISTS ("
+                            "   SELECT 1 FROM trade_events te_exit"
+                            "   WHERE te_exit.bot_name = :bot_name"
+                            "     AND te_exit.market_id = :market_id"
+                            "     AND te_exit.event_type = 'EXIT'"
+                            "   HAVING SUM(te_exit.size) >= ("
+                            "     SELECT COALESCE(SUM(te_entry.size), 0)"
+                            "     FROM trade_events te_entry"
+                            "     WHERE te_entry.bot_name = :bot_name"
+                            "       AND te_entry.market_id = :market_id"
+                            "       AND te_entry.event_type = 'ENTRY'"
+                            "   )"
                             " )"
                             " RETURNING sequence_num"
                         ),
@@ -4635,6 +4770,148 @@ class Database:
 
     # insert_trade_model_linkage removed — migration 052 drops table (0 readers)
     # aggregate_model_performance removed — migration 052 drops table (0 readers)
+
+    async def insert_shadow_fill(
+        self,
+        *,
+        bot_name: str,
+        market_id: str,
+        token_id: Optional[str] = None,
+        side: str = "BUY",
+        order_size_shares: Optional[float] = None,
+        order_size_usd: Optional[float] = None,
+        signal_price: Optional[float] = None,
+        confidence: Optional[float] = None,
+        edge_at_signal: Optional[float] = None,
+        latency_ms: Optional[float] = None,
+        book_snapshot: Optional[Any] = None,
+        best_ask: Optional[float] = None,
+        best_bid: Optional[float] = None,
+        spread: Optional[float] = None,
+        depth_at_best_usd: Optional[float] = None,
+        total_depth_usd: Optional[float] = None,
+        vwap_fill_price: Optional[float] = None,
+        book_walk_slippage: Optional[float] = None,
+        fill_fraction: Optional[float] = None,
+        edge_at_vwap: Optional[float] = None,
+        trade_executed: bool = True,
+        execution_price: Optional[float] = None,
+        correlation_id: Optional[str] = None,
+        model_name: Optional[str] = None,
+        event_data: Optional[Dict] = None,
+    ) -> Optional[int]:
+        """S115: Record a shadow fill row for retroactive P&L analysis.
+
+        Every trade signal gets a row — whether executed or not.
+        Book snapshot + VWAP enable true slippage analysis after resolution.
+        """
+        if self.session_factory is None:
+            return None
+        try:
+            import json as _json
+            from sqlalchemy import text as _sa_text
+            async with self.get_session() as session:
+                result = await session.execute(
+                    _sa_text(
+                        "INSERT INTO shadow_fills ("
+                        "  bot_name, market_id, token_id, side,"
+                        "  order_size_shares, order_size_usd, signal_price,"
+                        "  confidence, edge_at_signal, latency_ms,"
+                        "  book_snapshot, best_ask, best_bid, spread,"
+                        "  depth_at_best_usd, total_depth_usd,"
+                        "  vwap_fill_price, book_walk_slippage, fill_fraction,"
+                        "  edge_at_vwap, trade_executed, execution_price,"
+                        "  correlation_id, model_name, event_data"
+                        ") VALUES ("
+                        "  :bot_name, :market_id, :token_id, :side,"
+                        "  :order_size_shares, :order_size_usd, :signal_price,"
+                        "  :confidence, :edge_at_signal, :latency_ms,"
+                        "  CAST(:book_snapshot AS jsonb), :best_ask, :best_bid, :spread,"
+                        "  :depth_at_best_usd, :total_depth_usd,"
+                        "  :vwap_fill_price, :book_walk_slippage, :fill_fraction,"
+                        "  :edge_at_vwap, :trade_executed, :execution_price,"
+                        "  :correlation_id, :model_name, CAST(:event_data AS jsonb)"
+                        ") RETURNING id"
+                    ),
+                    {
+                        "bot_name": bot_name,
+                        "market_id": market_id,
+                        "token_id": token_id,
+                        "side": side,
+                        "order_size_shares": order_size_shares,
+                        "order_size_usd": order_size_usd,
+                        "signal_price": signal_price,
+                        "confidence": confidence,
+                        "edge_at_signal": edge_at_signal,
+                        "latency_ms": latency_ms,
+                        "book_snapshot": _json.dumps(book_snapshot) if book_snapshot else None,
+                        "best_ask": best_ask,
+                        "best_bid": best_bid,
+                        "spread": spread,
+                        "depth_at_best_usd": depth_at_best_usd,
+                        "total_depth_usd": total_depth_usd,
+                        "vwap_fill_price": vwap_fill_price,
+                        "book_walk_slippage": book_walk_slippage,
+                        "fill_fraction": fill_fraction,
+                        "edge_at_vwap": edge_at_vwap,
+                        "trade_executed": trade_executed,
+                        "execution_price": execution_price,
+                        "correlation_id": correlation_id,
+                        "model_name": model_name,
+                        "event_data": _json.dumps(event_data) if event_data else None,
+                    },
+                )
+                row = result.fetchone()
+                await session.commit()
+                return row[0] if row else None
+        except Exception as e:
+            logger.debug("shadow_fill insert failed for %s: %s", market_id, e)
+            return None
+
+    async def backfill_shadow_resolution(self) -> int:
+        """S115: Backfill shadow_fills with resolution data.
+
+        For resolved markets, compute shadow_pnl from vwap_fill_price:
+          YES resolution: pnl = (1.0 - vwap) * shares
+          NO resolution:  pnl = -vwap * shares
+        """
+        if self.session_factory is None:
+            return 0
+        try:
+            from sqlalchemy import text as _sa_text
+            async with self.get_session() as session:
+                result = await session.execute(
+                    _sa_text(
+                        "UPDATE shadow_fills sf SET "
+                        "  resolved_at = tm.resolved_at, "
+                        "  resolution_outcome = tm.resolution, "
+                        "  shadow_pnl = CASE "
+                        "    WHEN UPPER(tm.resolution) = 'YES' AND UPPER(sf.side) = 'YES' THEN "
+                        "      (1.0 - sf.vwap_fill_price) * sf.order_size_shares "
+                        "    WHEN UPPER(tm.resolution) = 'YES' AND UPPER(sf.side) = 'NO' THEN "
+                        "      (0.0 - sf.vwap_fill_price) * sf.order_size_shares "
+                        "    WHEN UPPER(tm.resolution) = 'NO' AND UPPER(sf.side) = 'YES' THEN "
+                        "      (0.0 - sf.vwap_fill_price) * sf.order_size_shares "
+                        "    WHEN UPPER(tm.resolution) = 'NO' AND UPPER(sf.side) = 'NO' THEN "
+                        "      (1.0 - sf.vwap_fill_price) * sf.order_size_shares "
+                        "    ELSE NULL "
+                        "  END "
+                        "FROM traded_markets tm "
+                        "WHERE sf.market_id = tm.market_id "
+                        "  AND tm.resolution IN ('YES', 'NO') "
+                        "  AND tm.resolved_at IS NOT NULL "
+                        "  AND sf.resolved_at IS NULL "
+                        "  AND sf.vwap_fill_price IS NOT NULL"
+                    )
+                )
+                updated = result.rowcount
+                await session.commit()
+                if updated > 0:
+                    logger.info("shadow_fills_resolution_backfill", updated=updated)
+                return updated
+        except Exception as e:
+            logger.debug("shadow_fills resolution backfill failed: %s", e)
+            return 0
 
     async def mark_market_resolved(
         self,

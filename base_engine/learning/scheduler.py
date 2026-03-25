@@ -587,8 +587,8 @@ class LearningScheduler:
         # Daily PnL summary alert — fires once per UTC calendar day
         if self.alerting and self.db:
             try:
-                from datetime import date as _date
-                _today = _date.today()
+                from datetime import datetime as _dt, timezone as _tz
+                _today = _dt.now(_tz.utc).date()
                 if _today != getattr(self, "_last_daily_pnl_date", None):
                     await self.alerting.check_daily_pnl_summary(self.db)
                     self._last_daily_pnl_date = _today

@@ -24,112 +24,6 @@ logger = get_logger()
 _map_rates_cache: Dict[str, Tuple[Dict[str, float], float]] = {}
 
 
-async def upsert_esports_team(db, team_data: Dict[str, Any]) -> None:
-    """Insert or update an esports team in esports_teams table."""
-    if db is None:
-        return
-    try:
-        async with db.get_session() as session:
-            await session.execute(
-                _text("""
-                INSERT INTO esports_teams (external_id, name, game, region, logo_url)
-                VALUES (:external_id, :name, :game, :region, :logo_url)
-                ON CONFLICT (external_id) DO UPDATE SET
-                    name = EXCLUDED.name,
-                    region = EXCLUDED.region,
-                    logo_url = EXCLUDED.logo_url,
-                    updated_at = NOW()
-                """),
-                {
-                    "external_id": str(team_data.get("id", "")),
-                    "name": str(team_data.get("name", "")),
-                    "game": str(team_data.get("game", "")),
-                    "region": str(team_data.get("region", "")),
-                    "logo_url": str(team_data.get("logo_url", "")),
-                },
-            )
-            await session.commit()
-    except Exception as exc:
-        logger.debug("esports_db: upsert_team failed", error=str(exc))
-
-
-async def upsert_esports_match(db, match_data: Dict[str, Any]) -> None:
-    """Insert or update an esports match in esports_matches table."""
-    if db is None:
-        return
-    try:
-        async with db.get_session() as session:
-            await session.execute(
-                _text("""
-                INSERT INTO esports_matches
-                    (external_id, game, tournament, team_a, team_b, team_a_id, team_b_id,
-                     best_of, status, score_a, score_b, scheduled_at)
-                VALUES
-                    (:external_id, :game, :tournament, :team_a, :team_b, :team_a_id, :team_b_id,
-                     :best_of, :status, :score_a, :score_b, :scheduled_at)
-                ON CONFLICT (external_id) DO UPDATE SET
-                    status = EXCLUDED.status,
-                    score_a = EXCLUDED.score_a,
-                    score_b = EXCLUDED.score_b,
-                    updated_at = NOW()
-                """),
-                {
-                    "external_id": str(match_data.get("match_id", "")),
-                    "game": str(match_data.get("game", "")),
-                    "tournament": str(match_data.get("tournament", "")),
-                    "team_a": str(match_data.get("team_a", "")),
-                    "team_b": str(match_data.get("team_b", "")),
-                    "team_a_id": str(match_data.get("team_a_id", "")),
-                    "team_b_id": str(match_data.get("team_b_id", "")),
-                    "best_of": int(match_data.get("best_of", 1)),
-                    "status": str(match_data.get("status", "not_started")),
-                    "score_a": int(match_data.get("score_a", 0)),
-                    "score_b": int(match_data.get("score_b", 0)),
-                    "scheduled_at": match_data.get("scheduled_at"),
-                },
-            )
-            await session.commit()
-    except Exception as exc:
-        logger.debug("esports_db: upsert_match failed", error=str(exc))
-
-
-async def log_esports_prediction(
-    db,
-    match_id: str,
-    market_id: str,
-    game: str,
-    model_prob: float,
-    market_price: float,
-    side: str,
-    confidence: float,
-    bot_name: str,
-) -> None:
-    """Log an esports prediction to the esports_predictions table."""
-    if db is None:
-        return
-    try:
-        async with db.get_session() as session:
-            await session.execute(
-                _text("""
-                INSERT INTO esports_live_events
-                    (match_id, game, event_type, description, confidence, market_side, edge_estimate)
-                VALUES
-                    (:match_id, :game, 'prediction', :description, :confidence, :side, :edge)
-                """),
-                {
-                    "match_id": match_id,
-                    "game": game,
-                    "description": f"{bot_name} prediction: model={model_prob:.3f} market={market_price:.3f}",
-                    "confidence": confidence,
-                    "side": side,
-                    "edge": abs(model_prob - market_price),
-                },
-            )
-            await session.commit()
-    except Exception as exc:
-        logger.debug("esports_db: log_prediction failed", error=str(exc))
-
-
 async def get_calibration(
     db, game: str, market_type: str = "match_winner"
 ) -> Optional[Dict[str, Any]]:
@@ -446,7 +340,10 @@ async def compute_calibration_curve(
               AND created_at >= CURRENT_DATE - :days
               {game_filter}
         """
-        rows = await db.fetch_all(sql, params)
+        async with db.get_session() as session:
+            from sqlalchemy import text as _cal_text
+            result = await session.execute(_cal_text(sql), params)
+            rows = result.fetchall()
         if not rows or len(rows) < 20:
             return None
 
@@ -456,9 +353,9 @@ async def compute_calibration_curve(
                 for i in range(5)]
 
         for row in rows:
-            pred = float(row["predicted_prob"])
-            side = str(row["side"]).upper()
-            actual = int(row["actual_outcome"])
+            pred = float(row[0])
+            side = str(row[1]).upper()
+            actual = int(row[2])
             # Convert to "confidence in our pick" perspective
             # If side=YES and outcome=1 → correct; side=NO and outcome=0 → correct
             conf = pred if side == "YES" else (1.0 - pred)
@@ -856,7 +753,7 @@ async def update_calibration(
                     correct_count = EXCLUDED.correct_count,
                     brier_score = EXCLUDED.brier_score,
                     kelly_fraction = EXCLUDED.kelly_fraction,
-                    updated_at = NOW()
+                    last_updated = NOW()
                 """),
                 {
                     "game": game,

@@ -26,22 +26,6 @@ from structlog import get_logger
 
 logger = get_logger()
 
-# LoL feature names (must match lol_win_model.FEATURE_NAMES)
-# Only features reliably available from PandaScore in training AND live inference.
-_LOL_FEATURES = [
-    "game_time_minutes", "gold_pct_blue", "tower_kills_diff", "dragon_kills_diff",
-    "dragon_soul_blue", "herald_blue", "inhib_down_diff", "baron_buff_count_diff",
-    "team_strength_diff",
-]
-
-# CS2 round feature names (must match cs2_economy_model.ROUND_FEATURES)
-_CS2_FEATURES = [
-    "team_a_money", "team_b_money", "team_a_equip_value", "team_b_equip_value",
-    "round_score_a", "round_score_b", "map_ct_rate", "team_a_is_ct",
-    "team_a_loss_streak", "team_b_loss_streak", "bomb_planted",
-    "team_a_alive", "team_b_alive", "team_strength_diff",
-]
-
 # CS2 map CT win rates (professional average)
 _MAP_SIDE_RATES = {
     "nuke": 0.57, "ancient": 0.55, "anubis": 0.54, "vertigo": 0.54,
@@ -219,39 +203,6 @@ class EsportsDataCollector:
 
         return rows
 
-    def _extract_lol_features(
-        self, blue: Dict, red: Dict, game_data: Dict
-    ) -> Dict[str, float]:
-        """Extract 8 reliable LoL features from PandaScore game-level team stats.
-
-        NOTE: Only used if paid-tier game detail data is available (not currently used).
-        """
-        # Game duration
-        length = game_data.get("length", 0) or 0
-        game_time_minutes = length / 60.0 if length else 30.0
-
-        # Team-level stats from PandaScore
-        blue_stats = blue.get("stats", {}) or {}
-        red_stats = red.get("stats", {}) or {}
-
-        blue_gold = float(blue_stats.get("gold_earned", 0) or 0)
-        red_gold = float(red_stats.get("gold_earned", 0) or 0)
-        total_gold = blue_gold + red_gold
-
-        # Build feature dict -- only 8 reliable features
-        features: Dict[str, float] = {
-            "game_time_minutes": game_time_minutes,
-            "gold_pct_blue": blue_gold / total_gold if total_gold > 0 else 0.5,
-            "tower_kills_diff": float(blue_stats.get("tower_kills", 0) or 0) - float(red_stats.get("tower_kills", 0) or 0),
-            "dragon_kills_diff": float(blue_stats.get("dragon_kills", 0) or 0) - float(red_stats.get("dragon_kills", 0) or 0),
-            "dragon_soul_blue": 1.0 if int(blue_stats.get("dragon_kills", 0) or 0) >= 4 else 0.0,
-            "herald_blue": float(int(blue_stats.get("herald_kill", 0) or blue_stats.get("rift_heralds", 0) or 0) > 0),
-            "inhib_down_diff": float(blue_stats.get("inhibitor_kills", 0) or 0) - float(red_stats.get("inhibitor_kills", 0) or 0),
-            "baron_buff_count_diff": float(blue_stats.get("baron_kills", 0) or 0) - float(red_stats.get("baron_kills", 0) or 0),
-        }
-
-        return features
-
     # -- CS2 extraction ------------------------------------------------------
 
     async def _process_cs2_match(self, match) -> List[Dict[str, Any]]:
@@ -270,6 +221,7 @@ class EsportsDataCollector:
 
         # Compute team strength diff once per match (cached)
         team_str_diff = await self._compute_team_strength_diff(match, "cs2")
+        glicko2_meta = self._get_glicko2_metadata(match, "cs2")
 
         rows = []
         for g_idx, g in enumerate(games_list):
@@ -313,6 +265,11 @@ class EsportsDataCollector:
                 "team_a_alive": 5.0,
                 "team_b_alive": 5.0,
                 "team_strength_diff": team_str_diff,
+                "matchup_uncertainty": glicko2_meta["matchup_uncertainty"],
+                "rd_asymmetry": glicko2_meta["rd_asymmetry"],
+                "team_a_volatility": glicko2_meta["team_a_volatility"],
+                "team_b_volatility": glicko2_meta["team_b_volatility"],
+                "best_of": int(getattr(match, "best_of", 1) or 1),
             }
 
             rows.append({
@@ -580,7 +537,7 @@ class EsportsDataCollector:
             async with db.get_session() as session:
                 result = await session.execute(
                     sa_text("""
-                        SELECT match_id, game, patch, game_state_json, outcome, scheduled_at
+                        SELECT match_id, game, patch, game_state_json, outcome, scheduled_at, team_a, team_b
                         FROM esports_training_data
                         WHERE game = :game
                         ORDER BY created_at DESC

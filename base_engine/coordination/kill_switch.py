@@ -56,7 +56,7 @@ class KillSwitch:
             # and prevents trading when DB is down and we don't know the real state
             if self._cache_engaged is not None:
                 return self._cache_engaged
-            return False  # First-ever check failed, assume safe
+            return True  # First-ever check failed, fail-safe: block trading
 
     async def is_engaged(self) -> bool:
         """Alias for check_kill_status for execution-loop use (check before execute)."""

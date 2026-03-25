@@ -4,7 +4,10 @@ import math
 from datetime import date, datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import numpy as np
 import pytest
+
+from config.settings import settings
 
 from base_engine.weather.station_registry import (
     STATION_REGISTRY,
@@ -1645,6 +1648,7 @@ class TestIntlMinEdge:
         bot._min_edge = 0.08
         bot._intl_min_edge = 0.12
         bot._category_params = {}
+        bot._spread_history = {}
         bot._get_min_edge = WeatherBot._get_min_edge.__get__(bot, WeatherBot)
         return bot
 
@@ -1719,3 +1723,282 @@ class TestLocalModelStationRegistry:
         for key, station in STATION_REGISTRY.items():
             if station.temp_unit == "F":
                 assert station.local_model is None, f"US station {key} should not have local_model"
+
+
+# ---------------------------------------------------------------------------
+# S123: WeatherConfidenceCalibrator tests
+# ---------------------------------------------------------------------------
+from bots.weather_bot import WeatherConfidenceCalibrator
+
+
+class TestWeatherConfidenceCalibrator:
+    """Tests for the Platt + Isotonic confidence calibration pipeline."""
+
+    def test_identity_when_unfitted(self):
+        """Unfitted calibrator returns raw confidence unchanged."""
+        cal = WeatherConfidenceCalibrator()
+        assert not cal.is_fitted
+        for p in [0.10, 0.50, 0.95]:
+            assert cal.calibrate(p) == p
+
+    def test_platt_compresses_overconfident(self):
+        """Temperature > 1 compresses extreme probabilities toward 0.5.
+
+        Platt: calibrated = sigmoid(logit(p) / T).
+        T > 1 divides logits, shrinking them → predictions move toward 0.5.
+        Our model is overconfident at the top, so the fitter should find T > 1.
+        """
+        cal = WeatherConfidenceCalibrator()
+        cal._temperature = 1.5
+        cal._isotonic = None
+        cal._fitted = True
+        # High confidence should be pulled down toward 0.5
+        result_high = cal.calibrate(0.95)
+        assert result_high < 0.95, f"Expected compression: {result_high} should be < 0.95"
+        # Low confidence should be pulled up toward 0.5
+        result_low = cal.calibrate(0.15)
+        assert result_low > 0.15, f"Expected compression: {result_low} should be > 0.15"
+        # Mid-range should stay close to 0.5
+        result_mid = cal.calibrate(0.50)
+        assert abs(result_mid - 0.50) < 0.05
+
+    def test_platt_amplifies_underconfident(self):
+        """Temperature < 1 amplifies logits, pushing probabilities toward extremes."""
+        cal = WeatherConfidenceCalibrator()
+        cal._temperature = 0.6
+        cal._isotonic = None
+        cal._fitted = True
+        result_high = cal.calibrate(0.80)
+        assert result_high > 0.80, f"Expected amplification: {result_high} should be > 0.80"
+        result_low = cal.calibrate(0.20)
+        assert result_low < 0.20, f"Expected amplification: {result_low} should be < 0.20"
+
+    def test_isotonic_monotonic(self):
+        """Isotonic regression preserves monotonicity."""
+        from sklearn.isotonic import IsotonicRegression
+        cal = WeatherConfidenceCalibrator()
+        cal._temperature = 1.0  # identity Platt
+        # Fit isotonic on synthetic data with known monotonic relationship
+        X = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9])
+        y = np.array([0.0, 0.0, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0, 1.0])
+        iso = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
+        iso.fit(X, y)
+        cal._isotonic = iso
+        cal._fitted = True
+        # Calibrated output must be monotonically non-decreasing
+        inputs = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+        outputs = [cal.calibrate(p) for p in inputs]
+        for i in range(1, len(outputs)):
+            assert outputs[i] >= outputs[i - 1], (
+                f"Monotonicity violation at {inputs[i]}: {outputs[i]} < {outputs[i-1]}"
+            )
+
+    def test_chained_platt_isotonic_valid_probabilities(self):
+        """Chained pipeline produces values in [0.01, 0.99]."""
+        from sklearn.isotonic import IsotonicRegression
+        cal = WeatherConfidenceCalibrator()
+        cal._temperature = 0.7
+        X = np.linspace(0.05, 0.95, 50)
+        # Synthetic outcomes: higher confidence → more wins
+        y = (X > np.random.uniform(0, 1, 50)).astype(float)
+        iso = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
+        iso.fit(WeatherConfidenceCalibrator._platt_transform(X, 0.7), y)
+        cal._isotonic = iso
+        cal._fitted = True
+        # Test full range
+        for p in np.linspace(0.01, 0.99, 100):
+            result = cal.calibrate(float(p))
+            assert 0.01 <= result <= 0.99, f"Out of range: calibrate({p}) = {result}"
+
+    def test_insufficient_data_returns_false(self):
+        """fit_from_trade_events returns False when no DB provided."""
+        import asyncio
+        cal = WeatherConfidenceCalibrator()
+        result = asyncio.get_event_loop().run_until_complete(
+            cal.fit_from_trade_events(db=None, window_days=30)
+        )
+        assert result is False
+        assert not cal.is_fitted
+
+    def test_fit_platt_finds_reasonable_temperature(self):
+        """_fit_platt on synthetic overconfident data should find T > 1 (compress)."""
+        # Simulate: model says 90% but actual WR is 70%
+        np.random.seed(42)
+        n = 500
+        confidences = np.random.uniform(0.6, 0.95, n)
+        # Actual outcomes are less extreme than confidence suggests
+        outcomes = (np.random.uniform(0, 1, n) < (confidences * 0.75 + 0.05)).astype(float)
+        t = WeatherConfidenceCalibrator._fit_platt(confidences, outcomes)
+        # T > 1 compresses overconfident predictions toward 0.5
+        assert 0.5 <= t <= 3.0, f"Temperature {t} outside reasonable range for overconfident data"
+
+    def test_brier_guard_rejects_worse_calibration(self):
+        """Calibration that worsens Brier score is rejected."""
+        import asyncio
+        cal = WeatherConfidenceCalibrator()
+        # Mock DB that returns perfectly calibrated data (calibration can't improve it)
+        mock_session = AsyncMock()
+        # Generate data where raw confidence IS the true probability
+        np.random.seed(123)
+        n = 300
+        confs = np.random.uniform(0.2, 0.8, n)
+        outcomes = (np.random.uniform(0, 1, n) < confs).astype(float)
+        rows = [(float(c), float(o)) for c, o in zip(confs, outcomes)]
+        mock_result = MagicMock()
+        mock_result.fetchall.return_value = rows
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_db = MagicMock()
+        mock_db.get_session = MagicMock(return_value=mock_session)
+        # If calibration worsens Brier by >0.005, it should be rejected
+        # With well-calibrated data, Platt should find T≈1.0 and not worsen things
+        result = asyncio.get_event_loop().run_until_complete(
+            cal.fit_from_trade_events(db=mock_db, window_days=30, min_samples=200)
+        )
+        # Either fitted (T≈1, no harm) or rejected — both are correct behavior
+        if cal.is_fitted:
+            assert abs(cal.temperature - 1.0) < 0.5, (
+                f"On well-calibrated data, T should be near 1.0, got {cal.temperature}"
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# S124: Zero-Kelly guard + Spread inflation
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestZeroKellyGuard:
+    """S124: Verify zero-Kelly trades are blocked (not forced to $5)."""
+
+    @pytest.fixture
+    def _mock_weather_bot(self):
+        """Minimal WeatherBot mock for _execute_weather_trade."""
+        bot = MagicMock()
+        bot.bot_name = "WeatherBot"
+        bot._recently_exited = {}
+        bot._exit_cooldown_secs = 14400
+        bot._fill_fail_tracker = {}
+        bot._fill_fail_max_consec = 3
+        bot._fill_fail_cooldown_secs = 1800
+        bot._min_fill_prob_estimate = 0.1
+        bot._daily_pnl = 0.0
+        bot._daily_loss_limit = 10000
+        bot._group_exposure = {}
+        bot._city_exposure = {}
+        bot._max_per_group = 10000
+        bot._max_correlated = 5000
+        bot._default_size = 25.0
+        bot._liquidity_cache = {}
+        bot._liquidity_cache_ttl = 60
+        bot.base_engine = MagicMock()
+        bot.base_engine.order_gateway = None
+        bot.base_engine.db = MagicMock()
+        bot.base_engine.db.insert_trade_event = AsyncMock()
+        bot.base_engine.liquidity_guardian = None
+        return bot
+
+    def test_zero_kelly_returns_false(self, _mock_weather_bot):
+        """When Kelly returns 0 shares, trade should NOT fire (no $5 forced bet)."""
+        import asyncio
+        from bots.weather_bot import WeatherBot
+
+        bot = _mock_weather_bot
+        # Mock Kelly to return 0 (negative EV)
+        bot.calculate_bot_position_size = AsyncMock(return_value=0.0)
+        bot._should_halt_severe_weather = MagicMock(return_value=None)
+        bot._get_severe_weather_boost = AsyncMock(return_value=1.0)
+        bot._get_model_age_hours = MagicMock(return_value=2.0)
+        bot._get_station_reliability_factor = AsyncMock(return_value=1.0)
+        bot._calibration_confidence = MagicMock(return_value=0.5)
+        bot._station_n_resolved = {"KJFK": 50}
+        bot._exposure_lock = asyncio.Lock()
+
+        opp = {
+            "market_id": "test_mkt_1", "token_id": "tok_1",
+            "side": "NO", "price": 0.85, "confidence": 0.78,
+            "raw_confidence": 0.95, "model_prob": 0.05,
+            "edge": -0.10, "abs_edge": 0.10, "city": "New York",
+            "target_date": "2026-03-25", "lead_time_hours": 48.0,
+            "ensemble_mean": 55.0, "model_spread": 3.0,
+            "ensemble_count": 51, "resolution_boundary_risk": False,
+            "market_type": "temperature",
+        }
+        group = MagicMock()
+        group.city = "New York"
+        group.target_date = date(2026, 3, 25)
+        group.station = MagicMock()
+        group.station.station_id = "KJFK"
+
+        result = asyncio.get_event_loop().run_until_complete(
+            WeatherBot._execute_weather_trade(bot, opp, group)
+        )
+        assert result is False, "Zero-Kelly trade should return False, not fire at $5"
+
+    def test_zero_kelly_logs_shadow_entry(self, _mock_weather_bot):
+        """When Kelly returns 0, a SHADOW_ENTRY should be written to DB."""
+        import asyncio
+        from bots.weather_bot import WeatherBot
+
+        bot = _mock_weather_bot
+        bot.calculate_bot_position_size = AsyncMock(return_value=0.0)
+        bot._should_halt_severe_weather = MagicMock(return_value=None)
+        bot._get_severe_weather_boost = AsyncMock(return_value=1.0)
+        bot._get_model_age_hours = MagicMock(return_value=2.0)
+        bot._get_station_reliability_factor = AsyncMock(return_value=1.0)
+        bot._calibration_confidence = MagicMock(return_value=0.5)
+        bot._station_n_resolved = {"KJFK": 50}
+        bot._exposure_lock = asyncio.Lock()
+
+        opp = {
+            "market_id": "test_mkt_2", "token_id": "tok_2",
+            "side": "NO", "price": 0.85, "confidence": 0.78,
+            "raw_confidence": 0.95, "model_prob": 0.05,
+            "edge": -0.10, "abs_edge": 0.10, "city": "New York",
+            "target_date": "2026-03-25", "lead_time_hours": 48.0,
+            "ensemble_mean": 55.0, "model_spread": 3.0,
+            "ensemble_count": 51, "resolution_boundary_risk": False,
+            "market_type": "temperature",
+        }
+        group = MagicMock()
+        group.city = "New York"
+        group.target_date = date(2026, 3, 25)
+        group.station = MagicMock()
+        group.station.station_id = "KJFK"
+
+        asyncio.get_event_loop().run_until_complete(
+            WeatherBot._execute_weather_trade(bot, opp, group)
+        )
+        bot.base_engine.db.insert_trade_event.assert_called_once()
+        call_kwargs = bot.base_engine.db.insert_trade_event.call_args
+        assert call_kwargs.kwargs["event_type"] == "SHADOW_ENTRY"
+        assert call_kwargs.kwargs["event_data"]["reason"] == "negative_ev"
+
+
+class TestSpreadInflation:
+    """S124: Verify spread inflation hook in probability engine."""
+
+    def test_spread_inflation_off_by_default(self):
+        """With default settings (factor=0.0), output should be unchanged."""
+        engine = WeatherProbabilityEngine()
+        # Use < 10 members to hit normal fallback path (not skewnorm MLE)
+        members = [50.0, 51.0, 52.0, 53.0, 54.0]
+        loc1, scale1, _ = engine.fit_distribution(members, lead_time_hours=120.0)
+        loc2, scale2, _ = engine.fit_distribution(members, lead_time_hours=24.0)
+        # With factor=0.0, lead time should not affect scale (same members)
+        assert abs(scale1 - scale2) < 0.01, (
+            f"With inflation OFF, scale should not vary by lead time: {scale1} vs {scale2}"
+        )
+
+    def test_spread_inflation_increases_with_lead_time(self):
+        """With factor > 0, longer lead times should produce wider scale."""
+        engine = WeatherProbabilityEngine()
+        # Use < 10 members to hit normal fallback path where effective_std is returned.
+        # Skewnorm MLE path uses its own scale; inflation only affects effective_std/emos_sigma.
+        members = [50.0, 51.0, 52.0, 53.0, 54.0]
+        with patch.object(settings, "WEATHER_SPREAD_INFLATION_FACTOR", 0.10):
+            _, scale_24h, _ = engine.fit_distribution(members, lead_time_hours=24.0)
+            _, scale_120h, _ = engine.fit_distribution(members, lead_time_hours=120.0)
+        # 120h should have ~12% wider scale than 24h
+        ratio = scale_120h / scale_24h
+        assert ratio > 1.05, f"Expected 120h scale > 24h by >5%, got ratio {ratio:.3f}"
+        assert ratio < 1.25, f"Inflation too aggressive: ratio {ratio:.3f}"

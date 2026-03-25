@@ -6,7 +6,6 @@ Tests:
   - bo5_match_prob: favoured team, equal teams at 2-2
   - Symmetry: bo3_match_prob(p, a, b) + bo3_match_prob(1-p, b, a) ~ 1.0
   - Probabilities always in [0, 1] range
-  - detect_momentum_fallacy returns edge when overweighted
   - map_veto_adjusted_prob returns per-map probs
 """
 import pytest
@@ -16,7 +15,6 @@ from esports.models.series_model import (
     bo5_match_prob,
     map_veto_adjusted_prob,
     series_prob_with_map_veto,
-    detect_momentum_fallacy,
 )
 
 
@@ -245,52 +243,3 @@ class TestSeriesProbWithMapVeto:
         )
         assert p == pytest.approx(1.0, abs=1e-6)
 
-
-# =========================================================================
-# Momentum Fallacy Detection
-# =========================================================================
-
-
-class TestMomentumFallacy:
-    def test_returns_edge_when_blowout_and_market_overreacts(self):
-        """Large margin + significant market adjustment -> fallacy detected."""
-        edge = detect_momentum_fallacy(map_margin=13, market_adjustment=0.10)
-        assert edge is not None
-        assert edge == pytest.approx(0.05, abs=0.01)  # 0.10 * 0.5
-
-    def test_returns_none_when_margin_small(self):
-        """Small margin (< 8) -> no fallacy even with market adjustment."""
-        edge = detect_momentum_fallacy(map_margin=5, market_adjustment=0.10)
-        assert edge is None
-
-    def test_returns_none_when_adjustment_small(self):
-        """Large margin but small market adjustment (< 3%) -> no fallacy."""
-        edge = detect_momentum_fallacy(map_margin=13, market_adjustment=0.02)
-        assert edge is None
-
-    def test_returns_none_when_both_small(self):
-        """Both margin and adjustment small -> no fallacy."""
-        edge = detect_momentum_fallacy(map_margin=3, market_adjustment=0.01)
-        assert edge is None
-
-    def test_negative_margin_still_detects(self):
-        """Negative margin (other team won) is handled by abs()."""
-        edge = detect_momentum_fallacy(map_margin=-10, market_adjustment=-0.08)
-        assert edge is not None
-        assert edge == pytest.approx(-0.04, abs=0.01)
-
-    def test_exact_threshold_margin(self):
-        """Margin = 8 exactly + adjustment = 0.03 exactly -> fallacy detected."""
-        edge = detect_momentum_fallacy(map_margin=8, market_adjustment=0.03)
-        assert edge is not None
-        assert edge == pytest.approx(0.015, abs=0.001)
-
-    def test_just_below_threshold_margin(self):
-        """Margin = 7 (below 8) -> not detected."""
-        edge = detect_momentum_fallacy(map_margin=7, market_adjustment=0.10)
-        assert edge is None
-
-    def test_just_below_threshold_adjustment(self):
-        """Adjustment = 0.029 (below 0.03) -> not detected."""
-        edge = detect_momentum_fallacy(map_margin=13, market_adjustment=0.029)
-        assert edge is None

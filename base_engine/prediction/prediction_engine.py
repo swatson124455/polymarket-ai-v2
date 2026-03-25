@@ -2509,7 +2509,6 @@ class PredictionEngine:
             _ttr_days = None
             if _mkt_end_date is not None:
                 try:
-                    from datetime import datetime, timezone
                     _ttr_td = _mkt_end_date - datetime.now(timezone.utc)
                     _ttr_days = max(0.0, _ttr_td.total_seconds() / 86400.0)
                 except Exception:
@@ -2651,8 +2650,7 @@ class PredictionEngine:
                                 category_text = row[1] or ""
                                 if row[2]:
                                     try:
-                                        from datetime import datetime as _dt
-                                        end = _dt.fromisoformat(str(row[2]).replace("Z", "+00:00"))
+                                        end = datetime.fromisoformat(str(row[2]).replace("Z", "+00:00"))
                                         if end.tzinfo is None:
                                             end = end.replace(tzinfo=timezone.utc)
                                         days_left = (end - datetime.now(timezone.utc)).days

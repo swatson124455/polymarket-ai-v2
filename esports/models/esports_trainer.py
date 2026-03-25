@@ -506,9 +506,10 @@ class EsportsModelTrainer:
                 subsample=0.8,
                 colsample_bytree=0.8,
                 eval_metric="logloss",
+                early_stopping_rounds=20,
                 verbosity=0,
             )
-            model.fit(X_train, y_train)
+            model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
 
             # Evaluate
             probs = model.predict_proba(X_val)[:, 1]

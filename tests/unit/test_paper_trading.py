@@ -6,17 +6,11 @@ from base_engine.execution.paper_trading import PaperTradingEngine
 
 @pytest.fixture(autouse=True)
 def _disable_slippage():
-    """Disable slippage and fees in paper trading tests for deterministic assertions."""
-    with patch("base_engine.execution.paper_trading.settings") as mock_settings, \
-         patch("base_engine.execution.paper_trading._size_dependent_slippage_bps", return_value=0), \
-         patch("base_engine.execution.paper_trading._sqrt_market_impact_bps", return_value=0):
-        mock_settings.FIXED_SLIPPAGE_BPS = 0
+    """Disable fees in paper trading tests for deterministic assertions."""
+    with patch("base_engine.execution.paper_trading.settings") as mock_settings:
         mock_settings.TAKER_FEE_BPS = 0
         mock_settings.MAKER_FEE_BPS = 0
         mock_settings.PAPER_TAKER_FEE_BPS = 0
-        mock_settings.PAPER_REALISTIC_FILLS = False
-        mock_settings.PAPER_LATENCY_DRIFT_BPS_PER_SEC = 10
-        mock_settings.PAPER_DEFAULT_SPREAD = 0.04
         yield
 
 
@@ -88,23 +82,17 @@ async def test_paper_trading_buy_then_sell():
 
 
 @pytest.mark.asyncio
-async def test_paper_trading_slippage_applied():
-    """PaperTradingEngine: Slippage adjusts fill price when enabled."""
+async def test_paper_trading_fills_at_signal_price_without_book():
+    """S115: Without orderbook tracker, fills at signal price (no theoretical slippage)."""
     with patch("base_engine.execution.paper_trading.settings") as mock_settings:
-        mock_settings.FIXED_SLIPPAGE_BPS = 100  # 1% slippage
         mock_settings.TAKER_FEE_BPS = 0
         mock_settings.MAKER_FEE_BPS = 0
         mock_settings.PAPER_TAKER_FEE_BPS = 0
-        mock_settings.PAPER_REALISTIC_FILLS = False
-        mock_settings.PAPER_LATENCY_DRIFT_BPS_PER_SEC = 10
-        mock_settings.PAPER_DEFAULT_SPREAD = 0.04
         engine = PaperTradingEngine(initial_capital=10000.0)
         engine.enable()
 
         result = await engine.place_order("m1", "t1", "BUY", 10.0, 0.50, "test")
         assert result["success"] is True
-        # Fill price should be higher than requested (BUY = worse price)
-        assert result["price"] > 0.50
-        assert result["slippage_bps"] > 0
-        assert "requested_price" in result
-        assert result["requested_price"] == 0.50
+        # Without book data, fills at signal price
+        assert result["price"] == 0.50
+        assert result["slippage_bps"] == 0.0

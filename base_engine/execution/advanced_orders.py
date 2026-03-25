@@ -147,7 +147,7 @@ class AdvancedOrderManager:
             order_type=OrderType.STOP_LOSS,
             market_id=market_id,
             token_id=token_id,
-            side="SELL",  # All position exits are SELL (selling the token you hold)
+            side=side,
             size=size,
             price=entry_price,
             stop_price=stop_loss_price,
@@ -181,7 +181,7 @@ class AdvancedOrderManager:
             order_type=OrderType.TAKE_PROFIT,
             market_id=market_id,
             token_id=token_id,
-            side="SELL",  # All position exits are SELL (selling the token you hold)
+            side=side,
             size=size,
             price=entry_price,
             take_profit_price=take_profit_price,
@@ -214,7 +214,7 @@ class AdvancedOrderManager:
             order_type=OrderType.TRAILING_STOP,
             market_id=market_id,
             token_id=token_id,
-            side="SELL",  # All position exits are SELL (selling the token you hold)
+            side=side,
             size=size,
             price=entry_price,
             trailing_distance=trailing_distance,

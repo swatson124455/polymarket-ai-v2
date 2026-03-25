@@ -29,11 +29,11 @@ class MirrorCalibrationStack:
         self._fitted = False
 
     async def fit(self) -> Dict[str, bool]:
-        """Fit all calibrators from DB. Call on first scan, re-fit daily."""
+        """Fit all calibrators from DB. Call on first scan, re-fit daily.
+        Always fits (even when MIRROR_USE_CALIBRATION=false) to support
+        dual-ledger shadow scoring (S121).
+        """
         results: Dict[str, bool] = {}
-
-        if not getattr(settings, "MIRROR_USE_CALIBRATION", False):
-            return results
 
         try:
             from base_engine.features.calibration import (
@@ -70,10 +70,32 @@ class MirrorCalibrationStack:
         category: str = "",
         ttr_days: Optional[float] = None,
     ) -> float:
-        """Apply calibration stack to raw confidence. Returns calibrated value."""
+        """Apply calibration stack to raw confidence. Returns calibrated value.
+        Only modifies confidence when MIRROR_USE_CALIBRATION=true (live mode).
+        """
         if not self._fitted or not getattr(settings, "MIRROR_USE_CALIBRATION", False):
             return raw_confidence
+        return self._apply_calibration(raw_confidence, category, ttr_days)
 
+    def shadow_calibrate(
+        self,
+        raw_confidence: float,
+        category: str = "",
+        ttr_days: Optional[float] = None,
+    ) -> Optional[float]:
+        """S121 dual-ledger: compute calibrated confidence without gating on
+        MIRROR_USE_CALIBRATION. Returns None if calibrators not fitted."""
+        if not self._fitted:
+            return None
+        return self._apply_calibration(raw_confidence, category, ttr_days)
+
+    def _apply_calibration(
+        self,
+        raw_confidence: float,
+        category: str = "",
+        ttr_days: Optional[float] = None,
+    ) -> float:
+        """Internal: run FTS + horizon bias on raw confidence."""
         conf = raw_confidence
 
         # Step 1: Focal Temperature Scaling

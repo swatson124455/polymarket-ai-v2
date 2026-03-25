@@ -246,31 +246,3 @@ def _series_prob_heterogeneous(
     return solve(needs_a, needs_b, 0)
 
 
-def detect_momentum_fallacy(
-    map_margin: int,
-    market_adjustment: float,
-) -> Optional[float]:
-    """
-    Detect if the market is overweighting momentum from previous map.
-
-    Empirically, round score margin on a completed map has near-zero
-    predictive value for the next map outcome (controlling for team strength
-    and map pick). Markets often adjust 5-15% based on blowout/close maps.
-
-    Args:
-        map_margin: Score margin on the just-completed map (e.g., 16-3 = 13).
-        market_adjustment: How much the market moved after the map result.
-                          Positive = market moved in winner's favour.
-
-    Returns:
-        Estimated edge from momentum fallacy, or None if no fallacy detected.
-        Positive = bet against the momentum (mean reversion).
-    """
-    # Margin has near-zero predictive value — market overweights it
-    # Threshold: if market adjusted > 3% and margin > 8 rounds, it's likely overweighted
-    if abs(map_margin) >= 8 and abs(market_adjustment) >= 0.03:
-        # The market overreacted — edge is roughly half the adjustment
-        edge = market_adjustment * 0.5
-        return edge
-
-    return None

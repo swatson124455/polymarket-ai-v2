@@ -365,9 +365,9 @@ class TestLiquidityCheckBlocksAllModes:
         from base_engine.execution.order_gateway import OrderGateway
         source = inspect.getsource(OrderGateway.place_order)
         sim_refs = [i for i, line in enumerate(source.split("\n")) if "SIMULATION_MODE" in line]
-        # Should have exactly 2: paper cash pre-check and main dispatch
-        assert len(sim_refs) == 2, (
-            f"Expected 2 SIMULATION_MODE refs in place_order, found {len(sim_refs)} at lines {sim_refs}"
+        # Should have exactly 3: paper cash pre-check, S115 edge-eroded log label, main dispatch
+        assert len(sim_refs) == 3, (
+            f"Expected 3 SIMULATION_MODE refs in place_order, found {len(sim_refs)} at lines {sim_refs}"
         )
 
 

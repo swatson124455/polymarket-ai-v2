@@ -149,7 +149,7 @@ class Settings(BaseSettings):
     MAX_DAILY_EXPOSURE: float = 1.0
     MIN_CONFIDENCE_THRESHOLD: float = float(os.getenv("MIN_CONFIDENCE_THRESHOLD", "0.45"))  # Session 47: was 0.55
     MAX_POSITION_SIZE_PCT: float = 0.10
-    TOTAL_CAPITAL: float = float(os.getenv("TOTAL_CAPITAL", "100000.0"))
+    TOTAL_CAPITAL: float = float(os.getenv("TOTAL_CAPITAL", "20000.0"))
     RISK_PER_TRADE_PCT: float = 1.0
     MAX_DAILY_LOSS: float = float(os.getenv("MAX_DAILY_LOSS", "10000.0"))
     MAX_WEEKLY_LOSS: float = float(os.getenv("MAX_WEEKLY_LOSS", "25000.0"))
@@ -370,6 +370,7 @@ class Settings(BaseSettings):
     MIRROR_ML_STRATEGY: str = os.getenv("MIRROR_ML_STRATEGY", "xgb")  # xgb | ql | combo
     MIRROR_ML_MIN_SCORE: float = float(os.getenv("MIRROR_ML_MIN_SCORE", "0.45"))
     MIRROR_ML_MODEL_PATH: str = os.getenv("MIRROR_ML_MODEL_PATH", "models/mirror_ml_selector.pkl")
+    MIRROR_ML_QTABLE_PATH: str = os.getenv("MIRROR_ML_QTABLE_PATH", "models/mirror_ml_qtable.pkl")
     MIRROR_ML_MAX_AGE_DAYS: int = int(os.getenv("MIRROR_ML_MAX_AGE_DAYS", "14"))
 
     # Exit logic
@@ -742,7 +743,7 @@ class Settings(BaseSettings):
     # S121: Externalized hardcoded values
     WEATHER_ALPHA_DECAY_HALF_LIFE_S: float = float(os.getenv("WEATHER_ALPHA_DECAY_HALF_LIFE_S", "1800"))
     WEATHER_NBM_BOOST: float = float(os.getenv("WEATHER_NBM_BOOST", "1.3"))
-    WEATHER_COMBINED_BOOST_CAP: float = float(os.getenv("WEATHER_COMBINED_BOOST_CAP", "2.0"))
+    # NOTE: WEATHER_COMBINED_BOOST_CAP defined above at S122 (1.5). Do not duplicate here.
     # S121: Model freshness sizing — scale by NWP model age (hours since last init)
     WEATHER_MODEL_FRESH_HOURS: float = float(os.getenv("WEATHER_MODEL_FRESH_HOURS", "2.0"))
     WEATHER_MODEL_STALE_HOURS: float = float(os.getenv("WEATHER_MODEL_STALE_HOURS", "8.0"))
@@ -755,9 +756,14 @@ class Settings(BaseSettings):
     WEATHER_CONFIDENCE_CAL_MIN_SAMPLES: int = int(os.getenv("WEATHER_CONFIDENCE_CAL_MIN_SAMPLES", "200"))
 
     # S124: Lead-time spread inflation for probability engine (default OFF)
-    # Widens effective_std at longer lead times to reduce overconfidence.
-    # With 0.10: 24h→×1.00, 48h→×1.04, 72h→×1.07, 120h→×1.12, 168h→×1.16
+    # S126: Two-component spread inflation to reduce overconfidence.
+    # BASE applies uniformly at all lead times (fixes short-lead overconfidence).
+    # FACTOR adds sqrt(lead_days)-scaled inflation for longer forecasts.
+    # With base=0.15, factor=0.10: 24h→×1.15, 48h→×1.19, 72h→×1.22, 120h→×1.27
+    WEATHER_SPREAD_INFLATION_BASE: float = float(os.getenv("WEATHER_SPREAD_INFLATION_BASE", "0.0"))
     WEATHER_SPREAD_INFLATION_FACTOR: float = float(os.getenv("WEATHER_SPREAD_INFLATION_FACTOR", "0.0"))
+    # S126: ISO-8601 start date for auto-decay (10%/day, hard zero at day 23)
+    WEATHER_SPREAD_INFLATION_START: str = os.getenv("WEATHER_SPREAD_INFLATION_START", "")
 
     # Scan intervals (seconds)
     SCAN_INTERVAL_ENSEMBLE: int = int(os.getenv("SCAN_INTERVAL_ENSEMBLE", "60"))
@@ -1052,7 +1058,7 @@ class Settings(BaseSettings):
 
     # --- Edge / confidence thresholds ---
     ESPORTS_MIN_EDGE: float = float(os.getenv("ESPORTS_MIN_EDGE", "0.05"))
-    ESPORTS_MIN_CONFIDENCE: float = float(os.getenv("ESPORTS_MIN_CONFIDENCE", "0.52"))
+    ESPORTS_MIN_CONFIDENCE: float = float(os.getenv("ESPORTS_MIN_CONFIDENCE", "0.20"))  # S127: lowered for signal_quality dampening
     ESPORTS_EGM_D: float = float(os.getenv("ESPORTS_EGM_D", "1.5"))  # Extremization factor for EGM blend
     ESPORTS_SERIES_MIN_EDGE: float = float(os.getenv("ESPORTS_SERIES_MIN_EDGE", "0.10"))
     ESPORTS_SERIES_REVERSE_SWEEP_FLOOR: float = float(os.getenv("ESPORTS_SERIES_REVERSE_SWEEP_FLOOR", "0.05"))
@@ -1160,7 +1166,7 @@ class Settings(BaseSettings):
     ESPORTS_ENTRY_WINDOW_HOURS: float = float(os.getenv("ESPORTS_ENTRY_WINDOW_HOURS", "12.0"))
 
     # --- Monitoring halt threshold (Brier score above this → halt trading for game) ---
-    ESPORTS_BRIER_HALT_THRESHOLD: float = float(os.getenv("ESPORTS_BRIER_HALT_THRESHOLD", "1.0"))
+    ESPORTS_BRIER_HALT_THRESHOLD: float = float(os.getenv("ESPORTS_BRIER_HALT_THRESHOLD", "0.30"))  # S127: lowered to actually halt bad games
 
     # --- Per-game Kelly multiplier thresholds ---
     ESPORTS_KELLY_BRIER_PENALTY: float = float(os.getenv("ESPORTS_KELLY_BRIER_PENALTY", "0.25"))

@@ -1,4 +1,5 @@
 import asyncio
+import os
 import time
 from typing import Optional, Dict, Any, List
 from structlog import get_logger
@@ -688,7 +689,7 @@ class BaseEngine:
                     "max_daily_loss": 0.05,  # 5%
                     "max_weekly_loss": 0.15,  # 15%
                     "cooldown_hours": 24,
-                    "starting_capital": 10000.0  # Default, should be set from portfolio
+                    "starting_capital": float(getattr(settings, "TOTAL_CAPITAL", 20000.0))
                 }
             )
             
@@ -755,7 +756,7 @@ class BaseEngine:
             self.historical_data_warehouse = HistoricalDataWarehouse(db=self.db)
             
             self.paper_trading = PaperTradingEngine(
-                initial_capital=getattr(settings, 'PAPER_TRADING_CAPITAL', 10000.0),
+                initial_capital=getattr(settings, 'PAPER_TRADING_CAPITAL', 20000.0),
                 db=self.db,
             )
             # K7 FIX: Wire PerformanceTracker into PaperTradingEngine for outcome tracking
@@ -1448,7 +1449,7 @@ class BaseEngine:
         # I58: Pre-populate market index from DB so bots have full metadata from their first scan.
         # Without this, WS messages arriving in the first 30s have no market metadata.
         try:
-            _initial_markets = await self._fetch_tradeable_markets()
+            _initial_markets = await self._fetch_tradeable_markets(None, None, time.monotonic())
             if _initial_markets:
                 self.update_market_index(_initial_markets)
                 logger.info("I58: Market index pre-populated at startup", count=len(_initial_markets))
@@ -1594,7 +1595,7 @@ class BaseEngine:
 
             # 4. Degradation manager with fleet-level tier control
             self.degradation_manager = DegradationManager(
-                total_bots=8,
+                total_bots=14,
                 order_gateway=self.order_gateway,
             )
 
