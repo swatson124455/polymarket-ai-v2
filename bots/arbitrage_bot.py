@@ -931,7 +931,7 @@ class ArbitrageBot(BaseBot):
                 order = await self.place_order(
                     market_id=market_id,
                     token_id=str(token_id),
-                    side="BUY",
+                    side="YES",
                     size=size,
                     price=float(price),
                     confidence=float(confidence),
@@ -1036,7 +1036,7 @@ class ArbitrageBot(BaseBot):
                     order = await self.place_order(
                         market_id=resolved_mid,
                         token_id=str(token_id),
-                        side="BUY",
+                        side="YES",
                         size=size,
                         price=price,
                         confidence=bond_confidence,
@@ -1143,7 +1143,7 @@ class ArbitrageBot(BaseBot):
                             size = min(max_total_risk * complement_weight, self.default_order_size * 2)
                         size = max(size, 1.0)
                         order = await self.place_order(
-                            market_id=resolved_mid, token_id=tid, side="BUY",
+                            market_id=resolved_mid, token_id=tid, side="YES",
                             size=size, price=pr, confidence=confidence,
                         )
                         if not order.get("success"):
@@ -1242,7 +1242,7 @@ class ArbitrageBot(BaseBot):
             order1 = await self.place_order(
                 market_id=str(market1_id),
                 token_id=str(token1),
-                side="BUY",
+                side="YES",
                 size=size,
                 price=float(price1),
                 confidence=float(confidence),
@@ -1251,7 +1251,7 @@ class ArbitrageBot(BaseBot):
                 order2 = await self.place_order(
                     market_id=str(market2_id),
                     token_id=str(token2),
-                    side="BUY",
+                    side="YES",
                     size=size,
                     price=float(price2),
                     confidence=float(confidence),
@@ -1260,7 +1260,7 @@ class ArbitrageBot(BaseBot):
                     order2 = await self.place_order(
                         market_id=str(market2_id),
                         token_id=str(token2),
-                        side="BUY",
+                        side="YES",
                         size=size,
                         price=float(price2),
                         confidence=float(confidence),
@@ -1272,10 +1272,12 @@ class ArbitrageBot(BaseBot):
                         market1=market1_id, market2=market2_id, profit_margin=opportunity.get("profit_margin", 0)
                     )
                 else:
+                    # S129: Emergency exit of leg 1 — use YES side (matching entry)
+                    # since place_order expects YES/NO, not SELL
                     exit1 = await self.place_order(
                         market_id=str(market1_id),
                         token_id=str(token1),
-                        side="SELL",
+                        side="YES",
                         size=size,
                         price=float(price1),
                         confidence=float(confidence),
