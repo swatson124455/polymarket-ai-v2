@@ -44,19 +44,30 @@ class EliteUserDetector:
             async with self.db.get_session() as session:
                 # Update total_trades: count only trades on resolved markets in last year
                 # Only overwrite when we have enough resolved trades; else preserve API stats.
+                # BUG-15 fix: UNION ALL instead of OR-JOIN to allow index usage
                 result = await session.execute(text("""
                     UPDATE users u
                     SET total_trades = COALESCE(trade_counts.cnt, 0)
                     FROM (
-                        -- D4 FIX: Join on both m.id and m.condition_id
-                        SELECT t.user_address, COUNT(*) as cnt
-                        FROM trades t
-                        JOIN markets m ON (t.market_id = CAST(m.id AS TEXT) OR t.market_id = m.condition_id)
-                        WHERE t.user_address IS NOT NULL
-                        AND t.market_id IS NOT NULL
-                        AND m.resolved = TRUE AND m.resolution IN ('YES', 'NO')
-                        AND t.timestamp >= NOW() - INTERVAL '1 day' * :lookback_days
-                        GROUP BY t.user_address
+                        SELECT user_address, COUNT(*) as cnt
+                        FROM (
+                            SELECT DISTINCT t.user_address, t.id
+                            FROM trades t
+                            JOIN markets m ON t.market_id = CAST(m.id AS TEXT)
+                            WHERE t.user_address IS NOT NULL
+                            AND t.market_id IS NOT NULL
+                            AND m.resolved = TRUE AND m.resolution IN ('YES', 'NO')
+                            AND t.timestamp >= NOW() - INTERVAL '1 day' * :lookback_days
+                            UNION
+                            SELECT DISTINCT t.user_address, t.id
+                            FROM trades t
+                            JOIN markets m ON t.market_id = m.condition_id
+                            WHERE t.user_address IS NOT NULL
+                            AND t.market_id IS NOT NULL
+                            AND m.resolved = TRUE AND m.resolution IN ('YES', 'NO')
+                            AND t.timestamp >= NOW() - INTERVAL '1 day' * :lookback_days
+                        ) deduped
+                        GROUP BY user_address
                         HAVING COUNT(*) >= :min_trades
                     ) trade_counts
                     WHERE u.address = trade_counts.user_address
@@ -65,28 +76,47 @@ class EliteUserDetector:
                 trades_updated = result.rowcount
                 
                 # Calculate win_rate from resolved trades in last year
+                # BUG-15 fix: UNION ALL instead of OR-JOIN for win_rate calc
                 wr_result = await session.execute(text("""
                     UPDATE users u
                     SET win_rate = COALESCE(wr.win_rate, 0.5)
                     FROM (
-                        SELECT 
-                            t.user_address,
-                            CASE WHEN COUNT(*) > 0 
-                                THEN SUM(CASE 
+                        SELECT
+                            user_address,
+                            CASE WHEN COUNT(*) > 0
+                                THEN SUM(won::int)::float / COUNT(*)
+                                ELSE 0.5
+                            END as win_rate
+                        FROM (
+                            SELECT DISTINCT ON (t.id) t.user_address, t.id,
+                                CASE
                                     WHEN (t.side = 'YES' AND m.resolution = 'YES') OR (t.side = 'NO' AND m.resolution = 'NO')
                                     OR (t.token_id = m.yes_token_id AND m.resolution = 'YES')
                                     OR (t.token_id = m.no_token_id AND m.resolution = 'NO')
-                                    THEN 1 ELSE 0 END)::float / COUNT(*)
-                                ELSE 0.5 
-                            END as win_rate
-                        FROM trades t
-                        -- D4 FIX: Join on both m.id and m.condition_id
-                        JOIN markets m ON (t.market_id = CAST(m.id AS TEXT) OR t.market_id = m.condition_id)
-                        WHERE t.user_address IS NOT NULL
-                        AND t.market_id IS NOT NULL
-                        AND m.resolved = TRUE AND m.resolution IN ('YES', 'NO')
-                        AND t.timestamp >= NOW() - INTERVAL '1 day' * :lookback_days
-                        GROUP BY t.user_address
+                                    THEN TRUE ELSE FALSE
+                                END as won
+                            FROM trades t
+                            JOIN markets m ON t.market_id = CAST(m.id AS TEXT)
+                            WHERE t.user_address IS NOT NULL
+                            AND t.market_id IS NOT NULL
+                            AND m.resolved = TRUE AND m.resolution IN ('YES', 'NO')
+                            AND t.timestamp >= NOW() - INTERVAL '1 day' * :lookback_days
+                            UNION
+                            SELECT DISTINCT ON (t.id) t.user_address, t.id,
+                                CASE
+                                    WHEN (t.side = 'YES' AND m.resolution = 'YES') OR (t.side = 'NO' AND m.resolution = 'NO')
+                                    OR (t.token_id = m.yes_token_id AND m.resolution = 'YES')
+                                    OR (t.token_id = m.no_token_id AND m.resolution = 'NO')
+                                    THEN TRUE ELSE FALSE
+                                END as won
+                            FROM trades t
+                            JOIN markets m ON t.market_id = m.condition_id
+                            WHERE t.user_address IS NOT NULL
+                            AND t.market_id IS NOT NULL
+                            AND m.resolved = TRUE AND m.resolution IN ('YES', 'NO')
+                            AND t.timestamp >= NOW() - INTERVAL '1 day' * :lookback_days
+                        ) deduped
+                        GROUP BY user_address
                         HAVING COUNT(*) >= :min_trades
                     ) wr
                     WHERE u.address = wr.user_address

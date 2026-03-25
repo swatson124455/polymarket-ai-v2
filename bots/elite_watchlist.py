@@ -186,14 +186,38 @@ class EliteWatchlist:
 
             addr_lower = addr.lower()
             new_addresses.add(addr_lower)
+            _num_trades = int(t.get("totalTrades", t.get("numTrades", t.get("total_trades", 0))) or 0)
             new_data[addr_lower] = {
                 "address": addr,
                 "pnl": pnl,
                 "vol": vol,
                 "efficiency": efficiency,
+                "num_trades": _num_trades,
                 "rank": t.get("rank", 0),
                 "userName": t.get("userName", ""),
             }
+
+        # S113 F3: Supplement num_trades from DB — Data API doesn't return totalTrades,
+        # causing F3 (trade size conviction) guard to always fail (_whale_n=0).
+        if self._db and new_data:
+            try:
+                _addrs_for_counts = [a for a, d in new_data.items() if d.get("num_trades", 0) == 0]
+                if _addrs_for_counts:
+                    _counts = await asyncio.wait_for(
+                        self._db.get_user_trade_counts(_addrs_for_counts, lookback_days=30),
+                        timeout=15.0,
+                    )
+                    _supplemented = 0
+                    for row in _counts:
+                        _addr_l = (row["user_address"] or "").strip().lower()
+                        if _addr_l in new_data:
+                            new_data[_addr_l]["num_trades"] = row["num_trades"]
+                            _supplemented += 1
+                    if _supplemented:
+                        logger.info("watchlist_num_trades_supplemented", count=_supplemented,
+                                    total=len(_addrs_for_counts))
+            except Exception as _nt_err:
+                logger.debug("watchlist num_trades supplement failed: %s", _nt_err)
 
         # M2: Apply inactivity decay — demote leaders who haven't traded recently
         _now_mono = time.monotonic()
@@ -287,6 +311,10 @@ class EliteWatchlist:
         """
         self._events_received += 1
 
+        # S117: Block trades until MirrorBot state is restored from DB
+        if not getattr(self._mirror_bot, '_state_restored', False):
+            return
+
         # 1. Extract user address
         user = data.get("user")
         if not user or not isinstance(user, dict):
@@ -354,15 +382,27 @@ class EliteWatchlist:
         _cutoff = _now_mono - 86400
         self._trader_market_trades[_wash_key] = [t for t in _trades if t[1] > _cutoff]
         _trades = self._trader_market_trades[_wash_key]
-        # Count round-trips (BUY+SELL pairs within 1h window)
+        # BUG-3 fix: prune empty keys to prevent unbounded dict growth
+        if not _trades:
+            del self._trader_market_trades[_wash_key]
+        # Count round-trips (entry+exit pairs within 1h window)
+        # BUG-1 fix: O(n log n) via sorted sells + bisect instead of O(n²)
+        # BUG-2 fix: count unique sell-matched entries to avoid overcounting
         _round_trips = 0
-        _buys = [t for t in _trades if t[0] in ("YES", "NO")]
-        _sells = [t for t in _trades if t[0] == "SELL"]
-        for _b_side, _b_time in _buys:
-            for _s_side, _s_time in _sells:
-                if abs(_b_time - _s_time) <= 3600:  # 1h window
-                    _round_trips += 1
-                    break
+        _entries = sorted([t[1] for t in _trades if t[0] in ("YES", "NO")])
+        _exits = sorted([t[1] for t in _trades if t[0] == "SELL"])
+        if _entries and _exits:
+            import bisect
+            _used_exits = set()
+            for _e_time in _entries:
+                # Find exits within [_e_time - 3600, _e_time + 3600]
+                _lo = bisect.bisect_left(_exits, _e_time - 3600)
+                _hi = bisect.bisect_right(_exits, _e_time + 3600)
+                for _si in range(_lo, _hi):
+                    if _si not in _used_exits:
+                        _used_exits.add(_si)
+                        _round_trips += 1
+                        break
         if _round_trips >= 3 and addr_lower not in self._wash_flagged:
             self._wash_flagged.add(addr_lower)
             logger.warning("wash_trader_flagged", trader=addr[:10],
@@ -385,8 +425,12 @@ class EliteWatchlist:
         confidence = min(0.70, 0.55 + _eff_bonus)
 
         # 8. Execute copy trade
+        # S112: Pass whale's trade USD for F3 conviction signal
+        _whale_trade_usd = size * price  # size=shares from RTDS, price=fill price
         self._copies_attempted += 1
         _start = time.monotonic()
+        # S115: Set scan_start_mono on MirrorBot for RTDS fast-path latency tracking
+        self._mirror_bot._scan_start_mono = _start
         try:
             executed = await self._mirror_bot._execute_mirror_trade(
                 market_id=market_id,
@@ -397,6 +441,7 @@ class EliteWatchlist:
                 trader_address=addr,
                 category=None,
                 source="rtds",
+                whale_trade_usd=_whale_trade_usd,
             )
             _latency_ms = (time.monotonic() - _start) * 1000
 
@@ -475,6 +520,10 @@ class EliteWatchlist:
             "timestamp": 1234567890
         }
         """
+        # S117: Block RTDS trades until MirrorBot state is restored from DB
+        if not getattr(self._mirror_bot, '_state_restored', False):
+            return
+
         # Fast-reject: check proxyWallet against watchlist before any processing
         addr = data.get("proxyWallet")
         if not addr or addr.lower() not in self._watchlist_addresses:

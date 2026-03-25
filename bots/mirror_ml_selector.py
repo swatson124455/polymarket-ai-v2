@@ -88,9 +88,8 @@ class MirrorMLSelector:
             # Stale model guard
             saved_at = payload.get("saved_at", "")
             if saved_at:
-                from datetime import datetime as _dt
                 try:
-                    save_dt = _dt.fromisoformat(saved_at)
+                    save_dt = datetime.fromisoformat(saved_at)
                     age_days = (datetime.now(timezone.utc) - save_dt).days
                     if age_days > self._max_age_days:
                         logger.warning("ml_selector_xgb: model too old (%d days > %d max)",
@@ -123,7 +122,8 @@ class MirrorMLSelector:
     def load_qtable(self, path: Optional[Path] = None) -> bool:
         """Load Q-table from pickle."""
         if path is None:
-            path = Path("models/mirror_ml_qtable.pkl")
+            path = Path(getattr(settings, "MIRROR_ML_QTABLE_PATH",
+                                "models/mirror_ml_qtable.pkl"))
         try:
             if not path.exists():
                 logger.debug("ml_selector_ql: no Q-table at %s", path)
@@ -283,7 +283,7 @@ class MirrorMLSelector:
         if result["ml_score_ql"] is not None:
             # Normalize Q-advantage to [0, 1] range via sigmoid
             q_adv = result["ml_score_ql"]
-            scores.append(1.0 / (1.0 + math.exp(-q_adv)))
+            scores.append(1.0 / (1.0 + math.exp(-max(-500, min(500, q_adv)))))
         if scores:
             result["ml_score_combo"] = round(sum(scores) / len(scores), 4)
 

@@ -278,7 +278,7 @@ class MirrorBot(BaseBot):
                             "size": float(r.size or 0.0),
                             "entry_price": float(r.entry_price or 0.5),
                             "current_price": float(r.current_price or r.entry_price or 0.5),
-                            "traders": set(r.trader_addresses or []),
+                            "traders": set() if not r.trader_addresses or r.trader_addresses in ('{}', '[]', '') else set(r.trader_addresses),
                             "timestamp": ts,
                         }
                         restored += 1
@@ -520,18 +520,26 @@ class MirrorBot(BaseBot):
             except Exception as e:
                 logger.debug("MirrorBot adaptive safety refresh failed: %s", e)
 
-        # M4/B4: Leader reconciliation on scan 3 — run in background to avoid
-        # blocking the scan loop for 30s while Gamma API calls complete
-        if self._scan_count == 3 and not self._recon_done:
-            self._recon_done = True  # Set immediately to prevent re-launch
+        # M4/B4: Leader reconciliation — run periodically in background to avoid
+        # blocking the scan loop for 30s while Gamma API calls complete.
+        # BUG-12 fix: run every 100 scans (~75 min) instead of once on scan 3.
+        # RACE-1 fix: store task ref, check for errors, only mark done on success.
+        _recon_interval = 100
+        _should_recon = (self._scan_count == 3 and not self._recon_done) or (
+            self._recon_done and self._scan_count % _recon_interval == 0)
+        if _should_recon and not getattr(self, '_recon_task_pending', False):
+            self._recon_task_pending = True
 
             async def _bg_recon():
                 try:
                     await asyncio.wait_for(self._reconcile_leader_positions(), timeout=60.0)
+                    self._recon_done = True
                 except asyncio.TimeoutError:
                     logger.warning("mirror_leader_recon timed out (60s, background)")
                 except Exception as e:
-                    logger.warning("mirror_leader_recon error: %s", e)
+                    logger.warning("mirror_leader_recon error: %s", e, exc_info=True)
+                finally:
+                    self._recon_task_pending = False
 
             asyncio.create_task(_bg_recon())
 
@@ -931,7 +939,8 @@ class MirrorBot(BaseBot):
                         original_side=pos["side"],
                         size=f"{pos['size']:.2f}",
                     )
-                    _exit_cost = pos["size"] * pos.get("current_price", pos["entry_price"])
+                    # BUG-13 fix: use actual exit_size and exit_price, not pos["size"]
+                    _exit_cost = exit_size * exit_price
                     self._daily_exposure = max(0.0, self._daily_exposure - _exit_cost)
                     # M1: Decrement category exposure on exit
                     _pos_cat = pos.get("category", "")
