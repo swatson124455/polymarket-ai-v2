@@ -693,6 +693,11 @@ class PaperTradingEngine:
             timestamp=datetime.now(timezone.utc)
         )
         self.trades.append(trade)
+        # S129: Cap in-memory trade list to prevent unbounded growth (~2MB/day).
+        # Older trades are already persisted to paper_trades DB; only recent
+        # entries are needed for in-memory P&L snapshots.
+        if len(self.trades) > 2000:
+            self.trades = self.trades[-1000:]
 
         # S94: Queue DB writes for execution AFTER lock release.
         # In-memory state (cash, positions, pnl) is already mutated above.

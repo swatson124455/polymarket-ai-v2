@@ -768,6 +768,9 @@ class BaseBot(ABC):
                 _corr_id = str(uuid.uuid4())[:8]
                 _bound = logger.bind(correlation_id=_corr_id, bot=self.bot_name)
                 logger.info("Scan cycle starting", bot_name=self.bot_name)
+                # S129: Clear signal metadata from prior cycle — entries not consumed
+                # by a trade are stale. Without this, the dict grows unbounded (~37MB/day).
+                self._pending_signal_meta.clear()
                 self._current_correlation_id = _corr_id
                 self._latency_tracker = _LatencyTracker()
                 self._latency_tracker.mark("scan_start")
