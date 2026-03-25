@@ -399,12 +399,15 @@ class EsportsModelTrainer:
                     continue
                 rows = await collector.get_training_data(db, game)
                 for row in rows:
+                    # S129: Copy before mutation — get_training_data may return
+                    # cached/shared dicts; in-place mutation corrupts cross-game.
+                    row = dict(row)
                     row["_game_id"] = _GAME_IDS[game]
                     row["_game"] = game
-                all_rows.append(rows)
+                    all_rows.append(row)
 
-            # Flatten
-            pooled = [row for rows in all_rows for row in rows]
+            # S129: all_rows is now flat (dicts appended individually with copy)
+            pooled = all_rows
             result["samples"] = len(pooled)
 
             if len(pooled) < 100:

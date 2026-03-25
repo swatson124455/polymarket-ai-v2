@@ -467,7 +467,7 @@ class LearningEngine:
             # M3 FIX: Evict oldest 20% of market keys when dict exceeds 5000 entries.
             # Without eviction, self.patterns grows unbounded (one key per market_id, never removed).
             # With 2700+ markets and growing, this leaks memory monotonically.
-            _MAX_PATTERNS = getattr(settings, "LEARNING_ENGINE_MAX_PATTERNS", 5000) if hasattr(self, '_settings_checked') else 5000
+            _MAX_PATTERNS = getattr(settings, "LEARNING_ENGINE_MAX_PATTERNS", 5000)
             _STRUCTURAL_KEYS = {"user_performance", "market_types", "price_ranges", "time_to_resolution"}
             if len(self.patterns) >= _MAX_PATTERNS:
                 _evict_count = max(1, len(self.patterns) // 5)  # evict 20%
