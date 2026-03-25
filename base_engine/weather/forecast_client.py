@@ -1095,7 +1095,7 @@ class WeatherForecastClient:
                 station.latitude, station.longitude, station.station_id, target_date,
             )
             if station.temp_unit.upper() == "F"
-            else asyncio.sleep(0, result=None)  # no-op coroutine for non-US stations
+            else asyncio.sleep(0)  # no-op coroutine for non-US stations
         )
         # Local hi-res model override for international stations (same role as NBM for US)
         local_task = (
@@ -1104,7 +1104,7 @@ class WeatherForecastClient:
                 station.local_model, target_date,
             )
             if station.local_model
-            else asyncio.sleep(0, result=None)
+            else asyncio.sleep(0)  # no-op
         )
         det_data, ens_data, nbm_high, local_high = await asyncio.gather(
             det_task, ens_task, nbm_task, local_task, return_exceptions=True
@@ -1247,7 +1247,7 @@ class WeatherForecastClient:
         # Model spread
         if len(ensemble_members) > 1:
             mean = sum(ensemble_members) / len(ensemble_members)
-            variance = sum((x - mean) ** 2 for x in ensemble_members) / len(ensemble_members)
+            variance = sum((x - mean) ** 2 for x in ensemble_members) / max(len(ensemble_members) - 1, 1)
             model_spread = variance ** 0.5
         else:
             model_spread = 2.0 if station.temp_unit == "F" else 1.1

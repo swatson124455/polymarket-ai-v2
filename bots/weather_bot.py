@@ -21,6 +21,7 @@ SWOT upgrades applied:
 """
 
 import asyncio
+import copy
 import json
 import time
 from datetime import date, datetime, timezone
@@ -54,6 +55,206 @@ from base_engine.data.daily_counter import increment_counter as _inc_daily, rest
 from config.settings import settings
 
 logger = get_logger()
+
+
+# ---------------------------------------------------------------------------
+# Confidence calibrator — Platt + Isotonic pipeline for Kelly sizing
+# ---------------------------------------------------------------------------
+_CONF_CAL_MIN_SAMPLES = 200  # minimum resolved trades to fit
+
+
+class WeatherConfidenceCalibrator:
+    """Two-stage Platt (temperature scaling) + Isotonic regression calibrator.
+
+    Fits on WeatherBot trade_events: (entry confidence, realized_pnl > 0).
+    Stage 1: Platt temperature scaling — compresses overconfident/underconfident
+             global shape via sigmoid(logit(p) / T).
+    Stage 2: Isotonic regression on Platt residuals — catches local kinks
+             that the logistic curve misses.
+    """
+
+    def __init__(self) -> None:
+        self._temperature: float = 1.0
+        self._isotonic: Any = None  # sklearn IsotonicRegression
+        self._fitted: bool = False
+        self._n_samples: int = 0
+
+    # -- static math helpers (self-contained, no external coupling) ----------
+
+    @staticmethod
+    def _sigmoid(x: "np.ndarray") -> "np.ndarray":
+        """Numerically stable sigmoid."""
+        import numpy as np
+        return np.where(
+            x >= 0,
+            1.0 / (1.0 + np.exp(-x)),
+            np.exp(x) / (1.0 + np.exp(x)),
+        )
+
+    @staticmethod
+    def _logit(p: "np.ndarray") -> "np.ndarray":
+        import numpy as np
+        p_clip = np.clip(p, 1e-7, 1.0 - 1e-7)
+        return np.log(p_clip / (1.0 - p_clip))
+
+    @staticmethod
+    def _platt_transform(raw: "np.ndarray", temperature: float) -> "np.ndarray":
+        """Apply temperature scaling: sigmoid(logit(p) / T)."""
+        logits = WeatherConfidenceCalibrator._logit(raw)
+        scaled = logits / max(temperature, 0.1)
+        return WeatherConfidenceCalibrator._sigmoid(scaled)
+
+    # -- fitting -------------------------------------------------------------
+
+    async def fit_from_trade_events(
+        self, db: Any, window_days: int = 30, min_samples: int = _CONF_CAL_MIN_SAMPLES,
+    ) -> bool:
+        """Fit Platt + Isotonic from WeatherBot resolved trade_events.
+
+        Returns True if fitted, False if insufficient data (identity passthrough).
+        """
+        if not db:
+            return False
+        try:
+            import numpy as np
+            from sqlalchemy import text
+
+            async with db.get_session() as session:
+                result = await session.execute(text("""
+                    WITH entries AS (
+                        SELECT DISTINCT ON (market_id) market_id, confidence
+                        FROM trade_events
+                        WHERE bot_name = 'WeatherBot' AND event_type = 'ENTRY'
+                          AND event_time >= NOW() - INTERVAL '1 day' * :window_days
+                          AND confidence IS NOT NULL
+                        ORDER BY market_id, event_time
+                    )
+                    SELECT e.confidence,
+                           CASE WHEN r.realized_pnl > 0 THEN 1.0 ELSE 0.0 END AS outcome
+                    FROM trade_events r
+                    JOIN entries e ON e.market_id = r.market_id
+                    WHERE r.bot_name = 'WeatherBot' AND r.event_type = 'RESOLUTION'
+                      AND r.realized_pnl IS NOT NULL
+                """), {"window_days": window_days})
+                rows = result.fetchall()
+
+            if len(rows) < min_samples:
+                logger.info(
+                    "weatherbot_confidence_cal_insufficient_data",
+                    n=len(rows), need=min_samples,
+                )
+                return False
+
+            confidences = np.array([float(r[0]) for r in rows], dtype=np.float64)
+            outcomes = np.array([float(r[1]) for r in rows], dtype=np.float64)
+
+            # Stage 1: Fit Platt temperature via minimize_scalar on log-loss
+            temperature = self._fit_platt(confidences, outcomes)
+
+            # Stage 2: Fit Isotonic on Platt-calibrated residuals
+            platt_cal = self._platt_transform(confidences, temperature)
+            isotonic = self._fit_isotonic(platt_cal, outcomes)
+
+            # Validate: calibrated Brier should not be worse than raw
+            raw_brier = float(np.mean((confidences - outcomes) ** 2))
+            if isotonic is not None:
+                final_cal = isotonic.predict(platt_cal)
+            else:
+                final_cal = platt_cal
+            cal_brier = float(np.mean((final_cal - outcomes) ** 2))
+
+            if cal_brier > raw_brier + 0.005:
+                # Calibration made things worse — don't use it
+                logger.warning(
+                    "weatherbot_confidence_cal_rejected",
+                    raw_brier=round(raw_brier, 4),
+                    cal_brier=round(cal_brier, 4),
+                    temperature=round(temperature, 3),
+                    n=len(rows),
+                )
+                self._fitted = False
+                return False
+
+            self._temperature = temperature
+            self._isotonic = isotonic
+            self._fitted = True
+            self._n_samples = len(rows)
+
+            logger.info(
+                "weatherbot_confidence_cal_fitted",
+                temperature=round(temperature, 3),
+                isotonic_fitted=isotonic is not None,
+                raw_brier=round(raw_brier, 4),
+                cal_brier=round(cal_brier, 4),
+                brier_improvement=round(raw_brier - cal_brier, 4),
+                n_samples=len(rows),
+                window_days=window_days,
+            )
+            return True
+
+        except Exception as exc:
+            logger.debug("weatherbot_confidence_cal_fit_failed", error=str(exc))
+            return False
+
+    @classmethod
+    def _fit_platt(cls, confidences: "np.ndarray", outcomes: "np.ndarray") -> float:
+        """Fit temperature T that minimizes log-loss on (confidence, outcome) pairs."""
+        import numpy as np
+        from scipy.optimize import minimize_scalar
+
+        def neg_log_loss(t: float) -> float:
+            p_cal = cls._platt_transform(confidences, t)
+            p_cal = np.clip(p_cal, 1e-7, 1.0 - 1e-7)
+            ll = outcomes * np.log(p_cal) + (1.0 - outcomes) * np.log(1.0 - p_cal)
+            return -float(np.mean(ll))
+
+        result = minimize_scalar(neg_log_loss, bounds=(0.3, 3.0), method="bounded")
+        return float(result.x)
+
+    @staticmethod
+    def _fit_isotonic(
+        platt_calibrated: "np.ndarray", outcomes: "np.ndarray",
+    ) -> Any:
+        """Fit isotonic regression on Platt-calibrated values. Returns fitted model or None."""
+        try:
+            from sklearn.isotonic import IsotonicRegression
+            iso = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
+            iso.fit(platt_calibrated, outcomes)
+            return iso
+        except Exception:
+            return None
+
+    # -- inference -----------------------------------------------------------
+
+    def calibrate(self, raw_confidence: float) -> float:
+        """Apply Platt → Isotonic calibration. Identity if not fitted."""
+        if not self._fitted:
+            return raw_confidence
+        try:
+            import numpy as np
+            p = np.array([raw_confidence], dtype=np.float64)
+            # Stage 1: Platt
+            p_platt = self._platt_transform(p, self._temperature)
+            # Stage 2: Isotonic
+            if self._isotonic is not None:
+                result = self._isotonic.predict(p_platt)[0]
+            else:
+                result = p_platt[0]
+            return float(np.clip(result, 0.01, 0.99))
+        except Exception:
+            return raw_confidence
+
+    @property
+    def is_fitted(self) -> bool:
+        return self._fitted
+
+    @property
+    def temperature(self) -> float:
+        return self._temperature
+
+    @property
+    def n_samples(self) -> int:
+        return self._n_samples
 
 
 class WeatherBot(BaseBot):
@@ -157,6 +358,10 @@ class WeatherBot(BaseBot):
         # P1: calibration state
         self._calibration_last_loaded: float = 0.0
         self._calibration_reload_interval: float = float(getattr(settings, "WEATHER_CALIBRATION_RELOAD_SECS", 21600.0))
+
+        # S123: Platt + Isotonic confidence calibrator (fits from trade_events)
+        self._confidence_calibrator = WeatherConfidenceCalibrator()
+        self._confidence_calibrator_fitted: bool = False
 
         # W4: Monitoring thresholds — structured Brier/drawdown alerts
         self._monitoring_halt: bool = False  # True = stop trading until Brier improves
@@ -838,7 +1043,7 @@ class WeatherBot(BaseBot):
                                 _fb_row = (await _fb_sess.execute(_fb_text("""
                                     SELECT m.question, p.size, p.entry_price
                                     FROM positions p
-                                    JOIN markets m ON p.market_id = m.condition_id
+                                    JOIN markets m ON (p.market_id = CAST(m.id AS TEXT) OR p.market_id = m.condition_id)
                                     WHERE p.market_id = :mid
                                       AND (p.source_bot = 'WeatherBot' OR p.bot_id = 'WeatherBot')
                                     LIMIT 1
@@ -907,7 +1112,7 @@ class WeatherBot(BaseBot):
         _now_mono = time.monotonic()
         if (self._discovery_cache is not None
                 and (_now_mono - self._discovery_cache[0]) < self._effective_discovery_ttl()):
-            weather_markets, groups = self._discovery_cache[1], self._discovery_cache[2]
+            weather_markets, groups = copy.deepcopy(self._discovery_cache[1]), copy.deepcopy(self._discovery_cache[2])
         else:
             # 1. Fetch weather markets via Gamma API tag_slug=temperature (PRIMARY).
             #    The standard ingestion pipeline misses weather events — they have
@@ -1531,7 +1736,7 @@ class WeatherBot(BaseBot):
         # Compute mean and std of ensemble
         mean_wind = sum(ensemble) / len(ensemble)
         if len(ensemble) > 1:
-            variance = sum((x - mean_wind) ** 2 for x in ensemble) / len(ensemble)
+            variance = sum((x - mean_wind) ** 2 for x in ensemble) / (len(ensemble) - 1)
             std_wind = max(variance ** 0.5, 0.5)  # Floor at 0.5 to avoid division by zero
         else:
             std_wind = 5.0  # Conservative default
@@ -1896,7 +2101,12 @@ class WeatherBot(BaseBot):
             # NO:  confidence = 1 - model_prob (P of NOT outcome) — correct for Kelly + risk manager
             _raw_conf = e["model_prob"] if side == "YES" else (1.0 - e["model_prob"])
             base_confidence = min(0.95, _raw_conf)
-            effective_confidence = base_confidence  # S121: removed 0.5x boundary penalty
+            # S123: Apply Platt + Isotonic calibration if fitted.
+            # Compresses overconfident model outputs toward empirical win rates.
+            if self._confidence_calibrator_fitted:
+                effective_confidence = self._confidence_calibrator.calibrate(base_confidence)
+            else:
+                effective_confidence = base_confidence
 
             if boundary_risk:
                 logger.debug(
@@ -1926,6 +2136,7 @@ class WeatherBot(BaseBot):
                 "side": side,
                 "price": price,
                 "confidence": effective_confidence,
+                "raw_confidence": base_confidence,
                 "model_prob": e["model_prob"],
                 "edge": e["edge"],
                 "abs_edge": e["abs_edge"],
@@ -2481,6 +2692,43 @@ class WeatherBot(BaseBot):
             except Exception as exc:
                 logger.warning("weatherbot_kelly_sizing_failed", error=str(exc))
                 _raw_size = self._default_size
+
+        # S124: Negative-EV gate — if calibrated confidence < price, the trade is
+        # negative EV regardless of sizing path (Kelly or S-T). The S-T allocator
+        # distributes budget by edge ratio and doesn't check Kelly's EV signal,
+        # so _raw_size can be large even when confidence < price. Block both paths.
+        if opp["confidence"] < opp["price"] or _raw_size <= 0:
+            logger.info(
+                "weatherbot_shadow_entry",
+                market_id=opp["market_id"], side=opp["side"],
+                price=round(opp["price"], 4),
+                confidence=round(opp["confidence"], 4),
+                raw_confidence=round(opp.get("raw_confidence", opp["confidence"]), 4),
+                edge=round(opp.get("edge", 0), 4),
+                raw_size_usd=round(_raw_size, 2), combined_boost=round(combined_boost, 3),
+                city=opp.get("city", ""),
+                reason="negative_ev" if opp["confidence"] < opp["price"] else "zero_kelly",
+            )
+            try:
+                _shadow_reason = "negative_ev" if opp["confidence"] < opp["price"] else "zero_kelly"
+                await self.base_engine.db.insert_trade_event(
+                    bot_name=self.bot_name, event_type="SHADOW_ENTRY",
+                    market_id=opp["market_id"], side=opp["side"],
+                    price=opp["price"], size=_raw_size / max(opp["price"], 0.01),
+                    confidence=opp["confidence"],
+                    event_data={
+                        "city": opp.get("city", ""),
+                        "raw_size_usd": round(_raw_size, 2),
+                        "raw_confidence": round(opp.get("raw_confidence", opp["confidence"]), 4),
+                        "combined_boost": round(combined_boost, 3),
+                        "lead_time_hours": round(opp.get("lead_time_hours", 0), 1),
+                        "reason": _shadow_reason,
+                    },
+                )
+            except Exception:
+                pass  # best-effort
+            return False
+
         size = max(_min_trade, _raw_size)
 
         # S97: Lock-guarded exposure reservation — re-read under lock for parallel safety
@@ -2518,6 +2766,7 @@ class WeatherBot(BaseBot):
                                 "city": opp.get("city", ""),
                                 "raw_size_usd": round(_raw_size, 2),
                                 "combined_boost": round(combined_boost, 3),
+                                "lead_time_hours": round(opp.get("lead_time_hours", 0), 1),
                                 "reason": "sub_min_trade" if _raw_size < _min_trade else "exposure_cap",
                             },
                         )
@@ -2595,12 +2844,10 @@ class WeatherBot(BaseBot):
                 opp.get("confidence", opp["model_prob"]),
                 opp.get("market_type", "temperature"),
             )
-            # Cooldown guard: prevent re-entry on same market within 15 min.
-            # _recently_exited is checked in _analyze_group(); must be populated here
-            # because the position_manager (not weather_bot) triggers SELL exits,
-            # so without this the dict stays empty and the cooldown never fires.
-            self._recently_exited[opp["market_id"]] = time.monotonic()
-            await self._save_exit_to_redis(opp["market_id"])
+            # S127: Entry-side cooldown REMOVED — cooldown must start at EXIT, not
+            # ENTRY.  Exit-side set lives at line ~1015 (PM exit detection).  The old
+            # entry-side set caused the 4h cooldown to expire before the position
+            # actually closed, defeating whipsaw protection.
             # S99: Clear fill-failure tracker on success
             self._fill_fail_tracker.pop(opp["market_id"], None)
             return True
@@ -3106,7 +3353,7 @@ class WeatherBot(BaseBot):
                 result = await session.execute(text("""
                     SELECT p.market_id, m.question, p.size, p.entry_price
                     FROM positions p
-                    JOIN markets m ON p.market_id = m.condition_id
+                    JOIN markets m ON (p.market_id = CAST(m.id AS TEXT) OR p.market_id = m.condition_id)
                     WHERE (p.source_bot = 'WeatherBot' OR p.bot_id = 'WeatherBot')
                       AND p.status = 'open'
                 """))
@@ -4200,6 +4447,20 @@ class WeatherBot(BaseBot):
             )
         except Exception as exc:
             logger.debug("weatherbot_calibration_reload_failed", error=str(exc))
+
+        # S123: Refit Platt + Isotonic confidence calibrator from trade_events
+        _conf_cal_enabled = getattr(settings, "WEATHER_CONFIDENCE_CAL_ENABLED", True)
+        if _conf_cal_enabled:
+            try:
+                _conf_cal_window = int(getattr(settings, "WEATHER_CONFIDENCE_CAL_WINDOW_DAYS", 30))
+                _conf_cal_min = int(getattr(settings, "WEATHER_CONFIDENCE_CAL_MIN_SAMPLES", _CONF_CAL_MIN_SAMPLES))
+                db = getattr(self.base_engine, "db", None)
+                fitted = await self._confidence_calibrator.fit_from_trade_events(
+                    db, window_days=_conf_cal_window, min_samples=_conf_cal_min,
+                )
+                self._confidence_calibrator_fitted = fitted
+            except Exception as cal_exc:
+                logger.debug("weatherbot_confidence_cal_refit_failed", error=str(cal_exc))
 
     async def _check_monitoring_thresholds(self) -> None:
         """W4: Check Brier score and drawdown against structured thresholds.

@@ -102,7 +102,7 @@ class MetarMonitor:
 
     async def _poll_all_stations(self) -> None:
         """Fetch METAR for all stations with same-day markets."""
-        today_str = date.today().isoformat()
+        today_str = datetime.now(timezone.utc).date().isoformat()
 
         # Filter to US stations only (METAR via AWC is US-focused)
         us_stations = [s for s in self._stations if s.temp_unit == "F" and s.station_id.startswith("K")]
@@ -183,7 +183,7 @@ class MetarMonitor:
                                     try:
                                         self._priority_queue.put_nowait({
                                             "station": station,
-                                            "target_date": date.today(),
+                                            "target_date": datetime.now(timezone.utc).date(),
                                             "observed_max": temp,
                                             "boundary": boundary,
                                             "source": "metar_boundary_cross",
@@ -215,7 +215,7 @@ class MetarMonitor:
 
     def get_running_max(self, station_id: str) -> Optional[float]:
         """Get today's running max temperature for a station."""
-        today_str = date.today().isoformat()
+        today_str = datetime.now(timezone.utc).date().isoformat()
         obs = self._observations.get(station_id)
         if obs and obs[0] == today_str:
             return obs[1]
@@ -229,7 +229,7 @@ class MetarMonitor:
         """
         if self._redis_cache is None or not getattr(self._redis_cache, "redis", None):
             return
-        today_str = date.today().isoformat()
+        today_str = datetime.now(timezone.utc).date().isoformat()
         saved = 0
         for station_id, (obs_date, max_temp) in self._observations.items():
             if obs_date != today_str:
@@ -254,7 +254,7 @@ class MetarMonitor:
             return
         try:
             keys = await self._redis_cache.redis.keys(f"{_REDIS_KEY_PREFIX}*")
-            today_str = date.today().isoformat()
+            today_str = datetime.now(timezone.utc).date().isoformat()
             restored = 0
             for key in keys:
                 try:
