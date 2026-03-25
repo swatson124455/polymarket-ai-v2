@@ -1067,7 +1067,7 @@ class SignalIngestionService:
                                             "source_name": f"sent_div:{div['topic']}",
                                             "direction": direction,
                                             "confidence": 0.6,
-                                            "raw_text": f"Sentiment divergence ({div['divergence_type']}): {div['topic']} shift={div.get('shift', 0):.2f}",
+                                            "raw_text": f"Sentiment divergence ({div['type']}): {div['topic']} shift={div.get('sentiment_shift', 0):.2f}",
                                             "time_sensitivity": "hours",
                                             "is_breaking": False,
                                             "expires_at": datetime.now(timezone.utc) + timedelta(hours=6),

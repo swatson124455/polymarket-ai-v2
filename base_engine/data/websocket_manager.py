@@ -289,7 +289,9 @@ class WebSocketManager:
         price_changes = data.get("price_changes") or []
         for pc in price_changes if isinstance(price_changes, list) else []:
             token_id = pc.get("token_id") or pc.get("asset_id")
-            new_price = pc.get("best_bid") or pc.get("best_ask") or pc.get("price")
+            _bid = pc.get("best_bid")
+            _ask = pc.get("best_ask")
+            new_price = _bid if _bid is not None else (_ask if _ask is not None else pc.get("price"))
             if token_id and new_price is not None:
                 await self._handle_price_change_one(market_id, token_id, float(new_price), _ws_recv_t=_ws_recv_t)
         token_id = data.get("token_id") or data.get("asset_id")

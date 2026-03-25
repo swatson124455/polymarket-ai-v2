@@ -48,6 +48,10 @@ class PaginatedQuery:
         count_result = await session.execute(text(count_query), params)
         total = count_result.scalar() or 0
         
+        # Sanitize order_by — only allow simple column+direction patterns
+        import re
+        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*(\s+(ASC|DESC))?$', order_by.strip(), re.IGNORECASE):
+            order_by = "timestamp DESC"
         # Get paginated results
         paginated_query = f"{query} ORDER BY {order_by} LIMIT :limit OFFSET :offset"
         result = await session.execute(

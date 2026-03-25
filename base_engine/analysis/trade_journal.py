@@ -128,8 +128,7 @@ class TradeJournal:
         
         async with self.db.get_session() as session:
             from sqlalchemy import select, func
-            from datetime import datetime
-            
+
             start = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
             end = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
             

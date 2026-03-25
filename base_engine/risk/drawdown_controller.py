@@ -38,7 +38,7 @@ class DrawdownController:
         self.cooldown_hours = config.get("cooldown_hours", 24)
         self.reduction_steps = config.get("reduction_steps", [0.5, 0.25, 0])
         
-        self.starting_capital = config.get("starting_capital", 10000.0)
+        self.starting_capital = config.get("starting_capital", 20000.0)
         self.last_reset = datetime.now(timezone.utc)
     
     async def check_drawdown_status(
@@ -72,8 +72,9 @@ class DrawdownController:
         if current_pnl is None:
             current_pnl = portfolio.get("realized_pnl_today", 0.0)
 
-        # M3 fix: Use separate weekly P&L if available, otherwise fall back to daily
-        weekly_pnl = portfolio.get("realized_pnl_week", current_pnl)
+        # M3 fix: Use separate weekly P&L if available; default to 0 (not daily)
+        # to avoid the weekly guard being an alias of the daily guard
+        weekly_pnl = portfolio.get("realized_pnl_week", 0.0)
 
         # Calculate drawdowns (positive = losing money)
         daily_drawdown = -current_pnl / starting_capital if starting_capital > 0 else 0.0

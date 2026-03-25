@@ -86,6 +86,11 @@ class PipelineGate:
             col = timestamp_col
             if table == "market_prices":
                 col = "timestamp"
+            # Sanitize table/col to prevent SQL injection
+            import re
+            _ident = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+            if not _ident.match(table) or not _ident.match(col):
+                return f"{table}: invalid identifier"
             async with self.db.get_session() as session:
                 result = await session.execute(
                     text(f"SELECT MAX({col}) FROM {table}")

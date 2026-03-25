@@ -59,7 +59,8 @@ class LiquidityGuardian:
             }
         
         # Calculate available liquidity at each price level
-        if side == "BUY":
+        # Accept both BUY/SELL and YES/NO conventions
+        if side in ("BUY", "YES"):
             levels = book.get("asks", [])
         else:
             levels = book.get("bids", [])
@@ -138,27 +139,28 @@ class LiquidityGuardian:
         if "error" in book:
             return 0.0
 
-        if side == "BUY":
+        _is_buy = side in ("BUY", "YES")
+        if _is_buy:
             levels = book.get("asks", [])
         else:
             levels = book.get("bids", [])
-        
+
         if not levels:
             return 0.0
-        
+
         best_price = float(levels[0].get("price", 0.5))
-        max_price = best_price * (1 + max_slippage_pct) if side == "BUY" else best_price * (1 - max_slippage_pct)
-        
+        max_price = best_price * (1 + max_slippage_pct) if _is_buy else best_price * (1 - max_slippage_pct)
+
         # Calculate how much we can buy/sell before exceeding max_price
         total_size = 0.0
         total_cost = 0.0
-        
+
         for level in levels:
             price = float(level.get("price", 0))
-            
-            if side == "BUY" and price > max_price:
+
+            if _is_buy and price > max_price:
                 break
-            if side == "SELL" and price < max_price:
+            if not _is_buy and price < max_price:
                 break
             
             size = float(level.get("size", 0))

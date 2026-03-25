@@ -83,6 +83,11 @@ class DataArchival:
             cutoff = self.warm_cutoff
             
             # Get partition months to archive
+            import re
+            _ident = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+            if not _ident.match(table_name) or not _ident.match(timestamp_column):
+                logger.warning("data_archival: invalid identifier", table=table_name, col=timestamp_column)
+                return
             partition_query = text(f"""
                 SELECT DISTINCT partition_month
                 FROM {table_name}

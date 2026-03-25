@@ -66,8 +66,7 @@ class MarketRegimeDetector:
         
         async with self.db.get_session() as session:
             from sqlalchemy import text
-            from datetime import datetime, timezone, timedelta
-            
+
             cutoff_date = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).replace(tzinfo=None)
             
             # Get price history

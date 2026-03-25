@@ -477,9 +477,11 @@ class RiskManager:
                 )
                 total_exposure = total_exposure_query.scalar() or 0.0
                 max_total = getattr(settings, "RISK_MAX_TOTAL_EXPOSURE_USD", 500.0)
-                # WeatherBot: apply higher bot-specific cap (DB fallback path)
+                # Bot-specific caps (DB fallback path)
                 if bot_name == "WeatherBot":
                     max_total = getattr(settings, "WEATHER_MAX_TOTAL_EXPOSURE_USD", max_total)
+                elif bot_name in ("EsportsBot", "EsportsLiveBot"):
+                    max_total = getattr(settings, "ESPORTS_MAX_TOTAL_EXPOSURE_USD", max_total)
                 if total_exposure + position_value > max_total:
                     checks["allowed"] = False
                     checks["reasons"].append(

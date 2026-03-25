@@ -137,7 +137,7 @@ class WhaleTracker:
                 return
             market_id = str(record.get("market_id") or record.get("market") or "")
             user_address = str(record.get("user_address") or "")
-            side = str(record.get("side") or "BUY")
+            side = str(record.get("side") or "YES")
             logger.info(
                 "Whale fast-path detected",
                 market_id=market_id,
@@ -301,9 +301,12 @@ class WhaleTracker:
                             "HAVING COUNT(*) >= 5"
                         ))).fetchall()
                     pipe = self.cache.redis.pipeline()
+                    _seen_cats = set()
                     for row in cat_rows:
                         pipe.hset(f"trader_accuracy:{row.category}", row.user_address, round(float(row.win_rate), 4))
-                    pipe.expire(f"trader_accuracy:{row.category}", 86400)  # 24h TTL
+                        _seen_cats.add(row.category)
+                    for _cat in _seen_cats:
+                        pipe.expire(f"trader_accuracy:{_cat}", 86400)  # 24h TTL
                     await pipe.execute()
                     logger.info("Whale: wrote category accuracy for %d trader×category pairs", len(cat_rows))
                 except Exception as _e:

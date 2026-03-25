@@ -131,11 +131,11 @@ class DomainCalibrator:
                     JOIN markets m ON pl.market_id = m.id
                     WHERE pl.resolution IS NOT NULL
                       AND LOWER(m.market_category) = :category
-                      AND pl.prediction_time > NOW() - INTERVAL ':days days'
+                      AND pl.prediction_time > NOW() - INTERVAL '1 day' * :n_days
                     ORDER BY pl.prediction_time DESC
                     LIMIT 5000
-                """.replace(":days", str(n_days)).replace(":category", f"'{category}'")),
-                    {"category": category})
+                """),
+                    {"category": category.lower(), "n_days": int(n_days)})
                 rows = r.fetchall()
 
             if len(rows) < MIN_RESOLVED_FOR_CALIBRATION:

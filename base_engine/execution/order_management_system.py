@@ -240,7 +240,7 @@ class OrderManagementSystem:
         if not order:
             return
         
-        order["filled"] = filled
+        order["filled"] = order.get("filled", 0) + filled
         if order["avg_fill_price"] is None:
             order["avg_fill_price"] = price
         else:

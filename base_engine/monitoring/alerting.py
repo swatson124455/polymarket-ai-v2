@@ -450,10 +450,10 @@ class AlertingSystem:
                            COUNT(*) AS trades,
                            COALESCE(SUM(realized_pnl), 0) AS total_pnl,
                            COUNT(*) FILTER (WHERE realized_pnl > 0) AS wins
-                    FROM paper_trades
-                    WHERE created_at >= CURRENT_DATE
+                    FROM trade_events
+                    WHERE event_time >= CURRENT_DATE
                       AND realized_pnl IS NOT NULL
-                      AND side IN ('YES', 'NO')
+                      AND event_type IN ('EXIT', 'RESOLUTION')
                     GROUP BY bot_name
                     ORDER BY bot_name
                 """))

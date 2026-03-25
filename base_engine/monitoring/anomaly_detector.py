@@ -4,6 +4,7 @@ Anomaly detector (#35) - flag unusual price/volume activity.
 Uses simple z-score or IQR on recent data; writes to data_quality_issues
 and optionally calls a webhook or callback.
 """
+import asyncio
 from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Dict, List, Optional
 from structlog import get_logger

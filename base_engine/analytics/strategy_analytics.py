@@ -66,8 +66,7 @@ class StrategyAnalytics:
         
         try:
             from sqlalchemy import select, func, and_
-            from datetime import datetime, timedelta, timezone
-            
+
             cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
             
             async with self.db.get_session() as session:

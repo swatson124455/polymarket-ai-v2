@@ -79,13 +79,13 @@ class ArbitrageTransactionCoordinator:
             return False, "Could not reserve NO"
         try:
             yes_order = await self.place_order_fn(
-                market_id, yes_token_id, "BUY", size, yes_price, confidence
+                market_id, yes_token_id, "YES", size, yes_price, confidence
             )
             if not yes_order.get("success"):
                 await self._release_both(market_id)
                 return False, yes_order.get("error", "YES order failed")
             no_order = await self.place_order_fn(
-                market_id, no_token_id, "BUY", size, no_price, confidence
+                market_id, no_token_id, "NO", size, no_price, confidence
             )
             if no_order.get("success"):
                 return True, None
