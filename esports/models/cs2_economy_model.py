@@ -89,6 +89,15 @@ _ROUND_FEATURE_DEFAULTS = {
     "team_strength_diff": 0.0,
 }
 
+PREGAME_FEATURES = [
+    "team_strength_diff",
+    "matchup_uncertainty",
+    "rd_asymmetry",
+    "team_a_volatility",
+    "team_b_volatility",
+    "best_of",
+]
+
 MODEL_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "data", "esports_cs2_model.pkl"
 )
@@ -103,8 +112,11 @@ class CS2EconomyModel:
     Tier 3 (Match): Given map probs + series score, P(team_a wins match)
     """
 
+    FEATURE_NAMES = PREGAME_FEATURES  # For _onnx_predict_game compatibility
+
     def __init__(self) -> None:
         self._round_model = None
+        self._pregame_model = None  # XGBoost on 6 Glicko-2 features (pre-game)
         self._calibrator = None  # IsotonicRegression for probability calibration
         self._is_trained = False
         # Adaptive blend: rolling Brier errors for Glicko-2 vs ML components
@@ -113,6 +125,80 @@ class CS2EconomyModel:
     @property
     def is_trained(self) -> bool:
         return self._is_trained
+
+    # ── Pre-game: Glicko-2 features (no economy data) ─────────────────
+
+    def predict_pregame(self, game_state: Dict[str, Any]) -> float:
+        """Predict P(team_a wins match) from Glicko-2 features (pre-game).
+
+        Uses same 6-feature pattern as Valorant/Dota2 models.
+        Falls back to logistic heuristic when pregame model not trained.
+        """
+        if self._pregame_model is not None:
+            try:
+                features = [float(game_state.get(f, 0.0)) for f in PREGAME_FEATURES]
+                X = np.array([features], dtype=np.float32)
+                X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+                proba = self._pregame_model.predict_proba(X)[0][1]
+                return float(np.clip(proba, 0.05, 0.95))
+            except Exception:
+                pass
+        return self._predict_pregame_heuristic(game_state)
+
+    @staticmethod
+    def _predict_pregame_heuristic(game_state: Dict[str, Any]) -> float:
+        """Logistic heuristic on team_strength_diff (mirrors Valorant/Dota2)."""
+        team_str = float(game_state.get("team_strength_diff", 0.0))
+        uncertainty = float(game_state.get("matchup_uncertainty", 0.5))
+        certainty_weight = max(0.3, 1.0 - 0.7 * uncertainty)
+        z = 2.0 * team_str * certainty_weight
+        prob = 1.0 / (1.0 + math.exp(-z))
+        return float(max(0.05, min(0.95, prob)))
+
+    def train_pregame(self, training_data: List[Dict[str, Any]]) -> bool:
+        """Train pregame XGBoost on 6 Glicko-2 features (match-level)."""
+        if len(training_data) < 50:
+            return False
+        try:
+            from xgboost import XGBClassifier
+
+            X_rows, y_rows = [], []
+            for row in training_data:
+                features = [float(row.get(f, 0.0)) for f in PREGAME_FEATURES]
+                label = int(row.get("team_a_won_round", row.get("team_a_won", 0)))
+                X_rows.append(features)
+                y_rows.append(label)
+
+            if len(X_rows) < 50:
+                return False
+
+            X = np.nan_to_num(np.array(X_rows, dtype=np.float32), nan=0.0)
+            y = np.array(y_rows, dtype=np.int32)
+
+            es_split = max(int(len(X) * 0.85), 50)
+            X_train, X_es = X[:es_split], X[es_split:]
+            y_train, y_es = y[:es_split], y[es_split:]
+
+            model = XGBClassifier(
+                n_estimators=60, max_depth=2, learning_rate=0.1,
+                subsample=0.8, colsample_bytree=0.8,
+                eval_metric="logloss", random_state=42,
+                early_stopping_rounds=20,
+            )
+            if len(X_es) >= 10:
+                model.fit(X_train, y_train, eval_set=[(X_es, y_es)], verbose=False)
+            else:
+                model.fit(X, y)
+
+            self._pregame_model = model
+            importances = dict(zip(PREGAME_FEATURES, model.feature_importances_))
+            top = sorted(importances.items(), key=lambda x: x[1], reverse=True)[:3]
+            logger.info("CS2EconomyModel: pregame trained", n_samples=len(X_rows),
+                        top_features=[(n, round(v, 3)) for n, v in top])
+            return True
+        except Exception as exc:
+            logger.error("CS2EconomyModel: pregame training failed", error=str(exc))
+            return False
 
     # ── Tier 1: Round probability ───────────────────────────────────────
 
@@ -276,8 +362,6 @@ class CS2EconomyModel:
 
         # Half-awareness: at halftime (12 rounds), sides switch
         # Remaining rounds = rounds until 13
-        total_remaining = remaining_a + remaining_b - 1  # one team wins before all are played
-
         # Binomial-like model: P(team_a wins K more before team_b wins L more)
         return self._binomial_race(round_prob, remaining_a, remaining_b)
 
@@ -311,6 +395,36 @@ class CS2EconomyModel:
             return result
 
         return solve(needs_a, needs_b)
+
+    @staticmethod
+    def _heterogeneous_series_prob(
+        map_probs: list, needs_a: int, needs_b: int
+    ) -> float:
+        """
+        Series win probability with per-map heterogeneous win probabilities.
+
+        Unlike _binomial_race (uniform p), each remaining map has its own
+        probability. Recursive with memoization.
+        """
+        memo: dict = {}
+
+        def solve(map_idx: int, a_needs: int, b_needs: int) -> float:
+            if a_needs <= 0:
+                return 1.0
+            if b_needs <= 0:
+                return 0.0
+            if map_idx >= len(map_probs):
+                return 0.5  # Ran out of maps — tiebreaker
+            key = (map_idx, a_needs, b_needs)
+            if key in memo:
+                return memo[key]
+            p = map_probs[map_idx]
+            result = (p * solve(map_idx + 1, a_needs - 1, b_needs) +
+                      (1 - p) * solve(map_idx + 1, a_needs, b_needs - 1))
+            memo[key] = result
+            return result
+
+        return solve(0, needs_a, needs_b)
 
     # ── Tier 3: Match (series) probability ──────────────────────────────
 
@@ -346,14 +460,12 @@ class CS2EconomyModel:
         if remaining_b <= 0:
             return 0.0
 
-        # Average remaining map probabilities for this projection
+        # Use per-map heterogeneous probabilities (not averaged)
         remaining_probs = map_probs[maps_won_a + maps_won_b:]
-        if remaining_probs:
-            avg_prob = sum(remaining_probs) / len(remaining_probs)
-        else:
-            avg_prob = 0.5
+        if not remaining_probs:
+            return 0.5
 
-        return self._binomial_race(avg_prob, remaining_a, remaining_b)
+        return self._heterogeneous_series_prob(remaining_probs, remaining_a, remaining_b)
 
     # ── Training ────────────────────────────────────────────────────────
 
@@ -489,6 +601,7 @@ class CS2EconomyModel:
                 pickle.dump({
                     "round_model": self._round_model,
                     "calibrator": self._calibrator,
+                    "pregame_model": self._pregame_model,
                 }, f)
             return True
         except Exception as exc:
@@ -504,23 +617,10 @@ class CS2EconomyModel:
                 data = pickle.load(f)
             self._round_model = data.get("round_model")
             self._calibrator = data.get("calibrator")
+            self._pregame_model = data.get("pregame_model")
             self._is_trained = self._round_model is not None
             return self._is_trained
         except Exception as exc:
             logger.warning("CS2EconomyModel: load failed", error=str(exc))
             return False
 
-    @staticmethod
-    def classify_buy(money: float) -> str:
-        """Classify team's buy quality from their money."""
-        if money >= FULL_BUY_THRESHOLD:
-            return "full"
-        elif money >= FORCE_BUY_THRESHOLD:
-            return "force"
-        return "eco"
-
-    @staticmethod
-    def projected_loss_bonus(consecutive_losses: int) -> int:
-        """Calculate loss bonus income for next round."""
-        idx = min(consecutive_losses, len(LOSS_BONUS) - 1)
-        return LOSS_BONUS[idx] if consecutive_losses > 0 else 0

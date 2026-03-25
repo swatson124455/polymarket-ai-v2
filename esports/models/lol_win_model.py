@@ -1,13 +1,14 @@
 """
-LoL Win Probability Model — XGBoost with 8 reliable features.
+LoL Win Probability Model — XGBoost with 9 features.
 
 Based on PandaScore professional match data with patch-weighted sampling.
 Only uses features reliably available in BOTH training (post-game stats) and
 live inference (mid-game PandaScore data). Dead/unreliable features removed.
 
-Features (8 total):
+Features (9 total):
     game_time_minutes, gold_pct_blue, tower_kills_diff, dragon_kills_diff,
-    dragon_soul_blue, herald_blue, inhib_down_diff, baron_buff_count_diff
+    matchup_uncertainty, rd_asymmetry, team_a_volatility, team_b_volatility,
+    team_strength_diff
 
 Patch-weighted training: current=1.0, prev=0.7, 2-ago=0.5, 3+ ago=0.3.
 Heuristic fallback: gold+tower+dragon sigmoid when model not yet trained.
@@ -103,9 +104,9 @@ class LoLWinModel:
             X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
             proba = self._model.predict_proba(X)[0][1]  # P(class=1) = P(blue_win)
 
-            # Apply calibration if available
+            # Apply calibration if available (IsotonicRegression: prob → prob)
             if self._calibrator is not None:
-                proba = self._calibrator.predict_proba(np.array([[proba]]))[0][1]
+                proba = float(self._calibrator.predict([proba])[0])
 
             return float(np.clip(proba, 0.01, 0.99))
         except Exception as exc:
@@ -323,7 +324,7 @@ class LoLWinModel:
             return False
 
         try:
-            from sklearn.calibration import CalibratedClassifierCV
+            from sklearn.isotonic import IsotonicRegression
 
             X_rows = []
             y_rows = []
@@ -341,10 +342,10 @@ class LoLWinModel:
             y = np.array(y_rows, dtype=np.int32)
             X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
-            self._calibrator = CalibratedClassifierCV(
-                self._model, method="isotonic", cv="prefit"
-            )
-            self._calibrator.fit(X, y)
+            # Get raw probabilities from model, then fit isotonic on prob→label
+            raw_probs = self._model.predict_proba(X)[:, 1]
+            self._calibrator = IsotonicRegression(out_of_bounds="clip")
+            self._calibrator.fit(raw_probs, y)
             logger.info("LoLWinModel: calibrated", n_samples=len(X_rows))
             return True
         except Exception as exc:
@@ -443,14 +444,3 @@ class LoLWinModel:
         except (ValueError, IndexError):
             return 3
 
-    @staticmethod
-    def build_game_state_from_timeline(frame: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Build a feature dict from a Riot API timeline frame.
-
-        This is a helper for converting raw timeline data into the format
-        expected by predict(). Production version would parse the full
-        Riot timeline JSON.
-        """
-        # Template — caller fills in actual values from Riot API response
-        return {name: frame.get(name, 0.0) for name in FEATURE_NAMES}

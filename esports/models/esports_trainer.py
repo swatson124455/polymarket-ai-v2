@@ -281,8 +281,10 @@ class EsportsModelTrainer:
             result["accuracy"] = round(accuracy, 4)
             result["brier_score"] = round(brier, 4)
             result["ece"] = round(ece, 4)
-            # Always graduate — user controls when to go live
-            result["graduated"] = True
+            # Graduate only if model meets minimum quality thresholds
+            result["graduated"] = (
+                accuracy >= 0.55 and brier < 0.30 and len(training_data) >= 200
+            )
 
             self._last_train_time[game] = time.monotonic()
             self._train_results[game] = result
@@ -461,8 +463,7 @@ class EsportsModelTrainer:
                         _team_win_hist[key_b] = _deque(maxlen=10)
                     _team_win_hist[key_b].append(1 - _lbl)
 
-            # Oldest-first for temporal split
-            pooled = list(reversed(pooled))
+            # pooled is already oldest-first from sort at line 440
             split_idx = int(len(pooled) * (1 - _VALIDATION_SPLIT))
             train_set = pooled[:split_idx]
             val_set = pooled[split_idx:]
@@ -754,7 +755,7 @@ class EsportsModelTrainer:
             _compiler = OnnxCompiler()
             _onnx_dir = os.path.join(os.path.dirname(__file__), "..", "..", "saved_models")
             _onnx_path = os.path.join(os.path.abspath(_onnx_dir), "lol_win_model.onnx")
-            _compiler.export_xgboost(model._model, n_features=8, save_path=_onnx_path)
+            _compiler.export_xgboost(model._model, n_features=9, save_path=_onnx_path)
         except Exception:
             pass  # ONNX export is optional
 
@@ -784,6 +785,9 @@ class EsportsModelTrainer:
 
         # Evaluate on second half (never seen by calibrator)
         metrics = self._evaluate_full_cs2(model, eval_set)
+
+        # Train pregame model (6 Glicko-2 features for pre-match predictions)
+        model.train_pregame(train_set)
 
         # Always save — graduation gate removed, user controls go-live
         model.save()
@@ -853,42 +857,6 @@ class EsportsModelTrainer:
         return metrics
 
     # ── Evaluation ──────────────────────────────────────────────────────
-
-    @staticmethod
-    def _evaluate_binary(model, val_set: List[Dict], label_key: str = "blue_win") -> float:
-        """Compute accuracy on validation set for LoL model."""
-        if not val_set:
-            return 0.0
-
-        correct = 0
-        total = 0
-        for row in val_set:
-            label = int(row.get(label_key, 0))
-            prob = model.predict(row)
-            predicted = 1 if prob > 0.5 else 0
-            if predicted == label:
-                correct += 1
-            total += 1
-
-        return correct / total if total > 0 else 0.0
-
-    @staticmethod
-    def _evaluate_binary_cs2(model, val_set: List[Dict]) -> float:
-        """Compute accuracy on validation set for CS2 round model."""
-        if not val_set:
-            return 0.0
-
-        correct = 0
-        total = 0
-        for row in val_set:
-            label = int(row.get("team_a_won_round", 0))
-            prob = model.predict_round(row)
-            predicted = 1 if prob > 0.5 else 0
-            if predicted == label:
-                correct += 1
-            total += 1
-
-        return correct / total if total > 0 else 0.0
 
     @staticmethod
     def _evaluate_full(

@@ -1,7 +1,7 @@
 """
 Independent Chain-of-Thought (CoT) validation for high-edge esports trades.
 
-When the model identifies a high-edge opportunity (>15%), use an LLM
+When the model identifies a high-edge opportunity (>20%), use an LLM
 to independently validate the prediction. This catches cases where:
 - Market question was misinterpreted by regex
 - Team roster changes invalidate Glicko-2 ratings
@@ -25,7 +25,7 @@ class CoTValidator:
     Queries an LLM with the market question, team names, model probability,
     and market price. Returns a structured verdict: approve, reject, or caution.
 
-    Cost-controlled: only called for edge > EDGE_THRESHOLD (default 15%).
+    Cost-controlled: only called for edge > EDGE_THRESHOLD (default 20%).
     """
 
     EDGE_THRESHOLD = 0.20  # Only validate trades with edge >= 20%
@@ -142,5 +142,5 @@ class CoTValidator:
             self._available = False
             return default_result
         except Exception as e:
-            logger.debug("CoTValidator: validation failed: %s", e)
-            return default_result  # Fail open: approve on error
+            logger.warning("CoTValidator: validation failed: %s", e, exc_info=True)
+            return {"approved": False, "reason": "validation_error", "confidence": 0.0}

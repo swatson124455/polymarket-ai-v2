@@ -130,10 +130,10 @@ class TestEsportsLiveBotInit:
         assert bot.bot_name == "EsportsLiveBot"
 
     def test_init_creates_queue(self):
-        """__init__ creates a game update queue with maxsize 200."""
+        """__init__ creates a game update queue with maxsize 500."""
         bot = make_bot()
         assert isinstance(bot._game_update_queue, asyncio.Queue)
-        assert bot._game_update_queue.maxsize == 200
+        assert bot._game_update_queue.maxsize == 500
 
     def test_init_components_none(self):
         """Components are None until start() is called."""

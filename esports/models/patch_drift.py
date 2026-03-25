@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import math
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from structlog import get_logger
@@ -27,7 +28,7 @@ from structlog import get_logger
 logger = get_logger()
 
 _BRIER_WINDOW = 20         # Rolling window for Brier score
-_BRIER_DEGRADATION = 0.05  # 5% degradation triggers warning
+_BRIER_DEGRADATION = 0.25  # Brier above no-skill baseline triggers warning
 _WINRATE_SHIFT = 0.03      # 3% champion win rate shift triggers retrain
 _OBSERVATION_HOURS = 48    # Paper-only period after new patch
 _CALIBRATION_WINDOW = 30   # Window for calibration check
@@ -294,8 +295,15 @@ class PatchDriftDetector:
         items = data.get("appnews", {}).get("newsitems", [])
         for item in items:
             title = str(item.get("title", "")).lower()
-            # Dota2 patch notes typically have "gameplay update" or version in title
-            if "gameplay update" in title or "patch" in title or "update" in title:
+            # Dota2 patch notes: require "gameplay update", "patch", or version number
+            if ("gameplay update" in title or "patch" in title or
+                    re.search(r'\d+\.\d+', title)):
+                # Exclude known non-gameplay patterns
+                if any(x in title for x in (
+                    "client", "workshop", "community", "cosmetic",
+                    "server", "maintenance",
+                )):
+                    continue
                 # Use the gid (unique news ID) as version identifier
                 gid = str(item.get("gid", ""))
                 if gid:

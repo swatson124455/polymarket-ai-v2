@@ -16,6 +16,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import re
 import time as _time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -157,6 +158,8 @@ class OpenDotaClient:
         for m in matches:
             is_radiant = m.get("radiant")
             radiant_win = m.get("radiant_win")
+            if radiant_win is None:
+                continue
             won = (is_radiant and radiant_win) or (not is_radiant and not radiant_win)
             if won:
                 wins += 1
@@ -199,15 +202,16 @@ class OpenDotaClient:
             if str(team.get("tag", "")).lower().strip() == name_lower:
                 return team.get("team_id")
 
-        # Pass 3: substring — team name contains search term or vice versa
-        # Prefer shortest containing name (most specific match)
+        # Pass 3: word-boundary match — avoids "og" matching "rogue"
+        # Prefer longest containing name (most specific match)
+        pattern = re.compile(r'\b' + re.escape(name_lower) + r'\b')
         candidates = []
         for team in data:
             tname = str(team.get("name", "")).lower()
-            if name_lower in tname or tname in name_lower:
+            if pattern.search(tname) or re.search(r'\b' + re.escape(tname) + r'\b', name_lower):
                 candidates.append((len(tname), team.get("team_id")))
         if candidates:
-            candidates.sort()  # shortest name first → most specific
+            candidates.sort(reverse=True)  # longest name first → most specific
             return candidates[0][1]
 
         return None

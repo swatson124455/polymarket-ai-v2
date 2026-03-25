@@ -43,7 +43,7 @@ class EsportsLiveBot(BaseBot):
             )
 
         self._api_key = api_key
-        self._game_update_queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+        self._game_update_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
         self._game_monitor = None
         self._event_detector = None
         self._live_trigger = None
@@ -151,7 +151,10 @@ class EsportsLiveBot(BaseBot):
                 restart_attempt=self._monitor_restart_count,
                 delay_s=delay,
             )
-            loop = asyncio.get_event_loop()
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.get_event_loop()
             loop.call_later(delay, lambda: asyncio.ensure_future(self._restart_monitor()))
 
     async def _restart_monitor(self) -> None:

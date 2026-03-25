@@ -168,16 +168,18 @@ class EsportsGameMonitor:
                             # E3: Track freshness for stale detection
                             mid = state.match_id
                             cur_score = (state.score_maps_a, state.score_maps_b)
-                            # Always update — match returned as "running" by PandaScore
-                            # means it's live. Stale = PandaScore stopped returning it.
-                            self._last_score_update[mid] = time.monotonic()
+                            # Only update timestamp when score CHANGES (not every poll)
+                            if cur_score != self._prev_scores.get(mid):
+                                self._last_score_update[mid] = time.monotonic()
+                            elif mid not in self._last_score_update:
+                                self._last_score_update[mid] = time.monotonic()
                             self._prev_scores[mid] = cur_score
 
                             self._active_games[mid] = state
                             try:
                                 self._queue.put_nowait(state)
                             except asyncio.QueueFull:
-                                logger.debug(
+                                logger.warning(
                                     "EsportsGameMonitor: queue full — dropping",
                                     match_id=mid,
                                 )
