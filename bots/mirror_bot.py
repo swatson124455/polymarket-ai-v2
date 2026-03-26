@@ -779,8 +779,7 @@ class MirrorBot(BaseBot):
 
         position_manager updates positions.current_price every 10s from market data.
         Without this sync, stop-loss uses stale entry prices and never fires.
-        Also syncs size — _track_open_position creates entries with size=0.0,
-        and if _execute_mirror_trade's size update is missed, exits fail with zero size.
+        Also syncs size from DB so stop-loss uses current values, not stale entry prices.
         """
         if not self._open_positions or not self.base_engine or not self.base_engine.db:
             return
@@ -939,8 +938,8 @@ class MirrorBot(BaseBot):
                         original_side=pos["side"],
                         size=f"{pos['size']:.2f}",
                     )
-                    # BUG-13 fix: use actual exit_size and exit_price, not pos["size"]
-                    _exit_cost = exit_size * exit_price
+                    # BUG-13 fix: use actual exit_size; S133: use entry_price (matches increment)
+                    _exit_cost = exit_size * pos.get("entry_price", exit_price)
                     self._daily_exposure = max(0.0, self._daily_exposure - _exit_cost)
                     # M1: Decrement category exposure on exit
                     _pos_cat = pos.get("category", "")
@@ -1001,23 +1000,6 @@ class MirrorBot(BaseBot):
             logger.warning("mirror_reap_resolved failed: %s", exc)
 
     # ── Position & Exposure Tracking ────────────────────────────────
-
-    def _track_open_position(self, trade_info: Dict):
-        """Record a newly opened mirror position for exit monitoring."""
-        pos_key = f"{trade_info['market_id']}:{trade_info['token_id']}"
-        if pos_key in self._open_positions:
-            self._open_positions[pos_key]["traders"].add(trade_info["trader_address"])
-            # N1: Refresh max-hold timer on each new trader entry (not just first entry)
-            self._open_positions[pos_key]["timestamp"] = datetime.now(timezone.utc).isoformat()
-        else:
-            self._open_positions[pos_key] = {
-                "side": trade_info["side"],
-                "size": 0.0,  # Updated by _execute_mirror_trade after sizing
-                "entry_price": trade_info["price"],
-                "traders": {trade_info["trader_address"]},
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "category": trade_info.get("category", ""),
-            }
 
     async def _persist_trader_to_position(self, trade_info: Dict) -> None:
         """Append trader_address to positions.trader_addresses for restart recovery."""
@@ -1230,6 +1212,14 @@ class MirrorBot(BaseBot):
         _is_sell = str(side).upper() == "SELL"
 
         if not _is_sell:
+            # S132: Minimum whale trade size — sub-$50 trades are noise (39.9% WR, -$153K).
+            # $50+ trades: 47.1% WR, +$1,428. Gate before any expensive lookups.
+            _min_whale_usd = float(getattr(settings, "MIRROR_MIN_WHALE_TRADE_USD", 50.0))
+            if whale_trade_usd > 0 and whale_trade_usd < _min_whale_usd:
+                logger.info("mirror_small_whale_skip", whale_usd=round(whale_trade_usd, 1),
+                            min_usd=_min_whale_usd, market=str(market_id)[:16])
+                return False
+
             # Market blocklist — closed/expired/speed markets
             if market_id in self._market_blocklist:
                 return False
@@ -1411,7 +1401,9 @@ class MirrorBot(BaseBot):
                         lr,
                     )
                     return False
-                reliability_mult = min(lr, 2.0)  # Cap at 2x
+                # S132: Cap at 1.0 — data shows rel_mult>1.05 is anti-signal
+                # (37.1% WR, -$113K). Only use reliability to PENALIZE, never amplify.
+                reliability_mult = min(lr, 1.0)
                 # R2: Sample-size ramp — don't trust high LR on tiny samples.
                 # 0 trades → 0x, 25 trades → 0.5x, 50+ trades → 1.0x (no change).
                 _eq_n = self._reliability_tracker.total_trade_count(trader_address)
@@ -1445,18 +1437,14 @@ class MirrorBot(BaseBot):
             _cat_n = 0
 
         # Factor 2: Price-implied edge.
-        # Contrarian bets (YES at low price, NO at high price) → boost.
-        # Consensus bets → slight penalty.
+        # S132 DATA: Contrarian boost was anti-signal (32.9% WR, -$84K).
+        # Neutral trades (46.6% WR) outperform both contrarian and consensus.
+        # Zeroed out — confidence should not depend on price direction.
         _price_dev = abs(price - 0.50)
         _side_upper = str(side).upper()
-        # S119 FIX: NO contrarian was inverted. Buying NO cheap (<0.45) = market disagrees = contrarian.
-        # Buying NO expensive (>0.55) = market agrees = consensus. Was backwards since S110.
         _is_contrarian = ((_side_upper == "YES" and price < 0.45)
                           or (_side_upper == "NO" and price < 0.45))
-        if _is_contrarian:
-            _price_adj = _price_dev * 0.15
-        else:
-            _price_adj = -(_price_dev * 0.15 * 0.3)
+        _price_adj = 0.0
 
         # Factor 3: Trade size conviction — whale betting larger than usual = higher conviction.
         # Uses whale_trade_usd from RTDS payload vs whale's avg trade size from watchlist.
@@ -1584,6 +1572,14 @@ class MirrorBot(BaseBot):
         if not _math_isfinite(size) or size < 0:
             size = 0.0
 
+        # S132: NO-side sizing penalty — NO loses 7x more than YES (-$139K vs -$20K).
+        # Halve NO position sizes until calibration improves.
+        _no_dampener = float(getattr(settings, "MIRROR_NO_SIDE_DAMPENER", 0.5))
+        if _side_upper == "NO" and _no_dampener < 1.0:
+            size *= _no_dampener
+            logger.info("mirror_no_side_dampened", side="NO", dampener=_no_dampener,
+                        market=str(market_id)[:16])
+
         # S99b Option C: Dampen sizing in gray zone (5-7¢ / 93-95¢)
         # S119: Set to 1.0 (no-op) for data collection. Re-evaluate ~Mar 29.
         _soft_min = float(getattr(settings, "MIRROR_MIN_PRICE", 0.07))
@@ -1690,9 +1686,19 @@ class MirrorBot(BaseBot):
                 self._category_exposure[category] = self._category_exposure.get(category, 0.0) + _trade_usd
 
             # Update position tracking with actual size
+            # S133: Create entry if missing — without this, new trades have no exit monitoring
             pos_key = f"{market_id}:{token_id}"
             if pos_key in self._open_positions:
                 self._open_positions[pos_key]["size"] += size
+            else:
+                self._open_positions[pos_key] = {
+                    "side": side,
+                    "size": size,
+                    "entry_price": price,
+                    "traders": {trader_address},
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "category": category,
+                }
 
             # S117: Track entry for opposing-side guard across restarts
             self._entered_market_sides.add((market_id, str(side).upper()))
