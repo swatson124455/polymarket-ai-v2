@@ -313,9 +313,9 @@ class TestAnalyzeOpportunity:
         assert result["edge"] == pytest.approx(0.20, abs=0.03)  # blue side bonus adds ~0.019
         assert result["game"] == "lol"
         assert result["market_type"] == "match_winner"
-        # S127: confidence = side_prob * signal_quality (< side_prob)
-        assert result["confidence"] < 0.70  # dampened by signal_quality
-        assert result["confidence"] > 0.20  # floor 0.30 * side_prob ~0.70
+        # S131: confidence = raw side_prob (SQ now scales sizing, not confidence)
+        assert result["confidence"] > 0.70  # raw side_prob ≈ 0.71 (model_prob + blue side)
+        assert result["confidence"] < 0.80  # but not too high
         assert result["market_id"] == "m1"
 
     @pytest.mark.asyncio
@@ -339,24 +339,24 @@ class TestAnalyzeOpportunity:
         assert result is not None
         assert result["side"] == "NO"
         assert result["edge"] == pytest.approx(0.30, abs=0.03)  # blue side bonus shifts
-        # S127: confidence = side_prob * signal_quality (< side_prob)
-        assert result["confidence"] < 0.70
-        assert result["confidence"] > 0.20
+        # S131: confidence = raw side_prob (SQ now scales sizing, not confidence)
+        assert result["confidence"] > 0.65  # 1 - model_prob ≈ 0.70
+        assert result["confidence"] < 0.75
 
     @pytest.mark.asyncio
     async def test_returns_none_when_confidence_below_min(self):
-        """Edge exists but confidence < min_confidence -> returns None."""
+        """S131: Edge exists but side_prob < 0.52 gate -> returns None."""
         bot = make_bot()
         bot._patch_drift = None
-        bot._min_edge = 0.08
-        bot._min_confidence = 0.40  # S127: adjusted for signal_quality dampening
-        # Market price = 0.42, model predicts 0.51 -> edge = 0.09 (>0.08)
-        # but confidence = 0.51 * signal_quality (~0.45) ≈ 0.23 < 0.40
+        bot._min_edge = 0.01  # Low edge gate so edge isn't the blocker
+        bot._min_confidence = 0.55  # S131: gate on raw side_prob
+        # Market price = 0.42, model predicts 0.505 -> side_prob ≈ 0.52 (with blue side)
+        # but min_confidence gate at 0.55 rejects it
         market = _make_market(
             question="Will Team A win the LoL match?",
             yes_price=0.42,
         )
-        bot._get_glicko2_prediction = AsyncMock(return_value=0.51)
+        bot._get_glicko2_prediction = AsyncMock(return_value=0.505)
         result = await bot.analyze_opportunity(market)
         assert result is None
 
@@ -1067,3 +1067,52 @@ class TestWsCooldownGuard:
         window_s = 12.0 * 3600
         recent = [t for t in bot._market_entry_times.get(mid, []) if now - t < window_s]
         assert len(recent) >= max_entries
+
+
+class TestStaleCostAfterMaxBetCap:
+    """S133: Verify _cost is recalculated after max-bet cap adjusts size."""
+
+    @pytest.mark.asyncio
+    async def test_min_trade_rejects_dust_after_max_bet_cap(self):
+        """When max-bet cap reduces size, min-trade gate should use updated cost."""
+        bot = make_bot()
+        bot.place_order = AsyncMock(return_value={"success": True})
+        bot._game_exposure = {}
+        bot._market_game = {}
+        bot._entered_market_sides = set()
+        bot._tournament_exposure = {}
+
+        opp = {
+            "market_id": "0xdust",
+            "token_id": "tok1",
+            "side": "YES",
+            "price": 0.05,
+            "confidence": 0.90,
+            "edge": 0.10,
+            "game": "lol",
+            "type": "prematch",
+            "market_type": "moneyline",
+        }
+
+        # Mock bankroll to return large size so max-bet cap triggers
+        bot.calculate_bot_position_size = AsyncMock(return_value=200.0)
+
+        with patch("bots.esports_bot.settings") as mock_settings:
+            mock_settings.ESPORTS_MAX_BET_USD = 5.0
+            mock_settings.ESPORTS_MIN_TRADE_USD = 8.0
+            mock_settings.ESPORTS_MAX_GAME_EXPOSURE = 10000.0
+            mock_settings.ESPORTS_MAX_POSITIONS = 100
+            mock_settings.ESPORTS_SPREAD_BASE = 0.15
+            mock_settings.ESPORTS_SPREAD_FACTOR = 0.05
+            mock_settings.ESPORTS_MIN_ENTRY_PRICE = 0.05
+            mock_settings.ESPORTS_MAX_ENTRY_PRICE = 0.95
+            mock_settings.ESPORTS_CLV_SCALING_ENABLED = False
+            mock_settings.ESPORTS_UPSET_RISK_ENABLED = False
+
+            # bankroll returns 200 shares at price=$0.05 → cost=$10 (>$8 min)
+            # max-bet cap: size=$5/$0.05=100 → cost=$5 (<$8 min)
+            # Without fix: stale _cost=$10 passes gate → dust trade
+            # With fix: _cost=$5 rejected
+            result = await bot._execute_esports_trade(opp)
+            assert result is False, "Dust trade should be rejected after max-bet cap"
+            bot.place_order.assert_not_called()

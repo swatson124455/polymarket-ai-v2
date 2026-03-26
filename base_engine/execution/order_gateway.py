@@ -85,12 +85,16 @@ class OrderGateway:
         """O(n) sum of open position values for a specific bot."""
         return sum(self._position_exposure.get(bot_name, {}).values())
 
-    def get_daily_exposure_usd(self, bot_name: str) -> float:
-        """O(1) in-memory daily exposure for a bot. Resets at day boundary."""
+    def _maybe_reset_daily(self) -> None:
+        """S133: Atomic day boundary reset — set date FIRST to prevent double-clear."""
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if self._daily_exposure_date != today:
+            self._daily_exposure_date = today  # Set BEFORE clear — second caller sees new date, skips
             self._daily_exposure_usd.clear()
-            self._daily_exposure_date = today
+
+    def get_daily_exposure_usd(self, bot_name: str) -> float:
+        """O(1) in-memory daily exposure for a bot. Resets at day boundary."""
+        self._maybe_reset_daily()
         return self._daily_exposure_usd.get(bot_name, 0.0)
 
     def _can_exit(self, market_id: str) -> bool:
@@ -131,10 +135,7 @@ class OrderGateway:
         if value > 0:
             self._position_exposure.setdefault(bot_name, {})[str(market_id)] = value
             self._total_exposure_usd += value
-            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            if self._daily_exposure_date != today:
-                self._daily_exposure_usd.clear()
-                self._daily_exposure_date = today
+            self._maybe_reset_daily()
             self._daily_exposure_usd[bot_name] = self._daily_exposure_usd.get(bot_name, 0.0) + value
         # T8 FIX: Store actual position details for CVaR snapshot
         if not hasattr(self, "_position_details"):
@@ -523,7 +524,8 @@ class OrderGateway:
         if self.risk_manager is not None and not _is_sell and not _rtds_fast:
             try:
                 # S97: WeatherBot skips CVaR Monte Carlo — has own group/city exposure limits
-                _skip_cvar = (bot_name == "WeatherBot")
+                # S133: EsportsBot skips CVaR — has own per-game/tournament/team exposure caps
+                _skip_cvar = (bot_name in ("WeatherBot", "EsportsBot"))
                 risk_check = await self.risk_manager.check_risk_limits(
                     bot_name, market_id, size, price, confidence, prediction=prediction,
                     skip_cvar=_skip_cvar,
@@ -938,6 +940,9 @@ class OrderGateway:
                 _signal_latency_ms = None
                 if _scan_start is not None:
                     _signal_latency_ms = (time.monotonic() - _scan_start) * 1000
+                # S133: Pass on_buy_fill callback so exposure is tracked UNDER
+                # the paper engine's _trade_lock — prevents stale-read race where
+                # another bot reads daily_exposure before this trade is reflected.
                 result = await self.paper_trading_engine.place_order(
                     market_id=market_id,
                     token_id=token_id,
@@ -954,6 +959,7 @@ class OrderGateway:
                     ask=_paper_ask,
                     volume=_paper_volume,
                     event_data=event_data,
+                    on_buy_fill=self._track_position_open,
                 )
                 latency_ms = (time.monotonic() - t0) * 1000
                 if not result.get("success"):
@@ -1017,8 +1023,8 @@ class OrderGateway:
                             )
                         if _is_sell:
                             self._track_position_close(bot_name, market_id)  # C3 FIX
-                        else:
-                            self._track_position_open(bot_name, market_id, _filled_size, effective_price, side=side)
+                        # S133: BUY tracking now happens inside paper engine's _trade_lock
+                        # via on_buy_fill callback — no post-return tracking needed.
                     elif result.get("success") and _filled_size <= 0:
                         # S107: Paper engine returned success but filled 0 tokens (e.g. idempotent
                         # duplicate). Do NOT create a position — release reservation instead.
@@ -1036,8 +1042,7 @@ class OrderGateway:
                 elif result.get("success") and _filled_size > 0:
                     if _is_sell:
                         self._track_position_close(bot_name, market_id)  # C3 FIX
-                    else:
-                        self._track_position_open(bot_name, market_id, _filled_size, effective_price, side=side)
+                    # S133: BUY tracking via on_buy_fill callback (inside lock)
                 return result
             except Exception as e:
                 if self.trade_coordinator is not None:

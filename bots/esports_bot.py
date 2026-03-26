@@ -252,6 +252,10 @@ class EsportsBot(BaseBot):
         # This set is empty between trades; it never accumulates entries.
         self._ws_pending_trades: set = set()
 
+        # S132 EB-3: Opposing-side guard — {(market_id, side)} persists across restarts
+        self._entered_market_sides: set = set()
+        self._entered_sides_restored: bool = False
+
         # Track data collection attempts per game: game → attempt count (max 3 retries)
         self._collection_attempted: Dict[str, int] = {}
 
@@ -589,6 +593,20 @@ class EsportsBot(BaseBot):
         # S109: Restore exit cooldowns from Redis (survives restarts)
         await self._restore_exit_cooldowns_from_redis()
 
+        # S131: Seed Brier cache from DB on startup — eliminates 10-min cold start
+        # where _game_brier_cache is empty and sq_brier defaults to 0.0.
+        try:
+            _acc_all = await self._get_cached_rolling_accuracy(db)
+            for _g, _acc in _acc_all.items():
+                if _acc and _acc.get("total", 0) >= 10:
+                    self._game_brier_cache[_g] = _acc["brier_score"]
+            if self._game_brier_cache:
+                logger.info("esportsbot_brier_cache_seeded",
+                            games=list(self._game_brier_cache.keys()),
+                            values={g: round(v, 3) for g, v in self._game_brier_cache.items()})
+        except Exception as exc:
+            logger.warning("esportsbot_brier_seed_failed", error=str(exc))
+
         logger.info(
             "EsportsBot: initialized",
             pandascore=True,
@@ -728,6 +746,12 @@ class EsportsBot(BaseBot):
         trade_token_id = yes_token_id if side == "YES" else no_token_id
         trade_price = yes_price if side == "YES" else (1.0 - yes_price)
 
+        # S133: Penny/extreme price guard (WS path)
+        _ws_min_price = float(getattr(settings, "ESPORTS_MIN_ENTRY_PRICE", 0.05))
+        _ws_max_price = float(getattr(settings, "ESPORTS_MAX_ENTRY_PRICE", 0.95))
+        if trade_price < _ws_min_price or trade_price > _ws_max_price:
+            return
+
         # S109: Post-exit cooldown — block WS re-entry within cooldown window
         _exit_ts = self._recently_exited.get(market_id)
         if _exit_ts is not None:
@@ -748,19 +772,19 @@ class EsportsBot(BaseBot):
             return
         og = getattr(self.base_engine, "order_gateway", None)
         if og is not None and og.has_open_position(self.bot_name, str(market_id)):
-            # GAP-2: Side-aware dedup — only block if same side
-            _pos_key = f"{self.bot_name}:{str(market_id)}"
-            _existing = getattr(og, "_position_details", {}).get(_pos_key, {})
-            if _existing and str(_existing.get("side", "")).upper() == side.upper():
-                return  # Same side — block re-entry
-            if not _existing:
-                return  # Fallback: can't determine side, block
+            # S132 EB-3: Block BOTH same-side re-entry AND opposing-side entry
+            return
+        # S132 EB-3: Historical opposing-side guard (survives restarts)
+        _opposite_ws = "NO" if side.upper() == "YES" else "YES"
+        if (market_id, _opposite_ws) in self._entered_market_sides:
+            return
 
         self._ws_pending_trades.add(market_id)
         try:
             side_prob = model_prob if side == "YES" else (1.0 - model_prob)
             _sq, _ = self._compute_signal_quality(game, market_id)
-            confidence = side_prob * _sq
+            # S131: SQ is sizing multiplier, confidence = raw side_prob
+            confidence = side_prob
             opp = {
                 "type": "esports_ws_reactive",
                 "market_id": market_id,
@@ -772,6 +796,7 @@ class EsportsBot(BaseBot):
                 "edge": round(abs(edge), 4),
                 "game": game,
                 "market_type": "match_winner",
+                "_signal_quality": _sq,
             }
             logger.info(
                 "EsportsBot WS reactive trade",
@@ -868,6 +893,25 @@ class EsportsBot(BaseBot):
         # S125: Restore game tags for open positions (EXIT events need game after restart)
         if not self._market_game_restored:
             await self._restore_market_game_from_db(db)
+
+        # S132 EB-3: Restore entered market sides for opposing-side guard
+        if not self._entered_sides_restored:
+            self._entered_sides_restored = True
+            try:
+                from sqlalchemy import text as _ems_text
+                async with db.get_session() as _ems_sess:
+                    _ems_rows = await _ems_sess.execute(
+                        _ems_text(
+                            "SELECT DISTINCT market_id, side FROM trade_events "
+                            "WHERE bot_name IN ('EsportsBot', 'EsportsLiveBot', 'EsportsSeriesBot') "
+                            "AND event_type = 'ENTRY' AND side IN ('YES', 'NO')"
+                        )
+                    )
+                    for _mr in _ems_rows.fetchall():
+                        self._entered_market_sides.add((_mr[0], _mr[1]))
+                    logger.info("esports_entered_sides_restored", n=len(self._entered_market_sides))
+            except Exception as _ems_exc:
+                logger.warning("esports_entered_sides_restore_failed", error=str(_ems_exc))
 
         # A1: Restore daily P&L + reset at UTC midnight
         # Refresh every 10 min to capture mid-day resolutions
@@ -1497,6 +1541,14 @@ class EsportsBot(BaseBot):
             if size <= 0 or not token_id:
                 continue
 
+            # S133: Skip exit if current_price is suspiciously low (dead/unquoted market)
+            # A price of 0.01-0.02 on a market we entered at 0.30+ means the book is empty,
+            # not that we lost 97%. Let resolution handle it instead.
+            if current < 0.03 and entry >= 0.05:
+                logger.debug("esportsbot_exit_skip_dead_market", market_id=mid,
+                             entry=round(entry, 4), current=round(current, 4))
+                continue
+
             # Prices are token-specific — (current - entry) is correct for BOTH YES and NO
             pnl_pct = (current - entry) / max(entry, 1e-6)
 
@@ -1652,156 +1704,17 @@ class EsportsBot(BaseBot):
                              model_prob=round(model_prob, 4),
                              current_price=round(current_price, 4))
 
-    async def _resolve_esports_from_clob(self, db) -> int:
-        """S104: Directly resolve esports markets via CLOB API.
-
-        Bypasses the shared resolution_backfill queue which is permanently starved
-        by 1500+ MirrorBot markets ahead of EsportsBot's ~38 markets.
-
-        Checks ALL unresolved esports markets per cycle (~20 min).
-        Uses same resolution pathway as resolution_backfill.py:
-        save_market_resolution() + mark_market_resolved() + insert RESOLUTION trade_event.
-        """
-        _resolved_count = 0
-        try:
-            import httpx
-            from sqlalchemy import text as _clob_text
-
-            # 1. Get ALL unresolved esports market_ids (typically <50)
-            async with db.get_session() as _s:
-                _rows = await _s.execute(
-                    _clob_text(
-                        "SELECT market_id FROM traded_markets "
-                        "WHERE (bot_names LIKE '%EsportsBot%' OR bot_names LIKE '%EsportsLiveBot%' "
-                        "OR bot_names LIKE '%EsportsSeriesBot%') "
-                        "AND resolved = FALSE "
-                        "ORDER BY first_trade_at ASC"
-                    )
-                )
-                _market_ids = [r[0] for r in _rows.fetchall()]
-
-            if not _market_ids:
-                return 0
-
-            logger.info("esportsbot_clob_resolution_start", unresolved=len(_market_ids))
-
-            # 2. Check each market on CLOB API
-            async with httpx.AsyncClient(timeout=15.0) as _http:
-                for _mid in _market_ids:
-                    try:
-                        _resp = await _http.get(f"https://clob.polymarket.com/markets/{_mid}")
-                        if _resp.status_code != 200:
-                            continue
-                        _clob = _resp.json()
-                        if not _clob.get("closed"):
-                            continue
-
-                        # 3. Determine resolution (YES/NO) from token winners
-                        _tokens = _clob.get("tokens") or []
-                        _resolution = None
-                        for _idx, _tok in enumerate(_tokens):
-                            if _tok.get("winner"):
-                                _resolution = "YES" if _idx == 0 else "NO"
-                                break
-                        if not _resolution:
-                            continue
-
-                        # 4. Parse resolved_at from end_date
-                        from datetime import datetime as _dt, timezone as _tz
-                        _end_raw = _clob.get("end_date_iso") or _clob.get("game_start_time")
-                        _resolved_at = _dt.now(_tz.utc).replace(tzinfo=None)
-                        if _end_raw:
-                            try:
-                                _resolved_at = _dt.fromisoformat(
-                                    str(_end_raw).replace("Z", "+00:00")
-                                ).replace(tzinfo=None)
-                            except Exception:
-                                pass
-
-                        # 5. Save resolution (updates markets table + traded_markets)
-                        await db.save_market_resolution(
-                            _mid, True, _resolution, "clob_api_esports", _resolved_at
-                        )
-                        await db.mark_market_resolved(_mid, _resolution)
-
-                        # S121: Detect game for RESOLUTION event_data (per-game P&L tracking)
-                        _res_game = self._market_game.get(_mid, "") or self._detect_game(_clob.get("question", "")) or ""
-
-                        # 6. Compute realized_pnl from paper_trades and emit RESOLUTION trade_event
-                        async with db.get_session() as _ps:
-                            _pts = await _ps.execute(
-                                _clob_text(
-                                    "SELECT bot_name, side, price, size "
-                                    "FROM paper_trades "
-                                    "WHERE market_id = :mid "
-                                    "AND bot_name IN ('EsportsBot', 'EsportsLiveBot', 'EsportsSeriesBot') "
-                                    "AND LOWER(side) != 'sell'"
-                                ),
-                                {"mid": _mid},
-                            )
-                            for _pt in _pts.fetchall():
-                                _bn = _pt[0]
-                                _side = _pt[1]
-                                _entry = float(_pt[2]) if _pt[2] else 0.0
-                                _size = float(_pt[3]) if _pt[3] else 0.0
-                                _won = (_side == _resolution)
-                                _pnl = (1.0 - _entry) * _size if _won else -_entry * _size
-                                try:
-                                    await db.insert_trade_event(
-                                        event_type="RESOLUTION",
-                                        bot_name=_bn,
-                                        market_id=_mid,
-                                        side=_side,
-                                        size=_size,
-                                        price=0.0,
-                                        realized_pnl=_pnl,
-                                        correlation_id=f"resolution:{_mid}",
-                                        event_time=_resolved_at,
-                                        event_data={"game": _res_game},
-                                    )
-                                except Exception:
-                                    pass  # Idempotent — may already exist
-                            # Also update paper_trades resolution
-                            try:
-                                await _ps.execute(
-                                    _clob_text(
-                                        "UPDATE paper_trades SET resolution = :res, resolved_at = :rat "
-                                        "WHERE market_id = :mid AND resolution IS NULL"
-                                    ),
-                                    {"res": _resolution, "rat": _resolved_at, "mid": _mid},
-                                )
-                                await _ps.commit()
-                            except Exception:
-                                pass
-
-                        _resolved_count += 1
-                        logger.info(
-                            "esportsbot_clob_resolved",
-                            market_id=_mid[:20],
-                            resolution=_resolution,
-                            question=str(_clob.get("question", ""))[:60],
-                        )
-
-                        await asyncio.sleep(0.5)  # Rate limit CLOB calls
-                    except Exception as _e:
-                        logger.warning("esportsbot_clob_resolve_failed", market_id=str(_mid)[:20], error=str(_e))
-        except Exception as _outer:
-            logger.warning("esportsbot_clob_resolution_outer_error", error=str(_outer))
-        return _resolved_count
-
     async def _backfill_esports_outcomes(self, db) -> None:
         """Backfill actual_outcome in esports_prediction_log from trade_events RESOLUTION.
 
         Runs every 10 scans. Idempotent — resolve_predictions() only updates
         rows where actual_outcome IS NULL. YES win → outcome=1, NO win → outcome=0.
+
+        S132: Removed _resolve_esports_from_clob() — S104 workaround that caused
+        SE-1 (paper_trades P&L NULL), EB-2 (per-row emission), EB-4 (triple path race).
+        S125 fixed shared queue starvation with expired-first ordering.
+        Esports resolutions now flow through shared resolution_backfill.py.
         """
-        # S104: Resolve esports markets directly from CLOB (bypass starved shared queue)
-        try:
-            _clob_resolved = await self._resolve_esports_from_clob(db)
-            if _clob_resolved > 0:
-                logger.info("esportsbot_clob_resolution_pass", resolved=_clob_resolved)
-        except Exception as _clob_err:
-            logger.warning("esportsbot_clob_resolution_pass_failed", error=str(_clob_err))
 
         from sqlalchemy import text as _sa_text
         from esports.data.esports_db import resolve_predictions as _resolve
@@ -1995,6 +1908,37 @@ class EsportsBot(BaseBot):
                 rflb_ab=_rflb_ab,
             )
 
+        # S133: Early prediction logging — log ALL model predictions for calibrator learning,
+        # even if downstream edge/confidence gates reject the trade. The existing dedup
+        # (ON CONFLICT UPDATE) prevents duplicates if the trade also logs later.
+        _early_log_cache = self._prediction_log_cache.get(market_id)
+        _should_early_log = True
+        if _early_log_cache:
+            _prev_prob, _prev_ts = _early_log_cache
+            if abs(_prev_prob - model_prob) < 0.01 and (time.monotonic() - _prev_ts) < 600:
+                _should_early_log = False
+        if _should_early_log:
+            try:
+                _db_early = getattr(self.base_engine, "db", None)
+                if _db_early is not None:
+                    from esports.data.esports_db import log_prediction as _early_log_pred
+                    _early_side = "YES" if model_prob >= price else "NO"
+                    _early_edge = abs(model_prob - price)
+                    await _early_log_pred(
+                        db=_db_early,
+                        match_id=market_id,
+                        game=game,
+                        market_id=market_id,
+                        bot_name="EsportsBot",
+                        predicted_prob=model_prob,
+                        market_price=price,
+                        side=_early_side,
+                        edge=round(_early_edge, 4),
+                    )
+                    self._prediction_log_cache[market_id] = (model_prob, time.monotonic())
+            except Exception:
+                pass  # Non-critical — later log or next scan will catch it
+
         # Validate edge
         # YES side: model thinks YES is more likely than market price
         # NO side: model thinks YES is less likely than market price
@@ -2032,10 +1976,12 @@ class EsportsBot(BaseBot):
             if _wf: _wf["low_edge"] += 1
             return None
 
-        # S127: Confidence = side_prob * signal_quality (decoupled from prediction)
+        # S131: SQ is a SIZING multiplier, not a confidence multiplier.
+        # confidence = raw side_prob (what we believe). SQ scales bet SIZE in
+        # _execute_esports_trade, not the probability itself.
+        confidence = side_prob
         try:
             _sq, _sq_components = self._compute_signal_quality(game, market_id)
-            confidence = side_prob * _sq
             logger.info("esportsbot_signal_quality", market_id=market_id, game=game,
                         side_prob=round(side_prob, 4), signal_quality=round(_sq, 4),
                         confidence=round(confidence, 4),
@@ -2045,7 +1991,8 @@ class EsportsBot(BaseBot):
                         sq_enrichment=_sq_components.get("enrichment"),
                         sq_brier=_sq_components.get("brier"))
         except Exception as _sq_exc:
-            confidence = side_prob  # Fallback: no dampening on error
+            _sq = 1.0  # Fallback: full sizing on error
+            _sq_components = {}
             logger.warning("esportsbot_signal_quality_failed", error=str(_sq_exc),
                           market_id=market_id, game=game)
 
@@ -2090,7 +2037,11 @@ class EsportsBot(BaseBot):
             )
         confidence *= _phase_mult
 
-        if confidence < self._min_confidence:
+        # S131: Confidence gate repurposed — now checks raw side_prob.
+        # With SQ moved to sizing, confidence = side_prob (always > 0.50 for
+        # chosen side). Gate at 0.52: model must show minimum conviction.
+        _min_side_prob = max(self._min_confidence, 0.52)
+        if confidence < _min_side_prob:
             if _wf: _wf["low_confidence"] += 1
             logger.info("esportsbot_low_confidence", game=game, market_id=market_id,
                         confidence=round(confidence, 4), model_prob=round(model_prob, 4),
@@ -2175,6 +2126,7 @@ class EsportsBot(BaseBot):
             "market_type": market_type,
             "end_date_iso": market_data.get("end_date_iso"),
             "_clob_volume": _clob_volume,
+            "_signal_quality": _sq,
         }
 
     # ── Internal helpers ───────────────────────────────────────────────────
@@ -3162,6 +3114,35 @@ class EsportsBot(BaseBot):
         Session 83: conformal conservative sizing.
         Series: S-T size override for correlated series bets.
         """
+        # S133: Penny/extreme price guard — reject entries on dead/resolved markets
+        _entry_price = float(opp.get("price", 0))
+        _esports_min_price = float(getattr(settings, "ESPORTS_MIN_ENTRY_PRICE", 0.05))
+        _esports_max_price = float(getattr(settings, "ESPORTS_MAX_ENTRY_PRICE", 0.95))
+        if _entry_price < _esports_min_price or _entry_price > _esports_max_price:
+            logger.info(
+                "esports_extreme_price_rejected",
+                market_id=opp.get("market_id", "")[:16],
+                price=round(_entry_price, 4),
+                min_price=_esports_min_price,
+                max_price=_esports_max_price,
+            )
+            return False
+
+        # S132 EB-3: Opposing-side guard — block entry if we hold or ever entered opposite side
+        _market_id = opp.get("market_id", "")
+        _side_upper = str(opp.get("side", "")).upper()
+        _opposite = "NO" if _side_upper == "YES" else "YES"
+        og = getattr(self.base_engine, "order_gateway", None)
+        if og is not None and og.has_open_position(self.bot_name, str(_market_id)):
+            _pos_key = f"{self.bot_name}:{str(_market_id)}"
+            _existing = getattr(og, "_position_details", {}).get(_pos_key, {})
+            if _existing and str(_existing.get("side", "")).upper() == _opposite:
+                logger.info("esports_opposing_side_blocked", market_id=_market_id[:16], side=opp["side"], existing=_opposite)
+                return False
+        if (_market_id, _opposite) in self._entered_market_sides:
+            logger.info("esports_opposing_side_blocked_historical", market_id=_market_id[:16], side=opp["side"], prior=_opposite)
+            return False
+
         # Retrieve event_data from prediction cache for ENTRY persistence
         _cached_pred = self._prediction_cache.get(opp.get("market_id", ""), {})
         _event_data = _cached_pred.get("event_data") or {}
@@ -3178,6 +3159,9 @@ class EsportsBot(BaseBot):
             self._game_exposure[game] = self._game_exposure.get(game, 0.0) + _st_cost
             if game:
                 self._market_game[opp["market_id"]] = game
+            # S132 EB-5: Persist confidence + signal_quality for S-T path
+            _event_data["confidence"] = round(opp.get("confidence", 0.0), 4)
+            _event_data["signal_quality"] = round(float(opp.get("_signal_quality", 1.0)), 4)
             order = await self.place_order(
                 market_id=opp["market_id"],
                 token_id=opp["token_id"],
@@ -3188,6 +3172,8 @@ class EsportsBot(BaseBot):
                 event_data=_event_data,
             )
             if order and order.get("success"):
+                # S132 EB-3: Track entered side for opposing-side guard
+                self._entered_market_sides.add((opp["market_id"], str(opp["side"]).upper()))
                 if game:
                     _db = getattr(self.base_engine, "db", None)
                     if _db is not None:
@@ -3255,11 +3241,12 @@ class EsportsBot(BaseBot):
                 "esportsbot_sizing_killed_at_bankroll",
                 market_id=opp.get("market_id"),
                 game=opp.get("game", ""),
-                confidence_after_conformal=round(confidence, 4),
+                confidence=round(confidence, 4),
                 price=round(opp["price"], 4),
-                edge_after_conformal=round(confidence - opp["price"], 4),
+                edge=round(confidence - opp["price"], 4),
                 phi_factor=round(phi_factor, 4),
                 dd_factor=round(dd_factor, 4),
+                signal_quality=round(float(opp.get("_signal_quality", 1.0)), 4),
             )
             return False
 
@@ -3267,10 +3254,12 @@ class EsportsBot(BaseBot):
         if _clv_max_override is not None and size > _clv_max_override:
             size = _clv_max_override
 
-        # Apply A6 + A8 + per-game Kelly multiplier + edge decay scaling after base sizing
+        # Apply A6 + A8 + per-game Kelly multiplier + edge decay + S131 signal quality sizing
         _game_mult = self._game_kelly_mult.get(opp.get("game", ""), 1.0)
         _decay_mult = self._get_edge_decay_sizing_mult(opp.get("game", ""))
-        size = size * phi_factor * dd_factor * _game_mult * _decay_mult
+        # S131: Signal quality scales SIZE, not probability. Low-trust → smaller bet.
+        _sq_sizing = float(opp.get("_signal_quality", 1.0))
+        size = size * phi_factor * dd_factor * _game_mult * _decay_mult * _sq_sizing
 
         # Upset risk scaling [T1-D]: reduce sizing for volatile favorites
         if getattr(settings, "ESPORTS_UPSET_RISK_ENABLED", True):
@@ -3304,6 +3293,7 @@ class EsportsBot(BaseBot):
         _cost = price * size
         if _cost > _max_bet:
             size = _max_bet / max(price, 0.01)
+            _cost = price * size  # S133: Recalculate after max-bet cap
 
         # GAP-4: Min trade floor — reject dust positions
         _min_trade = float(getattr(settings, "ESPORTS_MIN_TRADE_USD", 10.0))
@@ -3340,6 +3330,10 @@ class EsportsBot(BaseBot):
         if game:
             self._market_game[opp["market_id"]] = game
 
+        # S132 EB-5: Persist confidence + signal_quality for bucketed WR analysis
+        _event_data["confidence"] = round(confidence, 4)
+        _event_data["signal_quality"] = round(_sq_sizing, 4)
+
         order = await self.place_order(
             market_id=opp["market_id"],
             token_id=opp["token_id"],
@@ -3351,6 +3345,8 @@ class EsportsBot(BaseBot):
         )
 
         if order and order.get("success"):
+            # S132 EB-3: Track entered side for opposing-side guard
+            self._entered_market_sides.add((opp["market_id"], str(opp["side"]).upper()))
             # Update tournament exposure
             tournament = opp.get("tournament", "")
             if tournament:
@@ -3358,13 +3354,17 @@ class EsportsBot(BaseBot):
                     self._tournament_exposure.get(tournament, 0.0) + _entry_cost
                 )
             # Write-through: persist game exposure (USD) to daily_counters for restart recovery
+            # S133: Retry once on failure — without DB write, restart loses the increment
             if game:
                 _db = getattr(self.base_engine, "db", None)
                 if _db is not None:
-                    try:
-                        await _inc_daily(_db, "EsportsBot", f"game_{game}", _entry_cost)
-                    except Exception as _exc:
-                        logger.warning("esports_game_counter_write_failed", error=str(_exc))
+                    for _ct_attempt in range(2):
+                        try:
+                            await _inc_daily(_db, "EsportsBot", f"game_{game}", _entry_cost)
+                            break
+                        except Exception as _exc:
+                            if _ct_attempt == 1:
+                                logger.warning("esports_game_counter_write_failed", error=str(_exc))
 
             logger.info(
                 "EsportsBot trade executed",
@@ -3382,6 +3382,7 @@ class EsportsBot(BaseBot):
                 dd_factor=dd_factor,
                 game_kelly_mult=_game_mult,
                 edge_decay_mult=_decay_mult,
+                signal_quality=round(_sq_sizing, 4),
             )
             return True
         else:
@@ -3471,9 +3472,10 @@ class EsportsBot(BaseBot):
         return _phi_floor  # Low certainty (barely above min_edge)
 
     def _compute_signal_quality(self, game: str, market_id: str) -> tuple:
-        """S127: Compute signal quality score [0.30, 1.0] from existing model signals.
+        """S127/S131: Compute signal quality score [0.30, 1.0] from existing model signals.
 
         Measures how much we TRUST the prediction, not what the prediction IS.
+        S131: Used as a SIZING multiplier, not confidence multiplier.
         Components: model agreement, calibration status, Glicko-2 uncertainty,
         enrichment depth, rolling Brier score.
 
@@ -3500,7 +3502,9 @@ class EsportsBot(BaseBot):
         if len(_probs) >= 2:
             _agreement = max(0.0, min(1.0, 1.0 - _stats.stdev(_probs) / 0.20))
         else:
-            _agreement = 0.5  # Only one model: neutral
+            # S131: Single model is not "uncertain" — it's just one source.
+            # 0.70 = "no contradicting signal" (was 0.50 = coin-flip penalty).
+            _agreement = 0.70
 
         # 2. Calibration score (weight 0.25): is this game calibrated?
         _beta = self._beta_calibrators.get(game)
@@ -3512,7 +3516,8 @@ class EsportsBot(BaseBot):
         elif _beta_fit or _platt_fit:
             _calibration = 0.7
         else:
-            _calibration = 0.3
+            # S131: "Not fitted" ≠ "miscalibrated". 0.50 = unknown (was 0.30).
+            _calibration = 0.50
 
         # 3. Uncertainty (weight 0.20): Glicko-2 matchup uncertainty
         # matchup_uncertainty = (phi_a + phi_b) / 700; 0 = certain, 1 = unknown
@@ -3529,7 +3534,9 @@ class EsportsBot(BaseBot):
         _enrichment = min(1.0, _enrich_count / 3.0)
 
         # 5. Brier component (weight 0.10): rolling game-level Brier
-        _brier = self._game_brier_cache.get(game, 0.25)
+        # S131: Default 0.15 (was 0.25). "No data" ≠ "worst possible".
+        # 0.15 → score 0.40 (moderate trust), 0.25 → score 0.0 (zero trust).
+        _brier = self._game_brier_cache.get(game, 0.15)
         _brier_score = max(0.0, min(1.0, 1.0 - _brier / 0.25))
 
         # Weighted composite
@@ -5558,7 +5565,8 @@ class EsportsBot(BaseBot):
 
         side_prob = model_prob if side == "YES" else (1.0 - model_prob)
         _sq, _ = self._compute_signal_quality(game, market_id)
-        confidence = side_prob * _sq
+        # S131: SQ is sizing multiplier, confidence = raw side_prob
+        confidence = side_prob
 
         # Cache prediction for WS reactive path
         self._series_prediction_cache[market_id] = {
@@ -5595,6 +5603,7 @@ class EsportsBot(BaseBot):
             "market_type": "match_winner",
             "series_score": f"{maps_a}-{maps_b}",
             "best_of": best_of,
+            "_signal_quality": _sq,
         }
         result = [match_opp]
 
@@ -5895,7 +5904,8 @@ class EsportsBot(BaseBot):
             side_prob = model_prob if side == "YES" else (1.0 - model_prob)
             _sq, _ = self._compute_signal_quality(
                 cached.get("game", ""), market_id)
-            confidence = side_prob * _sq
+            # S131: SQ is sizing multiplier, confidence = raw side_prob
+            confidence = side_prob
             trade_price = new_price if side == "YES" else (1.0 - new_price)
             opp = {
                 "type": "esports_series_ws",
@@ -5908,6 +5918,7 @@ class EsportsBot(BaseBot):
                 "edge": round(abs(edge), 4),
                 "game": cached.get("game", ""),
                 "market_type": "match_winner",
+                "_signal_quality": _sq,
             }
             logger.info(
                 "esports_series_ws_reactive",
