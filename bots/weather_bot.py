@@ -3391,11 +3391,13 @@ class WeatherBot(BaseBot):
             today_start = datetime.strptime(today_str, "%Y-%m-%d")  # naive UTC midnight
             async with db.get_session() as session:
                 from sqlalchemy import text
+                # S134: Only use EXIT events for daily P&L — RESOLUTION events
+                # are corrupted by Phase 4b paper_trades UPSERT bug.
                 result = await session.execute(text("""
                     SELECT COALESCE(SUM(CAST(realized_pnl AS DOUBLE PRECISION)), 0.0)
                     FROM trade_events
                     WHERE bot_name = 'WeatherBot'
-                      AND event_type IN ('EXIT', 'RESOLUTION')
+                      AND event_type = 'EXIT'
                       AND realized_pnl IS NOT NULL
                       AND event_time >= :today_start
                 """), {"today_start": today_start})

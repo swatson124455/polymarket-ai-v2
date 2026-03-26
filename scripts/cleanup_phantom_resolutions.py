@@ -26,10 +26,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 async def main(dry_run: bool = False):
     from base_engine.data.database import Database
-    from config import settings
+    from dotenv import load_dotenv
+    load_dotenv()
 
-    db = Database(settings.DATABASE_URL)
-    await db.initialize()
+    db = Database()
+    await db.init()
 
     try:
         async with db.get_session() as session:
