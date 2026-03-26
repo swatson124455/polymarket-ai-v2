@@ -720,6 +720,10 @@ class EsportsBot(BaseBot):
         # S94: WS guards matching scan path (were missing — race/safety fix)
         if self._check_daily_loss_limit():
             return
+        # S134: Hard game disable
+        _disabled_ws = getattr(settings, "ESPORTS_DISABLED_GAMES", "")
+        if _disabled_ws and game in {g.strip() for g in _disabled_ws.split(",") if g.strip()}:
+            return
         if game in self._monitoring_halted_games:
             return
         if self._patch_drift and self._patch_drift.is_observation_mode(game):
@@ -1541,10 +1545,11 @@ class EsportsBot(BaseBot):
             if size <= 0 or not token_id:
                 continue
 
-            # S133: Skip exit if current_price is suspiciously low (dead/unquoted market)
-            # A price of 0.01-0.02 on a market we entered at 0.30+ means the book is empty,
-            # not that we lost 97%. Let resolution handle it instead.
-            if current < 0.03 and entry >= 0.05:
+            # S134 Fix A: Widen dead-market guard — skip exit if book is likely empty.
+            # Esports markets are binary (match winner). A price of <0.10 on an entry
+            # of 0.20+ means the orderbook is empty, not a real price move.
+            # Let resolution handle it (will pay 0.0 or 1.0).
+            if current < 0.10 and entry >= 0.20:
                 logger.debug("esportsbot_exit_skip_dead_market", market_id=mid,
                              entry=round(entry, 4), current=round(current, 4))
                 continue
@@ -1552,7 +1557,16 @@ class EsportsBot(BaseBot):
             # Prices are token-specific — (current - entry) is correct for BOTH YES and NO
             pnl_pct = (current - entry) / max(entry, 1e-6)
 
+            # S134 Fix B: Stop-loss floor price — don't trigger stop-loss if exit
+            # price < 0.10. Even if pnl_pct exceeds threshold, a sub-$0.10 price
+            # on a thin esports book is not real price discovery. Resolution will
+            # give the true 0.0 or 1.0 payout.
             if pnl_pct <= -stop_pct:
+                if current < 0.10:
+                    logger.info("esportsbot_stop_loss_floor_skip", market_id=mid,
+                                pnl_pct=f"{pnl_pct:.2%}", side=side,
+                                entry=round(entry, 4), current=round(current, 4))
+                    continue
                 logger.info("esportsbot_stop_loss", market_id=mid,
                             pnl_pct=f"{pnl_pct:.2%}", side=side,
                             entry=round(entry, 4), current=round(current, 4))
@@ -1821,6 +1835,12 @@ class EsportsBot(BaseBot):
         game = self._detect_game(question)
         if not game:
             if _wf: _wf["no_game"] += 1
+            return None
+
+        # S134: Hard game disable (env var, no data needed)
+        _disabled = getattr(settings, "ESPORTS_DISABLED_GAMES", "")
+        if _disabled and game in {g.strip() for g in _disabled.split(",") if g.strip()}:
+            if _wf: _wf["halted"] += 1
             return None
 
         # E4: Check monitoring-halted games

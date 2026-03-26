@@ -2,7 +2,7 @@ Exception type: ConnectionError
 Exception: Connection refused
 Traceback:
 Traceback (most recent call last):
-  File "C:\lockes-picks\polymarket-ai-v2\base_engine\data\data_ingestion.py", line 2237, in _pre_ingestion_checks
+  File "C:\lockes-picks\polymarket-ai-v2\base_engine\data\data_ingestion.py", line 2296, in _pre_ingestion_checks
     await self.db._verify_database()
   File "C:\Users\samwa\AppData\Local\Programs\Python\Python313\Lib\unittest\mock.py", line 2321, in _execute_mock_call
     raise effect

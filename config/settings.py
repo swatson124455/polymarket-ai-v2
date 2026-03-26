@@ -1175,6 +1175,9 @@ class Settings(BaseSettings):
     ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW: int = int(os.getenv("ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW", "5"))
     ESPORTS_ENTRY_WINDOW_HOURS: float = float(os.getenv("ESPORTS_ENTRY_WINDOW_HOURS", "12.0"))
 
+    # --- Hard game disable (comma-separated lowercase game names, e.g. "cod,r6") ---
+    ESPORTS_DISABLED_GAMES: str = os.getenv("ESPORTS_DISABLED_GAMES", "")
+
     # --- Monitoring halt threshold (Brier score above this → halt trading for game) ---
     ESPORTS_BRIER_HALT_THRESHOLD: float = float(os.getenv("ESPORTS_BRIER_HALT_THRESHOLD", "0.30"))  # S127: lowered to actually halt bad games
 
