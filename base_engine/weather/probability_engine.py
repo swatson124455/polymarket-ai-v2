@@ -98,37 +98,7 @@ class WeatherProbabilityEngine:
         # underdispersion once ≥20 calibration samples/bucket accumulate.
         effective_std = max(emos_sigma if emos_sigma is not None else std, 0.5)
 
-        # S124/S126: Spread inflation — two components:
-        #   BASE: uniform inflation at all lead times (fixes short-lead overconfidence)
-        #   FACTOR: additional inflation scaling with sqrt(lead_days) for longer forecasts
-        # S126 data: <24h trades lose -$204 (19pp overconfident), 24-48h lose -$601 (13pp).
-        #   72-120h earns +$1,453 (7pp overconfident). Overconfidence is worst at SHORT leads.
-        # With base=0.15, factor=0.10:
-        #   24h→×1.15, 48h→×1.19, 72h→×1.22, 120h→×1.27, 168h→×1.31
-        _spread_base = float(getattr(settings, "WEATHER_SPREAD_INFLATION_BASE", 0.0))
-        _spread_factor = float(getattr(settings, "WEATHER_SPREAD_INFLATION_FACTOR", 0.0))
-        # S126: Auto-decay 10%/day from start date.  Hard zero at day 23.
-        # As calibrator absorbs more-honest raw probs (6h refit, 30-day window),
-        # T drifts toward 1.0 and inflation becomes unnecessary.
-        _inflation_start = str(getattr(settings, "WEATHER_SPREAD_INFLATION_START", ""))
-        if _inflation_start and (_spread_base > 0 or _spread_factor > 0):
-            try:
-                _days_active = (datetime.now(timezone.utc) - datetime.fromisoformat(_inflation_start)).total_seconds() / 86400.0
-                if _days_active >= 23.0:
-                    _spread_base = 0.0
-                    _spread_factor = 0.0
-                elif _days_active > 0:
-                    _decay = 0.90 ** _days_active
-                    _spread_base *= _decay
-                    _spread_factor *= _decay
-            except (ValueError, TypeError):
-                pass  # Bad date format — use raw values without decay
-        if _spread_base > 0 or _spread_factor > 0:
-            _lead_days = max(lead_time_hours / 24.0, 1.0)
-            _inflation_mult = 1.0 + _spread_base + _spread_factor * (math.sqrt(_lead_days) - 1.0)
-            effective_std *= _inflation_mult
-            if emos_sigma is not None:
-                emos_sigma *= _inflation_mult
+        # S132: Spread inflation REMOVED — was double-counting with EMOS + Platt calibration.
 
         # EMOS loc shift applied to skewnorm-fitted location
         loc_shift = corrected_mean - mean  # = emos_a + (emos_b - 1) * mean
@@ -182,11 +152,7 @@ class WeatherProbabilityEngine:
         probs: Dict[str, float] = {}
         for b in buckets:
             p = self._integrate_bucket(dist, b)
-            # Tail bracket discount: use isotonic calibration if available (≥5 data
-            # points per cell), otherwise fall back to fixed 0.85 (15% discount).
-            # Favourite-longshot bias: retail bettors overweight extreme outcomes.
-            if b.bucket_type in ("at_or_below", "at_or_higher"):
-                p *= self._get_tail_discount(b.bucket_type, lead_time_hours)
+            # S132: Tail discount REMOVED — YES side is net profitable (+$815).
             probs[b.market_id] = max(0.001, min(0.999, p))  # Clamp to avoid 0/1
 
         # Normalize so probabilities sum to 1.0
@@ -243,8 +209,7 @@ class WeatherProbabilityEngine:
         probs: Dict[str, float] = {}
         for b in buckets:
             p = self._normal_cdf_bucket(loc, scale, b)
-            if b.bucket_type in ("at_or_below", "at_or_higher"):
-                p *= self._get_tail_discount(b.bucket_type, lead_time_hours)
+            # S132: Tail discount REMOVED
             probs[b.market_id] = max(0.001, min(0.999, p))
         total = sum(probs.values())
         if total > 0.01 and abs(total - 1.0) > 0.01:
@@ -345,31 +310,7 @@ class WeatherProbabilityEngine:
 
         return min(kelly * kelly_mult, kelly_mult)  # Cap at kelly_mult
 
-    def _get_tail_discount(
-        self, bucket_type: str, lead_time_hours: float,
-    ) -> float:
-        """Return tail calibration multiplier for at_or_below / at_or_higher buckets.
-
-        If isotonic calibration data exists (≥50 resolved tail events for this cell),
-        returns the average actual_freq / model_prob ratio as the multiplier.
-        Otherwise returns the fixed 0.90 (10% discount) cold-start fallback.
-        """
-        if bucket_type not in ("at_or_below", "at_or_higher"):
-            return 1.0
-        lead_bucket = int(lead_time_hours // 6) * 6
-        points = self._tail_isotonic.get((bucket_type, lead_bucket))
-        if not points or len(points) < 50:
-            return 0.90  # S127: Require 50 resolved tail events for stable calibration
-
-        # Isotonic calibration: average ratio of (actual_freq / model_prob)
-        # across binned (model_prob, actual_freq) pairs from resolved markets.
-        # This gives a data-driven discount that varies by lead time and bucket type.
-        ratios = [af / mp for mp, af in points if mp > 0.01]
-        if not ratios:
-            return 0.90
-        avg_ratio = sum(ratios) / len(ratios)
-        # Clamp to [0.5, 1.0] — never inflate tail probs, never discount more than 50%
-        return max(0.5, min(1.0, avg_ratio))
+    # S134: _get_tail_discount() removed (S132 dampener deletion)
 
     def load_tail_calibration(
         self,

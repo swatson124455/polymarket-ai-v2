@@ -606,16 +606,8 @@ class WeatherBot(BaseBot):
         if station and station.temp_unit.upper() == "C" and station.local_model is None:
             base = max(base, self._intl_min_edge)
 
-        # S114: Apply spread confidence gate
-        if model_spread is not None and station is not None:
-            history = self._spread_history.get(station.station_id)
-            if history and len(history) >= 3:
-                typical = sum(history) / len(history)
-                if typical > 0.1:  # avoid division by near-zero
-                    _sr_min = float(getattr(settings, "WEATHER_SPREAD_RATIO_MIN", 0.7))
-                    _sr_max = float(getattr(settings, "WEATHER_SPREAD_RATIO_MAX", 1.5))
-                    spread_ratio = max(_sr_min, min(_sr_max, model_spread / typical))
-                    base *= spread_ratio
+        # S132: Spread confidence gate REMOVED — double-counted spread
+        # already captured in the probability distribution width.
 
         return base
 
@@ -2552,37 +2544,14 @@ class WeatherBot(BaseBot):
         # for US stations, apply a 1.3× sizing multiplier (calibrated benchmark signal).
         nbm_boost = getattr(settings, "WEATHER_NBM_BOOST", 1.3) if opp.get("nbm_high_conviction") else 1.0
 
-        # S121: Model freshness factor — scale by NWP model age
-        _model_age_h = self._get_model_age_hours()
-        _fresh_h = getattr(settings, "WEATHER_MODEL_FRESH_HOURS", 2.0)
-        _stale_h = getattr(settings, "WEATHER_MODEL_STALE_HOURS", 8.0)
-        if _model_age_h is not None and _model_age_h < _fresh_h:
-            model_freshness = getattr(settings, "WEATHER_MODEL_FRESH_BOOST", 1.2)
-        elif _model_age_h is not None and _model_age_h > _stale_h:
-            model_freshness = getattr(settings, "WEATHER_MODEL_STALE_DISCOUNT", 0.8)
-        else:
-            model_freshness = 1.0
+        # S132: Model freshness dampener REMOVED
 
         # C4: Combined boost — additive with diminishing returns to prevent
         # multiplicative stacking (was 2.0×1.2×2.0=4.8→cap 3.0 = 0.75 Kelly).
         # New: each boost contributes its excess independently; capped at 2.0×
         # to keep effective Kelly ≤ 0.5 (quarter-Kelly × 2.0).
-        combined_boost = 1.0 + (expiry_boost - 1.0) + (regime_boost - 1.0) * 0.5 + (severe_boost - 1.0) * 0.5 + (jump_boost - 1.0) * 0.5 + (nbm_boost - 1.0) * 0.5 + (model_freshness - 1.0) * 0.5
-        # NOTE: 2.0 cap moved AFTER BM/station/calibration (fix 2D — S115)
-
-        # W7: Baker-McHale uncertainty-scaled sizing.
-        # When ensemble members agree (low spread), k* ≈ 1.0 → full size.
-        # When members disagree (high spread), k* < 1.0 → reduce size.
-        # k* = 1 / (1 + sigma²) where sigma = model_spread / typical_spread.
-        # Typical spread: ~3°F (1.7°C). Values below get boosted, above get shrunk.
-        _default_spread = float(getattr(settings, "WEATHER_DEFAULT_MODEL_SPREAD", 3.0))
-        _spread = opp.get("model_spread", _default_spread)
-        _typical_spread = _default_spread  # °F baseline
-        _sigma_norm = _spread / _typical_spread  # normalized: 1.0 = average
-        _bm_floor = float(getattr(settings, "WEATHER_BM_FLOOR", 0.50))
-        _bm_factor = max(_bm_floor, 1.0 / (1.0 + _sigma_norm ** 2))  # S107: floored at 0.50
-        # Scale combined_boost by Baker-McHale factor
-        combined_boost *= _bm_factor
+        # S132: model_freshness removed from formula; Baker-McHale removed
+        combined_boost = 1.0 + (expiry_boost - 1.0) + (regime_boost - 1.0) * 0.5 + (severe_boost - 1.0) * 0.5 + (jump_boost - 1.0) * 0.5 + (nbm_boost - 1.0) * 0.5
 
         # S107: Drawdown compression REMOVED from combined_boost — already applied
         # in BotBankrollManager.get_bet_size() via `compress` factor. Keeping both
@@ -2596,22 +2565,11 @@ class WeatherBot(BaseBot):
             if _station_factor != 1.0:
                 combined_boost *= _station_factor
 
-        # S114 Item 2: Bühlmann calibration confidence ramp
-        # Scale position size by w = n/(n+κ) where n = resolved pairs for station.
-        # Prevents overbetting on uncalibrated stations (Baker & McHale 2013).
-        if _station_id:
-            _cal_conf = self._calibration_confidence(_station_id)
-            if _cal_conf <= 0.0:
-                logger.info(
-                    "weatherbot_cold_start_skip",
-                    station=_station_id,
-                    n_resolved=self._station_n_resolved.get(_station_id, 0),
-                    market_id=opp["market_id"],
-                )
-                return False
-            combined_boost *= _cal_conf
+        # S132: Bühlmann calibration ramp REMOVED — global Platt calibration
+        # (T=2.271) handles uncalibrated stations.
 
-        combined_boost = min(combined_boost, getattr(settings, "WEATHER_COMBINED_BOOST_CAP", 2.0))
+        # S132: Combined boost cap REMOVED — guardrails (exposure caps, Kelly,
+        # slippage) prevent oversizing.
 
         # H1: Slippage-adjusted edge — query order book depth and skip if
         # estimated slippage eats the edge. Cap size to max safe fill.
@@ -2794,8 +2752,7 @@ class WeatherBot(BaseBot):
             jump_boost=jump_boost,
             forecast_delta=_forecast_delta,
             nbm_boost=nbm_boost,
-            model_freshness=model_freshness,
-            model_age_h=round(_model_age_h, 1) if _model_age_h is not None else None,
+            # S132: model_freshness and model_age_h removed
         )
 
         # S109: Convert USD to shares for place_order (paper engine expects shares).

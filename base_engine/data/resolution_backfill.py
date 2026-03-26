@@ -439,56 +439,74 @@ async def run_resolution_backfill(
         try:
             async with db.get_session() as _te_sess:
                 from sqlalchemy import text as _te_text
+                # S134: Source ENTRY size/price from trade_events (immutable)
+                # instead of paper_trades (mutable UPSERT overwrites size).
+                # Fixes RESOLUTION event size inflation → phantom P&L.
                 _resolved = await _te_sess.execute(_te_text(
-                    "SELECT pt.market_id, pt.bot_name, pt.side, "
-                    "       SUM(pt.realized_pnl) AS total_pnl, "
-                    "       MIN(pt.resolved_at) AS resolved_at, "
-                    "       SUM(pt.size) - COALESCE(("
-                    "         SELECT SUM(te_exit.size) FROM trade_events te_exit "
-                    "         WHERE te_exit.market_id = pt.market_id "
-                    "           AND te_exit.bot_name = pt.bot_name "
-                    "           AND te_exit.event_type = 'EXIT'"
-                    "       ), 0) AS remaining_size, "
-                    "       CASE WHEN SUM(pt.size) > 0 "
-                    "            THEN SUM(pt.price * pt.size) / SUM(pt.size) "
-                    "            ELSE 0.0 END AS avg_entry_price "
-                    "FROM paper_trades pt "
-                    "WHERE pt.resolution IN ('YES', 'NO') "
-                    "  AND pt.side IN ('YES', 'NO') "
-                    "  AND pt.resolved_at IS NOT NULL "
-                    "  AND NOT EXISTS ("
-                    "    SELECT 1 FROM trade_events te "
-                    "    WHERE te.market_id = pt.market_id "
-                    "      AND te.bot_name = pt.bot_name "
-                    "      AND te.event_type = 'RESOLUTION'"
-                    "  ) "
-                    "  AND EXISTS ("
-                    "    SELECT 1 FROM trade_events te2 "
-                    "    WHERE te2.market_id = pt.market_id "
-                    "      AND te2.bot_name = pt.bot_name "
-                    "      AND te2.side = pt.side "
-                    "      AND te2.event_type = 'ENTRY'"
-                    "  ) "
-                    "GROUP BY pt.market_id, pt.bot_name, pt.side "
-                    "HAVING SUM(pt.size) - COALESCE(("
-                    "  SELECT SUM(te_exit2.size) FROM trade_events te_exit2 "
-                    "  WHERE te_exit2.market_id = pt.market_id "
-                    "    AND te_exit2.bot_name = pt.bot_name "
-                    "    AND te_exit2.event_type = 'EXIT'"
-                    "), 0) > 0 "
+                    "SELECT e.market_id, e.bot_name, e.side, "
+                    "       pt_pnl.total_pnl, "
+                    "       pt_pnl.resolved_at, "
+                    "       e.total_entry_size - COALESCE(x.total_exit_size, 0) "
+                    "         AS remaining_size, "
+                    "       CASE WHEN e.total_entry_size > 0 "
+                    "            THEN e.weighted_price / e.total_entry_size "
+                    "            ELSE 0.0 END AS avg_entry_price, "
+                    "       COALESCE(x.exit_pnl, 0) AS exit_pnl_already "
+                    "FROM ("
+                    "  SELECT market_id, bot_name, side, "
+                    "         SUM(size) AS total_entry_size, "
+                    "         SUM(price * size) AS weighted_price "
+                    "  FROM trade_events "
+                    "  WHERE event_type = 'ENTRY' AND side IN ('YES', 'NO') "
+                    "  GROUP BY market_id, bot_name, side"
+                    ") e "
+                    "JOIN ("
+                    "  SELECT market_id, bot_name, side, "
+                    "         SUM(realized_pnl) AS total_pnl, "
+                    "         MIN(resolved_at) AS resolved_at "
+                    "  FROM paper_trades "
+                    "  WHERE resolution IN ('YES', 'NO') "
+                    "    AND side IN ('YES', 'NO') "
+                    "    AND resolved_at IS NOT NULL "
+                    "  GROUP BY market_id, bot_name, side"
+                    ") pt_pnl ON pt_pnl.market_id = e.market_id "
+                    "        AND pt_pnl.bot_name = e.bot_name "
+                    "        AND pt_pnl.side = e.side "
+                    "LEFT JOIN ("
+                    "  SELECT market_id, bot_name, "
+                    "         SUM(size) AS total_exit_size, "
+                    "         SUM(realized_pnl) AS exit_pnl "
+                    "  FROM trade_events "
+                    "  WHERE event_type = 'EXIT' "
+                    "  GROUP BY market_id, bot_name"
+                    ") x ON x.market_id = e.market_id "
+                    "    AND x.bot_name = e.bot_name "
+                    "WHERE NOT EXISTS ("
+                    "  SELECT 1 FROM trade_events te "
+                    "  WHERE te.market_id = e.market_id "
+                    "    AND te.bot_name = e.bot_name "
+                    "    AND te.event_type = 'RESOLUTION'"
+                    ") "
+                    "AND e.total_entry_size - COALESCE(x.total_exit_size, 0) > 0 "
                     "LIMIT 500"
                 ))
                 for row in _resolved.fetchall():
                     try:
-                        _entry_price = float(row[6]) if len(row) > 6 and row[6] is not None else 0.0
+                        _entry_price = float(row[6]) if row[6] is not None else 0.0
+                        _raw_pnl = float(row[3]) if row[3] is not None else None
+                        _exit_pnl = float(row[7]) if row[7] is not None else 0.0
+                        _adj_pnl = (_raw_pnl - _exit_pnl) if _raw_pnl is not None else None
+                        if _exit_pnl != 0:
+                            logger.info("phase4b_exit_pnl_subtracted", market=str(row[0])[:20],
+                                        bot=row[1], raw_pnl=round(_raw_pnl, 4), exit_pnl=round(_exit_pnl, 4))
                         await db.insert_trade_event(
                             event_type="RESOLUTION",
                             bot_name=row[1],
                             market_id=row[0],
                             side=row[2],
-                            size=float(row[5]) if len(row) > 5 and row[5] is not None else 0.0,
+                            size=float(row[5]) if row[5] is not None else 0.0,
                             price=_entry_price,
-                            realized_pnl=float(row[3]) if row[3] is not None else None,
+                            realized_pnl=_adj_pnl,
                             correlation_id=f"resolution:{row[0]}",
                             event_time=row[4],
                         )

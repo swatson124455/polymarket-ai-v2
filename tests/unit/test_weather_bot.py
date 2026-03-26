@@ -1975,30 +1975,14 @@ class TestZeroKellyGuard:
 
 
 class TestSpreadInflation:
-    """S124: Verify spread inflation hook in probability engine."""
+    """S132: Verify spread inflation is OFF (removed in S132)."""
 
-    def test_spread_inflation_off_by_default(self):
-        """With default settings (factor=0.0), output should be unchanged."""
+    def test_spread_not_inflated_by_lead_time(self):
+        """S132: Spread inflation removed — lead time should NOT affect scale."""
         engine = WeatherProbabilityEngine()
-        # Use < 10 members to hit normal fallback path (not skewnorm MLE)
         members = [50.0, 51.0, 52.0, 53.0, 54.0]
-        loc1, scale1, _ = engine.fit_distribution(members, lead_time_hours=120.0)
-        loc2, scale2, _ = engine.fit_distribution(members, lead_time_hours=24.0)
-        # With factor=0.0, lead time should not affect scale (same members)
-        assert abs(scale1 - scale2) < 0.01, (
-            f"With inflation OFF, scale should not vary by lead time: {scale1} vs {scale2}"
+        _, scale_24h, _ = engine.fit_distribution(members, lead_time_hours=24.0)
+        _, scale_120h, _ = engine.fit_distribution(members, lead_time_hours=120.0)
+        assert abs(scale_24h - scale_120h) < 0.01, (
+            f"Spread inflation should be OFF: 24h={scale_24h:.4f} vs 120h={scale_120h:.4f}"
         )
-
-    def test_spread_inflation_increases_with_lead_time(self):
-        """With factor > 0, longer lead times should produce wider scale."""
-        engine = WeatherProbabilityEngine()
-        # Use < 10 members to hit normal fallback path where effective_std is returned.
-        # Skewnorm MLE path uses its own scale; inflation only affects effective_std/emos_sigma.
-        members = [50.0, 51.0, 52.0, 53.0, 54.0]
-        with patch.object(settings, "WEATHER_SPREAD_INFLATION_FACTOR", 0.10):
-            _, scale_24h, _ = engine.fit_distribution(members, lead_time_hours=24.0)
-            _, scale_120h, _ = engine.fit_distribution(members, lead_time_hours=120.0)
-        # 120h should have ~12% wider scale than 24h
-        ratio = scale_120h / scale_24h
-        assert ratio > 1.05, f"Expected 120h scale > 24h by >5%, got ratio {ratio:.3f}"
-        assert ratio < 1.25, f"Inflation too aggressive: ratio {ratio:.3f}"
