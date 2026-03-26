@@ -200,6 +200,22 @@ class EliteReliabilityTracker:
             return 0
         return rec.get("yes_total", 0) + rec.get("no_total", 0)
 
+    def overall_win_rate(self, address: str) -> float:
+        """Return overall win rate (correct / total) across all sides and categories.
+
+        Returns 0.5 (uninformative prior) if no resolved trades exist.
+        """
+        key = (address or "").strip().lower()
+        rec = self._cache.get(key)
+        if not rec:
+            return 0.5
+        total = rec.get("yes_total", 0) + rec.get("no_total", 0)
+        if total == 0:
+            return 0.5
+        # alpha includes +1 prior, so correct = alpha - 1
+        correct = (rec.get("alpha_yes", 1) - 1) + (rec.get("alpha_no", 1) - 1)
+        return correct / total
+
     def category_trade_count(self, address: str, category: str) -> int:
         """Return total resolved trades for this trader in the given category."""
         if not category or not self._cat_cache:

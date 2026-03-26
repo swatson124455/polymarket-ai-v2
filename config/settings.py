@@ -386,6 +386,12 @@ class Settings(BaseSettings):
     MIRROR_MIN_WHALE_TRADE_USD: float = float(os.getenv("MIRROR_MIN_WHALE_TRADE_USD", "50.0"))
     # S132: NO-side dampener — NO loses 7x more than YES. 0.5 = half size on NO.
     MIRROR_NO_SIDE_DAMPENER: float = float(os.getenv("MIRROR_NO_SIDE_DAMPENER", "0.5"))
+    # S133: Spread gate — 20c+ spread markets lost -$151K. Reject wide-spread entries.
+    MIRROR_MAX_SPREAD: float = float(os.getenv("MIRROR_MAX_SPREAD", "0.20"))
+    # S133: Per-trader P&L blacklist — auto-block traders with poor WR after enough data.
+    # 76% of copied traders are unprofitable; top 3 worst = -$68K (43% of all losses).
+    MIRROR_TRADER_MIN_WIN_RATE: float = float(os.getenv("MIRROR_TRADER_MIN_WIN_RATE", "0.35"))
+    MIRROR_TRADER_MIN_RESOLVED: int = int(os.getenv("MIRROR_TRADER_MIN_RESOLVED", "20"))
     # Dampeners (S119: set to 1.0 = no-op for data collection phase)
     MIRROR_FAVORITE_PRICE_THRESHOLD: float = float(os.getenv("MIRROR_FAVORITE_PRICE_THRESHOLD", "0.70"))
     MIRROR_FAVORITE_DAMPENER: float = float(os.getenv("MIRROR_FAVORITE_DAMPENER", "1.0"))  # S119: 0.40→1.0 for data collection

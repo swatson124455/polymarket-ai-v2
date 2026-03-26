@@ -1220,6 +1220,23 @@ class MirrorBot(BaseBot):
                             min_usd=_min_whale_usd, market=str(market_id)[:16])
                 return False
 
+            # S133: Per-trader P&L blacklist — auto-block traders with <35% WR after 20+ resolved.
+            # 76% of copied traders are unprofitable; top 3 worst = -$68K (43% of all losses).
+            if self._reliability_tracker:
+                _bl_min_resolved = int(getattr(settings, "MIRROR_TRADER_MIN_RESOLVED", 20))
+                _bl_total = self._reliability_tracker.total_trade_count(trader_address)
+                if _bl_total >= _bl_min_resolved:
+                    _bl_wr = self._reliability_tracker.overall_win_rate(trader_address)
+                    _bl_min_wr = float(getattr(settings, "MIRROR_TRADER_MIN_WIN_RATE", 0.35))
+                    if _bl_wr < _bl_min_wr:
+                        logger.info("mirror_trader_blacklisted",
+                                    trader=trader_address[:10],
+                                    win_rate=round(_bl_wr, 3),
+                                    resolved=_bl_total,
+                                    min_wr=_bl_min_wr,
+                                    market=str(market_id)[:16])
+                        return False
+
             # Market blocklist — closed/expired/speed markets
             if market_id in self._market_blocklist:
                 return False
@@ -1344,12 +1361,26 @@ class MirrorBot(BaseBot):
         # stale price produces fake P&L (buying at yesterday's prices, selling at today's).
         _market_data = self.base_engine.get_market_from_index(str(market_id))
         _old_price = price  # S91: preserve trader's fill price for slippage check
+        _spread = None  # S133: captured for event_data logging
         if _market_data:
             # S99: Reject inactive/closed markets — prevents 400s from CLOB
             if not _market_data.get("active", True):
                 logger.info("mirror_market_inactive", market=str(market_id)[:16])
                 self._market_blocklist.add(market_id)
                 return False
+
+            # S133: Spread gate — 20c+ spread = -$151K in losses (wide spread = illiquid/stale).
+            # Spread = yes_price + no_price - 1.0 (overround). Tight market ≈ 0.
+            _max_spread = float(getattr(settings, "MIRROR_MAX_SPREAD", 0.20))
+            _yes_p = float(_market_data.get("yes_price", 0) or 0)
+            _no_p = float(_market_data.get("no_price", 0) or 0)
+            if _yes_p > 0 and _no_p > 0:
+                _spread = _yes_p + _no_p - 1.0
+                if _spread > _max_spread:
+                    logger.info("mirror_spread_rejected", spread=round(_spread, 3),
+                                max_spread=_max_spread, market=str(market_id)[:16],
+                                yes_price=round(_yes_p, 3), no_price=round(_no_p, 3))
+                    return False
 
             # S99: Hours-to-resolution filter — skip insider-territory markets
             _min_hours = float(getattr(settings, "MIRROR_MIN_HOURS_TO_RESOLUTION", 4))
@@ -1477,33 +1508,38 @@ class MirrorBot(BaseBot):
                     rel_mult=round(reliability_mult, 3))
 
         # S124: ML selector — score trade with all three strategies (shadow + optional live gate)
+        # Fail-open: any ML error must NOT block the trade (log + continue)
         _ml_scores = None
         if self._ml_selector and self._ml_selector.loaded:
-            _ml_features = {
-                "conf_base": _base,
-                "conf_price_adj": _price_adj,
-                "conf_conv_adj": _conv_adj,
-                "rel_mult": reliability_mult,
-                "price": price,
-                "whale_trade_usd": whale_trade_usd,
-                "category_encoded": self._ml_selector.encode_category(category),
-                "consensus": self._whale_consensus.get(f"{market_id}:{_side_upper}", 1),
-                "hour_utc": float(datetime.now(timezone.utc).hour),
-                "side_is_no": 1.0 if _side_upper == "NO" else 0.0,
-                "price_extremity": abs(price - 0.50),
-                "conf_composite": confidence,
-            }
-            _ml_scores = self._ml_selector.score_trade(_ml_features)
+            try:
+                _ml_features = {
+                    "conf_base": _base,
+                    "conf_price_adj": _price_adj,
+                    "conf_conv_adj": _conv_adj,
+                    "rel_mult": reliability_mult,
+                    "price": price,
+                    "whale_trade_usd": whale_trade_usd,
+                    "category_encoded": self._ml_selector.encode_category(category),
+                    "consensus": self._whale_consensus.get(f"{market_id}:{_side_upper}", 1),
+                    "hour_utc": float(datetime.now(timezone.utc).hour),
+                    "side_is_no": 1.0 if _side_upper == "NO" else 0.0,
+                    "price_extremity": abs(price - 0.50),
+                    "conf_composite": confidence,
+                }
+                _ml_scores = self._ml_selector.score_trade(_ml_features)
 
-            # Live gate: only block when MIRROR_USE_ML_SELECTOR=true
-            if getattr(settings, "MIRROR_USE_ML_SELECTOR", False) and self._ml_selector.should_block(_ml_scores):
-                logger.info("mirror_ml_rejected",
-                            strategy=getattr(settings, "MIRROR_ML_STRATEGY", "xgb"),
-                            xgb=_ml_scores.get("ml_score_xgb"),
-                            ql=_ml_scores.get("ml_score_ql"),
-                            confidence=round(confidence, 3),
-                            market=str(market_id)[:16])
-                return False
+                # Live gate: only block when MIRROR_USE_ML_SELECTOR=true
+                if getattr(settings, "MIRROR_USE_ML_SELECTOR", False) and self._ml_selector.should_block(_ml_scores):
+                    logger.info("mirror_ml_rejected",
+                                strategy=getattr(settings, "MIRROR_ML_STRATEGY", "xgb"),
+                                xgb=_ml_scores.get("ml_score_xgb"),
+                                ql=_ml_scores.get("ml_score_ql"),
+                                confidence=round(confidence, 3),
+                                market=str(market_id)[:16])
+                    return False
+            except Exception as e:
+                logger.warning("mirror_ml_selector_error", error=str(e), market=str(market_id)[:16])
+                # Fail-open: _ml_scores stays None, trade proceeds without ML gate
 
         # PERF: MirrorBot is a pure trader-mirroring strategy — confidence comes from
         # elite trader consensus + reliability weighting, not from market signals.
@@ -1657,6 +1693,7 @@ class MirrorBot(BaseBot):
             "trader": trader_address[:10],
             "consensus": self._whale_consensus.get(f"{market_id}:{str(side).upper()}", 1),
             "scan_start_mono": getattr(self, "_scan_start_mono", None),  # S115
+            "spread": round(_spread, 3) if _spread is not None else None,  # S133
         }
         # S124: Merge ML selector scores into event_data for shadow ledger analysis
         if _ml_scores:
