@@ -167,14 +167,14 @@ class TestResolutionBackfillGuard:
         """Source code regression test: the NOT EXISTS exit guard must be present."""
         from base_engine.data import resolution_backfill
         source = inspect.getsource(resolution_backfill.run_resolution_backfill)
-        assert "te_exit" in source, (
-            "Phase 4b query must reference te_exit alias for fully-exited guard"
+        assert "total_exit_size" in source, (
+            "Phase 4b query must reference total_exit_size for fully-exited guard"
         )
         assert "event_type = 'EXIT'" in source or "event_type='EXIT'" in source, (
             "Phase 4b query must filter for EXIT events"
         )
-        assert "HAVING SUM" in source, (
-            "Phase 4b query must use HAVING SUM to compare exit size to entry size"
+        assert "total_entry_size" in source and "total_exit_size" in source, (
+            "Phase 4b query must compare entry size to exit size for fully-exited guard"
         )
 
     def test_phase4b_sql_excludes_sell_side(self):
