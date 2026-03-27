@@ -58,60 +58,35 @@ logger = get_logger()
 
 
 # ---------------------------------------------------------------------------
-# Confidence calibrator — Platt + Isotonic pipeline for Kelly sizing
+# Confidence calibrator — Logistic Regression (S135: replaces Platt+Isotonic)
 # ---------------------------------------------------------------------------
 _CONF_CAL_MIN_SAMPLES = 200  # minimum resolved trades to fit
 
 
 class WeatherConfidenceCalibrator:
-    """Two-stage Platt (temperature scaling) + Isotonic regression calibrator.
+    """Logistic regression calibrator with 4 features.
 
-    Fits on WeatherBot trade_events: (entry confidence, realized_pnl > 0).
-    Stage 1: Platt temperature scaling — compresses overconfident/underconfident
-             global shape via sigmoid(logit(p) / T).
-    Stage 2: Isotonic regression on Platt residuals — catches local kinks
-             that the logistic curve misses.
+    Fits on WeatherBot trade_events: (confidence, side, lead_time_hours, price) → win/loss.
+    S135: Replaces Platt+Isotonic. Same math (logistic model) but with 4 inputs
+    instead of 1 — learns side, lead-time, and price effects from data.
     """
 
-    def __init__(self, side: str = "ALL") -> None:
-        self._side = side  # "YES", "NO", or "ALL"
-        self._temperature: float = 1.0
-        self._isotonic: Any = None  # sklearn IsotonicRegression
+    def __init__(self) -> None:
+        self._model: Any = None     # sklearn LogisticRegression
+        self._scaler: Any = None    # sklearn StandardScaler
         self._fitted: bool = False
         self._n_samples: int = 0
-
-    # -- static math helpers (self-contained, no external coupling) ----------
-
-    @staticmethod
-    def _sigmoid(x: "np.ndarray") -> "np.ndarray":
-        """Numerically stable sigmoid."""
-        import numpy as np
-        return np.where(
-            x >= 0,
-            1.0 / (1.0 + np.exp(-x)),
-            np.exp(x) / (1.0 + np.exp(x)),
-        )
-
-    @staticmethod
-    def _logit(p: "np.ndarray") -> "np.ndarray":
-        import numpy as np
-        p_clip = np.clip(p, 1e-7, 1.0 - 1e-7)
-        return np.log(p_clip / (1.0 - p_clip))
-
-    @staticmethod
-    def _platt_transform(raw: "np.ndarray", temperature: float) -> "np.ndarray":
-        """Apply temperature scaling: sigmoid(logit(p) / T)."""
-        logits = WeatherConfidenceCalibrator._logit(raw)
-        scaled = logits / max(temperature, 0.1)
-        return WeatherConfidenceCalibrator._sigmoid(scaled)
+        self._coef_confidence: float = 0.0  # for .temperature property compat
+        self._coefficients: dict = {}       # for logging/inspection
 
     # -- fitting -------------------------------------------------------------
 
     async def fit_from_trade_events(
         self, db: Any, window_days: int = 30, min_samples: int = _CONF_CAL_MIN_SAMPLES,
     ) -> bool:
-        """Fit Platt + Isotonic from WeatherBot resolved trade_events.
+        """Fit LogisticRegression from WeatherBot resolved trade_events.
 
+        Features: raw_confidence, side (YES=1/NO=0), lead_time_hours, entry_price.
         Returns True if fitted, False if insufficient data (identity passthrough).
         """
         if not db:
@@ -123,21 +98,21 @@ class WeatherConfidenceCalibrator:
             async with db.get_session() as session:
                 result = await session.execute(text("""
                     WITH entries AS (
-                        SELECT DISTINCT ON (market_id) market_id, confidence, side
+                        SELECT DISTINCT ON (market_id) market_id, confidence, side, price,
+                               COALESCE((event_data->>'lead_time_hours')::float, 48.0) AS lead_time_hours
                         FROM trade_events
                         WHERE bot_name = 'WeatherBot' AND event_type = 'ENTRY'
                           AND event_time >= NOW() - INTERVAL '1 day' * :window_days
                           AND confidence IS NOT NULL
-                          AND (:side_filter = 'ALL' OR side = :side_filter)
                         ORDER BY market_id, event_time
                     )
-                    SELECT e.confidence,
+                    SELECT e.confidence, e.side, e.lead_time_hours, e.price,
                            CASE WHEN r.realized_pnl > 0 THEN 1.0 ELSE 0.0 END AS outcome
                     FROM trade_events r
                     JOIN entries e ON e.market_id = r.market_id
                     WHERE r.bot_name = 'WeatherBot' AND r.event_type = 'RESOLUTION'
                       AND r.realized_pnl IS NOT NULL
-                """), {"window_days": window_days, "side_filter": self._side})
+                """), {"window_days": window_days})
                 rows = result.fetchall()
 
             if len(rows) < min_samples:
@@ -148,49 +123,61 @@ class WeatherConfidenceCalibrator:
                 return False
 
             confidences = np.array([float(r[0]) for r in rows], dtype=np.float64)
-            outcomes = np.array([float(r[1]) for r in rows], dtype=np.float64)
+            sides = np.array([1.0 if r[1] == "YES" else 0.0 for r in rows], dtype=np.float64)
+            lead_times = np.array([float(r[2]) for r in rows], dtype=np.float64)
+            prices = np.array([float(r[3]) for r in rows], dtype=np.float64)
+            outcomes = np.array([float(r[4]) for r in rows], dtype=np.float64)
 
-            # Stage 1: Fit Platt temperature via minimize_scalar on log-loss
-            temperature = self._fit_platt(confidences, outcomes)
+            X = np.column_stack([confidences, sides, lead_times, prices])
 
-            # Stage 2: Fit Isotonic on Platt-calibrated residuals
-            platt_cal = self._platt_transform(confidences, temperature)
-            isotonic = self._fit_isotonic(platt_cal, outcomes)
+            from sklearn.preprocessing import StandardScaler
+            from sklearn.linear_model import LogisticRegression
+
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X)
+            model = LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000)
+            model.fit(X_scaled, outcomes)
 
             # Validate: calibrated Brier should not be worse than raw
             raw_brier = float(np.mean((confidences - outcomes) ** 2))
-            if isotonic is not None:
-                final_cal = isotonic.predict(platt_cal)
-            else:
-                final_cal = platt_cal
-            cal_brier = float(np.mean((final_cal - outcomes) ** 2))
+            cal_probs = model.predict_proba(X_scaled)[:, 1]
+            cal_brier = float(np.mean((cal_probs - outcomes) ** 2))
 
             if cal_brier > raw_brier + 0.005:
-                # Calibration made things worse — don't use it
                 logger.warning(
                     "weatherbot_confidence_cal_rejected",
                     raw_brier=round(raw_brier, 4),
                     cal_brier=round(cal_brier, 4),
-                    temperature=round(temperature, 3),
                     n=len(rows),
                 )
                 self._fitted = False
                 return False
 
-            self._temperature = temperature
-            self._isotonic = isotonic
+            self._model = model
+            self._scaler = scaler
             self._fitted = True
             self._n_samples = len(rows)
+            self._coef_confidence = float(model.coef_[0][0])
+            self._coefficients = {
+                "confidence": round(float(model.coef_[0][0]), 4),
+                "side_yes": round(float(model.coef_[0][1]), 4),
+                "lead_time": round(float(model.coef_[0][2]), 4),
+                "entry_price": round(float(model.coef_[0][3]), 4),
+                "intercept": round(float(model.intercept_[0]), 4),
+            }
 
             logger.info(
                 "weatherbot_confidence_cal_fitted",
-                side=self._side,
-                temperature=round(temperature, 3),
-                isotonic_fitted=isotonic is not None,
+                model_type="logistic_regression",
+                n_samples=len(rows),
                 raw_brier=round(raw_brier, 4),
                 cal_brier=round(cal_brier, 4),
                 brier_improvement=round(raw_brier - cal_brier, 4),
-                n_samples=len(rows),
+                coef_confidence=self._coefficients["confidence"],
+                coef_side_yes=self._coefficients["side_yes"],
+                coef_lead_time=self._coefficients["lead_time"],
+                coef_entry_price=self._coefficients["entry_price"],
+                intercept=self._coefficients["intercept"],
                 window_days=window_days,
             )
             return True
@@ -199,50 +186,19 @@ class WeatherConfidenceCalibrator:
             logger.debug("weatherbot_confidence_cal_fit_failed", error=str(exc))
             return False
 
-    @classmethod
-    def _fit_platt(cls, confidences: "np.ndarray", outcomes: "np.ndarray") -> float:
-        """Fit temperature T that minimizes log-loss on (confidence, outcome) pairs."""
-        import numpy as np
-        from scipy.optimize import minimize_scalar
-
-        def neg_log_loss(t: float) -> float:
-            p_cal = cls._platt_transform(confidences, t)
-            p_cal = np.clip(p_cal, 1e-7, 1.0 - 1e-7)
-            ll = outcomes * np.log(p_cal) + (1.0 - outcomes) * np.log(1.0 - p_cal)
-            return -float(np.mean(ll))
-
-        result = minimize_scalar(neg_log_loss, bounds=(0.3, 3.0), method="bounded")
-        return float(result.x)
-
-    @staticmethod
-    def _fit_isotonic(
-        platt_calibrated: "np.ndarray", outcomes: "np.ndarray",
-    ) -> Any:
-        """Fit isotonic regression on Platt-calibrated values. Returns fitted model or None."""
-        try:
-            from sklearn.isotonic import IsotonicRegression
-            iso = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
-            iso.fit(platt_calibrated, outcomes)
-            return iso
-        except Exception:
-            return None
-
     # -- inference -----------------------------------------------------------
 
-    def calibrate(self, raw_confidence: float) -> float:
-        """Apply Platt → Isotonic calibration. Identity if not fitted."""
+    def calibrate(self, raw_confidence: float, side: str = "YES",
+                  lead_time_hours: float = 48.0, entry_price: float = 0.50) -> float:
+        """Apply logistic regression calibration. Identity if not fitted."""
         if not self._fitted:
             return raw_confidence
         try:
             import numpy as np
-            p = np.array([raw_confidence], dtype=np.float64)
-            # Stage 1: Platt
-            p_platt = self._platt_transform(p, self._temperature)
-            # Stage 2: Isotonic
-            if self._isotonic is not None:
-                result = self._isotonic.predict(p_platt)[0]
-            else:
-                result = p_platt[0]
+            side_enc = 1.0 if side == "YES" else 0.0
+            X = np.array([[raw_confidence, side_enc, lead_time_hours, entry_price]])
+            X_scaled = self._scaler.transform(X)
+            result = self._model.predict_proba(X_scaled)[0, 1]
             return float(np.clip(result, 0.01, 0.99))
         except Exception:
             return raw_confidence
@@ -253,7 +209,8 @@ class WeatherConfidenceCalibrator:
 
     @property
     def temperature(self) -> float:
-        return self._temperature
+        """Backward compat: returns confidence coefficient (diagnostic proxy for T)."""
+        return self._coef_confidence
 
     @property
     def n_samples(self) -> int:
@@ -362,14 +319,9 @@ class WeatherBot(BaseBot):
         self._calibration_last_loaded: float = 0.0
         self._calibration_reload_interval: float = float(getattr(settings, "WEATHER_CALIBRATION_RELOAD_SECS", 21600.0))
 
-        # S123: Platt + Isotonic confidence calibrator (fits from trade_events)
-        # S135: Split by side — YES and NO have fundamentally different calibration curves
-        self._confidence_calibrator_yes = WeatherConfidenceCalibrator(side="YES")
-        self._confidence_calibrator_no = WeatherConfidenceCalibrator(side="NO")
-        self._confidence_calibrator_all = WeatherConfidenceCalibrator(side="ALL")
-        self._cal_yes_fitted: bool = False
-        self._cal_no_fitted: bool = False
-        self._cal_all_fitted: bool = False
+        # S135: Logistic regression confidence calibrator (4-feature: conf, side, lead_time, price)
+        self._confidence_calibrator = WeatherConfidenceCalibrator()
+        self._cal_fitted: bool = False
 
         # W4: Monitoring thresholds — structured Brier/drawdown alerts
         self._monitoring_halt: bool = False  # True = stop trading until Brier improves
@@ -2101,15 +2053,12 @@ class WeatherBot(BaseBot):
             # NO:  confidence = 1 - model_prob (P of NOT outcome) — correct for Kelly + risk manager
             _raw_conf = e["model_prob"] if side == "YES" else (1.0 - e["model_prob"])
             base_confidence = min(0.95, _raw_conf)
-            # S123: Apply Platt + Isotonic calibration if fitted.
-            # S135: Per-side calibration — YES and NO have different calibration curves.
-            _split_cal = getattr(settings, "WEATHER_CONFIDENCE_CAL_SPLIT_BY_SIDE", True)
-            if _split_cal and side == "YES" and self._cal_yes_fitted:
-                effective_confidence = self._confidence_calibrator_yes.calibrate(base_confidence)
-            elif _split_cal and side == "NO" and self._cal_no_fitted:
-                effective_confidence = self._confidence_calibrator_no.calibrate(base_confidence)
-            elif self._cal_all_fitted:
-                effective_confidence = self._confidence_calibrator_all.calibrate(base_confidence)
+            # S135: Logistic regression calibration (4-feature: conf, side, lead_time, price)
+            if self._cal_fitted:
+                effective_confidence = self._confidence_calibrator.calibrate(
+                    base_confidence, side=side,
+                    lead_time_hours=lead_time, entry_price=price,
+                )
             else:
                 effective_confidence = base_confidence
 
@@ -4435,23 +4384,16 @@ class WeatherBot(BaseBot):
         except Exception as exc:
             logger.debug("weatherbot_calibration_reload_failed", error=str(exc))
 
-        # S123: Refit Platt + Isotonic confidence calibrator from trade_events
-        # S135: Fit per-side (YES, NO) + combined (ALL) calibrators
+        # S135: Refit logistic regression confidence calibrator from trade_events
         _conf_cal_enabled = getattr(settings, "WEATHER_CONFIDENCE_CAL_ENABLED", True)
         if _conf_cal_enabled:
             try:
                 _conf_cal_window = int(getattr(settings, "WEATHER_CONFIDENCE_CAL_WINDOW_DAYS", 30))
                 _conf_cal_min = int(getattr(settings, "WEATHER_CONFIDENCE_CAL_MIN_SAMPLES", _CONF_CAL_MIN_SAMPLES))
                 db = getattr(self.base_engine, "db", None)
-                for _cal, _attr in [
-                    (self._confidence_calibrator_yes, "_cal_yes_fitted"),
-                    (self._confidence_calibrator_no, "_cal_no_fitted"),
-                    (self._confidence_calibrator_all, "_cal_all_fitted"),
-                ]:
-                    _fitted = await _cal.fit_from_trade_events(
-                        db, window_days=_conf_cal_window, min_samples=_conf_cal_min,
-                    )
-                    setattr(self, _attr, _fitted)
+                self._cal_fitted = await self._confidence_calibrator.fit_from_trade_events(
+                    db, window_days=_conf_cal_window, min_samples=_conf_cal_min,
+                )
             except Exception as cal_exc:
                 logger.debug("weatherbot_confidence_cal_refit_failed", error=str(cal_exc))
 

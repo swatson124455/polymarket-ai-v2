@@ -764,8 +764,6 @@ class Settings(BaseSettings):
     WEATHER_CONFIDENCE_CAL_ENABLED: bool = os.getenv("WEATHER_CONFIDENCE_CAL_ENABLED", "true").lower() == "true"
     WEATHER_CONFIDENCE_CAL_WINDOW_DAYS: int = int(os.getenv("WEATHER_CONFIDENCE_CAL_WINDOW_DAYS", "30"))
     WEATHER_CONFIDENCE_CAL_MIN_SAMPLES: int = int(os.getenv("WEATHER_CONFIDENCE_CAL_MIN_SAMPLES", "200"))
-    # S135: Split YES/NO calibrators — one T per side. false = combined only (backward compat)
-    WEATHER_CONFIDENCE_CAL_SPLIT_BY_SIDE: bool = os.getenv("WEATHER_CONFIDENCE_CAL_SPLIT_BY_SIDE", "true").lower() == "true"
     # S135: Disable combined_boost for YES side — NO keeps all boosts
     WEATHER_YES_BOOST_ENABLED: bool = os.getenv("WEATHER_YES_BOOST_ENABLED", "false").lower() == "true"
 
