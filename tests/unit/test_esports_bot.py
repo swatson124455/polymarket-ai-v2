@@ -325,23 +325,22 @@ class TestAnalyzeOpportunity:
         bot._patch_drift = None
         bot._min_edge = 0.08
         bot._min_confidence = 0.20  # S127: lowered for signal_quality dampening
-        # Market price = 0.60, model predicts 0.30 -> edge_no ≈ 0.30
-        # S103: edge must stay under 0.45 edge cap (unfitted BetaCalibrator) and
-        # under 0.35 normal cap to avoid edge_cap rejection.
+        # Market price = 0.55, model predicts 0.40 -> edge_no ≈ 0.15
+        # S135: divergence=0.15 stays within 0.25 cap
         market = _make_market(
             question="Will Team A win the LoL match?",
-            yes_price=0.60,
-            no_price=0.40,
+            yes_price=0.55,
+            no_price=0.45,
         )
         # Mock Glicko-2 prediction (replaced base_engine.get_predictions fallback)
-        bot._get_glicko2_prediction = AsyncMock(return_value=0.30)
+        bot._get_glicko2_prediction = AsyncMock(return_value=0.40)
         result = await bot.analyze_opportunity(market)
         assert result is not None
         assert result["side"] == "NO"
-        assert result["edge"] == pytest.approx(0.30, abs=0.03)  # blue side bonus shifts
+        assert result["edge"] == pytest.approx(0.15, abs=0.03)  # blue side bonus shifts
         # S131: confidence = raw side_prob (SQ now scales sizing, not confidence)
-        assert result["confidence"] > 0.65  # 1 - model_prob ≈ 0.70
-        assert result["confidence"] < 0.75
+        assert result["confidence"] > 0.55  # 1 - model_prob ≈ 0.60
+        assert result["confidence"] < 0.65
 
     @pytest.mark.asyncio
     async def test_returns_none_when_confidence_below_min(self):
@@ -380,12 +379,12 @@ class TestAnalyzeOpportunity:
         bot._live_matches = {}
         bot._min_edge = 0.05
         bot._min_confidence = 0.20  # S127: lowered for signal_quality dampening
+        # S135: divergence=0.15 within 0.25 cap
         market = _make_market(
             question="Will Team A win the LoL match?",
-            yes_price=0.40,
+            yes_price=0.45,
         )
-        # Mock Glicko-2 prediction (replaced base_engine.get_predictions fallback)
-        bot._get_glicko2_prediction = AsyncMock(return_value=0.70)
+        bot._get_glicko2_prediction = AsyncMock(return_value=0.60)
         result = await bot.analyze_opportunity(market)
         assert result is not None
         assert result["type"] == "esports_pregame"
@@ -398,13 +397,13 @@ class TestAnalyzeOpportunity:
         bot._live_matches = {"m1": {"id": "m1", "game_state": {}}}
         bot._min_edge = 0.05
         bot._min_confidence = 0.20  # S127: lowered for signal_quality dampening
+        # S135: divergence=0.15 within 0.25 cap
         market = _make_market(
             market_id="m1",
             question="Will Team A win the LoL match?",
-            yes_price=0.40,
+            yes_price=0.45,
         )
-        # Mock Glicko-2 prediction (replaced base_engine.get_predictions fallback)
-        bot._get_glicko2_prediction = AsyncMock(return_value=0.70)
+        bot._get_glicko2_prediction = AsyncMock(return_value=0.60)
         result = await bot.analyze_opportunity(market)
         assert result is not None
         assert result["type"] == "esports_live"

@@ -451,7 +451,11 @@ async def run_resolution_backfill(
                     "       CASE WHEN e.total_entry_size > 0 "
                     "            THEN e.weighted_price / e.total_entry_size "
                     "            ELSE 0.0 END AS avg_entry_price, "
-                    "       COALESCE(x.exit_pnl, 0) AS exit_pnl_already "
+                    "       COALESCE(x.exit_pnl, 0) AS exit_pnl_already, "
+                    "       (SELECT te_g.event_data->>'game' FROM trade_events te_g "
+                    "        WHERE te_g.market_id = e.market_id AND te_g.bot_name = e.bot_name "
+                    "        AND te_g.event_type = 'ENTRY' AND te_g.event_data->>'game' IS NOT NULL "
+                    "        LIMIT 1) AS entry_game "
                     "FROM ("
                     "  SELECT market_id, bot_name, side, "
                     "         SUM(size) AS total_entry_size, "
@@ -499,6 +503,8 @@ async def run_resolution_backfill(
                         if _exit_pnl != 0:
                             logger.info("phase4b_exit_pnl_subtracted", market=str(row[0])[:20],
                                         bot=row[1], raw_pnl=round(_raw_pnl, 4), exit_pnl=round(_exit_pnl, 4))
+                        # S135: Include game tag from ENTRY event_data
+                        _res_event_data = {"game": row[8]} if row[8] else None
                         await db.insert_trade_event(
                             event_type="RESOLUTION",
                             bot_name=row[1],
@@ -509,6 +515,7 @@ async def run_resolution_backfill(
                             realized_pnl=_adj_pnl,
                             correlation_id=f"resolution:{row[0]}",
                             event_time=row[4],
+                            event_data=_res_event_data,
                         )
                     except Exception as _te_err:
                         logger.debug("Resolution backfill: trade_event emission failed for market %s: %s", str(row[0])[:20], _te_err)
@@ -538,7 +545,11 @@ async def run_resolution_backfill(
                     "         WHERE te_x.market_id = p.market_id "
                     "           AND te_x.bot_name = p.source_bot "
                     "           AND te_x.event_type = 'EXIT'"
-                    "       ), 0) AS exit_pnl_already "
+                    "       ), 0) AS exit_pnl_already, "
+                    "       (SELECT te_g.event_data->>'game' FROM trade_events te_g "
+                    "        WHERE te_g.market_id = p.market_id AND te_g.bot_name = p.source_bot "
+                    "        AND te_g.event_type = 'ENTRY' AND te_g.event_data->>'game' IS NOT NULL "
+                    "        LIMIT 1) AS entry_game "
                     "FROM positions p "
                     "JOIN markets m ON (p.market_id = CAST(m.id AS TEXT) "
                     "                   OR p.market_id = m.condition_id) "
@@ -555,7 +566,7 @@ async def run_resolution_backfill(
                 ))
                 for row in _pos_resolved.fetchall():
                     try:
-                        _mid, _bot, _side, _size, _entry, _res, _res_at, _exit_pnl = row
+                        _mid, _bot, _side, _size, _entry, _res, _res_at, _exit_pnl, _entry_game = row
                         _side_upper = str(_side).upper() if _side else ""
                         _res_upper = str(_res).upper()
                         if _side_upper == _res_upper:
@@ -567,6 +578,8 @@ async def run_resolution_backfill(
                         _net_pnl = _gross_pnl - _fee
                         # Subtract EXIT P&L already captured to avoid double-counting
                         _remaining_pnl = _net_pnl - float(_exit_pnl)
+                        # S135: Include game tag from ENTRY event_data
+                        _alt_event_data = {"game": _entry_game} if _entry_game else None
                         await db.insert_trade_event(
                             event_type="RESOLUTION",
                             bot_name=_bot,
@@ -577,6 +590,7 @@ async def run_resolution_backfill(
                             realized_pnl=round(_remaining_pnl, 4),
                             correlation_id=f"resolution:{_mid}",
                             event_time=_res_at,
+                            event_data=_alt_event_data,
                         )
                         _pos_res_emitted += 1
                     except Exception as _pr_err:

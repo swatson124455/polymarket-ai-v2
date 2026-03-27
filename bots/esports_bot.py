@@ -266,6 +266,11 @@ class EsportsBot(BaseBot):
         # Skip re-logging if prediction unchanged for same market within 10 min
         self._prediction_log_cache: Dict[str, tuple] = {}
 
+        # S135: Execution failure cooldown — after _execute_esports_trade returns
+        # False (e.g., dead orderbook spread), skip re-attempts for cooldown period.
+        # Prevents spam-retrying dead markets every 2s scan cycle.
+        self._exec_fail_cooldown: Dict[str, float] = {}
+
         # E4: Monitoring thresholds — per-game Brier alerts
         self._monitoring_halted_games: set = set()  # games halted by monitoring
         self._monitoring_last_check: float = 0.0
@@ -1179,6 +1184,16 @@ class EsportsBot(BaseBot):
                     if time.monotonic() - _exit_ts < _cooldown:
                         self._wf["exit_cooldown"] += 1
                         return (0, 0, 1)
+                # S135: Post-execution-failure cooldown — skip markets that recently
+                # failed in _execute_esports_trade (e.g., dead orderbook spread).
+                _fail_ts = self._exec_fail_cooldown.get(mid)
+                if _fail_ts is not None:
+                    _fail_cd = float(getattr(settings, "ESPORTS_EXEC_FAIL_COOLDOWN_S", 300))
+                    if time.monotonic() - _fail_ts < _fail_cd:
+                        self._wf["exec_fail_cooldown"] = self._wf.get("exec_fail_cooldown", 0) + 1
+                        return (0, 0, 1)
+                    else:
+                        del self._exec_fail_cooldown[mid]
                 # S109: Per-market rolling entry cap — hard backstop against churn
                 _max_entries = int(getattr(settings, "ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW", 2))
                 _window_s = float(getattr(settings, "ESPORTS_ENTRY_WINDOW_HOURS", 12.0)) * 3600
@@ -1227,6 +1242,8 @@ class EsportsBot(BaseBot):
                                 success = await self._execute_esports_trade(opp)
                             if success:
                                 self._market_entry_times.setdefault(mid, []).append(time.monotonic())
+                            elif not success:
+                                self._exec_fail_cooldown[mid] = time.monotonic()
                             return (1, 1 if success else 0, 0)
                         return (1, 0, 0)
                     return (0, 0, 1)
@@ -1237,6 +1254,9 @@ class EsportsBot(BaseBot):
                         success = await self._execute_esports_trade(opp)
                     if success:
                         self._market_entry_times.setdefault(mid, []).append(time.monotonic())
+                    else:
+                        # S135: Cooldown after execution failure
+                        self._exec_fail_cooldown[mid] = time.monotonic()
                     logger.info(
                         "esportsbot_trade_attempt",
                         market_id=mid, game=opp.get("game", ""),
@@ -1958,6 +1978,20 @@ class EsportsBot(BaseBot):
                     self._prediction_log_cache[market_id] = (model_prob, time.monotonic())
             except Exception:
                 pass  # Non-critical — later log or next scan will catch it
+
+        # S135: Divergence cap — when model disagrees massively with market,
+        # market has live info model doesn't. >0.30 divergence = 5.4% accuracy.
+        _max_div = float(getattr(settings, "ESPORTS_MAX_MODEL_DIVERGENCE", 0.25))
+        _divergence = abs(model_prob - price)
+        if _divergence > _max_div:
+            logger.info(
+                "esportsbot_divergence_capped", market_id=market_id, game=game,
+                model_prob=round(model_prob, 4), market_price=round(price, 4),
+                divergence=round(_divergence, 4), cap=_max_div,
+            )
+            if _wf:
+                _wf["divergence_cap"] = _wf.get("divergence_cap", 0) + 1
+            return None
 
         # Validate edge
         # YES side: model thinks YES is more likely than market price

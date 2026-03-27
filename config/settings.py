@@ -1175,12 +1175,18 @@ class Settings(BaseSettings):
     ESPORTS_MAX_HOLD_HOURS: float = float(os.getenv("ESPORTS_MAX_HOLD_HOURS", "96"))
     # S109: Post-exit cooldown (seconds) — prevents stop-loss churn (RC1)
     ESPORTS_EXIT_COOLDOWN_SECONDS: float = float(os.getenv("ESPORTS_EXIT_COOLDOWN_SECONDS", "300.0"))
+    # S135: Cooldown (seconds) after execution failure — stops spam-retrying dead markets
+    ESPORTS_EXEC_FAIL_COOLDOWN_S: float = float(os.getenv("ESPORTS_EXEC_FAIL_COOLDOWN_S", "300"))
     # S109: Max entries per market per rolling window — backstop against churn (RC3)
     ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW: int = int(os.getenv("ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW", "5"))
     ESPORTS_ENTRY_WINDOW_HOURS: float = float(os.getenv("ESPORTS_ENTRY_WINDOW_HOURS", "12.0"))
 
     # --- Hard game disable (comma-separated lowercase game names, e.g. "cod,r6") ---
     ESPORTS_DISABLED_GAMES: str = os.getenv("ESPORTS_DISABLED_GAMES", "")
+
+    # S135: Max model-market divergence — reject when abs(model_prob - market_price) exceeds this.
+    # Data: >0.30 divergence = 5.4% accuracy (2/37), ≤0.15 = 74.4% (29/39).
+    ESPORTS_MAX_MODEL_DIVERGENCE: float = float(os.getenv("ESPORTS_MAX_MODEL_DIVERGENCE", "0.25"))
 
     # --- Monitoring halt threshold (Brier score above this → halt trading for game) ---
     ESPORTS_BRIER_HALT_THRESHOLD: float = float(os.getenv("ESPORTS_BRIER_HALT_THRESHOLD", "0.30"))  # S127: lowered to actually halt bad games
