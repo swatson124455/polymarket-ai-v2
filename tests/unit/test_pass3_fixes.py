@@ -8,12 +8,14 @@ corresponding code changes are implemented.
 import asyncio
 import pytest
 
-pytestmark = pytest.mark.xfail(reason="Pass 3 audit fixes not yet applied to production code")
+# Most tests are xfail — Pass 3 fixes not yet applied. Individual tests
+# that validate CURRENT behavior (not pending fixes) are unmarked.
 from unittest.mock import patch, MagicMock, AsyncMock
 
 
 # ── Fix 1: ClobClient signature_type + funder ──
 
+@pytest.mark.xfail(reason="Pass 3 Fix 1: signature_type/funder not yet wired into clob_adapter")
 class TestClobClientConfig:
     """Verify _get_clob_client passes signature_type and funder to ClobClient."""
 
@@ -90,6 +92,7 @@ class TestClobClientConfig:
 
 # ── Fix 2: WebSocket subscription limit ──
 
+@pytest.mark.xfail(reason="Pass 3 Fix 2: WS subscription cap not yet implemented in websocket_manager")
 class TestWSSubscriptionLimit:
     """Verify WebSocket subscription cap at MAX_WS_SUBSCRIPTIONS."""
 
@@ -160,8 +163,10 @@ class TestWSSubscriptionLimit:
 # ── Fix 3: HTTP 425 handling ──
 
 class TestHTTP425Handling:
-    """Verify HTTP 425 returns retryable flag."""
+    """Verify HTTP 425 returns retryable flag. Note: test_non_425_error_no_retryable
+    validates CURRENT behavior and is NOT xfail."""
 
+    @pytest.mark.xfail(reason="Pass 3 Fix 3: HTTP 425 retryable flag not yet implemented")
     @pytest.mark.asyncio
     async def test_425_returns_retryable(self):
         """HTTP 425 should return success=False with retryable=True."""
