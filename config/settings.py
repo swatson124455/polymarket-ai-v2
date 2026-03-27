@@ -724,8 +724,8 @@ class Settings(BaseSettings):
     WEATHER_MIN_TRADE_USD: float = float(os.getenv("WEATHER_MIN_TRADE_USD", "5.0"))
     # S115: Bühlmann credibility denominator — higher k = slower sizing ramp for new stations
     WEATHER_BUHLMANN_KAPPA: float = float(os.getenv("WEATHER_BUHLMANN_KAPPA", "30.0"))
-    # S116: YES-side confidence gate threshold (disabled at 0.0, enable at e.g. 0.55)
-    WEATHER_YES_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_YES_MIN_CONFIDENCE", "0.0"))
+    # S116: YES-side confidence gate threshold. S135: default 0.35 (kills 6.4% WR dust trades)
+    WEATHER_YES_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_YES_MIN_CONFIDENCE", "0.35"))
     # S115: Combined sizing boost cap (expiry * regime * jump * nbm * bm * station * calibration)
     WEATHER_COMBINED_BOOST_CAP: float = float(os.getenv("WEATHER_COMBINED_BOOST_CAP", "1.5"))  # S122: 2.0→1.5
     # S118: NO entry price cap — NO trades with entry price above this are skipped.
@@ -764,6 +764,10 @@ class Settings(BaseSettings):
     WEATHER_CONFIDENCE_CAL_ENABLED: bool = os.getenv("WEATHER_CONFIDENCE_CAL_ENABLED", "true").lower() == "true"
     WEATHER_CONFIDENCE_CAL_WINDOW_DAYS: int = int(os.getenv("WEATHER_CONFIDENCE_CAL_WINDOW_DAYS", "30"))
     WEATHER_CONFIDENCE_CAL_MIN_SAMPLES: int = int(os.getenv("WEATHER_CONFIDENCE_CAL_MIN_SAMPLES", "200"))
+    # S135: Split YES/NO calibrators — one T per side. false = combined only (backward compat)
+    WEATHER_CONFIDENCE_CAL_SPLIT_BY_SIDE: bool = os.getenv("WEATHER_CONFIDENCE_CAL_SPLIT_BY_SIDE", "true").lower() == "true"
+    # S135: Disable combined_boost for YES side — NO keeps all boosts
+    WEATHER_YES_BOOST_ENABLED: bool = os.getenv("WEATHER_YES_BOOST_ENABLED", "false").lower() == "true"
 
     # S124: Lead-time spread inflation for probability engine (default OFF)
     # S126: Two-component spread inflation to reduce overconfidence.
