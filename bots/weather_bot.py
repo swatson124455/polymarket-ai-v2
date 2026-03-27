@@ -73,7 +73,8 @@ class WeatherConfidenceCalibrator:
              that the logistic curve misses.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, side: str = "ALL") -> None:
+        self._side = side  # "YES", "NO", or "ALL"
         self._temperature: float = 1.0
         self._isotonic: Any = None  # sklearn IsotonicRegression
         self._fitted: bool = False
@@ -122,11 +123,12 @@ class WeatherConfidenceCalibrator:
             async with db.get_session() as session:
                 result = await session.execute(text("""
                     WITH entries AS (
-                        SELECT DISTINCT ON (market_id) market_id, confidence
+                        SELECT DISTINCT ON (market_id) market_id, confidence, side
                         FROM trade_events
                         WHERE bot_name = 'WeatherBot' AND event_type = 'ENTRY'
                           AND event_time >= NOW() - INTERVAL '1 day' * :window_days
                           AND confidence IS NOT NULL
+                          AND (:side_filter = 'ALL' OR side = :side_filter)
                         ORDER BY market_id, event_time
                     )
                     SELECT e.confidence,
@@ -135,7 +137,7 @@ class WeatherConfidenceCalibrator:
                     JOIN entries e ON e.market_id = r.market_id
                     WHERE r.bot_name = 'WeatherBot' AND r.event_type = 'RESOLUTION'
                       AND r.realized_pnl IS NOT NULL
-                """), {"window_days": window_days})
+                """), {"window_days": window_days, "side_filter": self._side})
                 rows = result.fetchall()
 
             if len(rows) < min_samples:
@@ -182,6 +184,7 @@ class WeatherConfidenceCalibrator:
 
             logger.info(
                 "weatherbot_confidence_cal_fitted",
+                side=self._side,
                 temperature=round(temperature, 3),
                 isotonic_fitted=isotonic is not None,
                 raw_brier=round(raw_brier, 4),
@@ -360,8 +363,13 @@ class WeatherBot(BaseBot):
         self._calibration_reload_interval: float = float(getattr(settings, "WEATHER_CALIBRATION_RELOAD_SECS", 21600.0))
 
         # S123: Platt + Isotonic confidence calibrator (fits from trade_events)
-        self._confidence_calibrator = WeatherConfidenceCalibrator()
-        self._confidence_calibrator_fitted: bool = False
+        # S135: Split by side — YES and NO have fundamentally different calibration curves
+        self._confidence_calibrator_yes = WeatherConfidenceCalibrator(side="YES")
+        self._confidence_calibrator_no = WeatherConfidenceCalibrator(side="NO")
+        self._confidence_calibrator_all = WeatherConfidenceCalibrator(side="ALL")
+        self._cal_yes_fitted: bool = False
+        self._cal_no_fitted: bool = False
+        self._cal_all_fitted: bool = False
 
         # W4: Monitoring thresholds — structured Brier/drawdown alerts
         self._monitoring_halt: bool = False  # True = stop trading until Brier improves
@@ -2094,11 +2102,27 @@ class WeatherBot(BaseBot):
             _raw_conf = e["model_prob"] if side == "YES" else (1.0 - e["model_prob"])
             base_confidence = min(0.95, _raw_conf)
             # S123: Apply Platt + Isotonic calibration if fitted.
-            # Compresses overconfident model outputs toward empirical win rates.
-            if self._confidence_calibrator_fitted:
-                effective_confidence = self._confidence_calibrator.calibrate(base_confidence)
+            # S135: Per-side calibration — YES and NO have different calibration curves.
+            _split_cal = getattr(settings, "WEATHER_CONFIDENCE_CAL_SPLIT_BY_SIDE", True)
+            if _split_cal and side == "YES" and self._cal_yes_fitted:
+                effective_confidence = self._confidence_calibrator_yes.calibrate(base_confidence)
+            elif _split_cal and side == "NO" and self._cal_no_fitted:
+                effective_confidence = self._confidence_calibrator_no.calibrate(base_confidence)
+            elif self._cal_all_fitted:
+                effective_confidence = self._confidence_calibrator_all.calibrate(base_confidence)
             else:
                 effective_confidence = base_confidence
+
+            # S135 R3: YES confidence floor — data shows YES <0.35 has 6.4% WR, -$3,159
+            _yes_min_conf = float(getattr(settings, "WEATHER_YES_MIN_CONFIDENCE", 0.35))
+            if side == "YES" and _yes_min_conf > 0 and effective_confidence < _yes_min_conf:
+                logger.debug(
+                    "weatherbot_yes_conf_gate",
+                    market_id=e["market_id"],
+                    effective_confidence=round(effective_confidence, 3),
+                    floor=_yes_min_conf,
+                )
+                continue
 
             if boundary_risk:
                 logger.debug(
@@ -2552,6 +2576,10 @@ class WeatherBot(BaseBot):
         # to keep effective Kelly ≤ 0.5 (quarter-Kelly × 2.0).
         # S132: model_freshness removed from formula; Baker-McHale removed
         combined_boost = 1.0 + (expiry_boost - 1.0) + (regime_boost - 1.0) * 0.5 + (severe_boost - 1.0) * 0.5 + (jump_boost - 1.0) * 0.5 + (nbm_boost - 1.0) * 0.5
+
+        # S135 R4: Disable boost for YES — amplifies already-bad YES bets (18.8% WR at 0.95+ conf)
+        if opp["side"] == "YES" and not getattr(settings, "WEATHER_YES_BOOST_ENABLED", False):
+            combined_boost = 1.0
 
         # S107: Drawdown compression REMOVED from combined_boost — already applied
         # in BotBankrollManager.get_bet_size() via `compress` factor. Keeping both
@@ -4408,16 +4436,22 @@ class WeatherBot(BaseBot):
             logger.debug("weatherbot_calibration_reload_failed", error=str(exc))
 
         # S123: Refit Platt + Isotonic confidence calibrator from trade_events
+        # S135: Fit per-side (YES, NO) + combined (ALL) calibrators
         _conf_cal_enabled = getattr(settings, "WEATHER_CONFIDENCE_CAL_ENABLED", True)
         if _conf_cal_enabled:
             try:
                 _conf_cal_window = int(getattr(settings, "WEATHER_CONFIDENCE_CAL_WINDOW_DAYS", 30))
                 _conf_cal_min = int(getattr(settings, "WEATHER_CONFIDENCE_CAL_MIN_SAMPLES", _CONF_CAL_MIN_SAMPLES))
                 db = getattr(self.base_engine, "db", None)
-                fitted = await self._confidence_calibrator.fit_from_trade_events(
-                    db, window_days=_conf_cal_window, min_samples=_conf_cal_min,
-                )
-                self._confidence_calibrator_fitted = fitted
+                for _cal, _attr in [
+                    (self._confidence_calibrator_yes, "_cal_yes_fitted"),
+                    (self._confidence_calibrator_no, "_cal_no_fitted"),
+                    (self._confidence_calibrator_all, "_cal_all_fitted"),
+                ]:
+                    _fitted = await _cal.fit_from_trade_events(
+                        db, window_days=_conf_cal_window, min_samples=_conf_cal_min,
+                    )
+                    setattr(self, _attr, _fitted)
             except Exception as cal_exc:
                 logger.debug("weatherbot_confidence_cal_refit_failed", error=str(cal_exc))
 
