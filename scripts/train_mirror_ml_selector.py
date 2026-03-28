@@ -143,28 +143,53 @@ def _safe_float(val, default: float) -> float:
         return default
 
 
+def _walk_forward_splits(n: int, n_splits: int, gap: int = 5, min_train: int = 50):
+    """Yield (train_idx, val_idx) walk-forward folds with embargo gap.
+
+    S137 C13: gap=5 trades excluded between training end and validation start.
+    Prevents leakage from correlated adjacent trades (same market, same day).
+    """
+    fold_size = max(1, (n - min_train) // n_splits)
+    for fold in range(n_splits):
+        train_end = min_train + fold * fold_size
+        val_start = train_end + gap        # embargo: skip gap trades
+        val_end = min(val_start + fold_size, n)
+        if val_start >= val_end or train_end <= 0:
+            continue
+        yield np.arange(0, train_end), np.arange(val_start, val_end)
+
+
 def train_xgboost(X, y, feature_names):
-    """Train XGBoost with TimeSeriesSplit CV + isotonic calibration."""
-    from sklearn.model_selection import TimeSeriesSplit
+    """Train XGBoost with walk-forward CV (5-trade embargo) + isotonic calibration.
+
+    S137 C13: Updated hyperparameters for 585-sample regime:
+    - learning_rate 0.1 → 0.02 (prevents overfitting on small dataset)
+    - n_estimators 100 → 200 (compensates for lower LR)
+    - reg_lambda=5, reg_alpha=0.5 (L2+L1 regularization, reduces overfit)
+    - subsample 0.8 → 0.7, colsample_bytree 0.8 → 0.6 (more variance reduction)
+    - Walk-forward with 5-trade embargo gap (replaces leaky TimeSeriesSplit)
+    """
     from sklearn.isotonic import IsotonicRegression
     from sklearn.metrics import roc_auc_score, brier_score_loss
     import xgboost as xgb
 
     n_splits = min(5, max(2, len(X) // 100))
-    tscv = TimeSeriesSplit(n_splits=n_splits)
 
     # Class balance
     n_pos = y.sum()
     n_neg = len(y) - n_pos
     scale_pos_weight = n_neg / max(n_pos, 1)
 
+    # S137 C13: Regularized params tuned for ~585-sample MirrorBot dataset
     model = xgb.XGBClassifier(
-        n_estimators=100,
+        n_estimators=200,
         max_depth=3,
-        learning_rate=0.1,
+        learning_rate=0.02,
         min_child_weight=10,
-        subsample=0.8,
-        colsample_bytree=0.8,
+        subsample=0.7,
+        colsample_bytree=0.6,
+        reg_lambda=5,
+        reg_alpha=0.5,
         scale_pos_weight=scale_pos_weight,
         eval_metric="logloss",
         use_label_encoder=False,
@@ -176,7 +201,10 @@ def train_xgboost(X, y, feature_names):
     oof_mask = np.zeros(len(X), dtype=bool)
     fold_aucs = []
 
-    for fold, (train_idx, val_idx) in enumerate(tscv.split(X)):
+    # S137 C13: Walk-forward with 5-trade embargo (was plain TimeSeriesSplit)
+    for fold, (train_idx, val_idx) in enumerate(
+        _walk_forward_splits(len(X), n_splits, gap=5)
+    ):
         X_train, X_val = X[train_idx], X[val_idx]
         y_train, y_val = y[train_idx], y[val_idx]
 
@@ -188,7 +216,7 @@ def train_xgboost(X, y, feature_names):
         if len(np.unique(y_val)) > 1:
             auc = roc_auc_score(y_val, preds)
             fold_aucs.append(auc)
-            print(f"  Fold {fold+1}: AUC={auc:.3f}, n={len(val_idx)}")
+            print(f"  Fold {fold+1}: AUC={auc:.3f}, n={len(val_idx)}, embargo=5")
 
     # Retrain on full data
     model.fit(X, y)
