@@ -1671,15 +1671,40 @@ class MirrorBot(BaseBot):
                 elif _size_ratio < 0.3:
                     _conv_adj = -0.03  # small/exploratory
 
+        # Factor 4: S137 C12 — Time-to-resolution adjustment.
+        # Optimal copy-trade window: 12–48h. Too short = late/dangerous; too long = noisy.
+        # <12h (but >4h gate already passed): risky last-minute entry → -0.05
+        # 12-48h: sweet spot → +0.02
+        # 48-168h: neutral → 0.0
+        # >168h (7d+): uncertain, lots of noise → -0.02
+        _ttr_adj = 0.0
+        _ttr_h = None
+        if _market_data:
+            _md_end = _market_data.get("end_date_iso")
+            if _md_end:
+                try:
+                    _ttr_h = self.hours_until_resolution({"end_date_iso": _md_end})
+                except Exception:
+                    _ttr_h = None
+        if _ttr_h is not None:
+            if _ttr_h < 12:
+                _ttr_adj = -0.05
+            elif _ttr_h <= 48:
+                _ttr_adj = 0.02
+            elif _ttr_h > 168:
+                _ttr_adj = -0.02
+
         # Compose final confidence (overrides upstream flat 0.55)
         _raw_upstream = confidence
-        confidence = max(0.35, min(0.75, _base + _price_adj + _conv_adj))
+        confidence = max(0.35, min(0.75, _base + _price_adj + _conv_adj + _ttr_adj))
 
         logger.info("mirror_multifactor", trader=trader_address[:10],
                     category=category or "", cat_wr=round(_cat_wr, 3),
                     cat_n=_cat_n, base=round(_base, 3),
                     price_adj=round(_price_adj, 3),
                     conv_adj=round(_conv_adj, 3),
+                    ttr_adj=round(_ttr_adj, 3),
+                    ttr_h=round(_ttr_h, 1) if _ttr_h is not None else None,
                     whale_usd=round(whale_trade_usd, 0),
                     upstream=round(_raw_upstream, 3),
                     final=round(confidence, 3),
