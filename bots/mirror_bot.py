@@ -92,6 +92,9 @@ class MirrorBot(BaseBot):
         self._market_blocklist: set = set()  # market_ids to reject instantly
         self._entered_market_sides: set = set()  # {(market_id, side)} for opposing-side guard across restarts
         self._market_cooldown: Dict[str, float] = {}  # market_id -> cooldown_expiry_monotonic
+        # S137 C7: Market-maker detection — same trader YES+NO same market within 24h = liquidity
+        # provision, not directional signal. Key: "{trader}:{market}:{side}" → monotonic timestamp.
+        self._trader_market_sides: Dict[str, float] = {}
 
         # S99: Portfolio circuit breaker — pause entries when unrealized P&L < threshold
         self._circuit_breaker_until: float = 0.0  # monotonic time when pause expires
@@ -1332,6 +1335,30 @@ class MirrorBot(BaseBot):
         # allowing 686 positions past the 200 cap.
         if not _is_sell and not self._can_open_position(price, category=category):
             return False
+
+        # S137 C7: Market-maker detection — if this same trader traded the opposite side on
+        # this market within 24h, they are providing liquidity (MM), not making a directional
+        # bet. Copy-trading an MM gives 0 edge. Track & reject.
+        if not _is_sell and trader_address:
+            _mm_window = 86400.0  # 24h in seconds
+            _side_upper_mm = str(side).upper()
+            _opposite_mm = "NO" if _side_upper_mm == "YES" else "YES"
+            _opp_key = f"{trader_address}:{market_id}:{_opposite_mm}"
+            _opp_ts = self._trader_market_sides.get(_opp_key, 0.0)
+            if _opp_ts > 0 and (_time.monotonic() - _opp_ts) < _mm_window:
+                logger.info("mirror_market_maker_blocked",
+                            trader=trader_address[:10], market=str(market_id)[:16],
+                            side=_side_upper_mm, prior_opposite=_opposite_mm)
+                return False
+            # Record this side — prune entries older than 25h to bound memory
+            _now_mm = _time.monotonic()
+            self._trader_market_sides[f"{trader_address}:{market_id}:{_side_upper_mm}"] = _now_mm
+            # Prune: remove entries older than 25h (only on every ~1000 adds to amortize cost)
+            if len(self._trader_market_sides) > 5000:
+                _cutoff = _now_mm - 90000.0  # 25h
+                self._trader_market_sides = {
+                    k: v for k, v in self._trader_market_sides.items() if v > _cutoff
+                }
 
         # Opposing-side dedup: reject BUY if we already hold OR ever entered the opposite side.
         # Different elite traders can take YES vs NO on the same market — opening both
