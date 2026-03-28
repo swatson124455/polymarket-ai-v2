@@ -49,11 +49,13 @@ def _make_market(
     no_price=0.50,
     yes_token_id="tok-yes-1",
     no_token_id="tok-no-1",
+    volume_24h=5000.0,
 ):
     """Create a mock esports market dict."""
     return {
         "id": market_id,
         "question": question,
+        "volume_24h": volume_24h,
         "tokens": [
             {"tokenId": yes_token_id, "outcomePrice": str(yes_price)},
             {"tokenId": no_token_id, "outcomePrice": str(no_price)},

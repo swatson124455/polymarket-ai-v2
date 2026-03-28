@@ -30,9 +30,38 @@ logger = get_logger()
 _BRIER_WINDOW = 20         # Rolling window for Brier score
 _BRIER_DEGRADATION = 0.25  # Brier above no-skill baseline triggers warning
 _WINRATE_SHIFT = 0.03      # 3% champion win rate shift triggers retrain
-_OBSERVATION_HOURS = 48    # Paper-only period after new patch
+_OBSERVATION_HOURS = 48    # Paper-only period after new patch (minor default)
 _CALIBRATION_WINDOW = 30   # Window for calibration check
 _CALIBRATION_THRESHOLD = 0.15  # 15% gap between predicted and actual → halt
+
+# S136 Phase 7D: Patch severity keyword sets
+_MAJOR_KEYWORDS = {"rework", "overhaul", "economy", "new map", "major update", "new agent", "new champion"}
+_MINOR_KEYWORDS = {"balance", "patch", "update", "nerf", "buff", "adjustment"}
+_HOTFIX_KEYWORDS = {"hotfix", "bugfix", "crash fix", "server fix", "stability"}
+
+# Observation hours by severity tier
+_SEVERITY_OBSERVATION_HOURS = {
+    "hotfix": 0,    # Skip observation entirely
+    "minor": 48,    # Current default, unchanged
+    "major": 168,   # 7 days — RD inflation needed
+}
+
+
+def _classify_patch_severity(patch_notes: str) -> str:
+    """Classify a patch into hotfix / minor / major based on keyword matching.
+
+    Returns one of: ``"hotfix"``, ``"minor"``, ``"major"``.
+    """
+    notes_lower = patch_notes.lower()
+    # Hotfix check first (most specific)
+    if any(kw in notes_lower for kw in _HOTFIX_KEYWORDS):
+        return "hotfix"
+    # Major check (multiple keywords = higher confidence)
+    _major_hits = sum(1 for kw in _MAJOR_KEYWORDS if kw in notes_lower)
+    if _major_hits >= 2:
+        return "major"
+    # Default to minor
+    return "minor"
 
 
 class PatchDriftDetector:
@@ -51,6 +80,7 @@ class PatchDriftDetector:
         # Per-game state
         self._known_patches: Dict[str, str] = {}        # game → last known patch version
         self._patch_timestamps: Dict[str, _dt.datetime] = {}  # game → when patch was detected
+        self._patch_severity: Dict[str, str] = {}  # S136 7D: game → severity ("hotfix"/"minor"/"major")
         self._predictions: Dict[str, List[Tuple[float, float]]] = {}  # game → [(predicted, actual)]
         self._champion_baselines: Dict[str, Dict[str, float]] = {}  # game → {champion: win_rate}
         self._halted_games: set = set()  # games where trading is halted
@@ -123,15 +153,26 @@ class PatchDriftDetector:
         """
         Check if a game is in observation mode (paper-only after new patch).
 
+        S136 Phase 7D: Uses severity-based observation hours.
+        - hotfix: 0h (skip observation entirely)
+        - minor: 48h (default)
+        - major: 168h (7 days)
+
         Returns True for observation_hours after a new patch is detected.
         """
         ts = self._patch_timestamps.get(game)
         if ts is None:
             return False
 
+        # S136 7D: Use severity-specific observation hours
+        severity = self._patch_severity.get(game, "minor")
+        obs_hours = _SEVERITY_OBSERVATION_HOURS.get(severity, self._observation_hours)
+        if obs_hours <= 0:
+            return False  # hotfix — skip observation
+
         now = _dt.datetime.now(_dt.timezone.utc)
         hours_since = (now - ts).total_seconds() / 3600.0
-        return hours_since < self._observation_hours
+        return hours_since < obs_hours
 
     def should_retrain(self, game: str) -> bool:
         """Check if model should be retrained for this game."""
@@ -228,7 +269,10 @@ class PatchDriftDetector:
     # ── Internal helpers ────────────────────────────────────────────────
 
     async def _check_patch_version(self, game: str) -> Optional[str]:
-        """Check if a new patch has been released for a game."""
+        """Check if a new patch has been released for a game.
+
+        S136 Phase 7D: Classifies patch severity and sets observation hours accordingly.
+        """
         if game == "lol" and self._riot_client:
             try:
                 version = await self._riot_client.get_current_patch_version()
@@ -236,7 +280,15 @@ class PatchDriftDetector:
                     old = self._known_patches.get(game)
                     self._known_patches[game] = version
                     if old is not None:  # Don't trigger on first check
+                        severity = _classify_patch_severity(version)
+                        self._patch_severity[game] = severity
                         self._patch_timestamps[game] = _dt.datetime.now(_dt.timezone.utc)
+                        _obs_h = _SEVERITY_OBSERVATION_HOURS.get(severity, _OBSERVATION_HOURS)
+                        logger.info("PatchDriftDetector: patch classified",
+                                    game=game, severity=severity, observation_hours=_obs_h)
+                        if severity == "major":
+                            logger.warning("PatchDriftDetector: MAJOR patch — 7-day observation, RD inflation needed",
+                                           game=game, version=version)
                         return version
             except Exception as exc:
                 logger.debug("PatchDriftDetector: LoL patch check failed", error=str(exc))
@@ -246,11 +298,20 @@ class PatchDriftDetector:
                 patch = await self._hltv_scraper.get_current_patch_notes("cs2")
                 if patch:
                     version = str(patch.get("version", ""))
+                    _notes_text = str(patch.get("notes", patch.get("title", version)))
                     if version and version != self._known_patches.get(game):
                         old = self._known_patches.get(game)
                         self._known_patches[game] = version
                         if old is not None:
+                            severity = _classify_patch_severity(_notes_text)
+                            self._patch_severity[game] = severity
                             self._patch_timestamps[game] = _dt.datetime.now(_dt.timezone.utc)
+                            _obs_h = _SEVERITY_OBSERVATION_HOURS.get(severity, _OBSERVATION_HOURS)
+                            logger.info("PatchDriftDetector: patch classified",
+                                        game=game, severity=severity, observation_hours=_obs_h)
+                            if severity == "major":
+                                logger.warning("PatchDriftDetector: MAJOR patch — 7-day observation, RD inflation needed",
+                                               game=game, version=version)
                             return version
             except Exception as exc:
                 logger.debug("PatchDriftDetector: CS2 patch check failed", error=str(exc))
@@ -262,7 +323,15 @@ class PatchDriftDetector:
                     old = self._known_patches.get(game)
                     self._known_patches[game] = version
                     if old is not None:
+                        severity = _classify_patch_severity(version)
+                        self._patch_severity[game] = severity
                         self._patch_timestamps[game] = _dt.datetime.now(_dt.timezone.utc)
+                        _obs_h = _SEVERITY_OBSERVATION_HOURS.get(severity, _OBSERVATION_HOURS)
+                        logger.info("PatchDriftDetector: patch classified",
+                                    game=game, severity=severity, observation_hours=_obs_h)
+                        if severity == "major":
+                            logger.warning("PatchDriftDetector: MAJOR patch — 7-day observation, RD inflation needed",
+                                           game=game, version=version)
                         return version
             except Exception as exc:
                 logger.debug("PatchDriftDetector: Dota2 patch check failed", error=str(exc))
@@ -274,7 +343,15 @@ class PatchDriftDetector:
                     old = self._known_patches.get(game)
                     self._known_patches[game] = version
                     if old is not None:
+                        severity = _classify_patch_severity(version)
+                        self._patch_severity[game] = severity
                         self._patch_timestamps[game] = _dt.datetime.now(_dt.timezone.utc)
+                        _obs_h = _SEVERITY_OBSERVATION_HOURS.get(severity, _OBSERVATION_HOURS)
+                        logger.info("PatchDriftDetector: patch classified",
+                                    game=game, severity=severity, observation_hours=_obs_h)
+                        if severity == "major":
+                            logger.warning("PatchDriftDetector: MAJOR patch — 7-day observation, RD inflation needed",
+                                           game=game, version=version)
                         return version
             except Exception as exc:
                 logger.debug("PatchDriftDetector: Valorant patch check failed", error=str(exc))

@@ -26,7 +26,8 @@ from typing import Dict, List, Optional, Tuple
 _MU_DEFAULT = 1500.0       # Default rating
 _PHI_DEFAULT = 350.0       # Default rating deviation (high uncertainty)
 _SIGMA_DEFAULT = 0.06      # Default volatility
-_TAU = 0.5                 # System constant (controls volatility change rate)
+_TAU = 0.5                 # Default system constant (controls volatility change rate)
+                           # S136: Now per-game configurable via Glicko2Tracker(tau=...)
 _EPSILON = 0.000001        # Convergence tolerance for volatility iteration
 _SCALE = 173.7178          # Glicko-2 scaling factor (400 / ln(10))
 
@@ -73,6 +74,7 @@ def update_rating(
     player: Glicko2Rating,
     opponents: List[Glicko2Rating],
     outcomes: List[float],
+    tau: float = _TAU,
 ) -> Glicko2Rating:
     """
     Update a player's rating after a rating period.
@@ -113,7 +115,7 @@ def update_rating(
     delta *= v
 
     # Step 4: Determine new volatility (sigma')
-    sigma_new = _compute_new_sigma(player.sigma, phi, v, delta)
+    sigma_new = _compute_new_sigma(player.sigma, phi, v, delta, tau=tau)
 
     # Step 5: Update phi and mu
     phi_star = math.sqrt(phi ** 2 + sigma_new ** 2)
@@ -133,9 +135,13 @@ class Glicko2Tracker:
     Processes match results chronologically and maintains per-team ratings.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, tau: float = _TAU) -> None:
         self._ratings: Dict[str, Glicko2Rating] = {}
         self._match_count = 0
+        self._tau = tau  # S136: Per-game configurable
+        # S136 Phase 10A: Player-level ratings
+        self._player_ratings: Dict[str, Glicko2Rating] = {}  # player_id → rating
+        self._team_rosters: Dict[str, List[str]] = {}  # team_id → [player_ids]
 
     @property
     def match_count(self) -> int:
@@ -169,8 +175,8 @@ class Glicko2Tracker:
         else:
             outcome_a, outcome_b = 0.5, 0.5
 
-        new_a = update_rating(rating_a, [rating_b], [outcome_a])
-        new_b = update_rating(rating_b, [rating_a], [outcome_b])
+        new_a = update_rating(rating_a, [rating_b], [outcome_a], tau=self._tau)
+        new_b = update_rating(rating_b, [rating_a], [outcome_b], tau=self._tau)
 
         self._ratings[team_a_id] = new_a
         self._ratings[team_b_id] = new_b
@@ -220,6 +226,66 @@ class Glicko2Tracker:
         """Get all tracked team ratings."""
         return dict(self._ratings)
 
+    # ── S136 Phase 10A: Player-level rating methods ──────────────────
+
+    def set_player_rating(self, player_id: str, rating: Glicko2Rating) -> None:
+        """Pre-populate a player's rating (e.g., from DB persistence)."""
+        self._player_ratings[player_id] = rating
+
+    def get_player_rating(self, player_id: str) -> Glicko2Rating:
+        """Get player's current rating, or default if unseen."""
+        return self._player_ratings.get(player_id, Glicko2Rating())
+
+    def update_roster(self, team_id: str, new_roster: List[str]) -> float:
+        """Update team roster, return roster change ratio.
+
+        S136: Composite rating adjustment on roster change.
+        Returns the proportion of roster that changed (0.0 = no change, 1.0 = full rebuild).
+        """
+        old_roster = self._team_rosters.get(team_id, [])
+        self._team_rosters[team_id] = new_roster
+
+        if not old_roster:
+            return 0.0  # First time seeing roster, no change
+
+        old_set = set(old_roster)
+        new_set = set(new_roster)
+        n_total = max(len(new_set), 1)
+        n_changes = len(new_set - old_set)
+        change_ratio = n_changes / n_total
+
+        if change_ratio > 0 and team_id in self._ratings:
+            team_rating = self._ratings[team_id]
+            # Composite: blend team history with new player average
+            player_ratings = [self._player_ratings.get(p, Glicko2Rating()) for p in new_roster]
+            avg_player_mu = sum(r.mu for r in player_ratings) / max(len(player_ratings), 1)
+
+            # Alpha: how much to trust team history vs player average
+            alpha = max(0.50, 1.0 - change_ratio)  # Always >= 50% team history
+
+            # Cap adjustment if player avg deviates too much
+            if abs(avg_player_mu - team_rating.mu) > 200:
+                avg_player_mu = team_rating.mu + max(-200, min(200, avg_player_mu - team_rating.mu))
+
+            new_mu = alpha * team_rating.mu + (1 - alpha) * avg_player_mu
+
+            # RD inflation proportional to change
+            new_phi = math.sqrt(team_rating.phi ** 2 + 0.4 * change_ratio * 350.0 ** 2)
+            new_phi = min(new_phi, _PHI_DEFAULT)
+
+            self._ratings[team_id] = Glicko2Rating(
+                mu=new_mu, phi=new_phi, sigma=team_rating.sigma
+            )
+
+        return change_ratio
+
+    def get_all_player_ratings(self) -> Dict[str, tuple]:
+        """Export all player ratings for DB persistence."""
+        return {
+            pid: (r.mu, r.phi, r.sigma)
+            for pid, r in self._player_ratings.items()
+        }
+
 
 # ── Glicko-2 math helpers ────────────────────────────────────────────
 
@@ -233,7 +299,7 @@ def _E(mu: float, mu_j: float, g_j: float) -> float:
     return 1.0 / (1.0 + math.exp(-g_j * (mu - mu_j)))
 
 
-def _compute_new_sigma(sigma: float, phi: float, v: float, delta: float) -> float:
+def _compute_new_sigma(sigma: float, phi: float, v: float, delta: float, tau: float = _TAU) -> float:
     """
     Iterative algorithm to determine new volatility (Glickman Step 5.4).
 
@@ -247,7 +313,7 @@ def _compute_new_sigma(sigma: float, phi: float, v: float, delta: float) -> floa
         ex = math.exp(x)
         num = ex * (delta_sq - phi_sq - v - ex)
         denom = 2.0 * (phi_sq + v + ex) ** 2
-        return num / denom - (x - a) / (_TAU ** 2)
+        return num / denom - (x - a) / (tau ** 2)
 
     # Initial bounds
     A = a
@@ -255,9 +321,9 @@ def _compute_new_sigma(sigma: float, phi: float, v: float, delta: float) -> floa
         B = math.log(delta_sq - phi_sq - v)
     else:
         k = 1
-        while f(a - k * _TAU) < 0:
+        while f(a - k * tau) < 0:
             k += 1
-        B = a - k * _TAU
+        B = a - k * tau
 
     # Iterative convergence
     f_A = f(A)

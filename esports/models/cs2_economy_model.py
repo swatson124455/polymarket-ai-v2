@@ -96,6 +96,10 @@ PREGAME_FEATURES = [
     "team_a_volatility",
     "team_b_volatility",
     "best_of",
+    # S136 Phase 5A: CS2-specific features from HLTV
+    "hltv_ranking_diff",    # Most predictive pre-match feature
+    "recent_form_3m",       # Win rate over last 3 months
+    "lan_flag",             # LAN vs online (binary)
 ]
 
 MODEL_PATH = os.path.join(
@@ -117,7 +121,8 @@ class CS2EconomyModel:
     def __init__(self) -> None:
         self._round_model = None
         self._pregame_model = None  # XGBoost on 6 Glicko-2 features (pre-game)
-        self._calibrator = None  # IsotonicRegression for probability calibration
+        self._calibrator = None  # IsotonicRegression for round probability calibration
+        self._pregame_calibrator = None  # S136 5B: IsotonicRegression for pregame calibration
         self._is_trained = False
         # Adaptive blend: rolling Brier errors for Glicko-2 vs ML components
         self._blend_errors: collections.deque = collections.deque(maxlen=50)
@@ -140,6 +145,9 @@ class CS2EconomyModel:
                 X = np.array([features], dtype=np.float32)
                 X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
                 proba = self._pregame_model.predict_proba(X)[0][1]
+                # S136 5B: Apply pregame isotonic calibration if available
+                if self._pregame_calibrator is not None:
+                    proba = float(self._pregame_calibrator.predict(np.array([[proba]]))[0])
                 return float(np.clip(proba, 0.05, 0.95))
             except Exception:
                 pass
@@ -198,6 +206,52 @@ class CS2EconomyModel:
             return True
         except Exception as exc:
             logger.error("CS2EconomyModel: pregame training failed", error=str(exc))
+            return False
+
+    def calibrate_pregame(self, val_data: List[Dict[str, Any]]) -> bool:
+        """S136 5B: Calibrate pregame model using isotonic regression.
+
+        Collects raw pregame probabilities and actual outcomes, then fits
+        an isotonic regression to map raw probs -> calibrated probs.
+
+        Args:
+            val_data: List of dicts with pregame features + 'team_a_won'.
+
+        Returns:
+            True if calibration succeeded.
+        """
+        if self._pregame_model is None or not val_data:
+            return False
+
+        try:
+            from sklearn.isotonic import IsotonicRegression
+
+            # Temporarily disable existing calibrator to collect raw probs
+            old_calibrator = self._pregame_calibrator
+            self._pregame_calibrator = None
+
+            raw_probs = []
+            actuals = []
+            for row in val_data:
+                features = [float(row.get(f, 0.0)) for f in PREGAME_FEATURES]
+                X = np.array([features], dtype=np.float32)
+                X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+                proba = self._pregame_model.predict_proba(X)[0][1]
+                actual = int(row.get("team_a_won", 0))
+                raw_probs.append(proba)
+                actuals.append(actual)
+
+            if len(raw_probs) < 20:
+                self._pregame_calibrator = old_calibrator
+                return False
+
+            self._pregame_calibrator = IsotonicRegression(out_of_bounds="clip")
+            self._pregame_calibrator.fit(raw_probs, actuals)
+            logger.info("CS2EconomyModel: pregame calibrated", n_samples=len(raw_probs))
+            return True
+        except Exception as exc:
+            logger.debug("CS2EconomyModel: pregame calibration failed", error=str(exc))
+            self._pregame_calibrator = old_calibrator
             return False
 
     # ── Tier 1: Round probability ───────────────────────────────────────
@@ -602,6 +656,7 @@ class CS2EconomyModel:
                     "round_model": self._round_model,
                     "calibrator": self._calibrator,
                     "pregame_model": self._pregame_model,
+                    "pregame_calibrator": self._pregame_calibrator,
                 }, f)
             return True
         except Exception as exc:
@@ -618,6 +673,7 @@ class CS2EconomyModel:
             self._round_model = data.get("round_model")
             self._calibrator = data.get("calibrator")
             self._pregame_model = data.get("pregame_model")
+            self._pregame_calibrator = data.get("pregame_calibrator")
             self._is_trained = self._round_model is not None
             return self._is_trained
         except Exception as exc:

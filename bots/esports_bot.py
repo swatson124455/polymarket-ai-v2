@@ -120,7 +120,8 @@ class BetaCalibrator:
         outcomes = np.array([float(r[1]) for r in rows])
         ln_p = np.log(preds)
         ln_1mp = np.log(1.0 - preds)
-        lam = self.lambda_reg
+        # S136: Adaptive lambda — shrinks with sample size, floored at 2.0
+        lam = max(2.0, 200.0 / max(len(rows), 1))
 
         def _loss(params):
             a, b, c_ = params
@@ -219,6 +220,11 @@ class EsportsBot(BaseBot):
         self._cs2_model = None       # CS2EconomyModel
         self._dota2_model = None     # Dota2Model
         self._valorant_model = None  # ValorantModel
+        # S136 Phase 11A-11D: New game models
+        self._cod_model = None       # CoDModel
+        self._rl_model = None        # RocketLeagueModel
+        self._sc2_model = None       # SC2Model
+        self._r6_model = None        # R6Model
         self._trainer = None         # EsportsModelTrainer
         self._opendota = None        # OpenDotaClient (Dota2 enrichment)
         self._aligulac = None        # AligulacClient (SC2 ratings blend)
@@ -290,6 +296,9 @@ class EsportsBot(BaseBot):
         self._edge_decay_data: Dict[str, Dict] = {}      # game → latest edge decay analysis
         self._game_kelly_mult: Dict[str, float] = {}     # game → Kelly multiplier (Brier-based)
         self._game_brier_cache: Dict[str, float] = {}     # game → latest rolling Brier (for signal quality)
+        # S136 Phase 3A: Entry edge cache for edge-based exits
+        self._entry_edge_cache: Dict[str, Dict] = {}  # market_id → {model_prob, edge, market_type}
+        self._edge_peaks: Dict[str, float] = {}        # market_id → peak remaining edge
         # S109: Post-exit cooldown — prevents stop-loss churn (RC1)
         self._recently_exited: Dict[str, float] = {}     # market_id → monotonic time of exit
         # S109: Per-market rolling entry cap — hard backstop against churn (RC3)
@@ -322,10 +331,18 @@ class EsportsBot(BaseBot):
         self._conformal_per_game: Dict[str, Any] = {}
         # S100b: Per-game ADWIN drift detectors (Phase 4)
         self._adwin_per_game: Dict[str, Any] = {}
+        # S136 Phase 9C: Per-game divergence accuracy tracking
+        self._divergence_accuracy: Dict[str, Dict[str, list]] = {}
+        # S136 Phase 9D: ADWIN drift retrain flags
+        self._adwin_drift_detected: Dict[str, bool] = {}
         # S100b: Per-game Online Platt calibrators (Phase 2)
         self._online_platt_per_game: Dict[str, Any] = {
             g: OnlinePlattCalibrator() for g in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl")
         }
+        # S136 Phase 4A: Per-game Venn-ABERS calibrators
+        self._venn_abers_per_game: Dict[str, Any] = {}
+        # S136 Phase 4B: Global pooled BetaCalibrator (hierarchical shrinkage)
+        self._global_beta_calibrator = BetaCalibrator(lambda_reg=10.0, min_samples=15)
 
         # Parallel analysis (Item 6)
         _concurrency = int(getattr(settings, "ESPORTS_ANALYSIS_CONCURRENCY", 10))
@@ -528,6 +545,39 @@ class EsportsBot(BaseBot):
                 logger.info("EsportsBot: no saved Valorant model — will train on first scan")
         except Exception:
             logger.debug("EsportsBot: Valorant model not loaded")
+
+        # S136 Phase 11A-11D: Load new game models
+        try:
+            from esports.models.cod_model import CoDModel
+            self._cod_model = CoDModel()
+            if not self._cod_model.load():
+                logger.info("EsportsBot: no saved CoD model — will train on first scan")
+        except Exception:
+            logger.debug("EsportsBot: CoD model not loaded")
+
+        try:
+            from esports.models.rl_model import RocketLeagueModel
+            self._rl_model = RocketLeagueModel()
+            if not self._rl_model.load():
+                logger.info("EsportsBot: no saved RL model — will train on first scan")
+        except Exception:
+            logger.debug("EsportsBot: RL model not loaded")
+
+        try:
+            from esports.models.sc2_model import SC2Model
+            self._sc2_model = SC2Model()
+            if not self._sc2_model.load():
+                logger.info("EsportsBot: no saved SC2 model — will train on first scan")
+        except Exception:
+            logger.debug("EsportsBot: SC2 model not loaded")
+
+        try:
+            from esports.models.r6_model import R6Model
+            self._r6_model = R6Model()
+            if not self._r6_model.load():
+                logger.info("EsportsBot: no saved R6 model — will train on first scan")
+        except Exception:
+            logger.debug("EsportsBot: R6 model not loaded")
 
         # Initialize trainer for periodic retraining
         try:
@@ -735,8 +785,9 @@ class EsportsBot(BaseBot):
             return
         if self._patch_drift and self._patch_drift.is_halted(game):
             return
-        _max_game_exp = float(getattr(settings, "ESPORTS_MAX_GAME_EXPOSURE", 300.0))
-        if self._game_exposure.get(game, 0.0) >= _max_game_exp:
+        # S136 8A: Use percentage-based caps when enabled
+        _caps_ws = self._get_exposure_caps()
+        if self._game_exposure.get(game, 0.0) >= _caps_ws["per_game"]:
             return
 
         edge = model_prob - yes_price
@@ -1019,6 +1070,7 @@ class EsportsBot(BaseBot):
                             current_brier=_smart_brier.get(_retrain_game),
                             current_row_count=_smart_row_count.get(_retrain_game),
                             current_patch=_lol_patch if _retrain_game == "lol" else None,
+                            adwin_drift_detected=self._adwin_drift_detected,
                         )
                         and _retrain_game not in self._bg_train_tasks):
                     # Rebuild Glicko-2 trackers after training if this game
@@ -1031,7 +1083,10 @@ class EsportsBot(BaseBot):
 
             # E7: Cross-game XGBoost retrain (pools all 8 games)
             if (self._trainer
-                    and self._trainer.needs_retrain("cross_game")
+                    and self._trainer.needs_retrain(
+                        "cross_game",
+                        adwin_drift_detected=self._adwin_drift_detected,
+                    )
                     and "cross_game" not in self._bg_train_tasks):
                 _cg_task = asyncio.create_task(
                     self._train_in_background("cross_game", db),
@@ -1518,18 +1573,68 @@ class EsportsBot(BaseBot):
         return False
 
     def _get_drawdown_kelly_factor(self) -> float:
-        """A8: Reduce Kelly fraction when drawdown exceeds 10% of capital."""
-        capital = float(getattr(settings, "ESPORTS_TOTAL_CAPITAL", 5000.0))
-        if capital <= 0 or self._daily_pnl >= 0:
+        """S136 Phase 8C: 5-step drawdown tiers with hysteresis.
+
+        Replaces linear interpolation with discrete step tiers for clearer
+        risk boundaries.  Hysteresis prevents oscillation at tier edges:
+        once a lower tier is entered, the drawdown must recover 50%
+        before restoring the prior (higher) tier.
+        """
+        capital = float(getattr(settings, "ESPORTS_TOTAL_CAPITAL", 20000.0))
+        if capital <= 0:
             return 1.0
-        drawdown_pct = abs(self._daily_pnl) / capital
-        reduce_pct = float(getattr(settings, "ESPORTS_DRAWDOWN_REDUCE_PCT", 0.10))
-        if drawdown_pct >= reduce_pct:
-            # Linear scale: 10% drawdown → 0.5x Kelly, 20% → 0x (halted before this)
-            halt_pct = float(getattr(settings, "ESPORTS_DRAWDOWN_HALT_PCT", 0.20))
-            factor = max(0.0, 1.0 - (drawdown_pct - reduce_pct) / max(halt_pct - reduce_pct, 0.01))
-            return round(max(0.1, factor), 3)  # Floor at 10% Kelly
-        return 1.0
+        dd_pct = abs(self._daily_pnl) / capital if self._daily_pnl < 0 else 0.0
+
+        # Step tiers
+        if dd_pct > 0.25:
+            factor = 0.0  # halt
+        elif dd_pct > 0.20:
+            factor = 0.10
+        elif dd_pct > 0.15:
+            factor = 0.25
+        elif dd_pct > 0.10:
+            factor = 0.50
+        elif dd_pct > 0.05:
+            factor = 0.75
+        else:
+            factor = 1.0
+
+        # Hysteresis: require 50% recovery before restoring prior tier
+        _prev_factor = getattr(self, '_last_dd_factor', 1.0)
+        if factor > _prev_factor:
+            # Recovering -- check if drawdown recovered enough
+            _recovery_threshold = dd_pct * 0.5  # need to recover 50%
+            if dd_pct > _recovery_threshold and _prev_factor < 1.0:
+                factor = _prev_factor  # stay at current tier
+        self._last_dd_factor = factor
+
+        return round(factor, 3)
+
+    def _get_exposure_caps(self) -> Dict[str, float]:
+        """S136 Phase 8A: Compute exposure caps -- percentage-based when enabled.
+
+        Returns dict with keys: per_trade, per_market, per_team, per_game,
+        per_tournament, total_portfolio.
+        """
+        if getattr(settings, "ESPORTS_PCT_CAPS_ENABLED", False):
+            _cap_capital = float(getattr(settings, "ESPORTS_TOTAL_CAPITAL", 20000.0))
+            return {
+                "per_trade": _cap_capital * float(getattr(settings, "ESPORTS_PCT_PER_TRADE", 0.015)),
+                "per_market": _cap_capital * float(getattr(settings, "ESPORTS_PCT_PER_MARKET", 0.03)),
+                "per_team": _cap_capital * float(getattr(settings, "ESPORTS_PCT_PER_TEAM", 0.03)),
+                "per_game": _cap_capital * float(getattr(settings, "ESPORTS_PCT_PER_GAME", 0.04)),
+                "per_tournament": _cap_capital * float(getattr(settings, "ESPORTS_PCT_PER_TOURNAMENT", 0.12)),
+                "total_portfolio": _cap_capital * float(getattr(settings, "ESPORTS_PCT_TOTAL_PORTFOLIO", 0.60)),
+            }
+        # Fallback: absolute caps from env
+        return {
+            "per_trade": float(getattr(settings, "ESPORTS_MAX_BET_USD", 300.0)),
+            "per_market": float(getattr(settings, "ESPORTS_PER_MARKET_CAP", 600.0)),
+            "per_team": float(getattr(settings, "ESPORTS_MAX_TEAM_EXPOSURE", 2000.0)),
+            "per_game": float(getattr(settings, "ESPORTS_MAX_GAME_EXPOSURE", 5000.0)),
+            "per_tournament": float(getattr(settings, "ESPORTS_MAX_TOURNAMENT_EXPOSURE", 8000.0)),
+            "total_portfolio": float(getattr(settings, "ESPORTS_MAX_TOTAL_EXPOSURE_USD", 15000.0)),
+        }
 
     async def _check_and_execute_exits(self, db, positions=None) -> None:
         """B1: Stop-loss + max hold time exits for open EsportsBot positions.
@@ -1549,7 +1654,7 @@ class EsportsBot(BaseBot):
         if not positions:
             return
 
-        stop_pct = float(getattr(settings, "ESPORTS_STOP_LOSS_PCT", 0.15))
+        stop_pct = float(getattr(settings, "ESPORTS_STOP_LOSS_PCT", 0.20))
         max_hold_h = float(getattr(settings, "ESPORTS_MAX_HOLD_HOURS", 72))
         now_utc = datetime.now(timezone.utc)
         positions_to_close: list = []
@@ -1577,23 +1682,75 @@ class EsportsBot(BaseBot):
             # Prices are token-specific — (current - entry) is correct for BOTH YES and NO
             pnl_pct = (current - entry) / max(entry, 1e-6)
 
-            # S134 Fix B: Stop-loss floor price — don't trigger stop-loss if exit
-            # price < 0.10. Even if pnl_pct exceeds threshold, a sub-$0.10 price
-            # on a thin esports book is not real price discovery. Resolution will
-            # give the true 0.0 or 1.0 payout.
+            # S136 Phase 3A: Edge-based exit evaluation
+            _entry_model_prob = None
+            _entry_edge = None
+            _remaining_edge = None
+            _market_type = "match_winner"
+            _edge_cache = self._entry_edge_cache.get(mid, {})
+            if _edge_cache:
+                _entry_model_prob = _edge_cache.get("model_prob")
+                _entry_edge = _edge_cache.get("edge")
+                _market_type = _edge_cache.get("market_type", "match_winner")
+
+            if _entry_model_prob is not None:
+                _remaining_edge = _entry_model_prob - current - 0.0075  # tx cost ~0.75%
+
+                # Track peak edge for trailing stop
+                _peak_key = f"_peak_edge_{mid}"
+                _current_edge_val = max(0.0, _remaining_edge)
+                _prev_peak = self._edge_peaks.get(_peak_key, _entry_edge or 0.0)
+                self._edge_peaks[_peak_key] = max(_prev_peak, _current_edge_val)
+                _peak = self._edge_peaks[_peak_key]
+
+                # Full exit: edge gone
+                if _remaining_edge <= 0.01:
+                    logger.info("esportsbot_edge_exit_full", market_id=mid,
+                                remaining_edge=round(_remaining_edge, 4),
+                                entry_model_prob=round(_entry_model_prob, 4),
+                                current_price=round(current, 4))
+                    positions_to_close.append((pos, "edge_gone"))
+                    continue
+
+                # Trailing edge stop: edge dropped 50% from peak AND below 0.02
+                if _peak > 0.02 and _remaining_edge < _peak * 0.5 and _remaining_edge < 0.02:
+                    logger.info("esportsbot_trailing_edge_exit", market_id=mid,
+                                remaining_edge=round(_remaining_edge, 4),
+                                peak_edge=round(_peak, 4))
+                    positions_to_close.append((pos, "trailing_edge"))
+                    continue
+
+            # S134 Fix B + S136 Phase 3A: Stop-loss with edge override
+            # Floor price guard: sub-$0.10 = dead book, let resolution handle it.
+            # S136: Tightened to -20% AND require remaining_edge < 0.03
             if pnl_pct <= -stop_pct:
                 if current < 0.10:
                     logger.info("esportsbot_stop_loss_floor_skip", market_id=mid,
                                 pnl_pct=f"{pnl_pct:.2%}", side=side,
                                 entry=round(entry, 4), current=round(current, 4))
                     continue
+                # S136: Only trigger stop-loss if edge is also gone (or unknown)
+                if _remaining_edge is not None and _remaining_edge >= 0.03:
+                    logger.debug("esportsbot_stop_loss_edge_override", market_id=mid,
+                                 pnl_pct=f"{pnl_pct:.2%}",
+                                 remaining_edge=round(_remaining_edge, 4))
+                    continue
                 logger.info("esportsbot_stop_loss", market_id=mid,
                             pnl_pct=f"{pnl_pct:.2%}", side=side,
-                            entry=round(entry, 4), current=round(current, 4))
+                            entry=round(entry, 4), current=round(current, 4),
+                            remaining_edge=round(_remaining_edge, 4) if _remaining_edge is not None else None)
                 positions_to_close.append((pos, "stop_loss"))
                 continue
 
             # Max hold time check using DB opened_at
+            # S136 Phase 3A: Market-type-specific max hold hours
+            # match_winner: 12h, tournament_winner: 96h, default: ESPORTS_MAX_HOLD_HOURS
+            if _market_type == "match_winner":
+                _effective_max_hold = 12.0
+            elif _market_type == "tournament_winner":
+                _effective_max_hold = 96.0
+            else:
+                _effective_max_hold = max_hold_h
             opened_at = pos.get("opened_at")
             if opened_at is not None:
                 try:
@@ -1602,9 +1759,11 @@ class EsportsBot(BaseBot):
                     if opened_at.tzinfo is None:
                         opened_at = opened_at.replace(tzinfo=timezone.utc)
                     hold_h = (now_utc - opened_at).total_seconds() / 3600
-                    if hold_h >= max_hold_h:
+                    if hold_h >= _effective_max_hold:
                         logger.info("esportsbot_max_hold_exit", market_id=mid,
-                                    hold_h=f"{hold_h:.1f}h")
+                                    hold_h=f"{hold_h:.1f}h",
+                                    market_type=_market_type,
+                                    max_hold_h=_effective_max_hold)
                         positions_to_close.append((pos, "max_hold"))
                 except Exception:
                     pass
@@ -1659,6 +1818,9 @@ class EsportsBot(BaseBot):
                             logger.warning("esportsbot_orphan_close_failed", market_id=mid,
                                            error=str(_close_err))
                     self._market_game.pop(mid, None)
+                    # S136: Clean up edge tracking for exited position
+                    self._entry_edge_cache.pop(mid, None)
+                    self._edge_peaks.pop(f"_peak_edge_{mid}", None)
                     # S110: Set cooldown even on failed exit — prevents churn re-entry
                     self._recently_exited[mid] = time.monotonic()
                     self._prediction_cache.pop(mid, None)
@@ -1683,6 +1845,9 @@ class EsportsBot(BaseBot):
                             pass  # Non-critical: in-memory is authoritative intra-day
                 # Clean up market→game mapping for exited position
                 self._market_game.pop(mid, None)
+                # S136: Clean up edge tracking for exited position
+                self._entry_edge_cache.pop(mid, None)
+                self._edge_peaks.pop(f"_peak_edge_{mid}", None)
                 logger.info("esportsbot_exit_executed", market_id=mid, reason=reason,
                             exit_side="SELL", size=round(size, 2), game=game)
                 # S109: Set cooldown + invalidate prediction cache to prevent churn
@@ -1869,7 +2034,9 @@ class EsportsBot(BaseBot):
             return None
 
         # Exposure concentration check (per-game cap)
-        max_game = float(getattr(settings, "ESPORTS_MAX_GAME_EXPOSURE", 300.0))
+        # S136 8A: Use percentage-based caps when enabled
+        _caps = self._get_exposure_caps()
+        max_game = _caps["per_game"]
         if self._game_exposure.get(game, 0.0) >= max_game:
             if _wf: _wf["exposure_cap"] += 1
             _ecl = getattr(self, "_exposure_cap_logged", None)
@@ -1916,16 +2083,68 @@ class EsportsBot(BaseBot):
             if _wf: _wf["no_prediction"] += 1
             return None
 
-        # S100: Single-stage beta calibration (replaces 3-stage sequential pipeline)
+        # S136 Phase 4C: Calibrator ensemble (replaces S100/S100b sequential override)
         _raw_prob = model_prob
         _beta_cal = self._beta_calibrators.get(game)
-        if _beta_cal is not None and _beta_cal.is_fitted:
-            model_prob = _beta_cal.calibrate(model_prob)
-        # S100b (Phase 2): Online Platt override when available (fresher than batch Beta)
-        # Apply to raw prob, not beta-calibrated, to avoid double calibration
         _online_platt = self._online_platt_per_game.get(game)
+
+        _cal_probs = []
+        _cal_weights = []
+        _n_resolved = _beta_cal
+        _n_cal = _n_resolved._n_samples if (_n_resolved and _n_resolved._fitted) else 0
+
+        # Venn-ABERS
+        _va = self._venn_abers_per_game.get(game)
+        if _va and _va.is_fitted:
+            _va_prob = _va.calibrate(_raw_prob)
+            if _n_cal < 15:
+                _cal_probs.append(_va_prob); _cal_weights.append(1.0)
+            elif _n_cal < 30:
+                _cal_probs.append(_va_prob); _cal_weights.append(0.60)
+            elif _n_cal < 50:
+                _cal_probs.append(_va_prob); _cal_weights.append(0.40)
+            else:
+                _cal_probs.append(_va_prob); _cal_weights.append(0.30)
+
+        # BetaCal (with hierarchical pooling)
+        if _beta_cal and _beta_cal.is_fitted:
+            _bc_prob = _beta_cal.calibrate(_raw_prob)
+            # Hierarchical pooling: shrink per-game toward global
+            _global_cal = self._global_beta_calibrator
+            if _global_cal and _global_cal.is_fitted and _n_cal > 0:
+                _lambda_pool = 25
+                _w_game = _n_cal / (_n_cal + _lambda_pool)
+                _global_prob = _global_cal.calibrate(_raw_prob)
+                _bc_prob = _w_game * _bc_prob + (1 - _w_game) * _global_prob
+            if _n_cal < 15:
+                pass  # weight 0 — not enough data
+            elif _n_cal < 30:
+                _cal_probs.append(_bc_prob); _cal_weights.append(0.30)
+            elif _n_cal < 50:
+                _cal_probs.append(_bc_prob); _cal_weights.append(0.35)
+            else:
+                _cal_probs.append(_bc_prob); _cal_weights.append(0.35)
+
+        # OnlinePlatt
         if _online_platt and _online_platt.is_fitted:
-            model_prob = _online_platt.calibrate(_raw_prob)
+            _op_prob = _online_platt.calibrate(_raw_prob)
+            if _n_cal < 15:
+                pass
+            elif _n_cal < 30:
+                _cal_probs.append(_op_prob); _cal_weights.append(0.10)
+            elif _n_cal < 50:
+                _cal_probs.append(_op_prob); _cal_weights.append(0.25)
+            else:
+                _cal_probs.append(_op_prob); _cal_weights.append(0.35)
+
+        if _cal_probs:
+            _w_total = sum(_cal_weights)
+            if _w_total > 0:
+                model_prob = sum(p * w for p, w in zip(_cal_probs, _cal_weights)) / _w_total
+            # Log ensemble components
+            logger.debug("esportsbot_calibrator_ensemble", game=game,
+                         n_calibrators=len(_cal_probs), n_resolved=_n_cal,
+                         raw_prob=round(_raw_prob, 4), ensemble_prob=round(model_prob, 4))
 
         # RFLB correction [T1-B]: favorites systematically overbetted.
         # Nudge model_prob toward 0.50 when market prices a heavy favorite
@@ -1979,15 +2198,20 @@ class EsportsBot(BaseBot):
             except Exception:
                 pass  # Non-critical — later log or next scan will catch it
 
-        # S135: Divergence cap — when model disagrees massively with market,
-        # market has live info model doesn't. >0.30 divergence = 5.4% accuracy.
-        _max_div = float(getattr(settings, "ESPORTS_MAX_MODEL_DIVERGENCE", 0.25))
-        _divergence = abs(model_prob - price)
-        if _divergence > _max_div:
+        # S135+S136: Divergence cap — when model disagrees massively with market,
+        # market has live info model doesn't. S136 Phase 9C: per-game adaptive cap.
+        _div = abs(model_prob - price)
+        _game_div_cap = self._get_adaptive_div_cap(game)
+        _effective_div_cap = min(
+            _game_div_cap,
+            float(getattr(settings, "ESPORTS_MAX_MODEL_DIVERGENCE", 0.25)),
+        )
+        if _div > _effective_div_cap:
             logger.info(
                 "esportsbot_divergence_capped", market_id=market_id, game=game,
                 model_prob=round(model_prob, 4), market_price=round(price, 4),
-                divergence=round(_divergence, 4), cap=_max_div,
+                divergence=round(_div, 4), cap=_effective_div_cap,
+                adaptive_cap=round(_game_div_cap, 4),
             )
             if _wf:
                 _wf["divergence_cap"] = _wf.get("divergence_cap", 0) + 1
@@ -2596,6 +2820,115 @@ class EsportsBot(BaseBot):
                         return prob
             except Exception as _e:
                 logger.debug("esportsbot_valorant_model_predict_failed", game="valorant", error=str(_e))
+
+        # S136 Phase 11A-11D: CoD, RL, SC2, R6 — pre-game only (same pattern as Dota2/Valorant)
+        if game == "cod" and self._cod_model and self._cod_model.is_trained:
+            try:
+                glicko2_prob = await self._get_glicko2_prediction(market_data, game, price)
+                if glicko2_prob is not None:
+                    game_state = self._build_glicko2_game_state(market_data, game)
+                    if game_state:
+                        prob = self._cod_model.predict(game_state)
+                        _d = self._game_egm_d.get(game, self._egm_d)
+                        prob = extremized_geometric_mean([prob, glicko2_prob], d=_d)
+                        prob = max(0.05, min(0.95, prob))
+                        prob, _em = await self._enrich_prediction(prob, game, market_id, market_data, live_data)
+                        _ed_cod = {"game": game, "model_prob": round(prob, 4),
+                                   "scan_start_mono": getattr(self, "_scan_start_mono", None),
+                                   "_enrich_meta": _em}
+                        for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
+                                    "team_a_volatility", "team_b_volatility"):
+                            _ed_cod[_fk] = round(float(game_state.get(_fk, 0.0)), 6)
+                        self._prediction_cache[market_id] = {
+                            "prob": prob, "ts": time.monotonic(), "game": game,
+                            "ml_raw": self._cod_model.predict(game_state),
+                            "glicko2_est": glicko2_prob,
+                            "event_data": _ed_cod,
+                        }
+                        return prob
+            except Exception as _e:
+                logger.debug("esportsbot_cod_model_predict_failed", game="cod", error=str(_e))
+
+        if game == "rl" and self._rl_model and self._rl_model.is_trained:
+            try:
+                glicko2_prob = await self._get_glicko2_prediction(market_data, game, price)
+                if glicko2_prob is not None:
+                    game_state = self._build_glicko2_game_state(market_data, game)
+                    if game_state:
+                        prob = self._rl_model.predict(game_state)
+                        _d = self._game_egm_d.get(game, self._egm_d)
+                        prob = extremized_geometric_mean([prob, glicko2_prob], d=_d)
+                        prob = max(0.05, min(0.95, prob))
+                        prob, _em = await self._enrich_prediction(prob, game, market_id, market_data, live_data)
+                        _ed_rl = {"game": game, "model_prob": round(prob, 4),
+                                  "scan_start_mono": getattr(self, "_scan_start_mono", None),
+                                  "_enrich_meta": _em}
+                        for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
+                                    "team_a_volatility", "team_b_volatility"):
+                            _ed_rl[_fk] = round(float(game_state.get(_fk, 0.0)), 6)
+                        self._prediction_cache[market_id] = {
+                            "prob": prob, "ts": time.monotonic(), "game": game,
+                            "ml_raw": self._rl_model.predict(game_state),
+                            "glicko2_est": glicko2_prob,
+                            "event_data": _ed_rl,
+                        }
+                        return prob
+            except Exception as _e:
+                logger.debug("esportsbot_rl_model_predict_failed", game="rl", error=str(_e))
+
+        if game == "sc2" and self._sc2_model and self._sc2_model.is_trained:
+            try:
+                glicko2_prob = await self._get_glicko2_prediction(market_data, game, price)
+                if glicko2_prob is not None:
+                    game_state = self._build_glicko2_game_state(market_data, game)
+                    if game_state:
+                        prob = self._sc2_model.predict(game_state)
+                        _d = self._game_egm_d.get(game, self._egm_d)
+                        prob = extremized_geometric_mean([prob, glicko2_prob], d=_d)
+                        prob = max(0.05, min(0.95, prob))
+                        prob, _em = await self._enrich_prediction(prob, game, market_id, market_data, live_data)
+                        _ed_sc2 = {"game": game, "model_prob": round(prob, 4),
+                                   "scan_start_mono": getattr(self, "_scan_start_mono", None),
+                                   "_enrich_meta": _em}
+                        for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
+                                    "team_a_volatility", "team_b_volatility"):
+                            _ed_sc2[_fk] = round(float(game_state.get(_fk, 0.0)), 6)
+                        self._prediction_cache[market_id] = {
+                            "prob": prob, "ts": time.monotonic(), "game": game,
+                            "ml_raw": self._sc2_model.predict(game_state),
+                            "glicko2_est": glicko2_prob,
+                            "event_data": _ed_sc2,
+                        }
+                        return prob
+            except Exception as _e:
+                logger.debug("esportsbot_sc2_model_predict_failed", game="sc2", error=str(_e))
+
+        if game == "r6" and self._r6_model and self._r6_model.is_trained:
+            try:
+                glicko2_prob = await self._get_glicko2_prediction(market_data, game, price)
+                if glicko2_prob is not None:
+                    game_state = self._build_glicko2_game_state(market_data, game)
+                    if game_state:
+                        prob = self._r6_model.predict(game_state)
+                        _d = self._game_egm_d.get(game, self._egm_d)
+                        prob = extremized_geometric_mean([prob, glicko2_prob], d=_d)
+                        prob = max(0.05, min(0.95, prob))
+                        prob, _em = await self._enrich_prediction(prob, game, market_id, market_data, live_data)
+                        _ed_r6 = {"game": game, "model_prob": round(prob, 4),
+                                  "scan_start_mono": getattr(self, "_scan_start_mono", None),
+                                  "_enrich_meta": _em}
+                        for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
+                                    "team_a_volatility", "team_b_volatility"):
+                            _ed_r6[_fk] = round(float(game_state.get(_fk, 0.0)), 6)
+                        self._prediction_cache[market_id] = {
+                            "prob": prob, "ts": time.monotonic(), "game": game,
+                            "ml_raw": self._r6_model.predict(game_state),
+                            "glicko2_est": glicko2_prob,
+                            "event_data": _ed_r6,
+                        }
+                        return prob
+            except Exception as _e:
+                logger.debug("esportsbot_r6_model_predict_failed", game="r6", error=str(_e))
 
         # "Easy mode" fallback: Glicko-2 expected score from team strength ratings.
         # Replaces base prediction engine (politics/crypto model) which produced
@@ -3216,6 +3549,12 @@ class EsportsBot(BaseBot):
             # S132 EB-5: Persist confidence + signal_quality for S-T path
             _event_data["confidence"] = round(opp.get("confidence", 0.0), 4)
             _event_data["signal_quality"] = round(float(opp.get("_signal_quality", 1.0)), 4)
+            # S136 Phase 3A: Persist entry model_prob and edge for edge-based exits
+            _st_model_prob = opp.get("prediction", opp.get("confidence", 0.5))
+            _st_edge_val = opp.get("edge", 0.0)
+            _event_data["entry_model_prob"] = round(float(_st_model_prob), 6)
+            _event_data["entry_edge"] = round(float(_st_edge_val), 6)
+            _event_data["market_type"] = opp.get("market_type", "match_winner")
             order = await self.place_order(
                 market_id=opp["market_id"],
                 token_id=opp["token_id"],
@@ -3228,6 +3567,12 @@ class EsportsBot(BaseBot):
             if order and order.get("success"):
                 # S132 EB-3: Track entered side for opposing-side guard
                 self._entered_market_sides.add((opp["market_id"], str(opp["side"]).upper()))
+                # S136 Phase 3A: Cache entry edge data for exit evaluation
+                self._entry_edge_cache[opp["market_id"]] = {
+                    "model_prob": float(_st_model_prob),
+                    "edge": float(_st_edge_val),
+                    "market_type": opp.get("market_type", "match_winner"),
+                }
                 if game:
                     _db = getattr(self.base_engine, "db", None)
                     if _db is not None:
@@ -3336,6 +3681,59 @@ class EsportsBot(BaseBot):
                 if _vol < 0.8:
                     size *= 1.10
 
+        # S136 Phase 2A: Baker-McHale shadow mode — compute new sizing alongside old
+        # Will replace old cascade after 48h validation
+        import math as _bm_math
+        _bm_price = opp["price"]
+        _opp_edge = opp.get("edge", 0.0)
+        _opp_conf = opp.get("confidence", 0.5)
+
+        # sigma_model from Glicko-2 phi + conformal width + model agreement
+        _phi_a = opp.get("_phi_a", 200.0)
+        _phi_b = opp.get("_phi_b", 200.0)
+        _phi_norm = ((_phi_a + _phi_b) / 2.0) / 350.0  # normalized [0, 1]
+        _conf_width = opp.get("_conformal_width", 0.15)
+        _agreement_std = opp.get("_agreement_stdev", 0.10)
+        _sigma_model = max(0.08, _phi_norm * 0.15 + _conf_width * 0.5 + _agreement_std * 0.5)
+
+        # Adjust sigma by signal quality (SQ >= 0.30 gate already passed)
+        _sq_val = opp.get("_signal_quality", 0.7)
+        if _sq_val > 0:
+            _sigma_model = _sigma_model / _sq_val
+
+        # Baker-McHale shrinkage
+        _k_bm = _opp_edge ** 2 / (_opp_edge ** 2 + _sigma_model ** 2) if (_opp_edge ** 2 + _sigma_model ** 2) > 0 else 0.0
+        _base_kelly = float(getattr(settings, "ESPORTS_KELLY_DEFAULT_FRACTION", 0.25))
+        _eff_kelly = max(0.15, _k_bm * _base_kelly)
+
+        # Drawdown modifies bankroll, not size
+        _dd_bm = dd_factor  # reuse the already-computed daily drawdown factor
+        _capital_bm = float(getattr(settings, "ESPORTS_TOTAL_CAPITAL", 20000.0))
+        _eff_bankroll = _capital_bm * _dd_bm
+        _bm_size = _eff_kelly * _eff_bankroll / max(_bm_price, 0.01)
+
+        # Hard constraints (Layer 2)
+        _max_bet_bm = float(getattr(settings, "ESPORTS_MAX_BET_USD", 300.0))
+        _bm_size = min(_bm_size, _max_bet_bm / max(_bm_price, 0.01))
+
+        # Log shadow comparison
+        _old_size = size  # current cascade result
+        logger.info(
+            "esportsbot_sizing_shadow",
+            market_id=opp.get("market_id", ""),
+            game=opp.get("game", "?"),
+            old_size=round(float(_old_size) * _bm_price, 2),  # USD
+            new_size_bm=round(float(_bm_size) * _bm_price, 2),  # USD
+            ratio=round(float(_bm_size) / max(float(_old_size), 0.01), 2) if _old_size > 0 else 0.0,
+            k_bm=round(_k_bm, 4),
+            sigma_model=round(_sigma_model, 4),
+            eff_kelly=round(_eff_kelly, 4),
+            edge=round(_opp_edge, 4),
+        )
+        # SHADOW MODE: execute at min(old, new) — never exceed current levels
+        # Remove this line to cut over to Baker-McHale after validation
+        size = min(size, _bm_size)
+
         # Position re-entry: cap size at remaining room under per-market cap
         _max_size_override = opp.get("max_size_override")
         if _max_size_override is not None and size > _max_size_override:
@@ -3384,9 +3782,41 @@ class EsportsBot(BaseBot):
         if game:
             self._market_game[opp["market_id"]] = game
 
+        # S136 Phase 8B: Correlation-aware tournament cap
+        _tournament_name = opp.get("tournament", "")
+        if _tournament_name:
+            _caps_exec = self._get_exposure_caps()
+            _game_cap = _caps_exec["per_game"]
+            _tournament_cap = _caps_exec["per_tournament"]
+            _n_games_in_tournament = len(set(
+                g for g, exp in self._game_exposure.items() if exp > 0
+            ))
+            _rho = 0.25  # estimated correlation between games in same tournament
+            _corr_cap = _game_cap * math.sqrt(max(1, _n_games_in_tournament)) * (1.0 - _rho)
+            _tournament_cap = min(_tournament_cap, _corr_cap)
+            _current_tourn_exp = self._tournament_exposure.get(_tournament_name, 0.0)
+            if _current_tourn_exp + _entry_cost > _tournament_cap:
+                # Undo game exposure pre-update
+                self._game_exposure[game] = max(
+                    0.0, self._game_exposure.get(game, 0.0) - _entry_cost
+                )
+                logger.info("esportsbot_tournament_cap_hit",
+                            tournament=_tournament_name,
+                            exposure=round(_current_tourn_exp, 2),
+                            entry_cost=round(_entry_cost, 2),
+                            cap=round(_tournament_cap, 2),
+                            corr_cap=round(_corr_cap, 2))
+                return False
+
         # S132 EB-5: Persist confidence + signal_quality for bucketed WR analysis
         _event_data["confidence"] = round(confidence, 4)
         _event_data["signal_quality"] = round(_sq_sizing, 4)
+        # S136 Phase 3A: Persist entry model_prob and edge for edge-based exits
+        _entry_model_prob = opp.get("prediction", opp.get("confidence", 0.5))
+        _entry_edge_val = opp.get("edge", 0.0)
+        _event_data["entry_model_prob"] = round(float(_entry_model_prob), 6)
+        _event_data["entry_edge"] = round(float(_entry_edge_val), 6)
+        _event_data["market_type"] = opp.get("market_type", "match_winner")
 
         order = await self.place_order(
             market_id=opp["market_id"],
@@ -3401,6 +3831,12 @@ class EsportsBot(BaseBot):
         if order and order.get("success"):
             # S132 EB-3: Track entered side for opposing-side guard
             self._entered_market_sides.add((opp["market_id"], str(opp["side"]).upper()))
+            # S136 Phase 3A: Cache entry edge data for exit evaluation
+            self._entry_edge_cache[opp["market_id"]] = {
+                "model_prob": float(_entry_model_prob),
+                "edge": float(_entry_edge_val),
+                "market_type": opp.get("market_type", "match_winner"),
+            }
             # Update tournament exposure
             tournament = opp.get("tournament", "")
             if tournament:
@@ -3593,13 +4029,14 @@ class EsportsBot(BaseBot):
         _brier = self._game_brier_cache.get(game, 0.15)
         _brier_score = max(0.0, min(1.0, 1.0 - _brier / 0.25))
 
-        # Weighted composite
+        # S136: Reweighted — calibration most important for Kelly sizing,
+        # Brier most holistic metric, model agreement overlaps uncertainty.
         _sq = (
-            0.30 * _agreement
-            + 0.25 * _calibration
+            0.20 * _agreement
+            + 0.30 * _calibration
             + 0.20 * _uncertainty
-            + 0.15 * _enrichment
-            + 0.10 * _brier_score
+            + 0.10 * _enrichment
+            + 0.20 * _brier_score
         )
         _sq = max(0.30, min(1.0, _sq))
 
@@ -3632,15 +4069,53 @@ class EsportsBot(BaseBot):
                 logger.warning("esportsbot_adwin_drift", game=game,
                                estimation=round(self._adwin_per_game[game].estimation, 4),
                                width=self._adwin_per_game[game].width)
+                # S136 Phase 9D: Wire ADWIN drift to retrain flag
+                self._adwin_drift_detected[game] = True
+                logger.warning("esportsbot_adwin_drift_flagged", game=game)
         except ImportError:
             pass
         except Exception as exc:
             logger.debug("esportsbot_adwin_update_failed", game=game, error=str(exc))
 
+        # S136 Phase 9C: Track divergence accuracy for adaptive caps
+        try:
+            if game not in self._divergence_accuracy:
+                self._divergence_accuracy[game] = {}
+            # Use |predicted - 0.5| as proxy for divergence magnitude
+            _proxy_div = abs(predicted - 0.5)
+            _correct = int((predicted >= 0.5) == (actual >= 0.5))
+            # Bin to nearest 0.05
+            _bin_key = f"{round(_proxy_div / 0.05) * 0.05:.2f}"
+            if _bin_key not in self._divergence_accuracy[game]:
+                self._divergence_accuracy[game][_bin_key] = []
+            _bin_list = self._divergence_accuracy[game][_bin_key]
+            _bin_list.append(_correct)
+            # Keep last 200 samples per bin
+            if len(_bin_list) > 200:
+                self._divergence_accuracy[game][_bin_key] = _bin_list[-200:]
+        except Exception:
+            pass  # Non-critical tracking
+
         # Online Platt update (Phase 2)
         _platt = self._online_platt_per_game.get(game)
         if _platt:
             _platt.update(predicted, int(actual))
+
+    def _get_adaptive_div_cap(self, game: str) -> float:
+        """S136 Phase 9C: Per-game divergence cap from accuracy tracking."""
+        bins = self._divergence_accuracy.get(game, {})
+        if not bins or sum(len(v) for v in bins.values()) < 30:
+            return 0.25  # no data — defer to config cap via min()
+        # Find highest threshold where accuracy drops below 55%
+        for threshold in [0.25, 0.20, 0.15, 0.10, 0.05]:
+            bin_key = f"{threshold:.2f}"
+            samples = bins.get(bin_key, [])
+            if len(samples) >= 5:
+                acc = sum(samples) / len(samples)
+                if acc < 0.55:
+                    # This bin is unprofitable — cap just below it
+                    return max(0.05, threshold - 0.05)
+        return 0.25  # all bins profitable
 
     async def _check_kelly_graduation(self, db) -> None:
         """A3: Continuous Kelly scaling with de-graduation.
@@ -3760,7 +4235,10 @@ class EsportsBot(BaseBot):
                     ratings_rows = []
 
                 if ratings_rows:
-                    tracker = Glicko2Tracker()
+                    # S136: Per-game tau
+                    _tau_key = f"ESPORTS_GLICKO2_TAU_{game.upper()}"
+                    _tau_val = float(getattr(settings, _tau_key, getattr(settings, "ESPORTS_GLICKO2_TAU_DEFAULT", 0.5)))
+                    tracker = Glicko2Tracker(tau=_tau_val)
                     total_matches = 0
                     for row in ratings_rows:
                         team_key = str(row[0])
@@ -3801,7 +4279,10 @@ class EsportsBot(BaseBot):
                 if not matches:
                     continue
 
-                tracker = Glicko2Tracker()
+                # S136: Per-game tau
+                _tau_key2 = f"ESPORTS_GLICKO2_TAU_{game.upper()}"
+                _tau_val2 = float(getattr(settings, _tau_key2, getattr(settings, "ESPORTS_GLICKO2_TAU_DEFAULT", 0.5)))
+                tracker = Glicko2Tracker(tau=_tau_val2)
                 for row in matches:
                     team_a_name = str(row[0] or "").strip()
                     team_b_name = str(row[1] or "").strip()
@@ -4032,6 +4513,15 @@ class EsportsBot(BaseBot):
                     self._dota2_model.load()
                 elif game == "valorant" and self._valorant_model:
                     self._valorant_model.load()
+                # S136 Phase 11A-11D: Reload new game models after retrain
+                elif game == "cod" and self._cod_model:
+                    self._cod_model.load()
+                elif game == "rl" and self._rl_model:
+                    self._rl_model.load()
+                elif game == "sc2" and self._sc2_model:
+                    self._sc2_model.load()
+                elif game == "r6" and self._r6_model:
+                    self._r6_model.load()
                 # Rebuild Glicko-2 trackers if new game data collected
                 if init_glicko and result.get("samples", 0) > 0:
                     await self._init_glicko2_trackers(db)
@@ -4100,12 +4590,18 @@ class EsportsBot(BaseBot):
                 accuracy = acc_data["accuracy"]
                 self._game_brier_cache[game] = brier
 
-                _halt_thresh = float(getattr(settings, "ESPORTS_BRIER_HALT_THRESHOLD", 1.0))
-                if brier > _halt_thresh:
+                # S136: Statistical Brier halt — halt only when lower bound of
+                # 90% CI exceeds 0.25 (statistically confident worse than random).
+                # Requires n>=50. Replaces fixed threshold which false-halted on noise.
+                import math as _math
+                _n_total = acc_data["total"]
+                _should_halt = False
+                if _n_total >= 50:
+                    _se = _math.sqrt(brier * (1.0 - brier) / _n_total) if brier < 1.0 else 0.0
+                    _lower_bound = brier - 1.645 * _se  # 90% one-sided
+                    _should_halt = _lower_bound > 0.25
+                if _should_halt:
                     # S100: Don't halt when BetaCalibrator has no clean data yet.
-                    # Old accuracy is from stale 3-stage pipeline — meaningless.
-                    # Once BetaCalibrator fits (30+ clean post-fix predictions),
-                    # halting resumes with valid metrics.
                     _cal = self._beta_calibrators.get(game)
                     if _cal and not _cal._fitted:
                         if game in self._monitoring_halted_games:
@@ -4209,6 +4705,104 @@ class EsportsBot(BaseBot):
             except Exception as exc:
                 logger.debug("esportsbot_beta_cal_fit_failed",
                              game=_cal_game, error=str(exc))
+
+        # S136 Phase 4B: Hierarchical pooled BetaCal — pool all games for global calibrator
+        try:
+            from sqlalchemy import text as _text
+            import numpy as np
+            _all_preds = []
+            _all_outcomes = []
+            _game_counts = {}
+            async with db.get_session() as session:
+                for _pool_game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
+                    _pool_result = await session.execute(
+                        _text(
+                            "SELECT predicted_prob, actual_outcome "
+                            "FROM esports_prediction_log "
+                            "WHERE actual_outcome IS NOT NULL "
+                            "AND game = :game "
+                            "AND created_at > NOW() - :days_int * INTERVAL '1 day' "
+                            "ORDER BY created_at DESC LIMIT 5000"
+                        ),
+                        {"game": _pool_game, "days_int": int(_cal_days)},
+                    )
+                    _pool_rows = _pool_result.fetchall()
+                    _game_counts[_pool_game] = len(_pool_rows)
+                    for _pr in _pool_rows:
+                        _all_preds.append(float(_pr[0]))
+                        _all_outcomes.append(float(_pr[1]))
+            if len(_all_preds) >= self._global_beta_calibrator.min_samples:
+                _all_preds_arr = np.clip(
+                    np.array(_all_preds), 1e-6, 1.0 - 1e-6
+                )
+                _all_outcomes_arr = np.array(_all_outcomes)
+                # Fit global BetaCal using in-memory data (same algo as per-game)
+                from scipy.optimize import minimize as _minimize
+                ln_p = np.log(_all_preds_arr)
+                ln_1mp = np.log(1.0 - _all_preds_arr)
+                _glam = max(2.0, 200.0 / max(len(_all_preds), 1))
+
+                def _global_loss(params):
+                    a, b, c_ = params
+                    logits = a * ln_p - b * ln_1mp + c_
+                    nll = np.mean(
+                        _all_outcomes_arr * np.logaddexp(0.0, -logits)
+                        + (1.0 - _all_outcomes_arr) * np.logaddexp(0.0, logits)
+                    )
+                    reg = _glam * ((a - 1.0) ** 2 + (b - 1.0) ** 2 + c_ ** 2)
+                    return nll + reg
+
+                _gres = _minimize(
+                    _global_loss,
+                    x0=[1.0, 1.0, 0.0],
+                    method="L-BFGS-B",
+                    bounds=[(0.1, 5.0), (0.1, 5.0), (-2.0, 2.0)],
+                )
+                self._global_beta_calibrator.a = float(_gres.x[0])
+                self._global_beta_calibrator.b = float(_gres.x[1])
+                self._global_beta_calibrator.c = float(_gres.x[2])
+                self._global_beta_calibrator._fitted = True
+                self._global_beta_calibrator._n_samples = len(_all_preds)
+                logger.info("esportsbot_global_beta_cal_fitted",
+                            a=round(self._global_beta_calibrator.a, 4),
+                            b=round(self._global_beta_calibrator.b, 4),
+                            c=round(self._global_beta_calibrator.c, 4),
+                            n=len(_all_preds), game_counts=_game_counts)
+        except Exception as exc:
+            logger.debug("esportsbot_global_beta_cal_failed", error=str(exc))
+
+        # S136 Phase 4A: Fit per-game Venn-ABERS calibrators
+        try:
+            from esports.models.venn_abers_calibrator import VennAbersCalibrator
+            import numpy as np
+            async with db.get_session() as session:
+                for _va_game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
+                    _va_result = await session.execute(
+                        _text(
+                            "SELECT predicted_prob, actual_outcome "
+                            "FROM esports_prediction_log "
+                            "WHERE actual_outcome IS NOT NULL "
+                            "AND game = :game "
+                            "AND created_at > NOW() - :days_int * INTERVAL '1 day' "
+                            "ORDER BY created_at DESC LIMIT 5000"
+                        ),
+                        {"game": _va_game, "days_int": int(_cal_days)},
+                    )
+                    _va_rows = _va_result.fetchall()
+                    if len(_va_rows) >= 5:
+                        _va_preds = np.array([float(r[0]) for r in _va_rows])
+                        _va_outcomes = np.array([float(r[1]) for r in _va_rows])
+                        va = self._venn_abers_per_game.get(_va_game)
+                        if va is None:
+                            va = VennAbersCalibrator(min_samples=5)
+                            self._venn_abers_per_game[_va_game] = va
+                        _va_ok = va.fit(_va_preds, _va_outcomes)
+                        if _va_ok:
+                            logger.info("esportsbot_venn_abers_fitted",
+                                        game=_va_game, n=len(_va_rows),
+                                        interval_width=round(va.interval_width, 4))
+        except Exception as exc:
+            logger.debug("esportsbot_venn_abers_fit_failed", error=str(exc))
 
         # S100b: Fit per-game conformal predictors (Phase 3) from same data window.
         # Reuses BetaCalibrator's query pattern — (predicted_prob, actual_outcome).
@@ -4609,7 +5203,17 @@ class EsportsBot(BaseBot):
                         pandascore_id=team_id,
                         matches_processed=processed)
 
-            return self._team_name_to_id.get(name.lower())
+            # S136 6C: Auto-persist the query name → team_name mapping for session
+            # so subsequent scans don't re-backfill the same team
+            clean_name = name.lower().strip()
+            resolved_tid = self._team_name_to_id.get(clean_name)
+            if not resolved_tid and team_name:
+                # Map original query name to the PandaScore canonical name
+                self._team_name_to_id[clean_name] = team_name
+                logger.info("esportsbot_team_auto_added", name=clean_name, team_id=team_name)
+                resolved_tid = team_name
+
+            return resolved_tid
 
         except Exception as exc:
             logger.debug("esportsbot_team_backfill_failed",
@@ -4688,15 +5292,19 @@ class EsportsBot(BaseBot):
             # S94-P3: Use market_price as prior instead of 0.50.  When model is
             # uncertain (high phi), predictions stay close to market → small
             # realistic edges.  When confident (low phi), Glicko-2 dominates.
+            # S136: Smooth sigmoid prior replaces discrete 4-tier brackets.
+            # Eliminates artificial cliff at phi=350. Sigmoid yields similar
+            # values at bracket boundaries but transitions smoothly.
+            import math as _math_prior
             max_phi = max(rating_a.phi, rating_b.phi)
-            if max_phi >= 350.0:
-                prior_weight = 0.80
-            elif max_phi >= 200.0:
-                prior_weight = 0.50
-            elif max_phi >= 100.0:
-                prior_weight = 0.20
-            else:
-                prior_weight = 0.0
+            prior_weight = 0.85 / (1.0 + _math_prior.exp(-(max_phi - 200.0) / 50.0))
+
+            # S136 Phase 7C: Scale prior weight by market liquidity
+            # Thin markets should get less market weight even for uncertain teams
+            _volume_24h = float(market_data.get("volume_24h", market_data.get("volume", 0.0)))
+            _baseline_volume = 3000.0  # Median esports market 24h volume
+            _liquidity_factor = min(1.0, _volume_24h / _baseline_volume) if _baseline_volume > 0 else 0.5
+            prior_weight = prior_weight * max(0.10, _liquidity_factor)  # Floor at 10% of phi-weight
 
             if prior_weight > 0:
                 _prior = max(0.05, min(0.95, market_price))
@@ -5240,6 +5848,15 @@ class EsportsBot(BaseBot):
         "serral": "serral", "clem": "clem", "maru": "maru", "hero": "hero",
         "reynor": "reynor", "maxpax": "maxpax", "oliveira": "oliveira",
         "dark": "dark", "byun": "byun", "trap": "trap",
+        # S136 Phase 6A: Expanded aliases from common market question patterns
+        "ktr": "kt rolster", "rolster": "kt rolster",
+        "dwg": "dplus kia",
+        "ast": "astralis",
+        "100": "100 thieves",
+        "mous": "mousesports",
+        "kru": "kru esports",
+        "betboom": "betboom team",
+        "entity": "entity gaming",
         # Multi-game
         "weibo": "weibo gaming",
         "t1": "t1", "skt": "t1", "skt1": "t1", "sk telecom": "t1",
@@ -5302,15 +5919,19 @@ class EsportsBot(BaseBot):
                     return tid
 
         # Tier 6: fuzzy match via difflib (stdlib) — last resort for typos/transliterations
+        # S136 6B: Lower threshold for long names (5+ chars) to catch more matches
         from difflib import SequenceMatcher as _SM
-        best_ratio, best_tid = 0.0, None
+        best_ratio, best_tid, best_match = 0.0, None, None
         for known_name, tid in self._team_name_to_id.items():
             if len(known_name) <= 2:
                 continue
             ratio = _SM(None, name, known_name).ratio()
             if ratio > best_ratio:
-                best_ratio, best_tid = ratio, tid
-        if best_ratio >= 0.78 and best_tid is not None:
+                best_ratio, best_tid, best_match = ratio, tid, known_name
+        # Short names (<5 chars) need higher threshold to avoid false positives
+        threshold = 0.73 if len(name) >= 5 else 0.78
+        if best_ratio >= threshold and best_tid is not None:
+            logger.info("esportsbot_fuzzy_match", query=name, matched=best_match, ratio=round(best_ratio, 3))
             return best_tid
 
         return None

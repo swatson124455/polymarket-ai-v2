@@ -14,6 +14,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import math as _math_decay
 import os
 import time
 from typing import Any, Dict, List, Optional
@@ -35,6 +36,32 @@ _MIN_CS2_SAMPLES = int(getattr(settings, "ESPORTS_MIN_CS2_SAMPLES", 100))
 _MIN_CS2_UNIQUE_MATCHES = int(getattr(settings, "ESPORTS_MIN_CS2_UNIQUE_MATCHES", 15))
 _EARLY_STOPPING_ROUNDS = int(getattr(settings, "ESPORTS_EARLY_STOPPING_ROUNDS", 20))
 _ECE_BINS = 10  # Number of bins for Expected Calibration Error
+
+# S136 Phase 9A: Exponential decay weighting for non-LoL games
+_HALF_LIVES = {"cs2": 50, "dota2": 60, "valorant": 50, "sc2": 75, "cod": 60, "r6": 60, "rl": 60}
+_TOURNAMENT_MULTIPLIERS = {
+    "major": 1.5, "worlds": 1.5, "international": 1.5,
+    "regional": 1.2, "league": 1.2, "lck": 1.2, "lpl": 1.2, "lec": 1.2, "lcs": 1.2,
+    "qualifier": 1.0, "open": 1.0,
+    "showmatch": 0.5, "show": 0.5,
+}
+
+
+def _compute_sample_weight(game: str, days_ago: float, tournament_name: str = "") -> float:
+    """S136 Phase 9A: Time-decay + tournament importance weight for a training sample."""
+    half_life = _HALF_LIVES.get(game, 60)
+    decay_lambda = _math_decay.log(2) / half_life
+    time_weight = max(0.10, _math_decay.exp(-decay_lambda * days_ago))
+
+    # Tournament multiplier
+    t_mult = 1.0
+    if tournament_name:
+        t_lower = tournament_name.lower()
+        for key, mult in _TOURNAMENT_MULTIPLIERS.items():
+            if key in t_lower:
+                t_mult = mult
+                break
+    return time_weight * t_mult
 
 
 class EsportsModelTrainer:
@@ -75,6 +102,7 @@ class EsportsModelTrainer:
         current_row_count: Optional[int] = None,
         current_patch: Optional[str] = None,
         recent_loss_streak: int = 0,
+        adwin_drift_detected: Optional[Dict[str, bool]] = None,
     ) -> bool:
         """Check if a game model needs retraining (interval + smart triggers).
 
@@ -158,6 +186,11 @@ class EsportsModelTrainer:
                 game=game,
                 loss_streak=recent_loss_streak,
             )
+            return True
+
+        # S136 Trigger 6: ADWIN concept drift detection
+        if adwin_drift_detected and adwin_drift_detected.get(game, False):
+            logger.info("esports_retrain_trigger_adwin_drift", game=game)
             return True
 
         return False
@@ -499,6 +532,36 @@ class EsportsModelTrainer:
                 result["error"] = "insufficient split sizes"
                 return result
 
+            # S136 Phase 9A: Compute sample weights (time-decay + tournament importance)
+            # LoL uses patch weighting elsewhere; this applies to all games in cross-game pool.
+            from datetime import datetime as _dt_sw, timezone as _tz_sw
+            _now_sw = _dt_sw.now(_tz_sw.utc)
+
+            def _sample_weight(row):
+                _g = row.get("_game", "")
+                _sched = row.get("scheduled_at")
+                if _sched is None:
+                    _days = 30.0  # unknown age — assume moderately old
+                elif isinstance(_sched, str):
+                    try:
+                        _parsed = _dt_sw.fromisoformat(_sched.replace("Z", "+00:00"))
+                        if _parsed.tzinfo is None:
+                            _parsed = _parsed.replace(tzinfo=_tz_sw.utc)
+                        _days = max(0.0, (_now_sw - _parsed).total_seconds() / 86400.0)
+                    except (ValueError, TypeError):
+                        _days = 30.0
+                else:
+                    try:
+                        if _sched.tzinfo is None:
+                            _sched = _sched.replace(tzinfo=_tz_sw.utc)
+                        _days = max(0.0, (_now_sw - _sched).total_seconds() / 86400.0)
+                    except Exception:
+                        _days = 30.0
+                _tourn = str(row.get("tournament", ""))
+                return _compute_sample_weight(_g, _days, _tourn)
+
+            w_train = _np.array([_sample_weight(r) for r in train_set], dtype=_np.float32)
+
             # Train XGBoost
             from xgboost import XGBClassifier
 
@@ -512,7 +575,8 @@ class EsportsModelTrainer:
                 early_stopping_rounds=20,
                 verbosity=0,
             )
-            model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+            model.fit(X_train, y_train, eval_set=[(X_val, y_val)],
+                      sample_weight=w_train, verbose=False)
 
             # Evaluate
             probs = model.predict_proba(X_val)[:, 1]

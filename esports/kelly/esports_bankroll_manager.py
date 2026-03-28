@@ -15,14 +15,12 @@ Formula:
   8. Return final size (0.0 → skip trade)
 
 Hard caps:
-  Per-bet: ESPORTS_MAX_BET_USD (default $100)
-  Daily:   ESPORTS_MAX_DAILY_USD (default $500)
+  Per-bet: ESPORTS_MAX_BET_USD (default $300)
+  Daily:   ESPORTS_MAX_DAILY_USD (default $20000)
 
-Drawdown compression:
-  0 consecutive losses: 1.00x (full Kelly)
-  3 consecutive losses: 0.75x
-  5 consecutive losses: 0.50x
-  8+ consecutive losses: 0.25x
+Drawdown:
+  S136: Halt gate at 8+ consecutive losses (was multiplicative schedule).
+  Gradual drawdown handled by daily-PnL tiers in _execute_esports_trade().
 """
 from __future__ import annotations
 
@@ -35,13 +33,11 @@ from config.settings import settings  # noqa: F401 — kept at module level for 
 
 logger = get_logger()
 
-# Drawdown compression schedule: (min_losses, factor)
-# Applied in order — first matching threshold wins
-_DRAWDOWN_SCHEDULE = [
-    (8, 0.25),   # 8+ losses: quarter Kelly
-    (5, 0.50),   # 5-7 losses: half Kelly
-    (3, 0.75),   # 3-4 losses: three-quarter Kelly
-]
+# S136: Loss-streak halt gate (was multiplicative schedule compounding with
+# daily-PnL drawdown in _execute_esports_trade — double compression).
+# Now: full Kelly until 8+ consecutive losses, then halt (return 0.0).
+# Daily-PnL drawdown tiers in _execute_esports_trade handle gradual reduction.
+_LOSS_STREAK_HALT_THRESHOLD = 8
 
 
 class EsportsBankrollManager:
@@ -94,9 +90,9 @@ class EsportsBankrollManager:
         kelly_fraction = await self._apply_kelly_graduation(kelly_fraction, game, db)
 
         # Step 2: Kelly formula
-        capital = float(getattr(settings, "ESPORTS_TOTAL_CAPITAL", 5000.0))
-        max_bet = float(getattr(settings, "ESPORTS_MAX_BET_USD", 100.0))
-        max_daily = float(getattr(settings, "ESPORTS_MAX_DAILY_USD", 500.0))
+        capital = float(getattr(settings, "ESPORTS_TOTAL_CAPITAL", 20000.0))
+        max_bet = float(getattr(settings, "ESPORTS_MAX_BET_USD", 300.0))
+        max_daily = float(getattr(settings, "ESPORTS_MAX_DAILY_USD", 20000.0))
 
         kelly_bet = kelly_fraction * capital * (edge / fair_prob)
 
@@ -229,17 +225,17 @@ class EsportsBankrollManager:
 
     def _compute_drawdown_factor(self, game: str) -> float:
         """
-        Compute drawdown compression factor based on consecutive losses.
+        S136: Halt gate based on consecutive losses.
 
-        Reduces bet sizing during losing streaks to protect capital.
-        Returns 1.0 (full Kelly) when no drawdown, down to 0.25 at 8+ losses.
+        Returns 1.0 (full Kelly) for 0-7 consecutive losses.
+        Returns 0.0 (halt trading) at 8+ consecutive losses.
+
+        Gradual drawdown reduction is handled by daily-PnL tiers in
+        _execute_esports_trade() — no longer compounded here.
         """
         losses = self._consecutive_losses.get(game, 0)
-        if losses <= 0:
-            return 1.0
-        for threshold, factor in _DRAWDOWN_SCHEDULE:
-            if losses >= threshold:
-                return factor
+        if losses >= _LOSS_STREAK_HALT_THRESHOLD:
+            return 0.0
         return 1.0
 
     def record_outcome(self, game: str, won: bool) -> None:
