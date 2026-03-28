@@ -16,9 +16,11 @@ class TestFTSUnfittedReturnsIdentity:
             assert cal.calibrate(p) == p
 
     def test_unfitted_temperature_defaults(self):
+        # S137 C14: defaults updated to T=1.5, γ=2.0 (conservative prior for
+        # overconfident markets). calibrate() still returns identity when not fitted.
         cal = FocalTemperatureCalibrator(db=None)
-        assert cal.temperature == 1.0
-        assert cal.gamma == 0.0
+        assert cal.temperature == 1.5
+        assert cal.gamma == 2.0
 
 
 class TestFTSCalibrateBasic:

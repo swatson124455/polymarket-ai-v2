@@ -184,8 +184,12 @@ class FocalTemperatureCalibrator:
 
     def __init__(self, db: Optional[Any] = None):
         self.db = db
-        self._temperature: float = 1.0
-        self._gamma: float = 0.0
+        # S137 C14: Default T=1.5, γ=2.0 — conservative prior for overconfident
+        # prediction markets (calibrated population WR ~38%, raw confidences >70%).
+        # These defaults only activate when someone manually sets _fitted=True;
+        # unfitted calibrators return identity via is_fitted guard in calibrate().
+        self._temperature: float = 1.5
+        self._gamma: float = 2.0
         self._fitted: bool = False
 
     @staticmethod

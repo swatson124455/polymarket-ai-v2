@@ -1764,14 +1764,15 @@ class MirrorBot(BaseBot):
         _conf_cal_shadow = None
         if self._calibration_stack:
             # Calibrate confidence (domain + horizon aware)
-            _ttr_days = None
+            # S137 C14: Use actual computed _ttr_h (hours_until_resolution) / 24 instead of
+            # rough bucket mapping {"hours": 0.5, "days": 3.0, "weeks": 21.0} which mapped
+            # all "days"-TTR markets into the same 0-7d bucket regardless of actual TTR.
+            _ttr_days = _ttr_h / 24.0 if _ttr_h is not None else None
             _cat = category or ""
-            if _cat or market_id:
+            if not _cat and market_id:
                 try:
-                    _meta_cat, _meta_ttr = await self._get_market_meta(str(market_id))
-                    _cat = _cat or _meta_cat
-                    _ttr_map = {"hours": 0.5, "days": 3.0, "weeks": 21.0}
-                    _ttr_days = _ttr_map.get(_meta_ttr)
+                    _meta_cat, _ = await self._get_market_meta(str(market_id))
+                    _cat = _meta_cat or ""
                 except Exception:
                     pass
             # S121: Shadow ledger — always compute calibrated score (does not affect trade)
