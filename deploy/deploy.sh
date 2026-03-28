@@ -128,10 +128,29 @@ sudo mv -T "\$SWAP_TMP" "$CURRENT"
 echo "  $CURRENT -> $NEW_RELEASE"
 REMOTE
 
-# ── 6. Restart service ────────────────────────────────────────────────────────
+# ── 6. Install service files + restart per-bot services ──────────────────────
 echo ""
-echo "[6/7] Restarting service..."
-ssh $SSH_OPTS -i "$KEY" "$VPS" "sudo systemctl restart polymarket-ai"
+echo "[6/7] Installing service files + restarting services..."
+ssh $SSH_OPTS -i "$KEY" "$VPS" bash <<REMOTE
+set -euo pipefail
+# Install per-bot service files
+for SVC in polymarket-weather polymarket-mirror polymarket-esports; do
+    sudo cp "$NEW_RELEASE/deploy/\${SVC}.service" /etc/systemd/system/
+done
+# Ensure per-bot override env files exist (second EnvironmentFile wins over shared .env)
+[ -f $SHARED/.env.weather ] || sudo cp $SHARED/.env $SHARED/.env.weather
+[ -f $SHARED/.env.mirror  ] || sudo cp $SHARED/.env $SHARED/.env.mirror
+[ -f $SHARED/.env.esports ] || sudo cp $SHARED/.env $SHARED/.env.esports
+sudo chown polymarket:polymarket $SHARED/.env.weather $SHARED/.env.mirror $SHARED/.env.esports
+sudo systemctl daemon-reload
+# Stop and disable the old monolithic service (if running)
+sudo systemctl stop polymarket-ai 2>/dev/null || true
+sudo systemctl disable polymarket-ai 2>/dev/null || true
+# Enable and restart the 3 per-bot services
+sudo systemctl enable polymarket-weather polymarket-mirror polymarket-esports
+sudo systemctl restart polymarket-weather polymarket-mirror polymarket-esports
+echo "  polymarket-weather, polymarket-mirror, polymarket-esports restarted"
+REMOTE
 echo "  Restarting..."
 
 # ── 7. Health check ───────────────────────────────────────────────────────────
@@ -142,7 +161,7 @@ for i in $(seq 1 18); do
     sleep 5
     ELAPSED=$((i * 5))
     if ssh $SSH_OPTS -i "$KEY" "$VPS" \
-        "journalctl -u polymarket-ai --since '-${ELAPSED}s' --no-pager 2>/dev/null | grep -q 'scan_ms'" 2>/dev/null; then
+        "journalctl -u polymarket-weather -u polymarket-mirror -u polymarket-esports --since '-${ELAPSED}s' --no-pager 2>/dev/null | grep -q 'scan_ms'" 2>/dev/null; then
         HEALTH_OK=true
         echo "  Health OK at ${ELAPSED}s — bots scanning"
         break

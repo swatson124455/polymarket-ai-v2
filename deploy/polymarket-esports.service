@@ -1,0 +1,38 @@
+[Unit]
+Description=Polymarket AI V2 — EsportsBot
+After=network.target postgresql.service redis.service
+Wants=postgresql.service redis.service
+
+[Service]
+Type=simple
+User=polymarket
+Group=polymarket
+WorkingDirectory=/opt/polymarket-ai-v2
+Environment=PYTHONUNBUFFERED=1
+Environment="PYTHONWARNINGS=ignore::UserWarning:sklearn,ignore::FutureWarning:sklearn"
+EnvironmentFile=/opt/pa2-shared/.env
+EnvironmentFile=/opt/pa2-shared/.env.esports
+ExecStart=/opt/polymarket-ai-v2/venv/bin/python main.py
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=/opt/pa2-shared/data /opt/pa2-shared/saved_models /var/log/polymarket
+PrivateTmp=true
+
+# Resource limits
+MemoryMax=2G
+CPUQuota=80%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=polymarket-esports
+
+[Install]
+WantedBy=multi-user.target
