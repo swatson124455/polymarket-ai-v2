@@ -361,7 +361,7 @@ class Settings(BaseSettings):
 
     # Calibration + safety feature flags (all off by default)
     MIRROR_USE_CALIBRATION: bool = os.getenv("MIRROR_USE_CALIBRATION", "false").lower() in ("true", "1", "yes")
-    MIRROR_ADAPTIVE_SAFETY: bool = os.getenv("MIRROR_ADAPTIVE_SAFETY", "false").lower() in ("true", "1", "yes")
+    MIRROR_ADAPTIVE_SAFETY: bool = os.getenv("MIRROR_ADAPTIVE_SAFETY", "true").lower() in ("true", "1", "yes")  # S137 C4: enabled (BUG-14 denominator fixed)
     MIRROR_SKIP_LIQUIDITY_RTDS: bool = os.getenv("MIRROR_SKIP_LIQUIDITY_RTDS", "true").lower() in ("true", "1", "yes")
     MIRROR_SKIP_COORDINATOR_BUY: bool = os.getenv("MIRROR_SKIP_COORDINATOR_BUY", "true").lower() in ("true", "1", "yes")
     MIRROR_RTDS_FAST_PATH: bool = os.getenv("MIRROR_RTDS_FAST_PATH", "true").lower() in ("true", "1", "yes")
@@ -1218,7 +1218,8 @@ class Settings(BaseSettings):
     # --- Conformal prediction ---
     ESPORTS_USE_CONFORMAL: bool = os.getenv("ESPORTS_USE_CONFORMAL", "false").lower() in ("true", "1", "yes")
     ESPORTS_CONFORMAL_MIN_RESOLVED: int = int(os.getenv("ESPORTS_CONFORMAL_MIN_RESOLVED", "50"))
-    ESPORTS_RFLB_STRENGTH: float = float(os.getenv("ESPORTS_RFLB_STRENGTH", "0.03"))
+    # S136: Disabled — Polymarket has no traditional FLB. Re-enable via VPS .env.
+    ESPORTS_RFLB_STRENGTH: float = float(os.getenv("ESPORTS_RFLB_STRENGTH", "0.0"))
     ESPORTS_LAN_ADJUSTMENT_ENABLED: bool = os.getenv("ESPORTS_LAN_ADJUSTMENT_ENABLED", "true").lower() in ("true", "1", "yes")
     ESPORTS_LOL_BLUE_SIDE_BONUS: float = float(os.getenv("ESPORTS_LOL_BLUE_SIDE_BONUS", "0.019"))
     ESPORTS_UPSET_RISK_ENABLED: bool = os.getenv("ESPORTS_UPSET_RISK_ENABLED", "true").lower() in ("true", "1", "yes")

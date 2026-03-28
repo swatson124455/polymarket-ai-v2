@@ -102,49 +102,63 @@ class MirrorAdaptiveSafety:
             logger.debug("mirror_adaptive_safety_refresh failed: %s", e)
 
     def get_adjusted_max_positions(self) -> int:
-        """Return dynamically adjusted max positions."""
+        """Return dynamically adjusted max positions.
+
+        S137 C4: Exponential decay on drawdown — exp(-8 * dd) means:
+          dd=0%  → mult=1.00 (no change)
+          dd=5%  → mult=0.67
+          dd=10% → mult=0.45
+          dd=20% → mult=0.20
+        Recovery ratchet: consecutive_losses counter reduces mult further.
+        Hot streak (WR > 65%) allows up to 1.2x base.
+        """
+        import math
         base = int(getattr(settings, "MIRROR_MAX_CONCURRENT_POSITIONS", 200))
 
         if not self._fitted or not getattr(settings, "MIRROR_ADAPTIVE_SAFETY", False):
             return base
 
-        mult = 1.0
+        # Exponential drawdown response
+        mult = math.exp(-8.0 * self._drawdown_pct)
 
-        # Reduce on losing streak: -10% per consecutive loss, floor 30%
+        # Recovery ratchet: each consecutive loss cuts a further 8%, floor 0.20
         if self._consecutive_losses >= 3:
-            mult *= max(0.30, 1.0 - self._consecutive_losses * 0.10)
+            mult *= max(0.20, 1.0 - (self._consecutive_losses - 2) * 0.08)
 
-        # Reduce on drawdown: -50% at 20% drawdown, floor 30%
-        if self._drawdown_pct > 0.05:
-            mult *= max(0.30, 1.0 - self._drawdown_pct * 2.5)
-
-        # Boost on hot streak: +20% if win rate > 65%
+        # Hot streak bonus
         if self._recent_win_rate > 0.65 and self._consecutive_losses == 0:
-            mult *= 1.20
+            mult = min(1.20, mult * 1.20)
 
+        mult = max(0.10, min(1.20, mult))  # hard floor/ceiling
         adjusted = max(10, int(base * mult))
 
-        # S94: log at debug — this fires on every RTDS trade; refresh() already logs metrics
         if adjusted != base:
             logger.debug(
                 "mirror_adaptive_max_positions",
                 base=base,
                 adjusted=adjusted,
-                mult=round(mult, 2),
+                mult=round(mult, 3),
+                drawdown_pct=round(self._drawdown_pct, 3),
+                consecutive_losses=self._consecutive_losses,
             )
 
         return adjusted
 
     def get_adjusted_daily_cap_mult(self) -> float:
-        """Return multiplier for daily cap (1.0 = no change)."""
+        """Return multiplier for daily cap (1.0 = no change).
+
+        S137 C4: Exponential decay matching get_adjusted_max_positions.
+        Never boosts above 1.0 — we don't chase on hot streaks for sizing.
+        """
+        import math
         if not self._fitted or not getattr(settings, "MIRROR_ADAPTIVE_SAFETY", False):
             return 1.0
 
-        if self._consecutive_losses >= 5:
-            return 0.50  # Half daily cap during bad streak
-        if self._drawdown_pct > 0.15:
-            return 0.60
-        if self._recent_win_rate > 0.65:
-            return 1.15  # Slight boost
+        # Exponential drawdown response (same decay constant as positions)
+        mult = math.exp(-8.0 * self._drawdown_pct)
 
-        return 1.0
+        # Consecutive losses ratchet
+        if self._consecutive_losses >= 5:
+            mult *= max(0.20, 1.0 - (self._consecutive_losses - 4) * 0.10)
+
+        return max(0.10, min(1.0, mult))  # cap at 1.0 — never boost daily limit
