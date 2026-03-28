@@ -1018,6 +1018,28 @@ class Database:
             if checked_out >= warn_threshold and now - _last_pool_warn[0] > 60:
                 _last_pool_warn[0] = now
                 logger.warning(f"DB pool near exhaustion: {checked_out}/{total_connections} connections checked out")
+
+        # S136 FIX: Invalidate dead connections so the pool replaces them.
+        # Without this, ConnectionDoesNotExistError on mid-query connection death
+        # returns the broken connection to the pool for reuse, causing cascading
+        # failures across all bots.
+        @sa_event.listens_for(self.engine.sync_engine, "handle_error")
+        def _on_handle_error(context):
+            _err_str = str(context.original_exception)
+            if ("connection was closed" in _err_str
+                    or "ConnectionDoesNotExistError" in type(context.original_exception).__name__
+                    or "InterfaceError" in type(context.original_exception).__name__):
+                if context.connection is not None:
+                    try:
+                        context.invalidate_pool_on_disconnect = True
+                    except AttributeError:
+                        pass
+                    try:
+                        context.connection.invalidate()
+                    except Exception:
+                        pass
+                logger.warning("DB connection invalidated (dead connection detected)",
+                               error=type(context.original_exception).__name__)
         try:
             async with asyncio.timeout(10):
                 async with self.engine.begin() as conn:

@@ -1694,7 +1694,14 @@ class EsportsBot(BaseBot):
                 _market_type = _edge_cache.get("market_type", "match_winner")
 
             if _entry_model_prob is not None:
-                _remaining_edge = _entry_model_prob - current - 0.0075  # tx cost ~0.75%
+                # S136 fix: entry_model_prob is P(YES wins). For YES positions,
+                # remaining edge = model_prob - current_price. For NO positions,
+                # remaining edge = current_price - model_prob (NO profits when
+                # YES price falls below model's prediction).
+                if side == "NO":
+                    _remaining_edge = current - _entry_model_prob - 0.0075
+                else:
+                    _remaining_edge = _entry_model_prob - current - 0.0075
 
                 # Track peak edge for trailing stop
                 _peak_key = f"_peak_edge_{mid}"

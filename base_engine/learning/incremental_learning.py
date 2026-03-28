@@ -128,9 +128,23 @@ class IncrementalLearner:
         """
         Update prediction models. When batch is full we trigger a full retrain so new outcomes
         are learned (C: grow from new data in batches without real online learning).
+
+        S136 FIX: Added 1h cooldown to prevent retrain storms. Without cooldown,
+        rapid batch fills (e.g. resolution backfill or drift-triggered re-feeds)
+        can call retrain() every second in a tight loop, starving the scan coroutine
+        and causing 300s scan timeouts that kill bot scanning permanently.
         """
+        # S136 FIX: Cooldown — retrain at most once per hour from incremental path
+        _now = datetime.now(timezone.utc)
+        _last = getattr(self, '_last_incremental_retrain_at', None)
+        if _last is not None:
+            _elapsed_s = (_now - _last).total_seconds()
+            if _elapsed_s < 3600:  # 1 hour cooldown
+                logger.debug("Incremental retrain skipped: cooldown (%ds since last)", int(_elapsed_s))
+                return
         try:
             await self.prediction_engine.retrain()
+            self._last_incremental_retrain_at = _now
             logger.info("Incremental batch full: triggered full retrain")
         except Exception as e:
             logger.warning("Incremental retrain trigger failed: %s", e)

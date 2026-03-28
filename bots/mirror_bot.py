@@ -1441,6 +1441,12 @@ class MirrorBot(BaseBot):
                                     market_id=str(market_id)[:16])
                         return False
 
+        # Data: sports NO = 570 trades, 44.4% WR, -$13,923. No edge on the NO side
+        # of sports matchups regardless of whale size. Block entirely.
+        if not _is_sell and category == "sports" and str(side).upper() == "NO":
+            logger.info("mirror_sports_no_blocked", market=str(market_id)[:16])
+            return False
+
         # S137 C9: Category expertise filter — reject trades where the trader has ≥10
         # resolved trades in this category AND their category WR < 45%.
         # A trader can be lucky overall but systematically bad in specific categories.
@@ -1637,15 +1643,25 @@ class MirrorBot(BaseBot):
         # Low sample count → confidence stays near 0.50 (replaces domain drift).
         if self._reliability_tracker:
             try:
-                _cat_wr = self._reliability_tracker.mean(
-                    trader_address, side, category=category) if category else 0.50
-                _cat_n = (self._reliability_tracker.category_trade_count(
-                    trader_address, category) if category else 0)
-                _shrinkage = _cat_n / (_cat_n + 20)  # pseudocount=20
-                _base = 0.50 + _shrinkage * (_cat_wr - 0.50)
-                # Safety net: cap unfamiliar categories (double-conservative)
-                if category and _cat_n < 10:
-                    _base = min(_base, 0.52)
+                if category:
+                    _cat_wr = self._reliability_tracker.mean(
+                        trader_address, side, category=category)
+                    _cat_n = self._reliability_tracker.category_trade_count(
+                        trader_address, category)
+                    _shrinkage = _cat_n / (_cat_n + 20)  # pseudocount=20
+                    _base = 0.50 + _shrinkage * (_cat_wr - 0.50)
+                    # Safety net: cap unfamiliar categories (double-conservative)
+                    if _cat_n < 10:
+                        _base = min(_base, 0.52)
+                else:
+                    # No category: use overall trader WR — better signal than flat 0.5.
+                    # Data: category lookup fails for 61% of markets (long-tail / pre-ingestion).
+                    # Flat 0.5 base means formula can never exceed gate=0.50; overall WR
+                    # gives real signal from trader's resolved track record.
+                    _cat_wr = self._reliability_tracker.overall_win_rate(trader_address)
+                    _cat_n = self._reliability_tracker.total_trade_count(trader_address)
+                    _shrinkage = min(1.0, _cat_n / 50)  # ramp: 0 trades→0x, 50+→1.0x
+                    _base = 0.50 + _shrinkage * (_cat_wr - 0.50)
             except Exception:
                 _base = 0.50
                 _cat_wr = 0.50
