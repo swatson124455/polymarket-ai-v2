@@ -2,7 +2,9 @@
 Bayesian Elite Reliability (Element 4).
 
 Per-user Beta(alpha, beta) from resolved trades. All counts from data; no invented numbers.
-Prior: Beta(1, 1) = "I know nothing" for users with no history.
+Prior: Beta(6, 10) = empirical Bayes centered at 37.5% population win rate (6/(6+10)).
+S137: Updated from flat Beta(1, 1) to reflect observed 39.3% WR across 5,495 trades.
+Traders with few resolved trades are shrunk toward the population mean instead of 50%.
 """
 from __future__ import annotations
 
@@ -26,6 +28,13 @@ class EliteReliabilityTracker:
         self._cache: Dict[str, Dict[str, float]] = {}  # address -> { alpha_yes, beta_yes, alpha_no, beta_no }
         self._cat_cache: Dict[Tuple[str, str], Dict[str, float]] = {}  # (address, category) -> same shape
 
+    # S137 C6: Empirical Bayes prior Beta(6, 10) centered at 37.5% population WR.
+    # Was Beta(1, 1) = flat "I know nothing" prior → shrank toward 50%, masking that
+    # 76% of tracked traders are unprofitable. Beta(6, 10) shrinks low-data traders
+    # toward ~37.5% instead, giving more realistic early estimates.
+    _PRIOR_ALPHA: int = 6   # pseudo-wins
+    _PRIOR_BETA: int = 10   # pseudo-losses  (6/(6+10) = 37.5% ≈ observed population WR)
+
     @staticmethod
     def _build_beta_rec(r: Dict[str, Any]) -> Dict[str, float]:
         """Convert a row of resolution counts into Beta params."""
@@ -35,11 +44,12 @@ class EliteReliabilityTracker:
         no_total = int(r.get("no_total") or 0)
         yes_incorrect = yes_total - yes_correct
         no_incorrect = no_total - no_correct
+        # S137 C6: Empirical Bayes prior Beta(6,10) instead of flat Beta(1,1)
         return {
-            "alpha_yes": yes_correct + 1,
-            "beta_yes": yes_incorrect + 1,
-            "alpha_no": no_correct + 1,
-            "beta_no": no_incorrect + 1,
+            "alpha_yes": yes_correct + EliteReliabilityTracker._PRIOR_ALPHA,
+            "beta_yes": yes_incorrect + EliteReliabilityTracker._PRIOR_BETA,
+            "alpha_no": no_correct + EliteReliabilityTracker._PRIOR_ALPHA,
+            "beta_no": no_incorrect + EliteReliabilityTracker._PRIOR_BETA,
             "yes_total": yes_total,
             "no_total": no_total,
         }

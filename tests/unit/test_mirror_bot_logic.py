@@ -1304,7 +1304,8 @@ class TestEliteReliabilityCategory:
         rec = EliteReliabilityTracker._build_beta_rec({
             "yes_correct": 7, "yes_total": 10, "no_correct": 3, "no_total": 5,
         })
-        assert rec["alpha_yes"] == 8  # 7+1
-        assert rec["beta_yes"] == 4   # (10-7)+1
-        assert rec["alpha_no"] == 4   # 3+1
-        assert rec["beta_no"] == 3    # (5-3)+1
+        # S137 C6: Prior is now Beta(6, 10) — empirical Bayes centered at 37.5% WR
+        assert rec["alpha_yes"] == 13  # 7+6
+        assert rec["beta_yes"] == 13   # (10-7)+10
+        assert rec["alpha_no"] == 9    # 3+6
+        assert rec["beta_no"] == 12    # (5-3)+10
