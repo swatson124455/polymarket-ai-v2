@@ -115,9 +115,17 @@ class WeatherProbabilityEngine:
                 # Apply EMOS corrections: shift loc, use EMOS sigma if available
                 loc_emos = loc + loc_shift
                 scale_emos = max(emos_sigma if emos_sigma is not None else scale, 0.5)
-                # Sanity: reject extreme skew or absurd scale
-                if abs(a) < 10.0 and 0.1 < scale_emos < 30.0:
-                    return (loc_emos, scale_emos, a)
+                # Sanity: reject absurd scale; clip extreme shape (preserves direction)
+                if 0.1 < scale_emos < 30.0:
+                    a_clipped = max(-4.0, min(4.0, a))
+                    if abs(a) > 4.0:
+                        logger.debug(
+                            "weather_shape_clipped",
+                            station=station_id,
+                            alpha_raw=round(a, 3),
+                            alpha_clipped=round(a_clipped, 3),
+                        )
+                    return (loc_emos, scale_emos, a_clipped)
             except Exception:
                 pass  # Fall through to normal
 
