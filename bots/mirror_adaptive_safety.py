@@ -76,14 +76,18 @@ class MirrorAdaptiveSafety:
                     break
             self._consecutive_losses = streak
 
-            # Drawdown: cumulative P&L curve, clamped to [0, 1]
+            # Drawdown: cumulative P&L curve normalised by bot capital (not P&L peak).
+            # BUG-14 fix: previous code divided by max(peak, 1.0) — if recent P&L peak was
+            # $200 and current is -$100, it would report 150% drawdown instead of 1.5%.
             cum = 0.0
             peak = 0.0
             for p in reversed(pnls):  # oldest first
                 cum += p
                 peak = max(peak, cum)
-            raw_dd = (peak - cum) / max(peak, 1.0) if peak > 0 else 0.0
-            self._drawdown_pct = min(raw_dd, 1.0)  # S94: clamp — raw dollars can exceed 1.0
+            _capital = float(getattr(settings, "MIRROR_TOTAL_CAPITAL", 20000))
+            _high_water = max(peak, 0.0)  # high-water from start of window (0 if all losses)
+            raw_dd = max(0.0, _high_water - cum) / max(_capital, 1.0)
+            self._drawdown_pct = min(raw_dd, 1.0)  # clamp — should not exceed 100% of capital
 
             self._fitted = True
             logger.info(
