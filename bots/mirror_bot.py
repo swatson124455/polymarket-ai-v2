@@ -1347,60 +1347,12 @@ class MirrorBot(BaseBot):
                 if _time.monotonic() < _cd_exp:
                     return False
 
-        # Resolve category early (needed for M1 category cap + M3 domain tracking)
-        if not category:
-            try:
-                _meta_cat, _ = await self._get_market_meta(str(market_id))
-                category = _meta_cat or ""
-            except Exception:
-                category = ""
+        # ── S137 C16: Tier 1 — pure-in-memory gates, NO DB/cache ──────
+        # These run before category resolve (_get_market_meta DB/cache call).
+        # High rejection rate (dup signals, opposing hedges, MM liquidity providers)
+        # means most bad trades are rejected before any external I/O.
 
-        # Category blocklist — skip bot-dominated speed markets (e.g., 15-min crypto)
-        if not _is_sell and category:
-            _cat_bl = getattr(settings, "MIRROR_CATEGORY_BLOCKLIST", "")
-            if _cat_bl:
-                _cat_lower = category.lower()
-                for _bl in _cat_bl.lower().split(","):
-                    _bl = _bl.strip()
-                    if _bl and _bl in _cat_lower:
-                        self._market_blocklist.add(market_id)  # cache for future fast-reject
-                        logger.info("mirror_category_blocked", category=category,
-                                    market_id=str(market_id)[:16])
-                        return False
-
-        # S137 C9: Category expertise filter — reject trades where the trader has ≥10
-        # resolved trades in this category AND their category WR < 45%.
-        # A trader can be lucky overall but systematically bad in specific categories.
-        if not _is_sell and category and self._reliability_tracker:
-            _cat_min_trades = int(getattr(settings, "MIRROR_CAT_MIN_TRADES", 10))
-            _cat_min_wr = float(getattr(settings, "MIRROR_CAT_MIN_WIN_RATE", 0.45))
-            try:
-                _cat_count = int(self._reliability_tracker.category_trade_count(trader_address, category))
-            except (TypeError, ValueError):
-                _cat_count = 0
-            if _cat_count >= _cat_min_trades:
-                try:
-                    _cat_wr = float(self._reliability_tracker.category_win_rate(trader_address, category))
-                except (TypeError, ValueError):
-                    _cat_wr = 0.5  # uninformative — skip gate
-                if _cat_wr < _cat_min_wr:
-                    logger.info("mirror_category_expertise_blocked",
-                                trader=trader_address[:10],
-                                category=category,
-                                cat_wr=round(_cat_wr, 3),
-                                cat_trades=_cat_count,
-                                market=str(market_id)[:16])
-                    return False
-
-        # S85 FIX: Enforce position cap for ALL paths (consensus + RTDS).
-        # Previously only consensus checked _can_open_position(); RTDS bypassed it,
-        # allowing 686 positions past the 200 cap.
-        if not _is_sell and not self._can_open_position(price, category=category):
-            return False
-
-        # S137 C7: Market-maker detection — if this same trader traded the opposite side on
-        # this market within 24h, they are providing liquidity (MM), not making a directional
-        # bet. Copy-trading an MM gives 0 edge. Track & reject.
+        # S137 C7: Market-maker detection — same trader both sides within 24h = MM.
         if not _is_sell and trader_address:
             _mm_window = 86400.0  # 24h in seconds
             _side_upper_mm = str(side).upper()
@@ -1465,6 +1417,59 @@ class MirrorBot(BaseBot):
                         self._whale_consensus[_cons_key],
                     )
                     return False
+
+        # ── S137 C16: Tier 2 — category-dependent gates (DB/cache call) ──
+
+        # Resolve category early (needed for M1 category cap + M3 domain tracking)
+        if not category:
+            try:
+                _meta_cat, _ = await self._get_market_meta(str(market_id))
+                category = _meta_cat or ""
+            except Exception:
+                category = ""
+
+        # Category blocklist — skip bot-dominated speed markets (e.g., 15-min crypto)
+        if not _is_sell and category:
+            _cat_bl = getattr(settings, "MIRROR_CATEGORY_BLOCKLIST", "")
+            if _cat_bl:
+                _cat_lower = category.lower()
+                for _bl in _cat_bl.lower().split(","):
+                    _bl = _bl.strip()
+                    if _bl and _bl in _cat_lower:
+                        self._market_blocklist.add(market_id)  # cache for future fast-reject
+                        logger.info("mirror_category_blocked", category=category,
+                                    market_id=str(market_id)[:16])
+                        return False
+
+        # S137 C9: Category expertise filter — reject trades where the trader has ≥10
+        # resolved trades in this category AND their category WR < 45%.
+        # A trader can be lucky overall but systematically bad in specific categories.
+        if not _is_sell and category and self._reliability_tracker:
+            _cat_min_trades = int(getattr(settings, "MIRROR_CAT_MIN_TRADES", 10))
+            _cat_min_wr = float(getattr(settings, "MIRROR_CAT_MIN_WIN_RATE", 0.45))
+            try:
+                _cat_count = int(self._reliability_tracker.category_trade_count(trader_address, category))
+            except (TypeError, ValueError):
+                _cat_count = 0
+            if _cat_count >= _cat_min_trades:
+                try:
+                    _cat_wr = float(self._reliability_tracker.category_win_rate(trader_address, category))
+                except (TypeError, ValueError):
+                    _cat_wr = 0.5  # uninformative — skip gate
+                if _cat_wr < _cat_min_wr:
+                    logger.info("mirror_category_expertise_blocked",
+                                trader=trader_address[:10],
+                                category=category,
+                                cat_wr=round(_cat_wr, 3),
+                                cat_trades=_cat_count,
+                                market=str(market_id)[:16])
+                    return False
+
+        # S85 FIX: Enforce position cap for ALL paths (consensus + RTDS).
+        # Previously only consensus checked _can_open_position(); RTDS bypassed it,
+        # allowing 686 positions past the 200 cap.
+        if not _is_sell and not self._can_open_position(price, category=category):
+            return False
 
         if _is_sell:
             pos_key = f"{market_id}:{token_id}"
