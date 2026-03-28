@@ -389,6 +389,9 @@ class Settings(BaseSettings):
     MIRROR_NO_PRICE_BLOCK: float = float(os.getenv("MIRROR_NO_PRICE_BLOCK", "0.75"))    # S137 C5: hard block NO when token price >75%
     # S137 C8: Market volume gate — thin markets have poor execution quality
     MIRROR_MIN_MARKET_VOLUME_24H: float = float(os.getenv("MIRROR_MIN_MARKET_VOLUME_24H", "5000.0"))
+    # S137 C9: Category expertise filter — reject traders with poor category-specific WR
+    MIRROR_CAT_MIN_TRADES: int = int(os.getenv("MIRROR_CAT_MIN_TRADES", "10"))
+    MIRROR_CAT_MIN_WIN_RATE: float = float(os.getenv("MIRROR_CAT_MIN_WIN_RATE", "0.45"))
     # S133: Spread gate — 20c+ spread markets lost -$151K. Reject wide-spread entries.
     MIRROR_MAX_SPREAD: float = float(os.getenv("MIRROR_MAX_SPREAD", "0.20"))
     # S133: Per-trader P&L blacklist — auto-block traders with poor WR after enough data.

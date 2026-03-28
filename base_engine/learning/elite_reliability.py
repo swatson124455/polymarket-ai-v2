@@ -236,3 +236,26 @@ class EliteReliabilityTracker:
         if not rec:
             return 0
         return rec.get("yes_total", 0) + rec.get("no_total", 0)
+
+    def category_win_rate(self, address: str, category: str) -> float:
+        """Return win rate for this trader in the given category.
+
+        Returns 0.5 (uninformative) if the trader has no category-specific records.
+        Uses raw correct/total counts (not Bayesian posterior) for direct comparison.
+        """
+        if not category or not self._cat_cache:
+            return 0.5
+        key = (address or "").strip().lower()
+        cat_key = (key, category.strip().lower())
+        rec = self._cat_cache.get(cat_key)
+        if not rec:
+            return 0.5
+        total = rec.get("yes_total", 0) + rec.get("no_total", 0)
+        if total == 0:
+            return 0.5
+        # Subtract prior offsets to get raw resolved counts
+        correct = (
+            (rec.get("alpha_yes", self._PRIOR_ALPHA) - self._PRIOR_ALPHA) +
+            (rec.get("alpha_no", self._PRIOR_ALPHA) - self._PRIOR_ALPHA)
+        )
+        return correct / total

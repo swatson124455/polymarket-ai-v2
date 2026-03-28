@@ -1330,6 +1330,30 @@ class MirrorBot(BaseBot):
                                     market_id=str(market_id)[:16])
                         return False
 
+        # S137 C9: Category expertise filter — reject trades where the trader has ≥10
+        # resolved trades in this category AND their category WR < 45%.
+        # A trader can be lucky overall but systematically bad in specific categories.
+        if not _is_sell and category and self._reliability_tracker:
+            _cat_min_trades = int(getattr(settings, "MIRROR_CAT_MIN_TRADES", 10))
+            _cat_min_wr = float(getattr(settings, "MIRROR_CAT_MIN_WIN_RATE", 0.45))
+            try:
+                _cat_count = int(self._reliability_tracker.category_trade_count(trader_address, category))
+            except (TypeError, ValueError):
+                _cat_count = 0
+            if _cat_count >= _cat_min_trades:
+                try:
+                    _cat_wr = float(self._reliability_tracker.category_win_rate(trader_address, category))
+                except (TypeError, ValueError):
+                    _cat_wr = 0.5  # uninformative — skip gate
+                if _cat_wr < _cat_min_wr:
+                    logger.info("mirror_category_expertise_blocked",
+                                trader=trader_address[:10],
+                                category=category,
+                                cat_wr=round(_cat_wr, 3),
+                                cat_trades=_cat_count,
+                                market=str(market_id)[:16])
+                    return False
+
         # S85 FIX: Enforce position cap for ALL paths (consensus + RTDS).
         # Previously only consensus checked _can_open_position(); RTDS bypassed it,
         # allowing 686 positions past the 200 cap.

@@ -711,6 +711,7 @@ class TestExecuteMirrorTrade:
         bot._reliability_tracker = MagicMock()
         bot._reliability_tracker.likelihood_ratio = MagicMock(return_value=1.0)
         bot._reliability_tracker.category_trade_count = MagicMock(return_value=50)
+        bot._reliability_tracker.category_win_rate = MagicMock(return_value=0.60)  # S137 C9: pass category gate
         bot._reliability_tracker.mean = MagicMock(return_value=0.60)
         bot._reliability_tracker.total_trade_count = MagicMock(return_value=50)
         bot._reliability_tracker.overall_win_rate = MagicMock(return_value=0.60)
@@ -761,6 +762,7 @@ class TestExecuteMirrorTrade:
         bot._reliability_tracker = MagicMock()
         bot._reliability_tracker.likelihood_ratio = MagicMock(return_value=1.0)
         bot._reliability_tracker.category_trade_count = MagicMock(return_value=50)
+        bot._reliability_tracker.category_win_rate = MagicMock(return_value=0.60)  # S137 C9: pass category gate
         bot._reliability_tracker.mean = MagicMock(return_value=0.60)
         bot._reliability_tracker.total_trade_count = MagicMock(return_value=50)
         bot._reliability_tracker.overall_win_rate = MagicMock(return_value=0.60)
@@ -778,6 +780,7 @@ class TestExecuteMirrorTrade:
         bot._reliability_tracker = MagicMock()
         bot._reliability_tracker.likelihood_ratio = MagicMock(return_value=1.0)
         bot._reliability_tracker.category_trade_count = MagicMock(return_value=50)
+        bot._reliability_tracker.category_win_rate = MagicMock(return_value=0.60)  # S137 C9: pass category gate
         bot._reliability_tracker.mean = MagicMock(return_value=0.60)
         bot._reliability_tracker.total_trade_count = MagicMock(return_value=50)
         bot._reliability_tracker.overall_win_rate = MagicMock(return_value=0.60)
