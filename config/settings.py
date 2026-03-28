@@ -375,6 +375,13 @@ class Settings(BaseSettings):
 
     # Exit logic
     MIRROR_STOP_LOSS_PCT: float = float(os.getenv("MIRROR_STOP_LOSS_PCT", "0.15"))
+    # S137 C10: Reversed stop-loss graduation — tight early (kill losers fast), loose late (near-res noise)
+    # Was: -15%→-10%→-5% (backwards — tightest at end). Now: -10%→-12%→-15% (tightest at start).
+    MIRROR_STOP_LOSS_TIGHTEN_48H: float = float(os.getenv("MIRROR_STOP_LOSS_TIGHTEN_48H", "-0.12"))
+    MIRROR_STOP_LOSS_TIGHTEN_72H: float = float(os.getenv("MIRROR_STOP_LOSS_TIGHTEN_72H", "-0.15"))
+    # S137 C10: Near-resolution tightener — if < 24h to resolution, tighten to -5%
+    MIRROR_STOP_LOSS_NEAR_RES_HOURS: float = float(os.getenv("MIRROR_STOP_LOSS_NEAR_RES_HOURS", "24.0"))
+    MIRROR_STOP_LOSS_NEAR_RES_PCT: float = float(os.getenv("MIRROR_STOP_LOSS_NEAR_RES_PCT", "-0.05"))
     MIRROR_MAX_POSITIONS: int = int(os.getenv("MIRROR_MAX_POSITIONS", "1000"))
     MIRROR_TOTAL_CAPITAL: float = float(os.getenv("MIRROR_TOTAL_CAPITAL", "20000"))
     # Tier 0 pre-trade filters
@@ -1115,6 +1122,16 @@ class Settings(BaseSettings):
     ESPORTS_MAX_GAME_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_GAME_EXPOSURE", "5000.0"))
     ESPORTS_MAX_TOURNAMENT_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_TOURNAMENT_EXPOSURE", "8000.0"))
     ESPORTS_MAX_TEAM_EXPOSURE: float = float(os.getenv("ESPORTS_MAX_TEAM_EXPOSURE", "2000.0"))
+
+    # S136 Phase 8A: Percentage-based caps (scaled by ESPORTS_TOTAL_CAPITAL)
+    # These override absolute caps when ESPORTS_PCT_CAPS_ENABLED=true
+    ESPORTS_PCT_CAPS_ENABLED: bool = os.getenv("ESPORTS_PCT_CAPS_ENABLED", "true").lower() in ("true", "1", "yes")
+    ESPORTS_PCT_PER_TRADE: float = float(os.getenv("ESPORTS_PCT_PER_TRADE", "0.015"))  # 1.5%
+    ESPORTS_PCT_PER_MARKET: float = float(os.getenv("ESPORTS_PCT_PER_MARKET", "0.03"))  # 3%
+    ESPORTS_PCT_PER_TEAM: float = float(os.getenv("ESPORTS_PCT_PER_TEAM", "0.03"))  # 3%
+    ESPORTS_PCT_PER_GAME: float = float(os.getenv("ESPORTS_PCT_PER_GAME", "0.04"))  # 4%
+    ESPORTS_PCT_PER_TOURNAMENT: float = float(os.getenv("ESPORTS_PCT_PER_TOURNAMENT", "0.12"))  # 12%
+    ESPORTS_PCT_TOTAL_PORTFOLIO: float = float(os.getenv("ESPORTS_PCT_TOTAL_PORTFOLIO", "0.60"))  # 60%
 
     # --- External API keys (esports data enrichment) ---
     ALIGULAC_API_KEY: str = os.getenv("ALIGULAC_API_KEY", "")

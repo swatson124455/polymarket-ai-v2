@@ -818,11 +818,16 @@ class MirrorBot(BaseBot):
         positions_to_close: List[str] = []
 
         # S99: Stop-loss (with graduated tightening) + take-profit + circuit breaker
-        _base_stop_pct = float(getattr(settings, "MIRROR_STOP_LOSS_PCT", 0.15))
+        # S137 C10: Graduation REVERSED — tight early (kill losers fast), loose late (near-res noise).
+        # Old defaults: -15% (0-48h), -10% (48-72h), -5% (72h+) — backwards.
+        # New defaults: -10% (0-48h), -12% (48-72h), -15% (72h+) + near-resolution -5%.
+        _base_stop_pct = float(getattr(settings, "MIRROR_STOP_LOSS_PCT", 0.15))  # 72h+ stop
         _tp_pct = float(getattr(settings, "MIRROR_TAKE_PROFIT_PCT", 0.25))
-        _stop_48h = float(getattr(settings, "MIRROR_STOP_LOSS_TIGHTEN_48H", -0.10))
-        _stop_72h = float(getattr(settings, "MIRROR_STOP_LOSS_TIGHTEN_72H", -0.05))
+        _stop_48h = float(getattr(settings, "MIRROR_STOP_LOSS_TIGHTEN_48H", -0.12))  # 0-48h tight
+        _stop_72h = float(getattr(settings, "MIRROR_STOP_LOSS_TIGHTEN_72H", -0.15))  # 48-72h medium
         _force_exit_hours = float(getattr(settings, "MIRROR_FORCE_EXIT_HOURS", 96))
+        _near_res_hours = float(getattr(settings, "MIRROR_STOP_LOSS_NEAR_RES_HOURS", 24.0))
+        _near_res_stop = abs(float(getattr(settings, "MIRROR_STOP_LOSS_NEAR_RES_PCT", -0.05)))
         _now_utc = datetime.now(timezone.utc)
         _total_unrealized = 0.0
 
@@ -859,13 +864,18 @@ class MirrorBot(BaseBot):
                 positions_to_close.append(_pos_key)
                 continue
 
-            # Graduated stop-loss threshold
-            if _hours_held >= 72:
-                _effective_stop = abs(_stop_72h)
+            # S137 C10: Graduated stop-loss — reversed so it's tight early and loose late.
+            # Near-resolution override: < 24h left → -5% to avoid being stuck at resolution.
+            _meta = self._market_meta_cache.get(_pos_key.split(":", 1)[0])
+            _ttr_hours = _meta[1] if _meta and len(_meta) > 1 else None
+            if _ttr_hours is not None and _ttr_hours < _near_res_hours:
+                _effective_stop = _near_res_stop  # tight near resolution
+            elif _hours_held >= 72:
+                _effective_stop = _base_stop_pct  # loose at 72h+ (near res, let it breathe)
             elif _hours_held >= 48:
-                _effective_stop = abs(_stop_48h)
+                _effective_stop = abs(_stop_72h)   # medium 48-72h
             else:
-                _effective_stop = _base_stop_pct
+                _effective_stop = abs(_stop_48h)   # tight 0-48h (kill losers fast)
 
             if _pnl_pct <= -_effective_stop:
                 logger.info("MirrorBot autonomous stop-loss", market=_pos_key,
