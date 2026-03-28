@@ -631,8 +631,10 @@ class MirrorBot(BaseBot):
         self._check_daily_reset()
 
         # S85: Reap positions on resolved markets (every 20 scans)
+        # S135: Also reconcile exited positions that are still status='open' in DB
         if self._scan_count % 20 == 1:
             await self._reap_resolved_positions()
+            await self._reconcile_exited_positions()
 
         # Check for exits from tracked positions
         if self._open_positions and getattr(settings, "MIRROR_EXIT_ENABLED", True):
@@ -948,6 +950,21 @@ class MirrorBot(BaseBot):
                             0.0, self._category_exposure.get(_pos_cat, 0.0) - _exit_cost
                         )
                     del self._open_positions[pos_key]
+                    # S135: Mark position closed in DB so it doesn't reload on restart
+                    # Use _sql alias (not _t) — _t is a local var in this function due to the
+                    # conditional import at L909 (Python 3.13 scoping: local for entire function).
+                    try:
+                        from sqlalchemy import text as _sql
+                        async with self.base_engine.db.get_session() as _cs:
+                            await _cs.execute(_sql(
+                                "UPDATE positions SET status = 'closed' "
+                                "WHERE market_id = :mid AND token_id = :tid "
+                                "  AND COALESCE(source_bot, bot_id) = 'MirrorBot' "
+                                "  AND status = 'open'"
+                            ), {"mid": market_id, "tid": token_id})
+                            await _cs.commit()
+                    except Exception as _db_err:
+                        logger.warning("mirror_exit_db_close_failed market=%s: %s", market_id[:20], _db_err)
             except Exception as e:
                 logger.warning("Failed to execute mirror exit for %s: %s", pos_key, e)
 
@@ -998,6 +1015,47 @@ class MirrorBot(BaseBot):
                                 len(reaped), _reaped_usd)
         except Exception as exc:
             logger.warning("mirror_reap_resolved failed: %s", exc)
+
+    async def _reconcile_exited_positions(self) -> None:
+        """S135: Close DB positions that have EXIT trade_events but still status='open'.
+
+        Without this, positions exited via stop-loss or trader-SELL before S135
+        remain as zombies in the DB and reload on every restart.
+        """
+        try:
+            db = getattr(self.base_engine, "db", None)
+            if not db or not db.session_factory:
+                return
+            from sqlalchemy import text as _text
+            async with db.get_session() as session:
+                result = await session.execute(_text(
+                    "UPDATE positions SET status = 'closed' "
+                    "WHERE (bot_id = 'MirrorBot' OR source_bot = 'MirrorBot') "
+                    "  AND status = 'open' "
+                    "  AND market_id IN ("
+                    "    SELECT te.market_id FROM trade_events te "
+                    "    WHERE te.bot_name = 'MirrorBot' "
+                    "      AND te.event_type = 'EXIT'"
+                    "  ) "
+                    "RETURNING market_id, token_id"
+                ), {})
+                closed = result.fetchall()
+                await session.commit()
+                if closed:
+                    for row in closed:
+                        pos_key = f"{row[0]}:{row[1]}"
+                        _pos = self._open_positions.pop(pos_key, None)
+                        if _pos:
+                            _pos_cost = _pos.get("size", 0.0) * _pos.get("entry_price", 0.0)
+                            self._daily_exposure = max(0.0, self._daily_exposure - _pos_cost)
+                            _pos_cat = _pos.get("category", "")
+                            if _pos_cat:
+                                self._category_exposure[_pos_cat] = max(
+                                    0.0, self._category_exposure.get(_pos_cat, 0.0) - _pos_cost
+                                )
+                    logger.info("mirror_reconcile_exited: closed %d zombie positions in DB", len(closed))
+        except Exception as exc:
+            logger.warning("mirror_reconcile_exited failed: %s", exc)
 
     # ── Position & Exposure Tracking ────────────────────────────────
 
@@ -1350,6 +1408,19 @@ class MirrorBot(BaseBot):
                         0.0, self._category_exposure.get(category, 0.0) - _exit_usd
                     )
                 del self._open_positions[pos_key]
+                # S135: Mark position closed in DB so it doesn't reload on restart
+                try:
+                    from sqlalchemy import text as _st
+                    async with self.base_engine.db.get_session() as _cs:
+                        await _cs.execute(_st(
+                            "UPDATE positions SET status = 'closed' "
+                            "WHERE market_id = :mid AND token_id = :tid "
+                            "  AND COALESCE(source_bot, bot_id) = 'MirrorBot' "
+                            "  AND status = 'open'"
+                        ), {"mid": market_id, "tid": token_id})
+                        await _cs.commit()
+                except Exception as _db_err:
+                    logger.warning("mirror_sell_db_close_failed market=%s: %s", str(market_id)[:16], _db_err)
                 logger.info(
                     "MirrorBot: SELL exit executed market=%s size=%.2f",
                     str(market_id)[:16], _exit_size,

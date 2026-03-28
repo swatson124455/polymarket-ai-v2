@@ -462,15 +462,20 @@ class EliteWatchlist:
                     _meta = self._mirror_bot._market_meta_cache.get(str(market_id))
                     if _meta:
                         _cat = _meta[0]  # (category, ttr, expiry)
-                    self._mirror_bot._track_open_position({
-                        "market_id": market_id,
-                        "token_id": token_id,
-                        "side": resolved_side,
-                        "price": price,
-                        "trader_address": addr,
-                        "trade_id": tx_hash or f"ws_{int(time.time())}",
-                        "category": _cat,
-                    })
+                    # M2 fix: _track_open_position() was deleted in S134; inline the dict creation
+                    # matching the pattern in _execute_mirror_trade() (L1799-1806).
+                    # RTDS path has no final size yet — use 0.0; _execute_mirror_trade will
+                    # increment it once the actual order fills.
+                    _pos_key = f"{market_id}:{token_id}"
+                    if _pos_key not in self._mirror_bot._open_positions:
+                        self._mirror_bot._open_positions[_pos_key] = {
+                            "side": resolved_side,
+                            "size": 0.0,
+                            "entry_price": price,
+                            "traders": {addr},
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "category": _cat,
+                        }
                     # Fire-and-forget: non-financial metadata (trader address on position).
                     # Shaves ~50-200ms off copy latency by not awaiting DB write.
                     _t = asyncio.create_task(self._mirror_bot._persist_trader_to_position({
