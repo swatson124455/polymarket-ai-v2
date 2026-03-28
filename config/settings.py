@@ -385,7 +385,8 @@ class Settings(BaseSettings):
     # S132: Minimum whale trade USD — sub-$50 trades are noise (39.9% WR, -$153K)
     MIRROR_MIN_WHALE_TRADE_USD: float = float(os.getenv("MIRROR_MIN_WHALE_TRADE_USD", "50.0"))
     # S132: NO-side dampener — NO loses 7x more than YES. 0.5 = half size on NO.
-    MIRROR_NO_SIDE_DAMPENER: float = float(os.getenv("MIRROR_NO_SIDE_DAMPENER", "0.5"))
+    MIRROR_NO_SIDE_DAMPENER: float = float(os.getenv("MIRROR_NO_SIDE_DAMPENER", "0.3"))  # S137 C5: 0.5→0.3 (NO = -$139K, 87% of losses)
+    MIRROR_NO_PRICE_BLOCK: float = float(os.getenv("MIRROR_NO_PRICE_BLOCK", "0.75"))    # S137 C5: hard block NO when token price >75%
     # S133: Spread gate — 20c+ spread markets lost -$151K. Reject wide-spread entries.
     MIRROR_MAX_SPREAD: float = float(os.getenv("MIRROR_MAX_SPREAD", "0.20"))
     # S133: Per-trader P&L blacklist — auto-block traders with poor WR after enough data.

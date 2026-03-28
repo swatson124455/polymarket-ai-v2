@@ -1453,6 +1453,16 @@ class MirrorBot(BaseBot):
                                 yes_price=round(_yes_p, 3), no_price=round(_no_p, 3))
                     return False
 
+            # S137 C5: Hard block on heavy NO favorites — NO price > threshold means
+            # the market already assigns 75%+ probability to the NO outcome.
+            # Copy-trading NO at those prices requires market-maker spread capture that
+            # doesn't transfer; data shows NO-side = -$139K (87% of all losses).
+            _no_price_block = float(getattr(settings, "MIRROR_NO_PRICE_BLOCK", 0.75))
+            if str(side).upper() == "NO" and _no_p > _no_price_block:
+                logger.info("mirror_no_heavy_favorite_blocked", no_price=round(_no_p, 3),
+                            threshold=_no_price_block, market=str(market_id)[:16])
+                return False
+
             # S99: Hours-to-resolution filter — skip insider-territory markets
             _min_hours = float(getattr(settings, "MIRROR_MIN_HOURS_TO_RESOLUTION", 4))
             _end_date = _market_data.get("end_date_iso")
