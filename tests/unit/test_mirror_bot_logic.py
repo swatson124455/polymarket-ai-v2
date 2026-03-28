@@ -30,10 +30,12 @@ def _make_engine(yes_token_id="tok-yes", no_token_id="tok-no"):
     engine.order_gateway._daily_exposure_usd = {}
     engine.get_markets = AsyncMock(return_value=[])
     engine.filter_markets_for_trading = MagicMock(return_value=[])
-    # S133: Return realistic market data so spread gate doesn't reject on MagicMock floats.
+    # S133: Return realistic market data so spread/volume gates don't reject.
     # Omit yes_price/no_price so price correction and slippage checks pass through unchanged.
     engine.get_market_from_index = MagicMock(return_value={
         "active": True,
+        "volume_24h": 100000.0,   # S137 C8: volume gate requires > 5000
+        "liquidity": 50000.0,
     })
     # DB session returns a row with yes_token_id / no_token_id
     mock_row = MagicMock()
@@ -748,6 +750,7 @@ class TestExecuteMirrorTrade:
         # Override market data to have tight spread (yes=0.55, no=0.45, spread=0.0)
         engine.get_market_from_index = MagicMock(return_value={
             "active": True, "yes_price": 0.55, "no_price": 0.45,
+            "volume_24h": 100000.0, "liquidity": 50000.0,  # S137 C8: pass volume gate
         })
         bot.bankroll = MagicMock()
         bot.bankroll.capital = 3000.0

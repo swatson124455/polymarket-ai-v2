@@ -1480,6 +1480,19 @@ class MirrorBot(BaseBot):
                                 yes_price=round(_yes_p, 3), no_price=round(_no_p, 3))
                     return False
 
+            # S137 C8: Market volume gate — thin markets have poor execution quality and
+            # invite manipulation. Minimum $5K 24h volume (falls back to lifetime liquidity).
+            _min_vol = float(getattr(settings, "MIRROR_MIN_MARKET_VOLUME_24H", 5000.0))
+            _vol_24h = float(_market_data.get("volume_24h") or 0)
+            _liq = float(_market_data.get("liquidity") or 0)
+            # Use 24h volume; if unavailable, use on-book liquidity as proxy
+            _vol_check = _vol_24h if _vol_24h > 0 else _liq
+            if _min_vol > 0 and _vol_check < _min_vol:
+                logger.info("mirror_low_volume_blocked", volume_24h=round(_vol_24h, 0),
+                            liquidity=round(_liq, 0), min_vol=_min_vol,
+                            market=str(market_id)[:16])
+                return False
+
             # S137 C5: Hard block on heavy NO favorites — NO price > threshold means
             # the market already assigns 75%+ probability to the NO outcome.
             # Copy-trading NO at those prices requires market-maker spread capture that

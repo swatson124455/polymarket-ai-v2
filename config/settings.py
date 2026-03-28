@@ -387,6 +387,8 @@ class Settings(BaseSettings):
     # S132: NO-side dampener — NO loses 7x more than YES. 0.5 = half size on NO.
     MIRROR_NO_SIDE_DAMPENER: float = float(os.getenv("MIRROR_NO_SIDE_DAMPENER", "0.3"))  # S137 C5: 0.5→0.3 (NO = -$139K, 87% of losses)
     MIRROR_NO_PRICE_BLOCK: float = float(os.getenv("MIRROR_NO_PRICE_BLOCK", "0.75"))    # S137 C5: hard block NO when token price >75%
+    # S137 C8: Market volume gate — thin markets have poor execution quality
+    MIRROR_MIN_MARKET_VOLUME_24H: float = float(os.getenv("MIRROR_MIN_MARKET_VOLUME_24H", "5000.0"))
     # S133: Spread gate — 20c+ spread markets lost -$151K. Reject wide-spread entries.
     MIRROR_MAX_SPREAD: float = float(os.getenv("MIRROR_MAX_SPREAD", "0.20"))
     # S133: Per-trader P&L blacklist — auto-block traders with poor WR after enough data.
@@ -1226,6 +1228,14 @@ class Settings(BaseSettings):
     ESPORTS_UPSET_RISK_ENABLED: bool = os.getenv("ESPORTS_UPSET_RISK_ENABLED", "true").lower() in ("true", "1", "yes")
     ESPORTS_ROSTER_CHANGE_PENALTY: float = float(os.getenv("ESPORTS_ROSTER_CHANGE_PENALTY", "0.15"))
     ESPORTS_ROSTER_CHANGE_DECAY_DAYS: int = int(os.getenv("ESPORTS_ROSTER_CHANGE_DECAY_DAYS", "7"))
+
+    # --- S136: Per-game Glicko-2 tau ---
+    ESPORTS_GLICKO2_TAU_CS2: float = float(os.getenv("ESPORTS_GLICKO2_TAU_CS2", "0.45"))
+    ESPORTS_GLICKO2_TAU_LOL: float = float(os.getenv("ESPORTS_GLICKO2_TAU_LOL", "0.55"))
+    ESPORTS_GLICKO2_TAU_DOTA2: float = float(os.getenv("ESPORTS_GLICKO2_TAU_DOTA2", "0.50"))
+    ESPORTS_GLICKO2_TAU_VALORANT: float = float(os.getenv("ESPORTS_GLICKO2_TAU_VALORANT", "0.50"))
+    ESPORTS_GLICKO2_TAU_SC2: float = float(os.getenv("ESPORTS_GLICKO2_TAU_SC2", "0.70"))
+    ESPORTS_GLICKO2_TAU_DEFAULT: float = float(os.getenv("ESPORTS_GLICKO2_TAU_DEFAULT", "0.50"))
 
     # --- Retention ---
     ESPORTS_TRAINING_RETENTION_DAYS: int = int(os.getenv("ESPORTS_TRAINING_RETENTION_DAYS", "365"))
