@@ -279,6 +279,7 @@ class WeatherBot(BaseBot):
         self._group_exposure: Dict[str, float] = {}   # "city:date" → USD deployed
         self._city_exposure: Dict[str, float] = {}     # city → total USD deployed
         self._recently_exited: Dict[str, float] = {}   # market_id → mono time
+        self._exit_reasons: Dict[str, str] = {}        # T1-K: market_id → exit reason
         self._exit_cooldown_secs = float(getattr(settings, "WEATHER_EXIT_COOLDOWN_SECS", 14400.0))
         self._known_open_markets: Set[str] = set()     # snapshot for PM exit detection
         # S104: market_id → (group_key, city, cost_usd) — survives cache expiry, used for exit exposure decrement
@@ -566,6 +567,20 @@ class WeatherBot(BaseBot):
         # already captured in the probability distribution width.
 
         return base
+
+    def _get_exit_cooldown(self, market_id: str) -> float:
+        """T1-K: Return exit cooldown in seconds based on the exit reason.
+
+        Different exits warrant different re-entry windows:
+          REVERSAL  — model probability reversed → short cooldown (30 min default)
+                      Re-entry OK once forecast re-aligns.
+          RESOLUTION — market resolved or PM-triggered exit → long cooldown (4h default).
+          (default)  — unknown reason → long cooldown (conservative).
+        """
+        reason = self._exit_reasons.get(market_id, "RESOLUTION")
+        if reason == "REVERSAL":
+            return float(getattr(settings, "WEATHER_EXIT_COOLDOWN_REVERSAL_SECS", 1800.0))
+        return self._exit_cooldown_secs
 
     # ── S114: Cold-start calibration confidence ─────────────────────────
 
@@ -962,6 +977,7 @@ class WeatherBot(BaseBot):
             exited_by_pm = self._known_open_markets - current_open
             for mid in exited_by_pm:
                 self._recently_exited[mid] = time.monotonic()
+                self._exit_reasons[mid] = "RESOLUTION"  # T1-K: long cooldown for PM exits
                 await self._save_exit_to_redis(mid)
                 # S104: Decrement group/city exposure on exit
                 cached = self._market_group_cache.pop(mid, None)
@@ -1223,6 +1239,8 @@ class WeatherBot(BaseBot):
         # Phase 4: Re-evaluate open positions with fresh model probabilities
         # Feeds position_manager's model-reversal exit logic with current forecasts.
         await self._reevaluate_open_positions(analyzed)
+        # T1-A: Proactively exit positions where model probability has reversed.
+        await self._evaluate_mid_life_exits(analyzed)
 
         # Phase 4b: Outcome backfill + drift detection + cleanup — every 10 scans
         # All three are independent (different tables, no shared mutable state) —
@@ -1991,7 +2009,7 @@ class WeatherBot(BaseBot):
             # Skip recently exited markets
             mono_now = time.monotonic()
             exited_at = self._recently_exited.get(e["market_id"])
-            if exited_at and mono_now - exited_at < self._exit_cooldown_secs:  # S107: 4hr cooldown
+            if exited_at and mono_now - exited_at < self._get_exit_cooldown(e["market_id"]):  # T1-K: reason-specific
                 continue
 
             # Skip if no token ID
@@ -2379,7 +2397,7 @@ class WeatherBot(BaseBot):
         _mono_now = time.monotonic()
         _mid = opp.get("market_id", "")
         _exited_at = self._recently_exited.get(_mid)
-        if _exited_at and _mono_now - _exited_at < self._exit_cooldown_secs:  # S107: 4hr
+        if _exited_at and _mono_now - _exited_at < self._get_exit_cooldown(_mid):  # T1-K: reason-specific
             return False
 
         # S99: Fill-failure cooldown — skip markets that failed N consecutive times
@@ -2871,6 +2889,153 @@ class WeatherBot(BaseBot):
                 updated=updated,
                 total=len(bot_positions),
             )
+
+    async def _evaluate_mid_life_exits(
+        self,
+        analyzed: List[Tuple[List[Dict], "WeatherMarketGroup", Dict[str, float]]],
+    ) -> None:
+        """T1-A: Proactively exit positions where the model probability has reversed.
+
+        For each open WeatherBot position that appears in an analyzed group, checks
+        whether the fresh model probability implies a negative edge beyond
+        WEATHER_EXIT_MIN_EDGE. If so, places a SELL order to close the position.
+
+        The 6-item exit chain mirrors the PM-exit detection block:
+          1. Set in-memory cooldown (_recently_exited)
+          2. Persist to Redis (_save_exit_to_redis)
+          3. Decrement group/city exposure (_market_group_cache pop + _inc_daily)
+          4. Place SELL order via base_engine.place_order
+
+        Gated by WEATHER_MID_LIFE_EXIT_ENABLED (default False).
+        """
+        if not getattr(settings, "WEATHER_MID_LIFE_EXIT_ENABLED", False):
+            return
+
+        og = getattr(self.base_engine, "order_gateway", None)
+        if not og:
+            return
+
+        exit_min_edge = float(getattr(settings, "WEATHER_EXIT_MIN_EDGE", 0.05))
+
+        for _opps, group, model_probs in analyzed:
+            if not model_probs:
+                continue
+            for bucket in group.buckets:
+                mid = bucket.market_id
+                if mid not in model_probs:
+                    continue
+
+                # Skip if in cooldown
+                if mid in self._recently_exited:
+                    continue
+
+                # Skip if no open position
+                detail_key = f"WeatherBot:{mid}"
+                details = og._position_details.get(detail_key)
+                if not details:
+                    continue
+
+                side = details.get("side", "YES")
+                entry_price = float(details.get("price", 0.5))
+                size_shares = float(details.get("size", 0.0))
+                if size_shares <= 0 or entry_price <= 0:
+                    continue
+
+                fresh_prob = model_probs[mid]  # P(YES token)
+
+                # Token-specific EV: same formula for both sides
+                # (price is always the cost of the token we hold)
+                if side == "YES":
+                    current_ev = fresh_prob - entry_price
+                    token_id = bucket.token_id
+                    current_price = bucket.yes_price
+                else:
+                    current_ev = (1.0 - fresh_prob) - entry_price
+                    token_id = bucket.no_token_id
+                    current_price = 1.0 - bucket.yes_price
+
+                if not token_id:
+                    continue
+
+                if current_ev >= -exit_min_edge:
+                    continue
+
+                logger.info(
+                    "weatherbot_mid_life_exit_triggered",
+                    market_id=mid,
+                    side=side,
+                    entry_price=round(entry_price, 4),
+                    fresh_prob=round(fresh_prob, 4),
+                    current_ev=round(current_ev, 4),
+                    exit_min_edge=exit_min_edge,
+                    size_shares=round(size_shares, 2),
+                )
+
+                # 1. Set in-memory cooldown (T1-K: REVERSAL → 30-min re-entry window)
+                self._recently_exited[mid] = time.monotonic()
+                self._exit_reasons[mid] = "REVERSAL"
+                # 2. Persist to Redis
+                await self._save_exit_to_redis(mid)
+                # 3. Decrement group/city exposure
+                cached = self._market_group_cache.pop(mid, None)
+                if cached:
+                    group_key, city, exit_cost = cached
+                    async with self._exposure_lock:
+                        self._group_exposure[group_key] = max(
+                            0.0, self._group_exposure.get(group_key, 0.0) - exit_cost
+                        )
+                        self._city_exposure[city] = max(
+                            0.0, self._city_exposure.get(city, 0.0) - exit_cost
+                        )
+                    _db = getattr(self.base_engine, "db", None)
+                    if _db is not None:
+                        try:
+                            await _inc_daily(_db, "WeatherBot", f"group_{group_key}", -exit_cost)
+                            await _inc_daily(_db, "WeatherBot", f"city_{city}", -exit_cost)
+                        except Exception as exc:
+                            logger.warning(
+                                "weatherbot_mid_life_exit_exposure_db_failed",
+                                market_id=mid, exc=str(exc),
+                            )
+                    logger.info(
+                        "weatherbot_mid_life_exit_exposure_decremented",
+                        market_id=mid, group_key=group_key, city=city,
+                        cost_usd=round(exit_cost, 2),
+                    )
+                # 4. Place SELL order to close position
+                try:
+                    _exit_result = await self.base_engine.place_order(
+                        bot_name=self.bot_name,
+                        market_id=mid,
+                        token_id=token_id,
+                        side="SELL",
+                        size=size_shares,
+                        price=max(0.01, current_price),
+                        confidence=0.0,
+                        event_data={
+                            "exit_reason": "model_reversal",
+                            "current_ev": round(current_ev, 4),
+                        },
+                    )
+                    if _exit_result.get("success"):
+                        logger.info(
+                            "weatherbot_mid_life_exit_filled",
+                            market_id=mid, side=side,
+                            size_shares=round(size_shares, 2),
+                            current_price=round(current_price, 4),
+                            current_ev=round(current_ev, 4),
+                        )
+                    else:
+                        logger.warning(
+                            "weatherbot_mid_life_exit_order_failed",
+                            market_id=mid,
+                            error=_exit_result.get("error", "unknown"),
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "weatherbot_mid_life_exit_exception",
+                        market_id=mid, exc=str(exc),
+                    )
 
     # ── Regime detection ─────────────────────────────────────────────────
 

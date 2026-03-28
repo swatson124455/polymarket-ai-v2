@@ -1991,3 +1991,211 @@ class TestSpreadInflation:
         assert abs(scale_24h - scale_120h) < 0.01, (
             f"Spread inflation should be OFF: 24h={scale_24h:.4f} vs 120h={scale_120h:.4f}"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# T1-A: Mid-life exit evaluator + T1-K: Exit-reason-specific cooldowns
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestMidLifeExitEvaluator:
+    """T1-A: _evaluate_mid_life_exits exits positions with reversed model probability."""
+
+    def _make_bot(self):
+        import asyncio
+        bot = MagicMock()
+        bot.bot_name = "WeatherBot"
+        bot._recently_exited = {}
+        bot._exit_reasons = {}
+        bot._exit_cooldown_secs = 14400.0
+        bot._exposure_lock = asyncio.Lock()
+        bot._group_exposure = {}
+        bot._city_exposure = {}
+        bot._market_group_cache = {}
+        bot._save_exit_to_redis = AsyncMock()
+        bot.base_engine = MagicMock()
+        bot.base_engine.place_order = AsyncMock(return_value={"success": True})
+        bot.base_engine.db = None
+        bot.base_engine.order_gateway = MagicMock()
+        bot.base_engine.order_gateway._position_details = {}
+        return bot
+
+    def _make_bucket(self, market_id, yes_price, token_id="t1", no_token_id="n1"):
+        return TemperatureBucket(
+            market_id=market_id,
+            bucket_type="range",
+            low_bound=70.0,
+            high_bound=75.0,
+            yes_price=yes_price,
+            token_id=token_id,
+            no_token_id=no_token_id,
+            temp_unit="F",
+        )
+
+    def _make_analyzed(self, bucket, fresh_prob):
+        group = MagicMock()
+        group.buckets = [bucket]
+        return [([], group, {bucket.market_id: fresh_prob})]
+
+    @pytest.mark.asyncio
+    async def test_skips_when_flag_disabled(self):
+        """Feature flag off → no exits triggered."""
+        from bots.weather_bot import WeatherBot
+        bot = self._make_bot()
+        bucket = self._make_bucket("mkt1", yes_price=0.60)
+        # Position: YES at 0.60, fresh_prob drops to 0.40 (EV = -0.20)
+        bot.base_engine.order_gateway._position_details = {
+            "WeatherBot:mkt1": {"side": "YES", "price": 0.60, "size": 10.0}
+        }
+        analyzed = self._make_analyzed(bucket, 0.40)
+        with patch.object(settings, "WEATHER_MID_LIFE_EXIT_ENABLED", False, create=True):
+            await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
+        bot.base_engine.place_order.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_exits_yes_position_on_reversal(self):
+        """YES position exits when fresh_prob - entry_price < -exit_min_edge."""
+        from bots.weather_bot import WeatherBot
+        bot = self._make_bot()
+        bucket = self._make_bucket("mkt1", yes_price=0.45, token_id="yes_tok")
+        bot.base_engine.order_gateway._position_details = {
+            "WeatherBot:mkt1": {"side": "YES", "price": 0.60, "size": 15.0}
+        }
+        analyzed = self._make_analyzed(bucket, 0.40)  # EV = 0.40 - 0.60 = -0.20
+        with patch.object(settings, "WEATHER_MID_LIFE_EXIT_ENABLED", True, create=True):
+            with patch.object(settings, "WEATHER_EXIT_MIN_EDGE", 0.05, create=True):
+                await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
+        bot.base_engine.place_order.assert_called_once()
+        call_kwargs = bot.base_engine.place_order.call_args
+        assert call_kwargs.kwargs["side"] == "SELL"
+        assert call_kwargs.kwargs["token_id"] == "yes_tok"
+        assert call_kwargs.kwargs["size"] == 15.0
+        assert "mkt1" in bot._recently_exited
+        assert bot._exit_reasons["mkt1"] == "REVERSAL"
+
+    @pytest.mark.asyncio
+    async def test_exits_no_position_on_reversal(self):
+        """NO position exits when (1 - fresh_prob) - entry_price < -exit_min_edge."""
+        from bots.weather_bot import WeatherBot
+        bot = self._make_bot()
+        # NO token: entry was at 0.70 (YES was at 0.30, NO = 1 - 0.30 = 0.70)
+        bucket = self._make_bucket("mkt2", yes_price=0.80, no_token_id="no_tok")
+        # fresh_prob = P(YES) = 0.80 → P(NO) = 0.20, entry was 0.70 → EV = 0.20 - 0.70 = -0.50
+        bot.base_engine.order_gateway._position_details = {
+            "WeatherBot:mkt2": {"side": "NO", "price": 0.70, "size": 8.0}
+        }
+        analyzed = self._make_analyzed(bucket, 0.80)
+        with patch.object(settings, "WEATHER_MID_LIFE_EXIT_ENABLED", True, create=True):
+            with patch.object(settings, "WEATHER_EXIT_MIN_EDGE", 0.05, create=True):
+                await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
+        bot.base_engine.place_order.assert_called_once()
+        call_kwargs = bot.base_engine.place_order.call_args
+        assert call_kwargs.kwargs["side"] == "SELL"
+        assert call_kwargs.kwargs["token_id"] == "no_tok"
+        assert bot._exit_reasons["mkt2"] == "REVERSAL"
+
+    @pytest.mark.asyncio
+    async def test_no_exit_when_ev_above_threshold(self):
+        """Does NOT exit when EV is above -exit_min_edge (edge still positive)."""
+        from bots.weather_bot import WeatherBot
+        bot = self._make_bot()
+        bucket = self._make_bucket("mkt3", yes_price=0.60)
+        # Entry 0.60, fresh_prob 0.58 → EV = -0.02 < 0.05 threshold → no exit
+        bot.base_engine.order_gateway._position_details = {
+            "WeatherBot:mkt3": {"side": "YES", "price": 0.60, "size": 10.0}
+        }
+        analyzed = self._make_analyzed(bucket, 0.58)
+        with patch.object(settings, "WEATHER_MID_LIFE_EXIT_ENABLED", True, create=True):
+            with patch.object(settings, "WEATHER_EXIT_MIN_EDGE", 0.05, create=True):
+                await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
+        bot.base_engine.place_order.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_cooldown_markets(self):
+        """Markets in _recently_exited cooldown are not re-exited."""
+        import time
+        from bots.weather_bot import WeatherBot
+        bot = self._make_bot()
+        bucket = self._make_bucket("mkt4", yes_price=0.40)
+        bot._recently_exited["mkt4"] = time.monotonic()  # just exited
+        bot.base_engine.order_gateway._position_details = {
+            "WeatherBot:mkt4": {"side": "YES", "price": 0.70, "size": 5.0}
+        }
+        analyzed = self._make_analyzed(bucket, 0.30)
+        with patch.object(settings, "WEATHER_MID_LIFE_EXIT_ENABLED", True, create=True):
+            await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
+        bot.base_engine.place_order.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_market_with_no_open_position(self):
+        """If no position details found, no SELL is placed."""
+        from bots.weather_bot import WeatherBot
+        bot = self._make_bot()
+        bucket = self._make_bucket("mkt5", yes_price=0.40)
+        # No entry in _position_details
+        analyzed = self._make_analyzed(bucket, 0.20)
+        with patch.object(settings, "WEATHER_MID_LIFE_EXIT_ENABLED", True, create=True):
+            await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
+        bot.base_engine.place_order.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_exposure_decremented_on_exit(self):
+        """Group and city exposure are decremented when cache entry exists."""
+        from bots.weather_bot import WeatherBot
+        bot = self._make_bot()
+        bucket = self._make_bucket("mkt6", yes_price=0.40, token_id="t6")
+        bot._market_group_cache["mkt6"] = ("NYC:2026-04-01", "NYC", 100.0)
+        bot._group_exposure["NYC:2026-04-01"] = 500.0
+        bot._city_exposure["NYC"] = 800.0
+        bot.base_engine.order_gateway._position_details = {
+            "WeatherBot:mkt6": {"side": "YES", "price": 0.65, "size": 5.0}
+        }
+        analyzed = self._make_analyzed(bucket, 0.30)
+        with patch.object(settings, "WEATHER_MID_LIFE_EXIT_ENABLED", True, create=True):
+            with patch.object(settings, "WEATHER_EXIT_MIN_EDGE", 0.05, create=True):
+                await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
+        assert bot._group_exposure["NYC:2026-04-01"] == pytest.approx(400.0)
+        assert bot._city_exposure["NYC"] == pytest.approx(700.0)
+        assert "mkt6" not in bot._market_group_cache
+
+
+class TestExitReasonCooldowns:
+    """T1-K: _get_exit_cooldown returns reason-specific TTLs."""
+
+    def _make_bot(self):
+        bot = MagicMock()
+        bot._exit_reasons = {}
+        bot._exit_cooldown_secs = 14400.0
+        return bot
+
+    def test_resolution_uses_long_cooldown(self):
+        from bots.weather_bot import WeatherBot
+        bot = self._make_bot()
+        bot._exit_reasons["mkt1"] = "RESOLUTION"
+        result = WeatherBot._get_exit_cooldown(bot, "mkt1")
+        assert result == 14400.0
+
+    def test_reversal_uses_short_cooldown(self):
+        from bots.weather_bot import WeatherBot
+        bot = self._make_bot()
+        bot._exit_reasons["mkt1"] = "REVERSAL"
+        with patch.object(settings, "WEATHER_EXIT_COOLDOWN_REVERSAL_SECS", 1800.0, create=True):
+            result = WeatherBot._get_exit_cooldown(bot, "mkt1")
+        assert result == 1800.0
+
+    def test_unknown_reason_falls_back_to_long_cooldown(self):
+        from bots.weather_bot import WeatherBot
+        bot = self._make_bot()
+        # No entry in _exit_reasons
+        result = WeatherBot._get_exit_cooldown(bot, "unknown_market")
+        assert result == 14400.0
+
+    def test_reversal_cooldown_shorter_than_resolution(self):
+        from bots.weather_bot import WeatherBot
+        bot = self._make_bot()
+        bot._exit_reasons["rev"] = "REVERSAL"
+        bot._exit_reasons["res"] = "RESOLUTION"
+        with patch.object(settings, "WEATHER_EXIT_COOLDOWN_REVERSAL_SECS", 1800.0, create=True):
+            rev_cd = WeatherBot._get_exit_cooldown(bot, "rev")
+            res_cd = WeatherBot._get_exit_cooldown(bot, "res")
+        assert rev_cd < res_cd
