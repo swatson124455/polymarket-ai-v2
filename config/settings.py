@@ -358,6 +358,7 @@ class Settings(BaseSettings):
     # RTDS: global trade feed
     RTDS_WS_URL: str = os.getenv("RTDS_WS_URL", "wss://ws-live-data.polymarket.com")
     RTDS_PING_INTERVAL: int = int(os.getenv("RTDS_PING_INTERVAL", "5"))
+    RTDS_RECV_TIMEOUT: int = int(os.getenv("RTDS_RECV_TIMEOUT", "25"))  # S137 C15: was 120s
 
     # Calibration + safety feature flags (all off by default)
     MIRROR_USE_CALIBRATION: bool = os.getenv("MIRROR_USE_CALIBRATION", "false").lower() in ("true", "1", "yes")

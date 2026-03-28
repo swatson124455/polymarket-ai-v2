@@ -20,6 +20,9 @@ logger = get_logger()
 
 _DEFAULT_URL = "wss://ws-live-data.polymarket.com"
 _PING_INTERVAL = 5  # seconds — RTDS requires keep-alive pings
+# S137 C15: 25s recv timeout (was 120s). With 5s pings, 25s means we detect silent
+# disconnects within one scan interval instead of waiting 2 minutes.
+_DEFAULT_RECV_TIMEOUT = 25
 
 
 class RTDSWebSocket:
@@ -30,7 +33,7 @@ class RTDSWebSocket:
         handler: Callable[[Dict[str, Any]], Awaitable[None]],
         ws_url: str = _DEFAULT_URL,
         ping_interval: int = _PING_INTERVAL,
-        recv_timeout: int = 120,
+        recv_timeout: int = _DEFAULT_RECV_TIMEOUT,
     ):
         self._handler = handler
         self._ws_url = ws_url

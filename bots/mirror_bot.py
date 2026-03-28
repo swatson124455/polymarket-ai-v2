@@ -590,10 +590,13 @@ class MirrorBot(BaseBot):
                 from base_engine.data.rtds_websocket import RTDSWebSocket
                 _rtds_url = getattr(settings, "RTDS_WS_URL", "wss://ws-live-data.polymarket.com")
                 _rtds_ping = int(getattr(settings, "RTDS_PING_INTERVAL", 5))
+                # S137 C15: Pass recv_timeout from settings (default 25s, was hardcoded 120s)
+                _rtds_recv_timeout = int(getattr(settings, "RTDS_RECV_TIMEOUT", 25))
                 self._rtds_ws = RTDSWebSocket(
                     handler=self._watchlist.on_rtds_trade,
                     ws_url=_rtds_url,
                     ping_interval=_rtds_ping,
+                    recv_timeout=_rtds_recv_timeout,
                 )
                 await self._rtds_ws.connect()
                 self._rtds_started = True
@@ -661,7 +664,9 @@ class MirrorBot(BaseBot):
             else:
                 self._rtds_stale_count = 0
             self._prev_rtds_dispatched = _rtds_dispatched
-            if self._rtds_stale_count >= 4 and self._rtds_ws.last_recv_age > 120:
+            # S137 C15: Watchdog threshold 120 → 60s. With recv_timeout=25s, 60s
+            # means the reconnect loop itself is stuck — indicates deeper failure.
+            if self._rtds_stale_count >= 4 and self._rtds_ws.last_recv_age > 60:
                 logger.warning(
                     "rtds_stale_dispatch: %d scans unchanged, last_recv %.0fs ago — reconnecting",
                     self._rtds_stale_count, self._rtds_ws.last_recv_age,
