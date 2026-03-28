@@ -38,10 +38,10 @@ SWAP_TMP="${CURRENT}_rollback_$TIMESTAMP"
 sudo ln -s "$PREV_DIR" "\$SWAP_TMP"
 sudo mv -T "\$SWAP_TMP" "$CURRENT"
 echo "Symlink: $CURRENT -> $PREV_DIR"
-sudo systemctl restart polymarket-ai
+sudo systemctl restart polymarket-weather polymarket-mirror polymarket-esports
 REMOTE
 
 echo ""
 echo "=== ROLLBACK to $PREV_NAME COMPLETE ==="
-echo "Monitor: ssh -i \$KEY \$VPS 'journalctl -u polymarket-ai -f --no-pager'"
+echo "Monitor: ssh -i \$KEY \$VPS 'journalctl -u polymarket-weather -u polymarket-mirror -u polymarket-esports -f --no-pager'"
 echo ""

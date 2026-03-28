@@ -610,8 +610,8 @@ async def main():
                 pass
         watchdog_task.add_done_callback(_watchdog_done)
 
-        # Phase 5b: lightweight health endpoint on localhost:8765
-        health_task = asyncio.create_task(_health_server(bots, _shutdown_event))
+        # Phase 5b: lightweight health endpoint on localhost:{HEALTH_PORT}
+        health_task = asyncio.create_task(_health_server(bots, _shutdown_event, port=settings.HEALTH_PORT))
 
         logger.info("System running -- press Ctrl+C to stop", active_bots=len(bots))
 

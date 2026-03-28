@@ -204,6 +204,7 @@ class Settings(BaseSettings):
     DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "0.05"))
     # Health check interval (minutes). HealthRunner fires this often inside IngestionScheduler.
     HEALTH_CHECK_INTERVAL_MINUTES: int = int(os.getenv("HEALTH_CHECK_INTERVAL_MINUTES", "60"))
+    HEALTH_PORT: int = int(os.getenv("HEALTH_PORT", "8765"))  # per-service port; override in .env.{bot}
     # Mini backfill interval (minutes). prediction_log + pseudo-label labeling between daily runs.
     MINI_BACKFILL_INTERVAL_MINUTES: int = int(os.getenv("MINI_BACKFILL_INTERVAL_MINUTES", "15"))  # S92: 30→15 for faster resolution clearing
     # Transaction cost model (for dynamic edge threshold)
