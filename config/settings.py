@@ -382,6 +382,8 @@ class Settings(BaseSettings):
     # S137 C10: Near-resolution tightener — if < 24h to resolution, tighten to -5%
     MIRROR_STOP_LOSS_NEAR_RES_HOURS: float = float(os.getenv("MIRROR_STOP_LOSS_NEAR_RES_HOURS", "24.0"))
     MIRROR_STOP_LOSS_NEAR_RES_PCT: float = float(os.getenv("MIRROR_STOP_LOSS_NEAR_RES_PCT", "-0.05"))
+    # S137 C11: Resolution-relative max-hold — exit after >80% of total market duration
+    MIRROR_MAX_HOLD_FRACTION: float = float(os.getenv("MIRROR_MAX_HOLD_FRACTION", "0.80"))
     MIRROR_MAX_POSITIONS: int = int(os.getenv("MIRROR_MAX_POSITIONS", "1000"))
     MIRROR_TOTAL_CAPITAL: float = float(os.getenv("MIRROR_TOTAL_CAPITAL", "20000"))
     # Tier 0 pre-trade filters

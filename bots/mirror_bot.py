@@ -825,9 +825,12 @@ class MirrorBot(BaseBot):
         _tp_pct = float(getattr(settings, "MIRROR_TAKE_PROFIT_PCT", 0.25))
         _stop_48h = float(getattr(settings, "MIRROR_STOP_LOSS_TIGHTEN_48H", -0.12))  # 0-48h tight
         _stop_72h = float(getattr(settings, "MIRROR_STOP_LOSS_TIGHTEN_72H", -0.15))  # 48-72h medium
-        _force_exit_hours = float(getattr(settings, "MIRROR_FORCE_EXIT_HOURS", 96))
         _near_res_hours = float(getattr(settings, "MIRROR_STOP_LOSS_NEAR_RES_HOURS", 24.0))
         _near_res_stop = abs(float(getattr(settings, "MIRROR_STOP_LOSS_NEAR_RES_PCT", -0.05)))
+        # S137 C11: Resolution-relative max-hold — exit when held > MIRROR_MAX_HOLD_FRACTION of total
+        # market duration. Replaces fixed 96h which is wrong for 7-day and 30-day markets alike.
+        _max_hold_frac = float(getattr(settings, "MIRROR_MAX_HOLD_FRACTION", 0.80))
+        _force_exit_hours = float(getattr(settings, "MIRROR_FORCE_EXIT_HOURS", 96))  # fallback if no TTR
         _now_utc = datetime.now(timezone.utc)
         _total_unrealized = 0.0
 
@@ -857,8 +860,29 @@ class MirrorBot(BaseBot):
                 except (ValueError, TypeError):
                     pass
 
-            # Force exit at 96h regardless of P&L
-            if _hours_held >= _force_exit_hours:
+            # S137 C11: Compute TTR from market index (live data, not stale meta string).
+            # _market_meta_cache[1] = "hours"/"days"/"weeks" string — not usable for comparison.
+            _pos_market_id = _pos_key.split(":", 1)[0]
+            _pos_md = self.base_engine.get_market_from_index(_pos_market_id)
+            _ttr_hours: Optional[float] = None
+            if _pos_md:
+                _pos_end = _pos_md.get("end_date_iso")
+                if _pos_end:
+                    _ttr_hours = self.hours_until_resolution({"end_date_iso": _pos_end})
+
+            # S137 C11: Resolution-relative max-hold — if we've held >80% of total duration, exit.
+            # Better than fixed 96h: respects 7-day markets (exit at day 5.6) and 30-day markets.
+            if _ttr_hours is not None and _hours_held > 0:
+                _total_duration = _hours_held + _ttr_hours
+                _hold_frac = _hours_held / max(_total_duration, 1.0)
+                if _hold_frac >= _max_hold_frac:
+                    logger.info("mirror_max_hold_fraction_exit", market=_pos_key,
+                                hold_frac=round(_hold_frac, 3), hours_held=round(_hours_held, 1),
+                                ttr_hours=round(_ttr_hours, 1), pnl_pct=f"{_pnl_pct:.2%}")
+                    positions_to_close.append(_pos_key)
+                    continue
+            elif _hours_held >= _force_exit_hours:
+                # Fallback: no TTR available, use fixed 96h
                 logger.info("mirror_force_exit", market=_pos_key, hours=round(_hours_held, 1),
                             pnl_pct=f"{_pnl_pct:.2%}")
                 positions_to_close.append(_pos_key)
@@ -866,12 +890,11 @@ class MirrorBot(BaseBot):
 
             # S137 C10: Graduated stop-loss — reversed so it's tight early and loose late.
             # Near-resolution override: < 24h left → -5% to avoid being stuck at resolution.
-            _meta = self._market_meta_cache.get(_pos_key.split(":", 1)[0])
-            _ttr_hours = _meta[1] if _meta and len(_meta) > 1 else None
+            # Graduated stop-loss thresholds (TTR already computed above for C11)
             if _ttr_hours is not None and _ttr_hours < _near_res_hours:
                 _effective_stop = _near_res_stop  # tight near resolution
             elif _hours_held >= 72:
-                _effective_stop = _base_stop_pct  # loose at 72h+ (near res, let it breathe)
+                _effective_stop = _base_stop_pct  # loose at 72h+ (market noise dominates)
             elif _hours_held >= 48:
                 _effective_stop = abs(_stop_72h)   # medium 48-72h
             else:
