@@ -8,7 +8,7 @@ When db is provided, each trade is persisted to paper_trades for resolution back
 """
 import asyncio
 import time
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Callable, Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone
 from structlog import get_logger
 from config.settings import settings
@@ -330,6 +330,7 @@ class PaperTradingEngine:
         model_version: Optional[int] = None,
         model_name: Optional[str] = None,
         event_data: Optional[dict] = None,
+        on_buy_fill: Optional[Callable] = None,
     ) -> Dict:
         """
         Place a paper trade order.
@@ -358,6 +359,7 @@ class PaperTradingEngine:
             result = await self._place_order_locked(
                 market_id, token_id, side, size, price, bot_name, confidence, original_side, order_type, correlation_id, latency_ms,
                 bid=bid, ask=ask, volume=volume, model_version=model_version, model_name=model_name, event_data=event_data,
+                on_buy_fill=on_buy_fill,
             )
             # Drain pending DB writes (populated by _place_order_locked)
             _db_writes = list(self._pending_db_writes)
@@ -391,6 +393,7 @@ class PaperTradingEngine:
         model_version: Optional[int] = None,
         model_name: Optional[str] = None,
         event_data: Optional[dict] = None,
+        on_buy_fill: Optional[Callable] = None,
     ) -> Dict:
         """Inner order handler — called under self._trade_lock."""
         # S115: Fill fraction from book walk (1.0 = full fill, <1.0 = thin book)
@@ -798,6 +801,16 @@ class PaperTradingEngine:
         # so the next fill on same token in this scan sees reduced depth.
         if _book_walk_used and _depletion_key and _book_snapshot:
             self._update_book_depletion(_depletion_key, _book_snapshot, size, _book_side)
+
+        # S133: Invoke on_buy_fill callback inside the lock so exposure is tracked
+        # before any concurrent bot reads daily_exposure.
+        if side == "BUY" and on_buy_fill is not None:
+            try:
+                _token_side_for_cb = original_side if original_side in ("YES", "NO") else "YES"
+                on_buy_fill(bot_name, market_id, size, price, side=_token_side_for_cb,
+                            predicted_prob=confidence or 0.5)
+            except Exception as _cb_err:
+                logger.warning("on_buy_fill callback failed (non-critical): %s", _cb_err)
 
         _result = {
             "success": True,
