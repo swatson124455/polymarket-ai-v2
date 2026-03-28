@@ -4339,6 +4339,7 @@ class WeatherBot(BaseBot):
                     _all_pairs.extend(data["pairs"])
                     _samos_pairs.extend(data.get("samos_pairs", []))
 
+            _computed_global_emos: Optional[Tuple[float, float, float]] = None
             _global_method = "raw_emos"
             if len(_samos_pairs) >= _MIN_EMOS_SAMPLES:
                 _samos_result = WeatherBot._fit_samos(_samos_pairs)
@@ -4354,6 +4355,7 @@ class WeatherBot(BaseBot):
                     _raw_b = _sb
                     _raw_sigma = _avg_cs * _ss
                     self._prob_engine.load_global_emos((_raw_a, _raw_b, _raw_sigma))
+                    _computed_global_emos = (_raw_a, _raw_b, _raw_sigma)
                     _global_method = "samos"
                     logger.info(
                         "weatherbot_global_samos_fitted",
@@ -4366,6 +4368,7 @@ class WeatherBot(BaseBot):
             if _global_method != "samos" and len(_all_pairs) >= _MIN_EMOS_SAMPLES:
                 _global_a, _global_b, _global_sigma = WeatherBot._fit_emos(_all_pairs)
                 self._prob_engine.load_global_emos((_global_a, _global_b, _global_sigma))
+                _computed_global_emos = (_global_a, _global_b, _global_sigma)
                 logger.info(
                     "weatherbot_global_emos_fitted",
                     n_pairs=len(_all_pairs),
@@ -4373,6 +4376,43 @@ class WeatherBot(BaseBot):
                     b=round(_global_b, 4),
                     sigma=round(_global_sigma, 4),
                 )
+
+            # T0-C: Bühlmann credibility blending — continuously blends local + global EMOS
+            # using w = n/(n+30). Replaces binary 20-pair threshold for cold stations.
+            # Feature flag: WEATHER_EMOS_SHRINKAGE_ENABLED (default: false).
+            # When enabled, replaces the earlier load_emos_calibration() call with blended params.
+            _shrinkage_enabled = getattr(settings, "WEATHER_EMOS_SHRINKAGE_ENABLED", False)
+            if _shrinkage_enabled and _computed_global_emos is not None:
+                _ga, _gb, _gs = _computed_global_emos
+                _KAPPA = 30.0
+                _SHRINK_MIN = 3
+                blended_emos: Dict[str, Dict[int, Tuple[float, float, Optional[float]]]] = {}
+                for sid, buckets_data in raw.items():
+                    for bucket, data in buckets_data.items():
+                        pairs = data["pairs"]
+                        n = len(pairs)
+                        if n < _SHRINK_MIN:
+                            continue
+                        # Use already-fitted local params if available; else fit fresh
+                        if sid in emos_params and bucket in emos_params[sid]:
+                            a_loc, b_loc, s_loc = emos_params[sid][bucket]
+                        else:
+                            a_loc, b_loc, s_loc = WeatherBot._fit_emos(pairs)
+                        w = n / (n + _KAPPA)
+                        a_blend = w * a_loc + (1.0 - w) * _ga
+                        b_blend = w * b_loc + (1.0 - w) * _gb
+                        s_effective = s_loc if s_loc is not None else _gs
+                        s_blend = max(0.5, w * s_effective + (1.0 - w) * _gs)
+                        if sid not in blended_emos:
+                            blended_emos[sid] = {}
+                        blended_emos[sid][bucket] = (a_blend, b_blend, s_blend)
+                if blended_emos:
+                    self._prob_engine.load_emos_calibration(blended_emos)
+                    logger.info(
+                        "weatherbot_emos_shrinkage_applied",
+                        stations=len(blended_emos),
+                        kappa=int(_KAPPA),
+                    )
 
             self._calibration_last_loaded = now_mono
             _sc: Dict[str, int] = {
