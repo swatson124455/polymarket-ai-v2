@@ -1748,11 +1748,13 @@ class TestWeatherConfidenceCalibrator:
         sides = np.array([1.0] * 200 + [0.0] * 200)
         lead_times = np.random.uniform(1, 120, n)
         prices = np.random.uniform(0.03, 0.90, n)
+        bucket_encs = np.random.choice([0.0, 1.0, 2.0], n)
+        spreads = np.random.uniform(1.0, 8.0, n)
         # YES wins less, short lead wins less, low price wins less
         base_wr = np.clip(0.3 * (1.0 - sides * 0.4) + 0.003 * lead_times + 0.3 * prices, 0.05, 0.95)
         outcomes = (np.random.uniform(0, 1, n) < base_wr).astype(float)
 
-        X = np.column_stack([confidences, sides, lead_times, prices])
+        X = np.column_stack([confidences, sides, lead_times, prices, bucket_encs, spreads])
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
         model = LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000)
@@ -1847,7 +1849,8 @@ class TestWeatherConfidenceCalibrator:
         prices = np.random.uniform(0.1, 0.8, n)
         outcomes = (np.random.uniform(0, 1, n) < confs).astype(float)
         rows = [
-            (float(confs[i]), sides_str[i], float(lead_times[i]), float(prices[i]), float(outcomes[i]))
+            (float(confs[i]), sides_str[i], float(lead_times[i]), float(prices[i]),
+             0.0, 3.0, float(outcomes[i]))
             for i in range(n)
         ]
         mock_result = MagicMock()

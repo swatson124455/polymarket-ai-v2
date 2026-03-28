@@ -222,7 +222,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         elevation_m=4.0,
         timezone="America/New_York",
         temp_unit="F",
-        aliases=("washington d.c.", "washington dc", "washington, d.c.", "washington, dc", "dc", "washington"),
+        aliases=("washington d.c.", "washington dc", "washington, d.c.", "washington, dc", "dc"),
         resolution_source="Weather Underground / KDCA",
         has_asos_1min=True,
     ),

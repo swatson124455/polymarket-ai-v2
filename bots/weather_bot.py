@@ -64,11 +64,12 @@ _CONF_CAL_MIN_SAMPLES = 200  # minimum resolved trades to fit
 
 
 class WeatherConfidenceCalibrator:
-    """Logistic regression calibrator with 4 features.
+    """Logistic regression calibrator with 6 features.
 
-    Fits on WeatherBot trade_events: (confidence, side, lead_time_hours, price) → win/loss.
-    S135: Replaces Platt+Isotonic. Same math (logistic model) but with 4 inputs
-    instead of 1 — learns side, lead-time, and price effects from data.
+    Fits on WeatherBot trade_events: (confidence, side, lead_time_hours, price,
+    bucket_type_enc, ensemble_spread) → win/loss.
+    S135: Replaced Platt+Isotonic. S136: Added bucket_type and ensemble_spread.
+    bucket_type_enc: at_or_higher=1, range=2, else=0.
     """
 
     def __init__(self) -> None:
@@ -76,6 +77,7 @@ class WeatherConfidenceCalibrator:
         self._scaler: Any = None    # sklearn StandardScaler
         self._fitted: bool = False
         self._n_samples: int = 0
+        self._cal_brier: Optional[float] = None  # calibrated Brier score — fed to BankrollManager
         self._coef_confidence: float = 0.0  # for .temperature property compat
         self._coefficients: dict = {}       # for logging/inspection
 
@@ -99,14 +101,22 @@ class WeatherConfidenceCalibrator:
                 result = await session.execute(text("""
                     WITH entries AS (
                         SELECT DISTINCT ON (market_id) market_id, confidence, side, price,
-                               COALESCE((event_data->>'lead_time_hours')::float, 48.0) AS lead_time_hours
+                               COALESCE((event_data->>'lead_time_hours')::float, 48.0) AS lead_time_hours,
+                               CASE event_data->>'bucket_type'
+                                   WHEN 'at_or_higher' THEN 1.0
+                                   WHEN 'range' THEN 2.0
+                                   ELSE 0.0
+                               END AS bucket_type_enc,
+                               COALESCE((event_data->>'ensemble_spread')::float, 3.0) AS ensemble_spread
                         FROM trade_events
                         WHERE bot_name = 'WeatherBot' AND event_type = 'ENTRY'
                           AND event_time >= NOW() - INTERVAL '1 day' * :window_days
                           AND confidence IS NOT NULL
+                          AND price >= 0.08
                         ORDER BY market_id, event_time
                     )
                     SELECT e.confidence, e.side, e.lead_time_hours, e.price,
+                           e.bucket_type_enc, e.ensemble_spread,
                            CASE WHEN r.realized_pnl > 0 THEN 1.0 ELSE 0.0 END AS outcome
                     FROM trade_events r
                     JOIN entries e ON e.market_id = r.market_id
@@ -126,9 +136,11 @@ class WeatherConfidenceCalibrator:
             sides = np.array([1.0 if r[1] == "YES" else 0.0 for r in rows], dtype=np.float64)
             lead_times = np.array([float(r[2]) for r in rows], dtype=np.float64)
             prices = np.array([float(r[3]) for r in rows], dtype=np.float64)
-            outcomes = np.array([float(r[4]) for r in rows], dtype=np.float64)
+            bucket_encs = np.array([float(r[4]) for r in rows], dtype=np.float64)
+            spreads = np.array([float(r[5]) for r in rows], dtype=np.float64)
+            outcomes = np.array([float(r[6]) for r in rows], dtype=np.float64)
 
-            X = np.column_stack([confidences, sides, lead_times, prices])
+            X = np.column_stack([confidences, sides, lead_times, prices, bucket_encs, spreads])
 
             from sklearn.preprocessing import StandardScaler
             from sklearn.linear_model import LogisticRegression
@@ -157,12 +169,15 @@ class WeatherConfidenceCalibrator:
             self._scaler = scaler
             self._fitted = True
             self._n_samples = len(rows)
+            self._cal_brier = cal_brier
             self._coef_confidence = float(model.coef_[0][0])
             self._coefficients = {
                 "confidence": round(float(model.coef_[0][0]), 4),
                 "side_yes": round(float(model.coef_[0][1]), 4),
                 "lead_time": round(float(model.coef_[0][2]), 4),
                 "entry_price": round(float(model.coef_[0][3]), 4),
+                "bucket_type": round(float(model.coef_[0][4]), 4),
+                "ensemble_spread": round(float(model.coef_[0][5]), 4),
                 "intercept": round(float(model.intercept_[0]), 4),
             }
 
@@ -177,6 +192,8 @@ class WeatherConfidenceCalibrator:
                 coef_side_yes=self._coefficients["side_yes"],
                 coef_lead_time=self._coefficients["lead_time"],
                 coef_entry_price=self._coefficients["entry_price"],
+                coef_bucket_type=self._coefficients["bucket_type"],
+                coef_ensemble_spread=self._coefficients["ensemble_spread"],
                 intercept=self._coefficients["intercept"],
                 window_days=window_days,
             )
@@ -189,14 +206,21 @@ class WeatherConfidenceCalibrator:
     # -- inference -----------------------------------------------------------
 
     def calibrate(self, raw_confidence: float, side: str = "YES",
-                  lead_time_hours: float = 48.0, entry_price: float = 0.50) -> float:
-        """Apply logistic regression calibration. Identity if not fitted."""
+                  lead_time_hours: float = 48.0, entry_price: float = 0.50,
+                  bucket_type: str = "unknown", ensemble_spread: float = 3.0) -> float:
+        """Apply logistic regression calibration. Identity if not fitted.
+
+        bucket_type: 'at_or_higher'=1, 'range'=2, else=0.
+        ensemble_spread: std dev of ensemble members (degrees).
+        """
         if not self._fitted:
             return raw_confidence
         try:
             import numpy as np
             side_enc = 1.0 if side == "YES" else 0.0
-            X = np.array([[raw_confidence, side_enc, lead_time_hours, entry_price]])
+            bucket_enc = 1.0 if bucket_type == "at_or_higher" else (2.0 if bucket_type == "range" else 0.0)
+            X = np.array([[raw_confidence, side_enc, lead_time_hours, entry_price,
+                           bucket_enc, ensemble_spread]])
             X_scaled = self._scaler.transform(X)
             result = self._model.predict_proba(X_scaled)[0, 1]
             return float(np.clip(result, 0.01, 0.99))
@@ -291,10 +315,6 @@ class WeatherBot(BaseBot):
         # S97: Exposure lock for parallel trade execution
         self._exposure_lock = asyncio.Lock()
 
-        # S97: Sizing factor caches (avoid recomputing every trade)
-        self._regime_boost_cache: Optional[Tuple[float, float]] = None  # (mono_time, value) — 1h TTL
-        self._calibration_cache: Optional[Tuple[float, float]] = None   # (mono_time, scaling) — 1h TTL
-        self._drawdown_cache: Optional[Tuple[float, float]] = None      # (mono_time, compression) — 5min TTL
 
         # S97: Priority queue for jump detection + METAR boundary events
         self._priority_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
@@ -491,30 +511,6 @@ class WeatherBot(BaseBot):
                     consecutive_losses=streak,
                     kelly_factor=self._compute_weather_drawdown_factor(market_type),
                 )
-
-    def _get_model_age_hours(self) -> Optional[float]:
-        """S121: Return the age (in hours) of the freshest NWP model run.
-
-        Reads _last_gfs_run and _last_ecmwf_run from ModelRunMonitor.
-        Format: "YYYYMMDDHH" (e.g. "2026031612" = Mar 16 12Z).
-        Returns None if no model run is known yet (cold start).
-        """
-        # datetime and timezone already imported at module level (line 26)
-        ages = []
-        now = datetime.now(timezone.utc)
-        for attr in ("_last_gfs_run", "_last_ecmwf_run"):
-            run_str = getattr(self._model_run_monitor, attr, None)
-            if not run_str or len(run_str) < 10:
-                continue
-            try:
-                # Parse "2026031612" → datetime
-                run_dt = datetime.strptime(run_str[:10], "%Y%m%d%H").replace(tzinfo=timezone.utc)
-                age_h = (now - run_dt).total_seconds() / 3600.0
-                if age_h >= 0:
-                    ages.append(age_h)
-            except (ValueError, TypeError):
-                continue
-        return min(ages) if ages else None
 
     # ── Per-market-type adaptive parameters (cross-bot from MirrorBot) ─────
 
@@ -2053,11 +2049,13 @@ class WeatherBot(BaseBot):
             # NO:  confidence = 1 - model_prob (P of NOT outcome) — correct for Kelly + risk manager
             _raw_conf = e["model_prob"] if side == "YES" else (1.0 - e["model_prob"])
             base_confidence = min(0.95, _raw_conf)
-            # S135: Logistic regression calibration (4-feature: conf, side, lead_time, price)
+            # S135: Logistic regression calibration (6-feature: conf, side, lead_time, price, bucket, spread)
             if self._cal_fitted:
                 effective_confidence = self._confidence_calibrator.calibrate(
                     base_confidence, side=side,
                     lead_time_hours=lead_time, entry_price=price,
+                    bucket_type=bucket.bucket_type,
+                    ensemble_spread=forecast.model_spread,
                 )
             else:
                 effective_confidence = base_confidence
@@ -2115,6 +2113,7 @@ class WeatherBot(BaseBot):
                 "market_type": "temperature",
                 "forecast_delta": forecast.forecast_delta,
                 "nbm_high_conviction": e["market_id"] in _nbm_signals,
+                "bucket_type": bucket.bucket_type,
             })
             await self._log_weather_prediction(
                 e["market_id"], e["model_prob"], price,
@@ -2620,8 +2619,16 @@ class WeatherBot(BaseBot):
         else:
             # Size via central risk_manager Kelly (same as all other bots)
             try:
+                _cal_qual = None
+                if (self._confidence_calibrator.is_fitted
+                        and self._confidence_calibrator._cal_brier is not None):
+                    _cal_qual = {
+                        "brier": self._confidence_calibrator._cal_brier,
+                        "count": self._confidence_calibrator.n_samples,
+                    }
                 kelly_shares = await self.calculate_bot_position_size(
                     opp["confidence"], opp["price"],
+                    calibration_quality=_cal_qual,
                 )
                 _raw_size = kelly_shares * opp["price"] * combined_boost
             except Exception as exc:
@@ -2751,6 +2758,8 @@ class WeatherBot(BaseBot):
                 "scan_start_mono": getattr(self, "_scan_start_mono", None),
                 "alpha_decay_half_life_s": getattr(settings, "WEATHER_ALPHA_DECAY_HALF_LIFE_S", 1800),
                 "volume_24h": opp.get("_clob_volume", 0.0),  # S107 Fix 3: pass CLOB volume for fill model
+                "bucket_type": opp.get("bucket_type", "unknown"),
+                "ensemble_spread": opp.get("model_spread", 3.0),
             },
         )
 
