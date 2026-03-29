@@ -795,6 +795,21 @@ class EsportsBot(BaseBot):
 
         edge = model_prob - yes_price
 
+        # S139: Divergence cap — WS path must enforce the same cap as scan path.
+        # Without this, price moves after the scan can produce 0.50+ divergence trades.
+        _div_ws = abs(model_prob - yes_price)
+        _eff_div_cap_ws = min(
+            self._get_adaptive_div_cap(game),
+            float(getattr(settings, "ESPORTS_MAX_MODEL_DIVERGENCE", 0.25)),
+        )
+        if _div_ws > _eff_div_cap_ws:
+            logger.info(
+                "esportsbot_divergence_capped_ws", market_id=market_id, game=game,
+                model_prob=round(model_prob, 4), market_price=round(yes_price, 4),
+                divergence=round(_div_ws, 4), cap=_eff_div_cap_ws,
+            )
+            return
+
         if abs(edge) < self._min_edge:
             return
 
@@ -6390,6 +6405,20 @@ class EsportsBot(BaseBot):
         edge_yes = model_prob - market_price
         edge_no = market_price - model_prob
 
+        # S139: Divergence cap — series scan path was the only path with no cap.
+        _div_sa = abs(model_prob - market_price)
+        _eff_div_cap_sa = min(
+            self._get_adaptive_div_cap(game),
+            float(getattr(settings, "ESPORTS_MAX_MODEL_DIVERGENCE", 0.25)),
+        )
+        if _div_sa > _eff_div_cap_sa:
+            logger.info(
+                "esportsbot_divergence_capped_series", market_id=market_id, game=game,
+                model_prob=round(model_prob, 4), market_price=round(market_price, 4),
+                divergence=round(_div_sa, 4), cap=_eff_div_cap_sa,
+            )
+            return []
+
         side = None
         trade_token_id = token_id
         trade_price = market_price
@@ -6744,6 +6773,23 @@ class EsportsBot(BaseBot):
 
         model_prob = cached["prob"]
         edge = model_prob - new_price
+
+        # S139: Divergence cap — mirrors scan path enforcement.
+        _series_ws_game = cached.get("game", "")
+        _div_sws = abs(model_prob - new_price)
+        _eff_div_cap_sws = min(
+            self._get_adaptive_div_cap(_series_ws_game),
+            float(getattr(settings, "ESPORTS_MAX_MODEL_DIVERGENCE", 0.25)),
+        )
+        if _div_sws > _eff_div_cap_sws:
+            logger.info(
+                "esportsbot_divergence_capped_series_ws", market_id=market_id,
+                game=_series_ws_game,
+                model_prob=round(model_prob, 4), market_price=round(new_price, 4),
+                divergence=round(_div_sws, 4), cap=_eff_div_cap_sws,
+            )
+            return
+
         if abs(edge) < self._series_min_edge:
             return
 
