@@ -875,8 +875,17 @@ class MirrorBot(BaseBot):
                 if _pos_end:
                     _ttr_hours = self.hours_until_resolution({"end_date_iso": _pos_end})
 
+            # S140: Absolute force-exit — always fires regardless of TTR.
+            # S137 had this as elif (only when TTR=None), so long-dated markets
+            # with hold_frac < 0.80 sat forever, blocking 480 opposing-side entries.
+            if _hours_held >= _force_exit_hours:
+                logger.info("mirror_force_exit", market=_pos_key, hours=round(_hours_held, 1),
+                            pnl_pct=f"{_pnl_pct:.2%}")
+                positions_to_close.append(_pos_key)
+                continue
+
             # S137 C11: Resolution-relative max-hold — if we've held >80% of total duration, exit.
-            # Better than fixed 96h: respects 7-day markets (exit at day 5.6) and 30-day markets.
+            # Catches medium-dated markets BEFORE the absolute cutoff.
             if _ttr_hours is not None and _hours_held > 0:
                 _total_duration = _hours_held + _ttr_hours
                 _hold_frac = _hours_held / max(_total_duration, 1.0)
@@ -886,12 +895,6 @@ class MirrorBot(BaseBot):
                                 ttr_hours=round(_ttr_hours, 1), pnl_pct=f"{_pnl_pct:.2%}")
                     positions_to_close.append(_pos_key)
                     continue
-            elif _hours_held >= _force_exit_hours:
-                # Fallback: no TTR available, use fixed 96h
-                logger.info("mirror_force_exit", market=_pos_key, hours=round(_hours_held, 1),
-                            pnl_pct=f"{_pnl_pct:.2%}")
-                positions_to_close.append(_pos_key)
-                continue
 
             # S137 C10: Graduated stop-loss — reversed so it's tight early and loose late.
             # Near-resolution override: < 24h left → -5% to avoid being stuck at resolution.

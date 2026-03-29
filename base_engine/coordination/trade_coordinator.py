@@ -130,6 +130,7 @@ class TradeCoordinator:
         entry_price: float,
         source_bot: Optional[str] = None,
         bot_id: Optional[str] = None,
+        token_id: str = "",
     ) -> None:
         """Confirm reserved position after successful trade. bot_id: which bot reserved (must match reserve). source_bot enables per-bot P&L attribution."""
         if not self.db.session_factory:
@@ -212,14 +213,14 @@ class TradeCoordinator:
                             INSERT INTO positions (bot_id, source_bot, market_id, token_id, side, size,
                                 entry_price, current_price, unrealized_pnl, opened_at, status, is_paper,
                                 entry_cost, breakeven_price)
-                            VALUES (:bot_id, :source_bot, :market_id, '', :side, :size,
+                            VALUES (:bot_id, :source_bot, :market_id, :token_id, :side, :size,
                                 :entry_price, :entry_price, 0, :opened_at, 'open', :is_paper,
                                 :entry_cost, :breakeven_price)
                             ON CONFLICT (bot_id, market_id, side) DO UPDATE
                                 SET status = 'open', size = :size, entry_price = :entry_price,
                                     current_price = :entry_price, unrealized_pnl = 0,
                                     opened_at = :opened_at, is_paper = :is_paper,
-                                    source_bot = :source_bot,
+                                    source_bot = :source_bot, token_id = :token_id,
                                     entry_cost = :entry_cost, breakeven_price = :breakeven_price
                                 WHERE positions.status = 'closed'
                         """),
@@ -227,6 +228,7 @@ class TradeCoordinator:
                             "bot_id": which_bot,
                             "source_bot": source_bot or which_bot,
                             "market_id": market_id,
+                            "token_id": token_id,
                             "side": side,
                             "size": size,
                             "entry_price": entry_price,
