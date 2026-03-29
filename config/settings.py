@@ -21,9 +21,10 @@ class Settings(BaseSettings):
     # Empty when not set - avoids trying localhost (which fails with "password auth failed for user")
     DATABASE_URL: str = os.getenv("DATABASE_URL") or ""
     # Connection pool configuration
-    DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "30"))
-    DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "5"))
+    DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "12"))  # S141: 30→12 (3 services × 14 = 42, fits in PG max=50)
+    DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "2"))  # S141: 5→2
     DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))
+    DB_POOL_RECYCLE: int = int(os.getenv("DB_POOL_RECYCLE", "600"))
     # Optional: after bulk insert, run a quick COUNT/exists check and log if data not visible (debug/staging)
     VERIFY_SAVE_AFTER_INSERT: bool = os.getenv("VERIFY_SAVE_AFTER_INSERT", "false").lower() in ("true", "1", "yes")
     # Pre-insert validation: skip invalid market/price/trade rows instead of failing (optional)
@@ -783,6 +784,10 @@ class Settings(BaseSettings):
     WEATHER_CONFIDENCE_CAL_MIN_SAMPLES: int = int(os.getenv("WEATHER_CONFIDENCE_CAL_MIN_SAMPLES", "200"))
     # S135: Disable combined_boost for YES side — NO keeps all boosts
     WEATHER_YES_BOOST_ENABLED: bool = os.getenv("WEATHER_YES_BOOST_ENABLED", "false").lower() == "true"
+
+    # S140: Bid-ask spread gate — reject markets with spread > threshold (cents).
+    # Replaces S132-removed spread inflation as a hard floor.
+    WEATHER_MAX_SPREAD: float = float(os.getenv("WEATHER_MAX_SPREAD", "0.30"))
 
     # S124: Lead-time spread inflation for probability engine (default OFF)
     # S126: Two-component spread inflation to reduce overconfidence.

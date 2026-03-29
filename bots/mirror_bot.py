@@ -820,6 +820,28 @@ class MirrorBot(BaseBot):
         # B2: Sync DB prices into in-memory dict so stop-loss sees real prices
         await self._sync_prices_from_db()
 
+        # S141: Overlay RTDS live prices for positions where DB price is stale.
+        # position_manager only updates markets in the initial WebSocket subscription (~500).
+        # RTDS sees ALL global trades, so we get real-time prices for any active market.
+        if self._watchlist:
+            _rtds_updated = 0
+            for _pk, _pdata in self._open_positions.items():
+                _tok = _pk.split(":", 1)[1] if ":" in _pk else ""
+                if not _tok:
+                    continue
+                _rtds_p = self._watchlist.get_rtds_price(_tok, max_age_s=300.0)
+                if _rtds_p is not None:
+                    _old_cp = float(_pdata.get("current_price", 0) or 0)
+                    _ep = float(_pdata.get("entry_price", 0) or 0)
+                    # Only override if DB price is stale (stuck at entry_price).
+                    # If position_manager already updated current_price, trust it.
+                    if abs(_old_cp - _ep) < 1e-6:
+                        _pdata["current_price"] = _rtds_p
+                        _rtds_updated += 1
+            if _rtds_updated:
+                logger.info("mirror_rtds_price_overlay", updated=_rtds_updated,
+                            total=len(self._open_positions))
+
         positions_to_close: List[str] = []
 
         # S99: Stop-loss (with graduated tightening) + take-profit + circuit breaker
@@ -997,18 +1019,27 @@ class MirrorBot(BaseBot):
                     # S135: Mark position closed in DB so it doesn't reload on restart
                     # Use _sql alias (not _t) — _t is a local var in this function due to the
                     # conditional import at L909 (Python 3.13 scoping: local for entire function).
-                    try:
-                        from sqlalchemy import text as _sql
-                        async with self.base_engine.db.get_session() as _cs:
-                            await _cs.execute(_sql(
-                                "UPDATE positions SET status = 'closed' "
-                                "WHERE market_id = :mid AND token_id = :tid "
-                                "  AND COALESCE(source_bot, bot_id) = 'MirrorBot' "
-                                "  AND status = 'open'"
-                            ), {"mid": market_id, "tid": token_id})
-                            await _cs.commit()
-                    except Exception as _db_err:
-                        logger.warning("mirror_exit_db_close_failed market=%s: %s", market_id[:20], _db_err)
+                    # S141: Retry position close to prevent ghost exits (D6).
+                    # Without retry, pool exhaustion causes silent failure → position
+                    # reloads on restart → duplicate EXIT events accumulate.
+                    from sqlalchemy import text as _sql
+                    for _close_attempt in range(3):
+                        try:
+                            async with self.base_engine.db.get_session() as _cs:
+                                await _cs.execute(_sql(
+                                    "UPDATE positions SET status = 'closed' "
+                                    "WHERE market_id = :mid AND token_id = :tid "
+                                    "  AND COALESCE(source_bot, bot_id) = 'MirrorBot' "
+                                    "  AND status = 'open'"
+                                ), {"mid": market_id, "tid": token_id})
+                                await _cs.commit()
+                            break
+                        except Exception as _db_err:
+                            if _close_attempt < 2:
+                                await asyncio.sleep(0.5)
+                            else:
+                                logger.warning("mirror_exit_db_close_failed market=%s attempt=%d: %s",
+                                               market_id[:20], _close_attempt + 1, _db_err)
             except Exception as e:
                 logger.warning("Failed to execute mirror exit for %s: %s", pos_key, e)
 

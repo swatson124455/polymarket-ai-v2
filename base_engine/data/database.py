@@ -970,8 +970,8 @@ class Database:
             url = f"postgresql+asyncpg://{url}" if "://" not in url else url
         
         logger.info("Initializing PostgreSQL database")
-        pool_size = settings.DB_POOL_SIZE  # Default: 15 (settings.py)
-        max_overflow = settings.DB_MAX_OVERFLOW  # Default: 5 (settings.py)
+        pool_size = settings.DB_POOL_SIZE  # Default: 12 (settings.py)
+        max_overflow = settings.DB_MAX_OVERFLOW  # Default: 2 (settings.py)
         pool_timeout = settings.DB_POOL_TIMEOUT  # Default: 30 (settings.py)
         connect_timeout = getattr(settings, "DB_CONNECT_TIMEOUT", 15)
         db_ssl = getattr(settings, "DB_SSL", False)
@@ -979,7 +979,7 @@ class Database:
         stmt_cache = 256  # asyncpg prepared statement cache (local PG)
 
         connect_args: dict = {"statement_cache_size": stmt_cache, "timeout": connect_timeout, "ssl": db_ssl}
-        _pool_recycle = 3600  # Recycle connections every 1h
+        _pool_recycle = int(getattr(settings, "DB_POOL_RECYCLE", 600))  # S141: 1h→10min default
         self.engine = create_async_engine(
             url,
             echo=False,
@@ -4689,7 +4689,13 @@ class Database:
         """
         if self.session_factory is None:
             return None
-        idem_key = f"{bot_name}:{market_id}:{side}:{order_id or correlation_id or ''}"
+        # S141: ENTRY idempotency excludes order_id to prevent concurrent duplicate entries.
+        # order_id is unique per call, so two concurrent whale signals on the same market
+        # would both insert. Using token_id instead deduplicates on (market, token, side).
+        if event_type == "ENTRY":
+            idem_key = f"{bot_name}:{market_id}:{token_id or ''}:{side}:ENTRY"
+        else:
+            idem_key = f"{bot_name}:{market_id}:{side}:{order_id or correlation_id or ''}"
         evt_time = _naive_utc(event_time) if event_time else _naive_utc(datetime.now(timezone.utc))
 
         try:

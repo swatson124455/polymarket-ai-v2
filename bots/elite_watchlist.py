@@ -66,6 +66,11 @@ class EliteWatchlist:
         self._last_refresh_date: Optional[str] = None  # "YYYY-MM-DD" for daily check
         self._running: bool = False
 
+        # S141: RTDS price cache — latest trade price per token_id from ALL global trades.
+        # Used by MirrorBot exit logic as fallback when position_manager prices are stale.
+        # Bounded by active Polymarket token count (~10K max).
+        self._rtds_price_cache: Dict[str, Tuple[float, float]] = {}  # token_id → (price, mono_time)
+
         # Stats
         self._events_received: int = 0
         self._events_matched: int = 0
@@ -529,6 +534,16 @@ class EliteWatchlist:
         if not getattr(self._mirror_bot, '_state_restored', False):
             return
 
+        # S141: Cache price from ALL RTDS trades (not just elite) for position price updates.
+        # This runs before the watchlist filter so we get prices for every active market.
+        _rtds_token = data.get("asset")
+        _rtds_price = data.get("price")
+        if _rtds_token and _rtds_price is not None:
+            try:
+                self._rtds_price_cache[_rtds_token] = (float(_rtds_price), time.monotonic())
+            except (ValueError, TypeError):
+                pass
+
         # Fast-reject: check proxyWallet against watchlist before any processing
         addr = data.get("proxyWallet")
         if not addr or addr.lower() not in self._watchlist_addresses:
@@ -574,4 +589,20 @@ class EliteWatchlist:
             "seen_tx_count": len(self._seen_tx),
             "last_refresh_date": self._last_refresh_date,
             "last_refresh_ago_s": round(time.monotonic() - self._last_refresh, 0) if self._last_refresh else None,
+            "rtds_price_cache_size": len(self._rtds_price_cache),
         }
+
+    def get_rtds_price(self, token_id: str, max_age_s: float = 300.0) -> Optional[float]:
+        """S141: Return cached RTDS price for a token, or None if stale/missing.
+
+        Args:
+            token_id: CLOB token ID.
+            max_age_s: Maximum age in seconds (default 5 min). Older prices are discarded.
+        """
+        entry = self._rtds_price_cache.get(token_id)
+        if entry is None:
+            return None
+        price, mono_time = entry
+        if time.monotonic() - mono_time > max_age_s:
+            return None
+        return price

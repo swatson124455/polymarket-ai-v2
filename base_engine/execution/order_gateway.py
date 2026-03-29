@@ -607,6 +607,11 @@ class OrderGateway:
                 # In live mode the CLOB order itself rejects if truly illiquid.
                 if bot_name in ("EsportsBot", "EsportsLiveBot", "EsportsSeriesBot"):
                     return None
+                # S141: Skip liquidity check for MirrorBot SELL exits — dead markets
+                # have zero bids, blocking stop-loss exits indefinitely. Paper fill
+                # model handles simulation; in live mode the CLOB rejects if illiquid.
+                if _is_sell and bot_name == "MirrorBot":
+                    return None
                 # Look up condition_id from market index for CLOB API order book query
                 _cid = ""
                 if self._market_index:

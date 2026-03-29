@@ -462,14 +462,15 @@ async def run_resolution_backfill(
                     "            THEN e.weighted_price / e.total_entry_size "
                     "            ELSE 0.0 END AS avg_entry_price, "
                     "       COALESCE(x.exit_pnl, 0) AS exit_pnl_already, "
+                    "       pt_pnl.resolution AS market_resolution, "
                     "       (SELECT te_g.event_data->>'game' FROM trade_events te_g "
                     "        WHERE te_g.market_id = e.market_id AND te_g.bot_name = e.bot_name "
                     "        AND te_g.event_type = 'ENTRY' AND te_g.event_data->>'game' IS NOT NULL "
                     "        LIMIT 1) AS entry_game "
                     "FROM ("
                     "  SELECT market_id, bot_name, side, "
-                    "         SUM(size) AS total_entry_size, "
-                    "         SUM(price * size) AS weighted_price "
+                    "         SUM(COALESCE(size, 0)) AS total_entry_size, "
+                    "         SUM(COALESCE(price, 0) * COALESCE(size, 0)) AS weighted_price "
                     "  FROM trade_events "
                     "  WHERE event_type = 'ENTRY' AND side IN ('YES', 'NO') "
                     "  GROUP BY market_id, bot_name, side"
@@ -499,6 +500,7 @@ async def run_resolution_backfill(
                     "  SELECT 1 FROM trade_events te "
                     "  WHERE te.market_id = e.market_id "
                     "    AND te.bot_name = e.bot_name "
+                    "    AND te.side = e.side "
                     "    AND te.event_type = 'RESOLUTION'"
                     ") "
                     "AND e.total_entry_size - COALESCE(x.total_exit_size, 0) > 0 "
@@ -509,21 +511,25 @@ async def run_resolution_backfill(
                         _entry_price = float(row[6]) if row[6] is not None else 0.0
                         # S140: P&L computed from ENTRY price/size + resolution outcome
                         # (no longer reads paper_trades.realized_pnl — was corrupted by UPSERT)
-                        _computed_pnl = float(row[3]) if row[3] is not None else None
+                        _computed_pnl = float(row[3]) if row[3] is not None else 0.0  # S141: NULL→0 fallback
                         _exit_pnl = float(row[7]) if row[7] is not None else 0.0
                         _adj_pnl = _computed_pnl  # already excludes exited size in SQL
                         if _exit_pnl != 0:
                             logger.info("phase4b_exit_pnl_noted", market=str(row[0])[:20],
                                         bot=row[1], computed_pnl=round(_computed_pnl or 0, 4), exit_pnl=round(_exit_pnl, 4))
+                        # S141: resolution price = payout (1.0 if won, 0.0 if lost), not entry_price.
+                        # row[8] = pt_pnl.resolution ('YES'/'NO'), row[2] = position side
+                        _market_resolution = str(row[8]).upper() if row[8] else ""
+                        _resolution_price = 1.0 if _market_resolution == str(row[2]).upper() else 0.0
                         # S135: Include game tag from ENTRY event_data
-                        _res_event_data = {"game": row[8]} if row[8] else None
+                        _res_event_data = {"game": row[9]} if row[9] else None
                         await db.insert_trade_event(
                             event_type="RESOLUTION",
                             bot_name=row[1],
                             market_id=row[0],
                             side=row[2],
                             size=float(row[5]) if row[5] is not None else 0.0,
-                            price=_entry_price,
+                            price=_resolution_price,
                             realized_pnl=_adj_pnl,
                             correlation_id=f"resolution:{row[0]}",
                             event_time=row[4],
@@ -598,7 +604,7 @@ async def run_resolution_backfill(
                             market_id=_mid,
                             side=_side_upper,
                             size=float(_size),
-                            price=float(_entry),
+                            price=_payout,  # S141: 1.0 if won, 0.0 if lost (was entry_price)
                             realized_pnl=round(_remaining_pnl, 4),
                             correlation_id=f"resolution:{_mid}",
                             event_time=_res_at,
