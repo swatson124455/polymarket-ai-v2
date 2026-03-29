@@ -264,6 +264,33 @@ class HealthScheduler:
             self._record_error("exposure_reconcile")
             logger.debug("Exposure reconcile job error: %s", e)
 
+    async def _run_daily_audit(self) -> None:
+        """
+        Run the full data integrity audit suite once per day.
+
+        Builds an AuditOrchestrator with all 21 checks, runs them sequentially,
+        persists violations to reconciliation_breaks, and fires a CRITICAL alert
+        if new violations are found. Pattern mirrors _run_sports_calibration().
+        """
+        db = getattr(self.base_engine, "db", None) if self.base_engine else None
+        if db is None:
+            return
+
+        self._record_run("daily_audit")
+        try:
+            from base_engine.audit.factory import build_audit_orchestrator
+            alerting = getattr(self.base_engine, "alerting", None)
+            orchestrator = build_audit_orchestrator(db=db, alerting=alerting)
+            summary = await orchestrator.run_all(
+                run_type="scheduled_daily",
+                triggered_by="scheduler",
+            )
+            total_breaks = summary.get("total_breaks", 0) if summary else 0
+            logger.info("HealthScheduler: daily_audit complete", total_breaks=total_breaks)
+        except Exception as e:
+            self._record_error("daily_audit")
+            logger.warning("Daily audit job error: %s", e)
+
     async def _run_sports_calibration(self) -> None:
         """
         Update sports_calibration table with current bet outcomes and recompute Kelly fractions.
@@ -365,6 +392,7 @@ class HealthScheduler:
             ("sli_report",          self._run_sli_report,           120, 60),
             ("exposure_reconcile",  self._run_exposure_reconcile,   30, 15),   # I16: was 300s — phantom exposure now detected within 30s
             ("sports_calibration",  self._run_sports_calibration,   _sports_cal_interval, 300),
+            ("daily_audit",         self._run_daily_audit,          86400,               3600),
         ]
 
         for job_id, fn, interval_s, grace_s in jobs:

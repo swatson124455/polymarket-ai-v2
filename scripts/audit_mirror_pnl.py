@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Deep P&L audit for MirrorBot — verify +$19k is real."""
+"""
+DEPRECATED: Use `python scripts/run_audit.py --bot MirrorBot` instead.
+This script predates the unified audit system (base_engine/audit/).
+Retained for reference only.
+
+Deep P&L audit for MirrorBot — verify +$19k is real.
+"""
 import asyncio
 from base_engine.data.database import Database
 from dotenv import load_dotenv

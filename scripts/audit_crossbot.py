@@ -1,4 +1,10 @@
-"""Audit cross-bot position contamination in paper trading engine."""
+"""
+DEPRECATED: Use `python scripts/run_audit.py` instead.
+This script predates the unified audit system (base_engine/audit/).
+Retained for reference only.
+
+Audit cross-bot position contamination in paper trading engine.
+"""
 import asyncio
 import sys
 import os

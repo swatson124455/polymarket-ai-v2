@@ -506,7 +506,26 @@ class ReconciliationBreak(Base):
     detected_at = Column(NaiveUTCDateTime, nullable=True, default=lambda: _naive_utc(datetime.now(timezone.utc)))
     resolved_at = Column(NaiveUTCDateTime, nullable=True)
     resolution_note = Column(Text, nullable=True)
+    audit_run_id = Column(BigInteger, nullable=True)
+    violation_hash = Column(String, nullable=True)
 
+
+class AuditRun(Base):
+    """Audit run metadata (migration 062)."""
+    __tablename__ = "audit_runs"
+    run_id        = Column(BigInteger, primary_key=True, autoincrement=True)
+    run_type      = Column(String, nullable=False)
+    started_at    = Column(NaiveUTCDateTime, nullable=False, default=lambda: _naive_utc(datetime.now(timezone.utc)))
+    completed_at  = Column(NaiveUTCDateTime, nullable=True)
+    status        = Column(String, nullable=False, default="running")
+    checks_run    = Column(Integer, nullable=True)
+    checks_passed = Column(Integer, nullable=True)
+    checks_failed = Column(Integer, nullable=True)
+    checks_warned = Column(Integer, nullable=True)
+    total_breaks  = Column(Integer, nullable=True)
+    summary       = Column(JSON, nullable=True, default=dict)
+    error_message = Column(Text, nullable=True)
+    triggered_by  = Column(String, nullable=False, default="scheduler")
 
 
 # TradeModelLinkage ORM class removed — migration 052 drops table (0 readers)

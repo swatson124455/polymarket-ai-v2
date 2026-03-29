@@ -102,4 +102,16 @@ async def audit_trade_events(db) -> dict:
     else:
         logger.info("trade_event_audit_clean", total_violations=0)
 
+    # Persist violations to reconciliation_breaks via audit system
+    if total > 0:
+        try:
+            from base_engine.audit.factory import build_audit_orchestrator
+            orchestrator = build_audit_orchestrator(db=db)
+            await orchestrator.run_all(
+                run_type="post_resolution",
+                triggered_by="post_resolution",
+            )
+        except Exception as e:
+            logger.debug("trade_event_audit persist_to_db failed (non-fatal): %s", e)
+
     return result

@@ -1,4 +1,11 @@
-"""P&L audit: cross-validate trade_events (authority) vs positions, detect split states."""
+"""
+DEPRECATED: Use `python scripts/run_audit.py` instead.
+This script predates the unified audit system (base_engine/audit/).
+Retained for reference only — run_audit.py covers all checks with DB persistence,
+trend detection, and alerting.
+
+P&L audit: cross-validate trade_events (authority) vs positions, detect split states.
+"""
 import argparse
 import asyncio
 import io
