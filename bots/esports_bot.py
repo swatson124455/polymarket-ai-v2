@@ -284,7 +284,8 @@ class EsportsBot(BaseBot):
 
         # Glicko-2 trackers for "easy mode" pre-game predictions
         self._glicko2_trackers: Dict[str, Any] = {}  # game → Glicko2Tracker
-        self._team_name_to_id: Dict[str, str] = {}    # lowercased team name → PandaScore ID
+        self._team_name_to_id: Dict[str, str] = {}    # lowercased team name → team key
+        self._team_name_to_ps_id: Dict[str, int] = {}   # S137 10C: lowercased name → PandaScore numeric ID
         self._backfill_attempted: set = set()            # "game:name" keys already queried this session
         self._backfill_calls_this_scan: int = 0          # reset each scan; capped
         self._max_backfills_per_scan: int = int(
@@ -2742,6 +2743,24 @@ class EsportsBot(BaseBot):
                 if glicko2_prob is not None:
                     game_state = self._build_glicko2_game_state(market_data, game)
                     if game_state:
+                        # S137 Phase 5A wiring: inject HLTV features for CS2 pregame
+                        if getattr(self, "_hltv", None):
+                            try:
+                                _q = str(market_data.get("question", "")).lower()
+                                _ta, _tb, _, _ = self._extract_team_ids_from_question(_q)
+                                if _ta and _tb:
+                                    _ra = await self._hltv.get_team_rating(_ta, game="cs2")
+                                    _rb = await self._hltv.get_team_rating(_tb, game="cs2")
+                                    if _ra is not None and _rb is not None:
+                                        game_state["hltv_ranking_diff"] = _ra - _rb
+                                    _results_a = await self._hltv.get_recent_results(_ta, game="cs2", n=20)
+                                    if _results_a:
+                                        _wins = sum(1 for _r in _results_a if _r.get("won"))
+                                        game_state["recent_form_3m"] = _wins / len(_results_a) - 0.5
+                                    # LAN flag: not reliably available from market data — default 0.0
+                                    # Features that stay unset fall through to nan_to_num(0.0) in the model
+                            except Exception:
+                                pass  # Graceful degradation: features stay at 0.0
                         prob = self._cs2_model.predict_pregame(game_state)
                         _d = self._game_egm_d.get(game, self._egm_d)
                         prob = extremized_geometric_mean([prob, glicko2_prob], d=_d)
@@ -4224,6 +4243,11 @@ class EsportsBot(BaseBot):
                     tid, name = str(row[0]).strip(), str(row[1]).strip()
                     if tid and name:
                         self._team_name_to_id[name.lower()] = name.lower()
+                        # S137 10C: Build PandaScore ID mapping for roster lookups
+                        try:
+                            self._team_name_to_ps_id[name.lower()] = int(tid)
+                        except (ValueError, TypeError):
+                            pass
 
             # 2. Fast path: load persisted Glicko-2 ratings from DB
             all_games = ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl")
@@ -4260,11 +4284,33 @@ class EsportsBot(BaseBot):
                     tracker.set_match_count(total_matches)
                     self._glicko2_trackers[game] = tracker
                     games_loaded.add(game)
+                    # S137 10C: Load player ratings from DB
+                    _player_count = 0
+                    try:
+                        async with db.get_session() as session:
+                            _pr_rows = await session.execute(text("""
+                                SELECT player_id, mu, phi, sigma
+                                FROM glicko2_player_ratings
+                                WHERE game = :game
+                            """), {"game": game})
+                            for _pr in _pr_rows.fetchall():
+                                _p_id = str(_pr[0])
+                                _p_rating = Glicko2Rating(
+                                    mu=float(_pr[1]),
+                                    phi=float(_pr[2]),
+                                    sigma=float(_pr[3]),
+                                )
+                                tracker.set_player_rating(_p_id, _p_rating)
+                                _player_count += 1
+                    except Exception:
+                        pass  # Table may not exist yet (migration 060 not run)
+
                     logger.info(
                         "EsportsBot: Glicko-2 loaded from DB",
                         game=game,
                         teams_rated=len(ratings_rows),
                         match_count=total_matches,
+                        players_loaded=_player_count,
                     )
 
             # 3. Slow path: rebuild games missing from DB (first run or new game added)
@@ -4358,6 +4404,32 @@ class EsportsBot(BaseBot):
                             "mc": match_count,
                         })
                     await session.commit()
+
+                # S137 10C: Save player ratings
+                try:
+                    player_ratings = tracker.get_all_player_ratings()
+                    if player_ratings:
+                        async with db.get_session() as session:
+                            for p_id, (p_mu, p_phi, p_sigma) in player_ratings.items():
+                                await session.execute(text("""
+                                    INSERT INTO glicko2_player_ratings
+                                        (game, player_id, mu, phi, sigma, updated_at)
+                                    VALUES
+                                        (:game, :player_id, :mu, :phi, :sigma, NOW())
+                                    ON CONFLICT (game, player_id) DO UPDATE SET
+                                        mu = :mu, phi = :phi, sigma = :sigma,
+                                        updated_at = NOW()
+                                """), {
+                                    "game": game,
+                                    "player_id": p_id,
+                                    "mu": p_mu,
+                                    "phi": p_phi,
+                                    "sigma": p_sigma,
+                                })
+                            await session.commit()
+                except Exception:
+                    pass  # Table may not exist yet (migration 060 not run)
+
             logger.info("EsportsBot: Glicko-2 ratings saved to DB",
                         games=len(self._glicko2_trackers))
         except Exception as exc:
@@ -5163,6 +5235,8 @@ class EsportsBot(BaseBot):
 
             team_id = int(team_data["id"])
             team_name = str(team_data.get("name", name)).lower()
+            # S137 10C: Populate PandaScore ID mapping for roster lookups
+            self._team_name_to_ps_id[team_name] = team_id
 
             # 2. Fetch recent finished matches
             matches = await self._pandascore.get_team_matches(team_id, game, per_page=20)
@@ -5320,8 +5394,8 @@ class EsportsBot(BaseBot):
             if 0.05 < prob < 0.95:
                 # Roster stability [T2-D]: penalize teams with recent roster changes
                 try:
-                    _roster_a = await self._check_roster_stability(team_a_id)
-                    _roster_b = await self._check_roster_stability(team_b_id)
+                    _roster_a = await self._check_roster_stability(team_a_id, game=game)
+                    _roster_b = await self._check_roster_stability(team_b_id, game=game)
                     if _roster_a < 1.0 or _roster_b < 1.0:
                         # Nudge prob toward market_price proportional to penalty
                         _roster_factor = min(_roster_a, _roster_b)
@@ -5337,19 +5411,32 @@ class EsportsBot(BaseBot):
 
     # ── Session 83: New helper methods ──────────────────────────────────
 
-    async def _check_roster_stability(self, team_id: str) -> float:
+    async def _check_roster_stability(self, team_id: str, game: str = "") -> float:
         """Return confidence multiplier based on roster stability [T2-D].
 
         Returns 1.0 if no change detected, or (1 - penalty * decay) if recent change.
         Checks PandaScore team roster hash, caches with 24h TTL.
+
+        S137 10C: Fixed to accept team names (not just PandaScore numeric IDs).
+        Uses _team_name_to_ps_id mapping built during _init_glicko2_trackers().
+        When roster change detected, also calls tracker.update_roster() for
+        composite player rating adjustment.
         """
         if not self._pandascore:
             return 1.0
 
         try:
-            # 1K: Normalize team_id to consistent str key
-            team_id = str(int(team_id))
-            ps_id = int(team_id)
+            # S137 10C: Map team name → PandaScore ID via lookup table.
+            # Previously did str(int(team_id)) which silently failed for all
+            # non-numeric team names (i.e., all Glicko-2 team keys).
+            ps_id = self._team_name_to_ps_id.get(team_id)
+            if ps_id is None:
+                # Fallback: try numeric conversion for backward compat
+                try:
+                    ps_id = int(team_id)
+                except (ValueError, TypeError):
+                    return 1.0
+            team_id = str(ps_id)
             now = time.monotonic()
 
             # 1K: Cooldown after API failure — skip refetch for 1h
@@ -5395,9 +5482,24 @@ class EsportsBot(BaseBot):
             if cached:
                 old_hash, _ = cached
                 if old_hash != roster_hash:
+                    # S137 10C: Call update_roster() for composite player rating
+                    _change_ratio = 0.0
+                    if game and roster:
+                        _tracker = self._glicko2_trackers.get(game)
+                        if _tracker:
+                            # team_id here is str(ps_id); need original team name for tracker
+                            # Reverse lookup: find the team name that mapped to this ps_id
+                            _tracker_key = None
+                            for _tn, _pid in self._team_name_to_ps_id.items():
+                                if _pid == ps_id:
+                                    _tracker_key = _tn
+                                    break
+                            if _tracker_key:
+                                _change_ratio = _tracker.update_roster(_tracker_key, roster)
                     logger.info(
                         "esportsbot_roster_change", team_id=team_id,
                         old_hash=old_hash, new_hash=roster_hash,
+                        change_ratio=round(_change_ratio, 3),
                     )
                     self._roster_change_cache[team_id] = now
                     self._roster_cache[team_id] = (roster_hash, now)
