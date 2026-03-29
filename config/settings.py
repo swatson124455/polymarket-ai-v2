@@ -1200,10 +1200,14 @@ class Settings(BaseSettings):
     ESPORTS_MAX_HOLD_HOURS: float = float(os.getenv("ESPORTS_MAX_HOLD_HOURS", "96"))
     # S109: Post-exit cooldown (seconds) — prevents stop-loss churn (RC1)
     ESPORTS_EXIT_COOLDOWN_SECONDS: float = float(os.getenv("ESPORTS_EXIT_COOLDOWN_SECONDS", "300.0"))
+    # S138: Extended cooldown after edge_gone exit — prevents churn loop
+    ESPORTS_EDGE_GONE_COOLDOWN_SECONDS: float = float(os.getenv("ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", "1800.0"))
+    # S138: Minimum hold time (minutes) before edge_gone exit can fire
+    ESPORTS_MIN_HOLD_MINUTES: float = float(os.getenv("ESPORTS_MIN_HOLD_MINUTES", "10.0"))
     # S135: Cooldown (seconds) after execution failure — stops spam-retrying dead markets
     ESPORTS_EXEC_FAIL_COOLDOWN_S: float = float(os.getenv("ESPORTS_EXEC_FAIL_COOLDOWN_S", "300"))
     # S109: Max entries per market per rolling window — backstop against churn (RC3)
-    ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW: int = int(os.getenv("ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW", "5"))
+    ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW: int = int(os.getenv("ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW", "2"))
     ESPORTS_ENTRY_WINDOW_HOURS: float = float(os.getenv("ESPORTS_ENTRY_WINDOW_HOURS", "12.0"))
 
     # --- Hard game disable (comma-separated lowercase game names, e.g. "cod,r6") ---

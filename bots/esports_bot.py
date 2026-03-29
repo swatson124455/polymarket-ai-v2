@@ -302,6 +302,8 @@ class EsportsBot(BaseBot):
         self._edge_peaks: Dict[str, float] = {}        # market_id → peak remaining edge
         # S109: Post-exit cooldown — prevents stop-loss churn (RC1)
         self._recently_exited: Dict[str, float] = {}     # market_id → monotonic time of exit
+        # S138: Track exit reason for extended edge_gone cooldown
+        self._exit_reasons: Dict[str, str] = {}          # market_id → exit reason
         # S109: Per-market rolling entry cap — hard backstop against churn (RC3)
         self._market_entry_times: Dict[str, list] = {}    # market_id → [monotonic timestamps]
 
@@ -814,9 +816,14 @@ class EsportsBot(BaseBot):
             return
 
         # S109: Post-exit cooldown — block WS re-entry within cooldown window
+        # S138: Extended cooldown for edge_gone exits to prevent churn loop
         _exit_ts = self._recently_exited.get(market_id)
         if _exit_ts is not None:
-            _cooldown = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 900.0))
+            _exit_reason = self._exit_reasons.get(market_id, "")
+            if _exit_reason == "edge_gone":
+                _cooldown = float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0))
+            else:
+                _cooldown = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 300.0))
             if time.monotonic() - _exit_ts < _cooldown:
                 return
 
@@ -1234,9 +1241,14 @@ class EsportsBot(BaseBot):
             async with self._analysis_semaphore:
                 mid = str(m.get("id", ""))
                 # S109: Post-exit cooldown — block re-entry within cooldown window
+                # S138: Extended cooldown for edge_gone exits to prevent churn loop
                 _exit_ts = self._recently_exited.get(mid)
                 if _exit_ts is not None:
-                    _cooldown = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 900.0))
+                    _exit_reason = self._exit_reasons.get(mid, "")
+                    if _exit_reason == "edge_gone":
+                        _cooldown = float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0))
+                    else:
+                        _cooldown = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 300.0))
                     if time.monotonic() - _exit_ts < _cooldown:
                         self._wf["exit_cooldown"] += 1
                         return (0, 0, 1)
@@ -1517,20 +1529,28 @@ class EsportsBot(BaseBot):
         except Exception as exc:
             logger.debug("esports_daily_pnl_restore_failed", error=str(exc))
 
-    async def _save_exit_cooldown_to_redis(self, market_id: str) -> None:
-        """S109: Persist exit cooldown to Redis so it survives restarts."""
+    async def _save_exit_cooldown_to_redis(self, market_id: str, reason: str = "") -> None:
+        """S109: Persist exit cooldown to Redis so it survives restarts.
+        S138: Use longer TTL for edge_gone exits to prevent churn loop."""
         try:
             cache = getattr(getattr(self, "base_engine", None), "cache", None)
             if cache is None or not getattr(cache, "redis", None):
                 return
-            ttl = int(float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 900.0)))
+            if reason == "edge_gone":
+                ttl = int(float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0)))
+            else:
+                ttl = int(float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 300.0)))
             expire_at = time.time() + ttl
             await cache.set(f"esportsbot:exit:{market_id}", expire_at, ttl=ttl)
+            # S138: Also persist exit reason for cooldown duration lookup on restart
+            if reason:
+                await cache.set(f"esportsbot:exit_reason:{market_id}", reason, ttl=ttl)
         except Exception as exc:
             logger.debug("esportsbot_redis_exit_save_failed", error=str(exc))
 
     async def _restore_exit_cooldowns_from_redis(self) -> None:
-        """S109: Reload exit cooldowns from Redis on startup."""
+        """S109: Reload exit cooldowns from Redis on startup.
+        S138: Also restore exit reasons for extended edge_gone cooldowns."""
         try:
             cache = getattr(getattr(self, "base_engine", None), "cache", None)
             if cache is None or not getattr(cache, "redis", None):
@@ -1538,18 +1558,28 @@ class EsportsBot(BaseBot):
             keys = await cache.redis.keys("esportsbot:exit:*")
             now_wall = time.time()
             now_mono = time.monotonic()
-            cooldown = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 900.0))
             count = 0
             for key in keys:
+                # S138: Skip exit_reason keys — they're metadata, not cooldowns
+                if ":exit_reason:" in key:
+                    continue
                 raw = await cache.get(key)
                 if raw is None:
                     continue
                 expire_at = float(raw)
                 if expire_at <= now_wall:
                     continue  # cooldown already expired
-                elapsed = cooldown - (expire_at - now_wall)
                 mid = key.split("esportsbot:exit:", 1)[-1]
+                # S138: Restore exit reason to determine correct cooldown duration
+                _reason_raw = await cache.get(f"esportsbot:exit_reason:{mid}")
+                _reason = str(_reason_raw) if _reason_raw else ""
+                if _reason == "edge_gone":
+                    cooldown = float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0))
+                else:
+                    cooldown = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 300.0))
+                elapsed = cooldown - (expire_at - now_wall)
                 self._recently_exited[mid] = now_mono - elapsed
+                self._exit_reasons[mid] = _reason
                 count += 1
             if count:
                 logger.info("esportsbot_exit_cooldowns_restored", count=count)
@@ -1711,14 +1741,38 @@ class EsportsBot(BaseBot):
                 self._edge_peaks[_peak_key] = max(_prev_peak, _current_edge_val)
                 _peak = self._edge_peaks[_peak_key]
 
+                # S138: Minimum hold time before edge_gone can fire.
+                # Prevents churn loop where positions are exited within seconds
+                # of entry and immediately re-entered, burning spread each cycle.
+                _min_hold_min = float(getattr(settings, "ESPORTS_MIN_HOLD_MINUTES", 10.0))
+                _hold_minutes = None
+                _opened_at = pos.get("opened_at")
+                if _opened_at is not None:
+                    try:
+                        if isinstance(_opened_at, str):
+                            _opened_at = datetime.fromisoformat(_opened_at)
+                        if _opened_at.tzinfo is None:
+                            _opened_at = _opened_at.replace(tzinfo=timezone.utc)
+                        _hold_minutes = (now_utc - _opened_at).total_seconds() / 60.0
+                    except Exception:
+                        pass
+
                 # Full exit: edge gone
                 if _remaining_edge <= 0.01:
-                    logger.info("esportsbot_edge_exit_full", market_id=mid,
-                                remaining_edge=round(_remaining_edge, 4),
-                                entry_model_prob=round(_entry_model_prob, 4),
-                                current_price=round(current, 4))
-                    positions_to_close.append((pos, "edge_gone"))
-                    continue
+                    if _hold_minutes is not None and _hold_minutes < _min_hold_min:
+                        logger.debug("esportsbot_edge_exit_hold_gate",
+                                     market_id=mid,
+                                     hold_min=round(_hold_minutes, 1),
+                                     min_hold=_min_hold_min,
+                                     remaining_edge=round(_remaining_edge, 4))
+                    else:
+                        logger.info("esportsbot_edge_exit_full", market_id=mid,
+                                    remaining_edge=round(_remaining_edge, 4),
+                                    entry_model_prob=round(_entry_model_prob, 4),
+                                    current_price=round(current, 4),
+                                    hold_min=round(_hold_minutes, 1) if _hold_minutes else None)
+                        positions_to_close.append((pos, "edge_gone"))
+                        continue
 
                 # Trailing edge stop: edge dropped 50% from peak AND below 0.02
                 if _peak > 0.02 and _remaining_edge < _peak * 0.5 and _remaining_edge < 0.02:
@@ -1831,8 +1885,9 @@ class EsportsBot(BaseBot):
                     self._edge_peaks.pop(f"_peak_edge_{mid}", None)
                     # S110: Set cooldown even on failed exit — prevents churn re-entry
                     self._recently_exited[mid] = time.monotonic()
+                    self._exit_reasons[mid] = reason  # S138: track for extended cooldown
                     self._prediction_cache.pop(mid, None)
-                    await self._save_exit_cooldown_to_redis(mid)
+                    await self._save_exit_cooldown_to_redis(mid, reason=reason)
                     continue  # Skip exposure decrement — position was orphaned
                 # B3: Decrement game exposure (USD) on exit
                 # Primary: _market_game (populated on entry, survives cache expiry)
@@ -1860,15 +1915,17 @@ class EsportsBot(BaseBot):
                             exit_side="SELL", size=round(size, 2), game=game)
                 # S109: Set cooldown + invalidate prediction cache to prevent churn
                 self._recently_exited[mid] = time.monotonic()
+                self._exit_reasons[mid] = reason  # S138: track for extended cooldown
                 self._prediction_cache.pop(mid, None)
-                await self._save_exit_cooldown_to_redis(mid)
+                await self._save_exit_cooldown_to_redis(mid, reason=reason)
             except Exception as exc:
                 logger.debug("esportsbot_exit_failed", market_id=mid, error=str(exc))
                 # S110: Set cooldown even on unexpected exit failure — prevents churn
                 self._recently_exited[mid] = time.monotonic()
+                self._exit_reasons[mid] = reason  # S138: track for extended cooldown
                 self._prediction_cache.pop(mid, None)
                 try:
-                    await self._save_exit_cooldown_to_redis(mid)
+                    await self._save_exit_cooldown_to_redis(mid, reason=reason)
                 except Exception:
                     pass  # Best-effort; in-memory cooldown is primary
 
