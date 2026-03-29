@@ -102,11 +102,18 @@ async def audit_trade_events(db) -> dict:
     else:
         logger.info("trade_event_audit_clean", total_violations=0)
 
-    # Persist violations to reconciliation_breaks via audit system
+    # Persist violations to reconciliation_breaks (trade-event checks only, not full 21-check audit)
     if total > 0:
         try:
-            from base_engine.audit.factory import build_audit_orchestrator
-            orchestrator = build_audit_orchestrator(db=db)
+            from base_engine.audit.checks.size_invariant_check import SizeInvariantCheck
+            from base_engine.audit.checks.orphan_check import OrphanCheck
+            from base_engine.audit.checks.temporal_order_check import TemporalOrderCheck
+            from base_engine.audit.orchestrator import AuditOrchestrator
+            from base_engine.audit.result_store import create_audit_run, store_check_results, complete_audit_run
+            orchestrator = AuditOrchestrator(db=db)
+            orchestrator.register_check(SizeInvariantCheck())
+            orchestrator.register_check(OrphanCheck())
+            orchestrator.register_check(TemporalOrderCheck())
             await orchestrator.run_all(
                 run_type="post_resolution",
                 triggered_by="post_resolution",

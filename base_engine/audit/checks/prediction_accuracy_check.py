@@ -240,6 +240,31 @@ class PredictionAccuracyCheck(BaseCheck):
                 },
             ))
 
+        # prediction_time > resolved_at — impossible timestamps (432-row EsportsBot issue)
+        # These rows are silently excluded from calibration labeling on every retrain.
+        impossible_ts_rows = await session.execute(text("""
+            SELECT pl.bot_name, COUNT(*) AS bad_rows
+            FROM prediction_log pl
+            JOIN markets m ON m.id = pl.market_id
+            WHERE pl.prediction_time > m.resolved_at
+              AND m.resolved_at IS NOT NULL
+            GROUP BY pl.bot_name
+            HAVING COUNT(*) > 0
+        """))
+        for row in impossible_ts_rows.fetchall():
+            bot_name, count = row
+            violations.append(AuditViolation(
+                recon_type="PREDICTION_ACCURACY_ANOMALY",
+                bot_name=bot_name or "",
+                market_id=None,
+                severity="WARNING",
+                details={
+                    "reason": "prediction_time_after_market_resolution",
+                    "bad_row_count": int(count),
+                    "impact": "rows silently excluded from calibration labeling on retrain",
+                },
+            ))
+
         return CheckResult(
             check_name=self.name,
             passed=len(violations) == 0,
