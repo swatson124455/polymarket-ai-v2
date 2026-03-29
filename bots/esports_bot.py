@@ -2547,9 +2547,8 @@ class EsportsBot(BaseBot):
                     logger.debug("esportsbot_catboost_blend_failed",
                                  game=game, error=str(_cb_exc))
 
-        # 5. LAN adjustment (CS2/Valorant only)
-        if (getattr(settings, "ESPORTS_LAN_ADJUSTMENT_ENABLED", True)
-                and game in ("cs2", "valorant")):
+        # 5. LAN adjustment (all games with LAN events — S137 parity fix)
+        if getattr(settings, "ESPORTS_LAN_ADJUSTMENT_ENABLED", True):
             _is_lan = self._is_lan_event(market_data)
             if _is_lan:
                 if prob > 0.55:
@@ -5540,13 +5539,31 @@ class EsportsBot(BaseBot):
 
     @staticmethod
     def _is_lan_event(market_data: Dict) -> bool:
-        """Detect LAN events from market question keywords [T1-C]."""
+        """Detect LAN events from market question keywords [T1-C].
+
+        S137 parity: Expanded from CS2/Val-only to cover all 8 games.
+        """
         q = str(market_data.get("question", "")).lower()
         _lan_keywords = (
+            # Generic LAN indicators
             " lan ", "lan final", "major ", "finals ", "playoff",
-            "world championship", "champions tour", "masters ",
+            "world championship", "grand final",
+            # CS2
             "blast premier", "iem ", "esl pro league",
             "pgl major", "copenhagen", "shanghai", "rio ",
+            # Valorant
+            "champions tour", "masters ", "vct ",
+            # Dota2
+            "the international", " ti1", " ti2", "dpc ",
+            "esl one", "dreamhack ",
+            # CoD
+            "cdl ", "call of duty league", "cod major",
+            # R6
+            "six invitational", "six major", "r6 major",
+            # SC2
+            "gsl ", "katowice", "global starcraft",
+            # RL
+            "rlcs ", "rocket league championship",
         )
         return any(kw in q for kw in _lan_keywords)
 
