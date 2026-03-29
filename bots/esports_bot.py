@@ -92,7 +92,7 @@ class BetaCalibrator:
             async with db.get_session() as session:
                 result = await session.execute(
                     _text(
-                        "SELECT predicted_prob, actual_outcome "
+                        "SELECT COALESCE(raw_model_prob, predicted_prob), actual_outcome "
                         "FROM esports_prediction_log "
                         "WHERE actual_outcome IS NOT NULL "
                         "AND game = :game "
@@ -159,7 +159,7 @@ class OnlinePlattCalibrator:
     """
     __slots__ = ("_model", "_n", "_min_samples", "_available")
 
-    def __init__(self, lr: float = 0.01, min_samples: int = 30):
+    def __init__(self, lr: float = 0.01, min_samples: int = 50):
         self._n: int = 0
         self._min_samples = min_samples
         self._available = False
@@ -316,7 +316,7 @@ class EsportsBot(BaseBot):
 
         # S100: Single-stage beta calibrators per game
         self._beta_calibrators: Dict[str, BetaCalibrator] = {
-            g: BetaCalibrator(lambda_reg=10.0, min_samples=10)
+            g: BetaCalibrator(lambda_reg=10.0, min_samples=50)
             for g in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl")
         }
         self._onnx_cross_game_session: Any = None  # ONNX InferenceSession for cross-game XGB
@@ -345,7 +345,7 @@ class EsportsBot(BaseBot):
         # S136 Phase 4A: Per-game Venn-ABERS calibrators
         self._venn_abers_per_game: Dict[str, Any] = {}
         # S136 Phase 4B: Global pooled BetaCalibrator (hierarchical shrinkage)
-        self._global_beta_calibrator = BetaCalibrator(lambda_reg=10.0, min_samples=15)
+        self._global_beta_calibrator = BetaCalibrator(lambda_reg=10.0, min_samples=50)
 
         # Parallel analysis (Item 6)
         _concurrency = int(getattr(settings, "ESPORTS_ANALYSIS_CONCURRENCY", 10))
@@ -2256,6 +2256,7 @@ class EsportsBot(BaseBot):
                         market_price=price,
                         side=_early_side,
                         edge=round(_early_edge, 4),
+                        raw_model_prob=_raw_prob,
                     )
                     self._prediction_log_cache[market_id] = (model_prob, time.monotonic())
             except Exception:
@@ -2410,6 +2411,7 @@ class EsportsBot(BaseBot):
                     side=side,
                     edge=round(edge, 4),
                     tournament_phase=_tournament_phase,
+                    raw_model_prob=_raw_prob,
                 )
                 self._prediction_log_cache[market_id] = (model_prob, time.monotonic())
             except Exception as exc:
@@ -4086,8 +4088,8 @@ class EsportsBot(BaseBot):
         elif _beta_fit or _platt_fit:
             _calibration = 0.7
         else:
-            # S131: "Not fitted" ≠ "miscalibrated". 0.50 = unknown (was 0.30).
-            _calibration = 0.50
+            # S138: Unfitted = low confidence in calibration, not neutral (was 0.50).
+            _calibration = 0.25
 
         # 3. Uncertainty (weight 0.20): Glicko-2 matchup uncertainty
         # matchup_uncertainty = (phi_a + phi_b) / 700; 0 = certain, 1 = unknown
@@ -4850,7 +4852,7 @@ class EsportsBot(BaseBot):
                 for _pool_game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
                     _pool_result = await session.execute(
                         _text(
-                            "SELECT predicted_prob, actual_outcome "
+                            "SELECT COALESCE(raw_model_prob, predicted_prob), actual_outcome "
                             "FROM esports_prediction_log "
                             "WHERE actual_outcome IS NOT NULL "
                             "AND game = :game "
@@ -4912,7 +4914,7 @@ class EsportsBot(BaseBot):
                 for _va_game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
                     _va_result = await session.execute(
                         _text(
-                            "SELECT predicted_prob, actual_outcome "
+                            "SELECT COALESCE(raw_model_prob, predicted_prob), actual_outcome "
                             "FROM esports_prediction_log "
                             "WHERE actual_outcome IS NOT NULL "
                             "AND game = :game "
@@ -4922,12 +4924,12 @@ class EsportsBot(BaseBot):
                         {"game": _va_game, "days_int": int(_cal_days)},
                     )
                     _va_rows = _va_result.fetchall()
-                    if len(_va_rows) >= 5:
+                    if len(_va_rows) >= 50:
                         _va_preds = np.array([float(r[0]) for r in _va_rows])
                         _va_outcomes = np.array([float(r[1]) for r in _va_rows])
                         va = self._venn_abers_per_game.get(_va_game)
                         if va is None:
-                            va = VennAbersCalibrator(min_samples=5)
+                            va = VennAbersCalibrator(min_samples=50)
                             self._venn_abers_per_game[_va_game] = va
                         _va_ok = va.fit(_va_preds, _va_outcomes)
                         if _va_ok:
@@ -5652,7 +5654,7 @@ class EsportsBot(BaseBot):
             if mult >= 1.2:
                 self._game_egm_d[game] = min(2.5, self._egm_d + 0.5)  # More extreme
             elif mult <= 0.5:
-                self._game_egm_d[game] = max(1.0, self._egm_d - 0.3)  # More conservative
+                self._game_egm_d[game] = 1.0  # S138: No extremization for poorly calibrated games
             else:
                 self._game_egm_d[game] = self._egm_d  # Default
 
@@ -6442,6 +6444,7 @@ class EsportsBot(BaseBot):
                 market_price=market_price,
                 side=side,
                 edge=round(edge, 4),
+                raw_model_prob=model_prob,  # WS path has no calibration, raw=calibrated
             )
         except Exception as exc:
             logger.warning("esports_series_prediction_log_failed", error=str(exc))

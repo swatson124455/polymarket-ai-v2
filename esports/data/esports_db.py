@@ -68,8 +68,10 @@ async def log_prediction(
     side: str,
     edge: float,
     tournament_phase: str = "",
+    raw_model_prob: float = None,
 ) -> None:
-    """Log a prediction to esports_prediction_log for accuracy tracking."""
+    """Log a prediction to esports_prediction_log for accuracy tracking.
+    S138: raw_model_prob stores pre-calibration probability for calibrator training."""
     if db is None:
         logger.warning("esports_db: log_prediction skipped — db is None")
         return
@@ -79,13 +81,14 @@ async def log_prediction(
             await session.execute(
                 _text("""
                 INSERT INTO esports_prediction_log
-                    (match_id, game, market_id, bot_name, predicted_prob, market_price, side, edge, tournament_phase)
+                    (match_id, game, market_id, bot_name, predicted_prob, market_price, side, edge, tournament_phase, raw_model_prob)
                 VALUES
-                    (:match_id, :game, :market_id, :bot_name, :predicted_prob, :market_price, :side, :edge, :tournament_phase)
+                    (:match_id, :game, :market_id, :bot_name, :predicted_prob, :market_price, :side, :edge, :tournament_phase, :raw_model_prob)
                 ON CONFLICT (market_id, bot_name) DO UPDATE SET
                     market_price = EXCLUDED.market_price,
                     side = EXCLUDED.side,
                     edge = EXCLUDED.edge,
+                    raw_model_prob = COALESCE(EXCLUDED.raw_model_prob, esports_prediction_log.raw_model_prob),
                     created_at = now()
 """),
                 {
@@ -98,6 +101,7 @@ async def log_prediction(
                     "side": side,
                     "edge": edge,
                     "tournament_phase": tournament_phase or "",
+                    "raw_model_prob": raw_model_prob,
                 },
             )
             await session.commit()

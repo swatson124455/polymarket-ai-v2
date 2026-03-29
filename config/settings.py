@@ -1088,7 +1088,7 @@ class Settings(BaseSettings):
     # --- Edge / confidence thresholds ---
     ESPORTS_MIN_EDGE: float = float(os.getenv("ESPORTS_MIN_EDGE", "0.05"))
     ESPORTS_MIN_CONFIDENCE: float = float(os.getenv("ESPORTS_MIN_CONFIDENCE", "0.20"))  # S127: lowered for signal_quality dampening
-    ESPORTS_EGM_D: float = float(os.getenv("ESPORTS_EGM_D", "1.5"))  # Extremization factor for EGM blend
+    ESPORTS_EGM_D: float = float(os.getenv("ESPORTS_EGM_D", "1.2"))  # S138: 1.5→1.2 (reduce compound extremization)
     ESPORTS_SERIES_MIN_EDGE: float = float(os.getenv("ESPORTS_SERIES_MIN_EDGE", "0.10"))
     ESPORTS_SERIES_REVERSE_SWEEP_FLOOR: float = float(os.getenv("ESPORTS_SERIES_REVERSE_SWEEP_FLOOR", "0.05"))
     ESPORTS_SERIES_HEDGE_ENABLED: bool = os.getenv("ESPORTS_SERIES_HEDGE_ENABLED", "true").lower() not in ("false", "0", "no")
@@ -1249,8 +1249,8 @@ class Settings(BaseSettings):
     # --- Conformal prediction ---
     ESPORTS_USE_CONFORMAL: bool = os.getenv("ESPORTS_USE_CONFORMAL", "false").lower() in ("true", "1", "yes")
     ESPORTS_CONFORMAL_MIN_RESOLVED: int = int(os.getenv("ESPORTS_CONFORMAL_MIN_RESOLVED", "50"))
-    # S136: Disabled — Polymarket has no traditional FLB. Re-enable via VPS .env.
-    ESPORTS_RFLB_STRENGTH: float = float(os.getenv("ESPORTS_RFLB_STRENGTH", "0.0"))
+    # S138: Enabled at 0.03 — compresses extreme favorite predictions. A/B logged.
+    ESPORTS_RFLB_STRENGTH: float = float(os.getenv("ESPORTS_RFLB_STRENGTH", "0.03"))
     ESPORTS_LAN_ADJUSTMENT_ENABLED: bool = os.getenv("ESPORTS_LAN_ADJUSTMENT_ENABLED", "true").lower() in ("true", "1", "yes")
     ESPORTS_LOL_BLUE_SIDE_BONUS: float = float(os.getenv("ESPORTS_LOL_BLUE_SIDE_BONUS", "0.019"))
     ESPORTS_UPSET_RISK_ENABLED: bool = os.getenv("ESPORTS_UPSET_RISK_ENABLED", "true").lower() in ("true", "1", "yes")
