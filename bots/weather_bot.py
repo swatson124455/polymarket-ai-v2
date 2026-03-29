@@ -64,21 +64,25 @@ _CONF_CAL_MIN_SAMPLES = 200  # minimum resolved trades to fit
 
 
 class WeatherConfidenceCalibrator:
-    """Logistic regression calibrator with 6 features.
+    """Per-side isotonic regression calibrator.
 
-    Fits on WeatherBot trade_events: (confidence, side, lead_time_hours, price,
-    bucket_type_enc, ensemble_spread) → win/loss.
-    S135: Replaced Platt+Isotonic. S136: Added bucket_type and ensemble_spread.
-    bucket_type_enc: at_or_higher=1, range=2, else=0.
+    Fits separate isotonic models for YES and NO sides from WeatherBot
+    trade_events: confidence → actual win rate (monotonic, non-parametric).
+    S135: Original Platt+Isotonic. S136: Added features.
+    S140: Removed entry_price, switched to logistic (still over-compressed).
+    S140b: Replaced logistic with per-side IsotonicRegression. The WR curve
+    is too flat (68-80% across 0.60-0.95) for logistic to discriminate —
+    isotonic handles this naturally without compression artifacts.
+    Training data filtered to lead_time>=48h, confidence>=0.60.
     """
 
     def __init__(self) -> None:
-        self._model: Any = None     # sklearn LogisticRegression
-        self._scaler: Any = None    # sklearn StandardScaler
+        self._model_no: Any = None    # sklearn IsotonicRegression for NO side
+        self._model_yes: Any = None   # sklearn IsotonicRegression for YES side
         self._fitted: bool = False
         self._n_samples: int = 0
-        self._cal_brier: Optional[float] = None  # calibrated Brier score — fed to BankrollManager
-        self._coef_confidence: float = 0.0  # for .temperature property compat
+        self._cal_brier: Optional[float] = None  # calibrated Brier score
+        self._coef_confidence: float = 0.0  # compat: slope proxy from NO model
         self._coefficients: dict = {}       # for logging/inspection
 
     # -- fitting -------------------------------------------------------------
@@ -86,9 +90,11 @@ class WeatherConfidenceCalibrator:
     async def fit_from_trade_events(
         self, db: Any, window_days: int = 30, min_samples: int = _CONF_CAL_MIN_SAMPLES,
     ) -> bool:
-        """Fit LogisticRegression from WeatherBot resolved trade_events.
+        """Fit per-side IsotonicRegression from WeatherBot resolved trade_events.
 
-        Features: raw_confidence, side (YES=1/NO=0), lead_time_hours, entry_price.
+        Separate monotonic calibrators for YES and NO sides.
+        S140b: Replaces logistic regression (coef_confidence=0.14 was too weak).
+        Training data filtered to lead_time>=48h, confidence>=0.60.
         Returns True if fitted, False if insufficient data (identity passthrough).
         """
         if not db:
@@ -100,30 +106,42 @@ class WeatherConfidenceCalibrator:
             async with db.get_session() as session:
                 result = await session.execute(text("""
                     WITH entries AS (
-                        SELECT DISTINCT ON (market_id) market_id, confidence, side, price,
-                               COALESCE((event_data->>'lead_time_hours')::float, 48.0) AS lead_time_hours,
-                               CASE event_data->>'bucket_type'
-                                   WHEN 'at_or_higher' THEN 1.0
-                                   WHEN 'range' THEN 2.0
-                                   ELSE 0.0
-                               END AS bucket_type_enc,
-                               COALESCE((event_data->>'ensemble_spread')::float, 3.0) AS ensemble_spread
+                        SELECT DISTINCT ON (market_id) market_id, confidence, side
                         FROM trade_events
                         WHERE bot_name = 'WeatherBot' AND event_type = 'ENTRY'
                           AND event_time >= NOW() - INTERVAL '1 day' * :window_days
                           AND confidence IS NOT NULL
                           AND price >= 0.08
+                          AND (event_data->>'lead_time_hours')::float >= 48.0
+                          AND confidence >= 0.60
                         ORDER BY market_id, event_time
                     )
-                    SELECT e.confidence, e.side, e.lead_time_hours, e.price,
-                           e.bucket_type_enc, e.ensemble_spread,
-                           CASE WHEN r.realized_pnl > 0 THEN 1.0 ELSE 0.0 END AS outcome
+                    SELECT e.confidence, e.side,
+                           CASE WHEN r.realized_pnl > 0 THEN 1.0 ELSE 0.0 END AS outcome,
+                           r.event_time
                     FROM trade_events r
                     JOIN entries e ON e.market_id = r.market_id
                     WHERE r.bot_name = 'WeatherBot' AND r.event_type = 'RESOLUTION'
                       AND r.realized_pnl IS NOT NULL
                 """), {"window_days": window_days})
                 rows = result.fetchall()
+
+            # S141: 7-day holdout for OOS Brier — rows in last 7d become test set
+            from datetime import timezone as _tz, timedelta as _td
+            _oos_cutoff = datetime.now(_tz.utc) - _td(days=7)
+            _test_conf: list = []
+            _test_sides: list = []
+            _test_outcomes: list = []
+            for _r in rows:
+                _et = _r[3]
+                if _et is None:
+                    continue
+                if getattr(_et, "tzinfo", None) is None:
+                    _et = _et.replace(tzinfo=_tz.utc)
+                if _et >= _oos_cutoff:
+                    _test_conf.append(float(_r[0]))
+                    _test_sides.append(_r[1])
+                    _test_outcomes.append(float(_r[2]))
 
             if len(rows) < min_samples:
                 logger.info(
@@ -133,26 +151,48 @@ class WeatherConfidenceCalibrator:
                 return False
 
             confidences = np.array([float(r[0]) for r in rows], dtype=np.float64)
-            sides = np.array([1.0 if r[1] == "YES" else 0.0 for r in rows], dtype=np.float64)
-            lead_times = np.array([float(r[2]) for r in rows], dtype=np.float64)
-            prices = np.array([float(r[3]) for r in rows], dtype=np.float64)
-            bucket_encs = np.array([float(r[4]) for r in rows], dtype=np.float64)
-            spreads = np.array([float(r[5]) for r in rows], dtype=np.float64)
-            outcomes = np.array([float(r[6]) for r in rows], dtype=np.float64)
+            sides_str = [r[1] for r in rows]
+            outcomes = np.array([float(r[2]) for r in rows], dtype=np.float64)
 
-            X = np.column_stack([confidences, sides, lead_times, prices, bucket_encs, spreads])
+            # Split by side
+            no_mask = np.array([s == "NO" for s in sides_str])
+            yes_mask = ~no_mask
 
-            from sklearn.preprocessing import StandardScaler
-            from sklearn.linear_model import LogisticRegression
+            from sklearn.isotonic import IsotonicRegression
 
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X)
-            model = LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000)
-            model.fit(X_scaled, outcomes)
+            model_no = None
+            model_yes = None
+            n_no = int(no_mask.sum())
+            n_yes = int(yes_mask.sum())
+
+            # Fit NO-side isotonic (needs >= 30 samples)
+            if n_no >= 30:
+                model_no = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
+                model_no.fit(confidences[no_mask], outcomes[no_mask])
+
+            # Fit YES-side isotonic (needs >= 30 samples)
+            if n_yes >= 30:
+                model_yes = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
+                model_yes.fit(confidences[yes_mask], outcomes[yes_mask])
+
+            # Need at least NO model (dominant side)
+            if model_no is None:
+                logger.info(
+                    "weatherbot_confidence_cal_insufficient_no_data",
+                    n_no=n_no, need=30,
+                )
+                return False
 
             # Validate: calibrated Brier should not be worse than raw
             raw_brier = float(np.mean((confidences - outcomes) ** 2))
-            cal_probs = model.predict_proba(X_scaled)[:, 1]
+            cal_probs = np.empty_like(confidences)
+            for i in range(len(confidences)):
+                if sides_str[i] == "NO" and model_no is not None:
+                    cal_probs[i] = model_no.predict([confidences[i]])[0]
+                elif sides_str[i] == "YES" and model_yes is not None:
+                    cal_probs[i] = model_yes.predict([confidences[i]])[0]
+                else:
+                    cal_probs[i] = confidences[i]  # identity fallback
             cal_brier = float(np.mean((cal_probs - outcomes) ** 2))
 
             if cal_brier > raw_brier + 0.005:
@@ -165,37 +205,62 @@ class WeatherConfidenceCalibrator:
                 self._fitted = False
                 return False
 
-            self._model = model
-            self._scaler = scaler
+            self._model_no = model_no
+            self._model_yes = model_yes
             self._fitted = True
             self._n_samples = len(rows)
             self._cal_brier = cal_brier
-            self._coef_confidence = float(model.coef_[0][0])
-            self._coefficients = {
-                "confidence": round(float(model.coef_[0][0]), 4),
-                "side_yes": round(float(model.coef_[0][1]), 4),
-                "lead_time": round(float(model.coef_[0][2]), 4),
-                "entry_price": round(float(model.coef_[0][3]), 4),
-                "bucket_type": round(float(model.coef_[0][4]), 4),
-                "ensemble_spread": round(float(model.coef_[0][5]), 4),
-                "intercept": round(float(model.intercept_[0]), 4),
-            }
+
+            # S141: Compute OOS Brier on 7-day holdout (reporting only, does not affect fit)
+            oos_brier = None
+            if _test_conf:
+                _tc = np.array(_test_conf, dtype=np.float64)
+                _to = np.array(_test_outcomes, dtype=np.float64)
+                _tp = np.empty_like(_tc)
+                for _i, (_c, _s) in enumerate(zip(_tc, _test_sides)):
+                    if _s == "NO" and model_no is not None:
+                        _tp[_i] = float(model_no.predict([_c])[0])
+                    elif _s == "YES" and model_yes is not None:
+                        _tp[_i] = float(model_yes.predict([_c])[0])
+                    else:
+                        _tp[_i] = _c
+                oos_brier = float(np.mean((_tp - _to) ** 2))
+
+            # Compute slope proxy for .temperature compat
+            if model_no is not None:
+                _lo = float(model_no.predict([0.60])[0])
+                _hi = float(model_no.predict([0.95])[0])
+                self._coef_confidence = round(_hi - _lo, 4)
+            else:
+                self._coef_confidence = 0.0
+
+            # Sample calibration outputs for logging
+            _no_samples = {}
+            if model_no is not None:
+                for c in [0.60, 0.70, 0.80, 0.90, 0.95]:
+                    _no_samples[f"no_{c}"] = round(float(model_no.predict([c])[0]), 4)
+            _yes_samples = {}
+            if model_yes is not None:
+                for c in [0.60, 0.70, 0.80, 0.90, 0.95]:
+                    _yes_samples[f"yes_{c}"] = round(float(model_yes.predict([c])[0]), 4)
+
+            self._coefficients = {**_no_samples, **_yes_samples}
 
             logger.info(
                 "weatherbot_confidence_cal_fitted",
-                model_type="logistic_regression",
+                model_type="isotonic_per_side",
                 n_samples=len(rows),
+                n_no=n_no,
+                n_yes=n_yes,
                 raw_brier=round(raw_brier, 4),
                 cal_brier=round(cal_brier, 4),
                 brier_improvement=round(raw_brier - cal_brier, 4),
-                coef_confidence=self._coefficients["confidence"],
-                coef_side_yes=self._coefficients["side_yes"],
-                coef_lead_time=self._coefficients["lead_time"],
-                coef_entry_price=self._coefficients["entry_price"],
-                coef_bucket_type=self._coefficients["bucket_type"],
-                coef_ensemble_spread=self._coefficients["ensemble_spread"],
-                intercept=self._coefficients["intercept"],
+                oos_brier=round(oos_brier, 4) if oos_brier is not None else None,
+                oos_n=len(_test_conf),
+                confidence_slope=self._coef_confidence,
                 window_days=window_days,
+                **_no_samples,
+                **_yes_samples,
             )
             return True
 
@@ -206,23 +271,25 @@ class WeatherConfidenceCalibrator:
     # -- inference -----------------------------------------------------------
 
     def calibrate(self, raw_confidence: float, side: str = "YES",
-                  lead_time_hours: float = 48.0, entry_price: float = 0.50,
-                  bucket_type: str = "unknown", ensemble_spread: float = 3.0) -> float:
-        """Apply logistic regression calibration. Identity if not fitted.
+                  lead_time_hours: float = 48.0,
+                  bucket_type: str = "unknown", ensemble_spread: float = 3.0,
+                  **kwargs) -> float:
+        """Apply per-side isotonic calibration. Identity if not fitted.
 
-        bucket_type: 'at_or_higher'=1, 'range'=2, else=0.
-        ensemble_spread: std dev of ensemble members (degrees).
+        S140b: Isotonic regression — monotonic, non-parametric, per-side.
+        Extra kwargs (lead_time_hours, bucket_type, ensemble_spread) accepted
+        for API compat but not used by isotonic model.
         """
         if not self._fitted:
             return raw_confidence
         try:
             import numpy as np
-            side_enc = 1.0 if side == "YES" else 0.0
-            bucket_enc = 1.0 if bucket_type == "at_or_higher" else (2.0 if bucket_type == "range" else 0.0)
-            X = np.array([[raw_confidence, side_enc, lead_time_hours, entry_price,
-                           bucket_enc, ensemble_spread]])
-            X_scaled = self._scaler.transform(X)
-            result = self._model.predict_proba(X_scaled)[0, 1]
+            if side == "NO" and self._model_no is not None:
+                result = self._model_no.predict([raw_confidence])[0]
+            elif side == "YES" and self._model_yes is not None:
+                result = self._model_yes.predict([raw_confidence])[0]
+            else:
+                return raw_confidence
             return float(np.clip(result, 0.01, 0.99))
         except Exception:
             return raw_confidence
@@ -233,7 +300,7 @@ class WeatherConfidenceCalibrator:
 
     @property
     def temperature(self) -> float:
-        """Backward compat: returns confidence coefficient (diagnostic proxy for T)."""
+        """Backward compat: returns NO-side slope (0.60→0.95 range) as proxy."""
         return self._coef_confidence
 
     @property
@@ -2067,11 +2134,11 @@ class WeatherBot(BaseBot):
             # NO:  confidence = 1 - model_prob (P of NOT outcome) — correct for Kelly + risk manager
             _raw_conf = e["model_prob"] if side == "YES" else (1.0 - e["model_prob"])
             base_confidence = min(0.95, _raw_conf)
-            # S135: Logistic regression calibration (6-feature: conf, side, lead_time, price, bucket, spread)
+            # S140: Logistic regression calibration (5-feature: conf, side, lead_time, bucket, spread)
             if self._cal_fitted:
                 effective_confidence = self._confidence_calibrator.calibrate(
                     base_confidence, side=side,
-                    lead_time_hours=lead_time, entry_price=price,
+                    lead_time_hours=lead_time,
                     bucket_type=bucket.bucket_type,
                     ensemble_spread=forecast.model_spread,
                 )
@@ -2472,28 +2539,11 @@ class WeatherBot(BaseBot):
         #   <hold_hours to resolution → 1.2× (within hold window, early convergence)
         #   otherwise → 1.0× (standard)
         lead_time = opp.get("lead_time_hours", 48.0)
-        _hold_h = getattr(settings, "WEATHER_HOLD_HOURS_BEFORE_RESOLUTION", 48.0)
-        # S101: Graduated expiry boost — cap near resolution to avoid compounding
-        # with paper_trading.py's 3.0x slippage + 0.5x fill penalty at <30min.
-        # 2.0x boost at <1h meets 3.0x penalty = net negative; cap to 1.2x.
-        if lead_time < 1.0:
-            expiry_boost = 1.2   # <1h: resolution penalty dominates, cap boost
-        elif lead_time < 6.0:
-            expiry_boost = 1.5   # 1-6h: METAR override window, moderate boost
-        elif lead_time < 12.0:
-            expiry_boost = 2.0   # 6-12h: NOAA final-call, maximum certainty
-        elif lead_time < 24.0:
-            expiry_boost = 1.5   # NOAA day-of: strong convergence
-        elif lead_time < _hold_h:
-            expiry_boost = 1.2   # Within hold window: early convergence signal
-        else:
-            expiry_boost = 1.0   # Standard (outside hold window)
-
-        if expiry_boost > 1.0:
-            logger.debug(
-                "weatherbot_expiry_boost: lead_h=%.1f hold_h=%.1f boost=%.1f",
-                lead_time, _hold_h, expiry_boost,
-            )
+        # S141: Expiry boost removed — S126 data shows inverse relationship with P&L.
+        # <24h=-$204, 24-48h=-$601, 48-72h=+$558, 72-120h=+$1,453.
+        # Market prices ensemble convergence simultaneously with the model.
+        # jump_boost handles legitimate "model run disagreement" signal.
+        expiry_boost = 1.0
 
         # Cross-city regime boost (P-Opportunity)
         regime_boost = opp.get("regime_boost", 1.0)
@@ -2652,6 +2702,30 @@ class WeatherBot(BaseBot):
             except Exception as exc:
                 logger.warning("weatherbot_kelly_sizing_failed", error=str(exc))
                 _raw_size = self._default_size
+
+        # S140: Spread gate — reject illiquid markets where bid-ask spread is too wide.
+        # The Wuhan incident (S139): 90c spread, 5778bps slippage, -$900 loss.
+        # Spread inflation code was removed in S132; this replaces it as a hard floor.
+        _spread_val = 0.0
+        _midx = getattr(self.base_engine.order_gateway, "_market_index", None)
+        if _midx:
+            _mdata = _midx.get(str(opp["market_id"]))
+            if _mdata:
+                _bb = float(_mdata.get("bestBid") or _mdata.get("best_bid") or 0)
+                _ba = float(_mdata.get("bestAsk") or _mdata.get("best_ask") or 0)
+                if _bb > 0 and _ba > 0:
+                    _spread_val = _ba - _bb
+
+        _max_spread = float(getattr(settings, "WEATHER_MAX_SPREAD", 0.30))
+        if _spread_val > _max_spread:
+            logger.info(
+                "weatherbot_spread_gate_reject",
+                market_id=opp["market_id"], city=opp.get("city", ""),
+                side=opp["side"], spread=round(_spread_val, 4),
+                max_spread=round(_max_spread, 4),
+                edge=round(opp.get("edge", 0), 4),
+            )
+            return False
 
         # S124: Negative-EV gate — if calibrated confidence < price, the trade is
         # negative EV regardless of sizing path (Kelly or S-T). The S-T allocator
@@ -4640,7 +4714,7 @@ class WeatherBot(BaseBot):
                     SELECT COUNT(*), AVG(POWER(forecast_temp - actual_temp, 2))
                     FROM weather_calibration
                     WHERE actual_temp IS NOT NULL
-                      AND created_at >= NOW() - INTERVAL '7 days'
+                      AND created_at >= NOW() - INTERVAL '30 days'
                 """))
                 row = result.fetchone()
                 if row and row[0] and row[0] >= 10:

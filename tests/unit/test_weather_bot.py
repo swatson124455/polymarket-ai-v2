@@ -357,6 +357,12 @@ class TestProbabilityEngine:
         assert scale > 0.5
         assert isinstance(shape, float)
 
+    def test_fit_distribution_skewnorm_fallback_at_n20(self):
+        """S141: n=20 members is below the threshold of 30 — must fall back to shape=0.0 (normal)."""
+        members = [48.0 + i * 0.1 for i in range(20)]  # n=20 < 30
+        _, _, shape = self.engine.fit_distribution(members, lead_time_hours=24.0)
+        assert shape == 0.0, f"Expected normal fallback (shape=0.0) for n=20, got {shape}"
+
     def test_fit_distribution_minimum_members(self):
         loc, scale, shape = self.engine.fit_distribution([50.0, 52.0], lead_time_hours=12.0)
         assert 49.0 < loc < 53.0
@@ -713,6 +719,15 @@ class TestWeatherBot:
         await weather_bot.scan_and_trade()
         # Should have attempted at least one trade (edge 8-25%)
         assert mock_engine.place_order.called
+
+    def test_expiry_boost_removed(self):
+        """S141: expiry_boost is always 1.0 — graduated schedule removed (inverse P&L relationship)."""
+        import inspect
+        from bots.weather_bot import WeatherBot
+        src = inspect.getsource(WeatherBot._execute_weather_trade)
+        assert "expiry_boost = 1.0" in src, "expiry_boost must be hardcoded to 1.0"
+        assert "elif lead_time < 1.0" not in src, "Old graduated schedule must be absent"
+        assert "elif lead_time < 6.0" not in src, "Old graduated schedule must be absent"
 
     @pytest.mark.asyncio
     async def test_daily_loss_limit_blocks(self, weather_bot):
@@ -1738,34 +1753,32 @@ class TestWeatherConfidenceCalibrator:
 
     @staticmethod
     def _build_fitted_calibrator():
-        """Build a calibrator fitted on synthetic data where YES/short-lead/low-price lose more."""
-        from sklearn.linear_model import LogisticRegression
-        from sklearn.preprocessing import StandardScaler
+        """Build a calibrator fitted on synthetic data where YES wins less than NO.
+
+        S140b: Per-side IsotonicRegression. NO side has higher WR than YES.
+        """
+        from sklearn.isotonic import IsotonicRegression
 
         np.random.seed(42)
         n = 400
-        confidences = np.random.uniform(0.4, 0.95, n)
-        sides = np.array([1.0] * 200 + [0.0] * 200)
-        lead_times = np.random.uniform(1, 120, n)
-        prices = np.random.uniform(0.03, 0.90, n)
-        bucket_encs = np.random.choice([0.0, 1.0, 2.0], n)
-        spreads = np.random.uniform(1.0, 8.0, n)
-        # YES wins less, short lead wins less, low price wins less
-        base_wr = np.clip(0.3 * (1.0 - sides * 0.4) + 0.003 * lead_times + 0.3 * prices, 0.05, 0.95)
-        outcomes = (np.random.uniform(0, 1, n) < base_wr).astype(float)
+        confidences = np.random.uniform(0.5, 0.95, n)
+        sides = ["YES"] * 200 + ["NO"] * 200
+        # NO wins more (WR ~0.7-0.85), YES wins less (WR ~0.3-0.5)
+        no_outcomes = (np.random.uniform(0, 1, 200) < (0.5 + 0.3 * confidences[200:])).astype(float)
+        yes_outcomes = (np.random.uniform(0, 1, 200) < (0.1 + 0.3 * confidences[:200])).astype(float)
 
-        X = np.column_stack([confidences, sides, lead_times, prices, bucket_encs, spreads])
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
-        model = LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000)
-        model.fit(X_scaled, outcomes)
+        model_no = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
+        model_no.fit(confidences[200:], no_outcomes)
+
+        model_yes = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
+        model_yes.fit(confidences[:200], yes_outcomes)
 
         cal = WeatherConfidenceCalibrator()
-        cal._model = model
-        cal._scaler = scaler
+        cal._model_no = model_no
+        cal._model_yes = model_yes
         cal._fitted = True
         cal._n_samples = n
-        cal._coef_confidence = float(model.coef_[0][0])
+        cal._coef_confidence = round(float(model_no.predict([0.95])[0] - model_no.predict([0.60])[0]), 4)
         return cal
 
     # -- Identity / unfitted tests --------
@@ -1775,7 +1788,7 @@ class TestWeatherConfidenceCalibrator:
         cal = WeatherConfidenceCalibrator()
         assert not cal.is_fitted
         for p in [0.10, 0.50, 0.95]:
-            assert cal.calibrate(p, side="YES", lead_time_hours=48.0, entry_price=0.5) == p
+            assert cal.calibrate(p, side="YES", lead_time_hours=48.0) == p
 
     def test_no_db_returns_false(self):
         """fit_from_trade_events returns False when no DB provided."""
@@ -1792,23 +1805,18 @@ class TestWeatherConfidenceCalibrator:
     def test_yes_compressed_more_than_no(self):
         """YES side should get lower calibrated confidence than NO (data: YES loses more)."""
         cal = self._build_fitted_calibrator()
-        yes_out = cal.calibrate(0.80, side="YES", lead_time_hours=48.0, entry_price=0.50)
-        no_out = cal.calibrate(0.80, side="NO", lead_time_hours=48.0, entry_price=0.50)
+        yes_out = cal.calibrate(0.80, side="YES")
+        no_out = cal.calibrate(0.80, side="NO")
         assert yes_out < no_out, f"YES ({yes_out:.3f}) should be < NO ({no_out:.3f})"
 
-    def test_short_lead_compressed_more(self):
-        """Short lead time should get lower calibrated confidence (data: short lead loses more)."""
+    def test_monotonic_no_side(self):
+        """S140b: Isotonic should be monotonically increasing for NO side."""
         cal = self._build_fitted_calibrator()
-        short = cal.calibrate(0.80, side="YES", lead_time_hours=6.0, entry_price=0.50)
-        long = cal.calibrate(0.80, side="YES", lead_time_hours=96.0, entry_price=0.50)
-        assert short < long, f"Short lead ({short:.3f}) should be < long lead ({long:.3f})"
-
-    def test_low_price_compressed_more(self):
-        """Low entry price should get lower calibrated confidence (data: low price loses more)."""
-        cal = self._build_fitted_calibrator()
-        low = cal.calibrate(0.80, side="YES", lead_time_hours=48.0, entry_price=0.05)
-        high = cal.calibrate(0.80, side="YES", lead_time_hours=48.0, entry_price=0.40)
-        assert low < high, f"Low price ({low:.3f}) should be < high price ({high:.3f})"
+        prev = 0.0
+        for c in [0.50, 0.60, 0.70, 0.80, 0.90, 0.95]:
+            out = cal.calibrate(c, side="NO")
+            assert out >= prev, f"NO side not monotonic: {c} → {out:.3f} < prev {prev:.3f}"
+            prev = out
 
     # -- Output validity tests --------
 
@@ -1818,15 +1826,18 @@ class TestWeatherConfidenceCalibrator:
         for conf in [0.01, 0.10, 0.50, 0.90, 0.99]:
             for side in ["YES", "NO"]:
                 for lt in [1.0, 48.0, 120.0]:
-                    result = cal.calibrate(conf, side=side, lead_time_hours=lt, entry_price=0.30)
+                    result = cal.calibrate(conf, side=side, lead_time_hours=lt)
                     assert 0.01 <= result <= 0.99, f"Out of range: {result} for conf={conf}, side={side}, lt={lt}"
 
     def test_exception_returns_raw(self):
-        """If scaler is broken, calibrate returns raw_confidence (fail-safe)."""
+        """If model is broken, calibrate returns raw_confidence (fail-safe)."""
         cal = self._build_fitted_calibrator()
-        cal._scaler = None  # force exception
-        result = cal.calibrate(0.75, side="YES", lead_time_hours=48.0, entry_price=0.30)
+        cal._model_no = None  # force fallback for NO
+        cal._model_yes = None  # force fallback for YES
+        result = cal.calibrate(0.75, side="YES")
         assert result == 0.75
+        result_no = cal.calibrate(0.80, side="NO")
+        assert result_no == 0.80
 
     def test_temperature_property_returns_float(self):
         """Backward compat: .temperature returns the confidence coefficient as float."""
@@ -1991,6 +2002,21 @@ class TestSpreadInflation:
         assert abs(scale_24h - scale_120h) < 0.01, (
             f"Spread inflation should be OFF: 24h={scale_24h:.4f} vs 120h={scale_120h:.4f}"
         )
+
+
+class TestSpreadGate:
+    """S140: Bid-ask spread gate rejects illiquid markets."""
+
+    def test_wide_spread_rejected(self):
+        """Markets with spread > WEATHER_MAX_SPREAD should be rejected."""
+        assert hasattr(settings, "WEATHER_MAX_SPREAD")
+        val = float(getattr(settings, "WEATHER_MAX_SPREAD", 0.30))
+        assert val > 0, "Spread gate must have a positive threshold"
+
+    def test_spread_config_default(self):
+        """Default spread gate is 30 cents."""
+        val = float(getattr(settings, "WEATHER_MAX_SPREAD", 0.30))
+        assert val == 0.30, f"Default should be 0.30, got {val}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

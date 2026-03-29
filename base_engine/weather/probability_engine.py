@@ -105,7 +105,7 @@ class WeatherProbabilityEngine:
 
         # Try skew-normal fit via MLE
         shape = 0.0  # Default: symmetric normal
-        if SCIPY_AVAILABLE and n >= 10:
+        if SCIPY_AVAILABLE and n >= 30:
             try:
                 with warnings.catch_warnings():
                     # Suppress scipy precision-loss warning for nearly-identical members;
