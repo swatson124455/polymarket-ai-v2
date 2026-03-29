@@ -1152,8 +1152,6 @@ class EsportsBot(BaseBot):
                             threshold=min_acc,
                             brier=round(acc_data["brier_score"], 4),
                         )
-                        if self._trainer:
-                            self._trainer._last_train_time.pop(game, None)
             except Exception as exc:
                 logger.warning("esportsbot_accuracy_check_failed", error=str(exc))
 
