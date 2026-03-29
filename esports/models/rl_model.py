@@ -1,0 +1,192 @@
+"""
+Rocket League Win Model — XGBoost with 6 Glicko-2 features.
+
+S136 Phase 11B: Logistic regression on Glicko-2 features.
+Targets RLCS (~24 teams, ~300 series/season). Boost pad control
+and demo rate features added as data accumulates.
+Target accuracy: 60-63%.
+
+Features (6):
+    team_strength_diff, matchup_uncertainty, rd_asymmetry,
+    team_a_volatility, team_b_volatility, best_of
+
+Heuristic fallback: logistic(team_strength_diff) when model not trained.
+
+Usage::
+    model = RocketLeagueModel()
+    model.train(data)
+    prob = model.predict(game_state)
+"""
+from __future__ import annotations
+
+import math
+import os
+import pickle
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+from structlog import get_logger
+
+logger = get_logger()
+
+FEATURE_NAMES = [
+    "team_strength_diff",
+    "matchup_uncertainty",
+    "rd_asymmetry",
+    "team_a_volatility",
+    "team_b_volatility",
+    "best_of",
+]
+
+MODEL_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", "saved_models", "rl_xgb.json"
+)
+
+
+class RocketLeagueModel:
+    """XGBoost binary classifier for Rocket League match winner prediction."""
+
+    FEATURE_NAMES = FEATURE_NAMES
+
+    def __init__(self) -> None:
+        self._model = None
+        self._is_trained = False
+
+    @property
+    def is_trained(self) -> bool:
+        return self._is_trained
+
+    def predict(self, game_state: Dict[str, Any]) -> float:
+        """Predict P(team_a wins) from game state dict."""
+        if not self._is_trained or self._model is None:
+            return self._predict_heuristic(game_state)
+
+        features = self._extract_features(game_state)
+        if features is None:
+            return self._predict_heuristic(game_state)
+
+        try:
+            X = np.array([features], dtype=np.float32)
+            X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+            proba = self._model.predict_proba(X)[0][1]
+            return float(np.clip(proba, 0.01, 0.99))
+        except Exception as exc:
+            logger.debug("RocketLeagueModel: predict failed", error=str(exc))
+            return 0.5
+
+    def train(self, training_data: List[Dict[str, Any]]) -> bool:
+        """Train on historical match data. Returns True if successful."""
+        if len(training_data) < 30:
+            logger.warning("RocketLeagueModel: insufficient data", count=len(training_data))
+            return False
+
+        try:
+            return self._train_sync(training_data)
+        except Exception as exc:
+            logger.error("RocketLeagueModel: training failed", error=str(exc))
+            return False
+
+    def _train_sync(self, training_data: List[Dict[str, Any]]) -> bool:
+        X_rows = []
+        y_rows = []
+
+        for row in training_data:
+            features = self._extract_features(row)
+            if features is None:
+                continue
+            label = int(row.get("team_a_won", 0))
+            X_rows.append(features)
+            y_rows.append(label)
+
+        if len(X_rows) < 30:
+            return False
+
+        X = np.array(X_rows, dtype=np.float32)
+        y = np.array(y_rows, dtype=np.int32)
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+        if len(X_rows) < 50:
+            # Use logistic regression for small samples
+            from sklearn.linear_model import LogisticRegression
+            model = LogisticRegression(C=1.0, max_iter=200)
+            model.fit(X, y)
+        else:
+            from xgboost import XGBClassifier
+
+            # 15% early stopping split
+            es_split = max(int(len(X) * 0.85), 50)
+            X_train, X_es = X[:es_split], X[es_split:]
+            y_train, y_es = y[:es_split], y[es_split:]
+
+            model = XGBClassifier(
+                n_estimators=60,
+                max_depth=2,
+                learning_rate=0.1,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                eval_metric="logloss",
+                random_state=42,
+                early_stopping_rounds=20,
+            )
+
+            if len(X_es) >= 10:
+                model.fit(X_train, y_train, eval_set=[(X_es, y_es)], verbose=False)
+            else:
+                model.fit(X, y)
+
+        self._model = model
+        self._is_trained = True
+
+        preds = model.predict_proba(X)[:, 1]
+        brier = float(np.mean((preds - y) ** 2))
+        accuracy = float(np.mean((preds >= 0.5) == y))
+        logger.info(
+            "RocketLeagueModel: trained",
+            n_samples=len(X_rows),
+            brier=round(brier, 4),
+            accuracy=round(accuracy, 4),
+        )
+        return True
+
+    def save(self, path: Optional[str] = None) -> bool:
+        path = path or MODEL_PATH
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as f:
+                pickle.dump({"model": self._model}, f)
+            logger.info("RocketLeagueModel: saved", path=path)
+            return True
+        except Exception as exc:
+            logger.warning("RocketLeagueModel: save failed", error=str(exc))
+            return False
+
+    def load(self, path: Optional[str] = None) -> bool:
+        path = path or MODEL_PATH
+        try:
+            if not os.path.exists(path):
+                return False
+            with open(path, "rb") as f:
+                data = pickle.load(f)
+            self._model = data.get("model")
+            self._is_trained = self._model is not None
+            logger.info("RocketLeagueModel: loaded", path=path)
+            return self._is_trained
+        except Exception as exc:
+            logger.warning("RocketLeagueModel: load failed", error=str(exc))
+            return False
+
+    @staticmethod
+    def _predict_heuristic(game_state: Dict[str, Any]) -> float:
+        """Logistic heuristic based on team_strength_diff."""
+        team_str = float(game_state.get("team_strength_diff", 0.0))
+        uncertainty = float(game_state.get("matchup_uncertainty", 0.5))
+        certainty_weight = max(0.3, 1.0 - 0.7 * uncertainty)
+        z = 2.0 * team_str * certainty_weight
+        prob = 1.0 / (1.0 + math.exp(-z))
+        return float(max(0.05, min(0.95, prob)))
+
+    def _extract_features(self, state: Dict[str, Any]) -> Optional[List[float]]:
+        try:
+            return [float(state.get(name, 0.0) or 0.0) for name in FEATURE_NAMES]
+        except Exception:
+            return None
