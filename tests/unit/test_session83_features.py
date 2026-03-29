@@ -86,7 +86,7 @@ class TestDynamicEgmD:
         bot = self._make_bot()
         bot._game_kelly_mult = {"cs2": 0.5}
         bot._update_per_game_egm_d()
-        assert bot._game_egm_d["cs2"] == 1.2  # 1.5 - 0.3
+        assert bot._game_egm_d["cs2"] == 1.0  # S138: poor calibration floors to 1.0 (was egm_d - 0.3)
 
     def test_normal_brier_keeps_default(self):
         bot = self._make_bot()
