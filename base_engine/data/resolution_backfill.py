@@ -444,7 +444,17 @@ async def run_resolution_backfill(
                 # Fixes RESOLUTION event size inflation → phantom P&L.
                 _resolved = await _te_sess.execute(_te_text(
                     "SELECT e.market_id, e.bot_name, e.side, "
-                    "       pt_pnl.total_pnl, "
+                    "       CASE WHEN pt_pnl.resolution = e.side "
+                    "            THEN (e.total_entry_size - COALESCE(x.total_exit_size, 0)) "
+                    "                 * (1.0 - CASE WHEN e.total_entry_size > 0 "
+                    "                               THEN e.weighted_price / e.total_entry_size "
+                    "                               ELSE 0.0 END) "
+                    "                 - (e.total_entry_size - COALESCE(x.total_exit_size, 0)) * 0.015 "
+                    "            ELSE -((CASE WHEN e.total_entry_size > 0 "
+                    "                         THEN e.weighted_price / e.total_entry_size "
+                    "                         ELSE 0.0 END) "
+                    "                   * (e.total_entry_size - COALESCE(x.total_exit_size, 0))) "
+                    "       END AS computed_pnl, "
                     "       pt_pnl.resolved_at, "
                     "       e.total_entry_size - COALESCE(x.total_exit_size, 0) "
                     "         AS remaining_size, "
@@ -465,14 +475,14 @@ async def run_resolution_backfill(
                     "  GROUP BY market_id, bot_name, side"
                     ") e "
                     "JOIN ("
-                    "  SELECT market_id, bot_name, side, "
-                    "         SUM(realized_pnl) AS total_pnl, "
-                    "         MIN(resolved_at) AS resolved_at "
-                    "  FROM paper_trades "
-                    "  WHERE resolution IN ('YES', 'NO') "
-                    "    AND side IN ('YES', 'NO') "
-                    "    AND resolved_at IS NOT NULL "
-                    "  GROUP BY market_id, bot_name, side"
+                    "  SELECT pt.market_id, pt.bot_name, pt.side, "
+                    "         MIN(pt.resolved_at) AS resolved_at, "
+                    "         MIN(pt.resolution) AS resolution "
+                    "  FROM paper_trades pt "
+                    "  WHERE pt.resolution IN ('YES', 'NO') "
+                    "    AND pt.side IN ('YES', 'NO') "
+                    "    AND pt.resolved_at IS NOT NULL "
+                    "  GROUP BY pt.market_id, pt.bot_name, pt.side"
                     ") pt_pnl ON pt_pnl.market_id = e.market_id "
                     "        AND pt_pnl.bot_name = e.bot_name "
                     "        AND pt_pnl.side = e.side "
@@ -497,12 +507,14 @@ async def run_resolution_backfill(
                 for row in _resolved.fetchall():
                     try:
                         _entry_price = float(row[6]) if row[6] is not None else 0.0
-                        _raw_pnl = float(row[3]) if row[3] is not None else None
+                        # S140: P&L computed from ENTRY price/size + resolution outcome
+                        # (no longer reads paper_trades.realized_pnl — was corrupted by UPSERT)
+                        _computed_pnl = float(row[3]) if row[3] is not None else None
                         _exit_pnl = float(row[7]) if row[7] is not None else 0.0
-                        _adj_pnl = (_raw_pnl - _exit_pnl) if _raw_pnl is not None else None
+                        _adj_pnl = _computed_pnl  # already excludes exited size in SQL
                         if _exit_pnl != 0:
-                            logger.info("phase4b_exit_pnl_subtracted", market=str(row[0])[:20],
-                                        bot=row[1], raw_pnl=round(_raw_pnl, 4), exit_pnl=round(_exit_pnl, 4))
+                            logger.info("phase4b_exit_pnl_noted", market=str(row[0])[:20],
+                                        bot=row[1], computed_pnl=round(_computed_pnl or 0, 4), exit_pnl=round(_exit_pnl, 4))
                         # S135: Include game tag from ENTRY event_data
                         _res_event_data = {"game": row[8]} if row[8] else None
                         await db.insert_trade_event(
@@ -531,7 +543,7 @@ async def run_resolution_backfill(
     if hasattr(db, "insert_trade_event"):
         try:
             _fee_rate = getattr(
-                __import__("base_engine.config.settings", fromlist=["settings"]),
+                __import__("config.settings", fromlist=["settings"]),
                 "TAKER_FEE_BPS", 150,
             ) / 10000.0
             async with db.get_session() as _pr_sess:
