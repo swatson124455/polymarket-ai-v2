@@ -1650,6 +1650,7 @@ class MirrorBot(BaseBot):
 
         # Apply elite reliability multiplier
         reliability_mult = 1.0
+        _eq_n = 0  # S142: init here so Baker-McHale block (post-sizing) is always bound
         if self._reliability_tracker:
             try:
                 lr = self._reliability_tracker.likelihood_ratio(trader_address, side, category=category)
@@ -1868,17 +1869,54 @@ class MirrorBot(BaseBot):
         )
         size *= reliability_mult
 
+        # S142: Baker-McHale edge-uncertainty shrinkage.
+        # Kelly oversizes when the edge estimate is uncertain (few resolved trades).
+        # Formula: k = edge² / (edge² + var)  where var = p*(1-p)/n (binomial SE²).
+        # Reference: Baker & McHale (2013), Decision Analysis — shrink toward 0 when
+        # standard error of the edge is large relative to the estimated edge itself.
+        # Only applied when _eq_n >= 5 (below 5, sample ramp already drives size→0).
+        if _eq_n >= 5:
+            _bm_edge = max(0.0, confidence - price)
+            _bm_edge_sq = _bm_edge * _bm_edge
+            _bm_var = confidence * (1.0 - confidence) / _eq_n  # binomial SE²
+            _bm_denom = _bm_edge_sq + _bm_var
+            if _bm_denom > 0:
+                _bm_k = _bm_edge_sq / _bm_denom
+                size *= _bm_k
+                if _bm_k < 0.90:  # only log meaningful shrinkage
+                    logger.info("mirror_bm_shrinkage", trader=trader_address[:10],
+                                n=_eq_n, edge=round(_bm_edge, 3), k=round(_bm_k, 3),
+                                market=str(market_id)[:16])
+
         # S124: NaN/inf guard — defense-in-depth against corrupted Kelly output
         if not _math_isfinite(size) or size < 0:
             size = 0.0
 
-        # S132: NO-side sizing penalty — NO loses 7x more than YES (-$139K vs -$20K).
-        # Halve NO position sizes until calibration improves.
-        _no_dampener = float(getattr(settings, "MIRROR_NO_SIDE_DAMPENER", 0.5))
-        if _side_upper == "NO" and _no_dampener < 1.0:
-            size *= _no_dampener
-            logger.info("mirror_no_side_dampened", side="NO", dampener=_no_dampener,
-                        market=str(market_id)[:16])
+        # S142: Dynamic NO-side dampener — price-tiered (replaces flat multiplier).
+        # Data: NO = -$139K (87% of losses). Low NO-token prices = highest taker
+        # slippage ratio on the platform; near-zero upside relative to execution cost.
+        # Master gate: MIRROR_NO_SIDE_DAMPENER must be < 1.0 to activate (set to 1.0
+        # for data-collection mode; 0.3 in .env.mirror re-enables).
+        # NOTE: 'price' here is already corrected to live NO token price (see line ~1627).
+        if _side_upper == "NO":
+            _no_master = float(getattr(settings, "MIRROR_NO_SIDE_DAMPENER", 0.3))
+            if _no_master < 1.0:
+                if price < 0.10:
+                    # Sub-10c: taker slippage exceeds realistic upside entirely
+                    logger.info("mirror_no_dynamic_blocked", no_price=round(price, 3),
+                                reason="sub-10c", market=str(market_id)[:16])
+                    return False
+                elif price < 0.25:
+                    _no_dampener = 0.15  # very cheap NO — high risk taker position
+                elif price < 0.40:
+                    _no_dampener = 0.30  # speculative
+                elif price < 0.60:
+                    _no_dampener = 0.50  # balanced market
+                else:
+                    _no_dampener = 0.75  # NO is market consensus (range 0.60–0.75)
+                size *= _no_dampener
+                logger.info("mirror_no_dynamic_dampened", no_price=round(price, 3),
+                            dampener=_no_dampener, market=str(market_id)[:16])
 
         # S99b Option C: Dampen sizing in gray zone (5-7¢ / 93-95¢)
         # S119: Set to 1.0 (no-op) for data collection. Re-evaluate ~Mar 29.

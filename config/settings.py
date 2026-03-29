@@ -323,7 +323,7 @@ class Settings(BaseSettings):
     BACKTEST_PREFER_PRICE_HISTORY: bool = os.getenv("BACKTEST_PREFER_PRICE_HISTORY", "false").lower() in ("true", "1", "yes")
     
     # Elite Trader Settings - Top 200 traders
-    TOP_TRADER_COUNT: int = 500  # Top 500 traders
+    TOP_TRADER_COUNT: int = 300  # S142: 500→300 (top 0.04% capture 70% of profits; reduce noise)
     # Elite thresholds (relaxed: 5 bets in last year, 55% win; high vol+return weighted higher)
     ELITE_MIN_TRADES: int = int(os.getenv("ELITE_MIN_TRADES", "100"))  # 5→100: minimum trades to qualify as elite
     ELITE_MIN_VOLUME_USD: float = float(os.getenv("ELITE_MIN_VOLUME_USD", "10000"))  # OR $10k volume — either proves activity
@@ -343,7 +343,7 @@ class Settings(BaseSettings):
     ELITE_MARKET_MAKER_BOTH_SIDES_RATIO: float = float(os.getenv("ELITE_MARKET_MAKER_BOTH_SIDES_RATIO", "0.6"))
     SOFTEST_MARKETS_COUNT: int = 25
     # MirrorBot — RTDS real-time copy trading (S96+)
-    MIRROR_MIN_CONFIDENCE: float = float(os.getenv("MIRROR_MIN_CONFIDENCE", "0.50"))
+    MIRROR_MIN_CONFIDENCE: float = float(os.getenv("MIRROR_MIN_CONFIDENCE", "0.55"))  # S142: 0.50→0.55 (0.50 is breakeven after fees)
     MIRROR_MAX_PER_MARKET: float = float(os.getenv("MIRROR_MAX_PER_MARKET", "500"))
     MIRROR_MAX_PER_MARKET_PCT: float = float(os.getenv("MIRROR_MAX_PER_MARKET_PCT", "0.10"))
     MIRROR_MAX_CATEGORY_EXPOSURE_USD: float = float(os.getenv("MIRROR_MAX_CATEGORY_EXPOSURE_USD", "40000"))
@@ -355,7 +355,7 @@ class Settings(BaseSettings):
     MIRROR_MIN_ELITE_TRADES: int = int(os.getenv("MIRROR_MIN_ELITE_TRADES", "100"))
     # Watchlist: real-time WebSocket copy trading (monthly leaderboard top 1k)
     WATCHLIST_ENABLED: bool = os.getenv("WATCHLIST_ENABLED", "false").lower() in ("true", "1", "yes")
-    WATCHLIST_SIZE: int = int(os.getenv("WATCHLIST_SIZE", "500"))
+    WATCHLIST_SIZE: int = int(os.getenv("WATCHLIST_SIZE", "300"))  # S142: 500→300 (aligned with TOP_TRADER_COUNT)
     WHALE_TRADE_LOG_ENABLED: bool = os.getenv("WHALE_TRADE_LOG_ENABLED", "true").lower() in ("true", "1", "yes")
     # RTDS: global trade feed
     RTDS_WS_URL: str = os.getenv("RTDS_WS_URL", "wss://ws-live-data.polymarket.com")
@@ -393,7 +393,7 @@ class Settings(BaseSettings):
     MIRROR_CATEGORY_BLOCKLIST: str = os.getenv("MIRROR_CATEGORY_BLOCKLIST", "crypto,15-minute,speed")
     MIRROR_MARKET_COOLDOWN_SECONDS: int = int(os.getenv("MIRROR_MARKET_COOLDOWN_SECONDS", "1800"))
     MIRROR_MIN_TRADE_USD: float = float(os.getenv("MIRROR_MIN_TRADE_USD", "50.0"))
-    MIRROR_MAX_SLIPPAGE_PCT: float = float(os.getenv("MIRROR_MAX_SLIPPAGE_PCT", "0.08"))
+    MIRROR_MAX_SLIPPAGE_PCT: float = float(os.getenv("MIRROR_MAX_SLIPPAGE_PCT", "0.05"))  # S142: 0.08→0.05 (8% slippage consumed edge on 3-5¢ signal)
     # S132: Minimum whale trade USD — sub-$50 trades are noise (39.9% WR, -$153K)
     MIRROR_MIN_WHALE_TRADE_USD: float = float(os.getenv("MIRROR_MIN_WHALE_TRADE_USD", "50.0"))
     # S132: NO-side dampener — NO loses 7x more than YES. 0.5 = half size on NO.
@@ -404,8 +404,8 @@ class Settings(BaseSettings):
     # S137 C9: Category expertise filter — reject traders with poor category-specific WR
     MIRROR_CAT_MIN_TRADES: int = int(os.getenv("MIRROR_CAT_MIN_TRADES", "10"))
     MIRROR_CAT_MIN_WIN_RATE: float = float(os.getenv("MIRROR_CAT_MIN_WIN_RATE", "0.45"))
-    # S133: Spread gate — 20c+ spread markets lost -$151K. Reject wide-spread entries.
-    MIRROR_MAX_SPREAD: float = float(os.getenv("MIRROR_MAX_SPREAD", "0.20"))
+    # S133/S142: Spread gate — 20c+ spread = entering 20% underwater. Tightened to 8c.
+    MIRROR_MAX_SPREAD: float = float(os.getenv("MIRROR_MAX_SPREAD", "0.08"))
     # S133: Per-trader P&L blacklist — auto-block traders with poor WR after enough data.
     # 76% of copied traders are unprofitable; top 3 worst = -$68K (43% of all losses).
     MIRROR_TRADER_MIN_WIN_RATE: float = float(os.getenv("MIRROR_TRADER_MIN_WIN_RATE", "0.35"))

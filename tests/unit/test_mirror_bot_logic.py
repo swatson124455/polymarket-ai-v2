@@ -704,17 +704,22 @@ class TestExecuteMirrorTrade:
         bot.bankroll = MagicMock()
         bot.bankroll.capital = 3000.0
         bot.bankroll.max_daily_usd = 10000
-        bot.calculate_bot_position_size = AsyncMock(return_value=100.0)
+        # S142: 300 shares so BM shrinkage (k≈0.42) still yields >$50 trade.
+        # 300 × 0.42 × 0.60 = $75.42 > MIRROR_MIN_TRADE_USD=$50.
+        # Per-market cap: bankroll.capital=3000 × 5% = $150 = 250 shares, which is above 300×0.42=126.
+        bot.calculate_bot_position_size = AsyncMock(return_value=300.0)
         bot.place_order = AsyncMock(return_value={"success": True, "order_id": "ord1"})
         bot.store_pending_trade_signals = AsyncMock()
         # S103: Mock reliability tracker so multi-factor confidence produces valid value
+        # S142: WR must produce positive edge after Baker-McHale shrinkage.
+        # price=0.60 → need final confidence > 0.60. WR=0.72 → _base=0.72 → edge=0.057 → k≈0.42.
         bot._reliability_tracker = MagicMock()
         bot._reliability_tracker.likelihood_ratio = MagicMock(return_value=1.0)
         bot._reliability_tracker.category_trade_count = MagicMock(return_value=50)
-        bot._reliability_tracker.category_win_rate = MagicMock(return_value=0.60)  # S137 C9: pass category gate
-        bot._reliability_tracker.mean = MagicMock(return_value=0.60)
+        bot._reliability_tracker.category_win_rate = MagicMock(return_value=0.72)  # S137 C9: pass category gate
+        bot._reliability_tracker.mean = MagicMock(return_value=0.72)
         bot._reliability_tracker.total_trade_count = MagicMock(return_value=50)
-        bot._reliability_tracker.overall_win_rate = MagicMock(return_value=0.60)
+        bot._reliability_tracker.overall_win_rate = MagicMock(return_value=0.72)
         # S109: No pre-existing position on same market+side — same-side dedup blocks re-entry.
 
         result = await bot._execute_mirror_trade(
@@ -756,16 +761,17 @@ class TestExecuteMirrorTrade:
         bot.bankroll = MagicMock()
         bot.bankroll.capital = 3000.0
         bot.bankroll.max_daily_usd = 10000
-        bot.calculate_bot_position_size = AsyncMock(return_value=100.0)
+        # S142: 200 shares; WR=0.85 → confidence=0.75 (cap) → BM k=0.914 → 182 shares → $100 > $50.
+        bot.calculate_bot_position_size = AsyncMock(return_value=200.0)
         bot.place_order = AsyncMock(return_value={"success": True, "order_id": "ord1"})
         bot.store_pending_trade_signals = AsyncMock()
         bot._reliability_tracker = MagicMock()
         bot._reliability_tracker.likelihood_ratio = MagicMock(return_value=1.0)
         bot._reliability_tracker.category_trade_count = MagicMock(return_value=50)
-        bot._reliability_tracker.category_win_rate = MagicMock(return_value=0.60)  # S137 C9: pass category gate
-        bot._reliability_tracker.mean = MagicMock(return_value=0.60)
+        bot._reliability_tracker.category_win_rate = MagicMock(return_value=0.85)  # S142: high enough for BM k>0.9
+        bot._reliability_tracker.mean = MagicMock(return_value=0.85)
         bot._reliability_tracker.total_trade_count = MagicMock(return_value=50)
-        bot._reliability_tracker.overall_win_rate = MagicMock(return_value=0.60)
+        bot._reliability_tracker.overall_win_rate = MagicMock(return_value=0.85)
         result = await bot._execute_mirror_trade(
             market_id="mkt1", token_id="tok-yes", side="YES",
             price=0.55, confidence=0.70, trader_address="addr1",
