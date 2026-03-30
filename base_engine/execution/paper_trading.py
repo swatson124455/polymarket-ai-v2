@@ -533,6 +533,20 @@ class PaperTradingEngine:
                             price_before=round(_price_before_drift, 6),
                             price_after=round(price, 6), side=side)
 
+        # S147: Preserve original order USD cap after VWAP adjustment.
+        # Book walk can raise the fill price above the sizing price, causing
+        # size * VWAP to exceed the intended USD (e.g., $300 cap becomes $367).
+        # Trim shares so the fill stays within the original order USD.
+        if side == "BUY" and _book_walk_used and price > original_price and _order_size_usd > 0:
+            _new_notional = size * price
+            if _new_notional > _order_size_usd * 1.005:  # 0.5% tolerance for rounding
+                size = _order_size_usd / price
+                logger.info("paper_vwap_size_trim", market_id=market_id,
+                            original_usd=round(_order_size_usd, 2),
+                            vwap_usd=round(_new_notional, 2),
+                            trimmed_size=round(size, 4),
+                            bot_name=bot_name)
+
         # Partial fill from book depth
         if _fill_frac < 1.0:
             _filled_size = round(size * _fill_frac, 4)
