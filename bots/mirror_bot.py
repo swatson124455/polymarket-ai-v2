@@ -285,12 +285,35 @@ class MirrorBot(BaseBot):
                             "timestamp": ts,
                         }
                         restored += 1
+                # S144: Count stale-price positions (current_price == entry_price).
+                _stale = sum(
+                    1 for p in self._open_positions.values()
+                    if abs(float(p.get("current_price", 0) or 0) - float(p.get("entry_price", 0) or 0)) < 1e-6
+                )
                 logger.info(
-                    "MirrorBot startup: restored %d open positions from DB",
-                    restored,
+                    "MirrorBot startup: restored %d open positions from DB (stale_price=%d)",
+                    restored, _stale,
                 )
         except Exception as exc:
             logger.warning("MirrorBot _restore_state_on_startup failed: %s", exc)
+
+        # S144: Immediately sync fresh prices from DB so stop-loss has accurate
+        # current_price right after restart, not 45s later on first scan cycle.
+        if self._open_positions:
+            try:
+                _stale_before = sum(
+                    1 for p in self._open_positions.values()
+                    if abs(float(p.get("current_price", 0) or 0) - float(p.get("entry_price", 0) or 0)) < 1e-6
+                )
+                await self._sync_prices_from_db()
+                _stale_after = sum(
+                    1 for p in self._open_positions.values()
+                    if abs(float(p.get("current_price", 0) or 0) - float(p.get("entry_price", 0) or 0)) < 1e-6
+                )
+                logger.info("mirror_startup_price_sync stale_before=%d stale_after=%d",
+                            _stale_before, _stale_after)
+            except Exception as _ps_err:
+                logger.warning("mirror_startup_price_sync failed: %s", _ps_err)
 
         # S117: Build _entered_market_sides from ALL trade_events ENTRY records.
         # Prevents opposing-side entries on markets where the first side already resolved.
@@ -2055,13 +2078,31 @@ class MirrorBot(BaseBot):
                 category=category,
             )
 
-            # R2: Store signal context for ML training (fire-and-forget).
+            # R2: Store signal context for ML training.
+            # S144: MirrorBot never calls apply_signal_enhancements() so
+            # _pending_signal_meta is empty. Populate it with MirrorBot-specific
+            # data so trade_signals rows are actually written (was 0% coverage).
             _trade_id = order.get("trade_id") or order.get("order_id")
             if _trade_id:
-                _t = asyncio.create_task(
-                    self.store_pending_trade_signals(str(_trade_id), str(market_id))
-                )
-                _t.add_done_callback(lambda t: self._on_bg_task_done(t, "store_trade_signals"))
+                self._pending_signal_meta[str(market_id)] = {
+                    "signal_direction": side,
+                    "signal_confidence": round(confidence, 4),
+                    "signal_source": f"mirror_rtds_{trader_address[:8]}",
+                    "signal_multiplier": round(reliability_mult, 4) if reliability_mult else None,
+                    "order_flow_direction": side,
+                    "order_flow_multiplier": None,
+                    "trends_signal": category,
+                    "trends_multiplier": None,
+                }
+                try:
+                    await asyncio.wait_for(
+                        self.store_pending_trade_signals(str(_trade_id), str(market_id)),
+                        timeout=2.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("mirror_signal_store_timeout", market_id=market_id)
+                except Exception as _sig_err:
+                    logger.debug("mirror_signal_store_failed: %s", _sig_err)
 
             return True
         return False

@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from bots.mirror_bot import MirrorBot
+from config.settings import settings
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -625,6 +626,55 @@ class TestRestoreStateOnStartup:
         assert bot._state_restored is True
         assert bot._daily_exposure == 0.0
 
+    @pytest.mark.asyncio
+    async def test_startup_calls_sync_prices_immediately(self):
+        """S144: After restoring positions, _sync_prices_from_db runs immediately."""
+        bot, engine = _make_bot()
+        bot._state_restored = False
+
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        # First execute: daily exposure
+        scalar_result = MagicMock()
+        scalar_result.scalar = MagicMock(return_value=0.0)
+
+        # Second execute: category exposure
+        cat_result = MagicMock()
+        cat_result.fetchall = MagicMock(return_value=[])
+
+        # Third execute: one position (stale price == entry_price)
+        pos_row = MagicMock()
+        pos_row.market_id = "mkt1"
+        pos_row.token_id = "tok-yes"
+        pos_row.side = "YES"
+        pos_row.size = 50.0
+        pos_row.entry_price = 0.60
+        pos_row.current_price = 0.60  # stale: same as entry
+        pos_row.opened_at = datetime(2026, 3, 9, tzinfo=timezone.utc)
+        pos_row.trader_addresses = []
+        positions_result = MagicMock()
+        positions_result.fetchall = MagicMock(return_value=[pos_row])
+
+        # Fourth execute: entered_market_sides
+        sides_result = MagicMock()
+        sides_result.fetchall = MagicMock(return_value=[])
+
+        mock_ctx.execute = AsyncMock(side_effect=[
+            scalar_result, cat_result, positions_result, sides_result,
+        ])
+        engine.db.get_session = MagicMock(return_value=mock_ctx)
+
+        # Mock _sync_prices_from_db to verify it is called
+        bot._sync_prices_from_db = AsyncMock()
+
+        await bot._restore_state_on_startup()
+
+        # Key assertion: price sync was called immediately after restore
+        bot._sync_prices_from_db.assert_awaited_once()
+        assert "mkt1:tok-yes" in bot._open_positions
+
 
 
 # ── _track_open_position() ─────────────────────────────────────────────────
@@ -778,6 +828,42 @@ class TestExecuteMirrorTrade:
         )
         assert result is True
         bot.place_order.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_bm_shrinkage_rejects_low_edge_despite_tight_spread(self):
+        """S144: WR=0.60 trader, tight spread, price=0.55 — BM shrinks size below dust gate.
+
+        Baker-McHale shrinkage is the safety net for low-edge trades that pass the
+        spread gate. confidence ≈ 0.55-0.60, edge ≈ 0.00-0.05, BM k is very small,
+        so the final size falls below the $50 MIRROR_MIN_TRADE_USD dust gate.
+        """
+        bot, engine = _make_bot()
+        # Tight spread market (passes spread gate)
+        engine.get_market_from_index = MagicMock(return_value={
+            "active": True, "yes_price": 0.55, "no_price": 0.45,
+            "volume_24h": 100000.0, "liquidity": 50000.0,
+        })
+        bot.bankroll = MagicMock()
+        bot.bankroll.capital = 3000.0
+        bot.bankroll.max_daily_usd = 10000
+        bot.calculate_bot_position_size = AsyncMock(return_value=200.0)
+        bot.place_order = AsyncMock(return_value={"success": True, "order_id": "ord1"})
+        bot.store_pending_trade_signals = AsyncMock()
+        # WR=0.60: mediocre trader → confidence ≈ 0.55-0.60 → tiny edge over price=0.55
+        bot._reliability_tracker = MagicMock()
+        bot._reliability_tracker.likelihood_ratio = MagicMock(return_value=1.0)
+        bot._reliability_tracker.category_trade_count = MagicMock(return_value=50)
+        bot._reliability_tracker.category_win_rate = MagicMock(return_value=0.60)
+        bot._reliability_tracker.mean = MagicMock(return_value=0.60)
+        bot._reliability_tracker.total_trade_count = MagicMock(return_value=50)
+        bot._reliability_tracker.overall_win_rate = MagicMock(return_value=0.60)
+        result = await bot._execute_mirror_trade(
+            market_id="mkt1", token_id="tok-yes", side="YES",
+            price=0.55, confidence=0.70, trader_address="addr1",
+        )
+        # BM shrinkage kills the trade — size too small for dust gate
+        assert result is False
+        bot.place_order.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_same_side_dedup_blocks_reentry(self):
@@ -1321,3 +1407,55 @@ class TestEliteReliabilityCategory:
         assert rec["beta_yes"] == 13   # (10-7)+10
         assert rec["alpha_no"] == 9    # 3+6
         assert rec["beta_no"] == 12    # (5-3)+10
+
+
+# ── MirrorAdaptiveSafety ───────────────────────────────────────────────────
+
+
+class TestAdaptiveSafetyEagerFit:
+    """S144: Adaptive safety must fit on the very first scan, not after 20 scans."""
+
+    @pytest.mark.asyncio
+    async def test_refresh_runs_eagerly_when_unfitted(self):
+        """When _fitted=False, refresh() runs immediately even at scan_count=1."""
+        from bots.mirror_adaptive_safety import MirrorAdaptiveSafety
+
+        mock_db = MagicMock()
+        mock_db.session_factory = True
+        safety = MirrorAdaptiveSafety(db=mock_db)
+
+        # Provide 6 resolved trades so it can fit (minimum is 5)
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        pnl_rows = [(10.0,), (5.0,), (-3.0,), (8.0,), (-2.0,), (12.0,)]
+        mock_result = MagicMock()
+        mock_result.fetchall = MagicMock(return_value=pnl_rows)
+        mock_ctx.execute = AsyncMock(return_value=mock_result)
+        mock_db.get_session = MagicMock(return_value=mock_ctx)
+
+        # Enable adaptive safety
+        with patch.object(settings, "MIRROR_ADAPTIVE_SAFETY", True):
+            # scan_count=1: normally blocked by 20-scan throttle
+            await safety.refresh(scan_count=1)
+
+        # Key assertion: it fitted on the first call
+        assert safety._fitted is True
+        assert safety._recent_win_rate > 0
+
+    @pytest.mark.asyncio
+    async def test_refresh_throttled_once_fitted(self):
+        """After fitting, refresh() respects the 20-scan throttle."""
+        from bots.mirror_adaptive_safety import MirrorAdaptiveSafety
+
+        mock_db = MagicMock()
+        mock_db.session_factory = True
+        safety = MirrorAdaptiveSafety(db=mock_db)
+        safety._fitted = True
+        safety._last_refresh_scan = 5
+
+        with patch.object(settings, "MIRROR_ADAPTIVE_SAFETY", True):
+            await safety.refresh(scan_count=10)  # only 5 scans since last
+
+        # DB should not have been called (throttled)
+        mock_db.get_session.assert_not_called()

@@ -42,8 +42,10 @@ class MirrorAdaptiveSafety:
         if not self._db or not getattr(self._db, "session_factory", None):
             return
 
-        # Refresh every 20 scans (~15 min at 45s interval)
-        if scan_count - self._last_refresh_scan < 20:
+        # Refresh every 20 scans (~15 min at 45s interval).
+        # S144: Always run immediately when unfitted (startup) so the circuit
+        # breaker is active within the first scan cycle, not 15 minutes later.
+        if self._fitted and (scan_count - self._last_refresh_scan < 20):
             return
         self._last_refresh_scan = scan_count
 

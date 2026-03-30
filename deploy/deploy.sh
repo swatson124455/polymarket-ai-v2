@@ -108,8 +108,11 @@ sudo chown -h polymarket:polymarket \
 
 # Run migrations — abort + clean up on failure
 # cd first so pydantic-settings resolves .env relative to the release dir
+# S144: Bypass PgBouncer for migrations — connect directly to postgres via unix socket.
+# Bots consume most of PgBouncer's 25 connections; migration only needs 1 for a few seconds.
 cd $NEW_RELEASE
-sudo -u polymarket $SHARED/venv/bin/python scripts/run_migrations.py || {
+MIGRATION_DB_URL="postgresql://polymarket:polymarket_s46@/polymarket?host=/var/run/postgresql"
+sudo -u polymarket DATABASE_URL="\$MIGRATION_DB_URL" $SHARED/venv/bin/python scripts/run_migrations.py || {
     echo "MIGRATION FAILED — removing release $NEW_RELEASE"
     sudo rm -rf "$NEW_RELEASE"
     exit 1
