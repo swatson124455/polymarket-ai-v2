@@ -5285,19 +5285,29 @@ class Database:
                 # Also backfill trade_events ENTRY records for orphans.
                 # trade_events is the P&L authority — without an ENTRY event,
                 # resolution backfill can't compute realized P&L.
+                # S143: Join paper_trades to recover confidence (was lost in repair path).
                 te_result = await session.execute(
                     _sa_text(
                         "INSERT INTO trade_events "
                         "  (event_type, execution_mode, event_time, bot_name, market_id, "
-                        "   token_id, side, size, price, idempotency_key) "
+                        "   token_id, side, size, price, confidence, idempotency_key) "
                         "SELECT "
                         "  'ENTRY', 'paper', COALESCE(p.opened_at, NOW()), "
                         "  COALESCE(p.source_bot, p.bot_id), p.market_id, p.token_id, "
                         "  COALESCE(p.side, 'YES'), p.size, "
                         "  COALESCE(p.entry_price, p.current_price, 0.50), "
+                        "  pt_match.confidence, "
                         "  'repair-entry-' || p.id::text "
                         "FROM positions p "
+                        "LEFT JOIN LATERAL ("
+                        "  SELECT confidence FROM paper_trades pt2 "
+                        "  WHERE pt2.market_id = p.market_id "
+                        "    AND pt2.bot_name = COALESCE(p.source_bot, p.bot_id) "
+                        "    AND LOWER(pt2.side) != 'sell' "
+                        "  ORDER BY pt2.created_at DESC LIMIT 1"
+                        ") pt_match ON true "
                         "WHERE p.status = 'open' "
+                        "  AND p.opened_at < NOW() - INTERVAL '60 seconds' "
                         "  AND NOT EXISTS ("
                         "    SELECT 1 FROM trade_events te "
                         "    WHERE te.bot_name = COALESCE(p.source_bot, p.bot_id) "
