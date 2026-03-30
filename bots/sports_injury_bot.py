@@ -311,6 +311,17 @@ class SportsInjuryBot(BaseBot):
 
             # Step 6: Place order
             token_id = market.yes_token_id if side == "YES" else (market.no_token_id or market.yes_token_id or "")
+            # S145: Populate signal meta for auto-store in place_order()
+            self._pending_signal_meta[str(market.market_id)] = {
+                "signal_direction": side,
+                "signal_confidence": round(event.confidence, 4),
+                "signal_source": f"injury_{getattr(event, 'source', 'event')}" if getattr(event, "source", None) else "injury_event",
+                "signal_multiplier": round(abs(edge), 4) if edge else None,
+                "order_flow_direction": None,
+                "order_flow_multiplier": None,
+                "trends_signal": None,
+                "trends_multiplier": round(fair_prob, 4) if fair_prob else None,
+            }
             try:
                 result = await asyncio.wait_for(
                     self.place_order(

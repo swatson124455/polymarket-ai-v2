@@ -71,6 +71,12 @@ class EliteWatchlist:
         # Bounded by active Polymarket token count (~10K max).
         self._rtds_price_cache: Dict[str, Tuple[float, float]] = {}  # token_id → (price, mono_time)
 
+        # S146: Copy-P&L per trader — tier assignment based on OUR realized P&L when copying them.
+        # Populated during refresh_watchlist() from trade_events DB query.
+        # tier: 1=copy-profitable (full size), 2=thin data (50%), 3=copy-unprofitable (25%)
+        self._copy_tiers: Dict[str, int] = {}  # addr_lower → tier (1/2/3)
+        self._copy_perf: Dict[str, Dict] = {}  # addr_lower → {trades, wins, copy_wr, copy_pnl}
+
         # Stats
         self._events_received: int = 0
         self._events_matched: int = 0
@@ -246,6 +252,69 @@ class EliteWatchlist:
         if _removed_inactive or _decayed_inactive:
             logger.info("leader_inactivity", removed=_removed_inactive, decayed=_decayed_inactive)
 
+        # S146: Query copy-P&L per trader from trade_events and assign tiers.
+        # Tier 1 = copy-profitable (full sizing), Tier 2 = thin data (learning),
+        # Tier 3 = copy-unprofitable (probation). All 300 stay — tiers control capital only.
+        _min_for_tier = int(getattr(settings, "MIRROR_COPY_MIN_TRADES_FOR_TIER", 20))
+        _new_copy_tiers: Dict[str, int] = {}
+        _new_copy_perf: Dict[str, Dict] = {}
+        _tier_counts = {1: 0, 2: 0, 3: 0}
+        if self._db and new_addresses:
+            try:
+                from sqlalchemy import text
+                async with self._db.get_session(timeout=15) as session:
+                    _result = await session.execute(text("""
+                        WITH entry_trader AS (
+                            SELECT DISTINCT ON (market_id)
+                                market_id, event_data->>'trader' AS trader
+                            FROM trade_events
+                            WHERE bot_name = 'MirrorBot' AND event_type = 'ENTRY'
+                                AND event_data->>'trader' IS NOT NULL
+                                AND event_time >= NOW() - INTERVAL '30 days'
+                            ORDER BY market_id, event_time ASC
+                        )
+                        SELECT
+                            LOWER(et.trader) AS trader,
+                            COUNT(*) AS trades,
+                            COUNT(*) FILTER (WHERE te.realized_pnl > 0) AS wins,
+                            ROUND(SUM(te.realized_pnl)::numeric, 2) AS copy_pnl
+                        FROM trade_events te
+                        JOIN entry_trader et ON et.market_id = te.market_id
+                        WHERE te.bot_name = 'MirrorBot'
+                            AND te.event_type IN ('EXIT', 'RESOLUTION')
+                        GROUP BY LOWER(et.trader)
+                    """))
+                    for row in _result:
+                        _addr = str(row[0] or "").strip().lower()
+                        if not _addr or _addr not in new_addresses:
+                            continue
+                        _trades = int(row[1])
+                        _wins = int(row[2])
+                        _pnl = float(row[3] or 0)
+                        _wr = round(100.0 * _wins / _trades, 1) if _trades > 0 else 0.0
+                        _new_copy_perf[_addr] = {
+                            "trades": _trades, "wins": _wins,
+                            "copy_wr": _wr, "copy_pnl": _pnl,
+                        }
+                        if _trades >= _min_for_tier:
+                            _tier = 1 if _pnl > 0 else 3
+                        else:
+                            _tier = 2
+                        _new_copy_tiers[_addr] = _tier
+                        _tier_counts[_tier] += 1
+                logger.info("watchlist_copy_scoring",
+                            tier1=_tier_counts[1], tier2=_tier_counts[2], tier3=_tier_counts[3],
+                            total_scored=sum(_tier_counts.values()))
+            except Exception as _cp_err:
+                logger.warning("watchlist_copy_scoring_failed: %s", _cp_err)
+
+        # Assign tier 2 (learning) to watchlist members with no copy data
+        for _addr in new_addresses:
+            if _addr not in _new_copy_tiers:
+                _new_copy_tiers[_addr] = 2
+
+        self._copy_tiers = _new_copy_tiers
+        self._copy_perf = _new_copy_perf
         self._watchlist_addresses = new_addresses
         self._watchlist_data = new_data
         self._last_refresh = time.monotonic()
@@ -500,6 +569,7 @@ class EliteWatchlist:
                     confidence=round(confidence, 3),
                     efficiency=round(_efficiency, 4),
                     trader_pnl=round(trader_data.get("pnl", 0), 0),
+                    copy_tier=self._copy_tiers.get(addr_lower, 2),  # S146
                 )
             else:
                 logger.debug(
@@ -591,6 +661,14 @@ class EliteWatchlist:
             "last_refresh_ago_s": round(time.monotonic() - self._last_refresh, 0) if self._last_refresh else None,
             "rtds_price_cache_size": len(self._rtds_price_cache),
         }
+
+    def get_copy_tier(self, trader_address: str) -> int:
+        """S146: Return copy-P&L tier for a trader (1=profitable, 2=thin data, 3=unprofitable)."""
+        return self._copy_tiers.get(trader_address.lower(), 2)
+
+    def get_copy_perf(self, trader_address: str) -> Optional[Dict]:
+        """S146: Return copy performance dict for a trader, or None if no data."""
+        return self._copy_perf.get(trader_address.lower())
 
     def get_rtds_price(self, token_id: str, max_age_s: float = 300.0) -> Optional[float]:
         """S141: Return cached RTDS price for a token, or None if stale/missing.

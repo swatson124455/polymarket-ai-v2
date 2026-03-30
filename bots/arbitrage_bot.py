@@ -928,6 +928,17 @@ class ArbitrageBot(BaseBot):
                 size = self.default_order_size
             orders = []
             for token_id, price in zip(token_ids, prices):
+                # S145: Populate signal meta for auto-store in place_order()
+                self._pending_signal_meta[str(market_id)] = {
+                    "signal_direction": "YES",
+                    "signal_confidence": round(float(confidence), 4),
+                    "signal_source": "arb_bundle",
+                    "signal_multiplier": None,
+                    "order_flow_direction": None,
+                    "order_flow_multiplier": None,
+                    "trends_signal": None,
+                    "trends_multiplier": None,
+                }
                 order = await self.place_order(
                     market_id=market_id,
                     token_id=str(token_id),
@@ -1142,6 +1153,17 @@ class ArbitrageBot(BaseBot):
                         except Exception:
                             size = min(max_total_risk * complement_weight, self.default_order_size * 2)
                         size = max(size, 1.0)
+                        # S145: Populate signal meta for auto-store in place_order()
+                        self._pending_signal_meta[str(resolved_mid)] = {
+                            "signal_direction": "YES",
+                            "signal_confidence": round(confidence, 4),
+                            "signal_source": "arb_negrisk_buy_all",
+                            "signal_multiplier": round(profit, 4),
+                            "order_flow_direction": None,
+                            "order_flow_multiplier": None,
+                            "trends_signal": None,
+                            "trends_multiplier": None,
+                        }
                         order = await self.place_order(
                             market_id=resolved_mid, token_id=tid, side="YES",
                             size=size, price=pr, confidence=confidence,
@@ -1186,6 +1208,17 @@ class ArbitrageBot(BaseBot):
                         except Exception:
                             size = min(max_total_risk * complement_weight, self.default_order_size * 2)
                         size = max(size, 1.0)
+                        # S145: Populate signal meta for auto-store in place_order()
+                        self._pending_signal_meta[str(resolved_mid)] = {
+                            "signal_direction": "NO",
+                            "signal_confidence": round(confidence, 4),
+                            "signal_source": "arb_negrisk_sell_all",
+                            "signal_multiplier": round(profit, 4),
+                            "order_flow_direction": None,
+                            "order_flow_multiplier": None,
+                            "trends_signal": None,
+                            "trends_multiplier": None,
+                        }
                         # Buy NO = sell YES on the other side; use NO token (tokenId is outcome-specific)
                         order = await self.place_order(
                             market_id=resolved_mid, token_id=tid, side="NO",
@@ -1238,7 +1271,18 @@ class ArbitrageBot(BaseBot):
             if not all([market1_id, market2_id, token1, token2, price1, price2]):
                 logger.warning("Missing required fields for cross-market arbitrage")
                 return
-            
+
+            # S145: Populate signal meta for auto-store in place_order()
+            self._pending_signal_meta[str(market1_id)] = {
+                "signal_direction": "YES",
+                "signal_confidence": round(float(confidence), 4),
+                "signal_source": "arb_cross_market",
+                "signal_multiplier": round(float(opportunity.get("profit_margin", 0)), 4),
+                "order_flow_direction": None,
+                "order_flow_multiplier": None,
+                "trends_signal": None,
+                "trends_multiplier": None,
+            }
             order1 = await self.place_order(
                 market_id=str(market1_id),
                 token_id=str(token1),
@@ -1248,6 +1292,16 @@ class ArbitrageBot(BaseBot):
                 confidence=float(confidence),
             )
             if order1.get("success"):
+                self._pending_signal_meta[str(market2_id)] = {
+                    "signal_direction": "YES",
+                    "signal_confidence": round(float(confidence), 4),
+                    "signal_source": "arb_cross_market",
+                    "signal_multiplier": round(float(opportunity.get("profit_margin", 0)), 4),
+                    "order_flow_direction": None,
+                    "order_flow_multiplier": None,
+                    "trends_signal": None,
+                    "trends_multiplier": None,
+                }
                 order2 = await self.place_order(
                     market_id=str(market2_id),
                     token_id=str(token2),

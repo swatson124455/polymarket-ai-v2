@@ -177,6 +177,18 @@ class OracleBot(BaseBot):
             if size <= 0:
                 return
 
+            # S145: Populate signal meta for auto-store in place_order()
+            self._pending_signal_meta[str(market_id)] = {
+                "signal_direction": proposed_side,
+                "signal_confidence": 0.95,
+                "signal_source": "oracle_feed",
+                "signal_multiplier": None,
+                "order_flow_direction": None,
+                "order_flow_multiplier": None,
+                "trends_signal": None,
+                "trends_multiplier": None,
+            }
+
             order = await self.place_order(
                 market_id=market_id,
                 token_id=str(token_id),

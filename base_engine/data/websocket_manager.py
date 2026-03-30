@@ -182,10 +182,9 @@ class WebSocketManager:
             except websockets.exceptions.ConnectionClosed:
                 _reconnect_attempts += 1
                 _backoff = min(2 ** _reconnect_attempts, _MAX_BACKOFF)
-                # N3 FIX: After 10 consecutive failures (~10 min of retries), log CRITICAL and
-                # slow down to 5-minute intervals. Without this circuit breaker, the reconnect
-                # loop retries every 60s forever on permanent network failure, consuming CPU.
-                _MAX_BEFORE_CRITICAL = 10
+                # S145: Reduced from 10→5 for faster detection (~62s vs ~362s).
+                # Same 300s backoff after trip — no reconnect storm risk.
+                _MAX_BEFORE_CRITICAL = 5
                 if _reconnect_attempts == _MAX_BEFORE_CRITICAL:
                     logger.critical(
                         "WebSocket: %d consecutive reconnect failures — network may be permanently down. "

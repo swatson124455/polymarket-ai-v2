@@ -873,7 +873,8 @@ class MirrorBot(BaseBot):
         # New defaults: -10% (0-48h), -12% (48-72h), -15% (72h+) + near-resolution -5%.
         _base_stop_pct = float(getattr(settings, "MIRROR_STOP_LOSS_PCT", 0.15))  # 72h+ stop
         _tp_pct = float(getattr(settings, "MIRROR_TAKE_PROFIT_PCT", 0.25))
-        _stop_48h = float(getattr(settings, "MIRROR_STOP_LOSS_TIGHTEN_48H", -0.12))  # 0-48h tight
+        _stop_24h = float(getattr(settings, "MIRROR_STOP_LOSS_TIGHTEN_24H", -0.06))  # S146: 0-24h tightest
+        _stop_48h = float(getattr(settings, "MIRROR_STOP_LOSS_TIGHTEN_48H", -0.12))  # 24-48h tight
         _stop_72h = float(getattr(settings, "MIRROR_STOP_LOSS_TIGHTEN_72H", -0.15))  # 48-72h medium
         _near_res_hours = float(getattr(settings, "MIRROR_STOP_LOSS_NEAR_RES_HOURS", 24.0))
         _near_res_stop = abs(float(getattr(settings, "MIRROR_STOP_LOSS_NEAR_RES_PCT", -0.05)))
@@ -941,17 +942,19 @@ class MirrorBot(BaseBot):
                     positions_to_close.append(_pos_key)
                     continue
 
-            # S137 C10: Graduated stop-loss — reversed so it's tight early and loose late.
-            # Near-resolution override: < 24h left → -5% to avoid being stuck at resolution.
-            # Graduated stop-loss thresholds (TTR already computed above for C11)
+            # S137 C10 / S146: Graduated stop-loss — 4-tier, tight early and loose late.
+            # S146: Added 24h tier. Tightened all thresholds for 40% WR regime.
+            # Near-resolution override: < 24h left → -3% to avoid being stuck at resolution.
             if _ttr_hours is not None and _ttr_hours < _near_res_hours:
-                _effective_stop = _near_res_stop  # tight near resolution
+                _effective_stop = _near_res_stop  # near-resolution override
             elif _hours_held >= 72:
-                _effective_stop = _base_stop_pct  # loose at 72h+ (market noise dominates)
+                _effective_stop = _base_stop_pct  # 72h+ (market noise dominates)
             elif _hours_held >= 48:
-                _effective_stop = abs(_stop_72h)   # medium 48-72h
+                _effective_stop = abs(_stop_72h)   # 48-72h medium
+            elif _hours_held >= 24:
+                _effective_stop = abs(_stop_48h)   # 24-48h tight
             else:
-                _effective_stop = abs(_stop_48h)   # tight 0-48h (kill losers fast)
+                _effective_stop = abs(_stop_24h)   # S146: 0-24h tightest (kill losers fast)
 
             if _pnl_pct <= -_effective_stop:
                 logger.info("MirrorBot autonomous stop-loss", market=_pos_key,
@@ -1778,9 +1781,22 @@ class MirrorBot(BaseBot):
             elif _ttr_h > 168:
                 _ttr_adj = -0.02
 
+        # S146 Factor 5: Copy-track adjustment — trader's demonstrated copyability.
+        # Proven copy-winners get a confidence boost; proven copy-losers get penalized.
+        # Thin data (< threshold trades): neutral (no adjustment until we have signal).
+        _copy_adj = 0.0
+        _min_for_tier = int(getattr(settings, "MIRROR_COPY_MIN_TRADES_FOR_TIER", 20))
+        if self._watchlist:
+            _cp = self._watchlist.get_copy_perf(trader_address)
+            if _cp and _cp["trades"] >= _min_for_tier:
+                if _cp["copy_wr"] > 55.0:
+                    _copy_adj = 0.03
+                elif _cp["copy_wr"] < 40.0:
+                    _copy_adj = -0.05
+
         # Compose final confidence (overrides upstream flat 0.55)
         _raw_upstream = confidence
-        confidence = max(0.35, min(0.75, _base + _price_adj + _conv_adj + _ttr_adj))
+        confidence = max(0.35, min(0.75, _base + _price_adj + _conv_adj + _ttr_adj + _copy_adj))
 
         logger.info("mirror_multifactor", trader=trader_address[:10],
                     category=category or "", cat_wr=round(_cat_wr, 3),
@@ -1788,6 +1804,7 @@ class MirrorBot(BaseBot):
                     price_adj=round(_price_adj, 3),
                     conv_adj=round(_conv_adj, 3),
                     ttr_adj=round(_ttr_adj, 3),
+                    copy_adj=round(_copy_adj, 3),  # S146
                     ttr_h=round(_ttr_h, 1) if _ttr_h is not None else None,
                     whale_usd=round(whale_trade_usd, 0),
                     upstream=round(_raw_upstream, 3),
@@ -1892,6 +1909,22 @@ class MirrorBot(BaseBot):
         )
         size *= reliability_mult
 
+        # S146: Copy-P&L tiered sizing — scale by trader's demonstrated copyability.
+        # Tier 1 (copy-profitable, n>=20): 1.0x. Tier 2 (thin data): 0.50x. Tier 3 (copy-unprofitable): 0.25x.
+        # All 300 traders stay on watchlist — tiers control capital, not membership.
+        _copy_tier = 2  # default: learning mode
+        if self._watchlist:
+            _copy_tier = self._watchlist.get_copy_tier(trader_address)
+        if _copy_tier == 2:
+            _tier_mult = float(getattr(settings, "MIRROR_COPY_TIER2_MULT", 0.50))
+            size *= _tier_mult
+        elif _copy_tier == 3:
+            _tier_mult = float(getattr(settings, "MIRROR_COPY_TIER3_MULT", 0.25))
+            size *= _tier_mult
+            logger.info("mirror_copy_tier3", trader=trader_address[:10],
+                        mult=_tier_mult, market=str(market_id)[:16])
+        # Tier 1: no multiplier (1.0x)
+
         # S142: Baker-McHale edge-uncertainty shrinkage.
         # Kelly oversizes when the edge estimate is uncertain (few resolved trades).
         # Formula: k = edge² / (edge² + var)  where var = p*(1-p)/n (binomial SE²).
@@ -1915,19 +1948,30 @@ class MirrorBot(BaseBot):
         if not _math_isfinite(size) or size < 0:
             size = 0.0
 
-        # S142: Dynamic NO-side dampener — price-tiered (replaces flat multiplier).
+        # S142/S146: Dynamic NO-side dampener — price-tiered (replaces flat multiplier).
         # Data: NO = -$139K (87% of losses). Low NO-token prices = highest taker
         # slippage ratio on the platform; near-zero upside relative to execution cost.
-        # Master gate: MIRROR_NO_SIDE_DAMPENER must be < 1.0 to activate (set to 1.0
-        # for data-collection mode; 0.3 in .env.mirror re-enables).
-        # NOTE: 'price' here is already corrected to live NO token price (see line ~1627).
+        # S146: Added minimum edge gate — NO trades must show 5% edge (confidence - price).
+        # S146: Raised hard-block floor from 0.10 to 0.20 (sub-20c NO has unreliable price feeds).
+        # Master gate: MIRROR_NO_SIDE_DAMPENER must be < 1.0 to activate.
         if _side_upper == "NO":
             _no_master = float(getattr(settings, "MIRROR_NO_SIDE_DAMPENER", 0.3))
             if _no_master < 1.0:
-                if price < 0.10:
-                    # Sub-10c: taker slippage exceeds realistic upside entirely
+                # S146: Hard-block floor — configurable (was hardcoded 0.10)
+                _no_block_floor = float(getattr(settings, "MIRROR_NO_BLOCK_FLOOR", 0.20))
+                if price < _no_block_floor:
                     logger.info("mirror_no_dynamic_blocked", no_price=round(price, 3),
-                                reason="sub-10c", market=str(market_id)[:16])
+                                reason=f"sub-{int(_no_block_floor*100)}c",
+                                market=str(market_id)[:16])
+                    return False
+                # S146: Minimum edge gate — NO must show positive edge to enter.
+                _no_min_edge = float(getattr(settings, "MIRROR_NO_MIN_EDGE", 0.05))
+                _no_edge = confidence - price
+                if _no_edge < _no_min_edge:
+                    logger.info("mirror_no_edge_rejected", no_price=round(price, 3),
+                                confidence=round(confidence, 3),
+                                edge=round(_no_edge, 3), min_edge=_no_min_edge,
+                                market=str(market_id)[:16])
                     return False
                 elif price < 0.25:
                     _no_dampener = 0.15  # very cheap NO — high risk taker position
@@ -2019,10 +2063,23 @@ class MirrorBot(BaseBot):
             "consensus": self._whale_consensus.get(f"{market_id}:{str(side).upper()}", 1),
             "scan_start_mono": getattr(self, "_scan_start_mono", None),  # S115
             "spread": round(_spread, 3) if _spread is not None else None,  # S133
+            "copy_tier": _copy_tier,  # S146: 1=profitable, 2=thin, 3=unprofitable
         }
         # S124: Merge ML selector scores into event_data for shadow ledger analysis
         if _ml_scores:
             _event_data.update(_ml_scores)
+
+        # S145: Populate signal meta BEFORE place_order so auto-store picks it up
+        self._pending_signal_meta[str(market_id)] = {
+            "signal_direction": side,
+            "signal_confidence": round(confidence, 4),
+            "signal_source": f"mirror_rtds_{trader_address[:8]}",
+            "signal_multiplier": round(reliability_mult, 4) if reliability_mult else None,
+            "order_flow_direction": side,
+            "order_flow_multiplier": None,
+            "trends_signal": category,
+            "trends_multiplier": None,
+        }
 
         order = await self.place_order(
             market_id=market_id,
@@ -2078,31 +2135,6 @@ class MirrorBot(BaseBot):
                 category=category,
             )
 
-            # R2: Store signal context for ML training.
-            # S144: MirrorBot never calls apply_signal_enhancements() so
-            # _pending_signal_meta is empty. Populate it with MirrorBot-specific
-            # data so trade_signals rows are actually written (was 0% coverage).
-            _trade_id = order.get("trade_id") or order.get("order_id")
-            if _trade_id:
-                self._pending_signal_meta[str(market_id)] = {
-                    "signal_direction": side,
-                    "signal_confidence": round(confidence, 4),
-                    "signal_source": f"mirror_rtds_{trader_address[:8]}",
-                    "signal_multiplier": round(reliability_mult, 4) if reliability_mult else None,
-                    "order_flow_direction": side,
-                    "order_flow_multiplier": None,
-                    "trends_signal": category,
-                    "trends_multiplier": None,
-                }
-                try:
-                    await asyncio.wait_for(
-                        self.store_pending_trade_signals(str(_trade_id), str(market_id)),
-                        timeout=2.0,
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning("mirror_signal_store_timeout", market_id=market_id)
-                except Exception as _sig_err:
-                    logger.debug("mirror_signal_store_failed: %s", _sig_err)
-
+            # S145: Signal storage now handled automatically by place_order()
             return True
         return False

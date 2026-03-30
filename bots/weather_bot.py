@@ -81,7 +81,8 @@ class WeatherConfidenceCalibrator:
         self._model_yes: Any = None   # sklearn IsotonicRegression for YES side
         self._fitted: bool = False
         self._n_samples: int = 0
-        self._cal_brier: Optional[float] = None  # calibrated Brier score
+        self._cal_brier: Optional[float] = None  # calibrated Brier score (train set)
+        self._oos_brier: Optional[float] = None   # S143: true out-of-sample Brier
         self._coef_confidence: float = 0.0  # compat: slope proxy from NO model
         self._coefficients: dict = {}       # for logging/inspection
 
@@ -126,22 +127,22 @@ class WeatherConfidenceCalibrator:
                 """), {"window_days": window_days})
                 rows = result.fetchall()
 
-            # S141: 7-day holdout for OOS Brier — rows in last 7d become test set
+            # S143: True train/test split — fit on days [window, 7], evaluate on [7, 0]
             from datetime import timezone as _tz, timedelta as _td
-            _oos_cutoff = datetime.now(_tz.utc) - _td(days=7)
-            _test_conf: list = []
-            _test_sides: list = []
-            _test_outcomes: list = []
+            _holdout_cutoff = datetime.now(_tz.utc) - _td(days=7)
+            _train_rows: list = []
+            _test_rows: list = []
             for _r in rows:
                 _et = _r[3]
                 if _et is None:
+                    _train_rows.append(_r)  # no timestamp → train (conservative)
                     continue
                 if getattr(_et, "tzinfo", None) is None:
                     _et = _et.replace(tzinfo=_tz.utc)
-                if _et >= _oos_cutoff:
-                    _test_conf.append(float(_r[0]))
-                    _test_sides.append(_r[1])
-                    _test_outcomes.append(float(_r[2]))
+                if _et >= _holdout_cutoff:
+                    _test_rows.append(_r)
+                else:
+                    _train_rows.append(_r)
 
             if len(rows) < min_samples:
                 logger.info(
@@ -150,9 +151,22 @@ class WeatherConfidenceCalibrator:
                 )
                 return False
 
-            confidences = np.array([float(r[0]) for r in rows], dtype=np.float64)
-            sides_str = [r[1] for r in rows]
-            outcomes = np.array([float(r[2]) for r in rows], dtype=np.float64)
+            # S143: Build training arrays from train_rows ONLY (true holdout)
+            _holdout_valid = True
+            _fit_rows = _train_rows
+            if len(_train_rows) < min_samples:
+                # Holdout split leaves insufficient training data — fall back to full window
+                _fit_rows = list(rows)
+                _holdout_valid = False
+                logger.info(
+                    "weatherbot_cal_holdout_fallback",
+                    train_n=len(_train_rows), total_n=len(rows),
+                    reason="train set too small after 7d holdout exclusion",
+                )
+
+            confidences = np.array([float(r[0]) for r in _fit_rows], dtype=np.float64)
+            sides_str = [r[1] for r in _fit_rows]
+            outcomes = np.array([float(r[2]) for r in _fit_rows], dtype=np.float64)
 
             # Split by side
             no_mask = np.array([s == "NO" for s in sides_str])
@@ -171,9 +185,65 @@ class WeatherConfidenceCalibrator:
                 model_no.fit(confidences[no_mask], outcomes[no_mask])
 
             # Fit YES-side isotonic (needs >= 30 samples)
+            _yes_widened = False
             if n_yes >= 30:
                 model_yes = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
                 model_yes.fit(confidences[yes_mask], outcomes[yes_mask])
+            else:
+                # S143: YES too thin in 30d — try wider window (90d) for YES only
+                _yes_fb_window = int(getattr(
+                    settings, "WEATHER_CONFIDENCE_CAL_YES_FALLBACK_WINDOW_DAYS", 90,
+                ))
+                if _yes_fb_window > window_days:
+                    try:
+                        async with db.get_session() as _ys:
+                            _yr = await _ys.execute(text("""
+                                WITH entries AS (
+                                    SELECT DISTINCT ON (market_id) market_id, confidence, side
+                                    FROM trade_events
+                                    WHERE bot_name = 'WeatherBot' AND event_type = 'ENTRY'
+                                      AND event_time >= NOW() - INTERVAL '1 day' * :window_days
+                                      AND confidence IS NOT NULL AND price >= 0.08
+                                      AND (event_data->>'lead_time_hours')::float >= 48.0
+                                      AND confidence >= 0.60 AND side = 'YES'
+                                    ORDER BY market_id, event_time
+                                )
+                                SELECT e.confidence, e.side,
+                                       CASE WHEN r.realized_pnl > 0 THEN 1.0 ELSE 0.0 END AS outcome,
+                                       r.event_time
+                                FROM trade_events r
+                                JOIN entries e ON e.market_id = r.market_id
+                                WHERE r.bot_name = 'WeatherBot' AND r.event_type = 'RESOLUTION'
+                                  AND r.realized_pnl IS NOT NULL
+                            """), {"window_days": _yes_fb_window})
+                            _yes_rows = _yr.fetchall()
+                        # Apply holdout split to wider window too
+                        _yes_train = [r for r in _yes_rows
+                                      if r[3] is None or (
+                                          r[3].replace(tzinfo=_tz.utc) if getattr(r[3], "tzinfo", None) is None else r[3]
+                                      ) < _holdout_cutoff]
+                        _n_yes_wide = len(_yes_train)
+                        if _n_yes_wide >= 30:
+                            _yc = np.array([float(r[0]) for r in _yes_train], dtype=np.float64)
+                            _yo = np.array([float(r[2]) for r in _yes_train], dtype=np.float64)
+                            model_yes = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
+                            model_yes.fit(_yc, _yo)
+                            _yes_widened = True
+                            n_yes = _n_yes_wide
+                            logger.info(
+                                "weatherbot_cal_yes_widened",
+                                n_yes_30d=int(yes_mask.sum()),
+                                n_yes_90d=_n_yes_wide,
+                                window_used=_yes_fb_window,
+                            )
+                        else:
+                            logger.info(
+                                "weatherbot_cal_yes_identity_fallback",
+                                n_yes_30d=int(yes_mask.sum()),
+                                n_yes_90d=_n_yes_wide,
+                            )
+                    except Exception as _ye:
+                        logger.debug("weatherbot_cal_yes_widen_failed", error=str(_ye))
 
             # Need at least NO model (dominant side)
             if model_no is None:
@@ -183,8 +253,8 @@ class WeatherConfidenceCalibrator:
                 )
                 return False
 
-            # Validate: calibrated Brier should not be worse than raw
-            raw_brier = float(np.mean((confidences - outcomes) ** 2))
+            # Validate: train-set calibrated Brier should not be worse than raw
+            raw_train_brier = float(np.mean((confidences - outcomes) ** 2))
             cal_probs = np.empty_like(confidences)
             for i in range(len(confidences)):
                 if sides_str[i] == "NO" and model_no is not None:
@@ -193,14 +263,14 @@ class WeatherConfidenceCalibrator:
                     cal_probs[i] = model_yes.predict([confidences[i]])[0]
                 else:
                     cal_probs[i] = confidences[i]  # identity fallback
-            cal_brier = float(np.mean((cal_probs - outcomes) ** 2))
+            train_brier = float(np.mean((cal_probs - outcomes) ** 2))
 
-            if cal_brier > raw_brier + 0.005:
+            if train_brier > raw_train_brier + 0.005:
                 logger.warning(
                     "weatherbot_confidence_cal_rejected",
-                    raw_brier=round(raw_brier, 4),
-                    cal_brier=round(cal_brier, 4),
-                    n=len(rows),
+                    raw_train_brier=round(raw_train_brier, 4),
+                    train_brier=round(train_brier, 4),
+                    n=len(_fit_rows),
                 )
                 self._fitted = False
                 return False
@@ -209,15 +279,16 @@ class WeatherConfidenceCalibrator:
             self._model_yes = model_yes
             self._fitted = True
             self._n_samples = len(rows)
-            self._cal_brier = cal_brier
+            self._cal_brier = train_brier
 
-            # S141: Compute OOS Brier on 7-day holdout (reporting only, does not affect fit)
+            # S143: Compute TRUE OOS Brier on held-out 7-day test set
             oos_brier = None
-            if _test_conf:
-                _tc = np.array(_test_conf, dtype=np.float64)
-                _to = np.array(_test_outcomes, dtype=np.float64)
+            if _holdout_valid and len(_test_rows) >= 10:
+                _tc = np.array([float(r[0]) for r in _test_rows], dtype=np.float64)
+                _to = np.array([float(r[2]) for r in _test_rows], dtype=np.float64)
+                _ts = [r[1] for r in _test_rows]
                 _tp = np.empty_like(_tc)
-                for _i, (_c, _s) in enumerate(zip(_tc, _test_sides)):
+                for _i, (_c, _s) in enumerate(zip(_tc, _ts)):
                     if _s == "NO" and model_no is not None:
                         _tp[_i] = float(model_no.predict([_c])[0])
                     elif _s == "YES" and model_yes is not None:
@@ -225,6 +296,7 @@ class WeatherConfidenceCalibrator:
                     else:
                         _tp[_i] = _c
                 oos_brier = float(np.mean((_tp - _to) ** 2))
+            self._oos_brier = oos_brier
 
             # Compute slope proxy for .temperature compat
             if model_no is not None:
@@ -250,18 +322,51 @@ class WeatherConfidenceCalibrator:
                 "weatherbot_confidence_cal_fitted",
                 model_type="isotonic_per_side",
                 n_samples=len(rows),
+                train_n=len(_fit_rows),
+                oos_n=len(_test_rows),
                 n_no=n_no,
                 n_yes=n_yes,
-                raw_brier=round(raw_brier, 4),
-                cal_brier=round(cal_brier, 4),
-                brier_improvement=round(raw_brier - cal_brier, 4),
+                raw_train_brier=round(raw_train_brier, 4),
+                train_brier=round(train_brier, 4),
+                brier_improvement=round(raw_train_brier - train_brier, 4),
                 oos_brier=round(oos_brier, 4) if oos_brier is not None else None,
-                oos_n=len(_test_conf),
+                holdout_valid=_holdout_valid,
+                yes_widened=_yes_widened,
                 confidence_slope=self._coef_confidence,
                 window_days=window_days,
                 **_no_samples,
                 **_yes_samples,
             )
+
+            # S143: Persist fit result to system_kv for monitoring
+            try:
+                import json as _json
+                _fit_record = {
+                    "ts": datetime.now(_tz.utc).isoformat(),
+                    "n_no": n_no, "n_yes": n_yes,
+                    "train_n": len(_fit_rows), "oos_n": len(_test_rows),
+                    "train_brier": round(train_brier, 4),
+                    "oos_brier": round(oos_brier, 4) if oos_brier is not None else None,
+                    "holdout_valid": _holdout_valid, "yes_widened": _yes_widened,
+                    "window_days": window_days, "fitted": True,
+                }
+                async with db.get_session() as _ps:
+                    _prev = await _ps.execute(text(
+                        "SELECT value FROM system_kv WHERE key = 'weatherbot_cal_fit_history'"
+                    ))
+                    _prev_row = _prev.scalar_one_or_none()
+                    _history = _json.loads(_prev_row) if _prev_row else []
+                    _history.append(_fit_record)
+                    _history = _history[-20:]  # keep last 20
+                    await _ps.execute(text("""
+                        INSERT INTO system_kv (key, value, updated_at)
+                        VALUES ('weatherbot_cal_fit_history', :val, NOW())
+                        ON CONFLICT (key) DO UPDATE SET value = :val, updated_at = NOW()
+                    """), {"val": _json.dumps(_history)})
+                    await _ps.commit()
+            except Exception:
+                pass  # persistence failure is non-fatal
+
             return True
 
         except Exception as exc:
@@ -1197,6 +1302,7 @@ class WeatherBot(BaseBot):
                 # High-confidence results are added to dynamic_stations DB and
                 # lookup_station() in-process cache immediately.
                 _still_unmatched: set = set()
+                _any_autodiscovered = False
                 from base_engine.weather.city_autodiscovery import try_auto_register
                 _db = getattr(self.base_engine, "db", None)
                 for _city in _new_unmatched:
@@ -1205,7 +1311,9 @@ class WeatherBot(BaseBot):
                     except Exception as _e:
                         logger.warning("city_autodiscovery_error", city=_city, error=str(_e))
                         _registered = False
-                    if not _registered:
+                    if _registered:
+                        _any_autodiscovered = True
+                    else:
                         _still_unmatched.add(_city)
 
                 if _still_unmatched:
@@ -1229,6 +1337,14 @@ class WeatherBot(BaseBot):
                         except Exception:
                             pass  # Alert failure is non-fatal
                 self._alerted_unmatched_cities.update(_new_unmatched)
+
+                # S143: Invalidate discovery cache so next scan re-groups with new city
+                if _any_autodiscovered:
+                    self._discovery_cache = None
+                    logger.info(
+                        "weatherbot_discovery_cache_invalidated",
+                        reason="autodiscovery_success",
+                    )
 
             # Daily digest — once per UTC day
             _today_str = date.today().isoformat()
@@ -4835,6 +4951,21 @@ class WeatherBot(BaseBot):
                                     mse_7d=round(brier_proxy, 2), n_resolved=n_resolved,
                                 )
                                 self._kelly_mult = default_kelly
+
+                        # S143: OOS Brier safety cap — if calibrator's true out-of-sample
+                        # performance is worse than 0.25 (random binary), cap Kelly at default.
+                        # Prevents Kelly graduation when confidence calibrator is poorly fitted
+                        # but temperature forecasts happen to be accurate.
+                        _oos_b = getattr(self._confidence_calibrator, "_oos_brier", None)
+                        default_kelly = float(getattr(settings, "WEATHER_KELLY_FRACTION", 0.25))
+                        if _oos_b is not None and _oos_b > 0.25 and self._kelly_mult > default_kelly:
+                            logger.warning(
+                                "weatherbot_kelly_oos_brier_cap",
+                                oos_brier=round(_oos_b, 4),
+                                kelly_before=self._kelly_mult,
+                                kelly_after=default_kelly,
+                            )
+                            self._kelly_mult = default_kelly
         except Exception as exc:
             logger.debug("weatherbot_monitoring_brier_check_failed", error=str(exc))
 

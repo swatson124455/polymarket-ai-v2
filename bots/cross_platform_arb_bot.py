@@ -267,6 +267,17 @@ class CrossPlatformArbBot(BaseBot):
     async def _execute_lag_trade(self, opp: Dict):
         side = "YES" if opp["type"] == "temporal_long" else "NO"
         size = await self.calculate_bot_position_size(opp["confidence"], opp["price"])
+        # S145: Populate signal meta for auto-store in place_order()
+        self._pending_signal_meta[str(opp["market_id"])] = {
+            "signal_direction": side,
+            "signal_confidence": round(opp["confidence"], 4),
+            "signal_source": "crypto_temporal_lag",
+            "signal_multiplier": round(opp.get("lag", 0), 4),
+            "order_flow_direction": None,
+            "order_flow_multiplier": None,
+            "trends_signal": None,
+            "trends_multiplier": None,
+        }
         order = await self.place_order(
             market_id=opp["market_id"], token_id=opp["token_id"],
             side=side, size=size, price=opp["price"], confidence=opp["confidence"],

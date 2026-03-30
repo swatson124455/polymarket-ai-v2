@@ -52,10 +52,24 @@ class RTDSWebSocket:
         """Seconds since last successful recv()."""
         return time.monotonic() - self._last_recv_mono
 
+    async def _cancel_stale_tasks(self) -> None:
+        """Cancel orphan ping/message loop tasks before creating new ones (S145 — H3 pattern)."""
+        for task in (self._ping_task, self._message_loop_task):
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._ping_task = None
+        self._message_loop_task = None
+
     async def connect(self) -> None:
         """Connect to RTDS and subscribe to activity/trades."""
         try:
             self.running = True
+            # S145: Cancel any stale tasks from previous connect() to prevent orphan leaks
+            await self._cancel_stale_tasks()
             self.ws = await websockets.connect(
                 self._ws_url,
                 ping_interval=None,  # We handle pings manually (RTDS protocol)
@@ -105,7 +119,15 @@ class RTDSWebSocket:
                 logger.debug("rtds_ping_error", error=str(e))
 
     async def _reconnect(self) -> bool:
-        """Reconnect and re-subscribe."""
+        """Reconnect and re-subscribe. Cancels stale ping task (S145)."""
+        # S145: Kill old ping loop — it's sending pings to a dead socket
+        if self._ping_task and not self._ping_task.done():
+            self._ping_task.cancel()
+            try:
+                await self._ping_task
+            except asyncio.CancelledError:
+                pass
+            self._ping_task = None
         if self.ws:
             try:
                 await self.ws.close()
@@ -122,6 +144,8 @@ class RTDSWebSocket:
                 "action": "subscribe",
                 "subscriptions": [{"topic": "activity", "type": "trades"}],
             }))
+            # Restart ping loop for new connection
+            self._ping_task = asyncio.create_task(self._ping_loop())
             logger.info("rtds_reconnected")
             return True
         except Exception as e:

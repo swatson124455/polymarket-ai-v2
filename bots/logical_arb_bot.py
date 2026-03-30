@@ -177,6 +177,17 @@ class LogicalArbBot(BaseBot):
         if size <= 0:
             return False
 
+        # S145: Populate signal meta for auto-store in place_order()
+        self._pending_signal_meta[str(target_id)] = {
+            "signal_direction": "NO",
+            "signal_confidence": round(confidence, 4),
+            "signal_source": "logical_arb_mutual_excl",
+            "signal_multiplier": round(opp.get("spread", 0), 4),
+            "order_flow_direction": None,
+            "order_flow_multiplier": None,
+            "trends_signal": None,
+            "trends_multiplier": None,
+        }
         result = await self.place_order(
             market_id=target_id, token_id=token_id,
             side="NO", size=size, price=target_price,
@@ -227,6 +238,17 @@ class LogicalArbBot(BaseBot):
                 return False
 
         # Leg 1: sell YES on overpriced subset (buy NO)
+        # S145: Populate signal meta for auto-store in place_order()
+        self._pending_signal_meta[str(subset_id)] = {
+            "signal_direction": "NO",
+            "signal_confidence": round(confidence, 4),
+            "signal_source": "logical_arb_subset",
+            "signal_multiplier": round(opp.get("spread", 0), 4),
+            "order_flow_direction": None,
+            "order_flow_multiplier": None,
+            "trends_signal": None,
+            "trends_multiplier": None,
+        }
         r1 = await self.place_order(
             market_id=subset_id, token_id=subset_token,
             side="NO", size=size, price=subset_price,
@@ -236,6 +258,16 @@ class LogicalArbBot(BaseBot):
             return False
 
         # Leg 2: buy YES on underpriced superset
+        self._pending_signal_meta[str(superset_id)] = {
+            "signal_direction": "YES",
+            "signal_confidence": round(confidence, 4),
+            "signal_source": "logical_arb_subset",
+            "signal_multiplier": round(opp.get("spread", 0), 4),
+            "order_flow_direction": None,
+            "order_flow_multiplier": None,
+            "trends_signal": None,
+            "trends_multiplier": None,
+        }
         r2 = await self.place_order(
             market_id=superset_id, token_id=superset_token,
             side="YES", size=size, price=superset_price,
@@ -293,11 +325,32 @@ class LogicalArbBot(BaseBot):
                             market_id=mid, reasons=risk.get("reasons"))
                 return False
 
+        # S145: Populate signal meta for auto-store in place_order()
+        self._pending_signal_meta[str(market_a_id)] = {
+            "signal_direction": side,
+            "signal_confidence": round(confidence, 4),
+            "signal_source": "logical_arb_complement",
+            "signal_multiplier": round(opp.get("spread", 0), 4),
+            "order_flow_direction": None,
+            "order_flow_multiplier": None,
+            "trends_signal": None,
+            "trends_multiplier": None,
+        }
         r1 = await self.place_order(
             market_id=market_a_id, token_id=token_a,
             side=side, size=size, price=price_a,
             confidence=confidence,
         )
+        self._pending_signal_meta[str(market_b_id)] = {
+            "signal_direction": side,
+            "signal_confidence": round(confidence, 4),
+            "signal_source": "logical_arb_complement",
+            "signal_multiplier": round(opp.get("spread", 0), 4),
+            "order_flow_direction": None,
+            "order_flow_multiplier": None,
+            "trends_signal": None,
+            "trends_multiplier": None,
+        }
         r2 = await self.place_order(
             market_id=market_b_id, token_id=token_b,
             side=side, size=size, price=price_b,

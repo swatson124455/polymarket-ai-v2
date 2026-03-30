@@ -214,6 +214,8 @@ class TestDailyExposureDecrement:
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_STOP_LOSS_PCT = 0.15
             ms.MIRROR_TAKE_PROFIT_PCT = 0.25
+            ms.MIRROR_STOP_LOSS_TIGHTEN_24H = -0.06  # S146
+            ms.MIRROR_STOP_LOSS_TIGHTEN_24H = -0.06  # S146
             ms.MIRROR_STOP_LOSS_TIGHTEN_48H = -0.10
             ms.MIRROR_STOP_LOSS_TIGHTEN_72H = -0.05
             ms.MIRROR_FORCE_EXIT_HOURS = 96
@@ -249,6 +251,7 @@ class TestDailyExposureDecrement:
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_STOP_LOSS_PCT = 0.15
             ms.MIRROR_TAKE_PROFIT_PCT = 0.25
+            ms.MIRROR_STOP_LOSS_TIGHTEN_24H = -0.06  # S146
             ms.MIRROR_STOP_LOSS_TIGHTEN_48H = -0.10
             ms.MIRROR_STOP_LOSS_TIGHTEN_72H = -0.05
             ms.MIRROR_FORCE_EXIT_HOURS = 96
@@ -281,6 +284,7 @@ class TestDailyExposureDecrement:
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_STOP_LOSS_PCT = 0.15
             ms.MIRROR_TAKE_PROFIT_PCT = 0.25
+            ms.MIRROR_STOP_LOSS_TIGHTEN_24H = -0.06  # S146
             ms.MIRROR_STOP_LOSS_TIGHTEN_48H = -0.10
             ms.MIRROR_STOP_LOSS_TIGHTEN_72H = -0.05
             ms.MIRROR_FORCE_EXIT_HOURS = 96
@@ -397,6 +401,7 @@ class TestTraderSellExitDetection:
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_STOP_LOSS_PCT = 0.15
             ms.MIRROR_TAKE_PROFIT_PCT = 0.25
+            ms.MIRROR_STOP_LOSS_TIGHTEN_24H = -0.06  # S146
             ms.MIRROR_STOP_LOSS_TIGHTEN_48H = -0.10
             ms.MIRROR_STOP_LOSS_TIGHTEN_72H = -0.05
             ms.MIRROR_FORCE_EXIT_HOURS = 96
@@ -418,7 +423,7 @@ class TestTraderSellExitDetection:
             "side": "YES",
             "size": 50.0,
             "entry_price": 0.60,
-            "current_price": 0.55,  # -8.3% loss, above -15% threshold
+            "current_price": 0.58,  # -3.3% loss, above -6% S146 24h threshold
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "traders": {"addr1"},
         }
@@ -429,6 +434,7 @@ class TestTraderSellExitDetection:
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_STOP_LOSS_PCT = 0.15
             ms.MIRROR_TAKE_PROFIT_PCT = 0.25
+            ms.MIRROR_STOP_LOSS_TIGHTEN_24H = -0.06  # S146
             ms.MIRROR_STOP_LOSS_TIGHTEN_48H = -0.10
             ms.MIRROR_STOP_LOSS_TIGHTEN_72H = -0.05
             ms.MIRROR_FORCE_EXIT_HOURS = 96
@@ -449,6 +455,7 @@ class TestTraderSellExitDetection:
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_STOP_LOSS_PCT = 0.15
             ms.MIRROR_TAKE_PROFIT_PCT = 0.25
+            ms.MIRROR_STOP_LOSS_TIGHTEN_24H = -0.06  # S146
             ms.MIRROR_STOP_LOSS_TIGHTEN_48H = -0.10
             ms.MIRROR_STOP_LOSS_TIGHTEN_72H = -0.05
             ms.MIRROR_FORCE_EXIT_HOURS = 96
@@ -771,6 +778,10 @@ class TestExecuteMirrorTrade:
         bot._reliability_tracker.total_trade_count = MagicMock(return_value=50)
         bot._reliability_tracker.overall_win_rate = MagicMock(return_value=0.72)
         # S109: No pre-existing position on same market+side — same-side dedup blocks re-entry.
+        # S146: Mock watchlist tier 1 (copy-profitable) so tier multiplier = 1.0x
+        bot._watchlist = MagicMock()
+        bot._watchlist.get_copy_tier = MagicMock(return_value=1)
+        bot._watchlist.get_copy_perf = MagicMock(return_value=None)  # No copy data → neutral adj
 
         result = await bot._execute_mirror_trade(
             market_id="mkt1", token_id="tok-yes", side="YES",

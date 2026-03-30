@@ -1823,14 +1823,7 @@ class EnsembleBot(BaseBot):
             except Exception as e:
                 logger.debug("Failed to mark prediction as traded: %s", e)
 
-            # R2: Store signal context captured during apply_signal_enhancements for ML training.
-            # Fire-and-forget background task — never blocks the trade execution path.
-            _trade_id = order.get("trade_id") or order.get("order_id")
-            if _trade_id:
-                _t = asyncio.create_task(
-                    self.store_pending_trade_signals(str(_trade_id), str(market_id))
-                )
-                _t.add_done_callback(lambda t: self._on_bg_task_done(t, "store_trade_signals"))
+            # S145: Signal storage now handled automatically by place_order()
 
     async def optimize_weights(self, backtest_results: List[Dict]) -> None:
         """
