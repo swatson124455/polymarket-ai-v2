@@ -2059,7 +2059,7 @@ class MirrorBot(BaseBot):
             "conf_upstream": round(_raw_upstream, 3),
             "conf_cal_shadow": round(_conf_cal_shadow, 3) if _conf_cal_shadow is not None else None,
             "rel_mult": round(reliability_mult, 3),
-            "trader": trader_address[:10],
+            "trader": trader_address,  # S146: full address for copy-P&L attribution (was [:10])
             "consensus": self._whale_consensus.get(f"{market_id}:{str(side).upper()}", 1),
             "scan_start_mono": getattr(self, "_scan_start_mono", None),  # S115
             "spread": round(_spread, 3) if _spread is not None else None,  # S133

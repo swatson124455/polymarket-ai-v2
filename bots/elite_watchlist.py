@@ -284,24 +284,50 @@ class EliteWatchlist:
                             AND te.event_type IN ('EXIT', 'RESOLUTION')
                         GROUP BY LOWER(et.trader)
                     """))
+                    # Build prefix→full_addr lookup for matching truncated (10-char)
+                    # trader addresses from historical event_data against full watchlist addrs.
+                    # New entries store full addresses; old entries are [:10] truncated.
+                    _prefix_map: Dict[str, str] = {}  # "0xabcd1234" → full_addr
+                    for _full in new_addresses:
+                        _prefix_map[_full[:10].lower()] = _full
                     for row in _result:
-                        _addr = str(row[0] or "").strip().lower()
-                        if not _addr or _addr not in new_addresses:
+                        _raw_addr = str(row[0] or "").strip().lower()
+                        if not _raw_addr:
+                            continue
+                        # Match: full address in watchlist, or prefix match for truncated
+                        _matched_addr = None
+                        if _raw_addr in new_addresses:
+                            _matched_addr = _raw_addr  # full address match
+                        elif len(_raw_addr) <= 10:
+                            _matched_addr = _prefix_map.get(_raw_addr)  # prefix match
+                        if not _matched_addr:
                             continue
                         _trades = int(row[1])
                         _wins = int(row[2])
                         _pnl = float(row[3] or 0)
                         _wr = round(100.0 * _wins / _trades, 1) if _trades > 0 else 0.0
-                        _new_copy_perf[_addr] = {
-                            "trades": _trades, "wins": _wins,
-                            "copy_wr": _wr, "copy_pnl": _pnl,
-                        }
-                        if _trades >= _min_for_tier:
-                            _tier = 1 if _pnl > 0 else 3
+                        # Accumulate if same trader matched from multiple prefixes
+                        if _matched_addr in _new_copy_perf:
+                            _existing = _new_copy_perf[_matched_addr]
+                            _existing["trades"] += _trades
+                            _existing["wins"] += _wins
+                            _existing["copy_pnl"] += _pnl
+                            _existing["copy_wr"] = round(100.0 * _existing["wins"] / _existing["trades"], 1)
+                        else:
+                            _new_copy_perf[_matched_addr] = {
+                                "trades": _trades, "wins": _wins,
+                                "copy_wr": _wr, "copy_pnl": _pnl,
+                            }
+                        _p = _new_copy_perf[_matched_addr]
+                        if _p["trades"] >= _min_for_tier:
+                            _tier = 1 if _p["copy_pnl"] > 0 else 3
                         else:
                             _tier = 2
-                        _new_copy_tiers[_addr] = _tier
-                        _tier_counts[_tier] += 1
+                        _new_copy_tiers[_matched_addr] = _tier
+                    # Recount tiers after all rows processed
+                    _tier_counts = {1: 0, 2: 0, 3: 0}
+                    for _t in _new_copy_tiers.values():
+                        _tier_counts[_t] = _tier_counts.get(_t, 0) + 1
                 logger.info("watchlist_copy_scoring",
                             tier1=_tier_counts[1], tier2=_tier_counts[2], tier3=_tier_counts[3],
                             total_scored=sum(_tier_counts.values()))
