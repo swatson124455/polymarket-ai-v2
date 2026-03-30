@@ -3107,12 +3107,17 @@ class Database:
                 """))
                 temporal_violations = r_check.scalar_one_or_none() or 0
                 if temporal_violations > 0:
-                    logger.warning(
-                        "Temporal ordering violation: %d prediction_log rows would receive labels "
-                        "with resolved_at < prediction_time — possible clock skew or data corruption. "
-                        "These rows are excluded from labeling.",
-                        temporal_violations,
-                    )
+                    # S142: rate-limit to once per 5 min — was firing every ~0.5s
+                    import time as _t
+                    _now = _t.monotonic()
+                    if not hasattr(self, "_last_temporal_warn") or (_now - self._last_temporal_warn) > 300:
+                        self._last_temporal_warn = _now
+                        logger.warning(
+                            "Temporal ordering violation: %d prediction_log rows have "
+                            "resolved_at < prediction_time — excluded from labeling. "
+                            "Run: python scripts/cleanup_temporal_violations.py --dry-run",
+                            temporal_violations,
+                        )
 
                 r = await session.execute(text("""
                     UPDATE prediction_log pl

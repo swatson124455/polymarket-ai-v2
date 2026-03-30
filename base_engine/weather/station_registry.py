@@ -1396,6 +1396,20 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         aliases=("tel aviv", "telaviv", "tel-aviv"),
         resolution_source="Weather Underground / LLBG",
     ),
+
+    # S142: Moscow — previously unmatched, logged every scan
+    "moscow": WeatherStation(
+        city_name="Moscow",
+        station_id="UUWW",
+        ghcnd_id="GHCND:RSM00027612",
+        latitude=55.9726,
+        longitude=37.4146,
+        elevation_m=190.0,
+        timezone="Europe/Moscow",
+        temp_unit="C",
+        aliases=("moscow",),
+        resolution_source="Weather Underground / UUWW (Sheremetyevo)",
+    ),
 }
 
 # Build alias → station lookup (pre-computed at import time)
@@ -1409,11 +1423,90 @@ US_CITY_NAMES: frozenset = frozenset(
     s.city_name for s in STATION_REGISTRY.values() if s.temp_unit == "F"
 )
 
+# Runtime-addable registry populated by city_autodiscovery.try_auto_register()
+# and pre-loaded from dynamic_stations DB on bot startup.
+# Keys: lowercase station_key (e.g. "riyadh", "cape_town").
+_DYNAMIC_REGISTRY: Dict[str, WeatherStation] = {}
+
+
+def register_dynamic_station(
+    station_key: str,
+    city_name: str,
+    latitude: float,
+    longitude: float,
+    timezone: str,
+    temp_unit: str,
+    aliases: List[str],
+) -> WeatherStation:
+    """Add a geocoded city to the in-process dynamic registry.
+
+    Called by city_autodiscovery after a successful DB insert, and by
+    load_dynamic_stations_from_db on bot startup. Dynamic stations use
+    the station_key as their station_id (no ICAO code available).
+    """
+    station = WeatherStation(
+        city_name=city_name,
+        station_id=station_key,      # no ICAO — used as a unique key only
+        ghcnd_id="",                 # no GHCND for auto-discovered cities
+        latitude=latitude,
+        longitude=longitude,
+        elevation_m=0.0,             # elevation ignored by Open-Meteo lat/lon query
+        timezone=timezone,
+        temp_unit=temp_unit,
+        aliases=tuple(a.lower() for a in aliases),
+        resolution_source="dynamic",
+    )
+    _DYNAMIC_REGISTRY[station_key] = station
+    for alias in station.aliases:
+        _DYNAMIC_REGISTRY[alias] = station
+    return station
+
+
+async def load_dynamic_stations_from_db(db: object) -> int:
+    """Pre-load all rows from dynamic_stations into _DYNAMIC_REGISTRY.
+
+    Call once during bot startup so that previously auto-discovered cities
+    are available immediately without waiting for the first new detection.
+    Returns the count of stations loaded.
+    """
+    if db is None or not hasattr(db, "session_factory") or db.session_factory is None:
+        return 0
+    try:
+        from sqlalchemy import text as _sa_text
+        async with db.get_session() as sess:
+            rows = (await sess.execute(
+                _sa_text(
+                    "SELECT station_key, city_name, latitude, longitude, "
+                    "timezone, temp_unit, aliases FROM dynamic_stations"
+                )
+            )).fetchall()
+        for row in rows:
+            register_dynamic_station(
+                station_key=row[0],
+                city_name=row[1],
+                latitude=float(row[2]),
+                longitude=float(row[3]),
+                timezone=row[4],
+                temp_unit=row[5],
+                aliases=list(row[6]) if row[6] else [row[0]],
+            )
+        if rows:
+            logger.info(
+                "dynamic_stations_loaded",
+                count=len(rows),
+                cities=[r[1] for r in rows],
+            )
+        return len(rows)
+    except Exception as exc:
+        logger.warning("dynamic_stations_load_failed", error=str(exc))
+        return 0
+
 
 def lookup_station(city_text: str) -> Optional[WeatherStation]:
     """Match city text (from a market question) to a station.
 
-    Tries exact alias match first, then word-boundary substring search.
+    Tries exact alias match first, then word-boundary substring search against
+    the static registry, then the dynamic registry (auto-discovered cities).
     Returns None if no match found.
 
     M8: Substring matching now requires word boundaries to avoid
@@ -1422,10 +1515,10 @@ def lookup_station(city_text: str) -> Optional[WeatherStation]:
     if not city_text:
         return None
     text = city_text.strip().lower()
-    # Exact alias match
+    # Exact alias match (static)
     if text in _ALIAS_MAP:
         return _ALIAS_MAP[text]
-    # M8: Word-boundary substring match (longest alias first)
+    # M8: Word-boundary substring match (longest alias first, static)
     import re
     for alias in sorted(_ALIAS_MAP, key=len, reverse=True):
         # Require alias to be at a word boundary in the text
@@ -1438,6 +1531,19 @@ def lookup_station(city_text: str) -> Optional[WeatherStation]:
                 station=_ALIAS_MAP[alias].station_id,
             )
             return _ALIAS_MAP[alias]
+    # Dynamic registry fallback (runtime-added auto-discovered cities)
+    if text in _DYNAMIC_REGISTRY:
+        return _DYNAMIC_REGISTRY[text]
+    for alias in sorted(_DYNAMIC_REGISTRY, key=len, reverse=True):
+        pattern = r"(?:^|\b)" + re.escape(alias) + r"(?:\b|$)"
+        if re.search(pattern, text):
+            logger.debug(
+                "dynamic_station_match",
+                input=city_text,
+                matched_alias=alias,
+                station=_DYNAMIC_REGISTRY[alias].station_id,
+            )
+            return _DYNAMIC_REGISTRY[alias]
     return None
 
 

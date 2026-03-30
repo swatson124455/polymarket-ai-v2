@@ -1110,6 +1110,9 @@ class WeatherBot(BaseBot):
             await self._restore_exposure_from_db()
             await self._rebuild_market_group_cache()
             await self._close_stale_positions()
+            # Pre-load previously auto-discovered cities into lookup_station()
+            from base_engine.weather.station_registry import load_dynamic_stations_from_db
+            await load_dynamic_stations_from_db(db)
             self._cache_warmed = True
 
         # S97: Start background monitors on first scan
@@ -1190,24 +1193,41 @@ class WeatherBot(BaseBot):
             _unmatched = self._market_mapper._last_unmatched_cities
             _new_unmatched = _unmatched - self._alerted_unmatched_cities
             if _new_unmatched:
-                logger.warning(
-                    "weatherbot_unmatched_cities",
-                    cities=sorted(_new_unmatched),
-                    n=len(_new_unmatched),
-                )
-                _alerting = getattr(self.base_engine, "alerting_system", None)
-                if _alerting:
+                # Try auto-registering each new city via Open-Meteo geocoding.
+                # High-confidence results are added to dynamic_stations DB and
+                # lookup_station() in-process cache immediately.
+                _still_unmatched: set = set()
+                from base_engine.weather.city_autodiscovery import try_auto_register
+                _db = getattr(self.base_engine, "db", None)
+                for _city in _new_unmatched:
                     try:
-                        from base_engine.monitoring.alerting import AlertSeverity
-                        await _alerting.send_alert(
-                            title="WeatherBot: New Unmatched Cities",
-                            message=f"Polymarket has weather markets for cities not in station registry: {sorted(_new_unmatched)}. Add to station_registry.py to trade them.",
-                            severity=AlertSeverity.WARNING,
-                            source="WeatherBot",
-                            metadata={"cities": sorted(_new_unmatched)},
-                        )
-                    except Exception:
-                        pass  # Alert failure is non-fatal
+                        _registered = await try_auto_register(_city, _db)
+                    except Exception as _e:
+                        logger.warning("city_autodiscovery_error", city=_city, error=str(_e))
+                        _registered = False
+                    if not _registered:
+                        _still_unmatched.add(_city)
+
+                if _still_unmatched:
+                    logger.warning(
+                        "weatherbot_unmatched_cities",
+                        cities=sorted(_still_unmatched),
+                        n=len(_still_unmatched),
+                        note="Low geocoding confidence — add manually via scripts/onboard_weather_cities.py",
+                    )
+                    _alerting = getattr(self.base_engine, "alerting_system", None)
+                    if _alerting:
+                        try:
+                            from base_engine.monitoring.alerting import AlertSeverity
+                            await _alerting.send_alert(
+                                title="WeatherBot: New Unmatched Cities",
+                                message=f"Polymarket has weather markets for cities not in station registry: {sorted(_still_unmatched)}. Auto-discovery failed (low confidence). Run scripts/onboard_weather_cities.py to add manually.",
+                                severity=AlertSeverity.WARNING,
+                                source="WeatherBot",
+                                metadata={"cities": sorted(_still_unmatched)},
+                            )
+                        except Exception:
+                            pass  # Alert failure is non-fatal
                 self._alerted_unmatched_cities.update(_new_unmatched)
 
             # Daily digest — once per UTC day
@@ -1869,18 +1889,18 @@ class WeatherBot(BaseBot):
         Returns (tradeable_opportunities, model_probs) where model_probs maps
         market_id → model probability for all buckets (used by L4 re-evaluation).
         """
-        # Skip if target date is in the past
-        today = date.today()
-        if group.target_date < today:
-            return [], {}
-
-        # Skip if lead time exceeds max
+        # Skip if market has already expired (target settlement time is in the past).
+        # S142: removed `max(0.0, ...)` clamp — negative lead_time means expired market.
+        # Previously, negative values were clamped to 0.0 which let expired markets
+        # through, producing prediction_log rows with resolved_at < prediction_time.
         now_utc = datetime.now(timezone.utc)
         target_noon = datetime(
             group.target_date.year, group.target_date.month, group.target_date.day,
             18, 0, tzinfo=timezone.utc,
         )
-        lead_time = max(0.0, (target_noon - now_utc).total_seconds() / 3600.0)
+        lead_time = (target_noon - now_utc).total_seconds() / 3600.0
+        if lead_time < 0.0:
+            return [], {}
         if lead_time > self._max_lead_time:
             return [], {}
 
@@ -2831,6 +2851,18 @@ class WeatherBot(BaseBot):
             # S132: model_freshness and model_age_h removed
         )
 
+        # S145: Populate signal meta for auto-store in place_order()
+        self._pending_signal_meta[str(opp["market_id"])] = {
+            "signal_direction": opp["side"],
+            "signal_confidence": round(opp["confidence"], 4),
+            "signal_source": f"weather_{opp.get('market_type', 'ensemble')}",
+            "signal_multiplier": round(combined_boost, 4) if combined_boost else None,
+            "order_flow_direction": opp.get("city"),
+            "order_flow_multiplier": round(lead_time, 1) if lead_time else None,
+            "trends_signal": None,
+            "trends_multiplier": round(opp.get("edge", 0), 4) if opp.get("edge") else None,
+        }
+
         # S109: Convert USD to shares for place_order (paper engine expects shares).
         # All upstream sizing, exposure tracking, and floor checks remain in USD.
         _size_shares = size / opp["price"]
@@ -3230,9 +3262,10 @@ class WeatherBot(BaseBot):
             # S101b: Paginate to fetch ALL events (was limit=100, missing overflow)
             import httpx
             url = f"{client.gamma_api}/events"
-            _MAX_PAGES = 5  # Safety valve: 500 events max
+            _MAX_PAGES = 10  # S142: raised 5→10 (hard cap 1000 events)
             events: list = []
             _pages_fetched = 0
+            _last_page_size = 0
             async with httpx.AsyncClient(timeout=15.0) as http:
                 for _page in range(_MAX_PAGES):
                     params = {
@@ -3262,8 +3295,17 @@ class WeatherBot(BaseBot):
                         break
                     events.extend(page_data)
                     _pages_fetched = _page + 1
-                    if len(page_data) < 100:
+                    _last_page_size = len(page_data)
+                    if _last_page_size < 100:
                         break  # Last page (partial)
+            # S142: warn if we hit the hard cap — there may be more markets
+            if _pages_fetched == _MAX_PAGES and _last_page_size == 100:
+                logger.warning(
+                    "weatherbot_pagination_overflow_risk",
+                    pages_fetched=_pages_fetched,
+                    total_events=len(events),
+                    note="Last page was full — Polymarket may have more temperature markets than fetched. Raise _MAX_PAGES if needed.",
+                )
         except Exception as exc:
             logger.warning("weatherbot_tag_fetch_error", error=str(exc))
             if not events:

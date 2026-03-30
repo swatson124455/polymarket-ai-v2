@@ -528,6 +528,7 @@ class WeatherMarketMapper:
                 city_text, target_date = self._extract_city_and_date(q)
                 if not city_text or not target_date:
                     _city_parse_fail += 1
+                    logger.debug("weather_city_parse_fail", question=q[:120])
                     continue
                 station = lookup_station(city_text)
                 if not station:
@@ -561,6 +562,7 @@ class WeatherMarketMapper:
                 city_text, target_date = self._extract_city_and_date(q)
                 if not city_text or not target_date:
                     _city_parse_fail += 1
+                    logger.debug("weather_city_parse_fail", question=q[:120])
                     continue
                 station = lookup_station(city_text)
                 if not station:

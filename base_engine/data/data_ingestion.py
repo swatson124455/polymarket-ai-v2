@@ -430,13 +430,16 @@ class DataIngestionService:
         self,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         top_markets_count: int = 1000,
-        num_processors: int = 50,
+        num_processors: int = 0,  # 0 = use settings.INGEST_NUM_PROCESSORS
         include_closed: bool = False,
     ) -> int:
+        _default = int(getattr(settings, "INGEST_NUM_PROCESSORS", 8))
+        if not num_processors:
+            num_processors = _default
         try:
-            num_processors = max(1, int(num_processors)) if isinstance(num_processors, (int, float)) else 50
+            num_processors = max(1, int(num_processors)) if isinstance(num_processors, (int, float)) else _default
         except (OverflowError, ValueError, TypeError):
-            num_processors = 50
+            num_processors = _default
         try:
             top_markets_count = max(1, int(top_markets_count)) if isinstance(top_markets_count, (int, float)) else 1000
         except (OverflowError, ValueError, TypeError):
@@ -973,6 +976,12 @@ class DataIngestionService:
             
             max_concurrent = 1  # Sequential batch processing to avoid pool exhaustion
             semaphore = asyncio.Semaphore(max_concurrent)
+            # S142: DB budget semaphore — limits concurrent save_to_db calls if
+            # max_concurrent is ever raised above 1. Currently max_concurrent=1 so
+            # this is a forward-compat guard; actual pool relief comes from num_processors=8.
+            _db_budget = max(1, int(getattr(settings, "INGEST_DB_BUDGET", 4)))
+            _db_sem = asyncio.Semaphore(_db_budget)
+            logger.info("Phase 1 ingestion: num_processors=%d, db_budget=%d", num_processors, _db_budget)
             progress_lock = asyncio.Lock()
             api_fetched_total = 0
             db_saved_total = 0
@@ -1171,7 +1180,8 @@ class DataIngestionService:
                         
                         batch_api_count = len(market_data)
                         try:
-                            batch_db_count = await save_to_db(market_data)
+                            async with _db_sem:
+                                batch_db_count = await save_to_db(market_data)
                         except RuntimeError as db_error:
                             logger.error(
                                 "CRITICAL: Database save failed for batch",
@@ -2069,6 +2079,32 @@ class DataIngestionService:
         
         return result
     
+    async def _phase2_select_markets(
+        self, max_markets_prices: int, incremental: bool,
+        skip_recent_hours: Optional[float],
+    ) -> Optional[List[str]]:
+        """Select market IDs for Phase 2 price ingestion. Extracted for timeout wrapping."""
+        market_ids: Optional[List[str]] = None
+        if self.smart_fetcher and not incremental:
+            try:
+                market_ids = await self.smart_fetcher.predict_active_market_ids(top_n=max_markets_prices)
+            except Exception as e:
+                logger.warning("SmartDataFetcher failed, falling back to get_softest_markets: %s", e)
+        if not market_ids:
+            if incremental and skip_recent_hours and skip_recent_hours > 0:
+                markets = await self.db.get_markets_needing_price_update(
+                    limit=max_markets_prices, skip_recent_hours=skip_recent_hours
+                )
+            else:
+                markets = await self.db.get_markets_for_price_ingestion(limit=max_markets_prices)
+            market_ids = [str(m["id"]) for m in markets if m.get("id") is not None]
+        if not market_ids:
+            markets = await self.db.get_softest_markets(limit=max_markets_prices)
+            market_ids = [str(m["id"]) for m in markets if m.get("id") is not None]
+        if not market_ids:
+            market_ids = await self.db.get_recent_market_ids(limit=max_markets_prices) or None
+        return market_ids
+
     async def ingest_everything(
         self,
         top_markets_count: int = 1000,
@@ -2153,26 +2189,23 @@ class DataIngestionService:
                     logger.warning("Failed to log Phase 1 sync (non-fatal): %s", e)
 
             # Phase 2: historical prices for markets we have in DB
+            # S142: wrap market selection in 30s timeout — under pool pressure these
+            # queries can hang until the 600s master timeout kills them.  Bot uses
+            # API fallback for prices so skipping Phase 2 is safe.
+            _PHASE2_SELECT_TIMEOUT = 30.0
             market_ids: Optional[List[str]] = None
             if self.db:
-                if self.smart_fetcher and not incremental:
-                    try:
-                        market_ids = await self.smart_fetcher.predict_active_market_ids(top_n=max_markets_prices)
-                    except Exception as e:
-                        logger.warning("SmartDataFetcher failed, falling back to get_softest_markets: %s", e)
-                if not market_ids:
-                    if incremental and skip_recent_hours and skip_recent_hours > 0:
-                        markets = await self.db.get_markets_needing_price_update(
-                            limit=max_markets_prices, skip_recent_hours=skip_recent_hours
-                        )
-                    else:
-                        markets = await self.db.get_markets_for_price_ingestion(limit=max_markets_prices)
-                    market_ids = [str(m["id"]) for m in markets if m.get("id") is not None]
-                if not market_ids:
-                    markets = await self.db.get_softest_markets(limit=max_markets_prices)
-                    market_ids = [str(m["id"]) for m in markets if m.get("id") is not None]
-                if not market_ids:
-                    market_ids = await self.db.get_recent_market_ids(limit=max_markets_prices) or None
+                try:
+                    market_ids = await asyncio.wait_for(
+                        self._phase2_select_markets(max_markets_prices, incremental, skip_recent_hours),
+                        timeout=_PHASE2_SELECT_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("Phase 2 market selection timed out after %.0fs — skipping price ingestion", _PHASE2_SELECT_TIMEOUT)
+                    market_ids = None
+                except Exception as e:
+                    logger.warning("Phase 2 market selection failed: %s — skipping price ingestion", e)
+                    market_ids = None
 
             to_ts = int(datetime.now(timezone.utc).timestamp())
             from_ts = to_ts - (days_back * 24 * 60 * 60)
