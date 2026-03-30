@@ -1371,6 +1371,14 @@ class MirrorBot(BaseBot):
         _is_sell = str(side).upper() == "SELL"
 
         if not _is_sell:
+            # S146: Hard price floor — reject absurd prices that slip through RTDS/WebSocket
+            # gates. 0.001 entry at line 455 should be blocked but defense-in-depth here.
+            # Also rejects near-resolved markets where token price has collapsed.
+            if price < 0.03 or price > 0.97:
+                logger.info("mirror_price_floor_blocked", price=round(price, 4),
+                            market=str(market_id)[:16])
+                return False
+
             # S132: Minimum whale trade size — sub-$50 trades are noise (39.9% WR, -$153K).
             # $50+ trades: 47.1% WR, +$1,428. Gate before any expensive lookups.
             _min_whale_usd = float(getattr(settings, "MIRROR_MIN_WHALE_TRADE_USD", 50.0))
