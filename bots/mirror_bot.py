@@ -865,7 +865,7 @@ class MirrorBot(BaseBot):
                 logger.info("mirror_rtds_price_overlay", updated=_rtds_updated,
                             total=len(self._open_positions))
 
-        positions_to_close: List[str] = []
+        positions_to_close: List[tuple] = []  # (pos_key, exit_event_data)
 
         # S99: Stop-loss (with graduated tightening) + take-profit + circuit breaker
         # S137 C10: Graduation REVERSED — tight early (kill losers fast), loose late (near-res noise).
@@ -896,7 +896,10 @@ class MirrorBot(BaseBot):
             # S99: Take-profit — capture the move, free capital
             if _pnl_pct >= _tp_pct:
                 logger.info("mirror_take_profit", market=_pos_key, pnl_pct=f"{_pnl_pct:.2%}")
-                positions_to_close.append(_pos_key)
+                positions_to_close.append((_pos_key, {
+                    "exit_reason": "take_profit",
+                    "pnl_pct": round(_pnl_pct, 4),
+                }))
                 continue
 
             # S99: Graduated exit pressure — tighten stop-loss by hold duration
@@ -927,7 +930,11 @@ class MirrorBot(BaseBot):
             if _hours_held >= _force_exit_hours:
                 logger.info("mirror_force_exit", market=_pos_key, hours=round(_hours_held, 1),
                             pnl_pct=f"{_pnl_pct:.2%}")
-                positions_to_close.append(_pos_key)
+                positions_to_close.append((_pos_key, {
+                    "exit_reason": "force_exit",
+                    "pnl_pct": round(_pnl_pct, 4),
+                    "hours_held": round(_hours_held, 1),
+                }))
                 continue
 
             # S137 C11: Resolution-relative max-hold — if we've held >80% of total duration, exit.
@@ -939,7 +946,12 @@ class MirrorBot(BaseBot):
                     logger.info("mirror_max_hold_fraction_exit", market=_pos_key,
                                 hold_frac=round(_hold_frac, 3), hours_held=round(_hours_held, 1),
                                 ttr_hours=round(_ttr_hours, 1), pnl_pct=f"{_pnl_pct:.2%}")
-                    positions_to_close.append(_pos_key)
+                    positions_to_close.append((_pos_key, {
+                        "exit_reason": "max_hold_fraction",
+                        "pnl_pct": round(_pnl_pct, 4),
+                        "hours_held": round(_hours_held, 1),
+                        "hold_frac": round(_hold_frac, 3),
+                    }))
                     continue
 
             # S137 C10 / S146: Graduated stop-loss — 4-tier, tight early and loose late.
@@ -960,7 +972,12 @@ class MirrorBot(BaseBot):
                 logger.info("MirrorBot autonomous stop-loss", market=_pos_key,
                             pnl_pct=f"{_pnl_pct:.2%}", hours_held=round(_hours_held, 1),
                             threshold=f"-{_effective_stop:.0%}")
-                positions_to_close.append(_pos_key)
+                positions_to_close.append((_pos_key, {
+                    "exit_reason": "stop_loss",
+                    "pnl_pct": round(_pnl_pct, 4),
+                    "hours_held": round(_hours_held, 1),
+                    "threshold": round(_effective_stop, 4),
+                }))
 
         # S99: Circuit breaker — if total unrealized P&L breaches threshold, pause entries
         _cb_threshold_pct = float(getattr(settings, "MIRROR_CIRCUIT_BREAKER_THRESHOLD", -0.20))
@@ -977,7 +994,14 @@ class MirrorBot(BaseBot):
                            pause_minutes=_cb_pause_min)
 
         # Execute the exits
-        for pos_key in set(positions_to_close):
+        # S147: Deduplicate by pos_key, keeping first exit reason (priority order preserved)
+        _seen_keys: set = set()
+        _deduped_exits: list = []
+        for _pk, _ed in positions_to_close:
+            if _pk not in _seen_keys:
+                _seen_keys.add(_pk)
+                _deduped_exits.append((_pk, _ed))
+        for pos_key, _exit_event_data in _deduped_exits:
             pos = self._open_positions.get(pos_key)
             if not pos:
                 continue
@@ -1023,6 +1047,7 @@ class MirrorBot(BaseBot):
                     size=exit_size,
                     price=exit_price,
                     confidence=0.80,
+                    event_data=_exit_event_data,
                 )
                 if order.get("success"):
                     logger.info(
