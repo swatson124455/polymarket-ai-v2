@@ -4786,7 +4786,7 @@ class Database:
                     "model_version": model_version,
                     "model_name": model_name,
                     "idempotency_key": idem_key,
-                    "event_data": json.dumps(event_data or {}),
+                    "event_data": json.dumps(event_data or {}, default=str),
                 }
                 if event_type == "RESOLUTION":
                     # Atomic INSERT...SELECT to prevent duplicates.
