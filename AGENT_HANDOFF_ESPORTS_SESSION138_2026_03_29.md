@@ -409,7 +409,31 @@ python scripts/run_audit.py --ack <id> --reason "..."
 - `duplicate_entry_check` — multiple ENTRY events while lifecycle still open (churn-loop guard)
 
 ### Note on SIGNAL_REQUIRED_BOTS
-`SIGNAL_REQUIRED_BOTS` is currently empty (default). Rogue ENTRY detection is WARNING-only for all bots. Set `SIGNAL_REQUIRED_BOTS=EsportsBot` in `.env` once you verify EsportsBot reliably writes `trade_signals` rows before every ENTRY. See factory.py TODO dated 2026-04-30.
+EsportsBot does **not** call `store_pending_trade_signals()` — confirmed by code search. Do not add EsportsBot to `SIGNAL_REQUIRED_BOTS`. The `signal_trade_mismatch` check will fire WARNING (not CRITICAL) for EsportsBot — this is expected and correct behaviour.
+
+### P2 — 432-row root cause: action needed this session
+The 432 rows are silently excluded from calibration labeling on every retrain. The audit system now detects them automatically, but the root cause is still unknown. Run this diagnostic to find out which fix applies:
+
+```sql
+SELECT
+  pl.bot_name,
+  COUNT(*) AS bad_rows,
+  MIN(EXTRACT(EPOCH FROM (pl.prediction_time - m.resolved_at))) AS min_delta_s,
+  MAX(EXTRACT(EPOCH FROM (pl.prediction_time - m.resolved_at))) AS max_delta_s,
+  AVG(EXTRACT(EPOCH FROM (pl.prediction_time - m.resolved_at))) AS avg_delta_s
+FROM prediction_log pl
+JOIN markets m ON m.id = pl.market_id
+WHERE pl.prediction_time > m.resolved_at
+  AND m.resolved_at IS NOT NULL
+GROUP BY pl.bot_name;
+```
+
+**Interpretation:**
+- `avg_delta_s < 5` → VPS clock jitter. Fix: add 5-second grace to the `AND m.resolved_at >= pl.prediction_time` guard in `database.py:3140`.
+- `avg_delta_s` in minutes/hours → backfill wrote a backdated `resolved_at` from the Polymarket API. Fix: in `resolution_backfill.py`, prevent `resolved_at` from being set earlier than the earliest `prediction_time` for that market.
+- Both present → apply both fixes.
+
+Do NOT remove or widen the guard without understanding the distribution — it prevents ML data leakage.
 
 ### Full audit docs
 `AGENT_HANDOFF_AUDIT_SYSTEM_2026_03_29.md`

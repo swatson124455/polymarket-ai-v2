@@ -473,6 +473,30 @@ python scripts/run_audit.py --ack <break_id> --reason "resolved in S143"
 - `stale_open_position` — positions open on resolved markets (resolution backfill gap)
 - `shadow_fill_mismatch` — trade_executed=TRUE but no ENTRY event (CRITICAL money leak)
 - `paper_trade_mismatch` — paper_trades P&L vs trade_events P&L discrepancy > $0.10
+- `signal_trade_mismatch` — MirrorBot calls `store_pending_trade_signals()` — verify coverage before enabling CRITICAL tier
+
+### SIGNAL_REQUIRED_BOTS — action needed this session
+MirrorBot writes `trade_signals` rows via `store_pending_trade_signals()` at `mirror_bot.py:2062`. It is a candidate for `SIGNAL_REQUIRED_BOTS`, which upgrades rogue ENTRY detection from WARNING → CRITICAL.
+
+**Before setting it**, run this coverage check:
+```sql
+SELECT
+  te.bot_name,
+  COUNT(DISTINCT te.market_id) AS entries,
+  COUNT(DISTINCT ts.market_id) AS with_signal,
+  ROUND(100.0 * COUNT(DISTINCT ts.market_id) / NULLIF(COUNT(DISTINCT te.market_id), 0), 1) AS coverage_pct
+FROM trade_events te
+LEFT JOIN trade_signals ts
+  ON ts.market_id = te.market_id AND ts.bot_name = te.bot_name
+  AND ts.created_at BETWEEN te.event_time - INTERVAL '5 minutes' AND te.event_time
+WHERE te.event_type = 'ENTRY' AND te.bot_name = 'MirrorBot'
+  AND te.created_at >= NOW() - INTERVAL '30 days'
+GROUP BY te.bot_name;
+```
+
+If `coverage_pct >= 90`: add `SIGNAL_REQUIRED_BOTS=MirrorBot` to `/opt/pa2-shared/.env` and restart. No code change needed — factory reads the env var. If below 90%, investigate why signal writes are being dropped before enabling.
+
+Deadline from factory.py TODO: **2026-04-30**.
 
 ### First automated run
 First daily_audit fires ~24h post-deploy (~2026-03-30 21:35 UTC). Results persist to `reconciliation_breaks` and alert via AlertingSystem if CRITICAL violations found.

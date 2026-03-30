@@ -140,5 +140,8 @@ python scripts/run_audit.py --ack <id> --reason "..."
 ### Note on PAPER_TAKER_FEE_BPS=0 and fee_check
 S141 set `PAPER_TAKER_FEE_BPS=0` in .env. The `fee_check` will flag WARNING for zero-fee ENTRY events where `execution_mode` is unknown (no paper flag in event_data). This is expected and not a real violation — acknowledge these via CLI or confirm event_data carries a paper flag.
 
+### Note on SIGNAL_REQUIRED_BOTS
+WeatherBot does **not** call `store_pending_trade_signals()` — confirmed by code search. Do not add WeatherBot to `SIGNAL_REQUIRED_BOTS`. The `signal_trade_mismatch` check will fire WARNING (not CRITICAL) for WeatherBot — expected and correct.
+
 ### Full audit docs
 `AGENT_HANDOFF_AUDIT_SYSTEM_2026_03_29.md`

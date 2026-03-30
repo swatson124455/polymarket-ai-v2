@@ -120,17 +120,44 @@ class AuditOrchestrator:
         # Fire aggregated alert for new CRITICAL violations
         await self._maybe_alert(results, run_id)
 
-        total_breaks = sum(r.violation_count for r in results)
+        total_breaks   = sum(r.violation_count for r in results)
+        total_critical = sum(r.critical_count for r in results)
+        total_warning  = sum(r.warning_count for r in results)
+        checks_passed  = sum(1 for r in results if r.passed and not r.timed_out)
+        checks_failed  = sum(1 for r in results if not r.passed or r.timed_out)
         timed_out_count = sum(1 for r in results if r.timed_out)
         logger.info(
             "audit_run_complete",
             run_id=run_id,
             checks_run=len(results),
-            checks_passed=sum(1 for r in results if r.passed),
+            checks_passed=checks_passed,
             total_breaks=total_breaks,
             timed_out=timed_out_count,
         )
-        return summary
+        # Build a return dict the CLI can consume directly.
+        # complete_audit_run() returns per-check trend data (keyed by check name) —
+        # that is stored in DB but is NOT the shape _print_summary() expects.
+        return {
+            "run_id":         run_id,
+            "status":         "failed" if error_message else "completed",
+            "checks_run":     len(results),
+            "checks_passed":  checks_passed,
+            "checks_failed":  checks_failed,
+            "total_breaks":   total_breaks,
+            "total_critical": total_critical,
+            "total_warning":  total_warning,
+            "check_summaries": {
+                r.check_name: {
+                    "passed":          r.passed,
+                    "violation_count": r.violation_count,
+                    "summary":         r.summary,
+                    "duration_ms":     round(r.duration_ms, 1),
+                    "timed_out":       r.timed_out,
+                }
+                for r in results
+            },
+            "trend": summary,  # per-check JSONB from complete_audit_run — visible via --json
+        }
 
     async def _run_single_check(self, check: BaseCheck) -> CheckResult:
         """
