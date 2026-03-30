@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "2"))  # S141: 5→2
     DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))
     DB_POOL_RECYCLE: int = int(os.getenv("DB_POOL_RECYCLE", "600"))
+    # Ingestion tuning — caps how many DB connections Phase 1 can hold simultaneously
+    INGEST_NUM_PROCESSORS: int = int(os.getenv("INGEST_NUM_PROCESSORS", "8"))
+    INGEST_DB_BUDGET: int = int(os.getenv("INGEST_DB_BUDGET", "4"))
     # Optional: after bulk insert, run a quick COUNT/exists check and log if data not visible (debug/staging)
     VERIFY_SAVE_AFTER_INSERT: bool = os.getenv("VERIFY_SAVE_AFTER_INSERT", "false").lower() in ("true", "1", "yes")
     # Pre-insert validation: skip invalid market/price/trade rows instead of failing (optional)
@@ -1107,6 +1110,7 @@ class Settings(BaseSettings):
     ESPORTS_MIN_TRADE_USD: float = float(os.getenv("ESPORTS_MIN_TRADE_USD", "10.0"))
     ESPORTS_MAX_DAILY_USD: float = float(os.getenv("ESPORTS_MAX_DAILY_USD", "20000.0"))
     ESPORTS_KELLY_DEFAULT_FRACTION: float = float(os.getenv("ESPORTS_KELLY_DEFAULT_FRACTION", "0.25"))
+    ESPORTS_BM_ACTIVE: bool = os.getenv("ESPORTS_BM_ACTIVE", "false").lower() == "true"
 
     # --- Execution ---
     ESPORTS_MAKER_FALLBACK_TIMEOUT_S: float = float(os.getenv("ESPORTS_MAKER_FALLBACK_TIMEOUT_S", "3.0"))

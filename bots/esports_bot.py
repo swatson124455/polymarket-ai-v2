@@ -2471,6 +2471,22 @@ class EsportsBot(BaseBot):
             except (TypeError, ValueError, AttributeError):
                 pass
 
+        # S141: Baker-McHale conformal width (real value from fitted predictor)
+        _conformal_width = 0.15
+        _cp = self._conformal_per_game.get(game)
+        if _cp and getattr(_cp, "is_fitted", False):
+            try:
+                import numpy as _np_cw
+                _cw_low, _, _cw_high = _cp.predict_interval(
+                    _np_cw.array([[model_prob]])
+                )
+                _conformal_width = float(_cw_high[0] - _cw_low[0])
+            except Exception:
+                pass
+
+        # S141: Baker-McHale agreement stdev (from signal quality)
+        _agreement_stdev = _sq_components.get("agreement_stdev", 0.10)
+
         return {
             "type": "esports_pregame" if not self._is_live(market_id) else "esports_live",
             "market_id": market_id,
@@ -2485,6 +2501,11 @@ class EsportsBot(BaseBot):
             "end_date_iso": market_data.get("end_date_iso"),
             "_clob_volume": _clob_volume,
             "_signal_quality": _sq,
+            # S141: Baker-McHale sigma inputs (real values from Glicko-2 + calibration)
+            "_phi_a": float(_ed.get("_phi_a", 200.0)),
+            "_phi_b": float(_ed.get("_phi_b", 200.0)),
+            "_conformal_width": _conformal_width,
+            "_agreement_stdev": _agreement_stdev,
         }
 
     # ── Internal helpers ───────────────────────────────────────────────────
@@ -2569,10 +2590,10 @@ class EsportsBot(BaseBot):
                     )
                 xgb_raw = xgb_prob
                 _enrich_meta["xgb_raw"] = xgb_raw
-                _d = self._game_egm_d.get(game, self._egm_d)
-                prob = extremized_geometric_mean(
-                    [prob, xgb_prob], weights=[0.6, 0.4], d=_d
-                )
+                # S141: simple weighted blend — EGM already applied in
+                # per-game ML+Glicko-2 blend; re-applying here was
+                # recursive extremization inflating all 8 games' probs.
+                prob = 0.6 * prob + 0.4 * xgb_prob
                 prob = max(0.05, min(0.95, prob))
 
         # 4. CatBoost draft model blend
@@ -2722,7 +2743,8 @@ class EsportsBot(BaseBot):
                         _gs_lol = self._build_glicko2_game_state(market_data, game)
                         if _gs_lol:
                             for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
-                                        "team_a_volatility", "team_b_volatility"):
+                                        "team_a_volatility", "team_b_volatility",
+                                        "_phi_a", "_phi_b"):
                                 _ed_lol[_fk] = round(float(_gs_lol.get(_fk, 0.0)), 6)
                         self._prediction_cache[market_id] = {
                             "prob": prob, "ts": time.monotonic(), "game": game,
@@ -2765,7 +2787,8 @@ class EsportsBot(BaseBot):
                                            "scan_start_mono": getattr(self, "_scan_start_mono", None),
                                            "_enrich_meta": _em}
                             for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
-                                        "team_a_volatility", "team_b_volatility"):
+                                        "team_a_volatility", "team_b_volatility",
+                                        "_phi_a", "_phi_b"):
                                 _ed_lol_pre[_fk] = round(float(_gs_lol.get(_fk, 0.0)), 6)
                             self._prediction_cache[market_id] = {
                                 "prob": prob, "ts": time.monotonic(), "game": game,
@@ -2796,7 +2819,8 @@ class EsportsBot(BaseBot):
                                    "_enrich_meta": _em}
                         if game_state:
                             for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
-                                        "team_a_volatility", "team_b_volatility"):
+                                        "team_a_volatility", "team_b_volatility",
+                                        "_phi_a", "_phi_b"):
                                 _ed_cs2[_fk] = round(float(game_state.get(_fk, 0.0)), 6)
                         self._prediction_cache[market_id] = {
                             "prob": prob, "ts": time.monotonic(), "game": game,
@@ -2841,7 +2865,8 @@ class EsportsBot(BaseBot):
                                        "scan_start_mono": getattr(self, "_scan_start_mono", None),
                                        "_enrich_meta": _em}
                         for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
-                                    "team_a_volatility", "team_b_volatility"):
+                                    "team_a_volatility", "team_b_volatility",
+                                    "_phi_a", "_phi_b"):
                             _ed_cs2_pre[_fk] = round(float(game_state.get(_fk, 0.0)), 6)
                         self._prediction_cache[market_id] = {
                             "prob": prob, "ts": time.monotonic(), "game": game,
@@ -2874,7 +2899,8 @@ class EsportsBot(BaseBot):
                                   "_enrich_meta": _em}
                         if game_state:
                             for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
-                                        "team_a_volatility", "team_b_volatility"):
+                                        "team_a_volatility", "team_b_volatility",
+                                        "_phi_a", "_phi_b"):
                                 _ed_d2[_fk] = round(float(game_state.get(_fk, 0.0)), 6)
                         self._prediction_cache[market_id] = {
                             "prob": prob, "ts": time.monotonic(), "game": game,
@@ -2906,7 +2932,8 @@ class EsportsBot(BaseBot):
                                    "_enrich_meta": _em}
                         if game_state:
                             for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
-                                        "team_a_volatility", "team_b_volatility"):
+                                        "team_a_volatility", "team_b_volatility",
+                                        "_phi_a", "_phi_b"):
                                 _ed_val[_fk] = round(float(game_state.get(_fk, 0.0)), 6)
                         self._prediction_cache[market_id] = {
                             "prob": prob, "ts": time.monotonic(), "game": game,
@@ -2934,7 +2961,8 @@ class EsportsBot(BaseBot):
                                    "scan_start_mono": getattr(self, "_scan_start_mono", None),
                                    "_enrich_meta": _em}
                         for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
-                                    "team_a_volatility", "team_b_volatility"):
+                                    "team_a_volatility", "team_b_volatility",
+                                    "_phi_a", "_phi_b"):
                             _ed_cod[_fk] = round(float(game_state.get(_fk, 0.0)), 6)
                         self._prediction_cache[market_id] = {
                             "prob": prob, "ts": time.monotonic(), "game": game,
@@ -2961,7 +2989,8 @@ class EsportsBot(BaseBot):
                                   "scan_start_mono": getattr(self, "_scan_start_mono", None),
                                   "_enrich_meta": _em}
                         for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
-                                    "team_a_volatility", "team_b_volatility"):
+                                    "team_a_volatility", "team_b_volatility",
+                                    "_phi_a", "_phi_b"):
                             _ed_rl[_fk] = round(float(game_state.get(_fk, 0.0)), 6)
                         self._prediction_cache[market_id] = {
                             "prob": prob, "ts": time.monotonic(), "game": game,
@@ -2988,7 +3017,8 @@ class EsportsBot(BaseBot):
                                    "scan_start_mono": getattr(self, "_scan_start_mono", None),
                                    "_enrich_meta": _em}
                         for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
-                                    "team_a_volatility", "team_b_volatility"):
+                                    "team_a_volatility", "team_b_volatility",
+                                    "_phi_a", "_phi_b"):
                             _ed_sc2[_fk] = round(float(game_state.get(_fk, 0.0)), 6)
                         self._prediction_cache[market_id] = {
                             "prob": prob, "ts": time.monotonic(), "game": game,
@@ -3015,7 +3045,8 @@ class EsportsBot(BaseBot):
                                   "scan_start_mono": getattr(self, "_scan_start_mono", None),
                                   "_enrich_meta": _em}
                         for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
-                                    "team_a_volatility", "team_b_volatility"):
+                                    "team_a_volatility", "team_b_volatility",
+                                    "_phi_a", "_phi_b"):
                             _ed_r6[_fk] = round(float(game_state.get(_fk, 0.0)), 6)
                         self._prediction_cache[market_id] = {
                             "prob": prob, "ts": time.monotonic(), "game": game,
@@ -3062,7 +3093,8 @@ class EsportsBot(BaseBot):
                 _gs = self._build_glicko2_game_state(market_data, game) if game else None
                 if _gs:
                     for _fk in ("team_strength_diff", "matchup_uncertainty", "rd_asymmetry",
-                                "team_a_volatility", "team_b_volatility", "best_of"):
+                                "team_a_volatility", "team_b_volatility", "best_of",
+                                "_phi_a", "_phi_b"):
                         _event_data[_fk] = round(float(_gs.get(_fk, 0.0)), 6)
                 if live_data is not None:
                     try:
@@ -3827,9 +3859,11 @@ class EsportsBot(BaseBot):
             eff_kelly=round(_eff_kelly, 4),
             edge=round(_opp_edge, 4),
         )
-        # SHADOW MODE: execute at min(old, new) — never exceed current levels
-        # Remove this line to cut over to Baker-McHale after validation
-        size = min(size, _bm_size)
+        # S141: env-flag cutover — ESPORTS_BM_ACTIVE=true activates BM sizing
+        if getattr(settings, "ESPORTS_BM_ACTIVE", False):
+            size = _bm_size
+        else:
+            size = min(size, _bm_size)  # shadow: never exceed cascade
 
         # Position re-entry: cap size at remaining room under per-market cap
         _max_size_override = opp.get("max_size_override")
@@ -4087,10 +4121,12 @@ class EsportsBot(BaseBot):
         if _em.get("cb_prob") is not None:
             _probs.append(float(_em["cb_prob"]))
         if len(_probs) >= 2:
-            _agreement = max(0.0, min(1.0, 1.0 - _stats.stdev(_probs) / 0.20))
+            _stdev_raw = _stats.stdev(_probs)
+            _agreement = max(0.0, min(1.0, 1.0 - _stdev_raw / 0.20))
         else:
             # S131: Single model is not "uncertain" — it's just one source.
             # 0.70 = "no contradicting signal" (was 0.50 = coin-flip penalty).
+            _stdev_raw = 0.10
             _agreement = 0.70
 
         # 2. Calibration score (weight 0.25): is this game calibrated?
@@ -4143,6 +4179,7 @@ class EsportsBot(BaseBot):
             "uncertainty": round(_uncertainty, 4),
             "enrichment": round(_enrichment, 4),
             "brier": round(_brier_score, 4),
+            "agreement_stdev": round(_stdev_raw, 4),  # S141: raw stdev for BM sigma
         }
         return _sq, _components
 
@@ -5938,6 +5975,9 @@ class EsportsBot(BaseBot):
                 "best_of": 1.0,  # Default; overridden if series data available
                 "team_a_recent_form": float(_g2es(rating_a, _ref)),
                 "team_b_recent_form": float(_g2es(rating_b, _ref)),
+                # S141: expose raw phi for Baker-McHale sigma_model
+                "_phi_a": rating_a.phi,
+                "_phi_b": rating_b.phi,
             }
         except Exception:
             return None
