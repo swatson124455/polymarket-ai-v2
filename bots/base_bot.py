@@ -334,6 +334,16 @@ class BaseBot(ABC):
         if result.get("success"):
             self.trades_executed += 1
             logger.info("Order placed", bot_name=self.bot_name, market_id=market_id, side=side, latency_ms=round(_order_ms, 1))
+            # S145: Auto-store pending signal metadata — every bot benefits automatically
+            _trade_id = result.get("trade_id") or result.get("order_id")
+            if _trade_id and self._pending_signal_meta.get(str(market_id)):
+                try:
+                    await asyncio.wait_for(
+                        self.store_pending_trade_signals(str(_trade_id), str(market_id)),
+                        timeout=2.0,
+                    )
+                except Exception:
+                    logger.debug("signal_store_failed", bot_name=self.bot_name, market_id=market_id)
         return result
 
     # ── Shared utilities: extracted from duplicate code across bots ──

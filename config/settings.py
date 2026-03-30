@@ -21,10 +21,10 @@ class Settings(BaseSettings):
     # Empty when not set - avoids trying localhost (which fails with "password auth failed for user")
     DATABASE_URL: str = os.getenv("DATABASE_URL") or ""
     # Connection pool configuration
-    DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "12"))  # S141: 30→12 (3 services × 14 = 42, fits in PG max=50)
-    DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "2"))  # S141: 5→2
-    DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))
-    DB_POOL_RECYCLE: int = int(os.getenv("DB_POOL_RECYCLE", "600"))
+    DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "8"))  # S145: 12→8 (PgBouncer transaction mode; 3×12=36 < pgb 40)
+    DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "4"))  # S145: 2→4 (burst headroom)
+    DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "15"))  # S145: 30→15 (fail fast)
+    DB_POOL_RECYCLE: int = int(os.getenv("DB_POOL_RECYCLE", "300"))  # S145: 600→300 (5min recycle)
     # Ingestion tuning — caps how many DB connections Phase 1 can hold simultaneously
     INGEST_NUM_PROCESSORS: int = int(os.getenv("INGEST_NUM_PROCESSORS", "8"))
     INGEST_DB_BUDGET: int = int(os.getenv("INGEST_DB_BUDGET", "4"))
@@ -383,6 +383,7 @@ class Settings(BaseSettings):
     MIRROR_STOP_LOSS_PCT: float = float(os.getenv("MIRROR_STOP_LOSS_PCT", "0.15"))
     # S137 C10: Reversed stop-loss graduation — tight early (kill losers fast), loose late (near-res noise)
     # Was: -15%→-10%→-5% (backwards — tightest at end). Now: -10%→-12%→-15% (tightest at start).
+    MIRROR_STOP_LOSS_TIGHTEN_24H: float = float(os.getenv("MIRROR_STOP_LOSS_TIGHTEN_24H", "-0.06"))  # S146: 0-24h tightest
     MIRROR_STOP_LOSS_TIGHTEN_48H: float = float(os.getenv("MIRROR_STOP_LOSS_TIGHTEN_48H", "-0.12"))
     MIRROR_STOP_LOSS_TIGHTEN_72H: float = float(os.getenv("MIRROR_STOP_LOSS_TIGHTEN_72H", "-0.15"))
     # S137 C10: Near-resolution tightener — if < 24h to resolution, tighten to -5%
@@ -402,6 +403,8 @@ class Settings(BaseSettings):
     # S132: NO-side dampener — NO loses 7x more than YES. 0.5 = half size on NO.
     MIRROR_NO_SIDE_DAMPENER: float = float(os.getenv("MIRROR_NO_SIDE_DAMPENER", "0.3"))  # S137 C5: 0.5→0.3 (NO = -$139K, 87% of losses)
     MIRROR_NO_PRICE_BLOCK: float = float(os.getenv("MIRROR_NO_PRICE_BLOCK", "0.75"))    # S137 C5: hard block NO when token price >75%
+    MIRROR_NO_BLOCK_FLOOR: float = float(os.getenv("MIRROR_NO_BLOCK_FLOOR", "0.20"))   # S146: hard block NO when token price < floor (was 0.10)
+    MIRROR_NO_MIN_EDGE: float = float(os.getenv("MIRROR_NO_MIN_EDGE", "0.05"))         # S146: NO must show >=5% edge (confidence - price)
     # S137 C8: Market volume gate — thin markets have poor execution quality
     MIRROR_MIN_MARKET_VOLUME_24H: float = float(os.getenv("MIRROR_MIN_MARKET_VOLUME_24H", "5000.0"))
     # S137 C9: Category expertise filter — reject traders with poor category-specific WR
@@ -413,6 +416,11 @@ class Settings(BaseSettings):
     # 76% of copied traders are unprofitable; top 3 worst = -$68K (43% of all losses).
     MIRROR_TRADER_MIN_WIN_RATE: float = float(os.getenv("MIRROR_TRADER_MIN_WIN_RATE", "0.35"))
     MIRROR_TRADER_MIN_RESOLVED: int = int(os.getenv("MIRROR_TRADER_MIN_RESOLVED", "20"))
+    # S146: Copy-P&L tiered sizing — multiplier per trader based on OUR copy-profitability.
+    # Tier 1 (copy-profitable, n>=threshold): 1.0x. Tier 2 (thin data): mult. Tier 3 (copy-unprofitable): mult.
+    MIRROR_COPY_TIER2_MULT: float = float(os.getenv("MIRROR_COPY_TIER2_MULT", "0.50"))
+    MIRROR_COPY_TIER3_MULT: float = float(os.getenv("MIRROR_COPY_TIER3_MULT", "0.25"))
+    MIRROR_COPY_MIN_TRADES_FOR_TIER: int = int(os.getenv("MIRROR_COPY_MIN_TRADES_FOR_TIER", "20"))
     # Dampeners (S119: set to 1.0 = no-op for data collection phase)
     MIRROR_FAVORITE_PRICE_THRESHOLD: float = float(os.getenv("MIRROR_FAVORITE_PRICE_THRESHOLD", "0.70"))
     MIRROR_FAVORITE_DAMPENER: float = float(os.getenv("MIRROR_FAVORITE_DAMPENER", "1.0"))  # S119: 0.40→1.0 for data collection
@@ -785,6 +793,8 @@ class Settings(BaseSettings):
     WEATHER_CONFIDENCE_CAL_ENABLED: bool = os.getenv("WEATHER_CONFIDENCE_CAL_ENABLED", "true").lower() == "true"
     WEATHER_CONFIDENCE_CAL_WINDOW_DAYS: int = int(os.getenv("WEATHER_CONFIDENCE_CAL_WINDOW_DAYS", "30"))
     WEATHER_CONFIDENCE_CAL_MIN_SAMPLES: int = int(os.getenv("WEATHER_CONFIDENCE_CAL_MIN_SAMPLES", "200"))
+    # S143: YES-side fallback window — wider window when 30d has <30 YES samples
+    WEATHER_CONFIDENCE_CAL_YES_FALLBACK_WINDOW_DAYS: int = int(os.getenv("WEATHER_CONFIDENCE_CAL_YES_FALLBACK_WINDOW_DAYS", "90"))
     # S135: Disable combined_boost for YES side — NO keeps all boosts
     WEATHER_YES_BOOST_ENABLED: bool = os.getenv("WEATHER_YES_BOOST_ENABLED", "false").lower() == "true"
 
@@ -1228,6 +1238,9 @@ class Settings(BaseSettings):
 
     # --- Monitoring halt threshold (Brier score above this → halt trading for game) ---
     ESPORTS_BRIER_HALT_THRESHOLD: float = float(os.getenv("ESPORTS_BRIER_HALT_THRESHOLD", "0.30"))  # S127: lowered to actually halt bad games
+    # S142: Statistical halt lower bound — 90% CI lower bound must exceed this to halt.
+    # Lowered from 0.25 to 0.22 so CS2 (Brier 0.339, lb=0.249) actually gets caught.
+    ESPORTS_BRIER_HALT_LOWER_BOUND: float = float(os.getenv("ESPORTS_BRIER_HALT_LOWER_BOUND", "0.22"))
 
     # --- Per-game Kelly multiplier thresholds ---
     ESPORTS_KELLY_BRIER_PENALTY: float = float(os.getenv("ESPORTS_KELLY_BRIER_PENALTY", "0.25"))

@@ -164,33 +164,44 @@ class _SemaphoreSession:
     """
     Async context manager that wraps session creation with semaphore.
     Limits concurrent database operations to prevent connection pool exhaustion.
+    Optional timeout kills hung queries before they block the pool.
     """
-    def __init__(self, session_factory, semaphore: Optional[asyncio.Semaphore]):
+    def __init__(self, session_factory, semaphore: Optional[asyncio.Semaphore],
+                 timeout: Optional[float] = None):
         self.session_factory = session_factory
         self.semaphore = semaphore
         self.session = None
-    
+        self.timeout = timeout
+        self._timeout_ctx = None
+
     async def __aenter__(self):
         if self.semaphore:
             try:
-                await asyncio.wait_for(self.semaphore.acquire(), timeout=30)
+                await asyncio.wait_for(self.semaphore.acquire(), timeout=15)
             except asyncio.TimeoutError:
                 raise DatabaseError(
-                    "DB semaphore timeout — all slots occupied for 30s",
+                    "DB semaphore timeout — all slots occupied for 15s",
                     operation="get_session",
                     table=None,
                 )
+        if self.timeout is not None:
+            self._timeout_ctx = asyncio.timeout(self.timeout)
+            await self._timeout_ctx.__aenter__()
         self.session = self.session_factory()
         result = await self.session.__aenter__()
         return result
-    
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         try:
             if self.session:
                 await self.session.__aexit__(exc_type, exc_val, exc_tb)
         finally:
-            if self.semaphore:
-                self.semaphore.release()
+            try:
+                if self._timeout_ctx is not None:
+                    await self._timeout_ctx.__aexit__(exc_type, exc_val, exc_tb)
+            finally:
+                if self.semaphore:
+                    self.semaphore.release()
         return False
 
 
@@ -995,7 +1006,7 @@ class Database:
         connect_timeout = getattr(settings, "DB_CONNECT_TIMEOUT", 15)
         db_ssl = getattr(settings, "DB_SSL", False)
 
-        stmt_cache = 256  # asyncpg prepared statement cache (local PG)
+        stmt_cache = 0  # PgBouncer transaction mode — prepared statements incompatible
 
         connect_args: dict = {"statement_cache_size": stmt_cache, "timeout": connect_timeout, "ssl": db_ssl}
         _pool_recycle = int(getattr(settings, "DB_POOL_RECYCLE", 600))  # S141: 1h→10min default
@@ -1069,13 +1080,37 @@ class Database:
             # All schema is managed via run_migrations.py; create_all is just a safety net.
             logger.debug("create_all skipped (tables should exist from migrations): %s", type(create_err).__name__)
         self._engine_loop_id = id(asyncio.get_running_loop())
+        # S145: Periodic pool health logging — 60s interval, visible in journalctl
+        self._pool_health_task = asyncio.create_task(self._log_pool_health(total_connections))
         logger.info("PostgreSQL database initialized successfully")
 
-    def get_session(self):
+    async def _log_pool_health(self, total_connections: int) -> None:
+        """S145: Log pool status every 60s for connection leak visibility."""
+        while True:
+            try:
+                await asyncio.sleep(60)
+                pool = self.engine.pool
+                checked_out = pool.checkedout()
+                checked_in = pool.checkedin()
+                overflow = pool.overflow()
+                sem_available = self._db_semaphore._value if self._db_semaphore else -1
+                logger.info("db_pool_health",
+                            checked_out=checked_out,
+                            checked_in=checked_in,
+                            overflow=overflow,
+                            total=total_connections,
+                            semaphore_available=sem_available)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                pass  # Pool health logging must never crash the system
+
+    def get_session(self, timeout: Optional[float] = None):
         """
         Get a database session (use with async context manager).
         Acquires semaphore to limit concurrent sessions and prevent pool exhaustion.
         Usage: async with self.db.get_session() as session:
+               async with self.db.get_session(timeout=10) as session:  # 10s timeout
         """
         if self.session_factory is None:
             raise DatabaseError(
@@ -1084,7 +1119,8 @@ class Database:
                 table=None
             )
         # Return a context manager that acquires semaphore before creating session
-        return _SemaphoreSession(self.session_factory, getattr(self, '_db_semaphore', None))
+        return _SemaphoreSession(self.session_factory, getattr(self, '_db_semaphore', None),
+                                 timeout=timeout)
 
     def get_raw_session(self):
         """

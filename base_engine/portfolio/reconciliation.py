@@ -55,22 +55,23 @@ class PositionReconciler:
         except Exception as e:
             logger.debug("Reconciler init failed: %s", e)
 
-    async def reconcile(self) -> List[Dict[str, Any]]:
+    async def reconcile(self, bot_name: str = "") -> List[Dict[str, Any]]:
         """
         Compare internal positions against blockchain balances.
         Returns list of discrepancies.
+        S142: Optional bot_name filter prevents cross-bot contamination.
         """
         if not self.db or not getattr(self.db, "session_factory", None):
             return []
 
         # Get internal positions
-        internal = await self._get_internal_positions()
+        internal = await self._get_internal_positions(bot_name=bot_name)
         if not internal:
             return []
 
         if not self._initialized:
             # Paper mode: reconcile positions table vs paper_trades net instead of chain
-            return await self._reconcile_paper_positions(internal)
+            return await self._reconcile_paper_positions(internal, bot_name=bot_name)
 
         # Get on-chain balances
         chain_balances = await self._get_chain_balances(internal)
@@ -109,25 +110,39 @@ class PositionReconciler:
 
         return discrepancies
 
-    async def _get_internal_positions(self) -> List[Dict]:
-        """Get open positions from DB."""
+    async def _get_internal_positions(self, bot_name: str = "") -> List[Dict]:
+        """Get open positions from DB, optionally filtered by bot_name."""
         try:
             from sqlalchemy import text
-            async with self.db.get_session() as session:
-                r = await session.execute(text("""
-                    SELECT market_id, token_id, side, size
-                    FROM positions
-                    WHERE status IN ('open', 'reserving')
-                """))
-                return [
-                    {"market_id": row[0], "token_id": row[1], "side": row[2], "size": float(row[3])}
-                    for row in r.fetchall()
-                ]
+            if bot_name:
+                async with self.db.get_session() as session:
+                    r = await session.execute(text("""
+                        SELECT market_id, token_id, side, size
+                        FROM positions
+                        WHERE status IN ('open', 'reserving')
+                          AND source_bot = :bot_name
+                    """), {"bot_name": bot_name})
+                    return [
+                        {"market_id": row[0], "token_id": row[1], "side": row[2], "size": float(row[3])}
+                        for row in r.fetchall()
+                    ]
+            else:
+                async with self.db.get_session() as session:
+                    r = await session.execute(text("""
+                        SELECT market_id, token_id, side, size
+                        FROM positions
+                        WHERE status IN ('open', 'reserving')
+                    """))
+                    return [
+                        {"market_id": row[0], "token_id": row[1], "side": row[2], "size": float(row[3])}
+                        for row in r.fetchall()
+                    ]
         except Exception as e:
             logger.debug("Internal positions query failed: %s", e)
             return []
 
-    async def _reconcile_paper_positions(self, internal: List[Dict]) -> List[Dict[str, Any]]:
+    async def _reconcile_paper_positions(self, internal: List[Dict],
+                                         bot_name: str = "") -> List[Dict[str, Any]]:
         """Paper-trading reconciliation: compare positions table vs trade_events net.
 
         For each open position in `internal`, compute the net size from trade_events
@@ -135,6 +150,7 @@ class PositionReconciler:
         P&L authority (not paper_trades which is legacy).
 
         A discrepancy of > 1% triggers a WARNING log.  Read-only — no position mutations.
+        S142: Added bot_name filter to prevent cross-bot contamination.
         """
         results: List[Dict[str, Any]] = []
         if not internal:
@@ -142,6 +158,11 @@ class PositionReconciler:
         try:
             from sqlalchemy import text as _text
             market_ids = [p["market_id"] for p in internal]
+            # S142: Filter by bot_name if provided to prevent cross-bot mismatch
+            _bot_filter = " AND bot_name = :bot_name" if bot_name else ""
+            _params: dict = {"ids": market_ids}
+            if bot_name:
+                _params["bot_name"] = bot_name
             async with self.db.get_session() as session:
                 te_rows = await session.execute(
                     _text(
@@ -154,13 +175,14 @@ class PositionReconciler:
                         " FROM trade_events"
                         " WHERE market_id = ANY(:ids)"
                         "   AND event_type IN ('ENTRY', 'EXIT')"
+                        + _bot_filter +
                         " GROUP BY market_id"
                         " HAVING SUM(CASE WHEN event_type = 'ENTRY'"
                         "   THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END)"
                         "  - SUM(CASE WHEN event_type = 'EXIT'"
                         "   THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) > 0.001"
                     ),
-                    {"ids": market_ids},
+                    _params,
                 )
                 te_map: Dict[str, float] = {
                     row.market_id: float(row.net_size or 0.0) for row in te_rows.fetchall()

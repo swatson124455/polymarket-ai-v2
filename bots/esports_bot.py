@@ -89,7 +89,7 @@ class BetaCalibrator:
 
         try:
             from sqlalchemy import text as _text
-            async with db.get_session() as session:
+            async with db.get_session(timeout=15) as session:
                 result = await session.execute(
                     _text(
                         "SELECT COALESCE(raw_model_prob, predicted_prob), actual_outcome "
@@ -300,6 +300,7 @@ class EsportsBot(BaseBot):
         # S136 Phase 3A: Entry edge cache for edge-based exits
         self._entry_edge_cache: Dict[str, Dict] = {}  # market_id → {model_prob, edge, market_type}
         self._edge_peaks: Dict[str, float] = {}        # market_id → peak remaining edge
+        self._edge_cache_restored: bool = False  # S142: one-time restore from DB
         # S109: Post-exit cooldown — prevents stop-loss churn (RC1)
         self._recently_exited: Dict[str, float] = {}     # market_id → monotonic time of exit
         # S138: Track exit reason for extended edge_gone cooldown
@@ -326,7 +327,12 @@ class EsportsBot(BaseBot):
         self._onnx_dota2_session: Any = None
         self._onnx_valorant_session: Any = None
         # Session 83: Per-game EGM d, edge decay multiplier, conformal intervals
-        self._game_egm_d: Dict[str, float] = {}  # game → dynamic d (overrides _egm_d)
+        # S142: Initialize all games to d=1.0 (conservative, no extremization).
+        # _update_per_game_egm_d() elevates well-calibrated games to d=1.5+ within 10min.
+        # Prevents over-extremized predictions during the startup window before monitoring runs.
+        self._game_egm_d: Dict[str, float] = {
+            g: 1.0 for g in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl")
+        }
         self._edge_decay_mult: Dict[str, float] = {}  # game → sizing multiplier from edge decay
         self._tabpfn_predictor: Any = None  # TabPFN ensemble for sparse games
         self._cot_validator: Any = None  # CoT LLM validator for high-edge trades
@@ -868,6 +874,8 @@ class EsportsBot(BaseBot):
             _sq, _ = self._compute_signal_quality(game, market_id)
             # S131: SQ is sizing multiplier, confidence = raw side_prob
             confidence = side_prob
+            # S142: Pull BM sigma inputs from prediction cache event_data
+            _cached_ed = cached.get("event_data") or {}
             opp = {
                 "type": "esports_ws_reactive",
                 "market_id": market_id,
@@ -880,6 +888,10 @@ class EsportsBot(BaseBot):
                 "game": game,
                 "market_type": "match_winner",
                 "_signal_quality": _sq,
+                "_phi_a": float(_cached_ed.get("_phi_a", 200.0)),
+                "_phi_b": float(_cached_ed.get("_phi_b", 200.0)),
+                "_conformal_width": float(_cached_ed.get("_conformal_width", 0.15)),
+                "_agreement_stdev": float(_cached_ed.get("_agreement_stdev", 0.10)),
             }
             logger.info(
                 "EsportsBot WS reactive trade",
@@ -982,7 +994,7 @@ class EsportsBot(BaseBot):
             self._entered_sides_restored = True
             try:
                 from sqlalchemy import text as _ems_text
-                async with db.get_session() as _ems_sess:
+                async with db.get_session(timeout=15) as _ems_sess:
                     _ems_rows = await _ems_sess.execute(
                         _ems_text(
                             "SELECT DISTINCT market_id, side FROM trade_events "
@@ -995,6 +1007,44 @@ class EsportsBot(BaseBot):
                     logger.info("esports_entered_sides_restored", n=len(self._entered_market_sides))
             except Exception as _ems_exc:
                 logger.warning("esports_entered_sides_restore_failed", error=str(_ems_exc))
+
+        # S142: Restore entry_edge_cache from trade_events for open positions.
+        # Without this, edge_gone and trailing_edge exits can't fire after restarts.
+        if not self._edge_cache_restored and db:
+            self._edge_cache_restored = True
+            try:
+                from sqlalchemy import text as _eec_text
+                async with db.get_session(timeout=15) as _eec_sess:
+                    _eec_rows = await _eec_sess.execute(
+                        _eec_text(
+                            "SELECT e.market_id, e.event_data "
+                            "FROM trade_events e "
+                            "JOIN positions p ON e.market_id = p.market_id "
+                            "  AND p.source_bot = 'EsportsBot' AND p.status = 'open' "
+                            "WHERE e.bot_name = 'EsportsBot' "
+                            "  AND e.event_type = 'ENTRY' "
+                            "  AND e.event_data IS NOT NULL "
+                            "  AND e.event_data->>'entry_model_prob' IS NOT NULL "
+                            "ORDER BY e.event_time DESC"
+                        )
+                    )
+                    _restored = 0
+                    for _er in _eec_rows.fetchall():
+                        _mid = _er[0]
+                        if _mid in self._entry_edge_cache:
+                            continue  # already populated this scan
+                        _ed = _er[1] if isinstance(_er[1], dict) else {}
+                        _mp = float(_ed.get("entry_model_prob", 0.5))
+                        _eg = float(_ed.get("entry_edge", 0.0))
+                        _mt = str(_ed.get("market_type", "match_winner"))
+                        self._entry_edge_cache[_mid] = {
+                            "model_prob": _mp, "edge": _eg, "market_type": _mt,
+                        }
+                        _restored += 1
+                    if _restored > 0:
+                        logger.info("esports_edge_cache_restored", n=_restored)
+            except Exception as _eec_exc:
+                logger.warning("esports_edge_cache_restore_failed", error=str(_eec_exc))
 
         # A1: Restore daily P&L + reset at UTC midnight
         # Refresh every 10 min to capture mid-day resolutions
@@ -1073,7 +1123,7 @@ class EsportsBot(BaseBot):
                 logger.debug("esportsbot_smart_retrain_brier_failed", error=str(_e))
             try:
                 from sqlalchemy import text as _sa_text
-                async with db.get_session() as _sess:
+                async with db.get_session(timeout=15) as _sess:
                     for _rg in ("lol", "cs2"):
                         _cnt = await _sess.execute(
                             _sa_text("SELECT COUNT(*) FROM esports_training_data WHERE game = :game"),
@@ -1483,7 +1533,7 @@ class EsportsBot(BaseBot):
             return
         try:
             from sqlalchemy import text as _sa_text
-            async with db.get_session() as session:
+            async with db.get_session(timeout=15) as session:
                 result = await session.execute(
                     _sa_text(
                         "SELECT DISTINCT ON (te.market_id) te.market_id, "
@@ -1524,7 +1574,7 @@ class EsportsBot(BaseBot):
             self._daily_pnl_date = today_str
             self._drawdown_halted = False
             today_start = datetime.strptime(today_str, "%Y-%m-%d")
-            async with db.get_session() as session:
+            async with db.get_session(timeout=15) as session:
                 from sqlalchemy import text
                 result = await session.execute(text("""
                     SELECT COALESCE(SUM(CAST(realized_pnl AS DOUBLE PRECISION)), 0.0)
@@ -1873,7 +1923,7 @@ class EsportsBot(BaseBot):
                     if _db is not None:
                         try:
                             from sqlalchemy import text as _sa_text
-                            async with _db.get_session() as _sess:
+                            async with _db.get_session(timeout=15) as _sess:
                                 await _sess.execute(
                                     _sa_text("""
                                         UPDATE positions SET status = 'closed'
@@ -1995,7 +2045,7 @@ class EsportsBot(BaseBot):
 
         from sqlalchemy import text as _sa_text
         from esports.data.esports_db import resolve_predictions as _resolve
-        async with db.get_session() as _sess:
+        async with db.get_session(timeout=15) as _sess:
             result = await _sess.execute(
                 _sa_text("""
                     SELECT DISTINCT te.market_id, te.side,
@@ -2016,7 +2066,7 @@ class EsportsBot(BaseBot):
         # S125: Fallback — resolve from markets table for predictions that have no
         # RESOLUTION trade_event (bot predicted but didn't trade, or event >7d old).
         try:
-            async with db.get_session() as _sess_mkt:
+            async with db.get_session(timeout=15) as _sess_mkt:
                 _mkt_result = await _sess_mkt.execute(
                     _sa_text("""
                         SELECT p.market_id, m.resolution
@@ -2040,7 +2090,7 @@ class EsportsBot(BaseBot):
         # S100b: Feed newly resolved predictions into streaming calibrators (ADWIN + OnlinePlatt)
         try:
             from sqlalchemy import text as _sa_text2
-            async with db.get_session() as _sess2:
+            async with db.get_session(timeout=15) as _sess2:
                 _newly = await _sess2.execute(
                     _sa_text2(
                         "SELECT game, predicted_prob, actual_outcome "
@@ -2593,7 +2643,9 @@ class EsportsBot(BaseBot):
                 # S141: simple weighted blend — EGM already applied in
                 # per-game ML+Glicko-2 blend; re-applying here was
                 # recursive extremization inflating all 8 games' probs.
-                prob = 0.6 * prob + 0.4 * xgb_prob
+                # S142: Reduce XGB weight to 0.1 if model is stale (>14 days)
+                _xgb_w = 0.1 if getattr(self, "_xgb_stale", False) else 0.4
+                prob = (1.0 - _xgb_w) * prob + _xgb_w * xgb_prob
                 prob = max(0.05, min(0.95, prob))
 
         # 4. CatBoost draft model blend
@@ -3684,6 +3736,17 @@ class EsportsBot(BaseBot):
             _event_data["entry_model_prob"] = round(float(_st_model_prob), 6)
             _event_data["entry_edge"] = round(float(_st_edge_val), 6)
             _event_data["market_type"] = opp.get("market_type", "match_winner")
+            # S145: Populate signal meta for auto-store in place_order()
+            self._pending_signal_meta[str(opp["market_id"])] = {
+                "signal_direction": opp["side"],
+                "signal_confidence": round(opp.get("confidence", 0.0), 4),
+                "signal_source": f"esports_{opp.get('game', 'unknown')}",
+                "signal_multiplier": round(float(opp.get("_signal_quality", 1.0)), 4),
+                "order_flow_direction": None,
+                "order_flow_multiplier": round(float(_st_edge_val), 4) if _st_edge_val else None,
+                "trends_signal": opp.get("game"),
+                "trends_multiplier": None,
+            }
             order = await self.place_order(
                 market_id=opp["market_id"],
                 token_id=opp["token_id"],
@@ -3833,7 +3896,10 @@ class EsportsBot(BaseBot):
         # Baker-McHale shrinkage
         _k_bm = _opp_edge ** 2 / (_opp_edge ** 2 + _sigma_model ** 2) if (_opp_edge ** 2 + _sigma_model ** 2) > 0 else 0.0
         _base_kelly = float(getattr(settings, "ESPORTS_KELLY_DEFAULT_FRACTION", 0.25))
-        _eff_kelly = max(0.15, _k_bm * _base_kelly)
+        # S142: Floor lowered from 0.15 to 0.005 — old floor dominated every sample
+        # (k_bm*0.25 ranges 0.005-0.084, all below 0.15). Every trade got $300 flat.
+        # New floor: min size = 0.005 * $20K / $0.50 = $50 (above $10 min trade).
+        _eff_kelly = max(0.005, _k_bm * _base_kelly)
 
         # Drawdown modifies bankroll, not size
         _dd_bm = dd_factor  # reuse the already-computed daily drawdown factor
@@ -3948,6 +4014,18 @@ class EsportsBot(BaseBot):
         _event_data["entry_model_prob"] = round(float(_entry_model_prob), 6)
         _event_data["entry_edge"] = round(float(_entry_edge_val), 6)
         _event_data["market_type"] = opp.get("market_type", "match_winner")
+
+        # S145: Populate signal meta for auto-store in place_order()
+        self._pending_signal_meta[str(opp["market_id"])] = {
+            "signal_direction": opp["side"],
+            "signal_confidence": round(confidence, 4),
+            "signal_source": f"esports_{opp.get('game', 'unknown')}",
+            "signal_multiplier": round(float(opp.get("_signal_quality", 1.0)), 4),
+            "order_flow_direction": None,
+            "order_flow_multiplier": round(float(_entry_edge_val), 4) if _entry_edge_val else None,
+            "trends_signal": opp.get("game"),
+            "trends_multiplier": None,
+        }
 
         order = await self.place_order(
             market_id=opp["market_id"],
@@ -4343,7 +4421,7 @@ class EsportsBot(BaseBot):
             from esports.models.glicko2 import Glicko2Tracker, Glicko2Rating
 
             # 1. Build team name → ID mapping from esports_teams
-            async with db.get_session() as session:
+            async with db.get_session(timeout=30) as session:
                 rows = await session.execute(text(
                     "SELECT external_id, name FROM esports_teams WHERE name IS NOT NULL"
                 ))
@@ -4362,7 +4440,7 @@ class EsportsBot(BaseBot):
             games_loaded = set()
             for game in all_games:
                 try:
-                    async with db.get_session() as session:
+                    async with db.get_session(timeout=15) as session:
                         rows = await session.execute(text("""
                             SELECT team_key, mu, phi, sigma, match_count
                             FROM glicko2_ratings
@@ -4395,7 +4473,7 @@ class EsportsBot(BaseBot):
                     # S137 10C: Load player ratings from DB
                     _player_count = 0
                     try:
-                        async with db.get_session() as session:
+                        async with db.get_session(timeout=15) as session:
                             _pr_rows = await session.execute(text("""
                                 SELECT player_id, mu, phi, sigma
                                 FROM glicko2_player_ratings
@@ -4428,7 +4506,7 @@ class EsportsBot(BaseBot):
 
             rebuilt_any = False
             for game in games_to_rebuild:
-                async with db.get_session() as session:
+                async with db.get_session(timeout=30) as session:
                     rows = await session.execute(text("""
                         SELECT team_a, team_b, outcome
                         FROM esports_training_data
@@ -4493,7 +4571,7 @@ class EsportsBot(BaseBot):
                 if not all_ratings:
                     continue
                 match_count = tracker.match_count
-                async with db.get_session() as session:
+                async with db.get_session(timeout=15) as session:
                     for team_key, rating in all_ratings.items():
                         await session.execute(text("""
                             INSERT INTO glicko2_ratings
@@ -4517,7 +4595,7 @@ class EsportsBot(BaseBot):
                 try:
                     player_ratings = tracker.get_all_player_ratings()
                     if player_ratings:
-                        async with db.get_session() as session:
+                        async with db.get_session(timeout=15) as session:
                             for p_id, (p_mu, p_phi, p_sigma) in player_ratings.items():
                                 await session.execute(text("""
                                     INSERT INTO glicko2_player_ratings
@@ -4778,15 +4856,18 @@ class EsportsBot(BaseBot):
                 self._game_brier_cache[game] = brier
 
                 # S136: Statistical Brier halt — halt only when lower bound of
-                # 90% CI exceeds 0.25 (statistically confident worse than random).
+                # 90% CI exceeds threshold (statistically confident worse than random).
                 # Requires n>=50. Replaces fixed threshold which false-halted on noise.
+                # S142: Threshold lowered from 0.25 to 0.22 via ESPORTS_BRIER_HALT_LOWER_BOUND
+                # so CS2 (Brier 0.339, lb=0.249) actually gets caught.
                 import math as _math
                 _n_total = acc_data["total"]
+                _halt_lb = float(getattr(settings, "ESPORTS_BRIER_HALT_LOWER_BOUND", 0.22))
                 _should_halt = False
                 if _n_total >= 50:
                     _se = _math.sqrt(brier * (1.0 - brier) / _n_total) if brier < 1.0 else 0.0
                     _lower_bound = brier - 1.645 * _se  # 90% one-sided
-                    _should_halt = _lower_bound > 0.25
+                    _should_halt = _lower_bound > _halt_lb
                 if _should_halt:
                     # S100: Don't halt when BetaCalibrator has no clean data yet.
                     _cal = self._beta_calibrators.get(game)
@@ -4900,7 +4981,7 @@ class EsportsBot(BaseBot):
             _all_preds = []
             _all_outcomes = []
             _game_counts = {}
-            async with db.get_session() as session:
+            async with db.get_session(timeout=30) as session:
                 for _pool_game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
                     _pool_result = await session.execute(
                         _text(
@@ -4962,7 +5043,7 @@ class EsportsBot(BaseBot):
         try:
             from esports.models.venn_abers_calibrator import VennAbersCalibrator
             import numpy as np
-            async with db.get_session() as session:
+            async with db.get_session(timeout=30) as session:
                 for _va_game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
                     _va_result = await session.execute(
                         _text(
@@ -4997,7 +5078,7 @@ class EsportsBot(BaseBot):
             from esports.models.conformal_wrapper import ConformalPredictor
             from sqlalchemy import text as _text
             import numpy as np
-            async with db.get_session() as session:
+            async with db.get_session(timeout=30) as session:
                 for _cf_game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
                     _cf_result = await session.execute(
                         _text(
@@ -5106,7 +5187,7 @@ class EsportsBot(BaseBot):
             from sqlalchemy import text as _sa_text
             train_days = int(getattr(settings, "ESPORTS_TRAINING_RETENTION_DAYS", 365))
             pred_days = int(getattr(settings, "ESPORTS_PREDICTION_RETENTION_DAYS", 180))
-            async with db.get_session() as session:
+            async with db.get_session(timeout=15) as session:
                 r1 = await session.execute(
                     _sa_text("DELETE FROM esports_training_data WHERE created_at < NOW() - INTERVAL '1 day' * :days"),
                     {"days": train_days},
@@ -5269,7 +5350,7 @@ class EsportsBot(BaseBot):
             ]
 
             for game in ("sc2", "rl", "cod", "r6"):
-                async with db.get_session() as session:
+                async with db.get_session(timeout=30) as session:
                     rows = await session.execute(_sa_text(
                         "SELECT e.event_data, r.realized_pnl "
                         "FROM trade_events r "
@@ -5801,7 +5882,17 @@ class EsportsBot(BaseBot):
             model = XGBClassifier()
             model.load_model(model_path)
             self._cross_game_model = model
-            logger.info("EsportsBot: cross_game_xgb loaded", path=model_path)
+            # S142: Check model freshness — stale XGB means 40% of every prediction is garbage
+            _age_days = (time.time() - os.path.getmtime(model_path)) / 86400.0
+            self._xgb_model_age_days = _age_days
+            if _age_days > 14:
+                logger.warning("esportsbot_xgb_stale_warning",
+                               age_days=round(_age_days, 1), path=model_path)
+                self._xgb_stale = True
+            else:
+                self._xgb_stale = False
+            logger.info("EsportsBot: cross_game_xgb loaded",
+                        path=model_path, age_days=round(_age_days, 1))
 
             # Session 82: Try loading ONNX compiled version for faster inference
             try:
@@ -6518,6 +6609,16 @@ class EsportsBot(BaseBot):
         except Exception as exc:
             logger.warning("esports_series_prediction_log_failed", error=str(exc))
 
+        # S142: Pull BM sigma inputs from Glicko-2 tracker for series trades
+        _phi_a_s, _phi_b_s = 200.0, 200.0
+        _tracker_s = self._glicko2_trackers.get(game)
+        if _tracker_s:
+            _ra_s = _tracker_s.get_rating(team_a.lower()) if team_a else None
+            _rb_s = _tracker_s.get_rating(team_b.lower()) if team_b else None
+            if _ra_s:
+                _phi_a_s = _ra_s.phi
+            if _rb_s:
+                _phi_b_s = _rb_s.phi
         match_opp = {
             "type": "esports_series",
             "market_id": market_id,
@@ -6532,6 +6633,8 @@ class EsportsBot(BaseBot):
             "series_score": f"{maps_a}-{maps_b}",
             "best_of": best_of,
             "_signal_quality": _sq,
+            "_phi_a": _phi_a_s,
+            "_phi_b": _phi_b_s,
         }
         result = [match_opp]
 
@@ -6852,6 +6955,8 @@ class EsportsBot(BaseBot):
             # S131: SQ is sizing multiplier, confidence = raw side_prob
             confidence = side_prob
             trade_price = new_price if side == "YES" else (1.0 - new_price)
+            # S142: Pull BM sigma inputs from series prediction cache
+            _cached_ed_sws = cached.get("event_data") or {}
             opp = {
                 "type": "esports_series_ws",
                 "market_id": market_id,
@@ -6864,6 +6969,10 @@ class EsportsBot(BaseBot):
                 "game": cached.get("game", ""),
                 "market_type": "match_winner",
                 "_signal_quality": _sq,
+                "_phi_a": float(_cached_ed_sws.get("_phi_a", 200.0)),
+                "_phi_b": float(_cached_ed_sws.get("_phi_b", 200.0)),
+                "_conformal_width": float(_cached_ed_sws.get("_conformal_width", 0.15)),
+                "_agreement_stdev": float(_cached_ed_sws.get("_agreement_stdev", 0.10)),
             }
             logger.info(
                 "esports_series_ws_reactive",

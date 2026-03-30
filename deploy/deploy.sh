@@ -149,10 +149,14 @@ sudo systemctl daemon-reload
 # Stop and disable the old monolithic service (if running)
 sudo systemctl stop polymarket-ai 2>/dev/null || true
 sudo systemctl disable polymarket-ai 2>/dev/null || true
-# Enable and restart the 3 per-bot services
+# S145: Explicit stop before start — frees all PgBouncer slots before new code loads.
+# Without this, old processes hold connections during the restart window, causing
+# pool exhaustion if the new processes also try to connect simultaneously.
 sudo systemctl enable polymarket-weather polymarket-mirror polymarket-esports
-sudo systemctl restart polymarket-weather polymarket-mirror polymarket-esports
-echo "  polymarket-weather, polymarket-mirror, polymarket-esports restarted"
+sudo systemctl stop polymarket-weather polymarket-mirror polymarket-esports 2>/dev/null || true
+sleep 2  # Let PgBouncer reclaim slots
+sudo systemctl start polymarket-weather polymarket-mirror polymarket-esports
+echo "  polymarket-weather, polymarket-mirror, polymarket-esports started (clean)"
 REMOTE
 echo "  Restarting..."
 
@@ -177,6 +181,15 @@ if [ "$HEALTH_OK" = false ]; then
     echo "ERROR: Health check failed after 90s — triggering rollback"
     bash "$(dirname "$0")/rollback.sh" || true
     exit 1
+fi
+
+# S143: Verify PgBouncer pool size is adequate for 3 bots
+_PGB_POOL=$(ssh $SSH_OPTS -i "$KEY" "$VPS" \
+    "grep -oP 'default_pool_size\s*=\s*\K[0-9]+' /etc/pgbouncer/pgbouncer.ini 2>/dev/null" || echo "0")
+if [ "$_PGB_POOL" -lt 40 ] 2>/dev/null; then
+    echo "  WARNING: PgBouncer default_pool_size=$_PGB_POOL (< 40). Risk of pool exhaustion with 3 bots."
+else
+    echo "  PgBouncer pool_size=$_PGB_POOL — OK"
 fi
 
 # ── Prune old releases (keep last 5) ─────────────────────────────────────────
