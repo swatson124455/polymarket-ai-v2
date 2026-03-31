@@ -2102,6 +2102,11 @@ class EsportsBot(BaseBot):
 
         from sqlalchemy import text as _sa_text
         from esports.data.esports_db import resolve_predictions as _resolve
+        # S149: Match backfill window to calibration window so all predictions
+        # within _cal_days can get actual_outcome populated.  Anchored to
+        # Glicko-2 fix date (2026-03-16) — no stale pre-fix data.
+        _GLICKO2_FIX = datetime(2026, 3, 16, tzinfo=timezone.utc)
+        _backfill_days = min(max(1, (datetime.now(timezone.utc) - _GLICKO2_FIX).days), 90)
         async with db.get_session(timeout=15) as _sess:
             result = await _sess.execute(
                 _sa_text("""
@@ -2112,8 +2117,9 @@ class EsportsBot(BaseBot):
                       AND te.event_type = 'RESOLUTION'
                       AND te.realized_pnl IS NOT NULL
                       AND te.side IN ('YES', 'NO')
-                      AND te.event_time > NOW() - INTERVAL '7 days'
-                """)
+                      AND te.event_time > NOW() - INTERVAL '1 day' * :backfill_days
+                """),
+                {"backfill_days": _backfill_days},
             )
             resolved = result.fetchall()
         for r in resolved:
@@ -2763,18 +2769,20 @@ class EsportsBot(BaseBot):
                     market_id=market_id, prob=round(prob, 4),
                 )
 
-        # 6. LoL blue side bonus
-        if game == "lol":
-            _blue_bonus = float(getattr(
-                settings, "ESPORTS_LOL_BLUE_SIDE_BONUS", 0.019,
-            ))
-            if _blue_bonus > 0:
-                prob = max(0.05, min(0.95, prob + _blue_bonus))
-                logger.debug(
-                    "esportsbot_blue_side_applied", game=game,
-                    market_id=market_id, bonus=_blue_bonus,
-                    prob=round(prob, 4),
-                )
+        # 6. LoL blue side bonus — DISABLED S149: no blue/red detection exists,
+        # so this applied +1.9% in a random direction on every LoL market.
+        # Re-enable only when actual blue-side detection is implemented.
+        # if game == "lol":
+        #     _blue_bonus = float(getattr(
+        #         settings, "ESPORTS_LOL_BLUE_SIDE_BONUS", 0.019,
+        #     ))
+        #     if _blue_bonus > 0:
+        #         prob = max(0.05, min(0.95, prob + _blue_bonus))
+        #         logger.debug(
+        #             "esportsbot_blue_side_applied", game=game,
+        #             market_id=market_id, bonus=_blue_bonus,
+        #             prob=round(prob, 4),
+        #         )
 
         # 7. BO format adjustment
         _bo = 1

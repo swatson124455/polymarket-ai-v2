@@ -312,12 +312,13 @@ class TestAnalyzeOpportunity:
         result = await bot.analyze_opportunity(market)
         assert result is not None
         assert result["side"] == "YES"
-        assert result["edge"] == pytest.approx(0.20, abs=0.03)  # blue side bonus adds ~0.019
+        assert result["edge"] == pytest.approx(0.20, abs=0.03)
         assert result["game"] == "lol"
         assert result["market_type"] == "match_winner"
-        # S131: confidence = raw side_prob (SQ now scales sizing, not confidence)
-        assert result["confidence"] > 0.70  # raw side_prob ≈ 0.71 (model_prob + blue side)
-        assert result["confidence"] < 0.80  # but not too high
+        # S149: blue side bonus disabled (no blue/red detection).
+        # confidence = raw side_prob after BO1 adjustment (~0.694 from 0.70).
+        assert result["confidence"] > 0.65
+        assert result["confidence"] < 0.80
         assert result["market_id"] == "m1"
 
     @pytest.mark.asyncio
