@@ -120,8 +120,10 @@ class BetaCalibrator:
         outcomes = np.array([float(r[1]) for r in rows])
         ln_p = np.log(preds)
         ln_1mp = np.log(1.0 - preds)
-        # S136: Adaptive lambda — shrinks with sample size, floored at 2.0
-        lam = max(2.0, 200.0 / max(len(rows), 1))
+        # S151: Lowered from 200/n (floor 2.0) to 50/n (floor 0.5).
+        # At LoL n=38, old lambda=5.26 pinned calibrator to identity.
+        # New lambda=1.32 lets it actually learn. Bounds still prevent wild params.
+        lam = max(0.5, 50.0 / max(len(rows), 1))
 
         def _loss(params):
             a, b, c_ = params
@@ -5171,7 +5173,8 @@ class EsportsBot(BaseBot):
                 from scipy.optimize import minimize as _minimize
                 ln_p = np.log(_all_preds_arr)
                 ln_1mp = np.log(1.0 - _all_preds_arr)
-                _glam = max(2.0, 200.0 / max(len(_all_preds), 1))
+                # S151: Matched per-game lambda reduction (50/n, floor 0.5)
+                _glam = max(0.5, 50.0 / max(len(_all_preds), 1))
 
                 def _global_loss(params):
                     a, b, c_ = params
