@@ -452,7 +452,10 @@ class MirrorBot(BaseBot):
         # S117: Pre-load reliability cache for instant F1 on startup
         if self._reliability_tracker:
             try:
-                loaded = await self._reliability_tracker.load_from_cache()
+                # S150: Relaxed from 24h→72h. Category WR data moves slowly (resolutions
+                # take hours/days). A 63h-old cache is far better than empty — empty cache
+                # means cat_n=0 → confidence=0.50 → zero entries. Live refresh updates it.
+                loaded = await self._reliability_tracker.load_from_cache(max_age_hours=72)
                 if loaded:
                     logger.info("reliability_cache_loaded_on_startup")
             except Exception:
@@ -612,9 +615,12 @@ class MirrorBot(BaseBot):
             # S115: Refresh reliability tracker independently — elite timeout must not kill F1
             if self._reliability_tracker:
                 try:
-                    await asyncio.wait_for(self._reliability_tracker.refresh(), timeout=30.0)
+                    # S150: Increased from 30s→120s. The get_user_resolution_counts_by_category()
+                    # query is expensive (full trades scan + 2 JOINs + GROUP BY). 30s was too tight
+                    # and caused reliability cache to stay empty → cat_n=0 → confidence=0.50 → zero entries.
+                    await asyncio.wait_for(self._reliability_tracker.refresh(), timeout=120.0)
                 except asyncio.TimeoutError:
-                    logger.warning("MirrorBot reliability refresh timed out (30s)")
+                    logger.warning("MirrorBot reliability refresh timed out (120s)")
                 except Exception as _rel_err:
                     logger.warning("Elite reliability refresh failed: %s", _rel_err)
 
@@ -1662,6 +1668,18 @@ class MirrorBot(BaseBot):
         # The trader may have traded hours ago at a different price. Entering at their
         # stale price produces fake P&L (buying at yesterday's prices, selling at today's).
         _market_data = self.base_engine.get_market_from_index(str(market_id))
+        # S150: Fallback fetch for RTDS markets not yet in index.
+        # Without market data, ttr_h=None (kills +0.02 TTR boost) and no spread/volume checks.
+        # Only fires for trades that already passed the $25+ whale gate — low volume.
+        if not _market_data:
+            try:
+                _fetched = await self.base_engine.get_market(str(market_id))
+                if _fetched and isinstance(_fetched, dict):
+                    self.base_engine.update_market_index([_fetched])
+                    _market_data = _fetched
+                    logger.debug("mirror_market_fallback_fetch", market=str(market_id)[:16])
+            except Exception:
+                pass  # proceed without — TTR stays None, confidence slightly lower
         _old_price = price  # S91: preserve trader's fill price for slippage check
         _spread = None  # S133: captured for event_data logging
         if _market_data:
