@@ -90,8 +90,9 @@ A bot can be `running=True` but scanning zero opportunities with zero log output
 4. **Scope creep** — "You asked me to fix X but I noticed Y could be improved." Stop. Fix X only.
 5. **Silent migration** — Changing a DB column, config key, or message format without updating every consumer.
 6. **Optimistic rewrite** — "This module is messy so I rewrote it." The old module handled 47 edge cases. Your rewrite handles 12.
-7. **Ad-hoc SQL before canonical scripts** — NEVER write raw SQL for P&L or data reporting without running the canonical script first (`scripts/bot_pnl.py`). Run the script, show its output as the baseline, THEN flag any gaps (e.g. "script doesn't filter by entry window"). If your ad-hoc query disagrees with the canonical script, your query is wrong — debug it, don't present it.
+7. **Ad-hoc SQL for P&L** — NEVER write raw SQL for P&L. Run `scripts/bot_pnl.py <BotName> <hours>` first. Present its output. If it can't answer the question (e.g. "entries made in X window"), say so: "bot_pnl.py reports by event time, not entry time." If it times out, replicate its EXACT SQL from the script — do NOT improvise. If an ad-hoc query disagrees with the canonical script, the ad-hoc query is wrong. Full stop. Violated twice (S149, S150) — do not violate again.
 8. **Unvalidated confidence** — NEVER present query results in formatted tables as if they are authoritative without cross-checking against a known-good source. If you haven't validated a number, label it "UNVERIFIED" explicitly.
+9. **Rationalizing impossible numbers** — If a query returns a statistically impossible result (100% win rate on 30+ trades, 8% resolution rate on daily markets after 72h, a side flipping from -$9K to +$2K between queries), the query is WRONG. Do not present it. Do not explain it away with "survivorship bias" or "small sample." Stop, say "this result looks wrong," and fix the query before reporting anything.
 
 ## Change Log (mandatory after every fix)
 
