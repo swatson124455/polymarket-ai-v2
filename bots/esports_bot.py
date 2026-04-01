@@ -3778,7 +3778,12 @@ class EsportsBot(BaseBot):
         q = question.lower()
         if any(kw in q for kw in ("map ", "game 1", "game 2", "game 3", "game 4", "game 5")):
             return "map_winner"
-        if any(kw in q for kw in (
+        # S151: Check for H2H pattern BEFORE tournament keywords.
+        # Questions like "team a vs team b (bo1) - circuito desafiante regular season"
+        # were misclassified as tournament_winner because "season" matched.
+        # If "vs" or "versus" is present, it's a head-to-head match.
+        _has_h2h = " vs " in q or " versus " in q
+        if not _has_h2h and any(kw in q for kw in (
             "tournament", "championship", "champion", "split winner", "season",
             "win msi", "win worlds", "msi 20", "worlds 20",
             "league winner", "win lpl", "win lck", "win lec", "win lcs", "win vct",
@@ -5729,6 +5734,9 @@ class EsportsBot(BaseBot):
                 _prior = max(0.05, min(0.95, market_price))
                 prob = prior_weight * _prior + (1.0 - prior_weight) * prob
 
+            # S151: Roster stability only for moderate predictions.
+            # Previously, prob in [0.95, 0.99) silently fell through to return None.
+            # Now we return prob for all valid predictions in (0.01, 0.99).
             if 0.05 < prob < 0.95:
                 # Roster stability [T2-D]: penalize teams with recent roster changes
                 try:
@@ -5742,7 +5750,7 @@ class EsportsBot(BaseBot):
                         prob = max(0.05, min(0.95, prob))
                 except Exception:
                     pass
-                return prob
+            return prob
         except Exception as exc:
             logger.debug("esportsbot_glicko2_rating_error", error=str(exc), game=game)
         return None
