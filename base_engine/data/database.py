@@ -1027,6 +1027,9 @@ class Database:
         )
         logger.info("session_factory created [id=%s, engine=%s]", id(self.session_factory), id(self.engine))
         total_connections = pool_size + max_overflow
+        # S151: Use PgBouncer effective pool for warning thresholds when configured
+        _effective_pool = getattr(settings, "DB_EFFECTIVE_POOL_SIZE", 0) if settings else 0
+        _warn_pool = _effective_pool if _effective_pool > 0 else total_connections
         # Application-level semaphore — prevents thundering herd on DB pool.
         # Set to total_connections (pool_size + overflow) so ALL available connections
         # can be used. The 30s timeout on acquire() prevents permanent hangs.
@@ -1035,7 +1038,7 @@ class Database:
         logger.info("DB semaphore initialized: limit=%d (pool_size=%d, total=%d)", _sem_limit, pool_size, total_connections)
         # Pool event listeners for monitoring
         from sqlalchemy import event as sa_event
-        warn_threshold = max(total_connections - 1, int(total_connections * 0.9))  # Only warn when nearly exhausted
+        warn_threshold = max(_warn_pool - 1, int(_warn_pool * 0.9))  # Only warn when nearly exhausted
         import time as _time_mod
         _last_pool_warn = [0.0]  # Rate-limit: max once per 60 seconds
         @sa_event.listens_for(self.engine.sync_engine, "connect")
@@ -1047,7 +1050,7 @@ class Database:
             now = _time_mod.monotonic()
             if checked_out >= warn_threshold and now - _last_pool_warn[0] > 60:
                 _last_pool_warn[0] = now
-                logger.warning(f"DB pool near exhaustion: {checked_out}/{total_connections} connections checked out")
+                logger.warning(f"DB pool near exhaustion: {checked_out}/{_warn_pool} connections checked out")
 
         # S136 FIX: Invalidate dead connections so the pool replaces them.
         # Without this, ConnectionDoesNotExistError on mid-query connection death

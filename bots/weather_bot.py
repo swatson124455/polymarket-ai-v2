@@ -73,7 +73,8 @@ class WeatherConfidenceCalibrator:
     S140b: Replaced logistic with per-side IsotonicRegression. The WR curve
     is too flat (68-80% across 0.60-0.95) for logistic to discriminate —
     isotonic handles this naturally without compression artifacts.
-    Training data filtered to lead_time>=48h, confidence>=0.60.
+    Training data filtered to lead_time>=48h, confidence>=0.40 (YES) / 0.60 (NO).
+    S151: YES floor relaxed from 0.60 to allow calibrator to accumulate training data.
     """
 
     def __init__(self) -> None:
@@ -95,7 +96,8 @@ class WeatherConfidenceCalibrator:
 
         Separate monotonic calibrators for YES and NO sides.
         S140b: Replaces logistic regression (coef_confidence=0.14 was too weak).
-        Training data filtered to lead_time>=48h, confidence>=0.60.
+        Training data filtered to lead_time>=48h, confidence>=0.40 (YES) / 0.60 (NO).
+        S151: YES floor relaxed from 0.60 → 0.40 to unblock calibrator (was circular).
         Returns True if fitted, False if insufficient data (identity passthrough).
         """
         if not db:
@@ -103,6 +105,11 @@ class WeatherConfidenceCalibrator:
         try:
             import numpy as np
             from sqlalchemy import text
+
+            # S151: YES-side uses relaxed confidence floor to accumulate training data
+            _yes_min_conf = float(getattr(settings, "WEATHER_CAL_YES_MIN_CONFIDENCE", 0.40))
+            _no_min_conf = 0.60  # NO side stays at 0.60 (working fine at n=653)
+            _sql_min_conf = min(_yes_min_conf, _no_min_conf)  # SQL uses lower bound
 
             async with db.get_session() as session:
                 result = await session.execute(text("""
@@ -114,7 +121,7 @@ class WeatherConfidenceCalibrator:
                           AND confidence IS NOT NULL
                           AND price >= 0.08
                           AND (event_data->>'lead_time_hours')::float >= 48.0
-                          AND confidence >= 0.60
+                          AND confidence >= :min_conf
                         ORDER BY market_id, event_time
                     )
                     SELECT e.confidence, e.side,
@@ -124,7 +131,7 @@ class WeatherConfidenceCalibrator:
                     JOIN entries e ON e.market_id = r.market_id
                     WHERE r.bot_name = 'WeatherBot' AND r.event_type = 'RESOLUTION'
                       AND r.realized_pnl IS NOT NULL
-                """), {"window_days": window_days})
+                """), {"window_days": window_days, "min_conf": _sql_min_conf})
                 rows = result.fetchall()
 
             # S143: True train/test split — fit on days [window, 7], evaluate on [7, 0]
@@ -163,6 +170,11 @@ class WeatherConfidenceCalibrator:
                     train_n=len(_train_rows), total_n=len(rows),
                     reason="train set too small after 7d holdout exclusion",
                 )
+
+            # S151: post-filter per-side confidence floors (SQL used the lower bound)
+            _fit_rows = [r for r in _fit_rows
+                         if not (r[1] == "NO" and float(r[0]) < _no_min_conf)
+                         and not (r[1] != "NO" and float(r[0]) < _yes_min_conf)]
 
             confidences = np.array([float(r[0]) for r in _fit_rows], dtype=np.float64)
             sides_str = [r[1] for r in _fit_rows]
@@ -205,7 +217,7 @@ class WeatherConfidenceCalibrator:
                                       AND event_time >= NOW() - INTERVAL '1 day' * :window_days
                                       AND confidence IS NOT NULL AND price >= 0.08
                                       AND (event_data->>'lead_time_hours')::float >= 48.0
-                                      AND confidence >= 0.60 AND side = 'YES'
+                                      AND confidence >= :min_conf_yes AND side = 'YES'
                                     ORDER BY market_id, event_time
                                 )
                                 SELECT e.confidence, e.side,
@@ -215,7 +227,7 @@ class WeatherConfidenceCalibrator:
                                 JOIN entries e ON e.market_id = r.market_id
                                 WHERE r.bot_name = 'WeatherBot' AND r.event_type = 'RESOLUTION'
                                   AND r.realized_pnl IS NOT NULL
-                            """), {"window_days": _yes_fb_window})
+                            """), {"window_days": _yes_fb_window, "min_conf_yes": _yes_min_conf})
                             _yes_rows = _yr.fetchall()
                         # Apply holdout split to wider window too
                         _yes_train = [r for r in _yes_rows
@@ -282,6 +294,10 @@ class WeatherConfidenceCalibrator:
             self._cal_brier = train_brier
 
             # S143: Compute TRUE OOS Brier on held-out 7-day test set
+            # S151: apply same per-side confidence filters to test rows for consistency
+            _test_rows = [r for r in _test_rows
+                          if not (r[1] == "NO" and float(r[0]) < _no_min_conf)
+                          and not (r[1] != "NO" and float(r[0]) < _yes_min_conf)]
             oos_brier = None
             if _holdout_valid and len(_test_rows) >= 10:
                 _tc = np.array([float(r[0]) for r in _test_rows], dtype=np.float64)

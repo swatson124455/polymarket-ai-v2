@@ -152,9 +152,10 @@ class HealthRunner:
                     SELECT COUNT(*) FROM pg_stat_activity WHERE datname = current_database()
                 """))
                 active_conns = r.scalar_one_or_none() or 0
+            _eff = getattr(self.settings, "DB_EFFECTIVE_POOL_SIZE", 0)
             pool_size = getattr(self.settings, "DB_POOL_SIZE", 10)
             overflow = getattr(self.settings, "DB_MAX_OVERFLOW", 3)
-            max_conns = pool_size + overflow
+            max_conns = _eff if _eff > 0 else pool_size + overflow
             pct = active_conns / max(max_conns, 1)
             if pct >= 0.90:
                 report.add(

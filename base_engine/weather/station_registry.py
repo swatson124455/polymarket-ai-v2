@@ -1558,6 +1558,7 @@ class StationHealthMonitor:
         self._stale_threshold = stale_threshold_minutes * 60.0
         self._health_cache: Dict[str, tuple] = {}  # station_id -> (is_healthy, mono_expiry)
         self._cache_ttl = 600.0  # 10 min
+        self._probe_429_until: float = 0.0  # S151: global Open-Meteo probe cooldown
 
     async def is_healthy(self, station: WeatherStation) -> bool:
         """Return True if station is reporting recent observations."""
@@ -1618,6 +1619,9 @@ class StationHealthMonitor:
         Returns True if Open-Meteo returns non-null temperature data for the
         station's coordinates. Fails open (returns True) on any error.
         """
+        # S151: global 429 cooldown — skip all probes if rate-limited
+        if time.monotonic() < self._probe_429_until:
+            return True  # Fail open during cooldown
         url = "https://api.open-meteo.com/v1/forecast"
         params = {
             "latitude": station.latitude,
@@ -1631,6 +1635,11 @@ class StationHealthMonitor:
                 async with sess.get(
                     url, params=params, timeout=aiohttp.ClientTimeout(total=10)
                 ) as resp:
+                    if resp.status == 429:
+                        _cd = 300.0  # 5-min cooldown matching forecast_client pattern
+                        self._probe_429_until = time.monotonic() + _cd
+                        logger.warning("station_probe_429_cooldown_set", cooldown_s=int(_cd))
+                        return True  # Fail open — rate limited
                     if resp.status != 200:
                         logger.warning(
                             "intl_station_probe_failed",

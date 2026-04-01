@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "4"))  # S145: 2→4 (burst headroom)
     DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "15"))  # S145: 30→15 (fail fast)
     DB_POOL_RECYCLE: int = int(os.getenv("DB_POOL_RECYCLE", "300"))  # S145: 600→300 (5min recycle)
+    DB_EFFECTIVE_POOL_SIZE: int = int(os.getenv("DB_EFFECTIVE_POOL_SIZE", "0"))  # S151: 0=auto (pool+overflow); set to PgBouncer default_pool_size (e.g. 40) for accurate warnings
+    WEATHER_STATION_PROBE_429_COOLDOWN_S: int = int(os.getenv("WEATHER_STATION_PROBE_429_COOLDOWN_S", "300"))  # S151: global cooldown for station probes on Open-Meteo 429
+    RESOLUTION_RECHECK_INTERVAL_HOURS: int = int(os.getenv("RESOLUTION_RECHECK_INTERVAL_HOURS", "6"))  # S151: skip re-checking markets checked within this window; 0=disable (check all every cycle)
+    WEATHER_CAL_YES_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_CAL_YES_MIN_CONFIDENCE", "0.40"))  # S151: relaxed YES calibrator training floor (NO stays at 0.60)
     # Ingestion tuning — caps how many DB connections Phase 1 can hold simultaneously
     INGEST_NUM_PROCESSORS: int = int(os.getenv("INGEST_NUM_PROCESSORS", "8"))
     INGEST_DB_BUDGET: int = int(os.getenv("INGEST_DB_BUDGET", "4"))

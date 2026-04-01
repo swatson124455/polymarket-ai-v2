@@ -238,17 +238,32 @@ async def run_resolution_backfill(
             # already closed. Fix: order by end_date_iso ASC (expired first),
             # then first_trade_at ASC. No more priority_bot preference — the
             # 500-batch with fair ordering resolves all bots proportionally.
+            # S151: skip recently-checked markets so new ones get batch slots
+            try:
+                from config.settings import Settings as _settings_cls
+                _recheck_h = getattr(_settings_cls, "RESOLUTION_RECHECK_INTERVAL_HOURS", 6)
+            except Exception:
+                _recheck_h = 6
+            _recheck_filter = ""
+            if _recheck_h > 0:
+                _recheck_filter = (
+                    "AND (tm.last_checked_at IS NULL "
+                    "OR tm.last_checked_at < NOW() - INTERVAL '1 hour' * :recheck_h) "
+                )
+                _params["recheck_h"] = _recheck_h
             _priority_order = (
                 "ORDER BY CASE WHEN m.end_date_iso < NOW() THEN 0 "
                 "              WHEN m.end_date_iso IS NULL THEN 1 "
                 "              ELSE 2 END, "
+                "tm.last_checked_at ASC NULLS FIRST, "
                 "m.end_date_iso ASC NULLS LAST, "
                 "tm.first_trade_at ASC NULLS LAST "
             )
             pt_result = await session.execute(text(
                 "SELECT tm.market_id FROM traded_markets tm "
                 "LEFT JOIN markets m ON m.id = tm.market_id "
-                "WHERE tm.status = 'open' OR tm.resolved = FALSE "
+                "WHERE (tm.status = 'open' OR tm.resolved = FALSE) "
+                + _recheck_filter
                 + _priority_order + "LIMIT :lim"
             ), _params)
             paper_market_ids = [r[0] for r in pt_result.fetchall() if r[0]]
@@ -296,8 +311,21 @@ async def run_resolution_backfill(
     _skipped_open = 0
     _skipped_no_res = 0
     _clob_closed = 0
+    # S151: helper to stamp last_checked_at so we don't re-check the same market every cycle
+    async def _touch_checked(market_id: str) -> None:
+        try:
+            async with db.get_session() as _lc:
+                await _lc.execute(
+                    text("UPDATE traded_markets SET last_checked_at = NOW() WHERE market_id = :mid"),
+                    {"mid": market_id},
+                )
+                await _lc.commit()
+        except Exception:
+            pass  # best-effort, non-fatal
+
     async with client:
         for mid in market_ids:
+            _api_checked = False  # S151: True if we got a valid API response
             try:
                 _from_clob = False
                 _is_condition_id = str(mid).startswith("0x") and len(str(mid)) == 66
@@ -313,6 +341,7 @@ async def run_resolution_backfill(
                     else:
                         m = None  # Market not closed or CLOB unavailable
                         _skipped_open += 1
+                        _api_checked = True  # CLOB responded (market just not closed)
                         # S125-mirror: If CLOB confirms market is still open but DB has
                         # a bogus end_date_iso in the past (e.g. 2020-11-04 from CLOB
                         # import without endDateISO), clear it so this market stops
@@ -331,7 +360,10 @@ async def run_resolution_backfill(
                 else:
                     m = await client.get_market(mid, use_cache=False)
                 if not m or not isinstance(m, dict):
+                    if _api_checked:
+                        await _touch_checked(mid)
                     continue
+                _api_checked = True  # Got a valid market dict from API
 
                 # Opportunistically backfill end_date_iso if missing in DB.
                 # Gamma API returns "endDateIso" (lowercase 'so'), "endDate".
@@ -359,12 +391,14 @@ async def run_resolution_backfill(
                 closed = m.get("closed") or m.get("isResolved") or m.get("resolved")
                 if not closed:
                     _skipped_open += 1
+                    await _touch_checked(mid)
                     continue
                 res = m.get("resolution") or m.get("outcome") or m.get("resolutionPrice")
                 if res is None:
                     res = _infer_resolution_from_outcome_prices(m)
                 if not res or str(res).upper() not in ("YES", "NO"):
                     _skipped_no_res += 1
+                    await _touch_checked(mid)
                     continue
                 _source = "clob_api" if _from_clob else "gamma_api"
                 # Pass end_date as resolved_at; fallback to now() so resolved_at is never NULL
@@ -375,6 +409,7 @@ async def run_resolution_backfill(
                     await db.mark_market_resolved(mid, str(res).upper())
                 except Exception as _mark_err:
                     logger.warning("mark_market_resolved failed for %s: %s", str(mid)[:20], _mark_err)
+                await _touch_checked(mid)
                 updated += 1
                 if log_progress and updated % 50 == 0:
                     logger.info("Resolution backfill: updated %d resolutions", updated)
