@@ -92,7 +92,8 @@ class BetaCalibrator:
             async with db.get_session(timeout=15) as session:
                 result = await session.execute(
                     _text(
-                        "SELECT COALESCE(raw_model_prob, predicted_prob), actual_outcome "
+                        "SELECT COALESCE(raw_model_prob, predicted_prob), actual_outcome, "
+                        "EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0 AS age_days "
                         "FROM esports_prediction_log "
                         "WHERE actual_outcome IS NOT NULL "
                         "AND game = :game "
@@ -118,6 +119,12 @@ class BetaCalibrator:
             np.array([float(r[0]) for r in rows]), 1e-6, 1.0 - 1e-6
         )
         outcomes = np.array([float(r[1]) for r in rows])
+        # S151: Temporal decay — half-life 7 days. Recent post-fix data
+        # dominates; old death-spiral-era predictions fade within 2-3 weeks.
+        ages = np.array([max(0.0, float(r[2])) for r in rows])
+        _half_life = 7.0
+        weights = np.exp(-np.log(2.0) * ages / _half_life)
+        weights = weights / weights.sum() * len(weights)  # normalize, preserve loss scale
         ln_p = np.log(preds)
         ln_1mp = np.log(1.0 - preds)
         # S151: Lowered from 200/n (floor 2.0) to 50/n (floor 0.5).
@@ -128,11 +135,12 @@ class BetaCalibrator:
         def _loss(params):
             a, b, c_ = params
             logits = a * ln_p - b * ln_1mp + c_
-            # stable log-sigmoid: -log(sigmoid(x)) = softplus(-x)
-            nll = np.mean(
+            # S151: Weighted NLL — recent samples count more
+            per_sample = (
                 outcomes * np.logaddexp(0.0, -logits)
                 + (1.0 - outcomes) * np.logaddexp(0.0, logits)
             )
+            nll = np.sum(weights * per_sample) / len(weights)
             reg = lam * ((a - 1.0) ** 2 + (b - 1.0) ** 2 + c_ ** 2)
             return nll + reg
 
@@ -5145,12 +5153,14 @@ class EsportsBot(BaseBot):
             import numpy as np
             _all_preds = []
             _all_outcomes = []
+            _all_ages = []
             _game_counts = {}
             async with db.get_session(timeout=30) as session:
                 for _pool_game in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl"):
                     _pool_result = await session.execute(
                         _text(
-                            "SELECT COALESCE(raw_model_prob, predicted_prob), actual_outcome "
+                            "SELECT COALESCE(raw_model_prob, predicted_prob), actual_outcome, "
+                            "EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0 AS age_days "
                             "FROM esports_prediction_log "
                             "WHERE actual_outcome IS NOT NULL "
                             "AND game = :game "
@@ -5164,11 +5174,16 @@ class EsportsBot(BaseBot):
                     for _pr in _pool_rows:
                         _all_preds.append(float(_pr[0]))
                         _all_outcomes.append(float(_pr[1]))
+                        _all_ages.append(max(0.0, float(_pr[2])))
             if len(_all_preds) >= self._global_beta_calibrator.min_samples:
                 _all_preds_arr = np.clip(
                     np.array(_all_preds), 1e-6, 1.0 - 1e-6
                 )
                 _all_outcomes_arr = np.array(_all_outcomes)
+                # S151: Temporal decay for global pooled calibrator (half-life 7 days)
+                _all_ages_arr = np.array(_all_ages)
+                _gw = np.exp(-np.log(2.0) * _all_ages_arr / 7.0)
+                _gw = _gw / _gw.sum() * len(_gw)
                 # Fit global BetaCal using in-memory data (same algo as per-game)
                 from scipy.optimize import minimize as _minimize
                 ln_p = np.log(_all_preds_arr)
@@ -5179,10 +5194,12 @@ class EsportsBot(BaseBot):
                 def _global_loss(params):
                     a, b, c_ = params
                     logits = a * ln_p - b * ln_1mp + c_
-                    nll = np.mean(
+                    # S151: Weighted NLL with temporal decay
+                    _per_sample = (
                         _all_outcomes_arr * np.logaddexp(0.0, -logits)
                         + (1.0 - _all_outcomes_arr) * np.logaddexp(0.0, logits)
                     )
+                    nll = np.sum(_gw * _per_sample) / len(_gw)
                     reg = _glam * ((a - 1.0) ** 2 + (b - 1.0) ** 2 + c_ ** 2)
                     return nll + reg
 
