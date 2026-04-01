@@ -166,7 +166,6 @@ class TestHTTP425Handling:
     """Verify HTTP 425 returns retryable flag. Note: test_non_425_error_no_retryable
     validates CURRENT behavior and is NOT xfail."""
 
-    @pytest.mark.xfail(reason="Pass 3 Fix 3: HTTP 425 retryable flag not yet implemented")
     @pytest.mark.asyncio
     async def test_425_returns_retryable(self):
         """HTTP 425 should return success=False with retryable=True."""

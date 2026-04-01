@@ -285,6 +285,30 @@ class MirrorBot(BaseBot):
                             "timestamp": ts,
                         }
                         restored += 1
+                # S150: Enrich positions with entry_confidence for edge decay.
+                # Query trade_events for the most recent ENTRY confidence per market.
+                # Safe default 0.55 (min_confidence) if not found — means no decay bonus.
+                if self._open_positions:
+                    _mids = [pk.split(":", 1)[0] for pk in self._open_positions]
+                    _conf_rows = await session.execute(
+                        _text(
+                            "SELECT DISTINCT ON (market_id) market_id, confidence "
+                            "FROM trade_events "
+                            "WHERE bot_name = :bot AND event_type = 'ENTRY' "
+                            "  AND market_id = ANY(:mids) "
+                            "ORDER BY market_id, event_time DESC"
+                        ),
+                        {"bot": self.bot_name, "mids": _mids},
+                    )
+                    _conf_map = {cr.market_id: float(cr.confidence or 0.55) for cr in _conf_rows.fetchall()}
+                    _enriched = 0
+                    for pk, pos in self._open_positions.items():
+                        mid = pk.split(":", 1)[0]
+                        pos["entry_confidence"] = _conf_map.get(mid, 0.55)
+                        if mid in _conf_map:
+                            _enriched += 1
+                    logger.info("mirror_entry_confidence_restored", enriched=_enriched, total=len(self._open_positions))
+
                 # S144: Count stale-price positions (current_price == entry_price).
                 _stale = sum(
                     1 for p in self._open_positions.values()
@@ -967,6 +991,20 @@ class MirrorBot(BaseBot):
                 _effective_stop = abs(_stop_48h)   # 24-48h tight
             else:
                 _effective_stop = abs(_stop_24h)   # S146: 0-24h tightest (kill losers fast)
+
+            # S150: Edge decay — original confidence decays -0.02 per day held.
+            # If decayed confidence drops below 0.50 (breakeven territory),
+            # halve the stop-loss threshold for tighter exits on stale positions.
+            _entry_conf = float(_pos.get("entry_confidence", 0.55) or 0.55)
+            _days_held = _hours_held / 24.0
+            _decayed_conf = _entry_conf - 0.02 * _days_held
+            if _decayed_conf < 0.50:
+                _effective_stop *= 0.50
+                logger.debug("mirror_edge_decay_tighten", market=_pos_key,
+                             entry_conf=round(_entry_conf, 3),
+                             decayed_conf=round(_decayed_conf, 3),
+                             days_held=round(_days_held, 1),
+                             tightened_stop=round(_effective_stop, 4))
 
             if _pnl_pct <= -_effective_stop:
                 logger.info("MirrorBot autonomous stop-loss", market=_pos_key,
@@ -1972,8 +2010,10 @@ class MirrorBot(BaseBot):
         # Formula: k = edge² / (edge² + var)  where var = p*(1-p)/n (binomial SE²).
         # Reference: Baker & McHale (2013), Decision Analysis — shrink toward 0 when
         # standard error of the edge is large relative to the estimated edge itself.
-        # Only applied when _eq_n >= 5 (below 5, sample ramp already drives size→0).
-        if _eq_n >= 5:
+        # S150: Lowered from n>=5 to n>=3 — apply earlier skepticism on thin-data traders.
+        # At n=3-4, BM shrinkage heavily penalises uncertain edges; sample ramp (n/50) still
+        # limits absolute size. Combined effect: don't overbet on luck.
+        if _eq_n >= 3:
             _bm_edge = max(0.0, confidence - price)
             _bm_edge_sq = _bm_edge * _bm_edge
             _bm_var = confidence * (1.0 - confidence) / _eq_n  # binomial SE²
@@ -2046,6 +2086,18 @@ class MirrorBot(BaseBot):
             if _fav_damp < 1.0:
                 logger.info("mirror_favorite_dampened: price=%.3f, size *= %.2f",
                             price, _fav_damp)
+
+        # S150: Adaptive bet-size multiplier — per-trade size reduction during drawdowns.
+        # Complements daily cap mult (which limits total daily exposure) by also shrinking
+        # each individual trade. Uses gentler decay (-4.0) than position limits (-8.0).
+        if (self._adaptive_safety
+                and getattr(settings, "MIRROR_ADAPTIVE_SAFETY", False)
+                and self._adaptive_safety._fitted):
+            _bet_mult = self._adaptive_safety.get_adjusted_bet_size_mult()
+            if _bet_mult < 1.0:
+                size *= _bet_mult
+                logger.info("mirror_adaptive_bet_size", mult=round(_bet_mult, 3),
+                            market=str(market_id)[:16])
 
         # M9: Cap per-market exposure — percentage-based with absolute safety cap
         _capital = float(getattr(self.bankroll, 'capital', 0) or 0) if self.bankroll else float(getattr(settings, "MIRROR_TOTAL_CAPITAL", 20000))
@@ -2159,6 +2211,7 @@ class MirrorBot(BaseBot):
                     "traders": {trader_address},
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "category": category,
+                    "entry_confidence": confidence,  # S150: for edge decay in exit eval
                 }
 
             # S117: Track entry for opposing-side guard across restarts

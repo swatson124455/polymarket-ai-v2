@@ -314,6 +314,17 @@ class ExecutionEngine:
                                 size=size,
                                 price=price
                             )
+                    # S150: Check for retryable dict responses (e.g. HTTP 425 from async_clob_client).
+                    # These don't raise — they return {"success": False, "retryable": True}.
+                    if (isinstance(order_result, dict)
+                            and not order_result.get("success")
+                            and order_result.get("retryable")
+                            and attempt < max_retries):
+                        self.circuit_breaker.record_failure()
+                        last_error = order_result.get("error", "retryable error")
+                        delay = min(0.1 * (2 ** attempt), 2.0)
+                        await asyncio.sleep(delay)
+                        continue
                     self.circuit_breaker.record_success()
                     break
                 except asyncio.TimeoutError as e:

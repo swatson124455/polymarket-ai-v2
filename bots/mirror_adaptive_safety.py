@@ -164,3 +164,22 @@ class MirrorAdaptiveSafety:
             mult *= max(0.20, 1.0 - (self._consecutive_losses - 4) * 0.10)
 
         return max(0.10, min(1.0, mult))  # cap at 1.0 — never boost daily limit
+
+    def get_adjusted_bet_size_mult(self) -> float:
+        """Return per-trade size multiplier based on drawdown (1.0 = no change).
+
+        S150: Half the decay constant of position limits (-4.0 vs -8.0) so sizing
+        degrades more gently than position count. Combined with daily cap mult,
+        provides defense-in-depth: drawdown shrinks both how many AND how big.
+          dd=0%  → 1.00x
+          dd=5%  → 0.82x
+          dd=10% → 0.67x
+          dd=20% → 0.45x
+        Never boosts above 1.0.
+        """
+        import math
+        if not self._fitted or not getattr(settings, "MIRROR_ADAPTIVE_SAFETY", False):
+            return 1.0
+
+        mult = math.exp(-4.0 * self._drawdown_pct)
+        return max(0.20, min(1.0, mult))

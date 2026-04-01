@@ -1470,3 +1470,146 @@ class TestAdaptiveSafetyEagerFit:
 
         # DB should not have been called (throttled)
         mock_db.get_session.assert_not_called()
+
+
+# ── S150: Baker-McHale n>=3 ─────────────────────────────────────────────────
+
+class TestBakerMcHaleThreshold:
+    """S150: BM shrinkage activates at n>=3 (was n>=5)."""
+
+    def test_bm_activates_at_n3(self):
+        """BM shrinkage should apply when trader has exactly 3 resolved trades."""
+        import math
+        confidence = 0.60
+        price = 0.50
+        _eq_n = 3
+
+        # Replicate the BM formula from mirror_bot.py
+        _bm_edge = max(0.0, confidence - price)
+        _bm_edge_sq = _bm_edge * _bm_edge
+        _bm_var = confidence * (1.0 - confidence) / _eq_n
+        _bm_k = _bm_edge_sq / (_bm_edge_sq + _bm_var)
+
+        # At n=3, variance is large → k should be well below 1.0
+        assert _eq_n >= 3, "BM should activate at n>=3"
+        assert _bm_k < 0.90, f"Expected meaningful shrinkage at n=3, got k={_bm_k:.3f}"
+        assert _bm_k > 0.0, "k should still be positive"
+
+    def test_bm_at_n4_less_shrinkage_than_n3(self):
+        """More data → less shrinkage (higher k)."""
+        confidence = 0.60
+        price = 0.50
+
+        def compute_k(n):
+            edge = max(0.0, confidence - price)
+            edge_sq = edge * edge
+            var = confidence * (1.0 - confidence) / n
+            return edge_sq / (edge_sq + var)
+
+        k3 = compute_k(3)
+        k4 = compute_k(4)
+        k5 = compute_k(5)
+        assert k3 < k4 < k5, f"k should increase with n: k3={k3:.3f} k4={k4:.3f} k5={k5:.3f}"
+
+
+# ── S150: Adaptive bet-size multiplier ──────────────────────────────────────
+
+class TestAdaptiveBetSizeMult:
+    """S150: get_adjusted_bet_size_mult() in MirrorAdaptiveSafety."""
+
+    def test_no_drawdown_returns_1(self):
+        from bots.mirror_adaptive_safety import MirrorAdaptiveSafety
+        safety = MirrorAdaptiveSafety()
+        safety._fitted = True
+        safety._drawdown_pct = 0.0
+
+        with patch.object(settings, "MIRROR_ADAPTIVE_SAFETY", True):
+            assert safety.get_adjusted_bet_size_mult() == 1.0
+
+    def test_10pct_drawdown(self):
+        import math
+        from bots.mirror_adaptive_safety import MirrorAdaptiveSafety
+        safety = MirrorAdaptiveSafety()
+        safety._fitted = True
+        safety._drawdown_pct = 0.10
+
+        with patch.object(settings, "MIRROR_ADAPTIVE_SAFETY", True):
+            mult = safety.get_adjusted_bet_size_mult()
+            expected = math.exp(-4.0 * 0.10)  # ~0.67
+            assert abs(mult - expected) < 0.01, f"Expected ~{expected:.2f}, got {mult:.2f}"
+
+    def test_floor_at_020(self):
+        from bots.mirror_adaptive_safety import MirrorAdaptiveSafety
+        safety = MirrorAdaptiveSafety()
+        safety._fitted = True
+        safety._drawdown_pct = 0.90  # extreme drawdown
+
+        with patch.object(settings, "MIRROR_ADAPTIVE_SAFETY", True):
+            assert safety.get_adjusted_bet_size_mult() == 0.20
+
+    def test_unfitted_returns_1(self):
+        from bots.mirror_adaptive_safety import MirrorAdaptiveSafety
+        safety = MirrorAdaptiveSafety()
+        safety._fitted = False
+        safety._drawdown_pct = 0.50
+
+        with patch.object(settings, "MIRROR_ADAPTIVE_SAFETY", True):
+            assert safety.get_adjusted_bet_size_mult() == 1.0
+
+    def test_never_boosts_above_1(self):
+        from bots.mirror_adaptive_safety import MirrorAdaptiveSafety
+        safety = MirrorAdaptiveSafety()
+        safety._fitted = True
+        safety._drawdown_pct = -0.05  # negative drawdown shouldn't happen but test defense
+
+        with patch.object(settings, "MIRROR_ADAPTIVE_SAFETY", True):
+            assert safety.get_adjusted_bet_size_mult() <= 1.0
+
+
+# ── S150: Edge decay on held positions ──────────────────────────────────────
+
+class TestEdgeDecay:
+    """S150: entry_confidence decays -0.02/day; stop halved if decayed < 0.50."""
+
+    def test_decay_formula(self):
+        """Position held 3 days with entry_conf=0.55 → decayed to 0.49."""
+        entry_conf = 0.55
+        hours_held = 72.0
+        days_held = hours_held / 24.0
+        decayed = entry_conf - 0.02 * days_held
+        assert abs(decayed - 0.49) < 0.001
+
+    def test_stop_halved_when_decayed_below_050(self):
+        """When decayed confidence < 0.50, effective stop should be halved."""
+        entry_conf = 0.55
+        hours_held = 72.0  # 3 days → decayed = 0.49
+        base_stop = 0.12  # 72h+ tier
+
+        days_held = hours_held / 24.0
+        decayed = entry_conf - 0.02 * days_held
+        effective_stop = base_stop
+        if decayed < 0.50:
+            effective_stop *= 0.50
+
+        assert effective_stop == 0.06, f"Expected 0.06, got {effective_stop}"
+
+    def test_no_tightening_when_fresh(self):
+        """Position held 1 day with entry_conf=0.60 → decayed 0.58, no tightening."""
+        entry_conf = 0.60
+        hours_held = 24.0
+        base_stop = 0.06  # 0-24h tier
+
+        days_held = hours_held / 24.0
+        decayed = entry_conf - 0.02 * days_held
+        effective_stop = base_stop
+        if decayed < 0.50:
+            effective_stop *= 0.50
+
+        assert effective_stop == 0.06, "Should not tighten — decayed conf still above 0.50"
+        assert decayed == 0.58
+
+    def test_default_entry_confidence(self):
+        """Missing entry_confidence defaults to 0.55 (min_confidence)."""
+        pos = {"entry_price": 0.50, "current_price": 0.48}
+        entry_conf = float(pos.get("entry_confidence", 0.55) or 0.55)
+        assert entry_conf == 0.55

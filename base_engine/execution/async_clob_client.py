@@ -122,7 +122,12 @@ class AsyncClobClient:
             }
         except httpx.HTTPStatusError as e:
             logger.warning("CLOB POST order failed: %s %s", e.response.status_code, e.response.text)
-            return {"success": False, "error": f"HTTP {e.response.status_code}: {e.response.text[:200]}"}
+            # S150: Mark retryable HTTP errors so execution_engine can retry.
+            # 425 = matching engine maintenance, 429 = rate limit, 502/503 = upstream.
+            result: Dict[str, Any] = {"success": False, "error": f"HTTP {e.response.status_code}: {e.response.text[:200]}"}
+            if e.response.status_code in (425, 429, 502, 503):
+                result["retryable"] = True
+            return result
         except Exception as e:
             logger.warning("CLOB place_order failed: %s", e)
             return {"success": False, "error": str(e)}
