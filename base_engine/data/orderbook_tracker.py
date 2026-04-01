@@ -62,8 +62,8 @@ class OrderBookTracker:
                 spread = best_ask - best_bid
             
             # Aggregate levels
-            bid_levels = self._aggregate_levels(bids)
-            ask_levels = self._aggregate_levels(asks)
+            bid_levels = self._aggregate_levels(bids, descending=True)
+            ask_levels = self._aggregate_levels(asks, descending=False)
             
             # Calculate depth within percentage of mid
             mid_price = (float(bids[0].get("price", 0)) + float(asks[0].get("price", 1))) / 2 if bids and asks else 0.5
@@ -107,7 +107,7 @@ class OrderBookTracker:
                 "error": str(e)
             }
     
-    def _aggregate_levels(self, levels: List[Dict]) -> List[Dict]:
+    def _aggregate_levels(self, levels: List[Dict], *, descending: bool = True) -> List[Dict]:
         """
         Aggregate order book levels by price.
         
@@ -137,7 +137,7 @@ class OrderBookTracker:
                 }
         
         # Sort by price (descending for bids, ascending for asks)
-        return sorted(aggregated.values(), key=lambda x: x["price"], reverse=True)
+        return sorted(aggregated.values(), key=lambda x: x["price"], reverse=descending)
     
     def _depth_within_pct(
         self,

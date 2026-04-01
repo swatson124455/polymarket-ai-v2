@@ -2863,6 +2863,21 @@ class WeatherBot(BaseBot):
             )
             return False
 
+        # S149: YES-side price floor — blocks low-price YES bets (9% WR at <10c)
+        _yes_min_price = float(getattr(settings, "WEATHER_YES_MIN_PRICE", 0.10))
+        if opp["side"] == "YES" and opp["price"] < _yes_min_price:
+            logger.info(
+                "weatherbot_yes_price_floor",
+                market_id=opp["market_id"], city=opp.get("city", ""),
+                price=round(opp["price"], 4), floor=_yes_min_price,
+            )
+            return False
+
+        # S149: YES-side sizing reduction — 0.75x while calibrator uncalibrated
+        _yes_size_mult = float(getattr(settings, "WEATHER_YES_SIZE_MULTIPLIER", 0.75))
+        if opp["side"] == "YES" and _yes_size_mult < 1.0:
+            _raw_size *= _yes_size_mult
+
         # S124: Negative-EV gate — if calibrated confidence < price, the trade is
         # negative EV regardless of sizing path (Kelly or S-T). The S-T allocator
         # distributes budget by edge ratio and doesn't check Kelly's EV signal,

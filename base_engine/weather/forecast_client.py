@@ -247,6 +247,9 @@ class WeatherForecastClient:
 
         Returns dict with keys per model: {model: [daily_max_temps...]}
         """
+        # 5-minute cooldown on 429 (same pattern as ensemble, shorter duration)
+        if time.monotonic() < self._model_429_until.get("deterministic", 0.0):
+            return None
         await self._rate_limit_wait()
         session = await self._ensure_session()
 
@@ -263,6 +266,12 @@ class WeatherForecastClient:
 
         try:
             async with session.get(_DETERMINISTIC_URL, params=params) as resp:
+                if resp.status == 429:
+                    self._model_429_until["deterministic"] = time.monotonic() + 300.0
+                    if self._redis:
+                        await self._redis.set("weatherbot:429:deterministic", "1", ttl=300)
+                    logger.warning("open_meteo_deterministic_429_cooldown", cooldown_s=300)
+                    return None
                 if resp.status != 200:
                     logger.warning("open_meteo_deterministic_error", status=resp.status)
                     return None

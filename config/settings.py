@@ -753,8 +753,12 @@ class Settings(BaseSettings):
     WEATHER_MIN_TRADE_USD: float = float(os.getenv("WEATHER_MIN_TRADE_USD", "5.0"))
     # S115: Bühlmann credibility denominator — higher k = slower sizing ramp for new stations
     WEATHER_BUHLMANN_KAPPA: float = float(os.getenv("WEATHER_BUHLMANN_KAPPA", "30.0"))
-    # S116: YES-side confidence gate threshold. S135: default 0.35 (kills 6.4% WR dust trades)
-    WEATHER_YES_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_YES_MIN_CONFIDENCE", "0.35"))
+    # S116: YES-side confidence gate threshold. S135: 0.35. S149: 0.50 (uncalibrated YES at 26% WR)
+    WEATHER_YES_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_YES_MIN_CONFIDENCE", "0.50"))
+    # S149: YES-side price floor — blocks suicidal <10c YES bets (-$11K at 9% WR in 7d data)
+    WEATHER_YES_MIN_PRICE: float = float(os.getenv("WEATHER_YES_MIN_PRICE", "0.10"))
+    # S149: YES-side sizing multiplier — reduces exposure while calibrator is uncalibrated (n_yes=2)
+    WEATHER_YES_SIZE_MULTIPLIER: float = float(os.getenv("WEATHER_YES_SIZE_MULTIPLIER", "0.75"))
     # S115: Combined sizing boost cap (expiry * regime * jump * nbm * bm * station * calibration)
     WEATHER_COMBINED_BOOST_CAP: float = float(os.getenv("WEATHER_COMBINED_BOOST_CAP", "1.5"))  # S122: 2.0→1.5
     # S118: NO entry price cap — NO trades with entry price above this are skipped.

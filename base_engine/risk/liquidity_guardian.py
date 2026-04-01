@@ -59,8 +59,9 @@ class LiquidityGuardian:
             }
         
         # Calculate available liquidity at each price level
-        # Accept both BUY/SELL and YES/NO conventions
-        if side in ("BUY", "YES"):
+        # YES/NO both mean "buy that token" → consume asks on that token's book.
+        # Only SELL means "sell a token" → consume bids.
+        if side in ("BUY", "YES", "NO"):
             levels = book.get("asks", [])
         else:
             levels = book.get("bids", [])
@@ -139,7 +140,7 @@ class LiquidityGuardian:
         if "error" in book:
             return 0.0
 
-        _is_buy = side in ("BUY", "YES")
+        _is_buy = side in ("BUY", "YES", "NO")
         if _is_buy:
             levels = book.get("asks", [])
         else:
