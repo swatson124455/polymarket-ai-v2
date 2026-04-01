@@ -90,6 +90,8 @@ A bot can be `running=True` but scanning zero opportunities with zero log output
 4. **Scope creep** — "You asked me to fix X but I noticed Y could be improved." Stop. Fix X only.
 5. **Silent migration** — Changing a DB column, config key, or message format without updating every consumer.
 6. **Optimistic rewrite** — "This module is messy so I rewrote it." The old module handled 47 edge cases. Your rewrite handles 12.
+7. **Ad-hoc SQL before canonical scripts** — NEVER write raw SQL for P&L or data reporting without running the canonical script first (`scripts/bot_pnl.py`). Run the script, show its output as the baseline, THEN flag any gaps (e.g. "script doesn't filter by entry window"). If your ad-hoc query disagrees with the canonical script, your query is wrong — debug it, don't present it.
+8. **Unvalidated confidence** — NEVER present query results in formatted tables as if they are authoritative without cross-checking against a known-good source. If you haven't validated a number, label it "UNVERIFIED" explicitly.
 
 ## Change Log (mandatory after every fix)
 
