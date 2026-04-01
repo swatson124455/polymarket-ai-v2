@@ -1927,8 +1927,17 @@ class MirrorBot(BaseBot):
         # executed at 38% confidence despite configured threshold.
         # DATA: <40% = 9% WR (-$157/pos), 40-50% = 18% WR (-$53/pos), 50%+ = profitable.
         if confidence < self.min_confidence:
-            logger.info("mirror_low_confidence", confidence=round(confidence, 3),
-                        min_required=self.min_confidence, market=str(market_id)[:16])
+            # S148: Shadow-watch 0.50–0.55 band — log what WOULD have traded
+            # to evaluate whether lowering the gate improves EV.
+            if confidence >= 0.50:
+                logger.info("mirror_shadow_conf_band",
+                            confidence=round(confidence, 3),
+                            side=side, price=round(price, 4),
+                            trader=str(trader_address)[:16],
+                            market=str(market_id)[:16])
+            else:
+                logger.info("mirror_low_confidence", confidence=round(confidence, 3),
+                            min_required=self.min_confidence, market=str(market_id)[:16])
             return False
 
         # S48 FIX: Use per-bot BotBankrollManager (Session 47) instead of deprecated
