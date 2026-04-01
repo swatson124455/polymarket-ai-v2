@@ -2563,10 +2563,11 @@ class EsportsBot(BaseBot):
             )
         confidence *= _phase_mult
 
-        # S131: Confidence gate repurposed — now checks raw side_prob.
-        # With SQ moved to sizing, confidence = side_prob (always > 0.50 for
-        # chosen side). Gate at 0.52: model must show minimum conviction.
-        _min_side_prob = max(self._min_confidence, 0.52)
+        # S151: Confidence gate uses env-configurable MIN_CONFIDENCE (default 0.20).
+        # Previously hardcoded floor of 0.52 blocked 22 markets with real edge
+        # where model predicted near 50/50 (e.g. model=0.47, market=0.25 → 22% edge).
+        # BM sizing (S151) controls risk via sigma instead of hard blocking.
+        _min_side_prob = self._min_confidence
         if confidence < _min_side_prob:
             if _wf: _wf["low_confidence"] += 1
             logger.info("esportsbot_low_confidence", game=game, market_id=market_id,
