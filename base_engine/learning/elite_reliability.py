@@ -22,9 +22,10 @@ class EliteReliabilityTracker:
     resolved trades. likelihood_ratio(user, side) returns odds for that user/side.
     """
 
-    def __init__(self, db: Any, lookback_days: int = 365):
+    def __init__(self, db: Any, lookback_days: int = 365, regime_start: str = None):
         self.db = db
         self.lookback_days = lookback_days
+        self.regime_start = regime_start  # S150: filter out pre-regime data
         self._cache: Dict[str, Dict[str, float]] = {}  # address -> { alpha_yes, beta_yes, alpha_no, beta_no }
         self._cat_cache: Dict[Tuple[str, str], Dict[str, float]] = {}  # (address, category) -> same shape
 
@@ -60,7 +61,8 @@ class EliteReliabilityTracker:
             self._cache = {}
             self._cat_cache = {}
             return
-        rows = await self.db.get_user_resolution_counts(lookback_days=self.lookback_days)
+        rows = await self.db.get_user_resolution_counts(
+            lookback_days=self.lookback_days, regime_start=self.regime_start)
         self._cache = {}
         for r in rows:
             addr = (r.get("user_address") or "").strip()
@@ -73,7 +75,7 @@ class EliteReliabilityTracker:
         if getattr(self.db, "get_user_resolution_counts_by_category", None):
             try:
                 cat_rows = await self.db.get_user_resolution_counts_by_category(
-                    lookback_days=self.lookback_days
+                    lookback_days=self.lookback_days, regime_start=self.regime_start
                 )
                 for r in cat_rows:
                     addr = (r.get("user_address") or "").strip()

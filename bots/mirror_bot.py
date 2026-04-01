@@ -68,9 +68,13 @@ class MirrorBot(BaseBot):
             from base_engine.learning.elite_reliability import EliteReliabilityTracker
 
             if base_engine.db:
+                # S150: regime_start filters out pre-S146 data from trader WR calculations.
+                # Prevents contamination from old broken gates (no NO dampener, crypto enabled, etc.)
+                _regime = getattr(settings, "MIRROR_REGIME_START", None) or None
                 self._reliability_tracker = EliteReliabilityTracker(
                     db=base_engine.db,
                     lookback_days=getattr(settings, "ELITE_LOOKBACK_DAYS", 365),
+                    regime_start=_regime,
                 )
         except Exception as e:
             logger.debug("elite reliability tracker init failed: %s", e)

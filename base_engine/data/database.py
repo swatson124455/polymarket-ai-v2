@@ -2237,17 +2237,21 @@ class Database:
             return [{"address": r[0], "total_profit": r[1], "win_rate": r[2], "total_trades": r[3] or 0, "total_volume": r[4] or 0} for r in rows]
 
     async def get_user_resolution_counts(
-        self, lookback_days: int = 365
+        self, lookback_days: int = 365, regime_start: str = None
     ) -> List[Dict[str, Any]]:
         """
         Per-user counts of correct/incorrect by side from resolved markets (for Bayesian elite reliability).
         Returns list of { user_address, yes_correct, yes_total, no_correct, no_total }.
         Side is inferred from token_id or t.side; outcome from m.resolution.
+
+        S150: regime_start filters out data from before a regime change (e.g. pre-S146).
         """
         if self.session_factory is None:
             return []
         async with self.get_session() as session:
-            q = text("""
+            # S150: Use regime_start if provided, otherwise fall back to lookback_days
+            _time_filter = "AND t.timestamp >= :regime_start" if regime_start else "AND t.timestamp >= NOW() - INTERVAL '1 day' * :days"
+            q = text(f"""
                 SELECT
                     t.user_address,
                     SUM(CASE WHEN (t.side IN ('YES','BUY') OR t.token_id = m.yes_token_id)
@@ -2263,10 +2267,11 @@ class Database:
                 WHERE t.user_address IS NOT NULL
                 AND t.market_id IS NOT NULL
                 AND m.resolved = TRUE AND m.resolution IN ('YES', 'NO')
-                AND t.timestamp >= NOW() - INTERVAL '1 day' * :days
+                {_time_filter}
                 GROUP BY t.user_address
             """)
-            result = await session.execute(q, {"days": lookback_days})
+            _params = {"regime_start": regime_start} if regime_start else {"days": lookback_days}
+            result = await session.execute(q, _params)
             rows = result.mappings().all()
             return [
                 {
@@ -2280,7 +2285,7 @@ class Database:
             ]
 
     async def get_user_resolution_counts_by_category(
-        self, lookback_days: int = 365
+        self, lookback_days: int = 365, regime_start: str = None
     ) -> List[Dict[str, Any]]:
         """Per-user per-category resolution counts for category-aware elite reliability.
 
@@ -2289,11 +2294,14 @@ class Database:
         S113: LEFT JOIN market_categories for markets outside top-1000 ingestion.
         Uses COALESCE(m.category, mc.category, 'unknown') to provide category data
         for whale trades on markets not in the markets table.
+        S150: regime_start filters out data from before a regime change (e.g. pre-S146).
         """
         if self.session_factory is None:
             return []
         async with self.get_session() as session:
-            q = text("""
+            # S150: Use regime_start if provided, otherwise fall back to lookback_days
+            _time_filter = "AND t.timestamp >= :regime_start" if regime_start else "AND t.timestamp >= NOW() - INTERVAL '1 day' * :days"
+            q = text(f"""
                 SELECT
                     t.user_address,
                     LOWER(COALESCE(m.category, mc.category, 'unknown')) AS category,
@@ -2324,10 +2332,11 @@ class Database:
                 AND t.market_id IS NOT NULL
                 AND (m.resolved = TRUE OR mc.resolved = TRUE)
                 AND COALESCE(m.resolution, mc.resolution) IN ('YES', 'NO')
-                AND t.timestamp >= NOW() - INTERVAL '1 day' * :days
+                {_time_filter}
                 GROUP BY t.user_address, LOWER(COALESCE(m.category, mc.category, 'unknown'))
             """)
-            result = await session.execute(q, {"days": lookback_days})
+            _params = {"regime_start": regime_start} if regime_start else {"days": lookback_days}
+            result = await session.execute(q, _params)
             rows = result.mappings().all()
             return [
                 {

@@ -262,15 +262,28 @@ class EliteWatchlist:
         if self._db and new_addresses:
             try:
                 from sqlalchemy import text
+                # S150: Apply regime_start to exclude pre-S146 data from copy-tier scoring.
+                # Without this, traders get penalized for losses under old broken gates.
+                _regime = getattr(settings, "MIRROR_REGIME_START", None) or None
+                _entry_time_filter = (
+                    f"AND event_time >= '{_regime}'"
+                    if _regime
+                    else "AND event_time >= NOW() - INTERVAL '30 days'"
+                )
+                _exit_time_filter = (
+                    f"AND te.event_time >= '{_regime}'"
+                    if _regime
+                    else ""
+                )
                 async with self._db.get_session(timeout=15) as session:
-                    _result = await session.execute(text("""
+                    _result = await session.execute(text(f"""
                         WITH entry_trader AS (
                             SELECT DISTINCT ON (market_id)
                                 market_id, event_data->>'trader' AS trader
                             FROM trade_events
                             WHERE bot_name = 'MirrorBot' AND event_type = 'ENTRY'
                                 AND event_data->>'trader' IS NOT NULL
-                                AND event_time >= NOW() - INTERVAL '30 days'
+                                {_entry_time_filter}
                             ORDER BY market_id, event_time ASC
                         )
                         SELECT
@@ -282,6 +295,7 @@ class EliteWatchlist:
                         JOIN entry_trader et ON et.market_id = te.market_id
                         WHERE te.bot_name = 'MirrorBot'
                             AND te.event_type IN ('EXIT', 'RESOLUTION')
+                            {_exit_time_filter}
                         GROUP BY LOWER(et.trader)
                     """))
                     # Build prefix→full_addr lookup for matching truncated (10-char)

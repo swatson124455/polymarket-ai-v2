@@ -425,6 +425,10 @@ class Settings(BaseSettings):
     MIRROR_COPY_TIER2_MULT: float = float(os.getenv("MIRROR_COPY_TIER2_MULT", "0.50"))
     MIRROR_COPY_TIER3_MULT: float = float(os.getenv("MIRROR_COPY_TIER3_MULT", "0.25"))
     MIRROR_COPY_MIN_TRADES_FOR_TIER: int = int(os.getenv("MIRROR_COPY_MIN_TRADES_FOR_TIER", "20"))
+    # S150: Regime start — filter reliability and copy-tier queries to exclude pre-regime data.
+    # Data before this date was generated under broken gates (no NO dampener, no stop-loss,
+    # crypto enabled, no tiers). Including it contaminates trader WR and tier assignments.
+    MIRROR_REGIME_START: str = os.getenv("MIRROR_REGIME_START", "2026-03-30T12:43:00+00:00")
     # Dampeners (S119: set to 1.0 = no-op for data collection phase)
     MIRROR_FAVORITE_PRICE_THRESHOLD: float = float(os.getenv("MIRROR_FAVORITE_PRICE_THRESHOLD", "0.70"))
     MIRROR_FAVORITE_DAMPENER: float = float(os.getenv("MIRROR_FAVORITE_DAMPENER", "1.0"))  # S119: 0.40→1.0 for data collection
