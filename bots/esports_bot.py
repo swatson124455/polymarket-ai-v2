@@ -1047,6 +1047,20 @@ class EsportsBot(BaseBot):
                         _restored += 1
                     if _restored > 0:
                         logger.info("esports_edge_cache_restored", n=_restored)
+                    # S150: Seed _edge_peaks from entry_edge_cache so trailing_edge
+                    # exits don't fire immediately on first scan after restart.
+                    # Without this, _edge_peaks is {} after restart, peak defaults
+                    # to entry_edge, and negative remaining_edge triggers instant exit.
+                    _peaks_seeded = 0
+                    for _pk_mid, _pk_cache in self._entry_edge_cache.items():
+                        _pk_key = f"_peak_edge_{_pk_mid}"
+                        if _pk_key not in self._edge_peaks:
+                            _pk_edge = float(_pk_cache.get("edge", 0.0))
+                            if _pk_edge > 0:
+                                self._edge_peaks[_pk_key] = _pk_edge
+                                _peaks_seeded += 1
+                    if _peaks_seeded > 0:
+                        logger.info("esports_edge_peaks_seeded", n=_peaks_seeded)
             except Exception as _eec_exc:
                 logger.warning("esports_edge_cache_restore_failed", error=str(_eec_exc))
 
@@ -1636,14 +1650,67 @@ class EsportsBot(BaseBot):
             logger.debug("esportsbot_redis_entry_count_save_failed", error=str(exc))
 
     async def _restore_entry_counts_from_redis(self) -> None:
-        """S143: Reload per-market entry counts from Redis on startup.
-        Places synthetic timestamps at 'now' so the 12h window counts down from restart."""
+        """S150: Reload per-market entry counts from trade_events DB (ground truth).
+
+        S143 used Redis as sole source, but SIGKILL restarts lose Redis writes.
+        Now queries actual ENTRY events in the rolling window.  Each entry's
+        real event_time is converted to a synthetic monotonic offset so the
+        in-memory window ages them out correctly.
+
+        Falls back to Redis if the DB query fails (preserves S143 behaviour).
+        """
+        _window_h = float(getattr(settings, "ESPORTS_ENTRY_WINDOW_HOURS", 12.0))
+        _window_s = _window_h * 3600
+        _now_mono = time.monotonic()
+        _now_utc = datetime.now(timezone.utc)
+
+        # Primary: DB ground truth
+        try:
+            db = getattr(self.base_engine, "db", None)
+            if db and db.session_factory:
+                from sqlalchemy import text as _ec_text
+                async with db.get_session(timeout=15) as _ec_sess:
+                    _ec_rows = await _ec_sess.execute(
+                        _ec_text(
+                            "SELECT market_id, event_time "
+                            "FROM trade_events "
+                            "WHERE bot_name = 'EsportsBot' "
+                            "  AND event_type = 'ENTRY' "
+                            "  AND event_time >= NOW() - INTERVAL '1 hour' * :hours "
+                            "ORDER BY event_time"
+                        ),
+                        {"hours": _window_h},
+                    )
+                    count = 0
+                    for _row in _ec_rows.fetchall():
+                        _mid = _row[0]
+                        _et = _row[1]
+                        # Convert real event_time to monotonic offset
+                        if _et is not None:
+                            if isinstance(_et, str):
+                                _et = datetime.fromisoformat(_et)
+                            if _et.tzinfo is None:
+                                _et = _et.replace(tzinfo=timezone.utc)
+                            _age_s = (_now_utc - _et).total_seconds()
+                            _mono_ts = _now_mono - _age_s
+                        else:
+                            _mono_ts = _now_mono
+                        self._market_entry_times.setdefault(_mid, []).append(_mono_ts)
+                        count += 1
+                    if count:
+                        logger.info("esportsbot_entry_counts_restored",
+                                    source="trade_events", total_entries=count,
+                                    markets=len(self._market_entry_times))
+                    return  # Success — skip Redis fallback
+        except Exception as _db_exc:
+            logger.warning("esportsbot_entry_counts_db_failed", error=str(_db_exc))
+
+        # Fallback: Redis (S143 original path)
         try:
             cache = getattr(getattr(self, "base_engine", None), "cache", None)
             if cache is None or not getattr(cache, "redis", None):
                 return
             keys = await cache.redis.keys("esportsbot:entry_count:*")
-            _now_mono = time.monotonic()
             count = 0
             for key in keys:
                 raw = await cache.get(key)
@@ -1655,7 +1722,8 @@ class EsportsBot(BaseBot):
                 self._market_entry_times[mid] = [_now_mono] * _n
                 count += _n
             if count:
-                logger.info("esportsbot_entry_counts_restored", markets=len(keys), total_entries=count)
+                logger.info("esportsbot_entry_counts_restored",
+                            source="redis_fallback", total_entries=count, markets=len(keys))
         except Exception as exc:
             logger.warning("esportsbot_restore_entry_counts_failed", error=str(exc))
 
@@ -1853,47 +1921,35 @@ class EsportsBot(BaseBot):
                 self._edge_peaks[_peak_key] = max(_prev_peak, _current_edge_val)
                 _peak = self._edge_peaks[_peak_key]
 
-                # S138: Minimum hold time before edge_gone can fire.
-                # Prevents churn loop where positions are exited within seconds
-                # of entry and immediately re-entered, burning spread each cycle.
-                _min_hold_min = float(getattr(settings, "ESPORTS_MIN_HOLD_MINUTES", 10.0))
-                _hold_minutes = None
+                # S150: Minimum hold time before edge-based exits can fire.
+                # opened_at is always datetime (tz-naive UTC) from SQLAlchemy
+                # NaiveUTCDateTime, or None.  No string parsing needed.
+                _min_hold_s = float(getattr(settings, "ESPORTS_MIN_HOLD_MINUTES", 10.0)) * 60
                 _opened_at = pos.get("opened_at")
-                if _opened_at is not None:
-                    try:
-                        if isinstance(_opened_at, str):
-                            _opened_at = datetime.fromisoformat(_opened_at)
-                        if _opened_at.tzinfo is None:
-                            _opened_at = _opened_at.replace(tzinfo=timezone.utc)
-                        _hold_minutes = (now_utc - _opened_at).total_seconds() / 60.0
-                    except Exception:
-                        pass
+                if _opened_at is None:
+                    _hold_ok = False
+                else:
+                    _hold_ok = (now_utc - _opened_at.replace(tzinfo=timezone.utc)).total_seconds() >= _min_hold_s
 
                 # Full exit: edge gone
                 if _remaining_edge <= 0.01:
-                    if _hold_minutes is not None and _hold_minutes < _min_hold_min:
-                        logger.debug("esportsbot_edge_exit_hold_gate",
-                                     market_id=mid,
-                                     hold_min=round(_hold_minutes, 1),
-                                     min_hold=_min_hold_min,
+                    if not _hold_ok:
+                        logger.info("esportsbot_edge_exit_hold_gate",
+                                     market_id=mid, opened_at=str(_opened_at),
                                      remaining_edge=round(_remaining_edge, 4))
                     else:
                         logger.info("esportsbot_edge_exit_full", market_id=mid,
                                     remaining_edge=round(_remaining_edge, 4),
                                     entry_model_prob=round(_entry_model_prob, 4),
-                                    current_price=round(current, 4),
-                                    hold_min=round(_hold_minutes, 1) if _hold_minutes else None)
+                                    current_price=round(current, 4))
                         positions_to_close.append((pos, "edge_gone"))
                         continue
 
                 # Trailing edge stop: edge dropped 50% from peak AND below 0.02
-                # S143: Apply same hold time guard as edge_gone to prevent churn loop
                 if _peak > 0.02 and _remaining_edge < _peak * 0.5 and _remaining_edge < 0.02:
-                    if _hold_minutes is not None and _hold_minutes < _min_hold_min:
-                        logger.debug("esportsbot_trailing_edge_hold_gate",
-                                     market_id=mid,
-                                     hold_min=round(_hold_minutes, 1),
-                                     min_hold=_min_hold_min,
+                    if not _hold_ok:
+                        logger.info("esportsbot_trailing_edge_hold_gate",
+                                     market_id=mid, opened_at=str(_opened_at),
                                      remaining_edge=round(_remaining_edge, 4))
                     else:
                         logger.info("esportsbot_trailing_edge_exit", market_id=mid,
