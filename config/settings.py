@@ -1243,6 +1243,7 @@ class Settings(BaseSettings):
     # S135: Max model-market divergence — reject when abs(model_prob - market_price) exceeds this.
     # Data: >0.30 divergence = 5.4% accuracy (2/37), ≤0.15 = 74.4% (29/39).
     ESPORTS_MAX_MODEL_DIVERGENCE: float = float(os.getenv("ESPORTS_MAX_MODEL_DIVERGENCE", "0.25"))
+    ESPORTS_LOW_SAMPLE_DIV_CAP: float = float(os.getenv("ESPORTS_LOW_SAMPLE_DIV_CAP", "0.35"))
 
     # --- Monitoring halt threshold (Brier score above this → halt trading for game) ---
     ESPORTS_BRIER_HALT_THRESHOLD: float = float(os.getenv("ESPORTS_BRIER_HALT_THRESHOLD", "0.30"))  # S127: lowered to actually halt bad games

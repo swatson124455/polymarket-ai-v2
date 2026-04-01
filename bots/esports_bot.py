@@ -4472,7 +4472,15 @@ class EsportsBot(BaseBot):
         """S136 Phase 9C: Per-game divergence cap from accuracy tracking."""
         bins = self._divergence_accuracy.get(game, {})
         if not bins or sum(len(v) for v in bins.values()) < 30:
-            return 0.25  # no data — defer to config cap via min()
+            # S151: Widen cap for games with <50 calibration samples.
+            # These games need trades to build calibration data. BM sizing
+            # controls risk via high sigma → tiny bets. As n grows past 50,
+            # the adaptive logic below takes over and tightens automatically.
+            _beta = self._beta_calibrators.get(game)
+            _n_cal = _beta._n_samples if _beta else 0
+            if _n_cal < 50:
+                return float(getattr(settings, "ESPORTS_LOW_SAMPLE_DIV_CAP", 0.35))
+            return 0.25  # no accuracy data but enough calibration samples
         # Find highest threshold where accuracy drops below 55%
         for threshold in [0.25, 0.20, 0.15, 0.10, 0.05]:
             bin_key = f"{threshold:.2f}"
