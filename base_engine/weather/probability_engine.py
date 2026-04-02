@@ -46,6 +46,8 @@ class WeatherProbabilityEngine:
         # Used as fallback for cold stations with no local EMOS.
         # Bühlmann blending: params = w*local + (1-w)*global where w = n/(n+κ).
         self._global_emos: Optional[Tuple[float, float, float]] = None
+        # S154: Variance inflation factor for non-EMOS paths.
+        self._variance_inflation_factor = float(getattr(settings, "WEATHER_VARIANCE_INFLATION_FACTOR", 1.4))
         # Isotonic tail calibration: (bucket_type, lead_bucket) → List[(model_prob, actual_freq)]
         # Replaces fixed 15% tail discount with data-driven calibration.
         # Requires ≥50 resolved tail events per cell; falls back to 0.85 multiplier until then.
@@ -92,13 +94,18 @@ class WeatherProbabilityEngine:
         emos_a, emos_b, emos_sigma = self._get_emos_params(station_id, lead_time_hours)
         corrected_mean = emos_a + emos_b * mean
 
-        # Use EMOS sigma when available; otherwise use raw ensemble spread.
-        # With 133 members (GEFS+IFS+AIFS) the members naturally diverge at longer
-        # lead times — no fixed inflation needed. EMOS sigma corrects residual
-        # underdispersion once ≥20 calibration samples/bucket accumulate.
-        effective_std = max(emos_sigma if emos_sigma is not None else std, 0.5)
-
-        # S132: Spread inflation REMOVED — was double-counting with EMOS + Platt calibration.
+        # Use EMOS sigma when available; otherwise use raw ensemble spread with
+        # S154 variance inflation for known NWP underdispersion.
+        # EMOS sigma already captures the spread-skill gap for calibrated stations.
+        # TODO: Upgrade to heteroscedastic EMOS (σ = c + d·S) for locally-calibrated
+        # stations where fixed sigma doesn't track day-to-day spread variation.
+        if emos_sigma is not None:
+            effective_std = max(emos_sigma, 0.5)
+        else:
+            # S154: Inflate raw ensemble spread for uncalibrated stations/leads.
+            # NWP ensembles underdispersed by 1.3-2.0x (MeteoSwiss, Gneiting 2005).
+            _vif = getattr(self, "_variance_inflation_factor", 1.4)
+            effective_std = max(std * _vif, 0.5)
 
         # EMOS loc shift applied to skewnorm-fitted location
         loc_shift = corrected_mean - mean  # = emos_a + (emos_b - 1) * mean
@@ -114,7 +121,11 @@ class WeatherProbabilityEngine:
                     a, loc, scale = skewnorm.fit(clean)
                 # Apply EMOS corrections: shift loc, use EMOS sigma if available
                 loc_emos = loc + loc_shift
-                scale_emos = max(emos_sigma if emos_sigma is not None else scale, 0.5)
+                # S154: Inflate non-EMOS scale for underdispersion
+                if emos_sigma is not None:
+                    scale_emos = max(emos_sigma, 0.5)
+                else:
+                    scale_emos = max(scale * self._variance_inflation_factor, 0.5)
                 # Sanity: reject absurd scale; clip extreme shape (preserves direction)
                 if 0.1 < scale_emos < 30.0:
                     a_clipped = max(-4.0, min(4.0, a))

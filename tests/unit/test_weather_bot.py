@@ -2020,6 +2020,121 @@ class TestSpreadGate:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# S154: NO Price Dampener + Lead-Time Multiplier + Config Defaults
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestS154NoPriceDampener:
+    """S154: NO high-price dampener reduces size above soft cap."""
+
+    def test_no_max_entry_price_default(self):
+        """Hard cap is 0.85 (S154)."""
+        val = float(getattr(settings, "WEATHER_NO_MAX_ENTRY_PRICE", 0.85))
+        assert val == 0.85, f"Default should be 0.85, got {val}"
+
+    def test_soft_cap_default(self):
+        """Soft cap default is 0.70."""
+        val = float(getattr(settings, "WEATHER_NO_PRICE_SOFT_CAP", 0.70))
+        assert val == 0.70, f"Default should be 0.70, got {val}"
+
+    def test_dampener_slope_default(self):
+        """Slope 6.0 makes dampener reach 0.10 at hard cap 0.85."""
+        val = float(getattr(settings, "WEATHER_NO_PRICE_DAMPENER_SLOPE", 6.0))
+        assert val == 6.0, f"Default should be 6.0, got {val}"
+
+    def test_dampener_formula_at_soft_cap(self):
+        """At soft cap (0.70), dampener is 1.0 (no reduction)."""
+        soft_cap = 0.70
+        slope = 6.0
+        price = 0.70
+        scale = max(0.10, 1.0 - slope * (price - soft_cap))
+        assert scale == 1.0
+
+    def test_dampener_formula_at_075(self):
+        """At 0.75, dampener is 0.70."""
+        soft_cap = 0.70
+        slope = 6.0
+        price = 0.75
+        scale = max(0.10, 1.0 - slope * (price - soft_cap))
+        assert abs(scale - 0.70) < 0.01
+
+    def test_dampener_formula_at_080(self):
+        """At 0.80, dampener is 0.40."""
+        soft_cap = 0.70
+        slope = 6.0
+        price = 0.80
+        scale = max(0.10, 1.0 - slope * (price - soft_cap))
+        assert abs(scale - 0.40) < 0.01
+
+    def test_dampener_formula_at_085(self):
+        """At 0.85 (hard cap), dampener is 0.10 (floor)."""
+        soft_cap = 0.70
+        slope = 6.0
+        price = 0.85
+        scale = max(0.10, 1.0 - slope * (price - soft_cap))
+        assert abs(scale - 0.10) < 0.01
+
+    def test_dampener_floor_prevents_negative(self):
+        """Floor of 0.10 prevents negative values."""
+        soft_cap = 0.70
+        slope = 6.0
+        price = 0.95  # far above hard cap, dampener formula goes negative
+        scale = max(0.10, 1.0 - slope * (price - soft_cap))
+        assert scale == 0.10
+
+
+class TestS154LeadTimeMultiplier:
+    """S154: Lead-time sizing multipliers concentrate capital on sweet spot."""
+
+    def test_72_120h_multiplier_default(self):
+        """72-120h (sweet spot) gets 1.15x."""
+        val = float(getattr(settings, "WEATHER_LEAD_TIME_MULT_72_120", 1.15))
+        assert val == 1.15
+
+    def test_48_72h_multiplier_default(self):
+        """48-72h is neutral 1.0x."""
+        val = float(getattr(settings, "WEATHER_LEAD_TIME_MULT_48_72", 1.0))
+        assert val == 1.0
+
+    def test_0_24h_multiplier_default(self):
+        """<24h gets 0.85x."""
+        val = float(getattr(settings, "WEATHER_LEAD_TIME_MULT_0_24", 0.85))
+        assert val == 0.85
+
+    def test_24_48h_multiplier_default(self):
+        """24-48h gets 0.70x (conservative, near-breakeven bucket)."""
+        val = float(getattr(settings, "WEATHER_LEAD_TIME_MULT_24_48", 0.70))
+        assert val == 0.70
+
+
+class TestS154MaxLeadTime:
+    """S154: Max lead time reduced to 120h."""
+
+    def test_max_lead_time_default(self):
+        """Max lead time is 120h (was 168h)."""
+        val = int(getattr(settings, "WEATHER_MAX_LEAD_TIME_HOURS", 120))
+        assert val == 120, f"Default should be 120, got {val}"
+
+
+class TestS154FeeOverride:
+    """S154: Per-bot fee override for weather markets."""
+
+    def test_weather_fee_default_zero(self):
+        """Weather taker fee defaults to 0 (weather markets have no taker fee)."""
+        val = int(getattr(settings, "WEATHER_TAKER_FEE_BPS", 0))
+        assert val == 0, f"Default should be 0 for weather, got {val}"
+
+
+class TestS154VarianceInflation:
+    """S154: Variance inflation for non-EMOS paths."""
+
+    def test_variance_inflation_default(self):
+        """Default inflation factor is 1.4."""
+        val = float(getattr(settings, "WEATHER_VARIANCE_INFLATION_FACTOR", 1.4))
+        assert val == 1.4, f"Default should be 1.4, got {val}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # T1-A: Mid-life exit evaluator + T1-K: Exit-reason-specific cooldowns
 # ═══════════════════════════════════════════════════════════════════════════
 

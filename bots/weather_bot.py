@@ -1052,7 +1052,8 @@ class WeatherBot(BaseBot):
 
             # Compute unrealized_pnl for just-closed positions where market resolved
             if all_closed:
-                _fee_rate = getattr(settings, "TAKER_FEE_BPS", 150) / 10000.0
+                # S154: Per-bot fee override — weather markets are 0% taker fee.
+                _fee_rate = getattr(settings, "WEATHER_TAKER_FEE_BPS", 0) / 10000.0
                 try:
                     async with db.get_session() as session:
                         await session.execute(sa_text(
@@ -2252,10 +2253,8 @@ class WeatherBot(BaseBot):
                 continue
 
             # S118 Fix 2: NO entry price cap — skip expensive NO tokens.
-            # Data: 70-80¢ NO bucket is -$484 (76.4% WR, 0.24x win/loss ratio).
-            # At 75¢ entry: risk $75, win $25. Need >75% WR to break even.
-            # <60¢ bucket is +$1,836 — that's where real NO edge lives.
-            _no_max_price = float(getattr(settings, "WEATHER_NO_MAX_ENTRY_PRICE", 0.65))
+            # S154: Hard cap 0.85 (break-even WR=price; 0.90+ loses -$3.5K despite 80.6% WR).
+            _no_max_price = float(getattr(settings, "WEATHER_NO_MAX_ENTRY_PRICE", 0.85))
             if side == "NO" and price > _no_max_price:
                 continue
 
@@ -2900,6 +2899,37 @@ class WeatherBot(BaseBot):
         if opp["side"] == "YES" and _yes_size_mult < 1.0:
             _raw_size *= _yes_size_mult
 
+        # S154: NO high-price dampener — sliding size reduction above soft cap.
+        # Break-even WR = entry price. NO at 0.90+: 80.6% WR but -$3,467 P&L.
+        # Slope 6.0 reaches floor 0.10 at hard cap $0.85, eliminating cliff.
+        _no_price_damp = 1.0
+        if opp["side"] == "NO":
+            _soft_cap = float(getattr(settings, "WEATHER_NO_PRICE_SOFT_CAP", 0.70))
+            if opp["price"] > _soft_cap:
+                _slope = float(getattr(settings, "WEATHER_NO_PRICE_DAMPENER_SLOPE", 6.0))
+                _no_price_damp = max(0.10, 1.0 - _slope * (opp["price"] - _soft_cap))
+                _raw_size *= _no_price_damp
+                logger.info(
+                    "weatherbot_no_price_dampener",
+                    market_id=opp["market_id"], city=opp.get("city", ""),
+                    price=round(opp["price"], 4), dampener=round(_no_price_damp, 3),
+                    raw_size_after=round(_raw_size, 2),
+                )
+
+        # S154: Lead-time sizing multiplier — concentrate capital on 72-120h sweet spot.
+        _lead_h = opp.get("lead_time_hours", 48.0)
+        _lt_mult = 1.0
+        if 72.0 <= _lead_h < 120.0:
+            _lt_mult = float(getattr(settings, "WEATHER_LEAD_TIME_MULT_72_120", 1.15))
+        elif 48.0 <= _lead_h < 72.0:
+            _lt_mult = float(getattr(settings, "WEATHER_LEAD_TIME_MULT_48_72", 1.0))
+        elif _lead_h < 24.0:
+            _lt_mult = float(getattr(settings, "WEATHER_LEAD_TIME_MULT_0_24", 0.85))
+        elif 24.0 <= _lead_h < 48.0:
+            _lt_mult = float(getattr(settings, "WEATHER_LEAD_TIME_MULT_24_48", 0.70))
+        if _lt_mult != 1.0:
+            _raw_size *= _lt_mult
+
         # S124: Negative-EV gate — if calibrated confidence < price, the trade is
         # negative EV regardless of sizing path (Kelly or S-T). The S-T allocator
         # distributes budget by edge ratio and doesn't check Kelly's EV signal,
@@ -3037,6 +3067,10 @@ class WeatherBot(BaseBot):
                 "volume_24h": opp.get("_clob_volume", 0.0),  # S107 Fix 3: pass CLOB volume for fill model
                 "bucket_type": opp.get("bucket_type", "unknown"),
                 "ensemble_spread": opp.get("model_spread", 3.0),
+                # S154: Calibrator divergence tracking + new dampener values
+                "cal_divergence": round(opp["confidence"] - opp.get("raw_confidence", opp["confidence"]), 4),
+                "no_price_dampener": round(_no_price_damp, 3),
+                "lead_time_mult": round(_lt_mult, 3),
             },
         )
 

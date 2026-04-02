@@ -765,7 +765,7 @@ class Settings(BaseSettings):
     WEATHER_KELLY_FRACTION: float = float(os.getenv("WEATHER_KELLY_FRACTION", "0.25"))
     WEATHER_DEFAULT_SIZE: float = float(os.getenv("WEATHER_DEFAULT_SIZE", "25"))
     WEATHER_FORECAST_CACHE_TTL: int = int(os.getenv("WEATHER_FORECAST_CACHE_TTL", "1800"))
-    WEATHER_MAX_LEAD_TIME_HOURS: int = int(os.getenv("WEATHER_MAX_LEAD_TIME_HOURS", "168"))
+    WEATHER_MAX_LEAD_TIME_HOURS: int = int(os.getenv("WEATHER_MAX_LEAD_TIME_HOURS", "120"))  # S154: 168→120. 120h+ lost -$4,032 on 9 trades (catastrophic forecast busts).
     WEATHER_SKIP_COORDINATOR_BUY: bool = os.getenv("WEATHER_SKIP_COORDINATOR_BUY", "true").lower() in ("true", "1", "yes")
     WEATHER_TRADE_CONCURRENCY: int = int(os.getenv("WEATHER_TRADE_CONCURRENCY", "8"))
     WEATHER_MAX_TOTAL_EXPOSURE_USD: float = float(os.getenv("WEATHER_MAX_TOTAL_EXPOSURE_USD", "50000"))
@@ -788,7 +788,11 @@ class Settings(BaseSettings):
     WEATHER_COMBINED_BOOST_CAP: float = float(os.getenv("WEATHER_COMBINED_BOOST_CAP", "0.25"))  # S153: floor 0.25x (was cap 1.5x)
     # S118: NO entry price cap — NO trades with entry price above this are skipped.
     # Data: 70-80¢ bucket is -$484 (76.4% WR, 0.24x win/loss). <60¢ is +$1,836.
-    WEATHER_NO_MAX_ENTRY_PRICE: float = float(os.getenv("WEATHER_NO_MAX_ENTRY_PRICE", "1.0"))  # S122: removed (was 0.65). Set to 1.0 = no cap.
+    WEATHER_NO_MAX_ENTRY_PRICE: float = float(os.getenv("WEATHER_NO_MAX_ENTRY_PRICE", "0.85"))  # S154: re-enabled (was 1.0). Break-even WR=price; 0.90+ loses -$3.5K despite 80.6% WR.
+    # S154: NO price dampener — sliding size reduction above soft cap.
+    # Slope 6.0 reaches floor 0.10 at hard cap $0.85. Formula: max(0.10, 1.0 - slope*(price-soft_cap))
+    WEATHER_NO_PRICE_SOFT_CAP: float = float(os.getenv("WEATHER_NO_PRICE_SOFT_CAP", "0.70"))
+    WEATHER_NO_PRICE_DAMPENER_SLOPE: float = float(os.getenv("WEATHER_NO_PRICE_DAMPENER_SLOPE", "6.0"))
     # S118: Max buckets per city+date group — limits correlated blowup risk.
     WEATHER_MAX_BUCKETS_PER_GROUP: int = int(os.getenv("WEATHER_MAX_BUCKETS_PER_GROUP", "5"))  # S122: 3→5
     # S118: Confidence discount for high-price NO trades — reduces Kelly sizing.
@@ -796,6 +800,19 @@ class Settings(BaseSettings):
     # Data: 90-95% confidence NO trades lost -$3,412 from 133 trades.
     WEATHER_NO_CONFIDENCE_DISCOUNT: float = float(os.getenv("WEATHER_NO_CONFIDENCE_DISCOUNT", "0.80"))
     WEATHER_NO_CONFIDENCE_DISCOUNT_THRESHOLD: float = float(os.getenv("WEATHER_NO_CONFIDENCE_DISCOUNT_THRESHOLD", "0.70"))
+    # S154: Lead-time sizing multipliers — concentrate capital on 72-120h sweet spot (91.2% WR, +$664).
+    # Conservative values per sample-size rebuttal. Tune via env vars.
+    WEATHER_LEAD_TIME_MULT_72_120: float = float(os.getenv("WEATHER_LEAD_TIME_MULT_72_120", "1.15"))
+    WEATHER_LEAD_TIME_MULT_48_72: float = float(os.getenv("WEATHER_LEAD_TIME_MULT_48_72", "1.0"))
+    WEATHER_LEAD_TIME_MULT_0_24: float = float(os.getenv("WEATHER_LEAD_TIME_MULT_0_24", "0.85"))
+    WEATHER_LEAD_TIME_MULT_24_48: float = float(os.getenv("WEATHER_LEAD_TIME_MULT_24_48", "0.70"))
+    # S154: Per-bot taker fee — weather markets are 0% taker fee (confirmed by settings comment).
+    # Phantom 150bps distorts P&L by ~$900 over ~3K winning trades.
+    WEATHER_TAKER_FEE_BPS: int = int(os.getenv("WEATHER_TAKER_FEE_BPS", "0"))
+    # S154: Ensemble variance inflation factor — applied ONLY when EMOS sigma is NOT available.
+    # NWP ensembles underdispersed by 1.3-2.0x for surface temp (MeteoSwiss, Gneiting 2005).
+    # TODO: Upgrade to heteroscedastic EMOS (σ = c + d·S) for locally-calibrated stations.
+    WEATHER_VARIANCE_INFLATION_FACTOR: float = float(os.getenv("WEATHER_VARIANCE_INFLATION_FACTOR", "1.4"))
     # S99: Fill-failure cooldown
     WEATHER_FILL_FAIL_COOLDOWN_SCANS: int = int(os.getenv("WEATHER_FILL_FAIL_COOLDOWN_SCANS", "2"))
     WEATHER_FILL_FAIL_COOLDOWN_SECS: float = float(os.getenv("WEATHER_FILL_FAIL_COOLDOWN_SECS", "120"))  # S101: 900→120s — IOC gas negligible, 2min = 1 scan cycle
