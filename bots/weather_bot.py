@@ -2741,16 +2741,19 @@ class WeatherBot(BaseBot):
 
         # S132: Model freshness dampener REMOVED
 
-        # C4: Combined boost — additive with diminishing returns to prevent
-        # multiplicative stacking (was 2.0×1.2×2.0=4.8→cap 3.0 = 0.75 Kelly).
-        # New: each boost contributes its excess independently; capped at 2.0×
-        # to keep effective Kelly ≤ 0.5 (quarter-Kelly × 2.0).
-        # S132: model_freshness removed from formula; Baker-McHale removed
-        combined_boost = 1.0 + (expiry_boost - 1.0) + (regime_boost - 1.0) * 0.5 + (severe_boost - 1.0) * 0.5 + (jump_boost - 1.0) * 0.5 + (nbm_boost - 1.0) * 0.5
-
-        # S135 R4: Disable boost for YES — amplifies already-bad YES bets (18.8% WR at 0.95+ conf)
-        if opp["side"] == "YES" and not getattr(settings, "WEATHER_YES_BOOST_ENABLED", False):
-            combined_boost = 1.0
+        # S153: Convert boosts to dampeners. Shadow data (30K+ resolved) shows
+        # boosted trades have 11pp LOWER WR than unboosted (64% vs 75%).
+        # Regime/jump/NBM/severe signals correlate with market-already-priced-in
+        # or noisy outlier patterns. Each signal now REDUCES size.
+        # Dampener values: regime 0.8x, severe 0.7-0.85x, jump 0.75x, nbm 0.8x.
+        # Formula: multiply dampeners (< 1.0 when signal fires, 1.0 otherwise).
+        _regime_damp = 1.0 / max(regime_boost, 1.0) if regime_boost > 1.0 else 1.0  # 1.2x boost → 0.83x dampener
+        _severe_damp = 1.0 / max(severe_boost, 1.0) if severe_boost > 1.0 else 1.0  # 2.0x boost → 0.50x dampener
+        _jump_damp = 1.0 / max(jump_boost, 1.0) if jump_boost > 1.0 else 1.0  # 1.5x boost → 0.67x dampener
+        _nbm_damp = 1.0 / max(nbm_boost, 1.0) if nbm_boost > 1.0 else 1.0  # 1.3x boost → 0.77x dampener
+        combined_boost = _regime_damp * _severe_damp * _jump_damp * _nbm_damp
+        # Floor at 0.25x to prevent dust trades
+        combined_boost = max(combined_boost, 0.25)
 
         # S107: Drawdown compression REMOVED from combined_boost — already applied
         # in BotBankrollManager.get_bet_size() via `compress` factor. Keeping both

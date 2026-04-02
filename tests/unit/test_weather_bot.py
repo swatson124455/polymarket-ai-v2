@@ -2014,9 +2014,9 @@ class TestSpreadGate:
         assert val > 0, "Spread gate must have a positive threshold"
 
     def test_spread_config_default(self):
-        """Default spread gate is 30 cents."""
-        val = float(getattr(settings, "WEATHER_MAX_SPREAD", 0.30))
-        assert val == 0.30, f"Default should be 0.30, got {val}"
+        """Default spread gate is 1.0 (disabled since S153)."""
+        val = float(getattr(settings, "WEATHER_MAX_SPREAD", 1.0))
+        assert val == 1.0, f"Default should be 1.0 (disabled), got {val}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

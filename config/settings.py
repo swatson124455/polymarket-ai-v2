@@ -439,6 +439,13 @@ class Settings(BaseSettings):
     # Data before this date was generated under broken gates (no NO dampener, no stop-loss,
     # crypto enabled, no tiers). Including it contaminates trader WR and tier assignments.
     MIRROR_REGIME_START: str = os.getenv("MIRROR_REGIME_START", "2026-03-30T12:43:00+00:00")
+    # S153: Split scoring — gate score (should we trade?) + kelly probability (how much to bet?)
+    MIRROR_USE_SPLIT_SCORING: bool = os.getenv("MIRROR_USE_SPLIT_SCORING", "false").lower() in ("true", "1", "yes")
+    MIRROR_GATE_THRESHOLD: float = float(os.getenv("MIRROR_GATE_THRESHOLD", "0.52"))
+    MIRROR_GATE_DECAY_HALF_LIFE: float = float(os.getenv("MIRROR_GATE_DECAY_HALF_LIFE", "20"))
+    MIRROR_MAX_KELLY_EDGE: float = float(os.getenv("MIRROR_MAX_KELLY_EDGE", "0.05"))
+    MIRROR_GATE_COLD_START_PRIOR: float = float(os.getenv("MIRROR_GATE_COLD_START_PRIOR", "0.53"))
+    MIRROR_GATE_FACTOR_WEIGHT: float = float(os.getenv("MIRROR_GATE_FACTOR_WEIGHT", "0.30"))
     # Dampeners (S119: set to 1.0 = no-op for data collection phase)
     MIRROR_FAVORITE_PRICE_THRESHOLD: float = float(os.getenv("MIRROR_FAVORITE_PRICE_THRESHOLD", "0.70"))
     MIRROR_FAVORITE_DAMPENER: float = float(os.getenv("MIRROR_FAVORITE_DAMPENER", "1.0"))  # S119: 0.40→1.0 for data collection
@@ -772,13 +779,13 @@ class Settings(BaseSettings):
     # S115: Bühlmann credibility denominator — higher k = slower sizing ramp for new stations
     WEATHER_BUHLMANN_KAPPA: float = float(os.getenv("WEATHER_BUHLMANN_KAPPA", "30.0"))
     # S116: YES-side confidence gate threshold. S135: 0.35. S149: 0.50 (uncalibrated YES at 26% WR)
-    WEATHER_YES_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_YES_MIN_CONFIDENCE", "0.50"))
+    WEATHER_YES_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_YES_MIN_CONFIDENCE", "0.0"))  # S153: disabled (was 0.50). Re-enable: export WEATHER_YES_MIN_CONFIDENCE=0.50
     # S149: YES-side price floor — blocks suicidal <10c YES bets (-$11K at 9% WR in 7d data)
-    WEATHER_YES_MIN_PRICE: float = float(os.getenv("WEATHER_YES_MIN_PRICE", "0.10"))
+    WEATHER_YES_MIN_PRICE: float = float(os.getenv("WEATHER_YES_MIN_PRICE", "0.0"))  # S153: disabled (was 0.10). Re-enable: export WEATHER_YES_MIN_PRICE=0.10
     # S149: YES-side sizing multiplier — reduces exposure while calibrator is uncalibrated (n_yes=2)
     WEATHER_YES_SIZE_MULTIPLIER: float = float(os.getenv("WEATHER_YES_SIZE_MULTIPLIER", "0.75"))
-    # S115: Combined sizing boost cap (expiry * regime * jump * nbm * bm * station * calibration)
-    WEATHER_COMBINED_BOOST_CAP: float = float(os.getenv("WEATHER_COMBINED_BOOST_CAP", "1.5"))  # S122: 2.0→1.5
+    # S153: Combined sizing multiplier floor (dampeners now, not boosts). Signals reduce size.
+    WEATHER_COMBINED_BOOST_CAP: float = float(os.getenv("WEATHER_COMBINED_BOOST_CAP", "0.25"))  # S153: floor 0.25x (was cap 1.5x)
     # S118: NO entry price cap — NO trades with entry price above this are skipped.
     # Data: 70-80¢ bucket is -$484 (76.4% WR, 0.24x win/loss). <60¢ is +$1,836.
     WEATHER_NO_MAX_ENTRY_PRICE: float = float(os.getenv("WEATHER_NO_MAX_ENTRY_PRICE", "1.0"))  # S122: removed (was 0.65). Set to 1.0 = no cap.
@@ -822,7 +829,7 @@ class Settings(BaseSettings):
 
     # S140: Bid-ask spread gate — reject markets with spread > threshold (cents).
     # Replaces S132-removed spread inflation as a hard floor.
-    WEATHER_MAX_SPREAD: float = float(os.getenv("WEATHER_MAX_SPREAD", "0.30"))
+    WEATHER_MAX_SPREAD: float = float(os.getenv("WEATHER_MAX_SPREAD", "1.0"))  # S153: disabled (was 0.30). Re-enable: export WEATHER_MAX_SPREAD=0.30
 
     # S124: Lead-time spread inflation for probability engine (default OFF)
     # S126: Two-component spread inflation to reduce overconfidence.

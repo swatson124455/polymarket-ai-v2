@@ -360,8 +360,11 @@ async def run_resolution_backfill(
                 else:
                     m = await client.get_market(mid, use_cache=False)
                 if not m or not isinstance(m, dict):
-                    if _api_checked:
-                        await _touch_checked(mid)
+                    # S153: Always stamp last_checked_at after attempting API check,
+                    # even on failure. Without this, failed markets stay NULL and
+                    # re-queue every cycle via NULLS FIRST, starving the queue.
+                    # They'll be retried after RESOLUTION_RECHECK_INTERVAL_HOURS (6h).
+                    await _touch_checked(mid)
                     continue
                 _api_checked = True  # Got a valid market dict from API
 
@@ -416,6 +419,9 @@ async def run_resolution_backfill(
             except Exception as _e:
                 if log_progress:
                     logger.warning("Resolution backfill: market %s error: %s", str(mid)[:20], _e, exc_info=True)
+                # S153: Stamp last_checked_at on error so broken markets don't
+                # re-queue every cycle. They'll be retried after recheck interval.
+                await _touch_checked(mid)
             await asyncio.sleep(delay_seconds)
 
     if log_progress:
