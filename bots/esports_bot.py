@@ -2259,7 +2259,23 @@ class EsportsBot(BaseBot):
             if _wf: _wf["no_token"] += 1
             return None
 
-        token = tokens[0]
+        # S152: Identify YES/NO tokens by outcome field instead of assuming tokens[0]=YES.
+        # LoL regional leagues showed inverted token ordering → systematic YES-side losses.
+        _yes_tok = None
+        _no_tok = None
+        for _t in tokens:
+            _outcome = (_t.get("outcome") or _t.get("side") or "").upper()
+            if _outcome in ("YES", "1", "TRUE"):
+                _yes_tok = _t
+            elif _outcome in ("NO", "0", "FALSE"):
+                _no_tok = _t
+        # Fallback: if no outcome field, use positional order (legacy behavior)
+        if _yes_tok is None:
+            _yes_tok = tokens[0]
+        if _no_tok is None and len(tokens) > 1:
+            _no_tok = tokens[1] if tokens[1] is not _yes_tok else tokens[0]
+
+        token = _yes_tok
         price_raw = token.get("outcomePrice") or token.get("price")
         price = self.validate_price(price_raw, market_id)
         if price is None:
@@ -2478,7 +2494,7 @@ class EsportsBot(BaseBot):
         # Validate edge
         # YES side: model thinks YES is more likely than market price
         # NO side: model thinks YES is less likely than market price
-        no_token = tokens[1] if len(tokens) > 1 else {}
+        no_token = _no_tok if _no_tok else {}
         no_token_id = no_token.get("tokenId") or no_token.get("token_id")
 
         # Populate token map for WS reactive path (Fix 1: YES/NO identification)
