@@ -298,9 +298,13 @@ class RiskManager:
         
         # WeatherBot uses multi-bucket markets (9 temperature outcomes) where
         # single-bucket model_prob rarely exceeds 45%.  Use WEATHER_MIN_CONFIDENCE.
+        # S152: EsportsBot uses Baker-McHale sizing (sigma-based risk control) instead
+        # of a confidence floor.  Use ESPORTS_MIN_CONFIDENCE (default 0.20).
         _min_conf = settings.MIN_CONFIDENCE_THRESHOLD
         if bot_name == "WeatherBot":
             _min_conf = getattr(settings, "WEATHER_MIN_CONFIDENCE", _min_conf)
+        elif bot_name == "EsportsBot":
+            _min_conf = getattr(settings, "ESPORTS_MIN_CONFIDENCE", _min_conf)
         if confidence < _min_conf:
             checks["allowed"] = False
             checks["reasons"].append(f"Confidence {confidence:.2%} below threshold {_min_conf:.2%}")
