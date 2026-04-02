@@ -190,6 +190,13 @@ class PatchDriftDetector:
 
         return False
 
+    def get_patch_severity(self, game: str) -> Optional[str]:
+        """S154: Return the severity of the most recent patch for a game.
+
+        Returns ``"hotfix"``, ``"minor"``, ``"major"``, or None if no patch detected.
+        """
+        return self._patch_severity.get(game)
+
     def is_halted(self, game: str) -> bool:
         """Check if trading is halted for this game due to calibration failure."""
         return game in self._halted_games

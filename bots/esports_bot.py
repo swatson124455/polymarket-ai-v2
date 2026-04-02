@@ -326,8 +326,13 @@ class EsportsBot(BaseBot):
         self._last_cleanup_date: Optional[str] = None
 
         # S100: Single-stage beta calibrators per game
+        # S154: Lowered min_samples from 50 to 15 so thin games (Dota2 n=34,
+        # Valorant n=16) can fit per-game BetaCal. Safe because:
+        #   - Regularization is strong at low n: lam = max(0.5, 50/n) = 3.3 at n=15
+        #   - Hierarchical pooling dominates: w_global = 25/(n+25) = 61% at n=16
+        #   - Worst case: near-identity calibration (harmless, equivalent to global)
         self._beta_calibrators: Dict[str, BetaCalibrator] = {
-            g: BetaCalibrator(lambda_reg=10.0, min_samples=50)
+            g: BetaCalibrator(lambda_reg=10.0, min_samples=15)
             for g in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl")
         }
         self._onnx_cross_game_session: Any = None  # ONNX InferenceSession for cross-game XGB
@@ -355,8 +360,10 @@ class EsportsBot(BaseBot):
         # S136 Phase 9D: ADWIN drift retrain flags
         self._adwin_drift_detected: Dict[str, bool] = {}
         # S100b: Per-game Online Platt calibrators (Phase 2)
+        # S154: Lowered min_samples from 50 to 15 (matching BetaCal).
+        # OnlinePlatt has only 2 params (slope+intercept), lr=0.01 is conservative.
         self._online_platt_per_game: Dict[str, Any] = {
-            g: OnlinePlattCalibrator() for g in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl")
+            g: OnlinePlattCalibrator(min_samples=15) for g in ("lol", "cs2", "dota2", "valorant", "cod", "r6", "sc2", "rl")
         }
         # S136 Phase 4A: Per-game Venn-ABERS calibrators
         self._venn_abers_per_game: Dict[str, Any] = {}
@@ -1262,6 +1269,27 @@ class EsportsBot(BaseBot):
                                 "EsportsBot: game halted (calibration failure)",
                                 game=game,
                             )
+                        # S154: Phi inflation on new patch detection.
+                        # observation_mode=True + should_retrain=True = fresh patch.
+                        # Only inflate once per patch (check _patch_phi_inflated).
+                        if (status.get("observation_mode") and status.get("should_retrain")):
+                            _inflated_key = f"{game}:{self._patch_drift._known_patches.get(game, '')}"
+                            if _inflated_key not in getattr(self, "_patch_phi_inflated", set()):
+                                if not hasattr(self, "_patch_phi_inflated"):
+                                    self._patch_phi_inflated: set = set()
+                                severity = self._patch_drift.get_patch_severity(game)
+                                _phi_factors = {"hotfix": 1.0, "minor": 1.15, "major": 1.30}
+                                _phi_factor = _phi_factors.get(severity, 1.0)
+                                if _phi_factor > 1.0:
+                                    _tracker = self._glicko2_trackers.get(game)
+                                    if _tracker:
+                                        _n = _tracker.inflate_phi_all_teams(factor=_phi_factor)
+                                        self._patch_phi_inflated.add(_inflated_key)
+                                        logger.warning(
+                                            "esportsbot_patch_phi_inflated",
+                                            game=game, severity=severity,
+                                            factor=_phi_factor, teams_affected=_n,
+                                        )
                 except (asyncio.TimeoutError, Exception) as exc:
                     logger.debug("EsportsBot: patch drift check failed", error=str(exc))
 
@@ -2357,6 +2385,14 @@ class EsportsBot(BaseBot):
             return None
 
         # S136 Phase 4C: Calibrator ensemble (replaces S100/S100b sequential override)
+        # S154: Dropped VennABERS — interval_width=1.0 at current n is pure noise.
+        # New weights (BetaCal + OnlinePlatt):
+        #   Per-game fitted (n>=50):
+        #     n 15-29: BC=0.75, OP=0.25
+        #     n 30-49: BC=0.55, OP=0.45
+        #     n>=50:   BC=0.50, OP=0.50
+        #   Per-game NOT fitted (n<50): fall back to global BetaCal pool (n=244)
+        #     Global pool provides cross-game miscalibration correction.
         _raw_prob = model_prob
         _beta_cal = self._beta_calibrators.get(game)
         _online_platt = self._online_platt_per_game.get(game)
@@ -2365,19 +2401,6 @@ class EsportsBot(BaseBot):
         _cal_weights = []
         _n_resolved = _beta_cal
         _n_cal = _n_resolved._n_samples if (_n_resolved and _n_resolved._fitted) else 0
-
-        # Venn-ABERS
-        _va = self._venn_abers_per_game.get(game)
-        if _va and _va.is_fitted:
-            _va_prob = _va.calibrate(_raw_prob)
-            if _n_cal < 15:
-                _cal_probs.append(_va_prob); _cal_weights.append(1.0)
-            elif _n_cal < 30:
-                _cal_probs.append(_va_prob); _cal_weights.append(0.60)
-            elif _n_cal < 50:
-                _cal_probs.append(_va_prob); _cal_weights.append(0.40)
-            else:
-                _cal_probs.append(_va_prob); _cal_weights.append(0.30)
 
         # BetaCal (with hierarchical pooling)
         if _beta_cal and _beta_cal.is_fitted:
@@ -2390,25 +2413,35 @@ class EsportsBot(BaseBot):
                 _global_prob = _global_cal.calibrate(_raw_prob)
                 _bc_prob = _w_game * _bc_prob + (1 - _w_game) * _global_prob
             if _n_cal < 15:
-                pass  # weight 0 — not enough data
+                pass  # n<15: per-game BC skipped (handled by global fallback below)
             elif _n_cal < 30:
-                _cal_probs.append(_bc_prob); _cal_weights.append(0.30)
+                _cal_probs.append(_bc_prob); _cal_weights.append(0.75)
             elif _n_cal < 50:
-                _cal_probs.append(_bc_prob); _cal_weights.append(0.35)
+                _cal_probs.append(_bc_prob); _cal_weights.append(0.55)
             else:
-                _cal_probs.append(_bc_prob); _cal_weights.append(0.35)
+                _cal_probs.append(_bc_prob); _cal_weights.append(0.50)
 
         # OnlinePlatt
         if _online_platt and _online_platt.is_fitted:
             _op_prob = _online_platt.calibrate(_raw_prob)
             if _n_cal < 15:
-                pass
+                pass  # n<15: per-game OP skipped
             elif _n_cal < 30:
-                _cal_probs.append(_op_prob); _cal_weights.append(0.10)
-            elif _n_cal < 50:
                 _cal_probs.append(_op_prob); _cal_weights.append(0.25)
+            elif _n_cal < 50:
+                _cal_probs.append(_op_prob); _cal_weights.append(0.45)
             else:
-                _cal_probs.append(_op_prob); _cal_weights.append(0.35)
+                _cal_probs.append(_op_prob); _cal_weights.append(0.50)
+
+        # S154: Global BetaCal fallback for thin games.
+        # When no per-game calibrator is fitted (Dota2, Valorant, CoD, R6, SC2, RL),
+        # use the global pool (n=244) for universal miscalibration correction.
+        if not _cal_probs:
+            _global_cal = self._global_beta_calibrator
+            if _global_cal and _global_cal.is_fitted:
+                _global_prob = _global_cal.calibrate(_raw_prob)
+                _cal_probs.append(_global_prob)
+                _cal_weights.append(1.0)
 
         if _cal_probs:
             _w_total = sum(_cal_weights)
@@ -3038,24 +3071,30 @@ class EsportsBot(BaseBot):
                 if glicko2_prob is not None:
                     game_state = self._build_glicko2_game_state(market_data, game)
                     if game_state:
-                        # S137 Phase 5A wiring: inject HLTV features for CS2 pregame
-                        if getattr(self, "_hltv", None):
-                            try:
-                                _q = str(market_data.get("question", "")).lower()
-                                _ta, _tb, _, _ = self._extract_team_ids_from_question(_q)
-                                if _ta and _tb:
-                                    _ra = await self._hltv.get_team_rating(_ta, game="cs2")
-                                    _rb = await self._hltv.get_team_rating(_tb, game="cs2")
-                                    if _ra is not None and _rb is not None:
-                                        game_state["hltv_ranking_diff"] = _ra - _rb
-                                    _results_a = await self._hltv.get_recent_results(_ta, game="cs2", n=20)
-                                    if _results_a:
-                                        _wins = sum(1 for _r in _results_a if _r.get("won"))
-                                        game_state["recent_form_3m"] = _wins / len(_results_a) - 0.5
-                                    # LAN flag: not reliably available from market data — default 0.0
-                                    # Features that stay unset fall through to nan_to_num(0.0) in the model
-                            except Exception:
-                                pass  # Graceful degradation: features stay at 0.0
+                        # S154: HLTV injection DISABLED — train/serve skew bug.
+                        # CS2 model was trained WITHOUT HLTV features (they default to 0.0
+                        # in training data), but this block injected real non-zero values
+                        # at inference. The model can't meaningfully interpret features it
+                        # never saw during training. hltv_ranking_diff, recent_form_3m, and
+                        # lan_flag now stay at 0.0 (matching training conditions).
+                        # Re-enable ONLY after backfilling HLTV features into training data
+                        # and retraining the CS2 model.
+                        # --- Original S137 Phase 5A wiring (disabled) ---
+                        # if getattr(self, "_hltv", None):
+                        #     try:
+                        #         _q = str(market_data.get("question", "")).lower()
+                        #         _ta, _tb, _, _ = self._extract_team_ids_from_question(_q)
+                        #         if _ta and _tb:
+                        #             _ra = await self._hltv.get_team_rating(_ta, game="cs2")
+                        #             _rb = await self._hltv.get_team_rating(_tb, game="cs2")
+                        #             if _ra is not None and _rb is not None:
+                        #                 game_state["hltv_ranking_diff"] = _ra - _rb
+                        #             _results_a = await self._hltv.get_recent_results(_ta, game="cs2", n=20)
+                        #             if _results_a:
+                        #                 _wins = sum(1 for _r in _results_a if _r.get("won"))
+                        #                 game_state["recent_form_3m"] = _wins / len(_results_a) - 0.5
+                        #     except Exception:
+                        #         pass
                         prob = self._cs2_model.predict_pregame(game_state)
                         _d = self._game_egm_d.get(game, self._egm_d)
                         prob = extremized_geometric_mean([prob, glicko2_prob], d=_d)

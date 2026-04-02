@@ -269,15 +269,62 @@ class Glicko2Tracker:
 
             new_mu = alpha * team_rating.mu + (1 - alpha) * avg_player_mu
 
-            # RD inflation proportional to change
-            new_phi = math.sqrt(team_rating.phi ** 2 + 0.4 * change_ratio * 350.0 ** 2)
-            new_phi = min(new_phi, _PHI_DEFAULT)
+            # S154: Tiered phi inflation based on number of swaps.
+            # 1 swap (ratio~0.2) → factor 1.20
+            # 2 swaps (ratio~0.4) → factor 1.40
+            # 3+ swaps (ratio>=0.6) → factor 1.75 + mu regression 30%
+            phi_cap = 0.70 * _PHI_DEFAULT  # 245 — never fully erase history
+            if change_ratio >= 0.6:
+                # 3+ player swap: aggressive inflation + mu regression
+                new_phi = min(team_rating.phi * 1.75, phi_cap)
+                new_mu = new_mu + 0.30 * (_MU_DEFAULT - new_mu)
+            elif change_ratio >= 0.35:
+                # 2-player swap
+                new_phi = min(team_rating.phi * 1.40, phi_cap)
+            else:
+                # 1-player swap
+                new_phi = min(team_rating.phi * 1.20, phi_cap)
 
             self._ratings[team_id] = Glicko2Rating(
                 mu=new_mu, phi=new_phi, sigma=team_rating.sigma
             )
 
         return change_ratio
+
+    def inflate_phi_all_teams(
+        self,
+        factor: float,
+        mu_regress_frac: float = 0.0,
+        mu_population_mean: float = _MU_DEFAULT,
+    ) -> int:
+        """S154: Inflate phi (RD) for all teams by a multiplicative factor.
+
+        Used after game patches or multi-player roster swaps to widen
+        rating uncertainty.  Phi is capped at 70% of the unrated default
+        (245 when _PHI_DEFAULT=350) so team history is never fully erased.
+
+        Args:
+            factor: Multiplicative phi inflation (e.g. 1.15 for minor patch).
+            mu_regress_frac: Fraction to regress mu toward population mean
+                (0.0 = no regression, 0.30 = 30% regression).
+            mu_population_mean: Target for mu regression.
+
+        Returns:
+            Number of teams affected.
+        """
+        phi_cap = 0.70 * _PHI_DEFAULT  # 245 at default RD=350
+        count = 0
+        for team_id, rating in self._ratings.items():
+            new_phi = min(rating.phi * factor, phi_cap)
+            new_mu = rating.mu
+            if mu_regress_frac > 0:
+                new_mu = rating.mu + mu_regress_frac * (mu_population_mean - rating.mu)
+            if new_phi != rating.phi or new_mu != rating.mu:
+                self._ratings[team_id] = Glicko2Rating(
+                    mu=new_mu, phi=new_phi, sigma=rating.sigma,
+                )
+                count += 1
+        return count
 
     def get_all_player_ratings(self) -> Dict[str, tuple]:
         """Export all player ratings for DB persistence."""

@@ -565,10 +565,14 @@ class EsportsModelTrainer:
             # Train XGBoost
             from xgboost import XGBClassifier
 
+            # S154: Tightened for effective n~56 under 7-day decay.
+            # Was: depth=4, n_estimators=200 — too complex, overfitting risk.
             model = XGBClassifier(
-                n_estimators=200,
-                max_depth=4,
+                n_estimators=100,
+                max_depth=3,
                 learning_rate=0.05,
+                min_child_weight=5,
+                reg_lambda=2.0,
                 subsample=0.8,
                 colsample_bytree=0.8,
                 eval_metric="logloss",
