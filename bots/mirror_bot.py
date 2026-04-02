@@ -1944,8 +1944,13 @@ class MirrorBot(BaseBot):
                     self._whale_consensus.pop(_cons_key, None)  # S153: clean legacy too
             _gate_base += min(0.09, 0.03 * max(0, _consensus_count - 1))
 
-            # Reliability applied to gate base (harsh — intentional, before factor blend)
-            _gate_base *= min(reliability_mult, 1.0)
+            # Reliability applied to gate base — cold-start aware.
+            # S154: During cold-start (n<5), efficiency prior IS the signal. The sample
+            # ramp in reliability_mult zeros it out (0 trades → 0x), which defeats the
+            # efficiency prior. Use a floor of decay_w (1.0 at n=0, decays as data grows)
+            # so gate_base preserves the efficiency prior until data takes over.
+            _gate_rel = max(reliability_mult, _decay_w) if _eq_n < 5 else min(reliability_mult, 1.0)
+            _gate_base *= _gate_rel
             _gate_base = max(0.20, min(0.85, _gate_base))
 
             # Geometric mean of active factors, blended into gate_base
