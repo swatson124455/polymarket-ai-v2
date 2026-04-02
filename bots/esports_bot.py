@@ -2020,9 +2020,15 @@ class EsportsBot(BaseBot):
 
             # Max hold time check using DB opened_at
             # S136 Phase 3A: Market-type-specific max hold hours
-            # match_winner: 12h, tournament_winner: 96h, default: ESPORTS_MAX_HOLD_HOURS
+            # S154: Market-type-specific max hold hours.
+            # match_winner: 12h, map_winner: 8h (resolves in 1-2h typically),
+            # tournament_winner: 96h, default: ESPORTS_MAX_HOLD_HOURS.
+            # LoL map_winner was 55% of entries and using 24h default —
+            # tightened to force more profitable exits vs losing resolutions.
             if _market_type == "match_winner":
                 _effective_max_hold = 12.0
+            elif _market_type == "map_winner":
+                _effective_max_hold = 8.0
             elif _market_type == "tournament_winner":
                 _effective_max_hold = 96.0
             else:
