@@ -107,8 +107,9 @@ class MirrorBot(BaseBot):
 
         # S113 P2: Multi-whale consensus counter — tracks how many unique whales
         # attempted the same (market_id, side) even though same-side dedup blocks re-entry.
-        # Used for future F4 (consensus signal) analysis. Resets daily.
-        self._whale_consensus: Dict[str, int] = {}  # "market_id:side" -> whale count
+        # S153: Added TTL (30-min) to prevent stale consensus bonuses.
+        self._whale_consensus: Dict[str, int] = {}  # legacy — kept for backward compat reads
+        self._whale_consensus_ts: Dict[str, tuple] = {}  # "market_id:side" -> (count, mono_time)
 
         # Session 82: Calibration stack (FTS + Le2026 + conformal)
         self._calibration_stack = None
@@ -1337,6 +1338,7 @@ class MirrorBot(BaseBot):
             self._daily_exposure = 0.0
             self._category_exposure.clear()
             self._whale_consensus.clear()  # S113 P2: reset consensus counter daily
+            self._whale_consensus_ts.clear()  # S153: TTL version
             self._daily_reset_date = today
             # S99b: 60s cooldown to prevent burst of 30+ trades at midnight
             self._daily_reset_cooldown = _time.monotonic() + 60
@@ -1452,30 +1454,14 @@ class MirrorBot(BaseBot):
                             market=str(market_id)[:16])
                 return False
 
-            # S132: Minimum whale trade size — sub-$50 trades are noise (39.9% WR, -$153K).
-            # $50+ trades: 47.1% WR, +$1,428. Gate before any expensive lookups.
-            _min_whale_usd = float(getattr(settings, "MIRROR_MIN_WHALE_TRADE_USD", 50.0))
-            if whale_trade_usd > 0 and whale_trade_usd < _min_whale_usd:
-                logger.info("mirror_small_whale_skip", whale_usd=round(whale_trade_usd, 1),
-                            min_usd=_min_whale_usd, market=str(market_id)[:16])
-                return False
+            # S132→S153: Whale trade size — weighted factor (was binary BLOCK < $5).
+            # Larger trades carry more conviction; small trades penalized but not killed.
+            # Ramp: $0→0.50, $12.5→0.75, $25+→1.0.
+            pass  # _wf_whale computed below in split scoring block
 
-            # S133: Per-trader P&L blacklist — auto-block traders with <35% WR after 20+ resolved.
-            # 76% of copied traders are unprofitable; top 3 worst = -$68K (43% of all losses).
-            if self._reliability_tracker:
-                _bl_min_resolved = int(getattr(settings, "MIRROR_TRADER_MIN_RESOLVED", 20))
-                _bl_total = self._reliability_tracker.total_trade_count(trader_address)
-                if _bl_total >= _bl_min_resolved:
-                    _bl_wr = self._reliability_tracker.overall_win_rate(trader_address)
-                    _bl_min_wr = float(getattr(settings, "MIRROR_TRADER_MIN_WIN_RATE", 0.35))
-                    if _bl_wr < _bl_min_wr:
-                        logger.info("mirror_trader_blacklisted",
-                                    trader=trader_address[:10],
-                                    win_rate=round(_bl_wr, 3),
-                                    resolved=_bl_total,
-                                    min_wr=_bl_min_wr,
-                                    market=str(market_id)[:16])
-                        return False
+            # S133→S153: Per-trader WR — weighted factor (was binary BLOCK < 35%).
+            # 25%→0.0 (hard block), 35%→0.50, 45%+→1.0. Only activates after 20+ resolved.
+            pass  # _wf_trader_wr computed below in split scoring block
 
             # Market blocklist — closed/expired/speed markets
             if market_id in self._market_blocklist:
@@ -1547,9 +1533,15 @@ class MirrorBot(BaseBot):
             _market_prefix = f"{market_id}:"
             for _pk, _pv in self._open_positions.items():
                 if _pk.startswith(_market_prefix) and str(_pv.get("side", "")).upper() == _side_upper:
-                    # S113 P2: Track multi-whale consensus (don't re-enter, just count)
+                    # S113→S153: Track multi-whale consensus with TTL
                     _cons_key = f"{market_id}:{_side_upper}"
-                    self._whale_consensus[_cons_key] = self._whale_consensus.get(_cons_key, 1) + 1
+                    _existing_cons = self._whale_consensus_ts.get(_cons_key)
+                    if _existing_cons and (_time.monotonic() - _existing_cons[1]) < 1800:
+                        self._whale_consensus_ts[_cons_key] = (_existing_cons[0] + 1, _time.monotonic())
+                    else:
+                        self._whale_consensus_ts[_cons_key] = (1, _time.monotonic())
+                    # Legacy compat
+                    self._whale_consensus[_cons_key] = self._whale_consensus_ts[_cons_key][0]
                     # Also record the whale in the position's traders set
                     self._open_positions[_pk]["traders"].add(trader_address)
                     logger.debug(
@@ -1582,29 +1574,10 @@ class MirrorBot(BaseBot):
                                     market_id=str(market_id)[:16])
                         return False
 
-        # S137 C9: Category expertise filter — reject trades where the trader has ≥10
-        # resolved trades in this category AND their category WR < 45%.
-        # A trader can be lucky overall but systematically bad in specific categories.
-        if not _is_sell and category and self._reliability_tracker:
-            _cat_min_trades = int(getattr(settings, "MIRROR_CAT_MIN_TRADES", 10))
-            _cat_min_wr = float(getattr(settings, "MIRROR_CAT_MIN_WIN_RATE", 0.40))
-            try:
-                _cat_count = int(self._reliability_tracker.category_trade_count(trader_address, category))
-            except (TypeError, ValueError):
-                _cat_count = 0
-            if _cat_count >= _cat_min_trades:
-                try:
-                    _cat_wr = float(self._reliability_tracker.category_win_rate(trader_address, category))
-                except (TypeError, ValueError):
-                    _cat_wr = 0.5  # uninformative — skip gate
-                if _cat_wr < _cat_min_wr:
-                    logger.info("mirror_category_expertise_blocked",
-                                trader=trader_address[:10],
-                                category=category,
-                                cat_wr=round(_cat_wr, 3),
-                                cat_trades=_cat_count,
-                                market=str(market_id)[:16])
-                    return False
+        # S137→S153: Category expertise — weighted factor (was binary BLOCK < 40%).
+        # When cat_n < 10: factor=1.0 (no penalty — great overall WR + new to category is fine).
+        # When cat_n >= 10: ramp 30%→0.2, 40%→0.6, 55%+→1.0.
+        pass  # _wf_cat_expertise computed below in split scoring block
 
         # S85 FIX: Enforce position cap for ALL paths (consensus + RTDS).
         # Previously only consensus checked _can_open_position(); RTDS bypassed it,
@@ -1680,6 +1653,8 @@ class MirrorBot(BaseBot):
                 pass  # proceed without — TTR stays None, confidence slightly lower
         _old_price = price  # S91: preserve trader's fill price for slippage check
         _spread = None  # S133: captured for event_data logging
+        _vol_check = 0.0  # S153: default for no-market-data path
+        _near_res_h = None  # S153: default for no-market-data path
         if _market_data:
             # S99: Reject inactive/closed markets — prevents 400s from CLOB
             if not _market_data.get("active", True):
@@ -1687,51 +1662,34 @@ class MirrorBot(BaseBot):
                 self._market_blocklist.add(market_id)
                 return False
 
-            # S133: Spread gate — 20c+ spread = -$151K in losses (wide spread = illiquid/stale).
-            # Spread = yes_price + no_price - 1.0 (overround). Tight market ≈ 0.
-            _max_spread = float(getattr(settings, "MIRROR_MAX_SPREAD", 0.20))
+            # S133→S153: Spread — weighted factor (was binary BLOCK > 0.08).
+            # Ramp: 0→1.0, 0.08→0.68, 0.15→0.40, 0.25→0.0 (hard block at extreme).
             _yes_p = float(_market_data.get("yes_price", 0) or 0)
             _no_p = float(_market_data.get("no_price", 0) or 0)
             if _yes_p > 0 and _no_p > 0:
                 _spread = _yes_p + _no_p - 1.0
-                if _spread > _max_spread:
-                    logger.info("mirror_spread_rejected", spread=round(_spread, 3),
-                                max_spread=_max_spread, market=str(market_id)[:16],
-                                yes_price=round(_yes_p, 3), no_price=round(_no_p, 3))
-                    return False
+            else:
+                _spread = None
+            # _wf_spread computed below in split scoring block
 
-            # S137 C8: Market volume gate — thin markets have poor execution quality and
-            # invite manipulation. Minimum $5K 24h volume (falls back to lifetime liquidity).
-            _min_vol = float(getattr(settings, "MIRROR_MIN_MARKET_VOLUME_24H", 5000.0))
+            # S137→S153: Volume — weighted factor (was binary BLOCK < $5K).
+            # Ramp: $0→0.50, $7.5K→0.75, $15K+→1.0.
             _vol_24h = float(_market_data.get("volume_24h") or 0)
             _liq = float(_market_data.get("liquidity") or 0)
-            # Use 24h volume; if unavailable, use on-book liquidity as proxy
             _vol_check = _vol_24h if _vol_24h > 0 else _liq
-            if _min_vol > 0 and _vol_check < _min_vol:
-                logger.info("mirror_low_volume_blocked", volume_24h=round(_vol_24h, 0),
-                            liquidity=round(_liq, 0), min_vol=_min_vol,
-                            market=str(market_id)[:16])
-                return False
+            # _wf_volume computed below in split scoring block
 
-            # S137 C5: Hard block on heavy NO favorites — NO price > threshold means
-            # the market already assigns 75%+ probability to the NO outcome.
-            # Copy-trading NO at those prices requires market-maker spread capture that
-            # doesn't transfer; data shows NO-side = -$139K (87% of all losses).
-            _no_price_block = float(getattr(settings, "MIRROR_NO_PRICE_BLOCK", 0.75))
-            if str(side).upper() == "NO" and _no_p > _no_price_block:
-                logger.info("mirror_no_heavy_favorite_blocked", no_price=round(_no_p, 3),
-                            threshold=_no_price_block, market=str(market_id)[:16])
-                return False
+            # S137→S153: NO heavy favorite — weighted factor (was binary BLOCK NO > 0.75).
+            # Ramp: 0.60→1.0, 0.75→0.50, 0.90→0.0. YES side always 1.0.
+            # _wf_no_fav computed below in split scoring block
 
-            # S99: Hours-to-resolution filter — skip insider-territory markets
-            _min_hours = float(getattr(settings, "MIRROR_MIN_HOURS_TO_RESOLUTION", 1))
+            # S99→S153: Near-resolution — weighted factor (was binary BLOCK < 1h).
+            # Ramp: 0h→0.30, 2.7h→0.53, 8h+→1.0.
             _end_date = _market_data.get("end_date_iso")
+            _near_res_h = None
             if _end_date:
-                _h = self.hours_until_resolution({"end_date_iso": _end_date})
-                if _h is not None and _h < _min_hours:
-                    logger.info("mirror_near_resolution", market=str(market_id)[:16],
-                                hours=round(_h, 1), min_hours=_min_hours)
-                    return False
+                _near_res_h = self.hours_until_resolution({"end_date_iso": _end_date})
+            # _wf_near_res computed below in split scoring block
 
             _side_upper = str(side).upper()
             if _side_upper in ("YES", "NO"):
@@ -1742,24 +1700,19 @@ class MirrorBot(BaseBot):
                         logger.info("mirror_price_corrected", market=str(market_id)[:16],
                                     trader_price=round(_old_price, 4), market_price=round(price, 4))
 
-        # R4: Price direction pre-filter — skip if market already moved >5% toward
-        # the trade direction since whale's fill. Edge likely consumed by other copiers.
-        _dir_thresh = float(getattr(settings, "MIRROR_PRICE_DIRECTION_THRESH", 0.05))
+        # R4→S153: Price direction — weighted factor (was binary BLOCK > 5%).
+        # Ramp: 0%→1.0, 5%→0.67, 15%→0.0.
+        _price_dir_pct = 0.0
         if _old_price > 0.01 and not _is_sell:
-            _move_pct = (price - _old_price) / _old_price
-            if _move_pct > _dir_thresh:
-                logger.info("mirror_price_direction_skip", market=str(market_id)[:16],
-                            trader_price=round(_old_price, 4), market_price=round(price, 4),
-                            move_pct=round(_move_pct, 3))
-                return False
+            _price_dir_pct = max(0.0, (price - _old_price) / _old_price)
+        # _wf_price_dir computed below in split scoring block
 
-        # S91: Slippage cap — reject when market has moved too far from whale's fill price
-        _max_slip = float(getattr(settings, "MIRROR_MAX_SLIPPAGE_PCT", 0.05))
-        if _old_price > 0.01 and abs(price - _old_price) / _old_price > _max_slip:
-            logger.info("mirror_slippage_blocked", market=str(market_id)[:16],
-                        trader_price=round(_old_price, 4), market_price=round(price, 4),
-                        slippage_pct=round(abs(price - _old_price) / _old_price, 3))
-            return False
+        # S91→S153: Slippage — weighted factor (was binary BLOCK > 5%).
+        # Ramp: 0%→1.0, 5%→0.67, 15%→0.0.
+        _slip_pct = 0.0
+        if _old_price > 0.01:
+            _slip_pct = abs(price - _old_price) / _old_price
+        # _wf_slippage computed below in split scoring block
 
         # Apply elite reliability multiplier
         reliability_mult = 1.0
@@ -1878,9 +1831,173 @@ class MirrorBot(BaseBot):
                 elif _cp["copy_wr"] < 40.0:
                     _copy_adj = -0.05
 
-        # Compose final confidence (overrides upstream flat 0.55)
+        # ── S153: Split scoring — gate score (trust metric) + kelly probability (sizing) ──
+        # Old single-confidence path preserved behind MIRROR_USE_SPLIT_SCORING toggle.
         _raw_upstream = confidence
-        confidence = max(0.35, min(0.75, _base + _price_adj + _conv_adj + _ttr_adj + _copy_adj))
+
+        # S154: Compute old confidence BEFORE try block — needed as fallback if split scoring fails.
+        _old_confidence = max(0.35, min(0.75, _base + _price_adj + _conv_adj + _ttr_adj + _copy_adj))
+
+        # S154: Fail-open — any exception in split scoring falls back to old confidence path.
+        # Without this, a bug in any factor formula crashes the entire evaluate method.
+        # Hard-blocks (return False) inside the try are NOT caught — return is not an exception.
+        _split_scoring_ok = True
+        try:
+            # --- Compute all weighted factors (S153: was binary gates) ---
+            # Whale trade size: $0→0.50, $12.5→0.75, $25+→1.0
+            _wf_whale = min(1.0, 0.50 + 0.50 * (whale_trade_usd / 25.0)) if whale_trade_usd > 0 else 0.50
+
+            # Trader WR: 25%→0.0, 35%→0.50, 45%+→1.0. Only when n>=20.
+            _wf_trader_wr = 1.0
+            if self._reliability_tracker:
+                _bl_min_resolved = int(getattr(settings, "MIRROR_TRADER_MIN_RESOLVED", 20))
+                _bl_total = self._reliability_tracker.total_trade_count(trader_address)
+                if _bl_total >= _bl_min_resolved:
+                    _bl_wr = self._reliability_tracker.overall_win_rate(trader_address)
+                    _wf_trader_wr = max(0.0, min(1.0, (_bl_wr - 0.25) / 0.20))
+                    # S154: Hard-block at WR<=25% with 20+ trades — actively destructive trader.
+                    # Same pattern as _wf_spread and _wf_no_fav hard-blocks.
+                    if _wf_trader_wr <= 0.0:
+                        logger.info("mirror_trader_wr_hard_block", wr=round(_bl_wr, 3),
+                                    n=_bl_total, trader=trader_address[:10],
+                                    market=str(market_id)[:16])
+                        return False
+
+            # Category expertise: no penalty when cat_n<10 (new to category ≠ bad).
+            # When cat_n>=10: 30%→0.2, 42.5%→0.7, 55%+→1.0.
+            _wf_cat_expertise = 1.0
+            if category and self._reliability_tracker:
+                try:
+                    _ce_count = int(self._reliability_tracker.category_trade_count(trader_address, category))
+                except (TypeError, ValueError):
+                    _ce_count = 0
+                if _ce_count >= 10:
+                    try:
+                        _ce_wr = float(self._reliability_tracker.category_win_rate(trader_address, category))
+                    except (TypeError, ValueError):
+                        _ce_wr = 0.50
+                    _wf_cat_expertise = max(0.20, min(1.0, (_ce_wr - 0.30) / 0.25))
+
+            # Spread: 0→1.0, 0.125→0.50, 0.25→0.0. Hard block at extreme.
+            _wf_spread = 1.0
+            if _spread is not None and _spread > 0:
+                _wf_spread = max(0.0, min(1.0, 1.0 - _spread / 0.25))
+                if _wf_spread <= 0.0:
+                    logger.info("mirror_spread_hard_block", spread=round(_spread, 3),
+                                market=str(market_id)[:16])
+                    return False
+
+            # Volume: $0→0.50, $7.5K→0.75, $15K+→1.0
+            _wf_volume = min(1.0, 0.50 + 0.50 * (_vol_check / 15000.0)) if _market_data else 1.0
+
+            # NO heavy favorite: 0.60→1.0, 0.75→0.50, 0.90→0.0. YES=1.0.
+            _wf_no_fav = 1.0
+            if _side_upper == "NO" and _market_data:
+                _nfp = float(_market_data.get("no_price", 0) or 0)
+                if _nfp > 0.60:
+                    _wf_no_fav = max(0.0, 1.0 - (_nfp - 0.60) / 0.30)
+                    if _wf_no_fav <= 0.0:
+                        logger.info("mirror_no_fav_hard_block", no_price=round(_nfp, 3),
+                                    market=str(market_id)[:16])
+                        return False
+
+            # Near-resolution: 0h→0.30, 2.7h→0.53, 8h+→1.0
+            _wf_near_res = 1.0
+            if _near_res_h is not None:
+                _wf_near_res = min(1.0, 0.30 + 0.70 * (_near_res_h / 8.0))
+
+            # Price direction: 0%→1.0, 5%→0.67, 15%→0.0
+            _wf_price_dir = max(0.0, 1.0 - _price_dir_pct / 0.15) if _price_dir_pct > 0 else 1.0
+
+            # Slippage: 0%→1.0, 5%→0.67, 15%→0.0
+            _wf_slippage = max(0.0, 1.0 - _slip_pct / 0.15) if _slip_pct > 0 else 1.0
+
+            # --- Gate Score: weighted composite trust metric ---
+            _efficiency = 0.0
+            if self._watchlist:
+                try:
+                    _wd_gate = getattr(self._watchlist, "_watchlist_data", {})
+                    if isinstance(_wd_gate, dict):
+                        _efficiency = float(_wd_gate.get(trader_address.lower(), {}).get("efficiency", 0.0) or 0.0)
+                except (TypeError, ValueError, AttributeError):
+                    _efficiency = 0.0
+
+            _decay_hl = float(getattr(settings, "MIRROR_GATE_DECAY_HALF_LIFE", 20))
+            _decay_w = _math.exp(-0.693 * _eq_n / max(_decay_hl, 1))
+            _cold_prior = float(getattr(settings, "MIRROR_GATE_COLD_START_PRIOR", 0.53))
+            _eff_prior = min(0.65, 0.50 + _efficiency * 0.50) if _efficiency > 0 else _cold_prior
+            _gate_base = _decay_w * _eff_prior + (1.0 - _decay_w) * _base
+
+            # Additive adjustments (amplified for gate)
+            _gate_base += _conv_adj * 1.5 + _ttr_adj * 1.2 + _copy_adj * 1.2
+
+            # Consensus bonus with 30-min TTL
+            _cons_key = f"{market_id}:{_side_upper}"
+            _consensus_count = 1
+            _cons_entry = self._whale_consensus_ts.get(_cons_key)
+            if _cons_entry:
+                _c_count, _c_time = _cons_entry
+                if (_time.monotonic() - _c_time) < 1800:
+                    _consensus_count = _c_count
+                else:
+                    del self._whale_consensus_ts[_cons_key]
+                    self._whale_consensus.pop(_cons_key, None)  # S153: clean legacy too
+            _gate_base += min(0.09, 0.03 * max(0, _consensus_count - 1))
+
+            # Reliability applied to gate base (harsh — intentional, before factor blend)
+            _gate_base *= min(reliability_mult, 1.0)
+            _gate_base = max(0.20, min(0.85, _gate_base))
+
+            # Geometric mean of active factors, blended into gate_base
+            _factors = [_wf_whale, _wf_trader_wr, _wf_cat_expertise, _wf_spread,
+                        _wf_volume, _wf_no_fav, _wf_near_res, _wf_price_dir, _wf_slippage]
+            _active_factors = [f for f in _factors if f < 0.99]
+            if _active_factors:
+                _geo = _math.prod(_active_factors) ** (1.0 / len(_active_factors))
+            else:
+                _geo = 1.0
+            _factor_w = float(getattr(settings, "MIRROR_GATE_FACTOR_WEIGHT", 0.30))
+            gate_score = _gate_base * ((1.0 - _factor_w) + _factor_w * _geo)
+
+            # --- Kelly Probability: market-anchored, conservative ---
+            _copy_tier = 2
+            if self._watchlist:
+                _copy_tier = self._watchlist.get_copy_tier(trader_address)
+            if _eq_n >= 5:
+                _trader_edge = max(0.0, _base - 0.50) * min(1.0, (_eq_n - 5) / 45.0)
+            else:
+                _trader_edge = 0.01
+            _kelly_copy_bonus = 0.02 if (_copy_tier == 1 and _copy_adj > 0) else 0.0
+            _max_edge = float(getattr(settings, "MIRROR_MAX_KELLY_EDGE", 0.05))
+            kelly_prob = min(price + _max_edge, price + _trader_edge + _kelly_copy_bonus)
+            kelly_prob = max(price + 0.005, min(0.95, kelly_prob))
+
+        except Exception:
+            logger.exception("split_scoring_error, falling back to old confidence")
+            _split_scoring_ok = False
+            gate_score = _old_confidence
+            kelly_prob = _old_confidence
+            _wf_whale = _wf_trader_wr = _wf_cat_expertise = 1.0
+            _wf_spread = _wf_volume = _wf_no_fav = 1.0
+            _wf_near_res = _wf_price_dir = _wf_slippage = 1.0
+            _geo = 1.0
+            _decay_w = 1.0
+            _eff_prior = 0.53
+            _consensus_count = 1
+            _factor_w = 0.30
+            _gate_base = _old_confidence
+
+        # --- Shadow/live toggle ---
+        _split_live = getattr(settings, "MIRROR_USE_SPLIT_SCORING", False)
+        if not isinstance(_split_live, bool):
+            _split_live = False
+        # S154: Force old path if split scoring threw an exception
+        if not _split_scoring_ok:
+            _split_live = False
+        if _split_live:
+            confidence = kelly_prob
+        else:
+            confidence = _old_confidence
 
         logger.info("mirror_multifactor", trader=trader_address[:10],
                     category=category or "", cat_wr=round(_cat_wr, 3),
@@ -1888,12 +2005,34 @@ class MirrorBot(BaseBot):
                     price_adj=round(_price_adj, 3),
                     conv_adj=round(_conv_adj, 3),
                     ttr_adj=round(_ttr_adj, 3),
-                    copy_adj=round(_copy_adj, 3),  # S146
+                    copy_adj=round(_copy_adj, 3),
                     ttr_h=round(_ttr_h, 1) if _ttr_h is not None else None,
                     whale_usd=round(whale_trade_usd, 0),
                     upstream=round(_raw_upstream, 3),
                     final=round(confidence, 3),
                     rel_mult=round(reliability_mult, 3))
+        logger.info("mirror_split_scoring",
+                    gate_score=round(gate_score, 3),
+                    kelly_prob=round(kelly_prob, 3),
+                    old_conf=round(_old_confidence, 3),
+                    gate_base=round(_gate_base, 3),
+                    eff_prior=round(_eff_prior, 3),
+                    decay_w=round(_decay_w, 3),
+                    geo_mean=round(_geo, 3),
+                    factor_w=round(_factor_w, 3),
+                    consensus=_consensus_count,
+                    wf_whale=round(_wf_whale, 2),
+                    wf_trader_wr=round(_wf_trader_wr, 2),
+                    wf_cat=round(_wf_cat_expertise, 2),
+                    wf_spread=round(_wf_spread, 2),
+                    wf_volume=round(_wf_volume, 2),
+                    wf_no_fav=round(_wf_no_fav, 2),
+                    wf_near_res=round(_wf_near_res, 2),
+                    wf_price_dir=round(_wf_price_dir, 2),
+                    wf_slippage=round(_wf_slippage, 2),
+                    split_live=_split_live,
+                    trader=trader_address[:10],
+                    market=str(market_id)[:16])
 
         # S124: ML selector — score trade with all three strategies (shadow + optional live gate)
         # Fail-open: any ML error must NOT block the trade (log + continue)
@@ -1908,7 +2047,7 @@ class MirrorBot(BaseBot):
                     "price": price,
                     "whale_trade_usd": whale_trade_usd,
                     "category_encoded": self._ml_selector.encode_category(category),
-                    "consensus": self._whale_consensus.get(f"{market_id}:{_side_upper}", 1),
+                    "consensus": _consensus_count,  # S153: from TTL-aware source
                     "hour_utc": float(datetime.now(timezone.utc).hour),
                     "side_is_no": 1.0 if _side_upper == "NO" else 0.0,
                     "price_extremity": abs(price - 0.50),
@@ -1977,19 +2116,31 @@ class MirrorBot(BaseBot):
         # calibration). Without this gate, self.min_confidence was dead code — trades
         # executed at 38% confidence despite configured threshold.
         # DATA: <40% = 9% WR (-$157/pos), 40-50% = 18% WR (-$53/pos), 50%+ = profitable.
-        if confidence < self.min_confidence:
-            # S148: Shadow-watch 0.50–0.55 band — log what WOULD have traded
-            # to evaluate whether lowering the gate improves EV.
-            if confidence >= 0.50:
-                logger.info("mirror_shadow_conf_band",
-                            confidence=round(confidence, 3),
-                            side=side, price=round(price, 4),
+        # S153: Split scoring gate check
+        if _split_live:
+            _gate_threshold = float(getattr(settings, "MIRROR_GATE_THRESHOLD", 0.52))
+            if gate_score < _gate_threshold:
+                logger.info("mirror_gate_blocked",
+                            gate_score=round(gate_score, 3),
+                            threshold=_gate_threshold,
+                            kelly_prob=round(kelly_prob, 3),
                             trader=str(trader_address)[:16],
                             market=str(market_id)[:16])
-            else:
-                logger.info("mirror_low_confidence", confidence=round(confidence, 3),
-                            min_required=self.min_confidence, market=str(market_id)[:16])
-            return False
+                return False
+        else:
+            if confidence < self.min_confidence:
+                # S148: Shadow-watch 0.50–0.55 band
+                if confidence >= 0.50:
+                    logger.info("mirror_shadow_conf_band",
+                                confidence=round(confidence, 3),
+                                gate_score=round(gate_score, 3),
+                                side=side, price=round(price, 4),
+                                trader=str(trader_address)[:16],
+                                market=str(market_id)[:16])
+                else:
+                    logger.info("mirror_low_confidence", confidence=round(confidence, 3),
+                                min_required=self.min_confidence, market=str(market_id)[:16])
+                return False
 
         # S48 FIX: Use per-bot BotBankrollManager (Session 47) instead of deprecated
         # risk_manager.calculate_position_size() which divides Kelly by KELLY_ACTIVE_BOTS.
@@ -2005,7 +2156,7 @@ class MirrorBot(BaseBot):
         # S146: Copy-P&L tiered sizing — scale by trader's demonstrated copyability.
         # Tier 1 (copy-profitable, n>=20): 1.0x. Tier 2 (thin data): 0.50x. Tier 3 (copy-unprofitable): 0.25x.
         # All 300 traders stay on watchlist — tiers control capital, not membership.
-        _copy_tier = 2  # default: learning mode
+        _copy_tier = 2  # default: learning mode (also computed in S153 block above)
         if self._watchlist:
             _copy_tier = self._watchlist.get_copy_tier(trader_address)
         if _copy_tier == 2:
@@ -2167,10 +2318,16 @@ class MirrorBot(BaseBot):
             "conf_cal_shadow": round(_conf_cal_shadow, 3) if _conf_cal_shadow is not None else None,
             "rel_mult": round(reliability_mult, 3),
             "trader": trader_address,  # S146: full address for copy-P&L attribution (was [:10])
-            "consensus": self._whale_consensus.get(f"{market_id}:{str(side).upper()}", 1),
+            "consensus": _consensus_count,  # S153: from TTL-aware dict
             "scan_start_mono": getattr(self, "_scan_start_mono", None),  # S115
             "spread": round(_spread, 3) if _spread is not None else None,  # S133
             "copy_tier": _copy_tier,  # S146: 1=profitable, 2=thin, 3=unprofitable
+            # S153: Split scoring data for retroactive analysis
+            "gate_score": round(gate_score, 3),
+            "kelly_prob": round(kelly_prob, 3),
+            "gate_decay_w": round(_decay_w, 3),
+            "eff_prior": round(_eff_prior, 3),
+            "geo_mean": round(_geo, 3),
         }
         # S124: Merge ML selector scores into event_data for shadow ledger analysis
         if _ml_scores:
