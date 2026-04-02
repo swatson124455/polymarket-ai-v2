@@ -1,0 +1,39 @@
+[Unit]
+Description=Polymarket AI V2 — Ingestion Service
+After=network.target postgresql.service redis.service
+Wants=postgresql.service redis.service
+
+[Service]
+Type=simple
+User=polymarket
+Group=polymarket
+WorkingDirectory=/opt/polymarket-ai-v2
+Environment=PYTHONUNBUFFERED=1
+Environment="PYTHONWARNINGS=ignore::UserWarning:sklearn,ignore::FutureWarning:sklearn"
+EnvironmentFile=-/opt/pa2-shared/.env
+EnvironmentFile=-/opt/pa2-shared/.env.ingestion
+ExecStart=/opt/polymarket-ai-v2/venv/bin/python ingestion_main.py
+Restart=always
+RestartSec=15
+TimeoutStopSec=60
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=/opt/pa2-shared/data /opt/pa2-shared/saved_models /var/log/polymarket
+PrivateTmp=true
+
+# Ingestion is lighter than trading bots
+MemoryMax=1G
+CPUQuota=50%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=polymarket-ingestion
+
+[Install]
+WantedBy=multi-user.target

@@ -26,6 +26,15 @@ class Settings(BaseSettings):
     DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "15"))  # S145: 30→15 (fail fast)
     DB_POOL_RECYCLE: int = int(os.getenv("DB_POOL_RECYCLE", "300"))  # S145: 600→300 (5min recycle)
     DB_EFFECTIVE_POOL_SIZE: int = int(os.getenv("DB_EFFECTIVE_POOL_SIZE", "0"))  # S151: 0=auto (pool+overflow); set to PgBouncer default_pool_size (e.g. 40) for accurate warnings
+    DB_STATEMENT_TIMEOUT_MS: int = int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "30000"))  # S152: per-connection PG statement_timeout; 30s for bots, 300s for ingestion
+    DB_IDLE_IN_TXN_TIMEOUT_MS: int = int(os.getenv("DB_IDLE_IN_TXN_TIMEOUT_MS", "120000"))  # S152: idle_in_transaction_session_timeout; 120s conservative default
+    DB_APPLICATION_NAME: str = os.getenv("DB_APPLICATION_NAME", "")  # S152: per-service name for pg_stat_activity monitoring
+    # Ingestion process separation — disable scheduler in bot services
+    INGESTION_ENABLED: bool = os.getenv("INGESTION_ENABLED", "true").lower() in ("true", "1", "yes")  # S152: false in bot .env when ingestion runs as separate service
+    # Ingestion scheduler timeouts
+    RUN_INGESTION_MAX_SECONDS: float = float(os.getenv("RUN_INGESTION_MAX_SECONDS", "900"))  # S152: master cycle timeout (was 2400)
+    INGESTION_TIMEOUT_SECONDS: float = float(os.getenv("INGESTION_TIMEOUT_SECONDS", "300"))  # S152: ingest_everything timeout (was 600)
+    INGESTION_AUX_TIMEOUT_SECONDS: float = float(os.getenv("INGESTION_AUX_TIMEOUT_SECONDS", "90"))  # S152: aux task timeout (was 300)
     WEATHER_STATION_PROBE_429_COOLDOWN_S: int = int(os.getenv("WEATHER_STATION_PROBE_429_COOLDOWN_S", "300"))  # S151: global cooldown for station probes on Open-Meteo 429
     RESOLUTION_RECHECK_INTERVAL_HOURS: int = int(os.getenv("RESOLUTION_RECHECK_INTERVAL_HOURS", "6"))  # S151: skip re-checking markets checked within this window; 0=disable (check all every cycle)
     WEATHER_CAL_YES_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_CAL_YES_MIN_CONFIDENCE", "0.40"))  # S151: relaxed YES calibrator training floor (NO stays at 0.60)

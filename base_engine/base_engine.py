@@ -1194,7 +1194,8 @@ class BaseEngine:
                     feature_engineer=_feature_engineer,
                     model_version_manager=self.model_version_manager,
                 )
-            if self.data_ingestion is not None:
+            # S152: Gate on INGESTION_ENABLED — when false, ingestion runs as separate process
+            if getattr(settings, "INGESTION_ENABLED", True) and self.data_ingestion is not None:
                 interval_min = getattr(settings, "INGESTION_SCHEDULER_INTERVAL_MINUTES", 5)
                 top_markets = getattr(settings, "INGESTION_TOP_MARKETS_COUNT", 500)
                 ingest_initial_delay = getattr(settings, "INGESTION_SCHEDULER_INITIAL_DELAY_SECONDS", 30)
@@ -1535,7 +1536,8 @@ class BaseEngine:
                 pass  # Best-effort cleanup
 
         # Start ingestion scheduler (periodic markets; daily full ingestion when DAILY_FULL_INGESTION_ENABLED)
-        if self.ingestion_scheduler is not None:
+        # S152: Gated on INGESTION_ENABLED — when false, ingestion runs as separate service
+        if getattr(settings, "INGESTION_ENABLED", True) and self.ingestion_scheduler is not None:
             try:
                 await self.ingestion_scheduler.start()
                 logger.info("Ingestion scheduler started")

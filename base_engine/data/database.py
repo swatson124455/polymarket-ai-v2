@@ -1008,7 +1008,17 @@ class Database:
 
         stmt_cache = 0  # PgBouncer transaction mode — prepared statements incompatible
 
-        connect_args: dict = {"statement_cache_size": stmt_cache, "timeout": connect_timeout, "ssl": db_ssl}
+        # S152: Per-connection PG timeouts + application_name for monitoring
+        _stmt_timeout_ms = int(getattr(settings, "DB_STATEMENT_TIMEOUT_MS", 30_000))
+        _idle_txn_ms = int(getattr(settings, "DB_IDLE_IN_TXN_TIMEOUT_MS", 120_000))
+        _server_settings: dict = {
+            "statement_timeout": str(_stmt_timeout_ms),
+            "idle_in_transaction_session_timeout": str(_idle_txn_ms),
+        }
+        _app_name = getattr(settings, "DB_APPLICATION_NAME", "")
+        if _app_name:
+            _server_settings["application_name"] = _app_name
+        connect_args: dict = {"statement_cache_size": stmt_cache, "timeout": connect_timeout, "ssl": db_ssl, "server_settings": _server_settings}
         _pool_recycle = int(getattr(settings, "DB_POOL_RECYCLE", 600))  # S141: 1h→10min default
         self.engine = create_async_engine(
             url,

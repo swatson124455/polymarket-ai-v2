@@ -1573,14 +1573,26 @@ class DataIngestionService:
                         if trade_data and self.db.session_factory:
                             from base_engine.data.id_resolver import resolve_market_ids_batch
                             raw_ids = [t.get("market_id") for t in trade_data if t.get("market_id")]
-                            resolved = await resolve_market_ids_batch(self.db, raw_ids) if raw_ids else {}
+                            # S152: per-call timeouts prevent a single slow trader from holding connections
+                            resolved = {}
+                            if raw_ids:
+                                try:
+                                    resolved = await asyncio.wait_for(
+                                        resolve_market_ids_batch(self.db, raw_ids), timeout=15,
+                                    )
+                                except asyncio.TimeoutError:
+                                    logger.warning("resolve_market_ids_batch timeout for trader %s", trader_address)
                             for t in trade_data:
                                 rid = t.get("market_id")
                                 if rid and rid in resolved:
                                     t["market_id"] = resolved[rid]
                             try:
-                                await self.db.bulk_insert_trades(trade_data)
+                                await asyncio.wait_for(
+                                    self.db.bulk_insert_trades(trade_data), timeout=15,
+                                )
                                 count += len(trade_data)
+                            except asyncio.TimeoutError:
+                                logger.warning("bulk_insert_trades timeout for trader %s", trader_address)
                             except Exception as e:
                                 logger.warning(f"Database save failed for trades (data available from API): {str(e)}")
                         

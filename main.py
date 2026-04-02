@@ -21,56 +21,11 @@ import structlog
 # MUST happen BEFORE any application imports that call get_logger() at module level.
 # With cache_logger_on_first_use=True, loggers cached during import would use the
 # default factory forever if we configured after imports.
+# S152: Extracted to config/logging_setup.py — shared with ingestion_main.py
+from config.logging_setup import configure_logging
+configure_logging()
 
-# Ensure stdout is line-buffered when redirected to a file
-if not sys.stdout.isatty():
-    try:
-        sys.stdout.reconfigure(line_buffering=True)
-    except Exception:
-        pass
-
-# Direct file logger: writes to data/paper_trading.log immediately, bypassing stdout
-# buffering issues when run via subprocess, Start-Process, or shell redirection.
-_LOG_FILE = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data", "paper_trading.log")
-_log_fh = None
-try:
-    _log_fh = open(_LOG_FILE, "a", encoding="utf-8", buffering=1)  # line-buffered
-except Exception:
-    pass
-
-
-class _TeeLogger:
-    """Logger that writes to both stdout (flush=True) and the log file."""
-    def msg(self, message: str, **kw) -> None:
-        print(message, flush=True)
-        if _log_fh:
-            try:
-                _log_fh.write(message + "\n")
-            except Exception:
-                pass
-    log = debug = info = warning = warn = error = critical = fatal = exception = msg
-
-
-class _TeeLoggerFactory:
-    def __call__(self, *args, **kwargs):
-        return _TeeLogger()
-
-
-# Import settings early (before structlog.configure) — settings itself doesn't log
 from config.settings import settings
-_log_level = getattr(settings, "LOG_LEVEL", "INFO").upper()
-
-structlog.configure(
-    processors=[
-        structlog.contextvars.merge_contextvars,
-        structlog.processors.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.dev.ConsoleRenderer(),
-    ],
-    wrapper_class=structlog.make_filtering_bound_logger(getattr(logging, _log_level, logging.INFO)),
-    logger_factory=_TeeLoggerFactory(),
-    cache_logger_on_first_use=True,
-)
 
 # Session 47: Suppress noisy sklearn warnings BEFORE application imports.
 # sklearn.utils.parallel.py emits UserWarning ~600+ times per scan cycle (10 markets × 6-8
@@ -384,7 +339,8 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
                 logger.debug("Heartbeat staleness check failed: %s", e)
 
         # Check scheduler health (SF-28)
-        if hasattr(base_engine, 'ingestion_scheduler') and base_engine.ingestion_scheduler:
+        # S152: Gate on INGESTION_ENABLED — when false, ingestion runs as separate service
+        if getattr(settings, "INGESTION_ENABLED", True) and hasattr(base_engine, 'ingestion_scheduler') and base_engine.ingestion_scheduler:
             _is = base_engine.ingestion_scheduler
             if hasattr(_is, 'running') and not _is.running:
                 logger.warning("Watchdog: ingestion_scheduler stopped -- restarting")

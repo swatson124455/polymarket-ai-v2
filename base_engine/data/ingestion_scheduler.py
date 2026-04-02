@@ -23,13 +23,15 @@ WEEKLY_INTERVAL_SECONDS = 7 * 24 * 60 * 60
 PROGRESS_LOG_INTERVAL_SECONDS = 60
 
 # I51: configurable ingest timeout — override INGESTION_TIMEOUT_SECONDS in .env
-_INGESTION_TIMEOUT_SECONDS: float = float(getattr(settings, "INGESTION_TIMEOUT_SECONDS", 600.0))
+# S152: Reduced defaults — ingestion now runs in a separate process, shorter timeouts
+# prevent the advisory lock from being held too long and free connections faster.
+_INGESTION_TIMEOUT_SECONDS: float = float(getattr(settings, "INGESTION_TIMEOUT_SECONDS", 300.0))  # was 600
 # Timeout for auxiliary tasks (top_users, elite_activity, health check, backfill).
 # These MUST have timeouts — without them a hung API call kills the scheduler loop.
-_AUX_TIMEOUT_SECONDS: float = float(getattr(settings, "INGESTION_AUX_TIMEOUT_SECONDS", 300.0))
+_AUX_TIMEOUT_SECONDS: float = float(getattr(settings, "INGESTION_AUX_TIMEOUT_SECONDS", 90.0))  # was 300
 # Master timeout for entire _run_ingestion() cycle.  If ANY sub-task hangs
 # (e.g. corrupted asyncpg connection after wait_for cancellation), the loop recovers.
-_RUN_INGESTION_MAX_SECONDS: float = float(getattr(settings, "RUN_INGESTION_MAX_SECONDS", 2400.0))
+_RUN_INGESTION_MAX_SECONDS: float = float(getattr(settings, "RUN_INGESTION_MAX_SECONDS", 900.0))  # was 2400
 
 
 class IngestionScheduler:
@@ -71,6 +73,7 @@ class IngestionScheduler:
         self._last_mini_backfill: Optional[datetime] = None
         self.running = False
         self._task: Optional[asyncio.Task] = None
+        self._last_cycle_end: float = time.time()  # S152: watchdog stale-cycle detection
 
     def _on_loop_done(self, task: asyncio.Task) -> None:
         """Callback for loop task — auto-restart on crash."""
@@ -153,6 +156,7 @@ class IngestionScheduler:
             except Exception as e:
                 logger.error("Scheduled ingestion failed: %s", e, exc_info=True)
             elapsed = time.monotonic() - cycle_start
+            self._last_cycle_end = time.time()  # S152: watchdog stale-cycle detection
             logger.info("IngestionScheduler: cycle %d finished in %.1fs", cycle, elapsed)
             # Heartbeat: sleep in 60s chunks and log so long idle periods show activity
             remaining = self.interval_seconds
