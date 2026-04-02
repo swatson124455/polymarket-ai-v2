@@ -319,10 +319,9 @@ class AutomatedPositionManager:
                 logger.info("Closed %d positions on expired markets", closed_count)
             except Exception as e:
                 logger.warning("Failed to commit expired position closures: %s", e)
-                try:
-                    await session.rollback()
-                except Exception:
-                    pass
+                # Do NOT rollback here — rollback expires all ORM objects in the session,
+                # causing MissingGreenlet when _check_position accesses position attributes.
+                # The session context manager in _monitor_positions handles cleanup on exit.
                 return positions  # Return all positions if commit failed
 
         return active
@@ -495,11 +494,10 @@ class AutomatedPositionManager:
                 except Exception:
                     pass
         except Exception as e:
-            logger.debug("current_price update failed (non-fatal): %s", e)
-            try:
-                await session.rollback()
-            except Exception:
-                pass
+            logger.warning("current_price update failed (non-fatal): %s", e)
+            # Do NOT rollback here — rollback expires all ORM objects in the session,
+            # causing MissingGreenlet when _check_position accesses position attributes.
+            # The session context manager in _monitor_positions handles cleanup on exit.
 
     async def _check_position(self, position: Position):
         """Check a single position for stop-loss/take-profit, model reversal, and edge depletion.
