@@ -162,9 +162,9 @@ echo "  Restarting..."
 
 # ── 7. Health check ───────────────────────────────────────────────────────────
 echo ""
-echo "[7/7] Health check (90s timeout)..."
+echo "[7/7] Health check (300s timeout)..."
 HEALTH_OK=false
-for i in $(seq 1 18); do
+for i in $(seq 1 60); do
     sleep 5
     ELAPSED=$((i * 5))
     if ssh $SSH_OPTS -i "$KEY" "$VPS" \
@@ -178,7 +178,7 @@ done
 
 if [ "$HEALTH_OK" = false ]; then
     echo ""
-    echo "ERROR: Health check failed after 90s — triggering rollback"
+    echo "ERROR: Health check failed after 300s — triggering rollback"
     bash "$(dirname "$0")/rollback.sh" || true
     exit 1
 fi

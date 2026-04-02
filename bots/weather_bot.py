@@ -196,9 +196,12 @@ class WeatherConfidenceCalibrator:
                 model_no = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
                 model_no.fit(confidences[no_mask], outcomes[no_mask])
 
-            # Fit YES-side isotonic (needs >= 30 samples)
+            # Fit YES-side isotonic — needs enough samples for stable fit.
+            # S152: 30 was too low — n_yes=51 produced a step function mapping
+            # everything to 0.99. Identity passthrough until n_yes >= min_samples.
+            _yes_min_samples = int(getattr(settings, "WEATHER_CAL_YES_MIN_SAMPLES", 200))
             _yes_widened = False
-            if n_yes >= 30:
+            if n_yes >= _yes_min_samples:
                 model_yes = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
                 model_yes.fit(confidences[yes_mask], outcomes[yes_mask])
             else:
@@ -235,7 +238,7 @@ class WeatherConfidenceCalibrator:
                                           r[3].replace(tzinfo=_tz.utc) if getattr(r[3], "tzinfo", None) is None else r[3]
                                       ) < _holdout_cutoff]
                         _n_yes_wide = len(_yes_train)
-                        if _n_yes_wide >= 30:
+                        if _n_yes_wide >= _yes_min_samples:
                             _yc = np.array([float(r[0]) for r in _yes_train], dtype=np.float64)
                             _yo = np.array([float(r[2]) for r in _yes_train], dtype=np.float64)
                             model_yes = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
