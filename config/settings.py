@@ -446,6 +446,7 @@ class Settings(BaseSettings):
     MIRROR_MAX_KELLY_EDGE: float = float(os.getenv("MIRROR_MAX_KELLY_EDGE", "0.05"))
     MIRROR_GATE_COLD_START_PRIOR: float = float(os.getenv("MIRROR_GATE_COLD_START_PRIOR", "0.53"))
     MIRROR_GATE_FACTOR_WEIGHT: float = float(os.getenv("MIRROR_GATE_FACTOR_WEIGHT", "0.30"))
+    MIRROR_COLD_START_SIZE_FLOOR: float = float(os.getenv("MIRROR_COLD_START_SIZE_FLOOR", "0.15"))
     # Dampeners (S119: set to 1.0 = no-op for data collection phase)
     MIRROR_FAVORITE_PRICE_THRESHOLD: float = float(os.getenv("MIRROR_FAVORITE_PRICE_THRESHOLD", "0.70"))
     MIRROR_FAVORITE_DAMPENER: float = float(os.getenv("MIRROR_FAVORITE_DAMPENER", "1.0"))  # S119: 0.40→1.0 for data collection

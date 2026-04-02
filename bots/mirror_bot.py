@@ -1731,6 +1731,14 @@ class MirrorBot(BaseBot):
                 # 0 trades → 0x, 25 trades → 0.5x, 50+ trades → 1.0x (no change).
                 _eq_n = self._reliability_tracker.total_trade_count(trader_address)
                 _sample_ramp = min(1.0, _eq_n / 50)
+                # S154: Floor ramp during cold-start so gate-approved traders can trade
+                # at reduced size. Without this, reliability_mult=0.0 zeroes all sizes
+                # even though the gate validated the trader via efficiency prior.
+                # Three layers of conservatism compound: gate threshold, kelly edge cap,
+                # and this 15% floor. None is zero.
+                _cs_floor = float(getattr(settings, "MIRROR_COLD_START_SIZE_FLOOR", 0.15))
+                if _eq_n < 5 and _sample_ramp < _cs_floor:
+                    _sample_ramp = _cs_floor
                 reliability_mult *= _sample_ramp
             except Exception as e:
                 logger.debug("elite reliability lookup failed: %s", e)
@@ -1971,7 +1979,13 @@ class MirrorBot(BaseBot):
             if _eq_n >= 5:
                 _trader_edge = max(0.0, _base - 0.50) * min(1.0, (_eq_n - 5) / 45.0)
             else:
-                _trader_edge = 0.01
+                # S154: Cold-start — derive edge from same efficiency prior the gate trusts.
+                # Flat 0.01 ignored leaderboard signal, producing dust sizes through BM.
+                # _eff_prior=0.55 → 0.030, _eff_prior=0.65 → 0.090 (capped by MAX_KELLY_EDGE).
+                # _eff_prior=0.53 (unknown) → 0.018 (tiny but non-zero — correct for unknowns).
+                # Multiply by _decay_w so edge naturally fades as _eq_n→5 and warm path takes over.
+                _eff_edge = max(0.0, _eff_prior - 0.50)
+                _trader_edge = max(0.01, _eff_edge * _decay_w * 0.60)
             _kelly_copy_bonus = 0.02 if (_copy_tier == 1 and _copy_adj > 0) else 0.0
             _max_edge = float(getattr(settings, "MIRROR_MAX_KELLY_EDGE", 0.05))
             kelly_prob = min(price + _max_edge, price + _trader_edge + _kelly_copy_bonus)
