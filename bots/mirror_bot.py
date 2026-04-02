@@ -2312,7 +2312,11 @@ class MirrorBot(BaseBot):
             return False
 
         # S91: Min trade USD — skip dust trades (testing, rebalancing, airdrop farming)
-        _min_trade_usd = float(getattr(settings, "MIRROR_MIN_TRADE_USD", 10.0))
+        # S154: Cold-start override — micro-positions are intentionally small (bootstrap _eq_n).
+        # Warm-state $50 gate stays: small size from established trader = low conviction = skip.
+        _min_trade_usd = float(getattr(settings, "MIRROR_MIN_TRADE_USD", 50.0))
+        if _eq_n < 5:
+            _min_trade_usd = float(getattr(settings, "MIRROR_COLD_START_MIN_TRADE_USD", 8.0))
         _trade_value_usd = size * price
         if _trade_value_usd < _min_trade_usd:
             logger.info("mirror_dust_skipped", trade_usd=round(_trade_value_usd, 2),
