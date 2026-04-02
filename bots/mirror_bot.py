@@ -1582,18 +1582,12 @@ class MirrorBot(BaseBot):
                                     market_id=str(market_id)[:16])
                         return False
 
-        # Data: sports NO = 570 trades, 44.4% WR, -$13,923. No edge on the NO side
-        # of sports matchups regardless of whale size. Block entirely.
-        if not _is_sell and category == "sports" and str(side).upper() == "NO":
-            logger.info("mirror_sports_no_blocked", market=str(market_id)[:16])
-            return False
-
         # S137 C9: Category expertise filter — reject trades where the trader has ≥10
         # resolved trades in this category AND their category WR < 45%.
         # A trader can be lucky overall but systematically bad in specific categories.
         if not _is_sell and category and self._reliability_tracker:
             _cat_min_trades = int(getattr(settings, "MIRROR_CAT_MIN_TRADES", 10))
-            _cat_min_wr = float(getattr(settings, "MIRROR_CAT_MIN_WIN_RATE", 0.45))
+            _cat_min_wr = float(getattr(settings, "MIRROR_CAT_MIN_WIN_RATE", 0.40))
             try:
                 _cat_count = int(self._reliability_tracker.category_trade_count(trader_address, category))
             except (TypeError, ValueError):
@@ -1730,7 +1724,7 @@ class MirrorBot(BaseBot):
                 return False
 
             # S99: Hours-to-resolution filter — skip insider-territory markets
-            _min_hours = float(getattr(settings, "MIRROR_MIN_HOURS_TO_RESOLUTION", 4))
+            _min_hours = float(getattr(settings, "MIRROR_MIN_HOURS_TO_RESOLUTION", 1))
             _end_date = _market_data.get("end_date_iso")
             if _end_date:
                 _h = self.hours_until_resolution({"end_date_iso": _end_date})
@@ -1760,7 +1754,7 @@ class MirrorBot(BaseBot):
                 return False
 
         # S91: Slippage cap — reject when market has moved too far from whale's fill price
-        _max_slip = float(getattr(settings, "MIRROR_MAX_SLIPPAGE_PCT", 0.08))
+        _max_slip = float(getattr(settings, "MIRROR_MAX_SLIPPAGE_PCT", 0.05))
         if _old_price > 0.01 and abs(price - _old_price) / _old_price > _max_slip:
             logger.info("mirror_slippage_blocked", market=str(market_id)[:16],
                         trader_price=round(_old_price, 4), market_price=round(price, 4),
