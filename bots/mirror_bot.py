@@ -1767,13 +1767,10 @@ class MirrorBot(BaseBot):
         if self._reliability_tracker:
             try:
                 lr = self._reliability_tracker.likelihood_ratio(trader_address, side, category=category)
-                if lr < 1.0:
-                    logger.info(
-                        "Skipping unreliable trader %s (LR=%.2f)",
-                        trader_address[:10],
-                        lr,
-                    )
-                    return False
+                # S152: LR gate DISABLED — Beta(6,10) prior demands 4 net wins before
+                # LR≥1.0, blocking traders who are actually profitable. Review in next
+                # handoff with post-S146 resolution data to pick a better prior.
+                # Was: if lr < 1.0: return False
                 # S132: Cap at 1.0 — data shows rel_mult>1.05 is anti-signal
                 # (37.1% WR, -$113K). Only use reliability to PENALIZE, never amplify.
                 reliability_mult = min(lr, 1.0)
