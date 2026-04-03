@@ -617,13 +617,32 @@ class BaseEngine:
 
             # Use WebSocket URL from client (which gets it from settings)
             ws_url = getattr(self.client, 'ws_url', 'wss://ws-subscriptions-clob.polymarket.com/ws/market')
+            _ws_resync_cooldown_s = 300  # 5 minutes between price resyncs
+            _last_ws_resync: float = 0.0
+
             async def _on_ws_reconnect() -> None:
                 """Callback fired after WS reconnects — triggers immediate price refresh.
 
                 position_manager._update_current_prices() polls every 10s from DB.
                 After WS reconnect, force an immediate position price refresh to close
                 the gap faster (instead of waiting up to 10s).
+
+                S155: Rate-limited to once per 5 minutes. The DISTINCT ON query scans
+                market_prices (67M rows) and takes ~58s — running it on every 60s
+                reconnect starves the DB pool and kills whale monitoring.
                 """
+                nonlocal _last_ws_resync
+                import time as _time_mod
+                _now_mono = _time_mod.monotonic()
+                if _now_mono - _last_ws_resync < _ws_resync_cooldown_s:
+                    logger.debug(
+                        "ws_reconnect_price_resync_skipped",
+                        seconds_since_last=int(_now_mono - _last_ws_resync),
+                        cooldown=_ws_resync_cooldown_s,
+                    )
+                    return
+                _last_ws_resync = _now_mono
+
                 subs = getattr(self.websocket_manager, "subscriptions", set())
                 price_subs = [s for s in subs if s.startswith("price:")]
                 logger.info(
