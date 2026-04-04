@@ -345,13 +345,19 @@ class AutomatedPositionManager:
             return
 
         try:
-            # Single efficient query: latest price per token_id (Session 51: include timestamp)
+            # S156: Lateral join forces index usage per token (was DISTINCT ON with seq scan on 63GB table).
+            # Old query caused 40-50s I/O stalls with 600+ token_ids, saturating disk and blocking all scans.
             result = await session.execute(
                 sa_text("""
-                    SELECT DISTINCT ON (token_id) token_id, price, timestamp
-                    FROM market_prices
-                    WHERE token_id = ANY(:token_ids)
-                    ORDER BY token_id, timestamp DESC
+                    SELECT t.token_id, lp.price, lp.timestamp
+                    FROM unnest(:token_ids::text[]) AS t(token_id)
+                    CROSS JOIN LATERAL (
+                        SELECT price, timestamp
+                        FROM market_prices mp
+                        WHERE mp.token_id = t.token_id
+                        ORDER BY mp.timestamp DESC
+                        LIMIT 1
+                    ) lp
                 """),
                 {"token_ids": token_ids}
             )
