@@ -200,7 +200,7 @@ fi
 
 # S143: Verify PgBouncer pool size is adequate for 3 bots
 _PGB_POOL=$(ssh $SSH_OPTS -i "$KEY" "$VPS" \
-    "grep -oP 'default_pool_size\s*=\s*\K[0-9]+' /etc/pgbouncer/pgbouncer.ini 2>/dev/null" || echo "0")
+    "sudo grep -oP 'default_pool_size\s*=\s*\K[0-9]+' /etc/pgbouncer/pgbouncer.ini 2>/dev/null" || echo "0")
 if [ "$_PGB_POOL" -lt 40 ] 2>/dev/null; then
     echo "  WARNING: PgBouncer default_pool_size=$_PGB_POOL (< 40). Risk of pool exhaustion with 3 bots."
 else
