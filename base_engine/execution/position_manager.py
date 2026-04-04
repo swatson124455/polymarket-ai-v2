@@ -345,9 +345,8 @@ class AutomatedPositionManager:
             return
 
         try:
-            # S156: Query market_prices_latest (tiny table, O(1) per token) instead of
-            # 63GB market_prices. Upserted on every price write by bulk_insert_prices_raw.
-            # Fallback: lateral join on market_prices if latest table is empty/missing.
+            # S156: Query market_prices_latest first (tiny table, O(1) per token).
+            # For any tokens NOT found, fall back to time-bounded historical lookup.
             result = await session.execute(
                 sa_text("""
                     SELECT token_id, price, timestamp
@@ -370,6 +369,36 @@ class AutomatedPositionManager:
                                 _stale_tokens.append((str(r[0])[:16], round(_age / 3600, 1)))
                         except Exception:
                             pass
+
+            # S156: Fallback for tokens missing from latest table — time-bounded
+            # lateral join on historical market_prices (capped at 7 days).
+            _missing = [t for t in token_ids if t not in latest_prices]
+            if _missing:
+                try:
+                    _fb_result = await session.execute(
+                        sa_text("""
+                            SELECT t.token_id, lp.price, lp.timestamp
+                            FROM unnest(:miss_ids::text[]) AS t(token_id)
+                            CROSS JOIN LATERAL (
+                                SELECT price, timestamp
+                                FROM market_prices mp
+                                WHERE mp.token_id = t.token_id
+                                  AND mp.timestamp > NOW() - INTERVAL '7 days'
+                                ORDER BY mp.timestamp DESC
+                                LIMIT 1
+                            ) lp
+                        """),
+                        {"miss_ids": _missing}
+                    )
+                    _fb_count = 0
+                    for r in _fb_result.fetchall():
+                        if r[1] is not None and float(r[1]) > 0:
+                            latest_prices[str(r[0])] = float(r[1])
+                            _fb_count += 1
+                    if _fb_count > 0:
+                        logger.debug("price_fallback_historical", found=_fb_count, missed=len(_missing))
+                except Exception as _fb_err:
+                    logger.debug("price_fallback_failed", error=str(_fb_err))
 
             if not latest_prices:
                 return

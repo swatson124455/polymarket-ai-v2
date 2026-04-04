@@ -1149,9 +1149,16 @@ class MirrorBot(BaseBot):
                     if _filled_exit >= exit_size - 0.01:
                         del self._open_positions[pos_key]
                     else:
-                        self._open_positions[pos_key]["size"] = max(0.0, pos["size"] - _filled_exit)
-                        logger.info("mirror_partial_exit", market=market_id[:20],
-                                    filled=round(_filled_exit, 2), remaining=round(pos["size"] - _filled_exit, 2))
+                        _remaining = max(0.0, pos["size"] - _filled_exit)
+                        self._open_positions[pos_key]["size"] = _remaining
+                        # S156: Warn at WARNING level — operator visibility for orphaned residuals.
+                        # Position stays in _open_positions and will be re-evaluated for exit
+                        # on next scan cycle (stop-loss, force-exit, take-profit all check size).
+                        logger.warning("mirror_partial_exit_residual",
+                                       market=market_id[:20],
+                                       filled=round(_filled_exit, 2),
+                                       remaining=round(_remaining, 2),
+                                       exit_reason=exit_reason.get("exit_reason", "unknown"))
                     # S135: Mark position closed in DB so it doesn't reload on restart
                     # Use _sql alias (not _t) — _t is a local var in this function due to the
                     # conditional import at L909 (Python 3.13 scoping: local for entire function).
@@ -1670,7 +1677,13 @@ class MirrorBot(BaseBot):
                 if _filled_sell >= _exit_size - 0.01:
                     del self._open_positions[pos_key]
                 else:
-                    self._open_positions[pos_key]["size"] = max(0.0, _pos["size"] - _filled_sell)
+                    _rem = max(0.0, _pos["size"] - _filled_sell)
+                    self._open_positions[pos_key]["size"] = _rem
+                    logger.warning("mirror_partial_exit_residual",
+                                   market=str(market_id)[:20],
+                                   filled=round(_filled_sell, 2),
+                                   remaining=round(_rem, 2),
+                                   exit_reason="rtds_sell")
                 # S135: Mark position closed in DB so it doesn't reload on restart
                 try:
                     from sqlalchemy import text as _st
