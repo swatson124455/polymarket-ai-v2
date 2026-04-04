@@ -54,6 +54,7 @@ echo "  OK — syntax clean, tests passed, SSH key present"
 # ── 2. Build archive ──────────────────────────────────────────────────────────
 echo ""
 echo "[2/7] Building archive..."
+set +e
 tar czf "$TMPTAR" \
     --exclude='.git' \
     --exclude='__pycache__' \
@@ -70,6 +71,12 @@ tar czf "$TMPTAR" \
     --exclude='htmlcov' \
     --exclude='.mypy_cache' \
     -C "$LOCAL_DIR" .
+_tar_exit=$?
+set -e
+if [[ $_tar_exit -ne 0 && $_tar_exit -ne 1 ]]; then
+    echo "ABORT: tar failed with exit code $_tar_exit"
+    exit 1
+fi
 ARCHIVE_SIZE=$(du -sh "$TMPTAR" 2>/dev/null | cut -f1)
 echo "  Archive: $TMPTAR ($ARCHIVE_SIZE)"
 
@@ -90,7 +97,7 @@ TARFILE="/tmp/pa2-$TIMESTAMP.tar.gz"
 
 # Extract to new release dir
 sudo mkdir -p "$NEW_RELEASE"
-sudo tar xzf "\$TARFILE" -C "$NEW_RELEASE" 2>/dev/null
+sudo tar xzf "\$TARFILE" -C "$NEW_RELEASE"
 sudo chown -R polymarket:polymarket "$NEW_RELEASE"
 rm -f "\$TARFILE"
 echo "  Extracted to $NEW_RELEASE"

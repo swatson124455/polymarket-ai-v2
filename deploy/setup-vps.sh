@@ -73,11 +73,11 @@ if [ -z "$PG_CONF_DIR" ]; then
 fi
 cat > "$PG_CONF_DIR/polymarket.conf" << 'PGCONF'
 # Polymarket AI tuning (16GB/4vCPU Lightsail)
-shared_buffers = 4GB
+shared_buffers = 2GB
 effective_cache_size = 12GB
-work_mem = 32MB
-maintenance_work_mem = 512MB
-max_connections = 200
+work_mem = 4MB
+maintenance_work_mem = 256MB
+max_connections = 50
 random_page_cost = 1.1
 effective_io_concurrency = 200
 max_worker_processes = 4

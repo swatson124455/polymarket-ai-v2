@@ -427,6 +427,7 @@ class EsportsBot(BaseBot):
         self._min_edge = float(getattr(settings, "ESPORTS_MIN_EDGE", 0.05))  # 5% easy mode
         self._min_confidence = float(getattr(settings, "ESPORTS_MIN_CONFIDENCE", 0.50))  # easy mode
         # S112: edge cap removed — all edges trade. High edges logged for monitoring.
+        self._churn_edge_penalty = float(getattr(settings, "ESPORTS_CHURN_EDGE_PENALTY", 0.03))
         self._egm_d = float(getattr(settings, "ESPORTS_EGM_D", 1.5))  # EGM extremization factor
         self._maker_timeout = float(
             getattr(settings, "ESPORTS_MAKER_FALLBACK_TIMEOUT_S", 3.0)
@@ -892,7 +893,9 @@ class EsportsBot(BaseBot):
             )
             return
 
-        if abs(edge) < self._min_edge:
+        # S156: Adaptive min_edge for churn markets
+        _ws_min_edge = self._get_adaptive_min_edge(market_id, self._min_edge)
+        if abs(edge) < _ws_min_edge:
             return
 
         if abs(edge) > 0.40:
@@ -1987,6 +1990,15 @@ class EsportsBot(BaseBot):
 
         return round(factor, 3)
 
+    def _get_adaptive_min_edge(self, market_id: str, base_edge: float) -> float:
+        """S156: Elevate min_edge for markets with prior edge-based exits.
+        Penalty grows linearly with consecutive exits (+0.03 per exit).
+        Resets naturally when market exits for non-edge reason (stop_loss, resolution)."""
+        _consec = self._consecutive_edge_exits.get(market_id, 0)
+        if _consec <= 0:
+            return base_edge
+        return base_edge + self._churn_edge_penalty * _consec
+
     def _get_exposure_caps(self) -> Dict[str, float]:
         """S136 Phase 8A: Compute exposure caps -- percentage-based when enabled.
 
@@ -2691,6 +2703,8 @@ class EsportsBot(BaseBot):
             float(getattr(settings, "ESPORTS_MARKET_FALLBACK_MIN_EDGE", 0.15))
             if _cached.get("fallback") else self._min_edge
         )
+        # S156: Elevate edge threshold for markets with prior edge-based exits (churn fix)
+        _effective_min_edge = self._get_adaptive_min_edge(market_id, _effective_min_edge)
 
         if edge_yes >= _effective_min_edge:
             side = "YES"
@@ -7378,7 +7392,9 @@ class EsportsBot(BaseBot):
             )
             return
 
-        if abs(edge) < self._series_min_edge:
+        # S156: Adaptive min_edge for churn markets
+        _sws_min_edge = self._get_adaptive_min_edge(market_id, self._series_min_edge)
+        if abs(edge) < _sws_min_edge:
             return
 
         side = "YES" if edge > 0 else "NO"

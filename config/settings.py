@@ -1323,6 +1323,9 @@ class Settings(BaseSettings):
     ESPORTS_MARKET_FALLBACK_ENABLED: bool = os.getenv("ESPORTS_MARKET_FALLBACK_ENABLED", "true").lower() in ("true", "1", "yes")
     ESPORTS_MARKET_FALLBACK_MIN_EDGE: float = float(os.getenv("ESPORTS_MARKET_FALLBACK_MIN_EDGE", "0.15"))
 
+    # --- Churn mitigation ---
+    ESPORTS_CHURN_EDGE_PENALTY: float = float(os.getenv("ESPORTS_CHURN_EDGE_PENALTY", "0.03"))  # S156: +0.03 min_edge per consecutive edge exit
+
     # --- Conformal prediction ---
     ESPORTS_USE_CONFORMAL: bool = os.getenv("ESPORTS_USE_CONFORMAL", "false").lower() in ("true", "1", "yes")
     ESPORTS_CONFORMAL_MIN_RESOLVED: int = int(os.getenv("ESPORTS_CONFORMAL_MIN_RESOLVED", "50"))

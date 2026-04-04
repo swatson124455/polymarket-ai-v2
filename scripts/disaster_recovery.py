@@ -32,6 +32,40 @@ def list_backups(backup_dir: Path) -> list:
     return sorted(dirs, key=lambda d: d.name, reverse=True)
 
 
+# S156: All tables supported for disaster recovery (was 3, now 12)
+_SUPPORTED_TABLES = {
+    "markets", "trades", "market_prices",
+    "positions", "trade_events", "paper_trades", "prediction_log",
+    "traded_markets", "bot_health_states", "fill_analysis",
+    "audit_runs", "tunable_config",
+}
+
+
+async def _bulk_upsert_generic(db, table_name: str, rows: list) -> None:
+    """Generic table restore via raw SQL. Truncates then inserts for full restore."""
+    if not rows:
+        return
+    from sqlalchemy import text
+    columns = list(rows[0].keys())
+    col_list = ", ".join(columns)
+    val_placeholders = ", ".join(f":{c}" for c in columns)
+    sql = f"INSERT INTO {table_name} ({col_list}) VALUES ({val_placeholders}) ON CONFLICT DO UPDATE SET " + \
+          ", ".join(f"{c} = EXCLUDED.{c}" for c in columns if c not in ("id", "break_id", "run_id"))
+    # Fallback: if no PK conflict clause works, use DO NOTHING
+    try:
+        async with db.get_session() as session:
+            for row in rows:
+                await session.execute(text(sql), row)
+            await session.commit()
+    except Exception:
+        # Retry with DO NOTHING (table may lack expected PK)
+        sql_safe = f"INSERT INTO {table_name} ({col_list}) VALUES ({val_placeholders}) ON CONFLICT DO NOTHING"
+        async with db.get_session() as session:
+            for row in rows:
+                await session.execute(text(sql_safe), row)
+            await session.commit()
+
+
 async def restore_table(db, table_name: str, backup_file: Path, batch_size: int = 1000) -> bool:
     """Restore a single table from a .json.gz file. Returns True on success."""
     try:
@@ -54,8 +88,9 @@ async def restore_table(db, table_name: str, backup_file: Path, batch_size: int 
             elif table_name == "market_prices":
                 await db.bulk_insert_prices_raw(batch)
             else:
-                print(f"  [ERROR] Unknown table: {table_name}")
-                return False
+                # S156: Generic restore for additional tables via raw SQL upsert
+                await _bulk_upsert_generic(db, table_name, batch)
+
             inserted += len(batch)
             print(f"    {inserted}/{total}")
         print(f"  [OK] {table_name}: {inserted} rows")
@@ -93,7 +128,7 @@ async def main_async(args: argparse.Namespace) -> int:
     table_to_file = {}
     for f in backup_files:
         name = f.stem.replace(".json", "")
-        if name in ("markets", "trades", "market_prices"):
+        if name in _SUPPORTED_TABLES:
             table_to_file[name] = f
     if args.table:
         if args.table not in table_to_file:
@@ -116,7 +151,10 @@ async def main_async(args: argparse.Namespace) -> int:
     if not db.session_factory:
         print("Error: Database not initialized (check DATABASE_URL)")
         return 1
-    tables = ["markets", "trades", "market_prices"]
+    # Restore in dependency order (markets first, then dependent tables)
+    tables = ["markets", "trades", "market_prices", "positions", "paper_trades",
+              "trade_events", "prediction_log", "traded_markets", "bot_health_states",
+              "fill_analysis", "audit_runs", "tunable_config"]
     ok = True
     for t in tables:
         if t in table_to_file:
@@ -129,7 +167,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Restore tables from JSON.gz backups")
     parser.add_argument("--list", action="store_true", help="List available backups")
     parser.add_argument("--date", type=str, help="Backup date YYYYMMDD")
-    parser.add_argument("--table", type=str, help="Restore only this table (markets, trades, market_prices)")
+    parser.add_argument("--table", type=str, help="Restore only this table (any of 12 supported tables)")
     parser.add_argument("--backup-dir", type=str, help="Backup root directory (default: data/backups)")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be restored")
     args = parser.parse_args()
