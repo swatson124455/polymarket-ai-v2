@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = os.getenv("DATABASE_URL") or ""
     # Connection pool configuration
     DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "8"))  # S145: 12→8 (PgBouncer transaction mode; 3×12=36 < pgb 40)
-    DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "4"))  # S145: 2→4 (burst headroom)
+    DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "1"))  # S156: 4→1 (4 services × 9 = 36 < PgBouncer 40, with 4 headroom)
     DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "15"))  # S145: 30→15 (fail fast)
     DB_POOL_RECYCLE: int = int(os.getenv("DB_POOL_RECYCLE", "300"))  # S145: 600→300 (5min recycle)
     DB_EFFECTIVE_POOL_SIZE: int = int(os.getenv("DB_EFFECTIVE_POOL_SIZE", "0"))  # S151: 0=auto (pool+overflow); set to PgBouncer default_pool_size (e.g. 40) for accurate warnings
@@ -373,6 +373,12 @@ class Settings(BaseSettings):
     # Watchlist: real-time WebSocket copy trading (monthly leaderboard top 1k)
     WATCHLIST_ENABLED: bool = os.getenv("WATCHLIST_ENABLED", "false").lower() in ("true", "1", "yes")
     WATCHLIST_SIZE: int = int(os.getenv("WATCHLIST_SIZE", "300"))  # S142: 500→300 (aligned with TOP_TRADER_COUNT)
+    # S155: Per-category diversified watchlist (shadow mode default)
+    WATCHLIST_ENRICHMENT_ENABLED: bool = os.getenv("WATCHLIST_ENRICHMENT_ENABLED", "false").lower() in ("true", "1", "yes")
+    WATCHLIST_CATEGORY_QUOTAS: str = os.getenv("WATCHLIST_CATEGORY_QUOTAS", "SPORTS:40,POLITICS:22,FINANCE_ECON:15,CULTURE:10,WEATHER:8,TECH:5")
+    WATCHLIST_MIN_ROI: float = float(os.getenv("WATCHLIST_MIN_ROI", "0.03"))
+    WATCHLIST_MIN_PROFIT_FACTOR: float = float(os.getenv("WATCHLIST_MIN_PROFIT_FACTOR", "1.2"))
+    WATCHLIST_SUNSET_DAYS: int = int(os.getenv("WATCHLIST_SUNSET_DAYS", "7"))
     WHALE_TRADE_LOG_ENABLED: bool = os.getenv("WHALE_TRADE_LOG_ENABLED", "true").lower() in ("true", "1", "yes")
     # RTDS: global trade feed
     RTDS_WS_URL: str = os.getenv("RTDS_WS_URL", "wss://ws-live-data.polymarket.com")

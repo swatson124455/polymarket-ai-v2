@@ -10,7 +10,7 @@ Group=polymarket
 WorkingDirectory=/opt/polymarket-ai-v2
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/opt/polymarket-ai-v2/.env
-ExecStart=/usr/bin/python3 -m streamlit run ui/dashboard.py --server.port 8501 --server.address 0.0.0.0
+ExecStart=/usr/bin/python3 -m streamlit run ui/dashboard.py --server.port 8501 --server.address 127.0.0.1
 Restart=always
 RestartSec=10
 

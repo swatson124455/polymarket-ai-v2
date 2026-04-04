@@ -138,8 +138,8 @@ def _coerce_datetimes_naive_utc(session: Session, _flush_context: Any, _instance
                         continue
                     if isinstance(attr.columns[0].type, (DateTime, NaiveUTCDateTime)):
                         dt_keys.append(attr.key)
-                except Exception:
-                    pass
+                except Exception as _dt_err:
+                    logger.debug("db_datetime_attr_check_failed", attr=str(getattr(attr, 'key', '?')), error=str(_dt_err))
             _dt_attr_cache[cls] = dt_keys
 
         for key in _dt_attr_cache[cls]:
@@ -981,8 +981,8 @@ class Database:
                     try:
                         if self.engine:
                             await self.engine.dispose()
-                    except Exception:
-                        pass
+                    except Exception as _disp_err:
+                        logger.debug("db_engine_dispose_failed", error=str(_disp_err))
                     await asyncio.sleep(wait)
         logger.error("Database verification failed after 3 attempts: %s", ascii(str(last_err)))
         raise DatabaseError(
@@ -1072,8 +1072,8 @@ class Database:
                         pass
                     try:
                         context.connection.invalidate()
-                    except Exception:
-                        pass
+                    except Exception as _inv_err:
+                        logger.debug("db_connection_invalidation_failed", error=str(_inv_err))
                 logger.warning("DB connection invalidated (dead connection detected)",
                                error=type(context.original_exception).__name__)
         try:
@@ -1099,7 +1099,10 @@ class Database:
                 checked_out = pool.checkedout()
                 checked_in = pool.checkedin()
                 overflow = pool.overflow()
-                sem_available = self._db_semaphore._value if self._db_semaphore else -1
+                try:
+                    sem_available = self._db_semaphore._value if self._db_semaphore else -1
+                except AttributeError:
+                    sem_available = -1  # Semaphore internal API changed
                 logger.info("db_pool_health",
                             checked_out=checked_out,
                             checked_in=checked_in,
@@ -1108,8 +1111,8 @@ class Database:
                             semaphore_available=sem_available)
             except asyncio.CancelledError:
                 break
-            except Exception:
-                pass  # Pool health logging must never crash the system
+            except Exception as _ph_err:
+                logger.debug("db_pool_health_check_failed", error=str(_ph_err))
 
     def get_session(self, timeout: Optional[float] = None):
         """
@@ -1146,6 +1149,13 @@ class Database:
         return _SemaphoreSession(self.session_factory, None)  # No semaphore
 
     async def close(self) -> None:
+        _task = getattr(self, "_pool_health_task", None)
+        if _task and not _task.done():
+            _task.cancel()
+            try:
+                await _task
+            except (asyncio.CancelledError, Exception):
+                pass
         if self.engine:
             try:
                 await self.engine.dispose()
@@ -1174,7 +1184,8 @@ class Database:
                 )
                 result = row.scalar_one_or_none()
                 return bool(result) if result is not None else default
-        except Exception:
+        except Exception as _ff_err:
+            logger.debug("db_feature_flag_query_failed", error=str(_ff_err))
             return default
 
     async def bulk_insert_markets(self, markets: List[Dict[str, Any]]) -> Tuple[int, int]:
@@ -1766,8 +1777,8 @@ class Database:
                         ),
                         {"mid": market_id, "res": resolution, "rat": _naive_utc(final_resolved_at)},
                     )
-                except Exception:
-                    pass  # Table may not exist yet (pre-migration)
+                except Exception as _tm_err:
+                    logger.debug("db_traded_markets_update_skipped", error=str(_tm_err))
                 await session.commit()
 
                 logger.debug(
@@ -3242,9 +3253,7 @@ class Database:
                         " :submitted_at, :filled_at, NOW()) "
                         "ON CONFLICT (bot_name, market_id, side) DO UPDATE SET "
                         " order_id = EXCLUDED.order_id, "
-                        " token_id = EXCLUDED.token_id, "
-                        " size = EXCLUDED.size, "
-                        " price = EXCLUDED.price, "
+                        " token_id = COALESCE(paper_trades.token_id, EXCLUDED.token_id), "
                         " confidence = EXCLUDED.confidence, "
                         " correlation_id = EXCLUDED.correlation_id, "
                         " realized_pnl = COALESCE(paper_trades.realized_pnl, EXCLUDED.realized_pnl), "
@@ -3289,8 +3298,8 @@ class Database:
                         ),
                         {"market_id": market_id, "bot_name": bot_name},
                     )
-                except Exception:
-                    pass  # Table may not exist yet (pre-migration)
+                except Exception as _tm_err:
+                    logger.debug("db_traded_markets_upsert_skipped", error=str(_tm_err))
                 await session.commit()
             # trade_event emission moved to paper_trading.py execution layer
             # to avoid duplicate writes (both paths generated same idempotency_key)
@@ -3449,10 +3458,10 @@ class Database:
                     WHERE pt.resolution IS NOT NULL
                       AND pt.resolution IN ('YES', 'NO')
                       AND pt.side IN ('YES', 'NO')
-                      AND pt.created_at >= NOW() - INTERVAL ':days days'
+                      AND pt.created_at >= NOW() - make_interval(days => :days)
                     GROUP BY DATE(pt.created_at)
                     ORDER BY day
-                """.replace(":days", str(int(days)))))
+                """), {"days": int(days)})
                 rows = result.fetchall()
                 curve = []
                 cumulative = 0.0
@@ -3548,9 +3557,9 @@ class Database:
                       AND resolution IN ('YES', 'NO')
                       AND side IN ('YES', 'NO')
                       AND realized_pnl IS NOT NULL
-                      AND created_at >= NOW() - INTERVAL ':days days'
+                      AND created_at >= NOW() - make_interval(days => :days)
                     ORDER BY bot_name, created_at ASC
-                """.replace(":days", str(int(days)))))
+                """), {"days": int(days)})
                 rows = result.fetchall()
                 if not rows:
                     return {}
@@ -5368,8 +5377,8 @@ class Database:
             _repaired = await self.repair_orphaned_positions()
             if _repaired and _repaired > 0:
                 logger.info("reconciliation: auto-repaired %d orphaned positions", _repaired)
-        except Exception:
-            pass  # Repair failure doesn't block reconciliation
+        except Exception as _rep_err:
+            logger.warning("db_recon_repair_failed", error=str(_rep_err))
 
         try:
             from sqlalchemy import text as _sa_text
@@ -5518,25 +5527,32 @@ class Database:
         ]
 
         try:
-            # Get raw asyncpg connection from SQLAlchemy engine
-            async with self.engine.connect() as conn:
-                raw_conn = await conn.get_raw_connection()
-                asyncpg_conn = raw_conn.dbapi_connection
+            # Acquire semaphore to stay within pool budget (mirrors get_session pattern)
+            if self._db_semaphore:
+                await asyncio.wait_for(self._db_semaphore.acquire(), timeout=15.0)
+            try:
+                # Get raw asyncpg connection from SQLAlchemy engine
+                async with self.engine.connect() as conn:
+                    raw_conn = await conn.get_raw_connection()
+                    asyncpg_conn = raw_conn.dbapi_connection
 
-                records = []
-                for e in events:
-                    records.append(tuple(
-                        e.get(col) for col in columns
-                    ))
+                    records = []
+                    for e in events:
+                        records.append(tuple(
+                            e.get(col) for col in columns
+                        ))
 
-                result = await asyncpg_conn.copy_records_to_table(
-                    "trade_events",
-                    records=records,
-                    columns=columns,
-                )
-                count = int(result.split()[-1]) if result else len(records)
-                logger.info("copy_insert_trade_events: %d events inserted", count)
-                return count
+                    result = await asyncpg_conn.copy_records_to_table(
+                        "trade_events",
+                        records=records,
+                        columns=columns,
+                    )
+                    count = int(result.split()[-1]) if result else len(records)
+                    logger.info("copy_insert_trade_events: %d events inserted", count)
+                    return count
+            finally:
+                if self._db_semaphore:
+                    self._db_semaphore.release()
         except Exception as e:
             logger.warning("copy_insert_trade_events failed, falling back to individual inserts: %s", e)
             # Fallback to individual inserts
@@ -5626,8 +5642,8 @@ class Database:
                             )
                         )
                         created += 1
-                    except Exception:
-                        pass  # Partition may already exist
+                    except Exception as _part_err:
+                        logger.debug("db_partition_create_skipped", month=month_key, error=str(_part_err))
 
                 await session.commit()
                 if created > 0:

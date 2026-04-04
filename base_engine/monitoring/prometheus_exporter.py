@@ -187,7 +187,7 @@ class PrometheusExporter:
 
         app = make_wsgi_app(self._registry)
         try:
-            self._server = make_server("0.0.0.0", port, app)
+            self._server = make_server("127.0.0.1", port, app)
         except OSError as exc:
             logger.error("failed_to_start_prometheus_server", port=port, error=str(exc))
             return

@@ -256,6 +256,23 @@ class WebSocketManager:
                 except Exception as e:
                     logger.error(f"Price stream subscription failed: {str(e)}", exc_info=True)
     
+    def prune_stale_subscriptions(self, active_token_ids: set) -> int:
+        """Remove subscriptions for tokens no longer in any bot's active set.
+        Call once per scan cycle (~10-30 min) as primary cleanup trigger.
+        Returns count of pruned subscriptions."""
+        _before = len(self.subscriptions)
+        _active_keys = {f"orderbook:{tid}" for tid in active_token_ids} | {f"price:{tid}" for tid in active_token_ids}
+        self.subscriptions = self.subscriptions & _active_keys
+        _pruned = _before - len(self.subscriptions)
+        if _pruned > 0:
+            logger.info("ws_subscriptions_pruned", pruned=_pruned, remaining=len(self.subscriptions))
+        # Safety cap: if prune hasn't run or active set is huge, cap at 5000
+        if len(self.subscriptions) > 5000:
+            _sorted = sorted(self.subscriptions)
+            self.subscriptions = set(_sorted[len(_sorted) // 2:])
+            logger.warning("ws_subscriptions_capped", remaining=len(self.subscriptions))
+        return _pruned
+
     async def get_latest_price(self, token_id: str) -> Optional[float]:
         """Get latest price from cache (updated via WebSocket)."""
         if self.cache.redis:

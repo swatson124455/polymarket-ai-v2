@@ -51,19 +51,21 @@ echo "  Done."
 # 7. Install systemd services
 echo "[7/7] Installing systemd services..."
 if [ "$(id -u)" -eq 0 ]; then
-    cp deploy/polymarket-ai.service /etc/systemd/system/
+    for SVC in polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion; do
+        cp "deploy/${SVC}.service" /etc/systemd/system/ 2>/dev/null || true
+    done
     cp deploy/polymarket-dashboard.service /etc/systemd/system/
     systemctl daemon-reload
-    systemctl enable polymarket-ai polymarket-dashboard
+    systemctl enable polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion polymarket-dashboard
     echo "  Services installed. Start with:"
-    echo "    systemctl start polymarket-ai"
+    echo "    systemctl start polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion"
     echo "    systemctl start polymarket-dashboard"
 else
     echo "  Not root — run these commands as root:"
-    echo "    sudo cp deploy/polymarket-ai.service /etc/systemd/system/"
+    echo "    sudo cp deploy/polymarket-weather.service deploy/polymarket-mirror.service deploy/polymarket-esports.service deploy/polymarket-ingestion.service /etc/systemd/system/"
     echo "    sudo cp deploy/polymarket-dashboard.service /etc/systemd/system/"
     echo "    sudo systemctl daemon-reload"
-    echo "    sudo systemctl enable --now polymarket-ai polymarket-dashboard"
+    echo "    sudo systemctl enable --now polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion polymarket-dashboard"
 fi
 
 # 8. Verify AWS application tagging

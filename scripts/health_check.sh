@@ -8,19 +8,26 @@ echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 echo ""
 
 echo "--- LAYER 1: PROCESS ---"
-echo "1.1 systemd: $(systemctl is-active polymarket-ai 2>/dev/null || echo 'NOT FOUND')"
+for SVC in polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion; do
+  echo "1.1 $SVC: $(systemctl is-active $SVC 2>/dev/null || echo 'NOT FOUND')"
+done
 echo "1.2 processes: $(pgrep -f 'python.*main.py' | wc -l)"
-echo "1.3 memory: $(systemctl show polymarket-ai --property=MemoryCurrent --value 2>/dev/null || echo N/A)"
+echo "1.3 memory:"
+for SVC in polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion; do
+  echo "    $SVC: $(systemctl show $SVC --property=MemoryCurrent --value 2>/dev/null || echo N/A)"
+done
 echo "1.4 bot_log_lines_30m:"
-for b in EnsembleBot ArbitrageBot MirrorBot CrossPlatformArbBot WeatherBot LogicalArbBot; do
-  echo "    $b: $(journalctl -u polymarket-ai --since '30 min ago' --no-pager 2>/dev/null | grep -c "$b")"
+for b in WeatherBot MirrorBot EsportsBot; do
+  _svc="polymarket-$(echo $b | sed 's/Bot$//' | tr '[:upper:]' '[:lower:]')"
+  echo "    $b: $(journalctl -u $_svc --since '30 min ago' --no-pager 2>/dev/null | grep -c "$b")"
 done
 echo "1.5 scan_lines_1h:"
-for b in EnsembleBot ArbitrageBot MirrorBot CrossPlatformArbBot WeatherBot LogicalArbBot; do
-  scans=$(journalctl -u polymarket-ai --since '1 hour ago' --no-pager 2>/dev/null | grep "$b" | grep -ci 'scan\|opportunities\|markets evaluated')
+for b in WeatherBot MirrorBot EsportsBot; do
+  _svc="polymarket-$(echo $b | sed 's/Bot$//' | tr '[:upper:]' '[:lower:]')"
+  scans=$(journalctl -u $_svc --since '1 hour ago' --no-pager 2>/dev/null | grep "$b" | grep -ci 'scan\|opportunities\|markets evaluated')
   echo "    $b: $scans"
 done
-echo "1.6 errors_1h: $(journalctl -u polymarket-ai --since '1 hour ago' -p err --no-pager 2>/dev/null | grep -c 'Traceback\|Exception')"
+echo "1.6 errors_1h: $(journalctl -u polymarket-weather -u polymarket-mirror -u polymarket-esports --since '1 hour ago' -p err --no-pager 2>/dev/null | grep -c 'Traceback\|Exception')"
 echo ""
 
 echo "--- LAYER 2: DATABASE ---"
@@ -67,18 +74,22 @@ grep -E '^RISK_MIN_PRICE|^RISK_MAX_PRICE|^MODEL_REVERSAL_THRESHOLD|^ENSEMBLE_MAX
 echo ""
 
 echo "--- LAYER 5: MONITORING ---"
-echo "5.1 health_checks_2h: $(journalctl -u polymarket-ai --since '2 hours ago' --no-pager 2>/dev/null | grep -c 'Health check')"
-echo "5.2 redis: $(redis-cli -a 78psiRhepTgrmWSoy3cgNEIr ping 2>&1)"
+echo "5.1 health_checks_2h: $(journalctl -u polymarket-weather -u polymarket-mirror -u polymarket-esports --since '2 hours ago' --no-pager 2>/dev/null | grep -c 'Health check')"
+_REDIS_PW=$(grep '^REDIS_PASSWORD=' /opt/pa2-shared/.env 2>/dev/null | cut -d= -f2)
+echo "5.2 redis: $(REDISCLI_AUTH="$_REDIS_PW" redis-cli ping 2>&1)"
 echo "5.3 alert_webhooks: $(grep -cE '^SLACK_WEBHOOK|^DISCORD_WEBHOOK|^ALERT_WEBHOOK|^SMTP_HOST' /opt/polymarket-ai-v2/.env 2>/dev/null) configured"
 echo "5.4 platt_scaling: $(grep '^PLATT_SCALING_ENABLED' /opt/polymarket-ai-v2/.env 2>/dev/null || echo 'NOT SET')"
 echo "5.4 resolved_predictions: $(sudo -u postgres psql -d polymarket -c "SELECT COUNT(*) FROM prediction_log WHERE resolution IS NOT NULL" -t -A 2>&1)"
 echo ""
 
 echo "--- LAYER 6: RECOVERY ---"
-echo "6.1 systemd_restarts: $(systemctl show polymarket-ai --property=NRestarts --value 2>/dev/null)"
-echo "6.2 watchdog_restarts_24h: $(journalctl -u polymarket-ai --since '24h ago' --no-pager 2>/dev/null | grep -ci 'watchdog.*restart')"
-echo "6.3 position_seeding: $(journalctl -u polymarket-ai --no-pager 2>/dev/null | grep -i 'seed.*position\|positions seeded' | tail -1)"
-echo "6.4 ws_status: $(journalctl -u polymarket-ai --since '1 hour ago' --no-pager 2>/dev/null | grep -i 'websocket' | tail -1)"
+echo "6.1 systemd_restarts:"
+for SVC in polymarket-weather polymarket-mirror polymarket-esports; do
+  echo "    $SVC: $(systemctl show $SVC --property=NRestarts --value 2>/dev/null)"
+done
+echo "6.2 watchdog_restarts_24h: $(journalctl -u polymarket-weather -u polymarket-mirror -u polymarket-esports --since '24h ago' --no-pager 2>/dev/null | grep -ci 'watchdog.*restart')"
+echo "6.3 position_seeding: $(journalctl -u polymarket-weather -u polymarket-mirror -u polymarket-esports --no-pager 2>/dev/null | grep -i 'seed.*position\|positions seeded' | tail -1)"
+echo "6.4 ws_status: $(journalctl -u polymarket-weather -u polymarket-mirror -u polymarket-esports --since '1 hour ago' --no-pager 2>/dev/null | grep -i 'websocket' | tail -1)"
 echo ""
 
 echo "=== END HEALTH CHECK ==="

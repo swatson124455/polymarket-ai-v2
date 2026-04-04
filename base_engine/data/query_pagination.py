@@ -100,9 +100,15 @@ class PaginatedQuery:
         Returns:
             Dictionary with results and cursor for next page
         """
+        import re
+        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', cursor_column.strip()):
+            cursor_column = "id"
+        if order_direction.strip().upper() not in ("ASC", "DESC"):
+            order_direction = "DESC"
+
         conditions = []
         query_params = params.copy()
-        
+
         if cursor:
             if order_direction == "DESC":
                 conditions.append(f"{cursor_column} < :cursor")

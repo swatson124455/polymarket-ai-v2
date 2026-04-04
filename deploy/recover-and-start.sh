@@ -135,16 +135,25 @@ echo "  Migrations complete."
 # ── 9. INSTALL + START SERVICES ─────────────────────────────
 echo ""
 echo "[SVC] Installing systemd services..."
-cp deploy/polymarket-ai.service /etc/systemd/system/
+for SVC in polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion; do
+    cp "deploy/${SVC}.service" /etc/systemd/system/ 2>/dev/null || true
+done
 cp deploy/polymarket-dashboard.service /etc/systemd/system/ 2>/dev/null || true
 systemctl daemon-reload
-systemctl enable polymarket-ai 2>/dev/null || true
+# Disable old monolithic service if present
+systemctl stop polymarket-ai 2>/dev/null || true
+systemctl disable polymarket-ai 2>/dev/null || true
+for SVC in polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion; do
+    systemctl enable $SVC 2>/dev/null || true
+done
 systemctl enable polymarket-dashboard 2>/dev/null || true
 
-echo "[SVC] Starting bot..."
-systemctl restart polymarket-ai
-sleep 3
-echo "  polymarket-ai: $(systemctl is-active polymarket-ai)"
+echo "[SVC] Starting bots..."
+for SVC in polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion; do
+    systemctl restart $SVC
+    sleep 2
+    echo "  $SVC: $(systemctl is-active $SVC)"
+done
 
 echo "[SVC] Starting dashboard..."
 systemctl restart polymarket-dashboard 2>/dev/null || echo "  polymarket-dashboard: not configured (non-fatal)"
@@ -156,12 +165,12 @@ echo "  RECOVERY COMPLETE"
 echo "============================================"
 echo ""
 echo "Service status:"
-for svc in polymarket-ai polymarket-dashboard postgresql redis; do
+for svc in polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion polymarket-dashboard postgresql redis; do
     echo "  $svc: $(systemctl is-active $svc 2>/dev/null || echo 'not-found')"
 done
 echo ""
 echo "Follow logs:"
-echo "  journalctl -u polymarket-ai -f --no-pager"
+echo "  journalctl -u polymarket-weather -u polymarket-mirror -u polymarket-esports -f --no-pager"
 echo ""
 echo "Dashboard:"
 echo "  http://$(curl -s ifconfig.me 2>/dev/null || echo 'YOUR_IP'):8501"

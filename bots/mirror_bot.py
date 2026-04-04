@@ -59,6 +59,12 @@ class MirrorBot(BaseBot):
         # M1: Per-category exposure tracking (USD deployed per category)
         self._category_exposure: Dict[str, float] = {}
 
+        # S156: Exposure lock — protects _daily_exposure and _category_exposure from
+        # race conditions between concurrent RTDS callbacks.  The await gap between
+        # _can_open_position() (reads) and the post-place_order increment (writes)
+        # allows interleaving that can overshoot the daily cap.
+        self._exposure_lock = asyncio.Lock()
+
         # Periodic elite refresh (avoid stale list)
         self._scan_count: int = 0
         self._elite_refresh_every_n_scans: int = 480  # S96: ~6h at 45s interval (was 40/~30min)
@@ -175,14 +181,24 @@ class MirrorBot(BaseBot):
             if db and getattr(db, "session_factory", None):
                 from sqlalchemy import text as _text
                 async with db.get_session() as session:
+                    # Sequential lookup: condition_id first (indexed), numeric id second
                     row = await session.execute(
                         _text(
                             "SELECT yes_token_id, no_token_id FROM markets "
-                            "WHERE condition_id = :mid OR id::text = :mid LIMIT 1"
+                            "WHERE condition_id = :mid LIMIT 1"
                         ),
                         {"mid": str(market_id)},
                     )
                     r = row.fetchone()
+                    if r is None and str(market_id).isdigit():
+                        row = await session.execute(
+                            _text(
+                                "SELECT yes_token_id, no_token_id FROM markets "
+                                "WHERE id = :mid_int LIMIT 1"
+                            ),
+                            {"mid_int": int(market_id)},
+                        )
+                        r = row.fetchone()
                     if r:
                         resolved = "YES" if str(token_id) == str(r[0]) else "NO"
                         self._token_side_cache[cache_key] = resolved
@@ -351,8 +367,10 @@ class MirrorBot(BaseBot):
             async with db.get_session() as session:
                 _ms_rows = await session.execute(
                     _text(
-                        "SELECT DISTINCT market_id, side FROM trade_events "
-                        "WHERE bot_name = :bot AND event_type = 'ENTRY' AND side IN ('YES', 'NO')"
+                        "SELECT DISTINCT te.market_id, te.side FROM trade_events te "
+                        "JOIN markets m ON m.condition_id = te.market_id "
+                        "WHERE te.bot_name = :bot AND te.event_type = 'ENTRY' "
+                        "AND te.side IN ('YES', 'NO') AND m.resolved = false"
                     ),
                     {"bot": self.bot_name},
                 )
@@ -599,7 +617,8 @@ class MirrorBot(BaseBot):
                 finally:
                     self._recon_task_pending = False
 
-            asyncio.create_task(_bg_recon())
+            self._bg_recon_task = asyncio.create_task(_bg_recon())
+            self._bg_recon_task.add_done_callback(self._task_error_handler)
 
         # M5: Periodic dedup flush to Redis (every 100 scans ~75 min)
         if self._scan_count % 100 == 0:
@@ -756,10 +775,16 @@ class MirrorBot(BaseBot):
                 from sqlalchemy import text as _text
                 async with db.get_session() as session:
                     row = await session.execute(
-                        _text("SELECT category, end_date_iso FROM markets WHERE condition_id = :mid OR id::text = :mid LIMIT 1"),
+                        _text("SELECT category, end_date_iso FROM markets WHERE condition_id = :mid LIMIT 1"),
                         {"mid": market_id},
                     )
                     r = row.fetchone()
+                    if r is None and str(market_id).isdigit():
+                        row = await session.execute(
+                            _text("SELECT category, end_date_iso FROM markets WHERE id = :mid_int LIMIT 1"),
+                            {"mid_int": int(market_id)},
+                        )
+                        r = row.fetchone()
                     if r:
                         category = str(r[0] or "")
                         end_raw = r[1]
@@ -800,9 +825,10 @@ class MirrorBot(BaseBot):
                                         _no_tid = _tok.get("token_id", "")
                                     if _tok.get("winner"):
                                         _resolution = "YES" if _ti == 0 else "NO"
-                                asyncio.create_task(self._persist_market_category(
+                                _pmc_task = asyncio.create_task(self._persist_market_category(
                                     market_id, category, q,
                                     _yes_tid, _no_tid, _resolved, _resolution))
+                                _pmc_task.add_done_callback(self._task_error_handler)
                 except Exception as _clob_err:
                     logger.debug("CLOB category fallback failed for %s: %s",
                                  market_id[:16], _clob_err)
@@ -1108,13 +1134,15 @@ class MirrorBot(BaseBot):
                     )
                     # BUG-13 fix: use actual exit_size; S133: use entry_price (matches increment)
                     _exit_cost = exit_size * pos.get("entry_price", exit_price)
-                    self._daily_exposure = max(0.0, self._daily_exposure - _exit_cost)
-                    # M1: Decrement category exposure on exit
-                    _pos_cat = pos.get("category", "")
-                    if _pos_cat:
-                        self._category_exposure[_pos_cat] = max(
-                            0.0, self._category_exposure.get(_pos_cat, 0.0) - _exit_cost
-                        )
+                    # S156: Decrement under lock (matches entry reservation pattern)
+                    async with self._exposure_lock:
+                        self._daily_exposure = max(0.0, self._daily_exposure - _exit_cost)
+                        # M1: Decrement category exposure on exit
+                        _pos_cat = pos.get("category", "")
+                        if _pos_cat:
+                            self._category_exposure[_pos_cat] = max(
+                                0.0, self._category_exposure.get(_pos_cat, 0.0) - _exit_cost
+                            )
                     del self._open_positions[pos_key]
                     # S135: Mark position closed in DB so it doesn't reload on restart
                     # Use _sql alias (not _t) — _t is a local var in this function due to the
@@ -1169,6 +1197,7 @@ class MirrorBot(BaseBot):
                 await session.commit()
                 if reaped:
                     _reaped_usd = 0.0
+                    _reaped_cats: dict = {}
                     for row in reaped:
                         pos_key = f"{row[0]}:{row[1]}"
                         _pos = self._open_positions.pop(pos_key, None)
@@ -1178,14 +1207,17 @@ class MirrorBot(BaseBot):
                         if _pos:
                             _pos_cost = _pos.get("size", 0.0) * _pos.get("entry_price", 0.0)
                             _reaped_usd += _pos_cost
-                            # Also decrement category exposure
                             _pos_cat = _pos.get("category", "")
                             if _pos_cat:
-                                self._category_exposure[_pos_cat] = max(
-                                    0.0, self._category_exposure.get(_pos_cat, 0.0) - _pos_cost
-                                )
+                                _reaped_cats[_pos_cat] = _reaped_cats.get(_pos_cat, 0.0) + _pos_cost
+                    # S156: Decrement under lock
                     if _reaped_usd > 0:
-                        self._daily_exposure = max(0.0, self._daily_exposure - _reaped_usd)
+                        async with self._exposure_lock:
+                            self._daily_exposure = max(0.0, self._daily_exposure - _reaped_usd)
+                            for _rc_cat, _rc_cost in _reaped_cats.items():
+                                self._category_exposure[_rc_cat] = max(
+                                    0.0, self._category_exposure.get(_rc_cat, 0.0) - _rc_cost
+                                )
                     logger.info("mirror_reap_resolved: removed %d stale positions, freed $%.2f daily exposure",
                                 len(reaped), _reaped_usd)
         except Exception as exc:
@@ -1217,16 +1249,24 @@ class MirrorBot(BaseBot):
                 closed = result.fetchall()
                 await session.commit()
                 if closed:
+                    _recon_usd = 0.0
+                    _recon_cats: dict = {}
                     for row in closed:
                         pos_key = f"{row[0]}:{row[1]}"
                         _pos = self._open_positions.pop(pos_key, None)
                         if _pos:
                             _pos_cost = _pos.get("size", 0.0) * _pos.get("entry_price", 0.0)
-                            self._daily_exposure = max(0.0, self._daily_exposure - _pos_cost)
+                            _recon_usd += _pos_cost
                             _pos_cat = _pos.get("category", "")
                             if _pos_cat:
-                                self._category_exposure[_pos_cat] = max(
-                                    0.0, self._category_exposure.get(_pos_cat, 0.0) - _pos_cost
+                                _recon_cats[_pos_cat] = _recon_cats.get(_pos_cat, 0.0) + _pos_cost
+                    # S156: Decrement under lock
+                    if _recon_usd > 0:
+                        async with self._exposure_lock:
+                            self._daily_exposure = max(0.0, self._daily_exposure - _recon_usd)
+                            for _rc_cat, _rc_cost in _recon_cats.items():
+                                self._category_exposure[_rc_cat] = max(
+                                    0.0, self._category_exposure.get(_rc_cat, 0.0) - _rc_cost
                                 )
                     logger.info("mirror_reconcile_exited: closed %d zombie positions in DB", len(closed))
         except Exception as exc:
@@ -1609,12 +1649,14 @@ class MirrorBot(BaseBot):
             )
             if order.get("success"):
                 _exit_usd = _exit_size * price
-                self._daily_exposure = max(0.0, self._daily_exposure - _exit_usd)
-                # M1: Decrement category exposure on exit
-                if category:
-                    self._category_exposure[category] = max(
-                        0.0, self._category_exposure.get(category, 0.0) - _exit_usd
-                    )
+                # S156: Decrement under lock
+                async with self._exposure_lock:
+                    self._daily_exposure = max(0.0, self._daily_exposure - _exit_usd)
+                    # M1: Decrement category exposure on exit
+                    if category:
+                        self._category_exposure[category] = max(
+                            0.0, self._category_exposure.get(category, 0.0) - _exit_usd
+                        )
                 del self._open_positions[pos_key]
                 # S135: Mark position closed in DB so it doesn't reload on restart
                 try:
@@ -2368,6 +2410,27 @@ class MirrorBot(BaseBot):
             "trends_multiplier": None,
         }
 
+        # S156: Reserve exposure under lock BEFORE place_order() to close the
+        # await gap between _can_open_position() (reads) and increment (writes).
+        # Two concurrent RTDS callbacks can both pass the cap check and both place
+        # orders, overshooting the daily cap by N * trade_size.
+        _trade_usd = size * price
+        async with self._exposure_lock:
+            # Re-verify daily cap under lock (stale check at L1337 is pre-lock)
+            if self.bankroll:
+                _lock_max = self.bankroll.max_daily_usd
+            else:
+                _lock_max = float(getattr(settings, "TOTAL_CAPITAL", 10000.0)) * getattr(
+                    settings, "MIRROR_MAX_DAILY_EXPOSURE_PCT", self.MAX_DAILY_EXPOSURE_PCT)
+            if self._daily_exposure + _trade_usd > _lock_max:
+                logger.info("mirror_exposure_lock_reject: $%.0f + $%.0f > cap $%.0f",
+                            self._daily_exposure, _trade_usd, _lock_max)
+                return False
+            # Reserve atomically
+            self._daily_exposure += _trade_usd
+            if category:
+                self._category_exposure[category] = self._category_exposure.get(category, 0.0) + _trade_usd
+
         order = await self.place_order(
             market_id=market_id,
             token_id=token_id,
@@ -2379,17 +2442,12 @@ class MirrorBot(BaseBot):
         )
 
         if order.get("success") and not order.get("idempotent"):
-            _trade_usd = size * price
-            self._daily_exposure += _trade_usd  # Track exposure in USD (skip idempotent dedup'd orders)
+            # Exposure already reserved above — no double-increment
 
             # S91: Set per-market cooldown to prevent re-entry on same signal
             _cd_secs = int(getattr(settings, "MIRROR_MARKET_COOLDOWN_SECONDS", 1800))
             if _cd_secs > 0:
                 self._market_cooldown[market_id] = _time.monotonic() + _cd_secs
-
-            # M1: Track per-category exposure
-            if category:
-                self._category_exposure[category] = self._category_exposure.get(category, 0.0) + _trade_usd
 
             # Update position tracking with actual size
             # S133: Create entry if missing — without this, new trades have no exit monitoring
@@ -2425,4 +2483,11 @@ class MirrorBot(BaseBot):
 
             # S145: Signal storage now handled automatically by place_order()
             return True
+
+        # S156: Revert reserved exposure on order failure (idempotent dedup also reverts)
+        async with self._exposure_lock:
+            self._daily_exposure = max(0.0, self._daily_exposure - _trade_usd)
+            if category:
+                self._category_exposure[category] = max(
+                    0.0, self._category_exposure.get(category, 0.0) - _trade_usd)
         return False

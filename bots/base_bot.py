@@ -403,21 +403,20 @@ class BaseBot(ABC):
         Apply signal, order flow, and Google Trends confidence adjustments.
         Phase 9: run the three fetches in parallel with asyncio.gather.
         """
-        async def _signals_mult() -> float:
+        async def _signals_mult() -> tuple:
+            """Returns (multiplier, best_signal_dict_or_None)."""
             if not getattr(settings, "USE_SIGNALS_IN_BOTS", True) or not getattr(self.base_engine, "signal_ingestion", None):
-                return 1.0
+                return 1.0, None
             try:
                 signals = await self.base_engine.signal_ingestion.get_signals_for_market(market_id, limit=5)
                 if not signals:
-                    return 1.0
+                    return 1.0, None
                 best = max(signals, key=lambda s: float(s.get("priority_score", 0) or 0))
                 sig_dir = (best.get("direction") or "").upper()
                 if not sig_dir:
-                    return 1.0
+                    return 1.0, best
                 direction_matches = sig_dir == direction
 
-                # R3: Use SignalEffectivenessTracker for accuracy-weighted multipliers.
-                # Falls back to flat 1.2x/0.6x when insufficient resolved signal data.
                 _effectiveness = getattr(self.base_engine, "signal_effectiveness", None)
                 if _effectiveness is not None:
                     _source = (best.get("source") or "unknown").lower()
@@ -426,51 +425,53 @@ class BaseBot(ABC):
                         (market_data or {}).get("category_slug") or
                         ""
                     )
-                    return await _effectiveness.get_multiplier(
+                    m = await _effectiveness.get_multiplier(
                         source=_source,
                         category=str(_category).lower(),
                         direction_matches=direction_matches,
                     )
-                # Fallback (no tracker yet): flat multipliers
+                    return m, best
                 if direction_matches:
-                    return 1.2
-                return 0.6
+                    return 1.2, best
+                return 0.6, best
             except Exception as e:
                 logger.debug("Signal fetch failed for %s: %s", market_id, e)
-                return 1.0
+                return 1.0, None
 
-        async def _flow_mult() -> float:
+        async def _flow_mult() -> tuple:
+            """Returns (multiplier, flow_dict_or_None)."""
             if not getattr(settings, "USE_ORDER_FLOW_IN_BOTS", True) or not getattr(self.base_engine, "trade_flow_analyzer", None):
-                return 1.0
+                return 1.0, None
             try:
                 flow = await self.base_engine.trade_flow_analyzer.get_flow_signal(token_id)
                 if not flow:
-                    return 1.0
+                    return 1.0, None
                 flow_dir = flow.get("direction", "")
                 if (flow_dir == "bullish" and direction == "YES") or (flow_dir == "bearish" and direction == "NO"):
-                    return 1.1
+                    return 1.1, flow
                 if (flow_dir == "bearish" and direction == "YES") or (flow_dir == "bullish" and direction == "NO"):
-                    return 0.85
-                return 1.0
+                    return 0.85, flow
+                return 1.0, flow
             except Exception as e:
                 logger.debug("Order flow fetch failed for %s: %s", market_id, e)
-                return 1.0
+                return 1.0, None
 
-        async def _trends_mult() -> float:
+        async def _trends_mult() -> tuple:
+            """Returns (multiplier, trend_dict_or_None)."""
             if not getattr(settings, "USE_GOOGLE_TRENDS", True) or not getattr(self.base_engine, "google_trends", None):
-                return 1.0
+                return 1.0, None
             try:
                 question = (market_data or {}).get("question") or (market_data or {}).get("title") or ""
                 if not question:
-                    return 1.0
+                    return 1.0, None
                 trend = await self.base_engine.google_trends.get_market_signal(question)
                 t_sig = trend.get("signal", "neutral")
                 if (t_sig == "bullish" and direction == "YES") or (t_sig == "bearish" and direction == "NO"):
-                    return 1.05
-                return 1.0
+                    return 1.05, trend
+                return 1.0, trend
             except Exception as e:
                 logger.debug("Google Trends fetch failed for %s: %s", market_id, e)
-                return 1.0
+                return 1.0, None
 
         # H1 FIX: Wrap each external service call with a 5s timeout before gather.
         # Without this, a single hung service (signal_ingestion, trade_flow, google_trends)
@@ -484,43 +485,26 @@ class BaseBot(ABC):
         _trends_meta: dict = {}
 
         async def _signals_mult_tracked() -> float:
-            mult = await _signals_mult()
-            # Capture which signal won (best by priority_score) for storage
-            try:
-                if getattr(settings, "USE_SIGNALS_IN_BOTS", True) and getattr(self.base_engine, "signal_ingestion", None):
-                    sigs = await self.base_engine.signal_ingestion.get_signals_for_market(market_id, limit=1)
-                    if sigs:
-                        b = max(sigs, key=lambda s: float(s.get("priority_score", 0) or 0))
-                        _sig_meta["direction"] = (b.get("direction") or "").upper() or None
-                        _sig_meta["source"] = (b.get("source") or "unknown").lower()
-                        _sig_meta["confidence"] = float(b.get("priority_score") or 0.5)
-                        _sig_meta["multiplier"] = mult
-            except Exception:
-                pass
+            mult, best_sig = await _signals_mult()
+            if best_sig:
+                _sig_meta["direction"] = (best_sig.get("direction") or "").upper() or None
+                _sig_meta["source"] = (best_sig.get("source") or "unknown").lower()
+                _sig_meta["confidence"] = float(best_sig.get("priority_score") or 0.5)
+                _sig_meta["multiplier"] = mult
             return mult
 
         async def _flow_mult_tracked() -> float:
-            mult = await _flow_mult()
-            try:
-                if getattr(settings, "USE_ORDER_FLOW_IN_BOTS", True) and getattr(self.base_engine, "trade_flow_analyzer", None):
-                    flow = await self.base_engine.trade_flow_analyzer.get_flow_signal(token_id)
-                    if flow:
-                        _flow_meta["direction"] = flow.get("direction", "neutral")
-                        _flow_meta["multiplier"] = mult
-            except Exception:
-                pass
+            mult, flow_data = await _flow_mult()
+            if flow_data:
+                _flow_meta["direction"] = flow_data.get("direction", "neutral")
+                _flow_meta["multiplier"] = mult
             return mult
 
         async def _trends_mult_tracked() -> float:
-            mult = await _trends_mult()
-            try:
-                question = (market_data or {}).get("question") or (market_data or {}).get("title") or ""
-                if question and getattr(settings, "USE_GOOGLE_TRENDS", True) and getattr(self.base_engine, "google_trends", None):
-                    trend = await self.base_engine.google_trends.get_market_signal(question)
-                    _trends_meta["signal"] = trend.get("signal", "neutral")
-                    _trends_meta["multiplier"] = mult
-            except Exception:
-                pass
+            mult, trend_data = await _trends_mult()
+            if trend_data:
+                _trends_meta["signal"] = trend_data.get("signal", "neutral")
+                _trends_meta["multiplier"] = mult
             return mult
 
         mults = await asyncio.gather(
@@ -921,33 +905,44 @@ class BaseBot(ABC):
     async def _whale_alert_listener(self) -> None:
         """Phase 5.2: Subscribe to Redis whale_alerts channel.
         Pushes market_ids to _whale_priority_queue so scan_loop drains them first.
-        No-op when Redis is not connected (in-memory fallback, no-op)."""
-        try:
-            _cache = getattr(self.base_engine, "cache", None)
-            if _cache is None:
-                return
-            pubsub = await _cache.subscribe("whale_alerts")
-            if pubsub is None:
-                return
-            logger.info("Whale alert listener started", bot_name=self.bot_name)
-            async for message in pubsub.listen():
-                if not self.running:
-                    break
-                if message.get("type") != "message":
-                    continue
-                try:
-                    data = json.loads(message["data"])
-                    mid = str(data.get("market_id") or "")
-                    if mid and not self._whale_priority_queue.full():
-                        self._whale_priority_queue.put_nowait(mid)
-                        logger.debug(
-                            "Whale priority enqueued: market=%s value_usd=%.0f",
-                            mid, float(data.get("value_usd", 0)),
-                            bot_name=self.bot_name,
-                        )
-                except Exception:
-                    pass
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.debug("Whale alert listener error (non-fatal): %s", e, bot_name=self.bot_name)
+        Reconnects with exponential backoff on failure. No-op when Redis is unavailable."""
+        _backoff = 5.0
+        _max_backoff = 60.0
+        _stable_since = 0.0
+        while self.running:
+            try:
+                _cache = getattr(self.base_engine, "cache", None)
+                if _cache is None:
+                    return
+                pubsub = await _cache.subscribe("whale_alerts")
+                if pubsub is None:
+                    return
+                logger.info("Whale alert listener started", bot_name=self.bot_name)
+                _stable_since = time.monotonic()
+                async for message in pubsub.listen():
+                    if not self.running:
+                        return
+                    # Reset backoff after 60s of stable listening
+                    if time.monotonic() - _stable_since > 60.0:
+                        _backoff = 5.0
+                    if message.get("type") != "message":
+                        continue
+                    try:
+                        data = json.loads(message["data"])
+                        mid = str(data.get("market_id") or "")
+                        if mid and not self._whale_priority_queue.full():
+                            self._whale_priority_queue.put_nowait(mid)
+                            logger.debug(
+                                "Whale priority enqueued: market=%s value_usd=%.0f",
+                                mid, float(data.get("value_usd", 0)),
+                                bot_name=self.bot_name,
+                            )
+                    except Exception:
+                        pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("Whale alert listener error, retrying in %.0fs: %s",
+                               _backoff, e, bot_name=self.bot_name)
+                await asyncio.sleep(_backoff)
+                _backoff = min(_backoff * 2, _max_backoff)

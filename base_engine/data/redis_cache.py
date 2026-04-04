@@ -48,18 +48,7 @@ class RedisCache:
             )
             await self.redis.ping()
             
-            # Configure eviction policy (if Redis supports it)
-            try:
-                # Set max memory (2GB default)
-                max_memory = getattr(settings, 'REDIS_MAX_MEMORY', '2gb')
-                await self.redis.config_set('maxmemory', max_memory)
-                # Set eviction policy to allkeys-lru (evict least recently used)
-                await self.redis.config_set('maxmemory-policy', 'allkeys-lru')
-                logger.info(f"Redis cache configured: maxmemory={max_memory}, eviction=allkeys-lru")
-            except Exception as config_error:
-                # Redis server might not support config_set, or we might not have permissions
-                logger.debug(f"Could not configure Redis eviction policy: {str(config_error)}")
-            
+            # Redis memory/eviction configured server-side (not by application code)
             logger.info("Redis cache initialized")
         except Exception as e:
             logger.warning(f"Redis connection failed: {str(e)}")

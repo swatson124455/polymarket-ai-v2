@@ -63,6 +63,10 @@ class UserOrderWebSocket:
                     }
                 )
             )
+            # Cancel stale message loop from prior connect() (prevents duplicate processing)
+            _prev = getattr(self, "_message_loop_task", None)
+            if _prev and not _prev.done():
+                _prev.cancel()
             self._message_loop_task = asyncio.create_task(self._message_loop())
             logger.info("UserOrderWebSocket connected")
         except Exception as e:

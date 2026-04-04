@@ -20,7 +20,7 @@ set -euo pipefail
 
 KEY="${SSH_KEY:-$HOME/.ssh/LightsailDefaultKey-eu-west-1.pem}"
 VPS="${VPS_HOST:-ubuntu@34.251.224.21}"
-SSH_OPTS="-o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no"
+SSH_OPTS="-o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3"
 RELEASES="/opt/pa2-releases"
 SHARED="/opt/pa2-shared"
 CURRENT="/opt/polymarket-ai-v2"
@@ -111,7 +111,14 @@ sudo chown -h polymarket:polymarket \
 # S144: Bypass PgBouncer for migrations — connect directly to postgres via unix socket.
 # Bots consume most of PgBouncer's 25 connections; migration only needs 1 for a few seconds.
 cd $NEW_RELEASE
-MIGRATION_DB_URL="postgresql://polymarket:polymarket_s46@/polymarket?host=/var/run/postgresql"
+# Extract DB password from shared .env (never hardcode credentials in scripts)
+_DB_PW=\$(grep '^DATABASE_URL=' $SHARED/.env | sed -n 's|.*://[^:]*:\([^@]*\)@.*|\1|p')
+if [ -z "\$_DB_PW" ]; then
+    echo "ABORT: Could not extract DB password from $SHARED/.env"
+    sudo rm -rf "$NEW_RELEASE"
+    exit 1
+fi
+MIGRATION_DB_URL="postgresql://polymarket:\${_DB_PW}@/polymarket?host=/var/run/postgresql"
 sudo -u polymarket DATABASE_URL="\$MIGRATION_DB_URL" $SHARED/venv/bin/python scripts/run_migrations.py || {
     echo "MIGRATION FAILED — removing release $NEW_RELEASE"
     sudo rm -rf "$NEW_RELEASE"
@@ -137,14 +144,15 @@ echo "[6/7] Installing service files + restarting services..."
 ssh $SSH_OPTS -i "$KEY" "$VPS" bash <<REMOTE
 set -euo pipefail
 # Install per-bot service files
-for SVC in polymarket-weather polymarket-mirror polymarket-esports; do
+for SVC in polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion; do
     sudo cp "$NEW_RELEASE/deploy/\${SVC}.service" /etc/systemd/system/
 done
 # Ensure per-bot override env files exist (second EnvironmentFile wins over shared .env)
-[ -f $SHARED/.env.weather ] || sudo cp $SHARED/.env $SHARED/.env.weather
-[ -f $SHARED/.env.mirror  ] || sudo cp $SHARED/.env $SHARED/.env.mirror
-[ -f $SHARED/.env.esports ] || sudo cp $SHARED/.env $SHARED/.env.esports
-sudo chown polymarket:polymarket $SHARED/.env.weather $SHARED/.env.mirror $SHARED/.env.esports
+[ -f $SHARED/.env.weather   ] || sudo cp $SHARED/.env $SHARED/.env.weather
+[ -f $SHARED/.env.mirror    ] || sudo cp $SHARED/.env $SHARED/.env.mirror
+[ -f $SHARED/.env.esports   ] || sudo cp $SHARED/.env $SHARED/.env.esports
+[ -f $SHARED/.env.ingestion ] || sudo cp $SHARED/.env $SHARED/.env.ingestion
+sudo chown polymarket:polymarket $SHARED/.env.weather $SHARED/.env.mirror $SHARED/.env.esports $SHARED/.env.ingestion
 sudo systemctl daemon-reload
 # Stop and disable the old monolithic service (if running)
 sudo systemctl stop polymarket-ai 2>/dev/null || true
@@ -152,11 +160,11 @@ sudo systemctl disable polymarket-ai 2>/dev/null || true
 # S145: Explicit stop before start — frees all PgBouncer slots before new code loads.
 # Without this, old processes hold connections during the restart window, causing
 # pool exhaustion if the new processes also try to connect simultaneously.
-sudo systemctl enable polymarket-weather polymarket-mirror polymarket-esports
-sudo systemctl stop polymarket-weather polymarket-mirror polymarket-esports 2>/dev/null || true
+sudo systemctl enable polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion
+sudo systemctl stop polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion 2>/dev/null || true
 sleep 2  # Let PgBouncer reclaim slots
-sudo systemctl start polymarket-weather polymarket-mirror polymarket-esports
-echo "  polymarket-weather, polymarket-mirror, polymarket-esports started (clean)"
+sudo systemctl start polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion
+echo "  polymarket-weather, polymarket-mirror, polymarket-esports, polymarket-ingestion started (clean)"
 REMOTE
 echo "  Restarting..."
 

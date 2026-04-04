@@ -142,3 +142,21 @@ data/*_stdout.txt
 # Large data files (CSVs, datasets)
 poly_data/*.csv
 poly_data/goldsky/*.csv
+
+# Session handoff docs (contain credentials and internal architecture)
+AGENT_HANDOFF_*.md
+MASTER_HANDOFF_*.md
+PROMPT_*.md
+AUDIT_*.md
+WEATHERBOT_*.md
+ESPORTS_SESSION*.md
+BOT_*.md
+HANDOFF_*.md
+NEW_AGENT_*.md
+PLAN_*.md
+*_HANDOFF.md
+*_REVIEW_PROMPT.md
+*_TRADING_PATHWAY_REVIEW.md
+
+# Archives
+*.tar.gz

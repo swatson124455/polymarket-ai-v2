@@ -547,6 +547,18 @@ class PaperTradingEngine:
                             trimmed_size=round(size, 4),
                             bot_name=bot_name)
 
+        # Relative slippage guard — reject fills with excessive price impact
+        _slip_abs = abs(price - original_price)
+        if _book_walk_used and _slip_abs >= 0.005:  # Skip sub-half-cent moves
+            _slip_pct = _slip_abs / max(original_price, 0.01)
+            _max_slip = 0.10 if original_price >= 0.20 else 0.20
+            if _slip_pct > _max_slip:
+                return {
+                    "success": False,
+                    "error": f"Slippage {_slip_pct:.1%} exceeds {_max_slip:.0%} limit "
+                             f"(original={original_price:.4f}, fill={price:.4f})",
+                }
+
         # Partial fill from book depth
         if _fill_frac < 1.0:
             _filled_size = round(size * _fill_frac, 4)
@@ -731,6 +743,9 @@ class PaperTradingEngine:
         # take_profit, and consecutive loss tracking uses risk_manager.record_trade_outcome()
         # directly. SELL paper_trades corrupted P&L queries across all bots.
         if side == "SELL":
+            # Enrich EXIT event_data with entry_price for P&L reconstruction
+            if event_data is not None:
+                event_data["entry_price"] = round(avg_price, 6) if avg_price else 0.0
             # S121: Enrich SELL event_data with book walk metrics (mirrors BUY enrichment)
             if event_data is not None and _book_walk_used:
                 event_data["slippage_bps"] = round(abs(price - original_price) * 10000, 1)

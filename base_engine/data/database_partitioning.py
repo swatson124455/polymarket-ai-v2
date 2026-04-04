@@ -201,8 +201,10 @@ class PartitionedQueryHelper:
             """
             
             if limit:
-                query_str += f" LIMIT {limit} OFFSET {offset}"
-            
+                query_str += " LIMIT :_limit OFFSET :_offset"
+                params["_limit"] = int(limit)
+                params["_offset"] = int(offset)
+
             query = text(query_str)
             result = await session.execute(query, params)
             rows = result.fetchall()
@@ -210,20 +212,27 @@ class PartitionedQueryHelper:
         
         return all_results
     
+    _ALLOWED_PARTITION_TABLES = frozenset({
+        "trade_events", "market_prices", "paper_trades", "prediction_log",
+        "esports_prediction_log", "decision_events",
+    })
+
     @staticmethod
     async def get_partition_stats(session: AsyncSession, table_name: str) -> Dict[str, Any]:
         """
         Get statistics about partitions in a table.
-        
+
         Args:
             session: Database session
-            table_name: Name of the table
-        
+            table_name: Name of the table (must be in allowlist)
+
         Returns:
             Dictionary with partition statistics
         """
+        if table_name not in DatabasePartitioning._ALLOWED_PARTITION_TABLES:
+            raise ValueError(f"Table '{table_name}' not in partition allowlist")
         query = text(f"""
-            SELECT 
+            SELECT
                 partition_month,
                 COUNT(*) as record_count,
                 MIN(timestamp) as min_timestamp,

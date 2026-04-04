@@ -1,16 +1,19 @@
 """
 EliteWatchlist — Real-time WebSocket copy trading.
 
-Maintains a set of top trader addresses from Polymarket's monthly leaderboard.
+Maintains a set of top trader addresses from Polymarket's per-category leaderboards.
 When a MarketTradeEvent arrives via WebSocket with a matching user.address,
 triggers instant copy through MirrorBot._execute_mirror_trade().
 
-Data source: Polymarket Data API monthly leaderboard (top 1k by profit).
-Refresh: once per day (configurable).
+S155: Restructured from single OVERALL leaderboard to per-category diversified
+selection with ROI ranking and hard quotas. See PLAN_WATCHLIST_RESTRUCTURE.
+
+Data source: Polymarket Data API per-category leaderboards (ROI-ranked).
+Refresh: daily (enrichment is heavier than old OVERALL-only pull).
 Detection: O(1) set lookup on every WebSocket trade event.
-Efficiency weight: profit/volume ratio slightly favors smarter traders over volume grinders.
 """
 import asyncio
+import math
 import time
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -31,6 +34,15 @@ _MAX_SEEN_TX = 50_000
 _LEADERBOARD_URL = "https://data-api.polymarket.com/v1/leaderboard"
 _LEADERBOARD_PAGE_SIZE = 50  # API max per request
 _LEADERBOARD_MAX_OFFSET = 1000  # API caps offset at 1000 → max 1050 traders
+
+# S155: Per-category watchlist constants
+_LEADERBOARD_CATEGORIES = ["SPORTS", "POLITICS", "FINANCE", "ECONOMICS", "CULTURE", "WEATHER", "TECH"]
+_LEADERBOARD_TIME_PERIODS = ["MONTH", "ALL"]
+# FINANCE and ECONOMICS are merged into a single quota group
+_CATEGORY_GROUP_MAP = {"FINANCE": "FINANCE_ECON", "ECONOMICS": "FINANCE_ECON"}
+_DEFAULT_QUOTAS = {"SPORTS": 40, "POLITICS": 22, "FINANCE_ECON": 15, "CULTURE": 10, "WEATHER": 8, "TECH": 5}
+_CATEGORY_MIN_TRADES = {"SPORTS": 30, "POLITICS": 20, "FINANCE_ECON": 15, "CULTURE": 15, "WEATHER": 10, "TECH": 10}
+_CATEGORY_MIN_VOLUME = {"SPORTS": 25_000, "POLITICS": 25_000, "FINANCE_ECON": 25_000, "CULTURE": 25_000, "WEATHER": 15_000, "TECH": 15_000}
 
 
 class EliteWatchlist:
@@ -61,6 +73,9 @@ class EliteWatchlist:
         self._trader_market_trades: Dict[Tuple[str, str], list] = {}
         self._wash_flagged: Set[str] = set()  # addr_lower set of flagged wash traders
 
+        # S156: Track persist tasks so they aren't garbage-collected + log errors
+        self._persist_tasks: set = set()
+
         # Refresh tracking
         self._last_refresh: float = 0.0
         self._last_refresh_date: Optional[str] = None  # "YYYY-MM-DD" for daily check
@@ -77,6 +92,12 @@ class EliteWatchlist:
         self._copy_tiers: Dict[str, int] = {}  # addr_lower → tier (1/2/3)
         self._copy_perf: Dict[str, Dict] = {}  # addr_lower → {trades, wins, copy_wr, copy_pnl}
 
+        # S155: Per-category watchlist state (shadow or production)
+        self._sunset_traders: Dict[str, float] = {}  # addr_lower → expiry monotonic time
+        self._category_watchlist_data: Dict[str, Dict] = {}  # shadow: per-category data
+        self._category_watchlist_addresses: Set[str] = set()  # shadow: per-category addresses
+        self._shadow_last_comparison: Optional[Dict] = None
+
         # Stats
         self._events_received: int = 0
         self._events_matched: int = 0
@@ -85,6 +106,15 @@ class EliteWatchlist:
         self._copies_yes: int = 0
         self._copies_no: int = 0
         self._copies_sell: int = 0
+
+    @staticmethod
+    def _persist_task_done(task):
+        """S156: Log errors from _persist_trader_to_position tasks (was silent no-op)."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            logger.warning("persist_trader_to_position_failed", error=str(exc))
 
     # ── Leaderboard Fetch ─────────────────────────────────────────
 
@@ -152,6 +182,272 @@ class EliteWatchlist:
             logger.warning("leaderboard_session_error", error=str(e))
 
         return out
+
+    # ── S155: Per-Category Pipeline ──────────────────────────────
+
+    async def _fetch_category_leaderboard(
+        self, category: str, time_period: str, limit: int = 100
+    ) -> List[Dict]:
+        """Fetch top traders for a specific category and time period."""
+        import aiohttp
+
+        out: List[Dict] = []
+        seen: Set[str] = set()
+        offset = 0
+        effective_limit = min(limit, _LEADERBOARD_MAX_OFFSET + _LEADERBOARD_PAGE_SIZE)
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                while len(out) < effective_limit and offset <= _LEADERBOARD_MAX_OFFSET:
+                    params = {
+                        "timePeriod": time_period,
+                        "orderBy": "PNL",
+                        "category": category,
+                        "limit": _LEADERBOARD_PAGE_SIZE,
+                        "offset": offset,
+                    }
+                    try:
+                        async with session.get(
+                            _LEADERBOARD_URL, params=params,
+                            timeout=aiohttp.ClientTimeout(total=15),
+                        ) as resp:
+                            if resp.status != 200:
+                                break
+                            data = await resp.json()
+                    except Exception:
+                        break
+
+                    if not data or not isinstance(data, list) or len(data) == 0:
+                        break
+
+                    for u in data:
+                        if not isinstance(u, dict):
+                            continue
+                        addr = u.get("proxyWallet") or u.get("address")
+                        if not addr or addr in seen:
+                            continue
+                        seen.add(addr)
+                        pnl = float(u.get("pnl", 0) or 0)
+                        vol = float(u.get("vol", 0) or 0)
+                        out.append({
+                            "address": addr,
+                            "pnl": pnl,
+                            "vol": vol,
+                            "rank": int(u.get("rank", 0) or 0),
+                            "userName": u.get("userName", ""),
+                            "_source_category": category,
+                            "_source_period": time_period,
+                        })
+                        if len(out) >= effective_limit:
+                            break
+
+                    if len(data) < _LEADERBOARD_PAGE_SIZE:
+                        break
+                    offset += _LEADERBOARD_PAGE_SIZE
+                    await asyncio.sleep(0.15)
+        except Exception as e:
+            logger.warning("category_leaderboard_error", category=category, period=time_period, error=str(e))
+
+        return out
+
+    async def _stage1_category_pulls(self) -> Dict[str, List[Dict]]:
+        """Stage 1: Fetch top 100 per category×period, filter by vol+ROI.
+
+        Returns dict keyed by category group (e.g. "FINANCE_ECON") → list of trader dicts.
+        """
+        _min_roi = float(getattr(settings, "WATCHLIST_MIN_ROI", 0.03))
+        pools: Dict[str, List[Dict]] = {}
+
+        for cat in _LEADERBOARD_CATEGORIES:
+            group = _CATEGORY_GROUP_MAP.get(cat, cat)
+            min_vol = _CATEGORY_MIN_VOLUME.get(group, 25_000)
+
+            for period in _LEADERBOARD_TIME_PERIODS:
+                raw = await self._fetch_category_leaderboard(cat, period, limit=100)
+                for t in raw:
+                    vol = t["vol"]
+                    pnl = t["pnl"]
+                    if vol < min_vol:
+                        continue
+                    roi = pnl / vol
+                    if roi < _min_roi:
+                        continue
+                    t["roi"] = roi
+                    t["_group"] = group
+                    pools.setdefault(group, []).append(t)
+
+        # Log stage 1 results
+        _counts = {g: len(ts) for g, ts in pools.items()}
+        logger.info("watchlist_stage1_pulls", candidates=_counts, total=sum(_counts.values()))
+        return pools
+
+    def _stage2_dedup(self, pools: Dict[str, List[Dict]]) -> Dict[str, List[Dict]]:
+        """Stage 2: Dedup traders across categories by priority order.
+
+        Since PNL/vol are OVERALL numbers regardless of category query,
+        ROI is identical across categories. Assign each trader to the first
+        category where they appear (priority: SPORTS > POLITICS > ... > TECH).
+        """
+        seen_addrs: Set[str] = set()
+        deduped: Dict[str, List[Dict]] = {}
+
+        # Process groups in priority order
+        group_order = ["SPORTS", "POLITICS", "FINANCE_ECON", "CULTURE", "WEATHER", "TECH"]
+        for group in group_order:
+            candidates = pools.get(group, [])
+            clean = []
+            for t in candidates:
+                addr_lower = t["address"].lower()
+                if addr_lower in seen_addrs:
+                    continue
+                seen_addrs.add(addr_lower)
+                clean.append(t)
+            if clean:
+                deduped[group] = clean
+
+        _counts = {g: len(ts) for g, ts in deduped.items()}
+        logger.info("watchlist_stage2_dedup", unique=_counts, total=sum(_counts.values()))
+        return deduped
+
+    async def _stage3_enrichment(self, pools: Dict[str, List[Dict]]) -> Dict[str, List[Dict]]:
+        """Stage 3: Enrich top candidates via closed-positions endpoint.
+
+        Computes trade count and profit factor. Filters by category-specific
+        min trades and profit factor thresholds.
+        """
+        _min_pf = float(getattr(settings, "WATCHLIST_MIN_PROFIT_FACTOR", 1.2))
+        quotas = self._parse_quotas()
+        enriched: Dict[str, List[Dict]] = {}
+
+        for group, candidates in pools.items():
+            quota = quotas.get(group, 0)
+            if quota == 0:
+                continue
+            min_trades = _CATEGORY_MIN_TRADES.get(group, 15)
+
+            # Sort by ROI descending, take top quota*1.5 for enrichment
+            sorted_cands = sorted(candidates, key=lambda x: x.get("roi", 0), reverse=True)
+            enrich_limit = int(quota * 1.5) + 1
+            sorted_cands = sorted_cands[:enrich_limit]
+
+            passed = []
+            for t in sorted_cands:
+                addr = t["address"]
+                try:
+                    positions = await self._client.get_closed_positions(addr, limit=100)
+                except Exception:
+                    positions = []
+
+                trade_count = len(positions) if positions else 0
+                # Compute profit factor from closed positions
+                gross_win = sum(float(p.get("pnl", 0) or 0) for p in positions if float(p.get("pnl", 0) or 0) > 0)
+                gross_loss = abs(sum(float(p.get("pnl", 0) or 0) for p in positions if float(p.get("pnl", 0) or 0) < 0))
+                profit_factor = gross_win / gross_loss if gross_loss > 0 else float("inf")
+
+                t["_trade_count"] = trade_count
+                t["_profit_factor"] = profit_factor
+
+                # Filter: trade count must meet category minimum
+                if trade_count < min_trades:
+                    continue
+                # Filter: ALL-period candidates must meet profit factor threshold
+                if t.get("_source_period") == "ALL" and profit_factor < _min_pf:
+                    continue
+
+                passed.append(t)
+                await asyncio.sleep(0.05)  # Rate limit courtesy
+
+            if passed:
+                enriched[group] = passed
+
+        _counts = {g: len(ts) for g, ts in enriched.items()}
+        logger.info("watchlist_stage3_enrichment", qualified=_counts, total=sum(_counts.values()))
+        return enriched
+
+    def _stage4_rank_and_select(
+        self, enriched: Dict[str, List[Dict]]
+    ) -> Tuple[Set[str], Dict[str, Dict]]:
+        """Stage 4: Rank by ROI within each category, enforce quotas, build watchlist."""
+        quotas = self._parse_quotas()
+        new_addresses: Set[str] = set()
+        new_data: Dict[str, Dict] = {}
+
+        for group, candidates in enriched.items():
+            quota = quotas.get(group, 0)
+            if quota == 0:
+                continue
+
+            # Rank by ROI descending, take top N per quota
+            ranked = sorted(candidates, key=lambda x: x.get("roi", 0), reverse=True)[:quota]
+
+            for t in ranked:
+                addr = t["address"]
+                addr_lower = addr.lower()
+                pnl = t["pnl"]
+                vol = t["vol"]
+                roi = t.get("roi", pnl / vol if vol > 0 else 0)
+
+                # S155: Scale ROI into efficiency for gate score eff_prior formula
+                # eff_prior = min(0.65, 0.50 + efficiency * 0.50)
+                # 5% ROI → eff 0.25 → eff_prior 0.625
+                # 15% ROI → eff 0.75 → eff_prior 0.65 (capped)
+                efficiency = min(1.0, roi * 5.0)
+
+                new_addresses.add(addr_lower)
+                new_data[addr_lower] = {
+                    "address": addr,
+                    "pnl": pnl,
+                    "vol": vol,
+                    "efficiency": efficiency,
+                    "roi": roi,
+                    "num_trades": t.get("_trade_count", 0),
+                    "rank": t.get("rank", 0),
+                    "userName": t.get("userName", ""),
+                    "category": group,
+                    "_profit_factor": t.get("_profit_factor", 0),
+                }
+
+        _breakdown = {}
+        for d in new_data.values():
+            cat = d.get("category", "unknown")
+            _breakdown[cat] = _breakdown.get(cat, 0) + 1
+        logger.info("watchlist_stage4_selected", breakdown=_breakdown, total=len(new_addresses))
+        return new_addresses, new_data
+
+    def _parse_quotas(self) -> Dict[str, int]:
+        """Parse WATCHLIST_CATEGORY_QUOTAS setting into dict."""
+        raw = getattr(settings, "WATCHLIST_CATEGORY_QUOTAS", "")
+        if not raw:
+            return dict(_DEFAULT_QUOTAS)
+        try:
+            result = {}
+            for pair in raw.split(","):
+                pair = pair.strip()
+                if ":" not in pair:
+                    continue
+                k, v = pair.split(":", 1)
+                result[k.strip()] = int(v.strip())
+            return result if result else dict(_DEFAULT_QUOTAS)
+        except Exception:
+            return dict(_DEFAULT_QUOTAS)
+
+    def _update_sunset_list(self, old_addrs: Set[str], new_addrs: Set[str]) -> None:
+        """S155: Add removed traders to sunset list for exit-only monitoring."""
+        removed = old_addrs - new_addrs
+        sunset_days = int(getattr(settings, "WATCHLIST_SUNSET_DAYS", 7))
+        expiry = time.monotonic() + sunset_days * 86400
+        for addr in removed:
+            self._sunset_traders[addr] = expiry
+
+        # Prune expired entries
+        now = time.monotonic()
+        expired = [a for a, exp in self._sunset_traders.items() if exp <= now]
+        for a in expired:
+            del self._sunset_traders[a]
+
+        if removed:
+            logger.info("watchlist_sunset_update", added=len(removed), total=len(self._sunset_traders),
+                        expired=len(expired))
 
     # ── Watchlist Refresh ─────────────────────────────────────────
 
@@ -590,14 +886,17 @@ class EliteWatchlist:
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                             "category": _cat,
                         }
-                    # Fire-and-forget: non-financial metadata (trader address on position).
-                    # Shaves ~50-200ms off copy latency by not awaiting DB write.
+                    # S156: Store task ref + error-logging callback (was fire-and-forget
+                    # with a no-op lambda that silently discarded exceptions).
+                    # Not awaited in hot path — shaves ~50-200ms off copy latency.
                     _t = asyncio.create_task(self._mirror_bot._persist_trader_to_position({
                         "market_id": market_id,
                         "token_id": token_id,
                         "trader_address": addr,
                     }))
-                    _t.add_done_callback(lambda t: t.result() if not t.cancelled() and not t.exception() else None)
+                    _t.add_done_callback(self._persist_task_done)
+                    self._persist_tasks.add(_t)
+                    _t.add_done_callback(self._persist_tasks.discard)
 
                 logger.info(
                     "mirror_instant_copy",

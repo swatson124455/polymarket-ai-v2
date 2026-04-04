@@ -670,6 +670,8 @@ class WeatherBot(BaseBot):
                 for row in result.fetchall():
                     mtype = str(row[0]).replace("weather_", "")
                     self._record_weather_outcome(mtype, bool(row[1]))
+                # S156: Write-through to Redis after processing outcomes
+                await self._save_consecutive_losses_to_redis()
         except Exception as exc:
             logger.debug("weatherbot_outcome_feed_failed", error=str(exc))
 
@@ -703,6 +705,36 @@ class WeatherBot(BaseBot):
                     consecutive_losses=streak,
                     kelly_factor=self._compute_weather_drawdown_factor(market_type),
                 )
+
+    async def _save_consecutive_losses_to_redis(self) -> None:
+        """S156: Persist consecutive loss streaks to Redis so they survive restarts."""
+        try:
+            cache = getattr(getattr(self, "base_engine", None), "cache", None)
+            if cache is None or not getattr(cache, "redis", None):
+                return
+            for mtype, streak in self._consecutive_losses.items():
+                await cache.set(f"weatherbot:consec_loss:{mtype}", streak, ttl=86400)
+        except Exception as exc:
+            logger.debug("weatherbot_redis_consec_loss_save_failed", error=str(exc))
+
+    async def _restore_consecutive_losses_from_redis(self) -> None:
+        """S156: Reload consecutive loss streaks from Redis on startup."""
+        try:
+            cache = getattr(getattr(self, "base_engine", None), "cache", None)
+            if cache is None or not getattr(cache, "redis", None):
+                return
+            keys = await cache.redis.keys("weatherbot:consec_loss:*")
+            for key in (keys or []):
+                key_str = key.decode() if isinstance(key, bytes) else str(key)
+                mtype = key_str.split("weatherbot:consec_loss:")[-1]
+                val = await cache.get(key_str)
+                if val is not None:
+                    self._consecutive_losses[mtype] = int(val)
+            if self._consecutive_losses:
+                logger.info("weatherbot_consec_losses_restored",
+                            streaks=dict(self._consecutive_losses))
+        except Exception as exc:
+            logger.debug("weatherbot_redis_consec_loss_restore_failed", error=str(exc))
 
     # ── Per-market-type adaptive parameters (cross-bot from MirrorBot) ─────
 
@@ -1231,6 +1263,7 @@ class WeatherBot(BaseBot):
             await self._forecast_client.warm_cache_from_db(db)
             await self._restore_exits_from_redis()
             await self._restore_backoff_from_redis()
+            await self._restore_consecutive_losses_from_redis()
             await self._metar_monitor.restore_from_redis()
             await self._restore_exposure_from_db()
             await self._rebuild_market_group_cache()
@@ -3048,7 +3081,7 @@ class WeatherBot(BaseBot):
 
         # S109: Convert USD to shares for place_order (paper engine expects shares).
         # All upstream sizing, exposure tracking, and floor checks remain in USD.
-        _size_shares = size / opp["price"]
+        _size_shares = size / max(opp["price"], 0.001)
         result = await self.place_order(
             market_id=opp["market_id"],
             token_id=opp["token_id"],

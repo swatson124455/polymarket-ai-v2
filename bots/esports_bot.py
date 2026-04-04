@@ -241,6 +241,8 @@ class EsportsBot(BaseBot):
         self._ballchasing = None     # BallchasingClient (RL replay stats)
         self._cross_game_model = None  # XGBClassifier (cross-game meta model)
         self._bg_train_tasks: Dict[str, asyncio.Task] = {}  # game → background train task
+        # S156: Limit concurrent training tasks to prevent CPU/memory spikes on 16GB VPS
+        self._train_semaphore = asyncio.Semaphore(3)
 
         # Per-game/tournament/team exposure tracking (USD deployed)
         self._game_exposure: Dict[str, float] = {}        # game → USD
@@ -317,6 +319,10 @@ class EsportsBot(BaseBot):
         self._exit_reasons: Dict[str, str] = {}          # market_id → exit reason
         # S109: Per-market rolling entry cap — hard backstop against churn (RC3)
         self._market_entry_times: Dict[str, list] = {}    # market_id → [monotonic timestamps]
+        # S155: Consecutive edge-exit counter — escalating cooldown for oscillating markets.
+        # When a market is exited 2+ times for edge_gone/trailing_edge without a profitable
+        # trade in between, the cooldown escalates to block re-entry into stable oscillation.
+        self._consecutive_edge_exits: Dict[str, int] = {}  # market_id → consecutive count
 
         # WS price tracking and cooldown dicts (moved from hasattr lazy-init)
         self._ws_prev_prices: Dict[str, float] = {}
@@ -652,6 +658,7 @@ class EsportsBot(BaseBot):
         await self._warm_form_cache()
         # S94: Background form prefetch — keeps form data cached between scans
         self._form_prefetch_task = asyncio.create_task(self._background_form_prefetch())
+        self._form_prefetch_task.add_done_callback(self._task_error_handler)  # S156: log if task dies
 
         # Initialize dedicated esports market service — bypasses broken Gamma API.
         # Queries DB directly for esports markets + background CLOB price refresh.
@@ -673,6 +680,8 @@ class EsportsBot(BaseBot):
 
         # S109: Restore exit cooldowns from Redis (survives restarts)
         await self._restore_exit_cooldowns_from_redis()
+        # S156: Restore exec failure cooldowns from Redis
+        await self._restore_exec_fail_from_redis()
         # S143: Restore per-market entry counts from Redis (prevents cap bypass on restart)
         await self._restore_entry_counts_from_redis()
 
@@ -715,6 +724,73 @@ class EsportsBot(BaseBot):
         if self._pandascore:
             await self._pandascore.close()
         await super().stop()
+
+    def _passes_ws_entry_gates(
+        self, market_id: str, side: str, game: str, trade_price: float,
+    ) -> bool:
+        """Shared WS entry gates for both match_winner and series paths.
+
+        Returns True if trade should proceed, False if any gate blocks it.
+        Gates match the scan path enforcement to prevent WS/scan divergence.
+        """
+        # Daily loss limit
+        if self._check_daily_loss_limit():
+            return False
+        # Hard game disable
+        _disabled = getattr(settings, "ESPORTS_DISABLED_GAMES", "")
+        if _disabled and game in {g.strip() for g in _disabled.split(",") if g.strip()}:
+            return False
+        if game in self._monitoring_halted_games:
+            return False
+        if self._patch_drift and self._patch_drift.is_observation_mode(game):
+            return False
+        if self._patch_drift and self._patch_drift.is_halted(game):
+            return False
+        # Exposure cap per game
+        _caps = self._get_exposure_caps()
+        if self._game_exposure.get(game, 0.0) >= _caps["per_game"]:
+            return False
+        # Penny/extreme price guard
+        _min_price = float(getattr(settings, "ESPORTS_MIN_ENTRY_PRICE", 0.05))
+        _max_price = float(getattr(settings, "ESPORTS_MAX_ENTRY_PRICE", 0.95))
+        if trade_price < _min_price or trade_price > _max_price:
+            return False
+        # Post-exit cooldown with S155 escalating cooldown
+        _exit_ts = self._recently_exited.get(market_id)
+        if _exit_ts is not None:
+            _exit_reason = self._exit_reasons.get(market_id, "")
+            if _exit_reason in ("edge_gone", "trailing_edge"):
+                _base_cd = float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0))
+                _consec = self._consecutive_edge_exits.get(market_id, 0)
+                if _consec >= 3:
+                    _cooldown = 86400.0  # 24h
+                elif _consec >= 2:
+                    _cooldown = 21600.0  # 6h
+                else:
+                    _cooldown = _base_cd
+            else:
+                _cooldown = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 300.0))
+            if time.monotonic() - _exit_ts < _cooldown:
+                return False
+        # Per-market rolling entry cap
+        _max_entries = int(getattr(settings, "ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW", 2))
+        _window_s = float(getattr(settings, "ESPORTS_ENTRY_WINDOW_HOURS", 12.0)) * 3600
+        _now_mono = time.monotonic()
+        _recent = [t for t in self._market_entry_times.get(market_id, []) if _now_mono - t < _window_s]
+        if len(_recent) >= _max_entries:
+            return False
+        # Pending trade guard (race condition)
+        if market_id in self._ws_pending_trades:
+            return False
+        # Position check
+        og = getattr(self.base_engine, "order_gateway", None)
+        if og is not None and og.has_open_position(self.bot_name, str(market_id)):
+            return False
+        # Opposing-side historical guard
+        _opposite = "NO" if side.upper() == "YES" else "YES"
+        if (market_id, _opposite) in self._entered_market_sides:
+            return False
+        return True
 
     async def on_price_update(self, event: dict) -> None:
         """
@@ -800,28 +876,9 @@ class EsportsBot(BaseBot):
         model_prob = cached["prob"]  # Always P(YES)
         game = cached.get("game", "")
 
-        # S94: WS guards matching scan path (were missing — race/safety fix)
-        if self._check_daily_loss_limit():
-            return
-        # S134: Hard game disable
-        _disabled_ws = getattr(settings, "ESPORTS_DISABLED_GAMES", "")
-        if _disabled_ws and game in {g.strip() for g in _disabled_ws.split(",") if g.strip()}:
-            return
-        if game in self._monitoring_halted_games:
-            return
-        if self._patch_drift and self._patch_drift.is_observation_mode(game):
-            return
-        if self._patch_drift and self._patch_drift.is_halted(game):
-            return
-        # S136 8A: Use percentage-based caps when enabled
-        _caps_ws = self._get_exposure_caps()
-        if self._game_exposure.get(game, 0.0) >= _caps_ws["per_game"]:
-            return
-
         edge = model_prob - yes_price
 
         # S139: Divergence cap — WS path must enforce the same cap as scan path.
-        # Without this, price moves after the scan can produce 0.50+ divergence trades.
         _div_ws = abs(model_prob - yes_price)
         _eff_div_cap_ws = min(
             self._get_adaptive_div_cap(game),
@@ -838,54 +895,15 @@ class EsportsBot(BaseBot):
         if abs(edge) < self._min_edge:
             return
 
-        # S112: Edge cap removed. Log high edges for monitoring.
         if abs(edge) > 0.40:
-            logger.info(
-                "esportsbot_ws_high_edge", market_id=market_id,
-                edge=round(edge, 4),
-            )
+            logger.info("esportsbot_ws_high_edge", market_id=market_id, edge=round(edge, 4))
 
         side = "YES" if edge > 0 else "NO"
         trade_token_id = yes_token_id if side == "YES" else no_token_id
         trade_price = yes_price if side == "YES" else (1.0 - yes_price)
 
-        # S133: Penny/extreme price guard (WS path)
-        _ws_min_price = float(getattr(settings, "ESPORTS_MIN_ENTRY_PRICE", 0.05))
-        _ws_max_price = float(getattr(settings, "ESPORTS_MAX_ENTRY_PRICE", 0.95))
-        if trade_price < _ws_min_price or trade_price > _ws_max_price:
-            return
-
-        # S109: Post-exit cooldown — block WS re-entry within cooldown window
-        # S138: Extended cooldown for edge_gone exits to prevent churn loop
-        # S143: trailing_edge gets same extended cooldown as edge_gone
-        _exit_ts = self._recently_exited.get(market_id)
-        if _exit_ts is not None:
-            _exit_reason = self._exit_reasons.get(market_id, "")
-            if _exit_reason in ("edge_gone", "trailing_edge"):
-                _cooldown = float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0))
-            else:
-                _cooldown = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 300.0))
-            if time.monotonic() - _exit_ts < _cooldown:
-                return
-
-        # S109: Per-market rolling entry cap — hard backstop against churn
-        _max_entries = int(getattr(settings, "ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW", 2))
-        _window_s = float(getattr(settings, "ESPORTS_ENTRY_WINDOW_HOURS", 12.0)) * 3600
-        _now_mono = time.monotonic()
-        _recent = [t for t in self._market_entry_times.get(market_id, []) if _now_mono - t < _window_s]
-        if len(_recent) >= _max_entries:
-            return
-
-        # Position check + pending trade guard (race condition prevention)
-        if market_id in self._ws_pending_trades:
-            return
-        og = getattr(self.base_engine, "order_gateway", None)
-        if og is not None and og.has_open_position(self.bot_name, str(market_id)):
-            # S132 EB-3: Block BOTH same-side re-entry AND opposing-side entry
-            return
-        # S132 EB-3: Historical opposing-side guard (survives restarts)
-        _opposite_ws = "NO" if side.upper() == "YES" else "YES"
-        if (market_id, _opposite_ws) in self._entered_market_sides:
+        # Shared entry gates (daily loss, game disable, exposure, price, cooldown, etc.)
+        if not self._passes_ws_entry_gates(market_id, side, game, trade_price):
             return
 
         self._ws_pending_trades.add(market_id)
@@ -955,9 +973,19 @@ class EsportsBot(BaseBot):
                         if now - v.get("ts", 0) > 1800]
         for k in stale_series:
             del self._series_prediction_cache[k]
-        # S109: Evict expired exit cooldowns
-        _cooldown = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 900.0))
-        stale_exits = [k for k, v in self._recently_exited.items() if now - v >= _cooldown]
+        # S109: Evict expired exit cooldowns (S155: use actual cooldown per market)
+        _cd_default = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 900.0))
+        _cd_edge = float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0))
+        stale_exits = []
+        for k, v in self._recently_exited.items():
+            _r = self._exit_reasons.get(k, "")
+            if _r in ("edge_gone", "trailing_edge"):
+                _c = self._consecutive_edge_exits.get(k, 0)
+                _eff_cd = 86400.0 if _c >= 3 else (21600.0 if _c >= 2 else _cd_edge)
+            else:
+                _eff_cd = _cd_default
+            if now - v >= _eff_cd:
+                stale_exits.append(k)
         for k in stale_exits:
             del self._recently_exited[k]
         # S109: Evict expired entry timestamps from rolling window
@@ -973,6 +1001,22 @@ class EsportsBot(BaseBot):
         # _series_glicko2_cache: cap at 500 entries — bulk clear when oversized
         if len(self._series_glicko2_cache) > 500:
             self._series_glicko2_cache.clear()
+        # Prune transient WS tracking dicts — remove markets no longer in prediction caches
+        _active_markets = set(self._prediction_cache.keys()) | set(self._series_prediction_cache.keys())
+        for _ws_dict in (self._ws_cooldowns, self._series_ws_prev_prices,
+                         self._series_ws_cooldowns):
+            _stale_ws = [k for k in _ws_dict if k not in _active_markets]
+            for k in _stale_ws:
+                del _ws_dict[k]
+        # Prune long-lived dicts with 7-day TTL (markets gone from scan for >7d)
+        _7d_s = 7 * 86400
+        _stale_exec = [k for k, v in self._exec_fail_cooldown.items() if now - v > _7d_s]
+        for k in _stale_exec:
+            del self._exec_fail_cooldown[k]
+        _stale_reasons = [k for k in self._exit_reasons if k not in self._recently_exited]
+        for k in _stale_reasons:
+            del self._exit_reasons[k]
+            self._consecutive_edge_exits.pop(k, None)
         if stale or stale_log or stale_series or stale_exits:
             logger.debug("esports_cache_cleanup", prediction_evicted=len(stale),
                          log_evicted=len(stale_log), series_evicted=len(stale_series),
@@ -1362,14 +1406,26 @@ class EsportsBot(BaseBot):
                 # S109: Post-exit cooldown — block re-entry within cooldown window
                 # S138: Extended cooldown for edge_gone exits to prevent churn loop
                 # S143: trailing_edge gets same extended cooldown as edge_gone
+                # S155: Escalating cooldown for consecutive edge exits
                 _exit_ts = self._recently_exited.get(mid)
                 if _exit_ts is not None:
                     _exit_reason = self._exit_reasons.get(mid, "")
+                    _consec = self._consecutive_edge_exits.get(mid, 0)
                     if _exit_reason in ("edge_gone", "trailing_edge"):
-                        _cooldown = float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0))
+                        _base_cd = float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0))
+                        if _consec >= 3:
+                            _cooldown = 86400.0  # 24h
+                        elif _consec >= 2:
+                            _cooldown = 21600.0  # 6h
+                        else:
+                            _cooldown = _base_cd
                     else:
                         _cooldown = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 300.0))
                     if time.monotonic() - _exit_ts < _cooldown:
+                        if _consec >= 2:
+                            logger.info("esportsbot_churn_escalated",
+                                        market_id=mid, consecutive=_consec,
+                                        cooldown_h=round(_cooldown / 3600, 1))
                         self._wf["exit_cooldown"] += 1
                         return (0, 0, 1)
                 # S135: Post-execution-failure cooldown — skip markets that recently
@@ -1433,6 +1489,7 @@ class EsportsBot(BaseBot):
                                 await self._save_entry_count_to_redis(mid)
                             elif not success:
                                 self._exec_fail_cooldown[mid] = time.monotonic()
+                                await self._save_exec_fail_to_redis(mid)
                             return (1, 1 if success else 0, 0)
                         return (1, 0, 0)
                     return (0, 0, 1)
@@ -1447,6 +1504,7 @@ class EsportsBot(BaseBot):
                     else:
                         # S135: Cooldown after execution failure
                         self._exec_fail_cooldown[mid] = time.monotonic()
+                        await self._save_exec_fail_to_redis(mid)
                     logger.info(
                         "esportsbot_trade_attempt",
                         market_id=mid, game=opp.get("game", ""),
@@ -1654,13 +1712,20 @@ class EsportsBot(BaseBot):
     async def _save_exit_cooldown_to_redis(self, market_id: str, reason: str = "") -> None:
         """S109: Persist exit cooldown to Redis so it survives restarts.
         S138: Use longer TTL for edge_gone exits to prevent churn loop.
-        S143: trailing_edge gets same extended cooldown as edge_gone."""
+        S143: trailing_edge gets same extended cooldown as edge_gone.
+        S155: Persist consecutive edge exit counter for escalating cooldown."""
         try:
             cache = getattr(getattr(self, "base_engine", None), "cache", None)
             if cache is None or not getattr(cache, "redis", None):
                 return
             if reason in ("edge_gone", "trailing_edge"):
-                ttl = int(float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0)))
+                _consec = self._consecutive_edge_exits.get(market_id, 0)
+                if _consec >= 3:
+                    ttl = 86400  # 24h
+                elif _consec >= 2:
+                    ttl = 21600  # 6h
+                else:
+                    ttl = int(float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0)))
             else:
                 ttl = int(float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 300.0)))
             expire_at = time.time() + ttl
@@ -1668,6 +1733,15 @@ class EsportsBot(BaseBot):
             # S138: Also persist exit reason for cooldown duration lookup on restart
             if reason:
                 await cache.set(f"esportsbot:exit_reason:{market_id}", reason, ttl=ttl)
+            # S155: Persist consecutive edge exit counter (TTL = 24h, decays naturally)
+            _consec_count = self._consecutive_edge_exits.get(market_id, 0)
+            if _consec_count > 0:
+                await cache.set(f"esportsbot:consec_edge:{market_id}", _consec_count, ttl=86400)
+            else:
+                try:
+                    await cache.redis.delete(f"esportsbot:consec_edge:{market_id}")
+                except Exception:
+                    pass
         except Exception as exc:
             logger.debug("esportsbot_redis_exit_save_failed", error=str(exc))
 
@@ -1767,7 +1841,8 @@ class EsportsBot(BaseBot):
 
     async def _restore_exit_cooldowns_from_redis(self) -> None:
         """S109: Reload exit cooldowns from Redis on startup.
-        S138: Also restore exit reasons for extended edge_gone cooldowns."""
+        S138: Also restore exit reasons for extended edge_gone cooldowns.
+        S155: Also restore consecutive edge exit counters."""
         try:
             cache = getattr(getattr(self, "base_engine", None), "cache", None)
             if cache is None or not getattr(cache, "redis", None):
@@ -1778,7 +1853,7 @@ class EsportsBot(BaseBot):
             count = 0
             for key in keys:
                 # S138: Skip exit_reason keys — they're metadata, not cooldowns
-                if ":exit_reason:" in key:
+                if ":exit_reason:" in key or ":consec_edge:" in key:
                     continue
                 raw = await cache.get(key)
                 if raw is None:
@@ -1791,8 +1866,18 @@ class EsportsBot(BaseBot):
                 # S143: trailing_edge gets same extended cooldown as edge_gone
                 _reason_raw = await cache.get(f"esportsbot:exit_reason:{mid}")
                 _reason = str(_reason_raw) if _reason_raw else ""
+                # S155: Restore consecutive edge exit counter
+                _consec_raw = await cache.get(f"esportsbot:consec_edge:{mid}")
+                _consec = int(float(_consec_raw)) if _consec_raw else 0
+                if _consec > 0:
+                    self._consecutive_edge_exits[mid] = _consec
                 if _reason in ("edge_gone", "trailing_edge"):
-                    cooldown = float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0))
+                    if _consec >= 3:
+                        cooldown = 86400.0
+                    elif _consec >= 2:
+                        cooldown = 21600.0
+                    else:
+                        cooldown = float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0))
                 else:
                     cooldown = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 300.0))
                 elapsed = cooldown - (expire_at - now_wall)
@@ -1801,8 +1886,51 @@ class EsportsBot(BaseBot):
                 count += 1
             if count:
                 logger.info("esportsbot_exit_cooldowns_restored", count=count)
+            # S155: Restore any remaining consec_edge keys not tied to active cooldowns
+            consec_keys = await cache.redis.keys("esportsbot:consec_edge:*")
+            for ck in consec_keys:
+                _mid = ck.split("esportsbot:consec_edge:", 1)[-1]
+                if _mid not in self._consecutive_edge_exits:
+                    _cv = await cache.get(ck)
+                    if _cv:
+                        self._consecutive_edge_exits[_mid] = int(float(_cv))
+            if self._consecutive_edge_exits:
+                logger.info("esportsbot_consec_edge_restored", count=len(self._consecutive_edge_exits),
+                            markets={k: v for k, v in self._consecutive_edge_exits.items() if v >= 2})
         except Exception as exc:
             logger.warning("esportsbot_restore_exits_failed", error=str(exc))
+
+    async def _save_exec_fail_to_redis(self, market_id: str) -> None:
+        """S156: Persist exec failure cooldown to Redis so it survives restarts."""
+        try:
+            cache = getattr(getattr(self, "base_engine", None), "cache", None)
+            if cache is None or not getattr(cache, "redis", None):
+                return
+            _cd = int(float(getattr(settings, "ESPORTS_EXEC_FAIL_COOLDOWN_S", 300)))
+            await cache.set(f"esportsbot:exec_fail:{market_id}", "1", ttl=_cd)
+        except Exception as exc:
+            logger.debug("esportsbot_exec_fail_redis_save_failed", error=str(exc))
+
+    async def _restore_exec_fail_from_redis(self) -> None:
+        """S156: Reload exec failure cooldowns from Redis on startup."""
+        try:
+            cache = getattr(getattr(self, "base_engine", None), "cache", None)
+            if cache is None or not getattr(cache, "redis", None):
+                return
+            keys = await cache.redis.keys("esportsbot:exec_fail:*")
+            count = 0
+            for key in (keys or []):
+                key_str = key.decode() if isinstance(key, bytes) else str(key)
+                mid = key_str.split("esportsbot:exec_fail:")[-1]
+                ttl = await cache.redis.ttl(key_str)
+                if ttl and ttl > 0:
+                    # Set monotonic time so remaining TTL matches original cooldown
+                    self._exec_fail_cooldown[mid] = time.monotonic()
+                    count += 1
+            if count:
+                logger.info("esportsbot_exec_fail_restored", count=count)
+        except Exception as exc:
+            logger.debug("esportsbot_exec_fail_redis_restore_failed", error=str(exc))
 
     def _check_daily_loss_limit(self) -> bool:
         """A1+A8: Return True if trading should be blocked (loss limit or drawdown halt)."""
@@ -2103,6 +2231,11 @@ class EsportsBot(BaseBot):
                     # S136: Clean up edge tracking for exited position
                     self._entry_edge_cache.pop(mid, None)
                     self._edge_peaks.pop(f"_peak_edge_{mid}", None)
+                    # S155: Track consecutive edge exits even on failed sell
+                    if reason in ("edge_gone", "trailing_edge"):
+                        self._consecutive_edge_exits[mid] = self._consecutive_edge_exits.get(mid, 0) + 1
+                    else:
+                        self._consecutive_edge_exits.pop(mid, None)
                     # S110: Set cooldown even on failed exit — prevents churn re-entry
                     self._recently_exited[mid] = time.monotonic()
                     self._exit_reasons[mid] = reason  # S138: track for extended cooldown
@@ -2118,7 +2251,9 @@ class EsportsBot(BaseBot):
                 if game and game in self._game_exposure:
                     # S103: Use entry_price * size (USD) to match entry-time increment
                     _exit_cost = entry * size
-                    self._game_exposure[game] = max(0.0, self._game_exposure.get(game, 0.0) - _exit_cost)
+                    # S156: Decrement under _trade_lock to prevent race with concurrent entry
+                    async with self._trade_lock:
+                        self._game_exposure[game] = max(0.0, self._game_exposure.get(game, 0.0) - _exit_cost)
                     # Write-through decrement so daily_counters stays accurate across restarts
                     _db = getattr(self.base_engine, "db", None)
                     if _db is not None:
@@ -2133,6 +2268,12 @@ class EsportsBot(BaseBot):
                 self._edge_peaks.pop(f"_peak_edge_{mid}", None)
                 logger.info("esportsbot_exit_executed", market_id=mid, reason=reason,
                             exit_side="SELL", size=round(size, 2), game=game)
+                # S155: Track consecutive edge-based exits for escalating cooldown
+                if reason in ("edge_gone", "trailing_edge"):
+                    self._consecutive_edge_exits[mid] = self._consecutive_edge_exits.get(mid, 0) + 1
+                else:
+                    # Non-edge exit (stop_loss, max_hold, resolution) resets the counter
+                    self._consecutive_edge_exits.pop(mid, None)
                 # S109: Set cooldown + invalidate prediction cache to prevent churn
                 self._recently_exited[mid] = time.monotonic()
                 self._exit_reasons[mid] = reason  # S138: track for extended cooldown
@@ -3934,6 +4075,14 @@ class EsportsBot(BaseBot):
             game = opp.get("game", "")
             # S103: Track USD cost, not shares
             _st_cost = opp["price"] * st_override
+            # S156: Re-verify game cap under _trade_lock (gate at L748 is pre-lock)
+            _st_caps = self._get_exposure_caps()
+            if game and self._game_exposure.get(game, 0.0) + _st_cost > _st_caps["per_game"]:
+                logger.info("esportsbot_st_exposure_lock_reject", game=game,
+                            exposure=round(self._game_exposure.get(game, 0.0), 2),
+                            st_cost=round(_st_cost, 2),
+                            cap=round(_st_caps["per_game"], 2))
+                return False
             self._game_exposure[game] = self._game_exposure.get(game, 0.0) + _st_cost
             if game:
                 self._market_game[opp["market_id"]] = game
@@ -4200,6 +4349,14 @@ class EsportsBot(BaseBot):
         # S103: Track USD cost (price * size), not shares — units must match ESPORTS_MAX_GAME_EXPOSURE (USD)
         game = opp.get("game", "")
         _entry_cost = price * size
+        # S156: Re-verify game cap under _trade_lock (gate at L748 is pre-lock)
+        _caps_lock = self._get_exposure_caps()
+        if game and self._game_exposure.get(game, 0.0) + _entry_cost > _caps_lock["per_game"]:
+            logger.info("esportsbot_exposure_lock_reject", game=game,
+                        exposure=round(self._game_exposure.get(game, 0.0), 2),
+                        entry_cost=round(_entry_cost, 2),
+                        cap=round(_caps_lock["per_game"], 2))
+            return False
         self._game_exposure[game] = self._game_exposure.get(game, 0.0) + _entry_cost
         # Persist market→game for reliable exit decrement (outlives prediction_cache 1h TTL)
         if game:
@@ -4993,42 +5150,44 @@ class EsportsBot(BaseBot):
         self, game: str, db, init_glicko: bool = False
     ) -> None:
         """Run model training as background task — does not block scan loop."""
-        try:
-            if game == "cross_game":
-                await asyncio.wait_for(
-                    self._trainer.train_cross_game(db=db), timeout=300.0,
-                )
-                self._load_cross_game_model()
-            else:
-                result = await asyncio.wait_for(
-                    self._trainer.train_game(game, db=db), timeout=300.0,
-                )
-                # Reload updated models
-                if game == "lol" and self._lol_model:
-                    self._lol_model.load()
-                elif game == "cs2" and self._cs2_model:
-                    self._cs2_model.load()
-                elif game == "dota2" and self._dota2_model:
-                    self._dota2_model.load()
-                elif game == "valorant" and self._valorant_model:
-                    self._valorant_model.load()
-                # S136 Phase 11A-11D: Reload new game models after retrain
-                elif game == "cod" and self._cod_model:
-                    self._cod_model.load()
-                elif game == "rl" and self._rl_model:
-                    self._rl_model.load()
-                elif game == "sc2" and self._sc2_model:
-                    self._sc2_model.load()
-                elif game == "r6" and self._r6_model:
-                    self._r6_model.load()
-                # Rebuild Glicko-2 trackers if new game data collected
-                if init_glicko and result.get("samples", 0) > 0:
-                    await self._init_glicko2_trackers(db)
-            logger.info("EsportsBot: bg retrain complete", game=game)
-        except asyncio.CancelledError:
-            logger.info("EsportsBot: bg retrain cancelled", game=game)
-        except (asyncio.TimeoutError, Exception) as exc:
-            logger.warning("EsportsBot: bg retrain failed", game=game, error=str(exc))
+        # S156: Acquire semaphore to limit concurrent training (max 3)
+        async with self._train_semaphore:
+            try:
+                if game == "cross_game":
+                    await asyncio.wait_for(
+                        self._trainer.train_cross_game(db=db), timeout=300.0,
+                    )
+                    self._load_cross_game_model()
+                else:
+                    result = await asyncio.wait_for(
+                        self._trainer.train_game(game, db=db), timeout=300.0,
+                    )
+                    # Reload updated models
+                    if game == "lol" and self._lol_model:
+                        self._lol_model.load()
+                    elif game == "cs2" and self._cs2_model:
+                        self._cs2_model.load()
+                    elif game == "dota2" and self._dota2_model:
+                        self._dota2_model.load()
+                    elif game == "valorant" and self._valorant_model:
+                        self._valorant_model.load()
+                    # S136 Phase 11A-11D: Reload new game models after retrain
+                    elif game == "cod" and self._cod_model:
+                        self._cod_model.load()
+                    elif game == "rl" and self._rl_model:
+                        self._rl_model.load()
+                    elif game == "sc2" and self._sc2_model:
+                        self._sc2_model.load()
+                    elif game == "r6" and self._r6_model:
+                        self._r6_model.load()
+                    # Rebuild Glicko-2 trackers if new game data collected
+                    if init_glicko and result.get("samples", 0) > 0:
+                        await self._init_glicko2_trackers(db)
+                logger.info("EsportsBot: bg retrain complete", game=game)
+            except asyncio.CancelledError:
+                logger.info("EsportsBot: bg retrain cancelled", game=game)
+            except (asyncio.TimeoutError, Exception) as exc:
+                logger.warning("EsportsBot: bg retrain failed", game=game, error=str(exc))
 
     async def _get_cached_rolling_accuracy(self, db, last_n: int = 50) -> Dict[str, Dict]:
         """S94: Batch rolling accuracy with 5-min cache.
@@ -6559,11 +6718,20 @@ class EsportsBot(BaseBot):
 
         def _churn_blocked(mid: str) -> bool:
             """Return True if market is blocked by anti-churn gates."""
-            # Gate 1: Post-exit cooldown (S143: reason-aware)
+            # Gate 1: Post-exit cooldown (S143: reason-aware, S155: escalating)
             _exit_ts = self._recently_exited.get(mid)
             if _exit_ts is not None:
                 _reason = self._exit_reasons.get(mid, "")
-                _cd = _cooldown_edge if _reason in ("edge_gone", "trailing_edge") else _cooldown_default
+                if _reason in ("edge_gone", "trailing_edge"):
+                    _consec = self._consecutive_edge_exits.get(mid, 0)
+                    if _consec >= 3:
+                        _cd = 86400.0
+                    elif _consec >= 2:
+                        _cd = 21600.0
+                    else:
+                        _cd = _cooldown_edge
+                else:
+                    _cd = _cooldown_default
                 if _now_mono - _exit_ts < _cd:
                     return True
             # Gate 2: Per-market rolling entry cap
@@ -6840,9 +7008,12 @@ class EsportsBot(BaseBot):
         # S131: SQ is sizing multiplier, confidence = raw side_prob
         confidence = side_prob
 
-        # Cache prediction for WS reactive path
+        # Cache prediction for WS reactive path (include token info for price conversion)
+        _token_map = self._market_token_map.get(market_id, {})
         self._series_prediction_cache[market_id] = {
             "prob": model_prob, "ts": time.monotonic(), "game": game,
+            "yes_token_id": _token_map.get("yes", str(token_id)),
+            "no_token_id": _token_map.get("no", ""),
         }
 
         # Log prediction
@@ -7143,7 +7314,11 @@ class EsportsBot(BaseBot):
         return None
 
     async def _series_on_price_update(self, event: dict) -> None:
-        """WS reactive path for series predictions."""
+        """WS reactive path for series predictions.
+
+        Uses _passes_ws_entry_gates() shared with on_price_update to prevent
+        gate drift (the original cause of missing 12 safety gates — S155 audit).
+        """
         market_id = event.get("market_id", "")
         token_id = event.get("token_id", "")
         new_price = float(event.get("price", 0))
@@ -7154,11 +7329,27 @@ class EsportsBot(BaseBot):
         if not cached:
             return
 
+        # NO price conversion: identify token and convert to YES-equivalent
+        _yes_tid = cached.get("yes_token_id", "")
+        _no_tid = cached.get("no_token_id", "")
+        if _yes_tid and _no_tid:
+            if token_id == _yes_tid:
+                yes_price = new_price
+            elif token_id == _no_tid:
+                yes_price = 1.0 - new_price
+            else:
+                return  # Unknown token — can't safely compute edge
+        elif _yes_tid and token_id == _yes_tid:
+            yes_price = new_price
+        else:
+            # No token map — cannot distinguish YES/NO, skip
+            return
+
         # Significance threshold
         threshold = float(getattr(settings, "ESPORTS_SERIES_WS_PRICE_CHANGE_PCT", 0.01))
         old_price = self._series_ws_prev_prices.get(market_id)
         self._series_ws_prev_prices[market_id] = new_price
-        if old_price is None or abs(new_price - old_price) / max(old_price, 0.01) < threshold:
+        if old_price is None or abs(yes_price - (1.0 - old_price if token_id == _no_tid else old_price)) / max(old_price, 0.01) < threshold:
             return
 
         # Cooldown
@@ -7169,11 +7360,11 @@ class EsportsBot(BaseBot):
         self._series_ws_cooldowns[market_id] = now
 
         model_prob = cached["prob"]
-        edge = model_prob - new_price
-
-        # S139: Divergence cap — mirrors scan path enforcement.
         _series_ws_game = cached.get("game", "")
-        _div_sws = abs(model_prob - new_price)
+        edge = model_prob - yes_price
+
+        # Divergence cap
+        _div_sws = abs(edge)
         _eff_div_cap_sws = min(
             self._get_adaptive_div_cap(_series_ws_game),
             float(getattr(settings, "ESPORTS_MAX_MODEL_DIVERGENCE", 0.25)),
@@ -7182,7 +7373,7 @@ class EsportsBot(BaseBot):
             logger.info(
                 "esportsbot_divergence_capped_series_ws", market_id=market_id,
                 game=_series_ws_game,
-                model_prob=round(model_prob, 4), market_price=round(new_price, 4),
+                model_prob=round(model_prob, 4), market_price=round(yes_price, 4),
                 divergence=round(_div_sws, 4), cap=_eff_div_cap_sws,
             )
             return
@@ -7191,25 +7382,17 @@ class EsportsBot(BaseBot):
             return
 
         side = "YES" if edge > 0 else "NO"
+        trade_price = yes_price if side == "YES" else (1.0 - yes_price)
 
-        og = getattr(self.base_engine, "order_gateway", None)
-        if og is not None and og.has_open_position(self.bot_name, str(market_id)):
-            # GAP-2: Side-aware dedup — only block if same side
-            _pos_key = f"{self.bot_name}:{str(market_id)}"
-            _existing = getattr(og, "_position_details", {}).get(_pos_key, {})
-            if _existing and str(_existing.get("side", "")).upper() == side.upper():
-                return
-            if not _existing:
-                return
+        # Shared entry gates (daily loss, game disable, exposure, price, cooldown, etc.)
+        if not self._passes_ws_entry_gates(market_id, side, _series_ws_game, trade_price):
+            return
 
+        self._ws_pending_trades.add(market_id)
         try:
             side_prob = model_prob if side == "YES" else (1.0 - model_prob)
-            _sq, _ = self._compute_signal_quality(
-                cached.get("game", ""), market_id)
-            # S131: SQ is sizing multiplier, confidence = raw side_prob
+            _sq, _ = self._compute_signal_quality(_series_ws_game, market_id)
             confidence = side_prob
-            trade_price = new_price if side == "YES" else (1.0 - new_price)
-            # S142: Pull BM sigma inputs from series prediction cache
             _cached_ed_sws = cached.get("event_data") or {}
             opp = {
                 "type": "esports_series_ws",
@@ -7220,7 +7403,7 @@ class EsportsBot(BaseBot):
                 "confidence": confidence,
                 "prediction": model_prob,
                 "edge": round(abs(edge), 4),
-                "game": cached.get("game", ""),
+                "game": _series_ws_game,
                 "market_type": "match_winner",
                 "_signal_quality": _sq,
                 "_phi_a": float(_cached_ed_sws.get("_phi_a", 200.0)),
@@ -7231,10 +7414,15 @@ class EsportsBot(BaseBot):
             logger.info(
                 "esports_series_ws_reactive",
                 market_id=market_id,
-                price_move=f"{old_price:.4f}→{new_price:.4f}",
+                price_move=f"{old_price:.4f}->{new_price:.4f}" if old_price else f"?->{new_price:.4f}",
                 edge=round(abs(edge), 4),
             )
             async with self._trade_lock:
-                await self._execute_esports_trade(opp)
+                _ws_success = await self._execute_esports_trade(opp)
+            if _ws_success:
+                self._market_entry_times.setdefault(market_id, []).append(time.monotonic())
+                await self._save_entry_count_to_redis(market_id)
         except Exception as exc:
             logger.debug("esports_series_ws_failed", error=str(exc))
+        finally:
+            self._ws_pending_trades.discard(market_id)

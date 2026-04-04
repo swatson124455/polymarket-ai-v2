@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 async def main():
     import asyncpg
     pool = await asyncpg.create_pool(
-        dsn=os.environ.get('DATABASE_URL', 'postgresql://polymarket:polymarket_s46@localhost:6432/polymarket'),
+        dsn=os.environ['DATABASE_URL'],
         min_size=1, max_size=5,
     )
 

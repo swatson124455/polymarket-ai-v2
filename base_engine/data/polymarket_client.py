@@ -808,7 +808,34 @@ class PolymarketClient:
         except Exception as e:
             logger.warning("Data API /activity fallback failed: %s", e)
             return []
-    
+
+    async def get_closed_positions(
+        self, user_address: str, limit: int = 100, offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Fetch closed positions for a user from Data API.
+
+        S155: Used by per-category watchlist enrichment to compute trade count
+        and profit factor per trader.
+
+        Endpoint: GET /v1/closed-positions?user={address}&limit=N&offset=M
+        Returns list of position dicts with: slug, title, pnl, size, outcome, conditionId.
+        """
+        try:
+            params = {"user": user_address, "limit": min(limit, 200), "offset": offset}
+            raw = await self._request(
+                "GET",
+                "/v1/closed-positions",
+                self.data_api,
+                params=params,
+                cache_key=f"closed_positions:{user_address}:{limit}:{offset}",
+            )
+            if not raw or not isinstance(raw, list):
+                return []
+            return raw
+        except Exception as e:
+            logger.debug("get_closed_positions failed for %s: %s", user_address[:10], e)
+            return []
+
     async def get_top_users(self, limit: int = 200) -> List[Dict]:
         """
         Fetch top traders by profit. Tries Gamma API first, falls back to Data API.
