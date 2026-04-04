@@ -1526,6 +1526,31 @@ class Database:
                     )
                     await session.execute(stmt)
                     inserted += len(chunk)
+                # S156: Upsert latest prices into market_prices_latest (tiny table for O(1) lookups)
+                try:
+                    _latest_sql = text(
+                        "INSERT INTO market_prices_latest (token_id, market_id, price, timestamp) "
+                        "VALUES (:token_id, :market_id, :price, :timestamp) "
+                        "ON CONFLICT (token_id) DO UPDATE SET "
+                        "  price = EXCLUDED.price, market_id = EXCLUDED.market_id, "
+                        "  timestamp = EXCLUDED.timestamp "
+                        "WHERE EXCLUDED.timestamp > market_prices_latest.timestamp"
+                    )
+                    # Deduplicate: keep only latest per token_id from this batch
+                    _latest_by_token: dict = {}
+                    for row in normalized:
+                        tid = row.get("token_id")
+                        if tid and (tid not in _latest_by_token or row["timestamp"] > _latest_by_token[tid]["timestamp"]):
+                            _latest_by_token[tid] = row
+                    for _lrow in _latest_by_token.values():
+                        await session.execute(_latest_sql, {
+                            "token_id": _lrow["token_id"],
+                            "market_id": _lrow.get("market_id"),
+                            "price": _lrow["price"],
+                            "timestamp": _lrow["timestamp"],
+                        })
+                except Exception as _lp_err:
+                    logger.debug("market_prices_latest upsert failed (non-fatal): %s", _lp_err)
                 await session.commit()
                 logger.debug("bulk_insert_prices_raw: %s rows (batches of %s)", inserted, batch_size)
                 if getattr(settings, "VERIFY_SAVE_AFTER_INSERT", False) and normalized:

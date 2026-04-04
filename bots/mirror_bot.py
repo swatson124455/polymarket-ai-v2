@@ -2008,7 +2008,15 @@ class MirrorBot(BaseBot):
                         _wf_volume, _wf_no_fav, _wf_near_res, _wf_price_dir, _wf_slippage]
             _active_factors = [f for f in _factors if f < 0.99]
             if _active_factors:
-                _geo = _math.prod(_active_factors) ** (1.0 / len(_active_factors))
+                # S156: Guard against complex result from negative product (floating-point edge case).
+                # Clamp product to [0, 1] before fractional exponent to prevent complex numbers.
+                _prod = max(0.0, float(_math.prod(_active_factors)))
+                _geo = _prod ** (1.0 / len(_active_factors))
+                if not isinstance(_geo, (int, float)) or _geo != _geo:  # complex or NaN
+                    logger.warning("mirror_geo_mean_anomaly", geo=repr(_geo),
+                                   factors=[round(f, 4) for f in _active_factors],
+                                   trader=trader_address[:10])
+                    _geo = 0.0
             else:
                 _geo = 1.0
             _factor_w = float(getattr(settings, "MIRROR_GATE_FACTOR_WEIGHT", 0.30))
@@ -2388,11 +2396,11 @@ class MirrorBot(BaseBot):
             "spread": round(_spread, 3) if _spread is not None else None,  # S133
             "copy_tier": _copy_tier,  # S146: 1=profitable, 2=thin, 3=unprofitable
             # S153: Split scoring data for retroactive analysis
-            "gate_score": round(gate_score, 3),
-            "kelly_prob": round(kelly_prob, 3),
-            "gate_decay_w": round(_decay_w, 3),
-            "eff_prior": round(_eff_prior, 3),
-            "geo_mean": round(_geo, 3),
+            "gate_score": round(float(gate_score), 3),
+            "kelly_prob": round(float(kelly_prob), 3),
+            "gate_decay_w": round(float(_decay_w), 3),
+            "eff_prior": round(float(_eff_prior), 3),
+            "geo_mean": round(float(_geo), 3),
         }
         # S124: Merge ML selector scores into event_data for shadow ledger analysis
         if _ml_scores:
@@ -2449,15 +2457,18 @@ class MirrorBot(BaseBot):
             if _cd_secs > 0:
                 self._market_cooldown[market_id] = _time.monotonic() + _cd_secs
 
-            # Update position tracking with actual size
-            # S133: Create entry if missing — without this, new trades have no exit monitoring
+            # Update position tracking with ACTUAL filled size (not requested size)
+            # S156: Use order["filled"] to prevent in-memory vs paper engine size divergence.
+            # Partial fills mean order["filled"] < requested size. Using requested size
+            # inflates _open_positions, causing "Insufficient position" errors on exit.
+            _filled_size = float(order.get("filled", size))
             pos_key = f"{market_id}:{token_id}"
             if pos_key in self._open_positions:
-                self._open_positions[pos_key]["size"] += size
+                self._open_positions[pos_key]["size"] += _filled_size
             else:
                 self._open_positions[pos_key] = {
                     "side": side,
-                    "size": size,
+                    "size": _filled_size,
                     "entry_price": price,
                     "traders": {trader_address},
                     "timestamp": datetime.now(timezone.utc).isoformat(),
