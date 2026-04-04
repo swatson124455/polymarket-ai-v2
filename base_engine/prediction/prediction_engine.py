@@ -3133,10 +3133,12 @@ class PredictionEngine:
                         if _need_l8:
                             try:
                                 _cid_l8 = getattr(market, "condition_id", None) or ""
+                                # S156: Add time bound to prevent full-table scan on 63GB table
                                 _l8_r = await _s.execute(
                                     sa_text(
                                         "SELECT price FROM market_prices "
                                         "WHERE (market_id = :mid OR market_id = :cid) "
+                                        "AND timestamp > NOW() - INTERVAL '7 days' "
                                         "ORDER BY timestamp DESC LIMIT 30"
                                     ),
                                     {"mid": str(market_id), "cid": _cid_l8},

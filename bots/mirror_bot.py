@@ -1125,15 +1125,17 @@ class MirrorBot(BaseBot):
                     event_data=_exit_event_data,
                 )
                 if order.get("success"):
+                    # S156: Use actual filled quantity — partial fills leave remainder
+                    _filled_exit = float(order.get("filled", exit_size))
                     logger.info(
                         "Mirror exit executed",
                         market=market_id,
                         exit_side=exit_side,
                         original_side=pos["side"],
-                        size=f"{pos['size']:.2f}",
+                        size=f"{_filled_exit:.2f}",
+                        requested=f"{exit_size:.2f}",
                     )
-                    # BUG-13 fix: use actual exit_size; S133: use entry_price (matches increment)
-                    _exit_cost = exit_size * pos.get("entry_price", exit_price)
+                    _exit_cost = _filled_exit * pos.get("entry_price", exit_price)
                     # S156: Decrement under lock (matches entry reservation pattern)
                     async with self._exposure_lock:
                         self._daily_exposure = max(0.0, self._daily_exposure - _exit_cost)
@@ -1143,7 +1145,13 @@ class MirrorBot(BaseBot):
                             self._category_exposure[_pos_cat] = max(
                                 0.0, self._category_exposure.get(_pos_cat, 0.0) - _exit_cost
                             )
-                    del self._open_positions[pos_key]
+                    # Partial fill: decrement position size, full fill: delete
+                    if _filled_exit >= exit_size - 0.01:
+                        del self._open_positions[pos_key]
+                    else:
+                        self._open_positions[pos_key]["size"] = max(0.0, pos["size"] - _filled_exit)
+                        logger.info("mirror_partial_exit", market=market_id[:20],
+                                    filled=round(_filled_exit, 2), remaining=round(pos["size"] - _filled_exit, 2))
                     # S135: Mark position closed in DB so it doesn't reload on restart
                     # Use _sql alias (not _t) — _t is a local var in this function due to the
                     # conditional import at L909 (Python 3.13 scoping: local for entire function).
@@ -1648,7 +1656,9 @@ class MirrorBot(BaseBot):
                 confidence=confidence,
             )
             if order.get("success"):
-                _exit_usd = _exit_size * price
+                # S156: Use actual filled quantity for partial fill correctness
+                _filled_sell = float(order.get("filled", _exit_size))
+                _exit_usd = _filled_sell * price
                 # S156: Decrement under lock
                 async with self._exposure_lock:
                     self._daily_exposure = max(0.0, self._daily_exposure - _exit_usd)
@@ -1657,7 +1667,10 @@ class MirrorBot(BaseBot):
                         self._category_exposure[category] = max(
                             0.0, self._category_exposure.get(category, 0.0) - _exit_usd
                         )
-                del self._open_positions[pos_key]
+                if _filled_sell >= _exit_size - 0.01:
+                    del self._open_positions[pos_key]
+                else:
+                    self._open_positions[pos_key]["size"] = max(0.0, _pos["size"] - _filled_sell)
                 # S135: Mark position closed in DB so it doesn't reload on restart
                 try:
                     from sqlalchemy import text as _st
@@ -2008,13 +2021,22 @@ class MirrorBot(BaseBot):
                         _wf_volume, _wf_no_fav, _wf_near_res, _wf_price_dir, _wf_slippage]
             _active_factors = [f for f in _factors if f < 0.99]
             if _active_factors:
-                # S156: Guard against complex result from negative product (floating-point edge case).
-                # Clamp product to [0, 1] before fractional exponent to prevent complex numbers.
-                _prod = max(0.0, float(_math.prod(_active_factors)))
-                _geo = _prod ** (1.0 / len(_active_factors))
-                if not isinstance(_geo, (int, float)) or _geo != _geo:  # complex or NaN
-                    logger.warning("mirror_geo_mean_anomaly", geo=repr(_geo),
-                                   factors=[round(f, 4) for f in _active_factors],
+                # S156: Validate all factors are real floats in [0,1] before geometric mean.
+                # Log raw values if any factor has bypassed bounds (NaN, complex, negative).
+                _sanitized = []
+                for _fi, _fv in enumerate(_active_factors):
+                    if not isinstance(_fv, (int, float)) or _fv != _fv:  # complex, NaN, or non-numeric
+                        logger.warning("mirror_factor_anomaly", index=_fi, value=repr(_fv),
+                                       all_factors=[repr(f) for f in _active_factors],
+                                       trader=trader_address[:10])
+                        _sanitized.append(0.5)  # neutral fallback
+                    else:
+                        _sanitized.append(max(0.0, min(1.0, float(_fv))))
+                try:
+                    _geo = _math.prod(_sanitized) ** (1.0 / len(_sanitized))
+                except (TypeError, ValueError, OverflowError) as _geo_err:
+                    logger.warning("mirror_geo_mean_failed", error=str(_geo_err),
+                                   factors=[repr(f) for f in _active_factors],
                                    trader=trader_address[:10])
                     _geo = 0.0
             else:

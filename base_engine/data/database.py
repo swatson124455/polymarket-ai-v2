@@ -1442,6 +1442,32 @@ class Database:
                             if fail_count <= 5:  # Only log first 5 failures to avoid log spam
                                 logger.warning(f"Failed to process price data: {str(e)}")
                             continue
+                    # S156: Upsert latest prices into market_prices_latest (ORM write path)
+                    try:
+                        _latest_by_token: dict = {}
+                        for pd in prices:
+                            tid = pd.get("token_id")
+                            ts = pd.get("timestamp")
+                            if tid and ts and (tid not in _latest_by_token or ts > _latest_by_token[tid]["timestamp"]):
+                                _latest_by_token[tid] = pd
+                        if _latest_by_token:
+                            _lp_sql = text(
+                                "INSERT INTO market_prices_latest (token_id, market_id, price, timestamp) "
+                                "VALUES (:token_id, :market_id, :price, :timestamp) "
+                                "ON CONFLICT (token_id) DO UPDATE SET "
+                                "  price = EXCLUDED.price, market_id = EXCLUDED.market_id, "
+                                "  timestamp = EXCLUDED.timestamp "
+                                "WHERE EXCLUDED.timestamp > market_prices_latest.timestamp"
+                            )
+                            for _lrow in _latest_by_token.values():
+                                await session.execute(_lp_sql, {
+                                    "token_id": _lrow.get("token_id"),
+                                    "market_id": _lrow.get("market_id"),
+                                    "price": float(_lrow.get("price", 0)),
+                                    "timestamp": _lrow.get("timestamp"),
+                                })
+                    except Exception as _lp_err:
+                        logger.debug("market_prices_latest orm upsert failed (non-fatal): %s", _lp_err)
                     if fail_count > 0:
                         logger.warning(f"Bulk insert prices: {success_count} succeeded, {fail_count} failed out of {len(prices)}")
                     else:
