@@ -284,10 +284,9 @@ class EsportsBot(BaseBot):
         # Skip re-logging if prediction unchanged for same market within 10 min
         self._prediction_log_cache: Dict[str, tuple] = {}
 
-        # S135: Execution failure cooldown — after _execute_esports_trade returns
-        # False (e.g., dead orderbook spread), skip re-attempts for cooldown period.
-        # Prevents spam-retrying dead markets every 2s scan cycle.
-        self._exec_fail_cooldown: Dict[str, float] = {}
+        # S157: Reason-specific execution failure cooldown.
+        # Replaces S135 blanket 300s cooldown. Dict stores (fail_code, expiry_monotonic).
+        self._exec_fail_cooldown: Dict[str, tuple] = {}  # market_id → (fail_code, expiry)
 
         # E4: Monitoring thresholds — per-game Brier alerts
         self._monitoring_halted_games: set = set()  # games halted by monitoring
@@ -319,10 +318,10 @@ class EsportsBot(BaseBot):
         self._exit_reasons: Dict[str, str] = {}          # market_id → exit reason
         # S109: Per-market rolling entry cap — hard backstop against churn (RC3)
         self._market_entry_times: Dict[str, list] = {}    # market_id → [monotonic timestamps]
-        # S155: Consecutive edge-exit counter — escalating cooldown for oscillating markets.
-        # When a market is exited 2+ times for edge_gone/trailing_edge without a profitable
-        # trade in between, the cooldown escalates to block re-entry into stable oscillation.
-        self._consecutive_edge_exits: Dict[str, int] = {}  # market_id → consecutive count
+        # S157: Edge hysteresis — separate entry threshold from hold threshold.
+        # Replaces S155 escalating cooldown + S156 adaptive min_edge.
+        self._min_edge_entry = float(getattr(settings, "ESPORTS_MIN_EDGE_ENTRY", 0.08))
+        self._min_edge_hold = float(getattr(settings, "ESPORTS_MIN_EDGE_HOLD", 0.03))
 
         # WS price tracking and cooldown dicts (moved from hasattr lazy-init)
         self._ws_prev_prices: Dict[str, float] = {}
@@ -427,7 +426,7 @@ class EsportsBot(BaseBot):
         self._min_edge = float(getattr(settings, "ESPORTS_MIN_EDGE", 0.05))  # 5% easy mode
         self._min_confidence = float(getattr(settings, "ESPORTS_MIN_CONFIDENCE", 0.50))  # easy mode
         # S112: edge cap removed — all edges trade. High edges logged for monitoring.
-        self._churn_edge_penalty = float(getattr(settings, "ESPORTS_CHURN_EDGE_PENALTY", 0.03))
+        # S157: _churn_edge_penalty removed — replaced by edge hysteresis (min_edge_entry/hold)
         self._egm_d = float(getattr(settings, "ESPORTS_EGM_D", 1.5))  # EGM extremization factor
         self._maker_timeout = float(
             getattr(settings, "ESPORTS_MAKER_FALLBACK_TIMEOUT_S", 3.0)
@@ -756,21 +755,13 @@ class EsportsBot(BaseBot):
         _max_price = float(getattr(settings, "ESPORTS_MAX_ENTRY_PRICE", 0.95))
         if trade_price < _min_price or trade_price > _max_price:
             return False
-        # Post-exit cooldown with S155 escalating cooldown
+        # S157: Flat post-exit cooldown (escalating removed — hysteresis handles churn)
         _exit_ts = self._recently_exited.get(market_id)
         if _exit_ts is not None:
             _exit_reason = self._exit_reasons.get(market_id, "")
-            if _exit_reason in ("edge_gone", "trailing_edge"):
-                _base_cd = float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0))
-                _consec = self._consecutive_edge_exits.get(market_id, 0)
-                if _consec >= 3:
-                    _cooldown = 86400.0  # 24h
-                elif _consec >= 2:
-                    _cooldown = 21600.0  # 6h
-                else:
-                    _cooldown = _base_cd
-            else:
-                _cooldown = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 300.0))
+            _cooldown = (float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0))
+                         if _exit_reason in ("edge_gone", "trailing_edge")
+                         else float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 300.0)))
             if time.monotonic() - _exit_ts < _cooldown:
                 return False
         # Per-market rolling entry cap
@@ -893,9 +884,11 @@ class EsportsBot(BaseBot):
             )
             return
 
-        # S156: Adaptive min_edge for churn markets
-        _ws_min_edge = self._get_adaptive_min_edge(market_id, self._min_edge)
-        if abs(edge) < _ws_min_edge:
+        # S157: Edge hysteresis — use higher entry threshold for new positions
+        if abs(edge) < self._min_edge_entry:
+            if abs(edge) >= self._min_edge_hold:
+                logger.debug("esportsbot_hysteresis_hold", market_id=market_id,
+                             edge=round(edge, 4), entry_thresh=self._min_edge_entry)
             return
 
         if abs(edge) > 0.40:
@@ -979,14 +972,11 @@ class EsportsBot(BaseBot):
         # S109: Evict expired exit cooldowns (S155: use actual cooldown per market)
         _cd_default = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 900.0))
         _cd_edge = float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0))
+        # S157: Flat cooldown lookup (escalating removed — hysteresis handles churn)
         stale_exits = []
         for k, v in self._recently_exited.items():
             _r = self._exit_reasons.get(k, "")
-            if _r in ("edge_gone", "trailing_edge"):
-                _c = self._consecutive_edge_exits.get(k, 0)
-                _eff_cd = 86400.0 if _c >= 3 else (21600.0 if _c >= 2 else _cd_edge)
-            else:
-                _eff_cd = _cd_default
+            _eff_cd = _cd_edge if _r in ("edge_gone", "trailing_edge") else _cd_default
             if now - v >= _eff_cd:
                 stale_exits.append(k)
         for k in stale_exits:
@@ -1013,13 +1003,14 @@ class EsportsBot(BaseBot):
                 del _ws_dict[k]
         # Prune long-lived dicts with 7-day TTL (markets gone from scan for >7d)
         _7d_s = 7 * 86400
-        _stale_exec = [k for k, v in self._exec_fail_cooldown.items() if now - v > _7d_s]
+        # S157: exec_fail_cooldown stores (fail_code, expiry_monotonic) tuples
+        _stale_exec = [k for k, v in self._exec_fail_cooldown.items()
+                       if (v[1] if isinstance(v, tuple) else v) < now - _7d_s]
         for k in _stale_exec:
             del self._exec_fail_cooldown[k]
         _stale_reasons = [k for k in self._exit_reasons if k not in self._recently_exited]
         for k in _stale_reasons:
             del self._exit_reasons[k]
-            self._consecutive_edge_exits.pop(k, None)
         if stale or stale_log or stale_series or stale_exits:
             logger.debug("esports_cache_cleanup", prediction_evicted=len(stale),
                          log_evicted=len(stale_log), series_evicted=len(stale_series),
@@ -1406,37 +1397,21 @@ class EsportsBot(BaseBot):
             """Analyze one market; returns (opps, trades, skips)."""
             async with self._analysis_semaphore:
                 mid = str(m.get("id", ""))
-                # S109: Post-exit cooldown — block re-entry within cooldown window
-                # S138: Extended cooldown for edge_gone exits to prevent churn loop
-                # S143: trailing_edge gets same extended cooldown as edge_gone
-                # S155: Escalating cooldown for consecutive edge exits
+                # S157: Flat post-exit cooldown (hysteresis handles churn, escalating removed)
                 _exit_ts = self._recently_exited.get(mid)
                 if _exit_ts is not None:
                     _exit_reason = self._exit_reasons.get(mid, "")
-                    _consec = self._consecutive_edge_exits.get(mid, 0)
-                    if _exit_reason in ("edge_gone", "trailing_edge"):
-                        _base_cd = float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0))
-                        if _consec >= 3:
-                            _cooldown = 86400.0  # 24h
-                        elif _consec >= 2:
-                            _cooldown = 21600.0  # 6h
-                        else:
-                            _cooldown = _base_cd
-                    else:
-                        _cooldown = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 300.0))
+                    _cooldown = (float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0))
+                                 if _exit_reason in ("edge_gone", "trailing_edge")
+                                 else float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 300.0)))
                     if time.monotonic() - _exit_ts < _cooldown:
-                        if _consec >= 2:
-                            logger.info("esportsbot_churn_escalated",
-                                        market_id=mid, consecutive=_consec,
-                                        cooldown_h=round(_cooldown / 3600, 1))
                         self._wf["exit_cooldown"] += 1
                         return (0, 0, 1)
-                # S135: Post-execution-failure cooldown — skip markets that recently
-                # failed in _execute_esports_trade (e.g., dead orderbook spread).
-                _fail_ts = self._exec_fail_cooldown.get(mid)
-                if _fail_ts is not None:
-                    _fail_cd = float(getattr(settings, "ESPORTS_EXEC_FAIL_COOLDOWN_S", 300))
-                    if time.monotonic() - _fail_ts < _fail_cd:
+                # S157: Reason-specific execution failure cooldown
+                _fail_entry = self._exec_fail_cooldown.get(mid)
+                if _fail_entry is not None:
+                    _fail_code, _fail_expiry = _fail_entry
+                    if time.monotonic() < _fail_expiry:
                         self._wf["exec_fail_cooldown"] = self._wf.get("exec_fail_cooldown", 0) + 1
                         return (0, 0, 1)
                     else:
@@ -1491,7 +1466,7 @@ class EsportsBot(BaseBot):
                                 self._market_entry_times.setdefault(mid, []).append(time.monotonic())
                                 await self._save_entry_count_to_redis(mid)
                             elif not success:
-                                self._exec_fail_cooldown[mid] = time.monotonic()
+                                self._set_exec_fail_cooldown(mid, getattr(self, "_last_fail_code", "unknown"))
                                 await self._save_exec_fail_to_redis(mid)
                             return (1, 1 if success else 0, 0)
                         return (1, 0, 0)
@@ -1505,8 +1480,8 @@ class EsportsBot(BaseBot):
                         self._market_entry_times.setdefault(mid, []).append(time.monotonic())
                         await self._save_entry_count_to_redis(mid)
                     else:
-                        # S135: Cooldown after execution failure
-                        self._exec_fail_cooldown[mid] = time.monotonic()
+                        # S157: Reason-specific cooldown after execution failure
+                        self._set_exec_fail_cooldown(mid, getattr(self, "_last_fail_code", "unknown"))
                         await self._save_exec_fail_to_redis(mid)
                     logger.info(
                         "esportsbot_trade_attempt",
@@ -1714,37 +1689,18 @@ class EsportsBot(BaseBot):
 
     async def _save_exit_cooldown_to_redis(self, market_id: str, reason: str = "") -> None:
         """S109: Persist exit cooldown to Redis so it survives restarts.
-        S138: Use longer TTL for edge_gone exits to prevent churn loop.
-        S143: trailing_edge gets same extended cooldown as edge_gone.
-        S155: Persist consecutive edge exit counter for escalating cooldown."""
+        S157: Simplified — flat cooldown per reason (escalating removed, hysteresis handles churn)."""
         try:
             cache = getattr(getattr(self, "base_engine", None), "cache", None)
             if cache is None or not getattr(cache, "redis", None):
                 return
-            if reason in ("edge_gone", "trailing_edge"):
-                _consec = self._consecutive_edge_exits.get(market_id, 0)
-                if _consec >= 3:
-                    ttl = 86400  # 24h
-                elif _consec >= 2:
-                    ttl = 21600  # 6h
-                else:
-                    ttl = int(float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0)))
-            else:
-                ttl = int(float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 300.0)))
+            ttl = (int(float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0)))
+                   if reason in ("edge_gone", "trailing_edge")
+                   else int(float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 300.0))))
             expire_at = time.time() + ttl
             await cache.set(f"esportsbot:exit:{market_id}", expire_at, ttl=ttl)
-            # S138: Also persist exit reason for cooldown duration lookup on restart
             if reason:
                 await cache.set(f"esportsbot:exit_reason:{market_id}", reason, ttl=ttl)
-            # S155: Persist consecutive edge exit counter (TTL = 24h, decays naturally)
-            _consec_count = self._consecutive_edge_exits.get(market_id, 0)
-            if _consec_count > 0:
-                await cache.set(f"esportsbot:consec_edge:{market_id}", _consec_count, ttl=86400)
-            else:
-                try:
-                    await cache.redis.delete(f"esportsbot:consec_edge:{market_id}")
-                except Exception:
-                    pass
         except Exception as exc:
             logger.debug("esportsbot_redis_exit_save_failed", error=str(exc))
 
@@ -1869,37 +1825,24 @@ class EsportsBot(BaseBot):
                 # S143: trailing_edge gets same extended cooldown as edge_gone
                 _reason_raw = await cache.get(f"esportsbot:exit_reason:{mid}")
                 _reason = str(_reason_raw) if _reason_raw else ""
-                # S155: Restore consecutive edge exit counter
-                _consec_raw = await cache.get(f"esportsbot:consec_edge:{mid}")
-                _consec = int(float(_consec_raw)) if _consec_raw else 0
-                if _consec > 0:
-                    self._consecutive_edge_exits[mid] = _consec
-                if _reason in ("edge_gone", "trailing_edge"):
-                    if _consec >= 3:
-                        cooldown = 86400.0
-                    elif _consec >= 2:
-                        cooldown = 21600.0
-                    else:
-                        cooldown = float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0))
-                else:
-                    cooldown = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 300.0))
+                # S157: Flat cooldown per reason (escalating removed — hysteresis handles churn)
+                cooldown = (float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0))
+                            if _reason in ("edge_gone", "trailing_edge")
+                            else float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 300.0)))
                 elapsed = cooldown - (expire_at - now_wall)
                 self._recently_exited[mid] = now_mono - elapsed
                 self._exit_reasons[mid] = _reason
                 count += 1
             if count:
                 logger.info("esportsbot_exit_cooldowns_restored", count=count)
-            # S155: Restore any remaining consec_edge keys not tied to active cooldowns
-            consec_keys = await cache.redis.keys("esportsbot:consec_edge:*")
-            for ck in consec_keys:
-                _mid = ck.split("esportsbot:consec_edge:", 1)[-1]
-                if _mid not in self._consecutive_edge_exits:
-                    _cv = await cache.get(ck)
-                    if _cv:
-                        self._consecutive_edge_exits[_mid] = int(float(_cv))
-            if self._consecutive_edge_exits:
-                logger.info("esportsbot_consec_edge_restored", count=len(self._consecutive_edge_exits),
-                            markets={k: v for k, v in self._consecutive_edge_exits.items() if v >= 2})
+            # S157: Clean up stale consec_edge Redis keys from removed escalating cooldown
+            try:
+                _stale_keys = await cache.redis.keys("esportsbot:consec_edge:*")
+                if _stale_keys:
+                    await cache.redis.delete(*_stale_keys)
+                    logger.info("esportsbot_stale_consec_edge_cleaned", count=len(_stale_keys))
+            except Exception:
+                pass  # Non-critical cleanup
         except Exception as exc:
             logger.warning("esportsbot_restore_exits_failed", error=str(exc))
 
@@ -1927,8 +1870,8 @@ class EsportsBot(BaseBot):
                 mid = key_str.split("esportsbot:exec_fail:")[-1]
                 ttl = await cache.redis.ttl(key_str)
                 if ttl and ttl > 0:
-                    # Set monotonic time so remaining TTL matches original cooldown
-                    self._exec_fail_cooldown[mid] = time.monotonic()
+                    # S157: Restore with unknown fail_code (Redis doesn't store it)
+                    self._exec_fail_cooldown[mid] = ("unknown", time.monotonic() + ttl)
                     count += 1
             if count:
                 logger.info("esportsbot_exec_fail_restored", count=count)
@@ -1990,14 +1933,27 @@ class EsportsBot(BaseBot):
 
         return round(factor, 3)
 
-    def _get_adaptive_min_edge(self, market_id: str, base_edge: float) -> float:
-        """S156: Elevate min_edge for markets with prior edge-based exits.
-        Penalty grows linearly with consecutive exits (+0.03 per exit).
-        Resets naturally when market exits for non-edge reason (stop_loss, resolution)."""
-        _consec = self._consecutive_edge_exits.get(market_id, 0)
-        if _consec <= 0:
-            return base_edge
-        return base_edge + self._churn_edge_penalty * _consec
+    # S157: _get_adaptive_min_edge removed — replaced by edge hysteresis (min_edge_entry/hold)
+
+    # S157: Cooldown duration by paper_trading fail_code
+    _FAIL_COOLDOWN_S = {
+        "book_depleted": 60,       # Market may refill quickly
+        "partial_fill": 60,        # Same as book_depleted
+        "slippage": 300,           # Wide spread needs time to tighten
+        "insufficient_cash": 86400,  # No retry until daily reset
+        "insufficient_position": 86400,  # Position state won't change mid-scan
+        "duplicate": 0,            # Idempotency working, not a failure
+    }
+    _FAIL_COOLDOWN_DEFAULT = 120   # Unknown fail_code fallback
+
+    def _set_exec_fail_cooldown(self, market_id: str, fail_code: str) -> None:
+        """S157: Set reason-specific execution failure cooldown."""
+        cd = self._FAIL_COOLDOWN_S.get(fail_code, self._FAIL_COOLDOWN_DEFAULT)
+        if cd <= 0:
+            return  # duplicate = no cooldown
+        if fail_code not in self._FAIL_COOLDOWN_S:
+            logger.warning("esportsbot_exec_fail_unknown_code", market_id=market_id, fail_code=fail_code)
+        self._exec_fail_cooldown[market_id] = (fail_code, time.monotonic() + cd)
 
     def _get_exposure_caps(self) -> Dict[str, float]:
         """S136 Phase 8A: Compute exposure caps -- percentage-based when enabled.
@@ -2109,8 +2065,8 @@ class EsportsBot(BaseBot):
                 else:
                     _hold_ok = (now_utc - _opened_at.replace(tzinfo=timezone.utc)).total_seconds() >= _min_hold_s
 
-                # Full exit: edge gone
-                if _remaining_edge <= 0.01:
+                # S157: Full exit when edge below hold threshold (hysteresis lower band)
+                if _remaining_edge <= self._min_edge_hold:
                     if not _hold_ok:
                         logger.info("esportsbot_edge_exit_hold_gate",
                                      market_id=mid, opened_at=str(_opened_at),
@@ -2119,12 +2075,13 @@ class EsportsBot(BaseBot):
                         logger.info("esportsbot_edge_exit_full", market_id=mid,
                                     remaining_edge=round(_remaining_edge, 4),
                                     entry_model_prob=round(_entry_model_prob, 4),
-                                    current_price=round(current, 4))
+                                    current_price=round(current, 4),
+                                    hold_threshold=self._min_edge_hold)
                         positions_to_close.append((pos, "edge_gone"))
                         continue
 
-                # Trailing edge stop: edge dropped 50% from peak AND below 0.02
-                if _peak > 0.02 and _remaining_edge < _peak * 0.5 and _remaining_edge < 0.02:
+                # Trailing edge stop: edge dropped 50% from peak AND below hold threshold
+                if _peak > self._min_edge_hold and _remaining_edge < _peak * 0.5 and _remaining_edge < self._min_edge_hold:
                     if not _hold_ok:
                         logger.info("esportsbot_trailing_edge_hold_gate",
                                      market_id=mid, opened_at=str(_opened_at),
@@ -2243,11 +2200,6 @@ class EsportsBot(BaseBot):
                     # S136: Clean up edge tracking for exited position
                     self._entry_edge_cache.pop(mid, None)
                     self._edge_peaks.pop(f"_peak_edge_{mid}", None)
-                    # S155: Track consecutive edge exits even on failed sell
-                    if reason in ("edge_gone", "trailing_edge"):
-                        self._consecutive_edge_exits[mid] = self._consecutive_edge_exits.get(mid, 0) + 1
-                    else:
-                        self._consecutive_edge_exits.pop(mid, None)
                     # S110: Set cooldown even on failed exit — prevents churn re-entry
                     self._recently_exited[mid] = time.monotonic()
                     self._exit_reasons[mid] = reason  # S138: track for extended cooldown
@@ -2280,12 +2232,6 @@ class EsportsBot(BaseBot):
                 self._edge_peaks.pop(f"_peak_edge_{mid}", None)
                 logger.info("esportsbot_exit_executed", market_id=mid, reason=reason,
                             exit_side="SELL", size=round(size, 2), game=game)
-                # S155: Track consecutive edge-based exits for escalating cooldown
-                if reason in ("edge_gone", "trailing_edge"):
-                    self._consecutive_edge_exits[mid] = self._consecutive_edge_exits.get(mid, 0) + 1
-                else:
-                    # Non-edge exit (stop_loss, max_hold, resolution) resets the counter
-                    self._consecutive_edge_exits.pop(mid, None)
                 # S109: Set cooldown + invalidate prediction cache to prevent churn
                 self._recently_exited[mid] = time.monotonic()
                 self._exit_reasons[mid] = reason  # S138: track for extended cooldown
@@ -2703,8 +2649,8 @@ class EsportsBot(BaseBot):
             float(getattr(settings, "ESPORTS_MARKET_FALLBACK_MIN_EDGE", 0.15))
             if _cached.get("fallback") else self._min_edge
         )
-        # S156: Elevate edge threshold for markets with prior edge-based exits (churn fix)
-        _effective_min_edge = self._get_adaptive_min_edge(market_id, _effective_min_edge)
+        # S157: Edge hysteresis — use higher entry threshold for new positions
+        _effective_min_edge = max(_effective_min_edge, self._min_edge_entry)
 
         if edge_yes >= _effective_min_edge:
             side = "YES"
@@ -4486,6 +4432,11 @@ class EsportsBot(BaseBot):
             self._game_exposure[game] = max(
                 0.0, self._game_exposure.get(game, 0.0) - _entry_cost
             )
+            # S157: Return fail_code for reason-specific cooldown
+            _fail_code = order.get("fail_code", "unknown") if order else "unknown"
+            logger.info("esportsbot_exec_fail", market_id=opp.get("market_id", ""),
+                        fail_code=_fail_code, error=str(order.get("error", ""))[:80] if order else "no_order")
+            self._last_fail_code = _fail_code
             return False
 
     # ── Sizing + confidence helpers ─────────────────────────────────────
@@ -6732,20 +6683,11 @@ class EsportsBot(BaseBot):
 
         def _churn_blocked(mid: str) -> bool:
             """Return True if market is blocked by anti-churn gates."""
-            # Gate 1: Post-exit cooldown (S143: reason-aware, S155: escalating)
+            # S157: Flat post-exit cooldown (hysteresis handles churn, escalating removed)
             _exit_ts = self._recently_exited.get(mid)
             if _exit_ts is not None:
                 _reason = self._exit_reasons.get(mid, "")
-                if _reason in ("edge_gone", "trailing_edge"):
-                    _consec = self._consecutive_edge_exits.get(mid, 0)
-                    if _consec >= 3:
-                        _cd = 86400.0
-                    elif _consec >= 2:
-                        _cd = 21600.0
-                    else:
-                        _cd = _cooldown_edge
-                else:
-                    _cd = _cooldown_default
+                _cd = _cooldown_edge if _reason in ("edge_gone", "trailing_edge") else _cooldown_default
                 if _now_mono - _exit_ts < _cd:
                     return True
             # Gate 2: Per-market rolling entry cap
@@ -7392,8 +7334,8 @@ class EsportsBot(BaseBot):
             )
             return
 
-        # S156: Adaptive min_edge for churn markets
-        _sws_min_edge = self._get_adaptive_min_edge(market_id, self._series_min_edge)
+        # S157: Edge hysteresis — use higher entry threshold for new series positions
+        _sws_min_edge = max(self._series_min_edge, self._min_edge_entry)
         if abs(edge) < _sws_min_edge:
             return
 

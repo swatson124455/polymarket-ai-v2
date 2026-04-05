@@ -34,6 +34,8 @@ def make_bot():
         mock_settings.PANDASCORE_API_KEY = "test-key"
         mock_settings.RIOT_API_KEY = None
         mock_settings.ESPORTS_MIN_EDGE = 0.08
+        mock_settings.ESPORTS_MIN_EDGE_ENTRY = 0.08  # S157: edge hysteresis entry threshold
+        mock_settings.ESPORTS_MIN_EDGE_HOLD = 0.03   # S157: edge hysteresis hold threshold
         mock_settings.ESPORTS_MIN_CONFIDENCE = 0.35  # S127: lowered for signal_quality dampening
         mock_settings.ESPORTS_MAKER_FALLBACK_TIMEOUT_S = 3.0
         mock_settings.SCAN_INTERVAL_ESPORTS = 120

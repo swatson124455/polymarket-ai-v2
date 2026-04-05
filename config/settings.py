@@ -1323,8 +1323,11 @@ class Settings(BaseSettings):
     ESPORTS_MARKET_FALLBACK_ENABLED: bool = os.getenv("ESPORTS_MARKET_FALLBACK_ENABLED", "true").lower() in ("true", "1", "yes")
     ESPORTS_MARKET_FALLBACK_MIN_EDGE: float = float(os.getenv("ESPORTS_MARKET_FALLBACK_MIN_EDGE", "0.15"))
 
-    # --- Churn mitigation ---
-    ESPORTS_CHURN_EDGE_PENALTY: float = float(os.getenv("ESPORTS_CHURN_EDGE_PENALTY", "0.03"))  # S156: +0.03 min_edge per consecutive edge exit
+    # --- Churn mitigation (S157: edge hysteresis replaces escalating cooldown) ---
+    # Entry requires higher edge than holding. Zone between HOLD and ENTRY = no action.
+    # Eliminates oscillation where model flips between "edge exists" and "edge gone".
+    ESPORTS_MIN_EDGE_ENTRY: float = float(os.getenv("ESPORTS_MIN_EDGE_ENTRY", "0.08"))
+    ESPORTS_MIN_EDGE_HOLD: float = float(os.getenv("ESPORTS_MIN_EDGE_HOLD", "0.03"))
 
     # --- Conformal prediction ---
     ESPORTS_USE_CONFORMAL: bool = os.getenv("ESPORTS_USE_CONFORMAL", "false").lower() in ("true", "1", "yes")
