@@ -3689,9 +3689,18 @@ class Database:
                 # S109: Zero out stale unrealized_pnl on already-closed positions FIRST.
                 # Must run BEFORE resolution update — otherwise we zero the fresh
                 # resolution P&L we just computed (P1-19 from S128 audit).
+                # S155: Skip positions on resolved markets — their P&L from stop-loss
+                # or take-profit exits is correct and should not be erased. The
+                # resolution update below only re-computes status='open' positions,
+                # so without this guard, stop-loss P&L was permanently destroyed.
                 r2 = await session.execute(text(
                     "UPDATE positions SET unrealized_pnl = 0 "
-                    "WHERE status = 'closed' AND unrealized_pnl != 0"
+                    "WHERE status = 'closed' AND unrealized_pnl != 0 "
+                    "AND NOT EXISTS ("
+                    "  SELECT 1 FROM markets m "
+                    "  WHERE (m.id = positions.market_id OR m.condition_id = positions.market_id) "
+                    "  AND m.resolution IN ('YES', 'NO')"
+                    ")"
                 ))
                 stale_cleaned = getattr(r2, "rowcount", 0) or 0
                 r = await session.execute(text("""

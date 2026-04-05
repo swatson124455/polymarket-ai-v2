@@ -637,6 +637,12 @@ class WeatherBot(BaseBot):
                 confidence=confidence,
             )
             self._prediction_log_cache[market_id] = (model_prob, now_mono)
+            # S155: Size cap — evict oldest 50% when cache exceeds 5000 entries
+            if len(self._prediction_log_cache) > 5000:
+                _sorted = sorted(self._prediction_log_cache,
+                                 key=lambda k: self._prediction_log_cache[k][1])
+                for _k in _sorted[:2500]:
+                    del self._prediction_log_cache[_k]
         except Exception:
             pass  # insert_prediction_log already logs internally
 
@@ -2553,12 +2559,14 @@ class WeatherBot(BaseBot):
         if total_edge <= 0:
             return {}
 
-        # Pro-rata allocation: each bucket gets its share of the budget
-        # proportional to its Kelly edge. Apply kelly_mult for safety.
+        # S155: Pro-rata allocation with min-trade filter. Previous max(1.0, share)
+        # floor wasted group budget on sub-$5 allocations that were rejected downstream.
+        _min_trade_usd = float(getattr(settings, "WEATHER_MIN_TRADE_USD", 5.0))
         allocations = {}
         for mid, f_i in edges.items():
             share = (f_i / total_edge) * kelly_mult * group_budget
-            allocations[mid] = round(max(1.0, share), 2)
+            if share >= _min_trade_usd:
+                allocations[mid] = round(share, 2)
 
         # Ensure total doesn't exceed group budget
         total = sum(allocations.values())
@@ -3692,14 +3700,16 @@ class WeatherBot(BaseBot):
             logger.debug("weatherbot_redis_backoff_restore_failed", error=str(exc))
 
     async def _save_exit_to_redis(self, market_id: str) -> None:
-        """Persist a recent-exit event to Redis with configurable TTL so it survives restarts."""
+        """Persist a recent-exit event to Redis with reason-specific TTL so it survives restarts."""
         try:
             cache = getattr(getattr(self, "base_engine", None), "cache", None)
             if cache is None or not getattr(cache, "redis", None):
                 return
-            _ttl = int(self._exit_cooldown_secs)
-            expire_at = time.time() + float(_ttl)
-            await cache.set(f"weatherbot:exit:{market_id}", expire_at, ttl=_ttl)
+            # S155: Use reason-specific TTL (REVERSAL=30min, default=4h)
+            _ttl = int(self._get_exit_cooldown(market_id))
+            reason = self._exit_reasons.get(market_id, "RESOLUTION")
+            payload = {"expire_at": time.time() + float(_ttl), "reason": reason}
+            await cache.set(f"weatherbot:exit:{market_id}", payload, ttl=_ttl)
         except Exception as exc:
             logger.debug("weatherbot_redis_exit_save_failed", error=str(exc))
 
@@ -3717,11 +3727,20 @@ class WeatherBot(BaseBot):
                 raw = await cache.get(key)
                 if raw is None:
                     continue
-                expire_at = float(raw)
+                # S155: Parse JSON payload with reason, backward compat with old float format
+                if isinstance(raw, dict):
+                    expire_at = float(raw.get("expire_at", 0))
+                    reason = raw.get("reason", "RESOLUTION")
+                else:
+                    expire_at = float(raw)
+                    reason = "RESOLUTION"
                 if expire_at <= now_wall:
                     continue  # cooldown already expired
-                elapsed = self._exit_cooldown_secs - (expire_at - now_wall)
                 mid = key.split("weatherbot:exit:", 1)[-1]
+                # Compute elapsed using reason-specific cooldown duration
+                self._exit_reasons[mid] = reason
+                _cooldown = self._get_exit_cooldown(mid)
+                elapsed = _cooldown - (expire_at - now_wall)
                 self._recently_exited[mid] = now_mono - elapsed
                 count += 1
             if count:
@@ -3860,6 +3879,19 @@ class WeatherBot(BaseBot):
         self._city_exposure.clear()
         self._market_group_cache.clear()  # S104: stale date mappings from yesterday
 
+        # S155: Prune unbounded session-lifetime caches (memory leak mitigation).
+        # These dicts grow without bounds; clear at day boundary to prevent OOM.
+        self._prediction_log_cache.clear()
+        self._written_forecasts.clear()
+        self._alerted_unmatched_cities.clear()
+        # TTL-based eviction for timed caches
+        _now_mono = time.monotonic()
+        self._afd_cache = {k: v for k, v in self._afd_cache.items() if v[0] > _now_mono}
+        self._station_mse_cache = {k: v for k, v in self._station_mse_cache.items()
+                                   if _now_mono - v[1] < 3600}
+        self._psw_discovery_cache = {k: v for k, v in self._psw_discovery_cache.items()
+                                      if _now_mono - v[0] < 1200}
+
         # P2: Restore today's realized P&L from paper_trades so restarts
         # don't reset the daily loss limit check to $0.
         await self._restore_daily_pnl_from_db()
@@ -3878,13 +3910,14 @@ class WeatherBot(BaseBot):
             today_start = datetime.strptime(today_str, "%Y-%m-%d")  # naive UTC midnight
             async with db.get_session() as session:
                 from sqlalchemy import text
-                # S134: Only use EXIT events for daily P&L — RESOLUTION events
-                # are corrupted by Phase 4b paper_trades UPSERT bug.
+                # S155: Include RESOLUTION events — Phase 4b dedup bug fixed in S87.
+                # RESOLUTION losses are the dominant loss source (-$31K vs +$677 exits).
+                # Excluding them disabled the daily loss limit circuit breaker.
                 result = await session.execute(text("""
                     SELECT COALESCE(SUM(CAST(realized_pnl AS DOUBLE PRECISION)), 0.0)
                     FROM trade_events
                     WHERE bot_name = 'WeatherBot'
-                      AND event_type = 'EXIT'
+                      AND event_type IN ('EXIT', 'RESOLUTION')
                       AND realized_pnl IS NOT NULL
                       AND event_time >= :today_start
                 """), {"today_start": today_start})
@@ -4991,11 +5024,11 @@ class WeatherBot(BaseBot):
                         if alerting:
                             await alerting.send_alert(
                                 title="WeatherBot Brier CRITICAL",
-                                message=f"7d forecast MSE={brier_proxy:.2f} (>25.0) — trading halted. "
+                                message=f"30d forecast MSE={brier_proxy:.2f} (>25.0) — trading halted. "
                                         f"Recalibrate EMOS or check data pipeline.",
                                 severity=AlertSeverity.CRITICAL,
                                 source="WeatherBot",
-                                metadata={"mse_7d": brier_proxy, "sample_count": row[0]},
+                                metadata={"mse_30d": brier_proxy, "sample_count": row[0]},
                             )
                         logger.critical(
                             "weatherbot_monitoring_halt",
@@ -5007,11 +5040,11 @@ class WeatherBot(BaseBot):
                         if alerting:
                             await alerting.send_alert(
                                 title="WeatherBot Brier WARNING",
-                                message=f"7d forecast MSE={brier_proxy:.2f} (>16.0) — "
+                                message=f"30d forecast MSE={brier_proxy:.2f} (>16.0) — "
                                         f"consider forcing EMOS recalibration.",
                                 severity=AlertSeverity.WARNING,
                                 source="WeatherBot",
-                                metadata={"mse_7d": brier_proxy, "sample_count": row[0]},
+                                metadata={"mse_30d": brier_proxy, "sample_count": row[0]},
                             )
                         logger.warning(
                             "weatherbot_monitoring_warning",

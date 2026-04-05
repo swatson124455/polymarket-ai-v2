@@ -1452,7 +1452,8 @@ class WeatherForecastClient:
                     return []
                 data = await resp.json()
             maxes = data.get("daily", {}).get("temperature_2m_max", [])
-            return [float(t) for t in maxes if t is not None]
+            import math
+            return [float(t) for t in maxes if t is not None and math.isfinite(float(t))]
         except Exception:
             return []
 

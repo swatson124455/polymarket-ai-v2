@@ -505,10 +505,13 @@ class WeatherProbabilityEngine:
         w = min(0.4, 0.4 * (lead_time_hours - 72.0) / (168.0 - 72.0))
 
         blended_loc = (1.0 - w) * loc + w * clim_mean
-        # RMS blend of variances (preserves total variance)
+        # S155: Mixture variance with cross-term for mean separation.
+        # Missing w*(1-w)*(m1-m2)² caused underestimated spread when
+        # ensemble and climatology disagree at long lead times.
         blended_scale = max(
-            ((1.0 - w) * scale ** 2 + w * clim_std ** 2) ** 0.5,
-            0.5,  # Floor
+            ((1.0 - w) * scale ** 2 + w * clim_std ** 2
+             + w * (1.0 - w) * (loc - clim_mean) ** 2) ** 0.5,
+            0.5,  # Floor (degrees Fahrenheit)
         )
 
         return (blended_loc, blended_scale)

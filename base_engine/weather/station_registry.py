@@ -1116,7 +1116,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
     "montreal": WeatherStation(
         city_name="Montreal",
         station_id="CYUL",
-        ghcnd_id="GHCND:CA006158733",
+        ghcnd_id="GHCND:CA007025250",  # S155: was CA006158733 (Toronto Pearson duplicate)
         latitude=45.4706,
         longitude=-73.7408,
         elevation_m=36.0,
