@@ -74,6 +74,8 @@ async def prune(days: int, batch_size: int, execute: bool) -> dict:
         batch_num += 1
         try:
             async with db.get_raw_session() as session:
+                # Override PgBouncer-inherited 30s timeout for this maintenance query
+                await session.execute(text("SET statement_timeout = '300s'"))
                 r = await session.execute(text("""
                     DELETE FROM market_prices
                     WHERE ctid IN (
