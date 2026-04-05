@@ -7368,10 +7368,12 @@ class EsportsBot(BaseBot):
             _sq, _ = self._compute_signal_quality(_series_ws_game, market_id)
             confidence = side_prob
             _cached_ed_sws = cached.get("event_data") or {}
+            # S158: Use correct token_id for the chosen side (was using raw WS token regardless)
+            _sws_token_id = (cached.get("no_token_id") or token_id) if side == "NO" else (cached.get("yes_token_id") or token_id)
             opp = {
                 "type": "esports_series_ws",
                 "market_id": market_id,
-                "token_id": token_id,
+                "token_id": _sws_token_id,
                 "side": side,
                 "price": trade_price,
                 "confidence": confidence,
