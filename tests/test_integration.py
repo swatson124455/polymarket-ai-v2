@@ -40,6 +40,7 @@ async def base_engine():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+@pytest.mark.xfail(reason="requires ingested historical data — fails on empty DB, see S156 review", strict=False)
 async def test_integration_backtest_learning(base_engine):
     async def test_strategy(trade, positions, capital):
         return {"action": "BUY", "size": 10, "price": trade.get("price", 0.5)}
