@@ -535,10 +535,9 @@ class AutomatedPositionManager:
             return True
         except Exception as e:
             logger.warning("current_price update failed (non-fatal): %s", e)
-            # Do NOT rollback here — rollback expires all ORM objects in the session,
-            # causing MissingGreenlet when _check_position accesses position attributes.
-            # The session context manager in _monitor_positions handles cleanup on exit.
             # S158: Return False so caller skips _check_position on the poisoned session.
+            # No rollback here — session exits via context manager. Rollback would expire
+            # all ORM objects, causing MissingGreenlet. Next cycle gets a fresh session.
             return False
 
     async def _check_position(self, position: Position):

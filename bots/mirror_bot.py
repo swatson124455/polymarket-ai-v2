@@ -259,9 +259,13 @@ class MirrorBot(BaseBot):
                     _cat_rows = await session.execute(
                         _text(
                             "SELECT COALESCE(event_data->>'category', '') AS cat, "
-                            "  SUM(CAST(size AS DOUBLE PRECISION) * CAST(price AS DOUBLE PRECISION)) AS spent "
+                            "  SUM(CASE WHEN event_type = 'ENTRY' "
+                            "    THEN CAST(size AS DOUBLE PRECISION) * CAST(price AS DOUBLE PRECISION) "
+                            "    WHEN event_type = 'EXIT' "
+                            "    THEN -CAST(size AS DOUBLE PRECISION) * CAST(price AS DOUBLE PRECISION) "
+                            "    ELSE 0 END) AS spent "
                             "FROM trade_events "
-                            "WHERE bot_name = :bot AND event_type = 'ENTRY' AND event_time >= CURRENT_DATE "
+                            "WHERE bot_name = :bot AND event_type IN ('ENTRY', 'EXIT') AND event_time >= CURRENT_DATE "
                             "GROUP BY COALESCE(event_data->>'category', '')"
                         ),
                         {"bot": self.bot_name},
@@ -269,7 +273,10 @@ class MirrorBot(BaseBot):
                     for _cr in _cat_rows.fetchall():
                         _cat_name = str(_cr[0] or "")
                         if _cat_name:
-                            self._category_exposure[_cat_name] = float(_cr[1] or 0.0)
+                            _val = float(_cr[1] or 0.0)
+                            if _val < 0:
+                                logger.warning("category_exposure_negative_clamped", cat=_cat_name, raw=round(_val, 2))
+                            self._category_exposure[_cat_name] = max(0.0, _val)
                     if self._category_exposure:
                         logger.info("MirrorBot startup: seeded _category_exposure from trade_events: %s",
                                     {k: round(v, 0) for k, v in self._category_exposure.items()})
@@ -1145,6 +1152,8 @@ class MirrorBot(BaseBot):
                     # Partial fill: decrement position size, full fill: delete
                     if _filled_exit >= exit_size - 0.01:
                         del self._open_positions[pos_key]
+                        self._slippage_fail_count.pop(pos_key, None)
+                        self._slippage_backoff.pop(pos_key, None)
                     else:
                         _remaining = max(0.0, pos["size"] - _filled_exit)
                         self._open_positions[pos_key]["size"] = _remaining
@@ -1155,7 +1164,7 @@ class MirrorBot(BaseBot):
                                        market=market_id[:20],
                                        filled=round(_filled_exit, 2),
                                        remaining=round(_remaining, 2),
-                                       exit_reason=exit_reason.get("exit_reason", "unknown"))
+                                       exit_reason=_exit_event_data.get("exit_reason", "unknown"))
                     # S135: Mark position closed in DB so it doesn't reload on restart
                     # Use _sql alias (not _t) — _t is a local var in this function due to the
                     # conditional import at L909 (Python 3.13 scoping: local for entire function).
@@ -1201,7 +1210,7 @@ class MirrorBot(BaseBot):
                     "WHERE (bot_id = :bot OR source_bot = :bot) "
                     "  AND is_paper = true "
                     "  AND market_id IN ("
-                    "    SELECT CAST(id AS TEXT) FROM markets WHERE resolution IN ('YES','NO')"
+                    "    SELECT condition_id FROM markets WHERE resolved = TRUE AND condition_id IS NOT NULL"
                     "  ) "
                     "RETURNING market_id, token_id"
                 ), {"bot": self.bot_name})
@@ -1213,6 +1222,9 @@ class MirrorBot(BaseBot):
                     for row in reaped:
                         pos_key = f"{row[0]}:{row[1]}"
                         _pos = self._open_positions.pop(pos_key, None)
+                        # S158: Clean slippage backoff for reaped positions
+                        self._slippage_fail_count.pop(pos_key, None)
+                        self._slippage_backoff.pop(pos_key, None)
                         # S113 P7: Decrement daily exposure for resolved positions —
                         # without this, resolved positions inflate _daily_exposure
                         # and block new trades via the daily cap.
@@ -1371,6 +1383,9 @@ class MirrorBot(BaseBot):
             self._daily_reset_date = today
             # S99b: 60s cooldown to prevent burst of 30+ trades at midnight
             self._daily_reset_cooldown = _time.monotonic() + 60
+            # S158: Prune expired market cooldowns (entries accumulate, never removed)
+            _now_mono = _time.monotonic()
+            self._market_cooldown = {k: v for k, v in self._market_cooldown.items() if v > _now_mono}
 
     # ── Deduplication ───────────────────────────────────────────────
 
@@ -1658,16 +1673,25 @@ class MirrorBot(BaseBot):
                                    filled=round(_filled_sell, 2),
                                    remaining=round(_rem, 2),
                                    exit_reason="rtds_sell")
-                # S135: Mark position closed in DB so it doesn't reload on restart
+                # S135/S158: Mark position closed on full fill, update size on partial fill.
+                # Was unconditional close — partial fills lost residual shares on restart.
                 try:
                     from sqlalchemy import text as _st
                     async with self.base_engine.db.get_session() as _cs:
-                        await _cs.execute(_st(
-                            "UPDATE positions SET status = 'closed' "
-                            "WHERE market_id = :mid AND token_id = :tid "
-                            "  AND COALESCE(source_bot, bot_id) = 'MirrorBot' "
-                            "  AND status = 'open'"
-                        ), {"mid": market_id, "tid": token_id})
+                        if _filled_sell >= _exit_size - 0.01:
+                            await _cs.execute(_st(
+                                "UPDATE positions SET status = 'closed' "
+                                "WHERE market_id = :mid AND token_id = :tid "
+                                "  AND COALESCE(source_bot, bot_id) = 'MirrorBot' "
+                                "  AND status = 'open'"
+                            ), {"mid": market_id, "tid": token_id})
+                        else:
+                            await _cs.execute(_st(
+                                "UPDATE positions SET size = :sz "
+                                "WHERE market_id = :mid AND token_id = :tid "
+                                "  AND COALESCE(source_bot, bot_id) = 'MirrorBot' "
+                                "  AND status = 'open'"
+                            ), {"mid": market_id, "tid": token_id, "sz": _rem})
                         await _cs.commit()
                 except Exception as _db_err:
                     logger.warning("mirror_sell_db_close_failed market=%s: %s", str(market_id)[:16], _db_err)
@@ -1819,14 +1843,9 @@ class MirrorBot(BaseBot):
             _cat_wr = 0.50
             _cat_n = 0
 
-        # Factor 2: Price-implied edge.
+        # Factor 2: Price-implied edge — ZEROED.
         # S132 DATA: Contrarian boost was anti-signal (32.9% WR, -$84K).
         # Neutral trades (46.6% WR) outperform both contrarian and consensus.
-        # Zeroed out — confidence should not depend on price direction.
-        _price_dev = abs(price - 0.50)
-        _side_upper = str(side).upper()
-        _is_contrarian = ((_side_upper == "YES" and price < 0.45)
-                          or (_side_upper == "NO" and price < 0.45))
         _price_adj = 0.0
 
         # Factor 3: Trade size conviction — whale betting larger than usual = higher conviction.

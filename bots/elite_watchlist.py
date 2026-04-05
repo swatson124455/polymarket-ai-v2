@@ -653,6 +653,11 @@ class EliteWatchlist:
         self._copy_perf = _new_copy_perf
         self._watchlist_addresses = new_addresses
         self._watchlist_data = new_data
+        # S158: Prune _last_trade_time for traders no longer on watchlist
+        _active_addrs = {a.lower() for a in new_addresses}
+        _stale_ltt = [k for k in self._last_trade_time if k not in _active_addrs]
+        for _k in _stale_ltt:
+            del self._last_trade_time[_k]
         self._last_refresh = time.monotonic()
         self._last_refresh_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
