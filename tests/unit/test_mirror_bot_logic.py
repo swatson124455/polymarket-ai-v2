@@ -1239,21 +1239,20 @@ class TestCanOpenPositionBankroll:
             ms.MIRROR_EXTREME_PRICE_DAMPENER = 0.25
             assert bot._can_open_position(0.50) is True
 
-    def test_blocks_at_bankroll_cap(self):
-        """Blocks when daily exposure reaches bankroll.max_daily_usd."""
+    def test_bankroll_cap_not_checked_here(self):
+        """S157 O4: Bankroll daily cap enforcement moved under _exposure_lock.
+        _can_open_position no longer checks daily exposure."""
         bot, _ = _make_bot()
         bot.bankroll = MagicMock()
         bot.bankroll.max_daily_usd = 5000
-        bot._daily_exposure = 5000.0
+        bot._daily_exposure = 5000.0  # at cap
 
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
-            ms.MIRROR_MIN_PRICE = 0.07
-            ms.MIRROR_MAX_PRICE = 0.93
             ms.MIRROR_HARD_MIN_PRICE = 0.05
             ms.MIRROR_HARD_MAX_PRICE = 0.95
-            ms.MIRROR_EXTREME_PRICE_DAMPENER = 0.25
-            assert bot._can_open_position(0.50) is False
+            # Should pass — daily cap checked under lock, not here
+            assert bot._can_open_position(0.50) is True
 
 
 # ── MIRROR_MAX_DAILY_EXPOSURE_PCT deprecation ──────────────────────────────
