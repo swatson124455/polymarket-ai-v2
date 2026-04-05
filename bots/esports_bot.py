@@ -322,6 +322,8 @@ class EsportsBot(BaseBot):
         # Replaces S155 escalating cooldown + S156 adaptive min_edge.
         self._min_edge_entry = float(getattr(settings, "ESPORTS_MIN_EDGE_ENTRY", 0.08))
         self._min_edge_hold = float(getattr(settings, "ESPORTS_MIN_EDGE_HOLD", 0.03))
+        # S157 review: Counter for markets in hysteresis band (hold < edge < entry)
+        self._hysteresis_hold_count = 0
 
         # WS price tracking and cooldown dicts (moved from hasattr lazy-init)
         self._ws_prev_prices: Dict[str, float] = {}
@@ -887,6 +889,7 @@ class EsportsBot(BaseBot):
         # S157: Edge hysteresis — use higher entry threshold for new positions
         if abs(edge) < self._min_edge_entry:
             if abs(edge) >= self._min_edge_hold:
+                self._hysteresis_hold_count += 1
                 logger.debug("esportsbot_hysteresis_hold", market_id=market_id,
                              edge=round(edge, 4), entry_thresh=self._min_edge_entry)
             return
@@ -1359,6 +1362,7 @@ class EsportsBot(BaseBot):
                      "low_edge": 0, "low_confidence": 0,
                      "passed": 0, "reentry_rejected": 0,
                      "exit_cooldown": 0, "max_entries": 0}
+        self._hysteresis_hold_count = 0
         self._exposure_cap_logged: set = set()  # per-scan: games already logged for cap hit
         og = getattr(self.base_engine, "order_gateway", None)
 
@@ -1546,6 +1550,7 @@ class EsportsBot(BaseBot):
             halted_games=list(self._monitoring_halted_games) or None,
             min_confidence=self._min_confidence,
             min_edge=self._min_edge,
+            hysteresis_hold=self._hysteresis_hold_count,
             waterfall=_wf_nonzero or None,
             backfills_this_scan=self._backfill_calls_this_scan,
             ws_trading=self._ws_trading_active,
