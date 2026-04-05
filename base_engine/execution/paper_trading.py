@@ -358,7 +358,8 @@ class PaperTradingEngine:
             logger.warning("Paper trade rejected: not enabled", market_id=market_id)
             return {
                 "success": False,
-                "error": "Paper trading not enabled"
+                "error": "Paper trading not enabled",
+                "fail_code": "paper_disabled",
             }
 
         # S94: Lock protects cash, positions, and realized_pnl from concurrent bot updates.
