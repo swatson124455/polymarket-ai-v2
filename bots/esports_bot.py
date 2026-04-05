@@ -1928,12 +1928,18 @@ class EsportsBot(BaseBot):
             factor = 1.0
 
         # Hysteresis: require 50% recovery before restoring prior tier
+        # S158: _dd_tier_trigger_pct records the dd_pct that caused the LAST tier downgrade.
+        # Only set on downgrade (factor < _prev_factor), not every call, so the recovery
+        # comparison stays stable until the tier actually changes.
         _prev_factor = getattr(self, '_last_dd_factor', 1.0)
+        _trigger_dd = getattr(self, '_dd_tier_trigger_pct', 0.0)
         if factor > _prev_factor:
-            # Recovering -- check if drawdown recovered enough
-            _recovery_threshold = dd_pct * 0.5  # need to recover 50%
-            if dd_pct > _recovery_threshold and _prev_factor < 1.0:
-                factor = _prev_factor  # stay at current tier
+            # Recovering — only restore higher tier if drawdown recovered 50% from trigger level
+            if _trigger_dd > 0 and dd_pct > _trigger_dd * 0.5:
+                factor = _prev_factor  # stay at current tier until sufficient recovery
+        if factor < _prev_factor:
+            # Tier degraded — record the drawdown level that caused this downgrade
+            self._dd_tier_trigger_pct = dd_pct
         self._last_dd_factor = factor
 
         return round(factor, 3)
