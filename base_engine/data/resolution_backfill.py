@@ -332,11 +332,17 @@ async def run_resolution_backfill(
                     """), {"mid": market_id})
                 else:
                     # Transient failure — exponential backoff: 1h→3h→9h→27h→7d cap
+                    # Promote after 5 consecutive failures (count incremented to 5 here)
                     await _lc.execute(text("""
                         UPDATE traded_markets
                         SET last_checked_at = NOW() + make_interval(
                             hours => LEAST(power(3, LEAST(COALESCE(check_fail_count, 0), 4)), 168)
-                        ), check_fail_count = COALESCE(check_fail_count, 0) + 1
+                        ),
+                        check_fail_count = COALESCE(check_fail_count, 0) + 1,
+                        resolution_status = CASE
+                            WHEN COALESCE(check_fail_count, 0) + 1 >= 5 THEN 'dead_letter'
+                            ELSE resolution_status
+                        END
                         WHERE market_id = :mid
                     """), {"mid": market_id})
                 await _lc.commit()
