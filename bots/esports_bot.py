@@ -7112,13 +7112,17 @@ class EsportsBot(BaseBot):
             return None
 
         try:
-            rows = await db.fetch(
-                "SELECT team_key, mu, phi, sigma, match_count "
-                "FROM glicko2_ratings WHERE game = :game "
-                "AND team_key IN (:ta, :tb)",
-                {"game": game, "ta": team_a.lower().strip(),
-                 "tb": team_b.lower().strip()},
-            )
+            from sqlalchemy import text as _sg_text
+            async with db.get_session(timeout=10) as _sg_session:
+                _sg_result = await _sg_session.execute(
+                    _sg_text(
+                        "SELECT team_key, mu, phi, sigma, match_count "
+                        "FROM glicko2_ratings WHERE game = :game "
+                        "AND team_key = ANY(:teams)"
+                    ),
+                    {"game": game, "teams": [team_a.lower().strip(), team_b.lower().strip()]},
+                )
+                rows = [dict(r._mapping) for r in _sg_result.fetchall()]
             if len(rows) < 2:
                 return None
 
