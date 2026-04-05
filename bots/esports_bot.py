@@ -1852,12 +1852,15 @@ class EsportsBot(BaseBot):
             logger.warning("esportsbot_restore_exits_failed", error=str(exc))
 
     async def _save_exec_fail_to_redis(self, market_id: str) -> None:
-        """S156: Persist exec failure cooldown to Redis so it survives restarts."""
+        """S156: Persist exec failure cooldown to Redis so it survives restarts.
+        S158: Use reason-specific TTL from in-memory cooldown instead of generic 300s."""
         try:
             cache = getattr(getattr(self, "base_engine", None), "cache", None)
             if cache is None or not getattr(cache, "redis", None):
                 return
-            _cd = int(float(getattr(settings, "ESPORTS_EXEC_FAIL_COOLDOWN_S", 300)))
+            _entry = self._exec_fail_cooldown.get(market_id)
+            _cd = int(_entry[1] - time.monotonic()) if _entry and isinstance(_entry, tuple) else 120
+            _cd = max(1, _cd)  # ensure positive TTL
             await cache.set(f"esportsbot:exec_fail:{market_id}", "1", ttl=_cd)
         except Exception as exc:
             logger.debug("esportsbot_exec_fail_redis_save_failed", error=str(exc))
