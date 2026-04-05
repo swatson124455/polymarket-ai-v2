@@ -340,8 +340,8 @@ async def run_resolution_backfill(
                         WHERE market_id = :mid
                     """), {"mid": market_id})
                 await _lc.commit()
-        except Exception:
-            pass  # best-effort, non-fatal
+        except Exception as e:
+            logger.warning("record_check_result_failed", market_id=market_id, error=str(e))
 
     async with client:
         for mid in market_ids:
