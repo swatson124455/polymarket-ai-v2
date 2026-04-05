@@ -256,11 +256,17 @@ class AutomatedPositionManager:
                     # SESSION 44 FIX: Update current_price from market_prices before checking exits.
                     # Without this, current_price == entry_price forever, causing every SELL to lose
                     # (exit at stale entry_price minus slippage = guaranteed loss).
+                    # S158: Returns False if price update failed — skip _check_position to avoid
+                    # cascade PendingRollbackError on the poisoned session.
+                    _prices_ok = True
                     if positions:
-                        await self._update_current_prices(session, positions)
+                        _prices_ok = await self._update_current_prices(session, positions)
 
-                    for position in positions:
-                        await self._check_position(position)
+                    if _prices_ok:
+                        for position in positions:
+                            await self._check_position(position)
+                    else:
+                        logger.warning("Skipping position checks — price update failed, %d positions deferred", len(positions))
 
                 await asyncio.sleep(self.check_interval_seconds)
             except Exception as e:
@@ -326,8 +332,11 @@ class AutomatedPositionManager:
 
         return active
 
-    async def _update_current_prices(self, session, positions: list) -> None:
+    async def _update_current_prices(self, session, positions: list) -> bool:
         """Fetch latest market prices and update current_price + unrealized_pnl on open positions.
+
+        Returns True on success, False on failure. Caller should skip _check_position
+        when False to avoid cascade PendingRollbackError on a poisoned session (S158).
 
         Uses a single SQL query (DISTINCT ON per token) to get the most recent price
         for all open positions' token_ids. This prevents the stale-price bug where
@@ -523,11 +532,14 @@ class AutomatedPositionManager:
                     )
                 except Exception:
                     pass
+            return True
         except Exception as e:
             logger.warning("current_price update failed (non-fatal): %s", e)
             # Do NOT rollback here — rollback expires all ORM objects in the session,
             # causing MissingGreenlet when _check_position accesses position attributes.
             # The session context manager in _monitor_positions handles cleanup on exit.
+            # S158: Return False so caller skips _check_position on the poisoned session.
+            return False
 
     async def _check_position(self, position: Position):
         """Check a single position for stop-loss/take-profit, model reversal, and edge depletion.
