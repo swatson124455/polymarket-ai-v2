@@ -2085,8 +2085,8 @@ class EsportsBot(BaseBot):
                         positions_to_close.append((pos, "edge_gone"))
                         continue
 
-                # Trailing edge stop: edge dropped 50% from peak AND below hold threshold
-                if _peak > self._min_edge_hold and _remaining_edge < _peak * 0.5 and _remaining_edge < self._min_edge_hold:
+                # Trailing edge stop: edge dropped 50% from peak (peak was meaningful)
+                if _peak > self._min_edge_hold and _remaining_edge < _peak * 0.5:
                     if not _hold_ok:
                         logger.info("esportsbot_trailing_edge_hold_gate",
                                      market_id=mid, opened_at=str(_opened_at),
