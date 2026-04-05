@@ -416,7 +416,7 @@ class Settings(BaseSettings):
     # Tier 0 pre-trade filters
     MIRROR_CATEGORY_BLOCKLIST: str = os.getenv("MIRROR_CATEGORY_BLOCKLIST", "crypto,15-minute,speed")
     MIRROR_MARKET_COOLDOWN_SECONDS: int = int(os.getenv("MIRROR_MARKET_COOLDOWN_SECONDS", "1800"))
-    MIRROR_MIN_TRADE_USD: float = float(os.getenv("MIRROR_MIN_TRADE_USD", "50.0"))
+    MIRROR_MIN_TRADE_USD: float = float(os.getenv("MIRROR_MIN_TRADE_USD", "25.0"))  # S157: 50→25 (unify with cold-start; $25 still filters dust)
     MIRROR_MAX_SLIPPAGE_PCT: float = float(os.getenv("MIRROR_MAX_SLIPPAGE_PCT", "0.05"))  # S142: 0.08→0.05 (8% slippage consumed edge on 3-5¢ signal)
     # S132: Minimum whale trade USD — sub-$50 trades are noise (39.9% WR, -$153K)
     MIRROR_MIN_WHALE_TRADE_USD: float = float(os.getenv("MIRROR_MIN_WHALE_TRADE_USD", "50.0"))
@@ -452,8 +452,8 @@ class Settings(BaseSettings):
     MIRROR_MAX_KELLY_EDGE: float = float(os.getenv("MIRROR_MAX_KELLY_EDGE", "0.05"))
     MIRROR_GATE_COLD_START_PRIOR: float = float(os.getenv("MIRROR_GATE_COLD_START_PRIOR", "0.53"))
     MIRROR_GATE_FACTOR_WEIGHT: float = float(os.getenv("MIRROR_GATE_FACTOR_WEIGHT", "0.30"))
-    MIRROR_COLD_START_SIZE_FLOOR: float = float(os.getenv("MIRROR_COLD_START_SIZE_FLOOR", "0.15"))
-    MIRROR_COLD_START_MIN_TRADE_USD: float = float(os.getenv("MIRROR_COLD_START_MIN_TRADE_USD", "8.0"))
+    MIRROR_COLD_START_SIZE_FLOOR: float = float(os.getenv("MIRROR_COLD_START_SIZE_FLOOR", "0.20"))  # S157: 0.15→0.20 (cold-start trades ~$60, above $25 gate)
+    # S157: MIRROR_COLD_START_MIN_TRADE_USD removed — single gate via MIRROR_MIN_TRADE_USD
     # Dampeners (S119: set to 1.0 = no-op for data collection phase)
     MIRROR_FAVORITE_PRICE_THRESHOLD: float = float(os.getenv("MIRROR_FAVORITE_PRICE_THRESHOLD", "0.70"))
     MIRROR_FAVORITE_DAMPENER: float = float(os.getenv("MIRROR_FAVORITE_DAMPENER", "1.0"))  # S119: 0.40→1.0 for data collection

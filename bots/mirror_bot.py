@@ -1355,33 +1355,10 @@ class MirrorBot(BaseBot):
                 self._cap_logged_this_scan = True
             return False
 
-        # Daily cap: read bankroll.max_daily_usd directly (avoids capital*0.15 mismatch).
-        # Fallback: MIRROR_MAX_DAILY_EXPOSURE_PCT * TOTAL_CAPITAL for test/mock scenarios.
-        if self.bankroll:
-            _max_daily_usd = self.bankroll.max_daily_usd
-        else:
-            # DEPRECATED: MIRROR_MAX_DAILY_EXPOSURE_PCT — use BotBankrollManager config instead.
-            if not self._deprecation_warned:
-                logger.warning(
-                    "MIRROR_MAX_DAILY_EXPOSURE_PCT is deprecated — "
-                    "configure bankroll.max_daily_usd in BotBankrollManager instead"
-                )
-                self._deprecation_warned = True
-            max_exposure_pct = getattr(settings, "MIRROR_MAX_DAILY_EXPOSURE_PCT", self.MAX_DAILY_EXPOSURE_PCT)
-            _max_daily_usd = float(getattr(settings, "TOTAL_CAPITAL", 10000.0)) * max_exposure_pct
-        if self._daily_exposure >= _max_daily_usd:
-            logger.info("Mirror DAILY CAP: $%.0f/$%.0f exposure, skipping",
-                        self._daily_exposure, _max_daily_usd)
-            return False
-
-        # M1: Per-category exposure cap — prevent concentration in one category
-        if category:
-            _cat_max_usd = float(getattr(settings, "MIRROR_MAX_CATEGORY_EXPOSURE_USD", 4000))
-            _cat_current = self._category_exposure.get(category, 0.0)
-            if _cat_current >= _cat_max_usd:
-                logger.info("Mirror CATEGORY CAP: %s $%.0f/$%.0f, skipping",
-                            category, _cat_current, _cat_max_usd)
-                return False
+        # S157: Daily exposure + category caps moved INSIDE _exposure_lock (L2448-2462).
+        # Pre-lock reads of _daily_exposure were racy — two concurrent RTDS callbacks
+        # could both pass stale checks and overshoot the cap.
+        # Only non-racy checks remain here (position count, opposing-side guard above).
 
         return True
 
@@ -2396,12 +2373,8 @@ class MirrorBot(BaseBot):
                         max_per_market_usd, remaining_daily_usd)
             return False
 
-        # S91: Min trade USD — skip dust trades (testing, rebalancing, airdrop farming)
-        # S154: Cold-start override — micro-positions are intentionally small (bootstrap _eq_n).
-        # Warm-state $50 gate stays: small size from established trader = low conviction = skip.
-        _min_trade_usd = float(getattr(settings, "MIRROR_MIN_TRADE_USD", 50.0))
-        if _eq_n < 5:
-            _min_trade_usd = float(getattr(settings, "MIRROR_COLD_START_MIN_TRADE_USD", 8.0))
+        # S157: Single dust gate (cold-start override removed — sizing floor handles cold-start)
+        _min_trade_usd = float(getattr(settings, "MIRROR_MIN_TRADE_USD", 25.0))
         _trade_value_usd = size * price
         if _trade_value_usd < _min_trade_usd:
             logger.info("mirror_dust_skipped", trade_usd=round(_trade_value_usd, 2),
