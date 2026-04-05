@@ -6,6 +6,10 @@
 
 set -euo pipefail
 
+# S157: Prevent concurrent watchdog instances (cooldown file race condition)
+exec 200>/var/lock/polymarket-watchdog.lock
+flock -n 200 || exit 0
+
 HEARTBEAT_DIR="/tmp/polymarket-heartbeats"
 MAX_AGE=300  # 5 minutes
 DB_NAME="polymarket"

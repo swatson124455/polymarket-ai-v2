@@ -118,8 +118,8 @@ sudo chown -h polymarket:polymarket \
 # S144: Bypass PgBouncer for migrations — connect directly to postgres via unix socket.
 # Bots consume most of PgBouncer's 25 connections; migration only needs 1 for a few seconds.
 cd $NEW_RELEASE
-# Extract DB password from shared .env (never hardcode credentials in scripts)
-_DB_PW=\$(grep '^DATABASE_URL=' $SHARED/.env | sed -n 's|.*://[^:]*:\([^@]*\)@.*|\1|p')
+# S157: Extract DB password using Python urlparse (sed breaks on passwords containing @)
+_DB_PW=\$(python3 -c "from urllib.parse import urlparse; import os; print(urlparse(open('$SHARED/.env').read().split('DATABASE_URL=')[1].split('\\\\n')[0].strip()).password)" 2>/dev/null || grep '^DATABASE_URL=' $SHARED/.env | sed -n 's|.*://[^:]*:\([^@]*\)@.*|\1|p')
 if [ -z "\$_DB_PW" ]; then
     echo "ABORT: Could not extract DB password from $SHARED/.env"
     sudo rm -rf "$NEW_RELEASE"
@@ -182,10 +182,23 @@ HEALTH_OK=false
 for i in $(seq 1 60); do
     sleep 5
     ELAPSED=$((i * 5))
-    if ssh $SSH_OPTS -i "$KEY" "$VPS" \
-        "journalctl -u polymarket-weather -u polymarket-mirror -u polymarket-esports --since '-${ELAPSED}s' --no-pager 2>/dev/null | grep -q 'scan_ms'" 2>/dev/null; then
+    # S157: Per-bot health check — only check enabled services (disabled bots don't block deploy)
+    _ALL_OK=true
+    _CHECKED=0
+    for _SVC in polymarket-weather polymarket-mirror polymarket-esports; do
+        # Skip services that are deliberately disabled
+        if ! ssh $SSH_OPTS -i "$KEY" "$VPS" "systemctl is-enabled $_SVC" &>/dev/null; then
+            continue
+        fi
+        _CHECKED=$((_CHECKED + 1))
+        if ! ssh $SSH_OPTS -i "$KEY" "$VPS" \
+            "journalctl -u $_SVC --since '-${ELAPSED}s' --no-pager 2>/dev/null | grep -q 'scan_ms'" 2>/dev/null; then
+            _ALL_OK=false
+        fi
+    done
+    if [ "$_CHECKED" -gt 0 ] && [ "$_ALL_OK" = true ]; then
         HEALTH_OK=true
-        echo "  Health OK at ${ELAPSED}s — bots scanning"
+        echo "  Health OK at ${ELAPSED}s — all $_CHECKED enabled bots scanning"
         break
     fi
     echo "  Waiting... ${ELAPSED}s"
