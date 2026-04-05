@@ -15,6 +15,15 @@ from config.settings import settings
 
 logger = get_logger()
 
+# S157: Failure code constants — used by bots for reason-specific cooldowns.
+# Avoids fragile string parsing of error messages.
+FAIL_BOOK_DEPLETED = "book_depleted"
+FAIL_SLIPPAGE = "slippage"
+FAIL_CASH = "insufficient_cash"
+FAIL_POSITION = "insufficient_position"
+FAIL_DUPLICATE = "duplicate"
+FAIL_PARTIAL = "partial_fill"
+
 
 def _vwap_from_book(
     asks: List[Dict],
@@ -414,7 +423,7 @@ class PaperTradingEngine:
         # returned success=True + filled=0, which created ghost positions (size=0).
         if correlation_id and correlation_id in self._pending_correlation_ids:
             logger.info("paper_trade_idempotent_memory", correlation_id=correlation_id, market_id=market_id)
-            return {"success": False, "idempotent": True, "order_id": "pending", "error": "duplicate: already pending"}
+            return {"success": False, "idempotent": True, "order_id": "pending", "error": "duplicate: already pending", "fail_code": FAIL_DUPLICATE}
 
         # H1: Idempotency guard — reject if correlation_id already executed (prevents double-fill
         # on timeout + retry). Checks DB before any cash/position mutation.
@@ -498,7 +507,7 @@ class PaperTradingEngine:
                                 bot_name=bot_name, walk_side=_book_side)
                 else:
                     # Depleted book has no remaining depth
-                    return {"success": False, "error": "Insufficient book depth (depleted by prior fills)"}
+                    return {"success": False, "error": "Insufficient book depth (depleted by prior fills)", "fail_code": FAIL_BOOK_DEPLETED}
 
         if not _used_depleted_book and _event.get("_shadow_book_walk_used"):
             _shadow_vwap = _event.get("_shadow_vwap")
@@ -557,6 +566,7 @@ class PaperTradingEngine:
                     "success": False,
                     "error": f"Slippage {_slip_pct:.1%} exceeds {_max_slip:.0%} limit "
                              f"(original={original_price:.4f}, fill={price:.4f})",
+                    "fail_code": FAIL_SLIPPAGE,
                 }
 
         # Partial fill from book depth
@@ -565,7 +575,7 @@ class PaperTradingEngine:
             if _filled_size < 0.01:
                 _filled_size = 0.0
             if _filled_size <= 0:
-                return {"success": False, "error": "Insufficient book depth for fill"}
+                return {"success": False, "error": "Insufficient book depth for fill", "fail_code": FAIL_PARTIAL}
             if _filled_size < size:
                 logger.info("paper_partial_fill", fill_pct=round(_fill_frac * 100, 1),
                             market_id=market_id, requested=round(size, 2),
@@ -595,7 +605,8 @@ class PaperTradingEngine:
                 logger.warning("Paper trade rejected: insufficient cash", market_id=market_id, cost=round(total_cost, 2), cash=round(self.cash, 2), fee=round(fee, 4))
                 return {
                     "success": False,
-                    "error": f"Insufficient cash: need ${total_cost:.2f} (inc ${fee:.2f} fee), have ${self.cash:.2f}"
+                    "error": f"Insufficient cash: need ${total_cost:.2f} (inc ${fee:.2f} fee), have ${self.cash:.2f}",
+                    "fail_code": FAIL_CASH,
                 }
 
             # Execute buy (notional + fee)
@@ -650,7 +661,8 @@ class PaperTradingEngine:
                 else:
                     return {
                         "success": False,
-                        "error": f"Insufficient position: need {size}, have {held}"
+                        "error": f"Insufficient position: need {size}, have {held}",
+                        "fail_code": FAIL_POSITION,
                     }
 
             # Execute sell (proceeds minus fee)
