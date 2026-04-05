@@ -35,6 +35,9 @@ _MIN_LOL_SAMPLES = int(getattr(settings, "ESPORTS_MIN_LOL_SAMPLES", 50))
 _MIN_CS2_SAMPLES = int(getattr(settings, "ESPORTS_MIN_CS2_SAMPLES", 100))
 _MIN_CS2_UNIQUE_MATCHES = int(getattr(settings, "ESPORTS_MIN_CS2_UNIQUE_MATCHES", 15))
 _EARLY_STOPPING_ROUNDS = int(getattr(settings, "ESPORTS_EARLY_STOPPING_ROUNDS", 20))
+# S158: Cross-game graduation constants — intentionally looser than per-game (fewer samples)
+_CROSS_GAME_MIN_ACCURACY = 0.55
+_CROSS_GAME_MAX_BRIER = 0.30
 _ECE_BINS = 10  # Number of bins for Expected Calibration Error
 
 # S136 Phase 9A: Exponential decay weighting for non-LoL games
@@ -316,7 +319,7 @@ class EsportsModelTrainer:
             result["ece"] = round(ece, 4)
             # Graduate only if model meets minimum quality thresholds
             result["graduated"] = (
-                accuracy >= 0.55 and brier < 0.30 and len(training_data) >= 200
+                accuracy >= _MIN_ACCURACY and brier < _MAX_BRIER and len(training_data) >= 200
             )
 
             self._last_train_time[game] = time.monotonic()
@@ -592,7 +595,7 @@ class EsportsModelTrainer:
             result["accuracy"] = round(accuracy, 4)
             result["brier_score"] = round(brier, 4)
             result["ece"] = round(ece, 4)
-            result["graduated"] = True
+            result["graduated"] = accuracy >= _CROSS_GAME_MIN_ACCURACY and brier < _CROSS_GAME_MAX_BRIER
             result["train_size"] = len(train_set)
             result["val_size"] = len(val_set)
 
