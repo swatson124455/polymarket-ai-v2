@@ -311,14 +311,34 @@ async def run_resolution_backfill(
     _skipped_open = 0
     _skipped_no_res = 0
     _clob_closed = 0
-    # S151: helper to stamp last_checked_at so we don't re-check the same market every cycle
-    async def _touch_checked(market_id: str) -> None:
+    # S157: Record check result with exponential backoff for failures.
+    # Replaces always-stamp _touch_checked() bandaid.
+    async def _record_check_result(market_id: str, success: bool = False, permanent: bool = False) -> None:
         try:
             async with db.get_session() as _lc:
-                await _lc.execute(
-                    text("UPDATE traded_markets SET last_checked_at = NOW() WHERE market_id = :mid"),
-                    {"mid": market_id},
-                )
+                if success:
+                    await _lc.execute(text("""
+                        UPDATE traded_markets
+                        SET last_checked_at = NOW(), check_fail_count = 0, resolution_status = 'resolved'
+                        WHERE market_id = :mid
+                    """), {"mid": market_id})
+                elif permanent:
+                    await _lc.execute(text("""
+                        UPDATE traded_markets
+                        SET last_checked_at = NOW() + INTERVAL '30 days',
+                            check_fail_count = COALESCE(check_fail_count, 0) + 1,
+                            resolution_status = 'dead_letter'
+                        WHERE market_id = :mid
+                    """), {"mid": market_id})
+                else:
+                    # Transient failure — exponential backoff: 1h→3h→9h→27h→7d cap
+                    await _lc.execute(text("""
+                        UPDATE traded_markets
+                        SET last_checked_at = NOW() + make_interval(
+                            hours => LEAST(power(3, LEAST(COALESCE(check_fail_count, 0), 4)), 168)
+                        ), check_fail_count = COALESCE(check_fail_count, 0) + 1
+                        WHERE market_id = :mid
+                    """), {"mid": market_id})
                 await _lc.commit()
         except Exception:
             pass  # best-effort, non-fatal
@@ -364,7 +384,7 @@ async def run_resolution_backfill(
                     # even on failure. Without this, failed markets stay NULL and
                     # re-queue every cycle via NULLS FIRST, starving the queue.
                     # They'll be retried after RESOLUTION_RECHECK_INTERVAL_HOURS (6h).
-                    await _touch_checked(mid)
+                    await _record_check_result(mid)
                     continue
                 _api_checked = True  # Got a valid market dict from API
 
@@ -394,14 +414,14 @@ async def run_resolution_backfill(
                 closed = m.get("closed") or m.get("isResolved") or m.get("resolved")
                 if not closed:
                     _skipped_open += 1
-                    await _touch_checked(mid)
+                    await _record_check_result(mid)
                     continue
                 res = m.get("resolution") or m.get("outcome") or m.get("resolutionPrice")
                 if res is None:
                     res = _infer_resolution_from_outcome_prices(m)
                 if not res or str(res).upper() not in ("YES", "NO"):
                     _skipped_no_res += 1
-                    await _touch_checked(mid)
+                    await _record_check_result(mid)
                     continue
                 _source = "clob_api" if _from_clob else "gamma_api"
                 # Pass end_date as resolved_at; fallback to now() so resolved_at is never NULL
@@ -412,7 +432,7 @@ async def run_resolution_backfill(
                     await db.mark_market_resolved(mid, str(res).upper())
                 except Exception as _mark_err:
                     logger.warning("mark_market_resolved failed for %s: %s", str(mid)[:20], _mark_err)
-                await _touch_checked(mid)
+                await _record_check_result(mid, success=True)
                 updated += 1
                 if log_progress and updated % 50 == 0:
                     logger.info("Resolution backfill: updated %d resolutions", updated)
@@ -421,7 +441,7 @@ async def run_resolution_backfill(
                     logger.warning("Resolution backfill: market %s error: %s", str(mid)[:20], _e, exc_info=True)
                 # S153: Stamp last_checked_at on error so broken markets don't
                 # re-queue every cycle. They'll be retried after recheck interval.
-                await _touch_checked(mid)
+                await _record_check_result(mid)
             await asyncio.sleep(delay_seconds)
 
     if log_progress:
