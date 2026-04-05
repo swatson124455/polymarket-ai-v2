@@ -329,47 +329,26 @@ class TestCanOpenPosition:
             ms.MIRROR_EXTREME_PRICE_DAMPENER = 0.25
             assert bot._can_open_position(0.50) is False
 
-    def test_blocks_when_daily_cap_reached(self):
+    def test_daily_cap_not_checked_here(self):
+        """S157 O4: Daily cap enforcement moved under _exposure_lock.
+        _can_open_position no longer checks daily exposure — only position
+        count, price bounds, and circuit breaker remain here."""
         bot, _ = _make_bot()
-        # max_daily = 0.15 * 10_000 = 1500; set exposure at cap
-        bot._daily_exposure = 1500.0
+        bot._daily_exposure = 1500.0  # at cap
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
-            ms.MIRROR_MAX_DAILY_EXPOSURE_PCT = 0.15
-            ms.TOTAL_CAPITAL = 10_000.0
-            ms.MIRROR_MIN_PRICE = 0.07
-            ms.MIRROR_MAX_PRICE = 0.93
             ms.MIRROR_HARD_MIN_PRICE = 0.05
             ms.MIRROR_HARD_MAX_PRICE = 0.95
-            ms.MIRROR_EXTREME_PRICE_DAMPENER = 0.25
-            assert bot._can_open_position(0.50) is False
+            # Should pass — daily cap checked under lock, not here
+            assert bot._can_open_position(0.50) is True
 
-    def test_blocks_exactly_at_cap(self):
+    def test_allows_below_position_cap(self):
+        """S157 O4: Only position count + price bounds checked here."""
         bot, _ = _make_bot()
-        bot._daily_exposure = 1500.0
         with patch("bots.mirror_bot.settings") as ms:
             ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
-            ms.MIRROR_MAX_DAILY_EXPOSURE_PCT = 0.15
-            ms.TOTAL_CAPITAL = 10_000.0
-            ms.MIRROR_MIN_PRICE = 0.07
-            ms.MIRROR_MAX_PRICE = 0.93
             ms.MIRROR_HARD_MIN_PRICE = 0.05
             ms.MIRROR_HARD_MAX_PRICE = 0.95
-            ms.MIRROR_EXTREME_PRICE_DAMPENER = 0.25
-            assert bot._can_open_position(0.50) is False
-
-    def test_allows_at_one_below_cap(self):
-        bot, _ = _make_bot()
-        bot._daily_exposure = 1499.99
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
-            ms.MIRROR_MAX_DAILY_EXPOSURE_PCT = 0.15
-            ms.TOTAL_CAPITAL = 10_000.0
-            ms.MIRROR_MIN_PRICE = 0.07
-            ms.MIRROR_MAX_PRICE = 0.93
-            ms.MIRROR_HARD_MIN_PRICE = 0.05
-            ms.MIRROR_HARD_MAX_PRICE = 0.95
-            ms.MIRROR_EXTREME_PRICE_DAMPENER = 0.25
             assert bot._can_open_position(0.50) is True
 
 
