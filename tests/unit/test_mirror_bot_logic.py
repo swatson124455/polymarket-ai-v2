@@ -1255,60 +1255,9 @@ class TestCanOpenPositionBankroll:
             assert bot._can_open_position(0.50) is True
 
 
-# ── MIRROR_MAX_DAILY_EXPOSURE_PCT deprecation ──────────────────────────────
-
-
-class TestDeprecationWarning:
-    def test_deprecation_logged_when_bankroll_is_none(self):
-        """Deprecation warning fires when fallback path is used."""
-        bot, _ = _make_bot()
-        bot.bankroll = None
-        bot._deprecation_warned = False
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
-            ms.MIRROR_MAX_DAILY_EXPOSURE_PCT = 0.15
-            ms.TOTAL_CAPITAL = 10000.0
-            ms.MIRROR_MIN_PRICE = 0.07
-            ms.MIRROR_MAX_PRICE = 0.93
-            ms.MIRROR_HARD_MIN_PRICE = 0.05
-            ms.MIRROR_HARD_MAX_PRICE = 0.95
-            ms.MIRROR_EXTREME_PRICE_DAMPENER = 0.25
-            with patch("bots.mirror_bot.logger") as mock_logger:
-                bot._can_open_position(0.50)
-                mock_logger.warning.assert_called_once()
-                assert "deprecated" in mock_logger.warning.call_args[0][0].lower()
-        assert bot._deprecation_warned is True
-
-    def test_deprecation_logged_only_once(self):
-        """Second call does not re-log the deprecation warning."""
-        bot, _ = _make_bot()
-        bot.bankroll = None
-        bot._deprecation_warned = True
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
-            ms.MIRROR_MAX_DAILY_EXPOSURE_PCT = 0.15
-            ms.TOTAL_CAPITAL = 10000.0
-            ms.MIRROR_MIN_PRICE = 0.07
-            ms.MIRROR_MAX_PRICE = 0.93
-            ms.MIRROR_HARD_MIN_PRICE = 0.05
-            ms.MIRROR_HARD_MAX_PRICE = 0.95
-            ms.MIRROR_EXTREME_PRICE_DAMPENER = 0.25
-            with patch("bots.mirror_bot.logger") as mock_logger:
-                bot._can_open_position(0.50)
-                mock_logger.warning.assert_not_called()
-
-    def test_no_deprecation_when_bankroll_set(self):
-        """No deprecation warning when bankroll provides max_daily_usd."""
-        bot, _ = _make_bot()
-        bot.bankroll = MagicMock()
-        bot.bankroll.max_daily_usd = 10000
-        bot._deprecation_warned = False
-        with patch("bots.mirror_bot.settings") as ms:
-            ms.MIRROR_MAX_CONCURRENT_POSITIONS = 20
-            with patch("bots.mirror_bot.logger") as mock_logger:
-                bot._can_open_position(0.50)
-                mock_logger.warning.assert_not_called()
-        assert bot._deprecation_warned is False
+# ── S157 O4: TestDeprecationWarning removed — daily cap deprecation logic
+# was in _can_open_position, which no longer handles daily caps (moved to
+# _exposure_lock). The _deprecation_warned flag and warning are dead code.
 
 
 # ── Elite Reliability Per-Category ──────────────────────────────────────────
