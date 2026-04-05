@@ -95,9 +95,6 @@ class MirrorBot(BaseBot):
         # M4: Startup leader reconciliation — run on scan 3 (after watchlist initialized)
         self._recon_done: bool = False
 
-        # Deprecation flag: MIRROR_MAX_DAILY_EXPOSURE_PCT fallback warning (log once)
-        self._deprecation_warned: bool = False
-
         # S91: Tier 0 pre-trade filters (in-memory, <0.01ms)
         self._market_blocklist: set = set()  # market_ids to reject instantly
         self._entered_market_sides: set = set()  # {(market_id, side)} for opposing-side guard across restarts
@@ -1781,7 +1778,7 @@ class MirrorBot(BaseBot):
                 # even though the gate validated the trader via efficiency prior.
                 # Three layers of conservatism compound: gate threshold, kelly edge cap,
                 # and this 15% floor. None is zero.
-                _cs_floor = float(getattr(settings, "MIRROR_COLD_START_SIZE_FLOOR", 0.15))
+                _cs_floor = float(getattr(settings, "MIRROR_COLD_START_SIZE_FLOOR", 0.20))
                 if _eq_n < 5 and _sample_ramp < _cs_floor:
                     _sample_ramp = _cs_floor
                 reliability_mult *= _sample_ramp
