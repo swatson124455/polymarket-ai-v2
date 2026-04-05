@@ -2049,7 +2049,7 @@ class EsportsBot(BaseBot):
                 # remaining edge = current_price - model_prob (NO profits when
                 # YES price falls below model's prediction).
                 if side == "NO":
-                    _remaining_edge = current - _entry_model_prob - 0.0075
+                    _remaining_edge = (1.0 - _entry_model_prob) - current - 0.0075
                 else:
                     _remaining_edge = _entry_model_prob - current - 0.0075
 
