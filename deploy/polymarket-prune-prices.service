@@ -1,0 +1,17 @@
+[Unit]
+Description=Prune old market_prices rows (30-day retention)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=polymarket
+Group=polymarket
+WorkingDirectory=/opt/polymarket-ai-v2
+EnvironmentFile=/opt/polymarket-ai-v2/.env
+ExecStart=/opt/pa2-shared/venv/bin/python scripts/prune_market_prices.py --execute --days 30 --batch 50000
+TimeoutStartSec=600
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=polymarket-prune-prices
