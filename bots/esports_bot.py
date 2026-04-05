@@ -5244,7 +5244,7 @@ class EsportsBot(BaseBot):
                     if alerting:
                         await alerting.send_alert(
                             title=f"EsportsBot {game} Brier CRITICAL",
-                            message=f"{game} 7d Brier={brier:.4f} (>{_halt_thresh}), accuracy={accuracy:.1%} — "
+                            message=f"{game} 7d Brier={brier:.4f} (>{_halt_lb}), accuracy={accuracy:.1%} — "
                                     f"trading halted for {game}.",
                             severity=AlertSeverity.CRITICAL,
                             source="EsportsBot",
