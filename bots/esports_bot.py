@@ -2076,6 +2076,7 @@ class EsportsBot(BaseBot):
                         logger.info("esportsbot_edge_exit_hold_gate",
                                      market_id=mid, opened_at=str(_opened_at),
                                      remaining_edge=round(_remaining_edge, 4))
+                        continue  # S158: don't fall through to trailing edge — preserves stop-loss path
                     else:
                         logger.info("esportsbot_edge_exit_full", market_id=mid,
                                     remaining_edge=round(_remaining_edge, 4),
