@@ -160,6 +160,106 @@ async def bot_pnl(bot_name: str, hours: int = 24):
         print(f"  All-time realized:  ${total_realized:+.2f}")
         print(f"  Net P&L (window):   ${total_upnl + realized_exit + realized_res:+.2f}")
 
+        # 5. WeatherBot dimensional breakdowns (S159)
+        if bot_name == "WeatherBot":
+            # Per-side breakdown: JOIN resolution/exit to their ENTRY for side
+            r5 = await s.execute(text("""
+                SELECT e_entry.side,
+                       COUNT(*) AS cnt,
+                       SUM(CASE WHEN r.realized_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+                       COALESCE(SUM(CAST(r.realized_pnl AS DOUBLE PRECISION)), 0) AS total_pnl
+                FROM trade_events r
+                JOIN (
+                    SELECT DISTINCT ON (market_id) market_id, side
+                    FROM trade_events
+                    WHERE bot_name = :bot AND event_type = 'ENTRY'
+                    ORDER BY market_id, event_time
+                ) e_entry ON e_entry.market_id = r.market_id
+                WHERE r.bot_name = :bot
+                  AND r.event_type IN ('RESOLUTION', 'EXIT')
+                  AND r.realized_pnl IS NOT NULL
+                GROUP BY e_entry.side
+                ORDER BY e_entry.side
+            """), {"bot": bot_name})
+            side_rows = r5.fetchall()
+            if side_rows:
+                print(f"\n{'='*50}")
+                print(f"PER-SIDE BREAKDOWN (all-time, resolution+exit)")
+                print(f"{'='*50}")
+                print(f"  {'Side':<6} {'Count':>6} {'Wins':>6} {'WR%':>7} {'P&L':>12}")
+                print(f"  {'-'*40}")
+                for sr in side_rows:
+                    wr = (float(sr[2]) / float(sr[1]) * 100) if sr[1] > 0 else 0
+                    print(f"  {sr[0]:<6} {sr[1]:>6} {sr[2]:>6} {wr:>6.1f}% ${float(sr[3]):>+11.2f}")
+
+            # Per-city breakdown
+            r6 = await s.execute(text("""
+                SELECT e_entry.event_data->>'city' AS city,
+                       COUNT(*) AS cnt,
+                       SUM(CASE WHEN r.realized_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+                       COALESCE(SUM(CAST(r.realized_pnl AS DOUBLE PRECISION)), 0) AS total_pnl
+                FROM trade_events r
+                JOIN (
+                    SELECT DISTINCT ON (market_id) market_id, event_data
+                    FROM trade_events
+                    WHERE bot_name = :bot AND event_type = 'ENTRY'
+                    ORDER BY market_id, event_time
+                ) e_entry ON e_entry.market_id = r.market_id
+                WHERE r.bot_name = :bot
+                  AND r.event_type IN ('RESOLUTION', 'EXIT')
+                  AND r.realized_pnl IS NOT NULL
+                  AND e_entry.event_data->>'city' IS NOT NULL
+                GROUP BY e_entry.event_data->>'city'
+                ORDER BY total_pnl DESC
+            """), {"bot": bot_name})
+            city_rows = r6.fetchall()
+            if city_rows:
+                print(f"\n{'='*50}")
+                print(f"PER-CITY BREAKDOWN (all-time, resolution+exit)")
+                print(f"{'='*50}")
+                print(f"  {'City':<20} {'Count':>6} {'Wins':>6} {'WR%':>7} {'P&L':>12}")
+                print(f"  {'-'*55}")
+                for cr in city_rows:
+                    wr = (float(cr[2]) / float(cr[1]) * 100) if cr[1] > 0 else 0
+                    print(f"  {(cr[0] or 'unknown'):<20} {cr[1]:>6} {cr[2]:>6} {wr:>6.1f}% ${float(cr[3]):>+11.2f}")
+
+            # Per-lead-time bucket
+            r7 = await s.execute(text("""
+                SELECT CASE
+                         WHEN (e_entry.event_data->>'lead_time_hours')::float < 24 THEN '<24h'
+                         WHEN (e_entry.event_data->>'lead_time_hours')::float < 48 THEN '24-48h'
+                         WHEN (e_entry.event_data->>'lead_time_hours')::float < 72 THEN '48-72h'
+                         WHEN (e_entry.event_data->>'lead_time_hours')::float < 120 THEN '72-120h'
+                         ELSE '>=120h'
+                       END AS bucket,
+                       COUNT(*) AS cnt,
+                       SUM(CASE WHEN r.realized_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+                       COALESCE(SUM(CAST(r.realized_pnl AS DOUBLE PRECISION)), 0) AS total_pnl
+                FROM trade_events r
+                JOIN (
+                    SELECT DISTINCT ON (market_id) market_id, event_data
+                    FROM trade_events
+                    WHERE bot_name = :bot AND event_type = 'ENTRY'
+                    ORDER BY market_id, event_time
+                ) e_entry ON e_entry.market_id = r.market_id
+                WHERE r.bot_name = :bot
+                  AND r.event_type IN ('RESOLUTION', 'EXIT')
+                  AND r.realized_pnl IS NOT NULL
+                  AND e_entry.event_data->>'lead_time_hours' IS NOT NULL
+                GROUP BY bucket
+                ORDER BY MIN((e_entry.event_data->>'lead_time_hours')::float)
+            """), {"bot": bot_name})
+            lt_rows = r7.fetchall()
+            if lt_rows:
+                print(f"\n{'='*50}")
+                print(f"PER-LEAD-TIME BREAKDOWN (all-time, resolution+exit)")
+                print(f"{'='*50}")
+                print(f"  {'Bucket':<10} {'Count':>6} {'Wins':>6} {'WR%':>7} {'P&L':>12}")
+                print(f"  {'-'*45}")
+                for lr in lt_rows:
+                    wr = (float(lr[2]) / float(lr[1]) * 100) if lr[1] > 0 else 0
+                    print(f"  {lr[0]:<10} {lr[1]:>6} {lr[2]:>6} {wr:>6.1f}% ${float(lr[3]):>+11.2f}")
+
     await db.close()
 
 
