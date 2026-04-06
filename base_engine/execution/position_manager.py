@@ -232,6 +232,12 @@ class AutomatedPositionManager:
                 # Every ~2 min (12 * 10s) run adverse fill update + persist
                 if self._cycle_count() % 12 == 0:
                     await self._run_adverse_fill_persistence()
+                    # S159 C26: Prune stale API price cache entries (>1 hour old)
+                    _prune_mono = time.monotonic()
+                    self._api_price_cache = {
+                        k: v for k, v in self._api_price_cache.items()
+                        if _prune_mono - v[1] < 3600
+                    }
 
                 # Refresh adaptive exit multipliers periodically (timeout prevents blocking stop-losses)
                 try:
@@ -261,8 +267,20 @@ class AutomatedPositionManager:
                     # Previous approach (skip checks entirely) caused 100% stale prices because
                     # the session stayed poisoned across cycles and prices never updated.
                     if positions:
+                        # S159 C21: Timeout prevents position monitoring freeze on slow
+                        # price queries. Without this, a hung market_prices_latest query
+                        # blocks the entire loop for up to 300s (server-side timeout).
                         try:
-                            await self._update_current_prices(session, positions)
+                            await asyncio.wait_for(
+                                self._update_current_prices(session, positions),
+                                timeout=15.0,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning("update_current_prices_timed_out_15s")
+                            try:
+                                await session.rollback()
+                            except Exception:
+                                pass
                         except Exception as _price_err:
                             logger.warning("_update_current_prices failed: %s", _price_err)
                             try:
@@ -298,15 +316,19 @@ class AutomatedPositionManager:
             return positions
 
         try:
-            # Query end dates for all markets with open positions
-            result = await session.execute(
-                sa_text("""
-                    SELECT id::text, end_date_iso FROM markets
-                    WHERE id::text = ANY(:market_ids) AND end_date_iso IS NOT NULL
-                """),
-                {"market_ids": market_ids},
-            )
-            end_dates = {str(r[0]): r[1] for r in result.fetchall() if r[1]}
+            # S159 C19: Session isolation — query markets end_dates in a separate
+            # session to prevent poisoning the main monitoring session.
+            # If this query fails (statement timeout, connection error), the main
+            # session stays clean for _update_current_prices and _check_position.
+            async with self.db.get_session() as _iso_session:
+                result = await _iso_session.execute(
+                    sa_text("""
+                        SELECT id::text, end_date_iso FROM markets
+                        WHERE id::text = ANY(:market_ids) AND end_date_iso IS NOT NULL
+                    """),
+                    {"market_ids": market_ids},
+                )
+                end_dates = {str(r[0]): r[1] for r in result.fetchall() if r[1]}
         except Exception as e:
             logger.debug("_close_expired_positions query failed (non-fatal): %s", e)
             return positions
@@ -441,12 +463,26 @@ class AutomatedPositionManager:
                         {"miss_ids": _missing}
                     )
                     _fb_count = 0
+                    _fb_seeds = []  # S159 C22: collect for market_prices_latest seeding
                     for r in _fb_result.fetchall():
                         if r[1] is not None and float(r[1]) > 0:
                             latest_prices[str(r[0])] = float(r[1])
                             _fb_count += 1
+                            _fb_seeds.append((str(r[0]), float(r[1]), r[2]))
                     if _fb_count > 0:
                         logger.debug("price_fallback_historical", found=_fb_count, missed=len(_missing))
+                    # S159 C22: Seed market_prices_latest so next cycle skips fallback
+                    for _seed_tid, _seed_price, _seed_ts in _fb_seeds:
+                        try:
+                            await session.execute(sa_text(
+                                "INSERT INTO market_prices_latest (token_id, price, timestamp) "
+                                "VALUES (:tid, :price, :ts) "
+                                "ON CONFLICT (token_id) DO UPDATE SET price = EXCLUDED.price, "
+                                "timestamp = EXCLUDED.timestamp "
+                                "WHERE market_prices_latest.timestamp < EXCLUDED.timestamp"
+                            ), {"tid": _seed_tid, "price": _seed_price, "ts": _seed_ts})
+                        except Exception:
+                            pass  # Non-fatal — fallback found the price, next cycle re-finds it
                 except Exception as _fb_err:
                     logger.debug("price_fallback_failed", error=str(_fb_err))
 
@@ -747,8 +783,9 @@ class AutomatedPositionManager:
                     pos = r.scalar_one_or_none()
                     if pos:
                         pos.status = "closed"
-                        # Compute actual P&L from exit price vs entry price, less taker fee
-                        exit_price = position.current_price or position.entry_price or 0.5
+                        # S159 C23: Use actual fill price from order result, not stale current_price.
+                        # place_order returns {"price": fill_price} with slippage already applied.
+                        exit_price = float(result.get("price") or position.current_price or position.entry_price or 0.5)
                         entry_price = position.entry_price or 0.5
                         _taker_fee_rate = getattr(settings, "TAKER_FEE_BPS", 150) / 10000.0
                         _exit_fee = _taker_fee_rate * _exit_size * exit_price
@@ -832,9 +869,8 @@ class AutomatedPositionManager:
                         pos = r.scalar_one_or_none()
                         if pos:
                             pos.status = "closed"
-                            # P&L = (exit_price - entry_price) × size - exit_fee
-                            # Same formula as _execute_exit — correct for both YES and NO tokens.
-                            _exit_price = float(position.current_price or position.entry_price or 0.5)
+                            # S159 C23: Use fill price from order result, not stale current_price.
+                            _exit_price = float(result.get("price") or position.current_price or position.entry_price or 0.5)
                             _entry_price = float(position.entry_price or 0.5)
                             _size = float(_exit_size)
                             _taker_fee_rate = getattr(settings, "TAKER_FEE_BPS", 150) / 10000.0
@@ -917,9 +953,8 @@ class AutomatedPositionManager:
                         pos = r.scalar_one_or_none()
                         if pos:
                             pos.status = "closed"
-                            # P&L = (exit_price - entry_price) × size - exit_fee
-                            # Same formula as _execute_exit — correct for both YES and NO tokens.
-                            _exit_price = float(position.current_price or position.entry_price or 0.5)
+                            # S159 C23: Use fill price from order result, not stale current_price.
+                            _exit_price = float(result.get("price") or position.current_price or position.entry_price or 0.5)
                             _entry_price = float(position.entry_price or 0.5)
                             _size = float(_exit_size)
                             _taker_fee_rate = getattr(settings, "TAKER_FEE_BPS", 150) / 10000.0
