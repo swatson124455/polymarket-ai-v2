@@ -128,6 +128,17 @@ class WeatherProbabilityEngine:
                     scale_emos = max(scale * self._variance_inflation_factor, 0.5)
                 # Sanity: reject absurd scale; clip extreme shape (preserves direction)
                 if 0.1 < scale_emos < 30.0:
+                    # S159: When EMOS sigma is active, force normal (shape=0).
+                    # EMOS already captures distributional info; raw MLE shape
+                    # is inconsistent with EMOS-calibrated loc/scale.
+                    if emos_sigma is not None:
+                        if abs(a) > 0.3:
+                            logger.info(
+                                "weather_emos_shape_zeroed",
+                                station=station_id,
+                                alpha_raw=round(a, 3),
+                            )
+                        return (loc_emos, scale_emos, 0.0)
                     a_clipped = max(-4.0, min(4.0, a))
                     if abs(a) > 4.0:
                         logger.debug(
