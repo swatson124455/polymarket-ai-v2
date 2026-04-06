@@ -1405,6 +1405,9 @@ class EsportsBot(BaseBot):
                 mid = str(m.get("id", ""))
                 # S157: Flat post-exit cooldown (hysteresis handles churn, escalating removed)
                 _exit_ts = self._recently_exited.get(mid)
+                # S159: Post-exit elevated edge window — after cooldown expires,
+                # require _reentry_min_edge for edge_gone/trailing exits within 2h.
+                _post_exit_elevated = False
                 if _exit_ts is not None:
                     _exit_reason = self._exit_reasons.get(mid, "")
                     _cooldown = (float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0))
@@ -1413,6 +1416,11 @@ class EsportsBot(BaseBot):
                     if time.monotonic() - _exit_ts < _cooldown:
                         self._wf["exit_cooldown"] += 1
                         return (0, 0, 1)
+                    # Cooldown passed — check if still in post-exit elevated edge window
+                    _post_exit_window = float(getattr(settings, "ESPORTS_POST_EXIT_EDGE_WINDOW_S", 7200.0))
+                    if (_exit_reason in ("edge_gone", "trailing_edge")
+                            and (time.monotonic() - _exit_ts) < _post_exit_window):
+                        _post_exit_elevated = True
                 # S157: Reason-specific execution failure cooldown
                 _fail_entry = self._exec_fail_cooldown.get(mid)
                 if _fail_entry is not None:
@@ -1478,6 +1486,15 @@ class EsportsBot(BaseBot):
                         return (1, 0, 0)
                     return (0, 0, 1)
                 opp = await self.analyze_opportunity(m)
+                # S159: Post-exit elevated edge gate — reject if edge below reentry bar
+                if opp and _post_exit_elevated:
+                    _opp_edge = opp.get("edge", 0)
+                    if _opp_edge < _reentry_min_edge:
+                        self._wf["post_exit_edge"] = self._wf.get("post_exit_edge", 0) + 1
+                        logger.info("esportsbot_post_exit_edge_gate",
+                                    market_id=mid, edge=round(_opp_edge, 4),
+                                    min_edge=_reentry_min_edge)
+                        return (0, 0, 1)
                 if opp and not self._ws_trading_active:
                     # Fallback: scan trades when WS is stale
                     async with self._trade_lock:

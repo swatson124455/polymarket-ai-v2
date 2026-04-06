@@ -103,6 +103,13 @@ class MirrorBot(BaseBot):
         # provision, not directional signal. Key: "{trader}:{market}:{side}" → monotonic timestamp.
         self._trader_market_sides: Dict[str, float] = {}
 
+        # S159 C2: Slippage backoff tracking — .pop() at L1195/L1266 requires these dicts.
+        # NOTE: Population logic (incrementing counts, setting backoff times) from S158 plan
+        # was never committed — these dicts are inert. Init prevents AttributeError on exit/reap.
+        # TODO: Investigate and implement the missing slippage backoff feature.
+        self._slippage_fail_count: Dict[str, int] = {}
+        self._slippage_backoff: Dict[str, float] = {}
+
         # S99: Portfolio circuit breaker — pause entries when unrealized P&L < threshold
         self._circuit_breaker_until: float = 0.0  # monotonic time when pause expires
         # S99b: Post-reset cooldown — prevent burst of trades after daily exposure reset
@@ -485,8 +492,8 @@ class MirrorBot(BaseBot):
                 loaded = await self._reliability_tracker.load_from_cache(max_age_hours=72)
                 if loaded:
                     logger.info("reliability_cache_loaded_on_startup")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("reliability_cache_load_failed", error=str(e))
 
         # M5: Restore dedup dict from Redis
         await self._restore_dedup_from_redis()
