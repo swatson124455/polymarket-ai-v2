@@ -2999,7 +2999,10 @@ class PredictionEngine:
                         _c90d = (_as_of - timedelta(days=90))
                         if _need_elite:
                             try:
-                                r_elite = await _s.execute(sa_text("""
+                                # S159 C24: 10s hard cap on elite queries — they join
+                                # trades × users with complex aggregations and can timeout,
+                                # holding connections until cancelled (21 timeouts/10min observed).
+                                r_elite = await asyncio.wait_for(_s.execute(sa_text("""
                                     SELECT
                                         COALESCE(SUM(
                                             CASE WHEN t.side IN ('YES', 'BUY') THEN 1.0 ELSE -1.0 END
@@ -3026,7 +3029,7 @@ class PredictionEngine:
                                     AND u.is_elite = TRUE
                                     AND COALESCE(u.is_likely_market_maker, false) = false
                                     AND t.timestamp >= :c90d
-                                """), {"market_id": market_id, "c1h": _c1h, "c6h": _c6h, "c24h": _c24h, "c90d": _c90d})
+                                """), {"market_id": market_id, "c1h": _c1h, "c6h": _c6h, "c24h": _c24h, "c90d": _c90d}), timeout=10.0)
                                 erow = r_elite.fetchone()
                                 if erow:
                                     elite_net = max(-1.0, min(1.0, float(erow[0] or 0)))
@@ -3036,6 +3039,12 @@ class PredictionEngine:
                                 self._elite_cache.set(f"elite:{market_id}", {
                                     "net": elite_net, "1h": elite_1h, "6h": elite_6h, "24h": elite_24h
                                 })
+                            except asyncio.TimeoutError:
+                                logger.debug("elite_query_timeout_10s", market_id=market_id)
+                                try:
+                                    await _s.rollback()
+                                except Exception:
+                                    pass
                             except Exception as e:
                                 logger.warning("Elite query failed (using zeros): %s", e)
                                 # ROLLBACK aborted transaction so subsequent queries in this session work
