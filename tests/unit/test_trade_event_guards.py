@@ -157,7 +157,10 @@ class TestInsertTradeEventResolutionGuard:
 
         insert_call = mock_session.execute.call_args_list[1]
         sql = str(insert_call[0][0].text)
-        assert "VALUES" in sql, "EXIT must use INSERT...VALUES"
+        # S159: Changed from INSERT...VALUES to INSERT...SELECT WHERE NOT EXISTS
+        # for partition-safe idempotency (same pattern as RESOLUTION path since S87).
+        assert "SELECT" in sql, "EXIT must use INSERT...SELECT WHERE NOT EXISTS"
+        assert "WHERE NOT EXISTS" in sql, "EXIT must have partition-safe dedup guard"
 
 
 class TestResolutionBackfillGuard:
