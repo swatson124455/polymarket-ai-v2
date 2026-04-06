@@ -1655,7 +1655,7 @@ class WeatherBot(BaseBot):
 
         Returns number of trades executed.
         """
-        import httpx
+        import aiohttp
 
         # S99/S115: Unified discovery cache (keyed by tag_slug)
         _now_mono = time.monotonic()
@@ -1672,11 +1672,16 @@ class WeatherBot(BaseBot):
                     "tag_slug": tag_slug,
                     "limit": "100",
                 }
-                async with httpx.AsyncClient(timeout=15.0) as http:
-                    resp = await http.get(url, params=params)
-                    if resp.status_code != 200:
+                # S159: Use aiohttp instead of httpx (shared dep, no extra TCP overhead)
+                _session = getattr(self._forecast_client, '_session', None)
+                if _session is None or _session.closed:
+                    await self._forecast_client._ensure_session()
+                    _session = self._forecast_client._session
+                async with _session.get(url, params=params,
+                                        timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status != 200:
                         return 0
-                    events = resp.json()
+                    events = await resp.json(content_type=None)
             except Exception as exc:
                 logger.debug(f"weatherbot_{market_type}_tag_fetch_error", error=str(exc))
                 return 0
@@ -3533,37 +3538,42 @@ class WeatherBot(BaseBot):
         try:
             # Gamma API supports tag_slug filter on /events endpoint
             # S101b: Paginate to fetch ALL events (was limit=100, missing overflow)
-            import httpx
+            # S159: Use aiohttp instead of httpx (shared dep, no extra TCP overhead)
+            import aiohttp as _aiohttp
             url = f"{client.gamma_api}/events"
             _MAX_PAGES = 10  # S142: raised 5→10 (hard cap 1000 events)
             events: list = []
             _pages_fetched = 0
             _last_page_size = 0
-            async with httpx.AsyncClient(timeout=15.0) as http:
-                for _page in range(_MAX_PAGES):
-                    params = {
-                        "active": "true",
-                        "closed": "false",
-                        "tag_slug": "temperature",
-                        "limit": "100",
-                        "offset": str(_page * 100),
-                    }
-                    resp = await http.get(url, params=params)
-                    if resp.status_code != 200:
+            _session = getattr(self._forecast_client, '_session', None)
+            if _session is None or _session.closed:
+                await self._forecast_client._ensure_session()
+                _session = self._forecast_client._session
+            for _page in range(_MAX_PAGES):
+                params = {
+                    "active": "true",
+                    "closed": "false",
+                    "tag_slug": "temperature",
+                    "limit": "100",
+                    "offset": str(_page * 100),
+                }
+                async with _session.get(url, params=params,
+                                        timeout=_aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status != 200:
                         if _page == 0:
-                            logger.warning("weatherbot_tag_fetch_failed", status=resp.status_code)
+                            logger.warning("weatherbot_tag_fetch_failed", status=resp.status)
                             _alerting = getattr(self.base_engine, "alerting_system", None)
                             if _alerting:
                                 await _alerting.send_alert(
                                     title="WeatherBot Tag Fetch Failed",
-                                    message=f"Gamma API tag_slug=temperature returned {resp.status_code}.",
+                                    message=f"Gamma API tag_slug=temperature returned {resp.status}.",
                                     severity=AlertSeverity.WARNING,
                                     source="WeatherBot",
-                                    metadata={"status_code": resp.status_code},
+                                    metadata={"status_code": resp.status},
                                 )
                             return []
                         break  # Non-first page failure — use what we have
-                    page_data = resp.json()
+                    page_data = await resp.json(content_type=None)
                     if not isinstance(page_data, list) or len(page_data) == 0:
                         break
                     events.extend(page_data)
@@ -3929,6 +3939,7 @@ class WeatherBot(BaseBot):
         self._prediction_log_cache.clear()
         self._written_forecasts.clear()
         self._alerted_unmatched_cities.clear()
+        self._liquidity_cache.clear()  # S159: was never pruned (TTL at read prevents stale data)
         # TTL-based eviction for timed caches
         _now_mono = time.monotonic()
         self._afd_cache = {k: v for k, v in self._afd_cache.items() if v[0] > _now_mono}
@@ -4221,7 +4232,8 @@ class WeatherBot(BaseBot):
                     return None
 
             # CRPS computation (Ferro 2014 fair CRPS for ensemble):
-            # CRPS = (1/M) * Σ|x_i - y| - (1/(2M²)) * Σ|x_i - x_j|
+            # Standard CRPS = (1/M) * Σ|x_i - y| - (1/(2M²)) * Σ|x_i - x_j|
+            # Note: uses M² denominator (standard CRPS), not M*(M-1) (fair/debiased CRPS).
             m = len(members)
             abs_diff_obs = sum(abs(x - actual_temp) for x in members) / m
 
@@ -5046,7 +5058,7 @@ class WeatherBot(BaseBot):
         if not db:
             return
 
-        # ── Brier score check (7-day rolling) ──
+        # ── Brier score check (30-day rolling) ──  # S159: was mislabeled "7-day"
         try:
             async with db.get_session() as session:
                 from sqlalchemy import text
@@ -5058,10 +5070,10 @@ class WeatherBot(BaseBot):
                 """))
                 row = result.fetchone()
                 if row and row[0] and row[0] >= 10:
-                    mse_7d = float(row[1])
+                    mse_30d = float(row[1])
                     # Normalize MSE to 0-1 Brier-like scale: divide by typical temp range squared
                     # For monitoring, use raw MSE as the metric (lower = better)
-                    brier_proxy = mse_7d
+                    brier_proxy = mse_30d
 
                     _brier_halt_mse = float(getattr(settings, "WEATHER_BRIER_HALT_MSE", 25.0))
                     if brier_proxy > _brier_halt_mse:  # MSE > threshold = avg error too high
@@ -5077,7 +5089,7 @@ class WeatherBot(BaseBot):
                             )
                         logger.critical(
                             "weatherbot_monitoring_halt",
-                            mse_7d=round(brier_proxy, 2),
+                            mse_30d=round(brier_proxy, 2),
                             samples=row[0],
                         )
                     elif brier_proxy > 16.0:  # MSE > 16 = avg error > 4°F
@@ -5093,13 +5105,13 @@ class WeatherBot(BaseBot):
                             )
                         logger.warning(
                             "weatherbot_monitoring_warning",
-                            mse_7d=round(brier_proxy, 2),
+                            mse_30d=round(brier_proxy, 2),
                             samples=row[0],
                         )
                     else:
                         # Below thresholds — clear halt if it was set
                         if self._monitoring_halt:
-                            logger.info("weatherbot_monitoring_halt_cleared", mse_7d=round(brier_proxy, 2))
+                            logger.info("weatherbot_monitoring_halt_cleared", mse_30d=round(brier_proxy, 2))
                         self._monitoring_halt = False
 
                         # W6: Dynamic Kelly graduation.
@@ -5112,7 +5124,7 @@ class WeatherBot(BaseBot):
                                 logger.info(
                                     "weatherbot_kelly_graduation",
                                     old=self._kelly_mult, new=0.50,
-                                    mse_7d=round(brier_proxy, 2), n_resolved=n_resolved,
+                                    mse_30d=round(brier_proxy, 2), n_resolved=n_resolved,
                                 )
                             self._kelly_mult = 0.50
                         elif n_resolved >= 100 and brier_proxy < 9.0:
@@ -5120,7 +5132,7 @@ class WeatherBot(BaseBot):
                                 logger.info(
                                     "weatherbot_kelly_graduation",
                                     old=self._kelly_mult, new=0.35,
-                                    mse_7d=round(brier_proxy, 2), n_resolved=n_resolved,
+                                    mse_30d=round(brier_proxy, 2), n_resolved=n_resolved,
                                 )
                             self._kelly_mult = 0.35
                         else:
@@ -5130,7 +5142,7 @@ class WeatherBot(BaseBot):
                                 logger.info(
                                     "weatherbot_kelly_downgrade",
                                     old=self._kelly_mult, new=default_kelly,
-                                    mse_7d=round(brier_proxy, 2), n_resolved=n_resolved,
+                                    mse_30d=round(brier_proxy, 2), n_resolved=n_resolved,
                                 )
                                 self._kelly_mult = default_kelly
 
