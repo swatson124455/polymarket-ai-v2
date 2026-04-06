@@ -71,7 +71,7 @@ class EliteWatchlist:
         # M6: Wash detection — track buy/sell round-trips per trader per market
         # Key: (addr_lower, market_id) -> list of (side, monotonic_time)
         self._trader_market_trades: Dict[Tuple[str, str], list] = {}
-        self._wash_flagged: Set[str] = set()  # addr_lower set of flagged wash traders
+        self._wash_flagged: Dict[str, float] = {}  # addr_lower -> monotonic time flagged (48h expiry)
 
         # S156: Track persist tasks so they aren't garbage-collected + log errors
         self._persist_tasks: set = set()
@@ -335,7 +335,8 @@ class EliteWatchlist:
                 addr = t["address"]
                 try:
                     positions = await self._client.get_closed_positions(addr, limit=100)
-                except Exception:
+                except Exception as _enrich_err:
+                    logger.warning("enrichment_api_failed", trader=addr[:10], error=str(_enrich_err))
                     positions = []
 
                 trade_count = len(positions) if positions else 0
@@ -560,17 +561,16 @@ class EliteWatchlist:
                 from sqlalchemy import text
                 # S150: Apply regime_start to exclude pre-S146 data from copy-tier scoring.
                 # Without this, traders get penalized for losses under old broken gates.
+                # S159: Parameterized regime_start — was f-string interpolation
                 _regime = getattr(settings, "MIRROR_REGIME_START", None) or None
-                _entry_time_filter = (
-                    f"AND event_time >= '{_regime}'"
-                    if _regime
-                    else "AND event_time >= NOW() - INTERVAL '30 days'"
-                )
-                _exit_time_filter = (
-                    f"AND te.event_time >= '{_regime}'"
-                    if _regime
-                    else ""
-                )
+                _params: Dict[str, Any] = {}
+                if _regime:
+                    _entry_time_filter = "AND event_time >= :regime_start"
+                    _exit_time_filter = "AND te.event_time >= :regime_start"
+                    _params["regime_start"] = _regime
+                else:
+                    _entry_time_filter = "AND event_time >= NOW() - INTERVAL '30 days'"
+                    _exit_time_filter = ""
                 async with self._db.get_session(timeout=15) as session:
                     _result = await session.execute(text(f"""
                         WITH entry_trader AS (
@@ -593,7 +593,7 @@ class EliteWatchlist:
                             AND te.event_type IN ('EXIT', 'RESOLUTION')
                             {_exit_time_filter}
                         GROUP BY LOWER(et.trader)
-                    """))
+                    """), _params)
                     # Build prefix→full_addr lookup for matching truncated (10-char)
                     # trader addresses from historical event_data against full watchlist addrs.
                     # New entries store full addresses; old entries are [:10] truncated.
@@ -622,7 +622,7 @@ class EliteWatchlist:
                             _existing["trades"] += _trades
                             _existing["wins"] += _wins
                             _existing["copy_pnl"] += _pnl
-                            _existing["copy_wr"] = round(100.0 * _existing["wins"] / _existing["trades"], 1)
+                            _existing["copy_wr"] = round(100.0 * _existing["wins"] / max(_existing["trades"], 1), 1)
                         else:
                             _new_copy_perf[_matched_addr] = {
                                 "trades": _trades, "wins": _wins,
@@ -658,6 +658,14 @@ class EliteWatchlist:
         _stale_ltt = [k for k in self._last_trade_time if k not in _active_addrs]
         for _k in _stale_ltt:
             del self._last_trade_time[_k]
+        # S159: Prune _rtds_price_cache entries older than 1h (dead markets)
+        _rtds_cutoff = time.monotonic() - 3600
+        _stale_rtds = [k for k, v in self._rtds_price_cache.items() if v[1] < _rtds_cutoff]
+        if _stale_rtds:
+            for _k in _stale_rtds:
+                del self._rtds_price_cache[_k]
+            logger.debug("rtds_price_cache_pruned", removed=len(_stale_rtds),
+                         remaining=len(self._rtds_price_cache))
         self._last_refresh = time.monotonic()
         self._last_refresh_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -819,11 +827,16 @@ class EliteWatchlist:
                         _round_trips += 1
                         break
         if _round_trips >= 3 and addr_lower not in self._wash_flagged:
-            self._wash_flagged.add(addr_lower)
+            self._wash_flagged[addr_lower] = time.monotonic()
             logger.warning("wash_trader_flagged", trader=addr[:10],
                            market=str(market_id)[:16], round_trips=_round_trips)
-        if addr_lower in self._wash_flagged:
-            return  # Skip wash traders entirely
+        # S159: 48h expiry — longer than MM detector's 24h window so the two don't overlap
+        _wash_ts = self._wash_flagged.get(addr_lower)
+        if _wash_ts is not None:
+            if time.monotonic() - _wash_ts > 172800:  # 48h
+                del self._wash_flagged[addr_lower]
+            else:
+                return  # Skip wash traders entirely
 
         # 6. Check position + daily limits
         if resolved_side != "SELL" and not self._mirror_bot._can_open_position(price):

@@ -8,6 +8,7 @@ Traders with few resolved trades are shrunk toward the population mean instead o
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -28,6 +29,7 @@ class EliteReliabilityTracker:
         self.regime_start = regime_start  # S150: filter out pre-regime data
         self._cache: Dict[str, Dict[str, float]] = {}  # address -> { alpha_yes, beta_yes, alpha_no, beta_no }
         self._cat_cache: Dict[Tuple[str, str], Dict[str, float]] = {}  # (address, category) -> same shape
+        self._refresh_lock = asyncio.Lock()  # S159: protect write path only (not reads)
 
     # S137 C6: Empirical Bayes prior Beta(6, 10) centered at 37.5% population WR.
     # Was Beta(1, 1) = flat "I know nothing" prior → shrank toward 50%, masking that
@@ -56,41 +58,51 @@ class EliteReliabilityTracker:
         }
 
     async def refresh(self) -> None:
-        """Load per-user resolution counts from DB and compute Beta params."""
-        if not self.db or not getattr(self.db, "get_user_resolution_counts", None):
-            self._cache = {}
-            self._cat_cache = {}
-            return
-        rows = await self.db.get_user_resolution_counts(
-            lookback_days=self.lookback_days, regime_start=self.regime_start)
-        self._cache = {}
-        for r in rows:
-            addr = (r.get("user_address") or "").strip()
-            if not addr:
-                continue
-            self._cache[addr.lower()] = self._build_beta_rec(r)
+        """Load per-user resolution counts from DB and compute Beta params.
 
-        # Per-category cache
-        self._cat_cache = {}
-        if getattr(self.db, "get_user_resolution_counts_by_category", None):
-            try:
-                cat_rows = await self.db.get_user_resolution_counts_by_category(
-                    lookback_days=self.lookback_days, regime_start=self.regime_start
-                )
-                for r in cat_rows:
-                    addr = (r.get("user_address") or "").strip()
-                    cat = (r.get("category") or "unknown").strip().lower()
-                    if not addr:
-                        continue
-                    self._cat_cache[(addr.lower(), cat)] = self._build_beta_rec(r)
-            except Exception as e:
-                logger.warning("Category reliability load failed: %s", e)
+        S159: Lock protects the write path only. Read methods (likelihood_ratio,
+        total_trade_count) are lock-free — they read whatever cache state exists
+        at that instant, which is always a valid snapshot.
+        """
+        async with self._refresh_lock:
+            if not self.db or not getattr(self.db, "get_user_resolution_counts", None):
+                self._cache = {}
+                self._cat_cache = {}
+                return
+            rows = await self.db.get_user_resolution_counts(
+                lookback_days=self.lookback_days, regime_start=self.regime_start)
+            _new_cache: Dict[str, Dict[str, float]] = {}
+            for r in rows:
+                addr = (r.get("user_address") or "").strip()
+                if not addr:
+                    continue
+                _new_cache[addr.lower()] = self._build_beta_rec(r)
 
-        logger.info("Elite reliability refreshed", n_users=len(self._cache),
-                    n_category_entries=len(self._cat_cache))
+            # Per-category cache
+            _new_cat: Dict[Tuple[str, str], Dict[str, float]] = {}
+            if getattr(self.db, "get_user_resolution_counts_by_category", None):
+                try:
+                    cat_rows = await self.db.get_user_resolution_counts_by_category(
+                        lookback_days=self.lookback_days, regime_start=self.regime_start
+                    )
+                    for r in cat_rows:
+                        addr = (r.get("user_address") or "").strip()
+                        cat = (r.get("category") or "unknown").strip().lower()
+                        if not addr:
+                            continue
+                        _new_cat[(addr.lower(), cat)] = self._build_beta_rec(r)
+                except Exception as e:
+                    logger.warning("Category reliability load failed: %s", e)
 
-        # S117: Persist to system_kv for instant startup next restart
-        await self.save_to_cache()
+            # Atomic swap — readers see old or new, never torn state
+            self._cache = _new_cache
+            self._cat_cache = _new_cat
+
+            logger.info("Elite reliability refreshed", n_users=len(self._cache),
+                        n_category_entries=len(self._cat_cache))
+
+            # S117: Persist to system_kv for instant startup next restart
+            await self.save_to_cache()
 
     async def save_to_cache(self) -> None:
         """S117: Persist _cache and _cat_cache to system_kv for instant startup."""
