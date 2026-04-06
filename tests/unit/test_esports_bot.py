@@ -314,12 +314,14 @@ class TestAnalyzeOpportunity:
         result = await bot.analyze_opportunity(market)
         assert result is not None
         assert result["side"] == "YES"
-        assert result["edge"] == pytest.approx(0.20, abs=0.03)
+        # S159: LoL YES dampener shrinks model_prob toward market price (40% shrink).
+        # Raw edge 0.20 → dampened to ~0.12 (0.50 + 0.20*0.60 = 0.62, edge = 0.12).
+        assert result["edge"] == pytest.approx(0.12, abs=0.03)
         assert result["game"] == "lol"
         assert result["market_type"] == "match_winner"
-        # S149: blue side bonus disabled (no blue/red detection).
-        # confidence = raw side_prob after BO1 adjustment (~0.694 from 0.70).
-        assert result["confidence"] > 0.65
+        # S159: LoL YES dampener reduces confidence (side_prob = dampened model_prob).
+        # Raw 0.70 → dampened ~0.62, after BO1 adjustment ~0.616.
+        assert result["confidence"] > 0.55
         assert result["confidence"] < 0.80
         assert result["market_id"] == "m1"
 

@@ -871,6 +871,11 @@ class EsportsBot(BaseBot):
         model_prob = cached["prob"]  # Always P(YES)
         game = cached.get("game", "")
 
+        # S159: LoL YES dampener — mirror scan path correction in WS path
+        _LOL_YES_SHRINK_WS = float(getattr(settings, "ESPORTS_LOL_YES_SHRINK", 0.40))
+        if game == "lol" and model_prob > yes_price and _LOL_YES_SHRINK_WS > 0:
+            model_prob = yes_price + (model_prob - yes_price) * (1.0 - _LOL_YES_SHRINK_WS)
+
         edge = model_prob - yes_price
 
         # S139: Divergence cap — WS path must enforce the same cap as scan path.
@@ -2653,6 +2658,19 @@ class EsportsBot(BaseBot):
                 rflb_adj=round(_rflb_adj, 4), market_price=round(price, 4),
                 rflb_ab=_rflb_ab,
             )
+
+        # S159: Per-game YES overestimation dampener.
+        # LoL model_prob systematically overestimates P(YES) for underdogs — model says
+        # 0.60, actual resolution win rate ~0.25.  When model produces a YES edge
+        # (model_prob > price), shrink model_prob toward market price by _LOL_YES_SHRINK.
+        # This reduces YES edge without affecting NO predictions (which are profitable).
+        _LOL_YES_SHRINK = float(getattr(settings, "ESPORTS_LOL_YES_SHRINK", 0.40))
+        if game == "lol" and model_prob > price and _LOL_YES_SHRINK > 0:
+            _pre_shrink = model_prob
+            model_prob = price + (model_prob - price) * (1.0 - _LOL_YES_SHRINK)
+            logger.info("esportsbot_lol_yes_dampener", market_id=market_id,
+                        pre_shrink=round(_pre_shrink, 4), post_shrink=round(model_prob, 4),
+                        market_price=round(price, 4), shrink=_LOL_YES_SHRINK)
 
         # S133: Early prediction logging — log ALL model predictions for calibrator learning,
         # even if downstream edge/confidence gates reject the trade. The existing dedup
