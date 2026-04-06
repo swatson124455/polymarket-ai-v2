@@ -2297,6 +2297,13 @@ class WeatherBot(BaseBot):
             if side == "NO" and price > _no_max_price:
                 continue
 
+            # S155B: YES entry price cap — mirrors NO cap. YES at 0.94 with 27.3% WR
+            # is structurally negative EV (break-even WR = price). Identity passthrough
+            # calibrator (n_yes=54) provides zero overconfidence correction.
+            _yes_max_price = float(getattr(settings, "WEATHER_YES_MAX_ENTRY_PRICE", 0.85))
+            if side == "YES" and price > _yes_max_price:
+                continue
+
             # Check position already open — fast path via in-memory set
             gw = self.base_engine.order_gateway
             if gw and hasattr(gw, "_open_position_markets"):
@@ -2940,6 +2947,23 @@ class WeatherBot(BaseBot):
         if opp["side"] == "YES" and _yes_size_mult < 1.0:
             _raw_size *= _yes_size_mult
 
+        # S155B: YES high-price dampener — mirrors NO dampener (S154).
+        # Break-even WR = price. YES at 0.70+ with 27.3% WR is catastrophic.
+        # Soft cap $0.50, slope 3.0: at $0.60 → 0.70x, $0.70 → 0.40x, $0.80 → 0.10x floor.
+        _yes_price_damp = 1.0
+        if opp["side"] == "YES":
+            _yes_soft = float(getattr(settings, "WEATHER_YES_PRICE_SOFT_CAP", 0.50))
+            if opp["price"] > _yes_soft:
+                _yes_slope = float(getattr(settings, "WEATHER_YES_PRICE_DAMPENER_SLOPE", 3.0))
+                _yes_price_damp = max(0.10, 1.0 - _yes_slope * (opp["price"] - _yes_soft))
+                _raw_size *= _yes_price_damp
+                logger.info(
+                    "weatherbot_yes_price_dampener",
+                    market_id=opp["market_id"], city=opp.get("city", ""),
+                    price=round(opp["price"], 4), dampener=round(_yes_price_damp, 3),
+                    raw_size_after=round(_raw_size, 2),
+                )
+
         # S154: NO high-price dampener — sliding size reduction above soft cap.
         # Break-even WR = entry price. NO at 0.90+: 80.6% WR but -$3,467 P&L.
         # Slope 6.0 reaches floor 0.10 at hard cap $0.85, eliminating cliff.
@@ -3111,6 +3135,7 @@ class WeatherBot(BaseBot):
                 # S154: Calibrator divergence tracking + new dampener values
                 "cal_divergence": round(opp["confidence"] - opp.get("raw_confidence", opp["confidence"]), 4),
                 "no_price_dampener": round(_no_price_damp, 3),
+                "yes_price_dampener": round(_yes_price_damp, 3),
                 "lead_time_mult": round(_lt_mult, 3),
             },
         )
