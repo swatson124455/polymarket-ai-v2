@@ -7439,7 +7439,7 @@ class EsportsBot(BaseBot):
             logger.info(
                 "esports_series_ws_reactive",
                 market_id=market_id,
-                price_move=f"{old_price:.4f}->{new_price:.4f}" if old_price else f"?->{new_price:.4f}",
+                price_move=f"{old_yes_price:.4f}->{new_price:.4f}" if old_yes_price else f"?->{new_price:.4f}",
                 edge=round(abs(edge), 4),
             )
             async with self._trade_lock:
