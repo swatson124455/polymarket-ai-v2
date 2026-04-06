@@ -260,6 +260,28 @@ async def bot_pnl(bot_name: str, hours: int = 24):
                     wr = (float(lr[2]) / float(lr[1]) * 100) if lr[1] > 0 else 0
                     print(f"  {lr[0]:<10} {lr[1]:>6} {lr[2]:>6} {wr:>6.1f}% ${float(lr[3]):>+11.2f}")
 
+            # S159: Calibrator status from system_kv
+            r8 = await s.execute(text(
+                "SELECT value FROM system_kv WHERE key = 'weatherbot_cal_fit_history'"
+            ))
+            _cal_row = r8.scalar_one_or_none()
+            if _cal_row:
+                import json as _json
+                _cal_hist = _json.loads(_cal_row)
+                if _cal_hist:
+                    _latest = _cal_hist[-1]
+                    print(f"\n{'='*50}")
+                    print(f"CALIBRATOR STATUS (latest fit)")
+                    print(f"{'='*50}")
+                    print(f"  n_no={_latest.get('n_no','?')}  n_yes={_latest.get('n_yes','?')}  "
+                          f"holdout={'valid' if _latest.get('holdout_valid') else 'invalid'}  "
+                          f"yes_widened={_latest.get('yes_widened', False)}")
+                    _tb = _latest.get('train_brier')
+                    _ob = _latest.get('oos_brier')
+                    _rob = _latest.get('raw_oos_brier')
+                    print(f"  train_brier={_tb}  oos_brier={_ob}  raw_oos_brier={_rob}")
+                    print(f"  fitted={_latest.get('fitted')}  ts={_latest.get('ts','?')}")
+
     await db.close()
 
 
