@@ -351,7 +351,7 @@ class AutomatedPositionManager:
         # Collect all token_ids from open positions
         token_ids = list({str(p.token_id) for p in positions if p.token_id})
         if not token_ids:
-            return
+            return True  # no tokens to update, but session is healthy
 
         try:
             # S156: Query market_prices_latest first (tiny table, O(1) per token).
@@ -410,7 +410,7 @@ class AutomatedPositionManager:
                     logger.debug("price_fallback_failed", error=str(_fb_err))
 
             if not latest_prices:
-                return
+                return True  # no prices found, but session is healthy
 
             updated = 0
             for pos in positions:
