@@ -506,6 +506,9 @@ async def run_resolution_backfill(
         try:
             async with db.get_session() as _te_sess:
                 from sqlalchemy import text as _te_text
+                # S158: Extended timeout — Phase 4b joins 3 full aggregates + NOT EXISTS.
+                # The global 30s DB_STATEMENT_TIMEOUT_MS is too short for 694+ entries.
+                await _te_sess.execute(_te_text("SET LOCAL statement_timeout = '120s'"))
                 # S134: Source ENTRY size/price from trade_events (immutable)
                 # instead of paper_trades (mutable UPSERT overwrites size).
                 # Fixes RESOLUTION event size inflation → phantom P&L.
@@ -621,6 +624,8 @@ async def run_resolution_backfill(
             ) / 10000.0
             async with db.get_session() as _pr_sess:
                 from sqlalchemy import text as _pr_text
+                # S158: Extended timeout for Phase 4b-alt (same reason as Phase 4b)
+                await _pr_sess.execute(_pr_text("SET LOCAL statement_timeout = '120s'"))
                 _pos_resolved = await _pr_sess.execute(_pr_text(
                     "SELECT p.market_id, p.source_bot, p.side, p.size, p.entry_price, "
                     "       m.resolution, "
@@ -638,7 +643,7 @@ async def run_resolution_backfill(
                     "FROM positions p "
                     "JOIN markets m ON (p.market_id = CAST(m.id AS TEXT) "
                     "                   OR p.market_id = m.condition_id) "
-                    "WHERE p.status = 'closed' "
+                    "WHERE p.status IN ('open', 'closed') "  # S158: include open positions on resolved markets
                     "  AND m.resolution IN ('YES', 'NO') "
                     "  AND NOT EXISTS ("
                     "    SELECT 1 FROM trade_events te "
@@ -678,6 +683,16 @@ async def run_resolution_backfill(
                             event_data=_alt_event_data,
                         )
                         _pos_res_emitted += 1
+                        # S158: Close open positions on resolved markets.
+                        # Without this, positions that ride to resolution stay status='open' forever.
+                        try:
+                            await _pr_sess.execute(_pr_text(
+                                "UPDATE positions SET status = 'closed' "
+                                "WHERE market_id = :mid AND source_bot = :bot AND status = 'open'"
+                            ), {"mid": _mid, "bot": _bot})
+                            await _pr_sess.commit()
+                        except Exception:
+                            pass  # Non-critical — position will be caught on next run
                     except Exception as _pr_err:
                         logger.debug(
                             "Resolution backfill 4b-alt: emission failed for %s/%s: %s",
