@@ -730,11 +730,14 @@ class BaseBot(ABC):
 
                     _ks_engaged = await asyncio.wait_for(_check_kill_switch(), timeout=10)
                 except asyncio.TimeoutError:
-                    logger.warning("Kill switch check timed out (10s) — proceeding with scan", bot_name=self.bot_name)
-                    _ks_engaged = False
+                    # S159: Fail-CLOSED — when kill switch state is unknown, don't trade.
+                    # The kill switch exists for emergencies; bypassing it during DB outages
+                    # (when you most need it) defeats its purpose.
+                    logger.warning("Kill switch check timed out (10s) — failing closed, skipping scan", bot_name=self.bot_name)
+                    _ks_engaged = True
                 except Exception as e:
-                    logger.debug("Kill switch check error: %s", e, bot_name=self.bot_name)
-                    _ks_engaged = False
+                    logger.warning("Kill switch check failed — failing closed", bot_name=self.bot_name, error=str(e))
+                    _ks_engaged = True
 
                 if _ks_engaged:
                     logger.debug("Scan paused: kill switch engaged", bot_name=self.bot_name)
