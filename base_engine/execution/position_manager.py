@@ -283,8 +283,15 @@ class AutomatedPositionManager:
 
         Session 46: Markets past their end_date are resolved (or about to be).
         Selling is pointless — resolution is free. Mark as closed in DB.
+        S159 C14: Skip PM_EXCLUDE_BOTS — they manage their own expiry/resolution.
+        S159 C12: Emit EXIT trade_event before closing (trade_events is P&L authority).
         """
         from sqlalchemy import text as sa_text
+        from config.settings import settings
+
+        # S159 C14: Excluded bots handle their own expiry via resolution backfill
+        # and bot-specific reap logic (e.g., MirrorBot 96h force-exit).
+        _exclude = set(getattr(settings, "PM_EXCLUDE_BOTS", []))
 
         market_ids = list({str(p.market_id) for p in positions if p.market_id})
         if not market_ids:
@@ -309,12 +316,41 @@ class AutomatedPositionManager:
         closed_count = 0
         for pos in positions:
             mid = str(pos.market_id)
+
+            # S159 C14: Skip excluded bots — they manage their own lifecycle
+            _bot = getattr(pos, "bot_id", None) or getattr(pos, "bot_name", None) or ""
+            if _bot in _exclude:
+                active.append(pos)
+                continue
+
             end_date = end_dates.get(mid)
             if end_date and hasattr(end_date, "tzinfo"):
                 # Ensure tz-aware comparison
                 if end_date.tzinfo is None:
                     end_date = end_date.replace(tzinfo=timezone.utc)
                 if end_date < now:
+                    # S159 C12: Record EXIT event — trade_events is canonical P&L authority
+                    try:
+                        _exit_price = float(pos.current_price or pos.entry_price or 0.5)
+                        _entry_price = float(pos.entry_price or 0.5)
+                        _size = float(pos.size or 0)
+                        _pnl = (_exit_price - _entry_price) * _size
+                        if not pos.current_price and not pos.entry_price:
+                            logger.warning("expired_position_no_price", pos_id=pos.id, market_id=mid)
+                        await self.db.insert_trade_event(
+                            event_type="EXIT",
+                            bot_name=_bot,
+                            market_id=mid,
+                            token_id=str(pos.token_id or ""),
+                            side="SELL",
+                            size=_size,
+                            price=_exit_price,
+                            realized_pnl=_pnl,
+                            event_data={"exit_reason": "market_expired", "end_date": end_date.isoformat()},
+                        )
+                    except Exception as _te_err:
+                        logger.warning("expired_position_trade_event_failed", pos_id=pos.id, error=str(_te_err))
+
                     pos.status = "closed"
                     closed_count += 1
                     logger.info(
