@@ -2294,7 +2294,9 @@ class EsportsBot(BaseBot):
             if side == "YES":
                 current_edge = model_prob - current_price
             else:
-                current_edge = (1.0 - model_prob) - (1.0 - current_price)
+                # current_price is NO token price (from position token_id lookup).
+                # P(NO) - NO_price = remaining edge for NO position.
+                current_edge = (1.0 - model_prob) - current_price
 
             if current_edge <= 0:
                 logger.debug("esportsbot_edge_collapsed", market_id=mid,
