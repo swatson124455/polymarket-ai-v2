@@ -104,9 +104,11 @@ class MetarMonitor:
         """Fetch METAR for all stations with same-day markets."""
         today_str = datetime.now(timezone.utc).date().isoformat()
 
-        # Filter to US stations only (METAR via AWC is US-focused)
-        us_stations = [s for s in self._stations if s.temp_unit == "F" and s.station_id.startswith("K")]
-        if not us_stations:
+        # S159: Monitor ALL stations with valid 4-char ICAO codes (was US-only K-prefix).
+        # AWC METAR API supports international ICAO codes. International METAR temps are
+        # in Celsius — conversion to Fahrenheit happens in _process_metar_obs().
+        monitored_stations = [s for s in self._stations if s.station_id and len(s.station_id) == 4]
+        if not monitored_stations:
             return
 
         # S99: Batch METAR requests in groups of 20 (AWC limit per request)
@@ -116,8 +118,8 @@ class MetarMonitor:
         _poll_t0 = time.monotonic()
         _batches_sent = 0
 
-        for i in range(0, len(us_stations), _batch_size):
-            batch = us_stations[i:i + _batch_size]
+        for i in range(0, len(monitored_stations), _batch_size):
+            batch = monitored_stations[i:i + _batch_size]
             icao_ids = ",".join(s.station_id for s in batch)
             try:
                 params = {
@@ -152,13 +154,15 @@ class MetarMonitor:
                 temp_c = obs.get("temp")
                 if station_id and temp_c is not None:
                     # Convert to station unit
-                    station = next((s for s in us_stations if s.station_id == station_id), None)
+                    station = next((s for s in monitored_stations if s.station_id == station_id), None)
                     if not station:
                         continue
 
-                    temp = float(temp_c)
-                    if station.temp_unit == "F":
-                        temp = temp * 9.0 / 5.0 + 32.0
+                    # S159: METAR API always reports temp in Celsius (ICAO standard).
+                    # Convert ALL stations to Fahrenheit — bucket boundaries are in F.
+                    # Previously only converted when temp_unit=="F" (US stations), leaving
+                    # international stations in Celsius (wrong unit for bucket comparison).
+                    temp = float(temp_c) * 9.0 / 5.0 + 32.0
 
                     # Update running daily max
                     prev = self._observations.get(station_id)
@@ -201,7 +205,7 @@ class MetarMonitor:
         _poll_ms = round((time.monotonic() - _poll_t0) * 1000)
         logger.info(
             "metar_poll_done",
-            stations_polled=len(us_stations),
+            stations_polled=len(monitored_stations),
             batches=_batches_sent,
             observations=len(data),
             updates=_updates,
