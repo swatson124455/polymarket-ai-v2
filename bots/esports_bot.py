@@ -449,6 +449,7 @@ class EsportsBot(BaseBot):
         self._last_kelly_check: float = 0.0          # was: _scan_count % 10 (~20min)
         self._last_outcome_backfill: float = 0.0     # was: _scan_count % 10 (~20min)
         self._last_clv_backfill: float = 0.0         # was: _clv_backfill_counter >= 10
+        self._last_ems_prune: float = 0.0            # S159: prune _entered_market_sides every 30min
 
         # A1+A8: Daily loss limit + drawdown halt
         self._daily_pnl: float = 0.0
@@ -1061,7 +1062,8 @@ class EsportsBot(BaseBot):
                         _ems_text(
                             "SELECT DISTINCT market_id, side FROM trade_events "
                             "WHERE bot_name IN ('EsportsBot', 'EsportsLiveBot', 'EsportsSeriesBot') "
-                            "AND event_type = 'ENTRY' AND side IN ('YES', 'NO')"
+                            "AND event_type = 'ENTRY' AND side IN ('YES', 'NO') "
+                            "AND event_time >= NOW() - INTERVAL '30 days'"
                         )
                     )
                     for _mr in _ems_rows.fetchall():
@@ -1584,6 +1586,46 @@ class EsportsBot(BaseBot):
             self._last_outcome_backfill = _now
             logger.info("esportsbot_outcome_backfill_triggered")
             await self._safe_backfill_outcomes(db)
+
+        # S159: Prune resolved markets from _entered_market_sides (every 30 min)
+        if db and (_now - self._last_ems_prune) >= 1800:
+            self._last_ems_prune = _now
+            await self._prune_entered_market_sides(db)
+
+    async def _prune_entered_market_sides(self, db) -> None:
+        """Remove (market_id, side) pairs for resolved markets.
+
+        Resolved markets can't be traded again, so the opposing-side guard
+        is useless for them.  Active markets with closed positions KEEP
+        their guard — prevents re-entering the opposite side within a
+        market's lifetime.
+        """
+        if not self._entered_market_sides:
+            return
+        try:
+            from sqlalchemy import text as _p_text
+            _market_ids = list({mid for mid, _ in self._entered_market_sides})
+            async with db.get_session(timeout=15) as _p_sess:
+                _rows = await _p_sess.execute(
+                    _p_text(
+                        "SELECT DISTINCT market_id FROM traded_markets "
+                        "WHERE market_id = ANY(:ids) AND resolved_at IS NOT NULL"
+                    ),
+                    {"ids": _market_ids},
+                )
+                _resolved = {r[0] for r in _rows.fetchall()}
+            if _resolved:
+                _before = len(self._entered_market_sides)
+                self._entered_market_sides = {
+                    (mid, side) for mid, side in self._entered_market_sides
+                    if mid not in _resolved
+                }
+                _pruned = _before - len(self._entered_market_sides)
+                if _pruned:
+                    logger.info("esports_ems_pruned",
+                                pruned=_pruned, remaining=len(self._entered_market_sides))
+        except Exception as _exc:
+            logger.debug("esports_ems_prune_failed", error=str(_exc))
 
     async def _safe_backfill_outcomes(self, db) -> None:
         """Background outcome backfill — non-blocking."""
