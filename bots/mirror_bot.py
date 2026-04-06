@@ -920,6 +920,7 @@ class MirrorBot(BaseBot):
         # RTDS sees ALL global trades, so we get real-time prices for any active market.
         if self._watchlist:
             _rtds_updated = 0
+            _rtds_persisted = 0
             for _pk, _pdata in self._open_positions.items():
                 _tok = _pk.split(":", 1)[1] if ":" in _pk else ""
                 if not _tok:
@@ -933,8 +934,40 @@ class MirrorBot(BaseBot):
                     if abs(_old_cp - _ep) < 1e-6:
                         _pdata["current_price"] = _rtds_p
                         _rtds_updated += 1
+                        # S159: Persist RTDS price to DB so _sync_prices_from_db
+                        # doesn't overwrite with stale value next cycle.  Also seed
+                        # market_prices_latest so position_manager can find it.
+                        _mid = _pk.split(":", 1)[0] if ":" in _pk else ""
+                        try:
+                            _db = getattr(self.base_engine, "db", None)
+                            if _db and getattr(_db, "session_factory", None):
+                                from sqlalchemy import text as _sa_text
+                                async with _db.get_session() as _rtds_s:
+                                    await _rtds_s.execute(_sa_text(
+                                        "UPDATE positions SET current_price = :price "
+                                        "WHERE token_id = :tid AND status = 'open' "
+                                        "AND COALESCE(source_bot, bot_id) = 'MirrorBot'"
+                                    ), {"price": _rtds_p, "tid": _tok})
+                                    await _rtds_s.execute(_sa_text(
+                                        "INSERT INTO market_prices_latest "
+                                        "(token_id, market_id, price, timestamp) "
+                                        "VALUES (:token_id, :market_id, :price, :timestamp) "
+                                        "ON CONFLICT (token_id) DO UPDATE SET "
+                                        "  price = EXCLUDED.price, "
+                                        "  market_id = EXCLUDED.market_id, "
+                                        "  timestamp = EXCLUDED.timestamp "
+                                        "WHERE EXCLUDED.timestamp > "
+                                        "  market_prices_latest.timestamp"
+                                    ), {"token_id": _tok, "market_id": _mid,
+                                        "price": _rtds_p,
+                                        "timestamp": datetime.now(timezone.utc).replace(tzinfo=None)})
+                                    await _rtds_s.commit()
+                                    _rtds_persisted += 1
+                        except Exception:
+                            pass  # non-fatal, in-memory override still works this cycle
             if _rtds_updated:
                 logger.info("mirror_rtds_price_overlay", updated=_rtds_updated,
+                            persisted=_rtds_persisted,
                             total=len(self._open_positions))
 
         positions_to_close: List[tuple] = []  # (pos_key, exit_event_data)
