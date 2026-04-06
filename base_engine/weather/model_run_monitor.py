@@ -332,7 +332,13 @@ class ModelRunMonitor:
             return None
 
     async def _get_session(self) -> aiohttp.ClientSession:
-        """Get or create aiohttp session from forecast client."""
+        """Get or create aiohttp session from forecast client.
+
+        S159: Use forecast_client's _ensure_session() instead of creating a bare
+        ClientSession(). A bare session has no timeout config (defaults to 300s)
+        and no User-Agent header, and since it writes to self._fc._session, it
+        poisons the forecast_client's shared session for all subsequent requests.
+        """
         if self._fc._session is None or self._fc._session.closed:
-            self._fc._session = aiohttp.ClientSession()
+            await self._fc._ensure_session()
         return self._fc._session
