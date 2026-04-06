@@ -81,7 +81,10 @@ async def test_expired_market_position_auto_closed():
 
     assert pos.status == "closed", "Expired position should be closed"
     assert len(active) == 0, "No active positions should remain"
+    # S159 C19: expired positions trigger commit on outer session (line 387)
+    # AND insert_trade_event is called for EXIT event (line 362)
     mock_outer_session.commit.assert_called_once()
+    db.insert_trade_event.assert_called_once()
 
 
 @pytest.mark.asyncio
