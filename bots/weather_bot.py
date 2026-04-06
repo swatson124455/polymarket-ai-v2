@@ -205,6 +205,17 @@ class WeatherConfidenceCalibrator:
             if n_yes >= _yes_min_samples:
                 model_yes = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
                 model_yes.fit(confidences[yes_mask], outcomes[yes_mask])
+                # S159: Log graduation breakpoints to verify calibration curve
+                _yes_steps = list(zip(
+                    [round(float(x), 3) for x in model_yes.X_thresholds_],
+                    [round(float(y), 3) for y in model_yes.y_thresholds_],
+                )) if hasattr(model_yes, "X_thresholds_") else []
+                logger.info(
+                    "weatherbot_cal_yes_graduated",
+                    n_yes=n_yes,
+                    n_steps=len(_yes_steps),
+                    steps=_yes_steps[:20],
+                )
             else:
                 # S143: YES too thin in 30d — try wider window (90d) for YES only
                 _yes_fb_window = int(getattr(
@@ -246,6 +257,18 @@ class WeatherConfidenceCalibrator:
                             model_yes.fit(_yc, _yo)
                             _yes_widened = True
                             n_yes = _n_yes_wide
+                            # S159: Log graduation breakpoints for widened fit
+                            _yes_steps = list(zip(
+                                [round(float(x), 3) for x in model_yes.X_thresholds_],
+                                [round(float(y), 3) for y in model_yes.y_thresholds_],
+                            )) if hasattr(model_yes, "X_thresholds_") else []
+                            logger.info(
+                                "weatherbot_cal_yes_graduated",
+                                n_yes=_n_yes_wide,
+                                n_steps=len(_yes_steps),
+                                steps=_yes_steps[:20],
+                                widened=True,
+                            )
                             logger.info(
                                 "weatherbot_cal_yes_widened",
                                 n_yes_30d=int(yes_mask.sum()),
@@ -2370,6 +2393,18 @@ class WeatherBot(BaseBot):
             else:
                 effective_confidence = base_confidence
 
+            # S159: YES identity passthrough confidence dampener.
+            # When YES calibrator has no model (n_yes < min_samples), raw confidence
+            # passes through uncorrected. Apply 0.85x to reduce overconfidence.
+            # This is upstream of the negative-EV gate (conf < price), so it also
+            # blocks marginal YES entries at high prices (~$0.81+ at max conf).
+            # Self-removes when YES calibrator graduates (model_yes is not None).
+            _yes_identity_damp = 1.0
+            if (side == "YES"
+                    and getattr(self._confidence_calibrator, "_model_yes", None) is None):
+                _yes_identity_damp = 0.85
+                effective_confidence *= _yes_identity_damp
+
             # S135 R3: YES confidence floor — data shows YES <0.35 has 6.4% WR, -$3,159
             _yes_min_conf = float(getattr(settings, "WEATHER_YES_MIN_CONFIDENCE", 0.35))
             if side == "YES" and _yes_min_conf > 0 and effective_confidence < _yes_min_conf:
@@ -2410,6 +2445,7 @@ class WeatherBot(BaseBot):
                 "price": price,
                 "confidence": effective_confidence,
                 "raw_confidence": base_confidence,
+                "_yes_identity_damp": _yes_identity_damp,
                 "model_prob": e["model_prob"],
                 "edge": e["edge"],
                 "abs_edge": e["abs_edge"],
@@ -3161,6 +3197,7 @@ class WeatherBot(BaseBot):
                 "cal_divergence": round(opp["confidence"] - opp.get("raw_confidence", opp["confidence"]), 4),
                 "no_price_dampener": round(_no_price_damp, 3),
                 "yes_price_dampener": round(_yes_price_damp, 3),
+                "yes_identity_conf_damp": round(opp.get("_yes_identity_damp", 1.0), 3),
                 "lead_time_mult": round(_lt_mult, 3),
             },
         )

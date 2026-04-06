@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     WEATHER_STATION_PROBE_429_COOLDOWN_S: int = int(os.getenv("WEATHER_STATION_PROBE_429_COOLDOWN_S", "300"))  # S151: global cooldown for station probes on Open-Meteo 429
     RESOLUTION_RECHECK_INTERVAL_HOURS: int = int(os.getenv("RESOLUTION_RECHECK_INTERVAL_HOURS", "6"))  # S151: skip re-checking markets checked within this window; 0=disable (check all every cycle)
     WEATHER_CAL_YES_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_CAL_YES_MIN_CONFIDENCE", "0.40"))  # S151: relaxed YES calibrator training floor (NO stays at 0.60)
-    WEATHER_CAL_YES_MIN_SAMPLES: int = int(os.getenv("WEATHER_CAL_YES_MIN_SAMPLES", "200"))  # S152: minimum YES samples for isotonic activation; identity passthrough below this
+    WEATHER_CAL_YES_MIN_SAMPLES: int = int(os.getenv("WEATHER_CAL_YES_MIN_SAMPLES", "100"))  # S159: 200→100; OOS Brier gate (S159) protects against overfitting at lower n
     # Ingestion tuning — caps how many DB connections Phase 1 can hold simultaneously
     INGEST_NUM_PROCESSORS: int = int(os.getenv("INGEST_NUM_PROCESSORS", "8"))
     INGEST_DB_BUDGET: int = int(os.getenv("INGEST_DB_BUDGET", "4"))
