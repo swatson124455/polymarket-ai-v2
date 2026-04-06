@@ -7322,11 +7322,13 @@ class EsportsBot(BaseBot):
             # No token map — cannot distinguish YES/NO, skip
             return
 
-        # Significance threshold
+        # Significance threshold — keyed by token_id (not market_id) to avoid
+        # YES/NO price cross-contamination. Stores YES-normalized price.
+        # _series_ws_cooldowns stays market_id-keyed (trade cooldown, not price tracking).
         threshold = float(getattr(settings, "ESPORTS_SERIES_WS_PRICE_CHANGE_PCT", 0.01))
-        old_price = self._series_ws_prev_prices.get(market_id)
-        self._series_ws_prev_prices[market_id] = new_price
-        if old_price is None or abs(yes_price - (1.0 - old_price if token_id == _no_tid else old_price)) / max(old_price, 0.01) < threshold:
+        old_yes_price = self._series_ws_prev_prices.get(token_id)
+        self._series_ws_prev_prices[token_id] = yes_price
+        if old_yes_price is None or abs(yes_price - old_yes_price) / max(old_yes_price, 0.01) < threshold:
             return
 
         # Cooldown
