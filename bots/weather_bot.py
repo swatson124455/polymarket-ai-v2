@@ -84,6 +84,7 @@ class WeatherConfidenceCalibrator:
         self._n_samples: int = 0
         self._cal_brier: Optional[float] = None  # calibrated Brier score (train set)
         self._oos_brier: Optional[float] = None   # S143: true out-of-sample Brier
+        self._raw_oos_brier: Optional[float] = None  # S159: raw OOS Brier for comparison
         self._coef_confidence: float = 0.0  # compat: slope proxy from NO model
         self._coefficients: dict = {}       # for logging/inspection
 
@@ -290,22 +291,18 @@ class WeatherConfidenceCalibrator:
                 self._fitted = False
                 return False
 
-            self._model_no = model_no
-            self._model_yes = model_yes
-            self._fitted = True
-            self._n_samples = len(rows)
-            self._cal_brier = train_brier
-
             # S143: Compute TRUE OOS Brier on held-out 7-day test set
             # S151: apply same per-side confidence filters to test rows for consistency
             _test_rows = [r for r in _test_rows
                           if not (r[1] == "NO" and float(r[0]) < _no_min_conf)
                           and not (r[1] != "NO" and float(r[0]) < _yes_min_conf)]
             oos_brier = None
+            raw_oos_brier = None
             if _holdout_valid and len(_test_rows) >= 10:
                 _tc = np.array([float(r[0]) for r in _test_rows], dtype=np.float64)
                 _to = np.array([float(r[2]) for r in _test_rows], dtype=np.float64)
                 _ts = [r[1] for r in _test_rows]
+                raw_oos_brier = float(np.mean((_tc - _to) ** 2))
                 _tp = np.empty_like(_tc)
                 for _i, (_c, _s) in enumerate(zip(_tc, _ts)):
                     if _s == "NO" and model_no is not None:
@@ -315,7 +312,28 @@ class WeatherConfidenceCalibrator:
                     else:
                         _tp[_i] = _c
                 oos_brier = float(np.mean((_tp - _to) ** 2))
+                # S159: OOS rejection gate — reject if calibration worsens OOS Brier.
+                # Isotonic should improve OOS if calibration is real; +0.005 gives
+                # minimal noise tolerance. On rejection, prior model retained (identity
+                # passthrough if no prior model exists).
+                if oos_brier > raw_oos_brier + 0.005:
+                    logger.warning(
+                        "weatherbot_confidence_cal_oos_rejected",
+                        raw_oos_brier=round(raw_oos_brier, 4),
+                        oos_brier=round(oos_brier, 4),
+                        delta=round(oos_brier - raw_oos_brier, 4),
+                        oos_n=len(_test_rows),
+                    )
+                    self._fitted = False
+                    return False
             self._oos_brier = oos_brier
+            self._raw_oos_brier = raw_oos_brier
+
+            self._model_no = model_no
+            self._model_yes = model_yes
+            self._fitted = True
+            self._n_samples = len(rows)
+            self._cal_brier = train_brier
 
             # Compute slope proxy for .temperature compat
             if model_no is not None:
@@ -349,6 +367,7 @@ class WeatherConfidenceCalibrator:
                 train_brier=round(train_brier, 4),
                 brier_improvement=round(raw_train_brier - train_brier, 4),
                 oos_brier=round(oos_brier, 4) if oos_brier is not None else None,
+                raw_oos_brier=round(raw_oos_brier, 4) if raw_oos_brier is not None else None,
                 holdout_valid=_holdout_valid,
                 yes_widened=_yes_widened,
                 confidence_slope=self._coef_confidence,
@@ -366,6 +385,7 @@ class WeatherConfidenceCalibrator:
                     "train_n": len(_fit_rows), "oos_n": len(_test_rows),
                     "train_brier": round(train_brier, 4),
                     "oos_brier": round(oos_brier, 4) if oos_brier is not None else None,
+                    "raw_oos_brier": round(raw_oos_brier, 4) if raw_oos_brier is not None else None,
                     "holdout_valid": _holdout_valid, "yes_widened": _yes_widened,
                     "window_days": window_days, "fitted": True,
                 }
