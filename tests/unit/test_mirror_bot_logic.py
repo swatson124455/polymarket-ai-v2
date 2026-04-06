@@ -222,6 +222,8 @@ class TestDailyExposureDecrement:
             ms.MIRROR_CIRCUIT_BREAKER_THRESHOLD = -0.20
             ms.MIRROR_CIRCUIT_BREAKER_PAUSE_MINUTES = 15
             ms.MIRROR_EXIT_ENABLED = True
+            ms.MIRROR_STOP_LOSS_GRACE_HOURS = 0.0  # S158: disable grace for test
+            ms.MIRROR_STOP_LOSS_NEAR_RES_HOURS = 24.0
             await bot._check_and_execute_exits()
 
         # S133: After exit: exposure = 200 - (50 * entry_price=0.60) = 170
@@ -258,6 +260,8 @@ class TestDailyExposureDecrement:
             ms.MIRROR_CIRCUIT_BREAKER_THRESHOLD = -0.20
             ms.MIRROR_CIRCUIT_BREAKER_PAUSE_MINUTES = 15
             ms.MIRROR_EXIT_ENABLED = True
+            ms.MIRROR_STOP_LOSS_GRACE_HOURS = 0.0  # S158: disable grace for test
+            ms.MIRROR_STOP_LOSS_NEAR_RES_HOURS = 24.0
             await bot._check_and_execute_exits()
 
         assert bot._daily_exposure == 0.0
@@ -291,6 +295,8 @@ class TestDailyExposureDecrement:
             ms.MIRROR_CIRCUIT_BREAKER_THRESHOLD = -0.20
             ms.MIRROR_CIRCUIT_BREAKER_PAUSE_MINUTES = 15
             ms.MIRROR_EXIT_ENABLED = True
+            ms.MIRROR_STOP_LOSS_GRACE_HOURS = 0.0
+            ms.MIRROR_STOP_LOSS_NEAR_RES_HOURS = 24.0
             await bot._check_and_execute_exits()
 
         assert bot._daily_exposure == 200.0
@@ -387,6 +393,8 @@ class TestTraderSellExitDetection:
             ms.MIRROR_CIRCUIT_BREAKER_THRESHOLD = -0.20
             ms.MIRROR_CIRCUIT_BREAKER_PAUSE_MINUTES = 15
             ms.MIRROR_EXIT_ENABLED = True
+            ms.MIRROR_STOP_LOSS_GRACE_HOURS = 0.0
+            ms.MIRROR_STOP_LOSS_NEAR_RES_HOURS = 24.0
             await bot._check_and_execute_exits()
 
         assert pos_key not in bot._open_positions
@@ -420,6 +428,8 @@ class TestTraderSellExitDetection:
             ms.MIRROR_CIRCUIT_BREAKER_THRESHOLD = -0.20
             ms.MIRROR_CIRCUIT_BREAKER_PAUSE_MINUTES = 15
             ms.MIRROR_EXIT_ENABLED = True
+            ms.MIRROR_STOP_LOSS_GRACE_HOURS = 0.0
+            ms.MIRROR_STOP_LOSS_NEAR_RES_HOURS = 24.0
             await bot._check_and_execute_exits()
 
         assert pos_key in bot._open_positions
@@ -441,6 +451,8 @@ class TestTraderSellExitDetection:
             ms.MIRROR_CIRCUIT_BREAKER_THRESHOLD = -0.20
             ms.MIRROR_CIRCUIT_BREAKER_PAUSE_MINUTES = 15
             ms.MIRROR_EXIT_ENABLED = True
+            ms.MIRROR_STOP_LOSS_GRACE_HOURS = 0.0
+            ms.MIRROR_STOP_LOSS_NEAR_RES_HOURS = 24.0
             await bot._check_and_execute_exits()
 
 

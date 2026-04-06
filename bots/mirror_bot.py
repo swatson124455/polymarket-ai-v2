@@ -1019,6 +1019,13 @@ class MirrorBot(BaseBot):
                     }))
                     continue
 
+            # S158: Grace period — skip stop-loss evaluation during post-entry reversion window.
+            # Data: 46% of 0-30min stops recover above entry price (whale impact reversion).
+            # 2h grace lets reversion complete; near-resolution override still fires immediately.
+            _grace_h = float(getattr(settings, "MIRROR_STOP_LOSS_GRACE_HOURS", 2.0))
+            if _hours_held < _grace_h and (_ttr_hours is None or _ttr_hours >= _near_res_hours):
+                continue  # skip stop-loss, but NOT take-profit/force-exit (already evaluated above)
+
             # S137 C10 / S146: Graduated stop-loss — 4-tier, tight early and loose late.
             # S146: Added 24h tier. Tightened all thresholds for 40% WR regime.
             # Near-resolution override: < 24h left → -3% to avoid being stuck at resolution.
@@ -2215,7 +2222,12 @@ class MirrorBot(BaseBot):
         # DATA: <40% = 9% WR (-$157/pos), 40-50% = 18% WR (-$53/pos), 50%+ = profitable.
         # S153: Split scoring gate check
         if _split_live:
-            _gate_threshold = float(getattr(settings, "MIRROR_GATE_THRESHOLD", 0.52))
+            # S158: NO-side gets lower gate threshold — 71.4% WR vs 45.4% YES.
+            # Existing NO gates (min_edge, block_floor, dampener) already filter heavily.
+            if _side_upper == "NO":
+                _gate_threshold = float(getattr(settings, "MIRROR_GATE_THRESHOLD_NO", 0.50))
+            else:
+                _gate_threshold = float(getattr(settings, "MIRROR_GATE_THRESHOLD", 0.52))
             if gate_score < _gate_threshold:
                 logger.info("mirror_gate_blocked",
                             gate_score=round(gate_score, 3),
@@ -2408,6 +2420,8 @@ class MirrorBot(BaseBot):
             "category": category or "",
             "source": source,
             "whale_trade_usd": round(whale_trade_usd, 2),
+            "whale_fill_price": round(_old_price, 4),  # S158: whale's RTDS fill price (before market override)
+            "bot_entry_price": round(price, 4),         # S158: bot's actual entry (current market midpoint)
             "conf_base": round(_base, 3),
             "conf_price_adj": round(_price_adj, 3),
             "conf_conv_adj": round(_conv_adj, 3),

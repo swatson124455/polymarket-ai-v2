@@ -448,6 +448,8 @@ class Settings(BaseSettings):
     # S153: Split scoring — gate score (should we trade?) + kelly probability (how much to bet?)
     MIRROR_USE_SPLIT_SCORING: bool = os.getenv("MIRROR_USE_SPLIT_SCORING", "false").lower() in ("true", "1", "yes")
     MIRROR_GATE_THRESHOLD: float = float(os.getenv("MIRROR_GATE_THRESHOLD", "0.52"))
+    MIRROR_GATE_THRESHOLD_NO: float = float(os.getenv("MIRROR_GATE_THRESHOLD_NO", "0.50"))  # S158: NO-side lower threshold (71.4% WR vs 45.4% YES)
+    MIRROR_STOP_LOSS_GRACE_HOURS: float = float(os.getenv("MIRROR_STOP_LOSS_GRACE_HOURS", "2.0"))  # S158: skip stop-loss during post-entry reversion window
     MIRROR_GATE_DECAY_HALF_LIFE: float = float(os.getenv("MIRROR_GATE_DECAY_HALF_LIFE", "20"))
     MIRROR_MAX_KELLY_EDGE: float = float(os.getenv("MIRROR_MAX_KELLY_EDGE", "0.05"))
     MIRROR_GATE_COLD_START_PRIOR: float = float(os.getenv("MIRROR_GATE_COLD_START_PRIOR", "0.53"))
@@ -792,6 +794,11 @@ class Settings(BaseSettings):
     WEATHER_YES_MIN_PRICE: float = float(os.getenv("WEATHER_YES_MIN_PRICE", "0.0"))  # S153: disabled (was 0.10). Re-enable: export WEATHER_YES_MIN_PRICE=0.10
     # S149: YES-side sizing multiplier — reduces exposure while calibrator is uncalibrated (n_yes=2)
     WEATHER_YES_SIZE_MULTIPLIER: float = float(os.getenv("WEATHER_YES_SIZE_MULTIPLIER", "0.75"))
+    # S155B: YES price dampener — mirrors NO dampener (S154). Break-even WR = price.
+    # YES at 0.94 with 27.3% WR = catastrophic negative EV. 20 YES entries >$0.50 in 48h audit.
+    WEATHER_YES_MAX_ENTRY_PRICE: float = float(os.getenv("WEATHER_YES_MAX_ENTRY_PRICE", "0.85"))
+    WEATHER_YES_PRICE_SOFT_CAP: float = float(os.getenv("WEATHER_YES_PRICE_SOFT_CAP", "0.50"))
+    WEATHER_YES_PRICE_DAMPENER_SLOPE: float = float(os.getenv("WEATHER_YES_PRICE_DAMPENER_SLOPE", "3.0"))
     # S153: Combined sizing multiplier floor (dampeners now, not boosts). Signals reduce size.
     WEATHER_COMBINED_BOOST_CAP: float = float(os.getenv("WEATHER_COMBINED_BOOST_CAP", "0.25"))  # S153: floor 0.25x (was cap 1.5x)
     # S118: NO entry price cap — NO trades with entry price above this are skipped.
