@@ -189,6 +189,16 @@ class _SemaphoreSession:
             await self._timeout_ctx.__aenter__()
         self.session = self.session_factory()
         result = await self.session.__aenter__()
+        # S159 C20: Per-session statement timeout. PgBouncer transaction mode compatible
+        # (proven by S157 prune fix). Default 60s; server-side ALTER SYSTEM is 300s fallback.
+        try:
+            from config.settings import settings as _settings
+            _timeout_ms = getattr(_settings, "DB_STATEMENT_TIMEOUT_MS", 60000)
+            from sqlalchemy import text as _sa_text
+            await result.execute(_sa_text(f"SET statement_timeout = '{_timeout_ms}'"))
+        except Exception as _set_err:
+            import structlog as _sl
+            _sl.get_logger().debug("set_statement_timeout_failed", timeout_ms=_timeout_ms, error=str(_set_err))
         return result
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -1009,8 +1019,9 @@ class Database:
         stmt_cache = 0  # PgBouncer transaction mode — prepared statements incompatible
 
         # S152: PgBouncer rejects server_settings startup params (transaction pooling).
-        # Timeouts are enforced server-side via ALTER SYSTEM (statement_timeout=300s,
-        # idle_in_transaction_session_timeout=60s). No per-connection override needed.
+        # Server-side ALTER SYSTEM (300s) is the fallback. S159 C20 adds per-session
+        # SET statement_timeout in _SemaphoreSession.__aenter__ (default 60s from
+        # DB_STATEMENT_TIMEOUT_MS setting). This is PgBouncer-compatible (proven S157).
         connect_args: dict = {"statement_cache_size": stmt_cache, "timeout": connect_timeout, "ssl": db_ssl}
         _pool_recycle = int(getattr(settings, "DB_POOL_RECYCLE", 600))  # S141: 1h→10min default
         self.engine = create_async_engine(
