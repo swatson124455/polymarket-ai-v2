@@ -575,7 +575,12 @@ class RiskManager:
 
                 # S91: Use cached base CVaR when positions haven't changed
                 now = time.monotonic()
-                _pos_hash = len(_existing_positions)  # cheap proxy — count changes on trade
+                # S159: Hash on composition, not just count. Exit+entry within 120s
+                # produces same count but different portfolio — stale CVaR.
+                _pos_ids = tuple(sorted(
+                    getattr(p, 'market_id', '') for p in _existing_positions
+                ))
+                _pos_hash = hash((len(_existing_positions), _pos_ids))
                 if (self._cvar_base_cache is not None
                         and now < self._cvar_base_cache_until
                         and self._cvar_base_positions_hash == _pos_hash):
@@ -1043,6 +1048,9 @@ class RiskManager:
                         updated_at = :now
                 """), {"pnl": pnl, "today": today_start, "week": week_start, "now": now})
                 await session.commit()
+                # S159: Invalidate cache so next risk check reads fresh data.
+                # Without this, a 60s stale window allows trades past daily loss limit.
+                self._risk_state_cache = None
         except Exception as e:
             logger.debug("risk_state update skipped: %s", e)
 
