@@ -191,6 +191,7 @@ class _SemaphoreSession:
         result = await self.session.__aenter__()
         # S159 C20: Per-session statement timeout. PgBouncer transaction mode compatible
         # (proven by S157 prune fix). Default 60s; server-side ALTER SYSTEM is 300s fallback.
+        _timeout_ms = 60000  # default outside try — prevents UnboundLocalError in except
         try:
             from config.settings import settings as _settings
             _timeout_ms = getattr(_settings, "DB_STATEMENT_TIMEOUT_MS", 60000)

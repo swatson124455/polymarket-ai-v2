@@ -4268,7 +4268,7 @@ class WeatherBot(BaseBot):
                 if not members or len(members) < 2:
                     return None
 
-            # CRPS computation (Ferro 2014 fair CRPS for ensemble):
+            # CRPS computation (standard CRPS for ensemble, M² denominator):
             # Standard CRPS = (1/M) * Σ|x_i - y| - (1/(2M²)) * Σ|x_i - x_j|
             # Note: uses M² denominator (standard CRPS), not M*(M-1) (fair/debiased CRPS).
             m = len(members)

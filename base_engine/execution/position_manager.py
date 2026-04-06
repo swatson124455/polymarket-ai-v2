@@ -786,7 +786,7 @@ class AutomatedPositionManager:
                         # S159 C23: Use actual fill price from order result, not stale current_price.
                         # place_order returns {"price": fill_price} with slippage already applied.
                         exit_price = float(result.get("price") or position.current_price or position.entry_price or 0.5)
-                        entry_price = position.entry_price or 0.5
+                        entry_price = float(position.entry_price or 0.5)
                         _taker_fee_rate = getattr(settings, "TAKER_FEE_BPS", 150) / 10000.0
                         _exit_fee = _taker_fee_rate * _exit_size * exit_price
                         pos.unrealized_pnl = (exit_price - entry_price) * _exit_size - _exit_fee
