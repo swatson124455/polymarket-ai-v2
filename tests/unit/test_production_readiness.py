@@ -32,6 +32,16 @@ def _make_mock_position(pos_id, market_id, status="open"):
     return pos
 
 
+class _AsyncCM:
+    """Minimal async context manager wrapping a mock session."""
+    def __init__(self, session):
+        self._session = session
+    async def __aenter__(self):
+        return self._session
+    async def __aexit__(self, *args):
+        pass
+
+
 def _make_mock_db():
     """Create a minimal mock database for position_manager."""
     db = MagicMock()
@@ -54,19 +64,24 @@ async def test_expired_market_position_auto_closed():
     # Position on expired market
     pos = _make_mock_position(1, "expired_market_123")
 
-    # Mock session that returns expired end_date
+    # S159: _close_expired_positions now uses self.db.get_session() internally
+    # (session isolation from C19), not the passed-in session argument.
     expired_date = datetime.now(timezone.utc) - timedelta(hours=24)
-    mock_session = AsyncMock()
+    mock_iso_session = AsyncMock()
     mock_result = MagicMock()
     mock_result.fetchall.return_value = [("expired_market_123", expired_date)]
-    mock_session.execute = AsyncMock(return_value=mock_result)
-    mock_session.commit = AsyncMock()
+    mock_iso_session.execute = AsyncMock(return_value=mock_result)
+    mock_iso_session.commit = AsyncMock()
+    db.get_session = MagicMock(return_value=_AsyncCM(mock_iso_session))
+    db.insert_trade_event = AsyncMock()  # S159 C12: EXIT event emission
 
-    active = await pm._close_expired_positions(mock_session, [pos])
+    mock_outer_session = AsyncMock()
+    mock_outer_session.commit = AsyncMock()
+    active = await pm._close_expired_positions(mock_outer_session, [pos])
 
     assert pos.status == "closed", "Expired position should be closed"
     assert len(active) == 0, "No active positions should remain"
-    mock_session.commit.assert_called_once()
+    mock_outer_session.commit.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -83,14 +98,16 @@ async def test_active_market_position_not_closed():
 
     pos = _make_mock_position(2, "active_market_456")
 
-    # End date is in the future
+    # End date is in the future — S159: mock db.get_session() for isolated session
     future_date = datetime.now(timezone.utc) + timedelta(days=7)
-    mock_session = AsyncMock()
+    mock_iso_session = AsyncMock()
     mock_result = MagicMock()
     mock_result.fetchall.return_value = [("active_market_456", future_date)]
-    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_iso_session.execute = AsyncMock(return_value=mock_result)
+    db.get_session = MagicMock(return_value=_AsyncCM(mock_iso_session))
 
-    active = await pm._close_expired_positions(mock_session, [pos])
+    mock_outer_session = AsyncMock()
+    active = await pm._close_expired_positions(mock_outer_session, [pos])
 
     assert pos.status == "open", "Active market position should stay open"
     assert len(active) == 1, "Position should remain in active list"
