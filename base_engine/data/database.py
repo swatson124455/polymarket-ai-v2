@@ -4915,6 +4915,10 @@ class Database:
                         _params,
                     )
                 else:
+                    # S159: WHERE NOT EXISTS is partition-safe for ENTRY/EXIT.
+                    # ON CONFLICT (idempotency_key, event_time) is per-partition — a retry
+                    # with a different event_time (e.g., month boundary) bypasses dedup.
+                    # Proven pattern: RESOLUTION path above uses WHERE NOT EXISTS since S87.
                     result = await session.execute(
                         _sa_text(
                             "INSERT INTO trade_events ("
@@ -4922,13 +4926,16 @@ class Database:
                             "  token_id, correlation_id, order_id, side, size, price, fees,"
                             "  realized_pnl, confidence, predicted_probability,"
                             "  model_version, model_name, idempotency_key, event_data"
-                            ") VALUES ("
+                            ") SELECT"
                             "  :event_type, :execution_mode, :event_time, :bot_name, :market_id,"
                             "  :token_id, :correlation_id, :order_id, :side, :size, :price, :fees,"
                             "  :realized_pnl, :confidence, :predicted_probability,"
                             "  :model_version, :model_name, :idempotency_key, CAST(:event_data AS jsonb)"
-                            ") ON CONFLICT (idempotency_key, event_time)"
-                            " WHERE idempotency_key IS NOT NULL DO NOTHING"
+                            " WHERE NOT EXISTS ("
+                            "   SELECT 1 FROM trade_events te"
+                            "   WHERE te.idempotency_key = :idempotency_key"
+                            "     AND :idempotency_key IS NOT NULL"
+                            " )"
                             " RETURNING sequence_num"
                         ),
                         _params,
@@ -5703,7 +5710,7 @@ class Database:
                         )
                         created += 1
                     except Exception as _part_err:
-                        logger.debug("db_partition_create_skipped", month=month_key, error=str(_part_err))
+                        logger.debug("db_partition_create_skipped", month=te_name, error=str(_part_err))
 
                 await session.commit()
                 if created > 0:
