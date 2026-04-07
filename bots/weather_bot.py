@@ -426,8 +426,8 @@ class WeatherConfidenceCalibrator:
                         ON CONFLICT (key) DO UPDATE SET value = :val, updated_at = NOW()
                     """), {"val": _json.dumps(_history)})
                     await _ps.commit()
-            except Exception:
-                pass  # persistence failure is non-fatal
+            except Exception as exc:
+                logger.debug("weatherbot_cal_fit_history_persist_failed", error=str(exc))
 
             return True
 
@@ -686,8 +686,8 @@ class WeatherBot(BaseBot):
                                  key=lambda k: self._prediction_log_cache[k][1])
                 for _k in _sorted[:2500]:
                     del self._prediction_log_cache[_k]
-        except Exception:
-            pass  # insert_prediction_log already logs internally
+        except Exception as exc:
+            logger.debug("weatherbot_prediction_log_failed", error=str(exc))
 
     async def _backfill_weather_outcomes(self) -> None:
         """Resolve WeatherBot predictions against settled markets.
