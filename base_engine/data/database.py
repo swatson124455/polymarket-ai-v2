@@ -197,6 +197,9 @@ class _SemaphoreSession:
             _timeout_ms = getattr(_settings, "DB_STATEMENT_TIMEOUT_MS", 60000)
             from sqlalchemy import text as _sa_text
             await result.execute(_sa_text(f"SET statement_timeout = '{_timeout_ms}'"))
+            # S161: Clear autobegin triggered by SET so callers can use session.begin().
+            # SET statement_timeout (without LOCAL) is session-scoped and survives COMMIT.
+            await result.commit()
         except Exception as _set_err:
             import structlog as _sl
             _sl.get_logger().warning("set_statement_timeout_failed", timeout_ms=_timeout_ms, error=str(_set_err))
