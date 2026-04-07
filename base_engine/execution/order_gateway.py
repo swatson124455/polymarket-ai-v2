@@ -337,7 +337,7 @@ class OrderGateway:
             from base_engine.data.database import Position
             async with db.get_session() as session:
                 result = await session.execute(
-                    select(Position.bot_id, Position.market_id, Position.size, Position.entry_price)
+                    select(Position.bot_id, Position.market_id, Position.size, Position.entry_price, Position.side)
                     .where(Position.status == "open")
                     .where(Position.side != "SELL")  # SELL rows = exit attempts, not open capital
                 )
@@ -345,6 +345,7 @@ class OrderGateway:
 
             new_open: Dict[str, Set[str]] = {}
             new_exposure: Dict[str, Dict[str, float]] = {}
+            new_details: Dict[str, dict] = {}
             total_exp = 0.0
 
             for row in rows:
@@ -352,6 +353,7 @@ class OrderGateway:
                 mid = str(row[1]) if row[1] else ""
                 size = float(row[2] or 0)
                 entry_price = float(row[3] or 0)
+                side = row[4] or "YES"
                 if not mid:
                     continue
                 new_open.setdefault(bot, set()).add(mid)
@@ -361,11 +363,15 @@ class OrderGateway:
                     prev = new_exposure.setdefault(bot, {}).get(mid, 0.0)
                     new_exposure[bot][mid] = prev + value
                     total_exp += value
+                # Rebuild position details so mid-life exit and CVaR can use them
+                new_details[f"{bot}:{mid}"] = {
+                    "side": side, "size": size, "price": entry_price, "predicted_prob": 0.5,
+                }
 
             old_exp = self._total_exposure_usd
             self._open_position_markets = new_open
             self._position_exposure = new_exposure
-            self._position_details = {}  # reset supplementary details; repopulated by new trades
+            self._position_details = new_details
             self._total_exposure_usd = total_exp
 
             drift = old_exp - total_exp
