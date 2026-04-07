@@ -1593,6 +1593,13 @@ class BaseEngine:
             self._ks_regime_task.add_done_callback(lambda t: self._on_bg_task_done(t, "ks_regime"))
             logger.info("B12 KS regime detection loop started")
 
+        # S161: Elite direction batch refresh — independent of feature precompute.
+        # Only needs DB, not PE models. Runs every 60s after 180s startup delay.
+        if self.prediction_engine:
+            self._elite_batch_task = asyncio.create_task(self._elite_batch_loop())
+            self._elite_batch_task.add_done_callback(lambda t: self._on_bg_task_done(t, "elite_batch"))
+            logger.info("Elite direction batch refresh loop started")
+
         # Observability SLI loop — always start (lightweight, <1ms per check)
         self._sli_task = asyncio.create_task(self._observability_sli_loop())
         self._sli_task.add_done_callback(lambda t: self._on_bg_task_done(t, "observability_sli"))
@@ -1983,14 +1990,29 @@ class BaseEngine:
                     if n > 0 and not pe._feature_cache_warmed:
                         pe._feature_cache_warmed = True
                         logger.info("Feature vector cache warmed: %d markets pre-computed", n)
-                    # S161: Batch-refresh elite direction cache — moves expensive
-                    # trades×users join off scan hot path. Chunks of 50 markets.
-                    try:
-                        _n_elite = await pe.batch_refresh_elite_cache(ids)
-                    except Exception as _elite_err:
-                        logger.warning("Elite batch refresh failed (non-fatal): %s", _elite_err)
+                    # Elite batch moved to independent _elite_batch_loop (S161 hotfix)
             except Exception as e:
                 logger.warning("Feature pre-compute loop failed (non-fatal): %s", e)
+            await asyncio.sleep(60)
+
+    async def _elite_batch_loop(self) -> None:
+        """Independent background loop: batch-refresh elite direction cache every 60s.
+
+        Separated from _feature_precompute_loop because precompute can take 30+ min
+        on 2000+ markets. Elite batch only needs DB access, not PE models.
+        """
+        # Wait 180s: bots need first scan done + some trades ingested before
+        # elite direction data is meaningful. Also avoids pool contention at boot.
+        await asyncio.sleep(180)
+        pe = self.prediction_engine
+        while self.running:
+            try:
+                markets = await self.get_all_tradeable_markets()
+                if markets:
+                    ids = [str(m["id"]) for m in markets if m.get("id")]
+                    _n_elite = await pe.batch_refresh_elite_cache(ids)
+            except Exception as e:
+                logger.warning("Elite batch refresh loop failed (non-fatal): %s", e)
             await asyncio.sleep(60)
 
     def get_observability_slis(self) -> Dict[str, Any]:
