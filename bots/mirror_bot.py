@@ -341,6 +341,34 @@ class MirrorBot(BaseBot):
                             _enriched += 1
                     logger.info("mirror_entry_confidence_restored", enriched=_enriched, total=len(self._open_positions))
 
+                    # S161: Enrich positions with category from ENTRY event_data.
+                    # Without category, exits can't decrement _category_exposure → drift.
+                    _cat_rows = await session.execute(
+                        _text(
+                            "SELECT DISTINCT ON (market_id) market_id, "
+                            "       event_data->>'category' AS cat "
+                            "FROM trade_events "
+                            "WHERE bot_name = :bot AND event_type = 'ENTRY' "
+                            "  AND market_id = ANY(:mids) "
+                            "ORDER BY market_id, event_time DESC"
+                        ),
+                        {"bot": self.bot_name, "mids": _mids},
+                    )
+                    _cat_map = {}
+                    for _cr in _cat_rows.fetchall():
+                        _cn = str(_cr.cat or "")
+                        if _cn:
+                            _cat_map[_cr.market_id] = _cn
+                    _cat_enriched = 0
+                    for pk, pos in self._open_positions.items():
+                        mid = pk.split(":", 1)[0]
+                        _cat_val = _cat_map.get(mid, "")
+                        if _cat_val:
+                            pos["category"] = _cat_val
+                            _cat_enriched += 1
+                    if _cat_enriched:
+                        logger.info("mirror_category_restored", enriched=_cat_enriched, total=len(self._open_positions))
+
                 # S144: Count stale-price positions (current_price == entry_price).
                 _stale = sum(
                     1 for p in self._open_positions.values()
@@ -928,6 +956,21 @@ class MirrorBot(BaseBot):
         # position_manager only updates markets in the initial WebSocket subscription (~500).
         # RTDS sees ALL global trades, so we get real-time prices for any active market.
         if self._watchlist:
+            # S161: Build set of tokens with market_prices_latest coverage (one query).
+            # Positions NOT in this set have no PM price feed — RTDS is the only source.
+            _mpl_covered_tokens: set = set()
+            try:
+                _db = getattr(self.base_engine, "db", None)
+                if _db and getattr(_db, "session_factory", None):
+                    from sqlalchemy import text as _mpl_text
+                    async with _db.get_session() as _mpl_s:
+                        _mpl_rows = await _mpl_s.execute(
+                            _mpl_text("SELECT DISTINCT token_id FROM market_prices_latest")
+                        )
+                        _mpl_covered_tokens = {str(r[0]) for r in _mpl_rows.fetchall() if r[0]}
+            except Exception:
+                pass  # fall back to original condition only (abs(cp-ep))
+
             _rtds_updated = 0
             _rtds_persisted = 0
             for _pk, _pdata in self._open_positions.items():
@@ -938,9 +981,11 @@ class MirrorBot(BaseBot):
                 if _rtds_p is not None:
                     _old_cp = float(_pdata.get("current_price", 0) or 0)
                     _ep = float(_pdata.get("entry_price", 0) or 0)
-                    # Only override if DB price is stale (stuck at entry_price).
-                    # If position_manager already updated current_price, trust it.
-                    if abs(_old_cp - _ep) < 1e-6:
+                    # S161: Apply RTDS when (a) price stuck at entry (no PM update ever),
+                    # OR (b) token has no market_prices_latest coverage (PM can't reach it).
+                    # Do NOT unconditionally apply — RTDS last-trade can be worse than
+                    # PM's fresh midpoint for tokens PM actively covers.
+                    if abs(_old_cp - _ep) < 1e-6 or _tok not in _mpl_covered_tokens:
                         _pdata["current_price"] = _rtds_p
                         _rtds_updated += 1
                         # S159: Persist RTDS price to DB so _sync_prices_from_db
@@ -1826,6 +1871,12 @@ class MirrorBot(BaseBot):
         # Without market data, ttr_h=None (kills +0.02 TTR boost) and no spread/volume checks.
         # Only fires for trades that already passed the $25+ whale gate — low volume.
         if not _market_data:
+            # S161: Three-tier fallback for markets not in scan-loop index:
+            # 1. Gamma API by numeric ID (original — works when market_id is numeric)
+            # 2. Local DB by condition_id (NEW — handles 0x hashes from RTDS)
+            # 3. 2s retry on DB (transient failure recovery)
+
+            # Tier 1: Gamma API (existing — fails with 422 on condition_id)
             try:
                 _fetched = await self.base_engine.get_market(str(market_id))
                 if _fetched and isinstance(_fetched, dict):
@@ -1833,12 +1884,65 @@ class MirrorBot(BaseBot):
                     _market_data = _fetched
                     logger.debug("mirror_market_fallback_fetch", market=str(market_id)[:16])
             except Exception:
-                pass  # proceed without — TTR stays None, confidence slightly lower
-        # S160 BUG-4: Hard-block if market data unavailable after fallback.
+                pass
+
+            # Tier 2: Local DB by condition_id (S161 — RTDS sends 0x hashes, Gamma 422s on them)
+            if not _market_data:
+                try:
+                    _db = getattr(self.base_engine, "db", None)
+                    if _db and getattr(_db, "session_factory", None):
+                        from sqlalchemy import text as _text
+                        async with _db.get_session() as _sess:
+                            _row = await _sess.execute(
+                                _text(
+                                    "SELECT id, condition_id, question, category, "
+                                    "yes_price, no_price, yes_token_id, no_token_id, "
+                                    "active, end_date_iso, volume "
+                                    "FROM markets WHERE condition_id = :cid LIMIT 1"
+                                ),
+                                {"cid": str(market_id)},
+                            )
+                            _r = _row.fetchone()
+                            if _r:
+                                _market_data = dict(_r._mapping)
+                                self.base_engine.update_market_index([_market_data])
+                                logger.debug("mirror_market_db_fallback", market=str(market_id)[:16])
+                except Exception as _e:
+                    logger.debug("mirror_market_db_fallback_err", market=str(market_id)[:16],
+                                 err=str(_e)[:80])
+
+            # Tier 3: 2s retry on DB (transient connection/pool failure)
+            if not _market_data:
+                import asyncio as _aio
+                await _aio.sleep(2)
+                try:
+                    _db = getattr(self.base_engine, "db", None)
+                    if _db and getattr(_db, "session_factory", None):
+                        from sqlalchemy import text as _text
+                        async with _db.get_session() as _sess:
+                            _row = await _sess.execute(
+                                _text(
+                                    "SELECT id, condition_id, question, category, "
+                                    "yes_price, no_price, yes_token_id, no_token_id, "
+                                    "active, end_date_iso, volume "
+                                    "FROM markets WHERE condition_id = :cid LIMIT 1"
+                                ),
+                                {"cid": str(market_id)},
+                            )
+                            _r = _row.fetchone()
+                            if _r:
+                                _market_data = dict(_r._mapping)
+                                self.base_engine.update_market_index([_market_data])
+                                logger.info("mirror_market_data_retry_success",
+                                            market=str(market_id)[:16])
+                except Exception:
+                    pass
+
+        # S160 BUG-4: Hard-block if market data unavailable after all fallbacks.
         # Without market data, price stays at whale's historical fill (possibly hours old).
         # Better to skip than enter at a stale price that produces fake P&L.
         if not _market_data:
-            logger.info("mirror_no_market_data_block", market=str(market_id)[:16],
+            logger.info("mirror_market_data_retry_fail", market=str(market_id)[:16],
                         stale_price=round(price, 4))
             return False
         _old_price = price  # S91: preserve trader's fill price for slippage check

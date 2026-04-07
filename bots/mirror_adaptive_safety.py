@@ -72,7 +72,7 @@ class MirrorAdaptiveSafety:
             # Consecutive losses (from most recent)
             streak = 0
             for p in pnls:
-                if p <= 0:
+                if p < 0:
                     streak += 1
                 else:
                     break
