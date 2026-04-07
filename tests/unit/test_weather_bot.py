@@ -2247,10 +2247,12 @@ class TestMidLifeExitEvaluator:
         bot._market_group_cache = {}
         bot._save_exit_to_redis = AsyncMock()
         bot.base_engine = MagicMock()
-        bot.base_engine.place_order = AsyncMock(return_value={"success": True})
         bot.base_engine.db = None
         bot.base_engine.order_gateway = MagicMock()
         bot.base_engine.order_gateway._position_details = {}
+        # S160 WB-1: mid-life exit now calls self.place_order() wrapper
+        bot.place_order = AsyncMock(return_value={"success": True})
+        bot.running = True
         return bot
 
     def _make_bucket(self, market_id, yes_price, token_id="t1", no_token_id="n1"):
@@ -2283,7 +2285,7 @@ class TestMidLifeExitEvaluator:
         analyzed = self._make_analyzed(bucket, 0.40)
         with patch.object(settings, "WEATHER_MID_LIFE_EXIT_ENABLED", False, create=True):
             await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
-        bot.base_engine.place_order.assert_not_called()
+        bot.place_order.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_exits_yes_position_on_reversal(self):
@@ -2298,8 +2300,9 @@ class TestMidLifeExitEvaluator:
         with patch.object(settings, "WEATHER_MID_LIFE_EXIT_ENABLED", True, create=True):
             with patch.object(settings, "WEATHER_EXIT_MIN_EDGE", 0.05, create=True):
                 await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
-        bot.base_engine.place_order.assert_called_once()
-        call_kwargs = bot.base_engine.place_order.call_args
+        # S160 WB-1: now calls self.place_order() wrapper, not base_engine.place_order()
+        bot.place_order.assert_called_once()
+        call_kwargs = bot.place_order.call_args
         assert call_kwargs.kwargs["side"] == "SELL"
         assert call_kwargs.kwargs["token_id"] == "yes_tok"
         assert call_kwargs.kwargs["size"] == 15.0
@@ -2321,8 +2324,9 @@ class TestMidLifeExitEvaluator:
         with patch.object(settings, "WEATHER_MID_LIFE_EXIT_ENABLED", True, create=True):
             with patch.object(settings, "WEATHER_EXIT_MIN_EDGE", 0.05, create=True):
                 await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
-        bot.base_engine.place_order.assert_called_once()
-        call_kwargs = bot.base_engine.place_order.call_args
+        # S160 WB-1: now calls self.place_order() wrapper, not base_engine.place_order()
+        bot.place_order.assert_called_once()
+        call_kwargs = bot.place_order.call_args
         assert call_kwargs.kwargs["side"] == "SELL"
         assert call_kwargs.kwargs["token_id"] == "no_tok"
         assert bot._exit_reasons["mkt2"] == "REVERSAL"
@@ -2341,7 +2345,7 @@ class TestMidLifeExitEvaluator:
         with patch.object(settings, "WEATHER_MID_LIFE_EXIT_ENABLED", True, create=True):
             with patch.object(settings, "WEATHER_EXIT_MIN_EDGE", 0.05, create=True):
                 await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
-        bot.base_engine.place_order.assert_not_called()
+        bot.place_order.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_skips_cooldown_markets(self):
@@ -2357,7 +2361,7 @@ class TestMidLifeExitEvaluator:
         analyzed = self._make_analyzed(bucket, 0.30)
         with patch.object(settings, "WEATHER_MID_LIFE_EXIT_ENABLED", True, create=True):
             await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
-        bot.base_engine.place_order.assert_not_called()
+        bot.place_order.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_skips_market_with_no_open_position(self):
@@ -2369,7 +2373,7 @@ class TestMidLifeExitEvaluator:
         analyzed = self._make_analyzed(bucket, 0.20)
         with patch.object(settings, "WEATHER_MID_LIFE_EXIT_ENABLED", True, create=True):
             await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
-        bot.base_engine.place_order.assert_not_called()
+        bot.place_order.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_exposure_decremented_on_exit(self):

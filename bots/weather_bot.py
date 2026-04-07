@@ -3425,8 +3425,7 @@ class WeatherBot(BaseBot):
                     )
                 # 4. Place SELL order to close position
                 try:
-                    _exit_result = await self.base_engine.place_order(
-                        bot_name=self.bot_name,
+                    _exit_result = await self.place_order(
                         market_id=mid,
                         token_id=token_id,
                         side="SELL",
