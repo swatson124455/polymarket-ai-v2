@@ -173,7 +173,7 @@ async def bot_pnl(bot_name: str, hours: int = 24):
                     SELECT DISTINCT ON (market_id) market_id, side
                     FROM trade_events
                     WHERE bot_name = :bot AND event_type = 'ENTRY'
-                    ORDER BY market_id, event_time
+                    ORDER BY market_id, event_time DESC
                 ) e_entry ON e_entry.market_id = r.market_id
                 WHERE r.bot_name = :bot
                   AND r.event_type IN ('RESOLUTION', 'EXIT')
@@ -203,7 +203,7 @@ async def bot_pnl(bot_name: str, hours: int = 24):
                     SELECT DISTINCT ON (market_id) market_id, event_data
                     FROM trade_events
                     WHERE bot_name = :bot AND event_type = 'ENTRY'
-                    ORDER BY market_id, event_time
+                    ORDER BY market_id, event_time DESC
                 ) e_entry ON e_entry.market_id = r.market_id
                 WHERE r.bot_name = :bot
                   AND r.event_type IN ('RESOLUTION', 'EXIT')
@@ -240,7 +240,7 @@ async def bot_pnl(bot_name: str, hours: int = 24):
                     SELECT DISTINCT ON (market_id) market_id, event_data
                     FROM trade_events
                     WHERE bot_name = :bot AND event_type = 'ENTRY'
-                    ORDER BY market_id, event_time
+                    ORDER BY market_id, event_time DESC
                 ) e_entry ON e_entry.market_id = r.market_id
                 WHERE r.bot_name = :bot
                   AND r.event_type IN ('RESOLUTION', 'EXIT')
