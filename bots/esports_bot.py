@@ -979,7 +979,7 @@ class EsportsBot(BaseBot):
         for k in stale_series:
             del self._series_prediction_cache[k]
         # S109: Evict expired exit cooldowns (S155: use actual cooldown per market)
-        _cd_default = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 900.0))
+        _cd_default = float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 300.0))
         _cd_edge = float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0))
         # S157: Flat cooldown lookup (escalating removed — hysteresis handles churn)
         stale_exits = []
@@ -1150,6 +1150,8 @@ class EsportsBot(BaseBot):
                     return_exceptions=True,
                 )
                 _positions = _pos_and_monitor[0] if not isinstance(_pos_and_monitor[0], Exception) else None
+                if len(_pos_and_monitor) > 1 and isinstance(_pos_and_monitor[1], Exception):
+                    logger.warning("esportsbot_monitoring_threshold_error", error=str(_pos_and_monitor[1]))
         except Exception:
             _positions = None
 
@@ -1484,7 +1486,7 @@ class EsportsBot(BaseBot):
                             if success:
                                 self._market_entry_times.setdefault(mid, []).append(time.monotonic())
                                 await self._save_entry_count_to_redis(mid)
-                            elif not success:
+                            else:
                                 self._set_exec_fail_cooldown(mid, getattr(self, "_last_fail_code", "unknown"))
                                 await self._save_exec_fail_to_redis(mid)
                             return (1, 1 if success else 0, 0)
@@ -1737,7 +1739,7 @@ class EsportsBot(BaseBot):
             self._daily_pnl = 0.0
             self._daily_pnl_date = today_str
             self._drawdown_halted = False
-            today_start = datetime.strptime(today_str, "%Y-%m-%d")
+            today_start = datetime.strptime(today_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
             async with db.get_session(timeout=15) as session:
                 from sqlalchemy import text
                 result = await session.execute(text("""
@@ -2223,8 +2225,8 @@ class EsportsBot(BaseBot):
                                     market_type=_market_type,
                                     max_hold_h=_effective_max_hold)
                         positions_to_close.append((pos, "max_hold"))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("esportsbot_max_hold_parse_error", market_id=mid, error=str(exc))
 
         # Execute exits via SELL-side order using the SAME token_id
         # (selling back the token we hold, not buying the opposite side)
@@ -2675,6 +2677,7 @@ class EsportsBot(BaseBot):
         # S133: Early prediction logging — log ALL model predictions for calibrator learning,
         # even if downstream edge/confidence gates reject the trade. The existing dedup
         # (ON CONFLICT UPDATE) prevents duplicates if the trade also logs later.
+        _tournament_phase = self._detect_tournament_phase(market_data)
         _early_log_cache = self._prediction_log_cache.get(market_id)
         _should_early_log = True
         if _early_log_cache:
@@ -2698,6 +2701,7 @@ class EsportsBot(BaseBot):
                         market_price=price,
                         side=_early_side,
                         edge=round(_early_edge, 4),
+                        tournament_phase=_tournament_phase,
                         raw_model_prob=_raw_prob,
                     )
                     self._prediction_log_cache[market_id] = (model_prob, time.monotonic())
@@ -2814,7 +2818,6 @@ class EsportsBot(BaseBot):
         # probs already encode uncertainty via phi-based Bayesian blending.
         db = getattr(self.base_engine, "db", None)
         _beta_cal = self._beta_calibrators.get(game)
-        _tournament_phase = self._detect_tournament_phase(market_data)
         if _beta_cal and not _beta_cal._fitted:
             _phase_mult = 1.0
         else:
@@ -2842,7 +2845,7 @@ class EsportsBot(BaseBot):
             _prev_prob, _prev_ts = _log_cache
             if abs(_prev_prob - model_prob) < 0.01 and (time.monotonic() - _prev_ts) < 600:
                 _should_log = False
-        if _should_log:
+        if _should_log and db is not None:
             try:
                 from esports.data.esports_db import log_prediction
                 await log_prediction(
@@ -4127,6 +4130,9 @@ class EsportsBot(BaseBot):
         st_override = opp.pop("_st_size_override", None)
         if st_override is not None and st_override >= 1.0:
             game = opp.get("game", "")
+            if not game:
+                logger.warning("esportsbot_st_empty_game", market_id=opp.get("market_id", ""))
+                return False
             # S103: Track USD cost, not shares
             _st_cost = opp["price"] * st_override
             # S156: Re-verify game cap under _trade_lock (gate at L748 is pre-lock)
@@ -4288,7 +4294,6 @@ class EsportsBot(BaseBot):
 
         # S136 Phase 2A: Baker-McHale shadow mode — compute new sizing alongside old
         # Will replace old cascade after 48h validation
-        import math as _bm_math
         _bm_price = opp["price"]
         _opp_edge = opp.get("edge", 0.0)
         _opp_conf = opp.get("confidence", 0.5)
@@ -4402,10 +4407,13 @@ class EsportsBot(BaseBot):
         # A10: Pre-update exposure BEFORE placing order (race condition fix)
         # S103: Track USD cost (price * size), not shares — units must match ESPORTS_MAX_GAME_EXPOSURE (USD)
         game = opp.get("game", "")
+        if not game:
+            logger.warning("esportsbot_empty_game_reject", market_id=opp.get("market_id", ""))
+            return False
         _entry_cost = price * size
         # S156: Re-verify game cap under _trade_lock (gate at L748 is pre-lock)
         _caps_lock = self._get_exposure_caps()
-        if game and self._game_exposure.get(game, 0.0) + _entry_cost > _caps_lock["per_game"]:
+        if self._game_exposure.get(game, 0.0) + _entry_cost > _caps_lock["per_game"]:
             logger.info("esportsbot_exposure_lock_reject", game=game,
                         exposure=round(self._game_exposure.get(game, 0.0), 2),
                         entry_cost=round(_entry_cost, 2),
@@ -6038,9 +6046,8 @@ class EsportsBot(BaseBot):
             _liquidity_factor = min(1.0, _volume_24h / _baseline_volume) if _baseline_volume > 0 else 0.5
             prior_weight = prior_weight * max(0.10, _liquidity_factor)  # Floor at 10% of phi-weight
 
-            if prior_weight > 0:
-                _prior = max(0.05, min(0.95, market_price))
-                prob = prior_weight * _prior + (1.0 - prior_weight) * prob
+            _prior = max(0.05, min(0.95, market_price))
+            prob = prior_weight * _prior + (1.0 - prior_weight) * prob
 
             # S151: Roster stability only for moderate predictions.
             # Previously, prob in [0.95, 0.99) silently fell through to return None.
@@ -7058,13 +7065,7 @@ class EsportsBot(BaseBot):
         # S131: SQ is sizing multiplier, confidence = raw side_prob
         confidence = side_prob
 
-        # Cache prediction for WS reactive path (include token info for price conversion)
         _token_map = self._market_token_map.get(market_id, {})
-        self._series_prediction_cache[market_id] = {
-            "prob": model_prob, "ts": time.monotonic(), "game": game,
-            "yes_token_id": _token_map.get("yes", str(token_id)),
-            "no_token_id": _token_map.get("no", ""),
-        }
 
         # Log prediction
         try:
@@ -7094,6 +7095,15 @@ class EsportsBot(BaseBot):
                 _phi_a_s = _ra_s.phi
             if _rb_s:
                 _phi_b_s = _rb_s.phi
+
+        # Cache prediction for WS reactive path (include token info + phi for BM sigma)
+        self._series_prediction_cache[market_id] = {
+            "prob": model_prob, "ts": time.monotonic(), "game": game,
+            "yes_token_id": _token_map.get("yes", str(token_id)),
+            "no_token_id": _token_map.get("no", ""),
+            "event_data": {"_phi_a": _phi_a_s, "_phi_b": _phi_b_s},
+        }
+
         match_opp = {
             "type": "esports_series",
             "market_id": market_id,
@@ -7114,15 +7124,19 @@ class EsportsBot(BaseBot):
         result = [match_opp]
 
         # Hedge: current map market
+        # S160: Use per-map probability (Glicko-2 expected_score), NOT series probability
         if self._series_hedge_enabled:
             current_map = maps_a + maps_b + 1
             map_market = await self._series_find_map_market(
                 match_id, game, team_a, team_b, current_map, db
             )
             if map_market:
+                per_map_prob = await self._series_get_glicko2_expected_score(game, team_a, team_b, db)
+                if per_map_prob is None:
+                    per_map_prob = 0.50
                 map_price = float(map_market.get("price") or 0.5)
-                map_edge_yes = model_prob - map_price
-                map_edge_no = map_price - model_prob
+                map_edge_yes = per_map_prob - map_price
+                map_edge_no = map_price - per_map_prob
                 map_side = None
                 map_trade_price = map_price
                 map_edge_val = 0.0
@@ -7134,7 +7148,7 @@ class EsportsBot(BaseBot):
                     map_trade_price = 1.0 - map_price
                     map_edge_val = map_edge_no
                 if map_side:
-                    map_conf = model_prob if map_side == "YES" else (1.0 - model_prob)
+                    map_conf = per_map_prob if map_side == "YES" else (1.0 - per_map_prob)
                     result.append({
                         "type": "esports_series_hedge",
                         "market_id": map_market["market_id"],
