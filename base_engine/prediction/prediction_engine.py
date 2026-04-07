@@ -557,20 +557,20 @@ class PredictionEngine:
             try:
                 async with self.db.get_session() as _s:
                     # Resolve market_id aliases: some markets use condition_id, others use id.
-                    # Build the full set of trade-table market_ids that map to each requested id.
+                    # ~10% of positions only match via condition_id (MirrorBot Commit 3B data).
                     _alias_result = await asyncio.wait_for(_s.execute(sa_text("""
                         SELECT req_id, array_agg(DISTINCT trade_mid) AS trade_mids
                         FROM (
                             SELECT u.req_id, u.req_id AS trade_mid
-                            FROM unnest(:mids::text[]) AS u(req_id)
+                            FROM unnest(CAST(:mids AS text[])) AS u(req_id)
                             UNION ALL
                             SELECT u.req_id, m.condition_id
-                            FROM unnest(:mids::text[]) AS u(req_id)
+                            FROM unnest(CAST(:mids AS text[])) AS u(req_id)
                             JOIN markets m ON CAST(m.id AS TEXT) = u.req_id
                             WHERE m.condition_id IS NOT NULL
                             UNION ALL
                             SELECT u.req_id, CAST(m.id AS TEXT)
-                            FROM unnest(:mids::text[]) AS u(req_id)
+                            FROM unnest(CAST(:mids AS text[])) AS u(req_id)
                             JOIN markets m ON m.condition_id = u.req_id
                         ) sub
                         GROUP BY req_id
