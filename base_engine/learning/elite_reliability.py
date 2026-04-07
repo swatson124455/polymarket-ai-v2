@@ -236,8 +236,8 @@ class EliteReliabilityTracker:
         total = rec.get("yes_total", 0) + rec.get("no_total", 0)
         if total == 0:
             return 0.5
-        # alpha includes +1 prior, so correct = alpha - 1
-        correct = (rec.get("alpha_yes", 1) - 1) + (rec.get("alpha_no", 1) - 1)
+        # alpha includes _PRIOR_ALPHA offset, so correct = alpha - _PRIOR_ALPHA
+        correct = (rec.get("alpha_yes", self._PRIOR_ALPHA) - self._PRIOR_ALPHA) + (rec.get("alpha_no", self._PRIOR_ALPHA) - self._PRIOR_ALPHA)
         return correct / total
 
     def category_trade_count(self, address: str, category: str) -> int:

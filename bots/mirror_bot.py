@@ -98,6 +98,7 @@ class MirrorBot(BaseBot):
         # S91: Tier 0 pre-trade filters (in-memory, <0.01ms)
         self._market_blocklist: set = set()  # market_ids to reject instantly
         self._entered_market_sides: set = set()  # {(market_id, side)} for opposing-side guard across restarts
+        self._last_ems_prune: float = 0.0  # S160: prune resolved markets from _entered_market_sides
         self._market_cooldown: Dict[str, float] = {}  # market_id -> cooldown_expiry_monotonic
         # S137 C7: Market-maker detection — same trader YES+NO same market within 24h = liquidity
         # provision, not directional signal. Key: "{trader}:{market}:{side}" → monotonic timestamp.
@@ -230,7 +231,6 @@ class MirrorBot(BaseBot):
         """
         if self._state_restored:
             return
-        self._state_restored = True
 
         db = getattr(self.base_engine, "db", None)
         if db is None or not getattr(db, "session_factory", None):
@@ -350,8 +350,10 @@ class MirrorBot(BaseBot):
                     "MirrorBot startup: restored %d open positions from DB (stale_price=%d)",
                     restored, _stale,
                 )
+            # S160: Only mark restored after all DB work succeeds — enables retry on failure.
+            self._state_restored = True
         except Exception as exc:
-            logger.warning("MirrorBot _restore_state_on_startup failed: %s", exc)
+            logger.warning("MirrorBot _restore_state_on_startup failed, will retry next scan: %s", exc)
 
         # S144: Immediately sync fresh prices from DB so stop-loss has accurate
         # current_price right after restart, not 45s later on first scan cycle.
@@ -726,9 +728,16 @@ class MirrorBot(BaseBot):
 
         # S85: Reap positions on resolved markets (every 20 scans)
         # S135: Also reconcile exited positions that are still status='open' in DB
+        # S160: Prune _entered_market_sides for resolved markets (every 30min)
         if self._scan_count % 20 == 1:
             await self._reap_resolved_positions()
             await self._reconcile_exited_positions()
+            import time as _time_mod
+            if self._entered_market_sides and (_time_mod.monotonic() - self._last_ems_prune) >= 1800:
+                self._last_ems_prune = _time_mod.monotonic()
+                _ems_db = getattr(self.base_engine, "db", None)
+                if _ems_db:
+                    await self._prune_entered_market_sides(_ems_db)
 
         # Check for exits from tracked positions
         if self._open_positions and getattr(settings, "MIRROR_EXIT_ENABLED", True):
@@ -1127,9 +1136,15 @@ class MirrorBot(BaseBot):
             if _pk not in _seen_keys:
                 _seen_keys.add(_pk)
                 _deduped_exits.append((_pk, _ed))
+        _now_mono = _time.monotonic()
         for pos_key, _exit_event_data in _deduped_exits:
             pos = self._open_positions.get(pos_key)
             if not pos:
+                continue
+
+            # S160: Slippage backoff — skip positions in exponential backoff after repeated slippage failures.
+            _backoff_until = self._slippage_backoff.get(pos_key, 0.0)
+            if _now_mono < _backoff_until:
                 continue
 
             # Exit by selling our position — SELL bypasses risk price bounds in order_gateway
@@ -1212,22 +1227,27 @@ class MirrorBot(BaseBot):
                                        filled=round(_filled_exit, 2),
                                        remaining=round(_remaining, 2),
                                        exit_reason=_exit_event_data.get("exit_reason", "unknown"))
-                    # S135: Mark position closed in DB so it doesn't reload on restart
-                    # Use _sql alias (not _t) — _t is a local var in this function due to the
-                    # conditional import at L909 (Python 3.13 scoping: local for entire function).
-                    # S141: Retry position close to prevent ghost exits (D6).
-                    # Without retry, pool exhaustion causes silent failure → position
-                    # reloads on restart → duplicate EXIT events accumulate.
+                    # S135/S160: Mark position closed on full fill, update size on partial.
+                    # Was unconditional close — partial fills lost residual shares on restart.
+                    # S141: Retry to prevent ghost exits (pool exhaustion → silent failure).
                     from sqlalchemy import text as _sql
                     for _close_attempt in range(3):
                         try:
                             async with self.base_engine.db.get_session() as _cs:
-                                await _cs.execute(_sql(
-                                    "UPDATE positions SET status = 'closed' "
-                                    "WHERE market_id = :mid AND token_id = :tid "
-                                    "  AND COALESCE(source_bot, bot_id) = 'MirrorBot' "
-                                    "  AND status = 'open'"
-                                ), {"mid": market_id, "tid": token_id})
+                                if _filled_exit >= exit_size - 0.01:
+                                    await _cs.execute(_sql(
+                                        "UPDATE positions SET status = 'closed' "
+                                        "WHERE market_id = :mid AND token_id = :tid "
+                                        "  AND COALESCE(source_bot, bot_id) = 'MirrorBot' "
+                                        "  AND status = 'open'"
+                                    ), {"mid": market_id, "tid": token_id})
+                                else:
+                                    await _cs.execute(_sql(
+                                        "UPDATE positions SET size = :sz "
+                                        "WHERE market_id = :mid AND token_id = :tid "
+                                        "  AND COALESCE(source_bot, bot_id) = 'MirrorBot' "
+                                        "  AND status = 'open'"
+                                    ), {"mid": market_id, "tid": token_id, "sz": _remaining})
                                 await _cs.commit()
                             break
                         except Exception as _db_err:
@@ -1236,6 +1256,21 @@ class MirrorBot(BaseBot):
                             else:
                                 logger.warning("mirror_exit_db_close_failed market=%s attempt=%d: %s",
                                                market_id[:20], _close_attempt + 1, _db_err)
+                else:
+                    # S160: Track slippage failures for exponential backoff.
+                    # After 3 consecutive slippage failures, back off 100s→200s→400s (cap 900s).
+                    _fail_code = order.get("fail_code", "")
+                    if _fail_code == "slippage":
+                        _count = self._slippage_fail_count.get(pos_key, 0) + 1
+                        self._slippage_fail_count[pos_key] = _count
+                        if _count >= 3:
+                            _backoff_secs = min(900.0, 100.0 * (2 ** (_count - 3)))
+                            self._slippage_backoff[pos_key] = _now_mono + _backoff_secs
+                            logger.info("mirror_slippage_backoff", market=market_id[:20],
+                                        count=_count, backoff_s=round(_backoff_secs))
+                    else:
+                        # Non-slippage failure: clear slippage streak
+                        self._slippage_fail_count.pop(pos_key, None)
             except Exception as e:
                 logger.warning("Failed to execute mirror exit for %s: %s", pos_key, e)
 
@@ -1342,6 +1377,41 @@ class MirrorBot(BaseBot):
                     logger.info("mirror_reconcile_exited: closed %d zombie positions in DB", len(closed))
         except Exception as exc:
             logger.warning("mirror_reconcile_exited failed: %s", exc)
+
+    async def _prune_entered_market_sides(self, db) -> None:
+        """S160: Remove (market_id, side) pairs for resolved markets.
+
+        Resolved markets can't be traded again, so the opposing-side guard
+        is useless for them.  Active markets with closed positions KEEP
+        their guard — prevents re-entering the opposite side within a
+        market's lifetime.
+        """
+        if not self._entered_market_sides:
+            return
+        try:
+            from sqlalchemy import text as _p_text
+            _market_ids = list({mid for mid, _ in self._entered_market_sides})
+            async with db.get_session(timeout=15) as _p_sess:
+                _rows = await _p_sess.execute(
+                    _p_text(
+                        "SELECT condition_id FROM markets "
+                        "WHERE condition_id = ANY(:ids) AND resolved = true"
+                    ),
+                    {"ids": _market_ids},
+                )
+                _resolved = {r[0] for r in _rows.fetchall()}
+            if _resolved:
+                _before = len(self._entered_market_sides)
+                self._entered_market_sides = {
+                    (mid, side) for mid, side in self._entered_market_sides
+                    if mid not in _resolved
+                }
+                _pruned = _before - len(self._entered_market_sides)
+                if _pruned:
+                    logger.info("mirror_ems_pruned",
+                                pruned=_pruned, remaining=len(self._entered_market_sides))
+        except Exception as _exc:
+            logger.debug("mirror_ems_prune_failed", error=str(_exc))
 
     # ── Position & Exposure Tracking ────────────────────────────────
 
@@ -1701,7 +1771,7 @@ class MirrorBot(BaseBot):
             if order.get("success"):
                 # S156: Use actual filled quantity for partial fill correctness
                 _filled_sell = float(order.get("filled", _exit_size))
-                _exit_usd = _filled_sell * price
+                _exit_usd = _filled_sell * float(_pos.get("entry_price", price))
                 # S156: Decrement under lock
                 async with self._exposure_lock:
                     self._daily_exposure = max(0.0, self._daily_exposure - _exit_usd)
@@ -1764,6 +1834,13 @@ class MirrorBot(BaseBot):
                     logger.debug("mirror_market_fallback_fetch", market=str(market_id)[:16])
             except Exception:
                 pass  # proceed without — TTR stays None, confidence slightly lower
+        # S160 BUG-4: Hard-block if market data unavailable after fallback.
+        # Without market data, price stays at whale's historical fill (possibly hours old).
+        # Better to skip than enter at a stale price that produces fake P&L.
+        if not _market_data:
+            logger.info("mirror_no_market_data_block", market=str(market_id)[:16],
+                        stale_price=round(price, 4))
+            return False
         _old_price = price  # S91: preserve trader's fill price for slippage check
         _spread = None  # S133: captured for event_data logging
         _vol_check = 0.0  # S153: default for no-market-data path
