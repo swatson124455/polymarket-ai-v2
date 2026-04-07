@@ -2404,6 +2404,12 @@ class WeatherBot(BaseBot):
                     and getattr(self._confidence_calibrator, "_model_yes", None) is None):
                 _yes_identity_damp = 0.85
                 effective_confidence *= _yes_identity_damp
+                logger.info(
+                    "weatherbot_yes_identity_dampener_applied",
+                    market_id=e["market_id"],
+                    original_confidence=round(effective_confidence / _yes_identity_damp, 3),
+                    dampened_confidence=round(effective_confidence, 3),
+                )
 
             # S135 R3: YES confidence floor — data shows YES <0.35 has 6.4% WR, -$3,159
             _yes_min_conf = float(getattr(settings, "WEATHER_YES_MIN_CONFIDENCE", 0.35))

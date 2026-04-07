@@ -22,7 +22,7 @@ import json
 import random
 import time
 from datetime import date, datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
 from structlog import get_logger
@@ -55,13 +55,6 @@ class MetarMonitor:
 
         # Running daily observations: station_id → (date, max_temp_observed)
         self._observations: Dict[str, Tuple[str, float]] = {}
-
-        # Bucket boundaries for jump detection: station_id → set of boundary temps
-        self._bucket_boundaries: Dict[str, Set[float]] = {}
-
-    def set_bucket_boundaries(self, station_id: str, boundaries: Set[float]) -> None:
-        """Set temperature boundaries for a station (from market bucket edges)."""
-        self._bucket_boundaries[station_id] = boundaries
 
     def start(self) -> None:
         """Start the background monitoring task."""
@@ -146,7 +139,6 @@ class MetarMonitor:
             return
 
         _updates = 0
-        _boundary_crosses = 0
 
         for obs in data:
             try:
@@ -171,29 +163,6 @@ class MetarMonitor:
                         if temp > prev_max:
                             self._observations[station_id] = (today_str, temp)
                             _updates += 1
-
-                            # Check if crossing a bucket boundary
-                            boundaries = self._bucket_boundaries.get(station_id, set())
-                            for boundary in boundaries:
-                                if prev_max < boundary <= temp:
-                                    _boundary_crosses += 1
-                                    logger.info(
-                                        "metar_boundary_crossed",
-                                        station=station_id,
-                                        boundary=boundary,
-                                        observed_max=round(temp, 1),
-                                        prev_max=round(prev_max, 1),
-                                    )
-                                    try:
-                                        self._priority_queue.put_nowait({
-                                            "station": station,
-                                            "target_date": datetime.now(timezone.utc).date(),
-                                            "observed_max": temp,
-                                            "boundary": boundary,
-                                            "source": "metar_boundary_cross",
-                                        })
-                                    except asyncio.QueueFull:
-                                        pass
                     else:
                         # New day or first observation
                         self._observations[station_id] = (today_str, temp)
@@ -209,7 +178,6 @@ class MetarMonitor:
             batches=_batches_sent,
             observations=len(data),
             updates=_updates,
-            boundary_crosses=_boundary_crosses,
             poll_ms=_poll_ms,
         )
 
