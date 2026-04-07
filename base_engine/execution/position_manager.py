@@ -245,61 +245,55 @@ class AutomatedPositionManager:
                 except asyncio.TimeoutError:
                     logger.debug("_refresh_exit_learning timed out — using cached thresholds")
 
-                async with self.db.get_session() as session:
-                    from sqlalchemy import select
+                # S161 ROOT FIX: Per-operation sessions eliminate session poisoning.
+                # Previously, one long-lived session (L248-old) was shared across read,
+                # price update, and position check. If _update_current_prices hit a
+                # timeout or error, the session entered InFailedSQLTransactionError and
+                # ALL downstream ops failed (~200 errors/10min observed). Now each
+                # operation gets its own session — failure is contained and disposed by
+                # the context manager. No poison propagates between operations.
 
-                    # Get all open positions (status 'open' or 'reserving')
-                    result = await session.execute(
+                # Step 1: Read positions — isolated session, expunge immediately.
+                # Detached ORM objects keep __dict__ — pure Python attr access, no
+                # session, no greenlet, no lazy-load for all downstream operations.
+                from sqlalchemy import select
+                async with self.db.get_session() as _read_session:
+                    result = await _read_session.execute(
                         select(Position).where(Position.status.in_(["open", "reserving"]))
                     )
                     positions = result.scalars().all()
                     _last_known_count = len(positions)
+                    for p in positions:
+                        _read_session.expunge(p)
 
-                    # Session 46: Auto-close positions on expired markets (past end_date)
-                    if positions:
-                        positions = await self._close_expired_positions(session, positions)
+                # Step 2: Close expired markets — already uses isolated sessions
+                # internally (S159 C19 + S160). session param is documented unused.
+                if positions:
+                    positions = await self._close_expired_positions(None, positions)
 
-                    # SESSION 44 FIX: Update current_price from market_prices before checking exits.
-                    # Without this, current_price == entry_price forever, causing every SELL to lose
-                    # (exit at stale entry_price minus slippage = guaranteed loss).
-                    # S158 FIX 2: On failure, rollback the poisoned session so it's usable again.
-                    # S161: On rollback, ORM objects are expired — skip _check_position to
-                    # avoid MissingGreenlet (lazy-load outside greenlet context). Positions
-                    # are rechecked next cycle (10s). Previous code ran _check_position
-                    # unconditionally, which crashed every cycle after rollback.
-                    _prices_ok = not positions  # vacuously true when no positions
-                    if positions:
-                        # S159 C21: Timeout prevents position monitoring freeze on slow
-                        # price queries. Without this, a hung market_prices_latest query
-                        # blocks the entire loop for up to 300s (server-side timeout).
-                        try:
+                # Step 3: Update current_price — isolated session. If this fails,
+                # the session is disposed cleanly. Positions retain read-time prices
+                # from Step 1 (potentially 10s stale, but better than skipping checks).
+                _prices_ok = not positions  # vacuously true when no positions
+                if positions:
+                    try:
+                        async with self.db.get_session() as _price_session:
                             await asyncio.wait_for(
-                                self._update_current_prices(session, positions),
+                                self._update_current_prices(_price_session, positions),
                                 timeout=15.0,
                             )
                             _prices_ok = True
-                        except asyncio.TimeoutError:
-                            logger.warning("update_current_prices_timed_out_15s")
-                            try:
-                                await session.rollback()
-                            except Exception:
-                                pass
-                        except Exception as _price_err:
-                            logger.warning("_update_current_prices failed: %s", _price_err)
-                            try:
-                                await session.rollback()
-                            except Exception:
-                                pass  # rollback failed — session will be disposed by pool
+                    except asyncio.TimeoutError:
+                        logger.warning("update_current_prices_timed_out_15s")
+                    except Exception as _price_err:
+                        logger.warning("_update_current_prices failed: %s", _price_err)
 
-                    # S161: Expunge positions from session after successful price update.
-                    # Detached objects keep __dict__ values — attribute access is pure
-                    # Python dict lookup with no session, no greenlet, no lazy-load.
-                    # _execute_exit re-queries by ID in its own session (L705).
-                    if _prices_ok:
-                        for p in positions:
-                            session.expunge(p)
-                        for position in positions:
-                            await self._check_position(position)
+                # Step 4: Check positions for exits. Runs with detached objects
+                # regardless of price update outcome. _execute_exit/_execute_stop_loss
+                # re-query by ID in their own sessions (L705+).
+                if _prices_ok:
+                    for position in positions:
+                        await self._check_position(position)
 
                 await asyncio.sleep(self.check_interval_seconds)
             except Exception as e:
