@@ -303,6 +303,10 @@ class AutomatedPositionManager:
         Selling is pointless — resolution is free. Mark as closed in DB.
         S159 C14: Skip PM_EXCLUDE_BOTS — they manage their own expiry/resolution.
         S159 C12: Emit EXIT trade_event before closing (trade_events is P&L authority).
+
+        NOTE: `session` param is unused — all DB writes use isolated sessions to prevent
+        session poisoning on the main monitoring session (S160). Do not reintroduce writes
+        on the passed-in session; that was the root cause of the P0 poisoning bug.
         """
         from sqlalchemy import text as sa_text
         from config.settings import settings
@@ -335,7 +339,7 @@ class AutomatedPositionManager:
 
         now = datetime.now(timezone.utc)
         active = []
-        closed_count = 0
+        _closed_ids = []  # position IDs to close via isolated session
         for pos in positions:
             mid = str(pos.market_id)
 
@@ -351,7 +355,8 @@ class AutomatedPositionManager:
                 if end_date.tzinfo is None:
                     end_date = end_date.replace(tzinfo=timezone.utc)
                 if end_date < now:
-                    # S159 C12: Record EXIT event — trade_events is canonical P&L authority
+                    # S159 C12: Record EXIT event — trade_events is canonical P&L authority.
+                    # S160: Only close position if EXIT event succeeds — prevents P&L gap.
                     try:
                         _exit_price = float(pos.current_price or pos.entry_price or 0.5)
                         _entry_price = float(pos.entry_price or 0.5)
@@ -370,28 +375,41 @@ class AutomatedPositionManager:
                             realized_pnl=_pnl,
                             event_data={"exit_reason": "market_expired", "end_date": end_date.isoformat()},
                         )
+                        _closed_ids.append(pos.id)
+                        logger.info(
+                            "Auto-closed expired position %s (market %s expired %s)",
+                            pos.id, mid, end_date.isoformat(),
+                        )
                     except Exception as _te_err:
-                        logger.warning("expired_position_trade_event_failed", pos_id=pos.id, error=str(_te_err))
-
-                    pos.status = "closed"
-                    closed_count += 1
-                    logger.info(
-                        "Auto-closed expired position %s (market %s expired %s)",
-                        pos.id, mid, end_date.isoformat(),
-                    )
+                        # Position stays open — will retry next cycle. WARNING so operators
+                        # can spot persistent failures (missing partition, DB down).
+                        logger.warning("expired_position_close_blocked",
+                                       pos_id=pos.id, market_id=mid, error=str(_te_err))
+                        active.append(pos)
                     continue
             active.append(pos)
 
-        if closed_count > 0:
+        # S160: Close positions via isolated session — NEVER dirty the main monitoring
+        # session. Previously, pos.status="closed" + session.commit() on the main session
+        # caused session poisoning if commit failed, breaking _update_current_prices for
+        # the entire cycle (InFailedSQLTransactionError). Now uses raw SQL in a separate
+        # session so the main session stays clean regardless of outcome.
+        if _closed_ids:
             try:
-                await session.commit()
-                logger.info("Closed %d positions on expired markets", closed_count)
+                async with self.db.get_session() as _close_session:
+                    await _close_session.execute(
+                        sa_text(
+                            "UPDATE positions SET status = 'closed' "
+                            "WHERE id = ANY(:ids) AND status = 'open'"
+                        ),
+                        {"ids": _closed_ids},
+                    )
+                    await _close_session.commit()
+                logger.info("Closed %d positions on expired markets", len(_closed_ids))
             except Exception as e:
-                logger.warning("Failed to commit expired position closures: %s", e)
-                # Do NOT rollback here — rollback expires all ORM objects in the session,
-                # causing MissingGreenlet when _check_position accesses position attributes.
-                # The session context manager in _monitor_positions handles cleanup on exit.
-                return positions  # Return all positions if commit failed
+                logger.warning("expired_position_commit_failed", count=len(_closed_ids), error=str(e))
+                # Positions are already removed from active list. They'll reappear
+                # next cycle (still status='open' in DB) and be retried.
 
         return active
 
@@ -548,10 +566,21 @@ class AutomatedPositionManager:
                     pos.unrealized_pnl = (_api_price - entry) * size
                     updated += 1
 
+            # S160: Collect CLOB fallback prices for market_prices_latest seeding
+            _clob_seeds = []
+            for pos in positions:
+                tid = str(pos.token_id) if pos.token_id else ""
+                if not tid or tid in latest_prices:
+                    continue
+                _cached = self._api_price_cache.get(tid)
+                if _cached and _cached[0] > 0:
+                    _clob_seeds.append((tid, _cached[0]))
+
             # Session 57: markets table fallback for CLOB tokens with wide spreads.
             # CLOB esports tokens have bid=$0.01/ask=$0.99 (spread > 0.5) so the
             # orderbook fallback skips them. The markets.yes_price/no_price columns
             # are refreshed by EsportsMarketService every 5 min via CLOB API.
+            _mkt_seeds = []
             _still_missing = [p for p in positions
                               if str(p.token_id or "") not in latest_prices
                               and str(p.token_id or "") not in self._api_price_cache]
@@ -589,12 +618,33 @@ class AutomatedPositionManager:
                             size = float(pos.size) if pos.size else 0.0
                             pos.unrealized_pnl = (new_price - entry) * size
                             updated += 1
+                            _mkt_seeds.append((tid, new_price))
                     except Exception:
                         pass
 
-            if updated > 0:
+            # S160: Seed market_prices_latest from CLOB + markets table fallbacks
+            # so next cycle finds them in the fast path (O(1) per token).
+            _all_seeds = _clob_seeds + _mkt_seeds
+            if _all_seeds:
+                _now_utc = datetime.now(timezone.utc)
+                for _seed_tid, _seed_price in _all_seeds:
+                    try:
+                        await session.execute(sa_text(
+                            "INSERT INTO market_prices_latest (token_id, price, timestamp) "
+                            "VALUES (:tid, :price, :ts) "
+                            "ON CONFLICT (token_id) DO UPDATE SET price = EXCLUDED.price, "
+                            "timestamp = EXCLUDED.timestamp "
+                            "WHERE market_prices_latest.timestamp < EXCLUDED.timestamp"
+                        ), {"tid": _seed_tid, "price": _seed_price, "ts": _now_utc})
+                    except Exception:
+                        pass  # Non-fatal — fallback found the price, next cycle re-seeds
+
+            if updated > 0 or _all_seeds:
                 await session.commit()
-                logger.debug("Updated current_price for %d/%d positions", updated, len(positions))
+                if updated > 0:
+                    logger.debug("Updated current_price for %d/%d positions", updated, len(positions))
+                if _all_seeds:
+                    logger.debug("price_seed_market_prices_latest", seeded=len(_all_seeds))
 
             # Session 51 P1-4: Alert on stale prices
             if _stale_tokens and self.alerting:
@@ -851,12 +901,12 @@ class AutomatedPositionManager:
 
             place = (self.order_gateway or self.execution_engine).place_order
             result = await place(
-                bot_name=position.bot_id or position.bot_name,
+                bot_name=position.bot_id or position.bot_name or "default",
                 market_id=position.market_id,
                 token_id=position.token_id,
                 side=exit_side,
                 size=_exit_size,
-                price=position.current_price or position.entry_price,
+                price=position.current_price or position.entry_price or 0.5,
                 confidence=1.0
             )
 
@@ -935,12 +985,12 @@ class AutomatedPositionManager:
 
             place = (self.order_gateway or self.execution_engine).place_order
             result = await place(
-                bot_name=position.bot_id or position.bot_name,
+                bot_name=position.bot_id or position.bot_name or "default",
                 market_id=position.market_id,
                 token_id=position.token_id,
                 side=exit_side,
                 size=_exit_size,
-                price=position.current_price or position.entry_price,
+                price=position.current_price or position.entry_price or 0.5,
                 confidence=1.0
             )
 

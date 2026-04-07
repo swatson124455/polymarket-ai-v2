@@ -474,18 +474,22 @@ class RiskManager:
                             f"{bot_name} exposure ${bot_exposure + position_value:.2f} exceeds bot max ${_per_bot_max:.2f}"
                         )
 
+                # S160: Match fast-path logic — Weather/Esports use bot-specific exposure,
+                # other bots use global sum. Fast path: L411 global, L416/L420 bot-specific.
+                max_total = getattr(settings, "RISK_MAX_TOTAL_EXPOSURE_USD", 500.0)
+                _total_exp_filter = [Position.status == "open"]
+                if bot_name == "WeatherBot":
+                    max_total = getattr(settings, "WEATHER_MAX_TOTAL_EXPOSURE_USD", max_total)
+                    _total_exp_filter.append(or_(Position.bot_id == bot_name, Position.source_bot == bot_name))
+                elif bot_name in ("EsportsBot", "EsportsLiveBot"):
+                    max_total = getattr(settings, "ESPORTS_MAX_TOTAL_EXPOSURE_USD", max_total)
+                    _total_exp_filter.append(or_(Position.bot_id == bot_name, Position.source_bot == bot_name))
                 total_exposure_query = await session.execute(
                     select(func.coalesce(func.sum(Position.size * Position.entry_price), 0)).where(
-                        Position.status == "open"
+                        *_total_exp_filter
                     )
                 )
                 total_exposure = total_exposure_query.scalar() or 0.0
-                max_total = getattr(settings, "RISK_MAX_TOTAL_EXPOSURE_USD", 500.0)
-                # Bot-specific caps (DB fallback path)
-                if bot_name == "WeatherBot":
-                    max_total = getattr(settings, "WEATHER_MAX_TOTAL_EXPOSURE_USD", max_total)
-                elif bot_name in ("EsportsBot", "EsportsLiveBot"):
-                    max_total = getattr(settings, "ESPORTS_MAX_TOTAL_EXPOSURE_USD", max_total)
                 if total_exposure + position_value > max_total:
                     checks["allowed"] = False
                     checks["reasons"].append(
@@ -578,7 +582,7 @@ class RiskManager:
                 # S159: Hash on composition, not just count. Exit+entry within 120s
                 # produces same count but different portfolio — stale CVaR.
                 _pos_ids = tuple(sorted(
-                    getattr(p, 'market_id', '') for p in _existing_positions
+                    p.get('market_id', '') for p in _existing_positions
                 ))
                 _pos_hash = hash((len(_existing_positions), _pos_ids))
                 if (self._cvar_base_cache is not None

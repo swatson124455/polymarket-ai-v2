@@ -192,7 +192,7 @@ class BotBankrollManager:
                 # "risk_manager" (public). The underscore prefix caused getattr to
                 # always return None, so drawdown compression never fired.
                 rm = getattr(self._gw, "risk_manager", None)
-            dd_pct = getattr(rm, "_cached_drawdown_pct", 0.0) if rm else 0.0
+            dd_pct = getattr(rm, "_cached_drawdown_pct", 0.05) if rm else 0.05
             if dd_pct > 0.02:
                 compress = max(0.30, 1.0 - dd_pct * 4.0)
                 fraction *= compress

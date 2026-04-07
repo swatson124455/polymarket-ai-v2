@@ -199,7 +199,7 @@ class _SemaphoreSession:
             await result.execute(_sa_text(f"SET statement_timeout = '{_timeout_ms}'"))
         except Exception as _set_err:
             import structlog as _sl
-            _sl.get_logger().debug("set_statement_timeout_failed", timeout_ms=_timeout_ms, error=str(_set_err))
+            _sl.get_logger().warning("set_statement_timeout_failed", timeout_ms=_timeout_ms, error=str(_set_err))
         return result
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):

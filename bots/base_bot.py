@@ -810,12 +810,13 @@ class BaseBot(ABC):
                 # Optional burst: if StrategicTimer says burst, run one extra scan at half interval
                 if getattr(settings, "USE_SCAN_JITTER", False):
                     try:
-                        from base_engine.analysis.game_theory import StrategicTimer
-                        _timer = StrategicTimer(
-                            base_interval_seconds=self._get_scan_interval(),
-                            burst_probability=0.02,
-                        )
-                        if _timer.should_burst():
+                        if self._strategic_timer is None:
+                            from base_engine.analysis.game_theory import StrategicTimer
+                            self._strategic_timer = StrategicTimer(
+                                base_interval_seconds=self._get_scan_interval(),
+                                burst_probability=0.02,
+                            )
+                        if self._strategic_timer.should_burst():
                             logger.debug("%s: burst scan triggered", self.bot_name)
                             await asyncio.sleep(self._get_scan_interval() * 0.5)
                             # C2 FIX: also apply timeout to burst scan
