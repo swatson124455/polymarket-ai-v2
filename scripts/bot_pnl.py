@@ -3,9 +3,9 @@
 Bot P&L Report — Canonical calculation from trade_events + positions.
 
 Usage:
-    python scripts/bot_pnl.py                    # All bots, last 24h
+    python scripts/bot_pnl.py                    # WeatherBot, last 24h
     python scripts/bot_pnl.py EsportsBot         # Specific bot, last 24h
-    python scripts/bot_pnl.py EsportsBot 8       # Specific bot, last 8h
+    python scripts/bot_pnl.py WeatherBot 8       # Specific bot, last 8h
 
 P&L math rules (uniform for YES and NO):
   - entry_price and current_price are ALWAYS token-specific prices
@@ -286,6 +286,6 @@ async def bot_pnl(bot_name: str, hours: int = 24):
 
 
 if __name__ == "__main__":
-    bot = sys.argv[1] if len(sys.argv) > 1 else "EsportsBot"
+    bot = sys.argv[1] if len(sys.argv) > 1 else "WeatherBot"
     hrs = int(sys.argv[2]) if len(sys.argv) > 2 else 24
     asyncio.run(bot_pnl(bot, hrs))
