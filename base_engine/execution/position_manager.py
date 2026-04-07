@@ -262,10 +262,12 @@ class AutomatedPositionManager:
                     # SESSION 44 FIX: Update current_price from market_prices before checking exits.
                     # Without this, current_price == entry_price forever, causing every SELL to lose
                     # (exit at stale entry_price minus slippage = guaranteed loss).
-                    # S158 FIX 2: On failure, rollback the poisoned session so it's usable again,
-                    # then proceed with position checks using whatever prices are available.
-                    # Previous approach (skip checks entirely) caused 100% stale prices because
-                    # the session stayed poisoned across cycles and prices never updated.
+                    # S158 FIX 2: On failure, rollback the poisoned session so it's usable again.
+                    # S161: On rollback, ORM objects are expired — skip _check_position to
+                    # avoid MissingGreenlet (lazy-load outside greenlet context). Positions
+                    # are rechecked next cycle (10s). Previous code ran _check_position
+                    # unconditionally, which crashed every cycle after rollback.
+                    _prices_ok = not positions  # vacuously true when no positions
                     if positions:
                         # S159 C21: Timeout prevents position monitoring freeze on slow
                         # price queries. Without this, a hung market_prices_latest query
@@ -275,6 +277,7 @@ class AutomatedPositionManager:
                                 self._update_current_prices(session, positions),
                                 timeout=15.0,
                             )
+                            _prices_ok = True
                         except asyncio.TimeoutError:
                             logger.warning("update_current_prices_timed_out_15s")
                             try:
@@ -288,8 +291,15 @@ class AutomatedPositionManager:
                             except Exception:
                                 pass  # rollback failed — session will be disposed by pool
 
-                    for position in positions:
-                        await self._check_position(position)
+                    # S161: Expunge positions from session after successful price update.
+                    # Detached objects keep __dict__ values — attribute access is pure
+                    # Python dict lookup with no session, no greenlet, no lazy-load.
+                    # _execute_exit re-queries by ID in its own session (L705).
+                    if _prices_ok:
+                        for p in positions:
+                            session.expunge(p)
+                        for position in positions:
+                            await self._check_position(position)
 
                 await asyncio.sleep(self.check_interval_seconds)
             except Exception as e:
