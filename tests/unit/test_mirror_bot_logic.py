@@ -536,13 +536,16 @@ class TestRestoreStateOnStartup:
         mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
-        # First execute: SUM of paper_trades (daily exposure)
+        # First execute: SUM of trade_events (daily exposure)
         scalar_result = MagicMock()
         scalar_result.scalar = MagicMock(return_value=350.0)
-        # Second execute: positions query (returns empty)
+        # Second execute: category exposure seed (S119)
+        cat_result = MagicMock()
+        cat_result.fetchall = MagicMock(return_value=[])
+        # Third execute: positions query (returns empty)
         positions_result = MagicMock()
         positions_result.fetchall = MagicMock(return_value=[])
-        mock_ctx.execute = AsyncMock(side_effect=[scalar_result, positions_result])
+        mock_ctx.execute = AsyncMock(side_effect=[scalar_result, cat_result, positions_result])
         engine.db.get_session = MagicMock(return_value=mock_ctx)
 
         await bot._restore_state_on_startup()
@@ -605,23 +608,25 @@ class TestRestoreStateOnStartup:
 
     @pytest.mark.asyncio
     async def test_handles_db_failure_gracefully(self):
-        """DB exception is caught — bot starts with default state."""
+        """DB exception is caught — bot retries on next scan (S160: _state_restored stays False)."""
         bot, engine = _make_bot()
         bot._state_restored = False
         engine.db.get_session.side_effect = Exception("DB down")
         await bot._restore_state_on_startup()
-        assert bot._state_restored is True
+        # S160: _state_restored stays False on failure so bot retries next scan
+        assert bot._state_restored is False
         assert bot._daily_exposure == 0.0
         assert bot._open_positions == {}
 
     @pytest.mark.asyncio
     async def test_no_db_skips_restore(self):
-        """When engine.db is None, restoration is skipped cleanly."""
+        """When engine.db is None, restoration is skipped (S160: stays False for retry)."""
         bot, engine = _make_bot()
         bot._state_restored = False
         engine.db = None
         await bot._restore_state_on_startup()
-        assert bot._state_restored is True
+        # S160: No DB means can't restore — stays False to retry when DB becomes available
+        assert bot._state_restored is False
         assert bot._daily_exposure == 0.0
 
     @pytest.mark.asyncio
@@ -972,8 +977,9 @@ class TestExecuteMirrorTrade:
 
         assert result is True
         assert "mkt1:tok-yes" not in bot._open_positions
-        # Daily exposure decremented: 100 - (75 * 0.55) = 58.75
-        expected = max(0.0, 100.0 - 75.0 * 0.55)
+        # S160: Daily exposure decremented using entry_price (0.60), not exit_price (0.55)
+        # 100 - (75 * 0.60) = 55.0
+        expected = max(0.0, 100.0 - 75.0 * 0.60)
         assert abs(bot._daily_exposure - expected) < 0.01
 
     @pytest.mark.asyncio

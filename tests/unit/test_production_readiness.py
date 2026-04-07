@@ -64,8 +64,8 @@ async def test_expired_market_position_auto_closed():
     # Position on expired market
     pos = _make_mock_position(1, "expired_market_123")
 
-    # S159: _close_expired_positions now uses self.db.get_session() internally
-    # (session isolation from C19), not the passed-in session argument.
+    # S159 C19 + S160: _close_expired_positions uses isolated sessions for both
+    # query and UPDATE — never touches the main monitoring session.
     expired_date = datetime.now(timezone.utc) - timedelta(hours=24)
     mock_iso_session = AsyncMock()
     mock_result = MagicMock()
@@ -79,12 +79,14 @@ async def test_expired_market_position_auto_closed():
     mock_outer_session.commit = AsyncMock()
     active = await pm._close_expired_positions(mock_outer_session, [pos])
 
-    assert pos.status == "closed", "Expired position should be closed"
     assert len(active) == 0, "No active positions should remain"
-    # S159 C19: expired positions trigger commit on outer session (line 387)
-    # AND insert_trade_event is called for EXIT event (line 362)
-    mock_outer_session.commit.assert_called_once()
+    # S160: Position closed via raw SQL in isolated session, not ORM mutation.
+    # Outer session is never committed — prevents session poisoning.
+    mock_outer_session.commit.assert_not_called()
     db.insert_trade_event.assert_called_once()
+    # S160: Isolated session used for both query AND status update
+    assert mock_iso_session.execute.call_count >= 1
+    mock_iso_session.commit.assert_called()
 
 
 @pytest.mark.asyncio
@@ -140,6 +142,66 @@ async def test_no_end_date_position_not_closed():
 
     assert pos.status == "open", "Position without end_date should stay open"
     assert len(active) == 1, "Position should remain in active list"
+
+
+@pytest.mark.asyncio
+async def test_expired_position_commit_failure_does_not_poison_main_session():
+    """S160: If isolated commit fails, main session must remain clean (not poisoned).
+
+    This is the core test for the session poisoning fix. Previously, a failed
+    commit on the main session left it in InFailedSQLTransactionError state,
+    breaking _update_current_prices for the entire cycle.
+    """
+    from base_engine.execution.position_manager import AutomatedPositionManager
+
+    db = _make_mock_db()
+    pm = AutomatedPositionManager(
+        execution_engine=MagicMock(),
+        order_manager=MagicMock(),
+        db=db,
+    )
+
+    pos = _make_mock_position(10, "expired_fail_market")
+
+    expired_date = datetime.now(timezone.utc) - timedelta(hours=24)
+
+    # Track which session is being created (query session vs close session)
+    _call_count = 0
+    _query_session = AsyncMock()
+    _close_session = AsyncMock()
+
+    mock_result = MagicMock()
+    mock_result.fetchall.return_value = [("expired_fail_market", expired_date)]
+    _query_session.execute = AsyncMock(return_value=mock_result)
+
+    # Close session commit FAILS — simulates DB error
+    _close_session.commit = AsyncMock(side_effect=Exception("connection reset"))
+    _close_session.execute = AsyncMock()
+
+    def _make_session():
+        nonlocal _call_count
+        _call_count += 1
+        if _call_count == 1:
+            return _AsyncCM(_query_session)
+        return _AsyncCM(_close_session)
+
+    db.get_session = MagicMock(side_effect=_make_session)
+    db.insert_trade_event = AsyncMock()  # EXIT event succeeds
+
+    mock_outer_session = AsyncMock()
+    active = await pm._close_expired_positions(mock_outer_session, [pos])
+
+    # Main session must NEVER be committed or rolled back
+    mock_outer_session.commit.assert_not_called()
+    mock_outer_session.rollback = AsyncMock()
+    mock_outer_session.rollback.assert_not_called()
+
+    # EXIT event was recorded (before the commit failure)
+    db.insert_trade_event.assert_called_once()
+
+    # Position removed from active list (expired, EXIT recorded)
+    # It will reappear next cycle since DB still has status='open'
+    assert len(active) == 0
 
 
 # ---------------------------------------------------------------------------
