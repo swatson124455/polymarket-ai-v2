@@ -1983,6 +1983,12 @@ class BaseEngine:
                     if n > 0 and not pe._feature_cache_warmed:
                         pe._feature_cache_warmed = True
                         logger.info("Feature vector cache warmed: %d markets pre-computed", n)
+                    # S161: Batch-refresh elite direction cache — moves expensive
+                    # trades×users join off scan hot path. Chunks of 50 markets.
+                    try:
+                        _n_elite = await pe.batch_refresh_elite_cache(ids)
+                    except Exception as _elite_err:
+                        logger.warning("Elite batch refresh failed (non-fatal): %s", _elite_err)
             except Exception as e:
                 logger.warning("Feature pre-compute loop failed (non-fatal): %s", e)
             await asyncio.sleep(60)

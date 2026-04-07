@@ -529,6 +529,132 @@ class PredictionEngine:
         await asyncio.gather(*tasks, return_exceptions=True)
         return count
 
+    async def batch_refresh_elite_cache(self, market_ids: list) -> int:
+        """Background batch refresh of elite direction cache for all active markets.
+
+        Runs a chunked batch query (50 markets/chunk) to pre-populate _elite_cache,
+        moving the expensive trades×users join OFF the scan hot path. The inline
+        query in predict() still serves as fallback for markets not in the batch.
+
+        Returns count of markets refreshed.
+        """
+        if not market_ids or not getattr(settings, "USE_ELITE_NET_DIRECTION", True):
+            return 0
+
+        _as_of = datetime.now(timezone.utc).replace(tzinfo=None)
+        _c1h = _as_of - timedelta(hours=1)
+        _c6h = _as_of - timedelta(hours=6)
+        _c24h = _as_of - timedelta(hours=24)
+        _c90d = _as_of - timedelta(days=90)
+
+        from sqlalchemy import text as sa_text
+
+        _chunk_size = 50
+        _refreshed = 0
+
+        for i in range(0, len(market_ids), _chunk_size):
+            chunk = market_ids[i:i + _chunk_size]
+            try:
+                async with self.db.get_session() as _s:
+                    # Resolve market_id aliases: some markets use condition_id, others use id.
+                    # Build the full set of trade-table market_ids that map to each requested id.
+                    _alias_result = await asyncio.wait_for(_s.execute(sa_text("""
+                        SELECT req_id, array_agg(DISTINCT trade_mid) AS trade_mids
+                        FROM (
+                            SELECT u.req_id, u.req_id AS trade_mid
+                            FROM unnest(:mids::text[]) AS u(req_id)
+                            UNION ALL
+                            SELECT u.req_id, m.condition_id
+                            FROM unnest(:mids::text[]) AS u(req_id)
+                            JOIN markets m ON CAST(m.id AS TEXT) = u.req_id
+                            WHERE m.condition_id IS NOT NULL
+                            UNION ALL
+                            SELECT u.req_id, CAST(m.id AS TEXT)
+                            FROM unnest(:mids::text[]) AS u(req_id)
+                            JOIN markets m ON m.condition_id = u.req_id
+                        ) sub
+                        GROUP BY req_id
+                    """), {"mids": chunk}), timeout=10.0)
+                    _alias_map = {}  # trade_mid -> list of req_ids
+                    _all_trade_mids = set()
+                    for row in _alias_result:
+                        req_id = row[0]
+                        trade_mids = row[1] or [req_id]
+                        for tmid in trade_mids:
+                            _all_trade_mids.add(tmid)
+                            _alias_map.setdefault(tmid, []).append(req_id)
+
+                    if not _all_trade_mids:
+                        continue
+
+                    # Batch elite direction query — one query per chunk
+                    _elite_result = await asyncio.wait_for(_s.execute(sa_text("""
+                        SELECT
+                            t.market_id,
+                            COALESCE(SUM(
+                                CASE WHEN t.side IN ('YES', 'BUY') THEN 1.0 ELSE -1.0 END
+                                * COALESCE(u.win_rate, 0.5)
+                            ) / NULLIF(SUM(COALESCE(u.win_rate, 0.5)), 0), 0) as net,
+                            COALESCE(
+                                SUM(CASE WHEN t.timestamp >= :c1h THEN
+                                    CASE WHEN t.side IN ('YES','BUY') THEN 1.0 ELSE -1.0 END * COALESCE(u.win_rate, 0.5) ELSE 0 END)
+                                / NULLIF(SUM(CASE WHEN t.timestamp >= :c1h THEN COALESCE(u.win_rate, 0.5) ELSE 0 END), 0), 0) as d1h,
+                            COALESCE(
+                                SUM(CASE WHEN t.timestamp >= :c6h THEN
+                                    CASE WHEN t.side IN ('YES','BUY') THEN 1.0 ELSE -1.0 END * COALESCE(u.win_rate, 0.5) ELSE 0 END)
+                                / NULLIF(SUM(CASE WHEN t.timestamp >= :c6h THEN COALESCE(u.win_rate, 0.5) ELSE 0 END), 0), 0) as d6h,
+                            COALESCE(
+                                SUM(CASE WHEN t.timestamp >= :c24h THEN
+                                    CASE WHEN t.side IN ('YES','BUY') THEN 1.0 ELSE -1.0 END * COALESCE(u.win_rate, 0.5) ELSE 0 END)
+                                / NULLIF(SUM(CASE WHEN t.timestamp >= :c24h THEN COALESCE(u.win_rate, 0.5) ELSE 0 END), 0), 0) as d24h
+                        FROM trades t
+                        JOIN users u ON t.user_address = u.address
+                        WHERE t.market_id = ANY(:trade_mids)
+                        AND u.is_elite = TRUE
+                        AND COALESCE(u.is_likely_market_maker, false) = false
+                        AND t.timestamp >= :c90d
+                        GROUP BY t.market_id
+                    """), {
+                        "trade_mids": list(_all_trade_mids),
+                        "c1h": _c1h, "c6h": _c6h, "c24h": _c24h, "c90d": _c90d,
+                    }), timeout=30.0)
+
+                    # Map results back to requested market_ids and populate cache
+                    _seen_req_ids = set()
+                    for row in _elite_result:
+                        trade_mid = row[0]
+                        vals = {
+                            "net": max(-1.0, min(1.0, float(row[1] or 0))),
+                            "1h": max(-1.0, min(1.0, float(row[2] or 0))),
+                            "6h": max(-1.0, min(1.0, float(row[3] or 0))),
+                            "24h": max(-1.0, min(1.0, float(row[4] or 0))),
+                        }
+                        for req_id in _alias_map.get(trade_mid, []):
+                            self._elite_cache.set(f"elite:{req_id}", vals)
+                            _seen_req_ids.add(req_id)
+
+                    # Markets with no elite trades → cache zeros (prevents inline fallback)
+                    _zero = {"net": 0.0, "1h": 0.0, "6h": 0.0, "24h": 0.0}
+                    for mid in chunk:
+                        if mid not in _seen_req_ids:
+                            self._elite_cache.set(f"elite:{mid}", _zero)
+                            _seen_req_ids.add(mid)
+
+                    _refreshed += len(_seen_req_ids)
+
+            except asyncio.TimeoutError:
+                logger.warning("elite_batch_timeout chunk=%d-%d", i, i + len(chunk))
+                try:
+                    pass  # session already cleaned up by context manager
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.warning("elite_batch_failed chunk=%d-%d: %s", i, i + len(chunk), e)
+
+        if _refreshed > 0:
+            logger.info("elite_batch_refresh count=%d/%d", _refreshed, len(market_ids))
+        return _refreshed
+
     async def _init_elevation_modules(self) -> None:
         """Initialize Elevation Plan feature modules (P3-05, P3-06, P5-03).
         Called from init() regardless of whether models were loaded or trained."""

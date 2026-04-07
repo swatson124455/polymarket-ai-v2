@@ -832,7 +832,7 @@ class RiskManager:
 
         # Drawdown-dependent Kelly compression — preserve capital during drawdowns
         try:
-            _dd_drawdown_pct = getattr(self, "_cached_drawdown_pct", 0.0)
+            _dd_drawdown_pct = getattr(self, "_cached_drawdown_pct", 0.05)
             if _dd_drawdown_pct > 0.02:  # Only compress if drawdown > 2%
                 _compress = max(0.30, 1.0 - _dd_drawdown_pct * 4.0)  # 5% dd → 0.8×, 10% → 0.6×, 17.5%+ → 0.3×
                 kelly_frac *= _compress

@@ -249,7 +249,11 @@ class BaseBot(ABC):
                 if self._strategic_timer is None:
                     from base_engine.analysis.game_theory import StrategicTimer
                     jitter_pct = getattr(settings, "SCAN_JITTER_PCT", 0.2)
-                    self._strategic_timer = StrategicTimer(base_interval_seconds=base, jitter_pct=jitter_pct)
+                    self._strategic_timer = StrategicTimer(
+                        base_interval_seconds=base,
+                        jitter_pct=jitter_pct,
+                        burst_probability=0.02,
+                    )
                 return self._strategic_timer.next_interval()
             except Exception as e:
                 logger.debug("strategic timer jitter calculation failed: %s", e)
@@ -808,14 +812,10 @@ class BaseBot(ABC):
                 await self._record_heartbeat(scan_duration_ms=_scan_ms)
 
                 # Optional burst: if StrategicTimer says burst, run one extra scan at half interval
-                if getattr(settings, "USE_SCAN_JITTER", False):
+                # Timer is initialized once in _get_scan_interval_seconds() with both
+                # jitter_pct and burst_probability params.
+                if getattr(settings, "USE_SCAN_JITTER", False) and self._strategic_timer is not None:
                     try:
-                        if self._strategic_timer is None:
-                            from base_engine.analysis.game_theory import StrategicTimer
-                            self._strategic_timer = StrategicTimer(
-                                base_interval_seconds=self._get_scan_interval(),
-                                burst_probability=0.02,
-                            )
                         if self._strategic_timer.should_burst():
                             logger.debug("%s: burst scan triggered", self.bot_name)
                             await asyncio.sleep(self._get_scan_interval() * 0.5)
