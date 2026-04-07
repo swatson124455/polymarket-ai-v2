@@ -229,6 +229,11 @@ class WeatherProbabilityEngine:
             lower = float(dist.cdf(bucket.low_bound - 0.5))
             return max(0.0, upper - lower)
 
+        logger.warning(
+            "integrate_bucket_unknown_type",
+            bucket_type=btype,
+            market_id=getattr(bucket, "market_id", "?"),
+        )
         return 0.0
 
     def _bucket_probabilities_fallback(
