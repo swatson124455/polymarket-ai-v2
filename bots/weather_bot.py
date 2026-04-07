@@ -3983,6 +3983,15 @@ class WeatherBot(BaseBot):
                                    if _now_mono - v[1] < 3600}
         self._psw_discovery_cache = {k: v for k, v in self._psw_discovery_cache.items()
                                       if _now_mono - v[0] < 1200}
+        # S160 WB-3: Prune expired exit cooldown entries (unbounded memory leak).
+        # Only remove entries past the max cooldown TTL (4h for RESOLUTION, 30m
+        # for REVERSAL). Active cooldowns are preserved.
+        _max_cd = max(self._exit_cooldown_secs, 1800.0)
+        _expired = [mid for mid, t in self._recently_exited.items()
+                    if _now_mono - t > _max_cd]
+        for mid in _expired:
+            self._recently_exited.pop(mid, None)
+            self._exit_reasons.pop(mid, None)
 
         # P2: Restore today's realized P&L from paper_trades so restarts
         # don't reset the daily loss limit check to $0.
