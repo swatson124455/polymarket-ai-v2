@@ -476,8 +476,8 @@ class EsportsBot(BaseBot):
                 bot_positions = getattr(og, "_open_position_markets", {})
                 if isinstance(bot_positions, dict) and bot_positions.get(self.bot_name):
                     return 60.0
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("scan_interval_position_check_failed: %s", e)
         return float(getattr(settings, "SCAN_INTERVAL_ESPORTS", 120))
 
     async def start(self) -> None:
@@ -2728,8 +2728,8 @@ class EsportsBot(BaseBot):
                         raw_model_prob=_raw_prob,
                     )
                     self._prediction_log_cache[market_id] = (model_prob, time.monotonic())
-            except Exception:
-                pass  # Non-critical — later log or next scan will catch it
+            except Exception as e:
+                logger.debug("prediction_log_failed market=%s: %s", market_id, e)
 
         # S135+S136: Divergence cap — when model disagrees massively with market,
         # market has live info model doesn't. S136 Phase 9C: per-game adaptive cap.
