@@ -101,7 +101,7 @@ class MirrorAdaptiveSafety:
             )
 
         except Exception as e:
-            logger.debug("mirror_adaptive_safety_refresh failed: %s", e)
+            logger.warning("mirror_adaptive_safety_refresh failed: %s", e)
 
     def get_adjusted_max_positions(self) -> int:
         """Return dynamically adjusted max positions.

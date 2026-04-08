@@ -968,8 +968,8 @@ class MirrorBot(BaseBot):
                             _mpl_text("SELECT DISTINCT token_id FROM market_prices_latest")
                         )
                         _mpl_covered_tokens = {str(r[0]) for r in _mpl_rows.fetchall() if r[0]}
-            except Exception:
-                pass  # fall back to original condition only (abs(cp-ep))
+            except Exception as e:
+                logger.debug("mirror_mpl_covered_query_fail: %s", e)
 
             _rtds_updated = 0
             _rtds_persisted = 0
@@ -1017,8 +1017,8 @@ class MirrorBot(BaseBot):
                                         "timestamp": datetime.now(timezone.utc).replace(tzinfo=None)})
                                     await _rtds_s.commit()
                                     _rtds_persisted += 1
-                        except Exception:
-                            pass  # non-fatal, in-memory override still works this cycle
+                        except Exception as e:
+                            logger.debug("mirror_rtds_persist_fail: %s", e)
             if _rtds_updated:
                 logger.info("mirror_rtds_price_overlay", updated=_rtds_updated,
                             persisted=_rtds_persisted,
@@ -2480,6 +2480,7 @@ class MirrorBot(BaseBot):
             confidence=confidence,
             price=price,
             conformal_interval=None,
+            category=category,
         )
         size *= reliability_mult
 
@@ -2689,10 +2690,24 @@ class MirrorBot(BaseBot):
             else:
                 _lock_max = float(getattr(settings, "TOTAL_CAPITAL", 10000.0)) * getattr(
                     settings, "MIRROR_MAX_DAILY_EXPOSURE_PCT", self.MAX_DAILY_EXPOSURE_PCT)
+            # S162: Apply adaptive safety multiplier (matching sizing path at ~L2615)
+            if (self._adaptive_safety
+                    and getattr(settings, "MIRROR_ADAPTIVE_SAFETY", False)
+                    and self._adaptive_safety._fitted):
+                _lock_max *= self._adaptive_safety.get_adjusted_daily_cap_mult()
             if self._daily_exposure + _trade_usd > _lock_max:
                 logger.info("mirror_exposure_lock_reject: $%.0f + $%.0f > cap $%.0f",
                             self._daily_exposure, _trade_usd, _lock_max)
                 return False
+            # S162: Category cap enforcement (S157 planned but never implemented)
+            if category:
+                _cat_max_raw = getattr(settings, "MIRROR_MAX_CATEGORY_EXPOSURE_USD", None)
+                _cat_max = float(_cat_max_raw) if isinstance(_cat_max_raw, (int, float, str)) else 40000.0
+                _cat_cur = self._category_exposure.get(category, 0.0)
+                if _cat_cur + _trade_usd > _cat_max:
+                    logger.info("mirror_category_cap_reject: %s $%.0f + $%.0f > cap $%.0f",
+                                category, _cat_cur, _trade_usd, _cat_max)
+                    return False
             # Reserve atomically
             self._daily_exposure += _trade_usd
             if category:

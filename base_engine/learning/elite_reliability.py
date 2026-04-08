@@ -188,7 +188,7 @@ class EliteReliabilityTracker:
         # Fallback: overall per-user stats
         rec = self._cache.get(key)
         if not rec:
-            return (1.0, 1.0)  # Beta(1,1) = know nothing
+            return (self._PRIOR_ALPHA, self._PRIOR_BETA)  # S162: consistent with cached prior
         if is_yes:
             return (rec["alpha_yes"], rec["beta_yes"])
         return (rec["alpha_no"], rec["beta_no"])

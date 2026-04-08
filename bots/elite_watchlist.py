@@ -570,7 +570,7 @@ class EliteWatchlist:
                     _params["regime_start"] = _regime
                 else:
                     _entry_time_filter = "AND event_time >= NOW() - INTERVAL '30 days'"
-                    _exit_time_filter = ""
+                    _exit_time_filter = "AND te.event_time >= NOW() - INTERVAL '30 days'"
                 async with self._db.get_session(timeout=15) as session:
                     _result = await session.execute(text(f"""
                         WITH entry_trader AS (
@@ -818,8 +818,8 @@ class EliteWatchlist:
             import bisect
             _used_exits = set()
             for _e_time in _entries:
-                # Find exits within [_e_time - 3600, _e_time + 3600]
-                _lo = bisect.bisect_left(_exits, _e_time - 3600)
+                # S162: Find exits within [_e_time, _e_time + 3600] (causal: exit must follow entry)
+                _lo = bisect.bisect_left(_exits, _e_time)
                 _hi = bisect.bisect_right(_exits, _e_time + 3600)
                 for _si in range(_lo, _hi):
                     if _si not in _used_exits:
