@@ -2,9 +2,10 @@
 **Date**: 2026-04-08
 **Bot**: WeatherBot (polymarket-weather.service)
 **Purpose**: Carbon-copy handoff — zero context loss, pick up seamlessly
-**Deploy**: PENDING — code changes committed locally, not yet deployed
+**Deploy**: `20260407_210515` — ALL SERVICES LIVE (Weather, Mirror, Esports, Ingestion)
 **VPS**: ubuntu@34.251.224.21 | SSH: ~/.ssh/LightsailDefaultKey-eu-west-1.pem
-**Service**: polymarket-weather.service | Running S161 deploy `20260407_172053`
+**Service**: polymarket-weather.service | Active since deploy `20260407_210515`
+**Commit**: `9f3a421`
 **Tests**: 1789 passed (0 failed, 2 skipped, 9 xfailed) — same as S161
 **Prior handoffs (READ FOR FULL CONTEXT)**:
   - `AGENT_HANDOFF_WEATHERBOT_SESSION161_MASTER.md` — S161: T1-A position_details rebuild, YES dampener logging, METAR dead code removed
@@ -90,8 +91,7 @@ losses in future sessions.** The cross-tab data is definitive:
 
 ## 2. CURRENT BOT STATE
 
-**Service**: polymarket-weather.service — running S161 deploy `20260407_172053`
-**S162 changes NOT YET DEPLOYED**
+**Service**: polymarket-weather.service — running S162 deploy `20260407_210515`
 
 ### Canonical P&L [per bot_pnl.py WeatherBot 9999, run 2026-04-08 00:25 UTC]
 - Open positions: 30 [per bot_pnl.py WeatherBot 9999]
@@ -154,6 +154,13 @@ Two errors found in S161 handoff:
 
 ## 5. POST-DEPLOY MONITORING
 
+### M0: negative_ev is the primary gate (S162 finding)
+Post-deploy funnel: 174 negative_ev blocks vs 49 exposure_cap blocks [journalctl].
+The NO calibrator (n_no=640 [per bot_pnl.py WeatherBot 9999], fitted) is correctly deflating
+overconfident model probabilities below market price — rejecting ~78% of raw-edge signals.
+This is correct behavior. The long-term fix is improving the underlying probability model
+so more signals survive calibration with genuine edge, NOT loosening gates.
+
 ### M1: YES entry rate
 - After 0.50x multiplier deploys, verify YES entries are still occurring (identity dampener at confidence level is the real gate, not size)
 - `grep -c 'weather_entry.*YES' /tmp/wb.log`
@@ -190,6 +197,12 @@ All S154-S161 invariants (36-68) remain active.
     +$773.71 [per bot_pnl.py WeatherBot 9999] (72-120h). Do NOT tighten these buckets.
 71. **YES_SIZE_MULTIPLIER doesn't affect calibrator graduation**: n_yes counts resolved
     entries, not trade sizes. Reducing multiplier is safe for calibrator timeline.
+72. **negative_ev is the primary trading gate**: The NO calibrator rejects ~78% of raw-edge
+    signals. This is correct — do NOT loosen gates. Fix the underlying probability model.
+73. **Exposure caps are correctly sized**: City deployment is well below $10K cap. The
+    exposure_cap shadow entries are legitimate capacity constraints, not bugs.
+74. **Always split logs by deploy timestamp**: Pre-deploy noise in unsplit log windows
+    caused a false diagnosis in S162. Filter `--since <deploy_time>` first.
 
 ---
 
@@ -222,12 +235,13 @@ bash deploy/deploy.sh
 
 ## 8. FIRST ACTIONS FOR NEXT SESSION
 
-1. **Deploy S162 changes** — commit + deploy.sh (or manual deploy)
-2. **Run canonical P&L** post-deploy: `bot_pnl.py WeatherBot 9999` with extended timeout
-3. **Verify cross-tab in output** — should show the new SIDE x LEAD-TIME section
-4. **Monitor YES entry rate** — confirm entries still flowing at 0.50x multiplier
-5. **24h post-deploy**: compare P&L trend, especially <24h bucket and YES side
-6. **Check calibrator graduation**: has n_yes crossed 100?
+1. **Run canonical P&L**: `bot_pnl.py WeatherBot 9999` (DB_STATEMENT_TIMEOUT_MS=120000)
+2. **Check cross-tab**: Verify SIDE x LEAD-TIME section appears in output
+3. **Compare P&L trend**: Has YES-side loss rate decreased with 0.50x multiplier?
+4. **Check calibrator graduation**: Has n_yes crossed 100? (was 62 at S162 start)
+5. **Monitor negative_ev ratio**: 174/223 signals blocked post-deploy. Is ratio stable or improving?
+6. **3-4 day check**: Run `bot_pnl.py WeatherBot 48` — if P&L per trade improved, system is working
+7. **Long-term**: Improve underlying probability model so fewer signals get rejected by calibrator
 
 ---
 
@@ -240,11 +254,46 @@ bash deploy/deploy.sh
 | S159 | OOS Brier gate, identity conf dampener, 17 cross-bot fixes | 20260406_154734 |
 | S160 | Deep audit (7 agents). 7 WB fixes + 11 shared + 10 Esports | 20260406_203453 |
 | S161 | T1-A alive (position_details rebuild), elite batch decoupled | 20260407_172053 |
-| **S162** | **Cross-tab query, <24h mult 0.85→0.60, YES size 0.75→0.50, WB-10 log** | **PENDING** |
+| **S162** | **Cross-tab query, <24h mult 0.85→0.60, YES size 0.75→0.50, WB-10 log** | **20260407_210515** |
 
 ---
 
-## 10. CHANGE LOG
+## 10. POST-DEPLOY VALIDATION (done in-session)
+
+### Deployment
+- Commit `9f3a421`, deploy `20260407_210515` — health OK at 60s, all 4 services active
+
+### Canonical P&L (post-deploy)
+- 84 entries in 48h [per bot_pnl.py WeatherBot 48]
+- 40 open positions [per bot_pnl.py WeatherBot 9999], all opened within last 12h [VPS psql]
+- Zero legacy/stale positions — book is clean
+- 42 active cities [journalctl], 2 unmatched (Busan, Panama City — NOT weather markets)
+
+### Trading Funnel (post-deploy, since 01:07 UTC) [all journalctl]
+- 174 negative_ev blocks (primary gate — calibrator correctly rejecting overconfident signals)
+- 49 exposure_cap blocks (legitimate — cities with open positions at capacity)
+- 6 zero_kelly blocks
+- Slippage rejections on 2-3 illiquid markets (Houston YES, Jakarta NO) — correct behavior
+- Multiple successful fills in first scan, steady-state ~2-5 trades/hour
+
+### Key Lesson (for future sessions)
+- Always split log data by deploy timestamp BEFORE analyzing. Pre-deploy noise (128 of 177
+  exposure_cap blocks) led to a misdiagnosis of in-memory counter drift that didn't exist.
+- The real finding: negative_ev is the primary gate, not exposure caps. The NO calibrator
+  is doing its job — the underlying model is systematically overestimating edge.
+
+### Items Verified Not Bugs
+- Exposure caps ($10K city, $20K group) are NOT too tight — actual city deployment is well
+  below caps. The caps correctly constrain per-city concentration.
+- In-memory exposure counters are NOT drifting — rollback on failed orders works correctly
+  (weather_bot.py:3246-3259).
+- Busan/Panama City "unmatched cities" are political/sports markets, not weather — no
+  onboarding needed.
+- YES price dampener (S155B) IS shipped at weather_bot.py:3017-3032 — S161 handoff was wrong.
+
+---
+
+## 11. CHANGE LOG
 
 ```
 ## CHANGE: 2026-04-08 (S162 — WeatherBot session, 4 files)
