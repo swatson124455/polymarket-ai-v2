@@ -2064,9 +2064,11 @@ class EsportsBot(BaseBot):
     async def _check_and_execute_exits(self, db, positions=None) -> None:
         """B1: Stop-loss + max hold time exits for open EsportsBot positions.
 
-        Queries the positions DB table (which has current_price updated every 10s
-        by position_manager) instead of the in-memory _position_details cache
-        (which lacks current_price and timestamp).
+        S162: EsportsBot is in PM_EXCLUDE_BOTS, so position_manager does NOT
+        update current_price in the positions table. This method fetches fresh
+        prices directly from market_prices_latest (single bulk query) instead
+        of relying on the stale current_price column. Without this, current_price
+        stays at entry_price forever and no stop-loss/trailing-edge exits fire.
         """
         if db is None:
             return
@@ -2079,6 +2081,25 @@ class EsportsBot(BaseBot):
         if not positions:
             return
 
+        # S162: Fetch fresh prices from market_prices_latest for all open positions.
+        # One bulk query — no per-position overhead, no position_manager dependency.
+        _token_ids = [str(p.get("token_id", "")) for p in positions if p.get("token_id")]
+        _fresh_prices: dict = {}
+        if _token_ids:
+            try:
+                from sqlalchemy import text as _sa_text
+                async with db.get_session() as _ps:
+                    _pr = await _ps.execute(
+                        _sa_text("SELECT token_id, price FROM market_prices_latest WHERE token_id = ANY(:tids)"),
+                        {"tids": _token_ids},
+                    )
+                    for _row in _pr.fetchall():
+                        if _row[1] is not None and float(_row[1]) > 0:
+                            _fresh_prices[str(_row[0])] = float(_row[1])
+            except Exception as _pe:
+                logger.debug("esportsbot_exit_price_fetch_failed", error=str(_pe))
+                # Fall through — use stale current_price from positions table as fallback
+
         stop_pct = float(getattr(settings, "ESPORTS_STOP_LOSS_PCT", 0.20))
         max_hold_h = float(getattr(settings, "ESPORTS_MAX_HOLD_HOURS", 72))
         now_utc = datetime.now(timezone.utc)
@@ -2087,7 +2108,9 @@ class EsportsBot(BaseBot):
         for pos in positions:
             mid = pos.get("market_id", "")
             entry = float(pos.get("entry_price", 0.5) or 0.5)
-            current = float(pos.get("current_price", entry) or entry)
+            # S162: Use fresh price from market_prices_latest, fall back to DB current_price
+            _tid = str(pos.get("token_id", ""))
+            current = _fresh_prices.get(_tid, float(pos.get("current_price", entry) or entry))
             side = (pos.get("side") or "YES").upper()
             size = float(pos.get("size", 0) or 0)
             token_id = pos.get("token_id", "")
