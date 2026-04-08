@@ -2028,12 +2028,15 @@ class MirrorBot(BaseBot):
                 # S154: Floor ramp during cold-start so gate-approved traders can trade
                 # at reduced size. Without this, reliability_mult=0.0 zeroes all sizes
                 # even though the gate validated the trader via efficiency prior.
-                # Three layers of conservatism compound: gate threshold, kelly edge cap,
-                # and this 15% floor. None is zero.
-                _cs_floor = float(getattr(settings, "MIRROR_COLD_START_SIZE_FLOOR", 0.20))
-                if _eq_n < 5 and _sample_ramp < _cs_floor:
-                    _sample_ramp = _cs_floor
+                # S164: Apply floor to FINAL reliability_mult, not just _sample_ramp.
+                # Under Beta(6,10) the LR=0.6 erodes the ramp floor (0.20×0.6=0.12),
+                # pushing all cold-start trades below the $25 dust gate.  Flooring
+                # the product instead of the ramp restores S157 intent regardless of
+                # the prior chosen for unknown traders.
                 reliability_mult *= _sample_ramp
+                _cs_floor = float(getattr(settings, "MIRROR_COLD_START_SIZE_FLOOR", 0.20))
+                if _eq_n < 5 and reliability_mult < _cs_floor:
+                    reliability_mult = _cs_floor
             except Exception as e:
                 logger.debug("elite reliability lookup failed: %s", e)
 
