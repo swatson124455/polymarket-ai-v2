@@ -95,8 +95,8 @@ class MirrorMLSelector:
                         logger.warning("ml_selector_xgb: model too old (%d days > %d max)",
                                        age_days, self._max_age_days)
                         return False
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("ml_selector_model_age_parse_fail: %s", e)
 
             # Cold-start guard
             n_samples = payload.get("n_samples", 0)

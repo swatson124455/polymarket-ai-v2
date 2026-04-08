@@ -214,7 +214,8 @@ class EliteWatchlist:
                             if resp.status != 200:
                                 break
                             data = await resp.json()
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("watchlist_leaderboard_fetch_fail: %s", e)
                         break
 
                     if not data or not isinstance(data, list) or len(data) == 0:
@@ -429,7 +430,8 @@ class EliteWatchlist:
                 k, v = pair.split(":", 1)
                 result[k.strip()] = int(v.strip())
             return result if result else dict(_DEFAULT_QUOTAS)
-        except Exception:
+        except Exception as e:
+            logger.warning("watchlist_quota_parse_fail: %s", e)
             return dict(_DEFAULT_QUOTAS)
 
     def _update_sunset_list(self, old_addrs: Set[str], new_addrs: Set[str]) -> None:

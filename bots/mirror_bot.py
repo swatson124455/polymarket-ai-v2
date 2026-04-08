@@ -209,7 +209,7 @@ class MirrorBot(BaseBot):
                         self._token_side_cache[cache_key] = resolved
                         return resolved
         except Exception as e:
-            logger.debug("_get_token_side failed for %s: %s", str(market_id)[:16], e)
+            logger.warning("_get_token_side failed for %s: %s", str(market_id)[:16], e)
         return "YES"  # Fallback: assume YES token
 
     # M4: _update_consensus_threshold deleted — dead code (zero callers) with logic bug.
@@ -1764,7 +1764,8 @@ class MirrorBot(BaseBot):
             try:
                 _meta_cat, _ = await self._get_market_meta(str(market_id))
                 category = _meta_cat or ""
-            except Exception:
+            except Exception as e:
+                logger.warning("mirror_category_meta_fail: %s", e)
                 category = ""
 
         # Category blocklist — skip bot-dominated speed markets (e.g., 15-min crypto)
@@ -2425,8 +2426,8 @@ class MirrorBot(BaseBot):
                 try:
                     _meta_cat, _ = await self._get_market_meta(str(market_id))
                     _cat = _meta_cat or ""
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("mirror_calibration_category_fail: %s", e)
             # S121: Shadow ledger — always compute calibrated score (does not affect trade)
             _conf_cal_shadow = self._calibration_stack.shadow_calibrate(
                 confidence, category=_cat, ttr_days=_ttr_days,
