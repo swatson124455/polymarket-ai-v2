@@ -792,8 +792,9 @@ class Settings(BaseSettings):
     WEATHER_YES_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_YES_MIN_CONFIDENCE", "0.0"))  # S153: disabled (was 0.50). Re-enable: export WEATHER_YES_MIN_CONFIDENCE=0.50
     # S149: YES-side price floor — blocks suicidal <10c YES bets (-$11K at 9% WR in 7d data)
     WEATHER_YES_MIN_PRICE: float = float(os.getenv("WEATHER_YES_MIN_PRICE", "0.0"))  # S153: disabled (was 0.10). Re-enable: export WEATHER_YES_MIN_PRICE=0.10
-    # S149: YES-side sizing multiplier — reduces exposure while calibrator is uncalibrated (n_yes=2)
-    WEATHER_YES_SIZE_MULTIPLIER: float = float(os.getenv("WEATHER_YES_SIZE_MULTIPLIER", "0.75"))
+    # S162: 0.75 → 0.50. YES all-time: 37.8% WR, -$24.4K (77% of total losses).
+    # Does NOT slow calibrator graduation — n_yes counts resolved entries, not sizes.
+    WEATHER_YES_SIZE_MULTIPLIER: float = float(os.getenv("WEATHER_YES_SIZE_MULTIPLIER", "0.50"))
     # S155B: YES price dampener — mirrors NO dampener (S154). Break-even WR = price.
     # YES at 0.94 with 27.3% WR = catastrophic negative EV. 20 YES entries >$0.50 in 48h audit.
     WEATHER_YES_MAX_ENTRY_PRICE: float = float(os.getenv("WEATHER_YES_MAX_ENTRY_PRICE", "0.85"))

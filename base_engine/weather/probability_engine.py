@@ -148,6 +148,13 @@ class WeatherProbabilityEngine:
                             alpha_clipped=round(a_clipped, 3),
                         )
                     return (loc_emos, scale_emos, a_clipped)
+                else:
+                    # S162 WB-10: Log when MLE scale is rejected as out-of-bounds
+                    logger.debug(
+                        "weather_mle_scale_out_of_bounds",
+                        station=station_id,
+                        scale_emos=round(scale_emos, 4),
+                    )
             except Exception:
                 pass  # Fall through to normal
 

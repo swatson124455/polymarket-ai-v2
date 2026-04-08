@@ -3056,7 +3056,10 @@ class WeatherBot(BaseBot):
         elif 48.0 <= _lead_h < 72.0:
             _lt_mult = float(getattr(settings, "WEATHER_LEAD_TIME_MULT_48_72", 1.0))
         elif _lead_h < 24.0:
-            _lt_mult = float(getattr(settings, "WEATHER_LEAD_TIME_MULT_0_24", 0.85))
+            # S162: Tightened from 0.85 → 0.60. Cross-tab (bot_pnl.py) shows <24h
+            # is negative for BOTH NO (-$9.5K, 60.5% WR) and YES (-$5.8K, 49.8% WR).
+            # Short-horizon markets have less forecast skill and more efficient pricing.
+            _lt_mult = float(getattr(settings, "WEATHER_LEAD_TIME_MULT_0_24", 0.60))
         elif 24.0 <= _lead_h < 48.0:
             _lt_mult = float(getattr(settings, "WEATHER_LEAD_TIME_MULT_24_48", 0.70))
         if _lt_mult != 1.0:

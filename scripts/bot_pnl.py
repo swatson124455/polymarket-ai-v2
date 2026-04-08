@@ -162,7 +162,9 @@ async def bot_pnl(bot_name: str, hours: int = 24):
 
         # 5. WeatherBot dimensional breakdowns (S159)
         if bot_name == "WeatherBot":
-            # Per-side breakdown: JOIN resolution/exit to their ENTRY for side
+            # Per-side breakdown: JOIN resolution/exit to their ENTRY for side.
+            # WB-16: DISTINCT ON picks latest ENTRY side — if market re-entered on
+            # opposite side, earlier exits misattributed. Rare for WeatherBot.
             r5 = await s.execute(text("""
                 SELECT e_entry.side,
                        COUNT(*) AS cnt,
@@ -259,6 +261,44 @@ async def bot_pnl(bot_name: str, hours: int = 24):
                 for lr in lt_rows:
                     wr = (float(lr[2]) / float(lr[1]) * 100) if lr[1] > 0 else 0
                     print(f"  {lr[0]:<10} {lr[1]:>6} {lr[2]:>6} {wr:>6.1f}% ${float(lr[3]):>+11.2f}")
+
+            # S162: Side x Lead-time cross-tabulation
+            r9 = await s.execute(text("""
+                SELECT e_entry.side,
+                       CASE
+                         WHEN (e_entry.event_data->>'lead_time_hours')::float < 24 THEN '<24h'
+                         WHEN (e_entry.event_data->>'lead_time_hours')::float < 48 THEN '24-48h'
+                         WHEN (e_entry.event_data->>'lead_time_hours')::float < 72 THEN '48-72h'
+                         WHEN (e_entry.event_data->>'lead_time_hours')::float < 120 THEN '72-120h'
+                         ELSE '>=120h'
+                       END AS bucket,
+                       COUNT(*) AS cnt,
+                       SUM(CASE WHEN r.realized_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+                       COALESCE(SUM(CAST(r.realized_pnl AS DOUBLE PRECISION)), 0) AS total_pnl
+                FROM trade_events r
+                JOIN (
+                    SELECT DISTINCT ON (market_id) market_id, side, event_data
+                    FROM trade_events
+                    WHERE bot_name = :bot AND event_type = 'ENTRY'
+                    ORDER BY market_id, event_time DESC
+                ) e_entry ON e_entry.market_id = r.market_id
+                WHERE r.bot_name = :bot
+                  AND r.event_type IN ('RESOLUTION', 'EXIT')
+                  AND r.realized_pnl IS NOT NULL
+                  AND e_entry.event_data->>'lead_time_hours' IS NOT NULL
+                GROUP BY e_entry.side, bucket
+                ORDER BY e_entry.side, MIN((e_entry.event_data->>'lead_time_hours')::float)
+            """), {"bot": bot_name})
+            xt_rows = r9.fetchall()
+            if xt_rows:
+                print(f"\n{'='*60}")
+                print(f"SIDE x LEAD-TIME CROSS-TAB (all-time, resolution+exit)")
+                print(f"{'='*60}")
+                print(f"  {'Side':<5} {'Bucket':<10} {'Count':>6} {'Wins':>6} {'WR%':>7} {'P&L':>12}")
+                print(f"  {'-'*50}")
+                for xr in xt_rows:
+                    wr = (float(xr[3]) / float(xr[2]) * 100) if xr[2] > 0 else 0
+                    print(f"  {xr[0]:<5} {xr[1]:<10} {xr[2]:>6} {xr[3]:>6} {wr:>6.1f}% ${float(xr[4]):>+11.2f}")
 
             # S159: Calibrator status from system_kv
             r8 = await s.execute(text(
