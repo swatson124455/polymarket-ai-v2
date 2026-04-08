@@ -1678,8 +1678,6 @@ class WeatherBot(BaseBot):
 
         Returns number of trades executed.
         """
-        import aiohttp
-
         # S99/S115: Unified discovery cache (keyed by tag_slug)
         _now_mono = time.monotonic()
         _ttl = self._effective_psw_discovery_ttl()
@@ -3584,7 +3582,6 @@ class WeatherBot(BaseBot):
             # Gamma API supports tag_slug filter on /events endpoint
             # S101b: Paginate to fetch ALL events (was limit=100, missing overflow)
             # S159: Use aiohttp instead of httpx (shared dep, no extra TCP overhead)
-            import aiohttp as _aiohttp
             url = f"{client.gamma_api}/events"
             _MAX_PAGES = 10  # S142: raised 5→10 (hard cap 1000 events)
             events: list = []
@@ -3603,7 +3600,7 @@ class WeatherBot(BaseBot):
                     "offset": str(_page * 100),
                 }
                 async with _session.get(url, params=params,
-                                        timeout=_aiohttp.ClientTimeout(total=15)) as resp:
+                                        timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     if resp.status != 200:
                         if _page == 0:
                             logger.warning("weatherbot_tag_fetch_failed", status=resp.status)
@@ -4016,8 +4013,7 @@ class WeatherBot(BaseBot):
         if not db:
             return
         try:
-            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            today_start = datetime.strptime(today_str, "%Y-%m-%d")  # naive UTC midnight
+            today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
             async with db.get_session() as session:
                 from sqlalchemy import text
                 # S155: Include RESOLUTION events — Phase 4b dedup bug fixed in S87.
@@ -4437,7 +4433,6 @@ class WeatherBot(BaseBot):
         if self._regime_tag and now_mono - self._regime_last_fetched < self._regime_cache_ttl:
             return self._regime_tag
 
-        import aiohttp
         url = "https://psl.noaa.gov/data/correlation/nina34.anom.data"
         try:
             async with aiohttp.ClientSession(
@@ -4507,8 +4502,6 @@ class WeatherBot(BaseBot):
         now_mono = time.monotonic()
         if now_mono - self._severe_weather_batch_time < 1800.0:
             return  # batch still fresh
-
-        import aiohttp
 
         _HIGH_IMPACT = {
             "Hurricane Warning", "Hurricane Watch",
@@ -4651,7 +4644,6 @@ class WeatherBot(BaseBot):
             return 1.0
 
         # Fetch latest AFD
-        import aiohttp
         url = f"https://api.weather.gov/products?type=AFD&location={wfo}&limit=1"
         factor = 1.0
         try:
@@ -4713,7 +4705,6 @@ class WeatherBot(BaseBot):
         if station.station_id in self._wfo_cache:
             return self._wfo_cache[station.station_id]
 
-        import aiohttp
         url = f"https://api.weather.gov/points/{station.latitude:.4f},{station.longitude:.4f}"
         wfo = None
         try:
@@ -4808,13 +4799,13 @@ class WeatherBot(BaseBot):
                 # S120: Rolling window — only use recent calibration data so
                 # winter EMOS coefficients don't contaminate spring forecasts.
                 _emos_window_days = int(getattr(settings, "WEATHER_EMOS_WINDOW_DAYS", 90))
-                rows = await session.execute(text(f"""
+                rows = await session.execute(text("""
                     SELECT station_id, lead_time_hours, bias, forecast_temp, actual_temp, regime,
                            target_date
                     FROM weather_calibration
                     WHERE bias IS NOT NULL AND actual_temp IS NOT NULL
-                      AND created_at >= NOW() - INTERVAL '{_emos_window_days} days'
-                """))
+                      AND created_at >= NOW() - make_interval(days => :emos_window)
+                """), {"emos_window": _emos_window_days})
                 all_rows = rows.fetchall()
 
             if not all_rows:

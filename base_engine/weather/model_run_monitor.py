@@ -142,7 +142,7 @@ class ModelRunMonitor:
                 check_time = now_utc - timedelta(hours=hours_back)
                 run_date = check_time.strftime("%Y%m%d")
                 # Find the most recent init hour at or before check_time
-                init_hour = max(h for h in _GFS_INIT_HOURS if h <= check_time.hour) if check_time.hour >= 0 else 18
+                init_hour = max(h for h in _GFS_INIT_HOURS if h <= check_time.hour)
                 run_id = f"{run_date}{init_hour:02d}"
 
                 # GFS data availability: ~3.5h after init. Check if f003 exists.
@@ -186,7 +186,7 @@ class ModelRunMonitor:
                 run_date = check_time.strftime("%Y%m%d")
                 init_hour = max(
                     h for h in _HRRR_EXTENDED_HOURS if h <= check_time.hour
-                ) if check_time.hour >= 0 else 18
+                )
                 run_id = f"{run_date}{init_hour:02d}"
 
                 # HRRR data on AWS Open Data — check if f02 surface file exists

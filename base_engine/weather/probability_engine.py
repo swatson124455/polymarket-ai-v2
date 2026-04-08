@@ -104,7 +104,7 @@ class WeatherProbabilityEngine:
         else:
             # S154: Inflate raw ensemble spread for uncalibrated stations/leads.
             # NWP ensembles underdispersed by 1.3-2.0x (MeteoSwiss, Gneiting 2005).
-            _vif = getattr(self, "_variance_inflation_factor", 1.4)
+            _vif = self._variance_inflation_factor
             effective_std = max(std * _vif, 0.5)
 
         # EMOS loc shift applied to skewnorm-fitted location

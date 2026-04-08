@@ -8,6 +8,7 @@ Weather Underground or NOAA CDO (Climate Data Online).
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone as _tz
@@ -1519,7 +1520,6 @@ def lookup_station(city_text: str) -> Optional[WeatherStation]:
     if text in _ALIAS_MAP:
         return _ALIAS_MAP[text]
     # M8: Word-boundary substring match (longest alias first, static)
-    import re
     for alias in sorted(_ALIAS_MAP, key=len, reverse=True):
         # Require alias to be at a word boundary in the text
         pattern = r"(?:^|\b)" + re.escape(alias) + r"(?:\b|$)"
