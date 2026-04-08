@@ -381,8 +381,8 @@ async def run_resolution_backfill(
                                         {"mid": mid},
                                     )
                                     await _ed_sess.commit()
-                            except Exception:
-                                pass  # best-effort, non-fatal
+                            except Exception as _ed_err:
+                                logger.warning("clear_stale_end_date failed: mid=%s err=%s", mid, _ed_err)
                 else:
                     m = await client.get_market(mid, use_cache=False)
                 if not m or not isinstance(m, dict):
@@ -686,13 +686,14 @@ async def run_resolution_backfill(
                         # S158: Close open positions on resolved markets.
                         # Without this, positions that ride to resolution stay status='open' forever.
                         try:
-                            await _pr_sess.execute(_pr_text(
-                                "UPDATE positions SET status = 'closed' "
-                                "WHERE market_id = :mid AND source_bot = :bot AND status = 'open'"
-                            ), {"mid": _mid, "bot": _bot})
+                            async with _pr_sess.begin_nested():
+                                await _pr_sess.execute(_pr_text(
+                                    "UPDATE positions SET status = 'closed' "
+                                    "WHERE market_id = :mid AND source_bot = :bot AND status = 'open'"
+                                ), {"mid": _mid, "bot": _bot})
                             await _pr_sess.commit()
-                        except Exception:
-                            pass  # Non-critical — position will be caught on next run
+                        except Exception as _close_err:
+                            logger.warning("close_resolved_position failed: mid=%s bot=%s err=%s", _mid, _bot, _close_err)
                     except Exception as _pr_err:
                         logger.debug(
                             "Resolution backfill 4b-alt: emission failed for %s/%s: %s",

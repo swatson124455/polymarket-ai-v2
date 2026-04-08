@@ -487,8 +487,8 @@ class AutomatedPositionManager:
                             _age = (_now - r[2]).total_seconds()
                             if _age > _stale_threshold:
                                 _stale_tokens.append((str(r[0])[:16], round(_age / 3600, 1)))
-                        except Exception:
-                            pass
+                        except Exception as _ts_err:
+                            logger.debug("price_staleness_check failed: tid=%s err=%s", str(r[0])[:16], _ts_err)
 
             # S156: Fallback for tokens missing from latest table — time-bounded
             # lateral join on historical market_prices (capped at 7 days).
@@ -522,17 +522,71 @@ class AutomatedPositionManager:
                     # S159 C22: Seed market_prices_latest so next cycle skips fallback
                     for _seed_tid, _seed_price, _seed_ts in _fb_seeds:
                         try:
-                            await session.execute(sa_text(
-                                "INSERT INTO market_prices_latest (token_id, price, timestamp) "
-                                "VALUES (:tid, :price, :ts) "
-                                "ON CONFLICT (token_id) DO UPDATE SET price = EXCLUDED.price, "
-                                "timestamp = EXCLUDED.timestamp "
-                                "WHERE market_prices_latest.timestamp < EXCLUDED.timestamp"
-                            ), {"tid": _seed_tid, "price": _seed_price, "ts": _seed_ts})
-                        except Exception:
-                            pass  # Non-fatal — fallback found the price, next cycle re-finds it
+                            async with session.begin_nested():
+                                await session.execute(sa_text(
+                                    "INSERT INTO market_prices_latest (token_id, price, timestamp) "
+                                    "VALUES (:tid, :price, :ts) "
+                                    "ON CONFLICT (token_id) DO UPDATE SET price = EXCLUDED.price, "
+                                    "timestamp = EXCLUDED.timestamp "
+                                    "WHERE market_prices_latest.timestamp < EXCLUDED.timestamp"
+                                ), {"tid": _seed_tid, "price": _seed_price, "ts": _seed_ts})
+                        except Exception as _seed_err:
+                            logger.warning("seed_mpl_historical failed: tid=%s err=%s", _seed_tid, _seed_err)
                 except Exception as _fb_err:
                     logger.debug("price_fallback_failed", error=str(_fb_err))
+
+            # S164: Fallback 2b — for tokens still missing, resolve token_id → market_id
+            # via the markets table, then query market_prices by market_id. Handles the
+            # ingestion gap where market_prices.token_id doesn't match positions.token_id
+            # but market_prices has rows keyed by market_id (which can be id or condition_id).
+            _still_miss = [t for t in token_ids if t not in latest_prices]
+            if _still_miss:
+                try:
+                    _fb2b_result = await session.execute(
+                        sa_text("""
+                            SELECT m_tok.token_id, lp.price, lp.timestamp
+                            FROM (
+                                SELECT yes_token_id AS token_id, id AS market_id FROM markets
+                                WHERE yes_token_id = ANY(:miss_ids)
+                                UNION ALL
+                                SELECT no_token_id AS token_id, id AS market_id FROM markets
+                                WHERE no_token_id = ANY(:miss_ids)
+                            ) m_tok
+                            CROSS JOIN LATERAL (
+                                SELECT price, timestamp
+                                FROM market_prices mp
+                                WHERE (mp.market_id = m_tok.market_id
+                                       OR mp.market_id = (SELECT condition_id FROM markets WHERE id = m_tok.market_id))
+                                  AND mp.timestamp > NOW() - INTERVAL '7 days'
+                                ORDER BY mp.timestamp DESC
+                                LIMIT 1
+                            ) lp
+                        """),
+                        {"miss_ids": _still_miss}
+                    )
+                    _fb2b_count = 0
+                    _fb2b_seeds = []
+                    for r in _fb2b_result.fetchall():
+                        if r[1] is not None and float(r[1]) > 0:
+                            latest_prices[str(r[0])] = float(r[1])
+                            _fb2b_count += 1
+                            _fb2b_seeds.append((str(r[0]), float(r[1]), r[2]))
+                    if _fb2b_count > 0:
+                        logger.info("price_fallback_market_id_join", found=_fb2b_count, missed=len(_still_miss))
+                    for _seed_tid, _seed_price, _seed_ts in _fb2b_seeds:
+                        try:
+                            async with session.begin_nested():
+                                await session.execute(sa_text(
+                                    "INSERT INTO market_prices_latest (token_id, price, timestamp) "
+                                    "VALUES (:tid, :price, :ts) "
+                                    "ON CONFLICT (token_id) DO UPDATE SET price = EXCLUDED.price, "
+                                    "timestamp = EXCLUDED.timestamp "
+                                    "WHERE market_prices_latest.timestamp < EXCLUDED.timestamp"
+                                ), {"tid": _seed_tid, "price": _seed_price, "ts": _seed_ts})
+                        except Exception as _seed_err:
+                            logger.warning("seed_mpl_market_id_join failed: tid=%s err=%s", _seed_tid, _seed_err)
+                except Exception as _fb2b_err:
+                    logger.debug("price_fallback_market_id_join_failed", error=str(_fb2b_err))
 
             if not latest_prices:
                 return True  # no prices found, but session is healthy
@@ -584,7 +638,8 @@ class AutomatedPositionManager:
                                     continue
                             else:
                                 continue
-                        except Exception:
+                        except Exception as _book_err:
+                            logger.debug("clob_orderbook_fallback failed: tid=%s err=%s", tid, _book_err)
                             continue
                     # Update position price
                     old_price = float(pos.current_price) if pos.current_price is not None else None
@@ -610,6 +665,7 @@ class AutomatedPositionManager:
             # CLOB esports tokens have bid=$0.01/ask=$0.99 (spread > 0.5) so the
             # orderbook fallback skips them. The markets.yes_price/no_price columns
             # are refreshed by EsportsMarketService every 5 min via CLOB API.
+            # S164: Also match condition_id (positions.market_id can store either format).
             _mkt_seeds = []
             _still_missing = [p for p in positions
                               if str(p.token_id or "") not in latest_prices
@@ -622,7 +678,7 @@ class AutomatedPositionManager:
                             sa_text("""
                                 SELECT id::text, yes_token_id, no_token_id, yes_price, no_price
                                 FROM markets
-                                WHERE id::text = ANY(:mids)
+                                WHERE (id::text = ANY(:mids) OR condition_id = ANY(:mids))
                                   AND yes_price IS NOT NULL
                             """),
                             {"mids": _missing_mids}
@@ -649,8 +705,8 @@ class AutomatedPositionManager:
                             pos.unrealized_pnl = (new_price - entry) * size
                             updated += 1
                             _mkt_seeds.append((tid, new_price))
-                    except Exception:
-                        pass
+                    except Exception as _mkt_err:
+                        logger.warning("price_fallback_markets failed: %s", _mkt_err)
 
             # S160: Seed market_prices_latest from CLOB + markets table fallbacks
             # so next cycle finds them in the fast path (O(1) per token).
@@ -659,15 +715,16 @@ class AutomatedPositionManager:
                 _now_utc = datetime.now(timezone.utc)
                 for _seed_tid, _seed_price in _all_seeds:
                     try:
-                        await session.execute(sa_text(
-                            "INSERT INTO market_prices_latest (token_id, price, timestamp) "
-                            "VALUES (:tid, :price, :ts) "
-                            "ON CONFLICT (token_id) DO UPDATE SET price = EXCLUDED.price, "
-                            "timestamp = EXCLUDED.timestamp "
-                            "WHERE market_prices_latest.timestamp < EXCLUDED.timestamp"
-                        ), {"tid": _seed_tid, "price": _seed_price, "ts": _now_utc})
-                    except Exception:
-                        pass  # Non-fatal — fallback found the price, next cycle re-seeds
+                        async with session.begin_nested():
+                            await session.execute(sa_text(
+                                "INSERT INTO market_prices_latest (token_id, price, timestamp) "
+                                "VALUES (:tid, :price, :ts) "
+                                "ON CONFLICT (token_id) DO UPDATE SET price = EXCLUDED.price, "
+                                "timestamp = EXCLUDED.timestamp "
+                                "WHERE market_prices_latest.timestamp < EXCLUDED.timestamp"
+                            ), {"tid": _seed_tid, "price": _seed_price, "ts": _now_utc})
+                    except Exception as _seed_err:
+                        logger.warning("seed_mpl_fallback failed: tid=%s err=%s", _seed_tid, _seed_err)
 
             if updated > 0 or _all_seeds:
                 await session.commit()
@@ -675,6 +732,21 @@ class AutomatedPositionManager:
                     logger.debug("Updated current_price for %d/%d positions", updated, len(positions))
                 if _all_seeds:
                     logger.debug("price_seed_market_prices_latest", seeded=len(_all_seeds))
+
+            # S164: Log positions that remain completely unpriced after all fallbacks.
+            # These have no stop-loss/trailing-edge protection.
+            _unpriced = [p for p in positions
+                         if str(p.token_id or "") not in latest_prices
+                         and str(p.token_id or "") not in self._api_price_cache
+                         and (p.current_price is None or
+                              (p.entry_price is not None and abs(float(p.current_price or 0) - float(p.entry_price)) < 1e-6))]
+            if _unpriced:
+                logger.warning(
+                    "unpriced_positions: %d positions have no price data after all fallbacks. "
+                    "No stop-loss protection. tokens=%s",
+                    len(_unpriced),
+                    [str(p.token_id or "")[:16] for p in _unpriced[:5]],
+                )
 
             # Session 51 P1-4: Alert on stale prices
             if _stale_tokens and self.alerting:
@@ -687,8 +759,8 @@ class AutomatedPositionManager:
                         source="position_manager.price_staleness",
                         metadata={"stale_count": len(_stale_tokens)},
                     )
-                except Exception:
-                    pass
+                except Exception as _alert_err:
+                    logger.debug("stale_price_alert failed: %s", _alert_err)
             return True
         except Exception as e:
             logger.warning("current_price update failed (non-fatal): %s", e)
@@ -807,9 +879,9 @@ class AutomatedPositionManager:
                                 position.id, _prob, cost_adjusted_pnl, params.breakeven_price,
                             )
             except asyncio.TimeoutError:
-                pass
-            except Exception:
-                pass
+                logger.debug("exit_strategy_timeout: pos=%s", position.id)
+            except Exception as _exit_err:
+                logger.debug("exit_strategy_failed: pos=%s err=%s", position.id, _exit_err)
 
         # --- Dynamic stop-loss / take-profit (replaces fixed 30%/60%) ---
         # Adaptive learning multiplier still applied on top of dynamic thresholds

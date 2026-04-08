@@ -7,6 +7,11 @@ Usage:
     python scripts/bot_pnl.py EsportsBot         # Specific bot, last 24h
     python scripts/bot_pnl.py WeatherBot 8       # Specific bot, last 8h
 
+EXIT side transition (S163, deployed 2026-04-08):
+  - Before 2026-04-08T16:01:40Z: EXIT events have side='SELL' (hardcoded)
+  - After  2026-04-08T16:01:40Z: EXIT events have side='YES' or 'NO' (token-outcome)
+  - Integrity checks should NOT group by side for EXIT events. Use event_type only.
+
 P&L math rules (uniform for YES and NO):
   - entry_price and current_price are ALWAYS token-specific prices
   - cost_basis = entry_price * size (for BOTH YES and NO)
