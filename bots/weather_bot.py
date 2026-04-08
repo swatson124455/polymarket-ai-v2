@@ -282,7 +282,7 @@ class WeatherConfidenceCalibrator:
                                 n_yes_90d=_n_yes_wide,
                             )
                     except Exception as _ye:
-                        logger.debug("weatherbot_cal_yes_widen_failed", error=str(_ye))
+                        logger.warning("weatherbot_cal_yes_widen_failed", error=str(_ye))
 
             # Need at least NO model (dominant side)
             if model_no is None:
@@ -427,12 +427,12 @@ class WeatherConfidenceCalibrator:
                     """), {"val": _json.dumps(_history)})
                     await _ps.commit()
             except Exception as exc:
-                logger.debug("weatherbot_cal_fit_history_persist_failed", error=str(exc))
+                logger.warning("weatherbot_cal_fit_history_persist_failed", error=str(exc))
 
             return True
 
         except Exception as exc:
-            logger.debug("weatherbot_confidence_cal_fit_failed", error=str(exc))
+            logger.warning("weatherbot_confidence_cal_fit_failed", error=str(exc))
             return False
 
     # -- inference -----------------------------------------------------------
@@ -938,8 +938,8 @@ class WeatherBot(BaseBot):
                             "bias": round(bias, 2),
                         })
                         inserted += 1
-                    except Exception:
-                        pass  # ON CONFLICT or other — skip row
+                    except Exception as exc:
+                        logger.warning("weatherbot_bootstrap_row_failed", station=station.station_id, error=str(exc))
                 await session.commit()
 
             if inserted > 0:
@@ -1436,8 +1436,8 @@ class WeatherBot(BaseBot):
                                 source="WeatherBot",
                                 metadata={"cities": sorted(_still_unmatched)},
                             )
-                        except Exception:
-                            pass  # Alert failure is non-fatal
+                        except Exception as exc:
+                            logger.warning("weatherbot_discovery_alert_failed", error=str(exc))
                 self._alerted_unmatched_cities.update(_new_unmatched)
 
                 # S143: Invalidate discovery cache so next scan re-groups with new city
@@ -2369,8 +2369,8 @@ class WeatherBot(BaseBot):
                     )
                     if _existing:
                         continue
-            except Exception:
-                pass  # fail-open: if DB unreachable, fall through to trade
+            except Exception as exc:
+                logger.warning("weatherbot_reentry_check_failed", market_id=str(e.get("market_id", "")), error=str(exc))
 
             # WU vs NWS resolution-source uncertainty:
             # S121: boundary_risk tracked for logging but NO LONGER discounts confidence.
@@ -2761,8 +2761,8 @@ class WeatherBot(BaseBot):
                     _mdata = _midx_cid.get(str(_mid))
                 if _mdata and isinstance(_mdata, dict):
                     _clob_volume = float(_mdata.get("volume") or _mdata.get("volume24hr") or 0)
-            except (TypeError, ValueError, AttributeError):
-                pass
+            except (TypeError, ValueError, AttributeError) as exc:
+                logger.warning("weatherbot_clob_volume_parse_failed", error=str(exc))
         if _clob_volume > 0:
             opp["_clob_volume"] = _clob_volume
 
@@ -3095,8 +3095,8 @@ class WeatherBot(BaseBot):
                         "reason": _shadow_reason,
                     },
                 )
-            except Exception:
-                pass  # best-effort
+            except Exception as exc:
+                logger.warning("weatherbot_shadow_entry_failed", error=str(exc))
             return False
 
         size = max(_min_trade, _raw_size)
@@ -3140,8 +3140,8 @@ class WeatherBot(BaseBot):
                                 "reason": "sub_min_trade" if _raw_size < _min_trade else "exposure_cap",
                             },
                         )
-                    except Exception:
-                        pass  # best-effort, don't block
+                    except Exception as exc:
+                        logger.warning("weatherbot_shadow_cap_failed", error=str(exc))
                 return False
             # Reserve exposure atomically under lock
             self._group_exposure[group_key] = current_group_exp + size
@@ -3225,8 +3225,8 @@ class WeatherBot(BaseBot):
                 try:
                     await _inc_daily(_db, "WeatherBot", f"group_{group_key}", size)
                     await _inc_daily(_db, "WeatherBot", f"city_{group.city}", size)
-                except Exception:
-                    pass  # Non-critical: in-memory is authoritative intra-day
+                except Exception as exc:
+                    logger.warning("weatherbot_daily_counter_write_failed", error=str(exc))
             # Log prediction for accuracy tracking at trade execution time
             await self._log_weather_prediction(
                 opp["market_id"], opp["model_prob"], opp["price"],
@@ -3253,8 +3253,8 @@ class WeatherBot(BaseBot):
                 try:
                     await _inc_daily(_db, "WeatherBot", f"group_{group_key}", -size)
                     await _inc_daily(_db, "WeatherBot", f"city_{group.city}", -size)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("weatherbot_daily_counter_revert_failed", error=str(exc))
             # S99: Track consecutive fill failures
             _prev = self._fill_fail_tracker.get(opp["market_id"])
             _prev_count = _prev[0] if _prev else 0

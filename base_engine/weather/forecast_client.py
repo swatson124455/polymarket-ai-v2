@@ -187,8 +187,8 @@ class WeatherForecastClient:
                         _stn = next((s for s in STATION_REGISTRY.values() if s.station_id == station_id), None)
                         if _stn:
                             _tz_resolved = ZoneInfo(_stn.timezone)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning("forecast_tz_resolve_failed", station=station_id, error=str(exc))
                     if _tz_resolved:
                         _local_noon = datetime(td.year, td.month, td.day, 12, 0, tzinfo=_tz_resolved)
                         target_noon_utc = _local_noon.astimezone(timezone.utc)
@@ -430,8 +430,8 @@ class WeatherForecastClient:
                         new_key = f"temperature_2m_max_member{running_offset + src_idx:02d}"
                         merged["daily"][new_key] = vals
                         src_count = max(src_count, src_idx + 1)
-                    except ValueError:
-                        pass
+                    except ValueError as exc:
+                        logger.warning("forecast_member_key_parse_failed", key=key, error=str(exc))
             running_offset += src_count
 
         return merged

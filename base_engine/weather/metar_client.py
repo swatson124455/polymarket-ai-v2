@@ -160,7 +160,7 @@ class MetarClient:
                     logger.debug("metar_using_asos_1min", station=station_id, max=round(asos_max, 1))
                     return asos_max
             except Exception as exc:
-                logger.debug("asos_1min_fallback_to_metar", station=station_id, error=str(exc))
+                logger.warning("asos_1min_fallback_to_metar", station=station_id, error=str(exc))
 
         session = await self._ensure_session()
         target_iso = target_date.isoformat()

@@ -155,8 +155,8 @@ class WeatherProbabilityEngine:
                         station=station_id,
                         scale_emos=round(scale_emos, 4),
                     )
-            except Exception:
-                pass  # Fall through to normal
+            except Exception as exc:
+                logger.warning("weather_mle_fit_failed", station=station_id, n=n, error=str(exc))
 
         return (corrected_mean, effective_std, shape)
 

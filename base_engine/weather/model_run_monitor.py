@@ -317,13 +317,13 @@ class ModelRunMonitor:
                             "source": "model_run_jump",
                         })
                     except asyncio.QueueFull:
-                        pass  # Non-fatal: normal scan will pick it up
+                        logger.warning("model_run_jump_queue_full", station=station.station_id, delta=round(delta, 2))
 
             self._prior_forecasts[cache_key] = new_mean
             return (1, jumped)
 
         except Exception as exc:
-            logger.debug(
+            logger.warning(
                 "model_run_refresh_failed",
                 station=station.station_id,
                 date=target_date.isoformat(),

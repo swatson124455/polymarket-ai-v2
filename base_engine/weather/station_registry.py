@@ -1610,7 +1610,7 @@ class StationHealthMonitor:
                 return False
             return True
         except Exception as exc:
-            logger.debug("station_health_error", station=station.station_id, error=str(exc))
+            logger.warning("station_health_error", station=station.station_id, error=str(exc))
             return True  # Fail open
 
     async def _probe_openmeteo(self, station: WeatherStation) -> bool:

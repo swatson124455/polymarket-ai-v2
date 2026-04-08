@@ -211,8 +211,8 @@ class MetarMonitor:
                 value = json.dumps({"date": obs_date, "max_temp": max_temp})
                 await self._redis_cache.set(key, value, ttl=86400)
                 saved += 1
-            except Exception:
-                pass  # Non-fatal: best-effort persistence
+            except Exception as exc:
+                logger.warning("metar_redis_save_failed", station=station_id, error=str(exc))
         if saved:
             logger.debug("metar_redis_saved", stations=saved)
 
@@ -240,7 +240,8 @@ class MetarMonitor:
                         station_id = key.split(_REDIS_KEY_PREFIX, 1)[-1]
                         self._observations[station_id] = (obs_date, float(max_temp))
                         restored += 1
-                except (json.JSONDecodeError, ValueError, TypeError):
+                except (json.JSONDecodeError, ValueError, TypeError) as exc:
+                    logger.warning("metar_redis_key_corrupt", key=key, error=str(exc))
                     continue
             if restored:
                 logger.info("metar_redis_restored", stations=restored)
