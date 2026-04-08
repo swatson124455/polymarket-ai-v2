@@ -29,14 +29,17 @@ class StalePositionCheck(BaseCheck):
         violations: List[AuditViolation] = []
 
         # Resolved market but position still open — CRITICAL
+        # S164: filter status='open' (closed positions with residual size are cosmetic)
+        # S164: JOIN on both id and condition_id (WeatherBot uses condition_id format)
         resolved_stale = await session.execute(text("""
             SELECT p.source_bot, p.market_id, p.side,
                    CAST(p.size AS DOUBLE PRECISION) AS pos_size,
                    CAST(p.entry_price AS DOUBLE PRECISION) AS entry_px,
                    m.resolved_at
             FROM positions p
-            JOIN markets m ON m.id = p.market_id
-            WHERE CAST(p.size AS DOUBLE PRECISION) > 0
+            JOIN markets m ON (m.id::text = p.market_id OR m.condition_id = p.market_id)
+            WHERE p.status = 'open'
+              AND CAST(p.size AS DOUBLE PRECISION) > 0
               AND m.resolved = TRUE
             LIMIT 200
         """))
@@ -62,8 +65,9 @@ class StalePositionCheck(BaseCheck):
                    CAST(p.size AS DOUBLE PRECISION) AS pos_size,
                    m.end_date_iso
             FROM positions p
-            JOIN markets m ON m.id = p.market_id
-            WHERE CAST(p.size AS DOUBLE PRECISION) > 0
+            JOIN markets m ON (m.id::text = p.market_id OR m.condition_id = p.market_id)
+            WHERE p.status = 'open'
+              AND CAST(p.size AS DOUBLE PRECISION) > 0
               AND m.resolved = FALSE
               AND m.end_date_iso IS NOT NULL
               AND m.end_date_iso < NOW() - INTERVAL '24 hours'
@@ -89,8 +93,9 @@ class StalePositionCheck(BaseCheck):
             SELECT p.source_bot, p.market_id, p.side,
                    CAST(p.size AS DOUBLE PRECISION) AS pos_size
             FROM positions p
-            JOIN markets m ON m.id = p.market_id
-            WHERE CAST(p.size AS DOUBLE PRECISION) > 0
+            JOIN markets m ON (m.id::text = p.market_id OR m.condition_id = p.market_id)
+            WHERE p.status = 'open'
+              AND CAST(p.size AS DOUBLE PRECISION) > 0
               AND m.resolved = FALSE
               AND m.active = FALSE
             LIMIT 100
