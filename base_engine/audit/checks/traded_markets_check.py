@@ -33,7 +33,7 @@ class TradedMarketsCheck(BaseCheck):
             FROM traded_markets tm
             WHERE NOT EXISTS (
                 SELECT 1 FROM trade_events te
-                WHERE te.bot_name = ANY(tm.bot_names)
+                WHERE te.bot_name = tm.bot_names
                   AND te.market_id = tm.market_id
                   AND te.event_type = 'ENTRY'
             )
@@ -60,7 +60,7 @@ class TradedMarketsCheck(BaseCheck):
             WHERE te.event_type = 'ENTRY'
               AND NOT EXISTS (
                   SELECT 1 FROM traded_markets tm
-                  WHERE tm.bot_names @> ARRAY[te.bot_name]
+                  WHERE tm.bot_names = te.bot_name
                     AND tm.market_id = te.market_id
               )
             GROUP BY te.bot_name, te.market_id

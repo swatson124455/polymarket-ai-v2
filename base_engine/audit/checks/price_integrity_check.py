@@ -29,16 +29,19 @@ class PriceIntegrityCheck(BaseCheck):
         violations: List[AuditViolation] = []
 
         # Prices outside [0, 1] — CRITICAL regardless of liquidity
+        # S164: Use market_prices_latest (tiny table) instead of market_prices
+        # (millions of rows) to avoid 120s timeout.
         oob_rows = await session.execute(text("""
-            SELECT mp.market_id, mp.side,
-                   CAST(mp.price AS DOUBLE PRECISION) AS px,
+            SELECT mpl.token_id, 'latest' AS side,
+                   CAST(mpl.price AS DOUBLE PRECISION) AS px,
                    m.liquidity
-            FROM market_prices mp
-            LEFT JOIN markets m ON m.id = mp.market_id
-            WHERE mp.price IS NOT NULL
+            FROM market_prices_latest mpl
+            LEFT JOIN markets m ON m.yes_token_id = mpl.token_id
+                                OR m.no_token_id = mpl.token_id
+            WHERE mpl.price IS NOT NULL
               AND (
-                  CAST(mp.price AS DOUBLE PRECISION) < 0
-                  OR CAST(mp.price AS DOUBLE PRECISION) > 1
+                  CAST(mpl.price AS DOUBLE PRECISION) < 0
+                  OR CAST(mpl.price AS DOUBLE PRECISION) > 1
               )
             LIMIT 100
         """))
@@ -57,28 +60,29 @@ class PriceIntegrityCheck(BaseCheck):
                 },
             ))
 
-        # Price sum anomalies — binary markets (2 sides)
+        # Price sum anomalies — binary markets (YES + NO token prices)
+        # S164: Use markets.yes_price/no_price instead of scanning market_prices.
+        # These are refreshed by ingestion every few minutes.
         sum_rows = await session.execute(text("""
-            WITH price_sums AS (
-                SELECT mp.market_id,
-                       SUM(CAST(mp.price AS DOUBLE PRECISION)) AS price_sum,
-                       COUNT(DISTINCT mp.side) AS side_count,
-                       CAST(m.liquidity AS DOUBLE PRECISION) AS liquidity
-                FROM market_prices mp
-                LEFT JOIN markets m ON m.id = mp.market_id
-                WHERE mp.price IS NOT NULL
-                  AND CAST(mp.price AS DOUBLE PRECISION) BETWEEN 0 AND 1
-                GROUP BY mp.market_id, m.liquidity
-                HAVING COUNT(DISTINCT mp.side) = 2
-            )
-            SELECT market_id, price_sum, liquidity
-            FROM price_sums
-            WHERE
-                -- Liquid markets: warn at [0.90, 1.10], critical at [0.80, 1.20]
-                (liquidity >= 100 AND (price_sum < 0.90 OR price_sum > 1.10))
-                OR
-                -- Thin markets: warn at [0.70, 1.30]
-                (liquidity < 100 AND (price_sum < 0.70 OR price_sum > 1.30))
+            SELECT m.id AS market_id,
+                   CAST(m.yes_price AS DOUBLE PRECISION) + CAST(m.no_price AS DOUBLE PRECISION) AS price_sum,
+                   CAST(m.liquidity AS DOUBLE PRECISION) AS liquidity
+            FROM markets m
+            WHERE m.yes_price IS NOT NULL
+              AND m.no_price IS NOT NULL
+              AND m.active = TRUE
+              AND m.resolved = FALSE
+              AND (
+                  -- Liquid markets: warn at [0.90, 1.10], critical at [0.80, 1.20]
+                  (CAST(m.liquidity AS DOUBLE PRECISION) >= 100
+                   AND (CAST(m.yes_price AS DOUBLE PRECISION) + CAST(m.no_price AS DOUBLE PRECISION) < 0.90
+                        OR CAST(m.yes_price AS DOUBLE PRECISION) + CAST(m.no_price AS DOUBLE PRECISION) > 1.10))
+                  OR
+                  -- Thin markets: warn at [0.70, 1.30]
+                  (CAST(m.liquidity AS DOUBLE PRECISION) < 100
+                   AND (CAST(m.yes_price AS DOUBLE PRECISION) + CAST(m.no_price AS DOUBLE PRECISION) < 0.70
+                        OR CAST(m.yes_price AS DOUBLE PRECISION) + CAST(m.no_price AS DOUBLE PRECISION) > 1.30))
+              )
             LIMIT 200
         """))
         for row in sum_rows.fetchall():

@@ -92,7 +92,7 @@ class StalePositionCheck(BaseCheck):
             JOIN markets m ON m.id = p.market_id
             WHERE CAST(p.size AS DOUBLE PRECISION) > 0
               AND m.resolved = FALSE
-              AND (m.active = FALSE OR m.accepting_orders = FALSE)
+              AND m.active = FALSE
             LIMIT 100
         """))
         for row in inactive_stale.fetchall():
