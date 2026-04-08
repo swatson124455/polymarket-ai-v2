@@ -274,17 +274,20 @@ class AutomatedPositionManager:
                 # Step 3: Update current_price — isolated session. If this fails,
                 # the session is disposed cleanly. Positions retain read-time prices
                 # from Step 1 (potentially 10s stale, but better than skipping checks).
+                #
+                # S162: NO asyncio.wait_for here. Client-side cancellation (CancelledError)
+                # corrupts asyncpg's protocol state machine — the connection reads garbage
+                # after cancellation, causing permanent InFailedSQLTransactionError loops
+                # (~200 errors/10min observed, zero exit protection on all positions).
+                # Server-side SET statement_timeout (30s from _SemaphoreSession.__aenter__)
+                # cancels hung queries safely through the Postgres protocol. asyncpg receives
+                # QueryCanceledError through the normal response path — no corruption.
                 _prices_ok = not positions  # vacuously true when no positions
                 if positions:
                     try:
                         async with self.db.get_session() as _price_session:
-                            await asyncio.wait_for(
-                                self._update_current_prices(_price_session, positions),
-                                timeout=15.0,
-                            )
+                            await self._update_current_prices(_price_session, positions)
                             _prices_ok = True
-                    except asyncio.TimeoutError:
-                        logger.warning("update_current_prices_timed_out_15s")
                     except Exception as _price_err:
                         logger.warning("_update_current_prices failed: %s", _price_err)
 
