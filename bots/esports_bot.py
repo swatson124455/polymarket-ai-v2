@@ -952,7 +952,7 @@ class EsportsBot(BaseBot):
             # to prevent re-triggering on the same market before next scan
             self._ws_cooldowns[market_id] = time.monotonic() + 110  # +110 so total ~120s
         except Exception as exc:
-            logger.debug("EsportsBot WS reactive failed", error=str(exc))
+            logger.warning("esportsbot_ws_reactive_failed", market_id=market_id, error=str(exc))
         finally:
             self._ws_pending_trades.discard(market_id)
 
@@ -2097,7 +2097,7 @@ class EsportsBot(BaseBot):
                         if _row[1] is not None and float(_row[1]) > 0:
                             _fresh_prices[str(_row[0])] = float(_row[1])
             except Exception as _pe:
-                logger.debug("esportsbot_exit_price_fetch_failed", error=str(_pe))
+                logger.warning("esportsbot_exit_price_fetch_failed", error=str(_pe))
                 # Fall through — use stale current_price from positions table as fallback
 
         stop_pct = float(getattr(settings, "ESPORTS_STOP_LOSS_PCT", 0.20))
@@ -2327,8 +2327,8 @@ class EsportsBot(BaseBot):
                     if _db is not None:
                         try:
                             await _inc_daily(_db, "EsportsBot", f"game_{game}", -_exit_cost)
-                        except Exception:
-                            pass  # Non-critical: in-memory is authoritative intra-day
+                        except Exception as _exp_exc:
+                            logger.warning("esportsbot_exit_exposure_write_failed", error=str(_exp_exc), game=game)
                 # Clean up market→game mapping for exited position
                 self._market_game.pop(mid, None)
                 # S136: Clean up edge tracking for exited position
@@ -2342,7 +2342,7 @@ class EsportsBot(BaseBot):
                 self._prediction_cache.pop(mid, None)
                 await self._save_exit_cooldown_to_redis(mid, reason=reason)
             except Exception as exc:
-                logger.debug("esportsbot_exit_failed", market_id=mid, error=str(exc))
+                logger.warning("esportsbot_exit_failed", market_id=mid, error=str(exc))
                 # S110: Set cooldown even on unexpected exit failure — prevents churn
                 self._recently_exited[mid] = time.monotonic()
                 self._exit_reasons[mid] = reason  # S138: track for extended cooldown
@@ -2804,7 +2804,7 @@ class EsportsBot(BaseBot):
                         sq_enrichment=_sq_components.get("enrichment"),
                         sq_brier=_sq_components.get("brier"))
         except Exception as _sq_exc:
-            _sq = 1.0  # Fallback: full sizing on error
+            _sq = 0.5  # Fallback: conservative half sizing on error
             _sq_components = {}
             logger.warning("esportsbot_signal_quality_failed", error=str(_sq_exc),
                           market_id=market_id, game=game)
@@ -2924,8 +2924,8 @@ class EsportsBot(BaseBot):
                     _mdata = _midx_cid.get(str(market_id))
                 if _mdata and isinstance(_mdata, dict):
                     _clob_volume = float(_mdata.get("volume") or _mdata.get("volume24hr") or 0)
-            except (TypeError, ValueError, AttributeError):
-                pass
+            except (TypeError, ValueError, AttributeError) as _vol_exc:
+                logger.debug("esportsbot_volume_parse_failed", market_id=market_id, error=str(_vol_exc))
 
         # S141: Baker-McHale conformal width (real value from fitted predictor)
         _conformal_width = 0.15
@@ -2937,8 +2937,8 @@ class EsportsBot(BaseBot):
                     _np_cw.array([[model_prob]])
                 )
                 _conformal_width = float(_cw_high[0] - _cw_low[0])
-            except Exception:
-                pass
+            except Exception as _cw_exc:
+                logger.debug("esportsbot_conformal_width_failed", market_id=market_id, error=str(_cw_exc))
 
         # S141: Baker-McHale agreement stdev (from signal quality)
         _agreement_stdev = _sq_components.get("agreement_stdev", 0.10)
@@ -4532,6 +4532,7 @@ class EsportsBot(BaseBot):
                             await _inc_daily(_db, "EsportsBot", f"game_{game}", _entry_cost)
                             break
                         except Exception as _exc:
+                            logger.debug("esports_game_counter_write_retry", attempt=_ct_attempt, error=str(_exc))
                             if _ct_attempt == 1:
                                 logger.warning("esports_game_counter_write_failed", error=str(_exc))
 
