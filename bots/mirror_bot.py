@@ -149,6 +149,13 @@ class MirrorBot(BaseBot):
         except Exception as e:
             logger.debug("MirrorMLSelector init skipped: %s", e)
 
+        # S164: Init summary — shows which optional modules loaded at INFO level
+        logger.info("mirror_optional_modules: reliability=%s calibration=%s adaptive=%s ml=%s",
+                    self._reliability_tracker is not None,
+                    self._calibration_stack is not None,
+                    self._adaptive_safety is not None,
+                    self._ml_selector is not None)
+
         # Real-time WebSocket copy trading via EliteWatchlist + RTDS global feed
         self._watchlist = None
         self._watchlist_started: bool = False
@@ -619,7 +626,7 @@ class MirrorBot(BaseBot):
                 if _cal_results:
                     logger.info("MirrorBot calibration stack fitted", results=_cal_results)
             except Exception as e:
-                logger.debug("MirrorBot calibration fit failed: %s", e)
+                logger.warning("MirrorBot calibration fit failed: %s", e)
 
         # S124: Load ML selector models on first scan
         if self._ml_selector and not self._ml_selector_loaded:
@@ -628,14 +635,14 @@ class MirrorBot(BaseBot):
                 self._ml_selector_loaded = True
                 logger.info("mirror_ml_selector_loaded", **_ml_status)
             except Exception as e:
-                logger.debug("mirror_ml_selector load failed: %s", e)
+                logger.warning("mirror_ml_selector load failed: %s", e)
 
         # Session 82: Refresh adaptive safety metrics periodically
         if self._adaptive_safety:
             try:
                 await self._adaptive_safety.refresh(self._scan_count)
             except Exception as e:
-                logger.debug("MirrorBot adaptive safety refresh failed: %s", e)
+                logger.warning("MirrorBot adaptive safety refresh failed: %s", e)
 
         # M4/B4: Leader reconciliation — run periodically in background to avoid
         # blocking the scan loop for 30s while Gamma API calls complete.
@@ -878,10 +885,10 @@ class MirrorBot(BaseBot):
                                     _yes_tid, _no_tid, _resolved, _resolution))
                                 _pmc_task.add_done_callback(self._task_error_handler)
                 except Exception as _clob_err:
-                    logger.debug("CLOB category fallback failed for %s: %s",
-                                 market_id[:16], _clob_err)
+                    logger.warning("CLOB category fallback failed for %s: %s",
+                                   market_id[:16], _clob_err)
         except Exception as e:
-            logger.debug("Market meta lookup failed for %s: %s", market_id, e)
+            logger.warning("Market meta lookup failed for %s: %s", market_id, e)
         self._market_meta_cache[market_id] = (category, time_to_res, now + self._MARKET_META_TTL)
         return category, time_to_res
 
@@ -909,7 +916,7 @@ class MirrorBot(BaseBot):
                 resolution=resolution,
             )
         except Exception as exc:
-            logger.debug("_persist_market_category failed: %s", exc)
+            logger.warning("_persist_market_category failed: %s", exc)
 
     # S98: _collect_and_aggregate_elite_trades + _parse_and_validate_trade deleted
     # RTDS is sole entry path — consensus scan no longer used
@@ -2409,7 +2416,7 @@ class MirrorBot(BaseBot):
                     market_id, token_id, side, confidence, _market_data
                 )
             except Exception as e:
-                logger.debug("MirrorBot: signal enhancements failed (using raw confidence): %s", e)
+                logger.warning("MirrorBot: signal enhancements failed (using raw confidence): %s", e)
 
         # Session 82: Apply calibration stack (FTS + Le2026 domain bias) to confidence.
         # Gated by MIRROR_USE_CALIBRATION=true. When off, confidence passes through unchanged.

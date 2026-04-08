@@ -169,7 +169,7 @@ class MirrorMLSelector:
 
             return float(np.clip(raw_prob, 0.01, 0.99))
         except Exception as e:
-            logger.debug("ml_selector_xgb predict error: %s", e)
+            logger.warning("ml_selector_xgb predict error: %s", e)
             return 0.50
 
     def _predict_ql(self, features: Dict[str, float]) -> Tuple[int, float, float]:
@@ -184,7 +184,7 @@ class MirrorMLSelector:
             action = ACTION_TRADE if q_trade >= q_skip else ACTION_SKIP
             return action, q_trade, q_skip
         except Exception as e:
-            logger.debug("ml_selector_ql predict error: %s", e)
+            logger.warning("ml_selector_ql predict error: %s", e)
             return ACTION_TRADE, 0.0, 0.0
 
     def _discretize_ql_state(self, features: Dict[str, float]) -> int:

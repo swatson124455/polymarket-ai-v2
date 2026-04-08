@@ -527,7 +527,7 @@ class EliteWatchlist:
                         logger.info("watchlist_num_trades_supplemented", count=_supplemented,
                                     total=len(_addrs_for_counts))
             except Exception as _nt_err:
-                logger.debug("watchlist num_trades supplement failed: %s", _nt_err)
+                logger.warning("watchlist num_trades supplement failed: %s", _nt_err)
 
         # M2: Apply inactivity decay — demote leaders who haven't traded recently
         _now_mono = time.monotonic()
