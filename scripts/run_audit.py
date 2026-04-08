@@ -41,7 +41,7 @@ async def _run_checks(
     from base_engine.audit.factory import build_audit_orchestrator
 
     db = Database()
-    await db.initialize()
+    await db.init()
 
     try:
         orchestrator = build_audit_orchestrator(db=db)
@@ -120,7 +120,7 @@ async def _list_open() -> int:
     from sqlalchemy import text
 
     db = Database()
-    await db.initialize()
+    await db.init()
     try:
         async with db.get_session() as session:
             rows = await session.execute(text("""
@@ -160,7 +160,7 @@ async def _acknowledge(break_id: int, reason: str) -> int:
     from sqlalchemy import text
 
     db = Database()
-    await db.initialize()
+    await db.init()
     try:
         async with db.get_session() as session:
             result = await session.execute(text("""
