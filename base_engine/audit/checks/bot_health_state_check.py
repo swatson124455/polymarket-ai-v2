@@ -26,14 +26,14 @@ class BotHealthStateCheck(BaseCheck):
 
         # Bots stuck in failed/safe_mode > 1 hour
         stuck_rows = await session.execute(text("""
-            SELECT bot_name, status, updated_at,
-                   EXTRACT(EPOCH FROM (NOW() - updated_at)) / 60 AS stuck_minutes
+            SELECT bot_name, status, recorded_at,
+                   EXTRACT(EPOCH FROM (NOW() - recorded_at)) / 60 AS stuck_minutes
             FROM bot_health_states
             WHERE status IN ('failed', 'safe_mode')
-              AND updated_at < NOW() - INTERVAL '1 hour'
+              AND recorded_at < NOW() - INTERVAL '1 hour'
         """))
         for row in stuck_rows.fetchall():
-            bot_name, status, updated_at, stuck_min = row
+            bot_name, status, recorded_at, stuck_min = row
             violations.append(AuditViolation(
                 recon_type="BOT_HEALTH_STATE_ANOMALY",
                 bot_name=bot_name or "",
@@ -42,21 +42,21 @@ class BotHealthStateCheck(BaseCheck):
                 details={
                     "reason": "bot_stuck_in_failed_state",
                     "status": status,
-                    "updated_at": str(updated_at) if updated_at else None,
+                    "recorded_at": str(recorded_at) if recorded_at else None,
                     "stuck_minutes": round(float(stuck_min), 1) if stuck_min else None,
                 },
             ))
 
         # Bots with no health update > 30 minutes
         silent_rows = await session.execute(text("""
-            SELECT bot_name, status, updated_at,
-                   EXTRACT(EPOCH FROM (NOW() - updated_at)) / 60 AS silent_minutes
+            SELECT bot_name, status, recorded_at,
+                   EXTRACT(EPOCH FROM (NOW() - recorded_at)) / 60 AS silent_minutes
             FROM bot_health_states
-            WHERE updated_at < NOW() - INTERVAL '30 minutes'
+            WHERE recorded_at < NOW() - INTERVAL '30 minutes'
               AND status NOT IN ('failed', 'safe_mode')
         """))
         for row in silent_rows.fetchall():
-            bot_name, status, updated_at, silent_min = row
+            bot_name, status, recorded_at, silent_min = row
             violations.append(AuditViolation(
                 recon_type="BOT_HEALTH_STATE_ANOMALY",
                 bot_name=bot_name or "",
@@ -65,7 +65,7 @@ class BotHealthStateCheck(BaseCheck):
                 details={
                     "reason": "bot_health_state_stale",
                     "status": status,
-                    "updated_at": str(updated_at) if updated_at else None,
+                    "recorded_at": str(recorded_at) if recorded_at else None,
                     "silent_minutes": round(float(silent_min), 1) if silent_min else None,
                 },
             ))

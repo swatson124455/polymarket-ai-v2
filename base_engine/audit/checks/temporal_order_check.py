@@ -2,6 +2,8 @@
 Check 2C: Temporal ordering — EXIT/RESOLUTION must not precede ENTRY by >5 seconds.
 5-second tolerance absorbs legitimate sub-second clock skew between API timestamps
 and bot system clock without masking genuine ordering bugs.
+S164: Removed side from JOIN — historical EXIT events used side='SELL' while
+ENTRYs used YES/NO, causing missed matches.
 """
 import time
 from typing import List
@@ -22,11 +24,11 @@ class TemporalOrderCheck(BaseCheck):
 
         rows = await session.execute(text("""
             WITH first_entry AS (
-                SELECT bot_name, market_id, side,
+                SELECT bot_name, market_id,
                        MIN(event_time) AS first_entry_time
                 FROM trade_events
                 WHERE event_type = 'ENTRY'
-                GROUP BY bot_name, market_id, side
+                GROUP BY bot_name, market_id
             )
             SELECT te.event_type, te.market_id, te.bot_name, te.side,
                    te.event_time, fe.first_entry_time, te.sequence_num,
@@ -35,7 +37,6 @@ class TemporalOrderCheck(BaseCheck):
             JOIN first_entry fe
               ON fe.bot_name  = te.bot_name
              AND fe.market_id = te.market_id
-             AND fe.side      = te.side
             WHERE te.event_type IN ('EXIT', 'RESOLUTION')
               AND te.event_time < fe.first_entry_time - INTERVAL '5 seconds'
             LIMIT 200

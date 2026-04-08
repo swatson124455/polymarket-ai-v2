@@ -47,7 +47,7 @@ _REQUIRED_TABLES: Set[str] = {
 _REQUIRED_COLUMNS: Dict[str, List[str]] = {
     "trade_events":    ["event_type", "market_id", "bot_name", "size", "price",
                         "realized_pnl", "event_time", "sequence_num", "correlation_id"],
-    "paper_trades":    ["bot_name", "market_id", "side", "amount", "profit_loss"],
+    "paper_trades":    ["bot_name", "market_id", "side", "size", "realized_pnl"],
     "positions":       ["bot_name", "market_id", "side", "size", "entry_price"],
     "markets":         ["id", "condition_id", "resolved", "active"],
     "traded_markets":  ["bot_name", "market_id"],
@@ -58,7 +58,7 @@ _REQUIRED_COLUMNS: Dict[str, List[str]] = {
     "shadow_fills":    ["bot_name", "market_id", "correlation_id", "trade_executed"],
     "prediction_log":  ["bot_name", "market_id", "predicted_prob", "actual_outcome",
                         "was_correct", "trade_executed", "prediction_time"],
-    "bot_health_states": ["bot_name", "status", "updated_at"],
+    "bot_health_states": ["bot_name", "status", "recorded_at"],
 }
 
 

@@ -3,7 +3,8 @@ Check 2A: Size invariant and negative size violations in trade_events.
 
 - EXIT + RESOLUTION size must not exceed ENTRY size (0.1% tolerance)
 - No negative sizes anywhere
-Uses SUM() aggregation per (bot, market, side) — partial exits handled correctly.
+Uses SUM() aggregation per (bot, market) — side excluded because historical
+EXIT events used side='SELL' while ENTRYs used YES/NO (S163 transition).
 """
 import time
 from decimal import Decimal
@@ -24,21 +25,24 @@ class SizeInvariantCheck(BaseCheck):
         violations: List[AuditViolation] = []
 
         # Size invariant: EXIT + RESOLUTION must not exceed ENTRY (with 0.1% tolerance)
+        # S164: GROUP BY market_id, bot_name only (no side). Historical EXIT events
+        # used side='SELL' while ENTRYs used YES/NO — per-side grouping created
+        # false positives. event_type is the correct discriminator, not side.
         rows = await session.execute(text("""
-            SELECT market_id, bot_name, side,
+            SELECT market_id, bot_name,
                 SUM(CASE WHEN event_type = 'ENTRY'      THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS entry_sz,
                 SUM(CASE WHEN event_type = 'EXIT'       THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS exit_sz,
                 SUM(CASE WHEN event_type = 'RESOLUTION' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS res_sz
             FROM trade_events
             WHERE event_type IN ('ENTRY', 'EXIT', 'RESOLUTION')
               AND size IS NOT NULL
-            GROUP BY market_id, bot_name, side
+            GROUP BY market_id, bot_name
             HAVING
                 SUM(CASE WHEN event_type IN ('EXIT','RESOLUTION') THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END)
                 > SUM(CASE WHEN event_type = 'ENTRY' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) * 1.001
         """))
         for row in rows.fetchall():
-            market_id, bot_name, side, entry_sz, exit_sz, res_sz = row
+            market_id, bot_name, entry_sz, exit_sz, res_sz = row
             overage = (exit_sz + res_sz) - entry_sz
             violations.append(AuditViolation(
                 recon_type="SIZE_INVARIANT",
@@ -46,7 +50,6 @@ class SizeInvariantCheck(BaseCheck):
                 market_id=str(market_id) if market_id else None,
                 severity="CRITICAL",
                 details={
-                    "side": side,
                     "entry_size": round(entry_sz, 6),
                     "exit_size": round(exit_sz, 6),
                     "resolution_size": round(res_sz, 6),

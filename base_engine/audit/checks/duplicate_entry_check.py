@@ -23,17 +23,19 @@ class DuplicateEntryCheck(BaseCheck):
         violations: List[AuditViolation] = []
 
         rows = await session.execute(text("""
+            -- S164: GROUP BY market_id, bot_name only (no side). Historical EXIT
+            -- events used side='SELL' while ENTRYs used YES/NO.
             WITH position_lifecycles AS (
-                SELECT bot_name, market_id, side,
+                SELECT bot_name, market_id,
                     SUM(CASE WHEN event_type = 'ENTRY' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS total_entered,
                     SUM(CASE WHEN event_type = 'EXIT'  THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS total_exited,
                     COUNT(CASE WHEN event_type = 'ENTRY' THEN 1 END)                                   AS entry_count,
                     BOOL_OR(event_type = 'RESOLUTION')                                                 AS has_resolution
                 FROM trade_events
                 WHERE event_type IN ('ENTRY', 'EXIT', 'RESOLUTION')
-                GROUP BY bot_name, market_id, side
+                GROUP BY bot_name, market_id
             )
-            SELECT bot_name, market_id, side, entry_count, total_entered, total_exited
+            SELECT bot_name, market_id, entry_count, total_entered, total_exited
             FROM position_lifecycles
             WHERE entry_count > 1
               AND has_resolution = FALSE
@@ -42,14 +44,13 @@ class DuplicateEntryCheck(BaseCheck):
             LIMIT 200
         """))
         for row in rows.fetchall():
-            bot_name, market_id, side, entry_count, total_entered, total_exited = row
+            bot_name, market_id, entry_count, total_entered, total_exited = row
             violations.append(AuditViolation(
                 recon_type="DUPLICATE_ENTRY",
                 bot_name=bot_name or "",
                 market_id=str(market_id) if market_id else None,
                 severity="WARNING",
                 details={
-                    "side": side,
                     "entry_count": int(entry_count),
                     "total_entered": round(float(total_entered), 6),
                     "total_exited": round(float(total_exited), 6),

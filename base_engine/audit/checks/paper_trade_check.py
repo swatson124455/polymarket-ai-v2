@@ -8,7 +8,7 @@ Each SELL paper_trade should correspond to an EXIT trade_event.
 Checks:
 1. BUY paper_trade with no matching ENTRY in trade_events → WARNING
 2. SELL paper_trade with no matching EXIT in trade_events → WARNING
-3. paper_trade P&L (profit_loss column) materially differs from trade_events realized_pnl
+3. paper_trade P&L (realized_pnl column) materially differs from trade_events realized_pnl
    for the same position closure → WARNING (> $0.10 difference)
 
 Note: paper_trades.status='open' may have no SELL/EXIT — that's expected.
@@ -34,7 +34,7 @@ class PaperTradeCheck(BaseCheck):
         # BUY paper_trade with no ENTRY in trade_events
         buy_orphan = await session.execute(text("""
             SELECT pt.bot_name, pt.market_id, pt.side,
-                   CAST(pt.amount AS DOUBLE PRECISION) AS amount,
+                   CAST(pt.size AS DOUBLE PRECISION) AS size,
                    pt.created_at
             FROM paper_trades pt
             WHERE LOWER(pt.side) = 'buy'
@@ -47,7 +47,7 @@ class PaperTradeCheck(BaseCheck):
             LIMIT 100
         """))
         for row in buy_orphan.fetchall():
-            bot_name, market_id, side, amount, created_at = row
+            bot_name, market_id, side, size, created_at = row
             violations.append(AuditViolation(
                 recon_type="PAPER_TRADE_MISMATCH",
                 bot_name=bot_name or "",
@@ -56,7 +56,7 @@ class PaperTradeCheck(BaseCheck):
                 details={
                     "reason": "buy_paper_trade_no_entry_event",
                     "side": side,
-                    "amount": round(float(amount), 6) if amount else 0,
+                    "size": round(float(size), 6) if size else 0,
                     "created_at": str(created_at) if created_at else None,
                 },
             ))
@@ -64,8 +64,8 @@ class PaperTradeCheck(BaseCheck):
         # SELL paper_trade with no EXIT in trade_events
         sell_orphan = await session.execute(text("""
             SELECT pt.bot_name, pt.market_id, pt.side,
-                   CAST(pt.amount AS DOUBLE PRECISION) AS amount,
-                   CAST(pt.profit_loss AS DOUBLE PRECISION) AS pnl,
+                   CAST(pt.size AS DOUBLE PRECISION) AS size,
+                   CAST(pt.realized_pnl AS DOUBLE PRECISION) AS pnl,
                    pt.created_at
             FROM paper_trades pt
             WHERE LOWER(pt.side) = 'sell'
@@ -78,7 +78,7 @@ class PaperTradeCheck(BaseCheck):
             LIMIT 100
         """))
         for row in sell_orphan.fetchall():
-            bot_name, market_id, side, amount, pnl, created_at = row
+            bot_name, market_id, side, size, pnl, created_at = row
             violations.append(AuditViolation(
                 recon_type="PAPER_TRADE_MISMATCH",
                 bot_name=bot_name or "",
@@ -87,8 +87,8 @@ class PaperTradeCheck(BaseCheck):
                 details={
                     "reason": "sell_paper_trade_no_exit_event",
                     "side": side,
-                    "amount": round(float(amount), 6) if amount else 0,
-                    "profit_loss": round(float(pnl), 4) if pnl else 0,
+                    "size": round(float(size), 6) if size else 0,
+                    "realized_pnl": round(float(pnl), 4) if pnl else 0,
                     "created_at": str(created_at) if created_at else None,
                 },
             ))
@@ -97,9 +97,9 @@ class PaperTradeCheck(BaseCheck):
         pnl_diff = await session.execute(text("""
             WITH pt_pnl AS (
                 SELECT bot_name, market_id,
-                       SUM(CAST(profit_loss AS DOUBLE PRECISION)) AS pt_total_pnl
+                       SUM(CAST(realized_pnl AS DOUBLE PRECISION)) AS pt_total_pnl
                 FROM paper_trades
-                WHERE profit_loss IS NOT NULL
+                WHERE realized_pnl IS NOT NULL
                   AND LOWER(side) != 'buy'
                 GROUP BY bot_name, market_id
             ),

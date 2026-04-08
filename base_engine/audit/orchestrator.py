@@ -29,7 +29,10 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-_STATEMENT_TIMEOUT = "30s"
+# S164: Increased from 30s to 120s. Safe because the daily audit now runs
+# out-of-process via systemd timer (polymarket-audit.timer), not on the bot pool.
+# fk_integrity and price_integrity checks timed out at 30s.
+_STATEMENT_TIMEOUT = "120s"
 
 
 class AuditOrchestrator:
