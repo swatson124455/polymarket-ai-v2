@@ -336,7 +336,7 @@ async def run_resolution_backfill(
                     await _lc.execute(text("""
                         UPDATE traded_markets
                         SET last_checked_at = NOW() + make_interval(
-                            hours => LEAST(power(3, LEAST(COALESCE(check_fail_count, 0), 4)), 168)
+                            hours => LEAST(power(3, LEAST(COALESCE(check_fail_count, 0), 4)), 168)::int
                         ),
                         check_fail_count = COALESCE(check_fail_count, 0) + 1,
                         resolution_status = CASE

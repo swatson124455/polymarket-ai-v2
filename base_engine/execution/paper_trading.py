@@ -779,7 +779,7 @@ class PaperTradingEngine:
             if self.db and hasattr(self.db, "insert_trade_event"):
                 self._pending_db_writes.append(
                     self._persist_exit_event(
-                        bot_name, market_id, token_id, size, price, realized_pnl,
+                        bot_name, market_id, token_id, _db_side, size, price, realized_pnl,
                         correlation_id, trade_id, model_version, model_name, event_data,
                     )
                 )
@@ -915,7 +915,7 @@ class PaperTradingEngine:
             logger.debug("shadow_fill_record_failed", error=str(_sf_err), market_id=market_id)
 
     async def _persist_exit_event(
-        self, bot_name, market_id, token_id, size, price, realized_pnl,
+        self, bot_name, market_id, token_id, side, size, price, realized_pnl,
         correlation_id, trade_id, model_version, model_name, event_data,
     ):
         """S94: Emit EXIT trade_event — called AFTER lock release."""
@@ -925,7 +925,7 @@ class PaperTradingEngine:
                 bot_name=bot_name,
                 market_id=market_id,
                 token_id=token_id,
-                side="SELL",
+                side=side,
                 size=size,
                 price=price,
                 realized_pnl=realized_pnl,

@@ -125,14 +125,17 @@ async def bot_pnl(bot_name: str, hours: int = 24):
         print(f"  {'TOTAL':<12} {'':5} realized=${total_realized:>+10.2f}  fees=${total_fees:>8.2f}")
 
         # 4. Data integrity check — detect impossible states (S120 guardrail)
+        # S163: Group by market_id only (not side). Historical EXIT events used
+        # side='SELL' while ENTRYs used YES/NO, causing false positives on per-side
+        # matching. event_type is the correct discriminator, not side.
         r4 = await s.execute(text("""
-            SELECT market_id, side,
+            SELECT market_id,
                    SUM(CASE WHEN event_type = 'ENTRY' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS entry_sz,
                    SUM(CASE WHEN event_type = 'EXIT' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS exit_sz,
                    SUM(CASE WHEN event_type = 'RESOLUTION' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS res_sz
             FROM trade_events
             WHERE bot_name = :bot
-            GROUP BY market_id, side
+            GROUP BY market_id
             HAVING SUM(CASE WHEN event_type IN ('EXIT', 'RESOLUTION') THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END)
                  > SUM(CASE WHEN event_type = 'ENTRY' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) * 1.001
         """), {"bot": bot_name})
@@ -143,8 +146,8 @@ async def bot_pnl(bot_name: str, hours: int = 24):
             print(f"{'!'*50}")
             for v in violations:
                 mid = v[0][:14] + ".." if len(v[0]) > 14 else v[0]
-                print(f"  {mid} {v[1]}: entry={float(v[2]):.1f} exit={float(v[3]):.1f} res={float(v[4]):.1f} "
-                      f"(disposal {float(v[3]) + float(v[4]):.1f} > entry {float(v[2]):.1f})")
+                print(f"  {mid}: entry={float(v[1]):.1f} exit={float(v[2]):.1f} res={float(v[3]):.1f} "
+                      f"(disposal {float(v[2]) + float(v[3]):.1f} > entry {float(v[1]):.1f})")
             print(f"{'!'*50}")
 
         # Summary

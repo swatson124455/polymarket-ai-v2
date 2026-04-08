@@ -106,6 +106,26 @@ async def prune(days: int, batch_size: int, execute: bool) -> dict:
 
     elapsed = time.monotonic() - t0
     print(f"\nDone: deleted {deleted_total:,} rows in {elapsed:.1f}s")
+
+    # S163: Kill connections stuck in idle-in-transaction (aborted) for >120s.
+    # These are residue from session poisoning — holding pool slots and locks.
+    # Runs every hour via the same systemd timer as pruning.
+    try:
+        async with db.get_raw_session() as session:
+            r = await session.execute(text("""
+                SELECT pg_terminate_backend(pid)
+                FROM pg_stat_activity
+                WHERE state = 'idle in transaction (aborted)'
+                AND datname = 'polymarket'
+                AND state_change < NOW() - INTERVAL '120 seconds'
+            """))
+            killed = r.rowcount
+            await session.commit()
+            if killed > 0:
+                print(f"Terminated {killed} idle-in-transaction (aborted) connection(s)")
+    except Exception as e:
+        print(f"idle-in-tx cleanup failed: {e}")
+
     await db.close()
     return {"deleted": deleted_total, "elapsed_s": round(elapsed, 1)}
 
