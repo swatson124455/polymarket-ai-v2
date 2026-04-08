@@ -3250,7 +3250,8 @@ class EsportsBot(BaseBot):
                     if 0.0 < prob < 1.0:
                         prob, _em = await self._enrich_prediction(prob, game, market_id, market_data, live_data)
                         tsd = float(game_state.get("team_strength_diff", 0.0))
-                        glicko2_est = max(0.05, min(0.95, 0.5 + tsd / 2))
+                        # S162: removed /2 — copy-paste artifact from 1982626fe, matches L3170/L3216
+                        glicko2_est = max(0.05, min(0.95, 0.5 + tsd))
                         _ed_cs2 = {"game": game, "model_prob": round(prob, 4),
                                    "scan_start_mono": getattr(self, "_scan_start_mono", None),
                                    "_enrich_meta": _em}
@@ -4434,7 +4435,8 @@ class EsportsBot(BaseBot):
                 g for g, exp in self._game_exposure.items() if exp > 0
             ))
             _rho = 0.25  # estimated correlation between games in same tournament
-            _corr_cap = _game_cap * math.sqrt(max(1, _n_games_in_tournament)) * (1.0 - _rho)
+            # S162: (1-rho) inside sqrt — portfolio variance scaling, not flat multiplier
+            _corr_cap = _game_cap * math.sqrt(max(1, _n_games_in_tournament) * (1.0 - _rho))
             _tournament_cap = min(_tournament_cap, _corr_cap)
             _current_tourn_exp = self._tournament_exposure.get(_tournament_name, 0.0)
             if _current_tourn_exp + _entry_cost > _tournament_cap:
