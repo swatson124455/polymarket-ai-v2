@@ -476,7 +476,11 @@ class Settings(BaseSettings):
     ENSEMBLE_EXIT_COOLDOWN_SECONDS: int = int(os.getenv("ENSEMBLE_EXIT_COOLDOWN_SECONDS", "300"))  # Session 47: was 1800 (30 min) — 5 min base, doubles per exit, 1h cap
 
     # Position manager adaptive exit thresholds (applies to ALL bots except excluded)
-    PM_EXCLUDE_BOTS: list = [b.strip() for b in os.getenv("PM_EXCLUDE_BOTS", "EsportsBot,MirrorBot,WeatherBot").split(",") if b.strip()]
+    # S162: EsportsBot removed — its own exit logic (L2064) depends on current_price
+    # being updated by position_manager. Dual exit checks are idempotent (SELL on
+    # closed position is rejected). MirrorBot/WeatherBot still excluded — they have
+    # fully independent price refresh + exit pipelines.
+    PM_EXCLUDE_BOTS: list = [b.strip() for b in os.getenv("PM_EXCLUDE_BOTS", "MirrorBot,WeatherBot").split(",") if b.strip()]
     PM_STOP_LOSS_PCT: float = float(os.getenv("PM_STOP_LOSS_PCT", "0.30"))           # 30% — wide for prediction markets
     PM_TAKE_PROFIT_PCT: float = float(os.getenv("PM_TAKE_PROFIT_PCT", "0.60"))       # 60% — let winners run
     PM_ADAPTIVE_EXITS: bool = os.getenv("PM_ADAPTIVE_EXITS", "true").lower() in ("true", "1", "yes")
