@@ -29,27 +29,27 @@ class TradedMarketsCheck(BaseCheck):
 
         # traded_markets rows with no ENTRY in trade_events
         stale_rows = await session.execute(text("""
-            SELECT tm.bot_name, tm.market_id, tm.first_traded_at, tm.last_traded_at
+            SELECT tm.bot_names, tm.market_id, tm.first_trade_at, tm.last_trade_at
             FROM traded_markets tm
             WHERE NOT EXISTS (
                 SELECT 1 FROM trade_events te
-                WHERE te.bot_name  = tm.bot_name
+                WHERE te.bot_name = ANY(tm.bot_names)
                   AND te.market_id = tm.market_id
                   AND te.event_type = 'ENTRY'
             )
             LIMIT 100
         """))
         for row in stale_rows.fetchall():
-            bot_name, market_id, first_at, last_at = row
+            bot_names, market_id, first_at, last_at = row
             violations.append(AuditViolation(
                 recon_type="TRADED_MARKETS_DRIFT",
-                bot_name=bot_name or "",
+                bot_name=",".join(bot_names) if bot_names else "",
                 market_id=str(market_id) if market_id else None,
                 severity="WARNING",
                 details={
                     "reason": "stale_traded_markets_row",
-                    "first_traded_at": str(first_at) if first_at else None,
-                    "last_traded_at": str(last_at) if last_at else None,
+                    "first_trade_at": str(first_at) if first_at else None,
+                    "last_trade_at": str(last_at) if last_at else None,
                 },
             ))
 
@@ -60,7 +60,7 @@ class TradedMarketsCheck(BaseCheck):
             WHERE te.event_type = 'ENTRY'
               AND NOT EXISTS (
                   SELECT 1 FROM traded_markets tm
-                  WHERE tm.bot_name  = te.bot_name
+                  WHERE tm.bot_names @> ARRAY[te.bot_name]
                     AND tm.market_id = te.market_id
               )
             GROUP BY te.bot_name, te.market_id

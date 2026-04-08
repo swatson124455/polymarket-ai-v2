@@ -44,10 +44,10 @@ class PredictionAccuracyCheck(BaseCheck):
             WITH resolved AS (
                 SELECT bot_name,
                        CAST(predicted_prob AS DOUBLE PRECISION) AS prob,
-                       CAST(actual_outcome AS DOUBLE PRECISION) AS outcome,
+                       CASE WHEN resolution = 'YES' THEN 1.0 ELSE 0.0 END AS outcome,
                        prediction_time
                 FROM prediction_log pl
-                WHERE pl.actual_outcome IS NOT NULL
+                WHERE pl.resolution IS NOT NULL
                   AND pl.predicted_prob IS NOT NULL
                   AND pl.prediction_time >= NOW() - INTERVAL '90 days'
             ),
@@ -204,18 +204,18 @@ class PredictionAccuracyCheck(BaseCheck):
             WITH recent AS (
                 SELECT bot_name,
                        AVG(POWER(CAST(predicted_prob AS DOUBLE PRECISION)
-                               - CAST(actual_outcome AS DOUBLE PRECISION), 2)) AS brier
+                               - CASE WHEN resolution = 'YES' THEN 1.0 ELSE 0.0 END, 2)) AS brier
                 FROM prediction_log
-                WHERE actual_outcome IS NOT NULL AND predicted_prob IS NOT NULL
+                WHERE resolution IS NOT NULL AND predicted_prob IS NOT NULL
                   AND prediction_time >= NOW() - INTERVAL '7 days'
                 GROUP BY bot_name
             ),
             prior AS (
                 SELECT bot_name,
                        AVG(POWER(CAST(predicted_prob AS DOUBLE PRECISION)
-                               - CAST(actual_outcome AS DOUBLE PRECISION), 2)) AS brier
+                               - CASE WHEN resolution = 'YES' THEN 1.0 ELSE 0.0 END, 2)) AS brier
                 FROM prediction_log
-                WHERE actual_outcome IS NOT NULL AND predicted_prob IS NOT NULL
+                WHERE resolution IS NOT NULL AND predicted_prob IS NOT NULL
                   AND prediction_time BETWEEN NOW() - INTERVAL '14 days' AND NOW() - INTERVAL '7 days'
                 GROUP BY bot_name
             )

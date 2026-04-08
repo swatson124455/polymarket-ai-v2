@@ -87,17 +87,17 @@ class ResolutionConsistencyCheck(BaseCheck):
 
         # paper_trades outcome set but market not resolved
         pt_rows = await session.execute(text("""
-            SELECT pt.bot_name, pt.market_id, pt.outcome,
+            SELECT pt.bot_name, pt.market_id, pt.resolution,
                    COUNT(*) AS trade_count
             FROM paper_trades pt
             LEFT JOIN markets m ON m.id = pt.market_id
-            WHERE pt.outcome IS NOT NULL
+            WHERE pt.resolution IS NOT NULL
               AND (m.resolved IS NULL OR m.resolved = FALSE)
-            GROUP BY pt.bot_name, pt.market_id, pt.outcome
+            GROUP BY pt.bot_name, pt.market_id, pt.resolution
             LIMIT 100
         """))
         for row in pt_rows.fetchall():
-            bot_name, market_id, outcome, count = row
+            bot_name, market_id, resolution, count = row
             violations.append(AuditViolation(
                 recon_type="RESOLUTION_INCONSISTENCY",
                 bot_name=bot_name or "",
@@ -105,7 +105,7 @@ class ResolutionConsistencyCheck(BaseCheck):
                 severity="WARNING",
                 details={
                     "reason": "paper_trade_resolved_before_market",
-                    "outcome": outcome,
+                    "resolution": resolution,
                     "trade_count": int(count),
                 },
             ))

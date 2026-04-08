@@ -30,7 +30,7 @@ class StalePositionCheck(BaseCheck):
 
         # Resolved market but position still open — CRITICAL
         resolved_stale = await session.execute(text("""
-            SELECT p.bot_name, p.market_id, p.side,
+            SELECT p.source_bot, p.market_id, p.side,
                    CAST(p.size AS DOUBLE PRECISION) AS pos_size,
                    CAST(p.entry_price AS DOUBLE PRECISION) AS entry_px,
                    m.resolved_at
@@ -58,7 +58,7 @@ class StalePositionCheck(BaseCheck):
 
         # Market end_date passed >24h ago but position open — WARNING
         expired_stale = await session.execute(text("""
-            SELECT p.bot_name, p.market_id, p.side,
+            SELECT p.source_bot, p.market_id, p.side,
                    CAST(p.size AS DOUBLE PRECISION) AS pos_size,
                    m.end_date_iso
             FROM positions p
@@ -86,7 +86,7 @@ class StalePositionCheck(BaseCheck):
 
         # Market inactive + unresolved but position open — WARNING
         inactive_stale = await session.execute(text("""
-            SELECT p.bot_name, p.market_id, p.side,
+            SELECT p.source_bot, p.market_id, p.side,
                    CAST(p.size AS DOUBLE PRECISION) AS pos_size
             FROM positions p
             JOIN markets m ON m.id = p.market_id

@@ -36,7 +36,7 @@ class DlqCheck(BaseCheck):
             SELECT COUNT(*) AS total,
                    COUNT(*) FILTER (WHERE created_at < NOW() - INTERVAL '1 hour') AS stuck
             FROM dead_letter_queue
-            WHERE processed = FALSE OR processed IS NULL
+            WHERE status NOT IN ('processed', 'replayed')
         """))
         row = count_row.fetchone()
         if row:
@@ -83,7 +83,7 @@ class DlqCheck(BaseCheck):
         error_rows = await session.execute(text("""
             SELECT error_type, COUNT(*) AS count
             FROM dead_letter_queue
-            WHERE (processed = FALSE OR processed IS NULL)
+            WHERE status NOT IN ('processed', 'replayed')
               AND error_type IS NOT NULL
             GROUP BY error_type
             HAVING COUNT(*) >= :min_count

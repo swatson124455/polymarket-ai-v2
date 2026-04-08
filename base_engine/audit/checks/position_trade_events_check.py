@@ -40,14 +40,14 @@ class PositionTradeEventsCheck(BaseCheck):
                   AND size IS NOT NULL
                 GROUP BY bot_name, market_id, side
             )
-            SELECT p.bot_name, p.market_id, p.side,
+            SELECT p.source_bot, p.market_id, p.side,
                    CAST(p.size AS DOUBLE PRECISION) AS pos_size,
                    te.net_size,
                    te.total_entered,
                    ABS(CAST(p.size AS DOUBLE PRECISION) - te.net_size) AS abs_diff
             FROM positions p
             JOIN te_net te
-              ON te.bot_name  = p.bot_name
+              ON te.bot_name  = p.source_bot
              AND te.market_id = p.market_id
              AND te.side      = p.side
             WHERE CAST(p.size AS DOUBLE PRECISION) > 0
@@ -73,13 +73,13 @@ class PositionTradeEventsCheck(BaseCheck):
 
         # Phantom positions: size > 0 but no ENTRY in trade_events
         phantom_rows = await session.execute(text("""
-            SELECT p.bot_name, p.market_id, p.side,
+            SELECT p.source_bot, p.market_id, p.side,
                    CAST(p.size AS DOUBLE PRECISION) AS pos_size
             FROM positions p
             WHERE CAST(p.size AS DOUBLE PRECISION) > 0
               AND NOT EXISTS (
                   SELECT 1 FROM trade_events te
-                  WHERE te.bot_name  = p.bot_name
+                  WHERE te.bot_name  = p.source_bot
                     AND te.market_id = p.market_id
                     AND te.event_type = 'ENTRY'
               )

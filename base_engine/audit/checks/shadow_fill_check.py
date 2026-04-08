@@ -32,9 +32,9 @@ class ShadowFillCheck(BaseCheck):
         executed_no_entry = await session.execute(text("""
             SELECT sf.bot_name, sf.market_id, sf.side,
                    sf.correlation_id,
-                   CAST(sf.size AS DOUBLE PRECISION)  AS sz,
-                   CAST(sf.price AS DOUBLE PRECISION) AS px,
-                   sf.filled_at
+                   CAST(sf.order_size_shares AS DOUBLE PRECISION)  AS sz,
+                   CAST(sf.signal_price AS DOUBLE PRECISION) AS px,
+                   sf.created_at
             FROM shadow_fills sf
             WHERE sf.trade_executed = TRUE
               AND sf.correlation_id IS NOT NULL
@@ -46,7 +46,7 @@ class ShadowFillCheck(BaseCheck):
             LIMIT 200
         """))
         for row in executed_no_entry.fetchall():
-            bot_name, market_id, side, corr_id, sz, px, filled_at = row
+            bot_name, market_id, side, corr_id, sz, px, created_at = row
             violations.append(AuditViolation(
                 recon_type="SHADOW_FILL_MISMATCH",
                 bot_name=bot_name or "",
@@ -58,7 +58,7 @@ class ShadowFillCheck(BaseCheck):
                     "correlation_id": str(corr_id),
                     "size": round(float(sz), 6) if sz else 0,
                     "price": round(float(px), 6) if px else 0,
-                    "filled_at": str(filled_at) if filled_at else None,
+                    "created_at": str(created_at) if created_at else None,
                 },
             ))
 

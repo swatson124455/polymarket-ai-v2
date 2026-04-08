@@ -51,8 +51,8 @@ class SignalExecutionCheck(BaseCheck):
 
         # Signal fired but no ENTRY within 5 minutes — WARNING
         signal_no_entry = await session.execute(text("""
-            SELECT ts.bot_name, ts.market_id, ts.side,
-                   ts.signal_time, ts.signal_type,
+            SELECT ts.bot_name, ts.market_id, ts.signal_direction,
+                   ts.created_at, ts.signal_source,
                    COUNT(*) AS unmatched_count
             FROM trade_signals ts
             WHERE NOT EXISTS (
@@ -60,14 +60,14 @@ class SignalExecutionCheck(BaseCheck):
                 WHERE te.bot_name  = ts.bot_name
                   AND te.market_id = ts.market_id
                   AND te.event_type = 'ENTRY'
-                  AND te.event_time BETWEEN ts.signal_time AND ts.signal_time + INTERVAL '5 minutes'
+                  AND te.event_time BETWEEN ts.created_at AND ts.created_at + INTERVAL '5 minutes'
             )
-            GROUP BY ts.bot_name, ts.market_id, ts.side, ts.signal_time, ts.signal_type
-            ORDER BY ts.signal_time DESC
+            GROUP BY ts.bot_name, ts.market_id, ts.signal_direction, ts.created_at, ts.signal_source
+            ORDER BY ts.created_at DESC
             LIMIT 100
         """))
         for row in signal_no_entry.fetchall():
-            bot_name, market_id, side, signal_time, signal_type, count = row
+            bot_name, market_id, signal_direction, created_at, signal_source, count = row
             violations.append(AuditViolation(
                 recon_type="SIGNAL_TRADE_MISMATCH",
                 bot_name=bot_name or "",
@@ -75,9 +75,9 @@ class SignalExecutionCheck(BaseCheck):
                 severity="WARNING",
                 details={
                     "reason": "signal_fired_no_entry",
-                    "side": side,
-                    "signal_time": str(signal_time) if signal_time else None,
-                    "signal_type": signal_type,
+                    "signal_direction": signal_direction,
+                    "created_at": str(created_at) if created_at else None,
+                    "signal_source": signal_source,
                     "unmatched_count": int(count),
                 },
             ))
@@ -93,7 +93,7 @@ class SignalExecutionCheck(BaseCheck):
                 SELECT 1 FROM trade_signals ts
                 WHERE ts.bot_name  = te.bot_name
                   AND ts.market_id = te.market_id
-                  AND ts.signal_time BETWEEN te.event_time - INTERVAL '5 minutes' AND te.event_time
+                  AND ts.created_at BETWEEN te.event_time - INTERVAL '5 minutes' AND te.event_time
               )
             ORDER BY te.event_time DESC
             LIMIT 100

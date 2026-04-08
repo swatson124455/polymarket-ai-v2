@@ -26,28 +26,26 @@ class FillAnalysisCheck(BaseCheck):
         violations: List[AuditViolation] = []
 
         # adverse_move_30s math check
+        # fill_analysis has no size column; adverse_move_30s = price_30s - fill_price
         math_rows = await session.execute(text("""
-            SELECT fa.bot_name, fa.market_id, fa.side,
+            SELECT fa.source_bot, fa.market_id, fa.fill_side,
                    CAST(fa.fill_price     AS DOUBLE PRECISION) AS fill_px,
-                   CAST(fa.size           AS DOUBLE PRECISION) AS sz,
                    CAST(fa.price_30s      AS DOUBLE PRECISION) AS px_30s,
                    CAST(fa.adverse_move_30s AS DOUBLE PRECISION) AS adv_move,
-                   fa.fill_id
+                   fa.id AS fill_id
             FROM fill_analysis fa
             WHERE fa.price_30s IS NOT NULL
               AND fa.adverse_move_30s IS NOT NULL
-              AND fa.size IS NOT NULL
               AND fa.fill_price IS NOT NULL
               AND ABS(
                   CAST(fa.adverse_move_30s AS DOUBLE PRECISION)
                   - (CAST(fa.price_30s AS DOUBLE PRECISION) - CAST(fa.fill_price AS DOUBLE PRECISION))
-                    * CAST(fa.size AS DOUBLE PRECISION)
               ) > 0.001
             LIMIT 100
         """))
         for row in math_rows.fetchall():
-            bot_name, market_id, side, fill_px, sz, px_30s, adv_move, fill_id = row
-            expected = (px_30s - fill_px) * sz if (px_30s is not None and sz is not None) else None
+            bot_name, market_id, side, fill_px, px_30s, adv_move, fill_id = row
+            expected = (px_30s - fill_px) if px_30s is not None else None
             violations.append(AuditViolation(
                 recon_type="FILL_ANALYSIS_INCONSISTENCY",
                 bot_name=bot_name or "",
@@ -59,7 +57,6 @@ class FillAnalysisCheck(BaseCheck):
                     "fill_id": str(fill_id) if fill_id else None,
                     "fill_price": round(float(fill_px), 6),
                     "price_30s": round(float(px_30s), 6),
-                    "size": round(float(sz), 6),
                     "reported_adverse_move": round(float(adv_move), 6),
                     "expected_adverse_move": round(float(expected), 6) if expected is not None else None,
                 },
@@ -67,10 +64,10 @@ class FillAnalysisCheck(BaseCheck):
 
         # fill_price or price_30s outside [0, 1] — CRITICAL
         oob_rows = await session.execute(text("""
-            SELECT fa.bot_name, fa.market_id, fa.side,
+            SELECT fa.source_bot, fa.market_id, fa.fill_side,
                    CAST(fa.fill_price AS DOUBLE PRECISION) AS fill_px,
                    CAST(fa.price_30s  AS DOUBLE PRECISION) AS px_30s,
-                   fa.fill_id
+                   fa.id AS fill_id
             FROM fill_analysis fa
             WHERE fa.fill_price IS NOT NULL
               AND (
@@ -101,12 +98,12 @@ class FillAnalysisCheck(BaseCheck):
 
         # price_300s NULL for rows older than 6h — WARNING (pipeline gap)
         stale_rows = await session.execute(text("""
-            SELECT fa.bot_name, fa.market_id, COUNT(*) AS gap_count
+            SELECT fa.source_bot, fa.market_id, COUNT(*) AS gap_count
             FROM fill_analysis fa
             WHERE fa.price_300s IS NULL
-              AND fa.filled_at IS NOT NULL
-              AND fa.filled_at < NOW() - INTERVAL '6 hours'
-            GROUP BY fa.bot_name, fa.market_id
+              AND fa.fill_time IS NOT NULL
+              AND fa.fill_time < NOW() - INTERVAL '6 hours'
+            GROUP BY fa.source_bot, fa.market_id
             HAVING COUNT(*) > 0
             ORDER BY gap_count DESC
             LIMIT 100

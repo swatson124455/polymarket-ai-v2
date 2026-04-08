@@ -7,9 +7,9 @@ Gaps indicate the bot stopped running or the snapshot writer failed.
 Checks:
 1. No snapshot for any active bot in the last 30 minutes → CRITICAL
 2. No snapshot for any active bot in the last 10 minutes → WARNING
-3. equity_value decreasing monotonically over the last 3+ consecutive snapshots
+3. total_equity decreasing monotonically over the last 3+ consecutive snapshots
    (drawdown trend) → WARNING
-4. equity_value IS NULL or <= 0 in any snapshot → WARNING (data quality)
+4. total_equity IS NULL or <= 0 in any snapshot → WARNING (data quality)
 """
 import time
 from typing import List
@@ -33,11 +33,11 @@ class EquitySnapshotCheck(BaseCheck):
 
         # Gap detection — last snapshot per bot
         gap_rows = await session.execute(text("""
-            SELECT bot_name, MAX(snapshot_time) AS last_snapshot,
-                   EXTRACT(EPOCH FROM (NOW() - MAX(snapshot_time))) / 60 AS gap_minutes
+            SELECT bot_name, MAX(snapshot_date) AS last_snapshot,
+                   EXTRACT(EPOCH FROM (NOW() - MAX(snapshot_date))) / 60 AS gap_minutes
             FROM equity_snapshots
             GROUP BY bot_name
-            HAVING EXTRACT(EPOCH FROM (NOW() - MAX(snapshot_time))) / 60 > :warn_gap
+            HAVING EXTRACT(EPOCH FROM (NOW() - MAX(snapshot_date))) / 60 > :warn_gap
             ORDER BY gap_minutes DESC
         """), {"warn_gap": _WARNING_GAP_MINUTES})
         for row in gap_rows.fetchall():
@@ -59,12 +59,12 @@ class EquitySnapshotCheck(BaseCheck):
         # Monotonic drawdown over last 3 consecutive snapshots
         drawdown_rows = await session.execute(text("""
             WITH recent AS (
-                SELECT bot_name, snapshot_time,
-                       CAST(equity_value AS DOUBLE PRECISION) AS eq,
-                       ROW_NUMBER() OVER (PARTITION BY bot_name ORDER BY snapshot_time DESC) AS rn
+                SELECT bot_name, snapshot_date,
+                       CAST(total_equity AS DOUBLE PRECISION) AS eq,
+                       ROW_NUMBER() OVER (PARTITION BY bot_name ORDER BY snapshot_date DESC) AS rn
                 FROM equity_snapshots
-                WHERE equity_value IS NOT NULL
-                  AND CAST(equity_value AS DOUBLE PRECISION) > 0
+                WHERE total_equity IS NOT NULL
+                  AND CAST(total_equity AS DOUBLE PRECISION) > 0
             ),
             ranked_3 AS (
                 SELECT bot_name,
@@ -95,12 +95,12 @@ class EquitySnapshotCheck(BaseCheck):
                 },
             ))
 
-        # NULL or zero equity_value in recent snapshots
+        # NULL or zero total_equity in recent snapshots
         bad_value_rows = await session.execute(text("""
             SELECT bot_name, COUNT(*) AS bad_count
             FROM equity_snapshots
-            WHERE snapshot_time >= NOW() - INTERVAL '1 hour'
-              AND (equity_value IS NULL OR CAST(equity_value AS DOUBLE PRECISION) <= 0)
+            WHERE snapshot_date >= NOW() - INTERVAL '1 hour'
+              AND (total_equity IS NULL OR CAST(total_equity AS DOUBLE PRECISION) <= 0)
             GROUP BY bot_name
             HAVING COUNT(*) > 0
         """))
@@ -112,7 +112,7 @@ class EquitySnapshotCheck(BaseCheck):
                 market_id=None,
                 severity="WARNING",
                 details={
-                    "reason": "null_or_zero_equity_value",
+                    "reason": "null_or_zero_total_equity",
                     "bad_count_1h": int(count),
                 },
             ))

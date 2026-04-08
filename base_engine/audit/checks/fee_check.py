@@ -35,12 +35,12 @@ class FeeCheck(BaseCheck):
             SELECT bot_name, market_id, side,
                    CAST(size AS DOUBLE PRECISION)   AS sz,
                    CAST(price AS DOUBLE PRECISION)  AS px,
-                   CAST(fee AS DOUBLE PRECISION)    AS fee_val,
+                   CAST(fees AS DOUBLE PRECISION)    AS fee_val,
                    sequence_num
             FROM trade_events
             WHERE event_type = 'ENTRY'
-              AND fee IS NOT NULL
-              AND CAST(fee AS DOUBLE PRECISION) < 0
+              AND fees IS NOT NULL
+              AND CAST(fees AS DOUBLE PRECISION) < 0
             LIMIT 100
         """))
         for row in neg_rows.fetchall():
@@ -65,17 +65,17 @@ class FeeCheck(BaseCheck):
             SELECT bot_name, market_id, side,
                    CAST(size AS DOUBLE PRECISION)   AS sz,
                    CAST(price AS DOUBLE PRECISION)  AS px,
-                   CAST(fee AS DOUBLE PRECISION)    AS fee_val,
+                   CAST(fees AS DOUBLE PRECISION)    AS fee_val,
                    sequence_num
             FROM trade_events
             WHERE event_type = 'ENTRY'
-              AND fee IS NOT NULL
+              AND fees IS NOT NULL
               AND size IS NOT NULL
               AND price IS NOT NULL
               AND CAST(size AS DOUBLE PRECISION) > 0
               AND CAST(price AS DOUBLE PRECISION) > 0
-              AND CAST(fee AS DOUBLE PRECISION) > 0
-              AND CAST(fee AS DOUBLE PRECISION)
+              AND CAST(fees AS DOUBLE PRECISION) > 0
+              AND CAST(fees AS DOUBLE PRECISION)
                   > CAST(size AS DOUBLE PRECISION) * CAST(price AS DOUBLE PRECISION) * 0.05
             LIMIT 100
         """))
@@ -111,8 +111,8 @@ class FeeCheck(BaseCheck):
                    event_data->>'execution_mode' AS exec_mode
             FROM trade_events
             WHERE event_type = 'ENTRY'
-              AND fee IS NOT NULL
-              AND CAST(fee AS DOUBLE PRECISION) = 0
+              AND fees IS NOT NULL
+              AND CAST(fees AS DOUBLE PRECISION) = 0
               AND size IS NOT NULL
               AND price IS NOT NULL
               AND CAST(size AS DOUBLE PRECISION) > 0
