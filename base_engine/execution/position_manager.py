@@ -291,6 +291,29 @@ class AutomatedPositionManager:
                     except Exception as _price_err:
                         logger.warning("_update_current_prices failed: %s", _price_err)
 
+                # S163: Persist price updates to DB in a separate session.
+                # _update_current_prices modifies in-memory attrs on expunged objects
+                # (invisible to ORM session.commit). Fallback path except:pass blocks
+                # can poison the price session, so use a clean session for UPDATEs.
+                if _prices_ok and positions:
+                    try:
+                        from sqlalchemy import text as _sa_text
+                        async with self.db.get_session() as _persist_session:
+                            _persisted = 0
+                            for _p in positions:
+                                if _p.current_price is not None and _p.entry_price is not None \
+                                        and abs(float(_p.current_price) - float(_p.entry_price)) > 1e-6:
+                                    await _persist_session.execute(_sa_text(
+                                        "UPDATE positions SET current_price = :price, unrealized_pnl = :upnl "
+                                        "WHERE id = :pid"
+                                    ), {"price": float(_p.current_price), "upnl": float(_p.unrealized_pnl or 0), "pid": _p.id})
+                                    _persisted += 1
+                            if _persisted > 0:
+                                await _persist_session.commit()
+                                logger.debug("position_prices_persisted", count=_persisted)
+                    except Exception as _persist_err:
+                        logger.warning("position_price_persist_failed: %s", _persist_err)
+
                 # Step 4: Check positions for exits. Runs with detached objects
                 # regardless of price update outcome. _execute_exit/_execute_stop_loss
                 # re-query by ID in their own sessions (L705+).
@@ -515,7 +538,6 @@ class AutomatedPositionManager:
                 return True  # no prices found, but session is healthy
 
             updated = 0
-            _db_updates = []  # S163: collect explicit UPDATEs for expunged positions
             for pos in positions:
                 tid = str(pos.token_id) if pos.token_id else ""
                 if tid not in latest_prices:
@@ -532,7 +554,6 @@ class AutomatedPositionManager:
                 size = float(pos.size) if pos.size else 0.0
                 pos.unrealized_pnl = (new_price - entry) * size
                 updated += 1
-                _db_updates.append((pos.id, new_price, pos.unrealized_pnl))
 
             # Session 51: CLOB API fallback for positions not in market_prices (e.g. MirrorBot)
             _pm_client = getattr(self.execution_engine, "client", None) if self.execution_engine else None
@@ -574,7 +595,6 @@ class AutomatedPositionManager:
                     size = float(pos.size) if pos.size else 0.0
                     pos.unrealized_pnl = (_api_price - entry) * size
                     updated += 1
-                    _db_updates.append((pos.id, _api_price, pos.unrealized_pnl))
 
             # S160: Collect CLOB fallback prices for market_prices_latest seeding
             _clob_seeds = []
@@ -628,7 +648,6 @@ class AutomatedPositionManager:
                             size = float(pos.size) if pos.size else 0.0
                             pos.unrealized_pnl = (new_price - entry) * size
                             updated += 1
-                            _db_updates.append((pos.id, new_price, pos.unrealized_pnl))
                             _mkt_seeds.append((tid, new_price))
                     except Exception:
                         pass
@@ -650,17 +669,7 @@ class AutomatedPositionManager:
                     except Exception:
                         pass  # Non-fatal — fallback found the price, next cycle re-seeds
 
-            # S163: Explicit DB UPDATE for expunged positions. S161 expunge()
-            # detaches ORM objects — attribute changes are invisible to session.commit().
-            # Without this, current_price/unrealized_pnl never persist to DB.
-            if _db_updates:
-                for _pos_id, _new_price, _new_upnl in _db_updates:
-                    await session.execute(sa_text(
-                        "UPDATE positions SET current_price = :price, unrealized_pnl = :upnl "
-                        "WHERE id = :pid"
-                    ), {"price": _new_price, "upnl": _new_upnl, "pid": _pos_id})
-
-            if updated > 0 or _all_seeds or _db_updates:
+            if updated > 0 or _all_seeds:
                 await session.commit()
                 if updated > 0:
                     logger.debug("Updated current_price for %d/%d positions", updated, len(positions))
