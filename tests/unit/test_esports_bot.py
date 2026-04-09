@@ -299,14 +299,15 @@ class TestAnalyzeOpportunity:
 
     @pytest.mark.asyncio
     async def test_returns_trade_dict_when_yes_edge(self):
-        """Model predicts higher than market -> YES trade with edge."""
+        """Model predicts higher than market -> YES trade with edge.
+        S168: Changed from LoL to Dota2 — LoL YES disabled (ESPORTS_LOL_YES_SHRINK=1.0)."""
         bot = make_bot()
         bot._patch_drift = None
         bot._min_edge = 0.08
         bot._min_confidence = 0.20  # S127: lowered for signal_quality dampening
         # Market price = 0.50, model predicts 0.70 -> edge = 0.20
         market = _make_market(
-            question="Will Team A win the LoL match?",
+            question="Will Team A win the Dota 2 match?",
             yes_price=0.50,
         )
         # Mock Glicko-2 prediction (replaced base_engine.get_predictions fallback)
@@ -314,13 +315,11 @@ class TestAnalyzeOpportunity:
         result = await bot.analyze_opportunity(market)
         assert result is not None
         assert result["side"] == "YES"
-        # S159: LoL YES dampener shrinks model_prob toward market price (40% shrink).
-        # Raw edge 0.20 → dampened to ~0.12 (0.50 + 0.20*0.60 = 0.62, edge = 0.12).
-        assert result["edge"] == pytest.approx(0.12, abs=0.03)
-        assert result["game"] == "lol"
+        # Dota2 has no YES dampener — full edge passes through.
+        # Raw 0.70, BO1 adjustment ~0.694, edge ≈ 0.194.
+        assert result["edge"] == pytest.approx(0.19, abs=0.03)
+        assert result["game"] == "dota2"
         assert result["market_type"] == "match_winner"
-        # S159: LoL YES dampener reduces confidence (side_prob = dampened model_prob).
-        # Raw 0.70 → dampened ~0.62, after BO1 adjustment ~0.616.
         assert result["confidence"] > 0.55
         assert result["confidence"] < 0.80
         assert result["market_id"] == "m1"
@@ -380,7 +379,8 @@ class TestAnalyzeOpportunity:
 
     @pytest.mark.asyncio
     async def test_pregame_type_when_not_live(self):
-        """Market not in live_matches -> type=esports_pregame."""
+        """Market not in live_matches -> type=esports_pregame.
+        S168: Changed from LoL to Dota2 — LoL YES disabled."""
         bot = make_bot()
         bot._patch_drift = None
         bot._live_matches = {}
@@ -388,7 +388,7 @@ class TestAnalyzeOpportunity:
         bot._min_confidence = 0.20  # S127: lowered for signal_quality dampening
         # S135: divergence=0.15 within 0.25 cap
         market = _make_market(
-            question="Will Team A win the LoL match?",
+            question="Will Team A win the Dota 2 match?",
             yes_price=0.45,
         )
         bot._get_glicko2_prediction = AsyncMock(return_value=0.60)
@@ -398,7 +398,8 @@ class TestAnalyzeOpportunity:
 
     @pytest.mark.asyncio
     async def test_live_type_when_live_match_exists(self):
-        """Market in live_matches -> type=esports_live."""
+        """Market in live_matches -> type=esports_live.
+        S168: Changed from LoL to Dota2 — LoL YES disabled."""
         bot = make_bot()
         bot._patch_drift = None
         bot._live_matches = {"m1": {"id": "m1", "game_state": {}}}
@@ -407,7 +408,7 @@ class TestAnalyzeOpportunity:
         # S135: divergence=0.15 within 0.25 cap
         market = _make_market(
             market_id="m1",
-            question="Will Team A win the LoL match?",
+            question="Will Team A win the Dota 2 match?",
             yes_price=0.45,
         )
         bot._get_glicko2_prediction = AsyncMock(return_value=0.60)

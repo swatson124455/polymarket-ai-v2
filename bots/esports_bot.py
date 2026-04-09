@@ -911,6 +911,22 @@ class EsportsBot(BaseBot):
         if not self._passes_ws_entry_gates(market_id, side, game, trade_price):
             return
 
+        # S168: Per-market reentry premium — WS path must enforce same elevated edge
+        # as scan path (L1497-1504). After edge-gone/trailing exit, require
+        # ESPORTS_REENTRY_MIN_EDGE within 24h window. Prevents churn oscillation.
+        _ws_exit_ts = self._recently_exited.get(market_id)
+        if _ws_exit_ts is not None:
+            _ws_exit_reason = self._exit_reasons.get(market_id, "")
+            if _ws_exit_reason in ("edge_gone", "trailing_edge"):
+                _ws_post_window = float(getattr(settings, "ESPORTS_POST_EXIT_EDGE_WINDOW_S", 86400.0))
+                if time.monotonic() - _ws_exit_ts < _ws_post_window:
+                    _ws_reentry_edge = float(getattr(settings, "ESPORTS_REENTRY_MIN_EDGE", 0.12))
+                    if abs(edge) < _ws_reentry_edge:
+                        logger.info("esportsbot_ws_post_exit_edge_gate",
+                                    market_id=market_id, edge=round(edge, 4),
+                                    min_edge=_ws_reentry_edge, reason=_ws_exit_reason)
+                        return
+
         self._ws_pending_trades.add(market_id)
         try:
             side_prob = model_prob if side == "YES" else (1.0 - model_prob)
@@ -1765,7 +1781,9 @@ class EsportsBot(BaseBot):
             cache = getattr(getattr(self, "base_engine", None), "cache", None)
             if cache is None or not getattr(cache, "redis", None):
                 return
-            ttl = (int(float(getattr(settings, "ESPORTS_EDGE_GONE_COOLDOWN_SECONDS", 1800.0)))
+            # S168: TTL extended to post-exit elevated edge window (24h) for edge_gone/trailing
+            # so the reentry premium survives restarts. Old TTL was cooldown-only (30min).
+            ttl = (int(float(getattr(settings, "ESPORTS_POST_EXIT_EDGE_WINDOW_S", 86400.0)))
                    if reason in ("edge_gone", "trailing_edge")
                    else int(float(getattr(settings, "ESPORTS_EXIT_COOLDOWN_SECONDS", 300.0))))
             expire_at = time.time() + ttl
@@ -2196,6 +2214,18 @@ class EsportsBot(BaseBot):
                                     peak_edge=round(_peak, 4))
                         positions_to_close.append((pos, "trailing_edge"))
                     continue
+
+            # S168: Unconditional hard stop-loss floor — fires BEFORE edge override.
+            # If PnL <= -40%, the model disagrees with the market by 40%.
+            # No edge override, no dead-market skip — exit unconditionally.
+            _hard_stop = float(getattr(settings, "ESPORTS_HARD_STOP_LOSS_PCT", 0.40))
+            if pnl_pct <= -_hard_stop:
+                logger.info("esportsbot_hard_stop_loss", market_id=mid,
+                            pnl_pct=f"{pnl_pct:.2%}", side=side,
+                            entry=round(entry, 4), current=round(current, 4),
+                            remaining_edge=round(_remaining_edge, 4) if _remaining_edge is not None else None)
+                positions_to_close.append((pos, "hard_stop_loss"))
+                continue
 
             # S134 Fix B + S136 Phase 3A: Stop-loss with edge override
             # Floor price guard: sub-$0.10 = dead book, let resolution handle it.
@@ -4293,7 +4323,19 @@ class EsportsBot(BaseBot):
         _decay_mult = self._get_edge_decay_sizing_mult(opp.get("game", ""))
         # S131: Signal quality scales SIZE, not probability. Low-trust → smaller bet.
         _sq_sizing = float(opp.get("_signal_quality", 1.0))
-        size = size * phi_factor * dd_factor * _game_mult * _decay_mult * _sq_sizing
+        _combined_dampener = phi_factor * dd_factor * _game_mult * _decay_mult * _sq_sizing
+        # S168: Compound dampener floor (INTERIM gate — proper fix is unified risk budget).
+        # If all dampeners combined push below 15% of Kelly, don't trade at all.
+        # Below 15%, positions are pure fee drag — too small to be meaningful.
+        _compound_floor = float(getattr(settings, "ESPORTS_COMPOUND_DAMPENER_FLOOR", 0.15))
+        if _combined_dampener < _compound_floor:
+            logger.info("esportsbot_compound_floor_reject", market_id=opp.get("market_id"),
+                        combined=round(_combined_dampener, 4),
+                        phi=round(phi_factor, 4), dd=round(dd_factor, 4),
+                        game=round(_game_mult, 4), decay=round(_decay_mult, 4),
+                        sq=round(_sq_sizing, 4))
+            return False
+        size = size * _combined_dampener
 
         # Upset risk scaling [T1-D]: reduce sizing for volatile favorites
         if getattr(settings, "ESPORTS_UPSET_RISK_ENABLED", True):
