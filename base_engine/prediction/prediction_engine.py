@@ -558,7 +558,10 @@ class PredictionEngine:
                 async with self.db.get_session() as _s:
                     # Resolve market_id aliases: some markets use condition_id, others use id.
                     # ~10% of positions only match via condition_id (MirrorBot Commit 3B data).
-                    _alias_result = await asyncio.wait_for(_s.execute(sa_text("""
+                    # S166: per-query 10s timeout via PG wire protocol (not asyncio.wait_for
+                    # which corrupts asyncpg connections on cancellation — S162 P0).
+                    await _s.execute(sa_text("SET LOCAL statement_timeout = '10000'"))
+                    _alias_result = await _s.execute(sa_text("""
                         SELECT req_id, array_agg(DISTINCT trade_mid) AS trade_mids
                         FROM (
                             SELECT u.req_id, u.req_id AS trade_mid
@@ -574,7 +577,7 @@ class PredictionEngine:
                             JOIN markets m ON m.condition_id = u.req_id
                         ) sub
                         GROUP BY req_id
-                    """), {"mids": chunk}), timeout=10.0)
+                    """), {"mids": chunk})
                     _alias_map = {}  # trade_mid -> list of req_ids
                     _all_trade_mids = set()
                     for row in _alias_result:
@@ -588,7 +591,9 @@ class PredictionEngine:
                         continue
 
                     # Batch elite direction query — one query per chunk
-                    _elite_result = await asyncio.wait_for(_s.execute(sa_text("""
+                    # S166: session-level statement_timeout (30s) covers this query.
+                    # Removed asyncio.wait_for — corrupts asyncpg on cancellation (S162 P0).
+                    _elite_result = await _s.execute(sa_text("""
                         SELECT
                             t.market_id,
                             COALESCE(SUM(
@@ -617,7 +622,7 @@ class PredictionEngine:
                     """), {
                         "trade_mids": list(_all_trade_mids),
                         "c1h": _c1h, "c6h": _c6h, "c24h": _c24h, "c90d": _c90d,
-                    }), timeout=30.0)
+                    })
 
                     # Map results back to requested market_ids and populate cache
                     _seen_req_ids = set()
@@ -642,14 +647,14 @@ class PredictionEngine:
 
                     _refreshed += len(_seen_req_ids)
 
-            except asyncio.TimeoutError:
-                logger.warning("elite_batch_timeout chunk=%d-%d", i, i + len(chunk))
-                try:
-                    pass  # session already cleaned up by context manager
-                except Exception:
-                    pass
             except Exception as e:
-                logger.warning("elite_batch_failed chunk=%d-%d: %s", i, i + len(chunk), e)
+                # S166: PG statement_timeout surfaces as OperationalError with
+                # "canceling statement due to statement timeout". Log distinctly.
+                _is_timeout = "statement timeout" in str(e).lower()
+                if _is_timeout:
+                    logger.warning("elite_batch_timeout chunk=%d-%d", i, i + len(chunk))
+                else:
+                    logger.warning("elite_batch_failed chunk=%d-%d: %s", i, i + len(chunk), e)
 
         if _refreshed > 0:
             logger.info("elite_batch_refresh count=%d/%d", _refreshed, len(market_ids))
@@ -728,7 +733,11 @@ class PredictionEngine:
         # To re-enable: set LOAD_MODELS_FROM_DB=true in .env
         if getattr(settings, "LOAD_MODELS_FROM_DB", False) and self.db.session_factory:
             try:
-                await asyncio.wait_for(self.load_models_from_db(), timeout=30)
+                # S166: removed asyncio.wait_for — DB query inside load_models_from_db()
+                # is protected by session-level statement_timeout. CPU pickle.loads is not
+                # a DB corruption risk. asyncio.wait_for cancellation mid-query corrupts
+                # asyncpg protocol state (S162 P0).
+                await self.load_models_from_db()
                 if self.models:
                     self.initialized = True
                     self.last_trained_at = datetime.now(timezone.utc)
@@ -736,8 +745,6 @@ class PredictionEngine:
                     self._save_models_to_file()  # Cache locally for next startup
                     await self._init_elevation_modules()
                     return
-            except asyncio.TimeoutError:
-                logger.warning("Loading models from database timed out, will train fresh")
             except Exception as e:
                 logger.warning("Could not load models from database, will train: %s", e)
 
@@ -3125,10 +3132,12 @@ class PredictionEngine:
                         _c90d = (_as_of - timedelta(days=90))
                         if _need_elite:
                             try:
-                                # S159 C24: 10s hard cap on elite queries — they join
-                                # trades × users with complex aggregations and can timeout,
-                                # holding connections until cancelled (21 timeouts/10min observed).
-                                r_elite = await asyncio.wait_for(_s.execute(sa_text("""
+                                # S166: 10s hard cap via PG wire protocol (not asyncio.wait_for
+                                # which corrupts asyncpg connections on cancellation — S162 P0).
+                                # S159 C24: elite queries join trades × users with complex
+                                # aggregations and can timeout (21 timeouts/10min observed).
+                                await _s.execute(sa_text("SET LOCAL statement_timeout = '10000'"))
+                                r_elite = await _s.execute(sa_text("""
                                     SELECT
                                         COALESCE(SUM(
                                             CASE WHEN t.side IN ('YES', 'BUY') THEN 1.0 ELSE -1.0 END
@@ -3155,7 +3164,7 @@ class PredictionEngine:
                                     AND u.is_elite = TRUE
                                     AND COALESCE(u.is_likely_market_maker, false) = false
                                     AND t.timestamp >= :c90d
-                                """), {"market_id": market_id, "c1h": _c1h, "c6h": _c6h, "c24h": _c24h, "c90d": _c90d}), timeout=10.0)
+                                """), {"market_id": market_id, "c1h": _c1h, "c6h": _c6h, "c24h": _c24h, "c90d": _c90d})
                                 erow = r_elite.fetchone()
                                 if erow:
                                     elite_net = max(-1.0, min(1.0, float(erow[0] or 0)))
@@ -3165,14 +3174,14 @@ class PredictionEngine:
                                 self._elite_cache.set(f"elite:{market_id}", {
                                     "net": elite_net, "1h": elite_1h, "6h": elite_6h, "24h": elite_24h
                                 })
-                            except asyncio.TimeoutError:
-                                logger.debug("elite_query_timeout_10s", market_id=market_id)
-                                try:
-                                    await _s.rollback()
-                                except Exception:
-                                    pass
                             except Exception as e:
-                                logger.warning("Elite query failed (using zeros): %s", e)
+                                # S166: PG statement_timeout surfaces as OperationalError.
+                                # Rollback needed — PG aborts transaction on timeout.
+                                _is_timeout = "statement timeout" in str(e).lower()
+                                if _is_timeout:
+                                    logger.debug("elite_query_timeout_10s", market_id=market_id)
+                                else:
+                                    logger.warning("Elite query failed (using zeros): %s", e)
                                 # ROLLBACK aborted transaction so subsequent queries in this session work
                                 try:
                                     await _s.rollback()
