@@ -539,40 +539,45 @@ class AutomatedPositionManager:
             # via the markets table, then query market_prices by market_id. Handles the
             # ingestion gap where market_prices.token_id doesn't match positions.token_id
             # but market_prices has rows keyed by market_id (which can be id or condition_id).
+            # S166: Entire block wrapped in SAVEPOINT — the LATERAL JOIN on market_prices
+            # can fail (timeout, type mismatch) and poison the session. Without the SAVEPOINT,
+            # Fallback 4 and all downstream operations inherit InFailedSQLTransactionError.
             _still_miss = [t for t in token_ids if t not in latest_prices]
             if _still_miss:
                 try:
-                    _fb2b_result = await session.execute(
-                        sa_text("""
-                            SELECT m_tok.token_id, lp.price, lp.timestamp
-                            FROM (
-                                SELECT yes_token_id AS token_id, id AS market_id FROM markets
-                                WHERE yes_token_id = ANY(:miss_ids)
-                                UNION ALL
-                                SELECT no_token_id AS token_id, id AS market_id FROM markets
-                                WHERE no_token_id = ANY(:miss_ids)
-                            ) m_tok
-                            CROSS JOIN LATERAL (
-                                SELECT price, timestamp
-                                FROM market_prices mp
-                                WHERE (mp.market_id = m_tok.market_id
-                                       OR mp.market_id = (SELECT condition_id FROM markets WHERE id = m_tok.market_id))
-                                  AND mp.timestamp > NOW() - INTERVAL '7 days'
-                                ORDER BY mp.timestamp DESC
-                                LIMIT 1
-                            ) lp
-                        """),
-                        {"miss_ids": _still_miss}
-                    )
-                    _fb2b_count = 0
-                    _fb2b_seeds = []
-                    for r in _fb2b_result.fetchall():
-                        if r[1] is not None and float(r[1]) > 0:
-                            latest_prices[str(r[0])] = float(r[1])
-                            _fb2b_count += 1
-                            _fb2b_seeds.append((str(r[0]), float(r[1]), r[2]))
-                    if _fb2b_count > 0:
-                        logger.info("price_fallback_market_id_join", found=_fb2b_count, missed=len(_still_miss))
+                    async with session.begin_nested():
+                        _fb2b_result = await session.execute(
+                            sa_text("""
+                                SELECT m_tok.token_id, lp.price, lp.timestamp
+                                FROM (
+                                    SELECT yes_token_id AS token_id, id AS market_id FROM markets
+                                    WHERE yes_token_id = ANY(:miss_ids)
+                                    UNION ALL
+                                    SELECT no_token_id AS token_id, id AS market_id FROM markets
+                                    WHERE no_token_id = ANY(:miss_ids)
+                                ) m_tok
+                                CROSS JOIN LATERAL (
+                                    SELECT price, timestamp
+                                    FROM market_prices mp
+                                    WHERE (mp.market_id = m_tok.market_id
+                                           OR mp.market_id = (SELECT condition_id FROM markets WHERE id = m_tok.market_id))
+                                      AND mp.timestamp > NOW() - INTERVAL '7 days'
+                                    ORDER BY mp.timestamp DESC
+                                    LIMIT 1
+                                ) lp
+                            """),
+                            {"miss_ids": _still_miss}
+                        )
+                        _fb2b_count = 0
+                        _fb2b_seeds = []
+                        for r in _fb2b_result.fetchall():
+                            if r[1] is not None and float(r[1]) > 0:
+                                latest_prices[str(r[0])] = float(r[1])
+                                _fb2b_count += 1
+                                _fb2b_seeds.append((str(r[0]), float(r[1]), r[2]))
+                        if _fb2b_count > 0:
+                            logger.info("price_fallback_market_id_join", found=_fb2b_count, missed=len(_still_miss))
+                    # Seed outside the SAVEPOINT (uses its own begin_nested per INSERT)
                     for _seed_tid, _seed_price, _seed_ts in _fb2b_seeds:
                         try:
                             async with session.begin_nested():
@@ -586,7 +591,7 @@ class AutomatedPositionManager:
                         except Exception as _seed_err:
                             logger.warning("seed_mpl_market_id_join failed: tid=%s err=%s", _seed_tid, _seed_err)
                 except Exception as _fb2b_err:
-                    logger.debug("price_fallback_market_id_join_failed", error=str(_fb2b_err))
+                    logger.warning("price_fallback_market_id_join_failed: %s", _fb2b_err)
 
             if not latest_prices:
                 return True  # no prices found, but session is healthy
