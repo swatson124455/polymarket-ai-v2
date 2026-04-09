@@ -969,10 +969,10 @@ class Database:
             try:
                 async with self.get_session() as session:
                     from sqlalchemy import text
-                    result = await asyncio.wait_for(
-                        session.execute(text("SELECT 1")),
-                        timeout=8,
-                    )
+                    # S166: removed asyncio.wait_for — client-side cancellation corrupts
+                    # asyncpg protocol state (S162 P0). Server-side SET statement_timeout
+                    # (set by get_session) handles hung queries safely via PG wire protocol.
+                    result = await session.execute(text("SELECT 1"))
                     test_value = result.scalar()
                     if test_value != 1:
                         raise DatabaseError(
