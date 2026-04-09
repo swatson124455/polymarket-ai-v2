@@ -679,9 +679,9 @@ class MirrorBot(BaseBot):
         # P3-2: Wrap with 10s timeout — elite refresh DB query can block scan 30s+ under pool pressure
         if not self.elite_traders or self._scan_count % self._elite_refresh_every_n_scans == 0:
             try:
-                await asyncio.wait_for(self._update_elite_traders(), timeout=10.0)
+                await asyncio.wait_for(self._update_elite_traders(), timeout=30.0)
             except asyncio.TimeoutError:
-                logger.warning("MirrorBot elite refresh timed out (10s) — continuing with stale list")
+                logger.warning("MirrorBot elite refresh timed out (30s) — continuing with stale list")
             except Exception as _elite_err:
                 logger.debug("MirrorBot elite refresh failed: %s", _elite_err)
             # S115: Refresh reliability tracker independently — elite timeout must not kill F1
@@ -1025,7 +1025,7 @@ class MirrorBot(BaseBot):
                                     await _rtds_s.commit()
                                     _rtds_persisted += 1
                         except Exception as e:
-                            logger.debug("mirror_rtds_persist_fail: %s", e)
+                            logger.warning("mirror_rtds_persist_fail: %s", e)
             if _rtds_updated:
                 logger.info("mirror_rtds_price_overlay", updated=_rtds_updated,
                             persisted=_rtds_persisted,
@@ -1588,7 +1588,7 @@ class MirrorBot(BaseBot):
             await cache.set("mirrorbot:dedup", keys, ttl=86400)
             logger.info("mirror_dedup_saved", n_keys=len(keys))
         except Exception as e:
-            logger.debug("mirror_dedup_save failed: %s", e)
+            logger.warning("mirror_dedup_save failed: %s", e)
 
     async def _restore_dedup_from_redis(self) -> None:
         """Restore mirrored_trades from Redis on startup."""
