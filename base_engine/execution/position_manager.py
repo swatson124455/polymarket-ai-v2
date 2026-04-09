@@ -492,33 +492,37 @@ class AutomatedPositionManager:
 
             # S156: Fallback for tokens missing from latest table — time-bounded
             # lateral join on historical market_prices (capped at 7 days).
+            # S166: SELECT wrapped in SAVEPOINT — the LATERAL JOIN on market_prices
+            # can fail (timeout, large result set) and poison the session, cascading
+            # InFailedSQLTransactionError to all downstream fallbacks.
             _missing = [t for t in token_ids if t not in latest_prices]
             if _missing:
                 try:
-                    _fb_result = await session.execute(
-                        sa_text("""
-                            SELECT t.token_id, lp.price, lp.timestamp
-                            FROM unnest(:miss_ids::text[]) AS t(token_id)
-                            CROSS JOIN LATERAL (
-                                SELECT price, timestamp
-                                FROM market_prices mp
-                                WHERE mp.token_id = t.token_id
-                                  AND mp.timestamp > NOW() - INTERVAL '7 days'
-                                ORDER BY mp.timestamp DESC
-                                LIMIT 1
-                            ) lp
-                        """),
-                        {"miss_ids": _missing}
-                    )
-                    _fb_count = 0
-                    _fb_seeds = []  # S159 C22: collect for market_prices_latest seeding
-                    for r in _fb_result.fetchall():
-                        if r[1] is not None and float(r[1]) > 0:
-                            latest_prices[str(r[0])] = float(r[1])
-                            _fb_count += 1
-                            _fb_seeds.append((str(r[0]), float(r[1]), r[2]))
-                    if _fb_count > 0:
-                        logger.debug("price_fallback_historical", found=_fb_count, missed=len(_missing))
+                    async with session.begin_nested():
+                        _fb_result = await session.execute(
+                            sa_text("""
+                                SELECT t.token_id, lp.price, lp.timestamp
+                                FROM unnest(:miss_ids::text[]) AS t(token_id)
+                                CROSS JOIN LATERAL (
+                                    SELECT price, timestamp
+                                    FROM market_prices mp
+                                    WHERE mp.token_id = t.token_id
+                                      AND mp.timestamp > NOW() - INTERVAL '7 days'
+                                    ORDER BY mp.timestamp DESC
+                                    LIMIT 1
+                                ) lp
+                            """),
+                            {"miss_ids": _missing}
+                        )
+                        _fb_count = 0
+                        _fb_seeds = []  # S159 C22: collect for market_prices_latest seeding
+                        for r in _fb_result.fetchall():
+                            if r[1] is not None and float(r[1]) > 0:
+                                latest_prices[str(r[0])] = float(r[1])
+                                _fb_count += 1
+                                _fb_seeds.append((str(r[0]), float(r[1]), r[2]))
+                        if _fb_count > 0:
+                            logger.debug("price_fallback_historical", found=_fb_count, missed=len(_missing))
                     # S159 C22: Seed market_prices_latest so next cycle skips fallback
                     for _seed_tid, _seed_price, _seed_ts in _fb_seeds:
                         try:
@@ -533,7 +537,7 @@ class AutomatedPositionManager:
                         except Exception as _seed_err:
                             logger.warning("seed_mpl_historical failed: tid=%s err=%s", _seed_tid, _seed_err)
                 except Exception as _fb_err:
-                    logger.debug("price_fallback_failed", error=str(_fb_err))
+                    logger.warning("price_fallback_historical_failed: %s", _fb_err)
 
             # S164: Fallback 2b — for tokens still missing, resolve token_id → market_id
             # via the markets table, then query market_prices by market_id. Handles the
