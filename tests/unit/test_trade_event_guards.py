@@ -130,14 +130,33 @@ class TestInsertTradeEventResolutionGuard:
 
     @pytest.mark.asyncio
     async def test_exit_event_uses_insert_values(self):
-        """EXIT events use INSERT...VALUES (not INSERT...SELECT) — no guard needed."""
+        """EXIT events use INSERT...SELECT WHERE NOT EXISTS for partition-safe dedup."""
         from base_engine.data.database import Database
 
         db = Database.__new__(Database)
         db.session_factory = MagicMock()
 
         mock_session = AsyncMock()
-        mock_session.execute = AsyncMock(return_value=MagicMock(fetchone=MagicMock(return_value=(1,))))
+        # S167: EXIT now has 4 execute calls:
+        #   [0] SET LOCAL synchronous_commit
+        #   [1] FK check (SELECT 1 FROM markets) — return row to pass
+        #   [2] EXIT size guard (SUM entry/exit) — entry=100, exit=0 to allow
+        #   [3] INSERT...SELECT (the actual insert)
+        mock_fk_result = MagicMock()
+        mock_fk_result.fetchone.return_value = (1,)  # market exists
+
+        mock_size_result = MagicMock()
+        mock_size_result.fetchone.return_value = (100.0, 0.0)  # entry=100, exit=0
+
+        mock_insert_result = MagicMock()
+        mock_insert_result.fetchone.return_value = (1,)  # inserted, returns seq
+
+        mock_session.execute = AsyncMock(side_effect=[
+            MagicMock(),        # SET LOCAL
+            mock_fk_result,     # FK check
+            mock_size_result,   # EXIT size guard
+            mock_insert_result, # INSERT
+        ])
         mock_session.commit = AsyncMock()
 
         mock_cm = AsyncMock()
@@ -155,7 +174,8 @@ class TestInsertTradeEventResolutionGuard:
             realized_pnl=1.0,
         )
 
-        insert_call = mock_session.execute.call_args_list[1]
+        # INSERT is the 4th execute call (index 3)
+        insert_call = mock_session.execute.call_args_list[3]
         sql = str(insert_call[0][0].text)
         # S159: Changed from INSERT...VALUES to INSERT...SELECT WHERE NOT EXISTS
         # for partition-safe idempotency (same pattern as RESOLUTION path since S87).
@@ -234,3 +254,201 @@ class TestTradeEventAudit:
 
         result = await audit_trade_events(mock_db)
         assert result == {}
+
+
+class TestS167ResolutionDedupNoSide:
+    """S167: RESOLUTION dedup should NOT use side — one per (bot, market)."""
+
+    @pytest.mark.asyncio
+    async def test_resolution_sql_omits_side_from_dedup(self):
+        """Verify the RESOLUTION NOT EXISTS guard does not include te.side."""
+        from base_engine.data.database import Database
+
+        db = Database.__new__(Database)
+        db.session_factory = MagicMock()
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(
+            return_value=MagicMock(fetchone=MagicMock(return_value=None))
+        )
+        mock_session.commit = AsyncMock()
+
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        db.get_session = MagicMock(return_value=mock_cm)
+
+        await db.insert_trade_event(
+            event_type="RESOLUTION",
+            bot_name="TestBot",
+            market_id="0xtest",
+            side="YES",
+            size=10.0,
+            price=0.0,
+        )
+
+        # The RESOLUTION INSERT is the 2nd execute call (after SET LOCAL)
+        insert_call = mock_session.execute.call_args_list[1]
+        sql = str(insert_call[0][0].text)
+        # The first NOT EXISTS block (RESOLUTION dedup) must NOT contain "te.side"
+        # Split at the second NOT EXISTS to isolate the first guard
+        first_guard = sql.split("NOT EXISTS")[1].split("NOT EXISTS")[0]
+        assert "te.side" not in first_guard, (
+            "S167: RESOLUTION dedup must NOT include side — one per (bot, market)"
+        )
+
+
+class TestS167ExitOversizeGuard:
+    """S167: EXIT events must be rejected when total exit size exceeds entry size."""
+
+    @pytest.mark.asyncio
+    async def test_exit_rejected_when_oversize(self):
+        """EXIT of 50 should be rejected when existing exits=80, entries=100."""
+        from base_engine.data.database import Database
+
+        db = Database.__new__(Database)
+        db.session_factory = MagicMock()
+
+        mock_session = AsyncMock()
+        mock_fk = MagicMock()
+        mock_fk.fetchone.return_value = (1,)  # market exists
+
+        mock_size = MagicMock()
+        mock_size.fetchone.return_value = (100.0, 80.0)  # entry=100, exit=80
+
+        mock_session.execute = AsyncMock(side_effect=[
+            MagicMock(),   # SET LOCAL
+            mock_fk,       # FK check
+            mock_size,     # size guard: 80+50=130 > 100 → reject
+        ])
+        mock_session.commit = AsyncMock()
+
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        db.get_session = MagicMock(return_value=mock_cm)
+
+        seq = await db.insert_trade_event(
+            event_type="EXIT",
+            bot_name="TestBot",
+            market_id="0xtest",
+            side="YES",
+            size=50.0,
+            price=0.5,
+        )
+
+        assert seq is None, "EXIT should be rejected when total exits exceed entries"
+
+    @pytest.mark.asyncio
+    async def test_exit_allowed_cross_side_transition(self):
+        """EXIT side=SELL on ENTRY side=YES should pass (side-agnostic guard)."""
+        from base_engine.data.database import Database
+
+        db = Database.__new__(Database)
+        db.session_factory = MagicMock()
+
+        mock_session = AsyncMock()
+        mock_fk = MagicMock()
+        mock_fk.fetchone.return_value = (1,)
+
+        mock_size = MagicMock()
+        mock_size.fetchone.return_value = (100.0, 0.0)  # entry=100, exit=0
+
+        mock_insert = MagicMock()
+        mock_insert.fetchone.return_value = (42,)
+
+        mock_session.execute = AsyncMock(side_effect=[
+            MagicMock(),   # SET LOCAL
+            mock_fk,       # FK check
+            mock_size,     # size guard: 0+10 < 100 → allow
+            mock_insert,   # INSERT
+        ])
+        mock_session.commit = AsyncMock()
+
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        db.get_session = MagicMock(return_value=mock_cm)
+
+        seq = await db.insert_trade_event(
+            event_type="EXIT",
+            bot_name="TestBot",
+            market_id="0xtest",
+            side="SELL",  # pre-S163 side
+            size=10.0,
+            price=0.5,
+        )
+
+        assert seq == 42, "EXIT with SELL side should pass (side-agnostic guard)"
+
+
+class TestS167FKValidation:
+    """S167: ENTRY/EXIT on non-existent markets must be rejected."""
+
+    @pytest.mark.asyncio
+    async def test_entry_rejected_when_market_missing(self):
+        """ENTRY on a market not in DB should return None."""
+        from base_engine.data.database import Database
+
+        db = Database.__new__(Database)
+        db.session_factory = MagicMock()
+
+        mock_session = AsyncMock()
+        mock_fk = MagicMock()
+        mock_fk.fetchone.return_value = None  # market does NOT exist
+
+        mock_session.execute = AsyncMock(side_effect=[
+            MagicMock(),   # SET LOCAL
+            mock_fk,       # FK check — fails
+        ])
+        mock_session.commit = AsyncMock()
+
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        db.get_session = MagicMock(return_value=mock_cm)
+
+        seq = await db.insert_trade_event(
+            event_type="ENTRY",
+            bot_name="TestBot",
+            market_id="nonexistent_market",
+            side="YES",
+            size=10.0,
+            price=0.5,
+        )
+
+        assert seq is None, "ENTRY on non-existent market should be rejected"
+
+    @pytest.mark.asyncio
+    async def test_resolution_skips_fk_check(self):
+        """RESOLUTION events should NOT be FK-checked (backfill on deleted markets)."""
+        from base_engine.data.database import Database
+
+        db = Database.__new__(Database)
+        db.session_factory = MagicMock()
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(
+            return_value=MagicMock(fetchone=MagicMock(return_value=(99,)))
+        )
+        mock_session.commit = AsyncMock()
+
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        db.get_session = MagicMock(return_value=mock_cm)
+
+        seq = await db.insert_trade_event(
+            event_type="RESOLUTION",
+            bot_name="TestBot",
+            market_id="deleted_market",
+            side="YES",
+            size=10.0,
+            price=0.0,
+        )
+
+        # RESOLUTION path has 2 execute calls: SET LOCAL + INSERT
+        # No FK check in between
+        assert mock_session.execute.call_count == 2, (
+            "RESOLUTION should have exactly 2 execute calls (no FK check)"
+        )

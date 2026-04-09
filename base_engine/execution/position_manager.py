@@ -270,6 +270,10 @@ class AutomatedPositionManager:
 
                 # S167: Batch-fetch market liquidity for illiquidity exit trigger.
                 # Cached per monitoring cycle (~10s), used in _check_position.
+                # Cache is cleared each cycle to prevent stale entries for markets
+                # no longer in the position list.
+                if getattr(settings, "ILLIQUIDITY_EXIT_ENABLED", False):
+                    self._market_liquidity_cache.clear()
                 if positions and getattr(settings, "ILLIQUIDITY_EXIT_ENABLED", False):
                     try:
                         from sqlalchemy import text as _liq_text
@@ -849,8 +853,9 @@ class AutomatedPositionManager:
             _cached_liq = self._market_liquidity_cache.get(_mid)
             _cost_basis = entry_price * size
             if _cached_liq is not None and _cost_basis > 0 and _cached_liq < _illiq_mult * _cost_basis:
-                # Stage 2: Confirm with live CLOB orderbook before exiting
-                _confirmed_illiquid = True  # default to exit if CLOB check unavailable
+                # Stage 2: Confirm with live CLOB orderbook before exiting.
+                # Conservative: don't exit on incomplete data (timeout/error → hold).
+                _confirmed_illiquid = False
                 _og = getattr(self, "order_gateway", None)
                 _lg = getattr(_og, "liquidity_guardian", None) if _og else None
                 if _lg is not None:
@@ -858,14 +863,17 @@ class AutomatedPositionManager:
                         _token_id = getattr(position, "token_id", "") or ""
                         _liq_result = await asyncio.wait_for(
                             _lg.check_liquidity(token_id=_token_id, size=size, side="SELL"),
-                            timeout=3.0,
+                            timeout=5.0,
                         )
                         if isinstance(_liq_result, dict):
                             _can_exec = _liq_result.get("can_execute", True)
                             _rec = _liq_result.get("recommendation", "proceed")
                             _confirmed_illiquid = (not _can_exec or _rec == "abort")
                     except Exception:
-                        pass  # CLOB check failed — use cached pre-filter result
+                        _confirmed_illiquid = False  # CLOB check failed — conservative, hold
+                else:
+                    # No liquidity guardian available — trust cached pre-filter
+                    _confirmed_illiquid = True
 
                 if _confirmed_illiquid:
                     logger.warning(

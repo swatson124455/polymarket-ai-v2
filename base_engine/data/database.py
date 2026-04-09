@@ -4864,7 +4864,15 @@ class Database:
 
                 # S167: FK validation — reject trade events on markets not in DB.
                 # Prevents orphan trade_events (678 WeatherBot orphans found in S166 audit).
-                # Fail-closed: returns None so callers don't proceed with unrecorded trades.
+                # Returns None (not raise) — matches existing failure mode. Callers that
+                # check the return value (position_manager, backfill scripts) already abort.
+                # paper_trading.py ENTRY path does NOT abort on None — the paper_trade
+                # INSERT runs in parallel via asyncio.gather and proceeds independently.
+                # This is acceptable: paper_trade is position authority, and the missing
+                # event is caught by position_trade_events_check audit. The upstream
+                # guard is that bots only trade markets discovered through ingestion.
+                # PLAN DEVIATION: plan said "raise exception (fail-closed)" but raising
+                # would break 6+ callers with bare except:pass around this call.
                 if event_type in ("ENTRY", "EXIT"):
                     _fk_check = await session.execute(
                         _sa_text(
