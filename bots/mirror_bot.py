@@ -140,21 +140,11 @@ class MirrorBot(BaseBot):
         except Exception as e:
             logger.debug("MirrorAdaptiveSafety init skipped: %s", e)
 
-        # S124: ML trade selector (three-way shadow race: XGBoost / Q-learning / combo)
-        self._ml_selector = None
-        self._ml_selector_loaded: bool = False
-        try:
-            from bots.mirror_ml_selector import MirrorMLSelector
-            self._ml_selector = MirrorMLSelector()
-        except Exception as e:
-            logger.debug("MirrorMLSelector init skipped: %s", e)
-
         # S164: Init summary — shows which optional modules loaded at INFO level
-        logger.info("mirror_optional_modules: reliability=%s calibration=%s adaptive=%s ml=%s",
+        logger.info("mirror_optional_modules: reliability=%s calibration=%s adaptive=%s",
                     self._reliability_tracker is not None,
                     self._calibration_stack is not None,
-                    self._adaptive_safety is not None,
-                    self._ml_selector is not None)
+                    self._adaptive_safety is not None)
 
         # Real-time WebSocket copy trading via EliteWatchlist + RTDS global feed
         self._watchlist = None
@@ -627,15 +617,6 @@ class MirrorBot(BaseBot):
                     logger.info("MirrorBot calibration stack fitted", results=_cal_results)
             except Exception as e:
                 logger.warning("MirrorBot calibration fit failed: %s", e)
-
-        # S124: Load ML selector models on first scan
-        if self._ml_selector and not self._ml_selector_loaded:
-            try:
-                _ml_status = self._ml_selector.load_all()
-                self._ml_selector_loaded = True
-                logger.info("mirror_ml_selector_loaded", **_ml_status)
-            except Exception as e:
-                logger.warning("mirror_ml_selector load failed: %s", e)
 
         # Session 82: Refresh adaptive safety metrics periodically
         if self._adaptive_safety:
@@ -2315,7 +2296,7 @@ class MirrorBot(BaseBot):
             _factor_w = float(getattr(settings, "MIRROR_GATE_FACTOR_WEIGHT", 0.30))
             gate_score = _gate_base * ((1.0 - _factor_w) + _factor_w * _geo)
 
-            # --- Kelly Probability: market-anchored, conservative ---
+            # --- Kelly Probability: YES=price-anchored, NO=WR-anchored (S168) ---
             _copy_tier = 2
             if self._watchlist:
                 _copy_tier = self._watchlist.get_copy_tier(trader_address)
@@ -2323,15 +2304,30 @@ class MirrorBot(BaseBot):
                 _trader_edge = max(0.0, _base - 0.50) * min(1.0, (_eq_n - 5) / 45.0)
             else:
                 # S154: Cold-start — derive edge from same efficiency prior the gate trusts.
-                # Flat 0.01 ignored leaderboard signal, producing dust sizes through BM.
-                # _eff_prior=0.55 → 0.030, _eff_prior=0.65 → 0.090 (capped by MAX_KELLY_EDGE).
-                # _eff_prior=0.53 (unknown) → 0.018 (tiny but non-zero — correct for unknowns).
-                # Multiply by _decay_w so edge naturally fades as _eq_n→5 and warm path takes over.
                 _eff_edge = max(0.0, _eff_prior - 0.50)
                 _trader_edge = max(0.01, _eff_edge * _decay_w * 0.60)
             _kelly_copy_bonus = 0.02 if (_copy_tier == 1 and _copy_adj > 0) else 0.0
             _max_edge = float(getattr(settings, "MIRROR_MAX_KELLY_EDGE", 0.05))
-            kelly_prob = min(price + _max_edge, price + _trader_edge + _kelly_copy_bonus)
+
+            if _side_upper == "NO":
+                # S168: NO-side uses trader's WR (_base) as win probability, not price + edge.
+                # The price-anchored formula structurally suppresses NO edge because cheap NO
+                # tokens (0.30-0.40) produce kelly_prob ~ 0.42-0.45, edge ~ 0.02-0.05, which
+                # fails the 0.05 gate. Same class of bug as EsportsBot (commit f2b92bf, S158).
+                _no_max_edge = float(getattr(settings, "MIRROR_NO_MAX_KELLY_EDGE", 0.10))
+                if _eq_n >= 5:
+                    # Warm: _base IS the trader's per-side NO WR (shrunk toward 0.50)
+                    kelly_prob = max(price + 0.005, min(price + _no_max_edge, _base + _kelly_copy_bonus))
+                else:
+                    # Cold-start: decay-attenuated ramp from price toward efficiency prior.
+                    # Matches YES cold-start design — prevents full-sizing on zero data.
+                    _cold_no_edge = max(0.0, _eff_prior - price) * _decay_w * 0.60
+                    kelly_prob = max(price + 0.005, min(price + _no_max_edge,
+                        price + _cold_no_edge + _kelly_copy_bonus))
+            else:
+                # YES: price-anchored (existing formula, completely unchanged)
+                kelly_prob = min(price + _max_edge, price + _trader_edge + _kelly_copy_bonus)
+
             kelly_prob = max(price + 0.005, min(0.95, kelly_prob))
 
         except Exception:
@@ -2395,40 +2391,6 @@ class MirrorBot(BaseBot):
                     split_live=_split_live,
                     trader=trader_address[:10],
                     market=str(market_id)[:16])
-
-        # S124: ML selector — score trade with all three strategies (shadow + optional live gate)
-        # Fail-open: any ML error must NOT block the trade (log + continue)
-        _ml_scores = None
-        if self._ml_selector and self._ml_selector.loaded:
-            try:
-                _ml_features = {
-                    "conf_base": _base,
-                    "conf_price_adj": _price_adj,
-                    "conf_conv_adj": _conv_adj,
-                    "rel_mult": reliability_mult,
-                    "price": price,
-                    "whale_trade_usd": whale_trade_usd,
-                    "category_encoded": self._ml_selector.encode_category(category),
-                    "consensus": _consensus_count,  # S153: from TTL-aware source
-                    "hour_utc": float(datetime.now(timezone.utc).hour),
-                    "side_is_no": 1.0 if _side_upper == "NO" else 0.0,
-                    "price_extremity": abs(price - 0.50),
-                    "conf_composite": confidence,
-                }
-                _ml_scores = self._ml_selector.score_trade(_ml_features)
-
-                # Live gate: only block when MIRROR_USE_ML_SELECTOR=true
-                if getattr(settings, "MIRROR_USE_ML_SELECTOR", False) and self._ml_selector.should_block(_ml_scores):
-                    logger.info("mirror_ml_rejected",
-                                strategy=getattr(settings, "MIRROR_ML_STRATEGY", "xgb"),
-                                xgb=_ml_scores.get("ml_score_xgb"),
-                                ql=_ml_scores.get("ml_score_ql"),
-                                confidence=round(confidence, 3),
-                                market=str(market_id)[:16])
-                    return False
-            except Exception as e:
-                logger.warning("mirror_ml_selector_error", error=str(e), market=str(market_id)[:16])
-                # Fail-open: _ml_scores stays None, trade proceeds without ML gate
 
         # PERF: MirrorBot is a pure trader-mirroring strategy — confidence comes from
         # elite trader consensus + reliability weighting, not from market signals.
@@ -2699,9 +2661,7 @@ class MirrorBot(BaseBot):
             "eff_prior": round(float(_eff_prior), 3),
             "geo_mean": round(float(_geo), 3),
         }
-        # S124: Merge ML selector scores into event_data for shadow ledger analysis
-        if _ml_scores:
-            _event_data.update(_ml_scores)
+        # S168: ML selector removed (was shadow-only, MIRROR_USE_ML_SELECTOR=false)
 
         # S145: Populate signal meta BEFORE place_order so auto-store picks it up
         self._pending_signal_meta[str(market_id)] = {

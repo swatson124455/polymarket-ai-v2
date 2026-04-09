@@ -391,13 +391,7 @@ class Settings(BaseSettings):
     MIRROR_SKIP_LIQUIDITY_RTDS: bool = os.getenv("MIRROR_SKIP_LIQUIDITY_RTDS", "true").lower() in ("true", "1", "yes")
     MIRROR_SKIP_COORDINATOR_BUY: bool = os.getenv("MIRROR_SKIP_COORDINATOR_BUY", "true").lower() in ("true", "1", "yes")
     MIRROR_RTDS_FAST_PATH: bool = os.getenv("MIRROR_RTDS_FAST_PATH", "true").lower() in ("true", "1", "yes")
-    # S124: ML trade selector (three-way shadow race: XGBoost / Q-learning / combo)
-    MIRROR_USE_ML_SELECTOR: bool = os.getenv("MIRROR_USE_ML_SELECTOR", "false").lower() in ("true", "1", "yes")
-    MIRROR_ML_STRATEGY: str = os.getenv("MIRROR_ML_STRATEGY", "xgb")  # xgb | ql | combo
-    MIRROR_ML_MIN_SCORE: float = float(os.getenv("MIRROR_ML_MIN_SCORE", "0.45"))
-    MIRROR_ML_MODEL_PATH: str = os.getenv("MIRROR_ML_MODEL_PATH", "models/mirror_ml_selector.pkl")
-    MIRROR_ML_QTABLE_PATH: str = os.getenv("MIRROR_ML_QTABLE_PATH", "models/mirror_ml_qtable.pkl")
-    MIRROR_ML_MAX_AGE_DAYS: int = int(os.getenv("MIRROR_ML_MAX_AGE_DAYS", "14"))
+    # S168: ML selector removed (was shadow-only, never enabled live. Saved 10-15ms per RTDS callback)
 
     # Exit logic
     MIRROR_STOP_LOSS_PCT: float = float(os.getenv("MIRROR_STOP_LOSS_PCT", "0.15"))
@@ -422,9 +416,10 @@ class Settings(BaseSettings):
     MIRROR_MIN_WHALE_TRADE_USD: float = float(os.getenv("MIRROR_MIN_WHALE_TRADE_USD", "50.0"))
     # S132: NO-side dampener — NO loses 7x more than YES. 0.5 = half size on NO.
     MIRROR_NO_SIDE_DAMPENER: float = float(os.getenv("MIRROR_NO_SIDE_DAMPENER", "0.3"))  # S137 C5: 0.5→0.3 (NO = -$139K, 87% of losses)
-    MIRROR_NO_PRICE_BLOCK: float = float(os.getenv("MIRROR_NO_PRICE_BLOCK", "0.75"))    # S137 C5: hard block NO when token price >75%
+    # S168: MIRROR_NO_PRICE_BLOCK removed — was defined but never referenced in mirror_bot.py (dead config)
     MIRROR_NO_BLOCK_FLOOR: float = float(os.getenv("MIRROR_NO_BLOCK_FLOOR", "0.20"))   # S146: hard block NO when token price < floor (was 0.10)
     MIRROR_NO_MIN_EDGE: float = float(os.getenv("MIRROR_NO_MIN_EDGE", "0.05"))         # S146: NO must show >=5% edge (confidence - price)
+    MIRROR_NO_MAX_KELLY_EDGE: float = float(os.getenv("MIRROR_NO_MAX_KELLY_EDGE", "0.10"))  # S168: NO max kelly edge cap (wider than YES 0.05)
     # S137 C8: Market volume gate — thin markets have poor execution quality
     MIRROR_MIN_MARKET_VOLUME_24H: float = float(os.getenv("MIRROR_MIN_MARKET_VOLUME_24H", "5000.0"))
     # S137 C9: Category expertise filter — reject traders with poor category-specific WR
@@ -1223,7 +1218,16 @@ class Settings(BaseSettings):
     ODDSPAPI_API_KEY: str = os.getenv("ODDSPAPI_API_KEY", "")
     BALLCHASING_API_KEY: str = os.getenv("BALLCHASING_API_KEY", "")
 
-    ESPORTS_REENTRY_MIN_EDGE: float = float(os.getenv("ESPORTS_REENTRY_MIN_EDGE", "0.08"))
+    # S168: Reentry min edge aligned with code (was 0.08, code used 0.12).
+    # After edge-gone exit, require elevated edge = MIN_EDGE_ENTRY + premium for that market.
+    ESPORTS_REENTRY_MIN_EDGE: float = float(os.getenv("ESPORTS_REENTRY_MIN_EDGE", "0.12"))
+    # S168: Post-exit elevated edge window extended from 2h to 24h. Within this window,
+    # edge-gone markets require ESPORTS_REENTRY_MIN_EDGE for re-entry.
+    ESPORTS_POST_EXIT_EDGE_WINDOW_S: float = float(os.getenv("ESPORTS_POST_EXIT_EDGE_WINDOW_S", "86400.0"))
+    # S168: Compound dampener floor (INTERIM). If phi*dd*game*decay*sq < 0.15,
+    # reject trade entirely — compound penalties below 15% of Kelly are fee drag.
+    # This is a gate, not a dampener. Proper fix: unified risk budget (model session).
+    ESPORTS_COMPOUND_DAMPENER_FLOOR: float = float(os.getenv("ESPORTS_COMPOUND_DAMPENER_FLOOR", "0.15"))
     ESPORTS_PER_MARKET_CAP: float = float(os.getenv("ESPORTS_PER_MARKET_CAP", "600"))
     ESPORTS_FRESHNESS_DECAY_SECONDS: float = float(os.getenv("ESPORTS_FRESHNESS_DECAY_SECONDS", "120.0"))
     ESPORTS_FRESHNESS_DECAY_PREGAME_SECONDS: float = float(os.getenv("ESPORTS_FRESHNESS_DECAY_PREGAME_SECONDS", "600.0"))
@@ -1266,6 +1270,10 @@ class Settings(BaseSettings):
     # --- Per-game thresholds (LoL) ---
     ESPORTS_LOL_GOLD_DIFF_THRESHOLD: int = int(os.getenv("ESPORTS_LOL_GOLD_DIFF_THRESHOLD", "5000"))
     ESPORTS_LOL_TOWER_DIFF_THRESHOLD: int = int(os.getenv("ESPORTS_LOL_TOWER_DIFF_THRESHOLD", "3"))
+    # S168: LoL YES entries disabled by default. At 1.0, shrink eliminates all YES edge
+    # (model_prob = price, edge = 0, fails min_edge_entry gate). Set to 0.0 to re-enable.
+    # Burden of proof: must demonstrate WR > 50% at p < 0.05 before re-enabling.
+    ESPORTS_LOL_YES_SHRINK: float = float(os.getenv("ESPORTS_LOL_YES_SHRINK", "1.0"))
 
     # --- Per-game thresholds (CS2) ---
     ESPORTS_CS2_ROUND_DIFF_THRESHOLD: int = int(os.getenv("ESPORTS_CS2_ROUND_DIFF_THRESHOLD", "5"))
@@ -1278,6 +1286,9 @@ class Settings(BaseSettings):
     # --- Stop-loss (B1) ---
     # 25% stop-loss + 96h hold — esports resolve fast (24-48h), these are safety nets.
     ESPORTS_STOP_LOSS_PCT: float = float(os.getenv("ESPORTS_STOP_LOSS_PCT", "0.25"))
+    # S168: Unconditional hard floor — fires BEFORE edge override, no exceptions.
+    # At -40%, the model disagrees with the market by 40% — that's not conviction, it's broken.
+    ESPORTS_HARD_STOP_LOSS_PCT: float = float(os.getenv("ESPORTS_HARD_STOP_LOSS_PCT", "0.40"))
     ESPORTS_MAX_HOLD_HOURS: float = float(os.getenv("ESPORTS_MAX_HOLD_HOURS", "96"))
     # S109: Post-exit cooldown (seconds) — prevents stop-loss churn (RC1)
     ESPORTS_EXIT_COOLDOWN_SECONDS: float = float(os.getenv("ESPORTS_EXIT_COOLDOWN_SECONDS", "300.0"))
