@@ -66,6 +66,10 @@ class AutomatedPositionManager:
         )
         # S167: Illiquidity exit — cached per monitoring cycle
         self._market_liquidity_cache: Dict[str, float] = {}  # market_id -> liquidity USD
+        # S167 P0-C: Unpriced position retry backoff — prevents pool exhaustion
+        # from permanently-unpriced tokens retrying 4 fallback queries every 10s.
+        self._unpriced_fail_count: Dict[str, int] = {}       # token_id -> consecutive failure cycles
+        self._unpriced_backoff_until: Dict[str, float] = {}  # token_id -> monotonic time to retry
 
     def set_order_gateway(self, gateway) -> None:
         """Route orders through gateway (kill switch, risk, paper)."""
@@ -527,7 +531,16 @@ class AutomatedPositionManager:
             # S166: SELECT wrapped in SAVEPOINT — the LATERAL JOIN on market_prices
             # can fail (timeout, large result set) and poison the session, cascading
             # InFailedSQLTransactionError to all downstream fallbacks.
-            _missing = [t for t in token_ids if t not in latest_prices]
+            # S167 P0-C: Skip tokens in backoff (permanently unpriced, exponential retry).
+            # Without this, 17+ unpriced tokens × 4 fallback queries × every 10s = 68 queries/cycle
+            # that always fail, draining the connection pool and causing scan stalls.
+            _backoff_mono = time.monotonic()
+            _missing = [t for t in token_ids
+                        if t not in latest_prices
+                        and _backoff_mono >= self._unpriced_backoff_until.get(t, 0)]
+            _backed_off = len(token_ids) - len(latest_prices) - len(_missing)
+            if _backed_off > 0:
+                logger.debug("unpriced_backoff_skipped: %d tokens in backoff", _backed_off)
             if _missing:
                 try:
                     async with session.begin_nested():
@@ -788,6 +801,29 @@ class AutomatedPositionManager:
                     len(_unpriced),
                     [str(p.token_id or "")[:16] for p in _unpriced[:5]],
                 )
+
+            # S167 P0-C: Update backoff counters for unpriced tokens.
+            # Tokens that fail 6+ consecutive cycles enter exponential backoff
+            # (5min → 10min → 20min → ... → 60min max). Tokens that get priced reset.
+            _unpriced_tids = {str(p.token_id or "") for p in _unpriced} if _unpriced else set()
+            for tid in _unpriced_tids:
+                if not tid:
+                    continue
+                self._unpriced_fail_count[tid] = self._unpriced_fail_count.get(tid, 0) + 1
+                _fails = self._unpriced_fail_count[tid]
+                if _fails >= 6:  # 60s of failures → start backoff
+                    _backoff_s = min(300 * (2 ** (_fails - 6)), 3600)  # 5m, 10m, 20m, ... 60m cap
+                    self._unpriced_backoff_until[tid] = time.monotonic() + _backoff_s
+                    if _fails == 6:
+                        logger.warning(
+                            "unpriced_backoff_started: tid=%s after %d cycles, retry in %ds",
+                            tid[:16], _fails, _backoff_s,
+                        )
+            # Reset counters for tokens that got priced this cycle
+            for tid in list(self._unpriced_fail_count):
+                if tid in latest_prices or tid in self._api_price_cache:
+                    self._unpriced_fail_count.pop(tid, None)
+                    self._unpriced_backoff_until.pop(tid, None)
 
             # Session 51 P1-4: Alert on stale prices
             if _stale_tokens and self.alerting:
