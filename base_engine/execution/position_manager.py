@@ -534,7 +534,7 @@ class AutomatedPositionManager:
                         _fb_result = await session.execute(
                             sa_text("""
                                 SELECT t.token_id, lp.price, lp.timestamp
-                                FROM unnest(:miss_ids::text[]) AS t(token_id)
+                                FROM unnest(CAST(:miss_ids AS text[])) AS t(token_id)
                                 CROSS JOIN LATERAL (
                                     SELECT price, timestamp
                                     FROM market_prices mp
