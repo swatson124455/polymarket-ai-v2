@@ -1,5 +1,5 @@
 """
-build_audit_orchestrator() — registers all 21 checks in order.
+build_audit_orchestrator() — registers all 23 checks in order.
 
 SIGNAL_REQUIRED_BOTS: opt-in list for CRITICAL rogue-trade detection.
 Starts empty — populate once you've verified that each bot reliably
@@ -37,6 +37,8 @@ from base_engine.audit.checks.dlq_check import DlqCheck
 from base_engine.audit.checks.equity_snapshot_check import EquitySnapshotCheck
 from base_engine.audit.checks.schema_drift_check import SchemaDriftCheck
 from base_engine.audit.checks.price_integrity_check import PriceIntegrityCheck
+from base_engine.audit.checks.frozen_price_check import FrozenPriceCheck
+from base_engine.audit.checks.prices_coverage_check import PricesCoverageCheck
 from base_engine.audit.checks.bot_health_state_check import BotHealthStateCheck
 
 if TYPE_CHECKING:
@@ -53,7 +55,7 @@ SIGNAL_REQUIRED_BOTS: List[str] = []
 
 def build_audit_orchestrator(db: "Database", alerting=None) -> AuditOrchestrator:
     """
-    Build and return an AuditOrchestrator with all 21 checks registered.
+    Build and return an AuditOrchestrator with all 23 checks registered.
 
     Reads SIGNAL_REQUIRED_BOTS from environment variable if set:
         SIGNAL_REQUIRED_BOTS=MirrorBot,WeatherBot,EsportsBot
@@ -98,6 +100,8 @@ def build_audit_orchestrator(db: "Database", alerting=None) -> AuditOrchestrator
     orchestrator.register_check(EquitySnapshotCheck())
     orchestrator.register_check(SchemaDriftCheck())
     orchestrator.register_check(PriceIntegrityCheck())
+    orchestrator.register_check(FrozenPriceCheck())          # S167: stale prices on open positions
+    orchestrator.register_check(PricesCoverageCheck())       # S167: open positions with no price data
     orchestrator.register_check(BotHealthStateCheck())
 
     logger.info(

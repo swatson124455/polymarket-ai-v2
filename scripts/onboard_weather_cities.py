@@ -141,7 +141,7 @@ async def process_city(session: aiohttp.ClientSession, city: str) -> None:
         print(
             f"    [{i}] {r.get('name')}, {admin}, {r.get('country_code', '?')}  "
             f"lat={r.get('latitude'):.4f} lon={r.get('longitude'):.4f}  "
-            f"score={r.get('score', '?'):.3f}"
+            f"score={float(r.get('score', 0.0)):.3f}"
         )
 
     # Warn if ambiguous

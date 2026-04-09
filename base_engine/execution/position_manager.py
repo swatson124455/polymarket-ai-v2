@@ -64,6 +64,8 @@ class AutomatedPositionManager:
         self._learning_refresh_interval: float = float(
             getattr(settings, "PM_LEARNING_REFRESH_SECONDS", 1800)
         )
+        # S167: Illiquidity exit — cached per monitoring cycle
+        self._market_liquidity_cache: Dict[str, float] = {}  # market_id -> liquidity USD
 
     def set_order_gateway(self, gateway) -> None:
         """Route orders through gateway (kill switch, risk, paper)."""
@@ -265,6 +267,32 @@ class AutomatedPositionManager:
                     _last_known_count = len(positions)
                     for p in positions:
                         _read_session.expunge(p)
+
+                # S167: Batch-fetch market liquidity for illiquidity exit trigger.
+                # Cached per monitoring cycle (~10s), used in _check_position.
+                if positions and getattr(settings, "ILLIQUIDITY_EXIT_ENABLED", False):
+                    try:
+                        from sqlalchemy import text as _liq_text
+                        _mids = list({str(p.market_id) for p in positions if p.market_id})
+                        if _mids:
+                            async with self.db.get_session() as _liq_session:
+                                _liq_rows = await _liq_session.execute(
+                                    _liq_text(
+                                        "SELECT CAST(id AS TEXT) AS mid, "
+                                        "  COALESCE(CAST(liquidity AS DOUBLE PRECISION), 0) AS liq "
+                                        "FROM markets WHERE CAST(id AS TEXT) = ANY(:mids) "
+                                        "UNION ALL "
+                                        "SELECT condition_id AS mid, "
+                                        "  COALESCE(CAST(liquidity AS DOUBLE PRECISION), 0) AS liq "
+                                        "FROM markets WHERE condition_id = ANY(:mids)"
+                                    ),
+                                    {"mids": _mids},
+                                )
+                                self._market_liquidity_cache = {
+                                    str(row[0]): float(row[1]) for row in _liq_rows.fetchall()
+                                }
+                    except Exception as _liq_err:
+                        logger.debug("illiquidity_cache_refresh_failed: %s", _liq_err)
 
                 # Step 2: Close expired markets — already uses isolated sessions
                 # internally (S159 C19 + S160). session param is documented unused.
@@ -812,6 +840,40 @@ class AutomatedPositionManager:
         cost_pnl_pct = cost_adjusted_pnl / (entry_price * size) if (entry_price * size) > 0 else 0.0
         # Raw P&L pct (for backwards compat with adaptive learning and logging)
         raw_pnl_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0.0
+
+        # --- S167: Illiquidity exit — ratio-based, two-stage ---
+        # Pre-filter: cached liquidity < N × cost basis → confirm with live CLOB
+        if getattr(settings, "ILLIQUIDITY_EXIT_ENABLED", False):
+            _illiq_mult = float(getattr(settings, "ILLIQUIDITY_EXIT_MULTIPLIER", 3.0))
+            _mid = str(getattr(position, "market_id", ""))
+            _cached_liq = self._market_liquidity_cache.get(_mid)
+            _cost_basis = entry_price * size
+            if _cached_liq is not None and _cost_basis > 0 and _cached_liq < _illiq_mult * _cost_basis:
+                # Stage 2: Confirm with live CLOB orderbook before exiting
+                _confirmed_illiquid = True  # default to exit if CLOB check unavailable
+                _og = getattr(self, "order_gateway", None)
+                _lg = getattr(_og, "liquidity_guardian", None) if _og else None
+                if _lg is not None:
+                    try:
+                        _token_id = getattr(position, "token_id", "") or ""
+                        _liq_result = await asyncio.wait_for(
+                            _lg.check_liquidity(token_id=_token_id, size=size, side="SELL"),
+                            timeout=3.0,
+                        )
+                        if isinstance(_liq_result, dict):
+                            _can_exec = _liq_result.get("can_execute", True)
+                            _rec = _liq_result.get("recommendation", "proceed")
+                            _confirmed_illiquid = (not _can_exec or _rec == "abort")
+                    except Exception:
+                        pass  # CLOB check failed — use cached pre-filter result
+
+                if _confirmed_illiquid:
+                    logger.warning(
+                        "illiquidity_exit: pos=%s market=%s liquidity=%.1f cost_basis=%.2f mult=%.1f",
+                        position.id, _mid, _cached_liq, _cost_basis, _illiq_mult,
+                    )
+                    await self._execute_exit(position, f"illiquidity_exit (liq=${_cached_liq:.0f})")
+                    return
 
         # --- Grace period: only gates model reversal, not stop-loss/take-profit ---
         _GRACE_PERIOD_SECONDS = 1200  # 20 minutes

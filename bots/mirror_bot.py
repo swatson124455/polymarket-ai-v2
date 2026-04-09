@@ -1189,6 +1189,7 @@ class MirrorBot(BaseBot):
                 _seen_keys.add(_pk)
                 _deduped_exits.append((_pk, _ed))
         _now_mono = _time.monotonic()
+        _zero_keys_to_remove: list = []  # S166: force-closed zero-size positions
         for pos_key, _exit_event_data in _deduped_exits:
             pos = self._open_positions.get(pos_key)
             if not pos:
@@ -1230,7 +1231,25 @@ class MirrorBot(BaseBot):
                     except Exception:
                         pass
                 if exit_size <= 0:
-                    logger.warning("mirror_exit_skip_zero_size", market=market_id[:20])
+                    # S166: Zero-size positions can never exit normally.  Leaving
+                    # them in _open_positions permanently blocks the market via
+                    # opposing-side guard and wastes a position cap slot.
+                    # Force-close: remove from memory + close in DB.
+                    logger.warning("mirror_force_close_zero_size",
+                                   market=market_id[:20], token=token_id[:20])
+                    _zero_keys_to_remove.append(pos_key)
+                    try:
+                        from sqlalchemy import text as _zs_sql
+                        async with self.base_engine.db.get_session() as _zs:
+                            await _zs.execute(_zs_sql(
+                                "UPDATE positions SET status = 'closed' "
+                                "WHERE market_id = :mid AND token_id = :tid "
+                                "  AND COALESCE(source_bot, bot_id) = 'MirrorBot' "
+                                "  AND status = 'open'"
+                            ), {"mid": market_id, "tid": token_id})
+                            await _zs.commit()
+                    except Exception as _zs_err:
+                        logger.warning("mirror_force_close_zero_size_db_fail: %s", _zs_err)
                     continue
 
                 order = await self.place_order(
@@ -1325,6 +1344,13 @@ class MirrorBot(BaseBot):
                         self._slippage_fail_count.pop(pos_key, None)
             except Exception as e:
                 logger.warning("Failed to execute mirror exit for %s: %s", pos_key, e)
+
+        # S166: Remove force-closed zero-size positions from in-memory dict.
+        # Done outside the loop to avoid mutating _open_positions during iteration.
+        for _zk in _zero_keys_to_remove:
+            self._open_positions.pop(_zk, None)
+            self._slippage_fail_count.pop(_zk, None)
+            self._slippage_backoff.pop(_zk, None)
 
     async def _reap_resolved_positions(self) -> None:
         """S85: Delete positions on markets that have already resolved.
@@ -2736,6 +2762,18 @@ class MirrorBot(BaseBot):
 
         if order.get("success") and not order.get("idempotent"):
             # Exposure already reserved above — no double-increment
+            # S166: Correct exposure for partial fills.  Entry reserved
+            # size * price, but only _filled_size was actually filled.
+            # Without this, the unfilled portion stays inflated in
+            # _daily_exposure and _category_exposure until daily reset.
+            _filled_size = float(order.get("filled", size))
+            _unfilled_usd = (size - _filled_size) * price
+            if _unfilled_usd > 0.01:
+                async with self._exposure_lock:
+                    self._daily_exposure = max(0.0, self._daily_exposure - _unfilled_usd)
+                    if category:
+                        self._category_exposure[category] = max(
+                            0.0, self._category_exposure.get(category, 0.0) - _unfilled_usd)
 
             # S91: Set per-market cooldown to prevent re-entry on same signal
             _cd_secs = int(getattr(settings, "MIRROR_MARKET_COOLDOWN_SECONDS", 1800))
@@ -2746,7 +2784,7 @@ class MirrorBot(BaseBot):
             # S156: Use order["filled"] to prevent in-memory vs paper engine size divergence.
             # Partial fills mean order["filled"] < requested size. Using requested size
             # inflates _open_positions, causing "Insufficient position" errors on exit.
-            _filled_size = float(order.get("filled", size))
+            # _filled_size already computed above (S166 partial fill correction)
             pos_key = f"{market_id}:{token_id}"
             if pos_key in self._open_positions:
                 self._open_positions[pos_key]["size"] += _filled_size

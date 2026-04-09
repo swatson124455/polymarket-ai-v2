@@ -4861,6 +4861,27 @@ class Database:
             from sqlalchemy import text as _sa_text
             async with self.get_session() as session:
                 await session.execute(_sa_text("SET LOCAL synchronous_commit = off"))
+
+                # S167: FK validation — reject trade events on markets not in DB.
+                # Prevents orphan trade_events (678 WeatherBot orphans found in S166 audit).
+                # Fail-closed: returns None so callers don't proceed with unrecorded trades.
+                if event_type in ("ENTRY", "EXIT"):
+                    _fk_check = await session.execute(
+                        _sa_text(
+                            "SELECT 1 FROM markets "
+                            "WHERE CAST(id AS TEXT) = :mid OR condition_id = :mid "
+                            "LIMIT 1"
+                        ),
+                        {"mid": market_id},
+                    )
+                    if _fk_check.fetchone() is None:
+                        logger.warning(
+                            "trade_event FK rejected: market not in DB — "
+                            "bot=%s market=%s event=%s",
+                            bot_name, market_id, event_type,
+                        )
+                        return None
+
                 # RESOLUTION events: use atomic INSERT...SELECT to prevent duplicates.
                 # ON CONFLICT (idempotency_key, event_time) is broken on partitioned tables
                 # because different event_time = different row = no conflict detected.
@@ -4909,8 +4930,8 @@ class Database:
                             "   SELECT 1 FROM trade_events te"
                             "   WHERE te.bot_name = :bot_name"
                             "     AND te.market_id = :market_id"
-                            "     AND te.side = :side"
                             "     AND te.event_type = 'RESOLUTION'"
+                            "   -- S167: side removed from dedup — one RESOLUTION per (bot, market)"
                             " )"
                             " AND NOT EXISTS ("
                             "   SELECT 1 FROM trade_events te_exit"
@@ -4930,6 +4951,33 @@ class Database:
                         _params,
                     )
                 else:
+                    # S167: EXIT over-size guard — reject EXIT if total EXIT size
+                    # would exceed total ENTRY size for same (bot_name, market_id).
+                    # Side-agnostic: historical EXITs use side='SELL', ENTRYs use YES/NO.
+                    if event_type == "EXIT":
+                        _size_check = await session.execute(
+                            _sa_text(
+                                "SELECT"
+                                "  COALESCE(SUM(CASE WHEN te.event_type = 'ENTRY' THEN te.size ELSE 0 END), 0) AS total_entry,"
+                                "  COALESCE(SUM(CASE WHEN te.event_type = 'EXIT' THEN te.size ELSE 0 END), 0) AS total_exit"
+                                " FROM trade_events te"
+                                " WHERE te.bot_name = :bot_name"
+                                "   AND te.market_id = :market_id"
+                                "   AND te.event_type IN ('ENTRY', 'EXIT')"
+                            ),
+                            {"bot_name": bot_name, "market_id": market_id},
+                        )
+                        _sz = _size_check.fetchone()
+                        if _sz:
+                            _total_entry, _total_exit = float(_sz[0]), float(_sz[1])
+                            if _total_exit + size > _total_entry + 1e-6:
+                                logger.warning(
+                                    "EXIT over-size rejected: bot=%s market=%s "
+                                    "exit_size=%.6f existing_exits=%.6f total_entries=%.6f",
+                                    bot_name, market_id, size, _total_exit, _total_entry,
+                                )
+                                return None
+
                     # S159: WHERE NOT EXISTS is partition-safe for ENTRY/EXIT.
                     # ON CONFLICT (idempotency_key, event_time) is per-partition — a retry
                     # with a different event_time (e.g., month boundary) bypasses dedup.

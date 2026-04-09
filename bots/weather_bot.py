@@ -2360,15 +2360,19 @@ class WeatherBot(BaseBot):
             # S118 Fix 1: DB-backed re-entry guard — prevents position stacking.
             # Data: 55% of markets had 2+ entries, Miami had 12 entries on one market.
             # The in-memory check above misses paper positions. DB is ground truth.
+            # S167: Fixed — db.fetch_one() doesn't exist, use get_session()+execute(text()).
+            #        Also fixed column: bot_id → source_bot (VPS schema).
             try:
                 db = getattr(self.base_engine, "db", None)
                 if db:
-                    _existing = await db.fetch_one(
-                        "SELECT 1 FROM positions WHERE market_id = :mid AND bot_id = 'WeatherBot' AND status = 'open' LIMIT 1",
-                        {"mid": str(e["market_id"])},
-                    )
-                    if _existing:
-                        continue
+                    from sqlalchemy import text as _reentry_text
+                    async with db.get_session(timeout=5) as _reentry_sess:
+                        _existing = await _reentry_sess.execute(
+                            _reentry_text("SELECT 1 FROM positions WHERE market_id = :mid AND source_bot = 'WeatherBot' AND status = 'open' LIMIT 1"),
+                            {"mid": str(e["market_id"])},
+                        )
+                        if _existing.fetchone():
+                            continue
             except Exception as exc:
                 logger.warning("weatherbot_reentry_check_failed", market_id=str(e.get("market_id", "")), error=str(exc))
 

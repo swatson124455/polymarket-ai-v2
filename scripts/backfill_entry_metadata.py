@@ -76,7 +76,7 @@ async def main():
                             if q:
                                 question_map[mid] = q
                     except Exception as e:
-                        pass
+                        print(f"WARNING: Gamma API fetch failed for {mid}: {e}")
                     await asyncio.sleep(0.1)  # Rate limit
 
         print(f"Questions after Gamma lookup: {len(question_map)}")

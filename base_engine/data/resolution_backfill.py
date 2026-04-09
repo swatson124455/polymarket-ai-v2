@@ -688,7 +688,7 @@ async def run_resolution_backfill(
                         try:
                             async with _pr_sess.begin_nested():
                                 await _pr_sess.execute(_pr_text(
-                                    "UPDATE positions SET status = 'closed' "
+                                    "UPDATE positions SET status = 'closed', size = 0 "
                                     "WHERE market_id = :mid AND source_bot = :bot AND status = 'open'"
                                 ), {"mid": _mid, "bot": _bot})
                             await _pr_sess.commit()
