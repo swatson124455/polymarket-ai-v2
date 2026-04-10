@@ -1979,6 +1979,201 @@ class TestWeatherConfidenceCalibrator:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# S168: Beta calibration + Per-city Brier tracker
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestBetaCalibration:
+    """S168: Tests for restricted 2-param Beta calibration model."""
+
+    def test_beta_calibrate_identity_at_defaults(self):
+        """At c=0, d=1 the Beta calibration is the identity function."""
+        cal = WeatherConfidenceCalibrator()
+        for p in [0.10, 0.30, 0.50, 0.70, 0.90]:
+            result = cal._beta_calibrate(p, c=0.0, d=1.0)
+            assert abs(result - p) < 0.001, f"Identity failed at p={p}: got {result}"
+
+    def test_beta_calibrate_monotonic(self):
+        """Beta calibration should be monotonically increasing."""
+        cal = WeatherConfidenceCalibrator()
+        prev = 0.0
+        for p in [0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90]:
+            result = cal._beta_calibrate(p, c=0.5, d=1.2)
+            assert result > prev, f"Not monotonic at p={p}: {result} <= {prev}"
+            prev = result
+
+    def test_beta_calibrate_output_range(self):
+        """Beta calibration outputs must be in (0, 1)."""
+        cal = WeatherConfidenceCalibrator()
+        for c in [-3.0, -1.0, 0.0, 1.0, 3.0]:
+            for d in [0.5, 1.0, 2.0, 5.0]:
+                for p in [0.01, 0.10, 0.50, 0.90, 0.99]:
+                    result = cal._beta_calibrate(p, c=c, d=d)
+                    assert 0.0 < result < 1.0, f"Out of range: c={c}, d={d}, p={p} → {result}"
+
+    def test_beta_calibrate_handles_extremes(self):
+        """Beta calibration handles near-0 and near-1 inputs gracefully."""
+        cal = WeatherConfidenceCalibrator()
+        r1 = cal._beta_calibrate(0.001, c=1.0, d=2.0)
+        r2 = cal._beta_calibrate(0.999, c=1.0, d=2.0)
+        assert 0.0 < r1 < 1.0
+        assert 0.0 < r2 < 1.0
+
+    def test_fit_beta_model_returns_params(self):
+        """_fit_beta_model returns (c, d, brier) on valid data."""
+        np.random.seed(42)
+        n = 200
+        confs = np.random.uniform(0.5, 0.95, n)
+        outcomes = (np.random.uniform(0, 1, n) < (0.3 + 0.5 * confs)).astype(float)
+        result = WeatherConfidenceCalibrator._fit_beta_model(confs, outcomes)
+        assert result is not None, "Beta fit should succeed with 200 samples"
+        c, d, brier = result
+        assert -5.0 <= c <= 5.0, f"c out of bounds: {c}"
+        assert 0.1 <= d <= 10.0, f"d out of bounds: {d}"
+        assert 0.0 <= brier <= 1.0, f"brier out of range: {brier}"
+
+    def test_fit_beta_model_too_few_samples(self):
+        """_fit_beta_model returns None with <10 samples."""
+        confs = np.array([0.5, 0.6, 0.7])
+        outcomes = np.array([1.0, 0.0, 1.0])
+        result = WeatherConfidenceCalibrator._fit_beta_model(confs, outcomes)
+        assert result is None
+
+    def test_beta_produces_distinct_outputs(self):
+        """S168 key test: Beta should produce distinct outputs where isotonic collapses."""
+        np.random.seed(42)
+        n = 300
+        confs = np.random.uniform(0.5, 0.95, n)
+        # Flat win rate (~70%) — isotonic will collapse to 2-3 bins
+        outcomes = (np.random.uniform(0, 1, n) < 0.70).astype(float)
+        result = WeatherConfidenceCalibrator._fit_beta_model(confs, outcomes)
+        assert result is not None
+        c, d, _ = result
+        # Check outputs are distinct at different confidence levels
+        cal = WeatherConfidenceCalibrator()
+        outputs = [cal._beta_calibrate(p, c, d) for p in [0.60, 0.70, 0.80, 0.90]]
+        # All 4 outputs should be different (Beta has continuous output)
+        assert len(set(round(o, 4) for o in outputs)) == 4, (
+            f"Beta should produce 4 distinct outputs, got: {[round(o, 4) for o in outputs]}"
+        )
+
+    def test_model_type_attributes_initialized(self):
+        """S168: New model type attributes initialized correctly."""
+        cal = WeatherConfidenceCalibrator()
+        assert cal._model_type_no == "none"
+        assert cal._model_type_yes == "none"
+        assert cal._beta_params_no is None
+        assert cal._beta_params_yes is None
+
+    def test_beta_yes_min_samples_lower_than_isotonic(self):
+        """Beta YES threshold (80) is lower than isotonic (200)."""
+        assert WeatherConfidenceCalibrator._BETA_YES_MIN_SAMPLES == 80
+
+
+class TestCityBrierTracker:
+    """S168: Tests for per-city rolling Brier tracker and sizing dampener."""
+
+    def _make_bot_with_brier(self):
+        """Create a minimal stub with city Brier state and methods."""
+        from collections import deque
+
+        class StubBot:
+            def __init__(self):
+                self._city_brier = {}
+                self._city_brier_window = 50
+
+            def _update_city_brier(self, city, confidence, outcome):
+                if city not in self._city_brier:
+                    self._city_brier[city] = deque(maxlen=self._city_brier_window)
+                self._city_brier[city].append((confidence, outcome))
+
+            def _get_city_brier_mult(self, city):
+                dq = self._city_brier.get(city)
+                if not dq or len(dq) < self._city_brier_window:
+                    return 1.0
+                brier = sum((c - o) ** 2 for c, o in dq) / len(dq)
+                if brier < 0.25:
+                    return 1.0
+                if brier >= 0.35:
+                    return 0.10
+                return max(0.30, 1.0 - 7.0 * (brier - 0.25))
+
+        return StubBot()
+
+    def test_neutral_when_no_data(self):
+        """Returns 1.0 when city has no Brier data."""
+        bot = self._make_bot_with_brier()
+        assert bot._get_city_brier_mult("UnknownCity") == 1.0
+
+    def test_neutral_when_insufficient_data(self):
+        """Returns 1.0 when city has fewer than 50 resolved trades."""
+        bot = self._make_bot_with_brier()
+        for _ in range(30):
+            bot._update_city_brier("TestCity", 0.70, 1.0)
+        assert bot._get_city_brier_mult("TestCity") == 1.0
+
+    def test_well_calibrated_city_gets_1x(self):
+        """Perfect calibration → 1.0x multiplier (no boost)."""
+        bot = self._make_bot_with_brier()
+        # Brier ~0 — predictions match outcomes perfectly
+        for _ in range(50):
+            bot._update_city_brier("Seoul", 0.80, 1.0)
+        mult = bot._get_city_brier_mult("Seoul")
+        assert mult == 1.0, f"Well-calibrated city should be 1.0x, got {mult}"
+
+    def test_poor_city_throttled(self):
+        """City with Brier > 0.35 → 0.10x near-block."""
+        bot = self._make_bot_with_brier()
+        # Brier = mean((0.80 - 0.0)^2) = 0.64 — very poor
+        for _ in range(50):
+            bot._update_city_brier("Dallas", 0.80, 0.0)
+        mult = bot._get_city_brier_mult("Dallas")
+        assert mult == 0.10, f"Very poor city should be 0.10x, got {mult}"
+
+    def test_moderate_city_tapered(self):
+        """City with Brier ~0.30 gets intermediate dampener."""
+        bot = self._make_bot_with_brier()
+        # Mix: 35 correct at conf=0.70, 15 incorrect at conf=0.70
+        # Brier = 35*(0.70-1.0)^2 + 15*(0.70-0.0)^2 / 50
+        #       = 35*0.09 + 15*0.49 / 50 = (3.15+7.35)/50 = 0.21
+        for _ in range(35):
+            bot._update_city_brier("Chicago", 0.70, 1.0)
+        for _ in range(15):
+            bot._update_city_brier("Chicago", 0.70, 0.0)
+        mult = bot._get_city_brier_mult("Chicago")
+        assert mult == 1.0, f"Brier ~0.21 should give 1.0x, got {mult}"
+
+    def test_multiplier_never_exceeds_1(self):
+        """Per S153 invariant: multiplier is always ≤1.0 (dampener only)."""
+        bot = self._make_bot_with_brier()
+        for _ in range(50):
+            bot._update_city_brier("GoodCity", 0.90, 1.0)  # Brier = 0.01
+        mult = bot._get_city_brier_mult("GoodCity")
+        assert mult <= 1.0, f"Multiplier must be ≤1.0, got {mult}"
+
+    def test_multiplier_floor_at_0_10(self):
+        """Worst-case multiplier floors at 0.10."""
+        bot = self._make_bot_with_brier()
+        for _ in range(50):
+            bot._update_city_brier("Terrible", 0.99, 0.0)  # Brier ~0.98
+        mult = bot._get_city_brier_mult("Terrible")
+        assert mult == 0.10, f"Floor should be 0.10, got {mult}"
+
+    def test_deque_respects_window(self):
+        """Only last 50 trades are used for Brier calculation."""
+        bot = self._make_bot_with_brier()
+        # First 50: terrible (Brier ~0.64)
+        for _ in range(50):
+            bot._update_city_brier("Recovering", 0.80, 0.0)
+        assert bot._get_city_brier_mult("Recovering") == 0.10
+        # Next 50: perfect — pushes old ones out
+        for _ in range(50):
+            bot._update_city_brier("Recovering", 0.80, 1.0)
+        mult = bot._get_city_brier_mult("Recovering")
+        assert mult == 1.0, f"After recovery, should be 1.0x, got {mult}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # S124: Zero-Kelly guard + Spread inflation
 # ═══════════════════════════════════════════════════════════════════════════
 

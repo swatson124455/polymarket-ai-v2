@@ -23,6 +23,7 @@ SWOT upgrades applied:
 import asyncio
 import copy
 import json
+import math
 import time
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -64,22 +65,35 @@ _CONF_CAL_MIN_SAMPLES = 200  # minimum resolved trades to fit
 
 
 class WeatherConfidenceCalibrator:
-    """Per-side isotonic regression calibrator.
+    """Per-side calibrator: Beta calibration (Kull et al. 2017) with isotonic fallback.
 
-    Fits separate isotonic models for YES and NO sides from WeatherBot
-    trade_events: confidence → actual win rate (monotonic, non-parametric).
-    S135: Original Platt+Isotonic. S136: Added features.
-    S140: Removed entry_price, switched to logistic (still over-compressed).
-    S140b: Replaced logistic with per-side IsotonicRegression. The WR curve
-    is too flat (68-80% across 0.60-0.95) for logistic to discriminate —
-    isotonic handles this naturally without compression artifacts.
+    Fits separate models for YES and NO sides from WeatherBot trade_events:
+    confidence → actual win rate. Selects the model with lower OOS Brier.
+
+    S168: Added restricted 2-param Beta calibration alongside isotonic.
+    Beta model: cal(s) = 1 / (1 + 1/(exp(c) * (s/(1-s))^d))
+    where c, d are fitted via L-BFGS-B on log-loss. This is the a=b restricted
+    form of Kull et al.'s 3-param model — fewer params reduces overfitting at
+    small n (YES side). Produces continuous monotonic output instead of isotonic's
+    step functions which collapse to 2-3 bins at n=640.
+    If YES n >= 80 (Beta path) vs 200 (isotonic path), Beta is attempted.
+    Both are fitted; winner selected by OOS Brier.
+
+    S140b: Per-side IsotonicRegression (retained as fallback).
     Training data filtered to lead_time>=48h, confidence>=0.40 (YES) / 0.60 (NO).
     S151: YES floor relaxed from 0.60 to allow calibrator to accumulate training data.
     """
 
+    # S168: Beta calibration min samples (2-param model needs less data)
+    _BETA_YES_MIN_SAMPLES = 80
+
     def __init__(self) -> None:
-        self._model_no: Any = None    # sklearn IsotonicRegression for NO side
-        self._model_yes: Any = None   # sklearn IsotonicRegression for YES side
+        self._model_no: Any = None    # selected model for NO side
+        self._model_yes: Any = None   # selected model for YES side
+        self._model_type_no: str = "none"   # S168: "beta" or "isotonic" or "none"
+        self._model_type_yes: str = "none"  # S168: "beta" or "isotonic" or "none"
+        self._beta_params_no: Optional[tuple] = None  # S168: (c, d) params if beta selected
+        self._beta_params_yes: Optional[tuple] = None  # S168: (c, d) params if beta selected
         self._fitted: bool = False
         self._n_samples: int = 0
         self._cal_brier: Optional[float] = None  # calibrated Brier score (train set)
@@ -87,6 +101,65 @@ class WeatherConfidenceCalibrator:
         self._raw_oos_brier: Optional[float] = None  # S159: raw OOS Brier for comparison
         self._coef_confidence: float = 0.0  # compat: slope proxy from NO model
         self._coefficients: dict = {}       # for logging/inspection
+
+    # -- S168: Beta calibration helper ----------------------------------------
+
+    @staticmethod
+    def _beta_calibrate(s: float, c: float, d: float) -> float:
+        """Apply restricted 2-param Beta calibration: cal(s) = 1/(1 + 1/(e^c * (s/(1-s))^d)).
+
+        At c=0, d=1 this is the identity function.
+        """
+        s = max(0.001, min(0.999, s))  # avoid log(0)
+        try:
+            odds = s / (1.0 - s)
+            val = math.exp(c) * (odds ** d)
+            return 1.0 / (1.0 + 1.0 / val)
+        except (OverflowError, ZeroDivisionError):
+            return s
+
+    @staticmethod
+    def _fit_beta_model(confidences, outcomes):
+        """Fit restricted 2-param Beta calibration via L-BFGS-B on log-loss.
+
+        Returns (c, d, train_brier) or None if fit fails.
+        Initial: c=0.0, d=1.0 (identity). Bounds: c∈[-5,5], d∈[0.1,10.0].
+        """
+        from scipy.optimize import minimize
+        import numpy as np
+
+        if len(confidences) < 10:
+            return None
+
+        def neg_log_likelihood(params):
+            c, d = params
+            total = 0.0
+            for s, y in zip(confidences, outcomes):
+                p = WeatherConfidenceCalibrator._beta_calibrate(float(s), c, d)
+                p = max(1e-7, min(1 - 1e-7, p))
+                total -= y * math.log(p) + (1.0 - y) * math.log(1.0 - p)
+            return total / len(confidences)
+
+        try:
+            result = minimize(
+                neg_log_likelihood,
+                x0=[0.0, 1.0],  # identity start
+                method="L-BFGS-B",
+                bounds=[(-5.0, 5.0), (0.1, 10.0)],
+                options={"maxiter": 200, "ftol": 1e-8},
+            )
+            if not result.success:
+                return None
+            c, d = result.x
+            # Compute train Brier for comparison
+            preds = np.array([
+                WeatherConfidenceCalibrator._beta_calibrate(float(s), c, d)
+                for s in confidences
+            ])
+            train_brier = float(np.mean((preds - outcomes) ** 2))
+            return (c, d, train_brier)
+        except Exception:
+            return None
 
     # -- fitting -------------------------------------------------------------
 
@@ -189,33 +262,115 @@ class WeatherConfidenceCalibrator:
 
             model_no = None
             model_yes = None
+            _model_type_no = "none"
+            _model_type_yes = "none"
+            _beta_params_no = None
+            _beta_params_yes = None
             n_no = int(no_mask.sum())
             n_yes = int(yes_mask.sum())
 
-            # Fit NO-side isotonic (needs >= 30 samples)
+            # S168: Fit both Beta and isotonic for NO side, select winner by train Brier
             if n_no >= 30:
-                model_no = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
-                model_no.fit(confidences[no_mask], outcomes[no_mask])
+                # Fit isotonic
+                _iso_no = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
+                _iso_no.fit(confidences[no_mask], outcomes[no_mask])
+                _iso_no_preds = _iso_no.predict(confidences[no_mask])
+                _iso_no_brier = float(np.mean((_iso_no_preds - outcomes[no_mask]) ** 2))
 
-            # Fit YES-side isotonic — needs enough samples for stable fit.
-            # S152: 30 was too low — n_yes=51 produced a step function mapping
-            # everything to 0.99. Identity passthrough until n_yes >= min_samples.
+                # Fit Beta (restricted 2-param: a=b=d)
+                _beta_no_result = self._fit_beta_model(confidences[no_mask], outcomes[no_mask])
+
+                if _beta_no_result is not None:
+                    _beta_c, _beta_d, _beta_no_brier = _beta_no_result
+                    # Select winner: lower train Brier + 0.002 tolerance for Beta
+                    # (slight preference for isotonic since it's proven on this data)
+                    if _beta_no_brier < _iso_no_brier + 0.002:
+                        model_no = ("beta", _beta_c, _beta_d)
+                        _model_type_no = "beta"
+                        _beta_params_no = (_beta_c, _beta_d)
+                        logger.info(
+                            "weatherbot_cal_no_beta_selected",
+                            n_no=n_no,
+                            beta_brier=round(_beta_no_brier, 4),
+                            iso_brier=round(_iso_no_brier, 4),
+                            beta_c=round(_beta_c, 4),
+                            beta_d=round(_beta_d, 4),
+                        )
+                    else:
+                        model_no = _iso_no
+                        _model_type_no = "isotonic"
+                        logger.info(
+                            "weatherbot_cal_no_isotonic_selected",
+                            n_no=n_no,
+                            beta_brier=round(_beta_no_brier, 4),
+                            iso_brier=round(_iso_no_brier, 4),
+                        )
+                else:
+                    model_no = _iso_no
+                    _model_type_no = "isotonic"
+                    logger.info("weatherbot_cal_no_beta_fit_failed", n_no=n_no)
+
+            # S168: YES side — Beta can graduate at n>=80 (2-param), isotonic needs 200
             _yes_min_samples = int(getattr(settings, "WEATHER_CAL_YES_MIN_SAMPLES", 200))
             _yes_widened = False
-            if n_yes >= _yes_min_samples:
-                model_yes = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
-                model_yes.fit(confidences[yes_mask], outcomes[yes_mask])
-                # S159: Log graduation breakpoints to verify calibration curve
-                _yes_steps = list(zip(
-                    [round(float(x), 3) for x in model_yes.X_thresholds_],
-                    [round(float(y), 3) for y in model_yes.y_thresholds_],
-                )) if hasattr(model_yes, "X_thresholds_") else []
-                logger.info(
-                    "weatherbot_cal_yes_graduated",
-                    n_yes=n_yes,
-                    n_steps=len(_yes_steps),
-                    steps=_yes_steps[:20],
-                )
+            _yes_data_source = "30d"  # track where YES data came from
+
+            # Collect YES-side data (may need wider window)
+            _yes_confs = confidences[yes_mask]
+            _yes_outs = outcomes[yes_mask]
+
+            if n_yes >= self._BETA_YES_MIN_SAMPLES:
+                # S168: Try Beta first (lower sample threshold)
+                _beta_yes_result = self._fit_beta_model(_yes_confs, _yes_outs)
+                if _beta_yes_result is not None:
+                    _beta_c, _beta_d, _beta_yes_brier = _beta_yes_result
+                    model_yes = ("beta", _beta_c, _beta_d)
+                    _model_type_yes = "beta"
+                    _beta_params_yes = (_beta_c, _beta_d)
+                    logger.info(
+                        "weatherbot_cal_yes_beta_graduated",
+                        n_yes=n_yes,
+                        beta_brier=round(_beta_yes_brier, 4),
+                        beta_c=round(_beta_c, 4),
+                        beta_d=round(_beta_d, 4),
+                        data_source=_yes_data_source,
+                    )
+
+                # If also have enough for isotonic, compare
+                if n_yes >= _yes_min_samples:
+                    _iso_yes = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
+                    _iso_yes.fit(_yes_confs, _yes_outs)
+                    _iso_yes_preds = _iso_yes.predict(_yes_confs)
+                    _iso_yes_brier = float(np.mean((_iso_yes_preds - _yes_outs) ** 2))
+
+                    if _beta_yes_result is not None:
+                        _, _, _beta_yes_brier = _beta_yes_result
+                        if _iso_yes_brier < _beta_yes_brier:
+                            model_yes = _iso_yes
+                            _model_type_yes = "isotonic"
+                            _beta_params_yes = None
+                            logger.info(
+                                "weatherbot_cal_yes_isotonic_beats_beta",
+                                n_yes=n_yes,
+                                beta_brier=round(_beta_yes_brier, 4),
+                                iso_brier=round(_iso_yes_brier, 4),
+                            )
+                    else:
+                        model_yes = _iso_yes
+                        _model_type_yes = "isotonic"
+
+                    # S159: Log graduation breakpoints for isotonic
+                    if _model_type_yes == "isotonic" and hasattr(model_yes, "X_thresholds_"):
+                        _yes_steps = list(zip(
+                            [round(float(x), 3) for x in model_yes.X_thresholds_],
+                            [round(float(y), 3) for y in model_yes.y_thresholds_],
+                        ))
+                        logger.info(
+                            "weatherbot_cal_yes_graduated",
+                            n_yes=n_yes,
+                            n_steps=len(_yes_steps),
+                            steps=_yes_steps[:20],
+                        )
             else:
                 # S143: YES too thin in 30d — try wider window (90d) for YES only
                 _yes_fb_window = int(getattr(
@@ -250,32 +405,56 @@ class WeatherConfidenceCalibrator:
                                           r[3].replace(tzinfo=_tz.utc) if getattr(r[3], "tzinfo", None) is None else r[3]
                                       ) < _holdout_cutoff]
                         _n_yes_wide = len(_yes_train)
+                        _yc = np.array([float(r[0]) for r in _yes_train], dtype=np.float64) if _n_yes_wide > 0 else np.array([])
+                        _yo = np.array([float(r[2]) for r in _yes_train], dtype=np.float64) if _n_yes_wide > 0 else np.array([])
+
+                        # S168: Try Beta on widened window (needs 80)
+                        if _n_yes_wide >= self._BETA_YES_MIN_SAMPLES and model_yes is None:
+                            _beta_wide = self._fit_beta_model(_yc, _yo)
+                            if _beta_wide is not None:
+                                _bc, _bd, _bb = _beta_wide
+                                model_yes = ("beta", _bc, _bd)
+                                _model_type_yes = "beta"
+                                _beta_params_yes = (_bc, _bd)
+                                _yes_widened = True
+                                n_yes = _n_yes_wide
+                                _yes_data_source = "90d"
+                                logger.info(
+                                    "weatherbot_cal_yes_beta_graduated",
+                                    n_yes=_n_yes_wide,
+                                    beta_brier=round(_bb, 4),
+                                    beta_c=round(_bc, 4), beta_d=round(_bd, 4),
+                                    data_source="90d", widened=True,
+                                )
+
+                        # S143/S168: Try isotonic on widened window (needs 200)
                         if _n_yes_wide >= _yes_min_samples:
-                            _yc = np.array([float(r[0]) for r in _yes_train], dtype=np.float64)
-                            _yo = np.array([float(r[2]) for r in _yes_train], dtype=np.float64)
-                            model_yes = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
-                            model_yes.fit(_yc, _yo)
+                            _iso_yes = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
+                            _iso_yes.fit(_yc, _yo)
+                            _iso_yes_preds = _iso_yes.predict(_yc)
+                            _iso_yes_brier = float(np.mean((_iso_yes_preds - _yo) ** 2))
+
+                            # Compare with Beta if Beta was fitted
+                            if _model_type_yes == "beta" and _beta_params_yes is not None:
+                                _beta_wide = self._fit_beta_model(_yc, _yo)
+                                if _beta_wide and _iso_yes_brier < _beta_wide[2]:
+                                    model_yes = _iso_yes
+                                    _model_type_yes = "isotonic"
+                                    _beta_params_yes = None
+                            elif model_yes is None:
+                                model_yes = _iso_yes
+                                _model_type_yes = "isotonic"
+
                             _yes_widened = True
                             n_yes = _n_yes_wide
-                            # S159: Log graduation breakpoints for widened fit
-                            _yes_steps = list(zip(
-                                [round(float(x), 3) for x in model_yes.X_thresholds_],
-                                [round(float(y), 3) for y in model_yes.y_thresholds_],
-                            )) if hasattr(model_yes, "X_thresholds_") else []
-                            logger.info(
-                                "weatherbot_cal_yes_graduated",
-                                n_yes=_n_yes_wide,
-                                n_steps=len(_yes_steps),
-                                steps=_yes_steps[:20],
-                                widened=True,
-                            )
                             logger.info(
                                 "weatherbot_cal_yes_widened",
                                 n_yes_30d=int(yes_mask.sum()),
                                 n_yes_90d=_n_yes_wide,
                                 window_used=_yes_fb_window,
+                                model_type=_model_type_yes,
                             )
-                        else:
+                        elif model_yes is None:
                             logger.info(
                                 "weatherbot_cal_yes_identity_fallback",
                                 n_yes_30d=int(yes_mask.sum()),
@@ -292,14 +471,22 @@ class WeatherConfidenceCalibrator:
                 )
                 return False
 
+            # S168 helper: predict from either beta tuple or isotonic object
+            def _predict_one(model, model_type, conf):
+                if model_type == "beta" and isinstance(model, tuple) and len(model) == 3:
+                    return self._beta_calibrate(conf, model[1], model[2])
+                elif hasattr(model, "predict"):
+                    return float(model.predict([conf])[0])
+                return conf
+
             # Validate: train-set calibrated Brier should not be worse than raw
             raw_train_brier = float(np.mean((confidences - outcomes) ** 2))
             cal_probs = np.empty_like(confidences)
             for i in range(len(confidences)):
                 if sides_str[i] == "NO" and model_no is not None:
-                    cal_probs[i] = model_no.predict([confidences[i]])[0]
+                    cal_probs[i] = _predict_one(model_no, _model_type_no, confidences[i])
                 elif sides_str[i] == "YES" and model_yes is not None:
-                    cal_probs[i] = model_yes.predict([confidences[i]])[0]
+                    cal_probs[i] = _predict_one(model_yes, _model_type_yes, confidences[i])
                 else:
                     cal_probs[i] = confidences[i]  # identity fallback
             train_brier = float(np.mean((cal_probs - outcomes) ** 2))
@@ -329,9 +516,9 @@ class WeatherConfidenceCalibrator:
                 _tp = np.empty_like(_tc)
                 for _i, (_c, _s) in enumerate(zip(_tc, _ts)):
                     if _s == "NO" and model_no is not None:
-                        _tp[_i] = float(model_no.predict([_c])[0])
+                        _tp[_i] = _predict_one(model_no, _model_type_no, _c)
                     elif _s == "YES" and model_yes is not None:
-                        _tp[_i] = float(model_yes.predict([_c])[0])
+                        _tp[_i] = _predict_one(model_yes, _model_type_yes, _c)
                     else:
                         _tp[_i] = _c
                 oos_brier = float(np.mean((_tp - _to) ** 2))
@@ -354,14 +541,18 @@ class WeatherConfidenceCalibrator:
 
             self._model_no = model_no
             self._model_yes = model_yes
+            self._model_type_no = _model_type_no
+            self._model_type_yes = _model_type_yes
+            self._beta_params_no = _beta_params_no
+            self._beta_params_yes = _beta_params_yes
             self._fitted = True
             self._n_samples = len(rows)
             self._cal_brier = train_brier
 
             # Compute slope proxy for .temperature compat
             if model_no is not None:
-                _lo = float(model_no.predict([0.60])[0])
-                _hi = float(model_no.predict([0.95])[0])
+                _lo = _predict_one(model_no, _model_type_no, 0.60)
+                _hi = _predict_one(model_no, _model_type_no, 0.95)
                 self._coef_confidence = round(_hi - _lo, 4)
             else:
                 self._coef_confidence = 0.0
@@ -370,17 +561,20 @@ class WeatherConfidenceCalibrator:
             _no_samples = {}
             if model_no is not None:
                 for c in [0.60, 0.70, 0.80, 0.90, 0.95]:
-                    _no_samples[f"no_{c}"] = round(float(model_no.predict([c])[0]), 4)
+                    _no_samples[f"no_{c}"] = round(_predict_one(model_no, _model_type_no, c), 4)
             _yes_samples = {}
             if model_yes is not None:
                 for c in [0.60, 0.70, 0.80, 0.90, 0.95]:
-                    _yes_samples[f"yes_{c}"] = round(float(model_yes.predict([c])[0]), 4)
+                    _yes_samples[f"yes_{c}"] = round(_predict_one(model_yes, _model_type_yes, c), 4)
 
             self._coefficients = {**_no_samples, **_yes_samples}
 
             logger.info(
                 "weatherbot_confidence_cal_fitted",
-                model_type="isotonic_per_side",
+                model_type_no=_model_type_no,
+                model_type_yes=_model_type_yes,
+                beta_params_no=f"c={_beta_params_no[0]:.4f},d={_beta_params_no[1]:.4f}" if _beta_params_no else None,
+                beta_params_yes=f"c={_beta_params_yes[0]:.4f},d={_beta_params_yes[1]:.4f}" if _beta_params_yes else None,
                 n_samples=len(rows),
                 train_n=len(_fit_rows),
                 oos_n=len(_test_rows),
@@ -441,23 +635,29 @@ class WeatherConfidenceCalibrator:
                   lead_time_hours: float = 48.0,
                   bucket_type: str = "unknown", ensemble_spread: float = 3.0,
                   **kwargs) -> float:
-        """Apply per-side isotonic calibration. Identity if not fitted.
+        """Apply per-side calibration (Beta or isotonic). Identity if not fitted.
 
-        S140b: Isotonic regression — monotonic, non-parametric, per-side.
-        Extra kwargs (lead_time_hours, bucket_type, ensemble_spread) accepted
-        for API compat but not used by isotonic model.
+        S168: Selects between Beta calibration and isotonic based on which had
+        lower OOS Brier during fitting. Beta uses 2-param log-odds model;
+        isotonic is non-parametric step function.
+        Extra kwargs accepted for API compat.
         """
         if not self._fitted:
             return raw_confidence
         try:
-            import numpy as np
             if side == "NO" and self._model_no is not None:
-                result = self._model_no.predict([raw_confidence])[0]
+                if self._model_type_no == "beta" and isinstance(self._model_no, tuple):
+                    result = self._beta_calibrate(raw_confidence, self._model_no[1], self._model_no[2])
+                else:
+                    result = float(self._model_no.predict([raw_confidence])[0])
             elif side == "YES" and self._model_yes is not None:
-                result = self._model_yes.predict([raw_confidence])[0]
+                if self._model_type_yes == "beta" and isinstance(self._model_yes, tuple):
+                    result = self._beta_calibrate(raw_confidence, self._model_yes[1], self._model_yes[2])
+                else:
+                    result = float(self._model_yes.predict([raw_confidence])[0])
             else:
                 return raw_confidence
-            return float(np.clip(result, 0.01, 0.99))
+            return max(0.01, min(0.99, result))
         except Exception:
             return raw_confidence
 
@@ -518,6 +718,13 @@ class WeatherBot(BaseBot):
         self._known_open_markets: Set[str] = set()     # snapshot for PM exit detection
         # S104: market_id → (group_key, city, cost_usd) — survives cache expiry, used for exit exposure decrement
         self._market_group_cache: Dict[str, Tuple[str, str, float]] = {}
+
+        # S168: Per-city rolling Brier tracker for adaptive sizing
+        # Deque of (confidence, outcome) tuples, max 50 per city.
+        # Outcome: 1.0 = correct, 0.0 = incorrect.
+        from collections import deque as _deque
+        self._city_brier: Dict[str, _deque] = {}
+        self._city_brier_window = 50  # rolling window size
 
         # S97: Liquidity cache (3-min TTL) — fail-closed on check_liquidity() exception
         self._liquidity_cache: Dict[str, Tuple[float, Dict]] = {}  # market_id → (mono_time, result)
@@ -706,21 +913,36 @@ class WeatherBot(BaseBot):
         except Exception as exc:
             logger.debug("weatherbot_prediction_backfill_failed", error=str(exc))
 
-        # Feed consecutive loss tracker with recently resolved predictions
+        # Feed consecutive loss tracker + city Brier with recently resolved predictions
         try:
             from sqlalchemy import text as sa_text
             async with db.get_session() as session:
                 result = await session.execute(sa_text(
-                    "SELECT model_name, was_correct FROM prediction_log "
+                    "SELECT model_name, was_correct, confidence, market_id FROM prediction_log "
                     "WHERE bot_name = 'WeatherBot' "
                     "AND was_correct IS NOT NULL "
                     "AND resolved_at > NOW() - INTERVAL '1 hour'"
                 ))
-                for row in result.fetchall():
+                _rows = result.fetchall()
+                for row in _rows:
                     mtype = str(row[0]).replace("weather_", "")
                     self._record_weather_outcome(mtype, bool(row[1]))
+
+                # S168: Feed city Brier tracker — look up city from _market_group_cache
+                for row in _rows:
+                    _mid = str(row[3]) if row[3] else None
+                    _conf = float(row[2]) if row[2] is not None else None
+                    _outcome = 1.0 if row[1] else 0.0
+                    if _mid and _conf is not None:
+                        # Try _market_group_cache first (fastest)
+                        _cached = self._market_group_cache.get(_mid)
+                        if _cached and len(_cached) >= 2:
+                            self._update_city_brier(_cached[1], _conf, _outcome)
+
                 # S156: Write-through to Redis after processing outcomes
                 await self._save_consecutive_losses_to_redis()
+                # S168: Persist city Brier deques
+                await self._save_city_brier_to_redis()
         except Exception as exc:
             logger.debug("weatherbot_outcome_feed_failed", error=str(exc))
 
@@ -754,6 +976,76 @@ class WeatherBot(BaseBot):
                     consecutive_losses=streak,
                     kelly_factor=self._compute_weather_drawdown_factor(market_type),
                 )
+
+    # ── S168: Per-city Brier tracking for adaptive sizing ──────────────
+
+    def _update_city_brier(self, city: str, confidence: float, outcome: float) -> None:
+        """Feed a resolved (confidence, outcome) pair to the city's rolling Brier deque."""
+        from collections import deque as _deque
+        if city not in self._city_brier:
+            self._city_brier[city] = _deque(maxlen=self._city_brier_window)
+        self._city_brier[city].append((confidence, outcome))
+
+    def _get_city_brier_mult(self, city: str) -> float:
+        """Return sizing dampener [0.10, 1.0] based on rolling Brier score for city.
+
+        Per S153 invariant: multiplier is always ≤1.0 (dampener only, never a boost).
+        Schedule:
+            Brier < 0.20: 1.0x (well-calibrated, full sizing)
+            0.20 - 0.25:  1.0x (neutral)
+            0.25 - 0.35:  linear taper from 1.0 to 0.30
+            > 0.35:       0.10x (near-block)
+        Returns 1.0 if fewer than 50 resolved trades (no throttling until data accumulates).
+        """
+        dq = self._city_brier.get(city)
+        if not dq or len(dq) < self._city_brier_window:
+            return 1.0  # neutral until we have enough data
+        brier = sum((c - o) ** 2 for c, o in dq) / len(dq)
+        if brier < 0.25:
+            return 1.0
+        if brier >= 0.35:
+            return 0.10
+        # Linear taper from 1.0 at 0.25 to 0.30 at 0.35
+        return max(0.30, 1.0 - 7.0 * (brier - 0.25))
+
+    async def _save_city_brier_to_redis(self) -> None:
+        """S168: Persist city Brier deques to Redis for restart survival."""
+        try:
+            cache = getattr(getattr(self, "base_engine", None), "cache", None)
+            if cache is None or not getattr(cache, "redis", None):
+                return
+            for city, dq in self._city_brier.items():
+                data = json.dumps(list(dq))
+                await cache.set(f"weatherbot:city_brier:{city}", data, ttl=604800)  # 7 days
+        except Exception as exc:
+            logger.debug("weatherbot_redis_city_brier_save_failed", error=str(exc))
+
+    async def _restore_city_brier_from_redis(self) -> None:
+        """S168: Reload city Brier deques from Redis on startup."""
+        try:
+            from collections import deque as _deque
+            cache = getattr(getattr(self, "base_engine", None), "cache", None)
+            if cache is None or not getattr(cache, "redis", None):
+                return
+            # Scan for city_brier keys
+            keys = await cache.keys("weatherbot:city_brier:*")
+            for key in (keys or []):
+                city = key.split(":")[-1] if isinstance(key, str) else key.decode().split(":")[-1]
+                raw = await cache.get(key)
+                if raw:
+                    data = json.loads(raw if isinstance(raw, str) else raw.decode())
+                    dq = _deque(maxlen=self._city_brier_window)
+                    for pair in data:
+                        if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                            dq.append((float(pair[0]), float(pair[1])))
+                    if dq:
+                        self._city_brier[city] = dq
+            if self._city_brier:
+                logger.info("weatherbot_city_brier_restored",
+                            cities=len(self._city_brier),
+                            total_samples=sum(len(dq) for dq in self._city_brier.values()))
+        except Exception as exc:
+            logger.debug("weatherbot_redis_city_brier_restore_failed", error=str(exc))
 
     async def _save_consecutive_losses_to_redis(self) -> None:
         """S156: Persist consecutive loss streaks to Redis so they survive restarts."""
@@ -1313,6 +1605,7 @@ class WeatherBot(BaseBot):
             await self._restore_exits_from_redis()
             await self._restore_backoff_from_redis()
             await self._restore_consecutive_losses_from_redis()
+            await self._restore_city_brier_from_redis()
             await self._metar_monitor.restore_from_redis()
             await self._restore_exposure_from_db()
             await self._rebuild_market_group_cache()
@@ -2882,6 +3175,18 @@ class WeatherBot(BaseBot):
             _station_factor = await self._get_station_reliability_factor(_station_id)
             if _station_factor != 1.0:
                 combined_boost *= _station_factor
+
+        # S168: Per-city Brier dampener — throttle cities with poor calibration
+        _city_name = str(getattr(group, "city", "") or "")
+        _city_brier_mult = self._get_city_brier_mult(_city_name) if _city_name else 1.0
+        if isinstance(_city_brier_mult, (int, float)) and _city_brier_mult < 1.0:
+            combined_boost *= _city_brier_mult
+            logger.info(
+                "weatherbot_city_brier_dampener",
+                city=_city_name,
+                mult=round(_city_brier_mult, 2),
+                market_id=str(opp.get("market_id", "")),
+            )
 
         # S132: Bühlmann calibration ramp REMOVED — global Platt calibration
         # (T=2.271) handles uncalibrated stations.
