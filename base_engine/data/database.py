@@ -197,19 +197,25 @@ class _SemaphoreSession:
             _timeout_ms = getattr(_settings, "DB_STATEMENT_TIMEOUT_MS", 60000)
             _idle_txn_ms = getattr(_settings, "DB_IDLE_IN_TXN_TIMEOUT_MS", 60000)
             from sqlalchemy import text as _sa_text
-            await result.execute(_sa_text(f"SET statement_timeout = '{_timeout_ms}'"))
-            # S168: Apply idle_in_transaction_session_timeout — kills sessions that sit
-            # idle inside an open transaction (e.g. after SAVEPOINT rollback in price
-            # fallback chain). Without this, connections hold locks forever, causing
-            # cascade: lock waits → statement timeouts → pool exhaustion → bot stall.
-            # Setting was defined in settings.py since S152 but never applied to connections.
-            await result.execute(_sa_text(f"SET idle_in_transaction_session_timeout = '{_idle_txn_ms}'"))
+            # S168: Single execute for both SETs — reduces connection-death failure surface.
+            # Two separate executes meant a connection dying between them left the session
+            # in an invalid transaction state that couldn't be rolled back.
+            await result.execute(_sa_text(
+                f"SET statement_timeout = '{_timeout_ms}'; "
+                f"SET idle_in_transaction_session_timeout = '{_idle_txn_ms}'"
+            ))
             # S161: Clear autobegin triggered by SET so callers can use session.begin().
             # SET statement_timeout (without LOCAL) is session-scoped and survives COMMIT.
             await result.commit()
         except Exception as _set_err:
             import structlog as _sl
             _sl.get_logger().warning("set_statement_timeout_failed", timeout_ms=_timeout_ms, error=str(_set_err))
+            # S168: Rollback poisoned session to prevent "Can't reconnect until invalid
+            # transaction is rolled back" cascading to all downstream operations.
+            try:
+                await result.rollback()
+            except Exception:
+                pass
         return result
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
