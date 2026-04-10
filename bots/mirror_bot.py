@@ -122,6 +122,12 @@ class MirrorBot(BaseBot):
         self._whale_consensus: Dict[str, int] = {}  # legacy — kept for backward compat reads
         self._whale_consensus_ts: Dict[str, tuple] = {}  # "market_id:side" -> (count, mono_time)
 
+        # S168 Phase 6: Active trader-exit signals — when RTDS SELL arrives from a tracked
+        # trader, record it here so the exit loop can close positions where tracked traders sold.
+        # Key: pos_key ("market_id:token_id") → set of trader addresses that issued SELL.
+        # Pruned every 30min alongside _prune_entered_market_sides.
+        self._trader_sell_signals: Dict[str, set] = {}
+
         # Session 82: Calibration stack (FTS + Le2026 + conformal)
         self._calibration_stack = None
         self._calibration_fitted: bool = False
@@ -754,6 +760,12 @@ class MirrorBot(BaseBot):
                 _ems_db = getattr(self.base_engine, "db", None)
                 if _ems_db:
                     await self._prune_entered_market_sides(_ems_db)
+                # S168 Phase 6: Prune sell signals for positions no longer open
+                _stale_sell_keys = [k for k in self._trader_sell_signals if k not in self._open_positions]
+                for _sk in _stale_sell_keys:
+                    del self._trader_sell_signals[_sk]
+                if _stale_sell_keys:
+                    logger.debug("mirror_sell_signals_pruned", count=len(_stale_sell_keys))
 
         # Check for exits from tracked positions
         if self._open_positions and getattr(settings, "MIRROR_EXIT_ENABLED", True):
@@ -1060,6 +1072,26 @@ class MirrorBot(BaseBot):
                     _hours_held = (_now_utc - _opened).total_seconds() / 3600.0
                 except (ValueError, TypeError):
                     pass
+
+            # S168 Phase 6: Active trader-exit — if a tracked trader issued SELL via RTDS,
+            # close the position on the next scan cycle. Only fires after 0.5h hold (safety
+            # guard against freshly-entered positions where traders set isn't populated yet).
+            # Skip positions already closed by the immediate RTDS SELL path (L1815+).
+            if _hours_held > 0.5 and _pos_key in self._trader_sell_signals:
+                _sell_traders = self._trader_sell_signals[_pos_key]
+                _pos_traders = _pos.get("traders")
+                # Check if ANY tracked trader on this position has sold
+                if isinstance(_pos_traders, set) and _sell_traders & _pos_traders:
+                    logger.info("mirror_trader_sell_exit",
+                                pos_key=_pos_key,
+                                sell_traders=len(_sell_traders & _pos_traders),
+                                hours_held=round(_hours_held, 1))
+                    positions_to_close.append((_pos_key, {
+                        "exit_reason": "trader_sell_exit",
+                        "pnl_pct": round(_pnl_pct, 4),
+                        "hours_held": round(_hours_held, 1),
+                    }))
+                    continue
 
             # S137 C11: Compute TTR from market index (live data, not stale meta string).
             # _market_meta_cache[1] = "hours"/"days"/"weeks" string — not usable for comparison.
@@ -1808,6 +1840,13 @@ class MirrorBot(BaseBot):
 
         if _is_sell:
             pos_key = f"{market_id}:{token_id}"
+            # S168 Phase 6: Record SELL signal for active trader-exit check in exit loop.
+            # Even if we close the position immediately below via RTDS SELL, record the
+            # signal so the exit loop doesn't redundantly attempt a second close.
+            if pos_key in self._open_positions and trader_address:
+                if pos_key not in self._trader_sell_signals:
+                    self._trader_sell_signals[pos_key] = set()
+                self._trader_sell_signals[pos_key].add(trader_address)
             if pos_key not in self._open_positions:
                 logger.debug(
                     "MirrorBot: skipping SELL (no position to close) market=%s",
