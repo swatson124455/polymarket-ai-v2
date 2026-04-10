@@ -1036,10 +1036,34 @@ class EsportsBot(BaseBot):
         _stale_reasons = [k for k in self._exit_reasons if k not in self._recently_exited]
         for k in _stale_reasons:
             del self._exit_reasons[k]
-        if stale or stale_log or stale_series or stale_exits:
+        # S168: Prune _entry_edge_cache, _edge_peaks, _market_game for markets
+        # no longer in open positions. These are cleaned on exit but NOT on resolution,
+        # causing unbounded growth (694+ entries observed in S165 auditor).
+        _pruned_edge: list = []
+        _pruned_peaks: list = []
+        _pruned_game: list = []
+        _og = getattr(self.base_engine, "order_gateway", None)
+        if _og is not None:
+            _open_mids: set = set()
+            for _pk in getattr(_og, "_position_details", {}):
+                if _pk.startswith(f"{self.bot_name}:"):
+                    _open_mids.add(_pk.split(":", 1)[1])
+            _pruned_edge = [k for k in self._entry_edge_cache if k not in _open_mids]
+            for k in _pruned_edge:
+                del self._entry_edge_cache[k]
+            _pruned_peaks = [k for k in self._edge_peaks
+                             if k.replace("_peak_edge_", "") not in _open_mids]
+            for k in _pruned_peaks:
+                del self._edge_peaks[k]
+            _pruned_game = [k for k in self._market_game if k not in _open_mids]
+            for k in _pruned_game:
+                del self._market_game[k]
+        if stale or stale_log or stale_series or stale_exits or _pruned_edge or _pruned_peaks or _pruned_game:
             logger.debug("esports_cache_cleanup", prediction_evicted=len(stale),
                          log_evicted=len(stale_log), series_evicted=len(stale_series),
                          exit_cooldown_evicted=len(stale_exits),
+                         edge_cache_pruned=len(_pruned_edge), peaks_pruned=len(_pruned_peaks),
+                         game_map_pruned=len(_pruned_game),
                          token_map_size=len(self._market_token_map),
                          glicko2_cache_size=len(self._series_glicko2_cache))
 
