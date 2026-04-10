@@ -386,7 +386,7 @@ class Settings(BaseSettings):
     RTDS_RECV_TIMEOUT: int = int(os.getenv("RTDS_RECV_TIMEOUT", "25"))  # S137 C15: was 120s
 
     # Calibration + safety feature flags (all off by default)
-    MIRROR_USE_CALIBRATION: bool = os.getenv("MIRROR_USE_CALIBRATION", "false").lower() in ("true", "1", "yes")
+    MIRROR_USE_CALIBRATION: bool = os.getenv("MIRROR_USE_CALIBRATION", "true").lower() in ("true", "1", "yes")  # S168: enabled (YES-only, Phase 1 OOS Brier +0.010)
     MIRROR_ADAPTIVE_SAFETY: bool = os.getenv("MIRROR_ADAPTIVE_SAFETY", "true").lower() in ("true", "1", "yes")  # S137 C4: enabled (BUG-14 denominator fixed)
     MIRROR_SKIP_LIQUIDITY_RTDS: bool = os.getenv("MIRROR_SKIP_LIQUIDITY_RTDS", "true").lower() in ("true", "1", "yes")
     MIRROR_SKIP_COORDINATOR_BUY: bool = os.getenv("MIRROR_SKIP_COORDINATOR_BUY", "true").lower() in ("true", "1", "yes")

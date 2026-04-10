@@ -2425,12 +2425,13 @@ class MirrorBot(BaseBot):
                     logger.warning("mirror_calibration_category_fail: %s", e)
             # S121: Shadow ledger — always compute calibrated score (does not affect trade)
             _conf_cal_shadow = self._calibration_stack.shadow_calibrate(
-                confidence, category=_cat, ttr_days=_ttr_days,
+                confidence, category=_cat, ttr_days=_ttr_days, side=_side_upper,
             )
             # Live calibration — only modifies confidence when MIRROR_USE_CALIBRATION=true
+            # S168: NO-side bypasses calibration (Phase 1 OOS: NO T=1.0, no improvement)
             _raw_conf = confidence
             confidence = self._calibration_stack.calibrate_confidence(
-                confidence, category=_cat, ttr_days=_ttr_days,
+                confidence, category=_cat, ttr_days=_ttr_days, side=_side_upper,
             )
             if abs(_raw_conf - confidence) > 0.01:
                 logger.info("mirror_calibrated", raw=round(_raw_conf, 3), cal=round(confidence, 3))

@@ -69,11 +69,16 @@ class MirrorCalibrationStack:
         raw_confidence: float,
         category: str = "",
         ttr_days: Optional[float] = None,
+        side: str = "",
     ) -> float:
         """Apply calibration stack to raw confidence. Returns calibrated value.
         Only modifies confidence when MIRROR_USE_CALIBRATION=true (live mode).
+        S168: NO-side bypasses calibration (Phase 1 OOS Brier: NO T=1.0, delta=0.0).
         """
         if not self._fitted or not getattr(settings, "MIRROR_USE_CALIBRATION", False):
+            return raw_confidence
+        # S168: Skip calibration for NO — Phase 1 showed no Brier improvement
+        if side.upper() == "NO":
             return raw_confidence
         return self._apply_calibration(raw_confidence, category, ttr_days)
 
@@ -82,9 +87,11 @@ class MirrorCalibrationStack:
         raw_confidence: float,
         category: str = "",
         ttr_days: Optional[float] = None,
+        side: str = "",
     ) -> Optional[float]:
         """S121 dual-ledger: compute calibrated confidence without gating on
-        MIRROR_USE_CALIBRATION. Returns None if calibrators not fitted."""
+        MIRROR_USE_CALIBRATION. Returns None if calibrators not fitted.
+        S168: Always computes for shadow ledger (both sides) — NO skip only in live."""
         if not self._fitted:
             return None
         return self._apply_calibration(raw_confidence, category, ttr_days)
