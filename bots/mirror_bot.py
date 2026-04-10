@@ -387,14 +387,18 @@ class MirrorBot(BaseBot):
                     "MirrorBot startup: restored %d open positions from DB (stale_price=%d)",
                     restored, _stale,
                 )
-            # S168 Phase 8: Restore DB-authoritative state (cooldowns, circuit breaker)
-            await self._restore_circuit_breaker()
-            await self._restore_cooldowns()
-
             # S160: Only mark restored after all DB work succeeds — enables retry on failure.
             self._state_restored = True
         except Exception as exc:
             logger.warning("MirrorBot _restore_state_on_startup failed, will retry next scan: %s", exc)
+
+        # S168 Phase 8: Restore DB-authoritative state (cooldowns, circuit breaker).
+        # OUTSIDE the main try block — failure here must NOT block core state restore.
+        try:
+            await self._restore_circuit_breaker()
+            await self._restore_cooldowns()
+        except Exception as _s8_err:
+            logger.debug("mirror_phase8_restore_skipped: %s", _s8_err)
 
         # S144: Immediately sync fresh prices from DB so stop-loss has accurate
         # current_price right after restart, not 45s later on first scan cycle.
@@ -641,9 +645,10 @@ class MirrorBot(BaseBot):
             except Exception as e:
                 logger.warning("MirrorBot adaptive safety refresh failed: %s", e)
 
-        # S168 Phase 7: Refresh category IE cache every 20 scans (~15min)
+        # S168 Phase 7: Refresh category IE cache every 15min. Skip first 3 scans
+        # to avoid DB pressure during startup restore sequence.
         import time as _time_ie
-        if (_time_ie.monotonic() - self._category_ie_last_refresh) > 900:  # 15 min
+        if self._scan_count >= 3 and (_time_ie.monotonic() - self._category_ie_last_refresh) > 900:
             try:
                 await self._refresh_category_ie()
                 self._category_ie_last_refresh = _time_ie.monotonic()
