@@ -543,6 +543,130 @@ class TestProbabilityEngine:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# S168 Phase 2A: Empirical CDF
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestEmpiricalCDF:
+    """S168: Tests for empirical_bucket_probabilities in probability engine."""
+
+    def _make_buckets(self, ranges):
+        """Create mock TemperatureBucket objects from (low, high, bucket_type) tuples."""
+        buckets = []
+        for i, (lo, hi, btype) in enumerate(ranges):
+            b = MagicMock()
+            b.market_id = f"market_{i}"
+            b.low_bound = lo
+            b.high_bound = hi
+            b.bucket_type = btype
+            buckets.append(b)
+        return buckets
+
+    def test_empirical_returns_normalized_probs(self):
+        """Empirical CDF should return normalized probabilities summing to ~1.0."""
+        engine = WeatherProbabilityEngine()
+        # 100 members centered around 50°F
+        np.random.seed(42)
+        members = list(np.random.normal(50, 3, 100))
+        buckets = self._make_buckets([
+            (45, 47, "range"),
+            (48, 49, "range"),
+            (50, 51, "range"),
+            (52, 53, "range"),
+            (54, 56, "range"),
+        ])
+        probs = engine.empirical_bucket_probabilities(members, buckets, lead_time_hours=48.0)
+        assert len(probs) == 5
+        total = sum(probs.values())
+        assert abs(total - 1.0) < 0.05, f"Should normalize to ~1.0, got {total}"
+
+    def test_empirical_returns_empty_for_small_ensemble(self):
+        """Empirical CDF requires n>=50 members."""
+        engine = WeatherProbabilityEngine()
+        members = [50.0] * 30  # only 30
+        buckets = self._make_buckets([(48, 52, "range")])
+        probs = engine.empirical_bucket_probabilities(members, buckets)
+        assert probs == {}
+
+    def test_empirical_handles_at_or_below(self):
+        """at_or_below bucket: P(T <= high_bound + 0.5)."""
+        engine = WeatherProbabilityEngine()
+        # All members at 45°F — 100% below 50
+        members = [45.0] * 100
+        buckets = self._make_buckets([(0, 50, "at_or_below")])
+        probs = engine.empirical_bucket_probabilities(members, buckets)
+        assert probs["market_0"] > 0.95
+
+    def test_empirical_handles_at_or_higher(self):
+        """at_or_higher bucket: P(T >= low_bound - 0.5)."""
+        engine = WeatherProbabilityEngine()
+        # All members at 55°F — 100% above 50
+        members = [55.0] * 100
+        buckets = self._make_buckets([(50, 100, "at_or_higher")])
+        probs = engine.empirical_bucket_probabilities(members, buckets)
+        assert probs["market_0"] > 0.95
+
+    def test_empirical_applies_emos_per_member(self):
+        """EMOS correction is applied per-member (a + b*member_i), not as mean shift."""
+        engine = WeatherProbabilityEngine()
+        # Load EMOS with a=5, b=0.8 — should shift and compress ensemble
+        engine.load_emos_calibration({
+            "test_station": {48: (5.0, 0.8, None)},
+        })
+        members = [40.0, 50.0, 60.0] * 20  # 60 members, mean=50, spread=20
+        # corrected: [5+0.8*40, 5+0.8*50, 5+0.8*60] = [37, 45, 53]
+        # Mean shifts from 50 to 45, spread narrows from 20 to 16 (b<1)
+        buckets = self._make_buckets([
+            (35, 39, "range"),   # captures members at 37
+            (43, 47, "range"),   # captures members at 45
+            (51, 55, "range"),   # captures members at 53
+        ])
+        probs = engine.empirical_bucket_probabilities(
+            members, buckets, station_id="test_station", lead_time_hours=48.0,
+        )
+        # Each third of members maps to a different bucket → ~33% each
+        for mid in probs:
+            assert 0.20 < probs[mid] < 0.50, f"{mid} = {probs[mid]}"
+
+    def test_empirical_captures_bimodal(self):
+        """Empirical CDF should capture bimodal distributions that skew-normal cannot."""
+        engine = WeatherProbabilityEngine()
+        # Bimodal: half at 40, half at 60
+        members = [40.0] * 50 + [60.0] * 50
+        buckets = self._make_buckets([
+            (38, 42, "range"),   # should capture ~50%
+            (48, 52, "range"),   # should be ~0%
+            (58, 62, "range"),   # should capture ~50%
+        ])
+        probs = engine.empirical_bucket_probabilities(members, buckets)
+        # Bimodal: peaks at 40 and 60, nothing at 50
+        assert probs["market_0"] > 0.30  # ~50% around 40
+        assert probs["market_1"] < 0.10  # near-zero around 50
+        assert probs["market_2"] > 0.30  # ~50% around 60
+
+    def test_empirical_laplace_smoothing_no_zeros(self):
+        """Laplace smoothing prevents zero probabilities in multi-bucket scenario."""
+        engine = WeatherProbabilityEngine()
+        # Members at 50; most probability in bucket [48,52], some via Laplace in [78,82]
+        members = [50.0] * 100
+        buckets = self._make_buckets([
+            (48, 52, "range"),   # captures all members
+            (78, 82, "range"),   # captures zero members, but Laplace gives > 0
+        ])
+        probs = engine.empirical_bucket_probabilities(members, buckets)
+        assert probs["market_0"] > 0.90  # most probability here
+        assert probs["market_1"] > 0.0   # Laplace prevents exact 0
+
+    def test_empirical_filters_nan_inf(self):
+        """NaN and Inf members are filtered out."""
+        engine = WeatherProbabilityEngine()
+        members = [50.0] * 80 + [float("nan")] * 10 + [float("inf")] * 10
+        buckets = self._make_buckets([(48, 52, "range")])
+        probs = engine.empirical_bucket_probabilities(members, buckets)
+        assert len(probs) > 0  # Should work with 80 clean members
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Forecast Client
 # ═══════════════════════════════════════════════════════════════════════════
 

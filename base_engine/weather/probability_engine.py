@@ -211,6 +211,71 @@ class WeatherProbabilityEngine:
 
         return probs
 
+    def empirical_bucket_probabilities(
+        self,
+        ensemble_members: List[float],
+        buckets: list,
+        station_id: str = "",
+        lead_time_hours: float = 48.0,
+    ) -> Dict[str, float]:
+        """S168 Phase 2A: Compute bucket probabilities from empirical CDF.
+
+        Uses the raw ensemble members directly instead of fitting a parametric
+        distribution. Each member is EMOS-corrected per-member (corrected_i = a + b * member_i)
+        to preserve the spread information EMOS-b encodes:
+          b < 1 (underdispersive ensemble): narrows ensemble
+          b > 1 (overdispersive ensemble): widens ensemble
+
+        Uses Laplace smoothing: P = (count + 0.5) / (n + 1) to prevent 0/1 probabilities.
+
+        Requires n >= 50 members for reliable CDF. Caller should fall back to
+        parametric (fit_distribution + bucket_probabilities) for smaller ensembles.
+
+        Returns {market_id: probability} dict, or {} on degenerate input.
+        """
+        # Filter NaN/Inf (same guard as fit_distribution C1)
+        clean = [m for m in ensemble_members if math.isfinite(m)]
+        if len(clean) < 50:
+            return {}
+
+        # Apply EMOS per-member: corrected_i = a + b * member_i
+        emos_a, emos_b, _emos_sigma = self._get_emos_params(station_id, lead_time_hours)
+        corrected = [emos_a + emos_b * m for m in clean]
+        n = len(corrected)
+
+        probs: Dict[str, float] = {}
+        for b in buckets:
+            btype = b.bucket_type
+            if btype == "at_or_below":
+                count = sum(1 for m in corrected if m <= b.high_bound + 0.5)
+            elif btype == "at_or_higher":
+                count = sum(1 for m in corrected if m >= b.low_bound - 0.5)
+            elif btype in ("range", "exact"):
+                lo = b.low_bound - 0.5
+                hi = b.high_bound + 0.5
+                count = sum(1 for m in corrected if lo <= m < hi)
+            else:
+                count = 0
+            # Laplace smoothing: avoid 0/1
+            probs[b.market_id] = max(0.001, min(0.999, (count + 0.5) / (n + 1)))
+
+        # Normalize
+        total = sum(probs.values())
+        if total > 0.01 and abs(total - 1.0) > 0.01:
+            for mid in probs:
+                probs[mid] /= total
+        elif total <= 0.01 and probs:
+            # Degenerate — same M1 guard as parametric path
+            logger.debug(
+                "weatherbot_empirical_degenerate",
+                total=round(total, 6),
+                n_members=n,
+                n_buckets=len(probs),
+            )
+            return {}
+
+        return probs
+
     @staticmethod
     def _integrate_bucket(dist, bucket) -> float:
         """CDF integration for a single bucket."""

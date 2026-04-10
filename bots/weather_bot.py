@@ -2493,39 +2493,66 @@ class WeatherBot(BaseBot):
         if self._city_exposure.get(group.city, 0.0) >= self._max_correlated:
             return [], {}
 
-        # Fit distribution
-        try:
-            loc, scale, shape = self._prob_engine.fit_distribution(
+        # S168 Phase 2A: Use empirical CDF when we have enough ensemble members (≥50).
+        # Empirical CDF captures bimodal distributions, heavy tails, and asymmetric
+        # spreads that skew-normal cannot. Falls back to parametric for small ensembles.
+        _n_clean = sum(1 for m in forecast.ensemble_members if isinstance(m, (int, float)) and math.isfinite(m))
+        _use_empirical = _n_clean >= 50
+
+        if _use_empirical:
+            # Empirical path: EMOS applied per-member inside empirical_bucket_probabilities().
+            # Climate prior and AFD are parametric adjustments — skip them in empirical path.
+            # The raw ensemble spread is more informative than EMOS-corrected spread at n≥133.
+            model_probs = self._prob_engine.empirical_bucket_probabilities(
                 forecast.ensemble_members,
-                forecast.lead_time_hours,
+                group.buckets,
                 group.station.station_id,
+                forecast.lead_time_hours,
             )
-        except ValueError as exc:
-            logger.debug("weatherbot_fit_failed", station=group.station.station_id, city=group.city, error=str(exc))
-            return [], {}
-
-        # T3B: Climate normal Bayesian prior — blend toward climatology at long lead times.
-        # At ≤72h the ensemble is skilled; beyond 72h, blend 0-40% toward 10-year climate mean.
-        if lead_time > 72.0:
-            climate = await self._forecast_client.get_climate_normal(
-                group.station.latitude, group.station.longitude,
-                group.target_date, group.station.temp_unit,
-            )
-            if climate:
-                clim_mean, clim_std = climate
-                loc, scale = WeatherProbabilityEngine.apply_climate_prior(
-                    loc, scale, clim_mean, clim_std, lead_time,
+            if not model_probs:
+                logger.debug("weatherbot_empirical_degenerate_skip", city=group.city)
+                return [], {}
+            # Parametric fit still needed for model_spread logging and other downstream consumers
+            try:
+                loc, scale, shape = self._prob_engine.fit_distribution(
+                    forecast.ensemble_members, forecast.lead_time_hours, group.station.station_id,
                 )
+            except ValueError:
+                loc, scale, shape = 0.0, 1.0, 0.0  # fallback for logging
+        else:
+            # Parametric path: fit distribution + integrate CDF
+            try:
+                loc, scale, shape = self._prob_engine.fit_distribution(
+                    forecast.ensemble_members,
+                    forecast.lead_time_hours,
+                    group.station.station_id,
+                )
+            except ValueError as exc:
+                logger.debug("weatherbot_fit_failed", station=group.station.station_id, city=group.city, error=str(exc))
+                return [], {}
 
-        # T3C: AFD uncertainty adjustment — widen/tighten spread based on NWS forecast discussion
-        afd_factor = await self._get_afd_spread_factor(group.station)
-        if afd_factor != 1.0:
-            scale *= afd_factor
+            # T3B: Climate normal Bayesian prior — blend toward climatology at long lead times.
+            # At ≤72h the ensemble is skilled; beyond 72h, blend 0-40% toward 10-year climate mean.
+            if lead_time > 72.0:
+                climate = await self._forecast_client.get_climate_normal(
+                    group.station.latitude, group.station.longitude,
+                    group.target_date, group.station.temp_unit,
+                )
+                if climate:
+                    clim_mean, clim_std = climate
+                    loc, scale = WeatherProbabilityEngine.apply_climate_prior(
+                        loc, scale, clim_mean, clim_std, lead_time,
+                    )
 
-        # Compute bucket probabilities
-        model_probs = self._prob_engine.bucket_probabilities(
-            loc, scale, shape, group.buckets, forecast.lead_time_hours,
-        )
+            # T3C: AFD uncertainty adjustment — widen/tighten spread based on NWS forecast discussion
+            afd_factor = await self._get_afd_spread_factor(group.station)
+            if afd_factor != 1.0:
+                scale *= afd_factor
+
+            # Compute bucket probabilities via parametric CDF integration
+            model_probs = self._prob_engine.bucket_probabilities(
+                loc, scale, shape, group.buckets, forecast.lead_time_hours,
+            )
 
         # Resolution-day METAR override: if within 12h of resolution, fetch the
         # running daily max from METAR T-groups and override model probabilities
