@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     DB_POOL_RECYCLE: int = int(os.getenv("DB_POOL_RECYCLE", "300"))  # S145: 600→300 (5min recycle)
     DB_EFFECTIVE_POOL_SIZE: int = int(os.getenv("DB_EFFECTIVE_POOL_SIZE", "0"))  # S151: 0=auto (pool+overflow); set to PgBouncer default_pool_size (e.g. 40) for accurate warnings
     DB_STATEMENT_TIMEOUT_MS: int = int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "30000"))  # S152: per-connection PG statement_timeout; 30s for bots, 300s for ingestion
-    DB_IDLE_IN_TXN_TIMEOUT_MS: int = int(os.getenv("DB_IDLE_IN_TXN_TIMEOUT_MS", "120000"))  # S152: idle_in_transaction_session_timeout; 120s conservative default
+    DB_IDLE_IN_TXN_TIMEOUT_MS: int = int(os.getenv("DB_IDLE_IN_TXN_TIMEOUT_MS", "60000"))  # S168: 120s→60s. Kills sessions idle-in-transaction >60s. Was configured since S152 but never applied to connections until S168 database.py fix.
     DB_APPLICATION_NAME: str = os.getenv("DB_APPLICATION_NAME", "")  # S152: per-service name for pg_stat_activity monitoring
     # Ingestion process separation — disable scheduler in bot services
     INGESTION_ENABLED: bool = os.getenv("INGESTION_ENABLED", "true").lower() in ("true", "1", "yes")  # S152: false in bot .env when ingestion runs as separate service

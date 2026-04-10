@@ -195,8 +195,15 @@ class _SemaphoreSession:
         try:
             from config.settings import settings as _settings
             _timeout_ms = getattr(_settings, "DB_STATEMENT_TIMEOUT_MS", 60000)
+            _idle_txn_ms = getattr(_settings, "DB_IDLE_IN_TXN_TIMEOUT_MS", 60000)
             from sqlalchemy import text as _sa_text
             await result.execute(_sa_text(f"SET statement_timeout = '{_timeout_ms}'"))
+            # S168: Apply idle_in_transaction_session_timeout — kills sessions that sit
+            # idle inside an open transaction (e.g. after SAVEPOINT rollback in price
+            # fallback chain). Without this, connections hold locks forever, causing
+            # cascade: lock waits → statement timeouts → pool exhaustion → bot stall.
+            # Setting was defined in settings.py since S152 but never applied to connections.
+            await result.execute(_sa_text(f"SET idle_in_transaction_session_timeout = '{_idle_txn_ms}'"))
             # S161: Clear autobegin triggered by SET so callers can use session.begin().
             # SET statement_timeout (without LOCAL) is session-scoped and survives COMMIT.
             await result.commit()

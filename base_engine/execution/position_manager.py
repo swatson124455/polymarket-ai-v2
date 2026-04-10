@@ -18,6 +18,7 @@ from base_engine.data.database import Database, Position
 from base_engine.execution.execution_engine import ExecutionEngine
 from base_engine.execution.advanced_orders import AdvancedOrderManager
 from base_engine.execution.exit_strategy import ExitStrategy, ExitParams
+from base_engine.execution.unpriced_token_blacklist import UnpricedTokenBlacklist
 
 logger = get_logger()
 
@@ -70,6 +71,9 @@ class AutomatedPositionManager:
         # from permanently-unpriced tokens retrying 4 fallback queries every 10s.
         self._unpriced_fail_count: Dict[str, int] = {}       # token_id -> consecutive failure cycles
         self._unpriced_backoff_until: Dict[str, float] = {}  # token_id -> monotonic time to retry
+        # S168: Persistent Redis-backed blacklist for permanently unpriced tokens.
+        # Survives restarts (unlike in-memory backoff). Loaded in _monitor_positions startup.
+        self._unpriced_blacklist: Optional[UnpricedTokenBlacklist] = None
 
     def set_order_gateway(self, gateway) -> None:
         """Route orders through gateway (kill switch, risk, paper)."""
@@ -220,6 +224,16 @@ class AutomatedPositionManager:
         # Initial delay: let startup DB connections settle before position monitoring begins.
         # 10s is sufficient — precompute starts at t+150s; warm task is background (non-blocking).
         await asyncio.sleep(10)
+        # S168: Initialize persistent blacklist from Redis (survives restarts).
+        try:
+            _redis = getattr(self.execution_engine, "cache", None) if self.execution_engine else None
+            if _redis is None:
+                _redis = getattr(self.db, "_redis", None)
+            if _redis is not None:
+                self._unpriced_blacklist = UnpricedTokenBlacklist(_redis)
+                await self._unpriced_blacklist.load()
+        except Exception as _bl_err:
+            logger.debug("unpriced_blacklist_init_failed: %s", _bl_err)
         _last_known_count = 0   # In-memory position count — skip DB query when 0
         _force_check_cycle = 0  # Force a re-check every 3rd cycle (30s) even if empty
         while self.monitoring:
@@ -535,12 +549,14 @@ class AutomatedPositionManager:
             # Without this, 17+ unpriced tokens × 4 fallback queries × every 10s = 68 queries/cycle
             # that always fail, draining the connection pool and causing scan stalls.
             _backoff_mono = time.monotonic()
+            _bl = self._unpriced_blacklist  # S168: Redis-backed persistent blacklist
             _missing = [t for t in token_ids
                         if t not in latest_prices
-                        and _backoff_mono >= self._unpriced_backoff_until.get(t, 0)]
+                        and _backoff_mono >= self._unpriced_backoff_until.get(t, 0)
+                        and not (_bl and _bl.is_blacklisted(t))]
             _backed_off = len(token_ids) - len(latest_prices) - len(_missing)
             if _backed_off > 0:
-                logger.debug("unpriced_backoff_skipped: %d tokens in backoff", _backed_off)
+                logger.debug("unpriced_backoff_skipped: %d tokens in backoff/blacklisted", _backed_off)
             if _missing:
                 try:
                     async with session.begin_nested():
@@ -819,6 +835,12 @@ class AutomatedPositionManager:
                             "unpriced_backoff_started: tid=%s after %d cycles, retry in %ds",
                             tid[:16], _fails, _backoff_s,
                         )
+                # S168: Also record to persistent Redis blacklist (survives restarts)
+                if self._unpriced_blacklist:
+                    try:
+                        await self._unpriced_blacklist.record_failure(tid)
+                    except Exception:
+                        pass  # Redis failure is non-fatal
             # Reset counters for tokens that got priced this cycle
             for tid in list(self._unpriced_fail_count):
                 if tid in latest_prices or tid in self._api_price_cache:
