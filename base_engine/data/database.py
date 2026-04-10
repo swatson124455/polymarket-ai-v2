@@ -197,13 +197,9 @@ class _SemaphoreSession:
             _timeout_ms = getattr(_settings, "DB_STATEMENT_TIMEOUT_MS", 60000)
             _idle_txn_ms = getattr(_settings, "DB_IDLE_IN_TXN_TIMEOUT_MS", 60000)
             from sqlalchemy import text as _sa_text
-            # S168: Single execute for both SETs — reduces connection-death failure surface.
-            # Two separate executes meant a connection dying between them left the session
-            # in an invalid transaction state that couldn't be rolled back.
-            await result.execute(_sa_text(
-                f"SET statement_timeout = '{_timeout_ms}'; "
-                f"SET idle_in_transaction_session_timeout = '{_idle_txn_ms}'"
-            ))
+            await result.execute(_sa_text(f"SET statement_timeout = '{_timeout_ms}'"))
+            # S168: idle_in_transaction_session_timeout — kills sessions idle in open txn.
+            await result.execute(_sa_text(f"SET idle_in_transaction_session_timeout = '{_idle_txn_ms}'"))
             # S161: Clear autobegin triggered by SET so callers can use session.begin().
             # SET statement_timeout (without LOCAL) is session-scoped and survives COMMIT.
             await result.commit()
