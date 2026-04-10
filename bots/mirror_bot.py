@@ -387,6 +387,10 @@ class MirrorBot(BaseBot):
                     "MirrorBot startup: restored %d open positions from DB (stale_price=%d)",
                     restored, _stale,
                 )
+            # S168 Phase 8: Restore DB-authoritative state (cooldowns, circuit breaker)
+            await self._restore_circuit_breaker()
+            await self._restore_cooldowns()
+
             # S160: Only mark restored after all DB work succeeds — enables retry on failure.
             self._state_restored = True
         except Exception as exc:
@@ -781,6 +785,8 @@ class MirrorBot(BaseBot):
                     del self._trader_sell_signals[_sk]
                 if _stale_sell_keys:
                     logger.debug("mirror_sell_signals_pruned", count=len(_stale_sell_keys))
+                # S168 Phase 8: Cleanup expired state rows (5s timeout guard)
+                await self._cleanup_expired_state()
 
         # Check for exits from tracked positions
         if self._open_positions and getattr(settings, "MIRROR_EXIT_ENABLED", True):
@@ -1203,6 +1209,9 @@ class MirrorBot(BaseBot):
         _cb_threshold_usd = _capital * _cb_threshold_pct  # negative number
         if _total_unrealized <= _cb_threshold_usd and _total_unrealized < 0:
             self._circuit_breaker_until = _time.monotonic() + (_cb_pause_min * 60)
+            # S168 Phase 8: Persist to DB so it survives restart
+            import time as _cb_time
+            asyncio.ensure_future(self._save_circuit_breaker(_cb_time.time() + _cb_pause_min * 60))
             logger.warning("mirror_circuit_breaker_tripped",
                            unrealized=round(_total_unrealized, 2),
                            threshold=round(_cb_threshold_usd, 2),
@@ -1603,6 +1612,101 @@ class MirrorBot(BaseBot):
         if not _factors:
             return 0.0
         return _m.prod(_factors) ** (1.0 / len(_factors))
+
+    async def _save_circuit_breaker(self, resume_at_wall: float) -> None:
+        """S168 Phase 8: Persist circuit breaker to DB so it survives restart."""
+        try:
+            from sqlalchemy import text
+            import json
+            _ttl_secs = max(0, resume_at_wall - __import__("time").time())
+            async with self.base_engine.db.get_session() as _s:
+                await _s.execute(text(
+                    "INSERT INTO mirror_state (key, value_json, expires_at, updated_at)"
+                    " VALUES ('circuit_breaker', :val, NOW() + :ttl * INTERVAL '1 second', NOW())"
+                    " ON CONFLICT (key) DO UPDATE SET"
+                    " value_json = EXCLUDED.value_json,"
+                    " expires_at = EXCLUDED.expires_at,"
+                    " updated_at = NOW()"
+                ), {"val": json.dumps({"resume_at": resume_at_wall}), "ttl": _ttl_secs})
+                await _s.commit()
+        except Exception as _e:
+            logger.debug("mirror_save_circuit_breaker_failed: %s", _e)
+
+    async def _restore_circuit_breaker(self) -> None:
+        """S168 Phase 8: Restore circuit breaker from DB on startup."""
+        try:
+            from sqlalchemy import text
+            import time as _t
+            async with self.base_engine.db.get_session() as _s:
+                _r = await _s.execute(text(
+                    "SELECT value_json FROM mirror_state"
+                    " WHERE key = 'circuit_breaker' AND expires_at > NOW()"
+                ))
+                _row = _r.fetchone()
+                if _row and _row[0]:
+                    _val = _row[0] if isinstance(_row[0], dict) else __import__("json").loads(_row[0])
+                    _wall_resume = float(_val.get("resume_at", 0))
+                    _remaining = _wall_resume - _t.time()
+                    if _remaining > 0:
+                        self._circuit_breaker_until = _t.monotonic() + _remaining
+                        logger.info("mirror_circuit_breaker_restored", remaining_s=round(_remaining, 0))
+        except Exception as _e:
+            logger.debug("mirror_restore_circuit_breaker_failed: %s", _e)
+
+    async def _save_cooldown(self, market_id: str, ttl_secs: float) -> None:
+        """S168 Phase 8: Persist market cooldown to DB."""
+        try:
+            from sqlalchemy import text
+            import json
+            _key = f"cooldown:{market_id}"
+            async with self.base_engine.db.get_session() as _s:
+                await _s.execute(text(
+                    "INSERT INTO mirror_state (key, value_json, expires_at, updated_at)"
+                    " VALUES (:key, :val, NOW() + :ttl * INTERVAL '1 second', NOW())"
+                    " ON CONFLICT (key) DO UPDATE SET"
+                    " value_json = EXCLUDED.value_json,"
+                    " expires_at = EXCLUDED.expires_at,"
+                    " updated_at = NOW()"
+                ), {"key": _key, "val": json.dumps({"market_id": market_id}), "ttl": ttl_secs})
+                await _s.commit()
+        except Exception as _e:
+            logger.debug("mirror_save_cooldown_failed: %s market=%s", _e, market_id[:16])
+
+    async def _restore_cooldowns(self) -> None:
+        """S168 Phase 8: Restore market cooldowns from DB on startup."""
+        try:
+            from sqlalchemy import text
+            import time as _t
+            async with self.base_engine.db.get_session() as _s:
+                _r = await _s.execute(text(
+                    "SELECT key, EXTRACT(EPOCH FROM (expires_at - NOW())) AS remaining"
+                    " FROM mirror_state"
+                    " WHERE key LIKE 'cooldown:%' AND expires_at > NOW()"
+                ))
+                _count = 0
+                for _row in _r.fetchall():
+                    _market_id = _row[0].replace("cooldown:", "", 1)
+                    _remaining = float(_row[1])
+                    if _remaining > 0:
+                        self._market_cooldown[_market_id] = _t.monotonic() + _remaining
+                        _count += 1
+                if _count > 0:
+                    logger.info("mirror_cooldowns_restored", count=_count)
+        except Exception as _e:
+            logger.debug("mirror_restore_cooldowns_failed: %s", _e)
+
+    async def _cleanup_expired_state(self) -> None:
+        """S168 Phase 8: Delete expired rows from mirror_state. 5s timeout guard."""
+        try:
+            from sqlalchemy import text
+            async with self.base_engine.db.get_session() as _s:
+                await _s.execute(text("SET LOCAL statement_timeout = '5000'"))
+                await _s.execute(text(
+                    "DELETE FROM mirror_state WHERE expires_at IS NOT NULL AND expires_at < NOW()"
+                ))
+                await _s.commit()
+        except Exception as _e:
+            logger.debug("mirror_cleanup_state_failed: %s", _e)
 
     async def _refresh_category_ie(self) -> None:
         """S168 Phase 7: Refresh category information efficiency from trade_events.
@@ -2909,6 +3013,8 @@ class MirrorBot(BaseBot):
             _cd_secs = int(getattr(settings, "MIRROR_MARKET_COOLDOWN_SECONDS", 1800))
             if _cd_secs > 0:
                 self._market_cooldown[market_id] = _time.monotonic() + _cd_secs
+                # S168 Phase 8: Persist to DB
+                asyncio.ensure_future(self._save_cooldown(str(market_id), float(_cd_secs)))
 
             # Update position tracking with ACTUAL filled size (not requested size)
             # S156: Use order["filled"] to prevent in-memory vs paper engine size divergence.
