@@ -128,6 +128,12 @@ class MirrorBot(BaseBot):
         # Pruned every 30min alongside _prune_entered_market_sides.
         self._trader_sell_signals: Dict[str, set] = {}
 
+        # S168 Phase 7: Category information efficiency cache.
+        # Per-category WR from resolved trade_events. Refreshed every 20 scans.
+        # Categories >55% WR → 1.0, 45-55% → 0.5, <45% → 0.0 (hard block).
+        self._category_ie_cache: Dict[str, float] = {}
+        self._category_ie_last_refresh: float = 0.0
+
         # Session 82: Calibration stack (FTS + Le2026 + conformal)
         self._calibration_stack = None
         self._calibration_fitted: bool = False
@@ -630,6 +636,15 @@ class MirrorBot(BaseBot):
                 await self._adaptive_safety.refresh(self._scan_count)
             except Exception as e:
                 logger.warning("MirrorBot adaptive safety refresh failed: %s", e)
+
+        # S168 Phase 7: Refresh category IE cache every 20 scans (~15min)
+        import time as _time_ie
+        if (_time_ie.monotonic() - self._category_ie_last_refresh) > 900:  # 15 min
+            try:
+                await self._refresh_category_ie()
+                self._category_ie_last_refresh = _time_ie.monotonic()
+            except Exception as _ie_err:
+                logger.debug("mirror_category_ie_refresh_failed: %s", _ie_err)
 
         # M4/B4: Leader reconciliation — run periodically in background to avoid
         # blocking the scan loop for 30s while Gamma API calls complete.
@@ -1533,6 +1548,98 @@ class MirrorBot(BaseBot):
         except Exception as exc:
             logger.warning("MirrorBot: failed to persist trader address: %s", exc)
 
+    def _market_quality_score(
+        self,
+        volume_24h: float = 0.0,
+        spread: Optional[float] = None,
+        hours_to_resolution: Optional[float] = None,
+        category: str = "",
+    ) -> float:
+        """S168 Phase 7: Composite market quality score (0.0-1.0).
+
+        Geometric mean of:
+          - Volume: log scale $0→0.0, $5K→0.50, $20K+→1.0
+          - Spread: linear 0→1.0, 0.05→0.67, 0.15→0.0
+          - TTR: log scale <2h→0.30, 8h→0.70, 24h+→1.0
+          - Category IE: from _category_ie_cache (refreshed every 20 scans)
+        """
+        import math as _m
+
+        # Volume component
+        if volume_24h <= 0:
+            _f_vol = 0.0
+        elif volume_24h >= 20000:
+            _f_vol = 1.0
+        else:
+            _f_vol = _m.log1p(volume_24h) / _m.log1p(20000)
+
+        # Spread component
+        if spread is None or spread <= 0:
+            _f_spread = 1.0  # no spread data = optimistic
+        elif spread >= 0.15:
+            _f_spread = 0.0
+        else:
+            _f_spread = max(0.0, 1.0 - spread / 0.15)
+
+        # TTR component
+        if hours_to_resolution is None:
+            _f_ttr = 0.70  # unknown = moderate
+        elif hours_to_resolution < 2:
+            _f_ttr = 0.30
+        elif hours_to_resolution >= 24:
+            _f_ttr = 1.0
+        else:
+            _f_ttr = 0.30 + 0.70 * _m.log1p(hours_to_resolution - 2) / _m.log1p(22)
+
+        # Category IE component (from cache, refreshed on 20-scan cadence)
+        _f_cat = 0.50  # default: unknown category = neutral
+        _cat_ie = getattr(self, "_category_ie_cache", {})
+        if category and _cat_ie:
+            _cat_lower = category.lower().strip()
+            if _cat_lower in _cat_ie:
+                _f_cat = _cat_ie[_cat_lower]
+
+        _factors = [f for f in [_f_vol, _f_spread, _f_ttr, _f_cat] if f > 0]
+        if not _factors:
+            return 0.0
+        return _m.prod(_factors) ** (1.0 / len(_factors))
+
+    async def _refresh_category_ie(self) -> None:
+        """S168 Phase 7: Refresh category information efficiency from trade_events.
+        Categories >55% WR → 1.0, 45-55% → 0.5, <45% → 0.0."""
+        try:
+            from sqlalchemy import text
+            _regime = getattr(settings, "MIRROR_REGIME_START", "2026-03-30T12:43:00+00:00")
+            from datetime import datetime as _dt
+            _since = _dt.fromisoformat(_regime)
+            async with self.base_engine.db.get_session() as _s:
+                _r = await _s.execute(text(
+                    "SELECT LOWER(COALESCE(event_data->>'category', 'unknown')) AS cat,"
+                    " COUNT(*) AS n,"
+                    " COUNT(CASE WHEN realized_pnl > 0 THEN 1 END) AS wins"
+                    " FROM trade_events"
+                    " WHERE bot_name = 'MirrorBot' AND event_type = 'RESOLUTION'"
+                    "   AND event_time >= :since AND realized_pnl IS NOT NULL"
+                    " GROUP BY LOWER(COALESCE(event_data->>'category', 'unknown'))"
+                ), {"since": _since})
+                _rows = _r.fetchall()
+            _new_cache: Dict[str, float] = {}
+            for _cat, _n, _wins in _rows:
+                if _n < 10:
+                    continue
+                _wr = _wins / _n
+                if _wr > 0.55:
+                    _new_cache[_cat] = 1.0
+                elif _wr >= 0.45:
+                    _new_cache[_cat] = 0.50
+                else:
+                    _new_cache[_cat] = 0.0
+            self._category_ie_cache = _new_cache
+            logger.info("mirror_category_ie_refreshed", categories=len(_new_cache),
+                        cache={k: v for k, v in sorted(_new_cache.items())})
+        except Exception as _e:
+            logger.warning("mirror_category_ie_refresh_error: %s", _e)
+
     def _can_open_position(self, price: float, category: str = "") -> bool:
         """Check concurrent position + daily exposure + category + price limits.
 
@@ -2038,6 +2145,25 @@ class MirrorBot(BaseBot):
             if _end_date:
                 _near_res_h = self.hours_until_resolution({"end_date_iso": _end_date})
             # _wf_near_res computed below in split scoring block
+
+            # S168 Phase 7: Market quality scoring — pre-entry composite filter.
+            # Geometric mean of volume, spread, TTR, and category IE.
+            _mq_threshold = float(getattr(settings, "MIRROR_MARKET_QUALITY_THRESHOLD", 0.30))
+            if _mq_threshold > 0:
+                _mq_score = self._market_quality_score(
+                    volume_24h=_vol_check,
+                    spread=_spread,
+                    hours_to_resolution=_near_res_h,
+                    category=category,
+                )
+                if _mq_score < _mq_threshold:
+                    logger.info("mirror_market_quality_blocked",
+                                score=round(_mq_score, 3), threshold=_mq_threshold,
+                                volume=round(_vol_check, 0),
+                                spread=round(_spread, 3) if _spread else None,
+                                ttr_h=round(_near_res_h, 1) if _near_res_h else None,
+                                market=str(market_id)[:16])
+                    return False
 
             _side_upper = str(side).upper()
             if _side_upper in ("YES", "NO"):

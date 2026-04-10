@@ -1025,6 +1025,7 @@ class TestExecuteMirrorTrade:
             ms.MIRROR_MAX_SLIPPAGE_PCT = 0.08
             ms.MIRROR_MIN_TRADE_USD = 1.0
             ms.MIRROR_MAX_PER_MARKET_PCT = 0.05
+            ms.MIRROR_MARKET_QUALITY_THRESHOLD = 0.0  # S168: disable for test
             ms.MIRROR_MIN_HOURS_TO_RESOLUTION = 4
             await bot._execute_mirror_trade(
                 market_id="mkt1", token_id="tok-yes", side="YES",
@@ -1066,6 +1067,7 @@ class TestExecuteMirrorTrade:
             ms.MIRROR_MAX_SLIPPAGE_PCT = 0.08
             ms.MIRROR_MIN_TRADE_USD = 1.0
             ms.MIRROR_MAX_PER_MARKET_PCT = 0.05
+            ms.MIRROR_MARKET_QUALITY_THRESHOLD = 0.0  # S168: disable for test
             ms.MIRROR_MIN_HOURS_TO_RESOLUTION = 4
             await bot._execute_mirror_trade(
                 market_id="mkt1", token_id="tok-yes", side="YES",
@@ -1131,6 +1133,7 @@ class TestExecuteMirrorTrade:
             ms.MIRROR_MAX_SLIPPAGE_PCT = 0.08
             ms.MIRROR_MIN_TRADE_USD = 1.0
             ms.MIRROR_MAX_PER_MARKET_PCT = 0.05
+            ms.MIRROR_MARKET_QUALITY_THRESHOLD = 0.0  # S168: disable for test
             ms.MIRROR_MIN_HOURS_TO_RESOLUTION = 4
             result = await bot._execute_mirror_trade(
                 market_id="mkt1", token_id="tok-yes", side="YES",
