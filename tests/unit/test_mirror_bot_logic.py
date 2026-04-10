@@ -837,15 +837,14 @@ class TestExecuteMirrorTrade:
         bot.place_order.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_bm_shrinkage_rejects_low_edge_despite_tight_spread(self):
-        """S144: WR=0.60 trader, tight spread, price=0.55 — BM shrinks size below dust gate.
+    async def test_bm_shrinkage_low_edge_passes_with_risk_budget(self):
+        """S168: WR=0.60 trader, tight spread, price=0.55 — unified risk budget
+        prevents BM shrinkage alone from killing the trade at dust gate.
 
-        Baker-McHale shrinkage is the safety net for low-edge trades that pass the
-        spread gate. confidence ≈ 0.55-0.60, edge ≈ 0.00-0.05, BM k is very small,
-        so the final size falls below the $50 MIRROR_MIN_TRADE_USD dust gate.
+        Pre-S168: BM k=0.075 multiplied by other penalties → dust gate rejection.
+        Post-S168: additive risk budget with 0.15 floor → trade executes at reduced size.
         """
         bot, engine = _make_bot()
-        # Tight spread market (passes spread gate)
         engine.get_market_from_index = MagicMock(return_value={
             "active": True, "yes_price": 0.55, "no_price": 0.45,
             "volume_24h": 100000.0, "liquidity": 50000.0,
@@ -856,7 +855,6 @@ class TestExecuteMirrorTrade:
         bot.calculate_bot_position_size = AsyncMock(return_value=200.0)
         bot.place_order = AsyncMock(return_value={"success": True, "order_id": "ord1"})
         bot.store_pending_trade_signals = AsyncMock()
-        # WR=0.60: mediocre trader → confidence ≈ 0.55-0.60 → tiny edge over price=0.55
         bot._reliability_tracker = MagicMock()
         bot._reliability_tracker.likelihood_ratio = MagicMock(return_value=1.0)
         bot._reliability_tracker.category_trade_count = MagicMock(return_value=50)
@@ -868,9 +866,9 @@ class TestExecuteMirrorTrade:
             market_id="mkt1", token_id="tok-yes", side="YES",
             price=0.55, confidence=0.70, trader_address="addr1",
         )
-        # BM shrinkage kills the trade — size too small for dust gate
-        assert result is False
-        bot.place_order.assert_not_called()
+        # S168: Risk budget floor prevents dust gate kill — trade executes at reduced size
+        assert result is not False
+        bot.place_order.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_same_side_dedup_blocks_reentry(self):

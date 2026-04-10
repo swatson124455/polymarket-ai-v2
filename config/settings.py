@@ -450,6 +450,7 @@ class Settings(BaseSettings):
     MIRROR_GATE_COLD_START_PRIOR: float = float(os.getenv("MIRROR_GATE_COLD_START_PRIOR", "0.53"))
     MIRROR_GATE_FACTOR_WEIGHT: float = float(os.getenv("MIRROR_GATE_FACTOR_WEIGHT", "0.30"))
     MIRROR_COLD_START_SIZE_FLOOR: float = float(os.getenv("MIRROR_COLD_START_SIZE_FLOOR", "0.35"))  # S157: 0.15→0.20, S166: 0.20→0.35 (restore entry volume after S160+S162 scoring pressure)
+    MIRROR_RISK_BUDGET_FLOOR: float = float(os.getenv("MIRROR_RISK_BUDGET_FLOOR", "0.15"))  # S168: min risk multiplier (prevents compound penalties killing trades at dust gate)
     # S157: MIRROR_COLD_START_MIN_TRADE_USD removed — single gate via MIRROR_MIN_TRADE_USD
     # Dampeners (S119: set to 1.0 = no-op for data collection phase)
     MIRROR_FAVORITE_PRICE_THRESHOLD: float = float(os.getenv("MIRROR_FAVORITE_PRICE_THRESHOLD", "0.70"))

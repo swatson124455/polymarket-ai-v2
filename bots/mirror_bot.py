@@ -2482,32 +2482,14 @@ class MirrorBot(BaseBot):
             conformal_interval=None,
             category=category,
         )
-        size *= reliability_mult
 
-        # S146: Copy-P&L tiered sizing — scale by trader's demonstrated copyability.
-        # Tier 1 (copy-profitable, n>=20): 1.0x. Tier 2 (thin data): 0.50x. Tier 3 (copy-unprofitable): 0.25x.
-        # All 300 traders stay on watchlist — tiers control capital, not membership.
+        # S146: Copy-P&L tiered sizing — compute tier (used by risk budget below).
         _copy_tier = 2  # default: learning mode (also computed in S153 block above)
         if self._watchlist:
             _copy_tier = self._watchlist.get_copy_tier(trader_address)
-        if _copy_tier == 2:
-            _tier_mult = float(getattr(settings, "MIRROR_COPY_TIER2_MULT", 0.50))
-            size *= _tier_mult
-        elif _copy_tier == 3:
-            _tier_mult = float(getattr(settings, "MIRROR_COPY_TIER3_MULT", 0.25))
-            size *= _tier_mult
-            logger.info("mirror_copy_tier3", trader=trader_address[:10],
-                        mult=_tier_mult, market=str(market_id)[:16])
-        # Tier 1: no multiplier (1.0x)
 
-        # S142: Baker-McHale edge-uncertainty shrinkage.
-        # Kelly oversizes when the edge estimate is uncertain (few resolved trades).
-        # Formula: k = edge² / (edge² + var)  where var = p*(1-p)/n (binomial SE²).
-        # Reference: Baker & McHale (2013), Decision Analysis — shrink toward 0 when
-        # standard error of the edge is large relative to the estimated edge itself.
-        # S150: Lowered from n>=5 to n>=3 — apply earlier skepticism on thin-data traders.
-        # At n=3-4, BM shrinkage heavily penalises uncertain edges; sample ramp (n/50) still
-        # limits absolute size. Combined effect: don't overbet on luck.
+        # S142: Baker-McHale edge-uncertainty shrinkage — compute k (used by risk budget).
+        _bm_k = 1.0
         if _eq_n >= 3:
             _bm_edge = max(0.0, confidence - price)
             _bm_edge_sq = _bm_edge * _bm_edge
@@ -2515,11 +2497,43 @@ class MirrorBot(BaseBot):
             _bm_denom = _bm_edge_sq + _bm_var
             if _bm_denom > 0:
                 _bm_k = _bm_edge_sq / _bm_denom
-                size *= _bm_k
-                if _bm_k < 0.90:  # only log meaningful shrinkage
-                    logger.info("mirror_bm_shrinkage", trader=trader_address[:10],
-                                n=_eq_n, edge=round(_bm_edge, 3), k=round(_bm_k, 3),
-                                market=str(market_id)[:16])
+
+        # S168: Unified risk budget — replaces 4 independent multiplicative penalties.
+        # Old: size *= reliability × tier × bm_k × adaptive. Compounded to dust.
+        # New: additive deductions with floor. Each factor's weight from Phase 1 data:
+        #   rel_mult: Q1=52.9% WR (moderate signal, 77% of trades) → weight 0.30
+        #   copy_tier: all tiers ~52-53% WR (near-zero differentiation) → weight 0.10/0.15
+        #   baker_mchale: function of confidence/n (moderate) → weight 0.20
+        #   adaptive_safety: drawdown protection (safety, not prediction) → weight 0.15
+        _risk_floor = float(getattr(settings, "MIRROR_RISK_BUDGET_FLOOR", 0.15))
+        _deduction = 0.0
+        _deduction += (1.0 - reliability_mult) * 0.30       # max 0.30 deduction
+        if _copy_tier == 2:
+            _deduction += 0.10                                # thin data → mild penalty
+        elif _copy_tier == 3:
+            _deduction += 0.15                                # copy-unprofitable → moderate
+        _deduction += (1.0 - _bm_k) * 0.20                  # max 0.20 deduction
+
+        _bet_mult = 1.0
+        if (self._adaptive_safety
+                and getattr(settings, "MIRROR_ADAPTIVE_SAFETY", False)
+                and self._adaptive_safety._fitted):
+            _bet_mult = self._adaptive_safety.get_adjusted_bet_size_mult()
+        if _bet_mult < 1.0:
+            _deduction += (1.0 - _bet_mult) * 0.15          # max 0.15 deduction
+
+        _risk_mult = max(_risk_floor, 1.0 - _deduction)
+        size *= _risk_mult
+        logger.info("mirror_risk_budget",
+                    risk_mult=round(_risk_mult, 3),
+                    deduction=round(_deduction, 3),
+                    rel=round(reliability_mult, 3),
+                    tier=_copy_tier,
+                    bm_k=round(_bm_k, 3),
+                    adaptive=round(_bet_mult, 3),
+                    floor=_risk_floor,
+                    trader=trader_address[:10],
+                    market=str(market_id)[:16])
 
         # S124: NaN/inf guard — defense-in-depth against corrupted Kelly output
         if not _math_isfinite(size) or size < 0:
@@ -2582,17 +2596,7 @@ class MirrorBot(BaseBot):
                 logger.info("mirror_favorite_dampened: price=%.3f, size *= %.2f",
                             price, _fav_damp)
 
-        # S150: Adaptive bet-size multiplier — per-trade size reduction during drawdowns.
-        # Complements daily cap mult (which limits total daily exposure) by also shrinking
-        # each individual trade. Uses gentler decay (-4.0) than position limits (-8.0).
-        if (self._adaptive_safety
-                and getattr(settings, "MIRROR_ADAPTIVE_SAFETY", False)
-                and self._adaptive_safety._fitted):
-            _bet_mult = self._adaptive_safety.get_adjusted_bet_size_mult()
-            if _bet_mult < 1.0:
-                size *= _bet_mult
-                logger.info("mirror_adaptive_bet_size", mult=round(_bet_mult, 3),
-                            market=str(market_id)[:16])
+        # S168: Adaptive bet-size multiplier moved into unified risk budget above.
 
         # M9: Cap per-market exposure — percentage-based with absolute safety cap
         _capital = float(getattr(self.bankroll, 'capital', 0) or 0) if self.bankroll else float(getattr(settings, "MIRROR_TOTAL_CAPITAL", 20000))
