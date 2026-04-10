@@ -285,6 +285,9 @@ class Settings(BaseSettings):
     AUTO_RETRAIN_MIN_SAMPLES: int = int(os.getenv("AUTO_RETRAIN_MIN_SAMPLES", "20"))
     # Incremental learner: batch size before triggering full retrain (C)
     INCREMENTAL_LEARNER_BATCH_SIZE: int = int(os.getenv("INCREMENTAL_LEARNER_BATCH_SIZE", "100"))
+    # S169: Training data cutoff — exclude pre-S163 corrupted data (duplicate resolutions, wrong EXIT sides, orphan events)
+    # Set to empty string to use all data. Default = post-S163 deploy timestamp.
+    TRAINING_DATA_CUTOFF: str = os.getenv("TRAINING_DATA_CUTOFF", "2026-04-08T16:01:40Z")
     # Wrap models in CalibratedClassifierCV (isotonic) for better probability calibration
     # Phase 0: Default true — wraps all non-CatBoost models with isotonic calibration.
     # CatBoost intentionally excluded (incompatible __sklearn_tags__).

@@ -1714,8 +1714,14 @@ class PredictionEngine:
     async def _get_paper_trade_training_rows(self, session) -> Optional[pd.DataFrame]:
         """Fetch resolved paper trades as training data (feedback loop)."""
         max_rows = getattr(settings, "PAPER_TRADE_TRAINING_MAX_ROWS", 5000)
+        cutoff = getattr(settings, "TRAINING_DATA_CUTOFF", "")
         try:
             from sqlalchemy import text
+            cutoff_clause = ""
+            bind_params = {}
+            if cutoff:
+                cutoff_clause = "AND pt.created_at > :training_cutoff"
+                bind_params["training_cutoff"] = cutoff
             result = await session.execute(text(f"""
                 SELECT pt.market_id, pt.token_id, pt.price, pt.size,
                        pt.created_at as trade_ts,
@@ -1742,8 +1748,9 @@ class PredictionEngine:
                 LEFT JOIN trade_signals ts ON ts.trade_id = pt.id
                 WHERE m.resolution IN ('YES', 'NO')
                   AND pt.resolution IS NOT NULL
+                  {cutoff_clause}
                 LIMIT {max_rows}
-            """))
+            """), bind_params)
             rows = result.fetchall()
             if not rows:
                 return None
@@ -1757,8 +1764,14 @@ class PredictionEngine:
     async def _get_prediction_log_training_rows(self, session) -> Optional[pd.DataFrame]:
         """Fetch resolved prediction log entries as training data with 'why wrong' signal."""
         max_rows = getattr(settings, "PREDICTION_LOG_TRAINING_MAX_ROWS", 10000)
+        cutoff = getattr(settings, "TRAINING_DATA_CUTOFF", "")
         try:
             from sqlalchemy import text
+            cutoff_clause = ""
+            bind_params = {}
+            if cutoff:
+                cutoff_clause = "AND pl.prediction_time > :training_cutoff"
+                bind_params["training_cutoff"] = cutoff
             result = await session.execute(text(f"""
                 SELECT pl.market_id, pl.token_id, pl.market_price as price,
                        COALESCE(pl.trade_size, 1.0) as size,
@@ -1778,8 +1791,9 @@ class PredictionEngine:
                 FROM prediction_log pl
                 JOIN markets m ON (pl.market_id = CAST(m.id AS TEXT) OR pl.market_id = m.condition_id)
                 WHERE m.resolution IN ('YES', 'NO')
+                {cutoff_clause}
                 LIMIT {max_rows}
-            """))
+            """), bind_params)
             rows = result.fetchall()
             if not rows:
                 return None

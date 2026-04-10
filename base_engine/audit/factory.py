@@ -1,5 +1,5 @@
 """
-build_audit_orchestrator() — registers all 23 checks in order.
+build_audit_orchestrator() — registers all 24 checks in order.
 
 SIGNAL_REQUIRED_BOTS: opt-in list for CRITICAL rogue-trade detection.
 Starts empty — populate once you've verified that each bot reliably
@@ -40,6 +40,7 @@ from base_engine.audit.checks.price_integrity_check import PriceIntegrityCheck
 from base_engine.audit.checks.frozen_price_check import FrozenPriceCheck
 from base_engine.audit.checks.prices_coverage_check import PricesCoverageCheck
 from base_engine.audit.checks.bot_health_state_check import BotHealthStateCheck
+from base_engine.audit.checks.resolution_verification_check import ResolutionVerificationCheck
 
 if TYPE_CHECKING:
     from base_engine.data.database import Database
@@ -55,7 +56,7 @@ SIGNAL_REQUIRED_BOTS: List[str] = []
 
 def build_audit_orchestrator(db: "Database", alerting=None) -> AuditOrchestrator:
     """
-    Build and return an AuditOrchestrator with all 23 checks registered.
+    Build and return an AuditOrchestrator with all 24 checks registered.
 
     Reads SIGNAL_REQUIRED_BOTS from environment variable if set:
         SIGNAL_REQUIRED_BOTS=MirrorBot,WeatherBot,EsportsBot
@@ -103,6 +104,7 @@ def build_audit_orchestrator(db: "Database", alerting=None) -> AuditOrchestrator
     orchestrator.register_check(FrozenPriceCheck())          # S167: stale prices on open positions
     orchestrator.register_check(PricesCoverageCheck())       # S167: open positions with no price data
     orchestrator.register_check(BotHealthStateCheck())
+    orchestrator.register_check(ResolutionVerificationCheck())  # S169: duplicate RESOLUTION detection
 
     logger.info(
         "audit_orchestrator_built",
