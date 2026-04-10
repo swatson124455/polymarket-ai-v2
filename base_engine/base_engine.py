@@ -573,6 +573,7 @@ class BaseEngine:
                 db=self.db,
                 prediction_engine=getattr(self, "prediction_engine", None),
                 alerting=self.alerting_system,  # Session 51 P1-4
+                redis_client=getattr(self.cache, "redis", None) if getattr(self, "cache", None) else None,  # S168
             )
             
             # Level 8: Signal & Data Systems

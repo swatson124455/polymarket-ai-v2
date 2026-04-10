@@ -41,12 +41,14 @@ class AutomatedPositionManager:
         db: Database,
         prediction_engine: Optional[Any] = None,
         alerting: Optional[Any] = None,
+        redis_client: Optional[Any] = None,  # S168: aioredis.Redis for persistent blacklist
     ):
         self.execution_engine = execution_engine
         self.order_manager = order_manager
         self.db = db
         self.prediction_engine = prediction_engine
         self.alerting = alerting  # Session 51 P1-4: price staleness alerts
+        self._redis_client = redis_client  # S168: passed from BaseEngine.cache.redis
         self.order_gateway = None  # Set by BaseEngine so stop-loss/take-profit respect kill switch
         self.risk_manager = None   # Set by BaseEngine to record consecutive trade outcomes
         # Session 45: Intelligent Exit Engine — dynamic cost/vol/TTR/regime-aware exits
@@ -225,15 +227,12 @@ class AutomatedPositionManager:
         # 10s is sufficient — precompute starts at t+150s; warm task is background (non-blocking).
         await asyncio.sleep(10)
         # S168: Initialize persistent blacklist from Redis (survives restarts).
-        try:
-            _redis = getattr(self.execution_engine, "cache", None) if self.execution_engine else None
-            if _redis is None:
-                _redis = getattr(self.db, "_redis", None)
-            if _redis is not None:
-                self._unpriced_blacklist = UnpricedTokenBlacklist(_redis)
+        if self._redis_client is not None:
+            try:
+                self._unpriced_blacklist = UnpricedTokenBlacklist(self._redis_client)
                 await self._unpriced_blacklist.load()
-        except Exception as _bl_err:
-            logger.debug("unpriced_blacklist_init_failed: %s", _bl_err)
+            except Exception as _bl_err:
+                logger.warning("unpriced_blacklist_init_failed: %s", _bl_err)
         _last_known_count = 0   # In-memory position count — skip DB query when 0
         _force_check_cycle = 0  # Force a re-check every 3rd cycle (30s) even if empty
         while self.monitoring:
