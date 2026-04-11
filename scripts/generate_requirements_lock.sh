@@ -13,4 +13,4 @@ fi
 source "$VENV/bin/activate"
 pip freeze > requirements.lock
 echo "Generated requirements.lock with $(wc -l < requirements.lock) pinned packages"
-echo "Copy to local repo: scp ubuntu@34.251.224.21:/opt/polymarket-ai-v2/requirements.lock ."
+echo "Copy to local repo: scp ubuntu@18.201.216.0:/opt/polymarket-ai-v2/requirements.lock ."

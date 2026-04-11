@@ -1,7 +1,7 @@
 #!/bin/bash
 # Polymarket AI V2 — Base Engine Health Check
 # Run locally: bash scripts/health_check.sh
-# Run via SSH: ssh -i KEY ubuntu@34.251.224.21 'bash -s' < scripts/health_check.sh
+# Run via SSH: ssh -i KEY ubuntu@18.201.216.0 'bash -s' < scripts/health_check.sh
 
 echo "=== POLYMARKET AI HEALTH CHECK ==="
 echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"

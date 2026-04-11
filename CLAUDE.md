@@ -143,7 +143,7 @@ When a bot accumulates in-memory financial state that must survive a restart, pi
 - **BotBankrollManager** handles SIZING; **risk_manager** handles LIMITS. Both must pass.
 - `risk_manager.calculate_position_size()` is DEPRECATED — BotBankrollManager used instead
 - Paper trading phase: PHASE_MAX_BET_USD=$1000, but per-bot BotBankrollManager max_bet_usd is the real cap ($300 for Weather/Mirror/Esports, $100 fallback for unknown bots)
-- **VPS**: Ubuntu-3 at 34.251.224.21 (16GB/4vCPU). SSH key: `~/.ssh/LightsailDefaultKey-eu-west-1.pem`
+- **VPS**: Ubuntu-32 at 18.201.216.0 (32GB/8vCPU). SSH key: `~/.ssh/LightsailDefaultKey-eu-west-1.pem`
 - **BUY/SELL vs YES/NO**: `BaseBot.place_order()` expects `side="YES"` or `side="NO"`. Never pass "BUY"/"SELL"
 - `PSEUDO_LABEL_ENABLED=false` — DO NOT enable. Only Location 1 (market resolution) labels are correct.
 - `websockets.exceptions` must be imported explicitly (v15 lazy-loads)

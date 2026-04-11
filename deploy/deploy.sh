@@ -19,7 +19,7 @@
 set -euo pipefail
 
 KEY="${SSH_KEY:-$HOME/.ssh/LightsailDefaultKey-eu-west-1.pem}"
-VPS="${VPS_HOST:-ubuntu@34.251.224.21}"
+VPS="${VPS_HOST:-ubuntu@18.201.216.0}"
 SSH_OPTS="-o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3"
 RELEASES="/opt/pa2-releases"
 SHARED="/opt/pa2-shared"
