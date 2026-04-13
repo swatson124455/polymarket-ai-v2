@@ -419,6 +419,20 @@ class OrderGateway:
                 logger.warning("Order blocked: kill switch engaged", bot_name=bot_name, market_id=market_id)
                 return {"success": False, "error": "Kill switch engaged"}
 
+        # S172 1E-b: Pre-trade market validation — resolve aliases, warn on unknown
+        if self._market_index is not None:
+            _known = market_id in self._market_index
+            if not _known and self._market_index_by_cid:
+                _by_cid = self._market_index_by_cid.get(market_id)
+                if _by_cid:
+                    _canonical = str(_by_cid.get("id", market_id))
+                    logger.debug("gateway_alias_resolved", alias=market_id[:20], canonical=_canonical[:20], bot_name=bot_name)
+                    market_id = _canonical
+                    _known = True
+            if not _known:
+                logger.warning("gateway_unknown_market", market_id=market_id[:20], bot_name=bot_name,
+                               note="market not in index — proceeding but may fail at execution")
+
         # Canary deployment: graduated capital scaling (0=off, 1=5%, 2=25%, 3=50%, 4=100%)
         _canary = getattr(settings, "CANARY_STAGE", 0)
         if _canary > 0:
