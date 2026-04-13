@@ -702,6 +702,36 @@ class EsportsBot(BaseBot):
         except Exception as exc:
             logger.warning("esportsbot_brier_seed_failed", error=str(exc))
 
+        # S172 1F: tracemalloc SIGUSR1 handler — dump top memory allocations on signal.
+        # Usage: kill -USR1 <pid>  →  journalctl -u polymarket-esports | grep tracemalloc
+        import signal
+        import tracemalloc
+        if not tracemalloc.is_tracing():
+            tracemalloc.start(10)  # 10-frame depth
+            logger.info("esportsbot_tracemalloc_started")
+
+        def _dump_tracemalloc(signum, frame):
+            snapshot = tracemalloc.take_snapshot()
+            top = snapshot.statistics("lineno")
+            lines = ["=== tracemalloc top 20 ==="]
+            for stat in top[:20]:
+                lines.append(f"  {stat}")
+            # Also check TabPFN size
+            _tabpfn_size = 0
+            if self._tabpfn_predictor is not None:
+                import sys
+                _tabpfn_size = sys.getsizeof(self._tabpfn_predictor)
+            lines.append(f"  TabPFN object size: {_tabpfn_size} bytes")
+            lines.append(f"  tracemalloc current: {tracemalloc.get_traced_memory()[0] / 1024 / 1024:.1f} MB")
+            lines.append(f"  tracemalloc peak: {tracemalloc.get_traced_memory()[1] / 1024 / 1024:.1f} MB")
+            logger.warning("\n".join(lines))
+
+        try:
+            signal.signal(signal.SIGUSR1, _dump_tracemalloc)
+            logger.info("esportsbot_sigusr1_handler_installed")
+        except (OSError, AttributeError):
+            logger.debug("esportsbot_sigusr1_not_available")
+
         logger.info(
             "EsportsBot: initialized",
             pandascore=True,
