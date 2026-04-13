@@ -26,8 +26,8 @@ class FrozenPriceCheck(BaseCheck):
 
         rows = await session.execute(text("""
             SELECT p.source_bot, p.market_id, p.token_id, p.size,
-                   mpl.price, mpl.updated_at,
-                   EXTRACT(EPOCH FROM (NOW() - mpl.updated_at)) / 3600 AS hours_stale
+                   mpl.price, mpl.timestamp,
+                   EXTRACT(EPOCH FROM (NOW() - mpl.timestamp)) / 3600 AS hours_stale
             FROM positions p
             JOIN market_prices_latest mpl ON mpl.token_id = p.token_id
             JOIN markets m ON (CAST(m.id AS TEXT) = p.market_id
@@ -36,7 +36,7 @@ class FrozenPriceCheck(BaseCheck):
               AND p.size > 0
               AND m.active = TRUE
               AND m.resolved = FALSE
-              AND EXTRACT(EPOCH FROM (NOW() - mpl.updated_at)) > 21600  -- 6 hours
+              AND EXTRACT(EPOCH FROM (NOW() - mpl.timestamp)) > 21600  -- 6 hours
             ORDER BY hours_stale DESC
             LIMIT 200
         """))
