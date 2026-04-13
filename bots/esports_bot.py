@@ -2920,6 +2920,15 @@ class EsportsBot(BaseBot):
                     raw_model_prob=_raw_prob,
                 )
                 self._prediction_log_cache[market_id] = (model_prob, time.monotonic())
+                # S172 1G: Also write to shared prediction_log for cross-bot calibration.
+                await db.insert_prediction_log(
+                    market_id=market_id,
+                    predicted_prob=model_prob,
+                    market_price=price,
+                    model_name=f"esports_{game}",
+                    bot_name="EsportsBot",
+                    confidence=confidence,
+                )
             except Exception as exc:
                 logger.warning("EsportsBot: prediction logging failed", error=str(exc))
 

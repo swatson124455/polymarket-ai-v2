@@ -3037,6 +3037,22 @@ class MirrorBot(BaseBot):
             if category:
                 self._category_exposure[category] = self._category_exposure.get(category, 0.0) + _trade_usd
 
+        # S172 1G: Log prediction for calibration analysis (MB had 0 prediction_log rows).
+        # kelly_prob is the model's estimated true probability; price is the market price.
+        _db = getattr(self.base_engine, "db", None)
+        if _db and not _is_sell:
+            try:
+                await _db.insert_prediction_log(
+                    market_id=market_id,
+                    predicted_prob=kelly_prob,
+                    market_price=price,
+                    model_name=f"mirror_split_{source}",
+                    bot_name="MirrorBot",
+                    confidence=gate_score,
+                )
+            except Exception as _pl_err:
+                logger.debug("mirror_prediction_log_failed", error=str(_pl_err))
+
         order = await self.place_order(
             market_id=market_id,
             token_id=token_id,
