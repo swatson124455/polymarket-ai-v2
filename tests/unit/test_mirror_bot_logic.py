@@ -29,6 +29,10 @@ def _make_engine(yes_token_id="tok-yes", no_token_id="tok-no"):
     engine.order_gateway = MagicMock()
     engine.order_gateway.has_open_position = MagicMock(return_value=False)
     engine.order_gateway._daily_exposure_usd = {}
+    # S172 D7: Shared hard stop returns "no exit" by default in tests
+    engine.risk_manager.check_hard_stop_loss = MagicMock(return_value={
+        "should_exit": False, "reason": "", "details": {},
+    })
     engine.get_markets = AsyncMock(return_value=[])
     engine.filter_markets_for_trading = MagicMock(return_value=[])
     # S133: Return realistic market data so spread/volume gates don't reject.
@@ -63,6 +67,8 @@ def _make_bot(**kwargs):
         ms.ORDER_LATENCY_ALERT_MS = 5000
         ms.BOT_SCAN_TIMEOUT_SECONDS = 60
         ms.MIRROR_MAX_CONCURRENT_FETCHES = 20
+        # S172 D8: Flat sizing default for tests — $100 passes dust gate ($25 min)
+        ms.MIRROR_FLAT_POSITION_SIZE_USD = 30.0
         bot = MirrorBot(engine)
     bot.bankroll = None  # Disable bankroll so daily cap uses settings path
     bot._adaptive_safety = None  # Disable adaptive safety so tests control limits via settings
@@ -779,10 +785,17 @@ class TestExecuteMirrorTrade:
         bot._watchlist.get_copy_tier = MagicMock(return_value=1)
         bot._watchlist.get_copy_perf = MagicMock(return_value=None)  # No copy data → neutral adj
 
-        result = await bot._execute_mirror_trade(
-            market_id="mkt1", token_id="tok-yes", side="YES",
-            price=0.60, confidence=0.70, trader_address="addr1",
-        )
+        # S172 D8: Flat sizing — set high enough to pass dust gate ($25 min)
+        from config.settings import settings as _real_settings
+        _old_flat = getattr(_real_settings, "MIRROR_FLAT_POSITION_SIZE_USD", 2.0)
+        _real_settings.MIRROR_FLAT_POSITION_SIZE_USD = 30.0
+        try:
+            result = await bot._execute_mirror_trade(
+                market_id="mkt1", token_id="tok-yes", side="YES",
+                price=0.60, confidence=0.70, trader_address="addr1",
+            )
+        finally:
+            _real_settings.MIRROR_FLAT_POSITION_SIZE_USD = _old_flat
 
         assert result is True
         # Size capped at MIRROR_MAX_PER_MARKET/price
@@ -829,10 +842,17 @@ class TestExecuteMirrorTrade:
         bot._reliability_tracker.mean = MagicMock(return_value=0.85)
         bot._reliability_tracker.total_trade_count = MagicMock(return_value=50)
         bot._reliability_tracker.overall_win_rate = MagicMock(return_value=0.85)
-        result = await bot._execute_mirror_trade(
-            market_id="mkt1", token_id="tok-yes", side="YES",
-            price=0.55, confidence=0.70, trader_address="addr1",
-        )
+        # S172 D8: Set flat sizing high enough for dust gate
+        from config.settings import settings as _real_settings
+        _old_flat = getattr(_real_settings, "MIRROR_FLAT_POSITION_SIZE_USD", 2.0)
+        _real_settings.MIRROR_FLAT_POSITION_SIZE_USD = 30.0
+        try:
+            result = await bot._execute_mirror_trade(
+                market_id="mkt1", token_id="tok-yes", side="YES",
+                price=0.55, confidence=0.70, trader_address="addr1",
+            )
+        finally:
+            _real_settings.MIRROR_FLAT_POSITION_SIZE_USD = _old_flat
         assert result is True
         bot.place_order.assert_called_once()
 
@@ -862,10 +882,19 @@ class TestExecuteMirrorTrade:
         bot._reliability_tracker.mean = MagicMock(return_value=0.60)
         bot._reliability_tracker.total_trade_count = MagicMock(return_value=50)
         bot._reliability_tracker.overall_win_rate = MagicMock(return_value=0.60)
-        result = await bot._execute_mirror_trade(
-            market_id="mkt1", token_id="tok-yes", side="YES",
-            price=0.55, confidence=0.70, trader_address="addr1",
-        )
+        # S172 D8: BM shrinkage test — WR=0.60 gives large deductions.
+        # $30 flat × 0.55 price × ~0.72 risk_mult = ~$11.88 (below $25 dust gate).
+        # Use $60 to survive worst-case deductions in this low-edge test.
+        from config.settings import settings as _real_settings
+        _old_flat = getattr(_real_settings, "MIRROR_FLAT_POSITION_SIZE_USD", 30.0)
+        _real_settings.MIRROR_FLAT_POSITION_SIZE_USD = 60.0
+        try:
+            result = await bot._execute_mirror_trade(
+                market_id="mkt1", token_id="tok-yes", side="YES",
+                price=0.55, confidence=0.70, trader_address="addr1",
+            )
+        finally:
+            _real_settings.MIRROR_FLAT_POSITION_SIZE_USD = _old_flat
         # S168: Risk budget floor prevents dust gate kill — trade executes at reduced size
         assert result is not False
         bot.place_order.assert_called_once()
