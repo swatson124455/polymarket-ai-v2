@@ -27,9 +27,24 @@ BEGIN
     END LOOP;
     ALTER TABLE trade_events DISABLE TRIGGER trg_trade_events_immutable;
 
-    -- Fix: price = 1.0 if won (realized_pnl > 0), 0.0 if lost
+    -- Fix: prefer event_data->>'resolution' field (matches side = won),
+    -- fall back to realized_pnl sign for rows without resolution in event_data.
+    -- This correctly handles realized_pnl=0 (break-even on winning side).
     UPDATE trade_events
-    SET price = CASE WHEN realized_pnl > 0 THEN 1.0 ELSE 0.0 END
+    SET price = CASE
+        -- Primary: event_data has resolution field — compare to trade side
+        WHEN event_data IS NOT NULL
+             AND event_data->>'resolution' IS NOT NULL
+             AND UPPER(event_data->>'resolution') = UPPER(side)
+        THEN 1.0
+        WHEN event_data IS NOT NULL
+             AND event_data->>'resolution' IS NOT NULL
+             AND UPPER(event_data->>'resolution') != UPPER(side)
+        THEN 0.0
+        -- Fallback: use realized_pnl sign (positive = won)
+        WHEN realized_pnl > 0 THEN 1.0
+        ELSE 0.0
+    END
     WHERE event_type = 'RESOLUTION'
       AND price NOT IN (0.0, 1.0);
     GET DIAGNOSTICS _updated = ROW_COUNT;
