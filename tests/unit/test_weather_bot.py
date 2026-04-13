@@ -803,7 +803,8 @@ def mock_engine():
     engine.trade_coordinator = None
     engine.cache = None
     engine.db = None
-    engine.risk_manager = None
+    engine.risk_manager = MagicMock()
+    engine.risk_manager.check_hard_stop_loss = MagicMock(return_value={"should_exit": False, "reason": "", "details": {}})
     engine.order_gateway = MagicMock()
     engine.order_gateway._open_position_markets = {"WeatherBot": set()}
     engine.get_all_tradeable_markets = AsyncMock(return_value=[])
