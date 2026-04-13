@@ -34,9 +34,10 @@ async def calibration_check(bot_name: str = "", cutoff: str = "", days: int = 90
         days: Rolling window in days (default 90). Ignored if cutoff provided.
     """
     if not cutoff:
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-        print(f"Rolling {days}-day window: cutoff = {cutoff}")
+        cutoff_dt = (datetime.now(timezone.utc) - timedelta(days=days)).replace(tzinfo=None)
+        print(f"Rolling {days}-day window: cutoff = {cutoff_dt.isoformat()}")
     else:
+        cutoff_dt = datetime.fromisoformat(cutoff).replace(tzinfo=None)
         print(f"Explicit cutoff: {cutoff}")
 
     db = Database()
@@ -46,7 +47,7 @@ async def calibration_check(bot_name: str = "", cutoff: str = "", days: int = 90
 
         # Build query — exclude EnsembleBot (dead) and NULL bot_name (pre-migration)
         bot_clause = "AND pl.bot_name NOT IN ('EnsembleBot') AND pl.bot_name IS NOT NULL"
-        params = {"cutoff": cutoff}
+        params = {"cutoff": cutoff_dt}
         if bot_name:
             bot_clause = "AND pl.bot_name = :bot_name"
             params["bot_name"] = bot_name
@@ -68,7 +69,7 @@ async def calibration_check(bot_name: str = "", cutoff: str = "", days: int = 90
             print(f"ERROR: Only {resolved} resolved predictions (need 50+).")
             print("Resolution backfill may not be running, or window too narrow.")
             print(f"  SELECT count(*), count(resolution) FROM prediction_log")
-            print(f"  WHERE prediction_time > '{cutoff}';")
+            print(f"  WHERE prediction_time > '{cutoff_dt.isoformat()}';")
             return
 
         # Fetch resolved predictions
