@@ -663,6 +663,73 @@ class RiskManager:
 
         return checks
 
+    # ── S172 D7: Shared Hard Stop-Loss ────────────────────────────────────
+    # Inviolable per-bot hard stop. Cannot be overridden by strategy code,
+    # edge score, model signal, or any override count. Called at the TOP of
+    # each bot's position monitoring loop before any bot-specific logic.
+
+    # Per-bot defaults — env vars override these.
+    _HARD_STOP_DEFAULTS = {
+        "WeatherBot": 0.25,
+        "MirrorBot": 0.30,
+        "EsportsBot": 0.50,
+    }
+    # Absolute code-level floor — no env var can loosen beyond this.
+    _HARD_STOP_ABSOLUTE_FLOOR = 0.50
+
+    def check_hard_stop_loss(
+        self,
+        bot_name: str,
+        pnl_pct: float,
+    ) -> Dict[str, Any]:
+        """
+        S172 D7: Shared inviolable hard stop-loss check.
+
+        Returns {"should_exit": bool, "reason": str, "details": dict}.
+
+        Single tier — inviolable hard stop per bot:
+          pnl_pct <= -hard_stop → exit unconditionally.
+          No edge override, no dead-market skip. Cannot be bypassed by strategy
+          code, edge score, model signal, or any override count.
+
+        Per-bot configurable via env var {BOT_PREFIX}_HARD_STOP_LOSS_PCT.
+        Absolute code-level floor: -50% (no env var can loosen beyond this).
+
+        Per-bot defaults: WB -25%, MB -30%, EB -50%.
+        """
+        # Resolve bot prefix for env var lookup
+        _prefix_map = {
+            "WeatherBot": "WEATHER",
+            "MirrorBot": "MIRROR",
+            "EsportsBot": "ESPORTS",
+        }
+        _prefix = _prefix_map.get(bot_name, bot_name.upper().replace("BOT", ""))
+
+        # Hard stop — clamped to absolute floor
+        _default_hard = self._HARD_STOP_DEFAULTS.get(bot_name, 0.30)
+        _hard_stop = float(getattr(
+            settings, f"{_prefix}_HARD_STOP_LOSS_PCT", _default_hard
+        ))
+        _hard_stop = min(_hard_stop, self._HARD_STOP_ABSOLUTE_FLOOR)
+
+        result = {
+            "should_exit": False,
+            "reason": "",
+            "details": {
+                "bot_name": bot_name,
+                "pnl_pct": round(pnl_pct, 4),
+                "hard_stop": round(_hard_stop, 4),
+            },
+        }
+
+        # Inviolable hard stop — no overrides possible
+        if pnl_pct <= -_hard_stop:
+            result["should_exit"] = True
+            result["reason"] = "hard_stop_loss"
+            return result
+
+        return result
+
     # ── Time-Horizon Capital Bucketing ─────────────────────────────────────
 
     def get_capital_bucket(self, days_to_expiry: float) -> str:

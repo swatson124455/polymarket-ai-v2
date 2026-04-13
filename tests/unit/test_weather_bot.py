@@ -2576,6 +2576,10 @@ class TestMidLifeExitEvaluator:
         bot.base_engine.db = None
         bot.base_engine.order_gateway = MagicMock()
         bot.base_engine.order_gateway._position_details = {}
+        # S172 D7: Shared hard stop returns "no exit" by default in tests
+        bot.base_engine.risk_manager.check_hard_stop_loss = MagicMock(return_value={
+            "should_exit": False, "reason": "", "details": {},
+        })
         # S160 WB-1: mid-life exit now calls self.place_order() wrapper
         bot.place_order = AsyncMock(return_value={"success": True})
         bot.running = True

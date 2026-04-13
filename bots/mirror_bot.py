@@ -224,6 +224,24 @@ class MirrorBot(BaseBot):
     # M4: _update_consensus_threshold deleted — dead code (zero callers) with logic bug.
     # Bug: docstring said "3+ consecutive" but code adjusted on every single trade.
 
+    # ── S172 D8: Signal Enhancement Override ──────────────────────
+    # Return 1.0 (neutral) — disable the +20% boost that amplifies losses
+    # when expectancy is negative. Keep -40% reduction active via base class
+    # when MIRROR_SKIP_SIGNAL_ENHANCEMENTS=false (currently True/skipped).
+    # This override ensures even if the skip flag is flipped, enhancements
+    # are neutralized for MirrorBot.
+
+    async def apply_signal_enhancements(
+        self,
+        market_id: str,
+        token_id: str,
+        direction: str,
+        confidence: float,
+        market_data=None,
+    ) -> float:
+        """S172 D8: Neutral override — no signal enhancement for MirrorBot."""
+        return confidence
+
     # ── Startup State Restoration ───────────────────────────────────
 
     async def _restore_state_on_startup(self) -> None:
@@ -1077,6 +1095,21 @@ class MirrorBot(BaseBot):
             _pnl_pct = (_current - _entry) / max(_entry, 1e-6)
             _size = float(_pos.get("size", 0) or 0)
             _total_unrealized += (_current - _entry) * _size
+
+            # S172 D7: Shared inviolable hard stop — fires BEFORE any bot-specific logic.
+            _stop_check = self.base_engine.risk_manager.check_hard_stop_loss(
+                bot_name=self.bot_name,
+                pnl_pct=_pnl_pct,
+            )
+            if _stop_check["should_exit"]:
+                logger.info("mirror_shared_hard_stop", market=_pos_key,
+                            pnl_pct=f"{_pnl_pct:.2%}",
+                            reason=_stop_check["reason"])
+                positions_to_close.append((_pos_key, {
+                    "exit_reason": _stop_check["reason"],
+                    "pnl_pct": round(_pnl_pct, 4),
+                }))
+                continue
 
             # S99: Take-profit — capture the move, free capital
             if _pnl_pct >= _tp_pct:
@@ -1936,7 +1969,9 @@ class MirrorBot(BaseBot):
                 return False
 
             # Per-market cooldown — prevent re-entry on same signal
-            _cooldown_secs = int(getattr(settings, "MIRROR_MARKET_COOLDOWN_SECONDS", 1800))
+            # S172 D8: Increased to 24h (86400s) from 30min (1800s). Re-entry disabled
+            # until expectancy is measured (see Phase 7G analytical review).
+            _cooldown_secs = int(getattr(settings, "MIRROR_MARKET_COOLDOWN_SECONDS", 86400))
             if _cooldown_secs > 0:
                 _cd_exp = self._market_cooldown.get(market_id, 0)
                 if _time.monotonic() < _cd_exp:
@@ -2746,16 +2781,29 @@ class MirrorBot(BaseBot):
                                 min_required=self.min_confidence, market=str(market_id)[:16])
                 return False
 
-        # S48 FIX: Use per-bot BotBankrollManager (Session 47) instead of deprecated
-        # risk_manager.calculate_position_size() which divides Kelly by KELLY_ACTIVE_BOTS.
-        # calculate_bot_position_size() returns shares (USD / price).
-        # Session 82: Pass conformal_interval for conservative Kelly sizing when available.
-        size = await self.calculate_bot_position_size(
+        # S172 D8: Flat sizing — Kelly fraction is negative (-0.068), so Kelly-based
+        # sizing produces $0 or negative bets. Use flat USD amount until accuracy
+        # exceeds 52% over 200+ trades with p<0.05, then re-introduce quarter-Kelly.
+        # Default $30 — clears MIRROR_MIN_TRADE_USD ($25 dust gate) after risk
+        # budget deductions (typical ~0.88x → $26.40 > $25).
+        # Plan originally said $1-2 but that's below dust gate and spread-dominated.
+        _flat_usd = float(getattr(settings, "MIRROR_FLAT_POSITION_SIZE_USD", 30.0))
+        if _flat_usd > 0 and price > 0:
+            size = _flat_usd / price
+        else:
+            size = 0.0
+        # Log Kelly-equivalent for comparison (don't use it for sizing)
+        _kelly_size = await self.calculate_bot_position_size(
             confidence=confidence,
             price=price,
             conformal_interval=None,
             category=category,
         )
+        logger.debug("mirror_flat_vs_kelly",
+                      flat_usd=round(_flat_usd, 2),
+                      flat_shares=round(size, 4),
+                      kelly_shares=round(_kelly_size, 4),
+                      price=round(price, 4))
 
         # S146: Copy-P&L tiered sizing — compute tier (used by risk budget below).
         _copy_tier = 2  # default: learning mode (also computed in S153 block above)

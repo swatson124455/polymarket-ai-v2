@@ -1133,14 +1133,53 @@ class WeatherBot(BaseBot):
         return base
 
     def _get_exit_cooldown(self, market_id: str) -> float:
-        """T1-K: Return exit cooldown in seconds based on the exit reason.
+        """S172 D10: Dynamic exit cooldown — TTL = min(time_to_resolution, 6h) floor 1h.
 
-        Different exits warrant different re-entry windows:
-          REVERSAL  — model probability reversed → short cooldown (30 min default)
-                      Re-entry OK once forecast re-aligns.
-          RESOLUTION — market resolved or PM-triggered exit → long cooldown (4h default).
-          (default)  — unknown reason → long cooldown (conservative).
+        Data source: markets.end_date_iso (Gamma API endDateISO).
+        Same calculation as exit_strategy.py:307-308.
+
+        Falls back to T1-K reason-specific cooldowns if end_date unavailable:
+          REVERSAL  — 30 min (model probability reversed, re-entry OK once forecast re-aligns)
+          RESOLUTION/default — 4h (conservative)
         """
+        # Try dynamic TTL based on time_to_resolution
+        try:
+            gw = getattr(self.base_engine, "order_gateway", None)
+            if gw:
+                _details = getattr(gw, "_position_details", {})
+                _detail = _details.get(f"WeatherBot:{market_id}")
+                if _detail and _detail.get("end_date_iso"):
+                    from datetime import datetime, timezone
+                    _end = _detail["end_date_iso"]
+                    if isinstance(_end, str):
+                        _end = datetime.fromisoformat(_end)
+                    if _end.tzinfo is None:
+                        _end = _end.replace(tzinfo=timezone.utc)
+                    _hours_to_res = (_end - datetime.now(timezone.utc)).total_seconds() / 3600.0
+                    # TTL = min(time_to_resolution, 6h) floor 1h, in seconds
+                    _ttl_hours = max(1.0, min(_hours_to_res, 6.0))
+                    return _ttl_hours * 3600.0
+        except Exception:
+            pass  # Fall through to reason-based default
+
+        # Also try DB lookup for end_date_iso
+        # (position_details may not have it — check markets index)
+        try:
+            _market_data = self.base_engine.get_market_from_index(str(market_id))
+            if _market_data:
+                _end_str = _market_data.get("end_date_iso") or _market_data.get("endDateIso")
+                if _end_str:
+                    from datetime import datetime, timezone
+                    _end = datetime.fromisoformat(str(_end_str))
+                    if _end.tzinfo is None:
+                        _end = _end.replace(tzinfo=timezone.utc)
+                    _hours_to_res = (_end - datetime.now(timezone.utc)).total_seconds() / 3600.0
+                    _ttl_hours = max(1.0, min(_hours_to_res, 6.0))
+                    return _ttl_hours * 3600.0
+        except Exception:
+            pass  # Fall through to reason-based default
+
+        # Fallback: T1-K reason-specific cooldowns
         reason = self._exit_reasons.get(market_id, "RESOLUTION")
         if reason == "REVERSAL":
             return float(getattr(settings, "WEATHER_EXIT_COOLDOWN_REVERSAL_SECS", 1800.0))
@@ -1614,6 +1653,12 @@ class WeatherBot(BaseBot):
             from base_engine.weather.station_registry import load_dynamic_stations_from_db
             await load_dynamic_stations_from_db(db)
             self._cache_warmed = True
+
+        # S172 D7: Standalone hard stop scan — checks ALL open WB positions every cycle.
+        # _evaluate_mid_life_exits only sees positions with fresh forecasts.
+        # This ensures the inviolable hard stop fires even for positions with
+        # no forecast data this cycle.
+        await self._check_hard_stop_all_positions()
 
         # S97: Start background monitors on first scan
         if not self._monitors_started:
@@ -3654,6 +3699,63 @@ class WeatherBot(BaseBot):
                 total=len(bot_positions),
             )
 
+    async def _check_hard_stop_all_positions(self) -> None:
+        """S172 D7: Standalone hard stop scan for ALL open WB positions.
+
+        Iterates every position in order_gateway._position_details for WeatherBot,
+        computes PnL%, and calls the shared hard stop. Fires every scan cycle
+        regardless of forecast availability.
+        """
+        og = getattr(self.base_engine, "order_gateway", None)
+        if not og:
+            return
+        _details = getattr(og, "_position_details", {})
+        _prefix = "WeatherBot:"
+        for _key, _det in list(_details.items()):
+            if not _key.startswith(_prefix):
+                continue
+            mid = _key[len(_prefix):]
+            if mid in self._recently_exited:
+                continue
+            entry_price = float(_det.get("price", 0.5) or 0.5)
+            current_price = float(_det.get("current_price", entry_price) or entry_price)
+            size = float(_det.get("size", 0.0) or 0.0)
+            if size <= 0 or entry_price <= 0:
+                continue
+            _pnl_pct = (current_price - entry_price) / max(entry_price, 1e-6)
+            _stop_check = self.base_engine.risk_manager.check_hard_stop_loss(
+                bot_name=self.bot_name,
+                pnl_pct=_pnl_pct,
+            )
+            if not _stop_check["should_exit"]:
+                continue
+            side = _det.get("side", "YES")
+            token_id = _det.get("token_id", "")
+            logger.info(
+                "weatherbot_hard_stop_standalone",
+                market_id=mid, side=side,
+                pnl_pct=f"{_pnl_pct:.2%}",
+                entry_price=round(entry_price, 4),
+                current_price=round(current_price, 4),
+            )
+            self._recently_exited[mid] = time.monotonic()
+            self._exit_reasons[mid] = "HARD_STOP_LOSS"
+            try:
+                await self._save_exit_to_redis(mid)
+            except Exception:
+                pass
+            try:
+                _exit_side = "NO" if side == "YES" else "YES"
+                await self.base_engine.place_order(
+                    market_id=mid, token_id=token_id,
+                    side=_exit_side, size=size, price=current_price,
+                    bot_name=self.bot_name, confidence=0.0,
+                    event_type="EXIT",
+                )
+            except Exception as _err:
+                logger.warning("weatherbot_hard_stop_order_failed",
+                               market_id=mid, error=str(_err))
+
     async def _evaluate_mid_life_exits(
         self,
         analyzed: List[Tuple[List[Dict], "WeatherMarketGroup", Dict[str, float]]],
@@ -3664,21 +3766,23 @@ class WeatherBot(BaseBot):
         whether the fresh model probability implies a negative edge beyond
         WEATHER_EXIT_MIN_EDGE. If so, places a SELL order to close the position.
 
+        S172 D7: Also checks shared hard stop-loss (inviolable, fires regardless of
+        WEATHER_MID_LIFE_EXIT_ENABLED flag).
+
         The 6-item exit chain mirrors the PM-exit detection block:
           1. Set in-memory cooldown (_recently_exited)
           2. Persist to Redis (_save_exit_to_redis)
           3. Decrement group/city exposure (_market_group_cache pop + _inc_daily)
           4. Place SELL order via base_engine.place_order
 
-        Gated by WEATHER_MID_LIFE_EXIT_ENABLED (default False).
+        Gated by WEATHER_MID_LIFE_EXIT_ENABLED (default False) — except hard stop
+        which always fires.
         """
-        if not getattr(settings, "WEATHER_MID_LIFE_EXIT_ENABLED", False):
-            return
-
         og = getattr(self.base_engine, "order_gateway", None)
         if not og:
             return
 
+        _mid_life_enabled = getattr(settings, "WEATHER_MID_LIFE_EXIT_ENABLED", False)
         exit_min_edge = float(getattr(settings, "WEATHER_EXIT_MIN_EDGE", 0.05))
 
         for _opps, group, model_probs in analyzed:
@@ -3719,6 +3823,49 @@ class WeatherBot(BaseBot):
                     current_price = 1.0 - bucket.yes_price
 
                 if not token_id:
+                    continue
+
+                # S172 D7: Shared hard stop-loss — inviolable, fires even if mid-life disabled.
+                _pnl_pct = (current_price - entry_price) / max(entry_price, 1e-6)
+                _stop_check = self.base_engine.risk_manager.check_hard_stop_loss(
+                    bot_name=self.bot_name,
+                    pnl_pct=_pnl_pct,
+                )
+                if _stop_check["should_exit"]:
+                    logger.info(
+                        "weatherbot_shared_hard_stop",
+                        market_id=mid,
+                        side=side,
+                        pnl_pct=f"{_pnl_pct:.2%}",
+                        reason=_stop_check["reason"],
+                        entry_price=round(entry_price, 4),
+                        current_price=round(current_price, 4),
+                    )
+                    # Use same exit chain as mid-life exit below
+                    self._recently_exited[mid] = time.monotonic()
+                    self._exit_reasons[mid] = _stop_check["reason"].upper()
+                    try:
+                        await self._save_exit_to_redis(mid)
+                    except Exception:
+                        pass
+                    try:
+                        await self.base_engine.place_order(
+                            market_id=mid,
+                            token_id=token_id,
+                            side="NO" if side == "YES" else "YES",
+                            size=size_shares,
+                            price=current_price,
+                            bot_name=self.bot_name,
+                            confidence=0.0,
+                            event_type="EXIT",
+                        )
+                    except Exception as _exit_err:
+                        logger.warning("weatherbot_hard_stop_order_failed",
+                                       market_id=mid, error=str(_exit_err))
+                    continue
+
+                # Skip model-reversal exit if mid-life is disabled
+                if not _mid_life_enabled:
                     continue
 
                 if current_ev >= -exit_min_edge:

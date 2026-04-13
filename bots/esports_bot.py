@@ -2239,38 +2239,19 @@ class EsportsBot(BaseBot):
                         positions_to_close.append((pos, "trailing_edge"))
                     continue
 
-            # S168: Unconditional hard stop-loss floor — fires BEFORE edge override.
-            # If PnL <= -40%, the model disagrees with the market by 40%.
-            # No edge override, no dead-market skip — exit unconditionally.
-            _hard_stop = float(getattr(settings, "ESPORTS_HARD_STOP_LOSS_PCT", 0.40))
-            if pnl_pct <= -_hard_stop:
-                logger.info("esportsbot_hard_stop_loss", market_id=mid,
+            # S172 D7: Shared inviolable hard stop-loss. One code path for all bots.
+            # EB-specific edge override (S134/S136) removed — plan says one shared check.
+            _stop_check = self.base_engine.risk_manager.check_hard_stop_loss(
+                bot_name=self.bot_name,
+                pnl_pct=pnl_pct,
+            )
+            if _stop_check["should_exit"]:
+                logger.info("esportsbot_shared_stop_loss", market_id=mid,
                             pnl_pct=f"{pnl_pct:.2%}", side=side,
                             entry=round(entry, 4), current=round(current, 4),
+                            reason=_stop_check["reason"],
                             remaining_edge=round(_remaining_edge, 4) if _remaining_edge is not None else None)
-                positions_to_close.append((pos, "hard_stop_loss"))
-                continue
-
-            # S134 Fix B + S136 Phase 3A: Stop-loss with edge override
-            # Floor price guard: sub-$0.10 = dead book, let resolution handle it.
-            # S136: Tightened to -20% AND require remaining_edge < 0.03
-            if pnl_pct <= -stop_pct:
-                if current < 0.10:
-                    logger.info("esportsbot_stop_loss_floor_skip", market_id=mid,
-                                pnl_pct=f"{pnl_pct:.2%}", side=side,
-                                entry=round(entry, 4), current=round(current, 4))
-                    continue
-                # S136: Only trigger stop-loss if edge is also gone (or unknown)
-                if _remaining_edge is not None and _remaining_edge >= 0.03:
-                    logger.debug("esportsbot_stop_loss_edge_override", market_id=mid,
-                                 pnl_pct=f"{pnl_pct:.2%}",
-                                 remaining_edge=round(_remaining_edge, 4))
-                    continue
-                logger.info("esportsbot_stop_loss", market_id=mid,
-                            pnl_pct=f"{pnl_pct:.2%}", side=side,
-                            entry=round(entry, 4), current=round(current, 4),
-                            remaining_edge=round(_remaining_edge, 4) if _remaining_edge is not None else None)
-                positions_to_close.append((pos, "stop_loss"))
+                positions_to_close.append((pos, _stop_check["reason"]))
                 continue
 
             # Max hold time check using DB opened_at
