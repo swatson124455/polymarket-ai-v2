@@ -176,53 +176,67 @@ REMOTE
 echo "  Restarting..."
 
 # ── 7. Health check ───────────────────────────────────────────────────────────
+# S173: Single SSH connection for health check. Previous version opened 2 SSH
+# connections per bot per 5s tick (up to 360 total), triggering fail2ban bans.
+# Now runs the entire polling loop server-side over one SSH session.
 echo ""
-echo "[7/7] Health check (300s timeout)..."
-HEALTH_OK=false
-for i in $(seq 1 60); do
-    sleep 5
-    ELAPSED=$((i * 5))
-    # S157: Per-bot health check — only check enabled services (disabled bots don't block deploy)
-    _ALL_OK=true
-    _CHECKED=0
-    for _SVC in polymarket-weather polymarket-mirror polymarket-esports; do
+echo "[7/7] Health check (300s timeout, single SSH connection)..."
+HEALTH_RESULT=$(ssh $SSH_OPTS -i "$KEY" "$VPS" bash <<'REMOTE'
+set -euo pipefail
+MAX_WAIT=300
+INTERVAL=10
+ELAPSED=0
+
+while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
+    sleep "$INTERVAL"
+    ELAPSED=$((ELAPSED + INTERVAL))
+
+    ALL_OK=true
+    CHECKED=0
+    for SVC in polymarket-weather polymarket-mirror polymarket-esports; do
         # Skip services that are deliberately disabled
-        if ! ssh $SSH_OPTS -i "$KEY" "$VPS" "systemctl is-enabled $_SVC" &>/dev/null; then
+        if ! systemctl is-enabled "$SVC" &>/dev/null; then
             continue
         fi
-        _CHECKED=$((_CHECKED + 1))
-        if ! ssh $SSH_OPTS -i "$KEY" "$VPS" \
-            "journalctl -u $_SVC --since '-${ELAPSED}s' --no-pager 2>/dev/null | grep -q 'scan_ms'" 2>/dev/null; then
-            _ALL_OK=false
+        CHECKED=$((CHECKED + 1))
+        if ! journalctl -u "$SVC" --since "-${ELAPSED}s" --no-pager 2>/dev/null | grep -q 'scan_ms'; then
+            ALL_OK=false
         fi
     done
-    if [ "$_CHECKED" -gt 0 ] && [ "$_ALL_OK" = true ]; then
-        HEALTH_OK=true
-        echo "  Health OK at ${ELAPSED}s — all $_CHECKED enabled bots scanning"
-        break
+
+    if [ "$CHECKED" -gt 0 ] && [ "$ALL_OK" = true ]; then
+        echo "HEALTH_OK at ${ELAPSED}s — all $CHECKED enabled bots scanning"
+        # Also grab PgBouncer pool size while we're here
+        PGB=$(sudo grep -oP 'default_pool_size\s*=\s*\K[0-9]+' /etc/pgbouncer/pgbouncer.ini 2>/dev/null || echo "0")
+        echo "PGB_POOL=$PGB"
+        # Prune old releases (keep last 5)
+        ls -1dt /opt/pa2-releases/*/ 2>/dev/null | tail -n +6 | xargs -r sudo rm -rf
+        exit 0
     fi
-    echo "  Waiting... ${ELAPSED}s"
+    echo "  Waiting... ${ELAPSED}s" >&2
 done
 
-if [ "$HEALTH_OK" = false ]; then
+echo "HEALTH_FAIL after ${MAX_WAIT}s"
+exit 1
+REMOTE
+) 2>&1  # capture both stdout and stderr from the SSH session
+
+echo "$HEALTH_RESULT" | grep -v '^$'
+
+if echo "$HEALTH_RESULT" | grep -q "HEALTH_OK"; then
+    # Extract and report PgBouncer pool size
+    _PGB_POOL=$(echo "$HEALTH_RESULT" | grep -oP 'PGB_POOL=\K[0-9]+' || echo "0")
+    if [ "$_PGB_POOL" -lt 40 ] 2>/dev/null; then
+        echo "  WARNING: PgBouncer default_pool_size=$_PGB_POOL (< 40). Risk of pool exhaustion with 3 bots."
+    else
+        echo "  PgBouncer pool_size=$_PGB_POOL — OK"
+    fi
+else
     echo ""
     echo "ERROR: Health check failed after 300s — triggering rollback"
     bash "$(dirname "$0")/rollback.sh" || true
     exit 1
 fi
-
-# S143: Verify PgBouncer pool size is adequate for 3 bots
-_PGB_POOL=$(ssh $SSH_OPTS -i "$KEY" "$VPS" \
-    "sudo grep -oP 'default_pool_size\s*=\s*\K[0-9]+' /etc/pgbouncer/pgbouncer.ini 2>/dev/null" || echo "0")
-if [ "$_PGB_POOL" -lt 40 ] 2>/dev/null; then
-    echo "  WARNING: PgBouncer default_pool_size=$_PGB_POOL (< 40). Risk of pool exhaustion with 3 bots."
-else
-    echo "  PgBouncer pool_size=$_PGB_POOL — OK"
-fi
-
-# ── Prune old releases (keep last 5) ─────────────────────────────────────────
-ssh $SSH_OPTS -i "$KEY" "$VPS" \
-    "ls -1dt $RELEASES/*/ 2>/dev/null | tail -n +6 | xargs -r sudo rm -rf" || true
 
 echo ""
 echo "=== Deploy $TIMESTAMP SUCCESSFUL ==="
