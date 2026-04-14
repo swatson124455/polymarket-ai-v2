@@ -3,7 +3,7 @@
 **Session:** 172C (continuation of S172B)
 **Date:** 2026-04-13
 **Scope:** ALL BOTS — S172 Phase 1 completion
-**Deploy:** PENDING — fail2ban locked out SSH (~1h ban). Code committed locally.
+**Deploy:** `20260413_172523` on Ubuntu-32 (18.201.216.0) — VERIFIED. Migrations 070+071 applied. Orderbook timer active.
 **Tests:** 1892 passed, 0 failed, 2 skipped, 9 xfailed
 **Branch:** master
 
@@ -24,7 +24,13 @@ Completed all remaining Phase 1 items (1I, 1J, 1K, 1L, 1M). The critical finding
 | 3 | `38b8547` | docs/SHADOW_MODE_PROTOCOL.md | 1L: Shadow mode protocol document |
 | 4 | `d0fe765` | schema/migrations/071_strategy_lifecycle.sql + down | 1M: Strategy lifecycle schema (5 tables) |
 
-**NOT YET DEPLOYED.** SSH locked out by fail2ban (deploy.sh triggered iptables rate limit). Need to wait ~1h for unban or use Lightsail console.
+**DEPLOYED as `20260413_172523`.** deploy.sh landed the release before health check timed out (SSH locked by fail2ban during check). Verified post-ban: symlink correct, all services active, 0 InFailedSQLTransaction.
+
+**Post-deploy additions:**
+- Migrations 070 + 071 applied (6 new tables created)
+- Orderbook collector systemd timer active (every 60s, 18/20 tokens on test run)
+- fail2ban maxretry raised 3→10 to prevent deploy lockouts
+- Phase RC root-cause plan drafted: `S172_PHASE_RC_ROOT_CAUSE_PLAN.md`
 
 ---
 
@@ -76,78 +82,18 @@ Key observations:
 
 ---
 
-## DEPLOY CHECKLIST (for next session)
+## PHASE RC — ROOT-CAUSE INVESTIGATION
 
-When SSH unblocks:
+Full plan: `S172_PHASE_RC_ROOT_CAUSE_PLAN.md`
 
-```bash
-# 1. Manual deploy
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-tar czf /tmp/pa2-$TIMESTAMP.tar.gz --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' --exclude='.env' --exclude='./data' --exclude='./saved_models' --exclude='./venv' --exclude='./.venv' -C /c/lockes-picks/polymarket-ai-v2 .
-scp -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem /tmp/pa2-$TIMESTAMP.tar.gz ubuntu@18.201.216.0:/tmp/
-ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 "
-  sudo mkdir -p /opt/pa2-releases/$TIMESTAMP
-  sudo tar xzf /tmp/pa2-$TIMESTAMP.tar.gz -C /opt/pa2-releases/$TIMESTAMP
-  sudo chown -R ubuntu:ubuntu /opt/pa2-releases/$TIMESTAMP
-  ln -sfn /opt/pa2-shared/.env /opt/pa2-releases/$TIMESTAMP/.env
-  for f in /opt/pa2-shared/.env.d/.env.*; do ln -sfn \$f /opt/pa2-releases/$TIMESTAMP/\$(basename \$f); done
-  ln -sfn /opt/pa2-shared/venv /opt/pa2-releases/$TIMESTAMP/venv
-  ln -sfn /opt/pa2-shared/data /opt/pa2-releases/$TIMESTAMP/data
-  [ -d /opt/pa2-shared/saved_models ] && ln -sfn /opt/pa2-shared/saved_models /opt/pa2-releases/$TIMESTAMP/saved_models
-  sudo ln -sfn /opt/pa2-releases/$TIMESTAMP /opt/polymarket-ai-v2
-  sudo systemctl restart polymarket-esports polymarket-mirror polymarket-weather polymarket-ingestion
-"
+**Summary:** 6-layer diagnostic per bot (fees → magnitude asymmetry → entry edge → exit timing → segment decomposition → temporal analysis). 2-3 weeks. Runs parallel to Phase 2.
 
-# 2. Apply migrations as postgres (ownership issue)
-ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 "
-  RELEASE=\$(readlink -f /opt/polymarket-ai-v2)
-  sudo -u postgres psql -d polymarket -f \$RELEASE/schema/migrations/070_orderbook_snapshots.sql
-  sudo -u postgres psql -d polymarket -c \"INSERT INTO schema_migrations (name) VALUES ('070_orderbook_snapshots.sql');\"
-  sudo -u postgres psql -d polymarket -f \$RELEASE/schema/migrations/071_strategy_lifecycle.sql
-  sudo -u postgres psql -d polymarket -c \"INSERT INTO schema_migrations (name) VALUES ('071_strategy_lifecycle.sql');\"
-"
+**Priority order:**
+1. WB first — 59.3% WR [UNVERIFIED] + negative edge is the most diagnostic puzzle
+2. MB second — largest dataset (9,519 trades [UNVERIFIED]), best for segmentation
+3. EB third — smallest sample, game-level breakdown
 
-# 3. Set up orderbook collector cron (every 60s via systemd timer)
-ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 "
-  cat << 'TIMER' | sudo tee /etc/systemd/system/polymarket-orderbook.service
-[Unit]
-Description=Polymarket Orderbook Collector
-After=postgresql@16-main.service
-
-[Service]
-Type=oneshot
-User=polymarket
-Group=polymarket
-WorkingDirectory=/opt/polymarket-ai-v2
-ExecStart=/opt/pa2-shared/venv/bin/python scripts/orderbook_collector.py --once --limit 200
-Environment=PYTHONPATH=/opt/polymarket-ai-v2
-EnvironmentFile=/opt/pa2-shared/.env
-TimeoutStartSec=90
-MemoryMax=256M
-TIMER
-
-  cat << 'TIMER' | sudo tee /etc/systemd/system/polymarket-orderbook.timer
-[Unit]
-Description=Polymarket Orderbook Collector Timer
-
-[Timer]
-OnCalendar=*:*:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-TIMER
-
-  sudo systemctl daemon-reload
-  sudo systemctl enable --now polymarket-orderbook.timer
-"
-
-# 4. Health check
-for svc in polymarket-weather polymarket-mirror polymarket-esports; do
-  echo "--- \$svc ---"
-  journalctl -u \$svc --since '5 min ago' --no-pager | grep -c 'InFailedSQLTransaction'
-done
-```
+**Decision gates:** Fix what's fixable, kill what's not. Re-run 1I on post-fix data.
 
 ---
 
@@ -176,8 +122,8 @@ Phase 1 is COMPLETE. Phase 2 starts:
 
 ## KNOWN ISSUES (carried forward + new)
 
-1. **fail2ban locking out SSH** — deploy.sh opens many connections, trips iptables 15/60s rate limit + fail2ban 3-retry ban. Solution: deploy.sh needs connection reuse (ControlMaster), or increase rate limit. This is the 4th SSH lockout across sessions.
-2. **Migration ownership** — ALTER TABLE requires postgres user. Migrations 070-071 need manual apply.
+1. **fail2ban — PARTIALLY FIXED.** maxretry raised 3→10. Still needs deploy IP whitelist if static IP available. ControlMaster in deploy.sh would help.
+2. **Migration ownership** — ALTER TABLE requires postgres user. 070-071 were applied manually. Systemic issue persists for future migrations.
 3. **Old VPS 34.251.224.21** — still exists, needs decommission.
 
 ---
