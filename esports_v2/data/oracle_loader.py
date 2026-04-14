@@ -78,7 +78,7 @@ def _detect_column(fieldnames: list, preferred: str, aliases: List[str]) -> str:
         return preferred
     for alias in aliases:
         if alias in fieldnames:
-            logger.info("oracle_column_alias", preferred=preferred, actual=alias)
+            logger.info(f"oracle_column_alias preferred={preferred} actual={alias}")
             return alias
     raise ValueError(
         f"Required column '{preferred}' not found in CSV. "
@@ -130,7 +130,7 @@ class OracleElixirLoader:
                 if gid:
                     games[gid].append(row)
 
-        logger.info("oracle_elixir_loaded", file=str(filepath), games=len(games))
+        logger.info(f"oracle_elixir_loaded file={filepath} games={len(games)}")
 
         # Convert each game group to a RawMatch
         matches = []
@@ -144,11 +144,7 @@ class OracleElixirLoader:
 
         # Sort by date
         matches.sort(key=lambda m: m.match_date or "")
-        logger.info(
-            "oracle_elixir_parsed",
-            loaded=self._loaded_count,
-            skipped=self._skipped_count,
-        )
+        logger.info(f"oracle_elixir_parsed loaded={self._loaded_count} skipped={self._skipped_count}")
         return matches
 
     def load_csvs(self, filepaths: List[str | Path]) -> List[RawMatch]:
@@ -171,7 +167,7 @@ class OracleElixirLoader:
         player_rows = [r for r in rows if r.get(COL_POSITION) != "team"]
 
         if len(team_rows) < 2:
-            logger.debug("oracle_skip_incomplete", gameid=gameid, team_rows=len(team_rows))
+            logger.debug(f"oracle_skip_incomplete gameid={gameid} team_rows={len(team_rows)}")
             return None
 
         # Identify Blue and Red side teams
@@ -185,7 +181,7 @@ class OracleElixirLoader:
                 red_team = tr
 
         if not blue_team or not red_team:
-            logger.debug("oracle_skip_no_sides", gameid=gameid)
+            logger.debug(f"oracle_skip_no_sides gameid={gameid}")
             return None
 
         team_a = blue_team.get(COL_TEAMNAME, "").strip()

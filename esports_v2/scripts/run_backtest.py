@@ -172,11 +172,17 @@ def run_shuffle_control(
         print("No matches for shuffle control.")
         sys.exit(1)
 
-    # Shuffle winners
+    # Shuffle winners: randomly assign the winner to team_a or team_b
+    # This breaks the correlation between team identity and outcome
+    # while preserving the match structure (same two teams, same date)
     rng = random.Random(seed)
     for m in all_matches:
         if rng.random() > 0.5:
-            m.winner, m.team_a, m.team_b = m.team_b, m.team_b, m.team_a
+            # Swap which team is recorded as the winner
+            if m.winner == m.team_a:
+                m.winner = m.team_b
+            elif m.winner == m.team_b:
+                m.winner = m.team_a
 
     pipeline = EsportsPipeline()
     result = run_walk_forward(

@@ -123,7 +123,7 @@ class GridLoader:
                     except json.JSONDecodeError:
                         continue
 
-        logger.info("grid_loaded", file=str(filepath), records=len(raw_matches))
+        logger.info(f"grid_loaded file={filepath} records={len(raw_matches)}")
 
         matches = []
         for rm in raw_matches:
@@ -135,7 +135,7 @@ class GridLoader:
                 self._skipped_count += 1
 
         matches.sort(key=lambda m: m.match_date or "")
-        logger.info("grid_parsed", loaded=self._loaded_count, skipped=self._skipped_count)
+        logger.info(f"grid_parsed loaded={self._loaded_count} skipped={self._skipped_count}")
         return matches
 
     def _parse_match(self, data: dict) -> Optional[RawMatch]:
@@ -267,7 +267,7 @@ class HLTVResultsLoader:
                     self._skipped_count += 1
 
         matches.sort(key=lambda m: m.match_date or "")
-        logger.info("hltv_parsed", loaded=self._loaded_count, skipped=self._skipped_count)
+        logger.info(f"hltv_parsed loaded={self._loaded_count} skipped={self._skipped_count}")
         return matches
 
     def _parse_row(self, row: dict) -> Optional[RawMatch]:
