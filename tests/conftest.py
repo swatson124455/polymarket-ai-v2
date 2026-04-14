@@ -3,11 +3,16 @@ Pytest configuration. Sets project-local temp dir when system temp is unusable (
 Provides shared fixtures for unit and integration tests.
 """
 import os
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 # Use project-local temp dir when system temp may be inaccessible (sandbox, permissions)
 _project_root = Path(__file__).resolve().parent.parent
+
+# Ensure project root is on sys.path so top-level packages (esports_v2, etc.) are importable
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
 _pytest_tmp = _project_root / ".pytest_tmp"
 _pytest_tmp.mkdir(parents=True, exist_ok=True)
 # Override temp dirs so pytest/capture use project dir (avoids FileNotFoundError when system temp inaccessible)

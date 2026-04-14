@@ -355,6 +355,26 @@ lleaves>=0.4.0; sys_platform == "linux"
 # Graceful fallback when not installed (returns None, signal_mult=1.0)
 
 # ============================================
+# ESPORTSBOT V2 — Rating Trinity + Meta-Model (Phase 5v2)
+# ============================================
+openskill>=6.0.0
+# Job: Player-level Plackett-Luce ratings (OpenSkill component of Rating Trinity)
+# Used by: esports_v2/ratings/openskill_engine.py
+
+venn-abers>=0.4.0
+# Job: Calibration with validity guarantees (Venn-ABERS predictor)
+# Used by: esports_v2/model/calibrator.py (5v2-B)
+
+shap>=0.43.0
+# Job: Feature importance analysis for XGBoost meta-model diagnostics
+# Used by: esports_v2/model/meta_model.py (5v2-B)
+
+# hltv-async-api>=0.8.0
+# Job: CS2 match data from HLTV (supplementary — GRID Open Access is primary)
+# Used by: esports_v2/data/hltv_loader.py (5v2-A4)
+# Commented: scraping library, may be blocked by HLTV. Install manually if needed.
+
+# ============================================
 # TESTING
 # ============================================
 pytest>=7.4.0             # Tests
