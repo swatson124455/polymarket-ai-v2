@@ -3332,27 +3332,38 @@ class WeatherBot(BaseBot):
         # S-T sizes are pre-computed by _execute_group_trades() and passed via
         # _st_size_override. Fall back to independent Kelly if not set.
         _min_trade = float(getattr(settings, "WEATHER_MIN_TRADE_USD", 5.0))
-        _st_override = opp.pop("_st_size_override", None)
-        if _st_override is not None:
-            _raw_size = _st_override * combined_boost
+
+        # Day 2 (S173): Flat sizing mode — decouple from confidence until calibration fixed.
+        # RC diagnostic S12/WB-8 showed confidence is anti-calibrated: highest-confidence
+        # bucket has largest losses because Kelly sizes up massively on rare catastrophic losses.
+        # When WEATHER_FLAT_SIZE_USD > 0, use flat dollar amount instead of Kelly.
+        _flat_size = float(getattr(settings, "WEATHER_FLAT_SIZE_USD", 0.0))
+        if _flat_size > 0:
+            _raw_size = _flat_size
+            # Still consume _st_size_override to avoid stale dict key
+            opp.pop("_st_size_override", None)
         else:
-            # Size via central risk_manager Kelly (same as all other bots)
-            try:
-                _cal_qual = None
-                if (self._confidence_calibrator.is_fitted
-                        and self._confidence_calibrator._cal_brier is not None):
-                    _cal_qual = {
-                        "brier": self._confidence_calibrator._cal_brier,
-                        "count": self._confidence_calibrator.n_samples,
-                    }
-                kelly_shares = await self.calculate_bot_position_size(
-                    opp["confidence"], opp["price"],
-                    calibration_quality=_cal_qual,
-                )
-                _raw_size = kelly_shares * opp["price"] * combined_boost
-            except Exception as exc:
-                logger.warning("weatherbot_kelly_sizing_failed", error=str(exc))
-                _raw_size = self._default_size
+            _st_override = opp.pop("_st_size_override", None)
+            if _st_override is not None:
+                _raw_size = _st_override * combined_boost
+            else:
+                # Size via central risk_manager Kelly (same as all other bots)
+                try:
+                    _cal_qual = None
+                    if (self._confidence_calibrator.is_fitted
+                            and self._confidence_calibrator._cal_brier is not None):
+                        _cal_qual = {
+                            "brier": self._confidence_calibrator._cal_brier,
+                            "count": self._confidence_calibrator.n_samples,
+                        }
+                    kelly_shares = await self.calculate_bot_position_size(
+                        opp["confidence"], opp["price"],
+                        calibration_quality=_cal_qual,
+                    )
+                    _raw_size = kelly_shares * opp["price"] * combined_boost
+                except Exception as exc:
+                    logger.warning("weatherbot_kelly_sizing_failed", error=str(exc))
+                    _raw_size = self._default_size
 
         # S140: Spread gate — reject illiquid markets where bid-ask spread is too wide.
         # The Wuhan incident (S139): 90c spread, 5778bps slippage, -$900 loss.

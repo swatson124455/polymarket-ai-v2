@@ -415,8 +415,15 @@ class Settings(BaseSettings):
     MIRROR_MARKET_COOLDOWN_SECONDS: int = int(os.getenv("MIRROR_MARKET_COOLDOWN_SECONDS", "1800"))
     MIRROR_MIN_TRADE_USD: float = float(os.getenv("MIRROR_MIN_TRADE_USD", "25.0"))  # S157: 50→25 (unify with cold-start; $25 still filters dust)
     MIRROR_MAX_SLIPPAGE_PCT: float = float(os.getenv("MIRROR_MAX_SLIPPAGE_PCT", "0.05"))  # S142: 0.08→0.05 (8% slippage consumed edge on 3-5¢ signal)
-    # S132: Minimum whale trade USD — sub-$50 trades are noise (39.9% WR, -$153K)
-    MIRROR_MIN_WHALE_TRADE_USD: float = float(os.getenv("MIRROR_MIN_WHALE_TRADE_USD", "50.0"))
+    # S173 Day 2: Trader wallet blacklist — CSV of address prefixes (case-insensitive).
+    # RC diagnostic MB-3: these 5 wallets are concentrated loss sources, all active in last 30 days.
+    MIRROR_TRADER_BLACKLIST: str = os.getenv(
+        "MIRROR_TRADER_BLACKLIST",
+        "0x818F214c,0xD84c2b6d,0x732F1891,0x6ac5BB06,0x88f46B9e"
+    )
+    # S173 Day 2: Minimum whale trade USD — raised $50→$100. RC diagnostic MB-4: small whale
+    # trades ($0-25) dominate losses; trades above $100 are profitable across 1,680 trades.
+    MIRROR_MIN_WHALE_TRADE_USD: float = float(os.getenv("MIRROR_MIN_WHALE_TRADE_USD", "100.0"))
     # S132: NO-side dampener — NO loses 7x more than YES. 0.5 = half size on NO.
     MIRROR_NO_SIDE_DAMPENER: float = float(os.getenv("MIRROR_NO_SIDE_DAMPENER", "0.3"))  # S137 C5: 0.5→0.3 (NO = -$139K, 87% of losses)
     # S168: MIRROR_NO_PRICE_BLOCK removed — was defined but never referenced in mirror_bot.py (dead config)
@@ -786,6 +793,9 @@ class Settings(BaseSettings):
     WEATHER_BM_FLOOR: float = float(os.getenv("WEATHER_BM_FLOOR", "0.50"))
     # S107: Minimum trade size in USD (was $1, now $5 — eliminates dust positions)
     WEATHER_MIN_TRADE_USD: float = float(os.getenv("WEATHER_MIN_TRADE_USD", "5.0"))
+    # S173 Day 2: Flat sizing mode — when > 0, uses flat USD instead of Kelly.
+    # Decouples sizing from confidence until calibration is fixed (RC diagnostic S12/WB-8).
+    WEATHER_FLAT_SIZE_USD: float = float(os.getenv("WEATHER_FLAT_SIZE_USD", "100.0"))
     # S115: Bühlmann credibility denominator — higher k = slower sizing ramp for new stations
     WEATHER_BUHLMANN_KAPPA: float = float(os.getenv("WEATHER_BUHLMANN_KAPPA", "30.0"))
     # S116: YES-side confidence gate threshold. S135: 0.35. S149: 0.50 (uncalibrated YES at 26% WR)
@@ -949,10 +959,14 @@ class Settings(BaseSettings):
     TRADING_PHASE: str = os.getenv("TRADING_PHASE", "paper")
 
     # Phase-based max bet USD cap (hard floor applied after Kelly).
-    # JSON dict: {"paper": 15.0, "learning": 20.0, "graduated": 200.0, "production": 1000.0}
+    # CONTEXT: The old $15 paper default was in risk_manager.calculate_position_size() which is
+    # DEPRECATED (CLAUDE.md L144). BotBankrollManager was the actual sizing path and had NO phase
+    # cap — trades were effectively uncapped. S173 Day 2 wired phase_max_bet_usd into
+    # BotBankrollManager.get_bet_size(), making this cap ACTUALLY ENFORCED for the first time.
+    # Net effect: TIGHTENING from uncapped to $200, not loosening from $15 to $200.
     PHASE_MAX_BET_USD: str = os.getenv(
         "PHASE_MAX_BET_USD",
-        '{"paper": 15.0, "learning": 20.0, "graduated": 200.0, "production": 1000.0}'
+        '{"paper": 200.0, "learning": 200.0, "graduated": 200.0, "production": 1000.0}'
     )
 
     # Category-specific base Kelly fraction (replaces global KELLY_FRACTION per category).

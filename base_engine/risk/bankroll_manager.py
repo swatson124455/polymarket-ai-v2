@@ -39,7 +39,7 @@ _DEFAULT_BOT_CONFIGS: Dict[str, Dict[str, Any]] = {
     "CrossPlatformArbBot": {"capital": 500,  "kelly_fraction": 0.20, "max_bet_usd": 50,  "max_daily_usd": 200},
     "OracleBot":           {"capital": 500,  "kelly_fraction": 0.20, "max_bet_usd": 50,  "max_daily_usd": 200},
     "LLMForecasterBot":    {"capital": 500,  "kelly_fraction": 0.20, "max_bet_usd": 50,  "max_daily_usd": 200},
-    "WeatherBot":          {"capital": 20000, "kelly_fraction": 0.25, "max_bet_usd": 600, "max_daily_usd": 20000},  # S122: 300→600, 10k→20k
+    "WeatherBot":          {"capital": 20000, "kelly_fraction": 0.25, "max_bet_usd": 200, "max_daily_usd": 20000},  # S173: 600→200 (Day 2 RC fix: $200+ positions = 67% of losses)
     "LogicalArbBot":       {"capital": 500,  "kelly_fraction": 0.20, "max_bet_usd": 200, "max_daily_usd": 500},
     "EsportsBot":          {"capital": 20000, "kelly_fraction": 0.25, "max_bet_usd": 300, "max_daily_usd": 10000},
     "EsportsLiveBot":      {"capital": 20000, "kelly_fraction": 0.25, "max_bet_usd": 300, "max_daily_usd": 10000},
@@ -81,6 +81,15 @@ class BotBankrollManager:
         self.kelly_fraction: float = cfg["kelly_fraction"]
         self.max_bet_usd: float = cfg["max_bet_usd"]
         self.max_daily_usd: float = cfg["max_daily_usd"]
+        # Day 2 (S173): Shared phase cap across all bots via PHASE_MAX_BET_USD JSON + TRADING_PHASE
+        # Parsed from risk_manager.py:934-946 pattern. Read here for bankroll-level enforcement.
+        try:
+            import json as _json_bm
+            _phase = getattr(settings, "TRADING_PHASE", "paper").lower()
+            _phase_caps = _json_bm.loads(getattr(settings, "PHASE_MAX_BET_USD", "{}"))
+            self.phase_max_bet_usd: float = float(_phase_caps.get(_phase, 200.0))
+        except Exception:
+            self.phase_max_bet_usd = 200.0
 
         logger.info(
             "BotBankrollManager initialized",
@@ -208,6 +217,9 @@ class BotBankrollManager:
         # Per-bet cap
         size_usd = min(size_usd, self.max_bet_usd)
 
+        # Day 2 (S173): Phase max bet cap — shared across all bots
+        size_usd = min(size_usd, self.phase_max_bet_usd)
+
         # Daily cap — lock-guarded for concurrent bots
         async with self._daily_lock:
             daily_spent = self._get_daily_spent()
@@ -260,6 +272,7 @@ class BotBankrollManager:
             "capital": self.capital,
             "kelly_fraction": self.kelly_fraction,
             "max_bet_usd": self.max_bet_usd,
+            "phase_max_bet_usd": self.phase_max_bet_usd,
             "max_daily_usd": self.max_daily_usd,
             "daily_spent": self._get_daily_spent(),
         }

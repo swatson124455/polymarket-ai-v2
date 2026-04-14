@@ -1955,6 +1955,28 @@ class MirrorBot(BaseBot):
                             market=str(market_id)[:16])
                 return False
 
+            # S173 Day 2: Trader wallet blacklist — block specific addresses.
+            # RC diagnostic MB-3: 5 worst wallets account for concentrated losses, all active.
+            _trader_bl = getattr(settings, "MIRROR_TRADER_BLACKLIST", "")
+            if _trader_bl and trader_address:
+                _blocked_wallets = set(a.strip().lower() for a in _trader_bl.split(",") if a.strip())
+                if trader_address.lower()[:10] in _blocked_wallets or trader_address.lower() in _blocked_wallets:
+                    logger.info("mirror_trader_blacklisted",
+                                trader=trader_address[:10],
+                                market=str(market_id)[:16])
+                    return False
+
+            # S173 Day 2: Minimum whale trade size hard gate.
+            # RC diagnostic MB-4: small whale trades ($0-25) dominate losses while
+            # trades above $100 are profitable. Hard floor before soft scoring.
+            _min_whale_usd = float(getattr(settings, "MIRROR_MIN_WHALE_TRADE_USD", 100.0))
+            if whale_trade_usd > 0 and whale_trade_usd < _min_whale_usd:
+                logger.info("mirror_whale_too_small",
+                            whale_usd=round(whale_trade_usd, 2),
+                            min_usd=_min_whale_usd,
+                            market=str(market_id)[:16])
+                return False
+
             # S132→S153: Whale trade size — weighted factor (was binary BLOCK < $5).
             # Larger trades carry more conviction; small trades penalized but not killed.
             # Ramp: $0→0.50, $12.5→0.75, $25+→1.0.

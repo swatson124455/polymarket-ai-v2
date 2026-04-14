@@ -42,6 +42,9 @@ def make_manager(bot_name="EnsembleBot", daily_exposure=None, bankroll_config=No
         mock_settings.BOT_BANKROLL_CONFIG = bankroll_config or "{}"
         mock_settings.CATEGORY_KELLY_FRACTIONS = "{}"
         mock_settings.SIMULATION_MODE = False
+        # S173: Phase cap — set high so it doesn't interfere with per-bot tests
+        mock_settings.PHASE_MAX_BET_USD = '{"paper": 9999.0}'
+        mock_settings.TRADING_PHASE = "paper"
 
         from base_engine.risk.bankroll_manager import BotBankrollManager
         mgr = BotBankrollManager(bot_name=bot_name, order_gateway=gw, db=None)
@@ -220,7 +223,7 @@ class TestPositiveEdge:
             # q = 1.0 - 0.65 = 0.35
             # kelly_full = (0.65 * 1.0 - 0.35) / 1.0 = 0.30
             # size_usd = 0.30 * 0.25 * 20000 = 1500.0
-            # Capped at max_bet_usd = 300.0
+            # Capped at max_bet_usd = 300.0 (phase_max_bet_usd = 9999 from make_manager mock)
             result = await mgr.get_bet_size(confidence=0.65, price=0.50)
         assert result == pytest.approx(300.0, abs=0.01)
 
@@ -593,3 +596,45 @@ class TestPerBotKellyIndependence:
         assert mgr.capital == 20000.0
         # Kelly fraction should be 0.25, not 0.25/N
         assert mgr.kelly_fraction == 0.25
+
+
+# =========================================================================
+# S173 Day 2: Phase Cap Enforcement
+# =========================================================================
+
+
+class TestPhaseCap:
+    def test_phase_cap_stored(self):
+        """Phase cap is parsed from PHASE_MAX_BET_USD JSON during init."""
+        mgr = make_manager("EnsembleBot")
+        # make_manager sets PHASE_MAX_BET_USD = '{"paper": 9999.0}'
+        assert mgr.phase_max_bet_usd == pytest.approx(9999.0)
+
+    def test_phase_cap_with_low_value(self):
+        """Phase cap enforces when set lower than per-bot max."""
+        with patch("base_engine.risk.bankroll_manager.settings") as ms:
+            ms.BOT_BANKROLL_CONFIG = "{}"
+            ms.CATEGORY_KELLY_FRACTIONS = "{}"
+            ms.SIMULATION_MODE = False
+            ms.PHASE_MAX_BET_USD = '{"paper": 50.0}'
+            ms.TRADING_PHASE = "paper"
+            from base_engine.risk.bankroll_manager import BotBankrollManager
+            mgr = BotBankrollManager("EnsembleBot", order_gateway=MagicMock(), db=None)
+        assert mgr.phase_max_bet_usd == pytest.approx(50.0)
+
+    @pytest.mark.asyncio
+    async def test_phase_cap_limits_bet_size(self):
+        """Phase cap at 50 limits a Kelly-computed bet that would be 200+."""
+        with patch("base_engine.risk.bankroll_manager.settings") as ms:
+            ms.BOT_BANKROLL_CONFIG = "{}"
+            ms.CATEGORY_KELLY_FRACTIONS = "{}"
+            ms.SIMULATION_MODE = False
+            ms.PHASE_MAX_BET_USD = '{"paper": 50.0}'
+            ms.TRADING_PHASE = "paper"
+            from base_engine.risk.bankroll_manager import BotBankrollManager
+            gw = MagicMock()
+            gw.get_daily_exposure_usd = lambda bot_name: 0.0
+            mgr = BotBankrollManager("EnsembleBot", order_gateway=gw, db=None)
+            # confidence=0.65, price=0.50 -> Kelly wants $1500 -> per-bot cap $300 -> phase cap $50
+            result = await mgr.get_bet_size(confidence=0.65, price=0.50)
+        assert result == pytest.approx(50.0, abs=0.01)
