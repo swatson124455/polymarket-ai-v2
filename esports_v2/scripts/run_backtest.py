@@ -5,14 +5,17 @@ Wires everything together:
   1. Load historical match data (Oracle's Elixir + GRID/HLTV)
   2. Walk-forward backtest with EsportsPipeline
   3. Compute metrics suite
-  4. Shuffle-label control test
+  4. Shuffle-label control test (MANDATORY on first run)
   5. Print report + gate check
+  6. Write results to esports_predictions DB (mode='backtest')
 
 Usage:
     python -m esports_v2.scripts.run_backtest \
         --lol-csv data/2024_LoL.csv data/2025_LoL.csv \
         --cs2-json data/grid_cs2.json \
         --output-dir output/backtest
+
+First run REQUIRES --shuffle-control (or --skip-shuffle to explicitly opt out).
 """
 from __future__ import annotations
 
@@ -22,7 +25,7 @@ import logging
 import random
 import sys
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from esports_v2.backtest.metrics import MetricsReport, compute_metrics
 from esports_v2.backtest.walk_forward import BacktestResult, run_walk_forward
@@ -33,6 +36,96 @@ from esports_v2.scripts.load_historical import load_all_matches
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
 
+# Sentinel file indicating shuffle control has been run at least once
+_SHUFFLE_SENTINEL = ".shuffle_control_passed"
+
+
+def _shuffle_sentinel_path(output_dir: Optional[str]) -> Path:
+    """Path to the shuffle control sentinel file."""
+    if output_dir:
+        return Path(output_dir) / _SHUFFLE_SENTINEL
+    return Path(_SHUFFLE_SENTINEL)
+
+
+def write_predictions_to_db(predictions: List[dict], db_url: Optional[str] = None) -> int:
+    """
+    Write backtest predictions to esports_predictions table (mode='backtest').
+
+    Uses raw SQL via psycopg2 to avoid depending on the full ORM stack.
+    Falls back gracefully if DB is unavailable (file-based backtest still works).
+
+    Args:
+        predictions: List of prediction dicts from the walk-forward backtest.
+        db_url: PostgreSQL connection string. If None, reads DATABASE_URL env var.
+
+    Returns:
+        Number of rows written.
+    """
+    import os
+
+    url = db_url or os.environ.get("DATABASE_URL")
+    if not url:
+        logger.warning("No DATABASE_URL set — skipping DB write. Use --output-dir for file output.")
+        return 0
+
+    try:
+        import psycopg2
+        from psycopg2.extras import execute_values
+    except ImportError:
+        logger.warning("psycopg2 not installed — skipping DB write.")
+        return 0
+
+    insert_sql = """
+        INSERT INTO esports_predictions (
+            match_id, game, predicted_winner, p_model, p_raw,
+            conformal_set, is_singleton, market_price, pinnacle_odds,
+            edge, kelly_fraction, actual_winner, correct, mode, model_version
+        ) VALUES %s
+        ON CONFLICT DO NOTHING
+    """
+
+    rows = []
+    for p in predictions:
+        actual = p.get("actual")
+        p_model = p.get("p_model", 0.5)
+        predicted_a = p_model > 0.5
+        actual_a = actual == 1 if actual is not None else None
+        correct = (predicted_a == actual_a) if actual is not None else None
+
+        conformal_set = p.get("conformal_set")
+        if isinstance(conformal_set, list):
+            conformal_set = [str(c) for c in conformal_set]
+
+        rows.append((
+            p.get("match_id"),
+            p.get("game"),
+            p.get("team_a") if predicted_a else p.get("team_b"),
+            p_model,
+            p.get("p_raw"),
+            conformal_set,
+            p.get("is_singleton"),
+            p.get("market_price"),
+            p.get("pinnacle_prob"),
+            p.get("edge"),
+            p.get("kelly_fraction"),
+            p.get("team_a") if actual_a else p.get("team_b") if actual is not None else None,
+            correct,
+            "backtest",
+            "v2-trinity",
+        ))
+
+    try:
+        conn = psycopg2.connect(url)
+        with conn:
+            with conn.cursor() as cur:
+                execute_values(cur, insert_sql, rows, page_size=500)
+        conn.close()
+        logger.info(f"Wrote {len(rows)} predictions to esports_predictions (mode='backtest')")
+        return len(rows)
+    except Exception as e:
+        logger.error(f"DB write failed: {e}")
+        return 0
+
 
 def run_backtest(
     lol_csvs: List[str],
@@ -41,19 +134,15 @@ def run_backtest(
     min_train_months: int = 3,
     fold_months: int = 1,
     alpha: float = 0.10,
-    output_dir: str | None = None,
 ) -> BacktestResult:
     """Run full walk-forward backtest."""
-    # Load data
     all_matches = load_all_matches(lol_csvs, cs2_jsons, cs2_csvs)
     if not all_matches:
         print("No matches loaded.")
         sys.exit(1)
 
-    # Create pipeline
     pipeline = EsportsPipeline(alpha=alpha)
 
-    # Run walk-forward
     result = run_walk_forward(
         matches=all_matches,
         pipeline=pipeline,
@@ -122,25 +211,43 @@ def main():
     parser.add_argument("--lol-csv", nargs="*", default=[], help="Oracle's Elixir LoL CSV files")
     parser.add_argument("--cs2-json", nargs="*", default=[], help="GRID CS2 JSON files")
     parser.add_argument("--cs2-csv", nargs="*", default=[], help="HLTV CS2 CSV files")
-    parser.add_argument("--output-dir", default=None, help="Output directory")
+    parser.add_argument("--output-dir", default=None, help="Output directory for file-based results")
     parser.add_argument("--min-train-months", type=int, default=3, help="Warmup months")
     parser.add_argument("--fold-months", type=int, default=1, help="Fold duration (months)")
     parser.add_argument("--alpha", type=float, default=0.10, help="Conformal alpha")
-    parser.add_argument("--shuffle-control", action="store_true", help="Run shuffle-label control")
+    parser.add_argument("--db-url", default=None, help="PostgreSQL URL (or reads DATABASE_URL env)")
+    parser.add_argument(
+        "--skip-shuffle", action="store_true",
+        help="Explicitly skip shuffle control (not recommended for first run)",
+    )
     args = parser.parse_args()
 
     if not args.lol_csv and not args.cs2_json and not args.cs2_csv:
         print("No data files specified. Use --lol-csv, --cs2-json, or --cs2-csv.")
         sys.exit(1)
 
-    # Main backtest
-    print("\n[1/2] Running walk-forward backtest...")
+    # Issue 6: Shuffle control is mandatory on first run
+    sentinel = _shuffle_sentinel_path(args.output_dir)
+    first_run = not sentinel.exists()
+    run_shuffle = first_run and not args.skip_shuffle
+
+    if first_run and args.skip_shuffle:
+        print("WARNING: Skipping shuffle control on first run (--skip-shuffle).")
+        print("  This is NOT recommended. Run without --skip-shuffle to validate.")
+
+    if first_run and not args.skip_shuffle:
+        print("First run detected — shuffle-label control will run automatically.")
+        print("  (Use --skip-shuffle to bypass, NOT recommended.)")
+
+    # ---- Main backtest ----
+    step = 1
+    total_steps = 2 if run_shuffle else 1
+    print(f"\n[{step}/{total_steps}] Running walk-forward backtest...")
     result = run_backtest(
         args.lol_csv, args.cs2_json, args.cs2_csv,
         min_train_months=args.min_train_months,
         fold_months=args.fold_months,
         alpha=args.alpha,
-        output_dir=args.output_dir,
     )
 
     # Enrich with CLV (if odds available in records)
@@ -162,29 +269,42 @@ def main():
         print("\n  Action: iterate features/hyperparams. If still failing after")
         print("  2 iterations, approach lacks edge — stop and reassess.")
 
-    # Shuffle control
-    if args.shuffle_control:
-        print("\n[2/2] Running shuffle-label control...")
+    # ---- Shuffle control ----
+    if run_shuffle:
+        step += 1
+        print(f"\n[{step}/{total_steps}] Running shuffle-label control (mandatory first run)...")
         shuffle_report = run_shuffle_control(
             args.lol_csv, args.cs2_json, args.cs2_csv,
             min_train_months=args.min_train_months,
             fold_months=args.fold_months,
         )
         print_report(shuffle_report, "SHUFFLE CONTROL")
-        if shuffle_report.accuracy > 0.55:
-            print("\n  WARNING: Shuffle control accuracy > 55% — possible data leakage!")
-        else:
-            print(f"\n  Shuffle control accuracy: {shuffle_report.accuracy:.3f} (expected ~50%)")
-            print("  No evidence of data leakage.")
 
-    # Save results
+        shuffle_ok = shuffle_report.accuracy <= 0.55
+        if not shuffle_ok:
+            print("\n  FAIL: Shuffle control accuracy > 55% — possible data leakage!")
+            print("  Do NOT proceed until this is investigated.")
+        else:
+            print(f"\n  PASS: Shuffle control accuracy: {shuffle_report.accuracy:.3f} (expected ~50%)")
+            print("  No evidence of data leakage.")
+            # Write sentinel
+            sentinel.parent.mkdir(parents=True, exist_ok=True)
+            sentinel.write_text(f"shuffle_accuracy={shuffle_report.accuracy:.4f}\n")
+            logger.info(f"Shuffle control passed — sentinel written to {sentinel}")
+
+    # ---- Issue 5: Write to DB ----
+    if result.all_predictions:
+        n_written = write_predictions_to_db(result.all_predictions, db_url=args.db_url)
+        if n_written > 0:
+            print(f"\n{n_written} predictions written to esports_predictions (mode='backtest', model_version='v2-trinity')")
+
+    # ---- Save file-based output ----
     if args.output_dir:
         out_dir = Path(args.output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save predictions
+        # Save predictions JSON
         preds_path = out_dir / "backtest_predictions.json"
-        # Convert numpy/bool types for JSON serialization
         serializable = []
         for p in result.all_predictions:
             row = {}
@@ -205,13 +325,6 @@ def main():
         with open(report_path, "w") as f:
             f.write(report.summary())
         print(f"Report saved to {report_path}")
-
-        # Feature importance
-        if hasattr(result, "trinity") and result.trinity:
-            importance_path = out_dir / "feature_importance.json"
-            # Pipeline feature importance would require access to the last fold's model
-            # Deferred to integration — just note it here
-            print(f"(Feature importance: run with --verbose for per-fold diagnostics)")
 
 
 if __name__ == "__main__":
