@@ -1721,6 +1721,11 @@ class WeatherBot(BaseBot):
             scan_limit = getattr(settings, "SCAN_MARKET_LIMIT", 800)
             weather_markets = weather_markets[:scan_limit]
 
+            # S177: Persist discovered markets to DB so trade_event FK check passes.
+            # Without this, markets from Gamma API exist only in memory and
+            # insert_trade_event() rejects ENTRY events with "market not in DB".
+            await self._ensure_markets_in_db(weather_markets)
+
             # 2. Group by (city, date)
             groups = self._market_mapper.group_markets(weather_markets)
             if not groups:
@@ -4057,6 +4062,50 @@ class WeatherBot(BaseBot):
             logger.debug("weatherbot_direct_api_failed", error=str(exc))
 
         return found
+
+    async def _ensure_markets_in_db(self, markets: List[Dict]) -> None:
+        """S177: Persist Gamma-discovered markets to the markets table.
+
+        Weather markets are discovered via Gamma API tag_slug=temperature and only
+        exist in memory.  The trade_event FK check (database.py:4886) rejects ENTRY
+        events when the market isn't in the DB.  This upsert ensures the FK check
+        passes without changing any existing market rows (ON CONFLICT DO NOTHING).
+        """
+        if not markets:
+            return
+        _db = getattr(self.base_engine, "db", None)
+        if not _db:
+            return
+        try:
+            async with _db.get_session() as session:
+                from sqlalchemy import text as _sa_text
+                _sql = _sa_text(
+                    "INSERT INTO markets (id, condition_id, question, slug, category,"
+                    " yes_token_id, no_token_id, yes_price, no_price, volume, active)"
+                    " VALUES (:id, :cid, :q, :slug, :cat, :yes_tid, :no_tid,"
+                    " :yes_p, :no_p, :vol, :active)"
+                    " ON CONFLICT (id) DO NOTHING"
+                )
+                for m in markets:
+                    mid = m.get("id", "")
+                    if not mid:
+                        continue
+                    await session.execute(_sql, {
+                        "id": mid,
+                        "cid": m.get("condition_id", ""),
+                        "q": m.get("question", ""),
+                        "slug": m.get("slug", ""),
+                        "cat": "weather",
+                        "yes_tid": m.get("yes_token_id", ""),
+                        "no_tid": m.get("no_token_id", ""),
+                        "yes_p": m.get("yes_price"),
+                        "no_p": m.get("no_price"),
+                        "vol": m.get("volume", 0),
+                        "active": True,
+                    })
+                await session.commit()
+        except Exception as exc:
+            logger.debug("weatherbot_ensure_markets_failed", error=str(exc))
 
     async def _fetch_weather_events_by_tag(self) -> List[Dict]:
         """Fetch live temperature-bucket markets via Gamma API tag_slug=temperature.
