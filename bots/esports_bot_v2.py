@@ -232,8 +232,11 @@ class EsportsBotV2(BaseBot):
                     await shadow_db.insert_match(session, row)
                     await session.commit()
 
-                # Update Trinity ratings
+                # Update Trinity ratings (only if winner is known)
                 raw = esports_match_to_raw(match)
+                if raw.winner is None:
+                    self._processed_match_ids.add(match_id)
+                    continue
                 mr = raw_to_match_result(raw)
                 prediction = self._trinity.process_match(mr)
                 self._processed_match_ids.add(match_id)
