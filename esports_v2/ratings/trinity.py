@@ -145,13 +145,15 @@ class Trinity:
         p_glicko = self._get_glicko(game).predict(team_a, team_b)
         p_openskill = self._get_openskill(game).predict(team_a, team_b)
 
-        # OpenSkill returns exactly 0.5 when roster data is missing.
-        # Exclude uninformative signal from spread/mean to prevent:
-        # (a) artificially widening spread → false abstain
-        # (b) artificially narrowing spread → false confidence
-        # XGBoost still sees p_openskill=0.5 as a feature (learns it's noise).
+        # When OpenSkill has no roster data for either team, its prediction
+        # is uninformative (returns 0.5). Exclude from spread/mean to prevent:
+        # (a) artificially widening spread → false abstain on strong favorites
+        # (b) artificially narrowing spread → false confidence on uncertain matchups
+        # Uses explicit has_rosters() check, not magic 0.5 comparison.
+        # XGBoost still sees p_openskill=0.5 as a feature (learns to discount it).
+        os_informative = self._get_openskill(game).has_rosters(team_a, team_b)
         informative = [p_elo, p_glicko]
-        if abs(p_openskill - 0.5) > 1e-9:
+        if os_informative:
             informative.append(p_openskill)
 
         spread = max(informative) - min(informative)

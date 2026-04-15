@@ -169,9 +169,12 @@ async def get_unresolved_match_ids(session) -> List[str]:
     return [r[0] for r in result.fetchall()]
 
 
-async def get_shadow_stats(session) -> Dict:
+async def get_shadow_stats(session, model_version: str = "v2-trinity") -> Dict:
     """
     Compute current shadow gate metrics from esports_predictions.
+
+    Filters by model_version to exclude contaminated predictions
+    (v2-trinity-contaminated = pre-OpenSkill-guard data).
 
     Returns dict with counts, accuracy, Brier, CLV — or empty if no data.
     """
@@ -192,8 +195,9 @@ async def get_shadow_stats(session) -> Dict:
                         ABS(p_model) - market_price
                 END) AS clv_mean
             FROM esports_predictions
-            WHERE mode = 'shadow'
-        """)
+            WHERE mode = 'shadow' AND model_version = :mv
+        """),
+        {"mv": model_version},
     )
     row = result.fetchone()
     if not row or row[0] == 0:

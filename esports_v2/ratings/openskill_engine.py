@@ -95,6 +95,10 @@ class OpenSkillEngine:
         probs = self._model.predict_win([os_a, os_b])
         return probs[0]
 
+    def has_rosters(self, team_a: str, team_b: str) -> bool:
+        """Check if both teams have roster data for an informative prediction."""
+        return bool(self._team_rosters.get(team_a)) and bool(self._team_rosters.get(team_b))
+
     def process_match(
         self,
         team_a: str,
