@@ -145,6 +145,19 @@ sudo mv -T "\$SWAP_TMP" "$CURRENT"
 echo "  $CURRENT -> $NEW_RELEASE"
 REMOTE
 
+# ── 5b. Install postgres crontab (backup job) ────────────────────────────────
+echo ""
+echo "[5b/7] Installing postgres crontab..."
+ssh $SSH_OPTS -i "$KEY" "$VPS" bash <<REMOTE
+set -euo pipefail
+if [ -f "$NEW_RELEASE/deploy/crontabs/postgres.crontab" ]; then
+    sudo -u postgres crontab "$NEW_RELEASE/deploy/crontabs/postgres.crontab"
+    echo "  postgres crontab installed from deploy/crontabs/postgres.crontab"
+else
+    echo "  WARNING: deploy/crontabs/postgres.crontab not found, skipping"
+fi
+REMOTE
+
 # ── 6. Install service files + restart per-bot services ──────────────────────
 echo ""
 echo "[6/7] Installing service files + restarting services..."
@@ -209,6 +222,10 @@ while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
         # Also grab PgBouncer pool size while we're here
         PGB=$(sudo grep -oP 'default_pool_size\s*=\s*\K[0-9]+' /etc/pgbouncer/pgbouncer.ini 2>/dev/null || echo "0")
         echo "PGB_POOL=$PGB"
+        # Backup staleness check: alert if no pg_dump newer than 25 hours
+        if ! find /opt/pa2-backups -name '*.dump' -mmin -1500 2>/dev/null | grep -q .; then
+            echo "BACKUP_STALE"
+        fi
         # Prune old releases (keep last 5)
         ls -1dt /opt/pa2-releases/*/ 2>/dev/null | tail -n +6 | xargs -r sudo rm -rf
         exit 0
@@ -230,6 +247,9 @@ if echo "$HEALTH_RESULT" | grep -q "HEALTH_OK"; then
         echo "  WARNING: PgBouncer default_pool_size=$_PGB_POOL (< 40). Risk of pool exhaustion with 3 bots."
     else
         echo "  PgBouncer pool_size=$_PGB_POOL — OK"
+    fi
+    if echo "$HEALTH_RESULT" | grep -q "BACKUP_STALE"; then
+        echo "  WARNING: No pg_dump backup in last 25 hours — check postgres crontab"
     fi
 else
     echo ""

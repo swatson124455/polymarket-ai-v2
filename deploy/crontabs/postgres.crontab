@@ -1,0 +1,6 @@
+# Managed by deploy.sh — do not edit manually.
+# Changes will be overwritten on next deploy.
+# To modify, edit this file in deploy/crontabs/postgres.crontab and redeploy.
+
+# Daily pg_dump backup at 04:00 UTC (7-day retention handled by daily_backup.sh)
+0 4 * * * /opt/pa2-backups/daily_backup.sh >> /opt/pa2-backups/backup.log 2>&1
