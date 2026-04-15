@@ -56,8 +56,8 @@ _SNAPSHOT_DIR = Path(os.getenv("ESPORTS_V2_SNAPSHOT_DIR", "data/snapshots"))
 class EsportsBotV2(BaseBot):
     """EsportsBot v2 — Trinity ratings + XGBoost + Venn-ABERS + MAPIE."""
 
-    def __init__(self, bot_name: str, base_engine: BaseEngine):
-        super().__init__(bot_name, base_engine)
+    def __init__(self, base_engine: BaseEngine):
+        super().__init__("EsportsBotV2", base_engine)
         self._trinity = Trinity()
         self._pipeline = EsportsPipeline()
         self._pandascore = None  # initialized in _initialize()
@@ -178,6 +178,10 @@ class EsportsBotV2(BaseBot):
             logger.info(f"Pipeline fitted on {len(self._training_records)} records")
         else:
             logger.warning(f"Only {len(self._training_records)} records — pipeline underfit")
+
+    async def analyze_opportunity(self, market_data: Dict) -> Optional[Dict]:
+        """Not used — EsportsBotV2 handles analysis inline in scan_and_trade."""
+        return None
 
     async def scan_and_trade(self) -> None:
         """Main scan cycle. Called by BaseBot._scan_loop() every interval."""
