@@ -68,6 +68,16 @@ async def match_exists(session, match_id: str) -> bool:
 
 async def insert_match(session, match: dict) -> None:
     """Insert a match into esports_matches. Skips on conflict (match_id PK)."""
+    # Parse match_date string to datetime (asyncpg requires datetime, not str)
+    params = dict(match)
+    md = params.get("match_date")
+    if isinstance(md, str):
+        from datetime import datetime
+        try:
+            params["match_date"] = datetime.fromisoformat(md.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            params["match_date"] = None
+
     await session.execute(
         text("""
             INSERT INTO esports_matches (
@@ -80,7 +90,7 @@ async def insert_match(session, match: dict) -> None:
                 :best_of, :match_date, :is_lan, :source
             ) ON CONFLICT (match_id) DO NOTHING
         """),
-        match,
+        params,
     )
 
 
