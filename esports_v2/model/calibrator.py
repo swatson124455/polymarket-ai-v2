@@ -51,9 +51,11 @@ class VennAbersCalibrator:
         self._train_data[game] = (scores.copy(), labels.copy())
 
         try:
-            from venn_abers import VennAbersCalibrator as VAC
-            cal = VAC()
-            cal.fit(scores.reshape(-1, 1), labels)
+            from venn_abers import VennAbers as VA
+            cal = VA(setting="classification")
+            # VennAbers expects 2-column probability array: [P(class=0), P(class=1)]
+            probs_2d = np.column_stack([1.0 - scores, scores])
+            cal.fit(probs_2d, labels)
             self._calibrators[game] = cal
             self._fallback = False
             logger.info(f"Venn-ABERS calibrator fit for {game} on {len(scores)} samples")
@@ -86,11 +88,15 @@ class VennAbersCalibrator:
             cal_prob = float(cal.predict([score])[0])
             return cal_prob, cal_prob, cal_prob
 
-        # Venn-ABERS: predict returns (p0, p1) intervals
+        # VennAbers.predict_proba returns (p0_arr, p1_arr) tuple
+        # p0[i] = calibrated probs assuming label=0
+        # p1[i] = calibrated probs assuming label=1
+        # Interval for class 1: [p0[0][1], p1[0][1]]
         try:
-            result = cal.predict_proba(np.array([[score]]))
-            p_lower = float(result[0][0])
-            p_upper = float(result[0][1])
+            test_2d = np.array([[1.0 - score, score]])
+            p0, p1 = cal.predict_proba(test_2d)
+            p_lower = float(p0[0][1])
+            p_upper = float(p1[0][1])
             calibrated = (p_lower + p_upper) / 2.0
             return calibrated, p_lower, p_upper
         except Exception as e:
@@ -115,9 +121,10 @@ class VennAbersCalibrator:
             return cal_probs, cal_probs, cal_probs
 
         try:
-            result = cal.predict_proba(scores.reshape(-1, 1))
-            p_lower = result[:, 0]
-            p_upper = result[:, 1]
+            probs_2d = np.column_stack([1.0 - scores, scores])
+            p0, p1 = cal.predict_proba(probs_2d)
+            p_lower = p0[:, 1]
+            p_upper = p1[:, 1]
             calibrated = (p_lower + p_upper) / 2.0
             return calibrated, p_lower, p_upper
         except Exception as e:

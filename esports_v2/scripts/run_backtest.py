@@ -25,7 +25,7 @@ import logging
 import random
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from esports_v2.backtest.metrics import MetricsReport, compute_metrics
 from esports_v2.backtest.walk_forward import BacktestResult, run_walk_forward
@@ -127,6 +127,43 @@ def write_predictions_to_db(predictions: List[dict], db_url: Optional[str] = Non
         return 0
 
 
+def _build_odds_bridge(
+    predictions: List[dict],
+    odds_lookup: Dict[str, tuple],
+) -> Dict[str, tuple]:
+    """
+    Build a match_id -> (odds_a, odds_b) dict by matching prediction teams/dates
+    to OddsPapi odds keys.
+
+    OddsPapi keys: "team_a_norm||team_b_norm||YYYY-MM-DD" (alphabetically sorted).
+    Predictions have: match_id, team_a, team_b, match_date.
+    """
+    from esports_v2.data.odds_loader import make_match_key
+
+    bridge: Dict[str, tuple] = {}
+    for pred in predictions:
+        team_a = pred.get("team_a", "")
+        team_b = pred.get("team_b", "")
+        date = pred.get("match_date", "")
+        if not team_a or not team_b or not date:
+            continue
+
+        key = make_match_key(team_a, team_b, date)
+        if key in odds_lookup:
+            # Determine if we need to swap odds order
+            # make_match_key sorts alphabetically; odds are (home, away)
+            # We need (odds for team_a, odds for team_b)
+            a_norm = team_a.strip().lower()
+            b_norm = team_b.strip().lower()
+            odds = odds_lookup[key]
+            if a_norm <= b_norm:
+                bridge[pred["match_id"]] = odds
+            else:
+                bridge[pred["match_id"]] = (odds[1], odds[0])
+
+    return bridge
+
+
 def run_backtest(
     lol_csvs: List[str],
     cs2_jsons: List[str],
@@ -221,6 +258,7 @@ def main():
     parser.add_argument("--min-train-months", type=int, default=3, help="Warmup months")
     parser.add_argument("--fold-months", type=int, default=1, help="Fold duration (months)")
     parser.add_argument("--alpha", type=float, default=0.10, help="Conformal alpha")
+    parser.add_argument("--odds-json", default=None, help="OddsPapi odds lookup JSON (from fetch_data.py)")
     parser.add_argument("--db-url", default=None, help="PostgreSQL URL (or reads DATABASE_URL env)")
     parser.add_argument(
         "--skip-shuffle", action="store_true",
@@ -256,8 +294,17 @@ def main():
         alpha=args.alpha,
     )
 
-    # Enrich with CLV (if odds available in records)
-    enrich_with_clv(result.all_predictions)
+    # Enrich with CLV
+    odds_lookup = None
+    if args.odds_json:
+        from esports_v2.data.odds_loader import OddsPapiLoader
+        raw_odds = OddsPapiLoader.load_odds(args.odds_json)
+        if raw_odds:
+            odds_lookup = _build_odds_bridge(result.all_predictions, raw_odds)
+            print(f"  Odds loaded: {len(raw_odds)} entries, {len(odds_lookup)} matched to predictions")
+        else:
+            print("  WARNING: --odds-json specified but no odds loaded")
+    enrich_with_clv(result.all_predictions, odds_lookup=odds_lookup)
 
     # Compute metrics
     report = compute_metrics(result.all_predictions)

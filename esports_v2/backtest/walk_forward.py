@@ -71,11 +71,15 @@ class BacktestResult:
 
 
 def _parse_date(d: Optional[str]) -> datetime:
-    """Parse ISO date string, handling various formats."""
+    """Parse ISO date string, handling various formats. Always returns naive UTC."""
     if not d:
         return datetime.min
     try:
-        return datetime.fromisoformat(d.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(d.replace("Z", "+00:00"))
+        # Strip timezone to naive UTC for consistent comparison
+        if dt.tzinfo is not None:
+            dt = dt.replace(tzinfo=None)
+        return dt
     except (ValueError, AttributeError):
         return datetime.min
 
