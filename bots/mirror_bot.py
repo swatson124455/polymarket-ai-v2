@@ -2768,6 +2768,24 @@ class MirrorBot(BaseBot):
                 logger.info("mirror_calibrated", raw=round(_raw_conf, 3), cal=round(confidence, 3))
 
 
+        # S177: Log prediction BEFORE gate check so gate-blocked signals still
+        # accumulate prediction_log data.  Without this, MB is in a deadlock:
+        # gate-blocked → no prediction_log → cat_n stays 0 → gate scores can't
+        # improve → permanently gate-blocked.  Moved from line 3062 (post-gate).
+        _db = getattr(self.base_engine, "db", None)
+        if _db and not _is_sell:
+            try:
+                await _db.insert_prediction_log(
+                    market_id=market_id,
+                    predicted_prob=kelly_prob,
+                    market_price=price,
+                    model_name=f"mirror_split_{source}",
+                    bot_name="MirrorBot",
+                    confidence=gate_score,
+                )
+            except Exception as _pl_err:
+                logger.debug("mirror_prediction_log_failed", error=str(_pl_err))
+
         # S103 Bug Fix: Enforce min_confidence AFTER all adjustments (domain drift,
         # calibration). Without this gate, self.min_confidence was dead code — trades
         # executed at 38% confidence despite configured threshold.
@@ -3058,22 +3076,6 @@ class MirrorBot(BaseBot):
             self._daily_exposure += _trade_usd
             if category:
                 self._category_exposure[category] = self._category_exposure.get(category, 0.0) + _trade_usd
-
-        # S172 1G: Log prediction for calibration analysis (MB had 0 prediction_log rows).
-        # kelly_prob is the model's estimated true probability; price is the market price.
-        _db = getattr(self.base_engine, "db", None)
-        if _db and not _is_sell:
-            try:
-                await _db.insert_prediction_log(
-                    market_id=market_id,
-                    predicted_prob=kelly_prob,
-                    market_price=price,
-                    model_name=f"mirror_split_{source}",
-                    bot_name="MirrorBot",
-                    confidence=gate_score,
-                )
-            except Exception as _pl_err:
-                logger.debug("mirror_prediction_log_failed", error=str(_pl_err))
 
         order = await self.place_order(
             market_id=market_id,
