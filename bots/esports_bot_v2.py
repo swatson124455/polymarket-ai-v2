@@ -20,7 +20,6 @@ Two-phase write:
 from __future__ import annotations
 
 import json
-import logging
 import os
 import time
 from datetime import datetime, timezone
@@ -40,7 +39,8 @@ from esports_v2.shadow.match_converter import (
 )
 from esports_v2.shadow import db as shadow_db
 
-logger = logging.getLogger(__name__)
+from structlog import get_logger
+logger = get_logger()
 
 # Defaults (overridable via env)
 _GAMES = os.getenv("ESPORTS_V2_GAMES", "cs2,lol").split(",")

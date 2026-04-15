@@ -7,12 +7,12 @@ Scoped to esports_matches + esports_predictions tables (migration 072).
 """
 from __future__ import annotations
 
-import logging
 from typing import Dict, List, Optional
 
 from sqlalchemy import text
+from structlog import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger()
 
 
 async def load_historical_matches(session, games: List[str]) -> List[dict]:
