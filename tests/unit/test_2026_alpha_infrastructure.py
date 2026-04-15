@@ -562,7 +562,7 @@ class TestEnsembleBotNewMethods:
 # ─── Main.py BOT_REGISTRY ───────────────────────────────────────────
 class TestBotRegistry:
     def test_registry_has_all_new_bots(self):
-        """main.py BOT_REGISTRY should contain exactly 14 bots (EnsembleBot archived Session 60)."""
+        """main.py BOT_REGISTRY should contain exactly 15 bots."""
         from main import BOT_REGISTRY
         expected_bots = {
             "ArbitrageBot", "MirrorBot",
@@ -571,7 +571,7 @@ class TestBotRegistry:
             # Sports betting bots — Migration 022
             "SportsInjuryBot", "SportsLiveBot", "SportsArbBot",
             # Esports bots — Migration 024
-            "EsportsBot", "EsportsLiveBot",
+            "EsportsBot", "EsportsBotV2", "EsportsLiveBot",
             # Logical arbitrage bot
             "LogicalArbBot",
         }
