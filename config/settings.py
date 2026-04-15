@@ -1174,9 +1174,11 @@ class Settings(BaseSettings):
 
     # --- Bot enable flags (all disabled by default) ---
     BOT_ENABLED_ESPORTS: bool = os.getenv("BOT_ENABLED_ESPORTS", "false").lower() in ("true", "1", "yes")
+    BOT_ENABLED_ESPORTS_V2: bool = os.getenv("BOT_ENABLED_ESPORTS_V2", "false").lower() in ("true", "1", "yes")
     BOT_ENABLED_ESPORTS_LIVE: bool = os.getenv("BOT_ENABLED_ESPORTS_LIVE", "false").lower() in ("true", "1", "yes")
     # --- Scan intervals (seconds) ---
     SCAN_INTERVAL_ESPORTS: int = int(os.getenv("SCAN_INTERVAL_ESPORTS", "120"))
+    SCAN_INTERVAL_ESPORTS_V2: int = int(os.getenv("SCAN_INTERVAL_ESPORTS_V2", "120"))
     SCAN_INTERVAL_ESPORTS_LIVE: int = int(os.getenv("SCAN_INTERVAL_ESPORTS_LIVE", "2"))
 
     # --- Edge / confidence thresholds ---

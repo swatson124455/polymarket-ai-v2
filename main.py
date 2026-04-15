@@ -53,6 +53,7 @@ from bots.sports_injury_bot import SportsInjuryBot
 from bots.sports_live_bot import SportsLiveBot
 from bots.sports_arb_bot import SportsArbBot
 from bots.esports_bot import EsportsBot
+from bots.esports_bot_v2 import EsportsBotV2
 from bots.esports_live_bot import EsportsLiveBot
 from bots.logical_arb_bot import LogicalArbBot
 
@@ -89,6 +90,7 @@ BOT_REGISTRY = {
     "SportsArbBot":    (SportsArbBot,    "BOT_ENABLED_SPORTS_ARB"),
     # Esports bots — Migration 024 (all disabled by default)
     "EsportsBot":       (EsportsBot,       "BOT_ENABLED_ESPORTS"),
+    "EsportsBotV2":     (EsportsBotV2,     "BOT_ENABLED_ESPORTS_V2"),
     "EsportsLiveBot":   (EsportsLiveBot,   "BOT_ENABLED_ESPORTS_LIVE"),
     # Logical arbitrage bot — cross-market constraint violations
     "LogicalArbBot":    (LogicalArbBot,    "BOT_ENABLED_LOGICAL_ARB"),
