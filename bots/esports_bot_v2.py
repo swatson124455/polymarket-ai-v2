@@ -78,6 +78,11 @@ class EsportsBotV2(BaseBot):
         self._games = [g.strip() for g in _GAMES]
         self._dry_run = _DRY_RUN
 
+    async def start(self):
+        """Override BaseBot.start() to run initialization before scan loop."""
+        await self._initialize()
+        await super().start()
+
     async def _initialize(self) -> None:
         """Load historical data, rebuild Trinity, fit pipeline."""
         if self._initialized:
@@ -186,9 +191,8 @@ class EsportsBotV2(BaseBot):
     async def scan_and_trade(self) -> None:
         """Main scan cycle. Called by BaseBot._scan_loop() every interval."""
         if not self._initialized:
-            await self._initialize()
-            if not self._initialized:
-                return
+            logger.warning("EsportsBotV2: not initialized, skipping scan")
+            return
 
         # 1. Process resolved matches (ratings update + Phase 2 writes)
         await self._resolve_finished_matches()
