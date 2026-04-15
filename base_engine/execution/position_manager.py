@@ -556,7 +556,15 @@ class AutomatedPositionManager:
             _backed_off = len(token_ids) - len(latest_prices) - len(_missing)
             if _backed_off > 0:
                 logger.debug("unpriced_backoff_skipped: %d tokens in backoff/blacklisted", _backed_off)
-            if _missing:
+
+            # S177: Fallback tiers 1-2 query the 19GB market_prices table with
+            # LATERAL JOINs that routinely hit 60s statement timeout.  Disabled by
+            # default (MARKET_PRICES_FALLBACK_ENABLED=false).  Price updates still
+            # work via market_prices_latest (tier 0) + CLOB API (tier 3).
+            # Set MARKET_PRICES_FALLBACK_ENABLED=true in .env to re-enable.
+            _mp_fallback = getattr(settings, "MARKET_PRICES_FALLBACK_ENABLED", False)
+
+            if _missing and _mp_fallback:
                 try:
                     async with session.begin_nested():
                         _fb_result = await session.execute(
@@ -607,7 +615,7 @@ class AutomatedPositionManager:
             # can fail (timeout, type mismatch) and poison the session. Without the SAVEPOINT,
             # Fallback 4 and all downstream operations inherit InFailedSQLTransactionError.
             _still_miss = [t for t in token_ids if t not in latest_prices]
-            if _still_miss:
+            if _still_miss and _mp_fallback:
                 try:
                     async with session.begin_nested():
                         _fb2b_result = await session.execute(

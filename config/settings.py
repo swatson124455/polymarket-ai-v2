@@ -696,6 +696,12 @@ class Settings(BaseSettings):
     # when a sub-task hangs (e.g. corrupted asyncpg connection after cancellation)
     RUN_INGESTION_MAX_SECONDS: float = float(os.getenv("RUN_INGESTION_MAX_SECONDS", "2400"))
 
+    # S177: Skip market_prices fallback tiers 1-2 in position_manager price updates.
+    # The 19GB market_prices table causes statement timeouts on LATERAL JOINs.
+    # When false (default), price updates use market_prices_latest + CLOB API only.
+    # Set true to re-enable market_prices historical fallback (rollback path).
+    MARKET_PRICES_FALLBACK_ENABLED: bool = os.getenv("MARKET_PRICES_FALLBACK_ENABLED", "false").lower() in ("true", "1", "yes")
+
     # Archival/retention: days to keep market_prices before archival (0=disabled)
     MARKET_PRICES_RETENTION_DAYS: int = int(os.getenv("MARKET_PRICES_RETENTION_DAYS", "730"))  # 2 years
 
