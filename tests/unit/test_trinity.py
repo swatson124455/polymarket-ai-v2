@@ -178,3 +178,59 @@ class TestTrinity:
 
 # Import the default for comparison
 from esports_v2.ratings.openskill_engine import MU_DEFAULT
+
+
+class TestOpenSkillMissingRosterGuard:
+    """Trinity spread/mean exclude uninformative OpenSkill (0.5) when no rosters."""
+
+    def test_spread_excludes_openskill_when_no_roster(self):
+        """Without rosters, spread is Elo vs Glicko-2 only (not inflated by 0.5)."""
+        trinity = Trinity()
+        # Process several matches to build Elo/Glicko-2 ratings (no rosters)
+        for i in range(20):
+            trinity.process_match(MatchResult(
+                match_id=f"m{i}", game="cs2",
+                team_a="Strong", team_b="Weak",
+                winner="a",
+            ))
+
+        pred = trinity.predict("Strong", "Weak", "cs2")
+        # Without fix: OpenSkill=0.5 pulls spread wide (Elo~0.7, Glicko~0.7, OS=0.5)
+        # With fix: spread = |Elo - Glicko| which is small since both agree
+        assert pred.p_openskill == pytest.approx(0.5, abs=0.01)
+        assert pred.p_elo > 0.6  # Strong team has high Elo after 20 wins
+        assert pred.p_glicko > 0.6  # Same for Glicko-2
+        # Spread should be small (Elo ≈ Glicko, OpenSkill excluded)
+        assert pred.trinity_spread < SPREAD_ABSTAIN, \
+            f"Spread {pred.trinity_spread} >= {SPREAD_ABSTAIN}: OpenSkill=0.5 is inflating spread"
+
+    def test_spread_includes_openskill_when_roster_present(self):
+        """With rosters, all 3 systems contribute to spread/mean."""
+        trinity = Trinity()
+        for i in range(20):
+            trinity.process_match(MatchResult(
+                match_id=f"m{i}", game="lol",
+                team_a="Alpha", team_b="Beta",
+                winner="a",
+                roster_a=["p1", "p2", "p3", "p4", "p5"],
+                roster_b=["p6", "p7", "p8", "p9", "p10"],
+            ))
+
+        pred = trinity.predict("Alpha", "Beta", "lol")
+        # OpenSkill should NOT be 0.5 since rosters were provided
+        assert pred.p_openskill != pytest.approx(0.5, abs=0.01)
+
+    def test_mean_uses_only_informative_systems(self):
+        """Mean computed from Elo+Glicko-2 when OpenSkill is uninformative."""
+        trinity = Trinity()
+        for i in range(10):
+            trinity.process_match(MatchResult(
+                match_id=f"m{i}", game="cs2",
+                team_a="X", team_b="Y",
+                winner="a",
+            ))
+
+        pred = trinity.predict("X", "Y", "cs2")
+        # Mean should be average of Elo and Glicko (not dragged toward 0.5 by OpenSkill)
+        expected_mean = (pred.p_elo + pred.p_glicko) / 2
+        assert pred.trinity_mean == pytest.approx(expected_mean, abs=0.001)
