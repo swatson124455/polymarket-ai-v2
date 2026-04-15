@@ -46,6 +46,14 @@ class PlayerRating:
             "matches_played": self.matches_played,
         }
 
+    @staticmethod
+    def from_dict(d: dict) -> PlayerRating:
+        return PlayerRating(
+            mu=d.get("rating", MU_DEFAULT),
+            sigma=d.get("deviation", SIGMA_DEFAULT),
+            matches_played=d.get("matches_played", 0),
+        )
+
 
 class OpenSkillEngine:
     """
@@ -76,6 +84,14 @@ class OpenSkillEngine:
     def get_roster(self, team_id: str) -> List[str]:
         """Get a team's current roster."""
         return self._team_rosters.get(team_id, [])
+
+    def get_all_rosters(self) -> Dict[str, List[str]]:
+        """Get all team rosters."""
+        return dict(self._team_rosters)
+
+    def set_roster(self, team_id: str, roster: List[str]) -> None:
+        """Pre-populate a team's roster (e.g., from snapshot restore)."""
+        self._team_rosters[team_id] = roster
 
     def predict(self, team_a: str, team_b: str) -> float:
         """

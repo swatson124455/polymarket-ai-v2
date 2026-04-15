@@ -109,16 +109,62 @@ class EsportsBotV2(BaseBot):
 
         # Try loading snapshot, fall back to full DB rebuild
         snapshot_loaded = await self._load_snapshot()
-        if not snapshot_loaded:
+        if snapshot_loaded:
+            # Snapshot restored Trinity ratings. Still need to build training
+            # records and fit the pipeline (XGBoost/Venn-ABERS/conformal).
+            # Use restored Trinity's predict() (not process_match) for features.
+            await self._build_training_records_from_db()
+        else:
             await self._rebuild_from_db()
+
+        # Fit pipeline on training records
+        if len(self._training_records) >= 50:
+            self._pipeline.fit(self._training_records)
+            self._last_retrain_time = time.monotonic()
+            logger.info(f"Pipeline fitted on {len(self._training_records)} records")
 
         self._initialized = True
         logger.info(
-            f"EsportsBotV2 initialized: "
-            f"games={self._games} matches={self._trinity.match_count} "
-            f"training_records={len(self._training_records)} "
-            f"dry_run={self._dry_run}"
+            "esports_bot_v2_initialized",
+            games=self._games,
+            matches=self._trinity.match_count,
+            training_records=len(self._training_records),
+            snapshot_loaded=snapshot_loaded,
+            dry_run=self._dry_run,
         )
+
+    async def _build_training_records_from_db(self) -> None:
+        """Build training records using restored Trinity (predict only, no rating updates)."""
+        db = getattr(self.base_engine, "db", None)
+        if not db:
+            return
+
+        async with db.get_session() as session:
+            matches = await shadow_db.load_historical_matches(session, self._games)
+
+        logger.info("building_training_records", match_count=len(matches))
+        t0 = time.monotonic()
+
+        for m in matches:
+            raw = RawMatch(
+                match_id=m["match_id"], game=m["game"],
+                event_name=m.get("event_name"), event_tier=m.get("event_tier"),
+                team_a=m["team_a"], team_b=m["team_b"],
+                winner=m.get("winner"),
+                score_a=m.get("score_a"), score_b=m.get("score_b"),
+                best_of=m.get("best_of"), match_date=m.get("match_date"),
+                is_lan=m.get("is_lan", False), source=m.get("source", "db"),
+            )
+            if not raw.winner:
+                continue
+            # Use predict() — ratings are already loaded from snapshot
+            prediction = self._trinity.predict(raw.team_a, raw.team_b, raw.game)
+            record = build_feature_record(raw, prediction)
+            record["actual"] = 1 if raw.winner == raw.team_a else 0
+            self._training_records.append(record)
+
+        elapsed = time.monotonic() - t0
+        logger.info("training_records_built", count=len(self._training_records), elapsed_s=round(elapsed, 1))
 
     async def _rebuild_from_db(self) -> None:
         """Full Trinity rebuild from esports_matches table."""
@@ -174,15 +220,7 @@ class EsportsBotV2(BaseBot):
             self._training_records.append(record)
 
         elapsed = time.monotonic() - t0
-        logger.info(f"Trinity rebuilt in {elapsed:.1f}s ({len(matches)} matches)")
-
-        # Fit pipeline on accumulated training data
-        if len(self._training_records) >= 50:
-            self._pipeline.fit(self._training_records)
-            self._last_retrain_time = time.monotonic()
-            logger.info(f"Pipeline fitted on {len(self._training_records)} records")
-        else:
-            logger.warning(f"Only {len(self._training_records)} records — pipeline underfit")
+        logger.info("trinity_rebuilt", elapsed_s=round(elapsed, 1), matches=len(matches))
 
     async def analyze_opportunity(self, market_data: Dict) -> Optional[Dict]:
         """Not used — EsportsBotV2 handles analysis inline in scan_and_trade."""
@@ -329,9 +367,14 @@ class EsportsBotV2(BaseBot):
             for match in upcoming:
                 match_id = f"ps_{match.match_id}"
 
-                # Skip if already predicted
+                # Skip if already predicted (in-memory cache + DB fallback)
                 if match_id in self._predicted_match_ids:
                     continue
+                # DB check for predictions from prior process lifetimes
+                async with db.get_session() as session:
+                    if await shadow_db.prediction_exists(session, match_id):
+                        self._predicted_match_ids.add(match_id)
+                        continue
 
                 # Skip if missing teams
                 if not match.team_a or not match.team_b:
@@ -447,6 +490,7 @@ class EsportsBotV2(BaseBot):
     async def _get_market_price(self, match, game: str) -> Optional[float]:
         """Find Polymarket market price for this match. Returns None if not found."""
         if not self._market_scanner:
+            logger.debug("market_price_skip_no_scanner", match_id=match.match_id)
             return None
         try:
             markets = await self._market_scanner.find_markets_for_match(
@@ -455,13 +499,27 @@ class EsportsBotV2(BaseBot):
                 team_names=[match.team_a, match.team_b],
             )
             if markets:
-                # Use first match_winner type market
                 for m in markets:
                     price = m.get("yes_price")
                     if price is not None and 0.03 < price < 0.97:
+                        logger.info(
+                            "market_price_found",
+                            match_id=match.match_id,
+                            team_a=match.team_a,
+                            team_b=match.team_b,
+                            price=price,
+                            market_question=str(m.get("question", ""))[:60],
+                        )
                         return price
+            logger.debug(
+                "market_price_not_found",
+                match_id=match.match_id,
+                team_a=match.team_a,
+                team_b=match.team_b,
+                markets_returned=len(markets) if markets else 0,
+            )
         except Exception as e:
-            logger.debug(f"Market price lookup failed: {e}")
+            logger.warning("market_price_lookup_error", match_id=match.match_id, error=str(e))
         return None
 
     async def _find_market_info(self, match, game: str) -> Optional[dict]:
@@ -486,6 +544,10 @@ class EsportsBotV2(BaseBot):
 
     async def _save_snapshot(self) -> None:
         """Serialize Trinity ratings + metadata to JSON for fast restart."""
+        from esports_v2.ratings.elo import EloRating
+        from esports_v2.ratings.glicko2 import Glicko2Rating
+        from esports_v2.ratings.openskill_engine import PlayerRating
+
         _SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
         snapshot = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -496,7 +558,8 @@ class EsportsBotV2(BaseBot):
             },
             "elo": {},
             "glicko": {},
-            "openskill": {},
+            "openskill_players": {},
+            "openskill_rosters": {},
         }
 
         for game in self._trinity.get_games():
@@ -506,17 +569,32 @@ class EsportsBotV2(BaseBot):
             snapshot["glicko"][game] = {
                 k: v.to_dict() for k, v in self._trinity.get_glicko_ratings(game).items()
             }
-            snapshot["openskill"][game] = {
+            snapshot["openskill_players"][game] = {
                 k: v.to_dict() for k, v in self._trinity.get_openskill_ratings(game).items()
             }
+            snapshot["openskill_rosters"][game] = self._trinity._get_openskill(game).get_all_rosters()
 
         path = _SNAPSHOT_DIR / "trinity_snapshot.json"
         with open(path, "w") as f:
-            json.dump(snapshot, f, indent=2, default=str)
-        logger.info(f"Trinity snapshot saved: {path} ({self._trinity.match_count} matches)")
+            json.dump(snapshot, f, default=str)
+        logger.info(
+            "trinity_snapshot_saved",
+            path=str(path),
+            matches=self._trinity.match_count,
+            games=list(snapshot["elo"].keys()),
+        )
 
     async def _load_snapshot(self) -> bool:
-        """Load Trinity snapshot. Returns False if missing or stale."""
+        """
+        Load Trinity snapshot and fully restore rating engine state.
+
+        Returns True if snapshot loaded successfully (no DB rebuild needed).
+        Returns False if missing/corrupt (caller should rebuild from DB).
+        """
+        from esports_v2.ratings.elo import EloRating
+        from esports_v2.ratings.glicko2 import Glicko2Rating
+        from esports_v2.ratings.openskill_engine import PlayerRating
+
         path = _SNAPSHOT_DIR / "trinity_snapshot.json"
         if not path.exists():
             logger.info("No Trinity snapshot found — will rebuild from DB")
@@ -536,18 +614,37 @@ class EsportsBotV2(BaseBot):
                 except (ValueError, TypeError):
                     pass
 
-            # TODO: Restore rating engine state from snapshot
-            # For now, we still rebuild from DB but use the processed_ids
-            # to skip already-known matches during incremental load
-            logger.info(
-                f"Snapshot loaded: {snapshot.get('match_count', 0)} matches, "
-                f"{len(self._processed_match_ids)} processed IDs"
-            )
+            # Restore Elo ratings per game
+            for game, ratings in snapshot.get("elo", {}).items():
+                engine = self._trinity._get_elo(game)
+                for team, rd in ratings.items():
+                    engine.set_rating(team, EloRating.from_dict(rd))
 
-            # Still need to rebuild Trinity from DB (full restore of rating
-            # engine state from JSON is deferred — requires engine-specific
-            # from_dict() methods on Elo/Glicko/OpenSkill)
-            await self._rebuild_from_db()
+            # Restore Glicko-2 ratings per game
+            for game, ratings in snapshot.get("glicko", {}).items():
+                engine = self._trinity._get_glicko(game)
+                for team, rd in ratings.items():
+                    engine.set_rating(team, Glicko2Rating.from_dict(rd))
+
+            # Restore OpenSkill player ratings + rosters per game
+            for game, ratings in snapshot.get("openskill_players", {}).items():
+                engine = self._trinity._get_openskill(game)
+                for player, rd in ratings.items():
+                    engine.set_player_rating(player, PlayerRating.from_dict(rd))
+            for game, rosters in snapshot.get("openskill_rosters", {}).items():
+                engine = self._trinity._get_openskill(game)
+                for team, roster in rosters.items():
+                    engine.set_roster(team, roster)
+
+            # Set match count on Trinity
+            self._trinity._match_count = snapshot.get("match_count", 0)
+
+            logger.info(
+                "trinity_snapshot_restored",
+                matches=self._trinity.match_count,
+                processed_ids=len(self._processed_match_ids),
+                teams_tracked=len(self._team_last_match),
+            )
             return True
 
         except Exception as e:

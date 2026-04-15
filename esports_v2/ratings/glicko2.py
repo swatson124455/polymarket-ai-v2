@@ -66,6 +66,15 @@ class Glicko2Rating:
             "matches_played": self.matches_played,
         }
 
+    @staticmethod
+    def from_dict(d: dict) -> Glicko2Rating:
+        return Glicko2Rating(
+            mu=d.get("rating", MU_DEFAULT),
+            phi=d.get("deviation", PHI_DEFAULT),
+            sigma=d.get("volatility", SIGMA_DEFAULT),
+            matches_played=d.get("matches_played", 0),
+        )
+
 
 class Glicko2Engine:
     """

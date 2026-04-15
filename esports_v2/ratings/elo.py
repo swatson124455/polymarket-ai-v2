@@ -35,6 +35,10 @@ class EloRating:
     def to_dict(self) -> dict:
         return {"rating": self.rating, "matches_played": self.matches_played}
 
+    @staticmethod
+    def from_dict(d: dict) -> EloRating:
+        return EloRating(rating=d.get("rating", DEFAULT_RATING), matches_played=d.get("matches_played", 0))
+
 
 class EloEngine:
     """
