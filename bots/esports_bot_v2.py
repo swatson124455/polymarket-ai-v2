@@ -371,6 +371,10 @@ class EsportsBotV2(BaseBot):
                 async with db.get_session() as session:
                     already = await shadow_db.prediction_exists(session, match_id)
                     if not already:
+                        # Ensure match exists in esports_matches (FK requirement)
+                        # Upcoming matches inserted with winner=NULL
+                        row = esports_match_to_db_row(match)
+                        await shadow_db.insert_match(session, row)
                         await shadow_db.insert_prediction(session, pred_record)
                         await session.commit()
                         self._predicted_match_ids.add(match_id)
