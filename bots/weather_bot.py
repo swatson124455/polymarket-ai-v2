@@ -4103,6 +4103,22 @@ class WeatherBot(BaseBot):
                         "vol": m.get("volume", 0),
                         "active": True,
                     })
+                # Also seed market_prices_latest so position_manager tier 0
+                # finds these tokens immediately — avoids "unpriced_positions"
+                # warnings for Gamma-discovered markets not yet in the price table.
+                _mpl_sql = _sa_text(
+                    "INSERT INTO market_prices_latest (token_id, price, timestamp)"
+                    " VALUES (:tid, :price, NOW())"
+                    " ON CONFLICT (token_id) DO UPDATE SET price = EXCLUDED.price,"
+                    " timestamp = EXCLUDED.timestamp"
+                    " WHERE market_prices_latest.timestamp < EXCLUDED.timestamp"
+                )
+                for m in markets:
+                    for _side_key, _price_key in [("yes_token_id", "yes_price"), ("no_token_id", "no_price")]:
+                        _tid = m.get(_side_key, "")
+                        _price = m.get(_price_key)
+                        if _tid and _price and 0 < _price < 1:
+                            await session.execute(_mpl_sql, {"tid": _tid, "price": _price})
                 await session.commit()
         except Exception as exc:
             logger.debug("weatherbot_ensure_markets_failed", error=str(exc))
