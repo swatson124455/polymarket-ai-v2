@@ -394,6 +394,8 @@ class Settings(BaseSettings):
     MIRROR_SKIP_LIQUIDITY_RTDS: bool = os.getenv("MIRROR_SKIP_LIQUIDITY_RTDS", "true").lower() in ("true", "1", "yes")
     MIRROR_SKIP_COORDINATOR_BUY: bool = os.getenv("MIRROR_SKIP_COORDINATOR_BUY", "true").lower() in ("true", "1", "yes")
     MIRROR_RTDS_FAST_PATH: bool = os.getenv("MIRROR_RTDS_FAST_PATH", "true").lower() in ("true", "1", "yes")
+    # S178 2H-b: Cross-bot token mutual exclusion (opt-in, default off)
+    ENABLE_CROSS_BOT_TOKEN_MUTEX: bool = os.getenv("ENABLE_CROSS_BOT_TOKEN_MUTEX", "false").lower() in ("true", "1", "yes")
     # S168: ML selector removed (was shadow-only, never enabled live. Saved 10-15ms per RTDS callback)
 
     # Exit logic

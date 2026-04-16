@@ -21,6 +21,15 @@ STALE_RESERVATION_MINUTES = 8  # Reservations older than this are reaped (8m: sl
 REAPER_INTERVAL_SECONDS = 60   # How often to run the reaper (was 120s; reduced to match shorter timeout)
 
 
+
+# S178 2H-b: Cross-bot token mutual exclusion (opt-in, default off).
+# Prevents two bots from simultaneously holding positions on the same token_id.
+# Known limitation: TOCTOU race — two concurrent reserve calls can both pass
+# the check before either inserts.  Acceptable for v1 (reduces collision
+# probability, doesn't eliminate it).  Upgrade path: pg_try_advisory_xact_lock.
+CROSS_BOT_TOKEN_MUTEX = getattr(settings, "ENABLE_CROSS_BOT_TOKEN_MUTEX", False)
+
+
 class TradeCoordinator:
     """Prevents multiple bots from taking same position. Uses session-based DB."""
 
@@ -88,6 +97,35 @@ class TradeCoordinator:
             return True
         bot_id_for_reserve = reserving_bot_id if reserving_bot_id else self.bot_id
         tok = token_id or ""
+
+        # S178 2H-b: Cross-bot token mutual exclusion — block if another bot
+        # already holds this token_id.  Fail-open on DB error.
+        if CROSS_BOT_TOKEN_MUTEX and tok:
+            try:
+                async with self.db.get_session() as _mutex_sess:
+                    _conflict = await _mutex_sess.execute(
+                        text("""
+                            SELECT 1 FROM positions
+                            WHERE token_id = :token_id
+                              AND bot_id != :bot_id
+                              AND status IN ('reserving', 'open')
+                            LIMIT 1
+                        """),
+                        {"token_id": tok, "bot_id": bot_id_for_reserve},
+                    )
+                    if _conflict.fetchone() is not None:
+                        logger.warning(
+                            "cross_bot_token_mutex_blocked",
+                            token_id=tok[:16],
+                            requesting_bot=bot_id_for_reserve,
+                            market_id=market_id,
+                            side=side,
+                        )
+                        return False
+            except Exception as _e:
+                # Fail-open: if check fails, allow the trade
+                logger.debug("cross_bot_token_mutex_check_failed", error=str(_e))
+
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         for attempt in range(DEFAULT_RESERVE_ATTEMPTS):
