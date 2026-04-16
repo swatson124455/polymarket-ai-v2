@@ -111,6 +111,9 @@ class MirrorBot(BaseBot):
         self._slippage_fail_count: Dict[str, int] = {}
         self._slippage_backoff: Dict[str, float] = {}
 
+        # S178 7J: ADWIN-U prediction drift detector — lazy-initialized on first check
+        self._prediction_drift: Any = None
+
         # S99: Portfolio circuit breaker — pause entries when unrealized P&L < threshold
         self._circuit_breaker_until: float = 0.0  # monotonic time when pause expires
         # S99b: Post-reset cooldown — prevent burst of trades after daily exposure reset
@@ -789,6 +792,10 @@ class MirrorBot(BaseBot):
 
         # Reset daily exposure at UTC day boundary
         self._check_daily_reset()
+
+        # S178 7J: Periodic prediction drift check (every ~8 min at 30s scan interval)
+        if self._scan_count % 15 == 5:
+            await self._check_prediction_drift()
 
         # S85: Reap positions on resolved markets (every 20 scans)
         # S135: Also reconcile exited positions that are still status='open' in DB
@@ -1745,6 +1752,31 @@ class MirrorBot(BaseBot):
                 await _s.commit()
         except Exception as _e:
             logger.debug("mirror_cleanup_state_failed: %s", _e)
+
+    async def _check_prediction_drift(self) -> None:
+        """S178 7J: Periodic ADWIN-U drift check on prediction_log.realized_edge."""
+        if self._prediction_drift is None:
+            _db = getattr(self.base_engine, "db", None)
+            if _db:
+                try:
+                    from base_engine.learning.prediction_drift import PredictionDriftDetector
+                    self._prediction_drift = PredictionDriftDetector(_db, bot_name="MirrorBot")
+                except Exception:
+                    return
+        if self._prediction_drift:
+            try:
+                report = await self._prediction_drift.check()
+                if report.get("drift_detected"):
+                    logger.warning(
+                        "prediction_drift_detected",
+                        drift_type=report.get("drift_type"),
+                        window_size=report.get("window_size"),
+                        current_mean=round(report.get("current_mean", 0), 4),
+                        baseline_mean=round(report.get("baseline_mean") or 0, 4),
+                        new_observations=report.get("new_observations"),
+                    )
+            except Exception as _e:
+                logger.debug("prediction_drift_check_failed", error=str(_e))
 
     async def _refresh_category_ie(self) -> None:
         """S168 Phase 7: Refresh category information efficiency from trade_events.
