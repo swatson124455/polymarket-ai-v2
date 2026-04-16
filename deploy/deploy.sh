@@ -193,10 +193,13 @@ echo "  Restarting..."
 # connections per bot per 5s tick (up to 360 total), triggering fail2ban bans.
 # Now runs the entire polling loop server-side over one SSH session.
 echo ""
-echo "[7/7] Health check (300s timeout, single SSH connection)..."
+echo "[7/7] Health check (420s timeout, single SSH connection)..."
 HEALTH_RESULT=$(ssh $SSH_OPTS -i "$KEY" "$VPS" bash <<'REMOTE'
 set -euo pipefail
-MAX_WAIT=300
+# S177: Increased from 300s to 420s to accommodate EsportsBotV2 pipeline.fit()
+# which takes ~330s on cold start (5.5 min XGBoost + Venn-ABERS training).
+# Revert to 300s after pipeline serialization (S176 P0) eliminates startup cost.
+MAX_WAIT=420
 INTERVAL=10
 ELAPSED=0
 
@@ -233,7 +236,7 @@ while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
     echo "  Waiting... ${ELAPSED}s" >&2
 done
 
-echo "HEALTH_FAIL after ${MAX_WAIT}s"
+echo "HEALTH_FAIL after ${MAX_WAIT}s — check EsportsBotV2 pipeline startup (5.5 min cold start)"
 exit 1
 REMOTE
 ) 2>&1  # capture both stdout and stderr from the SSH session
@@ -253,7 +256,7 @@ if echo "$HEALTH_RESULT" | grep -q "HEALTH_OK"; then
     fi
 else
     echo ""
-    echo "ERROR: Health check failed after 300s — triggering rollback"
+    echo "ERROR: Health check failed after 420s — triggering rollback"
     bash "$(dirname "$0")/rollback.sh" || true
     exit 1
 fi
