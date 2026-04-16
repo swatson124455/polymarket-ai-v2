@@ -1,0 +1,13 @@
+# S177: Logrotate config for Polymarket AI v2
+# Installed by deploy.sh to /etc/logrotate.d/polymarket
+
+/var/log/polymarket/*.log /opt/pa2-shared/data/paper_trading.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su polymarket polymarket
+}

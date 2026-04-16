@@ -117,11 +117,18 @@ class EsportsBotV2(BaseBot):
         else:
             await self._rebuild_from_db()
 
-        # Fit pipeline on training records
-        if len(self._training_records) >= 50:
+        # S177: Try loading cached pipeline snapshot (skips 5.5-min fit)
+        _pipeline_path = _SNAPSHOT_DIR / "pipeline.joblib"
+        pipeline_loaded = self._pipeline.load(_pipeline_path)
+
+        # Fit pipeline on training records if snapshot missing/stale/incompatible
+        if not pipeline_loaded and len(self._training_records) >= 50:
             self._pipeline.fit(self._training_records)
+            self._pipeline.save(_pipeline_path)
             self._last_retrain_time = time.monotonic()
             logger.info(f"Pipeline fitted on {len(self._training_records)} records")
+        elif pipeline_loaded:
+            self._last_retrain_time = time.monotonic()
 
         self._initialized = True
         logger.info(
@@ -342,6 +349,7 @@ class EsportsBotV2(BaseBot):
             ):
                 logger.info(f"Retraining pipeline ({self._matches_since_retrain} new matches)")
                 self._pipeline.fit(self._training_records)
+                self._pipeline.save(_SNAPSHOT_DIR / "pipeline.joblib")
                 self._matches_since_retrain = 0
                 self._last_retrain_time = now
 
@@ -655,6 +663,9 @@ class EsportsBotV2(BaseBot):
         """Save snapshot on graceful shutdown."""
         try:
             await self._save_snapshot()
+            # S177: Also save pipeline for fast restart
+            if self._pipeline.is_fitted:
+                self._pipeline.save(_SNAPSHOT_DIR / "pipeline.joblib")
         except Exception as e:
             logger.warning(f"Snapshot save on shutdown failed: {e}")
 

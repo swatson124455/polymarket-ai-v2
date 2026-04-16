@@ -6,7 +6,7 @@ to t.market_id = m.id.
 """
 from typing import Dict, List, Optional
 
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, text
 from structlog import get_logger
 
 from base_engine.data.database import Market
@@ -51,6 +51,8 @@ async def resolve_market_ids_batch(db, raw_ids: List[str]) -> Dict[str, str]:
         return {}
     out: Dict[str, str] = {}
     async with db.get_raw_session() as session:
+        # S177: Server-side timeout replaces asyncio.wait_for (which corrupts asyncpg state)
+        await session.execute(text("SET LOCAL statement_timeout = '15000'"))
         result = await session.execute(
             select(Market.id, Market.condition_id, Market.slug).where(
                 or_(

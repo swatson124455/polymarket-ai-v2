@@ -1721,6 +1721,8 @@ class Database:
                     # Use get_raw_session() — streaming persister calls this every 10s
                     async with self.get_raw_session() as session:
                         async with session.begin():
+                            # S177: Server-side timeout replaces asyncio.wait_for (which corrupts asyncpg state)
+                            await session.execute(text("SET LOCAL statement_timeout = '15000'"))
                             stmt = pg_insert(Trade.__table__).values(chunk)
                             # ON CONFLICT on PK → update size/price/side (upsert)
                             stmt = stmt.on_conflict_do_update(
@@ -3157,7 +3159,9 @@ class Database:
                 session.add(log)
                 await session.commit()
         except Exception as e:
-            logger.debug("Failed to write prediction_log (table may not exist): %s", e)
+            # S177: Elevated from debug to warning — MB and EB had 0 rows because
+            # failures were silently swallowed. Surface the actual error for diagnosis.
+            logger.warning("prediction_log_write_failed", error=str(e), market_id=market_id, bot_name=bot_name)
 
     async def mark_prediction_traded(
         self,

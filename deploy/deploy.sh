@@ -150,6 +150,14 @@ echo ""
 echo "[5b/7] Installing postgres crontab..."
 ssh $SSH_OPTS -i "$KEY" "$VPS" bash <<REMOTE
 set -euo pipefail
+# Ensure backup directory and script exist
+sudo mkdir -p /opt/pa2-backups
+if [ -f "$NEW_RELEASE/deploy/daily_backup.sh" ]; then
+    sudo cp "$NEW_RELEASE/deploy/daily_backup.sh" /opt/pa2-backups/daily_backup.sh
+    sudo chmod +x /opt/pa2-backups/daily_backup.sh
+    sudo chown postgres:postgres /opt/pa2-backups/daily_backup.sh
+    echo "  daily_backup.sh installed to /opt/pa2-backups/"
+fi
 if [ -f "$NEW_RELEASE/deploy/crontabs/postgres.crontab" ]; then
     sudo -u postgres crontab "$NEW_RELEASE/deploy/crontabs/postgres.crontab"
     echo "  postgres crontab installed from deploy/crontabs/postgres.crontab"
@@ -188,6 +196,26 @@ echo "  polymarket-weather, polymarket-mirror, polymarket-esports, polymarket-in
 REMOTE
 echo "  Restarting..."
 
+# ── 6b. Install + enable systemd timers (prune, audit) ───────────────────────
+echo ""
+echo "[6b/7] Installing systemd timers..."
+ssh $SSH_OPTS -i "$KEY" "$VPS" bash <<REMOTE
+set -euo pipefail
+for TIMER_SVC in polymarket-prune-prices polymarket-audit; do
+    if [ -f "$NEW_RELEASE/deploy/\${TIMER_SVC}.service" ] && [ -f "$NEW_RELEASE/deploy/\${TIMER_SVC}.timer" ]; then
+        sudo cp "$NEW_RELEASE/deploy/\${TIMER_SVC}.service" "$NEW_RELEASE/deploy/\${TIMER_SVC}.timer" /etc/systemd/system/
+        sudo systemctl daemon-reload
+        sudo systemctl enable --now "\${TIMER_SVC}.timer"
+        echo "  \${TIMER_SVC}.timer enabled"
+    fi
+done
+# S177: Install logrotate config
+if [ -f "$NEW_RELEASE/deploy/logrotate.d/polymarket" ]; then
+    sudo cp "$NEW_RELEASE/deploy/logrotate.d/polymarket" /etc/logrotate.d/polymarket
+    echo "  logrotate config installed"
+fi
+REMOTE
+
 # ── 7. Health check ───────────────────────────────────────────────────────────
 # S173: Single SSH connection for health check. Previous version opened 2 SSH
 # connections per bot per 5s tick (up to 360 total), triggering fail2ban bans.
@@ -196,9 +224,9 @@ echo ""
 echo "[7/7] Health check (420s timeout, single SSH connection)..."
 HEALTH_RESULT=$(ssh $SSH_OPTS -i "$KEY" "$VPS" bash <<'REMOTE'
 set -euo pipefail
-# S177: Increased from 300s to 420s to accommodate EsportsBotV2 pipeline.fit()
-# which takes ~330s on cold start (5.5 min XGBoost + Venn-ABERS training).
-# Revert to 300s after pipeline serialization (S176 P0) eliminates startup cost.
+# S177: Keep at 420s — first deploy after pipeline serialization has no snapshot on VPS.
+# Bot falls back to full fit (5.5 min) which exceeds 300s. After first successful run
+# saves the snapshot, subsequent restarts load in <30s. Safe to reduce to 300s in S178+.
 MAX_WAIT=420
 INTERVAL=10
 ELAPSED=0

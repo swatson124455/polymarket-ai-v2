@@ -10,6 +10,7 @@ from base_engine.data.polymarket_client import PolymarketClient
 from base_engine.data.database import Database
 from base_engine.data.recovery_hierarchy import RecoveryHierarchy, RecoveryLevel
 from base_engine.data.market_parser_v2 import MarketParserV2
+from sqlalchemy.exc import OperationalError as _OperationalError
 from base_engine.exceptions import (
     DataIngestionError,
     MarketFetchError,
@@ -1577,24 +1578,26 @@ class DataIngestionService:
                             resolved = {}
                             if raw_ids:
                                 try:
-                                    resolved = await asyncio.wait_for(
-                                        resolve_market_ids_batch(self.db, raw_ids), timeout=15,
-                                    )
-                                except asyncio.TimeoutError:
-                                    logger.warning("resolve_market_ids_batch timeout for trader %s", trader_address)
+                                    # S177: asyncio.wait_for removed — server-side SET LOCAL statement_timeout
+                                    # in id_resolver.py replaces it (prevents asyncpg state corruption).
+                                    # OperationalError wraps asyncpg.QueryCanceledError on timeout.
+                                    resolved = await resolve_market_ids_batch(self.db, raw_ids)
+                                except (_OperationalError, DatabaseError) as e:
+                                    logger.warning("resolve_market_ids_batch timeout/db error for trader %s: %s", trader_address, e)
                             for t in trade_data:
                                 rid = t.get("market_id")
                                 if rid and rid in resolved:
                                     t["market_id"] = resolved[rid]
                             try:
-                                await asyncio.wait_for(
-                                    self.db.bulk_insert_trades(trade_data), timeout=15,
-                                )
+                                # S177: asyncio.wait_for removed — server-side SET LOCAL statement_timeout
+                                # in bulk_insert_trades replaces it (prevents asyncpg state corruption).
+                                # OperationalError wraps asyncpg.QueryCanceledError on timeout.
+                                await self.db.bulk_insert_trades(trade_data)
                                 count += len(trade_data)
-                            except asyncio.TimeoutError:
-                                logger.warning("bulk_insert_trades timeout for trader %s", trader_address)
+                            except (_OperationalError, DatabaseError) as e:
+                                logger.warning("bulk_insert_trades timeout/db error for trader %s: %s", trader_address, e)
                             except Exception as e:
-                                logger.warning(f"Database save failed for trades (data available from API): {str(e)}")
+                                logger.warning("bulk_insert_trades unexpected error for trader %s: %s", trader_address, e)
                         
                         await asyncio.sleep(0.1)
                     except Exception as e:
@@ -2201,19 +2204,18 @@ class DataIngestionService:
                     logger.warning("Failed to log Phase 1 sync (non-fatal): %s", e)
 
             # Phase 2: historical prices for markets we have in DB
-            # S142: wrap market selection in 30s timeout — under pool pressure these
-            # queries can hang until the 600s master timeout kills them.  Bot uses
-            # API fallback for prices so skipping Phase 2 is safe.
-            _PHASE2_SELECT_TIMEOUT = 30.0
+            # S177: asyncio.wait_for removed — individual DB calls inside _phase2_select_markets
+            # have server-side statement_timeout (60s global). This prevents asyncpg state
+            # corruption while still guarding against hangs. Bot uses API fallback for prices
+            # so Phase 2 failure is non-fatal.
             market_ids: Optional[List[str]] = None
             if self.db:
                 try:
-                    market_ids = await asyncio.wait_for(
-                        self._phase2_select_markets(max_markets_prices, incremental, skip_recent_hours),
-                        timeout=_PHASE2_SELECT_TIMEOUT,
+                    market_ids = await self._phase2_select_markets(
+                        max_markets_prices, incremental, skip_recent_hours,
                     )
-                except asyncio.TimeoutError:
-                    logger.warning("Phase 2 market selection timed out after %.0fs — skipping price ingestion", _PHASE2_SELECT_TIMEOUT)
+                except (_OperationalError, DatabaseError) as e:
+                    logger.warning("Phase 2 market selection timed out/db error: %s — skipping price ingestion", e)
                     market_ids = None
                 except Exception as e:
                     logger.warning("Phase 2 market selection failed: %s — skipping price ingestion", e)

@@ -10,8 +10,12 @@ Sizing: Quarter-Kelly with $100 cap, consistent with Phase 5v2 risk controls.
 from __future__ import annotations
 
 import logging
+import pickle
+import time
+from pathlib import Path
 from typing import Dict, List, Optional
 
+import joblib
 import numpy as np
 
 from esports_v2.model.meta_model import XGBoostMetaModel
@@ -159,3 +163,66 @@ class EsportsPipeline:
             "edge": edge,
             "market_price": market_price,
         }
+
+    # ── Serialization (S177) ─────────────────────────────────────────────
+
+    STALENESS_SECONDS = 24 * 3600  # 24 hours
+
+    @property
+    def is_fitted(self) -> bool:
+        """True if XGBoost model has been trained."""
+        return self._xgb.is_fitted if hasattr(self._xgb, "is_fitted") else self._xgb._model is not None
+
+    def save(self, path: Path) -> None:
+        """Serialize fitted pipeline to disk via joblib."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        state = {
+            "xgb": self._xgb,
+            "calibrator": self._calibrator,
+            "conformal": self._conformal,
+            "saved_at": time.time(),
+        }
+        joblib.dump(state, path)
+        logger.info("pipeline_saved", path=str(path))
+
+    def load(self, path: Path) -> bool:
+        """
+        Load pipeline from disk. Returns True on success.
+
+        Checks staleness (24h) and catches deserialization errors
+        (e.g. XGBoost/sklearn version mismatch) — falls back to refit.
+        """
+        path = Path(path)
+        if not path.exists():
+            return False
+        try:
+            # Staleness check via file mtime
+            age = time.time() - path.stat().st_mtime
+            if age > self.STALENESS_SECONDS:
+                logger.info("pipeline_snapshot_stale", age_hours=age / 3600)
+                return False
+
+            state = joblib.load(path)
+            self._xgb = state["xgb"]
+            self._calibrator = state["calibrator"]
+            self._conformal = state["conformal"]
+            logger.info(
+                "pipeline_loaded",
+                path=str(path),
+                age_hours=age / 3600,
+            )
+            return True
+        except (
+            ModuleNotFoundError,   # library removed/renamed
+            ImportError,           # library not installed
+            AttributeError,        # class API changed
+            TypeError,             # constructor signature changed
+            ValueError,            # numpy dtype mismatch
+            EOFError,              # truncated file
+            KeyError,              # missing state key
+            pickle.UnpicklingError,  # corrupt/incompatible pickle
+            OSError,               # file I/O error
+        ) as e:
+            logger.warning("pipeline_snapshot_incompatible_refitting", error=str(e), error_type=type(e).__name__)
+            return False
