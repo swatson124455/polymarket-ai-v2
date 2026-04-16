@@ -60,7 +60,7 @@ DELETE_QUERIES = {
         DELETE FROM reconciliation_breaks
         WHERE ctid IN (
             SELECT ctid FROM reconciliation_breaks
-            WHERE recon_date < CURRENT_DATE - :days
+            WHERE recon_date < CURRENT_DATE - make_interval(days => :days)
             LIMIT :batch
         )
     """,
@@ -86,7 +86,7 @@ EXISTS_QUERIES = {
     "reconciliation_breaks": """
         SELECT COUNT(*) FROM (
             SELECT 1 FROM reconciliation_breaks
-            WHERE recon_date < CURRENT_DATE - :days
+            WHERE recon_date < CURRENT_DATE - make_interval(days => :days)
             LIMIT 1
         ) sub
     """,
