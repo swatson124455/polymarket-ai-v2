@@ -316,7 +316,14 @@ class WebSocketManager:
             await self._handle_price_change_one(market_id, token_id, float(new_price), _ws_recv_t=_ws_recv_t)
 
     async def _handle_price_change_one(self, market_id: Optional[str], token_id: str, new_price: float, _ws_recv_t: float = 0.0):
-        """Single price update for cache, EventBus (Phase 4), and Redis publish."""
+        """Single price update for cache, EventBus (Phase 4), and Redis publish.
+
+        S178 7A: Stage-level latency instrumentation. The >3s signal_ms latency
+        observed post-deploy is investigated here. Redis ops await inline and
+        can delay EventBus task scheduling; this measurement identifies whether
+        Redis round-trips or EventBus scheduling dominate.
+        """
+        _t_start = time.monotonic()
         if self.event_bus:
             try:
                 payload = {
@@ -329,6 +336,7 @@ class WebSocketManager:
                 self.event_bus.emit_sync("price_update", payload)
             except Exception as e:
                 logger.debug("EventBus price_update emit failed: %s", e)
+        _t_after_bus = time.monotonic()
         if self.cache and self.cache.redis:
             try:
                 await self.cache.set(f"prices:{token_id}:live", new_price, ttl=60)
@@ -345,6 +353,21 @@ class WebSocketManager:
                 )
             except Exception as e:
                 logger.debug("Redis price cache/publish failed (non-fatal): %s", e)
+        _t_end = time.monotonic()
+
+        # S178 7A: Log if any stage is slow (>50ms for stage, >200ms end-to-end).
+        # Sampling via dedup processor — same-level events dedup at 60s window.
+        _dispatch_ms = (_t_end - _ws_recv_t) * 1000 if _ws_recv_t > 0 else 0.0
+        _redis_ms = (_t_end - _t_after_bus) * 1000
+        _bus_ms = (_t_after_bus - _t_start) * 1000
+        if _dispatch_ms > 200 or _redis_ms > 50:
+            logger.info(
+                "ws_price_dispatch_stages",
+                dispatch_ms=round(_dispatch_ms, 1),
+                bus_emit_ms=round(_bus_ms, 1),
+                redis_ops_ms=round(_redis_ms, 1),
+                token_id=(token_id[:16] if token_id else None),
+            )
 
     async def _handle_trade(self, data: Dict[str, Any]):
         """Handle real-time trades. Polymarket last_trade_price: asset_id, market, price, size (strings)."""
