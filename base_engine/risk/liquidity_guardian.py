@@ -29,16 +29,21 @@ class LiquidityGuardian:
         trade_size: float,
         side: str,
         condition_id: str = "",
+        depth_multiplier: float = 0.0,
     ) -> Dict:
         """
         Check if trade can be executed without excessive slippage.
-        
+
         Args:
             market_id: Market ID
             token_id: Token ID
             trade_size: Size of trade in shares
             side: "BUY" or "SELL"
-        
+            condition_id: Optional condition_id for orderbook lookup
+            depth_multiplier: 2H per-bot depth gate. If > 0, trade_size must be
+                < (sum of top-5 level sizes) / depth_multiplier. 0 disables the
+                check. See settings.LIQUIDITY_DEPTH_MULT_{WB,MB,EB,DEFAULT}.
+
         Returns:
             Dict with:
                 - can_execute: bool
@@ -72,7 +77,24 @@ class LiquidityGuardian:
                 "reason": "no_liquidity",
                 "recommendation": "abort"
             }
-        
+
+        # 2H: Per-bot depth gate — fail fast when trade is too large relative to
+        # top-5 book depth. Separate from the slippage check below. Disabled when
+        # depth_multiplier == 0.
+        if depth_multiplier > 0:
+            _top5_depth = sum(float(lvl.get("size", 0)) for lvl in levels[:5])
+            _max_safe = _top5_depth / depth_multiplier if depth_multiplier > 0 else float("inf")
+            if trade_size > _max_safe:
+                return {
+                    "can_execute": False,
+                    "reason": "depth_exceeded",
+                    "trade_size": trade_size,
+                    "liquidity_depth": _top5_depth,
+                    "max_safe": _max_safe,
+                    "depth_multiplier": depth_multiplier,
+                    "recommendation": "reduce_size",
+                }
+
         # Simulate execution
         remaining = trade_size
         total_cost = 0.0

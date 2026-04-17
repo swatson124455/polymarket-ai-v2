@@ -505,6 +505,15 @@ class Settings(BaseSettings):
     ENSEMBLE_DISAGREEMENT_THRESHOLD: float = float(os.getenv("ENSEMBLE_DISAGREEMENT_THRESHOLD", "0.20"))
     ENSEMBLE_DISAGREEMENT_PENALTY: float = float(os.getenv("ENSEMBLE_DISAGREEMENT_PENALTY", "0.15"))
     MIN_MARKET_LIQUIDITY: float = float(os.getenv("MIN_MARKET_LIQUIDITY", "100"))
+    # 2H: Per-bot liquidity depth multipliers — trade_size must be < (sum of top-5 level sizes) / multiplier.
+    # Higher values are STRICTER (smaller trades relative to book depth). Set to 0 to disable the depth check.
+    # Known limitation: levels[:5] is a fixed window — on thin esports books 5 levels may be the entire
+    # book, on deep weather books it is a fraction. Acceptable for v1. Slippage check (max_slippage_pct)
+    # still applies independently in liquidity_guardian.py.
+    LIQUIDITY_DEPTH_MULT_WB: float = float(os.getenv("LIQUIDITY_DEPTH_MULT_WB", "10.0"))
+    LIQUIDITY_DEPTH_MULT_MB: float = float(os.getenv("LIQUIDITY_DEPTH_MULT_MB", "5.0"))
+    LIQUIDITY_DEPTH_MULT_EB: float = float(os.getenv("LIQUIDITY_DEPTH_MULT_EB", "3.0"))
+    LIQUIDITY_DEPTH_DEFAULT: float = float(os.getenv("LIQUIDITY_DEPTH_DEFAULT", "5.0"))
     SCAN_MARKET_LIMIT: int = int(os.getenv("SCAN_MARKET_LIMIT", "1500"))  # S101b: raised from 800 — pagination found 1139 markets (114 events)
     USE_GOOGLE_TRENDS: bool = os.getenv("USE_GOOGLE_TRENDS", "true").lower() in ("true", "1", "yes")
     CALIBRATION_TRACKING_ENABLED: bool = os.getenv("CALIBRATION_TRACKING_ENABLED", "true").lower() in ("true", "1", "yes")
