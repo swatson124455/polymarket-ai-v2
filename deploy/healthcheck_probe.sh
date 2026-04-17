@@ -82,6 +82,15 @@ fi
 echo "  no error-level entries in last 60s"
 
 # ── Gate 3: up to T+420s soft-wait for scan_ms from each bot ──────────────────
+# Observed scan_ms cadence on live VPS (2026-04-17, 4h into soak):
+#   polymarket-weather:  ~2 scan_ms per 5min (~150s between scans)
+#   polymarket-mirror:   ~5 scan_ms per 5min (~60s between scans)
+#   polymarket-esports:  ~3 scan_ms per 5min (~100s between scans)
+# The MAX_WAIT window MUST exceed the slowest cadence (weather, 150s) by a
+# margin that accommodates EB v2 cold-start fit (~5.5min). 420s = 7min is that
+# margin. Tightening MAX_WAIT below ~180s would produce spurious HEALTH_FAIL on
+# legitimate slow-scan bots. If future tuning shortens bot scan intervals, this
+# bound can be reduced — do NOT reduce without re-measuring live cadence.
 echo "[Gate 3] Waiting for scan_ms from each enabled bot (soft, up to 420s)..."
 MAX_WAIT=420
 INTERVAL=10
