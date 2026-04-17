@@ -9,6 +9,7 @@ User=polymarket
 Group=polymarket
 WorkingDirectory=/opt/polymarket-ai-v2
 EnvironmentFile=/opt/polymarket-ai-v2/.env
+Environment=PYTHONPATH=/opt/polymarket-ai-v2
 ExecStart=/opt/pa2-shared/venv/bin/python scripts/prune_old_data.py --table all --execute
 TimeoutStartSec=1800
 

@@ -8,6 +8,7 @@ User=polymarket
 Group=polymarket
 WorkingDirectory=/opt/polymarket-ai-v2
 EnvironmentFile=/opt/polymarket-ai-v2/.env
+Environment=PYTHONPATH=/opt/polymarket-ai-v2
 ExecStart=/opt/pa2-shared/venv/bin/python scripts/prune_market_prices.py --execute --days 30 --batch 50000
 TimeoutStartSec=600
 
