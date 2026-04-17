@@ -400,3 +400,12 @@ where `_mid = str(getattr(position, "market_id", ""))` (L917) and `_token_id = g
 **Consequence:** 2I is CODE READY (not blocked). Any spawned "fix position_manager.py:930" task is a false positive — dismiss.
 
 **Kept as durable record** because `AGENT_HANDOFF_*.md` is gitignored (`.gitignore:147`) — handoff retractions don't propagate cross-machine without a breadcrumb here.
+
+### S180 Hygiene Backlog
+
+**rollback.sh service-list drift.** `deploy/deploy.sh` step 6 starts 4 services (weather, mirror, esports, ingestion). `deploy/rollback.sh:41` restarts only 3 (missing ingestion). The bug isn't "missing line" — it's that `rollback.sh`'s service list has drifted from `deploy.sh`'s service list and there is no mechanism keeping them in sync. Fix options (prefer A):
+
+- **A.** Shared constants file, e.g. `deploy/common.sh` exporting `BOT_SERVICES=(...)`, sourced by both `deploy.sh` and `rollback.sh`.
+- **B.** Minimum viable: pinned comment at the top of each script pointing at the other with a note "keep service list in sync." Drift-detectable by grep.
+
+Discovered S180 (2026-04-17). Safe to defer: none of the S180 commits touched the ingestion path, so rollback's ingestion gap was harmless for the 2026-04-17 deploy. Will become dangerous next time an ingestion-affecting commit ships and rollback is needed.
