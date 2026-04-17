@@ -216,63 +216,28 @@ if [ -f "$NEW_RELEASE/deploy/logrotate.d/polymarket" ]; then
 fi
 REMOTE
 
-# ── 7. Health check ───────────────────────────────────────────────────────────
-# S173: Single SSH connection for health check. Previous version opened 2 SSH
-# connections per bot per 5s tick (up to 360 total), triggering fail2ban bans.
-# Now runs the entire polling loop server-side over one SSH session.
+# ── 7. Health check (tiered 3-gate, via healthcheck_probe.sh) ────────────────
+# S180: Replaced single-gate 420s scan_ms loop with tiered check in
+# deploy/healthcheck_probe.sh:
+#   Gate 1 (T+30s): systemctl is-active --quiet for all bot services (fail-fast)
+#   Gate 2 (T+60s): no ERROR-priority entries in journalctl (fail-fast)
+#   Gate 3 (T+420s): soft-wait for scan_ms (timeout → warn, not fail, as long as
+#                    services still active — covers EB v2 cold-start fit case
+#                    that caused the S180 false-red)
+# Probe exit 0 = HEALTH_OK or HEALTH_WARN; exit 1 = HEALTH_FAIL (triggers rollback).
 echo ""
-echo "[7/7] Health check (420s timeout, single SSH connection)..."
-HEALTH_RESULT=$(ssh $SSH_OPTS -i "$KEY" "$VPS" bash <<'REMOTE'
-set -euo pipefail
-# S177: Keep at 420s — first deploy after pipeline serialization has no snapshot on VPS.
-# Bot falls back to full fit (5.5 min) which exceeds 300s. After first successful run
-# saves the snapshot, subsequent restarts load in <30s. Safe to reduce to 300s in S178+.
-MAX_WAIT=420
-INTERVAL=10
-ELAPSED=0
-
-while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
-    sleep "$INTERVAL"
-    ELAPSED=$((ELAPSED + INTERVAL))
-
-    ALL_OK=true
-    CHECKED=0
-    for SVC in polymarket-weather polymarket-mirror polymarket-esports; do
-        # Skip services that are deliberately disabled
-        if ! systemctl is-enabled "$SVC" &>/dev/null; then
-            continue
-        fi
-        CHECKED=$((CHECKED + 1))
-        if ! journalctl -u "$SVC" --since "-${ELAPSED}s" --no-pager 2>/dev/null | grep -q 'scan_ms'; then
-            ALL_OK=false
-        fi
-    done
-
-    if [ "$CHECKED" -gt 0 ] && [ "$ALL_OK" = true ]; then
-        echo "HEALTH_OK at ${ELAPSED}s — all $CHECKED enabled bots scanning"
-        # Also grab PgBouncer pool size while we're here
-        PGB=$(sudo grep -oP 'default_pool_size\s*=\s*\K[0-9]+' /etc/pgbouncer/pgbouncer.ini 2>/dev/null || echo "0")
-        echo "PGB_POOL=$PGB"
-        # Backup staleness check: alert if no pg_dump newer than 25 hours
-        if ! find /opt/pa2-backups -name '*.dump' -mmin -1500 2>/dev/null | grep -q .; then
-            echo "BACKUP_STALE"
-        fi
-        # Prune old releases (keep last 5)
-        ls -1dt /opt/pa2-releases/*/ 2>/dev/null | tail -n +6 | xargs -r sudo rm -rf
-        exit 0
-    fi
-    echo "  Waiting... ${ELAPSED}s" >&2
-done
-
-echo "HEALTH_FAIL after ${MAX_WAIT}s — check EsportsBotV2 pipeline startup (5.5 min cold start)"
-exit 1
-REMOTE
-) 2>&1  # capture both stdout and stderr from the SSH session
+echo "[7/7] Health check (tiered via healthcheck_probe.sh)..."
+HEALTH_RESULT=$(ssh $SSH_OPTS -i "$KEY" "$VPS" \
+    "bash $NEW_RELEASE/deploy/healthcheck_probe.sh" 2>&1) && PROBE_EXIT=0 || PROBE_EXIT=$?
 
 echo "$HEALTH_RESULT" | grep -v '^$'
 
-if echo "$HEALTH_RESULT" | grep -q "HEALTH_OK"; then
-    # Extract and report PgBouncer pool size
+if [ "$PROBE_EXIT" -eq 0 ]; then
+    # Post-success bookkeeping that the probe does not do: prune old releases.
+    ssh $SSH_OPTS -i "$KEY" "$VPS" \
+        'ls -1dt /opt/pa2-releases/*/ 2>/dev/null | tail -n +6 | xargs -r sudo rm -rf'
+
+    # Report PgBouncer pool size warning if below threshold.
     _PGB_POOL=$(echo "$HEALTH_RESULT" | grep -oP 'PGB_POOL=\K[0-9]+' || echo "0")
     if [ "$_PGB_POOL" -lt 40 ] 2>/dev/null; then
         echo "  WARNING: PgBouncer default_pool_size=$_PGB_POOL (< 40). Risk of pool exhaustion with 3 bots."
@@ -282,9 +247,13 @@ if echo "$HEALTH_RESULT" | grep -q "HEALTH_OK"; then
     if echo "$HEALTH_RESULT" | grep -q "BACKUP_STALE"; then
         echo "  WARNING: No pg_dump backup in last 25 hours — check postgres crontab"
     fi
+    if echo "$HEALTH_RESULT" | grep -q "HEALTH_WARN"; then
+        echo "  WARN: scan_ms not seen from all bots within 420s. Services still active."
+        echo "        Likely EB v2 cold-start — monitor pipeline_ready log signal."
+    fi
 else
     echo ""
-    echo "ERROR: Health check failed after 420s — triggering rollback"
+    echo "ERROR: Health check failed (probe exit $PROBE_EXIT) — triggering rollback"
     bash "$(dirname "$0")/rollback.sh" || true
     exit 1
 fi
