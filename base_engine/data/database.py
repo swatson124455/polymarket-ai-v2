@@ -176,6 +176,9 @@ class _SemaphoreSession:
 
     async def __aenter__(self):
         if self.semaphore:
+            # 2A: asyncio.wait_for(Semaphore.acquire()) is cancellation-safe on Python 3.12+
+            # (bpo-47789 fixed leaking permits on cancel). VPS runs Python 3.13. If downgrading
+            # below 3.12, replace with asyncio.timeout() to avoid semaphore state corruption.
             try:
                 await asyncio.wait_for(self.semaphore.acquire(), timeout=15)
             except asyncio.TimeoutError:
@@ -5679,6 +5682,8 @@ class Database:
 
         try:
             # Acquire semaphore to stay within pool budget (mirrors get_session pattern)
+            # 2A: wait_for(Semaphore.acquire()) is cancellation-safe on Python 3.12+
+            # (bpo-47789). The finally block below releases on exit. Safe on Python 3.13.
             if self._db_semaphore:
                 await asyncio.wait_for(self._db_semaphore.acquire(), timeout=15.0)
             try:
