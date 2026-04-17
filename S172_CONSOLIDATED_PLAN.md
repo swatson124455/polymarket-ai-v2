@@ -420,3 +420,36 @@ ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 \
 ```
 
 Makes the check one command, not a remembered grep. Durable across sessions. Low priority; write when convenient.
+
+---
+
+## Phase 5v2-E — EB v2 scan-cycle cost reduction (deferred)
+
+**Observation (S181 diagnostic, 2026-04-17):** EB v2 scan cycles consistently 17-29 seconds (vs MB/WB typically 1-5s). Sample log:
+```
+polymarket-esports[*]: Slow scan cycle bot_name=EsportsBotV2 scan_ms=28949.3
+```
+
+**Suspected root cause:** pipeline inference on 28K Trinity records per scan — XGBoost + Venn-ABERS + conformal run full inference per market, with no per-market caching. Each scan re-scores the entire market set from scratch.
+
+**Candidate approaches (not ordered, requires design session):**
+- **Per-market prediction cache** with invalidation on new trades or N-minute TTL. Probably the single highest-ROI change.
+- **Batch inference** across all markets in one pipeline call rather than per-market loops.
+- **Model simplification:** reduce Venn-ABERS base estimators from current ensemble count.
+- **GPU move** if latency dominates and host has GPU available.
+
+**Out of scope for S181.** This is architectural work requiring its own design + test + deploy cycle. Belongs in a dedicated session after Phase 5v2-A/B/C/D close out.
+
+---
+
+## S181 By-Design Acceptances
+
+The S181 diagnostic surfaced 4 items that initially looked like bugs but are confirmed as designed behavior. Logged here so future agents do not re-investigate.
+
+**1. Unpriced position warning log (`unpriced_positions`).** `base_engine/execution/position_manager.py:822` emits this when a token has no price after all fallbacks. Position manager already has 4 fallback tiers (L517-784), exponential backoff with Redis-backed blacklist (L828-849). The warning is the designed behavior — logging the persistent-unpriced state is the safety signal, not a bug.
+
+**2. `mirror_market_data_retry_fail` log** at `bots/mirror_bot.py:2304`. Same subsystem as (1). Emitted when MB's 3-tier market data fallback exhausts without a price. Designed behavior.
+
+**3. `market_prices_latest` 94.5% stale >1h.** `MARKET_PRICES_FALLBACK_ENABLED=false` is the intentional S150 decision — bots do not read from this table. `prune_market_prices.timer` handles cleanup. Zero read consumers; table is legacy.
+
+**4. EnsembleBot RESOLUTION events.** EnsembleBot was deleted but had open positions at deletion time. These resolve naturally as markets close — the RESOLUTION events in `trade_events` are historical positions finalizing, not new trades. No cleanup needed; zombies exit on their own.
