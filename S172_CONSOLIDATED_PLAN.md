@@ -409,3 +409,14 @@ where `_mid = str(getattr(position, "market_id", ""))` (L917) and `_token_id = g
 - **B.** Minimum viable: pinned comment at the top of each script pointing at the other with a note "keep service list in sync." Drift-detectable by grep.
 
 Discovered S180 (2026-04-17). Safe to defer: none of the S180 commits touched the ingestion path, so rollback's ingestion gap was harmless for the 2026-04-17 deploy. Will become dangerous next time an ingestion-affecting commit ships and rollback is needed.
+
+**`scripts/check_illiquidity_stage2.sh` — committed morning-check script.** Step 8 (2I illiquidity exit enablement) uses a passive-wait strategy: observe natural stage-2 CLOB triggers in live logs, flip `ILLIQUIDITY_EXIT_ENABLED=true` once one fires cleanly. The daily check is a grep pattern that's easy to forget across sessions. Wrap it once:
+
+```bash
+# scripts/check_illiquidity_stage2.sh
+ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 \
+  "journalctl -u polymarket-weather -u polymarket-mirror -u polymarket-esports \
+   --since '24 hours ago' | grep -E 'illiquidity_check_stage2|illiquidity_exit' | tail -50"
+```
+
+Makes the check one command, not a remembered grep. Durable across sessions. Low priority; write when convenient.
