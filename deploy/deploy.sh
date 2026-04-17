@@ -201,7 +201,7 @@ echo ""
 echo "[6b/7] Installing systemd timers..."
 ssh $SSH_OPTS -i "$KEY" "$VPS" bash <<REMOTE
 set -euo pipefail
-for TIMER_SVC in polymarket-prune-prices polymarket-audit; do
+for TIMER_SVC in polymarket-prune-prices polymarket-audit polymarket-prune-data; do
     if [ -f "$NEW_RELEASE/deploy/\${TIMER_SVC}.service" ] && [ -f "$NEW_RELEASE/deploy/\${TIMER_SVC}.timer" ]; then
         sudo cp "$NEW_RELEASE/deploy/\${TIMER_SVC}.service" "$NEW_RELEASE/deploy/\${TIMER_SVC}.timer" /etc/systemd/system/
         sudo systemctl daemon-reload
