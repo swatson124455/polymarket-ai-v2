@@ -622,11 +622,10 @@ class OrderGateway:
                 if (correlation_id and str(correlation_id).startswith("rtds:")
                         and getattr(settings, "MIRROR_SKIP_LIQUIDITY_RTDS", False)):
                     return None
-                # S100b: Skip liquidity check for EsportsBot — esports orderbooks are
-                # chronically thin. Paper fill model handles slippage independently.
-                # In live mode the CLOB order itself rejects if truly illiquid.
-                if bot_name in ("EsportsBot", "EsportsLiveBot", "EsportsSeriesBot"):
-                    return None
+                # S180 (2H-3): EB blanket skip removed. Previously all EsportsBot
+                # variants bypassed check_liquidity entirely. Now they hit both the
+                # existing 3% slippage gate and the new per-bot depth gate (2H-1/2).
+                # Rollback if too restrictive: set LIQUIDITY_DEPTH_MULT_EB=0 in .env.
                 # S141: Skip liquidity check for MirrorBot SELL exits — dead markets
                 # have zero bids, blocking stop-loss exits indefinitely. Paper fill
                 # model handles simulation; in live mode the CLOB rejects if illiquid.
@@ -638,9 +637,19 @@ class OrderGateway:
                     _mdata = self._market_index.get(str(market_id))
                     if _mdata:
                         _cid = str(_mdata.get("conditionId") or _mdata.get("condition_id") or "")
+                # S180 (2H-3): per-bot depth multiplier selection. Blocks trades
+                # larger than (top-5 orderbook sum / multiplier). Multiplier=0 disables.
+                if bot_name == "WeatherBot":
+                    _depth_mult = settings.LIQUIDITY_DEPTH_MULT_WB
+                elif bot_name == "MirrorBot":
+                    _depth_mult = settings.LIQUIDITY_DEPTH_MULT_MB
+                elif bot_name in ("EsportsBot", "EsportsLiveBot", "EsportsSeriesBot"):
+                    _depth_mult = settings.LIQUIDITY_DEPTH_MULT_EB
+                else:
+                    _depth_mult = settings.LIQUIDITY_DEPTH_DEFAULT
                 return await self.liquidity_guardian.check_liquidity(
                     market_id=market_id, token_id=token_id, trade_size=size, side=side,
-                    condition_id=_cid,
+                    condition_id=_cid, depth_multiplier=_depth_mult,
                 )
 
             try:
