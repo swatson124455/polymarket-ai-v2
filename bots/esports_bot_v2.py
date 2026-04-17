@@ -51,6 +51,11 @@ _UPCOMING_HOURS = int(os.getenv("ESPORTS_V2_UPCOMING_HOURS", "48"))
 _PAST_DAYS = int(os.getenv("ESPORTS_V2_PAST_DAYS", "7"))
 _STALE_DAYS = int(os.getenv("ESPORTS_V2_STALE_DAYS", "45"))
 _SNAPSHOT_DIR = Path(os.getenv("ESPORTS_V2_SNAPSHOT_DIR", "data/snapshots"))
+# S181 #3: fail-open prediction_log write for cross-bot observability parity
+# with MB/WB (mirror_bot.py:2810, weather_bot.py:881). Flip to false in .env +
+# restart to disable without a code revert. Writes are strictly additive — not
+# safety-critical — so fail-open is appropriate.
+_PREDICTION_LOG_ENABLED = os.getenv("EB_V2_PREDICTION_LOG_ENABLED", "true").lower() in ("true", "1", "yes")
 
 
 class EsportsBotV2(BaseBot):
@@ -404,8 +409,13 @@ class EsportsBotV2(BaseBot):
                 record = build_feature_record(raw, trinity_pred)
                 pipeline_result = self._pipeline.predict(record)
 
-                # Find Polymarket market price
-                market_price = await self._get_market_price(match, game)
+                # Find Polymarket market (both price and market_id). S181 #3:
+                # captures market_id in addition to price so the prediction_log
+                # write below can reference it. _get_market_price kept unchanged
+                # for signature stability (no other current callers).
+                market_info = await self._find_polymarket_for_match(match, game)
+                market_price = market_info.get("price") if market_info else None
+                market_id = market_info.get("market_id") if market_info else None
 
                 # Override edge with Polymarket price if available
                 if market_price is not None:
@@ -432,6 +442,26 @@ class EsportsBotV2(BaseBot):
                         await shadow_db.insert_prediction(session, pred_record)
                         await session.commit()
                         self._predicted_match_ids.add(match_id)
+
+                # S181 #3: cross-bot observability parity with MB/WB. Writes a
+                # row to prediction_log (in addition to the shadow-schema write
+                # above) so gate_score_expectancy, Venn-ABERS, and drift detectors
+                # see EB v2 predictions. Only writes when a Polymarket market was
+                # found (market_id + market_price not None) — no meaningful
+                # prediction_log row without a market reference. Fail-silent like
+                # MB/WB; the shadow write above is the source-of-truth path.
+                if _PREDICTION_LOG_ENABLED and market_id is not None and market_price is not None:
+                    try:
+                        await db.insert_prediction_log(
+                            market_id=market_id,
+                            predicted_prob=pipeline_result["p_model"],
+                            market_price=market_price,
+                            model_name=f"esports_v2_{game}",
+                            bot_name="EsportsBotV2",
+                            confidence=float(pipeline_result.get("edge", 0.0)),
+                        )
+                    except Exception as _pl_err:
+                        logger.debug("esports_v2_prediction_log_failed", error=str(_pl_err))
 
                 # Queue for trading if singleton with edge
                 if pipeline_result.get("is_singleton") and pipeline_result.get("edge", 0) >= 0.05:
@@ -494,6 +524,35 @@ class EsportsBotV2(BaseBot):
         a_fresh = self._team_last_match.get(team_a, datetime.min) >= cutoff
         b_fresh = self._team_last_match.get(team_b, datetime.min) >= cutoff
         return a_fresh and b_fresh
+
+    async def _find_polymarket_for_match(self, match, game: str) -> Optional[Dict[str, Any]]:
+        """S181 #3: sibling to _get_market_price that returns the full market dict
+        (market_id + price + other fields) instead of just the price. Used by
+        _generate_predictions to capture market_id for the prediction_log write.
+
+        Returns dict with keys {market_id, price, ...} or None if no market found.
+        Internally mirrors _get_market_price's filter logic (0.03 < price < 0.97).
+        """
+        if not self._market_scanner:
+            logger.debug("market_dict_skip_no_scanner", match_id=match.match_id)
+            return None
+        try:
+            markets = await self._market_scanner.find_markets_for_match(
+                match_id=str(match.match_id),
+                game=game,
+                team_names=[match.team_a, match.team_b],
+            )
+            if markets:
+                for m in markets:
+                    price = m.get("yes_price")
+                    if price is not None and 0.03 < price < 0.97:
+                        mid = m.get("market_id")
+                        if mid is not None:
+                            return {"market_id": str(mid), "price": float(price), "market": m}
+            return None
+        except Exception as e:
+            logger.debug("market_dict_lookup_failed", match_id=match.match_id, error=str(e))
+            return None
 
     async def _get_market_price(self, match, game: str) -> Optional[float]:
         """Find Polymarket market price for this match. Returns None if not found."""

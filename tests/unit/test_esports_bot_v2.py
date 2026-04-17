@@ -471,3 +471,123 @@ class TestScanCycleSmoke:
         # But prediction was still logged
         preds = [s for s, _ in fake_db.session.executed if "INSERT INTO esports_predictions" in s]
         assert len(preds) == 1
+
+
+# ── S181 #3: prediction_log integration tests ──────────────────────────
+
+class TestPredictionLogIntegration:
+    """S181 Commit 3: EB v2 writes to prediction_log (cross-bot observability)
+    in addition to the esports_predictions shadow table.
+
+    Required tests (non-optional per S181 plan):
+      1. Call-existence — write happens when flag=true AND market found
+      1b. Skip when flag=false (env override takes effect)
+      1c. Skip when no Polymarket market found (nothing meaningful to log against)
+      2. Payload-contract pin — kwargs match what MB/WB pass, protecting
+         downstream consumers (Venn-ABERS, gate_score_expectancy, drift).
+    """
+
+    # Required kwargs shared by MirrorBot (mirror_bot.py:2810) and
+    # WeatherBot (weather_bot.py:881). EB v2 must pass these same keys.
+    REQUIRED_KEYS = {
+        "market_id", "predicted_prob", "market_price",
+        "model_name", "bot_name", "confidence",
+    }
+
+    def _make_bot_with_market(self, monkeypatch):
+        """Reuse TestScanCycleSmoke._make_bot setup + seed Trinity +
+        mock _find_polymarket_for_match to return a test market."""
+        smoke = TestScanCycleSmoke()
+        bot, fake_db = smoke._make_bot()
+        bot._initialized = True
+        smoke._seed_trinity(bot)
+
+        # Mock PandaScore with one upcoming match
+        upcoming = [_upcoming_match(
+            match_id=70001, game="cs2",
+            team_a="TeamA", team_b="TeamB",
+            scheduled_at="2026-04-15T20:00:00Z",
+        )]
+        bot._pandascore = AsyncMock()
+        bot._pandascore.get_upcoming_matches = AsyncMock(return_value=upcoming)
+        bot._pandascore.get_past_matches = AsyncMock(return_value=[])
+
+        # Mock the new market-dict helper to return a synthetic market.
+        # Covers the path where market_id + market_price are both set.
+        bot._find_polymarket_for_match = AsyncMock(return_value={
+            "market_id": "mkt-test-eb181",
+            "price": 0.55,
+            "market": {"yes_price": 0.55, "market_id": "mkt-test-eb181"},
+        })
+        bot._market_scanner = MagicMock()  # truthy so _get_market_price isn't short-circuited elsewhere
+
+        # Attach insert_prediction_log mock to the fake db
+        fake_db.insert_prediction_log = AsyncMock()
+        return bot, fake_db
+
+    @pytest.mark.asyncio
+    async def test_prediction_log_called_when_enabled_and_market_found(self, monkeypatch):
+        """Flag=true (default), market found → insert_prediction_log called exactly once."""
+        import bots.esports_bot_v2 as eb2
+        monkeypatch.setattr(eb2, "_PREDICTION_LOG_ENABLED", True)
+        bot, fake_db = self._make_bot_with_market(monkeypatch)
+
+        await bot.scan_and_trade()
+
+        assert fake_db.insert_prediction_log.await_count == 1, \
+            f"expected 1 insert_prediction_log call, got {fake_db.insert_prediction_log.await_count}"
+
+    @pytest.mark.asyncio
+    async def test_prediction_log_skipped_when_flag_false(self, monkeypatch):
+        """Flag=false → insert_prediction_log NOT called, even with market found."""
+        import bots.esports_bot_v2 as eb2
+        monkeypatch.setattr(eb2, "_PREDICTION_LOG_ENABLED", False)
+        bot, fake_db = self._make_bot_with_market(monkeypatch)
+
+        await bot.scan_and_trade()
+
+        fake_db.insert_prediction_log.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_prediction_log_skipped_when_no_market(self, monkeypatch):
+        """Flag=true but no Polymarket market → skip (nothing meaningful to log)."""
+        import bots.esports_bot_v2 as eb2
+        monkeypatch.setattr(eb2, "_PREDICTION_LOG_ENABLED", True)
+        bot, fake_db = self._make_bot_with_market(monkeypatch)
+        # Override: simulate no market found
+        bot._find_polymarket_for_match = AsyncMock(return_value=None)
+
+        await bot.scan_and_trade()
+
+        fake_db.insert_prediction_log.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_prediction_log_payload_contract(self, monkeypatch):
+        """Payload kwargs must include every key MB/WB pass — prevents silent
+        drift that would break Venn-ABERS, gate_score_expectancy, drift detectors.
+
+        REQUIRED_KEYS derived from:
+        - mirror_bot.py:2810-2817 (MB)
+        - weather_bot.py:881-888 (WB)
+        """
+        import bots.esports_bot_v2 as eb2
+        monkeypatch.setattr(eb2, "_PREDICTION_LOG_ENABLED", True)
+        bot, fake_db = self._make_bot_with_market(monkeypatch)
+
+        await bot.scan_and_trade()
+
+        assert fake_db.insert_prediction_log.await_count == 1
+        call = fake_db.insert_prediction_log.await_args
+        kwargs = call.kwargs
+
+        missing = self.REQUIRED_KEYS - set(kwargs.keys())
+        assert not missing, \
+            f"EB v2 prediction_log payload missing keys required by MB/WB: {missing}"
+
+        # Pin specific values that should come through unchanged
+        assert kwargs["market_id"] == "mkt-test-eb181"
+        assert kwargs["market_price"] == 0.55
+        assert kwargs["bot_name"] == "EsportsBotV2"
+        assert kwargs["model_name"].startswith("esports_v2_")
+        assert 0.0 <= kwargs["predicted_prob"] <= 1.0
+        assert isinstance(kwargs["confidence"], float)
