@@ -339,18 +339,30 @@ class WebSocketManager:
         _t_after_bus = time.monotonic()
         if self.cache and self.cache.redis:
             try:
-                await self.cache.set(f"prices:{token_id}:live", new_price, ttl=60)
+                # S181 7A: batch 3 Redis ops (SET, SET, PUBLISH) into a single
+                # pipeline round-trip. Measured before: redis_ops_ms ~= 328ms on
+                # every dispatch (3 sequential awaits). Expected after: <100ms.
+                # Bare pipeline() is transactional by default in redis-py 5.x
+                # (transaction=True → MULTI/EXEC wrap). Readers don't need cross-
+                # key atomicity (both SETs hold the same new_price under different
+                # keys; consumers query one key at a time) — but the default
+                # transactional wrap is stronger than needed, harmless, and
+                # matches codebase convention (signal_ingestion.py:707,
+                # whale_tracker.py:303). Values must be JSON-encoded here since
+                # pipe.set bypasses self.cache.set's implicit json.dumps.
+                _price_json = json.dumps(new_price)
+                _publish_payload = json.dumps({
+                    "market_id": market_id,
+                    "token_id": token_id,
+                    "price": new_price,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+                pipe = self.cache.redis.pipeline()
+                pipe.set(f"prices:{token_id}:live", _price_json, ex=60)
                 if market_id:
-                    await self.cache.set(f"prices:{market_id}:live", new_price, ttl=60)
-                await self.cache.redis.publish(
-                    f"price_updates:{market_id or ''}",
-                    json.dumps({
-                        "market_id": market_id,
-                        "token_id": token_id,
-                        "price": new_price,
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    })
-                )
+                    pipe.set(f"prices:{market_id}:live", _price_json, ex=60)
+                pipe.publish(f"price_updates:{market_id or ''}", _publish_payload)
+                await pipe.execute()
             except Exception as e:
                 logger.debug("Redis price cache/publish failed (non-fatal): %s", e)
         _t_end = time.monotonic()
