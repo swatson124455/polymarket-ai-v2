@@ -1,0 +1,18 @@
+[Unit]
+Description=Prune old trade_events/paper_trades/reconciliation_breaks rows
+Documentation=2B: Retention is 90 days for trade_events and paper_trades, 60 days for reconciliation_breaks. Data older than retention window is permanently DELETED with no archive. Historical P&L analysis beyond the retention window requires backup restoration. The trade_events DELETE uses SET LOCAL app.allow_retention_cleanup='true' to bypass the immutability trigger from migration 043. Safety guard in DELETE_QUERIES["trade_events"] protects markets with open/reserving positions or positions opened within the retention window.
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=polymarket
+Group=polymarket
+WorkingDirectory=/opt/polymarket-ai-v2
+EnvironmentFile=/opt/polymarket-ai-v2/.env
+ExecStart=/opt/pa2-shared/venv/bin/python scripts/prune_old_data.py --table all --execute
+TimeoutStartSec=1800
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=polymarket-prune-data

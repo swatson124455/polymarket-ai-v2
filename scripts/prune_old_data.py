@@ -126,6 +126,13 @@ async def prune_table(db, table: str, days: int, batch_size: int, execute: bool)
         try:
             async with db.get_raw_session() as session:
                 await session.execute(text("SET statement_timeout = '300s'"))
+                # 2B-1: trade_events has immutability trigger (migration 043). DELETE is
+                # blocked unless app.allow_retention_cleanup GUC is 'true'. SET LOCAL is
+                # transaction-scoped and auto-resets on COMMIT below. Without this, the
+                # DELETE raised "Cannot DELETE rows in append-only table" and the except
+                # block retried forever, pinning a DB connection.
+                if table == "trade_events":
+                    await session.execute(text("SET LOCAL app.allow_retention_cleanup = 'true'"))
                 r = await session.execute(
                     text(DELETE_QUERIES[table]),
                     {"days": days, "batch": batch_size},

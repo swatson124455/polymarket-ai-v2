@@ -1,0 +1,10 @@
+[Unit]
+Description=Run trade_events/paper_trades/reconciliation_breaks pruning daily
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target
