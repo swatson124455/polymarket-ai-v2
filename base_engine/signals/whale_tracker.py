@@ -199,8 +199,16 @@ class WhaleTracker:
                 # Check if part of cluster
                 cluster_id = await self._get_cluster_id(trade["user_address"])
                 
-                # Create whale movement record
-                movement = WhaleMovement(
+                # S181: ON CONFLICT DO NOTHING handles a concurrent UNIQUE race on trade_id.
+                # Pre-insert existence check at L174-181 above is non-atomic with commit — two
+                # concurrent _process_whale_trade calls can both see existing=None, both insert,
+                # and both hit IntegrityError. The pre-insert check is a PERFORMANCE optimization
+                # (avoids the smart_money_rank / category / cluster lookups when already recorded)
+                # but NOT a correctness guard. The correctness guard is this ON CONFLICT clause.
+                # Do NOT re-add an explicit raise or remove either guard.
+                # Pattern mirrors database.py:1753-1755 (Trade fallback on UNIQUE violation).
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
+                stmt = pg_insert(WhaleMovement.__table__).values(
                     trade_id=trade["id"],
                     user_address=trade["user_address"],
                     market_id=trade["market_id"],
@@ -213,10 +221,9 @@ class WhaleTracker:
                     smart_money_rank=smart_money_rank,
                     trader_category_accuracy=category_accuracy,
                     is_clustered=cluster_id is not None,
-                    cluster_id=cluster_id
-                )
-                
-                session.add(movement)
+                    cluster_id=cluster_id,
+                ).on_conflict_do_nothing(index_elements=["trade_id"])
+                await session.execute(stmt)
                 await session.commit()
                 
                 # Publish to Redis for real-time alerts
