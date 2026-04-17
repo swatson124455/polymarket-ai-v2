@@ -376,3 +376,27 @@ Station mapping already done in Phase 6. Build on it.
 - **Phase 2:** logging_setup.py (2C,2D), health_check.sh (2F enhance), slippage_check.py (2J), Feast config (2K)
 - **Phases 5-7:** Bot files, .env files, model files, WebSocket handlers, rating system implementations
 - **Phases 10-12:** Telegram bot, backtester, EMOS pipeline, city mastery system
+
+---
+
+## Corrections Log
+
+### S180 (2026-04-17) — Retraction of S179 §3 "position_manager.py:930" bug claim
+
+**Claim (in S179 handoff §3, now superseded):** Stage-2 illiquidity CLOB call at `base_engine/execution/position_manager.py:930` used wrong kwargs (`size=` instead of `trade_size=`, missing `market_id=`), raising TypeError silently, meaning stage-2 never executed in production. Allegedly blocked 2I (illiquidity exit enablement).
+
+**Retraction:** The claim was a misread. Verified by S180 (2026-04-17) against code at HEAD:
+
+```python
+# base_engine/execution/position_manager.py:929-932
+_liq_result = await asyncio.wait_for(
+    _lg.check_liquidity(market_id=_mid, token_id=_token_id, trade_size=size, side="SELL"),
+    timeout=5.0,
+)
+```
+
+where `_mid = str(getattr(position, "market_id", ""))` (L917) and `_token_id = getattr(position, "token_id", "")` (L928). Kwargs match `check_liquidity()` signature at `base_engine/risk/liquidity_guardian.py:25-33`. `tests/unit/test_illiquidity_exit.py:173-192` exercises stage-2 and passes.
+
+**Consequence:** 2I is CODE READY (not blocked). Any spawned "fix position_manager.py:930" task is a false positive — dismiss.
+
+**Kept as durable record** because `AGENT_HANDOFF_*.md` is gitignored (`.gitignore:147`) — handoff retractions don't propagate cross-machine without a breadcrumb here.
