@@ -453,3 +453,29 @@ The S181 diagnostic surfaced 4 items that initially looked like bugs but are con
 **3. `market_prices_latest` 94.5% stale >1h.** `MARKET_PRICES_FALLBACK_ENABLED=false` is the intentional S150 decision — bots do not read from this table. `prune_market_prices.timer` handles cleanup. Zero read consumers; table is legacy.
 
 **4. EnsembleBot RESOLUTION events.** EnsembleBot was deleted but had open positions at deletion time. These resolve naturally as markets close — the RESOLUTION events in `trade_events` are historical positions finalizing, not new trades. No cleanup needed; zombies exit on their own.
+
+---
+
+## Protocols (codified S182, 2026-04-18)
+
+Binding rules for all future sessions. These exist because each caught a real inverted-hypothesis or false-failure claim that would have shipped a wrong fix.
+
+### SQL-diff mandate
+
+**Mandatory for any fix whose hypothesis involves filter scope** (row coverage, inclusion/exclusion of categories, expected change in the row-count the query returns): run a row-count diff between the old and new clauses against live data before code is written. Document both counts in the planning artifact.
+
+**Out of scope:** cosmetic refactors that preserve row semantics (column-reference renames, SQL formatting, comment additions, whitespace) do NOT require a row-count diff. This protocol applies only when the hypothesis is about WHICH rows are matched.
+
+**Why this exists:** S182 Phase 0.2's original answer ("filter too narrow, broaden it") was wrong. A SQL diff revealed the proposed keyword filter matched 286 rows vs the existing `category='esports'` filter's 1,487. The fix would have *reduced* refresh coverage. Caught by mandating the row-count diff before code was written.
+
+### Persistent-state proof for "service is running but not producing X"
+
+**Mandatory for any "service is running but not producing X" claim:** prove the service is genuinely idle (not just quiet) via a **timestamp/counter comparison across two observation windows** — not a single-point-in-time query.
+
+**Minimum evidence:** two observations of the service's persistent-state output (e.g. `updated_at` timestamps, row counts, last-run logs) separated by at least one expected cycle interval. If both windows show zero production AND no recent state updates, the service is idle. If either window shows recent state updates, the service is working.
+
+**Why this exists:** "absence of error logs" looks identical to "service is doing nothing" in a snapshot. A single SELECT can return 0 rows during a legitimate quiet window and wrongly trigger an outage investigation. The two-window rule forces you to see whether the zero persists across an expected work cycle.
+
+### Out-of-scope for this protocols section
+
+Session-specific narratives (what a particular session decided, what commit landed where) belong in handoff files and memory, not here. This section is for **durable binding rules** only. Every addition to §Protocols must be a rule generalizable across bots and sessions.
