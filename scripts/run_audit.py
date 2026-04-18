@@ -25,6 +25,11 @@ import sys
 from datetime import datetime, timezone
 from typing import Optional
 
+# S182: structured log emission for audit_run_complete so Phase 5 sentinel
+# can detect script crashes that SuccessExitStatus=1 2 would otherwise mask.
+import structlog
+_logger = structlog.get_logger()
+
 # Ensure project root on path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -78,10 +83,30 @@ async def _run_checks(
             _print_summary(summary, bot_filter, verbose)
 
         if total_critical > 0:
-            return 2
+            rc = 2
+            status_str = "critical"
         elif total_warning > 0 or total_breaks > 0:
-            return 1
-        return 0
+            rc = 1
+            status_str = "warning"
+        else:
+            rc = 0
+            status_str = "pass"
+
+        # S182: emit a completion heartbeat so the Phase 5 sentinel can detect
+        # crashes that SuccessExitStatus=1 2 would mask. Landed alongside the
+        # unit-file SuccessExitStatus change. Keep this as the final observable
+        # action before returning — if it doesn't appear, the script didn't
+        # reach here cleanly.
+        _logger.info(
+            "audit_run_complete",
+            status=status_str,
+            findings_count=total_breaks,
+            critical_count=total_critical,
+            warning_count=total_warning,
+            exit_code=rc,
+            run_id=summary.get("run_id") if summary else None,
+        )
+        return rc
 
     finally:
         await db.close()

@@ -12,6 +12,17 @@ Environment=PYTHONPATH=/opt/polymarket-ai-v2
 ExecStart=/opt/pa2-shared/venv/bin/python scripts/run_audit.py
 TimeoutStartSec=900
 
+# S182: audit script exit codes 1 (warnings) and 2 (critical findings)
+# are SUCCESS signals per scripts/run_audit.py:15-19 — the audit ran
+# cleanly and found issues worth reporting. systemd default treats any
+# non-zero exit as failure; without SuccessExitStatus, findings trigger
+# unit failure and operators learn to ignore the alert (21h-old
+# uninvestigated findings in the Apr 17 03:03 run proved this). Do NOT
+# remove this directive without also ensuring the exit-code contract
+# in run_audit.py is updated in lockstep. Any other exit code (argparse
+# failure, import error, DB unreachable, teardown crash) still fails.
+SuccessExitStatus=1 2
+
 # Logging
 StandardOutput=journal
 StandardError=journal
