@@ -9,6 +9,7 @@ Features:
 """
 import asyncio
 import json
+import os
 import time
 import websockets
 import websockets.exceptions  # explicit import required — websockets v15 lazy-loads submodules
@@ -19,6 +20,16 @@ from structlog import get_logger
 from base_engine.data.redis_cache import RedisCache
 
 logger = get_logger()
+
+# S182 Commit 4: MB WS heartbeat-driven force-reconnect. MB observed 44 closes vs 43
+# reconnects over 6h — one stuck disconnected state where ws.recv() hangs instead of
+# raising ConnectionClosed. Heartbeat monitor checks time-since-last-message periodically
+# and force-closes a stale ws so the message loop's existing reconnect handler fires.
+# Fail-closed default (flag off). Only opted-in via .env.mirror per the scope decision
+# in S182 plan Commit 4. WB/EB unchanged pending WS disconnect-storm root-cause work.
+_WS_HEARTBEAT_ENABLED = os.getenv("WS_HEARTBEAT_RECONNECT_ENABLED", "false").lower() in ("true", "1", "yes")
+_WS_HEARTBEAT_TIMEOUT_S = float(os.getenv("WS_HEARTBEAT_TIMEOUT_S", "120"))
+_WS_HEARTBEAT_CHECK_INTERVAL_S = float(os.getenv("WS_HEARTBEAT_CHECK_INTERVAL_S", "60"))
 
 
 class WebSocketManager:
@@ -51,6 +62,11 @@ class WebSocketManager:
         self.handlers: Dict[str, List[Callable]] = {}
         self.running = False
         self.message_loop_task = None
+        # S182 Commit 4: heartbeat state. Always initialized; task only starts
+        # if _WS_HEARTBEAT_ENABLED. _last_message_ts gets refreshed on every
+        # successful ws.recv() in _message_loop so the heartbeat can measure silence.
+        self._last_message_ts: float = time.monotonic()
+        self._heartbeat_task: Optional[asyncio.Task] = None
     
     def _connect_kwargs(self) -> Dict[str, Any]:
         """Build kwargs for websockets.connect (ping settings)."""
@@ -80,6 +96,17 @@ class WebSocketManager:
                 except asyncio.CancelledError:
                     pass
             self.message_loop_task = asyncio.create_task(self._message_loop())
+            # S182 Commit 4: (re)start heartbeat only when opted-in via env flag.
+            # Opt-in set in .env.mirror only; WB/EB run with flag off.
+            if _WS_HEARTBEAT_ENABLED:
+                if self._heartbeat_task and not self._heartbeat_task.done():
+                    self._heartbeat_task.cancel()
+                    try:
+                        await self._heartbeat_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                self._last_message_ts = time.monotonic()  # reset stall clock at connect
+                self._heartbeat_task = asyncio.create_task(self._heartbeat_monitor())
             logger.info("WebSocket connected")
         except Exception as e:
             logger.error(f"WebSocket connection failed: {str(e)}", exc_info=True)
@@ -125,16 +152,58 @@ class WebSocketManager:
     async def disconnect(self):
         """Close WebSocket connection."""
         self.running = False
+        # S182 Commit 4: cancel heartbeat before message loop so it doesn't try
+        # to force-close a ws that's already being shut down cleanly.
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except (asyncio.CancelledError, Exception):
+                pass
         if self.message_loop_task:
             self.message_loop_task.cancel()
             try:
                 await self.message_loop_task
             except asyncio.CancelledError:
                 pass
-        
+
         if self.ws:
             await self.ws.close()
             logger.info("WebSocket disconnected")
+
+    async def _heartbeat_monitor(self):
+        """S182 Commit 4: force-reconnect on prolonged ws silence.
+
+        Runs as a background task. Every _WS_HEARTBEAT_CHECK_INTERVAL_S (default 60s),
+        measures time since last successful ws.recv(). If silence exceeds
+        _WS_HEARTBEAT_TIMEOUT_S (default 120s), closes the ws so the _message_loop's
+        ConnectionClosed handler reconnects. Avoids the "stuck disconnected" state
+        where ws.recv() hangs forever without raising (MB observed 44 closes vs
+        43 reconnects over 6h).
+        """
+        while self.running:
+            try:
+                await asyncio.sleep(_WS_HEARTBEAT_CHECK_INTERVAL_S)
+                if not self.running or not self.ws:
+                    continue
+                silence_s = time.monotonic() - self._last_message_ts
+                if silence_s > _WS_HEARTBEAT_TIMEOUT_S:
+                    logger.warning(
+                        "ws_heartbeat_stale_force_reconnect",
+                        silence_s=round(silence_s, 1),
+                        threshold_s=_WS_HEARTBEAT_TIMEOUT_S,
+                    )
+                    try:
+                        await self.ws.close()
+                    except Exception as _e:
+                        logger.debug("ws_heartbeat_close_failed", error=str(_e))
+                    # Reset the clock so we don't spam force-closes while the
+                    # message loop reconnects — next natural message will re-reset.
+                    self._last_message_ts = time.monotonic()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug("ws_heartbeat_monitor_error", error=str(e))
     
     async def subscribe_market(self, market_id: str, token_id: str):
         """Subscribe to market updates."""
@@ -169,6 +238,9 @@ class WebSocketManager:
                 
                 message = await self.ws.recv()
                 _ws_recv_t = time.monotonic()  # High-res receipt timestamp for signal latency
+                # S182 Commit 4: refresh heartbeat anchor on every successful recv
+                # so _heartbeat_monitor measures real silence, not stale reads.
+                self._last_message_ts = _ws_recv_t
                 data = json_loads(message)
 
                 # Polymarket may send arrays of events; process each element
