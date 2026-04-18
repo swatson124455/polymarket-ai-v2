@@ -77,6 +77,31 @@ class AutomatedPositionManager:
         # Survives restarts (unlike in-memory backoff). Loaded in _monitor_positions startup.
         self._unpriced_blacklist: Optional[UnpricedTokenBlacklist] = None
 
+    def _cleanup_closed_position_state(self, position) -> None:
+        """S182 Commit 3: remove in-memory state for a just-closed position.
+
+        Pre-S182 only `_exit_cooldowns` was popped at each close site — the
+        `_unpriced_fail_count` / `_unpriced_backoff_until` dicts (keyed on
+        token_id) accumulated stale entries indefinitely. Contributed to the
+        `unpriced_positions: ... tokens=[...]` log spam (226 events/6h on token
+        7601619960215177 observed 2026-04-18) by keeping dead tokens in the
+        retry/backoff bookkeeping after their positions were gone.
+
+        Centralizing the cleanup in one helper so every close path (exit,
+        stop-loss, take-profit, and their ghost-position variants) removes
+        ALL relevant in-memory state in lockstep. If future close paths are
+        added, they route through this helper too.
+
+        Do NOT call from an open-position path — this is close-only cleanup.
+        """
+        _tid = str(getattr(position, "token_id", "") or "")
+        _pid = getattr(position, "id", None)
+        if _pid is not None:
+            self._exit_cooldowns.pop(_pid, None)
+        if _tid:
+            self._unpriced_fail_count.pop(_tid, None)
+            self._unpriced_backoff_until.pop(_tid, None)
+
     def set_order_gateway(self, gateway) -> None:
         """Route orders through gateway (kill switch, risk, paper)."""
         self.order_gateway = gateway
@@ -927,7 +952,7 @@ class AutomatedPositionManager:
                     try:
                         _token_id = getattr(position, "token_id", "") or ""
                         _liq_result = await asyncio.wait_for(
-                            _lg.check_liquidity(token_id=_token_id, size=size, side="SELL"),
+                            _lg.check_liquidity(market_id=_mid, token_id=_token_id, trade_size=size, side="SELL"),
                             timeout=5.0,
                         )
                         if isinstance(_liq_result, dict):
@@ -1096,7 +1121,7 @@ class AutomatedPositionManager:
                     if _bot:
                         self.risk_manager.record_trade_outcome(_bot, was_profitable=(_realized > 0))
                 # Clear cooldown on success
-                self._exit_cooldowns.pop(position.id, None)
+                self._cleanup_closed_position_state(position)
             else:
                 err_msg = result.get("error", "")
                 # Ghost position: DB says open but paper engine has no position → close in DB
@@ -1114,7 +1139,7 @@ class AutomatedPositionManager:
                                 pos.status = "closed"
                                 pos.unrealized_pnl = 0.0
                                 await session.commit()
-                    self._exit_cooldowns.pop(position.id, None)
+                    self._cleanup_closed_position_state(position)
                 else:
                     # Other failure — set cooldown to prevent spam
                     self._exit_cooldowns[position.id] = time.monotonic() + _EXIT_RETRY_COOLDOWN
@@ -1180,7 +1205,7 @@ class AutomatedPositionManager:
                     if _bot:
                         self.risk_manager.record_trade_outcome(_bot, was_profitable=(pnl_pct > 0))
                 # Clear cooldown on success
-                self._exit_cooldowns.pop(position.id, None)
+                self._cleanup_closed_position_state(position)
             else:
                 err_msg = result.get("error", "")
                 # Ghost position: DB says open but paper engine has no position → close in DB
@@ -1198,7 +1223,7 @@ class AutomatedPositionManager:
                                 pos.status = "closed"
                                 pos.unrealized_pnl = 0.0
                                 await session.commit()
-                    self._exit_cooldowns.pop(position.id, None)
+                    self._cleanup_closed_position_state(position)
                 else:
                     # Other failure — set cooldown to prevent spam
                     self._exit_cooldowns[position.id] = time.monotonic() + _EXIT_RETRY_COOLDOWN
@@ -1264,7 +1289,7 @@ class AutomatedPositionManager:
                     if _bot:
                         self.risk_manager.record_trade_outcome(_bot, was_profitable=(pnl_pct > 0))
                 # Clear cooldown on success
-                self._exit_cooldowns.pop(position.id, None)
+                self._cleanup_closed_position_state(position)
             else:
                 err_msg = result.get("error", "")
                 # Ghost position: DB says open but paper engine has no position → close in DB
@@ -1282,7 +1307,7 @@ class AutomatedPositionManager:
                                 pos.status = "closed"
                                 pos.unrealized_pnl = 0.0
                                 await session.commit()
-                    self._exit_cooldowns.pop(position.id, None)
+                    self._cleanup_closed_position_state(position)
                 else:
                     # Other failure — set cooldown to prevent spam
                     self._exit_cooldowns[position.id] = time.monotonic() + _EXIT_RETRY_COOLDOWN
