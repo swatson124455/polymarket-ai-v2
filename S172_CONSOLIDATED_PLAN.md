@@ -544,6 +544,25 @@ Diagnostic output is a lens, not ground truth. Three sub-protocols cover the thr
 
 ---
 
+---
+
+### Protocol 4 — Runtime-reachability verification
+
+**Mandate.** For any "service is running but not producing X" investigation, verify that the code path that would produce X is actually reached at runtime *before* concluding the code path is broken. Protocol 2 (persistent-state proof) establishes that X is not being produced; it does NOT establish that the code meant to produce X is being executed.
+
+**Minimum evidence (any ONE of):**
+- **4a** — a log line emitted from inside the relevant code path proving execution (requires the code to already have such a log, or adding one as the first diagnostic step)
+- **4b** — a stack trace, profiler sample, or `strace`/`py-spy` capture showing the path is hot
+- **4c** — grep of the instantiation / dispatch / entry-point chain proving the service or function is reachable from the running process's startup (traces caller relationships, not just existence of the callee)
+
+If none of 4a/4b/4c can be produced, "the code is broken" is NOT a supported conclusion. The alternative hypothesis — the code is not being called at all — has a different fix (add the call site or wire the instantiation, rather than fix the code body).
+
+**Out of scope.** Systems where reachability is structurally guaranteed by framework conventions (e.g. `@app.route()` handlers registered at import time, systemd-managed oneshot scripts whose ExecStart is the entry point) don't need explicit reachability proof — the framework enforces it. This protocol applies to discretionary-invocation code: background tasks, service classes instantiated by application code, handlers registered dynamically.
+
+**Evidence of origin.** S182 Phase 1b shipped a fix to `EsportsMarketService.refresh_market_prices()` that was code-correct (verified via 5 passing tests + compiled production service) but sat in a code path with zero runtime callers — `EsportsBotV2._initialize()` never instantiates `EsportsMarketService`, so the background refresh task never starts. Phase 0.2-b's persistent-state comparison (Protocol 2) correctly identified that state wasn't advancing. It could not distinguish "running and failing" from "never running" — that distinction required runtime-reachability proof. Pattern on this subsystem across Phases 0.2 / 0.2-b / 1b: each investigation layer hypothesized the bug was one level deeper than the last verified layer when it was actually one level shallower (service-never-instantiated > silent-crash > filter-scope). Two consecutive hypothesis inversions on the same bug. Future investigations on this subsystem should assume a fourth failure mode is possible and start from runtime-reachability.
+
+---
+
 ### Out-of-scope for this protocols section
 
 Session-specific narratives (what a particular session decided, what commit landed where) belong in handoff files and memory, not here. This section is for **durable binding rules** only. Every addition must be a rule generalizable across bots and sessions, and every protocol must carry a scope clause, an out-of-scope clause, and an evidence-of-origin entry so future agents can judge applicability to their own context.
