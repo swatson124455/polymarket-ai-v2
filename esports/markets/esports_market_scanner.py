@@ -154,6 +154,15 @@ class EsportsMarketScanner:
                 "market_type": market_type,
                 "match_id": match_id,
                 "game": game,
+                # Passthrough paired-token keys from upstream market_service. The
+                # Polymarket API fallback path lacks these; passthrough emits None
+                # and preserves that path's pre-existing behavior.
+                "yes_token_id": market.get("yes_token_id"),
+                "no_token_id": market.get("no_token_id"),
+                "yes_price": market.get("yes_price"),
+                "no_price": market.get("no_price"),
+                "id": market.get("id"),
+                "condition_id": market.get("condition_id"),
             })
 
         await self._set_cache(cache_key, results)
@@ -225,6 +234,13 @@ class EsportsMarketScanner:
                     "question": market.get("question", ""),
                     "market_type": self._classify_market_type(question),
                     "game": self._detect_game(question),
+                    # Passthrough paired-token keys; see find_markets_for_match.
+                    "yes_token_id": market.get("yes_token_id"),
+                    "no_token_id": market.get("no_token_id"),
+                    "yes_price": market.get("yes_price"),
+                    "no_price": market.get("no_price"),
+                    "id": market.get("id"),
+                    "condition_id": market.get("condition_id"),
                 })
 
         await self._set_cache(cache_key, results)
