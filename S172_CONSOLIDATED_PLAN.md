@@ -486,26 +486,64 @@ sudo journalctl -u polymarket-mirror --since "2 hours ago" | \
 
 ---
 
-## Protocols (codified S182, 2026-04-18)
+## Protocols
 
-Binding rules for all future sessions. These exist because each caught a real inverted-hypothesis or false-failure claim that would have shipped a wrong fix.
+Binding rules for all future sessions. Each protocol exists because a real hypothesis-inversion or false-finding would have shipped a wrong fix in its absence. Added incrementally as new failure modes are caught during execution.
 
-### SQL-diff mandate
+**Scope of this section:** durable binding rules only. Session-specific narratives (what a session decided, what commit landed where) belong in handoff files and memory. Every addition to §Protocols must be a rule generalizable across bots and sessions.
 
-**Mandatory for any fix whose hypothesis involves filter scope** (row coverage, inclusion/exclusion of categories, expected change in the row-count the query returns): run a row-count diff between the old and new clauses against live data before code is written. Document both counts in the planning artifact.
+---
 
-**Out of scope:** cosmetic refactors that preserve row semantics (column-reference renames, SQL formatting, comment additions, whitespace) do NOT require a row-count diff. This protocol applies only when the hypothesis is about WHICH rows are matched.
+### Protocol 1 — SQL-diff on filter-scope fixes
 
-**Why this exists:** S182 Phase 0.2's original answer ("filter too narrow, broaden it") was wrong. A SQL diff revealed the proposed keyword filter matched 286 rows vs the existing `category='esports'` filter's 1,487. The fix would have *reduced* refresh coverage. Caught by mandating the row-count diff before code was written.
+**Mandate.** Any fix whose hypothesis involves filter scope — row coverage, inclusion/exclusion of categories, or an expected change in the row-count the query returns — must produce a row-count diff between the old and new clauses against live data *before* code is written. Document both counts in the planning artifact.
 
-### Persistent-state proof for "service is running but not producing X"
+**Out of scope.** Cosmetic refactors that preserve row semantics (column-reference renames, SQL formatting, comment additions, whitespace) do NOT require a row-count diff. This protocol applies only when the hypothesis is about WHICH rows are matched.
 
-**Mandatory for any "service is running but not producing X" claim:** prove the service is genuinely idle (not just quiet) via a **timestamp/counter comparison across two observation windows** — not a single-point-in-time query.
+**Evidence of origin.** S182 Phase 0.2's original answer ("filter too narrow, broaden it") was wrong. A SQL diff revealed the proposed keyword filter matched 286 rows vs the existing `category='esports'` filter's 1,487 — the fix would have *reduced* refresh coverage. Caught by the SQL-diff demand before code landed.
 
-**Minimum evidence:** two observations of the service's persistent-state output (e.g. `updated_at` timestamps, row counts, last-run logs) separated by at least one expected cycle interval. If both windows show zero production AND no recent state updates, the service is idle. If either window shows recent state updates, the service is working.
+---
 
-**Why this exists:** "absence of error logs" looks identical to "service is doing nothing" in a snapshot. A single SELECT can return 0 rows during a legitimate quiet window and wrongly trigger an outage investigation. The two-window rule forces you to see whether the zero persists across an expected work cycle.
+### Protocol 2 — Persistent-state proof for "service running but not producing X"
+
+**Mandate.** Any claim that a service is running but not producing expected output must be backed by a **timestamp/counter comparison across two observation windows separated by at least one expected cycle interval** — not a single-point-in-time query. If both windows show zero production AND no recent persistent-state updates, the service is idle. If either window shows recent state updates, the service is working (quiet, not idle).
+
+**Out of scope.** Alerts that fire on absence of a specific transient signal (e.g. "no heartbeat in the last N seconds") are not service-running-but-not-producing claims; they're transient-signal checks and handle their own semantics. This protocol applies to claims about persistent output (DB writes, state transitions, log emissions with stable cadence).
+
+**Evidence of origin.** S182 Phase 0.2-b's refresh-service idle diagnosis relied on comparing `markets.updated_at` at T+0 and T+60s — the max timestamp didn't advance, proving the service was genuinely stalled rather than coincidentally quiet. A single SELECT could have matched a legitimate quiet window and misled the investigation.
+
+---
+
+### Protocol 3 — Diagnostic output skepticism
+
+Diagnostic output is a lens, not ground truth. Three sub-protocols cover the three ways it can lie.
+
+#### 3a — Round-number skepticism
+
+**Mandate.** Round-number counts in diagnostic output (100, 200, 500, 1000, 10000) should be treated as possibly-LIMIT-capped until proven unbounded. Audit each check's query for explicit `LIMIT` clauses, per-subquery caps, and join-level truncation before trusting the count as ground truth.
+
+**Out of scope.** Counts that are naturally round by domain (e.g. exactly 100 positions opened because a daily cap is 100) are not LIMIT-capped. The protocol applies when a diagnostic COULD have returned more but returned exactly the round number matching a suspected LIMIT.
+
+**Evidence of origin.** S182 audit discovery — several audit checks reported findings of exactly 100 or 200, matching `LIMIT 100` / `LIMIT 200` clauses in their SQL. The true uncapped count was unknown; the round numbers were under-reporting. Caught by mapping every check's LIMIT clause before basing triage decisions on the reported counts.
+
+#### 3b — Dedup before trusting "findings count"
+
+**Mandate.** Cumulative tables that re-detect the same condition across runs will inflate apparent scope by a duplication factor. Before treating a row count as "findings count," dedupe on the stable-identity column (`violation_hash`, `event_id`, idempotency key, etc.) and report both raw and unique counts. The duplication factor itself is diagnostic — a factor of 10-11x across a 10-day window implies daily re-detection without a `last_seen` update path.
+
+**Out of scope.** Tables that are naturally append-only event logs (trade events, audit runs themselves, transactions) are not re-detection tables and their row count IS the event count. The protocol applies when a table's rows represent *detected conditions* rather than *events*.
+
+**Evidence of origin.** S182 audit found 35,043 OPEN `reconciliation_breaks` rows, which triage-scope-wise looked unmanageable. Dedupping on `violation_hash` collapsed the unique count to ~8,223 with dup factors of 9-12x on most categories, confirming daily re-detection. The tractable unit was unique violations, not raw rows.
+
+#### 3c — Newly-added check "spike" is not a regression
+
+**Mandate.** When a diagnostic check is newly added to a running system, its first execution appears as an apparent spike in findings as pre-existing violations surface for the first time. Before treating a dated cluster of findings as evidence of a regression, check `first_seen` dates against the deploy history of the check itself. A cluster of findings dated to a known check-deploy day is the check finding old problems, not a production event.
+
+**Out of scope.** Genuine spikes AFTER a check has been running steady — a sudden 10x jump on a well-established check is a real signal. This protocol applies only to the check's first-detection moment.
+
+**Evidence of origin.** S182 audit-history analysis showed a massive Apr 8 spike (4,333 findings) which initially looked like a catastrophic event. Cross-checking `first_seen` dates against recon_types revealed 12 new recon_types with `first_seen=2026-04-08` — the audit code had been extended that day with 12 new checks, and the "spike" was every pre-existing violation in the database surfacing through the new checks on their first run. Not a regression.
+
+---
 
 ### Out-of-scope for this protocols section
 
-Session-specific narratives (what a particular session decided, what commit landed where) belong in handoff files and memory, not here. This section is for **durable binding rules** only. Every addition to §Protocols must be a rule generalizable across bots and sessions.
+Session-specific narratives (what a particular session decided, what commit landed where) belong in handoff files and memory, not here. This section is for **durable binding rules** only. Every addition must be a rule generalizable across bots and sessions, and every protocol must carry a scope clause, an out-of-scope clause, and an evidence-of-origin entry so future agents can judge applicability to their own context.
