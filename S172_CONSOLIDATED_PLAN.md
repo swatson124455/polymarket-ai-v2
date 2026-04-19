@@ -603,20 +603,46 @@ Diagnostic output is a lens, not ground truth. Three sub-protocols cover the thr
 
 ---
 
-### Protocol 4 — Runtime-reachability verification
+### Protocol 4 — Runtime reachability and contract integrity
+
+Three sub-protocols cover distinct ways a component fails to produce the expected output despite being "running." The component may not actually be called (4a), may have been pattern-copied from a silently broken progenitor (4b), or may be silently dropping fields the upstream supplies (4c). Each sub-protocol has its own Mandate / Out-of-scope / Evidence-of-origin, but they share the same diagnostic posture: before concluding "the code is wrong," verify that the code is reached, the pattern is honest, and the information flow is whole.
+
+#### 4a — Runtime-reachability verification
 
 **Mandate.** For any "service is running but not producing X" investigation, verify that the code path that would produce X is actually reached at runtime *before* concluding the code path is broken. Protocol 2 (persistent-state proof) establishes that X is not being produced; it does NOT establish that the code meant to produce X is being executed.
 
 **Minimum evidence (any ONE of):**
-- **4a** — a log line emitted from inside the relevant code path proving execution (requires the code to already have such a log, or adding one as the first diagnostic step)
-- **4b** — a stack trace, profiler sample, or `strace`/`py-spy` capture showing the path is hot
-- **4c** — grep of the instantiation / dispatch / entry-point chain proving the service or function is reachable from the running process's startup (traces caller relationships, not just existence of the callee)
+- A log line emitted from inside the relevant code path proving execution (requires the code to already have such a log, or adding one as the first diagnostic step)
+- A stack trace, profiler sample, or `strace`/`py-spy` capture showing the path is hot
+- Grep of the instantiation / dispatch / entry-point chain proving the service or function is reachable from the running process's startup (traces caller relationships, not just existence of the callee)
 
-If none of 4a/4b/4c can be produced, "the code is broken" is NOT a supported conclusion. The alternative hypothesis — the code is not being called at all — has a different fix (add the call site or wire the instantiation, rather than fix the code body).
+If none can be produced, "the code is broken" is NOT a supported conclusion. The alternative hypothesis — the code is not being called at all — has a different fix (add the call site or wire the instantiation, rather than fix the code body).
 
 **Out of scope.** Systems where reachability is structurally guaranteed by framework conventions (e.g. `@app.route()` handlers registered at import time, systemd-managed oneshot scripts whose ExecStart is the entry point) don't need explicit reachability proof — the framework enforces it. This protocol applies to discretionary-invocation code: background tasks, service classes instantiated by application code, handlers registered dynamically.
 
 **Evidence of origin.** S182 Phase 1b shipped a fix to `EsportsMarketService.refresh_market_prices()` that was code-correct (verified via 5 passing tests + compiled production service) but sat in a code path with zero runtime callers — `EsportsBotV2._initialize()` never instantiates `EsportsMarketService`, so the background refresh task never starts. Phase 0.2-b's persistent-state comparison (Protocol 2) correctly identified that state wasn't advancing. It could not distinguish "running and failing" from "never running" — that distinction required runtime-reachability proof. Pattern on this subsystem across Phases 0.2 / 0.2-b / 1b: each investigation layer hypothesized the bug was one level deeper than the last verified layer when it was actually one level shallower (service-never-instantiated > silent-crash > filter-scope). Two consecutive hypothesis inversions on the same bug. Future investigations on this subsystem should assume a fourth failure mode is possible and start from runtime-reachability.
+
+#### 4b — Reused patterns inherit their predecessors' bugs
+
+**Mandate.** When reusing a pattern from existing code (copying a helper, mirroring a call site, replicating a query structure, porting a dict-access convention), verify the pattern works on a live instance before adopting it. "The existing code compiles and passes tests" is insufficient evidence — a pattern can be silently broken in a way that tests don't catch, particularly when the failure mode is returning a sentinel (None, empty, 0) that the caller treats as a legitimate absent result.
+
+**Minimum evidence.** Does the pattern produce observable output on a live system in the way the new caller expects? Either run the new code path end-to-end and verify the output, OR add a contract test that pins the producer's output schema against the consumer's expectations.
+
+**Out of scope.** Framework-provided patterns with strong type-system guarantees (e.g. typed protocol adapters, Pydantic-validated schema) are contract-verified by the framework; this protocol applies to loose-schema patterns like dict access, raw SQL structure, message-bus payload shapes.
+
+**Evidence of origin.** S181 Commit 3 introduced `_find_polymarket_for_match` in `bots/esports_bot_v2.py` by copying a dict-access pattern from the pre-existing `_get_market_price` helper. The helper read `m.get("yes_price")` from the scanner's output; the scanner had long emitted the key as `"price"`. The helper had been silently returning None for every call (EB v2 always found zero markets), but no visible failure surfaced because the caller treated None as "no market available." S181 Commit 3 inherited the bug unchanged. Protocol 4a (runtime-reachability) would have caught it had it existed at S181 time; Protocol 4b codifies the specific sub-case of pattern reuse.
+
+**Sibling application — handoff-entry verification.** The same discipline applies to prior-session handoff content: verify claims against current code before acting on them. A handoff describes the system at write-time; the interval to entry-time is a drift window. This is not a separate protocol — it's the same "is X actually true right now" posture applied to documentation instead of code. Both failure modes produce the same class of wasted investigation. Caught at S182 Phase 1d handoff entry when verification against current code surfaced a third key-name mismatch (`yes_token_id`/`no_token_id` vs scanner's singular `token_id`) at `bots/esports_bot_v2.py:604` that was absent from the prior handoff's flagged-bugs list. Had the handoff been trusted as testimony rather than verified as claim, Phase 1d would have shipped a fix that left site #604 silently broken.
+
+#### 4c — Projection lossiness
+
+**Mandate.** When a component takes structured input and produces structured output, verify that any fields present in the input AND expected by downstream consumers are also present in the output. A projection layer can silently drop fields the upstream has available; the bug is invisible from tests that examine only the projection's output against its own declared schema. Required check: diff the input dict keys against the output dict keys and cross-reference against consumer expectations.
+
+**Minimum evidence.** For any projection or adapter layer: enumerate the keys the upstream source provides (for each source if multiple), diff against the keys the output dict emits, and cross-reference against all consumers of the output. Any consumer-expected key missing from the output despite being present on the input is a silent-None bug. A contract test pinning the input→output field mapping makes future regressions loud.
+
+**Out of scope.** Projections that are explicitly narrowing their interface for a documented reason (e.g. redaction, privacy filtering, deliberate encapsulation) fall under their documented scope. This protocol applies to projections that drop fields by accident or oversight rather than design.
+
+**Evidence of origin.** S182 Phase 1d audit revealed `EsportsMarketScanner.find_markets_for_match` received market dicts from `EsportsMarketService.get_tradeable_esports_markets` that already contained `yes_token_id`, `no_token_id`, `yes_price`, `no_price`, `id`, `condition_id` as top-level keys. The scanner's output projection at `esports/markets/esports_market_scanner.py:149-157` emitted only `market_id`, `token_id`, `price`, and sibling fields — silently dropping the paired-token keys that three separate downstream readers in `bots/esports_bot_v2.py` (lines 547, 570, 604) were trying to consume. Initial Phase 0 classification labeled the bug as "schema-shape" (architectural, requires paired-tokens modeling) because it stopped at "scanner emits X, reader reads Y" without asking "what does the scanner's input already contain?" Looking one layer upstream reframed the bug from architectural to projection-lossiness and dissolved the "schema-shape" class entirely — all six consumer sites resolved by passing the upstream keys through. Protocol 4c codifies "diff input keys vs output keys" as a first-pass Phase 0 step before reaching for architectural or schema-shape fixes.
 
 ---
 
