@@ -509,6 +509,40 @@ sudo journalctl -u polymarket-mirror --since "2 hours ago" | \
 
 ---
 
+### S182 Phase 1d (2026-04-19) — Scanner projection lossiness + classification lesson
+
+**Context.** Phase 1d was opened to fix the key-name contract mismatch between `esports/markets/esports_market_scanner.py:149-157` and downstream EB v2 readers. Handoff-entry re-verification surfaced a third read site the prior session missed (`bots/esports_bot_v2.py:604` reading `yes_token_id`/`no_token_id` against scanner's singular `token_id` emission), prompting a full Phase 0 contract-audit. The audit enumerated 6 consumer read sites across 3 files and initially classified them into "rename class" (3) and "schema-shape class" (3), proposing a Phase 1d/1e split. Mid-audit a one-layer-deeper check on the scanner's input source reframed the classification.
+
+**Finding.** `EsportsMarketService.get_tradeable_esports_markets` at `esports/markets/esports_market_service.py:222-255` returns market dicts that already contain `yes_token_id`, `no_token_id`, `yes_price`, `no_price`, `id`, `condition_id` as top-level keys. The scanner's output projection at lines 149-157 / 221-228 emitted only `market_id`, `token_id`, `price`, and sibling fields — silently dropping the paired-token keys. All 6 consumer sites resolve by adding passthrough of those keys in the scanner's projection. No architectural fix, no Phase 1e.
+
+**Contract-alignment table (6 sites, A4 passthrough fix):**
+
+| # | Read site | Key read | Pre-A4 | Post-A4 |
+|---|---|---|---|---|
+| 1 | `bots/esports_bot_v2.py:547` `_find_polymarket_for_match` | `yes_price` | None | actual YES price |
+| 2 | `bots/esports_bot_v2.py:570` `_get_market_price` | `yes_price` | None | actual YES price |
+| 3 | `bots/esports_bot_v2.py:604` `_find_market_info` | `yes_token_id`, `no_token_id` | (None, None) | both populated |
+| 4 | `bots/esports_bot_v2.py:503` `_execute_trades` (downstream of #3) | `yes_token_id`, `no_token_id` | dead (filter blocks) | populated |
+| 5 | `bots/esports_bot_v2.py:509` `_execute_trades` (downstream of #3) | `id`, `condition_id` | dead (filter blocks) | populated |
+| 6 | `bots/esports_bot.py:7156` `_generate_series_opportunities` NO branch | `no_token_id` | None (silent fallback to YES token) | populated |
+
+**Live-correctness verification before fix (trade_events 30-day window, EsportsBot ENTRY):** 577 of 578 trades correctly aligned (344 OK_NO + 233 OK_YES); 1 anomalous trade (0.17%) detailed below. Site #6's code path produced **zero trades in 30 days** — `event_data.type` was NULL on every EsportsBot trade, and the series path sets `type='esports_series'`. Site #6's latent bug is inert in production output.
+
+**Classification lessons.**
+
+1. **"Schema-shape" vs "rename" is a function of where you look.** Phase 0.1 classified sites #3/#4/#6 as schema-shape because the scanner emits one token per market. The actual source (market_service) exposes paired tokens; the scanner was stripping them. The schema-shape label would have triggered a Phase 1e architectural investigation that dissolves once you look one layer upstream.
+
+2. **Phase 0 investigations that stop at "emits X / reads Y" can misclassify the bug.** Ask "what does the emitter's input already contain?" as a first-class Phase 0 step, not a second-pass clarification. Added as Protocol 4c (projection lossiness).
+
+**Flagged for Phase 4 backlog (not this session).**
+
+1. **`find_all_esports_markets` at `esports/markets/esports_market_scanner.py:162` is dead code.** Zero callers in repo (grep .py exhaustive across `C:\lockes-picks\polymarket-ai-v2`) and zero callers on VPS (`/opt/polymarket-ai-v2`, `/home/ubuntu` grep). Candidate for deletion, but "don't delete code you don't understand" (CLAUDE.md Rule 5) — evaluate in a follow-up with git-blame context on original intent.
+2. **One anomalous wrong-side trade preserved for investigation.** Timestamp `2026-04-03 17:26:27.420037`, market_id `0xb33827cbb7200ab893eca5b4083099b84a0725f1982027adf060b98ab2277b2b` (question: "Valorant: Team Heretics vs Natus Vincere - Map 2 Winner"), bot `EsportsBot`, side `NO`, token_id `55163220198676417751769539836973817727101168436989498813537578705796079734788` (the market's YES token), size $399.34, price $0.01. Not from site #6 series path (`event_data.type IS NULL`). Possibly related to scanner's `_classify_market_type` iteration order matching "winner" before "map" for map-specific markets. Dedicated investigation window to trace the producing code path.
+
+**Disposition.** A4 passthrough fix landed in Commit 1d-1 alongside `tests/unit/test_scanner_contract.py`. Protocol 4b (pattern inheritance) and Protocol 4c (projection lossiness) landed in Commit 1d-2. Phase 1e cancelled — no architectural gap. Phase 2 (gate-funnel observability) unblocked pending T+2h success gate (shadow prediction rate rises above 1-2/hr baseline).
+
+---
+
 ## Protocols
 
 Binding rules for all future sessions. Each protocol exists because a real hypothesis-inversion or false-finding would have shipped a wrong fix in its absence. Added incrementally as new failure modes are caught during execution.
