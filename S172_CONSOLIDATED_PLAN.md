@@ -454,6 +454,29 @@ The S181 diagnostic surfaced 4 items that initially looked like bugs but are con
 
 **4. EnsembleBot RESOLUTION events.** EnsembleBot was deleted but had open positions at deletion time. These resolve naturally as markets close — the RESOLUTION events in `trade_events` are historical positions finalizing, not new trades. No cleanup needed; zombies exit on their own.
 
+### S182 Phase 0.1 DENY + S181 Commit 3 regression (key-name contract mismatch)
+
+**Context.** S182 Phase 1c Phase 0.1 (runtime-reachability, load-bearing) investigated whether `EsportsBotV2` consumes price data that `EsportsMarketService.refresh_market_prices()` writes. Verdict: **DENY.**
+
+**Finding.** Scanner and caller disagree on the price-data key name. The scanner at [esports/markets/esports_market_scanner.py:149-157](esports/markets/esports_market_scanner.py) returns market dicts with key `"price"`; callers in EB v2 (`_find_polymarket_for_match` from S181 Commit 3 at `bots/esports_bot_v2.py:547`, and the pre-existing `_get_market_price` at line ~570) both read `m.get("yes_price")`. `m.get("yes_price")` returns `None` on the scanner's output, so EB v2 never finds a Polymarket market. EB's shadow-prediction rate of 1-2/hr is written with `market_price=None` (allowed path), which is why Commit 3's prediction_log write path (gated on market_id+market_price both non-None) never fires, and no trade executes.
+
+**S181 Commit 3 regression attribution.** S181 Commit 3 introduced `_find_polymarket_for_match` which reads `m.get('yes_price')` from scanner output. The scanner emits the key as `'price'`. The pattern was copied from the pre-existing `_get_market_price` helper which had the same bug silently. Neither the copied code nor the new code was tested against the scanner's actual output contract. Protocol 4 (runtime-reachability, landed S182 Commit 10) codifies the verification that would have caught this; a forthcoming Protocol 4b (pattern-reuse bug inheritance) will codify the remaining gap when Phase 1d lands.
+
+**Consequences for prior investigation narrative.**
+
+1. The "markets table stale" finding (S182 Phase 0.2) is a **real but parallel bug, not the trading-output blocker.** If the markets table had been refreshing correctly all along, EB v2 would still have found zero markets because it wasn't reading the column the service writes.
+2. **EsportsMarketService remains idle** and still needs instantiation — but that's a secondary investigation that gates nothing critical for EB v2 trading.
+3. **S182 Phase 1b Commit 2 stays on master as deployed-but-dormant.** Code is correct; it will activate correctly whenever some path instantiates the service. Not broken; future-dated.
+4. **Commit 9 cancelled** per S182 Phase 1c branching clause — instantiating the service wouldn't help EB v2 even if it worked perfectly, because EB v2's read path doesn't touch what the service writes.
+5. **The 43+ hours of zero trading output** (S181 Issue 9) has the same root cause as the key-name mismatch, not the markets staleness. The same fix closes both.
+6. **Phase 2 (gate-funnel observability) gate is now reframed.** "EB finds non-zero markets" precondition is satisfied by Phase 1d's key-name fix, not by Phase 1c's service instantiation.
+
+**Disposition.** Phase 1c closed. Phase 1d filed as a separate plan (`C:\Users\samwa\.claude\plans\s182-phase-1d.md`) with tight scope: (a) contract-audit all scanner-output consumers, (b) decide fix location (scanner-side alias vs EB-v2-side read-key change vs both), (c) ship fix with a scanner-contract regression test, (d) land Protocol 4b in the same session. Phase 1d opens within 24 hours.
+
+**Pattern to note for future investigators on this subsystem.** The bug was at a shallower layer than each successive hypothesis. Phase 0.2 blamed filter scope (wrong). Phase 0.2-b blamed silent crash (wrong). Phase 1c's runtime-reachability check finally surfaced the correct layer. Any future "service is running but not producing X" investigation on EB v2 should start from runtime reachability AND contract-verify the output schema of any intermediate component (like the scanner) before accepting that consumers receive what the producers emit.
+
+---
+
 ### S181 Issue 9 escalation — paper_trades zero-volume for 24h+ (ESCALATED)
 
 **Observed 2026-04-19 at T+~43h post-S181 deploy:**
