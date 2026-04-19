@@ -56,6 +56,14 @@ _SNAPSHOT_DIR = Path(os.getenv("ESPORTS_V2_SNAPSHOT_DIR", "data/snapshots"))
 # restart to disable without a code revert. Writes are strictly additive — not
 # safety-critical — so fail-open is appropriate.
 _PREDICTION_LOG_ENABLED = os.getenv("EB_V2_PREDICTION_LOG_ENABLED", "true").lower() in ("true", "1", "yes")
+# Instantiate EsportsMarketService in _initialize() and wire it into the
+# scanner so find_markets_for_match() has a data source. Without this flag
+# enabled (or without the wiring), the scanner's Strategy 1 (market_service)
+# and Strategy 2 (polymarket_client fallback) both short-circuit and the
+# scanner returns [] on every call — the A4 passthrough fix is then dormant
+# because it has no input to project over. Default on; flip to false in .env
+# + restart to disable without a code revert.
+_MARKET_SERVICE_ENABLED = os.getenv("ESPORTS_V2_MARKET_SERVICE_ENABLED", "true").lower() in ("true", "1", "yes")
 
 
 class EsportsBotV2(BaseBot):
@@ -104,11 +112,34 @@ class EsportsBotV2(BaseBot):
         self._pandascore = PandaScoreClient(api_key=api_key)
         await self._pandascore.init()
 
-        # Initialize market scanner
+        # Initialize market service + scanner. The service's background
+        # refresh keeps the markets table fresh and provides the scanner
+        # with paired-token market dicts. Constructor injection mirrors
+        # EsportsLiveBot._initialize() at bots/esports_live_bot.py:107-118.
         try:
             from esports.markets.esports_market_scanner import EsportsMarketScanner
             db = getattr(self.base_engine, "db", None)
-            self._market_scanner = EsportsMarketScanner(db=db)
+            _poly_client = getattr(self.base_engine, "client", None)
+
+            if _MARKET_SERVICE_ENABLED:
+                try:
+                    from esports.markets.esports_market_service import EsportsMarketService
+                    self._market_service = EsportsMarketService(
+                        db=db, polymarket_client=_poly_client,
+                    )
+                    self._market_service.start_background_refresh()
+                    logger.info("esports_v2_market_service_initialized")
+                except Exception as exc:
+                    logger.warning(
+                        "esports_v2_market_service_init_failed", error=str(exc),
+                    )
+                    self._market_service = None
+
+            self._market_scanner = EsportsMarketScanner(
+                db=db,
+                polymarket_client=_poly_client,
+                market_service=self._market_service,
+            )
         except Exception as e:
             logger.warning(f"Market scanner init failed: {e}")
 
@@ -729,8 +760,13 @@ class EsportsBotV2(BaseBot):
             logger.warning(f"Snapshot save on shutdown failed: {e}")
 
     async def stop(self):
-        """Graceful shutdown: save snapshot, close PandaScore client."""
+        """Graceful shutdown: save snapshot, close PandaScore + market service."""
         await self.flush_state()
         if self._pandascore:
             await self._pandascore.close()
+        if self._market_service:
+            try:
+                await self._market_service.close()
+            except Exception as exc:
+                logger.debug("esports_v2_market_service_close_failed", error=str(exc))
         await super().stop()

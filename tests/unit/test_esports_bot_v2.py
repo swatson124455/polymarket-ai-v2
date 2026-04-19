@@ -591,3 +591,135 @@ class TestPredictionLogIntegration:
         assert kwargs["model_name"].startswith("esports_v2_")
         assert 0.0 <= kwargs["predicted_prob"] <= 1.0
         assert isinstance(kwargs["confidence"], float)
+
+
+class TestMarketServiceWiring:
+    """Phase 1d Commit 1d-3: EsportsBotV2 instantiates EsportsMarketService and
+    wires it into the scanner via constructor injection, so find_markets_for_match
+    has a data source. Without this, bot._market_service stays None and the
+    scanner's Strategy 1 (market_service) + Strategy 2 (polymarket_client fallback)
+    both short-circuit on every call — A4 passthrough projects over an empty input
+    set. Mirrors EsportsLiveBot._initialize() pattern at bots/esports_live_bot.py:107-118.
+    """
+
+    @pytest.mark.asyncio
+    async def test_stop_closes_market_service(self):
+        """stop() awaits market_service.close() when service is set. Prevents
+        leaking the refresh task + httpx client on bot shutdown."""
+        from bots.esports_bot_v2 import EsportsBotV2
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        base_engine = MagicMock()
+        bot = EsportsBotV2(base_engine)
+        bot._pandascore = None
+        bot.flush_state = AsyncMock()
+
+        fake_svc = MagicMock()
+        fake_svc.close = AsyncMock()
+        bot._market_service = fake_svc
+
+        # Patch super().stop() so BaseBot teardown doesn't need real infrastructure
+        with patch.object(EsportsBotV2.__mro__[1], "stop", new=AsyncMock()):
+            await bot.stop()
+
+        fake_svc.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_stop_tolerates_market_service_close_failure(self):
+        """If market_service.close() raises, stop() continues to super().stop()
+        rather than leaving the bot half-torn-down. The error is logged, not
+        propagated."""
+        from bots.esports_bot_v2 import EsportsBotV2
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        base_engine = MagicMock()
+        bot = EsportsBotV2(base_engine)
+        bot._pandascore = None
+        bot.flush_state = AsyncMock()
+
+        fake_svc = MagicMock()
+        fake_svc.close = AsyncMock(side_effect=RuntimeError("close boom"))
+        bot._market_service = fake_svc
+
+        super_stop = AsyncMock()
+        with patch.object(EsportsBotV2.__mro__[1], "stop", new=super_stop):
+            await bot.stop()  # must not raise
+
+        fake_svc.close.assert_awaited_once()
+        super_stop.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_initialize_wires_market_service_into_scanner(self):
+        """Full wiring: flag on → _initialize() constructs EsportsMarketService with
+        (db, polymarket_client), starts its background refresh, and passes it as
+        the market_service kwarg to EsportsMarketScanner. The scanner's internal
+        attribute reflects the injection."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import bots.esports_bot_v2 as ebv2
+        from config.settings import settings
+
+        base_engine = MagicMock()
+        base_engine.db = MagicMock()
+        base_engine.client = MagicMock()
+
+        bot = ebv2.EsportsBotV2(base_engine)
+        bot._load_snapshot = AsyncMock(return_value=True)
+        bot._build_training_records_from_db = AsyncMock()
+        bot._pipeline = MagicMock()
+        bot._pipeline.load = MagicMock(return_value=True)
+        bot._pipeline.is_fitted = True
+
+        fake_ps = AsyncMock()
+        fake_ps.init = AsyncMock()
+        fake_service = MagicMock()
+        fake_service.start_background_refresh = MagicMock()
+
+        # config.settings reads env at module load — patch the attribute directly
+        # so _initialize's early-return on missing api_key doesn't fire.
+        with patch.object(settings, "PANDASCORE_API_KEY", "test_key"), \
+             patch.object(ebv2, "_MARKET_SERVICE_ENABLED", True), \
+             patch("esports.data.pandascore_client.PandaScoreClient", return_value=fake_ps), \
+             patch("esports.markets.esports_market_service.EsportsMarketService", return_value=fake_service) as mock_svc_cls:
+            await bot._initialize()
+
+        mock_svc_cls.assert_called_once_with(
+            db=base_engine.db, polymarket_client=base_engine.client,
+        )
+        fake_service.start_background_refresh.assert_called_once()
+        assert bot._market_service is fake_service
+        assert bot._market_scanner is not None
+        assert bot._market_scanner._market_service is fake_service
+
+    @pytest.mark.asyncio
+    async def test_initialize_flag_off_skips_market_service(self):
+        """Flag off (rollback path): _initialize() does NOT instantiate the service;
+        the scanner is still constructed but with market_service=None. This preserves
+        the pre-1d-3 behavior for rollback without a code revert."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import bots.esports_bot_v2 as ebv2
+        from config.settings import settings
+
+        base_engine = MagicMock()
+        base_engine.db = MagicMock()
+        base_engine.client = MagicMock()
+
+        bot = ebv2.EsportsBotV2(base_engine)
+        bot._load_snapshot = AsyncMock(return_value=True)
+        bot._build_training_records_from_db = AsyncMock()
+        bot._pipeline = MagicMock()
+        bot._pipeline.load = MagicMock(return_value=True)
+        bot._pipeline.is_fitted = True
+
+        fake_ps = AsyncMock()
+        fake_ps.init = AsyncMock()
+
+        with patch.object(settings, "PANDASCORE_API_KEY", "test_key"), \
+             patch.object(ebv2, "_MARKET_SERVICE_ENABLED", False), \
+             patch("esports.data.pandascore_client.PandaScoreClient", return_value=fake_ps), \
+             patch("esports.markets.esports_market_service.EsportsMarketService") as mock_svc_cls:
+            await bot._initialize()
+
+        mock_svc_cls.assert_not_called()
+        assert bot._market_service is None
+        assert bot._market_scanner is not None
+        assert bot._market_scanner._market_service is None
