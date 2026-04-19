@@ -454,6 +454,36 @@ The S181 diagnostic surfaced 4 items that initially looked like bugs but are con
 
 **4. EnsembleBot RESOLUTION events.** EnsembleBot was deleted but had open positions at deletion time. These resolve naturally as markets close — the RESOLUTION events in `trade_events` are historical positions finalizing, not new trades. No cleanup needed; zombies exit on their own.
 
+### S181 Issue 9 escalation — paper_trades zero-volume for 24h+ (ESCALATED)
+
+**Observed 2026-04-19 at T+~43h post-S181 deploy:**
+- `paper_trades` table: **0 rows across all 3 bots in the last 24h**
+- `prediction_log` in same 2h window: **MirrorBot=4,233, WeatherBot=31, EsportsBotV2=0** (EB cascade from markets-refresh-broken per S182 0.2-b)
+- The 4,233→0 MB funnel is ~100% gate-blocked
+
+**Per S181 plan's escalation rule** (if 0 at T+4h, file entry; we're at T+43h).
+
+**Suspected cause:** gate filtering. Not cold-start lag — the pattern has persisted for 43+ hours.
+
+**First-step investigation command for next agent:**
+```bash
+ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 \
+  "cd /opt/polymarket-ai-v2 && PYTHONPATH=/opt/polymarket-ai-v2 \
+   sudo -u polymarket /opt/pa2-shared/venv/bin/python \
+   scripts/gate_score_expectancy.py --json | head -40"
+```
+This reports per-bucket trade-vs-blocked counts — reveals whether signals exist but are gate-filtered (vs zero signals generated).
+
+**Secondary grep:**
+```bash
+sudo journalctl -u polymarket-mirror --since "2 hours ago" | \
+  grep -iE "gate_score|edge_below|conf_below|gate_rej" | tail -50
+```
+
+**Natural resolution path:** S182 Phase 2 Commit 5 (gate-funnel structured logging on all 3 bots) will make the gate breakdown self-documenting once deployed. Until then, the above investigation is the manual bypass.
+
+**Services/infrastructure otherwise healthy** — this is a pure gate-behavior issue, not an infra issue. All bots active, prediction engines running, DB healthy.
+
 ---
 
 ## Protocols (codified S182, 2026-04-18)
