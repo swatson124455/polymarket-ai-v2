@@ -42,6 +42,16 @@ _CACHE_TTL = 120.0
 # Background refresh interval (seconds) — 5 minutes
 _REFRESH_INTERVAL = float(os.environ.get("ESPORTS_PRICE_REFRESH_INTERVAL", "300"))
 
+# S182 #2: ESPORTS_MARKETS_REFRESH_V2_ENABLED gates the fixes landed this session:
+# (a) ORDER BY updated_at ASC NULLS FIRST on the refresh query for deterministic rotation
+# (b) logger.warning(exc_info=True) on the refresh-loop exception handler so silent
+#     crashes become visible (pre-S182 was logger.debug — invisible for 18h+ before detection)
+# (c) EsportsMarketService_cycle_complete heartbeat outside the `stats["total"] > 0`
+#     guard so zero-row cycles emit a log too (pre-S182 only non-zero cycles logged)
+# Default TRUE (opt-out). Rollback path: set ESPORTS_MARKETS_REFRESH_V2_ENABLED=false
+# in VPS .env and restart esports service. No code revert needed.
+_MARKETS_REFRESH_V2_ENABLED = os.environ.get("ESPORTS_MARKETS_REFRESH_V2_ENABLED", "true").lower() in ("true", "1", "yes")
+
 # Game keywords for the soccer/football double-gate
 _ESPORTS_GAME_KEYWORDS: Dict[str, List[str]] = {
     "lol": ["league of legends", "lol:", "lol ", " lol "],
@@ -281,15 +291,38 @@ class EsportsMarketService:
             try:
                 from sqlalchemy import text
                 async with self._db.get_session() as session:
-                    rows = await session.execute(text("""
-                        SELECT id, condition_id FROM markets
-                        WHERE category = 'esports'
-                          AND active = true
-                          AND (resolved = false OR resolved IS NULL)
-                          AND condition_id IS NOT NULL
-                          AND condition_id != ''
-                        LIMIT 1000
-                    """))
+                    # S182 #2: add `ORDER BY updated_at ASC NULLS FIRST` for
+                    # deterministic rotation — pre-S182 the query had no ORDER BY,
+                    # so same "first 1000" rows returned each cycle (verified by
+                    # Phase 0.2-b Investigation #2: md5 identical across 30s runs
+                    # when service was idle, with partial churn only from an
+                    # unknown upstream writer on `markets`). With NULLS FIRST,
+                    # rows never-refreshed get first priority; oldest stale next.
+                    # Env flag ESPORTS_MARKETS_REFRESH_V2_ENABLED (default true)
+                    # toggles the ORDER BY. Pre-existing behavior (no ordering)
+                    # restored via flag-off rollback without code revert.
+                    if _MARKETS_REFRESH_V2_ENABLED:
+                        _query_sql = """
+                            SELECT id, condition_id FROM markets
+                            WHERE category = 'esports'
+                              AND active = true
+                              AND (resolved = false OR resolved IS NULL)
+                              AND condition_id IS NOT NULL
+                              AND condition_id != ''
+                            ORDER BY updated_at ASC NULLS FIRST
+                            LIMIT 1000
+                        """
+                    else:
+                        _query_sql = """
+                            SELECT id, condition_id FROM markets
+                            WHERE category = 'esports'
+                              AND active = true
+                              AND (resolved = false OR resolved IS NULL)
+                              AND condition_id IS NOT NULL
+                              AND condition_id != ''
+                            LIMIT 1000
+                        """
+                    rows = await session.execute(text(_query_sql))
                     id_pairs = [(str(r[0]), str(r[1])) for r in rows.fetchall() if r[1]]
             except Exception as exc:
                 logger.warning("EsportsMarketService: refresh query failed", error=str(exc))
@@ -427,7 +460,22 @@ class EsportsMarketService:
             while True:
                 try:
                     stats = await self.refresh_market_prices()
-                    if stats["total"] > 0:
+                    # S182 #2: emit heartbeat OUTSIDE the stats["total"] > 0 guard.
+                    # Pre-S182 the log was suppressed on zero-row cycles, which is
+                    # exactly when the refresh is broken (either the in-scope query
+                    # returns 0 or silently crashes) — so the log never fired for 18h
+                    # and nobody knew the service was idle. Now every cycle emits
+                    # EsportsMarketService_cycle_complete regardless of total.
+                    if _MARKETS_REFRESH_V2_ENABLED:
+                        logger.info(
+                            "EsportsMarketService_cycle_complete",
+                            total=stats.get("total", 0),
+                            refreshed=stats.get("refreshed", 0),
+                            closed=stats.get("closed", 0),
+                            errors=stats.get("errors", 0),
+                        )
+                    elif stats["total"] > 0:
+                        # Legacy behavior: only log non-zero cycles
                         logger.info(
                             "EsportsMarketService: price refresh complete",
                             total=stats["total"],
@@ -436,7 +484,19 @@ class EsportsMarketService:
                             errors=stats["errors"],
                         )
                 except Exception as exc:
-                    logger.debug("EsportsMarketService: refresh loop error", error=str(exc))
+                    # S182 #2: logger.debug → logger.warning with exc_info=True.
+                    # Pre-S182 the silent-exception log was DEBUG (invisible in
+                    # default logging config), which masked an 18h+ outage where
+                    # the refresh loop was crashing on every iteration. Warning
+                    # + traceback makes future crashes visible immediately.
+                    if _MARKETS_REFRESH_V2_ENABLED:
+                        logger.warning(
+                            "EsportsMarketService: refresh loop error",
+                            error=str(exc),
+                            exc_info=True,
+                        )
+                    else:
+                        logger.debug("EsportsMarketService: refresh loop error", error=str(exc))
 
                 await asyncio.sleep(_REFRESH_INTERVAL)
 
