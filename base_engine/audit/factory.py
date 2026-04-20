@@ -29,6 +29,7 @@ from base_engine.audit.checks.resolution_consistency_check import ResolutionCons
 from base_engine.audit.checks.position_trade_events_check import PositionTradeEventsCheck
 from base_engine.audit.checks.paper_trade_check import PaperTradeCheck
 from base_engine.audit.checks.stale_position_check import StalePositionCheck
+from base_engine.audit.checks.traded_markets_status_drift_check import TradedMarketsStatusDriftCheck
 from base_engine.audit.checks.shadow_fill_check import ShadowFillCheck
 from base_engine.audit.checks.fill_analysis_check import FillAnalysisCheck
 from base_engine.audit.checks.signal_execution_check import SignalExecutionCheck
@@ -91,6 +92,7 @@ def build_audit_orchestrator(db: "Database", alerting=None) -> AuditOrchestrator
     orchestrator.register_check(PositionTradeEventsCheck())
     orchestrator.register_check(PaperTradeCheck())
     orchestrator.register_check(StalePositionCheck())
+    orchestrator.register_check(TradedMarketsStatusDriftCheck())
     orchestrator.register_check(ShadowFillCheck())
     orchestrator.register_check(FillAnalysisCheck())
     orchestrator.register_check(SignalExecutionCheck(signal_required_bots=signal_required_bots))
