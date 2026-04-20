@@ -1,17 +1,34 @@
-# S172 CONSOLIDATED PLAN v6.0 — FINAL (APPROVED)
+# S172 CONSOLIDATED PLAN v7.0 — INTEGRATED (Phase RC + Phase 5v2 + ongoing session corrections)
 
-**Session:** 172
-**Date:** 2026-04-12
-**Status:** APPROVED after 5 review cycles
-**Scope:** All 3 bots (WeatherBot, MasterBot, EsportsBot) — audit remediation + long-term elevation
+**Session:** 172 (original) + 173 (RC diagnostics + 5v2 amendment) + S180–S183 (session corrections log)
+**Date:** 2026-04-12 (v6.0) → 2026-04-13 (v7.0) → continuously updated
+**Status:** APPROVED — integrates v6.0 + Phase 5v2 Amendment + Phase RC findings + S180–S183 Corrections Log
+**Scope:** All 3 bots (WeatherBot, MirrorBot, EsportsBot) — audit remediation + long-term elevation
 **Timeline:** 8 months
-**Previous:** S171 (`AGENT_HANDOFF_S171_SHARED_MASTER.md`)
+**Previous:** S171 (`AGENT_HANDOFF_S171_SHARED_MASTER.md`), prior v6.0 and Phase 5v2 amendment folded in
+
+---
+
+## Changes v6.0 → v7.0
+
+1. **Phase RC inserted** between Phase 1 and Phase 2. Complete. Findings integrated.
+2. **Phase 5 replaced** by Phase 5v2 (EB rebuild). EB v1 killed — 4/4 kill criteria met.
+3. **Phase 6 gate updated** — gated on RC findings + post-fix WB data, not just 1B calibration.
+4. **Phase 7 gate updated** — gated on RC findings + post-fix MB data, not just prediction count.
+5. **Success criteria amended** — EB v2 evaluated separately. System may operate with 2 bots.
+6. **Phase 8B** evaluates EB v2 data (model_version='v2-trinity'), not v1.
+7. **Immediate WB/MB fixes** added as "Day 2" actions derived from RC findings.
+8. **Sessions S180–S183** Corrections Log, Protocols 1–4, Hygiene Backlogs appended (preserved from v6.0's ongoing edits — the consolidated plan is a living document).
 
 ---
 
 ## Context
 
-Six independent audits + gap analysis + handoff cross-reference + elevation roadmap identified 80+ issues and strategic improvements. All verified against live VPS (2026-04-12). Nothing deferred — every item has a phase assignment. Timeline: 8 months.
+Six independent audits + gap analysis + handoff cross-reference + elevation roadmap identified 80+ issues and strategic improvements. All verified against live VPS (2026-04-12). Phase 1 complete (12/12 items deployed). Phase RC diagnostics (35 queries, invariant-checked, cross-validated against bot_pnl.py) revealed:
+
+- **WB:** SIZING + SUBSET. Wins half the size of losses. YES side overwhelmingly negative. Confidence anti-calibrated. See `scripts/rc_diagnostic.py` output for numbers.
+- **MB:** SIGNAL + SUBSET. Sub-40% WR. Crypto category and 5 specific wallets dominate losses. See `scripts/rc_diagnostic.py` and `scripts/rc_verify.py` output for numbers.
+- **EB:** SIGNAL. Model uninformative — flat WR across all calibration buckets. Never profitable any week. 4/4 kill criteria met. Killed. See `scripts/rc_temporal.py` Q4 output.
 
 ---
 
@@ -21,11 +38,44 @@ Six independent audits + gap analysis + handoff cross-reference + elevation road
 - **Maintenance windows:** Schema changes (1C, 1E, migrations) deploy during 02:00-04:00 UTC low-activity window.
 - **Testing:** Each new subsystem (5H Glicko-2, 6J city rotation, 7H LLM signal) requires integration tests before merge. "Existing tests pass" is necessary but not sufficient.
 - **Shadow mode:** Define shadow mode protocol as process document in Phase 1 (was 8O — promoted). All model changes in Phases 5-7 must use shadow mode.
-- **Capital during elevation:** During Phases 5-7 model changes, bots continue at current paper-trade sizes. Shadow mode governs: candidate model predicts but doesn't trade until promoted.
+- **Capital during elevation:** During Phases 5v2/6/7 model changes, bots continue at current paper-trade sizes. Shadow mode governs: candidate model predicts but doesn't trade until promoted.
 
 ---
 
-## DAY 1 — Immediate (< 4 hours, SSH + 2 code commits)
+## MASTER TIMELINE
+
+```
+Week:  1   2   3   4   5   6   7   8   9  10  11  12  ...  M3  M4  M5  M8
+       |---|
+       Day 1 + Phase 1 (COMPLETE)
+       |---|
+       Phase RC (COMPLETE — diagnostics run, findings applied)
+       |---|
+       Day 2 (WB/MB immediate fixes from RC — COMPLETE, deploy 20260414_132211)
+           |-------------------|
+           Phase 2 (infra, parallel — ~95% done, 2I flip pending)
+                   |--------------------------------------|
+                   Phase 5v2 (EB rebuild: A→B→C→D — 5v2-A/B COMPLETE, C/D LIVE shadow)
+                       |---|
+                       Phase 3 (VPS config)
+                           |---|
+                           Phase 4 (hygiene)
+                       |-------------------------|
+                       Phase 6 (WB elevation — gated on RC + post-fix data)
+                               |-----------------------------|
+                               Phase 7 (MB — gated on RC + prediction count; 4/11 items shipped)
+                                               |--------------------------|
+                                               Phase 8 (cross-bot)
+                                                       |----------|
+                                                       Phase 10 (strategic)
+                                                               |-----------------|
+                                                               Phase 12 (WB EMOS)
+       |-----------------------------------------------------------  Phase 13 (ongoing)
+```
+
+---
+
+## DAY 1 — Immediate (COMPLETE — deploy 20260413_172523)
 
 ⚠️ **FIRST ACTION: D5 (backup). Before any config changes. If PG dies during D1-D4, you lose everything.**
 
@@ -61,7 +111,7 @@ Six independent audits + gap analysis + handoff cross-reference + elevation road
 
 ---
 
-## WEEK 1 — Phase 1: P0 Data Integrity + Edge Verification + Shadow Mode Protocol
+## WEEK 1 — Phase 1: P0 Data Integrity + Edge Verification + Shadow Mode Protocol (COMPLETE — 12/12 items, 1892+ tests pass)
 
 | Commit | Item | File(s) | Notes |
 |--------|------|---------|-------|
@@ -92,6 +142,55 @@ Six independent audits + gap analysis + handoff cross-reference + elevation road
 - Post-1E: verify drawdown controller sees all 3 bots' exposure
 
 **POST-COMMIT-2:** Run calibration_check.py WeatherBot (CRPS + Brier + PIT)
+
+---
+
+## PHASE RC — Root-Cause Investigation (COMPLETE)
+
+**Deliverables:** `scripts/rc_diagnostic.py` (35 diagnostics), `scripts/rc_verify.py`, `scripts/rc_temporal.py`. All invariant checks PASS. All-time P&L cross-validated against `bot_pnl.py`.
+
+**Findings summary:** See Context section above. Full output on VPS.
+
+**Decision framework applied:**
+
+| Bot | Verdict | Root Cause | Action |
+|-----|---------|------------|--------|
+| WB | FIX | SIZING + SUBSET | Day 2 fixes + Phase 6 elevation |
+| MB | FIX | SIGNAL + SUBSET | Day 2 fixes + Phase 7 elevation |
+| EB | KILL | SIGNAL (uninformative model) | Phase 5v2 rebuild |
+
+---
+
+## DAY 2 — Immediate Fixes from RC Findings (COMPLETE — deploy 20260414_132211)
+
+**Philosophy:** Fix sizing and block clearly toxic subsets. Do NOT remove entire sides (YES/NO) or restrict lead-time windows — insufficient data to confirm those restrictions improve outcomes long-term. Let the bots accumulate post-fix data with both sides active.
+
+**Deploy order:** D2-1 (shared) → D2-2/D2-3 (WB) → D2-4/D2-5/D2-6 (MB) → D2-7 (EB kill). Deployed during 02:00-04:00 UTC maintenance window. Rollback: revert config/code, `sudo systemctl restart <service>`.
+
+### Cross-Bot (Shared)
+
+- **D2-1:** Cap max position size at $200 across all bots via `BotBankrollManager.max_bet_usd`. The largest position bucket is the dominant loss driver for all 3 bots — see rc_diagnostic.py S5 for per-bot breakdown.
+
+### WeatherBot
+
+- **D2-2:** Flat sizing — decouple from confidence until calibration fixed. Cap at $100 max. The confidence column is anti-calibrated: highest-confidence bucket has the largest losses despite the highest WR, because Kelly sizes up massively and rare losses are catastrophic. See rc_diagnostic.py S12, WB-8, and rc_verify.py Q5 for stake-by-confidence data.
+- **D2-3:** Blacklist worst cities: Dallas, NYC, Toronto, Atlanta, London, Seattle. These 6 cities have wl_ratio < 0.15 (losses 7-17x larger than wins) and account for the majority of city-attributable losses. See rc_diagnostic.py WB-1, WB-7.
+
+**NOT doing:** Kill YES side or restrict to 48-120h lead-time. YES side and short lead-times are underperforming, but we don't have enough post-fix data to confirm removing them improves outcomes. Both sides continue trading at reduced sizing ($100 cap). Re-evaluate at Phase 6 gate after 4+ weeks of post-fix data.
+
+### MirrorBot
+
+- **D2-4:** Block crypto category. Crypto loses on both YES and NO sides and accounts for the dominant share of MB losses. See rc_verify.py Q1 for category x side breakdown.
+- **D2-5:** Blacklist 5 worst wallets (0x818F, 0xD84c, 0x732F, 0x6ac5, 0x88f4). All 5 are active in last 30 days with 654 combined entries. See rc_verify.py Q2 for recency, rc_diagnostic.py MB-3 for per-wallet P&L.
+- **D2-6:** Require `whale_trade_usd >= $100`. Small whale trades ($0-25, 3,394 trades) dominate losses while trades above $100 are profitable across 1,680 trades. See rc_diagnostic.py MB-4 for bucket breakdown.
+
+**NOT doing:** Block sports-NO side. Sports-NO is a secondary loss driver but removing an entire side reduces data collection. Let it run at capped sizing. Re-evaluate at Phase 7 gate.
+
+### EsportsBot
+
+- **D2-7:** Kill EB v1. `BOT_ENABLED=false`, `systemctl disable polymarket-esports`. Code stays in repo. (This is also 5v2-A1.)
+
+**Expected volume impact:** WB drops from ~80 trades/day to ~60-70 (city blacklist reduces ~15%). MB drops from ~150/day to ~80-100 (crypto block + whale filter removes ~40-50%). Both bots retain enough volume for statistically meaningful post-fix evaluation within 4 weeks.
 
 ---
 
@@ -136,40 +235,128 @@ If market_prices Option B approved: Commit 20 (DROP TABLE + exclusion + ingestio
 
 ---
 
-## WEEKS 3-6 — Phase 5: EsportsBot Elevation (EB-scoped, 6-8 weeks realistic)
+## WEEKS 3-12 — Phase 5v2: EsportsBot Rebuild (REPLACES Phase 5)
 
-**Gate:** Phase 1I edge verification. If P(edge > 0) < 0.7 for EB, replace this phase with root-cause investigation.
+**EB v1 KILLED.** 4/4 kill criteria met: no profitable subset, never profitable any week, model uninformative across all calibration buckets. See rc_diagnostic.py EB-6 and rc_temporal.py Q4.
 
-### Core items (do first):
+### Architecture: Rating Trinity + XGBoost + Conformal Filter
 
-| Item | Details | Prerequisite |
-|------|---------|-------------|
-| 5A: TabPFN removal/API migration | If already done in 1F conditional, skip. | 1F results |
-| 5B: Training data cleanup | Deterministic cleaning. Retraining gate April 17+ — this date is from the S169 7-day freeze (frozen April 10). | Retraining gate open |
-| 5C+5O: Rating system evaluation | Evaluate Glicko-2 vs OpenSkill before building. Build winner. Specify: match winner AND map winner? Map-specific (5H) data requirements depend on this. | 5B |
-| 5H: Map-specific ratings | Separate ratings per team per map. Acknowledge: 7 maps × ~50 teams = 350 rating pairs needing ~30 matches each. Sparse initially — use aggregate rating as fallback when map-specific has < N matches. Verify July 2025 CS2 economy update rules before building. | 5C winner |
-| 5I: Economy state modeling | Deterministic CS2 economy. Verify against July 2025 shared kill income update ($50/team member per kill changed CT recovery). Build on current rules, not pre-July-2025. | 5B |
-| 5N: Conformal prediction wrapper | Use MapieClassifier (not MapieTimeSeriesRegressor) for binary match outcomes. | Any base model from 5C |
+| Layer | Component | Purpose |
+|-------|-----------|---------|
+| 1. Ratings | Elo + Glicko-2 + OpenSkill | Three independent probability estimates |
+| 2. Consensus | Trinity spread/mean/agreement | Confidence from agreement, abstain on divergence |
+| 3. Meta-model | XGBoost | Combines ratings + game features → raw probability |
+| 4. Calibration | Venn-ABERS | Calibrated probability with validity guarantees |
+| 5. Filter | MAPIE conformal (LAC, alpha=0.10) | Only bet singletons — skip uncertain matches |
+| 6. Sizing | Quarter-Kelly, $100 cap, 5% bankroll max | Conservative sizing |
 
-### Deferred within Phase 5 (require data pipelines that don't exist yet):
+**Game scope:** CS2 + LoL only. Expand after edge demonstrated.
 
-| Item | Details | Hidden dependency |
-|------|---------|------------------|
-| 5-PREREQ: HLTV data pipeline | Build scraper/API integration for player stats, match data, roster changes. Required by 5J, 5K, 5L. Separate build item, estimate 1-2 weeks. | None |
-| 5-PREREQ: LoL data pipeline | Oracle's Elixir CSVs + Riot API for solo queue. Required by 5M. | None |
-| 5J: Player form EWMA | EWMA on KPR, ADR, KAST, opening kills. | 5-PREREQ HLTV |
-| 5K: Meta-shift detection | Post-patch monitoring. During post-patch window: reduce position sizes (model uncertainty > market inefficiency until model re-calibrated on new patch data). | 5B + 5-PREREQ HLTV |
-| 5L: Bayesian roster changepoint | BOCD for roster swap detection. | 5H + 5-PREREQ HLTV |
-| 5M: LoL draft analysis | Embedding-based DNN for draft outcomes. | 5-PREREQ LoL |
-| 5G: WebSocket upgrade | Architecture design needed. | Design session |
+### Sub-Phase 5v2-A: Data + Ratings Foundation (Weeks 3-4) — COMPLETE
 
-**EB prediction gate:** 300 predictions with wider CI.
+| Item | Details |
+|------|---------|
+| A1 | Kill EB v1 (= D2-7) |
+| A2 | Schema migration 072 — 6 new tables (esports_matches, esports_players, esports_ratings, esports_features, esports_predictions, esports_odds) |
+| A3 | Oracle's Elixir loader (LoL 2024-2026) |
+| A4 | GRID (primary) + HLTV (supplementary) loader (CS2 2024-2026) |
+| A5 | Elo engine (team-level, K=32) |
+| A6 | Glicko-2 engine (team-level, RD + volatility) |
+| A7 | OpenSkill engine (player-level Plackett-Luce) |
+| A8 | Trinity runner — process historical matches, snapshot ratings, compute features |
+
+**Gate 5v2-A (PASSED):** All 3 systems produce plausible probabilities. Known dominant teams rated highest. Trinity spread ~0.05-0.10. Unit tests pass.
+
+### Sub-Phase 5v2-B: Backtester + Meta-Model (Weeks 5-6) — COMPLETE
+
+| Item | Details |
+|------|---------|
+| B1 | Walk-forward engine (train patches N-3..N-1, predict N) |
+| B2 | XGBoost meta-model (trinity features + game-specific) |
+| B3 | Venn-ABERS calibration (per-game) |
+| B4 | MAPIE conformal filter (singleton at alpha=0.10) |
+| B5 | CLV tracking (Pinnacle odds) |
+| B6 | Metrics suite (accuracy, Brier, log loss, ECE, CLV, yield, drawdown, z-score) |
+| B7 | Full backtest: CS2 + LoL, 2024-2026 |
+
+**Gate 5v2-B (PASSED 5/6, CLV deferred to shadow):** Accuracy >58% singletons, Brier <0.23, CLV >+1.5% vs Pinnacle, singleton rate >30%, z-score >1.5, both games individually profitable. **If fails after 2 iterations → stop.**
+
+### Sub-Phase 5v2-C: Shadow Mode (Weeks 7-9) — LIVE
+
+| Item | Details |
+|------|---------|
+| C1 | Live data pipeline (GRID/HLTV real-time) |
+| C2 | Market discovery (match → Polymarket market_id mapping) |
+| C3 | Shadow prediction engine (log to esports_predictions mode='shadow') |
+| C4 | Live CLV tracking |
+
+**Duration:** Min 2 weeks or 50 resolved predictions.
+**Gate 5v2-C (HARD):** Shadow accuracy >55%, Brier <0.25, CLV >+2% vs Polymarket, backtest-to-shadow drop <5%.
+
+### Sub-Phase 5v2-D: Paper Trading (Weeks 10-12+) — LIVE (dry_run, shadow)
+
+| Item | Details |
+|------|---------|
+| D1 | Wire to base_engine (bots/esports_bot_v2.py extending BaseBot) |
+| D2 | Sizing: quarter-Kelly, $100 cap, D7 hard stop -50% |
+| D3 | prediction_log writes (model_version='v2-trinity') |
+| D4 | Enable: BOT_ENABLED=true, SIMULATION_MODE=true |
+
+**Duration:** Min 4 weeks or 100 resolved predictions.
+**Gate 5v2-D:** P(edge>0) >= 0.70 via edge_verification.py, accuracy >55%, wl_ratio >0.80, max drawdown <25%.
+
+### Risk Controls
+
+| Control | Value |
+|---------|-------|
+| Max position | $100 |
+| Max bankroll/bet | 5% |
+| Kelly fraction | 0.25 |
+| Hard stop-loss | -50% (D7) |
+| Min edge | 5% |
+| Conformal filter | alpha=0.10, singleton |
+| Trinity guard | spread < 0.15 |
+| Max daily bets | 10 |
+| Stale rating guard | skip if last match > 45 days |
+| Patch guard | 50% sizing for 2 weeks post-patch |
+
+### New Dependencies (pip)
+
+```
+openskill>=6.0.0       # Player-level ratings
+venn-abers>=0.4.0      # Calibration
+hltv-async-api>=0.8.0  # CS2 data (supplementary)
+shap>=0.43.0           # Feature importance
+# Already installed: xgboost, mapie
+```
+
+### Code Organization
+
+```
+esports_v2/           # Parallel to existing esports/
+  ratings/            # elo.py, glicko2.py, openskill_engine.py, trinity.py
+  features/           # cs2_features.py, lol_features.py, feature_registry.py
+  model/              # meta_model.py, calibrator.py, conformal.py
+  data/               # hltv_loader.py, oracle_loader.py, grid_loader.py, odds_loader.py, normalizer.py
+  backtest/           # walk_forward.py, metrics.py, runner.py
+  scripts/            # load_historical.py, run_backtest.py, run_shadow.py
+
+bots/esports_bot_v2.py   # Bot class (extends BaseBot)
+tests/esports_v2/         # Unit + integration tests
+```
+
+**Note:** Phase 5v2-E (scan-cycle cost reduction, deferred) is tracked in the Corrections Log section below.
 
 ---
 
 ## WEEKS 4-10 — Phase 6: WeatherBot Elevation (WB-scoped, extended for 6J)
 
-**Gate:** Phase 1B calibration results (CRPS/PIT).
+**Gate (updated v7):** Phase RC findings + post-Day-2 data. WB must show improvement on post-fix trades (D2-2, D2-3 applied) before elevation proceeds. Re-run edge_verification.py on trades after Day 2 deploy timestamp (20260414_132211). Concrete thresholds:
+- **P(edge>0) ≥ 0.30** on post-fix trades: proceed with Phase 6 (directionally positive, fixes are helping).
+- **P(edge>0) < 0.10** after 4 weeks: Day 2 fixes didn't address enough. Phase 6 items must target remaining loss drivers (e.g., 6D calibration, 6F YES-side strategy) before general elevation.
+- **Minimum sample:** 200+ closed trades on post-fix data before evaluating gate.
+
+Note: 1B calibration infrastructure (CRPS/PIT) is a prerequisite and is SHIPPED (`scripts/calibration_check.py:110-188`, commit `ccae341`). Gate now requires measured improvement on post-fix data, not just infrastructure existence.
 
 Station mapping MOVED HERE from Phase 12 (resolves 6N↔12A circular dependency).
 
@@ -200,7 +387,12 @@ Station mapping MOVED HERE from Phase 12 (resolves 6N↔12A circular dependency)
 
 ## MONTH 2-3 — Phase 7: MirrorBot Elevation (MB-scoped)
 
-**Gate:** 1G + 500+ logged predictions (~7 weeks at 80/week, not 6). If accumulation rate drops below 60/week, extend timeline accordingly — do not lower the 500 threshold.
+**Gate (updated v7):** 1G + 500+ logged predictions + RC findings. MB must show improvement on post-Day-2 data (D2-4 through D2-6 applied). Re-run edge_verification.py on trades after Day 2 deploy timestamp (20260414_132211). Concrete thresholds:
+- **P(edge>0) ≥ 0.30** on post-fix trades: proceed with Phase 7 (directionally positive).
+- **P(edge>0) < 0.10** after 4 weeks: crypto block + wallet blacklist + whale filter didn't address enough. Investigate remaining loss drivers before elevation.
+- **Minimum sample:** 500+ closed trades on post-fix data before evaluating gate.
+
+**Current status (as of 2026-04-19 verification):** 4/11 items shipped — 7E (`scripts/gate_score_expectancy.py`, a3052a7), 7G (`scripts/cooldown_analysis.py`, 344f1e2), 7J (`base_engine/learning/prediction_drift.py`, 3313874), 7K (`base_engine/learning/venn_abers_intervals.py`, 11fac16). 136,895 MB prediction_log rows accumulated — 500-row gate satisfied 273×. 7B (wallet selection overhaul) is the next highest-ROI unblocked item.
 
 | Item | Details | Prerequisite |
 |------|---------|-------------|
@@ -225,7 +417,7 @@ Station mapping MOVED HERE from Phase 12 (resolves 6N↔12A circular dependency)
 | Item | Details |
 |------|---------|
 | 8A: Central position registry | Full cross-bot mutual exclusion. |
-| 8B: Prediction gate decisions | MB 500+, EB 300. Kill = BOT_ENABLED=false in .env, systemctl disable service, keep code intact. Reversible if root-cause fix found. Retrain = unfreeze retraining with new training data. Proceed = proceed to live at 25% previous size. Gate: if calibration data insufficient at threshold, run on whatever's available + acknowledge wider CI. |
+| 8B: Prediction gate decisions | MB 500+, EB v2 100+ (model_version='v2-trinity', NOT v1). Kill = BOT_ENABLED=false in .env, systemctl disable service, keep code intact. Reversible if root-cause fix found. Retrain = unfreeze retraining with new training data. Proceed = proceed to live at 25% previous size. Gate: if calibration data insufficient at threshold, run on whatever's available + acknowledge wider CI. |
 | 8P: Evidently AI drift monitoring | Data drift, concept drift, prediction drift. |
 
 ### Month 3-4 — Bot-specific items:
@@ -290,6 +482,7 @@ Station mapping already done in Phase 6. Build on it.
 
 ## Decisions
 
+**From v6.0:**
 - **WeatherBot:** KEEP RUNNING with guardrails
 - **market_prices:** KILL (Option B, after pgBackRest + slippage refactor)
 - **D7:** Per-bot stop-loss, shared check REPLACES EB-specific override (one code path)
@@ -297,12 +490,24 @@ Station mapping already done in Phase 6. Build on it.
 - **D10:** TTL = min(time_to_resolution, 6h) floor 1h
 - **PG OOMScoreAdjust:** -900 (not -1000)
 - **Pool settings:** Investigate first, conservative reduction, 48h monitor with rollback trigger
-- **Calibration gate:** WB immediate, MB/EB after prediction_log fix, May 12 hard deadline
-- **EB prediction gate:** 300 (not 800)
+- **Calibration gate:** WB immediate, MB/EB after prediction_log fix
 - **1I as graduated gate:** ≥0.9 → full elevation, 0.7–0.9 → core items only, <0.7 → root-cause investigation
 - **NegRisk:** REMOVED
 - **Maker orders:** REMOVED
-- **Phase 5/6J city rotation:** Incremental build — minimal in Phase 6J, extend in Phase 12F. Don't build twice.
+- **Phase 6J city rotation:** Incremental build — minimal in Phase 6J, extend in Phase 12F. Don't build twice.
+
+**From v7.0 (RC + 5v2):**
+- **EB v1:** KILLED via 8B procedure. Code retained. Historical trade_events preserved.
+- **EB v2:** Rating trinity (Elo + Glicko-2 + OpenSkill) + XGBoost + Venn-ABERS + MAPIE conformal.
+- **EB v2 game scope:** CS2 + LoL only. Expand after edge demonstrated.
+- **EB v2 methodology:** Backtest → shadow → paper → conditional live. No phase skipping.
+- **EB v2 backtest gate:** Accuracy >58% singletons, Brier <0.23, CLV >+1.5%, both games profitable.
+- **EB v2 paper gate:** P(edge>0) ≥ 0.70, 100+ resolved predictions.
+- **EB v2 position cap:** $100.
+- **WB Day 2:** Flat sizing ($100 cap), blacklist 6 worst cities. Both sides keep trading — not enough data to kill YES.
+- **MB Day 2:** Block crypto, blacklist 5 wallets, require whale ≥ $100. Sports-NO keeps trading — not enough data to block a full side.
+- **Cross-bot Day 2:** Max position $200 cap via BotBankrollManager.
+- **WB/MB gates updated:** Post-Day-2 data must show improvement before elevation proceeds.
 
 ---
 
@@ -342,29 +547,35 @@ Station mapping already done in Phase 6. Build on it.
 
 ---
 
-## Success Criteria (8-month plan exit)
+## Success Criteria (8-month plan exit — AMENDED v7)
 
-- All 3 bots have P(edge > 0) ≥ 0.7 (measured via 1I methodology on post-fix data)
+- **WB and MB** have P(edge > 0) ≥ 0.7 on post-Day-2 trades (measured after 4+ weeks accumulation)
+- **EB v2** has P(edge > 0) ≥ 0.7 on paper trades (measured at 5v2-D gate). If EB v2 fails its gate: kill via 8B procedure, disable data pipeline crons, `systemctl disable polymarket-esports-v2`. Tables retained for future analysis. **System operates with 2 bots.**
 - Total portfolio maximum drawdown under 25% of deployed capital
 - Zero unresolved P0 audit items
-- All prediction gates met: WB calibrated (CRPS/PIT), MB 500+ predictions, EB 300+ predictions
+- All prediction gates met: WB calibrated, MB 500+ predictions, EB v2 100+ predictions (not v1)
 - Shadow mode protocol used for every model change — no exceptions
 - Backups operational (pgBackRest PITR or pg_dump daily minimum)
-- If any bot fails its prediction gate at 8B: killed or retrained per the defined criteria, not left running with negative expectancy
+- If any bot fails its gate: killed or retrained per defined criteria, not left running with negative expectancy
 
-## Verification
+## Verification (v6.0 + v7 additions)
 
-- pytest 1878+ pass after each commit
+- pytest 1892+ pass after each commit (updated baseline from Phase 1; currently 1843+ as of S182)
 - Every new subsystem has integration tests before merge
 - Rollback tested for schema changes
 - D5 backup exists before ANY Day 1 config changes
-- 1I edge verification gates Phases 5-7
+- 1I edge verification gates Phases 6-7 (5v2 has its own gate sequence)
 - 1J orderbook collection running (check rate limit compliance)
 - Shadow mode protocol documented and followed for all model changes
-- Phase 5: EB core items complete, data pipeline dependencies enumerated
+- **Day 2 fixes:** re-run edge_verification.py after 4 weeks of post-fix data (deploy 20260414_132211)
+- **5v2-A:** All 3 rating engines have unit tests. Integration test on 100 matches.
+- **5v2-B:** Walk-forward backtest with shuffle-label control. Reliability diagram.
+- **5v2-C:** Shadow predictions logged for min 2 weeks / 50 resolved.
+- **5v2-D:** P(edge>0) via edge_verification.py. rc_diagnostic.py on v2 trade_events.
+- **Phase RC scripts validated:** rc_diagnostic.py (35 diagnostics), rc_verify.py, rc_temporal.py — all invariant checks PASS, cross-validated against bot_pnl.py.
 - Phase 6: Station mapping complete, CRPS/PIT delta measured, 6C∥6K parallelized
-- Phase 7: 500+ prediction_log rows (7 weeks), LLM signal used for entry only
-- Phase 8: Prediction gates at 300 (EB) / 500 (MB) — run on available data with explicit CI
+- Phase 7: 500+ prediction_log rows (satisfied 273×), LLM signal used for entry only
+- Phase 8: Prediction gates at 100 (EB v2) / 500 (MB) — run on available data with explicit CI
 - Phase 12: EMOS top 5 cities, city rotation extends (not rebuilds) Phase 6J
 
 ---
@@ -372,9 +583,14 @@ Station mapping already done in Phase 6. Build on it.
 ## Critical Files
 
 - **Day 1:** risk_manager.py (D7), mirror_bot.py (D8), weather_bot.py (D10), config/env
-- **Phase 1:** frozen_price_check.py (1A), calibration_check.py (1B), order_gateway.py (1E-b), weather_bot.py (1E-a), mirror_bot.py+esports_bot.py (1G), esports_bot.py (1F), new edge_verification.py (1I), orderbook cron (1J), shadow mode doc (1L), strategy lifecycle migration (1M)
-- **Phase 2:** logging_setup.py (2C,2D), health_check.sh (2F enhance), slippage_check.py (2J), Feast config (2K)
-- **Phases 5-7:** Bot files, .env files, model files, WebSocket handlers, rating system implementations
+- **Phase 1:** frozen_price_check.py (1A), calibration_check.py (1B — CRPS/PIT shipped `ccae341`), order_gateway.py (1E-b), weather_bot.py (1E-a), mirror_bot.py+esports_bot.py (1G), esports_bot.py (1F), new edge_verification.py (1I), orderbook cron (1J), shadow mode doc (1L), strategy lifecycle migration (1M)
+- **Phase RC:** rc_diagnostic.py, rc_verify.py, rc_temporal.py
+- **Day 2:** bankroll_manager.py (D2-1 cap), weather_bot.py (D2-2 sizing, D2-3 city blacklist), mirror_bot.py (D2-4 crypto block, D2-5 wallet blacklist, D2-6 whale filter), .env.esports (D2-7 EB kill)
+- **Phase 2:** logging_setup.py (2C,2D), health_check.sh (2F enhance), slippage_check.py (2J), Feast config (2K — SKIPPED per S179 decision), order_gateway.py:625-652 (2H-3 shipped `b786316`)
+- **Phase 5v2:** esports_v2/ (new tree), bots/esports_bot_v2.py, migration 072, tests/esports_v2/
+- **Phase 6-7:** Bot files, .env files, model files, WebSocket handlers, rating system implementations
+  - 7E `scripts/gate_score_expectancy.py`, 7G `scripts/cooldown_analysis.py`, 7J `base_engine/learning/prediction_drift.py`, 7K `base_engine/learning/venn_abers_intervals.py` — all shipped
+  - 7B target: `bots/elite_watchlist.py` (1045 lines existing, retune against 136,895 MB prediction_log rows)
 - **Phases 10-12:** Telegram bot, backtester, EMOS pipeline, city mastery system
 
 ---
@@ -420,6 +636,29 @@ ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 \
 ```
 
 Makes the check one command, not a remembered grep. Durable across sessions. Low priority; write when convenient.
+
+### S183 Hygiene Backlog
+
+**Background task survivability audit.** Tasks launched via the in-session `background` pattern (observed during S182 soak: task IDs `bvbeuc1ta` T+2h and `bkxdhbi24` T+4h) produce 50-byte output stubs and appear to have launched cleanly, but are actually blocking on a long leading `sleep` inside the parent session's process tree. When the parent session closes, the sleep is killed and the task never fires its payload — no error, no notification, no completion. Observed in S183: both tasks' `.output` files contained only `"Waiting <N>s until T+<X>h at <timestamp>"` and never produced query output. Contrast with `mcp__scheduled-tasks__*` which persists to disk and survives session close (worked correctly for S183 T+4h at `anchor+42s`).
+
+**Fix options (prefer A):**
+- **A.** Audit every task-launch path used by agents — background bash with `sleep`, `Monitor` with `persistent: false`, etc. — and publish a "survives session close? Y/N" matrix in agent instructions. Anything with "N" is a false-affordance and should be replaced in agent prompts with `mcp__scheduled-tasks__*` or `CronCreate(durable: true)`.
+- **B.** Minimum viable: emit a WARNING in the harness when a task is launched via a pattern known to not survive, with `"this task will be killed if the session closes — use mcp__scheduled-tasks for durable scheduling"`.
+
+Discovered S183 (2026-04-19/20). Phase 4 backlog. Dangerous because "scheduled a background task" reads as complete when it isn't.
+
+**Session template codification — `§Session Template` before Phase 5 sentinel.** The pattern `inherit-handoff → verify-claims → walk-backward-hypotheses → fix-with-tests-and-gates → codify-protocols-from-failures` has now executed 3 sessions running (S180, S181 partial, S182). User flagged this in S182 as a backlog item and again in S183. Template should land as a `§Session Template` section in this plan file so future sessions default to it rather than re-deriving.
+
+**Drafts, in rough priority:**
+1. **Inherit-handoff.** Read predecessor handoff; verify the *one claim most load-bearing* (e.g., "X was deployed" → check git log on VPS release; "Y was fixed" → grep code for the supposed fix). Handoffs drift.
+2. **Verify-claims.** If the claim doesn't hold, update `memory/project_s172_current_state.md` as first action. Don't build on a false foundation.
+3. **Walk-backward-hypotheses.** Each time a hypothesis is invalidated, log the inversion and the diagnostic that inverted it. S182 ran 3 consecutive inversions — this is expected, not exceptional.
+4. **Fix-with-tests-and-gates.** Every shipped commit carries unit test + post-deploy gate (e.g., T+30min query). No exceptions.
+5. **Codify-protocols-from-failures.** Concrete failure → named protocol (§Protocols 1-4). Generic "we should be more careful" observations don't qualify.
+
+Should ship before Phase 5 sentinel deploys because the sentinel session itself will benefit from having the template explicit (and the sentinel's check #4b — persistent-findings watchdog — sits downstream of the protocol-codification step). 30-minute scope.
+
+Discovered via user's 3-session retrospective (S182 audit review, S183 audit review).
 
 ---
 
@@ -647,6 +886,38 @@ If none can be produced, "the code is broken" is NOT a supported conclusion. The
 **Sub-case — runtime-reachable input (Protocol 4c extension).** The "diff input keys vs output keys" check assumes the projection's input is non-empty at runtime. A projection that correctly passes through every key the upstream provides is still operationally inert if the upstream returns empty on every call. For projections with conditional input strategies (a strategy-A-or-strategy-B selection gated on external dependencies), verify at least one input strategy is actually exercised before declaring the projection fix complete — the equivalent of Protocol 4a applied to the projection's input rather than the projection itself. Minimum evidence: run the projection end-to-end against real data and observe non-empty output with consumer-expected keys populated.
 
 **Evidence of origin (sub-case).** S182 Phase 1d post-deploy T+44min verification found that the A4 passthrough fix — code-correct and verified by unit tests + VPS file diff — was operationally inert in `EsportsBotV2`. Its `_initialize()` at `bots/esports_bot_v2.py:111` constructed the scanner with only `db=db`, leaving both `self._market_service` and `self._poly` as None. Both of the scanner's internal input strategies (market_service at L97 and polymarket_client fallback at L107) short-circuited on every call, so `all_markets=[]` and the A4-enriched output never appeared because the `for market in (all_markets or [])` loop never iterated. `esports_predictions` showed 213 rows across 30 days with zero non-null `market_price`, confirming the pre-1d-3 state: the projection was never receiving input. Closed in Phase 1d Commit 1d-3 by wiring `EsportsMarketService` into the scanner constructor (mirrors `bots/esports_live_bot.py:107-118`). A pre-deploy E2E verification would have caught this — running the scanner+service against real data with a fixture match returned 13 non-empty results with all paired keys populated, proving the projection path works when the input is reachable. The durable lesson: Phase 0 contract audits should examine both ends of the projection (what does the emitter emit AND does it ever receive anything to emit from).
+
+---
+
+### Protocol 5 — Phase-level status claims require shipped-code verification
+
+**Mandate.** When a session report, handoff, or memory entry asserts phase-level status ("Phase X done," "Item Y pending," "Gate Z passed"), treat the claim as testimony, not fact, until verified against shipped code on master (and, where relevant, against the deployed release on VPS). Status claims drift across the serial chain of handoff → memory → next handoff → next memory; by the time a multi-session-old claim is reused, the underlying code may have changed in either direction (something marked "pending" may have shipped; something marked "done" may have been reverted or never merged from a branch).
+
+Protocol 4b's "handoff-entry verification" sibling clause covers claims about *bugs* and *specific code facts*. Protocol 5 is the status-claim sibling: it applies specifically to coarse-grained phase/item completion state, which has its own failure mode distinct from bug claims.
+
+**Minimum evidence.** For each phase/item status claim being relied upon:
+- **"Shipped" claims:** verify the file exists, read enough of its contents to confirm it's a real implementation (not a stub), and confirm the commit SHA is on master (`git log` or `git merge-base`). For deploy-dependent claims, additionally confirm the SHA is at or before the VPS-deployed release.
+- **"Pending" claims:** grep the target file/function for the supposed missing implementation. A claim that an item is pending is falsified by the presence of the code it allegedly lacks.
+- **"Gate passed" claims:** re-run the gate query or re-evaluate the gate criteria against current data, not against the data the claim was originally measured on. Gate data drifts; a gate passed last month may no longer hold.
+
+If evidence cannot be produced, the status claim is unsupported and must be re-marked as "memory-claimed, unverified" until verified. Acting on an unverified status claim — including propagating it into the next handoff or memory entry — is forbidden.
+
+**Out of scope.** Claims about facts invariant under code changes (historical events, design decisions, session narratives, deploy timestamps) do not require re-verification — they're immutable record. This protocol applies to claims about the *current state* of code, data, and configuration.
+
+**Evidence of origin.** S183 entry-point verification (2026-04-19/20) surfaced two drift items in memory/handoff status claims within a 30-minute window: (1) "2H-3 pending" (actually shipped in commit `b786316`, fully wired at `order_gateway.py:625-652` with per-bot depth multipliers), (2) "Phase 6 gated on 1B calibration pending" (1B CRPS/PIT shipped in commit `ccae341` at `scripts/calibration_check.py:110-188`). Both had cascaded through multiple handoffs unchallenged because no session had re-verified the claims against code since the original "pending" statements were first written. Both surfaced the moment a "read the code, don't guess" directive forced verification. Protocol 4b's handoff-entry verification would have prompted the check for bug claims; this protocol extends the same discipline to phase-level status claims as a distinct class.
+
+#### 5a — Canonical source document identity
+
+**Mandate.** When a session or memory entry asserts that a particular filename is the canonical version of a multi-version document (plan, schema, protocol, architecture doc), verify that the filename actually points to the most-recent-approved content. Document identity and document content drift independently: a filename convention can remain stable ("the unnumbered file is canonical") while the approved content has moved into a versioned sibling file, or vice versa. Claims about which file to read are a distinct failure class from claims about what a file says — the former fails before the document is even opened.
+
+**Minimum evidence.** For the document being relied upon:
+- List all files matching the canonical-name pattern (e.g., `ls S172_CONSOLIDATED_PLAN*.md`, `git ls-files '<schema>*.sql'`).
+- If more than one match exists, verify each is tracked in git, compare mtimes and commit dates, and read each header to determine which one is marked as approved/current.
+- If the "canonical" file by filename convention is NOT the most-recent-approved content, either promote the approved file to the canonical filename, or merge the approved content into the canonically-named file. Delete the orphan so the bifurcation does not recur.
+
+**Out of scope.** Explicit version-history files kept alongside the current file by design (e.g., `CHANGELOG.md`, migration files numbered in sequence, archived handoffs) are not bifurcations — they're intentional parallel artifacts. This sub-case applies to cases where two files both claim to be the current authoritative source.
+
+**Evidence of origin.** S183 plan-hygiene audit found `S172_CONSOLIDATED_PLAN_v7.md` tracked in git (committed `0f1e2a8` on 2026-04-14, headered "APPROVED — integrates v6.0 + Amendment 1 + Phase RC findings") sitting alongside `S172_CONSOLIDATED_PLAN.md` (v6, the filename-canonical version, last edited 2026-04-19 with ongoing session Corrections Log additions). Memory and CLAUDE.md both pointed at the unnumbered filename, so every session since 2026-04-14 had been reading v6 without Phase RC or Day 2 content. Surfaced by a grep of `^## ` section headers against both files which exposed Phase RC and Day 2 sections in v7 that v6 lacked. Resolved by merging v7's content into the canonical-filename v6 (v6 retained because it had more ongoing edits than v7) and `git rm` on the v7 orphan, preserving v6's Corrections Log + Protocols additions while folding in v7's RC + 5v2 content. The class of drift: filename-stable, content-drifted into a sibling.
 
 ---
 
