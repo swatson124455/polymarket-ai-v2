@@ -42,6 +42,53 @@ Six independent audits + gap analysis + handoff cross-reference + elevation road
 
 ---
 
+## Session Template
+
+Every session on this project follows one of two entry-point templates, then a shared execution pattern. The templates exist to prevent the class of failure where a session builds on stale testimony — see Protocols 4b, 5, 5a for the concrete failure modes.
+
+### Entry Point A — Handoff-inherit (predecessor session exists)
+
+A prior session left a handoff doc (`AGENT_HANDOFF_*.md`, gitignored) and updated memory. Default assumption: **the handoff is testimony, not fact.** The interval between handoff-write-time and session-entry-time is a drift window.
+
+**Phase 0 — Verify testimony (30-minute budget):**
+1. Read the predecessor handoff in full.
+2. Apply Protocol 5a — verify `S172_CONSOLIDATED_PLAN.md` is still the canonical filename (no sibling `_v8`, `_v7`, etc. with newer-approved content).
+3. Identify the single most load-bearing claim in the handoff (what the next session is supposed to build on first). Apply Protocol 4b to it — verify against current shipped code, not against the handoff's summary.
+4. Apply Protocol 5 to every phase-level status claim the session will rely on ("X is done," "Y is pending," "gate Z passed"). Verify each against shipped code, not against memory.
+5. If any verification fails, STOP. Update memory / current_state to reflect verified state before proceeding with session work. Building on an unverified claim is forbidden.
+
+### Entry Point B — Fresh start (no predecessor handoff)
+
+No handoff inherited. Session is picking up work from the plan directly, or starting a new line of investigation.
+
+**Phase 0 — Ground in canonical state (30-minute budget):**
+1. Read `CLAUDE.md` (project directive, always authoritative).
+2. Read `S172_CONSOLIDATED_PLAN.md` header + Changes v6.0→v7.0 section. Apply Protocol 5a to confirm no orphan sibling file.
+3. Read `memory/project_s172_current_state.md` — this is the live state claim.
+4. Verify the top 2-3 load-bearing claims in current_state.md against shipped code using Protocol 5. Do NOT verify every claim (budget-bound); verify the ones the session's intended work depends on.
+5. If drift found, update current_state.md first, then proceed.
+
+### Shared execution pattern (both entry points)
+
+After Phase 0 verification:
+
+1. **Walk-backward-hypotheses.** Each time a working hypothesis is invalidated, log the inversion and the diagnostic that inverted it. Three consecutive inversions on the same bug (as in S182 Phase 0.2 → 0.2-b → 1c → 1d) is expected, not exceptional — it's the signal that the original framing was at the wrong layer.
+2. **Fix-with-tests-and-gates.** Every shipped commit carries a unit test and a post-deploy gate (T+30min, T+2h, T+4h, T+24h). No exceptions. "Tests pass" is necessary but not sufficient — the gate is the truth.
+3. **Codify-protocols-from-failures.** Concrete failure → named protocol with Mandate / Out-of-scope / Evidence of origin (§Protocols structure). Generic "we should be more careful" observations do NOT qualify — every protocol must cite a specific failure that would have been prevented by the rule.
+4. **Update memory + state at session close.** Write or update the handoff for the next session. Update `memory/project_s172_current_state.md` with any verified status changes. Update `memory/MEMORY.md` index if adding new memory files.
+
+### Out-of-scope for this template
+
+- Session-specific execution details (what commit landed, what deploy timestamp fired) belong in the handoff doc and the §Corrections Log, not here. This template is the durable shape every session takes, not a log of any particular session's work.
+- Generic process advice ("be careful," "don't break things") that isn't tied to a concrete verifiable step.
+- Content overlap with CLAUDE.md — that file is the project directive; this template is the session shape. Don't duplicate.
+
+### Evidence of origin
+
+Template shape observed across S180, S181, S182, S183. Each session ran some variant of "inherit handoff → verify claims → walk backward through hypothesis layers → fix with tests and gates → codify protocols." S182's retrospective review explicitly identified this as a reusable pattern worth codifying. S183's plan-hygiene work landed it as this section. The two-entry-point split (handoff vs. fresh-start) was specifically requested in S183 review to prevent a fresh-start session from looking for a handoff that doesn't exist and getting stuck.
+
+---
+
 ## MASTER TIMELINE
 
 ```
@@ -659,6 +706,42 @@ Discovered S183 (2026-04-19/20). Phase 4 backlog. Dangerous because "scheduled a
 Should ship before Phase 5 sentinel deploys because the sentinel session itself will benefit from having the template explicit (and the sentinel's check #4b — persistent-findings watchdog — sits downstream of the protocol-codification step). 30-minute scope.
 
 Discovered via user's 3-session retrospective (S182 audit review, S183 audit review).
+
+### Phase 5 Sentinel — pre-deploy prerequisites
+
+The Phase 5 silent-failure sentinel (`scripts/silent_failure_sentinel.py`, not yet shipped) was planned to deploy after Phase 2 stable for 24h. S183 surfaced a two-part prerequisite. **The actual scheduling gate is Prereq 1** — Prereq 2 is a cheap ~5-line patch that unblocks sentinel design, not a workload that competes for session time. Framing the two as symmetric "double-gate" would mislead planning.
+
+**Prerequisite 1 (the real gate) — Audit triage complete.** Multi-session workload. The sentinel's check #4b alerts on persistent reconciliation_breaks findings. Running it against untriaged findings (9,900+ unique violations across 23 recon_types) would false-positive on every cycle. Triage output lives at `docs/audit_triage_3a.md` + `docs/audit_triage_3b.md` (working-tree — `AUDIT_*.md` glob in `.gitignore:150` catches them case-insensitively on Windows). P0 blockers identified: POSITION, STALE_POSITION, SIZE_INVARIANT, FK_MISSING_MARKET, POSITION_SIZE_MISMATCH. Sentinel cannot ship until these P0s are either fixed or explicitly whitelisted in sentinel config.
+
+**Prerequisite 2 (cheap unblock) — `triggered_by` labeling fix in `run_audit.py`.** The sentinel's check #4a was designed to alert if no `run_type='scheduled_daily'` heartbeat fired in 25 hours. S183 audit-runs query (Q3) showed only 2 `scheduled_daily` rows ever, with last_run 2026-04-04 — initially misread as "daily timer broken since Apr 4." Investigation via `systemctl status polymarket-audit.timer` revealed:
+- Timer: **ACTIVE**, enabled, firing daily at 03:00 UTC. Verified run fired 2026-04-20 03:01:03 UTC.
+- Service: **running correctly**. `run_id=879` completed at the observed 03:01:03 trigger.
+- `run_audit.py:69-70` **hardcodes** `run_type="cli"` and `triggered_by="cli"` regardless of invocation context. The systemd-fired daily run records as `triggered_by='cli'`, indistinguishable in the data from a manual CLI invocation.
+
+**What this means for sentinel #4a:**
+- Current design (watch for `run_type='scheduled_daily'`) would false-positive indefinitely — the label it watches for doesn't exist in current data.
+- Redesign to "any audit_runs row with `started_at > NOW() - 25h`" ignores run_type entirely but silently greens if only post_resolution runs fire (~54/day, always satisfying the 25h window even if the daily timer dies).
+- **Correct fix:** add `--triggered-by <label>` CLI flag to `run_audit.py` with default `"unlabeled"` (NOT `"cli"` — a missing-label invocation must be distinguishable from an explicit CLI run). Have `polymarket-audit.service` pass `--triggered-by scheduled_daily`. Sentinel #4a can then watch for the explicit label reliably.
+
+**Sequencing:** land the labeling fix BEFORE starting P0 audit work. Reason: the P0 fixes (e.g. deleting the legacy POSITION/STALE_POSITION emitter) will rerun audits; if the audit script still mislabels its own triggers, post-change verification runs are unreliable. Close the observability layer before using it to verify code changes.
+
+---
+
+### Silent-failure class — systemd components whose data-surface lies about their state
+
+Three instances documented across S180-S183. All share a structural pattern: a systemd-managed component whose apparent operational state (from data/log/query observation) disagreed with its actual runtime behavior. But the **mechanism differs each time**, which is why the pattern is worth naming separately from any individual instance.
+
+| # | Session | Component | Data-surface said | Actual state | Mechanism |
+|---|---------|-----------|-------------------|--------------|-----------|
+| 1 | S182 | `polymarket-audit.service` | "Failed" for 21+h (systemd unit status) | Script succeeding, findings reported | `SuccessExitStatus=1 2` missing; systemd default treated non-zero exit as failure while exit codes 1/2 were documented success signals |
+| 2 | S182 | `EsportsMarketService` | "Running" for 16 days (service active) | Never instantiated inside EB v2 | Runtime-reachability gap — code existed, was never called |
+| 3 | S183 | `polymarket-audit.timer` + `run_audit.py` | "Stopped firing since 2026-04-04" (0 `scheduled_daily` rows) | Firing daily at 03:00 UTC, all runs succeeding | Script hardcodes `triggered_by="cli"` regardless of invocation context; data column misreports run origin |
+
+**Diagnostic discipline.** For any component with a systemd timer or service unit, before concluding the component is broken from a data-surface observation: run `systemctl status <unit>` and `systemctl list-timers <pattern>` against the actual unit and cross-check. If the systemd view disagrees with the data view, the data view is the suspect — inspect the data-emitting code path for a silent encoding bug.
+
+**Promotion threshold.** Three instances is a cluster; four is a pattern. If a fourth instance of "systemd component's data surface disagrees with its actual behavior" surfaces in a future session, promote this to Protocol 6 with its own Mandate / Minimum Evidence / Out-of-scope / Evidence-of-origin structure. Until then, it lives here as a diagnostic heuristic, not a codified rule.
+
+**Why not already Protocol 6.** Each of the three mechanisms is already covered by existing protocols (4a runtime reachability for #2, 5 for #3's label drift; #1 is closer to a systemd-config hygiene issue). A fourth instance with a fourth mechanism — one the existing protocols don't naturally cover — is what would justify a new protocol rather than a cross-reference.
 
 ---
 

@@ -1,0 +1,109 @@
+# Phase 6-STATION top-5 city -> ICAO mapping for WeatherBot
+# Generated: 2026-04-20
+# Purpose: unblocks 6K (AIFS ENS), 6L (multi-model), 6N (station MLP)
+# Selection criteria: top 5 by WeatherBot trade count in paper_trades over last 90 days
+#
+# Source query (run on VPS 18.201.216.0 against postgres polymarket DB):
+#   SELECT (regexp_match(m.question, 'temperature in ([A-Za-z .''-]+?) be'))[1] AS city,
+#          COUNT(*) AS trade_count,
+#          SUM(pt.size * pt.price) AS bankroll_weighted
+#   FROM paper_trades pt JOIN markets m ON m.id = pt.market_id
+#   WHERE pt.bot_name='WeatherBot'
+#     AND pt.created_at > NOW() - INTERVAL '90 days'
+#     AND m.question IS NOT NULL
+#   GROUP BY city ORDER BY trade_count DESC LIMIT 5;
+#
+# Top-5 result (90-day window, queried 2026-04-20):
+#   Dallas         232 trades  $46,913 bankroll-weighted
+#   Seattle        221 trades  $32,308
+#   Miami          219 trades  $62,889
+#   New York City  217 trades  $23,859
+#   Chicago        215 trades  $28,602
+#
+# All 5 cities already exist in base_engine/weather/station_registry.py
+# (US ASOS 1-minute stations, K-prefix ICAO, continuous METAR reporting).
+# This file is the explicit Phase 6 contract; the registry remains canonical
+# in code. Do not modify station_registry.py — read from it.
+
+# Day 2 (deploy 20260414_132211) blacklisted 6 cities from WB trading due to
+# wl_ratio < 0.15 (losses 7-17x larger than wins): Dallas, NYC, Toronto, Atlanta,
+# London, Seattle. Three of the top-5 90-day-volume cities below are on that
+# blacklist (Dallas, Seattle, NYC). The 6-STATION mapping is INFRA-first: it
+# provisions data pipelines for ML model training (6K AIFS ENS, 6L multi-model,
+# 6N station MLP), NOT a trading-gate. Phase 6 calibration may unblock
+# blacklisted cities later. Keep mapping coverage, flag blacklist status
+# explicitly per city so consumers don't conflate "has station mapping" with
+# "WB trades this city today."
+
+mappings:
+  - polymarket_city: "Dallas"
+    icao_primary: "KDFW"
+    icao_backup: "KDAL"        # Dallas Love Field, 13km from KDFW
+    latitude: 32.8998
+    longitude: -97.0403
+    timezone: "America/Chicago"
+    blacklisted_d2_3: true     # WB Day 2 blacklist — wl_ratio<0.15, not currently traded
+    source_notes: >
+      KDFW (Dallas/Fort Worth International) is the canonical Polymarket
+      resolution station per Weather Underground. ASOS 1-minute reporting,
+      verified via station_registry.py and Wikipedia (32.897N, 97.038W).
+      Coordinates match registry within 0.01 deg.
+    verified: true
+
+  - polymarket_city: "Seattle"
+    icao_primary: "KSEA"
+    icao_backup: "KBFI"        # Boeing Field, 16km from KSEA
+    latitude: 47.4502
+    longitude: -122.3088
+    timezone: "America/Los_Angeles"
+    blacklisted_d2_3: true     # WB Day 2 blacklist — wl_ratio<0.15, not currently traded
+    source_notes: >
+      KSEA (Seattle-Tacoma International) is the canonical Polymarket
+      resolution station per Weather Underground. ASOS 1-minute reporting,
+      verified via station_registry.py and Wikipedia (47.449N, 122.309W).
+      Coordinates match registry within 0.001 deg. NWS official Seattle
+      weather record station since 1945.
+    verified: true
+
+  - polymarket_city: "Miami"
+    icao_primary: "KMIA"
+    icao_backup: "KFLL"        # Fort Lauderdale-Hollywood Intl, ~35km north
+    latitude: 25.7959
+    longitude: -80.2870
+    timezone: "America/New_York"
+    blacklisted_d2_3: false    # active — WB continues trading Miami
+    source_notes: >
+      KMIA (Miami International) is the canonical Polymarket resolution
+      station per Weather Underground. ASOS 1-minute reporting, verified
+      via station_registry.py and Wikipedia (25.79N, 80.29W). Coordinates
+      match registry within 0.01 deg.
+    verified: true
+
+  - polymarket_city: "New York City"
+    icao_primary: "KLGA"
+    icao_backup: "KJFK"        # JFK International, ~15km from LGA
+    latitude: 40.7772
+    longitude: -73.8726
+    timezone: "America/New_York"
+    blacklisted_d2_3: true     # WB Day 2 blacklist — wl_ratio<0.15, not currently traded
+    source_notes: >
+      KLGA (LaGuardia) is the canonical Polymarket resolution station per
+      Weather Underground (NYC market resolution rule). ASOS 1-minute
+      reporting, verified via station_registry.py and Wikipedia (40.775N,
+      73.875W). Coordinates match registry within 0.003 deg. KJFK and KEWR
+      (Newark) are common NYC backup stations.
+    verified: true
+
+  - polymarket_city: "Chicago"
+    icao_primary: "KORD"
+    icao_backup: "KMDW"        # Chicago Midway, ~16km from KORD
+    latitude: 41.9742
+    longitude: -87.9073
+    timezone: "America/Chicago"
+    blacklisted_d2_3: false    # active — WB continues trading Chicago
+    source_notes: >
+      KORD (Chicago O'Hare International) is the canonical Polymarket
+      resolution station per Weather Underground. ASOS 1-minute reporting,
+      verified via station_registry.py and Wikipedia (41.979N, 87.905W).
+      Coordinates match registry within 0.005 deg.
+    verified: true
