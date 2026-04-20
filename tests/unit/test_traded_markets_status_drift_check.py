@@ -9,10 +9,7 @@ Pins:
    requirement per AuditViolation.__post_init__).
 3. Empty session: zero rows → zero violations, passed=True.
 """
-import asyncio
-import os
 from typing import List
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -37,34 +34,37 @@ class _FakeSession:
         return _FakeResult(self._rows)
 
 
-def test_kill_switch_disables_check(monkeypatch):
+@pytest.mark.asyncio
+async def test_kill_switch_disables_check(monkeypatch):
     monkeypatch.setenv("TRADED_MARKETS_STATUS_DRIFT_CHECK_ENABLED", "false")
     check = TradedMarketsStatusDriftCheck()
     session = _FakeSession(rows=[("mkt_1", "MirrorBot", 3, None, None)])
-    result = asyncio.run(check.execute(session))
+    result = await check.execute(session)
     assert result.passed is True
     assert result.violations == []
     assert "disabled" in result.summary.lower()
 
 
-def test_empty_session_produces_no_violations(monkeypatch):
+@pytest.mark.asyncio
+async def test_empty_session_produces_no_violations(monkeypatch):
     monkeypatch.delenv("TRADED_MARKETS_STATUS_DRIFT_CHECK_ENABLED", raising=False)
     check = TradedMarketsStatusDriftCheck()
     session = _FakeSession(rows=[])
-    result = asyncio.run(check.execute(session))
+    result = await check.execute(session)
     assert result.passed is True
     assert result.violations == []
     assert result.check_name == "traded_markets_status_drift"
 
 
-def test_happy_path_emits_stale_position_critical(monkeypatch):
+@pytest.mark.asyncio
+async def test_happy_path_emits_stale_position_critical(monkeypatch):
     monkeypatch.delenv("TRADED_MARKETS_STATUS_DRIFT_CHECK_ENABLED", raising=False)
     check = TradedMarketsStatusDriftCheck()
     session = _FakeSession(rows=[
         ("mkt_abc", "MirrorBot", 5, "2026-04-01 10:00", "2026-04-10 18:30"),
         ("mkt_xyz", "WeatherBot,MirrorBot", 1, "2026-04-05 06:00", None),
     ])
-    result = asyncio.run(check.execute(session))
+    result = await check.execute(session)
     assert result.passed is False
     assert len(result.violations) == 2
 
