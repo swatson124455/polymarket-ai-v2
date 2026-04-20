@@ -71,9 +71,22 @@ async def _run_checks(
         # manual CLI runs in audit_runs. Default is "unlabeled" (not "cli")
         # so any future invocation that forgets --triggered-by is visibly
         # unlabeled in the data, not silently misclassified as CLI.
+        # S183 Hotfix: audit_runs.triggered_by has a CHECK constraint on
+        # {scheduler, cli, health_check, post_resolution, manual}. The
+        # free-form flag value (e.g. "scheduled_daily", "unlabeled") would
+        # violate it. Map invocation kind → source type; flag value remains
+        # on run_type (unconstrained) for sentinel heartbeat detection.
+        _KIND_TO_SOURCE = {
+            "scheduled_daily": "scheduler",
+            "cli": "cli",
+            "manual": "manual",
+            "health_check": "health_check",
+            "post_resolution": "post_resolution",
+            "unlabeled": "cli",
+        }
         summary = await orchestrator.run_all(
             run_type=triggered_by,
-            triggered_by=triggered_by,
+            triggered_by=_KIND_TO_SOURCE[triggered_by],
         )
 
         # Collect results from the orchestrator's last run
@@ -235,13 +248,16 @@ def main() -> None:
         dest="triggered_by",
         metavar="LABEL",
         default="unlabeled",
+        choices=["scheduled_daily", "cli", "manual", "health_check", "post_resolution", "unlabeled"],
         help=(
-            "Label recorded in audit_runs.run_type and audit_runs.triggered_by. "
-            "Default 'unlabeled' (intentionally NOT 'cli' — a missing-label invocation "
-            "must be distinguishable from an explicit manual CLI run so downstream "
-            "queries and the Phase 5 sentinel can detect wiring drift). Use "
-            "'scheduled_daily' from the systemd timer unit, 'cli' for explicit "
-            "manual runs."
+            "Invocation kind recorded in audit_runs.run_type. Default 'unlabeled' "
+            "(intentionally NOT 'cli' — a missing-label invocation must be "
+            "distinguishable from an explicit manual CLI run so downstream queries "
+            "and the Phase 5 sentinel can detect wiring drift). Use 'scheduled_daily' "
+            "from the systemd timer unit, 'cli' for explicit manual runs. The "
+            "audit_runs.triggered_by column is derived via _KIND_TO_SOURCE mapping "
+            "because it carries a CHECK constraint on {scheduler, cli, health_check, "
+            "post_resolution, manual}."
         ),
     )
 
