@@ -9,7 +9,12 @@ Group=polymarket
 WorkingDirectory=/opt/polymarket-ai-v2
 EnvironmentFile=/opt/polymarket-ai-v2/.env
 Environment=PYTHONPATH=/opt/polymarket-ai-v2
-ExecStart=/opt/pa2-shared/venv/bin/python scripts/run_audit.py
+# S183: --triggered-by scheduled_daily makes this invocation visible in
+# audit_runs.run_type + .triggered_by columns. Prior to this flag, the
+# script hardcoded "cli" regardless of source, hiding timer-driven daily
+# audits inside the "cli" bucket and masking their absence if the timer
+# broke. Phase 5 sentinel's 25h heartbeat check depends on this label.
+ExecStart=/opt/pa2-shared/venv/bin/python scripts/run_audit.py --triggered-by scheduled_daily
 TimeoutStartSec=900
 
 # S182: audit script exit codes 1 (warnings) and 2 (critical findings)

@@ -40,6 +40,7 @@ async def _run_checks(
     hours: int,
     output_json: bool,
     verbose: bool,
+    triggered_by: str = "unlabeled",
 ) -> int:
     """Run checks and return exit code (0=clean, 1=warning, 2=critical)."""
     from base_engine.data.database import Database
@@ -65,9 +66,14 @@ async def _run_checks(
                 await db.close()
                 return 2
 
+        # S183: run_type and triggered_by were hardcoded "cli" prior to this
+        # commit, making systemd-timer invocations indistinguishable from
+        # manual CLI runs in audit_runs. Default is "unlabeled" (not "cli")
+        # so any future invocation that forgets --triggered-by is visibly
+        # unlabeled in the data, not silently misclassified as CLI.
         summary = await orchestrator.run_all(
-            run_type="cli",
-            triggered_by="cli",
+            run_type=triggered_by,
+            triggered_by=triggered_by,
         )
 
         # Collect results from the orchestrator's last run
@@ -224,6 +230,20 @@ def main() -> None:
     parser.add_argument("--list-open", dest="list_open", action="store_true", help="Show all open unacknowledged violations")
     parser.add_argument("--ack", type=int, metavar="BREAK_ID", help="Acknowledge a reconciliation_break by ID")
     parser.add_argument("--reason", metavar="TEXT", help="Acknowledgment reason (required with --ack)")
+    parser.add_argument(
+        "--triggered-by",
+        dest="triggered_by",
+        metavar="LABEL",
+        default="unlabeled",
+        help=(
+            "Label recorded in audit_runs.run_type and audit_runs.triggered_by. "
+            "Default 'unlabeled' (intentionally NOT 'cli' — a missing-label invocation "
+            "must be distinguishable from an explicit manual CLI run so downstream "
+            "queries and the Phase 5 sentinel can detect wiring drift). Use "
+            "'scheduled_daily' from the systemd timer unit, 'cli' for explicit "
+            "manual runs."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -244,6 +264,7 @@ def main() -> None:
         hours=args.hours,
         output_json=args.output_json,
         verbose=args.verbose,
+        triggered_by=args.triggered_by,
     ))
     sys.exit(rc)
 
