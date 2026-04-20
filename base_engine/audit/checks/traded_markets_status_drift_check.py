@@ -49,8 +49,8 @@ class TradedMarketsStatusDriftCheck(BaseCheck):
             SELECT tm.market_id,
                    tm.bot_names,
                    COUNT(*) FILTER (WHERE pt.realized_pnl IS NOT NULL) AS resolved_trade_count,
-                   MIN(pt.entry_time) AS earliest_entry,
-                   MAX(pt.exit_time)  AS latest_exit
+                   MIN(pt.created_at) AS earliest_created,
+                   MAX(pt.resolved_at) AS latest_resolved
             FROM traded_markets tm
             JOIN paper_trades pt ON pt.market_id = tm.market_id
             WHERE tm.status = 'open'
@@ -61,7 +61,7 @@ class TradedMarketsStatusDriftCheck(BaseCheck):
         """))
 
         for row in rows.fetchall():
-            market_id, bot_names, resolved_trade_count, earliest_entry, latest_exit = row
+            market_id, bot_names, resolved_trade_count, earliest_created, latest_resolved = row
             bot = str(bot_names).split(",")[0] if bot_names else "unknown"
             violations.append(AuditViolation(
                 recon_type="STALE_POSITION",
@@ -72,8 +72,8 @@ class TradedMarketsStatusDriftCheck(BaseCheck):
                     "source": "traded_markets_status_drift",
                     "reason": "traded_markets.status='open' but paper_trades has resolved row(s)",
                     "resolved_trade_count": int(resolved_trade_count),
-                    "earliest_entry": str(earliest_entry) if earliest_entry else None,
-                    "latest_exit": str(latest_exit) if latest_exit else None,
+                    "earliest_created": str(earliest_created) if earliest_created else None,
+                    "latest_resolved": str(latest_resolved) if latest_resolved else None,
                 },
             ))
 

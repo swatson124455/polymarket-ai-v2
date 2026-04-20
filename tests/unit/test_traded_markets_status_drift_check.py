@@ -76,6 +76,8 @@ async def test_happy_path_emits_stale_position_critical(monkeypatch):
     # details must be non-empty (violation_hash discriminator contract)
     assert v0.details["resolved_trade_count"] == 5
     assert v0.details["source"] == "traded_markets_status_drift"
+    assert v0.details["earliest_created"] == "2026-04-01 10:00"
+    assert v0.details["latest_resolved"] == "2026-04-10 18:30"
     assert "reason" in v0.details
 
     # CSV bot_names: first entry is used
