@@ -1,11 +1,12 @@
 # S172 CONSOLIDATED PLAN v7.0 — INTEGRATED (Phase RC + Phase 5v2 + ongoing session corrections)
 
-**Session:** 172 (original) + 173 (RC diagnostics + 5v2 amendment) + S180–S183 (session corrections log)
-**Date:** 2026-04-12 (v6.0) → 2026-04-13 (v7.0) → continuously updated
-**Status:** APPROVED — integrates v6.0 + Phase 5v2 Amendment + Phase RC findings + S180–S183 Corrections Log
+**Session:** 172 (original) + 173 (RC diagnostics + 5v2 amendment) + S180–S186 (session corrections log, Protocols 1–6 + remaining candidates, Hygiene Backlogs)
+**Date:** 2026-04-12 (v6.0) → 2026-04-13 (v7.0) → continuously updated (latest: 2026-04-20, S186 — Protocol 6 promotion)
+**Status:** APPROVED — integrates v6.0 + Phase 5v2 Amendment + Phase RC findings + S180–S186 Corrections Log
 **Scope:** All 3 bots (WeatherBot, MirrorBot, EsportsBot) — audit remediation + long-term elevation
 **Timeline:** 8 months
 **Previous:** S171 (`AGENT_HANDOFF_S171_SHARED_MASTER.md`), prior v6.0 and Phase 5v2 amendment folded in
+**Latest session closes:** S184 (`AGENT_HANDOFF_S184_CLOSE.md`) — deploys; S185 (`AGENT_HANDOFF_S185_CLOSE.md`) — documentation-only, no commits, no deploys
 
 ---
 
@@ -18,7 +19,7 @@
 5. **Success criteria amended** — EB v2 evaluated separately. System may operate with 2 bots.
 6. **Phase 8B** evaluates EB v2 data (model_version='v2-trinity'), not v1.
 7. **Immediate WB/MB fixes** added as "Day 2" actions derived from RC findings.
-8. **Sessions S180–S183** Corrections Log, Protocols 1–4, Hygiene Backlogs appended (preserved from v6.0's ongoing edits — the consolidated plan is a living document).
+8. **Sessions S180–S186** Corrections Log, Protocols 1–6 (Protocol 6: canonical-source discipline for P&L/WR/trade-count claims, promoted from Rule Zero at fourth-instance trigger — S149/S150/S185/S186) + Protocol 5a (canonical-document identity), remaining Protocol candidates (SQL-contract, aggregate-statistics bucket-concentration check), Hygiene Backlogs (S180, S183, S185), Silent-failure class diagnostic heuristic appended (preserved from v6.0's ongoing edits — the consolidated plan is a living document). Latest entries: S184 gitignore-drift correction, S185 P0 recon_type reclassification (FIX_ROOT → FIX_AUDIT_CHECK), S185 Hygiene Backlog item for `result_store.py` chronic-OPEN gap, S186 Protocol 6 promotion + 6O deferral.
 
 ---
 
@@ -74,8 +75,9 @@ After Phase 0 verification:
 
 1. **Walk-backward-hypotheses.** Each time a working hypothesis is invalidated, log the inversion and the diagnostic that inverted it. Three consecutive inversions on the same bug (as in S182 Phase 0.2 → 0.2-b → 1c → 1d) is expected, not exceptional — it's the signal that the original framing was at the wrong layer.
 2. **Fix-with-tests-and-gates.** Every shipped commit carries a unit test and a post-deploy gate (T+30min, T+2h, T+4h, T+24h). No exceptions. "Tests pass" is necessary but not sufficient — the gate is the truth.
-3. **Codify-protocols-from-failures.** Concrete failure → named protocol with Mandate / Out-of-scope / Evidence of origin (§Protocols structure). Generic "we should be more careful" observations do NOT qualify — every protocol must cite a specific failure that would have been prevented by the rule.
-4. **Update memory + state at session close.** Write or update the handoff for the next session. Update `memory/project_s172_current_state.md` with any verified status changes. Update `memory/MEMORY.md` index if adding new memory files.
+3. **Cite canonical sources (Protocol 6).** Any P&L, win-rate, or trade-count number in session output must cite `scripts/bot_pnl.py` as source and include the invocation command that produced it. Fresh SQL against `trade_events` presented as canonical is forbidden. If the stop-hook surfaces a violation, follow the recovery procedure in Protocol 6: strip offending numbers, preserve qualitative findings, cite `bot_pnl.py` output directly, add Rule-Zero header to any producing script.
+4. **Codify-protocols-from-failures.** Concrete failure → named protocol with Mandate / Out-of-scope / Evidence of origin (§Protocols structure). Generic "we should be more careful" observations do NOT qualify — every protocol must cite a specific failure that would have been prevented by the rule.
+5. **Update memory + state at session close.** Write or update the handoff for the next session. Update `memory/project_s172_current_state.md` with any verified status changes. Update `memory/MEMORY.md` index if adding new memory files.
 
 ### Out-of-scope for this template
 
@@ -707,6 +709,76 @@ Should ship before Phase 5 sentinel deploys because the sentinel session itself 
 
 Discovered via user's 3-session retrospective (S182 audit review, S183 audit review).
 
+### S184 (2026-04-20) — Gitignore-claim drift caught by Protocol 5
+
+**Claim (S183 predecessor handoff §10):** A carbon-copy handoff file was reasoned not to be matched by any gitignore pattern.
+
+**Reality:** `.gitignore:157` `*_HANDOFF.md` is a suffix glob; any file ending in `_HANDOFF.md` is ignored, including carbon-copy variants.
+
+**Why logged.** Small documentation-level drift, but a concrete instance of Protocol 5 discipline applied below the phase/item tier. The §Protocol 5 evidence-of-origin cases (2H-3, 1B, scheduled_daily labeling) are all phase-level; this widens the evidence base to documentation-claim scale. Caught by reading `.gitignore` directly rather than propagating the predecessor's written reasoning.
+
+### S185 (2026-04-20) — P0 recon_type classification drift: FIX_ROOT → FIX_AUDIT_CHECK (or bulk ACK)
+
+**Claim (S183 close §4.2, propagated through S184 §6):** Remaining P0 set — `SIZE_INVARIANT`, `FK_MISSING_MARKET`, `POSITION_SIZE_MISMATCH` — are FIX_ROOT (actual bot bugs), not FIX_AUDIT_CHECK (supersession/data-filter), and "each probably a multi-commit investigation."
+
+**Reality (verified against VPS `polymarket` DB, 2026-04-20):** All three recon_types have a latest-underlying-event timestamp that is strictly older than the audit's own detected_at (audit re-fires daily against historical data). Approximate freeze ages:
+- SIZE_INVARIANT: no new underlying events since ~2026-04-08 (12 days frozen relative to today).
+- POSITION_SIZE_MISMATCH: WB-dominant; underlying events show `SELL` EXIT rows joined against `side='SELL'` position rows with zero matching `ENTRY`s — exact shape of the S163 legacy encoding where EXITs were recorded with `side='SELL'` while ENTRYs used `YES`/`NO`.
+- FK_MISSING_MARKET: orphan `event_time` range is a tight 5-day window 2026-03-24 → 2026-03-29. Nothing since.
+
+(Exact audit-row counts available from VPS `reconciliation_breaks` query; omitted here to avoid recording trade-count-adjacent specifics that belong in a bot_pnl-sourced summary. Run the VPS query directly to snapshot current state.)
+
+**Mechanism.** All three are historical-frozen:
+- SIZE_INVARIANT: fix aligns with S163 size-accounting work.
+- POSITION_SIZE_MISMATCH: `position_trade_events_check.py` query `GROUP BY bot_name, market_id, side` matches legacy `SELL` EXIT rows to `side='SELL'` position rows — which have 0 ENTRYs and negative net. Same root as `size_invariant_check.py`'s documented S164 fix (grouping by side creates false positives on S163-era data) — fix applied to size check but not to this check.
+- FK_MISSING_MARKET: likely tied to an ingestion-gap fix within the 2026-03-24 → 2026-03-29 window.
+
+**Why violations keep growing despite being historical.** `base_engine/audit/result_store.py` dedups on `(recon_date, violation_hash)` — per-day. No auto-close when the underlying data no longer reproduces the violation. Each daily audit re-emits the same hash as a new row with today's `recon_date`. OPEN count trends up indefinitely until manual ACK.
+
+**Correct dispositions (all FIX_AUDIT_CHECK / FIX_DATA, not FIX_ROOT):**
+1. **Bulk ACK** existing OPEN rows for these 3 recon_types where the latest reproducing `trade_events.event_time` is pre-freeze-cutoff. Separates the historical noise floor from live detection without weakening the checks.
+2. **Port the S164 `GROUP BY` fix** to `position_trade_events_check.py` (drop `side` from the join), matching `size_invariant_check.py:28-42` rationale.
+3. **Filter window** in the checks (e.g., `WHERE event_time >= :min_time`) so historical data stops re-emitting. Optional once (1) is done.
+
+**Why logged here rather than acted on.** Bulk ACK of ~17,825 OPEN rows across 3 recon_types is a material state change deserving explicit authorization and a dedicated session. The check-logic edits are ~5-10 lines each and low-risk; safe to bundle. The handoff chain's "FIX_ROOT, multi-commit each" framing would have driven a multi-session investigation of bot bugs that aren't there. Protocol 5 caught the drift by reading the data; next session should act with the corrected classification.
+
+**Evidence of origin.** Direct queries against VPS `polymarket` DB — counts by recon_type+status, date-of-latest underlying event per market-in-violation-set, WB side/event distribution, FK orphan `event_time` range. SQL-contract discipline applied: schema read (`\d reconciliation_breaks`, `\d trade_events`) preceded each query after two column-name misses (`first_seen_at`, `occurred_at`) — matching the SQL-contract candidate just added to §Protocol candidates.
+
+**Companion finding.** `result_store.py` has no auto-close mechanism: previously-OPEN violations whose underlying data no longer reproduces stay OPEN indefinitely. Not specific to this P0 set — every check that ever runs accumulates this drift. Filed as Phase 4 backlog item in §S185 Hygiene Backlog below. The P0 triple is the current concrete manifestation; the gap is structural.
+
+**Execution ordering for next session.** Port the S164 `GROUP BY` fix to `position_trade_events_check.py` FIRST, then bulk ACK the historical OPEN rows. Reversed order undoes itself — the next daily audit would re-emit everything just ACK'd.
+
+### S185 Hygiene Backlog
+
+**`base_engine/audit/result_store.py` — no auto-close mechanism for chronic OPEN findings.** `_persist_run_results()` at approximately L66-101 INSERTs each detected violation as a new row with `status='OPEN'` and dedups only on `(recon_date, violation_hash)` — per-day. No path exists to mark a previously-OPEN violation as RESOLVED when the underlying data no longer reproduces it. Consequence: every violation ever detected stays OPEN until manually ACK'd or the `violation_hash` changes (which it doesn't for stable violations). The OPEN backlog trends monotonically up for every recon_type. S185's historical-frozen P0s (SIZE_INVARIANT, PSM, FK_MISSING_MARKET) are the current concrete manifestation but the gap is structural — every future check will accumulate the same chronic-OPEN drift.
+
+**Fix options (prefer A):**
+- **A. Auto-close by non-reproduction.** At end of each audit run, for every previously-OPEN violation whose `violation_hash` was NOT re-emitted in the current run, mark RESOLVED with `resolution_note='auto_closed_not_reproduced'`. Requires one set-diff between "pre-run OPEN violation hashes" and "current-run emitted hashes." Safe: a violation that reappears later INSERTs fresh and reopens naturally.
+- **B. Auto-close by age.** After N days of continuous OPEN status without ACK, auto-close. Weaker than A — a genuinely unresolved long-running bug could silently auto-close.
+- **C. Event-time threshold per check.** In each check, only emit violations whose underlying `event_time >= NOW() - M days`. Pushes the decision into each check individually; no auto-close mechanism needed but requires touching every check.
+
+Discovered S185 (2026-04-20) during P0 triage. Phase 4 backlog. Dangerous because "audit found N open findings this week" is not a trend signal — N has a monotonic-growth floor independent of real bug emission, so a rising N means "more days elapsed since the last ACK sweep," not "more bugs."
+
+### S186 (2026-04-20) — 6O lead-time backtest deferred indefinitely
+
+**Context.** S185 created `scripts/wb_lead_time_backtest.py` (the "6O script") to produce bucket-level WB lead-time P&L with finer granularity (9 buckets) than `bot_pnl.py` r7 emits (5 buckets). The script was filed behind a Rule-Zero header warning and a validation workflow: run `scripts/bot_pnl.py WeatherBot <window>` over the same window, reconcile totals, quarantine if totals disagree. S186 executed the validation: totals disagreed significantly. Per the Rule-Zero header, the script is quarantined.
+
+**Root cause of the mismatch.** 6O's CTE joins `entry_events` → `resolved` many-to-one on `(market_id, side)`. When a market has multiple same-side ENTRY rows (WB has many: position stacking / re-entry is common), each entry joins to the same single `resolved` row and the same `realized_pnl` is counted once per entry. `bot_pnl.py` r7 inverts the join (RESOLUTION/EXIT rows as the driver, each joined to a DISTINCT-ON-market ENTRY for lead-time lookup) — the correct semantics.
+
+**Disposition — defer 6O indefinitely. Struck from queue.**
+
+Reasoning:
+- The per-lead-time bucket data already exists in `bot_pnl.py` r7. Coarser (5 buckets) but canonical. Any WB lead-time retune can cite that output directly without needing the 6O script.
+- The qualitative finding from S185 that survived the Rule-Zero strip (longest populated lead-time bucket collapses to a single `(entry_date, city, side)` correlated-blowup cluster — the WB S119 "correlated blowups" pattern) did not depend on 6O's bucket-level P&L; it was a cardinality observation on the underlying rows. That finding stands.
+- Rewriting 6O's SQL to replicate `bot_pnl.py`'s join semantics is non-trivial. WB's multi-entry-same-side pattern is handled by `bot_pnl.py` via DISTINCT-ON-entry with specific ordering; replicating it verbatim means duplicating `bot_pnl.py`'s logic. Per Protocol 6, improvising a parallel query is forbidden — the only legitimate rewrite path is to call `bot_pnl.py`'s resolution logic directly, which is a larger refactor than the script's analytical value justifies.
+- The 6O multiplier-retune proposal that was gated on validation passing is blocked regardless of whether the script gets rewritten. No deadline on the lead-time retune; WB's existing lead-time multipliers (S154: 72-120h=1.15x, 24-48h=0.70x) have held through the intervening window.
+
+**What lives on:** the qualitative single-event-dominance finding and the §Protocol candidates entry for the aggregate-statistics bucket-concentration check (the candidate that 6O's near-miss seeded).
+
+**What does not:** the `scripts/wb_lead_time_backtest.py` script as an ongoing analytical tool. It remains in the working tree with its Rule-Zero header warning for reference value (documenting the SQL shape that produces the over-count bug, for future agents who might be tempted to write similar multi-entry joins), but it is not to be run for bucket-level P&L. A follow-up session may delete it entirely; until then, the header warning is the canonical reading of its status.
+
+**Evidence of origin.** S186 session (2026-04-20) ran both scripts on VPS; totals do not match. Full outputs available in the S186 session SSH log. Validation workflow codified in the S185 handoff §4 step 1 produced the quarantine decision as designed — the prior session's gating clause "If validation fails, defer indefinitely" resolved cleanly without further escalation.
+
 ### Phase 5 Sentinel — pre-deploy prerequisites
 
 The Phase 5 silent-failure sentinel (`scripts/silent_failure_sentinel.py`, not yet shipped) was planned to deploy after Phase 2 stable for 24h. S183 surfaced a two-part prerequisite. **The actual scheduling gate is Prereq 1** — Prereq 2 is a cheap ~5-line patch that unblocks sentinel design, not a workload that competes for session time. Framing the two as symmetric "double-gate" would mislead planning.
@@ -739,9 +811,11 @@ Three instances documented across S180-S183. All share a structural pattern: a s
 
 **Diagnostic discipline.** For any component with a systemd timer or service unit, before concluding the component is broken from a data-surface observation: run `systemctl status <unit>` and `systemctl list-timers <pattern>` against the actual unit and cross-check. If the systemd view disagrees with the data view, the data view is the suspect — inspect the data-emitting code path for a silent encoding bug.
 
-**Promotion threshold.** Three instances is a cluster; four is a pattern. If a fourth instance of "systemd component's data surface disagrees with its actual behavior" surfaces in a future session, promote this to Protocol 6 with its own Mandate / Minimum Evidence / Out-of-scope / Evidence-of-origin structure. Until then, it lives here as a diagnostic heuristic, not a codified rule.
+**Promotion threshold.** Three instances is a cluster; four is a pattern. If a fourth instance of "systemd component's data surface disagrees with its actual behavior" surfaces in a future session, promote this to a numbered protocol (next available slot — Protocol 6 is now occupied by canonical-source discipline, so this would be Protocol 7 or later) with its own Mandate / Minimum Evidence / Out-of-scope / Evidence-of-origin structure. Until then, it lives here as a diagnostic heuristic, not a codified rule.
 
-**Why not already Protocol 6.** Each of the three mechanisms is already covered by existing protocols (4a runtime reachability for #2, 5 for #3's label drift; #1 is closer to a systemd-config hygiene issue). A fourth instance with a fourth mechanism — one the existing protocols don't naturally cover — is what would justify a new protocol rather than a cross-reference.
+**Why not already a numbered protocol.** Each of the three mechanisms is already covered by existing protocols (4a runtime reachability for #2, 5 for #3's label drift; #1 is closer to a systemd-config hygiene issue). A fourth instance with a fourth mechanism — one the existing protocols don't naturally cover — is what would justify a new protocol rather than a cross-reference.
+
+**Near-miss — S184 (2026-04-20), CHECK-constraint on `audit_runs.triggered_by`.** Commit `7b0b8ac` passed `--triggered-by scheduled_daily` into a column whose CHECK constraint did not allow that value; the violation would have fired on the next 03:00 UTC systemd-triggered daily audit. Caught pre-production by Protocol 5 schema-read discipline (`\d audit_runs` before trusting the commit's claim); fixed in `bf2828c` with a kind→source mapping. **Not promoted to instance #4.** The mechanism differs from the three documented instances, but the data surface did not lie — the CHECK would have blocked the write and raised loudly. Documented as near-miss to anchor Protocol 5's value without prematurely triggering the silent-failure class promotion.
 
 ---
 
@@ -1001,6 +1075,42 @@ If evidence cannot be produced, the status claim is unsupported and must be re-m
 **Out of scope.** Explicit version-history files kept alongside the current file by design (e.g., `CHANGELOG.md`, migration files numbered in sequence, archived handoffs) are not bifurcations — they're intentional parallel artifacts. This sub-case applies to cases where two files both claim to be the current authoritative source.
 
 **Evidence of origin.** S183 plan-hygiene audit found `S172_CONSOLIDATED_PLAN_v7.md` tracked in git (committed `0f1e2a8` on 2026-04-14, headered "APPROVED — integrates v6.0 + Amendment 1 + Phase RC findings") sitting alongside `S172_CONSOLIDATED_PLAN.md` (v6, the filename-canonical version, last edited 2026-04-19 with ongoing session Corrections Log additions). Memory and CLAUDE.md both pointed at the unnumbered filename, so every session since 2026-04-14 had been reading v6 without Phase RC or Day 2 content. Surfaced by a grep of `^## ` section headers against both files which exposed Phase RC and Day 2 sections in v7 that v6 lacked. Resolved by merging v7's content into the canonical-filename v6 (v6 retained because it had more ongoing edits than v7) and `git rm` on the v7 orphan, preserving v6's Corrections Log + Protocols additions while folding in v7's RC + 5v2 content. The class of drift: filename-stable, content-drifted into a sibling.
+
+---
+
+### Protocol 6 — Canonical-source discipline for P&L / win-rate / trade-count claims
+
+**Mandate.** Any P&L, win-rate, or trade-count claim — in session output (assistant messages), handoff docs, memory entries, commit messages, plan edits, or any artifact produced during a session — must cite `scripts/bot_pnl.py` as the source and include the exact invocation command that produced the number. A claim without an adjacent `scripts/bot_pnl.py` citation and invocation command is forbidden; the correct form is to omit the number entirely rather than produce it without sourcing, or to re-run `bot_pnl.py` and cite its output. This protocol codifies Rule Zero (the pre-existing memory rule) with mechanically checkable adherence criteria.
+
+**Minimum evidence.** For every paragraph, table, bullet, or sentence containing a P&L, win-rate, or trade-count number:
+- An explicit reference to `scripts/bot_pnl.py` in the same paragraph, or in an adjacent paragraph that unambiguously binds the number to the script's output.
+- The exact invocation command that produced the number (e.g., `PYTHONPATH=/opt/polymarket-ai-v2 python3 /opt/polymarket-ai-v2/scripts/bot_pnl.py WeatherBot 24`). Absent the command, the claim cannot be re-run for verification and is unsourced.
+- If the question `bot_pnl.py` answers does not match the claim's granularity (e.g., a claim needs per-bucket P&L that `bot_pnl.py` does not emit natively), the claim must either be omitted or must replicate `bot_pnl.py`'s EXACT resolution-join SQL verbatim. Improvising a parallel query against `trade_events` is forbidden — see CLAUDE.md Forbidden Pattern 7.
+
+**Out of scope.** Configuration values read from source code (e.g., `KELLY_FRACTION=0.25` from `settings.py:42`, `MIRROR_MIN_TRADE_USD=25` from `mirror_bot.py:2004`) with file:line citations are NOT P&L data — they are static facts derivable from code and do not require `bot_pnl.py` sourcing. Arithmetic derived from config values (e.g., "$25 minimum × 100 trades = $2,500 floor") is also exempt. Only numbers that claim to represent actual realized trading performance — realized dollar P&L, unrealized dollar P&L, win rates from trade data, trade counts from queries — fall under this protocol. Historical figures in handoff docs, memory files, or commit messages that predate Protocol 6 promotion are grandfathered; they do not retroactively require `bot_pnl.py` citations. New claims in any artifact produced after promotion must comply.
+
+**Enforcement mechanism.** A session stop-hook pattern-matches on P&L / win-rate / trade-count terms in assistant output and checks for `bot_pnl.py` citation adjacency. A violation surfaces as a hook message, giving the agent a chance to retract the number before the response is finalized. The stop-hook is why self-catch is now reliable — it is the mechanical surface that makes adherence verifiable rather than aspirational. Protocol 6's form is specifically designed to be checkable by this mechanism: "did this session cite `scripts/bot_pnl.py` in every P&L-bearing paragraph?" is grep-able; "did this session honor Rule Zero?" required interpretation. If the stop-hook fires, the procedure is: strip the offending numbers from the response, preserve any qualitative findings that survive without them, cite `bot_pnl.py` output directly for any numbers that must remain, and if the originating artifact was a script, add a Rule-Zero header warning naming this protocol.
+
+**Evidence of origin.** Four instances of the same failure class across sessions:
+
+| # | Session | Pattern | How caught |
+|---|---------|---------|------------|
+| 1 | S149 | Fresh SQL against `trade_events`, output presented as canonical | User correction mid-session |
+| 2 | S150 | Same pattern, different table/window | User correction mid-session |
+| 3 | S185 | 6O lead-time backtest script produced bucket-level P&L used in plan edits before self-catch | Stop-hook mid-session; recovery procedure codified (strip numbers / preserve qualitative / header-warn producing artifact / file candidate) |
+| 4 | 2026-04-20 | Reconciliation table + delta figures embedded in response summary without explicit `bot_pnl.py` citation, despite underlying numbers being from `bot_pnl.py` output | Stop-hook mid-session; retraction issued; protocol promotion landed |
+
+S185's handoff §2.2 named the fourth-instance promotion trigger explicitly. This session hit it. Landing Protocol 6 closes the trigger: the promotion mechanism has to actually produce a protocol when it fires, or the threshold becomes a lie that teaches future sessions triggers are soft. The mechanism that caught both S185's and this session's violation — the stop-hook — is now named in the protocol body so future sessions know to rely on it rather than on unaided rule-reading.
+
+---
+
+### Protocol candidates — awaiting next protocol-hygiene round
+
+Flagged mid-session; not yet binding rules. Listed so they don't get lost between sessions, and so the evidence base can accumulate before promotion.
+
+**SQL-contract verification against a live DB before commit.** Mocked-session unit tests cannot catch CHECK-constraint violations, undefined-column errors, bad joins, or any other string-vs-schema mismatch. S184 shipped two such bugs in a single session: `7b0b8ac` (CHECK violation, caught pre-production by Protocol 5 schema-read) and `535c14e` (undefined-column error in the `TradedMarketsStatusDriftCheck` query, caught post-deploy via journal — `UndefinedColumnError` on `pt.entry_time`/`exit_time`, the actual columns being `created_at`/`resolved_at`). Both were invisible to mocked unit tests and would have been caught by running the changed query against a real DB before commit. Candidate discipline: for commits that add or modify SQL in audit checks, factory queries, or any `session.execute(text(...))` path, execute the query against the VPS dev DB (or an equivalent) before commit. Promote to §Protocols (likely Protocol 7) if a third instance ships.
+
+**Aggregate-statistics bucket-concentration check.** When bucketing resolved-trade data by any dimension (lead time, city, category, trader, time of day), a bucket's headline statistic may be driven by a single correlated event rather than by the bucket's nominal dimension. S185 worked example (6O WB lead-time backtest): the longest populated lead-time bucket produced a dramatic apparent signal that, on drill-down, collapsed to a single `(entry_date, city, side)` triple's correlated-blowup cluster — the pattern already documented in WB S119 memory. Aggregating without a cardinality check would have produced a wrong multiplier-retune recommendation. Candidate discipline: before reporting any bucket-level aggregate, enumerate the bucket's underlying rows by `(entry_date × city × side)` (or equivalent domain-specific triple) and require that no single triple accounts for more than e.g. 50% of the bucket's row count. If it does, flag as "single-event-dominated" and present that bucket separately, not as an in-aggregate data point. Similar in shape to Protocol 4c (projection lossiness); could land as Protocol 4d (aggregate bucket concentration) or as a sub-clause to a future data-analysis protocol. Evidence-of-origin pre-seeded: the 6O finding is this candidate's first concrete catch.
 
 ---
 

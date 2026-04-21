@@ -147,9 +147,90 @@ CREATE TABLE mirror_rejected_signals (
 CREATE INDEX ON mirror_rejected_signals (trader_address, event_time DESC);
 CREATE INDEX ON mirror_rejected_signals (market_id, event_time DESC);
 ```
-A2. Wire a single `_log_rejection(trader, market_id, token_id, side, price, whale_usd, reason, stage)` helper in `mirror_bot.py`; call it at the 10-12 existing rejection sites:
-   - `elite_watchlist.py` wash-flagged return (:841)
-   - `mirror_bot.py` blacklist (:1995), whale_too_small (:2005), price_bounds (:1830), position_cap (:1850), no_edge_rejected (:2955), exposure_lock (:3094), category_cap (:3103), gate_blocked (:2833), shadow_conf_band / low_confidence (:2852), dust (:3027), size_zero (:3019).
+A2. Wire a single `_log_rejection(trader, market_id, token_id, side, price, whale_usd, reason, stage)` helper in `mirror_bot.py`; call it at every rejection site.
+
+**Phase A enumeration (2026-04-20, S185 verification — corrects prior 10-12 estimate):** 38 total early-exit points across the RTDS → execute pipeline. Per-handoff directive (don't trust the design doc's estimate), the exhaustive list below was produced by reading `elite_watchlist.on_trade_event` / `on_rtds_trade` and `mirror_bot._execute_mirror_trade` end-to-end. Line numbers as of master `d60ae17`.
+
+*Legend: `log_status` = emits a logger call today (`L`) vs. silent return (`S`). `instrument` = whether this site warrants a row in `mirror_rejected_signals` (`Y`) or not (`N` — malformed events / infra guards have no analytical value).*
+
+**Group 1 — `elite_watchlist.on_trade_event` (WS Market Channel handler)**
+
+| # | File:Line | Emitter / condition | Stage | log_status | instrument |
+|---|---|---|---|---|---|
+| 1 | elite_watchlist.py:740 | `_state_restored` False | infra guard | S | N |
+| 2 | elite_watchlist.py:745 | `user` not dict | malformed | S | N |
+| 3 | elite_watchlist.py:748 | `addr` missing | malformed | S | N |
+| 4 | elite_watchlist.py:753 | addr not on watchlist | pre_watchlist | S | N (highest volume, but no signal — fires on every non-whale trade) |
+| 5 | elite_watchlist.py:761 | `tx_hash` in `_seen_tx` | dedup | S | N |
+| 6 | elite_watchlist.py:771 | market_id / token_id missing | malformed | S | N |
+| 7 | elite_watchlist.py:777 | price/size parse fail | malformed | S | N |
+| 8 | elite_watchlist.py:780 | price ≤0.01 or ≥0.99 | watchlist | S | Y — signal-bearing whale trade with unplayable price |
+| 9 | elite_watchlist.py:782 | size ≤0 | malformed | S | N |
+| 10 | elite_watchlist.py:840 | wash_trader_flagged_skip (trader in `_wash_flagged`, <48h) | watchlist | S (log fired earlier at flag-time) | Y — trader-class reject, central to counterfactual analysis |
+| 11 | elite_watchlist.py:844 | `_can_open_position(price)` False (position/daily cap) | watchlist | S | Y — capacity reject |
+
+**Group 2 — `elite_watchlist.on_rtds_trade` (RTDS global handler)**
+
+| # | File:Line | Emitter / condition | Stage | log_status | instrument |
+|---|---|---|---|---|---|
+| 12 | elite_watchlist.py:963 | `_state_restored` False | infra guard | S | N |
+| 13 | elite_watchlist.py:978 | addr missing or not on watchlist | pre_watchlist | S | N (same as #4) |
+| 14 | elite_watchlist.py:984 | `_dedup_key` in `_seen_tx` | dedup | S | N |
+
+**Group 3 — `mirror_bot._execute_mirror_trade`, pre-gate tier (Tier 0+1+2)**
+
+| # | File:Line | Emitter / condition | Stage | log_status | instrument |
+|---|---|---|---|---|---|
+| 15 | mirror_bot.py:1985 | `mirror_price_floor_blocked` (price <0.03 or >0.97) | pre_gate | L | Y |
+| 16 | mirror_bot.py:1995 | `mirror_trader_blacklisted` | pre_gate | L | Y |
+| 17 | mirror_bot.py:2005 | `mirror_whale_too_small` (<`MIRROR_MIN_WHALE_TRADE_USD`=$100) | pre_gate | L | Y — single highest-volume rejection (§4.4) |
+| 18 | mirror_bot.py:2022 | `_market_blocklist` membership | pre_gate | S | Y |
+| 19 | mirror_bot.py:2031 | `_market_cooldown` active (24h default per S172 D8) | pre_gate | S | Y |
+| 20 | mirror_bot.py:2046 | `mirror_market_maker_blocked` (same trader both sides within 24h) | pre_gate | L | Y |
+| 21 | mirror_bot.py:2071 | `mirror_opposing_side_blocked` (in-mem open opposite) | pre_gate | L | Y |
+| 22 | mirror_bot.py:2078 | `mirror_opposing_side_blocked_historical` (`_entered_market_sides`) | pre_gate | L | Y |
+| 23 | mirror_bot.py:2092 | `mirror_same_side_blocked` (dup signal same side) | pre_gate | L (debug) | Y — flag as de-dup, not true rejection |
+| 24 | mirror_bot.py:2129 | `mirror_category_blocked` (`MIRROR_CATEGORY_BLOCKLIST` match) | pre_gate | L | Y |
+| 25 | mirror_bot.py:2143 | `_can_open_position(price, category)` False | pre_gate | S | Y — capacity reject (duplicates #11 on pre-RTDS path) |
+| 26 | mirror_bot.py:2155 | SELL path — no existing open position to close | pre_gate | L (debug) | N — SELL housekeeping, not a whale signal reject |
+| 27 | mirror_bot.py:2164 | SELL path — existing position size=0 | pre_gate | L | N — same as #26 |
+
+**Group 4 — `mirror_bot._execute_mirror_trade`, gate tier (split scoring)**
+
+| # | File:Line | Emitter / condition | Stage | log_status | instrument |
+|---|---|---|---|---|---|
+| 28 | mirror_bot.py:2538 | `mirror_trader_wr_hard_block` (WR ≤25% with n≥20 resolved) | gate | L | Y |
+| 29 | mirror_bot.py:2563 | `mirror_spread_hard_block` (spread ≥0.25) | gate | L | Y |
+| 30 | mirror_bot.py:2577 | `mirror_no_fav_hard_block` (NO price ≥0.90) | gate | L | Y |
+| 31 | mirror_bot.py:2833 | `mirror_gate_blocked` (gate_score < threshold, split scoring live) | gate | L | Y |
+| 32 | mirror_bot.py:2842 | `mirror_low_confidence` / `mirror_shadow_conf_band` (legacy path, confidence < min) | gate | L | Y |
+
+**Group 5 — `mirror_bot._execute_mirror_trade`, post-gate tier (sizing + exposure)**
+
+| # | File:Line | Emitter / condition | Stage | log_status | instrument |
+|---|---|---|---|---|---|
+| 33 | mirror_bot.py:2947 | `mirror_no_dynamic_blocked` (NO price < `MIRROR_NO_BLOCK_FLOOR`=0.20) | post_gate | L | Y |
+| 34 | mirror_bot.py:2955 | `mirror_no_edge_rejected` (NO edge <5%) | post_gate | L | Y |
+| 35 | mirror_bot.py:3019 | "size zero after limits" (per-market + daily shares cap collapses size) | post_gate | L | Y |
+| 36 | mirror_bot.py:3027 | `mirror_dust_skipped` (trade_usd < `MIRROR_MIN_TRADE_USD`=$25) | post_gate | L | Y |
+| 37 | mirror_bot.py:3094 | `mirror_exposure_lock_reject` (daily cap exceeded under lock) | post_gate | L | Y |
+| 38 | mirror_bot.py:3103 | `mirror_category_cap_reject` (per-category ≥$40K) | post_gate | L | Y |
+
+**Counts:** 38 total early-exit sites; 25 true signal rejections worth instrumenting (instrument=Y). Remaining 13 are malformed events, infra guards, SELL housekeeping, or the always-false non-whale filter (#4/#13) whose volume would swamp the table. (Prior draft said 26/12 — off-by-one in summary paragraph, table rows are the authoritative count. Corrected S186 spot-check 2026-04-20.)
+
+**Stage buckets (for the `rejection_stage` column):**
+- `pre_watchlist`: #4, #13 (non-whale fast-reject — deliberately OUT of instrumentation)
+- `watchlist`: #8, #10, #11 (whale trade present but rejected at watchlist layer)
+- `pre_gate`: #15–#25 (11 sites — most in-memory hard blocks)
+- `gate`: #28–#32 (5 sites — scoring path)
+- `post_gate`: #33–#38 (6 sites — sizing / exposure)
+
+**Consequence for §9.3 open question** (grouping stages): the 5-stage scheme holds; the 10-12 estimate in the prior draft was ~1/3 of the real count. `_log_rejection` helper signature unchanged; call-site count triples.
+
+**Not in instrumentation (explicit):**
+- Any malformed-event early return (user dict missing, price unparseable, size ≤0) — these are not signal rejections, they're data hygiene on the WS/RTDS feed.
+- Watchlist fast-reject (#4/#13) — fires on ~99% of RTDS events and carries no trader signal.
+- SELL housekeeping paths (#26/#27) — SELL paths close existing positions; "no position to close" is a no-op, not a rejected copy signal.
 
 A3. Backfill resolution. Existing `backfill_prediction_log_resolution` (`database.py:3227`) pattern applies — add equivalent `backfill_mirror_rejected_signals_resolution` that joins to `markets` on `market_id` once resolved.
 
