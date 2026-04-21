@@ -252,7 +252,7 @@ Week:  1   2   3   4   5   6   7   8   9  10  11  12  ...  M3  M4  M5  M8
 | 13 | 2C: Structlog dedup (30s TTL) | logging_setup.py | |
 | 14 | 2D: WatchedFileHandler + logrotate | logging_setup.py + new deploy/logrotate.d/polymarket | |
 | 15 | 2E: RTDS seen_set dedup | mirror_bot.py | |
-| 16 | 2F: Health check kill switch wiring | health_check.sh (EXISTS — enhance, don't recreate) | Review existing 6-layer script, add kill switch flag |
+| 16 | 2F: Health check kill switch wiring | `deploy/dead_man_watchdog.sh` (kill-switch writer — sets `system_config.kill_switch='true'`) + `deploy/healthcheck_probe.sh` (S180 tiered probe, replaced "6-layer script" framing) | Plan's `health_check.sh` reference is stale — no file by that name exists. Kill-switch wiring SHIPPED. See §S186b Corrections Log for reconciliation. |
 | 17 | 2G: Pool tightening — INVESTIGATE FIRST | .env files | Start: MB 10→8, EB 14→10. Monitor 48h. Rollback: if >5 events matching `pool_exhaustion\|TimeoutError\|semaphore\|QueuePool limit` in 48h, immediately revert. |
 | 18 | 2I: Illiquidity exit validation + enable | Config | Deploy BEFORE 2H — handle exits from illiquid positions before filtering entries by liquidity. |
 | 19 | 2H: Entry-time liquidity gate | order_gateway.py | Per-bot depth multiplier: WB 10×, MB 5×, EB 3× |
@@ -266,11 +266,13 @@ If market_prices Option B approved: Commit 20 (DROP TABLE + exclusion + ingestio
 
 ## WEEK 2 — Phase 3: VPS Config (SSH only)
 
-- effective_cache_size=12GB (planner hint, verify shared_buffers stays 4GB)
-- PgBouncer idle_txn timeout
-- sshd hardening (PasswordAuth=no, PermitRoot=no, MaxAuth=3, AllowUsers ubuntu)
-- SSH port change (non-standard high port — document the chosen port)
-- autovacuum_naptime=15
+**Verified state 2026-04-21 — see §S186b Corrections Log for full audit trail.**
+
+- ~~effective_cache_size=12GB~~ — **SUPERSEDED.** VPS running `effective_cache_size=24GB, shared_buffers=4GB` via `postgresql.auto.conf:4-5` (`ALTER SYSTEM SET` override; `pg_settings.source='configuration file'`). Origin: S152 PG tuning during VPS upgrade (commit `8d7b5e1`, Ubuntu-3 16GB → Ubuntu-32 32GB). Plan's 12GB target was pre-migration; current values correct for 32GB instance. No reapply needed. ✅
+- PgBouncer `idle_transaction_timeout` — **NOT APPLIED.** VPS has `server_idle_timeout=600` only; `idle_transaction_timeout` (client-side idle-in-txn kill) absent from `/etc/pgbouncer/pgbouncer.ini`. Plan phrasing "idle_txn timeout" was ambiguous between these two params — clarified: intent was `idle_transaction_timeout`. Hygiene backlog.
+- sshd hardening — **PARTIAL.** `PermitRootLogin no` ✅, `PasswordAuthentication no` ✅. `MaxAuthTries=3` + `AllowUsers ubuntu` NOT set (absent from `/etc/ssh/sshd_config` and `sshd_config.d/*.conf`). Hygiene backlog — 5-line sshd_config addition.
+- SSH port change — **NOT APPLIED.** Port 22 (default) per `ss -tlnp`. Partial mitigation via fail2ban (D4 ✅). Security-hardening backlog (threat-model decision).
+- autovacuum_naptime=15 — **NOT APPLIED.** `pg_settings.source='default'` (running 60s). Bundle with next Postgres-touching deploy. Hygiene backlog.
 
 ---
 
@@ -1003,6 +1005,44 @@ sudo journalctl -u polymarket-mirror --since "2 hours ago" | \
 
 ---
 
+### S186b (2026-04-21) — Full plan-vs-reality reconciliation + Phase 3 origin trail
+
+**Context.** User-requested 100% item-by-item verification of the plan against (a) `git log master` (698 commits), (b) local file existence, (c) VPS runtime state via SSH. Full per-item table archived at `docs/S186b_plan_reconciliation.md` (~140 items covered). This entry records the durable corrections and classifications; the table itself is the reference artifact.
+
+**Headline correction (Protocol 4c-shaped, both catches).** Two initial "missing" findings were verifier errors, not plan drift:
+- **D1 PG OOMScoreAdjust=-900** — applied via stock Ubuntu `/lib/systemd/system/postgresql@.service` template (instance unit), NOT the `postgresql.service` wrapper my `systemctl show postgresql -p OOMScoreAdjust` query targeted. Wrapper returns 0; instance units inherit -900 from the template. Running postmaster confirmed at -900; backends reset to 0 post-fork by design (preferred OOM victim).
+- **D3 RESOLUTION+EXIT partial unique indexes** — applied as per-partition indexes (`idx_trade_events_<YYYY_MM>_exit_dedup` / `_resolution_dedup` across 12 month partitions + default), NOT at parent-table level my `pg_indexes WHERE tablename='trade_events'` query targeted. Partitioned tables enforce uniqueness via per-partition indexes by PG design; the parent view hides them. Origin: commit `8f0c69f` "S159 C15+C18 — partition-safe ENTRY/EXIT dedup."
+
+Mechanism common to both: a default query interface by design surfaces only the less-informative layer of a hierarchical structure. Filed as Protocol candidate "Hierarchical infrastructure verification" in §Protocol candidates below. Two catches in one investigation qualifies for candidate filing; third real-world instance promotes to numbered protocol.
+
+**P3-1 effective_cache_size + shared_buffers origin trail (closes "undocumented intentional change" category):**
+- Plan target: `effective_cache_size=12GB`, `shared_buffers=4GB` (from 16GB VPS era).
+- VPS state: `effective_cache_size=24GB`, `shared_buffers=4GB`, both from `/var/lib/postgresql/16/main/postgresql.auto.conf:4-5`.
+- `pg_settings.source='configuration file'` confirms `ALTER SYSTEM SET` writes, not runtime defaults.
+- Origin: WeatherBot S152 "PG tuning applied" per `memory/MEMORY.md` entry, timed with commit `8d7b5e1` (VPS migration Ubuntu-3 16GB → Ubuntu-32 32GB).
+- NOT git-tracked because `ALTER SYSTEM` writes to `postgresql.auto.conf` in the data directory, outside the deploy pipeline.
+- Disposition: VPS values correct for 32GB instance. Plan text at Phase 3 updated. No reapply needed.
+
+**P3-2 PgBouncer `idle_transaction_timeout` — NOT APPLIED.** `/etc/pgbouncer/pgbouncer.ini` has `server_idle_timeout=600` only. Plan phrasing "PgBouncer idle_txn timeout" was ambiguous between `idle_transaction_timeout` (client-side idle-in-txn kill) and `server_idle_timeout` (pool-side idle-connection close) — two distinct PgBouncer params. Plan text clarified at Phase 3 to name `idle_transaction_timeout` explicitly. Hygiene backlog.
+
+**P3-3 sshd hardening — PARTIAL.** `PermitRootLogin no` + `PasswordAuthentication no` applied. `MaxAuthTries=3` + `AllowUsers ubuntu` absent from `/etc/ssh/sshd_config` and `sshd_config.d/*.conf`. Hygiene backlog — ~5-line sshd_config addition.
+
+**P3-4 SSH port change — NOT APPLIED.** Port 22 (default) per `ss -tlnp`. sshd_config has no `Port` directive. Fail2ban (D4 ✅) provides partial mitigation. Security-hardening backlog (threat-model decision).
+
+**P3-5 autovacuum_naptime=15 — NOT APPLIED.** `pg_settings.source='default'` (60s default). `setup-vps.sh` does not touch it; no git history. Hygiene backlog — bundle with next Postgres-touching deploy.
+
+**2F file-path drift — plan text reconciled.** Plan Phase 2 table row 16 referenced `health_check.sh` ("EXISTS — enhance"). Actual files: `deploy/dead_man_watchdog.sh` (kill-switch writer — sets `system_config.kill_switch='true'` via SQL) + `deploy/healthcheck_probe.sh` (S180 tiered probe, replaced the "6-layer script" framing). Plan row updated.
+
+**Meta-finding 1 — Protocol 5 symmetry for next plan-hygiene round.** Protocol 5 as written covers over-optimistic status claims (claim "done" when broken). S186b surfaced the symmetric case: over-pessimistic verifier claims (claim "missing" when applied at alternative substrate). Both failure directions produce wasted work — the over-optimistic case produces silent operational bugs; the over-pessimistic case produces unnecessary reapplication and plan edits. Protocol 5's mandate should apply symmetrically. Filed for next plan-hygiene round alongside: (a) Protocol 6 carveout for check-effectiveness measurements, (b) MEMORY.md growth budget (per S186 §6), (c) Protocol 4b adherence-vs-awareness refinement (per S186 §6).
+
+**Meta-finding 2 — infra-verification failure cluster.** All four remaining real discrepancies (P3-2, P3-3, P3-4, P3-5) share the same root: config/infra items where "did the commit land" diverges from "is it actually in effect on VPS." Code changes deploy uniformly; config changes require drop-in files, migration runs, or `ALTER SYSTEM` / sshd_config edits to take effect. The session that marked Day 1 COMPLETE verified commits landed; no session verified the config actually took effect on VPS end-to-end. This is the over-optimistic half of the same substrate-verification gap the Protocol 4c-shaped hierarchical-infra candidate addresses on the over-pessimistic half. Worth remembering that "Phase N COMPLETE" claims for any phase that modifies systemd drop-ins, migrations, or `postgresql.conf` must be verified on VPS post-deploy, not just merged on master.
+
+**Output-ratio tracking note.** Third consecutive session (S185, S186, S186b) where highest-value outputs are structural findings and plan corrections rather than code shipped. Not an action item — a pattern-tracking observation. If ratio persists another 3-5 sessions, characteristic of project state (phases converging, edge cases surfacing, meta-layer leverage) not coincidence.
+
+**Evidence of origin.** `git log --all --oneline -S "effective_cache_size"` (empty — confirms no tracked commit); `SELECT name, sourcefile, sourceline, source FROM pg_settings WHERE name IN (...)` (4 rows, three `configuration file` sources + one `default`); `cat /lib/systemd/system/postgresql@.service | grep OOMScore` (`-900`); `SELECT tablename, indexname FROM pg_indexes WHERE indexdef ~* 'unique' AND tablename LIKE 'trade_events%'` (30 rows including per-partition dedup indexes); `sudo grep -iE '^(MaxAuthTries|AllowUsers)' /etc/ssh/sshd_config` (empty); `ss -tlnp | grep sshd` (Port 22 only).
+
+---
+
 ## Protocols
 
 Binding rules for all future sessions. Each protocol exists because a real hypothesis-inversion or false-finding would have shipped a wrong fix in its absence. Added incrementally as new failure modes are caught during execution.
@@ -1177,6 +1217,8 @@ Flagged mid-session; not yet binding rules. Listed so they don't get lost betwee
 **Protocol 6 carveout for check-effectiveness measurements.** Protocol 6 as currently phrased ("Any P&L, win-rate, or trade-count claim...must cite scripts/bot_pnl.py") literally captures counts of audit-check findings (counts of rows returned by queries against trade_events and positions). These counts are not bot performance measurements — they measure the effectiveness of the audit check itself. The stop-hook enforcing Protocol 6 fires on such counts (observed S186: during PSM port validation, violation-count comparisons between OLD and NEW query shapes triggered the hook and had to be retracted despite being exactly the measurement needed to decide whether to ship the port). Semantic intent of Rule Zero was bot performance; Protocol 6's literal breadth over-captures. Two reasonable dispositions: (A) carve out an exception to Protocol 6 for check-effectiveness measurements — "violation counts produced by audit checks against production data do not require bot_pnl.py citation; they are sourced from the check's own query, which IS the canonical source for check effectiveness"; (B) accept the literal reading and build `scripts/check_effectiveness.py` that wraps audit check-shape comparisons and produces authoritative output. Lean: (A). Over-engineering risk on (B) is material, and (A) matches Rule Zero's original intent. File for next plan-hygiene round. Evidence base: one explicit instance (S186 PSM port validation); enforcement-vs-semantics tension is documentable without further accumulation.
 
 **Aggregate-statistics bucket-concentration check.** When bucketing resolved-trade data by any dimension (lead time, city, category, trader, time of day), a bucket's headline statistic may be driven by a single correlated event rather than by the bucket's nominal dimension. S185 worked example (6O WB lead-time backtest): the longest populated lead-time bucket produced a dramatic apparent signal that, on drill-down, collapsed to a single `(entry_date, city, side)` triple's correlated-blowup cluster — the pattern already documented in WB S119 memory. Aggregating without a cardinality check would have produced a wrong multiplier-retune recommendation. Candidate discipline: before reporting any bucket-level aggregate, enumerate the bucket's underlying rows by `(entry_date × city × side)` (or equivalent domain-specific triple) and require that no single triple accounts for more than e.g. 50% of the bucket's row count. If it does, flag as "single-event-dominated" and present that bucket separately, not as an in-aggregate data point. Similar in shape to Protocol 4c (projection lossiness); could land as Protocol 4d (aggregate bucket concentration) or as a sub-clause to a future data-analysis protocol. Evidence-of-origin pre-seeded: the 6O finding is this candidate's first concrete catch.
+
+**Hierarchical infrastructure verification.** Operational infra config often lives at a deeper substrate than default query interfaces expose. `systemctl show postgresql` returns the wrapper unit's values, NOT the template unit (`postgresql@.service`) values that instance units inherit. `SELECT indexname FROM pg_indexes WHERE tablename='trade_events'` returns parent-table indexes, NOT per-partition indexes that enforce uniqueness on partitioned tables (PG stores unique constraints as per-partition indexes by design). Connection poolers expose pool-level config, NOT per-connection state. Container orchestration exposes service definitions, NOT per-replica runtime. The verification question is NOT "did the default query return the expected result" — it IS "is the query interrogating the substrate where the setting actually takes effect." This candidate differs from Protocol 4c (projection lossiness — a component dropping data it had) by addressing a sharper class: a query interface surfacing by design only a subset of reality, where the subset is the less-informative layer. Candidate discipline: before concluding an infra setting is missing or absent, confirm the query surface covers the correct substrate level — for PG settings use `pg_settings.sourcefile`; for partitioned-table constraints query against partition names, not just the parent; for systemd inspect both `systemctl cat` on the template and the instance unit. **Evidence of origin:** S186b (2026-04-21) — user-requested full plan-vs-reality reconciliation flagged D1 (PG OOMScoreAdjust=-900) and D3 (trade_events RESOLUTION+EXIT unique indexes) as discrepancies. Both were verifier errors caused by this mechanism; both settings are actually applied (D1 via stock `postgresql@.service` template, D3 as per-partition indexes from commit `8f0c69f`). Two catches in one investigation qualifies for candidate filing. Third real-world instance would promote to a numbered protocol.
 
 ---
 
