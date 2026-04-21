@@ -2,8 +2,31 @@
 Check 5A: Position-level reconciliation against trade_events.
 
 Compares positions.size against the net of ENTRY - EXIT - RESOLUTION sizes
-in trade_events. Tolerance: 0.1% of entry size OR 0.001 shares (whichever is
-larger) to absorb rounding in DOUBLE PRECISION arithmetic.
+in trade_events, aggregated by (bot_name, market_id). Side is excluded from
+te_net aggregation because historical EXIT events used side='SELL' while
+ENTRYs used YES/NO (S163 transition) — per-side grouping created false
+positives where te_net(bot, mkt, 'SELL') built solely from legacy EXIT(SELL)
+rows matched phantom positions.side='SELL' rows with large negative net.
+
+S186 correction (supersedes S185 P0 disposition's "mirror S164" framing):
+a naive mirror of the S164 size_invariant_check GROUP BY fix is NOT correct
+for PSM. The two checks are not structurally isomorphic. size_invariant
+asserts a per-market sum invariant — aggregating across sides is
+semantically valid. PSM asserts a per-side invariant — per-side attribution
+is required. Verified against live data: a side-drop without guard shifts
+false positives from legacy-SELL (shrinks) to dual-side-open markets where
+positions has rows with size > 0 on BOTH sides simultaneously (grows).
+Side-agnostic te_net aggregates both sides' entries into one net, which
+then mismatches each individual positions row.
+
+Guard: the mismatch JOIN excludes markets where another positions row on
+the opposite side has size > 0 (NOT EXISTS sibling with size > 0). Single-
+side markets benefit from the S163 legacy fix; dual-side markets are
+routed to a separate diagnostic (DUAL_SIDE_CONCURRENT, filed as a follow-up
+P0 item — not part of this check).
+
+Tolerance: 0.1% of entry size OR 0.001 shares (whichever is larger) to
+absorb rounding in DOUBLE PRECISION arithmetic.
 
 Also checks:
 - positions with size > 0 but no ENTRY event (phantom position)
@@ -26,10 +49,15 @@ class PositionTradeEventsCheck(BaseCheck):
         t0 = time.monotonic()
         violations: List[AuditViolation] = []
 
-        # Size mismatch between positions table and trade_events net
+        # Size mismatch between positions table and trade_events net.
+        # S186: te_net GROUPed BY (bot_name, market_id) only — side is
+        # aggregated across to absorb legacy EXIT(SELL) / ENTRY(YES|NO)
+        # asymmetry. NOT EXISTS guard excludes dual-side-open markets
+        # where the side-agnostic aggregation would false-positive. See
+        # module docstring for the full rationale.
         mismatch_rows = await session.execute(text("""
             WITH te_net AS (
-                SELECT bot_name, market_id, side,
+                SELECT bot_name, market_id,
                     SUM(CASE WHEN event_type = 'ENTRY' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END)
                         - SUM(CASE WHEN event_type IN ('EXIT','RESOLUTION') THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END)
                     AS net_size,
@@ -38,7 +66,7 @@ class PositionTradeEventsCheck(BaseCheck):
                 FROM trade_events
                 WHERE event_type IN ('ENTRY', 'EXIT', 'RESOLUTION')
                   AND size IS NOT NULL
-                GROUP BY bot_name, market_id, side
+                GROUP BY bot_name, market_id
             )
             SELECT p.source_bot, p.market_id, p.side,
                    CAST(p.size AS DOUBLE PRECISION) AS pos_size,
@@ -49,10 +77,16 @@ class PositionTradeEventsCheck(BaseCheck):
             JOIN te_net te
               ON te.bot_name  = p.source_bot
              AND te.market_id = p.market_id
-             AND te.side      = p.side
             WHERE CAST(p.size AS DOUBLE PRECISION) > 0
               AND ABS(CAST(p.size AS DOUBLE PRECISION) - te.net_size)
                   > GREATEST(te.total_entered * 0.001, 0.001)
+              AND NOT EXISTS (
+                  SELECT 1 FROM positions p2
+                  WHERE p2.source_bot = p.source_bot
+                    AND p2.market_id  = p.market_id
+                    AND p2.side      <> p.side
+                    AND CAST(p2.size AS DOUBLE PRECISION) > 0
+              )
             LIMIT 200
         """))
         for row in mismatch_rows.fetchall():
