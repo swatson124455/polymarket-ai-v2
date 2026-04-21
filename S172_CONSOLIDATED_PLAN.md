@@ -19,7 +19,7 @@
 5. **Success criteria amended** — EB v2 evaluated separately. System may operate with 2 bots.
 6. **Phase 8B** evaluates EB v2 data (model_version='v2-trinity'), not v1.
 7. **Immediate WB/MB fixes** added as "Day 2" actions derived from RC findings.
-8. **Sessions S180–S186** Corrections Log, Protocols 1–6 (Protocol 6: canonical-source discipline for P&L/WR/trade-count claims, promoted from Rule Zero at fourth-instance trigger — S149/S150/S185/S186) + Protocol 5a (canonical-document identity), remaining Protocol candidates (SQL-contract, aggregate-statistics bucket-concentration check), Hygiene Backlogs (S180, S183, S185), Silent-failure class diagnostic heuristic appended (preserved from v6.0's ongoing edits — the consolidated plan is a living document). Latest entries: S184 gitignore-drift correction, S185 P0 recon_type reclassification (FIX_ROOT → FIX_AUDIT_CHECK), S185 Hygiene Backlog item for `result_store.py` chronic-OPEN gap, S186 Protocol 6 promotion + 6O deferral.
+8. **Sessions S180–S186** Corrections Log, Protocols 1–6 (Protocol 6: canonical-source discipline for P&L/WR/trade-count claims, promoted from Rule Zero at fourth-instance trigger — S149/S150/S185/S186) + Protocol 5a (canonical-document identity), remaining Protocol candidates (SQL-contract, aggregate-statistics bucket-concentration check, and — post-S186 — a Protocol 6 carveout decision for check-effectiveness measurements), Hygiene Backlogs (S180, S183, S185), Silent-failure class diagnostic heuristic appended (preserved from v6.0's ongoing edits — the consolidated plan is a living document). Latest entries: S184 gitignore-drift correction, S185 P0 recon_type reclassification (FIX_ROOT → FIX_AUDIT_CHECK), S185 Hygiene Backlog item for `result_store.py` chronic-OPEN gap, S186 Protocol 6 promotion + 6O deferral + PSM port shape correction (commit `e19815e` — S164 pattern inheritance without structural-isomorphism check) + new P0 follow-up DUAL_SIDE_CONCURRENT diagnostic filed.
 
 ---
 
@@ -779,6 +779,61 @@ Reasoning:
 
 **Evidence of origin.** S186 session (2026-04-20) ran both scripts on VPS; totals do not match. Full outputs available in the S186 session SSH log. Validation workflow codified in the S185 handoff §4 step 1 produced the quarantine decision as designed — the prior session's gating clause "If validation fails, defer indefinitely" resolved cleanly without further escalation.
 
+### S186 (2026-04-20) — PSM port shape correction: S164 pattern inheritance without structural-isomorphism check
+
+**Claim (S185 Corrections Log §S185):** The remaining P0 set's `POSITION_SIZE_MISMATCH` disposition recommended "port the S164 `GROUP BY` fix (drop `side` from the join), matching `size_invariant_check.py:28-42` rationale." Framed as a straightforward pattern reuse.
+
+**Reality (verified against live VPS data, S186):** A naive mirror-port — dropping `side` from `te_net` GROUP BY and from the positions JOIN — produces the OPPOSITE of the intended effect. Instead of reducing false positives, it shifts them from one class (legacy-SELL cases, shrinks) to another (dual-side-open markets, grows). Net direction upward, not downward. Counts elided per Protocol 6; the mechanism is the argument, not the magnitude.
+
+**Mechanism.** `size_invariant_check` and `position_trade_events_check` are NOT structurally isomorphic, despite their surface similarity:
+
+- **`size_invariant`** asserts a per-market sum invariant (`entry_total >= exit_total + resolution_total` within tolerance). Aggregating across sides is semantically valid — the invariant holds at the market level regardless of side attribution.
+- **PSM** asserts a per-side invariant (`positions(bot, mkt, side).size == te_net(bot, mkt, side)`). Per-side attribution is required by the check's semantics. Dropping `side` from aggregation produces a side-agnostic `te_net` that, when joined to per-side positions rows on dual-side-open markets, flags each side's position as mismatched (because `te_net.net = entry(YES) + entry(NO)` doesn't equal either side's position alone).
+
+A dual-side-open market is one where `positions(bot, mkt)` has rows with `size > 0` on BOTH sides simultaneously. Rare but not nonexistent: MB has opposing-side blocks in normal operation, but legacy data and edge cases produce such markets; any naive side-drop port produces a pair of false positives per such market.
+
+**Correction shipped** (commit `e19815e`, this session): the S186 port mirrors the S164 side-drop to absorb the legacy EXIT(SELL) asymmetry, AND adds a `NOT EXISTS` guard against positions siblings with opposite side and `size > 0`. The guard excludes dual-side-open markets from PSM. They are routed to a separate new diagnostic (below).
+
+**Contract test** (`tests/unit/test_position_trade_events_check.py`) pins both the side-drop (catches pre-S186 regression) and the NOT EXISTS guard (catches naive-port regression). Future agents who read "port the S164 fix to this check" will fail the guard assertion before shipping.
+
+**Why logged here.** This is a Protocol 4b documented instance — pattern inheritance without structural-fit verification produces wrong fixes. S185's handoff applied a plausible-sounding pattern without verifying the two checks' invariants matched. The verification was possible (and was what S186 did) only because the verification step was the session's work; the prior session's pattern-based framing would have cascaded through to a deploy had this session shipped the naive port without live-data measurement.
+
+**Companion Protocol 4b evidence.** Three consecutive sessions have caught prior-handoff pattern-based instructions that were structurally wrong: S183 (`yes_price`/`yes_token_id` schema-shape confusion), S185 (P0 FIX_ROOT misclassification vs FIX_AUDIT_CHECK), S186 (this finding — S164 pattern inheritance). Common mechanism: prior session applied a plausible-sounding pattern without verifying structural fit; current session verified and caught the error. The pattern being reused is never examined for isomorphism with the target structure. This strengthens Protocol 4b's grounding and gives future sessions concrete precedent to check against when tempted to apply "the S164 fix" or similar pattern-based instructions.
+
+**Execution consequence.** Step 3a was landed as the guarded port, not the naive port. Step 3b (bulk ACK) still requires explicit authorization and the one-day post-deploy verification window; the window evaluates whether the NEXT daily audit run (against the guarded query) re-emits the historical OPEN set. If it does not, bulk ACK becomes safe to execute. The guarded query is expected to emit fewer rows than the pre-S186 query (legacy-SELL class eliminated; dual-side class routed elsewhere) and therefore the verification-window observation should be a material reduction in new OPEN rows emitted per daily run — but the specific counts will be presented qualitatively or cited from a canonical source per Protocol 6.
+
+### S186 new P0 follow-up — DUAL_SIDE_CONCURRENT diagnostic (filed, not yet shipped)
+
+**Scope.** A new audit check, separate from PSM, that flags any `(bot_name, market_id)` pair where `positions(bot, mkt)` has size > 0 on BOTH YES and NO simultaneously.
+
+**Proposed recon_type.** `DUAL_SIDE_CONCURRENT`. Severity TBD — likely `HIGH` (not CRITICAL, since MB can legitimately hold both sides in arbitrage-class scenarios), but the operator can whitelist specific bot/market patterns if the false-positive volume is high.
+
+**Semantics** (distinct from PSM). PSM asks "does this position's size agree with the trade_events net for its side?" DUAL_SIDE_CONCURRENT asks "is holding both sides of this market concurrently legitimate for this bot's strategy?" The two questions have different answers and different fixes. PSM routes dual-side markets to this check via the NOT EXISTS guard; this check is where the decision about dual-side legitimacy lives.
+
+**Proposed query** (simple):
+```sql
+SELECT source_bot, market_id,
+       COUNT(DISTINCT side) AS distinct_sides,
+       STRING_AGG(side || '=' || CAST(size AS TEXT), ', ' ORDER BY side) AS side_sizes
+FROM positions
+WHERE CAST(size AS DOUBLE PRECISION) > 0
+GROUP BY source_bot, market_id
+HAVING COUNT(DISTINCT side) > 1
+LIMIT 200
+```
+
+**Implementation estimate.** ~50-80 lines (new `dual_side_concurrent_check.py` + factory registration + contract test). Comparable in scope to `TradedMarketsStatusDriftCheck` (S184 shipped ~87 lines for a new check). One-commit shippable.
+
+**Sequencing.** Separate session or separate commit within this session. NOT bundled with Step 3a (commit `e19815e`) because:
+- A new recon_type is a semantic addition, not a port.
+- The SQL structure is different (GROUP BY HAVING, not JOIN-based).
+- Bulk ACK of the pre-existing dual-side markets (now routed to this check) is a separate authorization decision from the PSM bulk ACK.
+- Clean commit boundary for future revert: if the new check introduces issues, it reverts independently of the PSM port.
+
+**Not urgent to ship before Step 3b.** PSM's NOT EXISTS guard means dual-side markets disappear from PSM immediately on deploy of Step 3a (`e19815e`). They become invisible to the audit until DUAL_SIDE_CONCURRENT ships. That's an observability gap for the duration, but the gap pre-existed (pre-S186 PSM flagged them under a misleading recon_type; post-S186 they're silent). Ship DUAL_SIDE_CONCURRENT at the next convenient session — priority P0 for closing the observability gap, but not schedule-gating.
+
+**Evidence of origin.** S186 session (2026-04-20) live-data spot-check of the guarded port excluded dual-side market `0xad437cf21f437aab742569757d0761e24bdb0d9b632780b63dafbf5555a3f43e` (WB positions showed both NO and SELL with size > 0). The exclusion is correct behavior for PSM but leaves the dual-side anomaly unflagged until a dedicated diagnostic ships. Filed as P0 not P1 because audit-observability gaps are category-P0 per the session template.
+
 ### Phase 5 Sentinel — pre-deploy prerequisites
 
 The Phase 5 silent-failure sentinel (`scripts/silent_failure_sentinel.py`, not yet shipped) was planned to deploy after Phase 2 stable for 24h. S183 surfaced a two-part prerequisite. **The actual scheduling gate is Prereq 1** — Prereq 2 is a cheap ~5-line patch that unblocks sentinel design, not a workload that competes for session time. Framing the two as symmetric "double-gate" would mislead planning.
@@ -1108,7 +1163,9 @@ S185's handoff §2.2 named the fourth-instance promotion trigger explicitly. Thi
 
 Flagged mid-session; not yet binding rules. Listed so they don't get lost between sessions, and so the evidence base can accumulate before promotion.
 
-**SQL-contract verification against a live DB before commit.** Mocked-session unit tests cannot catch CHECK-constraint violations, undefined-column errors, bad joins, or any other string-vs-schema mismatch. S184 shipped two such bugs in a single session: `7b0b8ac` (CHECK violation, caught pre-production by Protocol 5 schema-read) and `535c14e` (undefined-column error in the `TradedMarketsStatusDriftCheck` query, caught post-deploy via journal — `UndefinedColumnError` on `pt.entry_time`/`exit_time`, the actual columns being `created_at`/`resolved_at`). Both were invisible to mocked unit tests and would have been caught by running the changed query against a real DB before commit. Candidate discipline: for commits that add or modify SQL in audit checks, factory queries, or any `session.execute(text(...))` path, execute the query against the VPS dev DB (or an equivalent) before commit. Promote to §Protocols (likely Protocol 7) if a third instance ships.
+**SQL-contract verification against a live DB before commit.** Mocked-session unit tests cannot catch CHECK-constraint violations, undefined-column errors, bad joins, or any other string-vs-schema mismatch. S184 shipped two such bugs in a single session: `7b0b8ac` (CHECK violation, caught pre-production by Protocol 5 schema-read) and `535c14e` (undefined-column error in the `TradedMarketsStatusDriftCheck` query, caught post-deploy via journal — `UndefinedColumnError` on `pt.entry_time`/`exit_time`, the actual columns being `created_at`/`resolved_at`). Both were invisible to mocked unit tests and would have been caught by running the changed query against a real DB before commit. Candidate discipline: for commits that add or modify SQL in audit checks, factory queries, or any `session.execute(text(...))` path, execute the query against the VPS dev DB (or an equivalent) before commit. Promote to §Protocols (likely Protocol 7) if a third instance ships. **S186 partial precedent:** the S186 PSM port applied this discipline voluntarily (`e19815e` verified against live VPS data before commit), catching the S164-pattern-inheritance structural error. Not a "shipped bug then caught" instance like the prior two, but evidence that the discipline produces real catches when applied — strengthens the candidate for promotion.
+
+**Protocol 6 carveout for check-effectiveness measurements.** Protocol 6 as currently phrased ("Any P&L, win-rate, or trade-count claim...must cite scripts/bot_pnl.py") literally captures counts of audit-check findings (counts of rows returned by queries against trade_events and positions). These counts are not bot performance measurements — they measure the effectiveness of the audit check itself. The stop-hook enforcing Protocol 6 fires on such counts (observed S186: during PSM port validation, violation-count comparisons between OLD and NEW query shapes triggered the hook and had to be retracted despite being exactly the measurement needed to decide whether to ship the port). Semantic intent of Rule Zero was bot performance; Protocol 6's literal breadth over-captures. Two reasonable dispositions: (A) carve out an exception to Protocol 6 for check-effectiveness measurements — "violation counts produced by audit checks against production data do not require bot_pnl.py citation; they are sourced from the check's own query, which IS the canonical source for check effectiveness"; (B) accept the literal reading and build `scripts/check_effectiveness.py` that wraps audit check-shape comparisons and produces authoritative output. Lean: (A). Over-engineering risk on (B) is material, and (A) matches Rule Zero's original intent. File for next plan-hygiene round. Evidence base: one explicit instance (S186 PSM port validation); enforcement-vs-semantics tension is documentable without further accumulation.
 
 **Aggregate-statistics bucket-concentration check.** When bucketing resolved-trade data by any dimension (lead time, city, category, trader, time of day), a bucket's headline statistic may be driven by a single correlated event rather than by the bucket's nominal dimension. S185 worked example (6O WB lead-time backtest): the longest populated lead-time bucket produced a dramatic apparent signal that, on drill-down, collapsed to a single `(entry_date, city, side)` triple's correlated-blowup cluster — the pattern already documented in WB S119 memory. Aggregating without a cardinality check would have produced a wrong multiplier-retune recommendation. Candidate discipline: before reporting any bucket-level aggregate, enumerate the bucket's underlying rows by `(entry_date × city × side)` (or equivalent domain-specific triple) and require that no single triple accounts for more than e.g. 50% of the bucket's row count. If it does, flag as "single-event-dominated" and present that bucket separately, not as an in-aggregate data point. Similar in shape to Protocol 4c (projection lossiness); could land as Protocol 4d (aggregate bucket concentration) or as a sub-clause to a future data-analysis protocol. Evidence-of-origin pre-seeded: the 6O finding is this candidate's first concrete catch.
 
