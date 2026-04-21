@@ -824,6 +824,15 @@ LIMIT 200
 
 **Implementation estimate.** ~50-80 lines (new `dual_side_concurrent_check.py` + factory registration + contract test). Comparable in scope to `TradedMarketsStatusDriftCheck` (S184 shipped ~87 lines for a new check). One-commit shippable.
 
+**Semantic decision required BEFORE implementation.** The SQL is trivial; the semantics are the hard part. Before a future session writes this check, the operator must answer: *"what does a flag from this check mean, per bot, and what is the operator action when it fires?"* The answer varies by bot and may require a time-window component:
+
+- **MirrorBot:** may have legitimate arbitrage scenarios where dual-side concurrent holdings are intentional. If so, MB must be exempt, or the check must have per-bot thresholds, or the flag must be advisory not CRITICAL for MB.
+- **WeatherBot:** should probably never hold both sides concurrently. Dual-side on WB is likely a bug (stale position row not closed on resolution, or a race in the position writer). Flag as CRITICAL.
+- **EsportsBot:** unknown — depends on strategy. Operator to decide.
+- **Transition-window exemption:** all bots may legitimately be dual-side for brief moments (mid-exit, order-gateway race). Check may need a `dual_side_open_for > N minutes` predicate to avoid alerting on transient states.
+
+Do NOT write the SQL before these decisions are made. A check without a well-defined operator action is an observability-noise generator, not a diagnostic. This is the check-effectiveness question the Protocol 6 carveout candidate eventually frames.
+
 **Sequencing.** Separate session or separate commit within this session. NOT bundled with Step 3a (commit `e19815e`) because:
 - A new recon_type is a semantic addition, not a port.
 - The SQL structure is different (GROUP BY HAVING, not JOIN-based).
