@@ -158,5 +158,8 @@ PLAN_*.md
 *_REVIEW_PROMPT.md
 *_TRADING_PATHWAY_REVIEW.md
 
+# Audit artifacts (pre-mod ID captures, bulk-ACK SQL, etc — session-local, reversal backstop)
+audit_artifacts/
+
 # Archives
 *.tar.gz
