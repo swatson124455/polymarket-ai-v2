@@ -1,7 +1,7 @@
 # S172 CONSOLIDATED PLAN v7.0 — INTEGRATED (Phase RC + Phase 5v2 + ongoing session corrections)
 
 **Session:** 172 (original) + 173 (RC diagnostics + 5v2 amendment) + S180–S186 (session corrections log, Protocols 1–6 + remaining candidates, Hygiene Backlogs)
-**Date:** 2026-04-12 (v6.0) → 2026-04-13 (v7.0) → continuously updated (latest: 2026-04-22, S190 — Protocol 5b + 6a codified)
+**Date:** 2026-04-12 (v6.0) → 2026-04-13 (v7.0) → continuously updated (latest: 2026-04-22, S190 — Protocols 5b/5c/5d + 6a codified)
 **Status:** APPROVED — integrates v6.0 + Phase 5v2 Amendment + Phase RC findings + S180–S186 Corrections Log
 **Scope:** All 3 bots (WeatherBot, MirrorBot, EsportsBot) — audit remediation + long-term elevation
 **Timeline:** 8 months
@@ -1239,6 +1239,32 @@ If evidence cannot be produced, the status claim is unsupported and must be re-m
 **Out of scope.** Queries whose output is consumed by a downstream script that itself enforces shape discipline (e.g., `bot_pnl.py`'s internal queries, which are structured code paths with tested output shapes) do not require manual shape-verification by a human reader. This sub-section applies to ad-hoc SQL run during a session whose output feeds directly into a human-written claim.
 
 **Evidence of origin.** S190 §4.1 PSM verification (2026-04-22). One underlying error — multi-market `IN()` result attributed to a single market without inspecting the grouping column row-by-row — produced three reporting manifestations in the same investigation: (1) "dual-side market has 0 positions rows" (actually 2 rows), (2) "single-side market has 3 rows including SELL sibling" (actually 1 row; the 2 extras belonged to the dual-side market), (3) "dual-side has 0 trade_events even without bot filter" (conflated an earlier bot-filtered-zero with a later unfiltered query whose output omitted `market_id` from `SELECT`). Plus one derivative self-diagnosis miss: initial self-attribution blamed "errored query read as 0 rows," but the actual errored query (`column "created_at" does not exist`) was correctly recognized at the time — the real pattern was `IN`-misattribution throughout. Three manifestations from one cause in one session satisfied the operator's promotion threshold. Codified S190.
+
+#### 5c — Row-class-dependent field queries
+
+**Mandate.** When a column's presence, meaning, or semantics varies by a row-class discriminator (e.g., `event_type` in `trade_events`, `status` in `positions`, `recon_type` in `reconciliation_breaks`), population / coverage / presence queries must filter to the relevant row class before computing the statistic. A coverage query run without the class filter conflates classes where the column carries data with classes where the column is null by design, producing a number that answers no question.
+
+**Minimum evidence.**
+- Identify the row-class discriminator column whose value affects the queried field's semantics before writing the coverage query.
+- Filter or `GROUP BY` that column; if population varies across classes, report per-class coverage, not aggregate.
+- When inheriting a coverage claim from a prior session, re-verify its class-filter framing before treating the number as comparable to current data.
+
+**Out of scope.** Columns with uniform semantics across all row classes (primary keys, timestamps with invariant meaning, fully-populated fields) do not require class-filtered queries — the row class has no semantic effect. This sub-section applies only to columns whose presence or meaning is row-class-dependent.
+
+**Evidence of origin.** S188→S189 investigation of `trade_events.event_data->'trader'` coverage. S188 spot-checked 4 recent MB events, found 0 with the field, flagged as write-path-defect candidate. S189 Phase 0 traced the discrepancy to the absence of an `event_type` filter: the 4 sampled events were all EXIT (by design no trader); ENTRY events have 99.93% coverage; EXIT and RESOLUTION are 0% by design. The class-unaware query conflated ENTRY (trader-carrying) with EXIT/RESOLUTION (trader-not-carrying by design) into a single figure that captured neither class. S189 filed as candidate; codified S190 per operator direction.
+
+#### 5d — Verbatim query preservation
+
+**Mandate.** Queries that produce numeric or factual claims in handoff docs, memory entries, session reports, or any durable artifact must be preserved verbatim in the artifact. A claim without its producing query is reconstructable only if the outcome is distinctive enough to uniquely constrain the query shape; for any claim whose outcome is not self-constraining (most of them), reconstruction is impossible, and the claim cannot be independently verified by a future session even in principle.
+
+**Minimum evidence.**
+- Every handoff claim citing a count, coverage, ratio, sum, or other numeric finding embeds the SQL or command that produced it (in a fenced block or inline, as appropriate).
+- Multi-step investigations preserve intermediate queries, not just final results — downstream sessions need the intermediate shapes to replay the reasoning.
+- Where the exact query is impractical to embed verbatim (e.g., runs across multiple invocations with parameter variation), cite the script path and parameter values sufficient to reproduce the claim's specific output.
+
+**Out of scope.** Qualitative findings (pattern observations, design choices, code-review findings read from source files) do not require query citations — they are not query-derived. This sub-section applies only to quantitative claims falling within Protocol 6's scope, 5b's scope, or any claim where the number itself is the load-bearing evidence.
+
+**Evidence of origin.** S188 "0 of 4 recent MB events had the trader field" — S189 reproduced the underlying evidence only because the outcome was narrow enough (0-count) and the target distinctive enough (4 most-recent MB events, easily re-enumerable) to constrain the query shape for reconstruction. A less distinctive outcome ("68% coverage," "150 of 200 events") would have been impossible to reconstruct without the producing query preserved. The reconstruction-vs-reproduction ambiguity closes at source: claims unreproducible from their artifact are not durably verified, regardless of how rigorous the originating session was at claim time. S189 filed as candidate; codified S190 per operator direction.
 
 ---
 
