@@ -1,7 +1,7 @@
 # S172 CONSOLIDATED PLAN v7.0 — INTEGRATED (Phase RC + Phase 5v2 + ongoing session corrections)
 
 **Session:** 172 (original) + 173 (RC diagnostics + 5v2 amendment) + S180–S186 (session corrections log, Protocols 1–6 + remaining candidates, Hygiene Backlogs)
-**Date:** 2026-04-12 (v6.0) → 2026-04-13 (v7.0) → continuously updated (latest: 2026-04-20, S186 — Protocol 6 promotion)
+**Date:** 2026-04-12 (v6.0) → 2026-04-13 (v7.0) → continuously updated (latest: 2026-04-22, S190 — Protocol 5b + 6a codified)
 **Status:** APPROVED — integrates v6.0 + Phase 5v2 Amendment + Phase RC findings + S180–S186 Corrections Log
 **Scope:** All 3 bots (WeatherBot, MirrorBot, EsportsBot) — audit remediation + long-term elevation
 **Timeline:** 8 months
@@ -1225,6 +1225,21 @@ If evidence cannot be produced, the status claim is unsupported and must be re-m
 
 **Evidence of origin.** S183 plan-hygiene audit found `S172_CONSOLIDATED_PLAN_v7.md` tracked in git (committed `0f1e2a8` on 2026-04-14, headered "APPROVED — integrates v6.0 + Amendment 1 + Phase RC findings") sitting alongside `S172_CONSOLIDATED_PLAN.md` (v6, the filename-canonical version, last edited 2026-04-19 with ongoing session Corrections Log additions). Memory and CLAUDE.md both pointed at the unnumbered filename, so every session since 2026-04-14 had been reading v6 without Phase RC or Day 2 content. Surfaced by a grep of `^## ` section headers against both files which exposed Phase RC and Day 2 sections in v7 that v6 lacked. Resolved by merging v7's content into the canonical-filename v6 (v6 retained because it had more ongoing edits than v7) and `git rm` on the v7 orphan, preserving v6's Corrections Log + Protocols additions while folding in v7's RC + 5v2 content. The class of drift: filename-stable, content-drifted into a sibling.
 
+#### 5b — Query shape verification before interpretation
+
+**Mandate.** When a session relies on query output as evidence for a claim, verify the query's shape before interpreting the result. A rowcount, a sum, a set of returned rows — none of these are evidence until the query is confirmed to have executed without error, filtered as intended, and produced output that maps unambiguously to the question being asked. Reading query output as substantive result without a shape-check is a class of measurement error that produces confidently wrong conclusions — all the more dangerous because the numbers look authoritative.
+
+**Minimum evidence.** Before interpreting query output:
+- Confirm the query exited with status 0 (no syntax errors, no missing-column errors, no permission errors). An errored query may return truncated or empty output that looks like a valid answer.
+- Confirm the `WHERE` clauses produced the intended filter. For single-market claims derived from a multi-market `IN(...)` result, re-run per-market or include the filter-discriminating column (`market_id`, `bot_name`, etc.) in `SELECT` so attribution is unambiguous.
+- Confirm the result shape matches the claim's granularity. A `GROUP BY` query that groups by `(market_id, event_type, side)` but omits `market_id` from `SELECT` cannot be attributed row-by-row to specific markets — the grouping column must appear in `SELECT` or the query must be re-run per-clause.
+
+**Operational rule (the one thing to internalize).** When a query has multi-value `IN`, `OR`, or `GROUP BY` on a discriminating column, that column MUST appear in `SELECT`. If it doesn't, rows cannot be attributed and the output is not shape-verified regardless of how many rows came back.
+
+**Out of scope.** Queries whose output is consumed by a downstream script that itself enforces shape discipline (e.g., `bot_pnl.py`'s internal queries, which are structured code paths with tested output shapes) do not require manual shape-verification by a human reader. This sub-section applies to ad-hoc SQL run during a session whose output feeds directly into a human-written claim.
+
+**Evidence of origin.** S190 §4.1 PSM verification (2026-04-22). One underlying error — multi-market `IN()` result attributed to a single market without inspecting the grouping column row-by-row — produced three reporting manifestations in the same investigation: (1) "dual-side market has 0 positions rows" (actually 2 rows), (2) "single-side market has 3 rows including SELL sibling" (actually 1 row; the 2 extras belonged to the dual-side market), (3) "dual-side has 0 trade_events even without bot filter" (conflated an earlier bot-filtered-zero with a later unfiltered query whose output omitted `market_id` from `SELECT`). Plus one derivative self-diagnosis miss: initial self-attribution blamed "errored query read as 0 rows," but the actual errored query (`column "created_at" does not exist`) was correctly recognized at the time — the real pattern was `IN`-misattribution throughout. Three manifestations from one cause in one session satisfied the operator's promotion threshold. Codified S190.
+
 ---
 
 ### Protocol 6 — Canonical-source discipline for P&L / win-rate / trade-count claims
@@ -1251,6 +1266,31 @@ If evidence cannot be produced, the status claim is unsupported and must be re-m
 
 S185's handoff §2.2 named the fourth-instance promotion trigger explicitly. This session hit it. Landing Protocol 6 closes the trigger: the promotion mechanism has to actually produce a protocol when it fires, or the threshold becomes a lie that teaches future sessions triggers are soft. The mechanism that caught both S185's and this session's violation — the stop-hook — is now named in the protocol body so future sessions know to rely on it rather than on unaided rule-reading.
 
+#### 6a — Audit-check internal values carveout
+
+**Mandate.** Protocol 6 applies to claims about trading performance (P&L, win rates, ROI, trade counts). It does not apply to audit-check internal values (`positions.size`, `trade_events` sums, reconciliation deltas, violation counts returned by audit queries) cited as evidence that an audit check is computing correctly, provided the surrounding claim is about check correctness, not about trading outcomes.
+
+**Boundary clause (not a loophole).** The carveout applies only when the surrounding claim is explicitly about check correctness. If the same numbers are cited in a context making any claim about trading performance — including implicit claims ("the bot is doing well because size=X", "MB has been scaling in") — Protocol 6 applies fully and `bot_pnl.py` must be cited. The carveout is not a routing mechanism for performance claims dressed up as check-correctness framing.
+
+**Minimum evidence a claim qualifies.**
+- The surrounding paragraph names the specific audit check whose correctness is being evaluated (e.g., `PositionTradeEventsCheck`, `SizeInvariantCheck`, `TradedMarketsStatusDriftCheck`).
+- The number is framed as check-internal: an input the check reads, an output the check flags, or a delta the check computes — not as a characterization of bot performance.
+- No P&L / WR / ROI / trade-count claim is derived from or implied by the check-internal value. If derivation toward a performance claim is needed, run `bot_pnl.py` and cite it separately; do NOT bridge check-internal values into performance claims within the same paragraph.
+
+**Interaction with stop-hook enforcement.** The stop-hook pattern-matches on numeric content and cannot distinguish carveout-compliant usage from violation by text alone. Expected interaction: the hook may fire on carveout-compliant content, the agent names the carveout and its boundary clause, the operator adjudicates. Repeated hook firings consistently adjudicated as carveout-compliant are a signal to refine the matcher, not a signal to suppress the carveout. This is not a hook malfunction; it is the expected interaction between a mechanical matcher and a rule with semantic scope.
+
+**Out of scope.** Production performance claims (bot P&L over time, win rates on deployed strategies, ROI on capital deployed) remain fully inside Protocol 6 and require `bot_pnl.py` sourcing regardless of whether they happen to appear in a session that also involves audit checks. The carveout does not widen Protocol 6's grandfathering or weaken its enforcement for performance claims.
+
+**Evidence of origin.** Three instances across three sessions:
+
+| # | Session | Instance | How caught |
+|---|---------|----------|------------|
+| 1 | S186 | PSM port validation — violation-count comparisons between OLD and NEW query shapes triggered the hook despite being exactly the measurement needed to decide port correctness | Hook fired mid-session; candidate filed |
+| 2 | S189 | Trade-count-in-check-effectiveness reasoning for `trade_events.event_data->'trader'` investigation — count derived from `trade_events` for disposition reasoning, not P&L reasoning | Flagged in handoff §2.4 as borderline use |
+| 3 | S190 | §4.1 PSM verification required raw `positions.size` / `trade_events` sums / reconciliation delta as evidence; operator explicitly demanded raw SQL output as the verification standard; hook fired on the raw output AND fired again on the explanation response, demonstrating the protocol text's hook-interpretation was broader than the rule's intent | Hook fired twice (raw output + explanation); codification landed |
+
+Codified S190 with boundary clause to prevent loophole abuse.
+
 ---
 
 ### Protocol candidates — awaiting next protocol-hygiene round
@@ -1258,8 +1298,6 @@ S185's handoff §2.2 named the fourth-instance promotion trigger explicitly. Thi
 Flagged mid-session; not yet binding rules. Listed so they don't get lost between sessions, and so the evidence base can accumulate before promotion.
 
 **SQL-contract verification against a live DB before commit.** Mocked-session unit tests cannot catch CHECK-constraint violations, undefined-column errors, bad joins, or any other string-vs-schema mismatch. S184 shipped two such bugs in a single session: `7b0b8ac` (CHECK violation, caught pre-production by Protocol 5 schema-read) and `535c14e` (undefined-column error in the `TradedMarketsStatusDriftCheck` query, caught post-deploy via journal — `UndefinedColumnError` on `pt.entry_time`/`exit_time`, the actual columns being `created_at`/`resolved_at`). Both were invisible to mocked unit tests and would have been caught by running the changed query against a real DB before commit. Candidate discipline: for commits that add or modify SQL in audit checks, factory queries, or any `session.execute(text(...))` path, execute the query against the VPS dev DB (or an equivalent) before commit. Promote to §Protocols (likely Protocol 7) if a third instance ships. **S186 partial precedent:** the S186 PSM port applied this discipline voluntarily (`e19815e` verified against live VPS data before commit), catching the S164-pattern-inheritance structural error. Not a "shipped bug then caught" instance like the prior two, but evidence that the discipline produces real catches when applied — strengthens the candidate for promotion.
-
-**Protocol 6 carveout for check-effectiveness measurements.** Protocol 6 as currently phrased ("Any P&L, win-rate, or trade-count claim...must cite scripts/bot_pnl.py") literally captures counts of audit-check findings (counts of rows returned by queries against trade_events and positions). These counts are not bot performance measurements — they measure the effectiveness of the audit check itself. The stop-hook enforcing Protocol 6 fires on such counts (observed S186: during PSM port validation, violation-count comparisons between OLD and NEW query shapes triggered the hook and had to be retracted despite being exactly the measurement needed to decide whether to ship the port). Semantic intent of Rule Zero was bot performance; Protocol 6's literal breadth over-captures. Two reasonable dispositions: (A) carve out an exception to Protocol 6 for check-effectiveness measurements — "violation counts produced by audit checks against production data do not require bot_pnl.py citation; they are sourced from the check's own query, which IS the canonical source for check effectiveness"; (B) accept the literal reading and build `scripts/check_effectiveness.py` that wraps audit check-shape comparisons and produces authoritative output. Lean: (A). Over-engineering risk on (B) is material, and (A) matches Rule Zero's original intent. File for next plan-hygiene round. Evidence base: one explicit instance (S186 PSM port validation); enforcement-vs-semantics tension is documentable without further accumulation.
 
 **Aggregate-statistics bucket-concentration check.** When bucketing resolved-trade data by any dimension (lead time, city, category, trader, time of day), a bucket's headline statistic may be driven by a single correlated event rather than by the bucket's nominal dimension. S185 worked example (6O WB lead-time backtest): the longest populated lead-time bucket produced a dramatic apparent signal that, on drill-down, collapsed to a single `(entry_date, city, side)` triple's correlated-blowup cluster — the pattern already documented in WB S119 memory. Aggregating without a cardinality check would have produced a wrong multiplier-retune recommendation. Candidate discipline: before reporting any bucket-level aggregate, enumerate the bucket's underlying rows by `(entry_date × city × side)` (or equivalent domain-specific triple) and require that no single triple accounts for more than e.g. 50% of the bucket's row count. If it does, flag as "single-event-dominated" and present that bucket separately, not as an in-aggregate data point. Similar in shape to Protocol 4c (projection lossiness); could land as Protocol 4d (aggregate bucket concentration) or as a sub-clause to a future data-analysis protocol. Evidence-of-origin pre-seeded: the 6O finding is this candidate's first concrete catch.
 
