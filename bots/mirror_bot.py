@@ -1959,6 +1959,67 @@ class MirrorBot(BaseBot):
         """MirrorBot uses consensus-based scan, not per-market analysis."""
         return None
 
+    # ── Rejection Instrumentation (S172 7B Phase A) ─────────────────
+    async def _log_rejection(
+        self,
+        trader_address: str,
+        market_id: str,
+        rejection_reason: str,
+        rejection_stage: str,
+        token_id: Optional[str] = None,
+        side: Optional[str] = None,
+        price: Optional[float] = None,
+        whale_trade_usd: Optional[float] = None,
+        signal_metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """S172 7B Phase A: log a rejected whale signal for counterfactual PnL analysis.
+
+        Called at every mirror_bot.py rejection site (22 total, see
+        docs/7B_wallet_overhaul_design.md §A2). Writes to mirror_rejected_signals
+        (migration 073). Pure additive instrumentation — MUST NOT block the trade
+        path; any failure is swallowed and logged at warning level.
+
+        Args:
+            trader_address: Full 42-char hex wallet address. Never truncated —
+                Phase B's counterfactual ranking collides on 10-hex prefixes.
+            market_id: Polymarket market identifier.
+            rejection_reason: The specific gate/reason code, matching the
+                existing logger.info emitter name (e.g. "mirror_whale_too_small").
+            rejection_stage: One of "pre_gate" | "gate" | "post_gate".
+                Matches §A2 stage buckets. watchlist/pre_watchlist stages
+                live in elite_watchlist.py and are out of scope per S187 §2.1.
+            token_id / side / price / whale_trade_usd: optional structured context.
+            signal_metadata: optional site-specific context as a dict
+                (e.g. {"gate_score": 0.41, "threshold": 0.52}). Phase B's
+                retune script expects structured keys; do NOT pass full RTDS
+                event_data (row size balloons, GIN indexing becomes expensive).
+
+        Returns: None. Never raises — instrumentation failure must not block trading.
+        """
+        _db = getattr(self.base_engine, "db", None)
+        if _db is None:
+            return
+        try:
+            await _db.insert_mirror_rejected_signal(
+                trader_address=trader_address,
+                market_id=market_id,
+                rejection_reason=rejection_reason,
+                rejection_stage=rejection_stage,
+                token_id=token_id,
+                side=side,
+                price=price,
+                whale_trade_usd=whale_trade_usd,
+                metadata=signal_metadata,
+            )
+        except Exception as _rej_err:
+            # Match insert_prediction_log pattern: surfaced but never propagated.
+            logger.warning("mirror_rejection_log_failed",
+                           error=str(_rej_err),
+                           trader=(trader_address[:10] if trader_address else None),
+                           market_id=market_id,
+                           reason=rejection_reason,
+                           stage=rejection_stage)
+
     # ── Trade Execution ─────────────────────────────────────────────
 
     async def _execute_mirror_trade(
@@ -1985,6 +2046,14 @@ class MirrorBot(BaseBot):
             if price < 0.03 or price > 0.97:
                 logger.info("mirror_price_floor_blocked", price=round(price, 4),
                             market=str(market_id)[:16])
+                await self._log_rejection(
+                    trader_address=trader_address, market_id=str(market_id),
+                    rejection_reason="mirror_price_floor_blocked",
+                    rejection_stage="pre_gate",
+                    token_id=token_id, side=side, price=price,
+                    whale_trade_usd=whale_trade_usd,
+                    signal_metadata={"price_floor": 0.03, "price_ceiling": 0.97},
+                )
                 return False
 
             # S173 Day 2: Trader wallet blacklist — block specific addresses.
@@ -1996,6 +2065,14 @@ class MirrorBot(BaseBot):
                     logger.info("mirror_trader_blacklisted",
                                 trader=trader_address[:10],
                                 market=str(market_id)[:16])
+                    await self._log_rejection(
+                        trader_address=trader_address, market_id=str(market_id),
+                        rejection_reason="mirror_trader_blacklisted",
+                        rejection_stage="pre_gate",
+                        token_id=token_id, side=side, price=price,
+                        whale_trade_usd=whale_trade_usd,
+                        signal_metadata={"blacklist_source": "MIRROR_TRADER_BLACKLIST"},
+                    )
                     return False
 
             # S173 Day 2: Minimum whale trade size hard gate.
@@ -2007,6 +2084,14 @@ class MirrorBot(BaseBot):
                             whale_usd=round(whale_trade_usd, 2),
                             min_usd=_min_whale_usd,
                             market=str(market_id)[:16])
+                await self._log_rejection(
+                    trader_address=trader_address, market_id=str(market_id),
+                    rejection_reason="mirror_whale_too_small",
+                    rejection_stage="pre_gate",
+                    token_id=token_id, side=side, price=price,
+                    whale_trade_usd=whale_trade_usd,
+                    signal_metadata={"min_usd": _min_whale_usd},
+                )
                 return False
 
             # S132→S153: Whale trade size — weighted factor (was binary BLOCK < $5).
@@ -2020,6 +2105,14 @@ class MirrorBot(BaseBot):
 
             # Market blocklist — closed/expired/speed markets
             if market_id in self._market_blocklist:
+                await self._log_rejection(
+                    trader_address=trader_address, market_id=str(market_id),
+                    rejection_reason="mirror_market_blocklist",
+                    rejection_stage="pre_gate",
+                    token_id=token_id, side=side, price=price,
+                    whale_trade_usd=whale_trade_usd,
+                    signal_metadata=None,
+                )
                 return False
 
             # Per-market cooldown — prevent re-entry on same signal
@@ -2029,6 +2122,15 @@ class MirrorBot(BaseBot):
             if _cooldown_secs > 0:
                 _cd_exp = self._market_cooldown.get(market_id, 0)
                 if _time.monotonic() < _cd_exp:
+                    await self._log_rejection(
+                        trader_address=trader_address, market_id=str(market_id),
+                        rejection_reason="mirror_market_cooldown",
+                        rejection_stage="pre_gate",
+                        token_id=token_id, side=side, price=price,
+                        whale_trade_usd=whale_trade_usd,
+                        signal_metadata={"cooldown_secs": _cooldown_secs,
+                                         "remaining_s": max(0.0, _cd_exp - _time.monotonic())},
+                    )
                     return False
 
         # ── S137 C16: Tier 1 — pure-in-memory gates, NO DB/cache ──────
@@ -2047,6 +2149,16 @@ class MirrorBot(BaseBot):
                 logger.info("mirror_market_maker_blocked",
                             trader=trader_address[:10], market=str(market_id)[:16],
                             side=_side_upper_mm, prior_opposite=_opposite_mm)
+                await self._log_rejection(
+                    trader_address=trader_address, market_id=str(market_id),
+                    rejection_reason="mirror_market_maker_blocked",
+                    rejection_stage="pre_gate",
+                    token_id=token_id, side=side, price=price,
+                    whale_trade_usd=whale_trade_usd,
+                    signal_metadata={"mm_window_s": _mm_window,
+                                     "prior_opposite_side": _opposite_mm,
+                                     "seconds_since_opposite": _time.monotonic() - _opp_ts},
+                )
                 return False
             # Record this side — prune entries older than 25h to bound memory
             _now_mm = _time.monotonic()
@@ -2073,12 +2185,30 @@ class MirrorBot(BaseBot):
                         "mirror_opposing_side_blocked market=%s side=%s existing=%s",
                         str(market_id)[:16], side, _opposite,
                     )
+                    await self._log_rejection(
+                        trader_address=trader_address, market_id=str(market_id),
+                        rejection_reason="mirror_opposing_side_blocked",
+                        rejection_stage="pre_gate",
+                        token_id=token_id, side=side, price=price,
+                        whale_trade_usd=whale_trade_usd,
+                        signal_metadata={"opposite_side": _opposite,
+                                         "source": "in_memory_open_positions"},
+                    )
                     return False
             # Check 2: historical entries (catches resolved positions missed after restart)
             if (market_id, _opposite) in self._entered_market_sides:
                 logger.info(
                     "mirror_opposing_side_blocked_historical market=%s side=%s prior_entry=%s",
                     str(market_id)[:16], side, _opposite,
+                )
+                await self._log_rejection(
+                    trader_address=trader_address, market_id=str(market_id),
+                    rejection_reason="mirror_opposing_side_blocked_historical",
+                    rejection_stage="pre_gate",
+                    token_id=token_id, side=side, price=price,
+                    whale_trade_usd=whale_trade_usd,
+                    signal_metadata={"opposite_side": _opposite,
+                                     "source": "entered_market_sides"},
                 )
                 return False
 
@@ -2106,6 +2236,15 @@ class MirrorBot(BaseBot):
                         str(market_id)[:16], side,
                         self._whale_consensus[_cons_key],
                     )
+                    await self._log_rejection(
+                        trader_address=trader_address, market_id=str(market_id),
+                        rejection_reason="mirror_same_side_blocked",
+                        rejection_stage="pre_gate",
+                        token_id=token_id, side=side, price=price,
+                        whale_trade_usd=whale_trade_usd,
+                        signal_metadata={"consensus_count": self._whale_consensus[_cons_key],
+                                         "note": "dedup_signal_not_true_reject"},
+                    )
                     return False
 
         # ── S137 C16: Tier 2 — category-dependent gates (DB/cache call) ──
@@ -2130,6 +2269,15 @@ class MirrorBot(BaseBot):
                         self._market_blocklist.add(market_id)  # cache for future fast-reject
                         logger.info("mirror_category_blocked", category=category,
                                     market_id=str(market_id)[:16])
+                        await self._log_rejection(
+                            trader_address=trader_address, market_id=str(market_id),
+                            rejection_reason="mirror_category_blocked",
+                            rejection_stage="pre_gate",
+                            token_id=token_id, side=side, price=price,
+                            whale_trade_usd=whale_trade_usd,
+                            signal_metadata={"category": category,
+                                             "blocklist_match": _bl},
+                        )
                         return False
 
         # S137→S153: Category expertise — weighted factor (was binary BLOCK < 40%).
@@ -2141,6 +2289,15 @@ class MirrorBot(BaseBot):
         # Previously only consensus checked _can_open_position(); RTDS bypassed it,
         # allowing 686 positions past the 200 cap.
         if not _is_sell and not self._can_open_position(price, category=category):
+            await self._log_rejection(
+                trader_address=trader_address, market_id=str(market_id),
+                rejection_reason="mirror_can_open_position_false",
+                rejection_stage="pre_gate",
+                token_id=token_id, side=side, price=price,
+                whale_trade_usd=whale_trade_usd,
+                signal_metadata={"category": category,
+                                 "open_positions": len(self._open_positions)},
+            )
             return False
 
         if _is_sell:
@@ -2539,6 +2696,15 @@ class MirrorBot(BaseBot):
                         logger.info("mirror_trader_wr_hard_block", wr=round(_bl_wr, 3),
                                     n=_bl_total, trader=trader_address[:10],
                                     market=str(market_id)[:16])
+                        await self._log_rejection(
+                            trader_address=trader_address, market_id=str(market_id),
+                            rejection_reason="mirror_trader_wr_hard_block",
+                            rejection_stage="gate",
+                            token_id=token_id, side=side, price=price,
+                            whale_trade_usd=whale_trade_usd,
+                            signal_metadata={"trader_wr": _bl_wr, "trader_n": _bl_total,
+                                             "min_resolved": _bl_min_resolved},
+                        )
                         return False
 
             # Category expertise: no penalty when cat_n<10 (new to category ≠ bad).
@@ -2563,6 +2729,14 @@ class MirrorBot(BaseBot):
                 if _wf_spread <= 0.0:
                     logger.info("mirror_spread_hard_block", spread=round(_spread, 3),
                                 market=str(market_id)[:16])
+                    await self._log_rejection(
+                        trader_address=trader_address, market_id=str(market_id),
+                        rejection_reason="mirror_spread_hard_block",
+                        rejection_stage="gate",
+                        token_id=token_id, side=side, price=price,
+                        whale_trade_usd=whale_trade_usd,
+                        signal_metadata={"spread": _spread, "spread_hard_block_threshold": 0.25},
+                    )
                     return False
 
             # Volume: $0→0.50, $7.5K→0.75, $15K+→1.0
@@ -2577,6 +2751,15 @@ class MirrorBot(BaseBot):
                     if _wf_no_fav <= 0.0:
                         logger.info("mirror_no_fav_hard_block", no_price=round(_nfp, 3),
                                     market=str(market_id)[:16])
+                        await self._log_rejection(
+                            trader_address=trader_address, market_id=str(market_id),
+                            rejection_reason="mirror_no_fav_hard_block",
+                            rejection_stage="gate",
+                            token_id=token_id, side=side, price=price,
+                            whale_trade_usd=whale_trade_usd,
+                            signal_metadata={"no_price": _nfp,
+                                             "no_fav_threshold": 0.90},
+                        )
                         return False
 
             # Near-resolution: 0h→0.30, 2.7h→0.53, 8h+→1.0
@@ -2837,10 +3020,23 @@ class MirrorBot(BaseBot):
                             kelly_prob=round(kelly_prob, 3),
                             trader=str(trader_address)[:16],
                             market=str(market_id)[:16])
+                await self._log_rejection(
+                    trader_address=trader_address, market_id=str(market_id),
+                    rejection_reason="mirror_gate_blocked",
+                    rejection_stage="gate",
+                    token_id=token_id, side=side, price=price,
+                    whale_trade_usd=whale_trade_usd,
+                    signal_metadata={"gate_score": gate_score,
+                                     "threshold": _gate_threshold,
+                                     "kelly_prob": kelly_prob,
+                                     "category": category,
+                                     "scoring_mode": "split"},
+                )
                 return False
         else:
             if confidence < self.min_confidence:
                 # S148: Shadow-watch 0.50–0.55 band
+                _low_conf_reason = "mirror_shadow_conf_band" if confidence >= 0.50 else "mirror_low_confidence"
                 if confidence >= 0.50:
                     logger.info("mirror_shadow_conf_band",
                                 confidence=round(confidence, 3),
@@ -2851,6 +3047,18 @@ class MirrorBot(BaseBot):
                 else:
                     logger.info("mirror_low_confidence", confidence=round(confidence, 3),
                                 min_required=self.min_confidence, market=str(market_id)[:16])
+                await self._log_rejection(
+                    trader_address=trader_address, market_id=str(market_id),
+                    rejection_reason=_low_conf_reason,
+                    rejection_stage="gate",
+                    token_id=token_id, side=side, price=price,
+                    whale_trade_usd=whale_trade_usd,
+                    signal_metadata={"confidence": confidence,
+                                     "min_required": self.min_confidence,
+                                     "gate_score": gate_score,
+                                     "category": category,
+                                     "scoring_mode": "legacy"},
+                )
                 return False
 
         # S172 D8: Flat sizing — Kelly fraction is negative (-0.068), so Kelly-based
@@ -2948,6 +3156,15 @@ class MirrorBot(BaseBot):
                     logger.info("mirror_no_dynamic_blocked", no_price=round(price, 3),
                                 reason=f"sub-{int(_no_block_floor*100)}c",
                                 market=str(market_id)[:16])
+                    await self._log_rejection(
+                        trader_address=trader_address, market_id=str(market_id),
+                        rejection_reason="mirror_no_dynamic_blocked",
+                        rejection_stage="post_gate",
+                        token_id=token_id, side=side, price=price,
+                        whale_trade_usd=whale_trade_usd,
+                        signal_metadata={"no_price": price,
+                                         "no_block_floor": _no_block_floor},
+                    )
                     return False
                 # S146: Minimum edge gate — NO must show positive edge to enter.
                 _no_min_edge = float(getattr(settings, "MIRROR_NO_MIN_EDGE", 0.05))
@@ -2957,6 +3174,17 @@ class MirrorBot(BaseBot):
                                 confidence=round(confidence, 3),
                                 edge=round(_no_edge, 3), min_edge=_no_min_edge,
                                 market=str(market_id)[:16])
+                    await self._log_rejection(
+                        trader_address=trader_address, market_id=str(market_id),
+                        rejection_reason="mirror_no_edge_rejected",
+                        rejection_stage="post_gate",
+                        token_id=token_id, side=side, price=price,
+                        whale_trade_usd=whale_trade_usd,
+                        signal_metadata={"no_price": price,
+                                         "confidence": confidence,
+                                         "edge": _no_edge,
+                                         "min_edge": _no_min_edge},
+                    )
                     return False
                 elif price < 0.25:
                     _no_dampener = 0.15  # very cheap NO — high risk taker position
@@ -3019,6 +3247,16 @@ class MirrorBot(BaseBot):
         if size <= 0:
             logger.info("Mirror trade size zero after limits (per_mkt=$%.0f daily_rem=$%.0f), skipping",
                         max_per_market_usd, remaining_daily_usd)
+            await self._log_rejection(
+                trader_address=trader_address, market_id=str(market_id),
+                rejection_reason="mirror_size_zero_after_limits",
+                rejection_stage="post_gate",
+                token_id=token_id, side=side, price=price,
+                whale_trade_usd=whale_trade_usd,
+                signal_metadata={"max_per_market_usd": max_per_market_usd,
+                                 "remaining_daily_usd": remaining_daily_usd,
+                                 "daily_exposure": self._daily_exposure},
+            )
             return False
 
         # S157: Single dust gate (cold-start override removed — sizing floor handles cold-start)
@@ -3027,6 +3265,16 @@ class MirrorBot(BaseBot):
         if _trade_value_usd < _min_trade_usd:
             logger.info("mirror_dust_skipped", trade_usd=round(_trade_value_usd, 2),
                         min_usd=_min_trade_usd, market_id=str(market_id)[:16])
+            await self._log_rejection(
+                trader_address=trader_address, market_id=str(market_id),
+                rejection_reason="mirror_dust_skipped",
+                rejection_stage="post_gate",
+                token_id=token_id, side=side, price=price,
+                whale_trade_usd=whale_trade_usd,
+                signal_metadata={"trade_usd": _trade_value_usd,
+                                 "min_trade_usd": _min_trade_usd,
+                                 "size": size},
+            )
             return False
 
         # Session 82: Tag RTDS trades so order_gateway can skip liquidity check (saves 100-300ms).
@@ -3094,6 +3342,16 @@ class MirrorBot(BaseBot):
             if self._daily_exposure + _trade_usd > _lock_max:
                 logger.info("mirror_exposure_lock_reject: $%.0f + $%.0f > cap $%.0f",
                             self._daily_exposure, _trade_usd, _lock_max)
+                await self._log_rejection(
+                    trader_address=trader_address, market_id=str(market_id),
+                    rejection_reason="mirror_exposure_lock_reject",
+                    rejection_stage="post_gate",
+                    token_id=token_id, side=side, price=price,
+                    whale_trade_usd=whale_trade_usd,
+                    signal_metadata={"daily_exposure": self._daily_exposure,
+                                     "trade_usd": _trade_usd,
+                                     "lock_max": _lock_max},
+                )
                 return False
             # S162: Category cap enforcement (S157 planned but never implemented)
             if category:
@@ -3103,6 +3361,17 @@ class MirrorBot(BaseBot):
                 if _cat_cur + _trade_usd > _cat_max:
                     logger.info("mirror_category_cap_reject: %s $%.0f + $%.0f > cap $%.0f",
                                 category, _cat_cur, _trade_usd, _cat_max)
+                    await self._log_rejection(
+                        trader_address=trader_address, market_id=str(market_id),
+                        rejection_reason="mirror_category_cap_reject",
+                        rejection_stage="post_gate",
+                        token_id=token_id, side=side, price=price,
+                        whale_trade_usd=whale_trade_usd,
+                        signal_metadata={"category": category,
+                                         "category_exposure": _cat_cur,
+                                         "trade_usd": _trade_usd,
+                                         "category_cap": _cat_max},
+                    )
                     return False
             # Reserve atomically
             self._daily_exposure += _trade_usd

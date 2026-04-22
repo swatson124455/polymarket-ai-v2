@@ -918,6 +918,48 @@ class SportsCalibration(Base):
     )
 
 
+class MirrorRejectedSignal(Base):
+    """
+    S172 7B Phase A: rejected whale signals for counterfactual PnL analysis.
+
+    Every RTDS signal that reached `mirror_bot._execute_mirror_trade()` and was
+    rejected at a gate is logged here. Phase B joins to `markets.resolution`
+    (via `backfill_mirror_rejected_signals_resolution()`) to compute
+    would-have-been PnL per wallet, then feeds that evidence into watchlist
+    inclusion (currently copy-PnL only affects sizing).
+
+    Scope: mirror_bot.py only. EliteWatchlist RTDS-ingress dedup is excluded
+    per S187 §2.1 decision (transport artifact would pollute wallet ranking).
+
+    Schema matches migration 073_mirror_rejected_signals.sql.
+    """
+    __tablename__ = "mirror_rejected_signals"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    event_time = Column(NaiveUTCDateTime, nullable=False,
+                        default=lambda: _naive_utc(datetime.now(timezone.utc)))
+    trader_address = Column(Text, nullable=False)
+    market_id = Column(Text, nullable=False)
+    token_id = Column(Text, nullable=True)
+    side = Column(Text, nullable=True)
+    price = Column(Float, nullable=True)
+    whale_trade_usd = Column(Float, nullable=True)
+    rejection_reason = Column(Text, nullable=False)
+    rejection_stage = Column(Text, nullable=False)
+    # Phase B expects structured keys (confidence, gate_score, min_edge, ...).
+    # Size-capped by keeping only rejection-specific fields, NOT full RTDS event_data.
+    meta_data = Column("metadata", JSON, nullable=True)
+    # Phase A3: backfilled by backfill_mirror_rejected_signals_resolution once market resolves.
+    resolution = Column(String(16), nullable=True)
+    resolved_at = Column(NaiveUTCDateTime, nullable=True)
+
+    __table_args__ = (
+        Index("idx_mirror_rej_trader_time", "trader_address", "event_time"),
+        Index("idx_mirror_rej_market_time", "market_id", "event_time"),
+        Index("idx_mirror_rej_stage_time", "rejection_stage", "event_time"),
+    )
+
+
 class Database:
     def __init__(self) -> None:
         self.engine = None
@@ -3165,6 +3207,62 @@ class Database:
             # S177: Elevated from debug to warning — MB and EB had 0 rows because
             # failures were silently swallowed. Surface the actual error for diagnosis.
             logger.warning("prediction_log_write_failed", error=str(e), market_id=market_id, bot_name=bot_name)
+
+    async def insert_mirror_rejected_signal(
+        self,
+        trader_address: str,
+        market_id: str,
+        rejection_reason: str,
+        rejection_stage: str,
+        token_id: Optional[str] = None,
+        side: Optional[str] = None,
+        price: Optional[float] = None,
+        whale_trade_usd: Optional[float] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """S172 7B Phase A: log a rejected whale signal for counterfactual PnL analysis.
+
+        No-op if no DB session. Failures are surfaced as warnings but never raised —
+        instrumentation must not block the trade path. Matches the insert_prediction_log
+        failure-handling pattern (S177 elevated to warning from debug).
+
+        See: docs/7B_wallet_overhaul_design.md §5 Phase A, migration 073.
+        """
+        if self.session_factory is None:
+            return
+        if not trader_address or not market_id or not rejection_reason or not rejection_stage:
+            # Defensive: Phase B queries require these four fields to be non-null.
+            # A rejection without attribution is worse than no log — it pollutes counts.
+            logger.debug("mirror_rejected_signal_skipped_incomplete",
+                         trader=bool(trader_address), market=bool(market_id),
+                         reason=bool(rejection_reason), stage=bool(rejection_stage))
+            return
+        ts = _naive_utc(datetime.now(timezone.utc))
+        try:
+            async with self.get_session() as session:
+                from base_engine.data.database import MirrorRejectedSignal
+                row = MirrorRejectedSignal(
+                    event_time=ts,
+                    trader_address=trader_address,
+                    market_id=market_id,
+                    token_id=token_id,
+                    side=side,
+                    price=price,
+                    whale_trade_usd=whale_trade_usd,
+                    rejection_reason=rejection_reason,
+                    rejection_stage=rejection_stage,
+                    meta_data=metadata,  # Python attr; SQL column is "metadata"
+                )
+                session.add(row)
+                await session.commit()
+        except Exception as e:
+            # Match insert_prediction_log pattern: warning, not exception.
+            logger.warning("mirror_rejected_signal_write_failed",
+                           error=str(e),
+                           trader=(trader_address[:10] if trader_address else None),
+                           market_id=market_id,
+                           reason=rejection_reason,
+                           stage=rejection_stage)
 
     async def mark_prediction_traded(
         self,
