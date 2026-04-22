@@ -53,7 +53,7 @@ A downstream hard gate filters whale trades below `MIRROR_MIN_WHALE_TRADE_USD=10
    No `feature_snapshot={"trader": addr}`, no `correlation_id="...trader..."`.
 3. VPS query on `prediction_log WHERE bot_name='MirrorBot'`: **138,543 rows total, 0 non-null `feature_snapshot`, 0 non-null `correlation_id`, 25 with resolution set.** Trader identity is unrecoverable for any of the 138,543 rows.
 4. Rejections that happen BEFORE `insert_prediction_log` (notably `mirror_whale_too_small` at line 2006, and many other pre-prediction early-returns in `elite_watchlist.on_trade_event`) produce neither a `prediction_log` row nor a `paper_trades` row. They appear only in `logger.info(...)` output — stringified, not queryable by trader address.
-5. `trade_events` DOES carry `event_data->>'trader'` for ENTRY events (`elite_watchlist.py:582, 589`, and mirror_bot.py:3051 stores the full address). But trade_events only exist for trades MB actually took → it's the copy-PnL path, not the counterfactual path.
+5. `trade_events` DOES carry `event_data->>'trader'` for ENTRY events (`elite_watchlist.py:578-598` reads it, `mirror_bot.py:3299` writes the full address; 99.93% coverage on ENTRY — EXIT/RESOLUTION do not carry trader by design). But trade_events only exist for trades MB actually took → it's the copy-PnL path, not the counterfactual path.
 
 **Net:** with current instrumentation, we can compute copy-PnL for wallets MB copied, but we cannot recover the rejected-wallet set or attribute rejected trades to a trader. Ranking only by copy-PnL would be circular — optimizing the subset MB already liked.
 
