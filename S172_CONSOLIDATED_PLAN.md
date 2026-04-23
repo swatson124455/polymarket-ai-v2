@@ -845,6 +845,43 @@ Do NOT write the SQL before these decisions are made. A check without a well-def
 
 **Evidence of origin.** S186 session (2026-04-20) live-data spot-check of the guarded port excluded dual-side market `0xad437cf21f437aab742569757d0761e24bdb0d9b632780b63dafbf5555a3f43e` (WB positions showed both NO and SELL with size > 0). The exclusion is correct behavior for PSM but leaves the dual-side anomaly unflagged until a dedicated diagnostic ships. Filed as P0 not P1 because audit-observability gaps are category-P0 per the session template.
 
+### S190 Hygiene Backlog — Audit-framework findings folded in (S192)
+
+Promoted from handoff carry per S191 §4.6 task. Two MEDIUM-severity audit-framework items originally surfaced in S190 §2.7 were previously living only in handoff carried-backlog; this section fixes the plan-drift.
+
+**1. Phantom-position variant unprotected by S186 sibling guard.** PSM check at [base_engine/audit/checks/position_trade_events_check.py:108-134](base_engine/audit/checks/position_trade_events_check.py:108) has a SECOND query body (phantom positions: `size > 0` but no ENTRY in `trade_events`) that is structurally separate from the main `te_net` vs `positions.size` invariant. The S186 NOT EXISTS sibling guard (commit `e19815e`) was added to the main query only. The phantom query emits independently and uses its own WHERE clause with no dual-side exemption.
+
+**Live evidence (S192 verification, audit run 1182 fired 2026-04-23 03:03 UTC):** 12 rows emitted with `details->>'reason' = 'phantom_position_no_entry_event'` under `recon_type = POSITION_SIZE_MISMATCH`, all `bot_name = WeatherBot`. Cross-run trend across `scheduled_daily` runs 980/1082/1182: 11/11/12 (stable ±1). Post-S186-deploy confirms phantom variant continues to emit; the sibling guard does NOT cover this shape by design.
+
+**Fix options (prefer A):**
+- **A. Treat phantom variant as a distinct diagnostic.** Split emission to its own recon_type (e.g., `PHANTOM_POSITION`) so severity, dispositions, and ACK lifecycle are independent of PSM. The phantom shape is not a side-aggregation bug; it is a position-existed-without-a-create-event bug. Wrong recon_type classification blocks clean ACK sweeps and makes bulk-ACK scope decisions harder.
+- **B. Add a phantom-aware sibling guard.** If the 12 WB rows are historical-frozen (trade_events gap in a specific date window), add event-age filtering to the phantom query matching the S185 auto-close framework. Does NOT fix the classification issue in (A).
+- **C. Investigate whether WB's current position-creation path can produce phantom rows (real bug) vs. whether all 12 rows are pre-S163 legacy (frozen).** Query: `SELECT source_bot, market_id, side, last_seen_at FROM positions WHERE ...` intersect with trade_events existence check; group by month of position's `created_at` or equivalent. Determines whether this is FIX_ROOT (WB bug) or FIX_AUDIT_CHECK (historical-frozen, same category as S185 P0 triage).
+
+Severity: MEDIUM — audit-framework classification question, not a live-money risk. No timeline pressure. Ties into S185 auto-close discipline and PSM bulk-ACK scope.
+
+**2. CSV `bot_names` mishandling in `TradedMarketsCheck` — FIXED S192 (commit `edcf93e`, NOT YET DEPLOYED).**
+
+Original framing (pre-fix): `",".join(bot_names)` at [base_engine/audit/checks/traded_markets_check.py:46](base_engine/audit/checks/traded_markets_check.py:46) iterated the TEXT column's characters. Live evidence at discovery: 1,600 of 3,186 OPEN `TRADED_MARKETS_DRIFT` rows (50.2%) had `bot_name` values like `"M,i,r,r,o,r,B,o,t"`, breaking downstream equality/IN filters.
+
+Expanded scope discovered during S192 fix: the same CSV-TEXT misunderstanding produced TWO additional SQL bugs in the check. Both queries used string equality `te.bot_name = tm.bot_names` where `tm.bot_names` is CSV (single-bot rows matched fine; multi-bot rows never matched any single `trade_events.bot_name` value). This falsely reported every multi-bot `traded_markets` row as stale, and inversely falsely reported every multi-bot market's ENTRYs as missing.
+
+**S192 fix (`edcf93e`):**
+- SQL membership at L36 + L63: `te.bot_name = ANY(string_to_array(tm.bot_names, ','))`
+- Emission at L50: `str(bot_names).split(",")[0]` — matches sibling pattern at [base_engine/audit/checks/traded_markets_status_drift_check.py:65](base_engine/audit/checks/traded_markets_status_drift_check.py:65)
+- +4 contract tests in [tests/unit/test_traded_markets_check.py](tests/unit/test_traded_markets_check.py) pin both paths
+
+**VPS pre-deploy verification** (fixed SQL run against live `polymarket` DB):
+- Stale-row count: 919 → 707 (delta -212, exactly equal to multi-bot row count in `traded_markets`)
+- Missing-row count: 556 → 148 (delta -408, ~2 ENTRY-rows-per-multi-bot-market average)
+- Stale/missing output sets now mutually exclusive (overlap=0)
+- Concrete multi-bot trace: market `0xb0710a1f7b38f8411b36f31edf29…` with `bot_names="MirrorBot,EsportsBot"` has ENTRYs from both bots — OLD query falsely flagged stale, NEW query correctly excludes
+- 0 char-iterated `bot_name` values survive `split_part` post-fix
+
+**Post-deploy verification gate:** at next `scheduled_daily` audit run (2026-04-24 03:03 UTC), expect `TRADED_MARKETS_DRIFT` emission per-day to drop from flat 200/day (100 stale + 100 missing at LIMIT caps) toward a lower number as the fixed queries emit fewer false positives. Pre-fix OPEN rows (3,186) remain OPEN per S185 auto-close gap — they'll need bulk-ACK under separate authorization; this is not a defect of the fix.
+
+**Item 1 (phantom-position variant) remains open — Carry as Phase 4 backlog.** Item 2 shipped as surgical fix; the plan-drift it represented is closed.
+
 ### Phase 5 Sentinel — pre-deploy prerequisites
 
 The Phase 5 silent-failure sentinel (`scripts/silent_failure_sentinel.py`, not yet shipped) was planned to deploy after Phase 2 stable for 24h. S183 surfaced a two-part prerequisite. **The actual scheduling gate is Prereq 1** — Prereq 2 is a cheap ~5-line patch that unblocks sentinel design, not a workload that competes for session time. Framing the two as symmetric "double-gate" would mislead planning.
