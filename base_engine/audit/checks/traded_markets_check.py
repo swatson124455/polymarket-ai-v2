@@ -27,13 +27,17 @@ class TradedMarketsCheck(BaseCheck):
         t0 = time.monotonic()
         violations: List[AuditViolation] = []
 
-        # traded_markets rows with no ENTRY in trade_events
+        # traded_markets rows with no ENTRY in trade_events.
+        # traded_markets.bot_names is CSV TEXT (migration 042, writer at
+        # database.py:3475 appends with ','). Membership must use ANY(split),
+        # not string equality — else multi-bot rows never match any single
+        # trade_events.bot_name and are always falsely reported stale.
         stale_rows = await session.execute(text("""
             SELECT tm.bot_names, tm.market_id, tm.first_trade_at, tm.last_trade_at
             FROM traded_markets tm
             WHERE NOT EXISTS (
                 SELECT 1 FROM trade_events te
-                WHERE te.bot_name = tm.bot_names
+                WHERE te.bot_name = ANY(string_to_array(tm.bot_names, ','))
                   AND te.market_id = tm.market_id
                   AND te.event_type = 'ENTRY'
             )
@@ -43,7 +47,7 @@ class TradedMarketsCheck(BaseCheck):
             bot_names, market_id, first_at, last_at = row
             violations.append(AuditViolation(
                 recon_type="TRADED_MARKETS_DRIFT",
-                bot_name=",".join(bot_names) if bot_names else "",
+                bot_name=str(bot_names).split(",")[0] if bot_names else "",
                 market_id=str(market_id) if market_id else None,
                 severity="WARNING",
                 details={
@@ -60,7 +64,7 @@ class TradedMarketsCheck(BaseCheck):
             WHERE te.event_type = 'ENTRY'
               AND NOT EXISTS (
                   SELECT 1 FROM traded_markets tm
-                  WHERE tm.bot_names = te.bot_name
+                  WHERE te.bot_name = ANY(string_to_array(tm.bot_names, ','))
                     AND tm.market_id = te.market_id
               )
             GROUP BY te.bot_name, te.market_id
