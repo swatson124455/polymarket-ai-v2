@@ -18,19 +18,27 @@ from sqlalchemy import text as _sa_text
 
 
 async def increment_counter(db, bot_id: str, name: str, amount: float) -> None:
-    """Upsert: add amount to today's counter for (bot_id, name).
+    """Upsert: add amount to today's counter for (bot_id, name), floored at 0.
 
     Must be called with await — do not use asyncio.create_task (fire-and-forget
     risks in-memory/DB divergence on DB errors, undermining the write-through guarantee).
+
+    S194: counter_value is GREATEST(0, ...)-clamped at write time. Brings DB
+    write-through into parity with the in-memory clamp pattern at e.g.
+    weather_bot.py:1591 (`max(0.0, ... - exit_cost)`). Prior behavior allowed
+    decrements (negative `amount`) on fresh-zero counters to land negative,
+    producing 15+ days of negative rows on prod (peak 119 negative rows
+    2026-04-11). S105b's restore-time clamp (weather_bot.py:4440) papered over
+    startup symptoms but left the root bug intact across sessions.
     """
     async with db.get_session() as sess:
         await sess.execute(
             _sa_text("""
                 INSERT INTO daily_counters (bot_id, counter_date, counter_name, counter_value)
-                VALUES (:bot_id, CURRENT_DATE, :name, :amount)
+                VALUES (:bot_id, CURRENT_DATE, :name, GREATEST(0, :amount))
                 ON CONFLICT (bot_id, counter_date, counter_name)
                 DO UPDATE SET
-                    counter_value = daily_counters.counter_value + :amount,
+                    counter_value = GREATEST(0, daily_counters.counter_value + :amount),
                     updated_at    = NOW()
             """),
             {"bot_id": bot_id, "name": name, "amount": amount},
