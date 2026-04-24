@@ -383,23 +383,42 @@ class TestS167ExitOversizeGuard:
 
 
 class TestS167FKValidation:
-    """S167: ENTRY/EXIT on non-existent markets must be rejected."""
+    """S167 + S193: FK policy for trade events.
+
+    S167 behavior (unchanged for EXIT/RESOLUTION):
+      - EXIT on a market not in DB → return None (fail-closed)
+      - RESOLUTION bypasses the FK check entirely
+
+    S193 behavior (new for ENTRY):
+      - ENTRY on a market not in DB → insert minimal market stub, re-verify,
+        then insert the trade_event. Prevents phantom positions where the
+        paper_trade committed but the trade_event was silently dropped
+        (asyncio.gather None-return was not detected in paper_trading).
+    """
 
     @pytest.mark.asyncio
-    async def test_entry_rejected_when_market_missing(self):
-        """ENTRY on a market not in DB should return None."""
+    async def test_entry_auto_heals_when_market_missing(self):
+        """S193: ENTRY on a market not in DB should auto-heal via stub insert."""
         from base_engine.data.database import Database
 
         db = Database.__new__(Database)
         db.session_factory = MagicMock()
 
-        mock_session = AsyncMock()
-        mock_fk = MagicMock()
-        mock_fk.fetchone.return_value = None  # market does NOT exist
+        _fk_miss = MagicMock()
+        _fk_miss.fetchone.return_value = None        # initial FK check — miss
+        _stub_ok = MagicMock()                       # stub INSERT — no fetchone required
+        _fk_hit = MagicMock()
+        _fk_hit.fetchone.return_value = (1,)         # FK recheck — now present
+        _final_insert = MagicMock()
+        _final_insert.fetchone.return_value = (101,) # main INSERT returns seq_num
 
+        mock_session = AsyncMock()
         mock_session.execute = AsyncMock(side_effect=[
-            MagicMock(),   # SET LOCAL
-            mock_fk,       # FK check — fails
+            MagicMock(),     # SET LOCAL
+            _fk_miss,        # FK check 1 (miss)
+            _stub_ok,        # stub INSERT (ON CONFLICT DO NOTHING)
+            _fk_hit,         # FK recheck (hit)
+            _final_insert,   # main INSERT...SELECT
         ])
         mock_session.commit = AsyncMock()
 
@@ -411,13 +430,151 @@ class TestS167FKValidation:
         seq = await db.insert_trade_event(
             event_type="ENTRY",
             bot_name="TestBot",
-            market_id="nonexistent_market",
-            side="YES",
+            market_id="1706785",
+            side="NO",
             size=10.0,
-            price=0.5,
+            price=0.88,
         )
 
-        assert seq is None, "ENTRY on non-existent market should be rejected"
+        assert seq == 101, "ENTRY should succeed after auto-heal"
+        assert mock_session.execute.call_count == 5, (
+            "Auto-heal path expects 5 execute calls: SET LOCAL + FK + stub + recheck + INSERT"
+        )
+
+    @pytest.mark.asyncio
+    async def test_entry_auto_heal_hex_market_sets_condition_id(self):
+        """S193: hex market_id stub must set condition_id to the hex value."""
+        from base_engine.data.database import Database
+
+        db = Database.__new__(Database)
+        db.session_factory = MagicMock()
+
+        _fk_miss = MagicMock(); _fk_miss.fetchone.return_value = None
+        _fk_hit = MagicMock(); _fk_hit.fetchone.return_value = (1,)
+        _final = MagicMock(); _final.fetchone.return_value = (7,)
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(side_effect=[
+            MagicMock(), _fk_miss, MagicMock(), _fk_hit, _final,
+        ])
+        mock_session.commit = AsyncMock()
+
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        db.get_session = MagicMock(return_value=mock_cm)
+
+        hex_id = "0x15a515b02f64fa86ee17e1657c61ce098c960374b73064e86f3b092d4cf9d2f8"
+        seq = await db.insert_trade_event(
+            event_type="ENTRY", bot_name="TestBot", market_id=hex_id,
+            side="NO", size=10.0, price=0.68,
+        )
+
+        assert seq == 7
+        stub_call = mock_session.execute.call_args_list[2]
+        stub_params = stub_call[0][1]
+        assert stub_params["mid"] == hex_id
+        assert stub_params["cid"] == hex_id, "hex market_id → condition_id set to same value"
+
+    @pytest.mark.asyncio
+    async def test_entry_auto_heal_numeric_market_nulls_condition_id(self):
+        """S193: numeric market_id stub must leave condition_id NULL (ingestion fills later)."""
+        from base_engine.data.database import Database
+
+        db = Database.__new__(Database)
+        db.session_factory = MagicMock()
+
+        _fk_miss = MagicMock(); _fk_miss.fetchone.return_value = None
+        _fk_hit = MagicMock(); _fk_hit.fetchone.return_value = (1,)
+        _final = MagicMock(); _final.fetchone.return_value = (8,)
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(side_effect=[
+            MagicMock(), _fk_miss, MagicMock(), _fk_hit, _final,
+        ])
+        mock_session.commit = AsyncMock()
+
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        db.get_session = MagicMock(return_value=mock_cm)
+
+        seq = await db.insert_trade_event(
+            event_type="ENTRY", bot_name="TestBot", market_id="1706785",
+            side="NO", size=10.0, price=0.88,
+        )
+
+        assert seq == 8
+        stub_params = mock_session.execute.call_args_list[2][0][1]
+        assert stub_params["mid"] == "1706785"
+        assert stub_params["cid"] is None, "numeric market_id → condition_id NULL"
+
+    @pytest.mark.asyncio
+    async def test_entry_returns_none_when_auto_heal_fails(self):
+        """S193: if stub INSERT does not satisfy FK recheck, return None."""
+        from base_engine.data.database import Database
+
+        db = Database.__new__(Database)
+        db.session_factory = MagicMock()
+
+        _fk_miss_1 = MagicMock(); _fk_miss_1.fetchone.return_value = None
+        _fk_miss_2 = MagicMock(); _fk_miss_2.fetchone.return_value = None  # still missing
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(side_effect=[
+            MagicMock(),   # SET LOCAL
+            _fk_miss_1,    # FK check 1
+            MagicMock(),   # stub INSERT (no-op)
+            _fk_miss_2,    # FK recheck — still miss
+        ])
+        mock_session.commit = AsyncMock()
+
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        db.get_session = MagicMock(return_value=mock_cm)
+
+        seq = await db.insert_trade_event(
+            event_type="ENTRY", bot_name="TestBot", market_id="bogus_mid",
+            side="YES", size=1.0, price=0.5,
+        )
+
+        assert seq is None, "Auto-heal failure must return None"
+        assert mock_session.execute.call_count == 4, (
+            "Failed auto-heal stops after recheck — 4 execute calls, no main INSERT"
+        )
+
+    @pytest.mark.asyncio
+    async def test_exit_rejected_when_market_missing(self):
+        """S167 preserved: EXIT on a market not in DB returns None (no auto-heal)."""
+        from base_engine.data.database import Database
+
+        db = Database.__new__(Database)
+        db.session_factory = MagicMock()
+
+        _fk_miss = MagicMock(); _fk_miss.fetchone.return_value = None
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(side_effect=[
+            MagicMock(),   # SET LOCAL
+            _fk_miss,      # FK check — miss
+        ])
+        mock_session.commit = AsyncMock()
+
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        db.get_session = MagicMock(return_value=mock_cm)
+
+        seq = await db.insert_trade_event(
+            event_type="EXIT", bot_name="TestBot", market_id="unknown_market",
+            side="YES", size=10.0, price=0.5,
+        )
+
+        assert seq is None, "EXIT on unknown market must still be rejected"
+        assert mock_session.execute.call_count == 2, (
+            "EXIT fail-closed — no stub insert, no recheck"
+        )
 
     @pytest.mark.asyncio
     async def test_resolution_skips_fk_check(self):

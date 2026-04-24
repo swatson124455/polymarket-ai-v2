@@ -4978,15 +4978,18 @@ class Database:
 
                 # S167: FK validation — reject trade events on markets not in DB.
                 # Prevents orphan trade_events (678 WeatherBot orphans found in S166 audit).
-                # Returns None (not raise) — matches existing failure mode. Callers that
-                # check the return value (position_manager, backfill scripts) already abort.
-                # paper_trading.py ENTRY path does NOT abort on None — the paper_trade
-                # INSERT runs in parallel via asyncio.gather and proceeds independently.
-                # This is acceptable: paper_trade is position authority, and the missing
-                # event is caught by position_trade_events_check audit. The upstream
-                # guard is that bots only trade markets discovered through ingestion.
-                # PLAN DEVIATION: plan said "raise exception (fail-closed)" but raising
-                # would break 6+ callers with bare except:pass around this call.
+                # S193: auto-heal for ENTRY. When a market isn't in DB at trade time
+                # (bot places trade before ingestion scheduler catches up), the previous
+                # behavior silently returned None. paper_trading's asyncio.gather path
+                # ignored None returns, so the paper_trade committed anyway and a
+                # positions row was created with no corresponding trade_events ENTRY —
+                # a phantom row caught but not remediated by position_trade_events_check
+                # (12 WB phantoms across 7 markets, Apr 11–22, 2026). Auto-heal inserts
+                # a minimal stub (id only, plus condition_id when market_id is hex) so
+                # the FK re-check passes. Later bulk_insert_markets ON CONFLICT DO
+                # UPDATE enriches the stub with full data. EXIT keeps fail-closed: EXIT
+                # on an unknown market implies a missing prior ENTRY — auto-healing
+                # would mask a deeper inconsistency rather than fix one.
                 if event_type in ("ENTRY", "EXIT"):
                     _fk_check = await session.execute(
                         _sa_text(
@@ -4997,12 +5000,41 @@ class Database:
                         {"mid": market_id},
                     )
                     if _fk_check.fetchone() is None:
-                        logger.warning(
-                            "trade_event FK rejected: market not in DB — "
-                            "bot=%s market=%s event=%s",
-                            bot_name, market_id, event_type,
-                        )
-                        return None
+                        if event_type == "ENTRY":
+                            _cid_val = market_id if str(market_id).startswith("0x") else None
+                            await session.execute(
+                                _sa_text(
+                                    "INSERT INTO markets (id, condition_id, active) "
+                                    "VALUES (:mid, :cid, true) "
+                                    "ON CONFLICT (id) DO NOTHING"
+                                ),
+                                {"mid": market_id, "cid": _cid_val},
+                            )
+                            _fk_recheck = await session.execute(
+                                _sa_text(
+                                    "SELECT 1 FROM markets "
+                                    "WHERE CAST(id AS TEXT) = :mid OR condition_id = :mid "
+                                    "LIMIT 1"
+                                ),
+                                {"mid": market_id},
+                            )
+                            if _fk_recheck.fetchone() is None:
+                                logger.warning(
+                                    "trade_event FK auto-heal failed: bot=%s market=%s event=%s",
+                                    bot_name, market_id, event_type,
+                                )
+                                return None
+                            logger.info(
+                                "trade_event market auto-healed: bot=%s market=%s",
+                                bot_name, market_id,
+                            )
+                        else:
+                            logger.warning(
+                                "trade_event FK rejected: market not in DB — "
+                                "bot=%s market=%s event=%s",
+                                bot_name, market_id, event_type,
+                            )
+                            return None
 
                 # RESOLUTION events: use atomic INSERT...SELECT to prevent duplicates.
                 # ON CONFLICT (idempotency_key, event_time) is broken on partitioned tables

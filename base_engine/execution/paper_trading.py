@@ -999,6 +999,14 @@ class PaperTradingEngine:
                             raise _results[0]
                         if isinstance(_results[1], BaseException):
                             logger.warning("trade_event_entry_emit_failed", error=str(_results[1]), market_id=market_id)
+                        elif _results[1] is None:
+                            # S193: post auto-heal, None here means the FK retry failed
+                            # or the INSERT itself returned zero rows. Surface so residual
+                            # silent-drop cases are actionable, not audit-only.
+                            logger.warning(
+                                "trade_event_entry_returned_none",
+                                market_id=market_id, bot_name=bot_name, side=db_side,
+                            )
                     else:
                         await _paper_coro
 
