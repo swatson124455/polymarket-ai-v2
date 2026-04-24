@@ -1002,7 +1002,10 @@ sudo journalctl -u polymarket-mirror --since "2 hours ago" | \
   grep -iE "gate_score|edge_below|conf_below|gate_rej" | tail -50
 ```
 
-**Natural resolution path:** S182 Phase 2 Commit 5 (gate-funnel structured logging on all 3 bots) will make the gate breakdown self-documenting once deployed. Until then, the above investigation is the manual bypass.
+**Natural resolution path:** ~~S182 Phase 2 Commit 5 (gate-funnel structured logging on all 3 bots) will make the gate breakdown self-documenting once deployed.~~ **Corrected S194 (2026-04-24, F2):** the gate-funnel structured logging claimed here was **never shipped under any matching name** — grep `gate_funnel`/`gate_breakdown`/`funnel_log`/`funnel_stage` across `bots/*.py` and `base_engine/risk/*.py` returned zero matches at S194 verification. The MB and WB silence are **separate root causes** from EB v2's key-name mismatch (which WAS correctly fixed in S182 Phase 1d per the section above) and were not addressed by S182. Investigation routed to `S194_TRADING_REVIVAL_PLAN.md`:
+
+- WB silence: `daily_counters` over-decrement to negative (commit `b439f3f`, S194 B-NEW-1) + startup-hold flag wiring missing across all 3 bots (commit `f928695`, S194 B-NEW-2) + misleading `exposure_cap` label (commit `7b5e535`, S194 B-NEW-3)
+- MB silence: `MIRROR_REGIME_START` str-vs-datetime asyncpg DataError silently failing `EliteReliabilityTracker.refresh()` and `EliteWatchlist` copy-tier scoring for 25 days starting 2026-03-30, leaving the reliability cache empty → trader `_eq_n=0` → gate score capped → MB stopped trading 2026-04-13 (commits `8f26a38` + `35eed49`, S194 D4-NEW)
 
 **Services/infrastructure otherwise healthy** — this is a pure gate-behavior issue, not an infra issue. All bots active, prediction engines running, DB healthy.
 
