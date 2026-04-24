@@ -1,6 +1,7 @@
 from pydantic import ConfigDict, field_validator, model_validator
 from pydantic_settings import BaseSettings
 import warnings
+from datetime import datetime
 from typing import Optional
 import os
 
@@ -14,6 +15,25 @@ def _reject_empty_url(v: Optional[str], default: str) -> str:
     if v is None or (isinstance(v, str) and not str(v).strip()):
         return default
     return str(v).strip()
+
+
+def _parse_iso_dt(s: Optional[str]) -> Optional[datetime]:
+    """Parse an ISO 8601 datetime string into a datetime object.
+
+    Returns None for empty/whitespace input. Returns None on parse error rather
+    than raising — a malformed env-var value should disable the time filter, not
+    crash the bot at import time.
+
+    S194: Settings that reach asyncpg-bound SQL parameters must be `datetime`,
+    not `str`. asyncpg validates parameter types before sending and rejects
+    str-for-timestamptz with `DataError`. See MIRROR_REGIME_START.
+    """
+    if not s or not s.strip():
+        return None
+    try:
+        return datetime.fromisoformat(s.strip())
+    except (ValueError, TypeError):
+        return None
 
 
 class Settings(BaseSettings):
@@ -451,7 +471,12 @@ class Settings(BaseSettings):
     # S150: Regime start — filter reliability and copy-tier queries to exclude pre-regime data.
     # Data before this date was generated under broken gates (no NO dampener, no stop-loss,
     # crypto enabled, no tiers). Including it contaminates trader WR and tier assignments.
-    MIRROR_REGIME_START: str = os.getenv("MIRROR_REGIME_START", "2026-03-30T12:43:00+00:00")
+    # S194: Type changed from str to Optional[datetime]. asyncpg rejects str when binding
+    # to a TIMESTAMP query parameter ("expected datetime instance, got str"), causing
+    # both EliteReliabilityTracker.refresh() and EliteWatchlist copy-tier scoring to fail
+    # silently for 25 days starting 2026-03-30. Empty cache → trader _eq_n=0 → MB
+    # gate_score capped below threshold → MB stopped trading 2026-04-13.
+    MIRROR_REGIME_START: Optional[datetime] = _parse_iso_dt(os.getenv("MIRROR_REGIME_START", "2026-03-30T12:43:00+00:00"))
     # S153: Split scoring — gate score (should we trade?) + kelly probability (how much to bet?)
     MIRROR_USE_SPLIT_SCORING: bool = os.getenv("MIRROR_USE_SPLIT_SCORING", "false").lower() in ("true", "1", "yes")
     MIRROR_GATE_THRESHOLD: float = float(os.getenv("MIRROR_GATE_THRESHOLD", "0.52"))

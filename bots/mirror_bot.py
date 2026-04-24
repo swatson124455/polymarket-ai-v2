@@ -1794,9 +1794,19 @@ class MirrorBot(BaseBot):
         Categories >55% WR → 1.0, 45-55% → 0.5, <45% → 0.0."""
         try:
             from sqlalchemy import text
-            _regime = getattr(settings, "MIRROR_REGIME_START", "2026-03-30T12:43:00+00:00")
-            from datetime import datetime as _dt
-            _since = _dt.fromisoformat(_regime)
+            # S194: MIRROR_REGIME_START is now Optional[datetime] (was str). Handle both
+            # for safety against partial deploys / older settings versions, but treat
+            # datetime as the canonical post-S194 type.
+            _regime = getattr(settings, "MIRROR_REGIME_START", None)
+            if _regime is None:
+                # No regime filter — skip the time-bounded refresh; the unbounded
+                # query is too expensive to run by default.
+                return
+            if isinstance(_regime, str):
+                from datetime import datetime as _dt
+                _since = _dt.fromisoformat(_regime)
+            else:
+                _since = _regime  # already a datetime per S194 settings change
             async with self.base_engine.db.get_session() as _s:
                 _r = await _s.execute(text(
                     "SELECT LOWER(COALESCE(event_data->>'category', 'unknown')) AS cat,"

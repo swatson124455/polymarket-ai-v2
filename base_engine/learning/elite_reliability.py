@@ -23,10 +23,14 @@ class EliteReliabilityTracker:
     resolved trades. likelihood_ratio(user, side) returns odds for that user/side.
     """
 
-    def __init__(self, db: Any, lookback_days: int = 365, regime_start: str = None):
+    def __init__(self, db: Any, lookback_days: int = 365, regime_start: Optional["datetime"] = None):
         self.db = db
         self.lookback_days = lookback_days
-        self.regime_start = regime_start  # S150: filter out pre-regime data
+        # S150: filter out pre-regime data.
+        # S194: Type updated from str to Optional[datetime]. asyncpg validates
+        # parameter types before binding and rejects str-for-timestamptz with
+        # DataError, silently failing every refresh since 2026-03-30.
+        self.regime_start = regime_start
         self._cache: Dict[str, Dict[str, float]] = {}  # address -> { alpha_yes, beta_yes, alpha_no, beta_no }
         self._cat_cache: Dict[Tuple[str, str], Dict[str, float]] = {}  # (address, category) -> same shape
         self._refresh_lock = asyncio.Lock()  # S159: protect write path only (not reads)
