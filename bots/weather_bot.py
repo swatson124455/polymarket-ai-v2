@@ -3506,6 +3506,26 @@ class WeatherBot(BaseBot):
             remaining_city = self._max_correlated - current_city_exp
             size = min(size, remaining_group, remaining_city, _slippage_size_cap)
             if size < _min_trade:
+                # S194: Determine which constraint was binding so the diagnostic
+                # reason reflects the actual cause. Pre-S194, all three cap paths
+                # were collapsed into the misleading "exposure_cap" label, masking
+                # that ~75% of WB's blocked trades were actually slippage-cap firings
+                # (top-5 book depth too thin for the requested size — same root as
+                # the depth_exceeded gate, applied as soft size clamp rather than
+                # hard reject). S105b restore-time clamp + B-NEW-1 daily_counter
+                # clamp now keep `remaining_group/city` honest, so this split is
+                # the differentiator between "cap actually full" and "book too thin."
+                if _raw_size < _min_trade:
+                    _reason = "sub_min_trade"
+                else:
+                    # The binding cap is the smallest of the three (since
+                    # min() landed on it). Tie-break by listed order.
+                    _caps_by_value = (
+                        ("group_cap_exceeded", remaining_group),
+                        ("city_cap_exceeded", remaining_city),
+                        ("slippage_cap_exceeded", _slippage_size_cap),
+                    )
+                    _reason = min(_caps_by_value, key=lambda kv: kv[1])[0]
                 # S122: Log shadow entry for sub-$5 trades (data collection)
                 if _raw_size > 0:
                     logger.info(
@@ -3518,7 +3538,7 @@ class WeatherBot(BaseBot):
                         raw_size_usd=round(_raw_size, 2),
                         combined_boost=round(combined_boost, 3),
                         city=opp.get("city", ""),
-                        reason="sub_min_trade" if _raw_size < _min_trade else "exposure_cap",
+                        reason=_reason,
                     )
                     try:
                         await self.base_engine.db.insert_trade_event(
@@ -3534,7 +3554,7 @@ class WeatherBot(BaseBot):
                                 "raw_size_usd": round(_raw_size, 2),
                                 "combined_boost": round(combined_boost, 3),
                                 "lead_time_hours": round(opp.get("lead_time_hours", 0), 1),
-                                "reason": "sub_min_trade" if _raw_size < _min_trade else "exposure_cap",
+                                "reason": _reason,
                             },
                         )
                     except Exception as exc:
