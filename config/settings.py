@@ -1,7 +1,7 @@
 from pydantic import ConfigDict, field_validator, model_validator
 from pydantic_settings import BaseSettings
 import warnings
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 import os
 
@@ -18,7 +18,7 @@ def _reject_empty_url(v: Optional[str], default: str) -> str:
 
 
 def _parse_iso_dt(s: Optional[str]) -> Optional[datetime]:
-    """Parse an ISO 8601 datetime string into a datetime object.
+    """Parse an ISO 8601 datetime string into a NAIVE-UTC datetime object.
 
     Returns None for empty/whitespace input. Returns None on parse error rather
     than raising — a malformed env-var value should disable the time filter, not
@@ -27,11 +27,19 @@ def _parse_iso_dt(s: Optional[str]) -> Optional[datetime]:
     S194: Settings that reach asyncpg-bound SQL parameters must be `datetime`,
     not `str`. asyncpg validates parameter types before sending and rejects
     str-for-timestamptz with `DataError`. See MIRROR_REGIME_START.
+
+    S194 follow-up: tz-aware datetimes break PG comparisons against TIMESTAMP
+    WITHOUT TIME ZONE columns (the project's convention) — asyncpg raises
+    `can't subtract offset-naive and offset-aware datetimes`. Convert to UTC
+    then strip tzinfo so the result aligns with naive PG timestamps.
     """
     if not s or not s.strip():
         return None
     try:
-        return datetime.fromisoformat(s.strip())
+        dt = datetime.fromisoformat(s.strip())
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
     except (ValueError, TypeError):
         return None
 

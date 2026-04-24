@@ -16,14 +16,32 @@ import pytest
 class TestParseIsoDt:
     """The settings._parse_iso_dt helper must produce a datetime or None."""
 
-    def test_iso_string_with_tz_parses_to_datetime(self):
+    def test_iso_string_with_tz_parses_to_naive_utc_datetime(self):
+        """tz-aware input → tz-naive UTC datetime (PG project convention).
+
+        DB columns are TIMESTAMP WITHOUT TIME ZONE. Passing tz-aware datetime
+        causes asyncpg `can't subtract offset-naive and offset-aware datetimes`.
+        """
         from config.settings import _parse_iso_dt
 
         result = _parse_iso_dt("2026-03-30T12:43:00+00:00")
         assert isinstance(result, datetime), \
             "Must return datetime instance for asyncpg compatibility"
         assert result.year == 2026 and result.month == 3 and result.day == 30
-        assert result.tzinfo is not None, "tz-aware input must yield tz-aware result"
+        assert result.tzinfo is None, \
+            "S194 follow-up: must be NAIVE for TIMESTAMP WITHOUT TIME ZONE columns"
+        # Verify UTC offset was applied before stripping (input is already UTC, so unchanged)
+        assert result.hour == 12 and result.minute == 43
+
+    def test_iso_string_non_utc_tz_converted_to_utc(self):
+        """Non-UTC tz input must be converted to UTC THEN stripped."""
+        from config.settings import _parse_iso_dt
+
+        # 12:43 in +05:00 == 07:43 UTC
+        result = _parse_iso_dt("2026-03-30T12:43:00+05:00")
+        assert result.hour == 7 and result.minute == 43, \
+            "Non-UTC tz must be converted to UTC before tz-strip"
+        assert result.tzinfo is None
 
     def test_empty_string_returns_none(self):
         from config.settings import _parse_iso_dt
