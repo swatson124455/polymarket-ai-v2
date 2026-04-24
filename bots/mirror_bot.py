@@ -410,8 +410,19 @@ class MirrorBot(BaseBot):
                 )
             # S160: Only mark restored after all DB work succeeds — enables retry on failure.
             self._state_restored = True
+            # S194: Notify base_engine that exposure restoration has completed.
+            # Prior to S194, this wasn't wired — base_engine._exposure_restored
+            # stayed False and the 120s startup-hold watchdog forced degraded mode
+            # on every MB restart. MB's "exposure" for this semantic is the
+            # paper_trades SUM computed inside _restore_state_on_startup (CLAUDE.md
+            # State Persistence Decision Tree — MirrorBot net-counter pattern).
+            if getattr(self, "base_engine", None) is not None:
+                self.base_engine.mark_exposure_restored()
         except Exception as exc:
             logger.warning("MirrorBot _restore_state_on_startup failed, will retry next scan: %s", exc)
+            # S194: retry-on-failure preserves the ability to recover in subsequent
+            # scans. Do NOT mark exposure_restored here — watchdog's 120s fallback
+            # handles the degraded case so the bot can still trade.
 
         # S168 Phase 8: Restore DB-authoritative state (cooldowns, circuit breaker).
         # OUTSIDE the main try block — failure here must NOT block core state restore.

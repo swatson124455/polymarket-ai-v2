@@ -4452,8 +4452,20 @@ class WeatherBot(BaseBot):
                     groups=rebuilt_groups,
                     cities=len(self._city_exposure),
                 )
+            # S194: Notify base_engine that exposure restoration has completed.
+            # Prior to S194, this wasn't wired — base_engine._exposure_restored
+            # stayed False and the 120s startup-hold watchdog forced degraded mode
+            # on every restart. Fires even when rebuilt_groups==0 (empty counters
+            # is a valid restored state — no prior-day exposure to restore).
+            if getattr(self, "base_engine", None) is not None:
+                self.base_engine.mark_exposure_restored()
         except Exception as exc:
-            logger.debug("weatherbot_exposure_restore_failed", error=str(exc))
+            logger.warning("weatherbot_exposure_restore_failed", error=str(exc))
+            # S194: still notify base_engine so the watchdog doesn't force degraded
+            # mode just because restore failed. The fallback empty-dict state is
+            # operationally safe (no exposure means remaining_city = full cap).
+            if getattr(self, "base_engine", None) is not None:
+                self.base_engine.mark_exposure_restored()
 
     async def _rebuild_market_group_cache(self) -> None:
         """S104: Rebuild _market_group_cache from open positions on startup.

@@ -1404,6 +1404,16 @@ class BaseEngine:
             # Seed paper positions from DB so SELL exits work for positions opened in prior sessions
             await self.paper_trading.seed_positions_from_db()
 
+        # S194: Wire the startup-hold "positions seeded" flag. Prior to S194, the
+        # setter existed but was never called, so every restart of every bot
+        # hit the 120s watchdog timeout (base_engine.py:1298) and entered
+        # degraded mode with all 3 flags missing. OrderGateway.seed_positions_from_db
+        # fires in the constructor path (~L1162); paper_trading.seed_positions_from_db
+        # fires here in start(). Both are required-complete before the bot is
+        # "positions-seeded" for trading purposes. Wiring after the paper_trading
+        # path means both have run.
+        self.mark_positions_seeded()
+
         # Load tunable config from DB (P5-01)
         if self.tunable_config:
             try:
@@ -1450,8 +1460,20 @@ class BaseEngine:
         if self.position_reconciler:
             try:
                 await self.position_reconciler.init()
+                # S194: Wire startup-hold "reconciliation passed" flag. If the
+                # reconciler isn't configured (self.position_reconciler is None),
+                # we still want the engine to leave startup-hold — see fallback below.
+                self.mark_reconciliation_passed()
             except Exception as e:
                 logger.debug("Position reconciler init failed (non-critical): %s", e)
+                # S194: even on reconciler failure, unblock the flag so the 120s
+                # watchdog doesn't force degraded mode for a non-critical init.
+                # Matches pre-S194 behavior where degraded-mode fallback fired
+                # after 120s regardless; this just fires it immediately and loud.
+                self.mark_reconciliation_passed()
+        else:
+            # S194: no reconciler configured — flag immediately.
+            self.mark_reconciliation_passed()
 
         await self.data_ingestion.start()
 

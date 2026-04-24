@@ -1742,6 +1742,9 @@ class EsportsBot(BaseBot):
             return
         self._exposure_restored = True
         if db is None or not getattr(db, "session_factory", None):
+            # S194: no DB — still notify base_engine so watchdog doesn't force degraded mode.
+            if getattr(self, "base_engine", None) is not None:
+                self.base_engine.mark_exposure_restored()
             return
         try:
             counters = await _restore_daily(db, "EsportsBot")
@@ -1755,6 +1758,13 @@ class EsportsBot(BaseBot):
             )
         except Exception as exc:
             logger.warning("esports_restore_exposure_failed", error=str(exc))
+        # S194: Notify base_engine that exposure restoration has completed.
+        # Prior to S194, this wasn't wired — base_engine._exposure_restored
+        # stayed False and the 120s startup-hold watchdog forced degraded mode
+        # on every EB restart. Fires regardless of counters content (empty
+        # counter dict is a valid restored state).
+        if getattr(self, "base_engine", None) is not None:
+            self.base_engine.mark_exposure_restored()
 
     async def _restore_market_game_from_db(self, db) -> None:
         """S125: Restore _market_game from ENTRY trade_events for open positions.
