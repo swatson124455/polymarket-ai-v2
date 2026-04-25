@@ -356,7 +356,7 @@ class IngestionScheduler:
             logger.warning("Resolution queue outer error: %s", e)
 
     async def _do_mini_backfill(self, db, _now: datetime) -> None:
-        """Mini backfill: resolution + prediction_log + paper_trades + mirror_rejected_signals. Called inside lock + timeout."""
+        """Mini backfill: resolution + prediction_log + paper_trades + mirror_rejected_signals + trade_events. Called inside lock + timeout."""
         _rb_inserted = 0  # Resolution now handled by _do_resolution_queue()
         pred_updated = await db.backfill_prediction_log_resolution()
         pseudo_updated = 0
@@ -375,10 +375,18 @@ class IngestionScheduler:
             mrs_updated = await db.backfill_mirror_rejected_signals_resolution()
         except Exception as e:
             logger.warning("mini_backfill_mirror_rejected_signals_failed: %s", e)
-        if pred_updated > 0 or pseudo_updated > 0 or paper_updated > 0 or mrs_updated > 0:
+        # S195: emit RESOLUTION rows into trade_events. Previously gated inside
+        # the full backfill; now runs every mini cycle so it self-heals if
+        # the full path goes silent.
+        te_emitted = 0
+        try:
+            te_emitted = await db.backfill_trade_events_resolution()
+        except Exception as e:
+            logger.warning("mini_backfill_trade_events_failed: %s", e)
+        if pred_updated > 0 or pseudo_updated > 0 or paper_updated > 0 or mrs_updated > 0 or te_emitted > 0:
             logger.info(
-                "Mini backfill: %d prediction_log, %d pseudo-labels, %d paper_trades, %d mirror_rejected_signals",
-                pred_updated, pseudo_updated, paper_updated, mrs_updated,
+                "Mini backfill: %d prediction_log, %d pseudo-labels, %d paper_trades, %d mirror_rejected_signals, %d trade_events_resolution",
+                pred_updated, pseudo_updated, paper_updated, mrs_updated, te_emitted,
             )
         self._last_mini_backfill = _now
 

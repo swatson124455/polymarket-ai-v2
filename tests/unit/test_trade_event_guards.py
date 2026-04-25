@@ -184,12 +184,15 @@ class TestInsertTradeEventResolutionGuard:
 
 
 class TestResolutionBackfillGuard:
-    """resolution_backfill.py Phase 4b must contain the fully-exited guard."""
+    """Phase 4b must contain the fully-exited guard. S195 lifted Phase 4b
+    out of resolution_backfill.run_resolution_backfill into
+    Database.backfill_trade_events_resolution — these regression guards now
+    grep the new home."""
 
     def test_phase4b_sql_contains_exit_guard(self):
         """Source code regression test: the NOT EXISTS exit guard must be present."""
-        from base_engine.data import resolution_backfill
-        source = inspect.getsource(resolution_backfill.run_resolution_backfill)
+        from base_engine.data.database import Database
+        source = inspect.getsource(Database.backfill_trade_events_resolution)
         assert "total_exit_size" in source, (
             "Phase 4b query must reference total_exit_size for fully-exited guard"
         )
@@ -202,16 +205,16 @@ class TestResolutionBackfillGuard:
 
     def test_phase4b_sql_excludes_sell_side(self):
         """Phase 4b must filter paper_trades to YES/NO only (no SELL)."""
-        from base_engine.data import resolution_backfill
-        source = inspect.getsource(resolution_backfill.run_resolution_backfill)
+        from base_engine.data.database import Database
+        source = inspect.getsource(Database.backfill_trade_events_resolution)
         assert "pt.side IN ('YES', 'NO')" in source, (
             "Phase 4b must restrict to YES/NO sides (exclude SELL)"
         )
 
     def test_phase4b_sql_subtracts_exit_pnl(self):
         """Phase 4b must subtract EXIT P&L to avoid double-counting partial exits."""
-        from base_engine.data import resolution_backfill
-        source = inspect.getsource(resolution_backfill.run_resolution_backfill)
+        from base_engine.data.database import Database
+        source = inspect.getsource(Database.backfill_trade_events_resolution)
         assert "exit_pnl_already" in source, (
             "Phase 4b query must compute exit_pnl_already subquery"
         )

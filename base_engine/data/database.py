@@ -3322,6 +3322,216 @@ class Database:
             logger.debug("get_recent_resolved_for_blend failed: %s", e)
             return []
 
+    async def backfill_trade_events_resolution(self) -> int:
+        """Emit RESOLUTION rows into trade_events for resolved markets that lack
+        them. Returns total emission count (Phase 4b + Phase 4b-alt).
+
+        Lifted from resolution_backfill.py:506-720 — same SQL, same NOT EXISTS
+        guards, same TAKER_FEE_BPS for Phase 4b-alt. Three differences:
+          1. No `paper_updated > 0 OR updated > 0` gate — was the silent kill
+             switch. Once paper_trades fully caught up, the gate stayed false
+             forever and RESOLUTION emission stopped, even though Phase 4b-alt
+             could still find work. NOT EXISTS already prevents re-emission.
+          2. Unconditional emission count log (phase4b + phase4b_alt summed) so
+             silent-zero is visible in journal regardless of log_progress flag.
+          3. Idempotent and safe to call from multiple paths — full backfill,
+             mini scheduler, on_resolution event handler.
+
+        Phase 4b: emit from (trade_events ENTRY ⋈ paper_trades resolution).
+        Phase 4b-alt: emit from (positions ⋈ markets) for cases where
+        paper_trades.market_id ≠ positions.market_id (condition_id vs Gamma
+        ID mismatch — see S109). Subtracts already-captured EXIT P&L.
+        """
+        if self.session_factory is None:
+            return 0
+        if not hasattr(self, "insert_trade_event"):
+            return 0
+
+        _phase4b_emitted = 0
+        _phase4b_alt_emitted = 0
+
+        # ── Phase 4b: paper_trades-driven RESOLUTION emission ──────────────
+        try:
+            async with self.get_session() as _te_sess:
+                # S158: Extended timeout — Phase 4b joins 3 full aggregates + NOT EXISTS.
+                await _te_sess.execute(text("SET LOCAL statement_timeout = '120s'"))
+                _resolved = await _te_sess.execute(text(
+                    "SELECT e.market_id, e.bot_name, e.side, "
+                    "       CASE WHEN pt_pnl.resolution = e.side "
+                    "            THEN (e.total_entry_size - COALESCE(x.total_exit_size, 0)) "
+                    "                 * (1.0 - CASE WHEN e.total_entry_size > 0 "
+                    "                               THEN e.weighted_price / e.total_entry_size "
+                    "                               ELSE 0.0 END) "
+                    "                 - (e.total_entry_size - COALESCE(x.total_exit_size, 0)) * 0.015 "
+                    "            ELSE -((CASE WHEN e.total_entry_size > 0 "
+                    "                         THEN e.weighted_price / e.total_entry_size "
+                    "                         ELSE 0.0 END) "
+                    "                   * (e.total_entry_size - COALESCE(x.total_exit_size, 0))) "
+                    "       END AS computed_pnl, "
+                    "       pt_pnl.resolved_at, "
+                    "       e.total_entry_size - COALESCE(x.total_exit_size, 0) "
+                    "         AS remaining_size, "
+                    "       CASE WHEN e.total_entry_size > 0 "
+                    "            THEN e.weighted_price / e.total_entry_size "
+                    "            ELSE 0.0 END AS avg_entry_price, "
+                    "       COALESCE(x.exit_pnl, 0) AS exit_pnl_already, "
+                    "       pt_pnl.resolution AS market_resolution, "
+                    "       (SELECT te_g.event_data->>'game' FROM trade_events te_g "
+                    "        WHERE te_g.market_id = e.market_id AND te_g.bot_name = e.bot_name "
+                    "        AND te_g.event_type = 'ENTRY' AND te_g.event_data->>'game' IS NOT NULL "
+                    "        LIMIT 1) AS entry_game "
+                    "FROM ("
+                    "  SELECT market_id, bot_name, side, "
+                    "         SUM(COALESCE(size, 0)) AS total_entry_size, "
+                    "         SUM(COALESCE(price, 0) * COALESCE(size, 0)) AS weighted_price "
+                    "  FROM trade_events "
+                    "  WHERE event_type = 'ENTRY' AND side IN ('YES', 'NO') "
+                    "  GROUP BY market_id, bot_name, side"
+                    ") e "
+                    "JOIN ("
+                    "  SELECT pt.market_id, pt.bot_name, pt.side, "
+                    "         MIN(pt.resolved_at) AS resolved_at, "
+                    "         MIN(pt.resolution) AS resolution "
+                    "  FROM paper_trades pt "
+                    "  WHERE pt.resolution IN ('YES', 'NO') "
+                    "    AND pt.side IN ('YES', 'NO') "
+                    "    AND pt.resolved_at IS NOT NULL "
+                    "  GROUP BY pt.market_id, pt.bot_name, pt.side"
+                    ") pt_pnl ON pt_pnl.market_id = e.market_id "
+                    "        AND pt_pnl.bot_name = e.bot_name "
+                    "        AND pt_pnl.side = e.side "
+                    "LEFT JOIN ("
+                    "  SELECT market_id, bot_name, "
+                    "         SUM(size) AS total_exit_size, "
+                    "         SUM(realized_pnl) AS exit_pnl "
+                    "  FROM trade_events "
+                    "  WHERE event_type = 'EXIT' "
+                    "  GROUP BY market_id, bot_name"
+                    ") x ON x.market_id = e.market_id "
+                    "    AND x.bot_name = e.bot_name "
+                    "WHERE NOT EXISTS ("
+                    "  SELECT 1 FROM trade_events te "
+                    "  WHERE te.market_id = e.market_id "
+                    "    AND te.bot_name = e.bot_name "
+                    "    AND te.side = e.side "
+                    "    AND te.event_type = 'RESOLUTION'"
+                    ") "
+                    "AND e.total_entry_size - COALESCE(x.total_exit_size, 0) > 0 "
+                    "LIMIT 500"
+                ))
+                for row in _resolved.fetchall():
+                    try:
+                        _computed_pnl = float(row[3]) if row[3] is not None else 0.0
+                        _exit_pnl = float(row[7]) if row[7] is not None else 0.0
+                        _adj_pnl = _computed_pnl
+                        _market_resolution = str(row[8]).upper() if row[8] else ""
+                        _resolution_price = 1.0 if _market_resolution == str(row[2]).upper() else 0.0
+                        _res_event_data = {"game": row[9]} if row[9] else None
+                        await self.insert_trade_event(
+                            event_type="RESOLUTION",
+                            bot_name=row[1],
+                            market_id=row[0],
+                            side=row[2],
+                            size=float(row[5]) if row[5] is not None else 0.0,
+                            price=_resolution_price,
+                            realized_pnl=_adj_pnl,
+                            correlation_id=f"resolution:{row[0]}",
+                            event_time=row[4],
+                            event_data=_res_event_data,
+                        )
+                        _phase4b_emitted += 1
+                    except Exception as _te_err:
+                        logger.debug("phase4b emission failed for %s: %s", str(row[0])[:20], _te_err)
+        except Exception as _te_outer_err:
+            logger.warning("phase4b outer failure: %s", _te_outer_err)
+
+        # ── Phase 4b-alt: positions-driven RESOLUTION emission ─────────────
+        try:
+            _fee_rate = getattr(
+                __import__("config.settings", fromlist=["settings"]),
+                "TAKER_FEE_BPS", 150,
+            ) / 10000.0
+            async with self.get_session() as _pr_sess:
+                await _pr_sess.execute(text("SET LOCAL statement_timeout = '120s'"))
+                _pos_resolved = await _pr_sess.execute(text(
+                    "SELECT p.market_id, p.source_bot, p.side, p.size, p.entry_price, "
+                    "       m.resolution, "
+                    "       COALESCE(m.resolved_at, m.end_date_iso) AS resolved_at, "
+                    "       COALESCE(("
+                    "         SELECT SUM(te_x.realized_pnl) FROM trade_events te_x "
+                    "         WHERE te_x.market_id = p.market_id "
+                    "           AND te_x.bot_name = p.source_bot "
+                    "           AND te_x.event_type = 'EXIT'"
+                    "       ), 0) AS exit_pnl_already, "
+                    "       (SELECT te_g.event_data->>'game' FROM trade_events te_g "
+                    "        WHERE te_g.market_id = p.market_id AND te_g.bot_name = p.source_bot "
+                    "        AND te_g.event_type = 'ENTRY' AND te_g.event_data->>'game' IS NOT NULL "
+                    "        LIMIT 1) AS entry_game "
+                    "FROM positions p "
+                    "JOIN markets m ON (p.market_id = CAST(m.id AS TEXT) "
+                    "                   OR p.market_id = m.condition_id) "
+                    "WHERE p.status IN ('open', 'closed') "
+                    "  AND m.resolution IN ('YES', 'NO') "
+                    "  AND NOT EXISTS ("
+                    "    SELECT 1 FROM trade_events te "
+                    "    WHERE te.market_id = p.market_id "
+                    "      AND te.bot_name = p.source_bot "
+                    "      AND te.event_type = 'RESOLUTION'"
+                    "  ) "
+                    "ORDER BY p.id "
+                    "LIMIT 500"
+                ))
+                for row in _pos_resolved.fetchall():
+                    try:
+                        _mid, _bot, _side, _size, _entry, _res, _res_at, _exit_pnl, _entry_game = row
+                        _side_upper = str(_side).upper() if _side else ""
+                        _res_upper = str(_res).upper()
+                        _payout = 1.0 if _side_upper == _res_upper else 0.0
+                        _gross_pnl = (_payout - float(_entry)) * float(_size)
+                        _fee = _payout * float(_size) * _fee_rate
+                        _net_pnl = _gross_pnl - _fee
+                        _remaining_pnl = _net_pnl - float(_exit_pnl)
+                        _alt_event_data = {"game": _entry_game} if _entry_game else None
+                        await self.insert_trade_event(
+                            event_type="RESOLUTION",
+                            bot_name=_bot,
+                            market_id=_mid,
+                            side=_side_upper,
+                            size=float(_size),
+                            price=_payout,
+                            realized_pnl=round(_remaining_pnl, 4),
+                            correlation_id=f"resolution:{_mid}",
+                            event_time=_res_at,
+                            event_data=_alt_event_data,
+                        )
+                        _phase4b_alt_emitted += 1
+                        # S158: Close open positions on resolved markets.
+                        try:
+                            async with _pr_sess.begin_nested():
+                                await _pr_sess.execute(text(
+                                    "UPDATE positions SET status = 'closed', size = 0 "
+                                    "WHERE market_id = :mid AND source_bot = :bot AND status = 'open'"
+                                ), {"mid": _mid, "bot": _bot})
+                            await _pr_sess.commit()
+                        except Exception as _close_err:
+                            logger.warning("close_resolved_position failed: mid=%s bot=%s err=%s", _mid, _bot, _close_err)
+                    except Exception as _pr_err:
+                        logger.debug("phase4b_alt emission failed for %s/%s: %s", str(row[0])[:20], row[1], _pr_err)
+        except Exception as _pr_outer_err:
+            logger.warning("phase4b_alt outer failure: %s", _pr_outer_err)
+
+        _total = _phase4b_emitted + _phase4b_alt_emitted
+        # Unconditional emission counter — the silent-zero detector.
+        # Logs every invocation so journal grep can confirm the path is alive
+        # even when both counts are zero (steady-state — nothing to emit).
+        logger.info(
+            "trade_events_resolution_backfill",
+            phase4b=_phase4b_emitted,
+            phase4b_alt=_phase4b_alt_emitted,
+            total=_total,
+        )
+        return _total
+
     async def backfill_mirror_rejected_signals_resolution(self) -> int:
         """S172 7B Phase A3: backfill mirror_rejected_signals.resolution / .resolved_at
         from resolved markets. Returns count of rows updated.
