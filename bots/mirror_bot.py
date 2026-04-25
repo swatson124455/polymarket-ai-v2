@@ -2132,7 +2132,8 @@ class MirrorBot(BaseBot):
                     rejection_stage="pre_gate",
                     token_id=token_id, side=side, price=price,
                     whale_trade_usd=whale_trade_usd,
-                    signal_metadata=None,
+                    signal_metadata={"source": "in_memory_market_blocklist",
+                                     "blocklist_size": len(self._market_blocklist)},
                 )
                 return False
 

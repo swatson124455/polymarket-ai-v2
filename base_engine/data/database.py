@@ -3322,6 +3322,69 @@ class Database:
             logger.debug("get_recent_resolved_for_blend failed: %s", e)
             return []
 
+    async def backfill_mirror_rejected_signals_resolution(self) -> int:
+        """S172 7B Phase A3: backfill mirror_rejected_signals.resolution / .resolved_at
+        from resolved markets. Returns count of rows updated.
+
+        Mirrors backfill_prediction_log_resolution exactly — same join pattern,
+        same temporal-ordering guard, same warning rate-limit. Does NOT compute
+        was_correct / realized_edge: rejected signals don't have a directional
+        prediction (the bot rejected before placing). Phase B's retune script
+        computes counterfactual_pnl(s) = notional × (resolution_payout - price)
+        offline from these rows + markets.resolution.
+
+        Temporal ordering assertion: only labels rejections where the market
+        resolved AFTER the rejection event (resolved_at >= event_time). Prevents
+        retroactive labeling for markets that were already resolved at rejection
+        time — would corrupt counterfactual ranking with hindsight.
+        """
+        if self.session_factory is None:
+            return 0
+        try:
+            async with self.get_session() as session:
+                # Temporal integrity guard (mirror prediction_log pattern).
+                r_check = await session.execute(text("""
+                    SELECT COUNT(*) FROM mirror_rejected_signals mrs
+                    JOIN markets m ON (mrs.market_id = CAST(m.id AS TEXT)
+                                       OR mrs.market_id = m.condition_id)
+                    WHERE m.resolution IN ('YES', 'NO')
+                    AND m.resolved_at IS NOT NULL
+                    AND m.resolved_at < mrs.event_time
+                """))
+                temporal_violations = r_check.scalar_one_or_none() or 0
+                if temporal_violations > 0:
+                    import time as _t
+                    _now = _t.monotonic()
+                    if not hasattr(self, "_last_mrs_temporal_warn") or (_now - self._last_mrs_temporal_warn) > 300:
+                        self._last_mrs_temporal_warn = _now
+                        logger.warning(
+                            "Temporal ordering violation: %d mirror_rejected_signals rows "
+                            "have resolved_at < event_time — excluded from backfill.",
+                            temporal_violations,
+                        )
+
+                r = await session.execute(text("""
+                    UPDATE mirror_rejected_signals mrs
+                    SET
+                        resolution = m.resolution,
+                        resolved_at = m.resolved_at
+                    FROM markets m
+                    WHERE (mrs.market_id = CAST(m.id AS TEXT) OR mrs.market_id = m.condition_id)
+                    AND m.resolution IN ('YES', 'NO')
+                    AND (mrs.resolution IS NULL OR mrs.resolution NOT IN ('YES', 'NO'))
+                    -- Temporal ordering: only label if market resolved AFTER rejection event.
+                    AND (
+                        m.resolved_at IS NULL
+                        OR m.resolved_at >= mrs.event_time
+                    )
+                """))
+                count = getattr(r, "rowcount", 0) or 0
+                await session.commit()
+                return count
+        except Exception as e:
+            logger.debug("mirror_rejected_signals resolution backfill failed (table may not exist): %s", e)
+            return 0
+
     async def backfill_prediction_log_resolution(self) -> int:
         """
         Update prediction_log rows with resolution, resolved_at, was_correct from resolved markets.

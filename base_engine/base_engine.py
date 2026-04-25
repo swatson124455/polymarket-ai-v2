@@ -1670,12 +1670,16 @@ class BaseEngine:
             try:
                 async def _on_resolution(payload):
                     await self.event_bus.emit("market_resolved", payload)
-                    # Immediately backfill prediction_log and paper_trades for this resolution
+                    # Immediately backfill prediction_log, paper_trades, and mirror_rejected_signals (S172 7B Phase A3)
                     try:
                         n1 = await self.db.backfill_prediction_log_resolution()
                         n2 = await self.db.backfill_paper_trades_resolution()
-                        if n1 or n2:
-                            logger.info("Resolution event: backfilled %d prediction_log + %d paper_trades", n1, n2)
+                        n3 = await self.db.backfill_mirror_rejected_signals_resolution()
+                        if n1 or n2 or n3:
+                            logger.info(
+                                "Resolution event: backfilled %d prediction_log + %d paper_trades + %d mirror_rejected_signals",
+                                n1, n2, n3,
+                            )
                     except Exception as _e:
                         logger.debug("Resolution event backfill failed (non-fatal): %s", _e)
 

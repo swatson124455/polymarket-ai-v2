@@ -233,3 +233,94 @@ async def test_log_rejection_signal_metadata_optional():
     )
     kwargs = engine.db.insert_mirror_rejected_signal.await_args.kwargs
     assert kwargs["metadata"] is None or kwargs["metadata"] == {}
+
+
+# ── Phase A3 backfill tests ──────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_backfill_mirror_rejected_signals_resolution_returns_rowcount():
+    """S172 7B Phase A3: backfill function returns the UPDATE rowcount and
+    commits the session. Mirrors the prediction_log backfill contract."""
+    from base_engine.data.database import Database
+
+    db = Database.__new__(Database)
+    db.session_factory = MagicMock()  # truthy to bypass the early-return
+
+    # Mock session.execute(): first call is the temporal-violation SELECT (returns 0),
+    # second call is the UPDATE (returns a result whose .rowcount is 7).
+    temporal_result = MagicMock()
+    temporal_result.scalar_one_or_none = MagicMock(return_value=0)
+
+    update_result = MagicMock()
+    update_result.rowcount = 7
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=[temporal_result, update_result])
+    session.commit = AsyncMock()
+
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=session)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    db.get_session = MagicMock(return_value=ctx)
+
+    n = await db.backfill_mirror_rejected_signals_resolution()
+
+    assert n == 7
+    assert session.execute.await_count == 2
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_backfill_mirror_rejected_signals_temporal_ordering_guard():
+    """The UPDATE statement MUST include a temporal predicate excluding rows where
+    the market resolved BEFORE the rejection event — these would corrupt Phase B's
+    counterfactual ranking with hindsight (the rejection couldn't have been informed
+    by an outcome that hadn't happened yet, but a SQL backfill without this guard
+    would retroactively assign that outcome anyway)."""
+    from base_engine.data.database import Database
+    from sqlalchemy import text as _sa_text
+
+    db = Database.__new__(Database)
+    db.session_factory = MagicMock()
+
+    captured_sql = []
+
+    async def _fake_execute(stmt, *args, **kwargs):
+        # Capture the SQL string for assertion.
+        captured_sql.append(str(stmt))
+        result = MagicMock()
+        result.scalar_one_or_none = MagicMock(return_value=0)
+        result.rowcount = 0
+        return result
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=_fake_execute)
+    session.commit = AsyncMock()
+
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=session)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    db.get_session = MagicMock(return_value=ctx)
+
+    await db.backfill_mirror_rejected_signals_resolution()
+
+    # The UPDATE SQL (second statement) must contain the temporal-ordering guard.
+    update_sql = captured_sql[1]
+    assert "m.resolved_at >= mrs.event_time" in update_sql, (
+        "UPDATE must exclude rows where market resolved before rejection event"
+    )
+    # And it must filter to YES/NO resolutions only (skip CANCELLED/INVALID etc).
+    assert "m.resolution IN ('YES', 'NO')" in update_sql
+
+
+@pytest.mark.asyncio
+async def test_backfill_mirror_rejected_signals_no_db_returns_zero():
+    """If session_factory is None (API-only / test context), backfill is a no-op
+    that returns 0 — never raises, never blocks."""
+    from base_engine.data.database import Database
+
+    db = Database.__new__(Database)
+    db.session_factory = None
+
+    n = await db.backfill_mirror_rejected_signals_resolution()
+    assert n == 0

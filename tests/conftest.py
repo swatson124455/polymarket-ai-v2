@@ -60,6 +60,7 @@ def mock_db():
     db.backfill_positions_resolution = AsyncMock(return_value=0)
     db.backfill_paper_trades_resolution = AsyncMock(return_value=0)
     db.backfill_prediction_log_resolution = AsyncMock(return_value=0)
+    db.backfill_mirror_rejected_signals_resolution = AsyncMock(return_value=0)
     db.record_empty_price_fetch = AsyncMock()
     db.get_recent_resolved_predictions = AsyncMock(return_value=[])
     db.get_recent_brier_from_prediction_log = AsyncMock(return_value=None)

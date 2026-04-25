@@ -468,6 +468,16 @@ async def run_resolution_backfill(
     except Exception as e:
         logger.debug("Prediction log backfill failed (non-fatal): %s", e)
 
+    # Phase 3c (S172 7B Phase A3): Backfill mirror_rejected_signals resolution.
+    mrs_updated = 0
+    try:
+        mrs_updated = await db.backfill_mirror_rejected_signals_resolution()
+        result["mirror_rejected_signals_updated"] = mrs_updated
+        if log_progress and mrs_updated > 0:
+            logger.info("Mirror rejected signals resolution backfill: %d rows updated", mrs_updated)
+    except Exception as e:
+        logger.debug("Mirror rejected signals backfill failed (non-fatal): %s", e)
+
     # Phase 3b: Pseudo-label fallback — use closed SELL trade P&L when real resolution unavailable.
     # Implements delayed-label bridging from ML pipeline best practices: profitable exits imply
     # the directional prediction was correct. Only updates rows still missing was_correct.
