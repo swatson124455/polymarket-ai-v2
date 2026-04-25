@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""S195: seed esports_team_aliases from PandaScore matches + Polymarket markets.
+
+Two passes:
+
+  1. **Identity pass.** For every distinct (team_name, game) appearing in
+     `esports_matches`, register a canonical_name → itself row with
+     source='pandascore'. Establishes the canonical-name set.
+
+  2. **Fuzzy-link pass.** For every PandaScore canonical name and every
+     active Polymarket esports market question:
+       - Skip if the canonical name is already a substring of the question
+         (the matcher's stage-1 substring path will already win).
+       - Otherwise compute rapidfuzz.token_set_ratio(canonical, question).
+       - If score >= MIN_FUZZY_LINK and the question contains a candidate
+         variant (any capitalized run of 2+ words within the question),
+         add `(canonical_name, candidate_variant, source='fuzzy_link', confidence=score/100)`.
+     The variant extraction is deliberately conservative — the seed table
+     is for high-confidence variants only. Lower-confidence near-misses
+     should land in `esports_unmatched_predictions` and get reviewed by a
+     human, not auto-promoted to aliases.
+
+Idempotent: bulk_upsert_team_aliases uses ON CONFLICT DO NOTHING on the
+unique constraint (canonical_name, alias, game). Safe to re-run.
+
+Usage::
+
+    PYTHONPATH=/opt/polymarket-ai-v2 \
+      /opt/pa2-shared/venv/bin/python3 scripts/seed_esports_team_aliases.py
+
+    # Dry-run (count rows without writing)
+    PYTHONPATH=/opt/polymarket-ai-v2 \
+      /opt/pa2-shared/venv/bin/python3 scripts/seed_esports_team_aliases.py --dry-run
+
+    # Restrict to one game
+    PYTHONPATH=/opt/polymarket-ai-v2 \
+      /opt/pa2-shared/venv/bin/python3 scripts/seed_esports_team_aliases.py --game cs2
+"""
+import argparse
+import asyncio
+import re
+import sys
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Tunables
+MIN_FUZZY_LINK = 85.0   # rapidfuzz token_set_ratio threshold for auto-aliases
+MIN_TEAM_NAME_LEN = 2   # skip suspicious 1-char team names
+
+# Capitalized 2+ word runs — the candidate-variant extractor.
+# Matches "Team Liquid", "Aalborg Esport", "Fire Flux Esports", etc.
+_VARIANT_RE = re.compile(r"\b(?:[A-Z][a-z0-9]+(?:\s+[A-Z][a-z0-9]+){1,4})\b")
+
+
+async def _load_pandascore_teams(db, game: Optional[str]) -> Dict[str, Set[str]]:
+    """Distinct team names per game from `esports_matches`."""
+    from sqlalchemy import text
+
+    teams: Dict[str, Set[str]] = {}
+    async with db.get_session() as s:
+        if game:
+            r = await s.execute(text("""
+                SELECT game, team_a FROM esports_matches WHERE game = :g
+                UNION
+                SELECT game, team_b FROM esports_matches WHERE game = :g
+            """), {"g": game})
+        else:
+            r = await s.execute(text("""
+                SELECT game, team_a FROM esports_matches
+                UNION
+                SELECT game, team_b FROM esports_matches
+            """))
+        for g, name in r.fetchall():
+            if not name or len(name) < MIN_TEAM_NAME_LEN:
+                continue
+            teams.setdefault(g, set()).add(name.strip())
+    return teams
+
+
+async def _load_polymarket_esports_questions(
+    db, game: Optional[str],
+) -> List[str]:
+    """Active Polymarket esports market questions."""
+    from sqlalchemy import text
+
+    async with db.get_session() as s:
+        if game:
+            # Best-effort filter — pull all esports questions and let the
+            # caller game-filter via the keyword set in the scanner.
+            r = await s.execute(text("""
+                SELECT question FROM markets
+                WHERE LOWER(category) = 'esports'
+                  AND active = TRUE
+                  AND question IS NOT NULL
+            """))
+        else:
+            r = await s.execute(text("""
+                SELECT question FROM markets
+                WHERE LOWER(category) = 'esports'
+                  AND active = TRUE
+                  AND question IS NOT NULL
+            """))
+        return [str(row[0]) for row in r.fetchall()]
+
+
+def _extract_variants(question: str) -> List[str]:
+    """Return candidate alias variants from a question — capitalized
+    multi-word runs that look like org names. Conservative on purpose."""
+    if not question:
+        return []
+    return _VARIANT_RE.findall(question)
+
+
+def _build_identity_rows(
+    pandascore_teams: Dict[str, Set[str]],
+) -> List[Dict[str, Any]]:
+    """Identity rows: every PandaScore name maps to itself."""
+    rows = []
+    for game, names in pandascore_teams.items():
+        for name in names:
+            rows.append({
+                "canonical_name": name,
+                "alias": name,
+                "source": "pandascore",
+                "confidence": 1.0,
+                "game": game,
+            })
+    return rows
+
+
+def _build_fuzzy_link_rows(
+    pandascore_teams: Dict[str, Set[str]],
+    polymarket_questions: List[str],
+) -> List[Dict[str, Any]]:
+    """Cross-link rows: high-confidence alias variants from question text."""
+    try:
+        from rapidfuzz import fuzz
+    except ImportError:
+        print("rapidfuzz not available — skipping fuzzy-link pass", file=sys.stderr)
+        return []
+
+    rows: List[Dict[str, Any]] = []
+    seen: Set[Tuple[str, str, str]] = set()  # (canonical, alias, game)
+
+    for game, names in pandascore_teams.items():
+        for canonical in names:
+            canonical_lc = canonical.lower()
+            for q in polymarket_questions:
+                q_lc = q.lower()
+                # Skip the easy substring case — matcher handles it directly.
+                if canonical_lc in q_lc:
+                    continue
+                score = fuzz.token_set_ratio(canonical_lc, q_lc)
+                if score < MIN_FUZZY_LINK:
+                    continue
+                # Pull candidate variants from the question and pick the
+                # one with the highest fuzzy score against the canonical.
+                variants = _extract_variants(q)
+                if not variants:
+                    continue
+                best_variant = None
+                best_variant_score = 0.0
+                for v in variants:
+                    s = fuzz.token_set_ratio(canonical_lc, v.lower())
+                    if s > best_variant_score:
+                        best_variant_score = s
+                        best_variant = v
+                if not best_variant or best_variant_score < MIN_FUZZY_LINK:
+                    continue
+                key = (canonical, best_variant, game)
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append({
+                    "canonical_name": canonical,
+                    "alias": best_variant,
+                    "source": "fuzzy_link",
+                    "confidence": round(best_variant_score / 100.0, 4),
+                    "game": game,
+                })
+    return rows
+
+
+async def main(args: argparse.Namespace) -> int:
+    from base_engine.data.database import Database
+
+    db = Database()
+    await db.init()
+
+    print("Loading PandaScore teams from esports_matches…")
+    pandascore_teams = await _load_pandascore_teams(db, args.game)
+    total_teams = sum(len(s) for s in pandascore_teams.values())
+    print(f"  found {total_teams} distinct teams across {len(pandascore_teams)} games")
+
+    print("Loading active Polymarket esports questions…")
+    questions = await _load_polymarket_esports_questions(db, args.game)
+    print(f"  found {len(questions)} questions")
+
+    print("Building identity rows (canonical → self)…")
+    identity_rows = _build_identity_rows(pandascore_teams)
+    print(f"  {len(identity_rows)} identity rows")
+
+    print(f"Building fuzzy-link rows (token_set_ratio >= {MIN_FUZZY_LINK})…")
+    fuzzy_rows = _build_fuzzy_link_rows(pandascore_teams, questions)
+    print(f"  {len(fuzzy_rows)} fuzzy-link rows")
+
+    if args.dry_run:
+        print("\n--dry-run — not writing.")
+        # Show a sample of fuzzy rows so the operator can spot bogus links
+        for r in fuzzy_rows[:20]:
+            print(f"  [{r['game']}] {r['canonical_name']!r} → "
+                  f"{r['alias']!r}  conf={r['confidence']}")
+        await db.close()
+        return 0
+
+    print("\nUpserting…")
+    n1 = await db.bulk_upsert_team_aliases(identity_rows)
+    print(f"  identity inserted: {n1}")
+    n2 = await db.bulk_upsert_team_aliases(fuzzy_rows)
+    print(f"  fuzzy_link inserted: {n2}")
+    print(f"  total new rows: {n1 + n2}")
+    await db.close()
+    return 0
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--game", default=None,
+                        help="Restrict to one game (lol, cs2, dota2, valorant, …)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Compute rows but don't write to DB")
+    args = parser.parse_args()
+    sys.exit(asyncio.run(main(args)))
