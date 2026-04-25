@@ -960,6 +960,65 @@ class MirrorRejectedSignal(Base):
     )
 
 
+class EsportsTeamAlias(Base):
+    """S195: PandaScore team name ↔ Polymarket question variant mapping.
+
+    Replaces the naive substring matcher in
+    esports/markets/esports_market_scanner.py:130-132 that requires the
+    PandaScore team name to appear verbatim (lowercased) inside the
+    Polymarket question text. Org rebrands, sponsorship suffixes, and
+    abbreviations silently dropped predictions before this.
+
+    Schema matches migration 074_esports_team_aliases.sql.
+    """
+    __tablename__ = "esports_team_aliases"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    canonical_name = Column(Text, nullable=False)
+    alias = Column(Text, nullable=False)
+    # alias_lc is a generated column on the SQL side; ORM treats read-only.
+    source = Column(Text, nullable=False, default="manual")
+    confidence = Column(Float, nullable=True)
+    game = Column(Text, nullable=True)
+    created_at = Column(NaiveUTCDateTime, nullable=False,
+                        default=lambda: _naive_utc(datetime.now(timezone.utc)))
+
+    __table_args__ = (
+        Index("idx_eta_alias_lc", "alias", "game"),  # alias_lc index lives in SQL only
+        Index("idx_eta_canonical", "canonical_name", "game"),
+        UniqueConstraint("canonical_name", "alias", "game", name="uq_eta_canon_alias_game"),
+    )
+
+
+class EsportsUnmatchedPrediction(Base):
+    """S195: shadow predictions where no Polymarket market matched.
+
+    Daily report surfaces top missing aliases for review. Matcher writes
+    here whenever find_markets_for_match returns empty so the alias gap
+    becomes a first-class observability surface instead of a silent
+    `logger.debug` line.
+
+    Schema matches migration 074_esports_team_aliases.sql.
+    """
+    __tablename__ = "esports_unmatched_predictions"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    event_time = Column(NaiveUTCDateTime, nullable=False,
+                        default=lambda: _naive_utc(datetime.now(timezone.utc)))
+    match_id = Column(Text, nullable=False)
+    team_a = Column(Text, nullable=False)
+    team_b = Column(Text, nullable=False)
+    game = Column(Text, nullable=False)
+    candidate_markets_count = Column(Integer, nullable=False, default=0)
+    closest_question = Column(Text, nullable=True)
+    closest_score = Column(Float, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("match_id", "team_a", "team_b", name="idx_eup_match_dedup"),
+        Index("idx_eup_recent", "event_time"),
+    )
+
+
 class Database:
     def __init__(self) -> None:
         self.engine = None
@@ -3321,6 +3380,116 @@ class Database:
         except Exception as e:
             logger.debug("get_recent_resolved_for_blend failed: %s", e)
             return []
+
+    async def load_esports_team_aliases(self, game: Optional[str] = None) -> Dict[str, List[str]]:
+        """S195: bulk-load alias map for the matcher.
+
+        Returns: { canonical_name_lc: [alias1_lc, alias2_lc, ...] } including
+        canonical_name itself in each list. Optionally filtered by game so
+        e.g. League aliases don't leak into Dota matching.
+
+        The matcher caches the returned dict for the scanner's lifetime
+        (refresh handled by scanner-level TTL). All names returned lowercased
+        so the matcher's substring check needs no further normalization.
+        """
+        if self.session_factory is None:
+            return {}
+        try:
+            async with self.get_session() as session:
+                if game:
+                    rows = await session.execute(text("""
+                        SELECT LOWER(canonical_name) AS canon_lc, LOWER(alias) AS alias_lc
+                        FROM esports_team_aliases
+                        WHERE game = :game OR game IS NULL
+                    """), {"game": game})
+                else:
+                    rows = await session.execute(text("""
+                        SELECT LOWER(canonical_name) AS canon_lc, LOWER(alias) AS alias_lc
+                        FROM esports_team_aliases
+                    """))
+                out: Dict[str, List[str]] = {}
+                for canon_lc, alias_lc in rows.fetchall():
+                    if canon_lc not in out:
+                        out[canon_lc] = [canon_lc]
+                    if alias_lc != canon_lc and alias_lc not in out[canon_lc]:
+                        out[canon_lc].append(alias_lc)
+                return out
+        except Exception as e:
+            logger.debug("load_esports_team_aliases failed (table may not exist yet): %s", e)
+            return {}
+
+    async def log_unmatched_prediction(
+        self,
+        match_id: str,
+        team_a: str,
+        team_b: str,
+        game: str,
+        candidate_markets_count: int = 0,
+        closest_question: Optional[str] = None,
+        closest_score: Optional[float] = None,
+    ) -> None:
+        """S195: log a shadow prediction that found no Polymarket market.
+
+        Idempotent on (match_id, team_a, team_b) via ON CONFLICT DO NOTHING —
+        matcher can call this on every scan cycle without piling up dupes.
+        Never raises (instrumentation must not block the predict path).
+        """
+        if self.session_factory is None:
+            return
+        if not match_id or not team_a or not team_b or not game:
+            return
+        try:
+            async with self.get_session() as session:
+                await session.execute(text("""
+                    INSERT INTO esports_unmatched_predictions
+                        (match_id, team_a, team_b, game,
+                         candidate_markets_count, closest_question, closest_score)
+                    VALUES (:mid, :ta, :tb, :game, :cnt, :cq, :cs)
+                    ON CONFLICT (match_id, team_a, team_b) DO NOTHING
+                """), {
+                    "mid": match_id, "ta": team_a, "tb": team_b, "game": game,
+                    "cnt": int(candidate_markets_count or 0),
+                    "cq": closest_question, "cs": closest_score,
+                })
+                await session.commit()
+        except Exception as e:
+            logger.debug("log_unmatched_prediction failed (non-fatal): %s", e)
+
+    async def bulk_upsert_team_aliases(
+        self, rows: List[Dict[str, Any]],
+    ) -> int:
+        """S195: bulk insert/update aliases. Used by the seed builder script.
+
+        Each row: {canonical_name, alias, source, confidence?, game?}.
+        Returns count of rows actually inserted (existing rows unchanged
+        because the unique constraint is on (canonical_name, alias, game)).
+        """
+        if self.session_factory is None or not rows:
+            return 0
+        try:
+            inserted = 0
+            async with self.get_session() as session:
+                for r in rows:
+                    if not r.get("canonical_name") or not r.get("alias"):
+                        continue
+                    res = await session.execute(text("""
+                        INSERT INTO esports_team_aliases
+                            (canonical_name, alias, source, confidence, game)
+                        VALUES (:cn, :al, :src, :cf, :gm)
+                        ON CONFLICT (canonical_name, alias, game) DO NOTHING
+                    """), {
+                        "cn": r["canonical_name"],
+                        "al": r["alias"],
+                        "src": r.get("source", "manual"),
+                        "cf": r.get("confidence"),
+                        "gm": r.get("game"),
+                    })
+                    inserted += getattr(res, "rowcount", 0) or 0
+                await session.commit()
+            return inserted
+        except Exception as e:
+            logger.warning("bulk_upsert_team_aliases failed: %s", e)
+            return 0
 
     async def backfill_trade_events_resolution(self) -> int:
         """Emit RESOLUTION rows into trade_events for resolved markets that lack
