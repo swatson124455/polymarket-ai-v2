@@ -21,9 +21,6 @@ CREATE TABLE IF NOT EXISTS esports_team_aliases (
     id              BIGSERIAL PRIMARY KEY,
     canonical_name  TEXT NOT NULL,
     alias           TEXT NOT NULL,
-    -- Lowercased copy of alias for the matcher's case-insensitive lookup.
-    -- Generated column means the matcher never has to LOWER() at query time.
-    alias_lc        TEXT GENERATED ALWAYS AS (LOWER(alias)) STORED,
     -- Where this alias came from: 'pandascore', 'polymarket_question',
     -- 'manual', 'fuzzy_link'. Used by the seed builder for confidence
     -- weighting and for triaging bad aliases when matches go wrong.
@@ -38,11 +35,17 @@ CREATE TABLE IF NOT EXISTS esports_team_aliases (
     UNIQUE (canonical_name, alias, game)
 );
 
--- Fast lookup direction: given a market question, walk every alias_lc
--- and check substring against the question. The descending index makes
--- the longest aliases win first (more specific match).
+-- Plain alias index — matches the ORM's Index("idx_eta_alias_lc", "alias", "game")
+-- which the SQLAlchemy Base.metadata.create_all path emits.
 CREATE INDEX IF NOT EXISTS idx_eta_alias_lc
-    ON esports_team_aliases (alias_lc, game);
+    ON esports_team_aliases (alias, game);
+
+-- Functional index on LOWER(alias) — accelerates the matcher's
+-- case-insensitive load query (`SELECT LOWER(alias) ... FROM esports_team_aliases`).
+-- Replaces the GENERATED `alias_lc` column from the v1 migration draft;
+-- ORM-managed schema doesn't expose generated columns cleanly.
+CREATE INDEX IF NOT EXISTS idx_eta_alias_lower
+    ON esports_team_aliases (LOWER(alias), game);
 
 -- Reverse direction: canonical → all aliases for that team.
 -- Used by the matcher to expand a single PandaScore team name into the

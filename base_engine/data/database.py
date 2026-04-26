@@ -984,9 +984,12 @@ class EsportsTeamAlias(Base):
                         default=lambda: _naive_utc(datetime.now(timezone.utc)))
 
     __table_args__ = (
-        Index("idx_eta_alias_lc", "alias", "game"),  # alias_lc index lives in SQL only
+        Index("idx_eta_alias_lc", "alias", "game"),
         Index("idx_eta_canonical", "canonical_name", "game"),
         UniqueConstraint("canonical_name", "alias", "game", name="uq_eta_canon_alias_game"),
+        # Note: a functional LOWER(alias) index lives in migration 074 SQL only.
+        # SQLAlchemy can't express functional indexes via Index() args cleanly
+        # without raw text, and the matcher's hot path uses LOWER(alias).
     )
 
 
