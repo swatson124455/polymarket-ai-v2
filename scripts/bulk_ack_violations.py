@@ -1,9 +1,24 @@
 #!/usr/bin/env python3
-"""S167: Bulk-acknowledge historical violations in reconciliation_breaks.
+"""S167+: Bulk-acknowledge historical violations in reconciliation_breaks.
 
-Two ack classes:
-  Class 1 — Closed-position violations on known-fixed check types
-  Class 2 — WeatherBot orphan violations (bot paused 2026-04-08)
+Ack classes (each gated by a distinct safety filter):
+  Class 1 — Closed-position violations on known-fixed check types (S167)
+  Class 2 — WeatherBot orphan violations (bot paused 2026-04-08, S167)
+  Class 3 — TRADED_MARKETS_DRIFT pre-S192 fix (recon_date < 2026-04-23,
+            commit edcf93e shipped that day fixed the CSV-bot_names emission
+            bug that produced these as legacy false-positives, S195 §S192
+            close item 4.2)
+  Class 4 — STALE_POSITION pre-S184 (S184 close: STALE_POSITION P0
+            resolved via run_reconciliation() rewrite + new
+            TradedMarketsStatusDriftCheck shipped d60ae17; remaining
+            STALE_POSITION rows are pre-S184 legacy)
+
+Skipped (audit-check rewrite required, ack would re-raise immediately):
+  FK_MISSING_MARKET / SIZE_INVARIANT / POSITION_SIZE_MISMATCH per S185
+  reclassification (FIX_AUDIT_CHECK, not FIX_ROOT). S186 shipped the
+  POSITION_SIZE_MISMATCH check fix; FK_MISSING_MARKET + SIZE_INVARIANT
+  check fixes are still pending. Acking now wastes effort because the
+  next audit run re-emits.
 
 Safety: only OPEN → ACKNOWLEDGED.  Never touches current-day violations.
 Run on VPS:
@@ -72,6 +87,41 @@ async def main() -> None:
         class2_count = class2_result.rowcount
         print(f"Class 2 (WeatherBot orphans pre-pause): {class2_count} acked")
 
+        # ── Class 3: TRADED_MARKETS_DRIFT pre-S192 fix ──────────────
+        # S192 commit edcf93e (deployed 2026-04-23) fixed the CSV-bot_names
+        # SQL+emission bug. Violations dated before that commit are
+        # legacy false-positives — same root cause, no longer reachable.
+        # Post-S192 TMD violations are real and stay OPEN for triage.
+        class3_result = await session.execute(text("""
+            UPDATE reconciliation_breaks
+            SET status = 'ACKNOWLEDGED',
+                resolution_note = 'S195 bulk-ack: TRADED_MARKETS_DRIFT pre-S192 fix (edcf93e 2026-04-23)'
+            WHERE status = 'OPEN'
+              AND recon_type = 'TRADED_MARKETS_DRIFT'
+              AND recon_date < '2026-04-23'
+        """))
+        class3_count = class3_result.rowcount
+        print(f"Class 3 (TRADED_MARKETS_DRIFT pre-S192): {class3_count} acked")
+
+        # ── Class 4: STALE_POSITION pre-S184 ─────────────────────────
+        # S184 (commit 535c14e + d60ae17, deployed 20260420_121852) shipped
+        # TradedMarketsStatusDriftCheck and rewrote run_reconciliation();
+        # the STALE_POSITION P0 was resolved. Residual STALE_POSITION rows
+        # are pre-S184 legacy (3 rows on prod at S195 close per the
+        # operator's audit). Cap the date filter at 2026-04-20 — the
+        # S184 deploy day — so any post-fix recurrence stays OPEN for
+        # triage.
+        class4_result = await session.execute(text("""
+            UPDATE reconciliation_breaks
+            SET status = 'ACKNOWLEDGED',
+                resolution_note = 'S195 bulk-ack: STALE_POSITION pre-S184 fix (d60ae17 2026-04-20)'
+            WHERE status = 'OPEN'
+              AND recon_type = 'STALE_POSITION'
+              AND recon_date < '2026-04-20'
+        """))
+        class4_count = class4_result.rowcount
+        print(f"Class 4 (STALE_POSITION pre-S184):       {class4_count} acked")
+
         await session.commit()
 
         # ── Post-counts ─────────────────────────────────────────────
@@ -87,7 +137,7 @@ async def main() -> None:
         print(f"  {'TOTAL':40s} {total_after:>6d}")
 
         print(f"\nSummary: {total_before} → {total_after} OPEN violations "
-              f"({class1_count + class2_count} acknowledged)")
+              f"({class1_count + class2_count + class3_count + class4_count} acknowledged)")
 
 
 if __name__ == "__main__":
