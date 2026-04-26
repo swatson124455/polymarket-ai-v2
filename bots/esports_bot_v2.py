@@ -684,7 +684,15 @@ class EsportsBotV2(BaseBot):
         return None
 
     async def _find_market_info(self, match, game: str) -> Optional[dict]:
-        """Find full market info (id, tokens) for trading."""
+        """Find full market info (id, tokens) for trading.
+
+        Requires both yes_token_id AND no_token_id on the market — without
+        both, place_order() can't route the trade. S195 §4.1 deferred this
+        as "likely non-issue post-matcher-fix"; Protocol 10 (silent-loop
+        emission must be observable) mandates that we still surface the
+        case where the matcher returns candidate markets that all lack a
+        token, so drift here doesn't recur unobserved.
+        """
         if not self._market_scanner:
             return None
         try:
@@ -694,11 +702,36 @@ class EsportsBotV2(BaseBot):
                 team_names=[match.team_a, match.team_b],
             )
             if markets:
+                missing_yes = 0
+                missing_no = 0
                 for m in markets:
-                    if m.get("yes_token_id") and m.get("no_token_id"):
+                    yes = m.get("yes_token_id")
+                    no = m.get("no_token_id")
+                    if yes and no:
                         return m
+                    if not yes:
+                        missing_yes += 1
+                    if not no:
+                        missing_no += 1
+                # Markets returned but none had both tokens — observable now.
+                logger.warning(
+                    "esports_v2_market_info_no_token_pair",
+                    match_id=str(match.match_id),
+                    game=game,
+                    team_a=match.team_a,
+                    team_b=match.team_b,
+                    candidate_count=len(markets),
+                    missing_yes_token=missing_yes,
+                    missing_no_token=missing_no,
+                )
         except Exception as e:
-            logger.debug(f"Market info lookup failed: {e}")
+            logger.warning(
+                "esports_v2_market_info_lookup_failed",
+                match_id=str(match.match_id),
+                game=game,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
         return None
 
     # ── Snapshot persistence ──────────────────────────────────────
