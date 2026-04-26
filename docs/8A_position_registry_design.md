@@ -51,6 +51,15 @@
 
 **Reversibility.** This is a recorded decision in the design doc, not a schema change. If the risk-concentration argument later carries the day (e.g. observed under-performance traced to cross-bot correlation), Phase D can be revived by re-opening this section. The advisory-lock infrastructure shipping under FEATURE answer is identical to what BUG answer would need — no rework cost on revisit.
 
+**Re-decision tripwires.** The FEATURE decision is not "we picked feature, moving on" — it has explicit conditions under which Phase D should be revived and Phase D dropped. Re-evaluate if ANY of:
+
+1. **Correlated-loss concentration above threshold.** 7B Phase B (counterfactual retune, post-soak ~May 9-10) reveals that markets where two or more bots simultaneously held the same `(market_id, side)` produced significantly worse risk-adjusted returns than markets with single-bot OPEN. "Significantly" = a quantitative bar set in the Phase B retune analysis itself, not handwave. Concrete signal: realized Sharpe / Sortino on dual-bot-OPEN markets is ≥ 30% lower than single-bot, with the gap surviving the standard outliers-removed pass.
+2. **Audit-check failure depending on the absence of cross-bot duplicates.** A future audit check ships that assumes per-`(market_id, side)` uniqueness and produces material false positives because the assumption doesn't hold. If the failure is in the *check* it gets a Protocol 9 cleanup-not-fix; if it's a real downstream consumer (e.g. portfolio-level Kelly that needs to know aggregate exposure across bots), Phase D becomes the right enforcement.
+3. **Phase 8R (fractional Kelly portfolio sizing) requires it.** 8R as scoped in the S195 forward-audit weeks-5-6 calendar reads the registry for honest aggregate-exposure math. If 8R's design lands on "treat duplicate-OPEN as one logical position" — a defensible call — then Phase D becomes the schema-level guarantee that no duplicate exists. Without 8R running, FEATURE is the safer default.
+4. **Operational pain from race-condition bugs that the lock can't catch.** If the advisory locks shipping in Phase C reveal that races create same-`(market_id, side)` write attempts at a rate higher than the single-bot uq constraint can dedup (i.e. the race window is between two different bot processes, so per-bot uniqueness doesn't fire), the FEATURE decision needs reopening with explicit per-process deconflict logic.
+
+**Until any of these fires, Phase D stays dropped.** Filing this list explicitly to prevent the decision calcifying as "we already decided" without a tripwire for revisit. If a future session reads this doc and the trigger conditions clearly apply, that session has the standing to re-open §0 above.
+
 ---
 
 ## 1. Current State
