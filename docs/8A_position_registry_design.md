@@ -9,6 +9,31 @@
 
 ---
 
+## 0. Strategic Decision — REQUIRED BEFORE DAY 5 WIRING
+
+**Question.** Is two bots holding OPEN positions on the same `(market_id, side)` simultaneously a *feature* or a *bug*?
+
+**Why this question must land first.** Day 5 will wire `advisory_lock_for_market` around the 2–4 most-active open paths. The lock's purpose differs depending on the answer below — wiring before the answer locks the wrong thing.
+
+| Answer | Implications | 8A scope |
+|---|---|---|
+| **Feature.** Different bots have independent edges; capital should compound across them; per-bot accounting handles attribution. The current `uq_positions_bot_market_side` (per-bot uniqueness) is the correct boundary. | Advisory locks become **race-window only** — they prevent two bots from racing to write the SAME `(bot_id, market_id, side)` row, but never block a different bot. LISTEN/NOTIFY remains valuable for cross-bot visibility (a bot reading "MirrorBot is in YES on this market, my expected EV changes"). | Phase A, B, C, E only. **Phase D (the partial unique index) DOES NOT EXECUTE.** Phases reduce from 6 to 5; runtime risk drops sharply. |
+| **Bug.** Same-side concurrent positions across bots are correlated bets that violate Kelly assumptions and concentrate market-resolution risk on a single binary outcome. The cross-bot exclusion is the desired final state. | Advisory locks become **cross-bot serialisation** — every open path holds the lock long enough to check "does anyone else already have OPEN here?" and route to a modify path if so. Phase D ships the index as the schema-level guard once every caller routes. | All 6 phases (A–F) execute as drafted. Phase D landing requires the Week 2 migration-runner upgrade to enable `CREATE INDEX CONCURRENTLY`. |
+
+**Supporting evidence for the decision (no bias intended; recorded for the operator):**
+
+- **Per-bot uniqueness already enforced** (`uq_positions_bot_market_side`). Today's safety net.
+- **Historical cross-bot overlap is real**: recurring `{EsportsBot, MirrorBot}` pairs on the same `(market_id, side)` over multiple months on closed positions. Whether those overlaps were intended or accidental is a record-keeping question we can't answer from data alone — were those entries from MirrorBot copying a whale who happened to also be in a market EsportsBot was independently in, or were they direct duplicates?
+- **MirrorBot's design intent.** MB copies elite-trader signals; if EsportsBot is in YES on a CS2 market and a copied whale is also YES, MB's natural action is to take YES — concurrent same-side. Forcing MB to skip-or-modify could materially alter copy-trading semantics. Risk surface: 7B Phase B's wallet-selection retune may already implicitly assume MB can take any signal regardless of other bots.
+- **Risk concentration argument.** Two bots holding YES on the same market under independent strategies look similar to one bot with 2× size. If aggregate exposure caps are enforced per-bot only, cross-bot correlation can exceed what a per-bot Kelly analysis assumes. This is the structural argument for treating it as a bug.
+- **Audit-check guards already accommodate the divergence.** `position_trade_events_check.py` and `size_invariant_check.py` were patched in S186 to be side-agnostic at the aggregation layer specifically because the YES/NO/SELL state machine (see §1.1) creates non-trivial state shapes. These checks ALREADY work correctly with cross-bot duplicates — they don't depend on any uniqueness assumption beyond what the existing per-bot unique constraint provides.
+
+**Decision deadline.** End of Day 4 (next session). Until then, advisory-lock wiring at any open path is **deferred** — even at the cost of Day 4–5 calendar slip — because the wrong wiring would either leave the gap unprotected (lock-too-narrow) or break copy-trading flows (lock-too-wide).
+
+**Operator action.** Pick one answer, ideally with a one-paragraph rationale tied to one or more of the bullets above, before Day 5 wiring begins. If undecided: ship infrastructure-only Day 4 (write-path audit + observability) and defer wiring.
+
+---
+
 ## 1. Current State
 
 The `positions` table (`base_engine/data/database.py:291-316`) has the following uniqueness contract today:
@@ -49,7 +74,12 @@ __table_args__ = (
 
    These rows are closed today, so they don't conflict with a partial index `WHERE status='OPEN'`. But the historical pattern shows that EsportsBot and MirrorBot HAVE simultaneously held OPEN positions on the same market+side in the past. The proposed cross-bot index would block the second bot's OPEN insert in any future occurrence of this pattern.
 
-3. **Side-column anomaly (filed for §S195 hygiene backlog).** The query above returned `side='SELL'` rows in the `positions` table. Per `CLAUDE.md`: *"BUY/SELL vs YES/NO: BaseBot.place_order() expects side='YES' or side='NO'. Never pass 'BUY'/'SELL'."* The presence of `'SELL'` in `positions.side` indicates a write path bypassing that contract — likely legacy data or an older code path. Out of 8A scope; tracked as a separate hygiene item.
+3. **Side-column "anomaly" — RESOLVED to a deliberate audit-trail pattern, not a bug.** The query above returned `side='SELL'` rows in the `positions` table. Initial read of `CLAUDE.md` ("`BaseBot.place_order()` expects side='YES' or side='NO'. Never pass 'BUY'/'SELL'") suggested a contract violation. **Bound the blast radius (Day 3, 2026-04-26):**
+   - **Volume**: 1,124 SELL rows on prod, all `status='closed'`, zero `status='OPEN'` (verified). MirrorBot is the only currently-active writer; WB last 9 days ago, EB last 13 days ago, EnsembleBot last ~7 weeks ago.
+   - **Writer**: `base_engine/coordination/trade_coordinator.py:144` (`reserve_position`) inserts a `status='reserving'` row with `side='SELL'` as part of the exit flow. `confirm_position` at `:178` then marks both the SELL audit row AND the original YES/NO row as `'closed'`. The SELL row is an **audit trail of an exit attempt**, never a live position.
+   - **Reader**: `confirm_position:210` filters to `Position.side.in_(["YES","NO"])` for the live-position lookup (correct), with a status='open' fallback if the YES/NO row is missing. The audit-check layer (`position_trade_events_check.py`, `size_invariant_check.py`, `temporal_order_check.py`) is side-agnostic at the aggregation step specifically to absorb this state machine — comments at those files document S163/S164 transition handling.
+   - **Implication for 8A.** The SELL pattern does NOT conflict with the proposed partial unique index `WHERE status='OPEN'`: SELL rows are never OPEN by construction (they go directly to 'reserving' → 'closed'). The index design is robust to this pattern.
+   - **Smell, not bug.** The audit-trail pattern conflates position-state with exit-attempt-state in one schema slot. A separate `position_exits` table would be cleaner. Out of 8A scope; filed for future hygiene if and when the trade_coordinator rewrite happens.
 
 **Implication for the partial unique index.** The proposed index `CREATE UNIQUE INDEX ... ON positions (market_id, side) WHERE status = 'OPEN'` would change runtime behavior the next time two bots want to open on the same market+side concurrently — the second bot's INSERT raises `IntegrityError`. Whether that is the intended outcome is a design decision (§3.2 below), not a tautological tightening. Therefore Day 3 ships infrastructure that does not enforce the constraint; the index lands separately in a PR that wires up the caller-side handling for the new failure mode.
 
@@ -133,10 +163,11 @@ These tests need real concurrent transactions against a real DB (testcontainers 
 
 ## 5. Out-of-scope Findings (for §S195 / future hygiene)
 
-- **`positions.side='SELL'` anomaly.** Indicates a write path bypassing the `place_order()` contract that mandates `'YES' | 'NO'`. Recommend: grep all writers to `positions.side`, find the 'SELL' source, normalise.
+- **~~`positions.side='SELL'` anomaly~~ RESOLVED Day 3.** See §1 item 3 above — the SELL rows are an audit-trail pattern in `trade_coordinator.py`, not a contract violation. SELL is never `status='OPEN'`, so the proposed partial unique index `WHERE status='OPEN'` is robust to it. Smell remains (audit-trail conflated with position-state in one schema slot); `position_exits` table separation is a future-hygiene item not in 8A scope.
 - **Phase D index migration runner blocker.** `CREATE INDEX CONCURRENTLY` requires the migration-runner upgrade. Couples 8A Phase D to the Week 2 runner work; Phase D cannot ship in isolation.
 - **`side='YES'` paired with `side='NO'` for the same market_id is legitimate** (different binary-outcome positions). The proposed partial unique index is on `(market_id, side)` not `(market_id)` — it allows YES + NO simultaneously, only forbids same-side duplicates.
-- **Reserving status semantics.** Phase D needs to decide whether `status='reserving'` rows count for the partial unique index. Current proposal: `WHERE status = 'OPEN'` only. If `reserving` rows can also represent live exposure that should block a duplicate open, the predicate widens to `WHERE status IN ('OPEN','reserving')`.
+- **Reserving status semantics.** Phase D needs to decide whether `status='reserving'` rows count for the partial unique index. Current proposal: `WHERE status = 'OPEN'` only. If `reserving` rows can also represent live exposure that should block a duplicate open, the predicate widens to `WHERE status IN ('OPEN','reserving')`. Note: SELL audit-trail rows pass through `'reserving'` briefly during exit, so widening the predicate would re-introduce false-positive blocks during a normal exit flow — the narrow `'OPEN'`-only predicate is the safer default.
+- **uvloop silent-fallback verified Day 3.** `main.py:631` is `try: import uvloop; uvloop.install() except ImportError: pass`. The drift detector confirmed `uvloop` is missing on the prod venv, so the fallback to default asyncio IS firing. Per S195 Hygiene Backlog: structural fix is Week 2 (freeze-then-replace venv pattern alongside migration-runner upgrade); operator one-off `pip install -r requirements.txt` against the running venv is reversible but risks half-installed packages mid-import. Not 8A-scope; verified here for the reviewer's question.
 
 ---
 
