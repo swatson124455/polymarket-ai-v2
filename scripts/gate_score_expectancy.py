@@ -6,9 +6,19 @@ Buckets prediction_log entries by gate_score (stored in `confidence` column)
 and computes win rate, realized edge, and expectancy per bucket.
 Splits by trade_executed to compare traded vs gate-blocked signals.
 
-Usage:
+Usage (local dev):
     python scripts/gate_score_expectancy.py          # text table
     python scripts/gate_score_expectancy.py --json    # JSON output
+
+Usage (prod via SSH):
+    The script's Database() initialiser loads .env relative to the current
+    working directory, so on the VPS you MUST cd into the release tree
+    first — running from $HOME silently picks up no .env and falls back
+    to non-prod settings (S194 close hygiene item):
+
+        ssh ubuntu@<vps> "cd /opt/polymarket-ai-v2 && \\
+            sudo -u polymarket env PYTHONPATH=/opt/polymarket-ai-v2 \\
+            /opt/pa2-shared/venv/bin/python scripts/gate_score_expectancy.py"
 """
 import argparse
 import asyncio
