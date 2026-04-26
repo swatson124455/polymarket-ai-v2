@@ -110,18 +110,28 @@ class XGBoostMetaModel:
         logger.info(f"XGBoost trained on {len(records)} records, {X.shape[1]} features")
 
     def predict_proba(self, record: dict) -> float:
-        """Predict P(team_a wins) for a single record."""
+        """Predict P(team_a wins) for a single record.
+
+        Uses the underlying Booster's inplace_predict to skip DMatrix
+        construction. For binary:logistic objectives the default
+        predict_type="value" returns the same probability as
+        XGBClassifier.predict_proba(...)[:, 1].
+        """
         if self._model is None:
             return 0.5
         X = record_to_features(record).reshape(1, -1)
-        return float(self._model.predict_proba(X)[0, 1])
+        return float(self._model.get_booster().inplace_predict(X)[0])
 
     def predict_proba_batch(self, records: List[dict]) -> np.ndarray:
-        """Predict P(team_a wins) for a batch of records."""
+        """Predict P(team_a wins) for a batch of records.
+
+        Same DMatrix-skipping path as predict_proba. Returns a 1-D array
+        of probabilities.
+        """
         if self._model is None:
             return np.full(len(records), 0.5)
         X = np.array([record_to_features(r) for r in records])
-        return self._model.predict_proba(X)[:, 1]
+        return np.asarray(self._model.get_booster().inplace_predict(X))
 
     def feature_importance(self) -> Dict[str, float]:
         """Get feature importances (gain-based)."""
