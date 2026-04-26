@@ -3610,7 +3610,12 @@ class Database:
                         )
                         _phase4b_emitted += 1
                     except Exception as _te_err:
-                        logger.debug("phase4b emission failed for %s: %s", str(row[0])[:20], _te_err)
+                        # S195: warning (was debug). Per-row failures here were
+                        # the silent-zero source — the insert_trade_event SQL
+                        # comment bug went undetected for 17 days because this
+                        # was at debug level. Keep visible at warning.
+                        logger.warning("phase4b emission failed for %s/%s: %s",
+                                       row[1], str(row[0])[:20], _te_err)
         except Exception as _te_outer_err:
             logger.warning("phase4b outer failure: %s", _te_outer_err)
 
@@ -3685,7 +3690,9 @@ class Database:
                         except Exception as _close_err:
                             logger.warning("close_resolved_position failed: mid=%s bot=%s err=%s", _mid, _bot, _close_err)
                     except Exception as _pr_err:
-                        logger.debug("phase4b_alt emission failed for %s/%s: %s", str(row[0])[:20], row[1], _pr_err)
+                        # S195: warning (was debug) — same rationale as phase4b above.
+                        logger.warning("phase4b_alt emission failed for %s/%s: %s",
+                                       row[1], str(row[0])[:20], _pr_err)
         except Exception as _pr_outer_err:
             logger.warning("phase4b_alt outer failure: %s", _pr_outer_err)
 
@@ -5527,7 +5534,10 @@ class Database:
                             "   WHERE te.bot_name = :bot_name"
                             "     AND te.market_id = :market_id"
                             "     AND te.event_type = 'RESOLUTION'"
-                            "   -- S167: side removed from dedup — one RESOLUTION per (bot, market)"
+                            "   /* S167: side removed from dedup — one RESOLUTION per (bot, market). "
+                            "      S195: this comment was a `-- ` SQL line comment on a single-line"
+                            "      Python concat, which silently swallowed the closing `)` and the"
+                            "      AND NOT EXISTS / RETURNING tail. Use block-comment style only here. */"
                             " )"
                             " AND NOT EXISTS ("
                             "   SELECT 1 FROM trade_events te_exit"
