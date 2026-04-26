@@ -78,3 +78,44 @@ async def test_helper_does_not_swallow_inner_exception() -> None:
 
     # Lock SQL still issued before the body raised.
     session.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_helper_supports_nested_locks_on_distinct_markets() -> None:
+    """Multi-leg arbitrage shape: a single transaction may need to lock
+    two markets atomically (e.g. open a YES on market A and a NO on market B
+    in one bundle). PostgreSQL advisory locks taken inside the same
+    transaction on distinct keys are compatible by default (PG docs
+    §13.3.5: 'multiple lock requests for the same key from the same
+    session always succeed without waiting'). The helper must support
+    this without re-acquiring or releasing — both lock SQL statements
+    must dispatch in order, and exceptions from the inner body must
+    propagate out of both layers.
+    """
+    session = AsyncMock()
+    async with advisory_lock_for_market(session, "0xmarket-a"):
+        async with advisory_lock_for_market(session, "0xmarket-b"):
+            pass
+
+    assert session.execute.await_count == 2
+    first_call_params = session.execute.call_args_list[0].args[1]
+    second_call_params = session.execute.call_args_list[1].args[1]
+    assert first_call_params == {"market_id": "0xmarket-a"}
+    assert second_call_params == {"market_id": "0xmarket-b"}
+
+
+@pytest.mark.asyncio
+async def test_helper_supports_nested_locks_on_same_market() -> None:
+    """Same-market re-entrance: a code path may legitimately call into
+    another path that also takes the lock (e.g. open-or-modify routes
+    through a shared helper). PG semantics: the second acquisition
+    succeeds immediately without blocking. Helper must not optimise
+    by suppressing the second SELECT — caller-visible behaviour stays
+    'the lock SQL was dispatched' so log-based debugging works.
+    """
+    session = AsyncMock()
+    async with advisory_lock_for_market(session, "0xsame"):
+        async with advisory_lock_for_market(session, "0xsame"):
+            pass
+
+    assert session.execute.await_count == 2
