@@ -32,16 +32,21 @@ echo "Rollback : $PREV_DIR"
 echo ""
 
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+# Service list MUST match deploy.sh's restart set (currently weather + mirror
+# + esports + ingestion). Drift here means rollback leaves the missing
+# service(s) running on the pre-rollback code while the symlink points
+# elsewhere — the §S180 rollback-list-drift class. If deploy.sh adds a
+# service, mirror it here.
 ssh $SSH_OPTS -i "$KEY" "$VPS" bash <<REMOTE
 set -euo pipefail
 SWAP_TMP="${CURRENT}_rollback_$TIMESTAMP"
 sudo ln -s "$PREV_DIR" "\$SWAP_TMP"
 sudo mv -T "\$SWAP_TMP" "$CURRENT"
 echo "Symlink: $CURRENT -> $PREV_DIR"
-sudo systemctl restart polymarket-weather polymarket-mirror polymarket-esports
+sudo systemctl restart polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion
 REMOTE
 
 echo ""
 echo "=== ROLLBACK to $PREV_NAME COMPLETE ==="
-echo "Monitor: ssh -i \$KEY \$VPS 'journalctl -u polymarket-weather -u polymarket-mirror -u polymarket-esports -f --no-pager'"
+echo "Monitor: ssh -i \$KEY \$VPS 'journalctl -u polymarket-weather -u polymarket-mirror -u polymarket-esports -u polymarket-ingestion -f --no-pager'"
 echo ""
