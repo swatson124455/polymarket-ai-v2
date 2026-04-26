@@ -61,6 +61,12 @@ SQL_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+# PG dollar-quoted body opener / closer. Optional tag must be a valid SQL
+# identifier; a bare `$$` is the untagged form. A `$1` parameter placeholder
+# does NOT match (no closing `$` after the digit), so this is safe alongside
+# asyncpg-style positional parameters.
+_DOLLAR_TAG_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
+
 # Default repo subtrees to walk in --all mode. Excludes tests so the regression
 # guards in tests/unit/test_trade_events_resolution_backfill.py (which use
 # `--` strings *to describe* the bug) are not flagged.
@@ -108,9 +114,11 @@ def _fragment_text(node: cst.BaseString) -> str:
 def _find_sql_dash_dash_offsets(joined: str) -> list[int]:
     """Return offsets in `joined` where a SQL `--` line comment actually starts.
 
-    Skips `--` occurrences inside `/* ... */` block comments, single-quoted
-    string literals (with PG-standard `''` escape), and `"..."` identifiers.
-    These are the four parser states PostgreSQL recognises around `--`.
+    Skips `--` occurrences inside the four states PostgreSQL ignores:
+      - `/* ... */` block comments
+      - `'...'` string literals (with PG-standard `''` escape)
+      - `"..."` quoted identifiers
+      - `$tag$ ... $tag$` dollar-quoted bodies (untagged `$$` form too)
     """
     offsets: list[int] = []
     i = 0
@@ -118,9 +126,22 @@ def _find_sql_dash_dash_offsets(joined: str) -> list[int]:
     in_block = False
     in_squote = False
     in_dquote = False
+    dollar_tag: str | None = None  # None = not in a dollar block
+
     while i < n:
         ch = joined[i]
         nxt = joined[i + 1] if i + 1 < n else ""
+
+        if dollar_tag is not None:
+            # Inside a dollar body: scan for the matching close $tag$.
+            if ch == "$":
+                m = _DOLLAR_TAG_RE.match(joined, i)
+                if m and (m.group(1) or "") == dollar_tag:
+                    dollar_tag = None
+                    i = m.end()
+                    continue
+            i += 1
+            continue
         if in_block:
             if ch == "*" and nxt == "/":
                 in_block = False
@@ -142,6 +163,14 @@ def _find_sql_dash_dash_offsets(joined: str) -> list[int]:
                 in_dquote = False
             i += 1
             continue
+        # Check $tag$ opener BEFORE plain `$` so `$1` placeholders fall
+        # through harmlessly (no closing `$`, so the regex misses).
+        if ch == "$":
+            m = _DOLLAR_TAG_RE.match(joined, i)
+            if m:
+                dollar_tag = m.group(1) or ""
+                i = m.end()
+                continue
         if ch == "/" and nxt == "*":
             in_block = True
             i += 2

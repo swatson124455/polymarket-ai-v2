@@ -143,3 +143,70 @@ def test_two_fragments_no_sql_keyword_does_not_flag(detector, tmp_path: Path) ->
     )
     violations = _check_source(detector, src, tmp_path)
     assert violations == []
+
+
+# ───── dollar-quoting (S195 Day 2 follow-up) ──────────────────────────────────
+
+def test_dash_inside_untagged_dollar_block_does_not_flag(
+    detector, tmp_path: Path
+) -> None:
+    """`$$ ... $$` is a dollar-quoted body; `--` inside is part of the body
+    text, not a SQL line comment from the outer parser's view."""
+    src = (
+        'q = (\n'
+        '    "CREATE FUNCTION f() RETURNS int AS $$ "\n'
+        '    "BEGIN -- inside body, harmless "\n'
+        '    "RETURN 1; END $$ LANGUAGE plpgsql"\n'
+        ')\n'
+    )
+    violations = _check_source(detector, src, tmp_path)
+    assert violations == []
+
+
+def test_dash_inside_tagged_dollar_block_does_not_flag(
+    detector, tmp_path: Path
+) -> None:
+    """`$body$ ... $body$` matches close on the same tag only."""
+    src = (
+        'q = (\n'
+        '    "CREATE FUNCTION f() RETURNS int AS $body$ "\n'
+        '    "BEGIN -- inside tagged body "\n'
+        '    "RETURN 2; END $body$ LANGUAGE plpgsql"\n'
+        ')\n'
+    )
+    violations = _check_source(detector, src, tmp_path)
+    assert violations == []
+
+
+def test_asyncpg_placeholder_does_not_open_dollar_block(
+    detector, tmp_path: Path
+) -> None:
+    """`$1`, `$2` are positional-parameter placeholders, not dollar-quote
+    openers. The bug shape (--in non-final fragment, no \\n) must still flag
+    when placeholders are present.
+    """
+    src = (
+        'q = (\n'
+        '    "SELECT * FROM trade_events "\n'
+        '    "WHERE bot_name = $1 -- S167 silently swallowing "\n'
+        '    "AND market_id = $2"\n'
+        ')\n'
+    )
+    violations = _check_source(detector, src, tmp_path)
+    assert len(violations) == 1
+
+
+def test_dash_after_dollar_block_close_still_flags(
+    detector, tmp_path: Path
+) -> None:
+    """If the dollar-quoted block closes mid-fragment and a real `--` follows
+    in the still-non-final fragment with no trailing newline, that's the bug.
+    """
+    src = (
+        'q = (\n'
+        '    "INSERT INTO foo SELECT 1 FROM (SELECT $$ a $$ AS x) -- consumed"\n'
+        '    "WHERE bar = 2"\n'
+        ')\n'
+    )
+    violations = _check_source(detector, src, tmp_path)
+    assert len(violations) == 1
