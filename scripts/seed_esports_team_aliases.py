@@ -203,9 +203,13 @@ async def main(args: argparse.Namespace) -> int:
     identity_rows = _build_identity_rows(pandascore_teams)
     print(f"  {len(identity_rows)} identity rows")
 
-    print(f"Building fuzzy-link rows (token_set_ratio >= {MIN_FUZZY_LINK})…")
-    fuzzy_rows = _build_fuzzy_link_rows(pandascore_teams, questions)
-    print(f"  {len(fuzzy_rows)} fuzzy-link rows")
+    if args.no_fuzzy:
+        print("Skipping fuzzy-link pass (--no-fuzzy)")
+        fuzzy_rows = []
+    else:
+        print(f"Building fuzzy-link rows (token_set_ratio >= {MIN_FUZZY_LINK})…")
+        fuzzy_rows = _build_fuzzy_link_rows(pandascore_teams, questions)
+        print(f"  {len(fuzzy_rows)} fuzzy-link rows")
 
     if args.dry_run:
         print("\n--dry-run — not writing.")
@@ -232,5 +236,9 @@ if __name__ == "__main__":
                         help="Restrict to one game (lol, cs2, dota2, valorant, …)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Compute rows but don't write to DB")
+    parser.add_argument("--no-fuzzy", action="store_true",
+                        help="Skip the fuzzy-link pass — identity rows only. "
+                             "Recommended for initial seed; fuzzy can be re-run "
+                             "later with manual review of borderline matches.")
     args = parser.parse_args()
     sys.exit(asyncio.run(main(args)))

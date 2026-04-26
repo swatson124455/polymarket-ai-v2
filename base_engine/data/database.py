@@ -3475,10 +3475,14 @@ class Database:
                 for r in rows:
                     if not r.get("canonical_name") or not r.get("alias"):
                         continue
+                    # S195: explicit created_at — the prod table was originally
+                    # created by ORM Base.metadata.create_all without a SQL
+                    # DEFAULT (the ORM uses a Python-side default), so raw
+                    # INSERT hits NOT NULL on created_at without this.
                     res = await session.execute(text("""
                         INSERT INTO esports_team_aliases
-                            (canonical_name, alias, source, confidence, game)
-                        VALUES (:cn, :al, :src, :cf, :gm)
+                            (canonical_name, alias, source, confidence, game, created_at)
+                        VALUES (:cn, :al, :src, :cf, :gm, NOW())
                         ON CONFLICT (canonical_name, alias, game) DO NOTHING
                     """), {
                         "cn": r["canonical_name"],
