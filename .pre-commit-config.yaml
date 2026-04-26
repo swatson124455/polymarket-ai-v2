@@ -1,0 +1,32 @@
+# S195 follow-up — guard against the SQL `--` adjacent-string concat bug class.
+# To install:
+#   pip install pre-commit
+#   pre-commit install   # adds .git/hooks/pre-commit
+# To run on the whole tree manually:
+#   pre-commit run --all-files
+# CI integration: invoke `pre-commit run --all-files --show-diff-on-failure`.
+
+repos:
+  - repo: local
+    hooks:
+      - id: sql-dash-dash
+        name: Forbid SQL `--` line comments inside Python adjacent-string concat
+        entry: python scripts/check_sql_dash_dash.py
+        language: python
+        types: [python]
+        # Skip generated / vendored / non-source roots and the detector's own
+        # source (the detector's docstring intentionally contains the bug
+        # shape; the contract tests cover that path).
+        exclude: |
+          (?x)^(
+            venv/.*|
+            \.venv/.*|
+            saved_models/.*|
+            data/.*|
+            review_package/.*|
+            output/.*|
+            scripts/check_sql_dash_dash\.py$|
+            tests/unit/test_check_sql_dash_dash\.py$|
+            tests/unit/test_trade_events_resolution_backfill\.py$
+          )
+        additional_dependencies: ["libcst==1.8.6"]
