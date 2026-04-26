@@ -1250,6 +1250,17 @@ Pattern: 4 instances of "diagnostic-inverts-remediation-space" within this sessi
 
 **ORM-vs-migration ordering — broader fix.** `Base.metadata.create_all` runs at first DB session use and silently bypasses SQL DEFAULTs, GENERATED columns, functional/partial indexes, CHECK constraints, and other PG-specific DDL. Migration 074 + 075 together fix the two specific columns, but the structural bug remains for any future table. Week 2 plan: kill `create_all()` in the live service path (use only against a fresh test DB), wire `alembic check` programmatically at startup with explicit try/except + structured logging, supplement with ~70 LOC of homegrown `pg_catalog` probes for what reflection misses (`attgenerated`, functional/partial indexes via `pg_indexes.indexdef`, CHECK constraints via `information_schema.check_constraints`).
 
+**Phase 3 VPS config — PARTIAL DONE 2026-04-26.** Two of the four hardening items applied on prod by the operator:
+
+- **PgBouncer `idle_transaction_timeout = 300` (5 min)** — added to `/etc/pgbouncer/pgbouncer.ini` after the existing `server_idle_timeout = 600`. Online reload via `systemctl reload pgbouncer` (no connection drop). Closes the connection-leak class observed in S163-S168 where idle-in-transaction sessions held PgBouncer slots indefinitely.
+- **PostgreSQL `autovacuum_naptime = 30s` (was 60s default)** — written to `/etc/postgresql/16/main/postgresql.conf`, SIGHUP reload via `systemctl reload postgresql`. More aggressive vacuum cadence reduces dead-tuple buildup on hot tables (`trade_events`, `paper_trades`, `prediction_log`) without measurable load impact.
+
+Both verified live (settings present in config files; reload returned ok; `SHOW autovacuum_naptime` returns 30s). **NOT in code** — both edits are prod-only out-of-band changes. Same drift class as rapidfuzz/skops/uvloop (the venv-refresh pattern). Structural fix for the class is the Week 2 deploy hardening track: a `deploy/postgres_tuning.sh` runbook + a fresh-VPS bootstrap that applies these from the repo on first run.
+
+**DEFERRED Phase 3 items** (operator caution required, not blocking trading):
+- **sshd `MaxAuthTries`/`AllowUsers` hardening** — limits brute-force surface but a typo in `sshd_config` can lock the operator out. Best applied with a follow-up session that has explicit recovery procedure rehearsed (reset via Lightsail console).
+- **SSH port change from 22** — same lockout risk + requires updating `deploy/deploy.sh`, `rollback.sh`, all `Bash`/`scp` invocations in the operator workflow, and the user's local `~/.ssh/config`. Not a small change despite being one config edit on the VPS.
+
 ---
 
 ### S187 Hygiene Backlog
