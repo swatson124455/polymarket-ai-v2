@@ -83,6 +83,6 @@ CREATE INDEX IF NOT EXISTS idx_eup_recent
     ON esports_unmatched_predictions (event_time DESC);
 
 
-COMMENT ON TABLE esports_team_aliases IS 'S195: PandaScore team name to Polymarket question variant mapping. Replaces naive substring matcher; grown by seed script + matcher feedback.';
+COMMENT ON TABLE esports_team_aliases IS 'S195 — PandaScore team name to Polymarket question variant mapping. Replaces naive substring matcher, grown by seed script + matcher feedback.';
 
-COMMENT ON TABLE esports_unmatched_predictions IS 'S195: Shadow predictions where no Polymarket market matched. Daily report surfaces top missing aliases for review.';
+COMMENT ON TABLE esports_unmatched_predictions IS 'S195 — Shadow predictions where no Polymarket market matched. Daily report surfaces top missing aliases for review.';
