@@ -19,6 +19,7 @@ Two-phase write:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -86,22 +87,46 @@ class EsportsBotV2(BaseBot):
         self._last_retrain_time = 0.0
         self._initialized = False
         self._pending_predictions: List[dict] = []  # predictions awaiting trade execution
+        # S195 Day 2: heavy init (snapshot/DB rebuild + pipeline fit) runs as
+        # a background task so the BaseEngine 120s startup-hold is not blocked
+        # by the cold-fit (~5.5 min). scan_and_trade() gates on this task
+        # being done before predicting.
+        self._warmup_task: Optional[asyncio.Task[None]] = None
 
         # Config
         self._games = [g.strip() for g in _GAMES]
         self._dry_run = _DRY_RUN
 
     async def start(self):
-        """Override BaseBot.start() to run initialization before scan loop."""
-        await self._initialize()
+        """Override BaseBot.start() to spin warmup concurrent with scan loop."""
+        await self._lightweight_init()
+        if self._pandascore is not None:
+            self._warmup_task = asyncio.create_task(
+                self._heavy_warmup(), name="esports_bot_v2_warmup",
+            )
         await super().start()
 
     async def _initialize(self) -> None:
-        """Load historical data, rebuild Trinity, fit pipeline."""
+        """Back-compat shim: synchronous init for callers that still expect
+        full readiness on return. Equivalent to lightweight init followed by
+        an immediate await of the heavy warmup. Tests and any external code
+        that called the pre-S195-Day-2 _initialize() get the same semantics.
+        """
         if self._initialized:
             return
+        await self._lightweight_init()
+        if self._pandascore is None:
+            return
+        await self._heavy_warmup()
 
-        # Initialize PandaScore client
+    async def _lightweight_init(self) -> None:
+        """Fast init: PandaScore client, market service, scanner.
+
+        No DB-heavy work. Returns in seconds so super().start() can enter
+        the scan loop within the BaseEngine startup-hold window.
+        """
+        if self._pandascore is not None:
+            return
         from esports.data.pandascore_client import PandaScoreClient
         from config.settings import settings
         api_key = getattr(settings, "PANDASCORE_API_KEY", None)
@@ -143,6 +168,14 @@ class EsportsBotV2(BaseBot):
         except Exception as e:
             logger.warning(f"Market scanner init failed: {e}")
 
+    async def _heavy_warmup(self) -> None:
+        """Snapshot load / DB rebuild / pipeline fit — the slow cold path.
+
+        Runs as a background task (kicked off from start()) so a 5.5-min
+        cold fit no longer pushes total init past the 120s BaseEngine
+        startup-hold. scan_and_trade() refuses to predict until this
+        task is .done() and exception-free.
+        """
         # Try loading snapshot, fall back to full DB rebuild
         snapshot_loaded = await self._load_snapshot()
         if snapshot_loaded:
@@ -175,6 +208,30 @@ class EsportsBotV2(BaseBot):
             snapshot_loaded=snapshot_loaded,
             dry_run=self._dry_run,
         )
+
+    def _warmup_complete(self) -> bool:
+        """Return True iff heavy warmup finished successfully.
+
+        Fail-loud contract: if the warmup task raised, this method re-raises
+        on the next call so the scan loop surfaces the failure rather than
+        silently scanning with an unfit model.
+        """
+        if self._initialized:
+            return True
+        task = self._warmup_task
+        if task is None or not task.done():
+            return False
+        if task.cancelled():
+            logger.warning("esports_bot_v2_warmup_cancelled")
+            return False
+        exc = task.exception()
+        if exc is not None:
+            logger.error(
+                "esports_bot_v2_warmup_failed",
+                error=str(exc), error_type=type(exc).__name__,
+            )
+            raise exc
+        return self._initialized
 
     async def _build_training_records_from_db(self) -> None:
         """Build training records using restored Trinity (predict only, no rating updates)."""
@@ -270,9 +327,15 @@ class EsportsBotV2(BaseBot):
         return None
 
     async def scan_and_trade(self) -> None:
-        """Main scan cycle. Called by BaseBot._scan_loop() every interval."""
-        if not self._initialized:
-            logger.warning("EsportsBotV2: not initialized, skipping scan")
+        """Main scan cycle. Called by BaseBot._scan_loop() every interval.
+
+        Gates on _warmup_complete() — during the cold-start window (snapshot
+        load / DB rebuild / pipeline fit), this returns early so the scan
+        loop ticks but does not attempt to predict against an unfit model.
+        Fails loud if the warmup task ended with an exception.
+        """
+        if not self._warmup_complete():
+            logger.info("esports_bot_v2_scan_skipped_warmup_in_progress")
             return
 
         # 1. Process resolved matches (ratings update + Phase 2 writes)
