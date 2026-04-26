@@ -1114,6 +1114,144 @@ Mechanism common to both: a default query interface by design surfaces only the 
 
 **Evidence of origin.** This session, 2026-04-21. Phase 0 Protocol 5 verification of S186 CLOSE handoff (19 tool calls, each claim matched to evidence); `e19815e` deployed cleanly as release `20260421_114928` with HEALTH_WARN soft-warn per documented S180 EB v2 cold-start pattern; VPS symlink + PSM `GROUP BY bot_name, market_id` + `NOT EXISTS` guard confirmed live via SSH. Then three unverified-item closures during the 15h soak wait until the 2026-04-22 03:03 UTC audit fire.
 
+### S194 (2026-04-24) — Trading revival: 6 commits unblock MB after 12-day silence + WB infrastructure cleanup
+
+**Context.** S172 §S181 Issue 9 ("paper_trades zero-volume ESCALATED 2026-04-19") was acknowledged but never root-caused. S194 deep-dive identified four behavioral roots, all shipped + deployed in this session. MB resumed trading post-deploy after a multi-day silence (canonical counts via `scripts/bot_pnl.py`).
+
+**Phase A diagnostics (Phase A complete, hypothesis inversions recorded):**
+
+| Hypothesis | Outcome |
+|---|---|
+| WB `_restore_exposure_from_db()` sums historical (closed) positions, pinning city counters at cap | **FALSIFIED** — restore reads `daily_counters` (correct semantics). Real bug was elsewhere (see B-NEW-1 + B-NEW-2 below). |
+| `mirror_state` empty → MB cold-start deadlock | **FALSIFIED** — `_eq_n` source is `EliteReliabilityTracker.total_trade_count()`, not `mirror_state`. `mirror_state` was a red herring. |
+| Triple-blind passes (S193 pattern continuing) inverted v2 D4 framing — promoted to second instance of "Triple-blind catches what Pass 1 missed." Promotion candidate strengthened. | |
+
+**Commits (all on master, all deployed):**
+
+- `b439f3f` **B-NEW-1** — `daily_counter.py` GREATEST(0, ...) clamp on both INSERT and ON CONFLICT UPDATE branches. Pre-fix: net-counter callers (WB `_city_exposure`/`_group_exposure`) decrement-on-exit landed counters negative on fresh-zero days. 15+ days of negatives on prod (qualitative — peak count visible in `daily_counters` history, magnitude omitted per Protocol 6). S105b restore-time clamp papered over startup symptoms but didn't fix the write-through bug.
+- `f928695` **B-NEW-2** — Wire `mark_positions_seeded()` / `mark_exposure_restored()` / `mark_reconciliation_passed()` across `base_engine.start()` + 3 bot files. Pre-fix: setters defined at `base_engine.py:1275/1280/1285` but ZERO callers in entire codebase. Every restart of every bot hit the 120s startup-hold watchdog and entered degraded mode. Watchdog retained as last-resort fallback.
+- `8f26a38` + `35eed49` **D4-NEW** — `MIRROR_REGIME_START` typed as `str` (settings.py:454); asyncpg rejected str-for-timestamptz with `DataError`. Both `EliteReliabilityTracker.refresh()` AND `EliteWatchlist` copy-tier scoring SQL failed silently for 25 days starting 2026-03-30 (cache `updated_at` confirmed). Empty cache → trader `_eq_n=0` → MB gate score capped → MB stopped trading 2026-04-13. Type changed to `Optional[datetime]` via `_parse_iso_dt()` helper that strips tz to naive UTC (PG TIMESTAMP WITHOUT TIME ZONE convention). Follow-up commit added the tz-strip after first deploy revealed `can't subtract offset-naive and offset-aware datetimes`.
+- `7b5e535` **B-NEW-3** — Split misleading `exposure_cap` SHADOW_ENTRY label at `weather_bot.py:3508-3521` into 4 disjoint reasons: `sub_min_trade`, `group_cap_exceeded`, `city_cap_exceeded`, `slippage_cap_exceeded`. Pre-fix label conflated all three cap sources; ~75% of WB rejections were actually slippage-cap firings (book-depth too thin), not true cap exhaustion. Pure observability — no behavior change in trading logic.
+- `c7bf9e0` **F2** — Correct §S181 line 1005 wrong-claim about gate-funnel observability. Preserves line 970 (EB v2 root cause = key-name mismatch — TRUE, fixed in S182 Phase 1d). Strikes line 1005 ("Phase 2 Commit 5 gate-funnel logging would self-document") — verified never shipped under any matching name (grep across `bots/*.py` + `base_engine/risk/*.py` returned zero matches).
+
+**Deploys.** Five releases in chain: `20260424_122139` (B-NEW-1+B-NEW-2) → `20260424_130539` (D4-NEW first form) → `20260424_131251` (D4-NEW tz-strip follow-up) → `20260424_133833` (B-NEW-3+F2, first attempt) → `20260424_132746` (B-NEW-3+F2, late-completing background race; identical code from same HEAD `c7bf9e0`). Two last deploys raced; current symlink at `132746`. All 6 commits in deployed tree (verified via grep on S194 markers across the 4 affected files).
+
+**Live verification (qualitative, check-internal carveout 6a where applicable; performance via `bot_pnl.py`):**
+
+- Bug 1: `daily_counters` produces zero new negative rows under `counter_date = CURRENT_DATE` post-deploy (audit/check-correctness).
+- Bug 2: Each of WB/MB has zero `startup_hold: timeout reached` events post-deploy. All three flags fire via the proper `mark_*` setter chain (`positions seeded` → `reconciliation passed` → `exposure restored` → `engine ready to trade`). Watchdog fallback now never invoked under happy path.
+- Bug 3 (D4-NEW): `system_kv['reliability_cache'].updated_at` advanced from 2026-03-30 (25 days stale) to a fresh post-deploy timestamp. Cache size dropped substantially because the regime_start filter is now properly excluding pre-regime data (its original intent).
+- Bug 4 (B-NEW-3): new label categories shipped; verification deferred until next WB SHADOW_ENTRY rejection.
+- MB resumed producing `paper_trades` rows post-D4-NEW deploy after the multi-day silence (qualitative; canonical count via `scripts/bot_pnl.py MirrorBot 24`).
+
+**Phase 0 audit gate from S193 close (verified S194 close):** `audit_runs.run_id=1282`, `run_type=scheduled_daily`, fired 2026-04-24 03:01:02 UTC. Zero `phantom_position_no_entry_event` emissions. S193 ENTRY auto-heal end-to-end verified.
+
+**EsportsBot v2 residual.** EB v2 still hits the 120s startup-hold timeout once per restart because its `_restore_exposure_from_db()` is invoked from the first scan cycle (~28s typical scan time per S181 finding) and the cold-start XGBoost+Venn-ABERS pipeline fit can push first-scan completion past the 120s window. Out of S194 scope — separate fix would require either watchdog timeout extension for EB or moving EB exposure restore out of the scan loop.
+
+**Plan-hygiene candidates this session (filed, not codified):**
+- "Triple-blind verification for inventory/hypothesis claims" — S193 first instance, S194 second instance (v1 → v2 → v3 plan revisions inverted load-bearing claims each pass). Promotion criteria met (≥2 instances). Candidate for next plan-hygiene round.
+- "Diagnostic-inverts-remediation-space" pattern — S193 first instance, S194 second instance (D4-NEW: mirror_state hypothesis inverted by triple-blind to find EliteReliabilityTracker as actual store). 2 instances filed.
+
+**Operational consequences.**
+- S172 Phase 7 gate (MB elevation) now genuinely evaluable for the first time in weeks. 7B Phase A (wallet selection overhaul) becomes the next-highest-ROI unblocked item.
+- §S181 Issue 9 now closed via this entry — both root causes identified and shipped.
+
+**Out of S194 scope (filed for future sessions):**
+- Phase C (WB slippage_size_cap): C-NEW-1-A diagnostic still required first to characterize the 4 dominant numeric markets driving `depth_exceeded` rejections. Decision tree (close-no-fix / filter universe / cap raw_size at signal-gen) blocked on diagnostic.
+- D-prereq runbook fix: `gate_score_expectancy.py` requires `cd /opt/polymarket-ai-v2` before invocation. Trivial; document in §S187 hygiene backlog.
+- D1/D2/D3/D5 secondary MB gate options: hold pending observation of D4-NEW impact in coming days.
+- EB v2 startup timing fix (above).
+
+**Evidence of origin.** S194 session 2026-04-24. Phase A diagnostics + triple-blind passes recorded in `S194_TRADING_REVIVAL_PLAN.md` (working tree, gitignored per `.gitignore:147`). Six commits `b439f3f`, `f928695`, `8f26a38`, `35eed49`, `7b5e535`, `c7bf9e0` on master. Five deploys 2026-04-24 12:21 UTC → 13:38 UTC.
+
+---
+
+### S195 (2026-04-25 → 2026-04-26) — RESOLUTION silent-zero + EB matcher overhaul + Day 1/2 follow-ups
+
+**Context.** Two independent root causes found via recursive dive-down. RESOLUTION emission had been silently failing for ~17 days due to a SQL `--` line comment that ate the rest of the INSERT. EsportsBot wasn't trading because (a) the alias table was empty, then (b) once seeded, the matcher accepted any market mentioning either team — so famous teams routed to season-long playoff markets. Multiple intermediate hypotheses got disproven by direct measurement before any fix shipped (recurring pattern this session). Day 1 + Day 2 followed up the same session-day with infrastructure hardening + EB v2 cold-start fix.
+
+**Phase A diagnostics (4 hypothesis inversions, all caught pre-fix):**
+
+| Hypothesis | Outcome |
+|---|---|
+| The full backfill job isn't being invoked | **FALSIFIED** — background journal grep showed `_do_resolution_queue` calls `run_resolution_backfill` every ~15 min; `log_progress=False` was suppressing all phase logs. |
+| `SIGNAL_REQUIRED_BOTS=EsportsBot` puts EB in shadow-only mode | **FALSIFIED** — reading `base_engine/audit/factory.py:55` + `base_engine/audit/checks/signal_execution_check.py` showed it's an audit-check severity dial, not a trading gate. EB is enabled to trade per `BOT_ENABLED_ESPORTS=true`. |
+| 35 upcoming matches in 48h window are unpredicted | **FALSIFIED** — own SQL bug (double-prefixed `'ps_' \|\| em.match_id` in JOIN). Correct join showed 0 unpredicted matches; all 35 had predictions but most had NULL `market_price`. |
+| Architectural wiring fix in commit 1 (`d67e03e`) is sufficient | **FALSIFIED** — `PostgresSyntaxError: syntax error at end of input` in journal. The wiring change made the silent failure observable but didn't fix it. The actual silent-zero was upstream in `insert_trade_event`. |
+
+Pattern: 4 instances of "diagnostic-inverts-remediation-space" within this session; 4-instance threshold met across S193/S194/S195 — promotion-ready as a Protocol candidate (see plan-hygiene below).
+
+**Commits — initial S195 close (8 on master, 2 successful deploys at code level):**
+
+- `d67e03e` Architectural cleanup — Phase 4b → first-class `backfill_trade_events_resolution()` method + 3 invocation paths + unconditional emission counter. Useful structurally, NOT the root-cause fix. Pre-S195-Day-2 reviewers should note: cleanup commits without root-cause linkage are a class flagged in the plan-hygiene below.
+- `9a2f363` EB alias matcher v1 + migration 074 + unmatched-predictions tracker. Matcher returned `any(team in question)` — too loose; necessary but not sufficient.
+- `0c32b61` EB seed builder script `seed_esports_team_aliases.py`. Identity pass + fuzzy-link pass; fuzzy pass produced 3 false positives in dry-run; `--no-fuzzy` flag added later.
+- `b82ad68` **ROOT CAUSE #1** — `--` SQL comment in `insert_trade_event` RESOLUTION INSERT swallowed the closing `)` + `AND NOT EXISTS` + `RETURNING`. Introduced ~2026-04-08 in S167. 17 days of silent `PostgresSyntaxError` at `database.py:5530`. Fixed via `/* ... */` block comment.
+- `989ab66` Migration 074 v2 — drop GENERATED column, use functional `LOWER(alias)` index. First deploy attempt failed because ORM created the table before migration ran (no GENERATED column).
+- `05015e7` Migration 074 v3 — inline `COMMENT` statements onto single lines. Second deploy attempt failed because multi-line PostgreSQL adjacent-string concat broke the migration runner's parse.
+- `4f63ff5` `bulk_upsert_team_aliases` sets `created_at = NOW()` explicitly + `--no-fuzzy` seed flag. ORM-created tables had no SQL DEFAULT (Python-side `default=` only) so raw INSERT hit `NotNullViolationError`. Hot-patched on prod via `ALTER TABLE`; this commit makes future fresh installs idempotent.
+- `f4c5d11` **ROOT CAUSE #2** — Matcher requires BOTH teams + ranks match-specific above season / handicap. Live test: T1 vs BNK FEARX pre-fix returned 25 markets (top = season playoff); post-fix returns 1 market (the correct one). Three new helpers replace `_team_match_score`: `_team_present`, `_both_teams_present`, `_specificity_score`.
+
+**One-off prod ops not in any commit:** manual `sudo pip install rapidfuzz>=3.5.0` + `ALTER TABLE ... SET DEFAULT NOW()` for the two created_at/event_time columns. Lifted into commits in Day 1 (see below).
+
+**Commits — S195 Day 1 (2026-04-26, 4 commits, infrastructure follow-ups):**
+
+- `e3bc0ad` `fix(deps)`: rapidfuzz promoted from `requirements-improvements.txt` to core `requirements.txt`. `deploy/first-run.sh:22` only installs `requirements.txt`, so rapidfuzz was outside the deploy path. Lifts the manual prod hot-patch into version control.
+- `c00a148` `fix(migration)`: 075 — lifts the manual `ALTER TABLE ... SET DEFAULT NOW()` hot-patch. Idempotent — no-op on prod (DEFAULT already set), active on fresh installs. `down/075_drop_esports_default_now.sql` documents the intentional non-rollback contract: `bulk_upsert_team_aliases` (commit 7) sets `created_at = NOW()` explicitly, so the DEFAULTs are belt-and-suspenders, NOT load-bearing.
+- `1ab85b9` `feat(ci)`: libcst pre-commit guard at `scripts/check_sql_dash_dash.py` against the SQL `--` adjacent-string concat bug class (root cause #1 above). State-aware SQL parser tracks `/* */` block comments + `'...'` string literals + `"..."` quoted identifiers to suppress false positives; only flags `--` in a non-final fragment with no trailing `\n`. 9 contract tests pin the boundary. `.pre-commit-config.yaml` wires `libcst==1.8.6`. Repo-wide sweep clean.
+- `4c6a584` `feat(ops)`: `scripts/check_deploy_drift.py` — pip drift (declared-but-missing on VPS; leaf-not-declared notice) + schema drift probe for the two S195-tracked DEFAULT columns. PEP 503 name normalisation. Distinguishes `requirements.txt` (deploy-installed) from `requirements-improvements.txt` (optional). Operator-runnable; auto-wiring into `deploy.sh` deferred to Week 2 alongside the migration-runner replacement (S195 §6.3 in handoff).
+
+**Commits — S195 Day 2 (2026-04-26, 3 commits, EB v2 cold-start fix):**
+
+- `b1dbfad` `perf(esports_v2)`: `XGBoostMetaModel.predict_proba` + `predict_proba_batch` route through `Booster.inplace_predict()` instead of `XGBClassifier.predict_proba`. For binary:logistic, default `predict_type="value"` returns identical probabilities without DMatrix construction overhead. Hot path is `_predict_upcoming_matches` (35+ matches per scan).
+- `3708241` `fix(esports_v2)`: persistence migrated from joblib/pickle to `skops>=0.13.0` with explicit `_SKOPS_TRUSTED_TYPES` whitelist (6 entries). `load()` prefers `.skops`, falls back to `.joblib` at the same stem so legacy pre-Day-2 snapshots still load on first restart; next save rewrites in skops format. 5 new contract tests pin save→load round-trip + fallback + stale + reject-untrusted. `requirements.txt` adds `skops>=0.13.0`.
+- `c7e2a3e` `fix(esports_v2)`: split `_initialize()` into `_lightweight_init()` (sync, seconds) + `_heavy_warmup()` (5+ min, background asyncio.Task). `start()` kicks off the warmup task and yields to `super().start()` immediately, so the BaseEngine 120s startup-hold runs concurrent with the cold fit instead of being blocked by it. `scan_and_trade()` gates on `_warmup_complete()` which implements the fail-loud contract — re-raises any warmup exception so the scan loop surfaces failures rather than scanning silently against an unfit model. Cancelled tasks (graceful shutdown) return `False` without raising. `_initialize()` retained as a back-compat shim. 6 new gate tests pin the contract.
+
+**Phase 0 verification (Day 1, post-deploy `20260425_213055`):**
+- Symlink at expected release; RESOLUTION emission healthy (125 backfill log lines / 6h); MB+WB 120h windows match handoff session-close numbers (canonical via `bot_pnl.py`); 28 trade_events guard tests pass.
+- EB re-predicted 13/13 cleared matches at 02:34+ UTC. **Affirmative-path gap (open):** all 13 cleared rows were "no Polymarket equivalent" cases (NRG/M80/RUSTEC/AaB Esport/etc. — no T1 / BNK FEARX / Nongshim / Gen.G in the set). Phase 0 verifies the rejection path of root cause #2 only; affirmative path needs a tier-1 matchable match to enter the 48h horizon (queued in §S195 Hygiene Backlog below).
+- Drift detector found uvloop + 10 other declared packages absent on VPS. uvloop is real perf drift (`main.py:629-634` silent fallback to default asyncio). Triage list in §S195 Hygiene Backlog.
+
+**EB v2 cold-start architecture after Day 2.** `start()` → lightweight init → kick `_heavy_warmup()` as background task → `super().start()` immediately. Heavy work (snapshot load + DB rebuild + pipeline fit) runs concurrent with the BaseEngine 120s startup-hold rather than blocking it. `scan_and_trade()` ticks during warmup but skips predicting; on warmup success the gate opens; on warmup failure the gate re-raises. Resolves the §S194 EB v2 startup-timing residual (`HEALTH_WARN` soft mode every restart) at the architectural level. Empirical post-deploy verification pending — current symlink is still the pre-Day-2 `20260425_213055`.
+
+**Plan-hygiene candidates (≥3-instance, promotion-ready per S195 close §5):**
+- **Diagnostic-inverts-remediation-space.** S193 §4.1 + S194 D4-NEW + S195 §2.3 four sub-instances. 4-instance threshold cleared. Recommend codifying as Protocol 7 in next plan-hygiene round.
+- **Triple-blind verification for hypothesis claims.** S193 + S194 + S195 (4 wrong hypotheses caught before any wrong fix shipped). 3 instances. Promotion-ready as Protocol 8.
+- **Architectural cleanup is not a substitute for root cause** (NEW). S195 commit `d67e03e` cleanup added emission counter + invocation paths but did NOT fix the underlying SQL bug (commit `b82ad68` did). Mandate candidate (Protocol 9): cleanup commits without root-cause linkage must carry `Cleanup-Only: yes` trailer + reference the tracked root-cause commit.
+- **Silent-loop emission must be observable** (NEW). S195 fix bumped per-row Phase 4b/Phase 4b-alt logs from `debug` to `warning` + added an emission counter. Mandate candidate (Protocol 10): retry/fallback/loop paths that swallow exceptions or skip rows must emit at WARNING + increment a Prometheus counter.
+
+**Operational consequences.**
+- §S194 EB v2 startup-timing residual closed at the code-architecture level (Day 2). Empirical confirmation requires deploy + observation.
+- bot_pnl.py windowed numbers had been undercounted for 17 calendar days for any window not crossing pre-2026-04-08 data. Now corrected. Future windowed comparisons against pre-fix data will show apparent jumps that are accounting recovery, not actual performance change.
+- Migration-runner fragility surfaced on three distinct failure modes in one deploy chain: GENERATED column conflict, multi-line PostgreSQL string-literal concat, internal `;` inside string literal. Replacement scheduled for Week 2 (sqlparse-based splitter + squawk-cli linter per S195 §6.3).
+- ORM-vs-migration ordering bug (`Base.metadata.create_all` runs before migrations and silently bypasses SQL DEFAULTs / GENERATED columns / functional indexes) is broader than just the two columns 075 fixes. Probe + structural fix scheduled for Week 2 (kill `create_all()` in service path; wire `alembic check` programmatically at startup).
+
+**Out of S195 scope (filed for future sessions):**
+- Affirmative-path matcher verification (rejection-path verified Day 1; affirmative needs a matchable match next).
+- EB throughput improvement (~1 prediction per 75 min today, bounded by PandaScore poll cadence not by the matcher) — Week 2.
+- 7B Phase B counterfactual retune — blocked on 2-week `mirror_rejected_signals` soak completing ~2026-05-09/10 — Week 3.
+- Migration-runner upgrade + ORM-drift probe + auto-wired drift CI gate — Week 2.
+- uvloop install on prod venv — operator one-off (see §S195 Hygiene Backlog).
+- Token-pair issue at `bots/esports_bot_v2.py:635` (`_find_market_info` requires both `yes_token_id` AND `no_token_id`) — deferred per S195 close §4.1.
+
+**Evidence of origin.** Initial S195 close 2026-04-25 → 2026-04-26 overnight (`AGENT_HANDOFF_S195_CLOSE.md`). Day 1 + Day 2 same session-day 2026-04-26. 15 commits total: `d67e03e`, `9a2f363`, `0c32b61`, `b82ad68`, `989ab66`, `05015e7`, `4f63ff5`, `f4c5d11` (initial close); `e3bc0ad`, `c00a148`, `1ab85b9`, `4c6a584` (Day 1); `b1dbfad`, `3708241`, `c7e2a3e` (Day 2). Pre-session HEAD `c7bf9e0`; post-Day-2 HEAD `c7e2a3e`. Initial S195 close deployed as `20260425_213055`; Day 1 + Day 2 commits not yet deployed.
+
+---
+
+### S195 Hygiene Backlog
+
+**uvloop missing on prod venv (real perf drift).** `requirements.txt` declares `uvloop>=0.19.0; sys_platform != 'win32'` and `main.py:629-634` imports it with `try/except ImportError: pass` graceful fallback. Drift detector confirmed not installed on the prod venv at `/opt/pa2-shared/venv` — bots are running on default asyncio, missing the 2–4× event-loop throughput uplift the comment claims. The fallback is silent: no log line emits "uvloop unavailable, using default loop". Fix: one-off operator command `sudo /opt/pa2-shared/venv/bin/pip install -r /opt/polymarket-ai-v2/requirements.txt` against the running prod venv (idempotent — already-installed deps no-op). Bots must restart to re-import; happens automatically on next deploy. Ship the install whenever the next deploy window is convenient. Not auto-wired into `deploy.sh` because adding `pip install` to a shared running venv mid-deploy risks half-installed packages being imported by still-serving old code. Structural fix is Week 2 alongside migration-runner replacement.
+
+**10 other declared-but-missing packages — triage list.** Drift detector also flagged `lleaves`, `pymc`, `nutpie`, `onnxmltools`, `onnxruntime`, `skl2onnx`, `discord-py`, `praw`, `spacy`, `telethon` as declared in `requirements.txt` but absent from the prod venv. Each needs labelling as one of: (a) intentional, gated on phase X (no fix needed, document the gate); (b) deploy bug (install via the same one-off command above). Initial classification: `discord.py`/`praw`/`telethon` → SOCIAL STREAMING phase, gated on Phase 12 sports work — install when phase activates; `pymc`/`nutpie` → Phase 6P/6N Bayesian work, install when phase activates; `lleaves` → LightGBM compiled inference (Linux-only marker, 16× faster), install when WB compiled-pipeline phase activates; `onnxmltools`/`onnxruntime`/`skl2onnx` → ONNX export for esports model compiled inference, defer until perf-regression demand; `spacy` → injury detector NER, gated on sports/news phase. None are blocking trading today — graceful fallbacks are in place — but the drift detector will keep flagging until each is either installed or the gating phase completes and updates the requirements file accordingly.
+
+**Affirmative-path matcher test queue.** Day 1 Phase 0 verified the rejection path of root-cause-#2 (matcher correctly returns 0 markets for tier-3/academy team pairs with no Polymarket equivalent). Affirmative path remains unverified: no tier-1 matchable match (T1/BNK FEARX/Nongshim/Gen.G class) was in the 13 cleared rows. Test contract: when a tier-1 match next enters the 48h `esports_predictions` horizon (typically several per week given LCK/major event cadence), the next-session Phase 0 must (a) confirm at least one such row has `market_price IS NOT NULL` post-prediction, (b) cross-check the matched market via the matcher's `_find_polymarket_for_match` output equals the season-non-playoff market for the specific match. Acceptable to ship the next deploy without this confirmation; the rejection-path evidence is real and the affirmative path is the same code branch — the verification is empirical, not architectural.
+
+**Migration-runner replacement scope (Week 2 anchor).** Three distinct migration-074 failure modes documented in S195 close §2.4 (GENERATED column ordering, multi-line string concat, internal `;` in string literal). The current `scripts/run_migrations.py` already handles dollar-quoted blocks and full-line `--` comments, but doesn't tokenise SQL string literals so a `;` inside `'...'` confuses the splitter. Replacement plan per the audit: replace `text.split(';')` with `sqlparse.split(text)` (one line; `sqlparse` is already a transitive dep) plus an 8-line preprocessor that skips dollar-quoted regions before splitting. Add `squawk-cli` as a CI lint on `migrations/*.sql`. Defer alembic-as-runner until autogenerate is wanted. The drift CI gate (`scripts/check_deploy_drift.py`) auto-wires into `deploy.sh` in the same Week 2 PR.
+
+**ORM-vs-migration ordering — broader fix.** `Base.metadata.create_all` runs at first DB session use and silently bypasses SQL DEFAULTs, GENERATED columns, functional/partial indexes, CHECK constraints, and other PG-specific DDL. Migration 074 + 075 together fix the two specific columns, but the structural bug remains for any future table. Week 2 plan: kill `create_all()` in the live service path (use only against a fresh test DB), wire `alembic check` programmatically at startup with explicit try/except + structured logging, supplement with ~70 LOC of homegrown `pg_catalog` probes for what reflection misses (`attgenerated`, functional/partial indexes via `pg_indexes.indexdef`, CHECK constraints via `information_schema.check_constraints`).
+
+---
+
 ### S187 Hygiene Backlog
 
 **RTDS dedup hit rate observability.** From 2E scope decision: 7B Phase A excludes `EliteWatchlist._seen_tx` dedup from `mirror_rejected_signals`, but the hit rate of `_seen_tx` is itself operationally interesting. "How often does the same trade arrive twice via RTDS?" — 1% = transport noise (expected); 40% = likely upstream dedup bug worth investigating. Cheap fix: one structured log line at `bots/elite_watchlist.py:984-988` emitting a counter (not a rejection-table row, not a 7B coupling). 30-second implementation whenever 7B Phase A work is in the vicinity of this file anyway.
