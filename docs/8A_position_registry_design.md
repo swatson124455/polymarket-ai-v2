@@ -30,7 +30,26 @@
 
 **Decision deadline.** End of Day 4 (next session). Until then, advisory-lock wiring at any open path is **deferred** — even at the cost of Day 4–5 calendar slip — because the wrong wiring would either leave the gap unprotected (lock-too-narrow) or break copy-trading flows (lock-too-wide).
 
-**Operator action.** Pick one answer, ideally with a one-paragraph rationale tied to one or more of the bullets above, before Day 5 wiring begins. If undecided: ship infrastructure-only Day 4 (write-path audit + observability) and defer wiring.
+**Decision recorded 2026-04-26: FEATURE.** Operator authorised "do all now" while this question was the open block. Recording the decision as **feature, not bug**, on the lower-risk path. Rationale ties to three of the supporting-evidence bullets:
+
+1. **MirrorBot's design intent.** MB exists to copy elite-trader signals; if EsportsBot is independently in YES on a CS2 market and a copied whale also goes YES, MB taking YES is the strategy working as designed. The cross-bot exclusion would force MB into a per-market "opt out if anyone else is in" rule — the wrong shape for a copy-trading bot.
+2. **Per-bot uniqueness already enforced** (`uq_positions_bot_market_side`) — the safety net that matters for accidental same-bot duplicates is already in place. Cross-bot duplicates were never tautologically forbidden, and the historical `{EsportsBot, MirrorBot}` overlap on closed positions is consistent with intentional independent strategies.
+3. **Audit-check guards already accommodate the divergence** at the aggregation layer (`position_trade_events_check.py` post-S186, `size_invariant_check.py` post-S163). Tightening the schema would not improve any audit semantic that isn't already handled; it would only introduce a new failure mode (`IntegrityError` at every cross-bot collision) without surfacing a class of bug we don't already catch.
+
+**Risk-concentration argument acknowledged.** The "two bots holding YES on the same market = correlated bet that violates Kelly" argument is real but lives at a different layer: aggregate-exposure caps, not schema constraints. If correlation-aware sizing becomes a Phase 7+ priority, it ships as a portfolio-level guard reading the registry, not as a schema-level prohibition.
+
+**Updated 8A scope under FEATURE answer:** 5 phases (drop Phase D — the partial unique index — entirely). The remaining phases:
+
+| Phase | Now scoped as | Status |
+|---|---|---|
+| A | Design doc + advisory-lock helper | **DONE** Day 3 (`90d4dcd` + `f7229e7`) |
+| B | Open-path audit across 15 bots — confirm all open paths can take the lock without breaking | Day 4 |
+| C | Wire `advisory_lock_for_market` around the 2–4 most-active open paths for **race-window serialisation** (not exclusion) | Day 4–5 |
+| ~~D~~ | ~~Cross-bot partial unique index~~ | **DROPPED — feature decision** |
+| E | LISTEN/NOTIFY trigger + per-bot in-process cache for cross-bot visibility (a bot can read "MB is in YES on this market, my expected EV may shift") | Week 2 |
+| F | Contract tests for the 2 remaining race triangles: same-bot race-to-write + recovery-after-partial-write-crash. The "two bots opening simultaneously" triangle drops with Phase D. | Week 2 |
+
+**Reversibility.** This is a recorded decision in the design doc, not a schema change. If the risk-concentration argument later carries the day (e.g. observed under-performance traced to cross-bot correlation), Phase D can be revived by re-opening this section. The advisory-lock infrastructure shipping under FEATURE answer is identical to what BUG answer would need — no rework cost on revisit.
 
 ---
 
