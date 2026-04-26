@@ -1250,16 +1250,27 @@ Pattern: 4 instances of "diagnostic-inverts-remediation-space" within this sessi
 
 **ORM-vs-migration ordering — broader fix.** `Base.metadata.create_all` runs at first DB session use and silently bypasses SQL DEFAULTs, GENERATED columns, functional/partial indexes, CHECK constraints, and other PG-specific DDL. Migration 074 + 075 together fix the two specific columns, but the structural bug remains for any future table. Week 2 plan: kill `create_all()` in the live service path (use only against a fresh test DB), wire `alembic check` programmatically at startup with explicit try/except + structured logging, supplement with ~70 LOC of homegrown `pg_catalog` probes for what reflection misses (`attgenerated`, functional/partial indexes via `pg_indexes.indexdef`, CHECK constraints via `information_schema.check_constraints`).
 
-**Phase 3 VPS config — PARTIAL DONE 2026-04-26.** Two of the four hardening items applied on prod by the operator:
+**Audit-check rewrites for SIZE_INVARIANT + FK_MISSING_MARKET — RESCOPED 2026-04-26.** S185's reclassification to `FIX_AUDIT_CHECK` for these two recon types is **incorrect** based on Day 3 prod investigation. The audit checks themselves are structurally sound; the OPEN violations reflect real data-shape issues:
 
+- **SIZE_INVARIANT (10,121 rows)** — sample probe of one MirrorBot violation: ENTRY size=404.727 (NO shares), EXIT size=810.81 (SELL). The SELL-side EXIT is ~2× the ENTRY size. Investigating one further would reveal whether SELL EXITs are dollar-denominated while ENTRYs are share-denominated, or whether MirrorBot's exit logic has a real size-computation bug. Either way the fix is in MirrorBot's emission logic or a units-aware audit check, not a one-line check rewrite. Multi-hour engineering, not bulk-ack class.
+- **FK_MISSING_MARKET (7,042 rows)** — the JOIN at `fk_integrity_check.py:50` (`m.id = t.market_id`) is correct: both `markets.id` and `markets.condition_id` are `character varying` and contain the same 0x-hex string for the sampled row. The orphans are real — referenced markets aren't in the `markets` table. Pre-S195 trade_events emit code didn't auto-heal (S193's fix added auto-heal for ENTRY only). Older rows from before that fix permanently orphan the FK. Either backfill stub markets for orphans or live with the recon noise; both are operator-decision territory, not a check rewrite.
+
+**S185's FIX_AUDIT_CHECK label was a misclassification.** Recommended re-classification: SIZE_INVARIANT → FIX_EMISSION (MirrorBot exit-size computation), FK_MISSING_MARKET → ACCEPT_LEGACY_NOISE_OR_BACKFILL_STUBS (operator decision per backlog entry below). Bulk-acking either pre-rewrite would just have them re-raise on the next audit run — same anti-pattern as the original "ack and move on" S185 rejected. Re-classification handle: open a follow-up plan-hygiene PR that updates both checks' module docstrings and reclassifies the recon_type metadata.
+
+**Phase 3 VPS config — 3/4 DONE 2026-04-26 (SSH port deferred).**
+
+DONE:
 - **PgBouncer `idle_transaction_timeout = 300` (5 min)** — added to `/etc/pgbouncer/pgbouncer.ini` after the existing `server_idle_timeout = 600`. Online reload via `systemctl reload pgbouncer` (no connection drop). Closes the connection-leak class observed in S163-S168 where idle-in-transaction sessions held PgBouncer slots indefinitely.
 - **PostgreSQL `autovacuum_naptime = 30s` (was 60s default)** — written to `/etc/postgresql/16/main/postgresql.conf`, SIGHUP reload via `systemctl reload postgresql`. More aggressive vacuum cadence reduces dead-tuple buildup on hot tables (`trade_events`, `paper_trades`, `prediction_log`) without measurable load impact.
+- **sshd `MaxAuthTries 3` + `AllowUsers ubuntu`** — added to `/etc/ssh/sshd_config`, validated via `sshd -t` before reload, applied via `systemctl reload ssh`. Verified live: a fresh SSH connection still authenticates as `ubuntu` post-reload. The `polymarket` service-runner user keeps working because `AllowUsers` restricts SSH login only — `sudo -u polymarket` from an `ubuntu` SSH session is unaffected.
 
-Both verified live (settings present in config files; reload returned ok; `SHOW autovacuum_naptime` returns 30s). **NOT in code** — both edits are prod-only out-of-band changes. Same drift class as rapidfuzz/skops/uvloop (the venv-refresh pattern). Structural fix for the class is the Week 2 deploy hardening track: a `deploy/postgres_tuning.sh` runbook + a fresh-VPS bootstrap that applies these from the repo on first run.
+All three verified live (config files contain the new values, reloads returned ok, runtime checks pass). **NOT in code** — same drift class as rapidfuzz/skops/uvloop. Structural fix is the Week 2 deploy hardening track.
 
-**DEFERRED Phase 3 items** (operator caution required, not blocking trading):
-- **sshd `MaxAuthTries`/`AllowUsers` hardening** — limits brute-force surface but a typo in `sshd_config` can lock the operator out. Best applied with a follow-up session that has explicit recovery procedure rehearsed (reset via Lightsail console).
-- **SSH port change from 22** — same lockout risk + requires updating `deploy/deploy.sh`, `rollback.sh`, all `Bash`/`scp` invocations in the operator workflow, and the user's local `~/.ssh/config`. Not a small change despite being one config edit on the VPS.
+**STILL DEFERRED — SSH port change from 22.** Three coupled prerequisites that none of the prior fixes address:
+  1. AWS Lightsail firewall must be reconfigured to open the new port BEFORE sshd starts listening on it (otherwise lockout despite valid sshd config).
+  2. `deploy/deploy.sh` + `deploy/rollback.sh` + every operator-side `ssh -i .../key` invocation needs `-p NEW_PORT` plumbed through.
+  3. Local `~/.ssh/config` Host entry needs the new port. If the operator's automation uses ad-hoc invocations, each one needs auditing.
+  Each step is reversible individually but the chain has multiple chances to lock the operator out. Best done in a session that opens with an explicit recovery rehearsal: confirm Lightsail console access, document the rollback command, and make port 22 the FALLBACK listen port until the new port is verified working.
 
 ---
 
