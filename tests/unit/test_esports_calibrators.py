@@ -220,23 +220,8 @@ class TestVennAbersCalibrator:
         result = cal.fit(preds, outcomes)
         assert result is False
 
-    @pytest.mark.xfail(
-        reason=(
-            "esports/models/venn_abers_calibrator.py:66-68 missing cal_size "
-            "param. venn_abers>=0.4.0 with inductive=True requires explicit "
-            "cal_size or train_proper_size; without it the library raises "
-            "'For Inductive Venn-ABERS please provide either calibration or "
-            "proper train set size' and the wrapper's fit() returns False. "
-            "This means EsportsBot's per-game calibrator at "
-            "bots/esports_bot.py:5636-5663 has been silently failing fit. "
-            "Tracked in §S195 hygiene; fix needs operator review because it "
-            "changes prod calibration behavior (raw -> calibrated probs) "
-            "which affects Kelly sizing + edge calculations."
-        ),
-        strict=False,
-    )
     def test_fit_with_sufficient_data(self):
-        """20+ samples -> fits successfully."""
+        """20+ samples -> fits successfully (operator-reviewed cal_size=0.25 fix)."""
         cal = VennAbersCalibrator(min_samples=5)
         np.random.seed(42)
         n = 30
