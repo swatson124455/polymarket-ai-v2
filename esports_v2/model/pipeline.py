@@ -22,6 +22,20 @@ from esports_v2.model.meta_model import XGBoostMetaModel
 from esports_v2.model.calibrator import VennAbersCalibrator
 from esports_v2.model.conformal import ConformalFilter
 
+# S195 Day 2: skops trusted-type whitelist for safe-load.
+# skops.io.load rejects any type not in this list to defend against pickle
+# code-execution surfaces. Adding a type here is an explicit security review.
+# Probe with: skops.io.get_untrusted_types(file=<path>) when the model adds
+# new sub-components.
+_SKOPS_TRUSTED_TYPES: List[str] = [
+    "esports_v2.model.calibrator.VennAbersCalibrator",
+    "esports_v2.model.conformal.ConformalFilter",
+    "esports_v2.model.meta_model.XGBoostMetaModel",
+    "venn_abers.venn_abers.VennAbers",
+    "xgboost.core.Booster",
+    "xgboost.sklearn.XGBClassifier",
+]
+
 logger = logging.getLogger(__name__)
 
 # Sizing constants (Phase 5v2 risk controls)
@@ -174,7 +188,14 @@ class EsportsPipeline:
         return self._xgb.is_fitted if hasattr(self._xgb, "is_fitted") else self._xgb._model is not None
 
     def save(self, path: Path) -> None:
-        """Serialize fitted pipeline to disk via joblib."""
+        """Serialize fitted pipeline to disk in skops format.
+
+        Always writes skops regardless of the caller's extension. skops
+        provides safe-load semantics (rejects unknown types at load time),
+        replacing the pickle-backed joblib that was previously used. Old
+        pipeline.joblib files on disk remain loadable via the legacy fallback
+        in load() until they age past STALENESS_SECONDS and get refit.
+        """
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         state = {
@@ -183,46 +204,71 @@ class EsportsPipeline:
             "conformal": self._conformal,
             "saved_at": time.time(),
         }
-        joblib.dump(state, path)
-        logger.info("pipeline_saved", path=str(path))
+        # Defer the import so the rest of the package keeps working when
+        # skops is absent (graceful degradation matches venn_abers / mapie).
+        import skops.io as sio  # noqa: PLC0415
+        sio.dump(state, str(path))
+        logger.info("pipeline_saved", path=str(path), format="skops")
 
     def load(self, path: Path) -> bool:
         """
         Load pipeline from disk. Returns True on success.
 
-        Checks staleness (24h) and catches deserialization errors
-        (e.g. XGBoost/sklearn version mismatch) — falls back to refit.
+        Tries the requested path as skops first. If the path is missing,
+        falls back to the legacy joblib snapshot at the same stem with
+        suffix .joblib (S195 transition: pre-Day-2 deploys wrote joblib).
+        Both paths share the staleness check.
+
+        Catches deserialization errors (XGBoost/sklearn version mismatch,
+        skops trusted-type rejection, etc.) and reports as refit-needed.
         """
         path = Path(path)
-        if not path.exists():
+        skops_path = path if path.suffix == ".skops" else path.with_suffix(".skops")
+        legacy_path = path.with_suffix(".joblib")
+
+        chosen = skops_path if skops_path.exists() else (
+            legacy_path if legacy_path.exists() else None
+        )
+        if chosen is None:
             return False
+
         try:
-            # Staleness check via file mtime
-            age = time.time() - path.stat().st_mtime
+            age = time.time() - chosen.stat().st_mtime
             if age > self.STALENESS_SECONDS:
-                logger.info("pipeline_snapshot_stale", age_hours=age / 3600)
+                logger.info("pipeline_snapshot_stale", age_hours=age / 3600,
+                            path=str(chosen))
                 return False
 
-            state = joblib.load(path)
+            if chosen.suffix == ".skops":
+                import skops.io as sio  # noqa: PLC0415
+                state = sio.load(str(chosen), trusted=_SKOPS_TRUSTED_TYPES)
+                fmt = "skops"
+            else:
+                # Legacy joblib path. The next save() call rewrites in skops
+                # format, so this fallback drains over one retrain cycle.
+                state = joblib.load(chosen)
+                fmt = "joblib_legacy"
+
             self._xgb = state["xgb"]
             self._calibrator = state["calibrator"]
             self._conformal = state["conformal"]
-            logger.info(
-                "pipeline_loaded",
-                path=str(path),
-                age_hours=age / 3600,
-            )
+            logger.info("pipeline_loaded", path=str(chosen),
+                        age_hours=age / 3600, format=fmt)
             return True
         except (
             ModuleNotFoundError,   # library removed/renamed
             ImportError,           # library not installed
             AttributeError,        # class API changed
             TypeError,             # constructor signature changed
-            ValueError,            # numpy dtype mismatch
+            ValueError,            # numpy dtype mismatch / skops type-check
             EOFError,              # truncated file
             KeyError,              # missing state key
-            pickle.UnpicklingError,  # corrupt/incompatible pickle
+            pickle.UnpicklingError,  # corrupt/incompatible pickle (joblib path)
             OSError,               # file I/O error
         ) as e:
-            logger.warning("pipeline_snapshot_incompatible_refitting", error=str(e), error_type=type(e).__name__)
+            logger.warning(
+                "pipeline_snapshot_incompatible_refitting",
+                error=str(e), error_type=type(e).__name__,
+                path=str(chosen),
+            )
             return False

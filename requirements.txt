@@ -361,6 +361,14 @@ openskill>=6.0.0
 # Job: Player-level Plackett-Luce ratings (OpenSkill component of Rating Trinity)
 # Used by: esports_v2/ratings/openskill_engine.py
 
+skops>=0.13.0
+# Job: Safe-load model serialisation with explicit trusted-type whitelist.
+# Used by: esports_v2/model/pipeline.py — replaces joblib/pickle for the
+# EsportsPipeline snapshot in S195 Day 2. skops.io.load rejects any type
+# not in _SKOPS_TRUSTED_TYPES, defending against pickle code-execution
+# at load time. Adding a type to the whitelist is an explicit security
+# review, not a transparent default.
+
 venn-abers>=0.4.0
 # Job: Calibration with validity guarantees (Venn-ABERS predictor)
 # Used by: esports_v2/model/calibrator.py (5v2-B)
