@@ -12,8 +12,10 @@ optuna>=3.5.0
 # -----------------------------------------------------------------------------
 # FUNCTION: Cross-platform market matching
 # Enables: Fuzzy matching for ArbScanner ("Bitcoin $100K" ~ "BTC to reach 100000")
+# NOTE: rapidfuzz was promoted to core requirements.txt in S195 (matcher
+# load-bearing for EsportsBot v2). No need to install via this file anymore.
 # -----------------------------------------------------------------------------
-rapidfuzz>=3.5.0
+# rapidfuzz>=3.5.0  # moved to requirements.txt
 
 # -----------------------------------------------------------------------------
 # FUNCTION: Unified LLM interface

@@ -374,6 +374,15 @@ shap>=0.43.0
 # Used by: esports_v2/data/hltv_loader.py (5v2-A4)
 # Commented: scraping library, may be blocked by HLTV. Install manually if needed.
 
+rapidfuzz>=3.5.0
+# Job: Fuzzy string matching (token_set_ratio, partial_ratio).
+# Used by: esports/markets/esports_market_scanner.py (team-name → Polymarket
+# question fuzzy fallback when alias-table substring match fails) AND
+# scripts/seed_esports_team_aliases.py (fuzzy-link pass for alias seeding).
+# Promoted from requirements-improvements.txt to core in S195: matcher relies on
+# it; without it, fuzzy fallback silently no-ops and matches drop on rebrands /
+# sponsorship suffixes / spelling variants.
+
 # ============================================
 # TESTING
 # ============================================
