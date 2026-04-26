@@ -137,43 +137,96 @@ class EsportsMarketScanner:
         return expanded
 
     @staticmethod
-    def _team_match_score(
-        team_names: List[str], question_lc: str, expanded: List[str],
+    def _team_present(
+        team_name: str, question_lc: str, alias_map: Dict[str, List[str]],
     ) -> Tuple[bool, float]:
-        """S195: decide whether this market's question mentions either team.
+        """S195: is one specific team mentioned in the question?
 
-        Two-stage:
-          1. Substring check across all expanded aliases (fast). If any alias
-             appears in the question, return (True, 100.0).
-          2. rapidfuzz fallback over the original (non-expanded) team names.
-             Catches typos and word-order variations the alias table missed.
-             Threshold _FUZZY_THRESHOLD; below that we treat as no match.
+        Three-stage check for ONE team:
+          1. Direct substring on the lowercased team name.
+          2. Substring on any of the team's known aliases.
+          3. rapidfuzz token_set_ratio fallback over the canonical name only.
 
-        Returns (matched, score) where score is the best fuzzy ratio seen
-        (used by the unmatched-prediction tracker for triage).
+        Returns (matched, score) where score reflects match quality (100 for
+        exact substring, the rapidfuzz value for fuzzy hits, 0 otherwise).
         """
-        # Stage 1: alias substring (cheap, exact)
-        for a in expanded:
-            if a and a in question_lc:
+        team_lc = (team_name or "").strip().lower()
+        if not team_lc:
+            return False, 0.0
+        # Stage 1: direct substring
+        if team_lc in question_lc:
+            return True, 100.0
+        # Stage 2: alias substring
+        for variant in alias_map.get(team_lc, []):
+            v = (variant or "").strip().lower()
+            if v and v != team_lc and v in question_lc:
                 return True, 100.0
-
-        # Stage 2: fuzzy fallback over canonical names only. Don't fuzz
-        # every alias — alias variants are designed for exact substring,
-        # fuzzing them would just push the threshold work into rapidfuzz.
-        if _RAPIDFUZZ_AVAILABLE and team_names:
-            best = 0.0
-            for t in team_names:
-                t_lc = (t or "").strip().lower()
-                if not t_lc:
-                    continue
-                # token_set_ratio handles word-order + partial overlap, e.g.
-                # "AaB Esport" vs "Aalborg Esport AaB" scores ~85+.
-                score = float(_rapidfuzz_fuzz.token_set_ratio(t_lc, question_lc))
-                if score > best:
-                    best = score
-            return (best >= _FUZZY_THRESHOLD), best
-
+        # Stage 3: fuzzy fallback (canonical name only — alias variants
+        # are designed for exact substring; fuzzing them is double work)
+        if _RAPIDFUZZ_AVAILABLE:
+            score = float(_rapidfuzz_fuzz.token_set_ratio(team_lc, question_lc))
+            if score >= _FUZZY_THRESHOLD:
+                return True, score
+            return False, score
         return False, 0.0
+
+    @classmethod
+    def _both_teams_present(
+        cls,
+        team_names: List[str],
+        question_lc: str,
+        alias_map: Dict[str, List[str]],
+    ) -> Tuple[bool, float, float]:
+        """S195 deeper fix: require BOTH teams in the question, not either.
+
+        Pre-fix the matcher returned markets where a single team appeared,
+        so famous teams like T1 picked up season-long playoff markets and
+        unrelated other-opponent matches. The actual `T1 vs BNK FEARX`
+        market existed but was buried in the result set — and the caller
+        picks the first result, so the wrong market won.
+
+        Returns (both_present, score_a, score_b). Score = max of the two
+        teams' individual scores when both pass; otherwise = the better
+        single-team score for unmatched-tracker triage.
+        """
+        if not team_names or len(team_names) < 2:
+            return False, 0.0, 0.0
+        a_ok, a_score = cls._team_present(team_names[0], question_lc, alias_map)
+        b_ok, b_score = cls._team_present(team_names[1], question_lc, alias_map)
+        return (a_ok and b_ok), a_score, b_score
+
+    @staticmethod
+    def _specificity_score(question_lc: str) -> float:
+        """S195 deeper fix: rank match-specific questions above season /
+        handicap / playoff markets so the caller's first-result pick is
+        the right one.
+
+        Heuristic — higher score = more likely the question is about ONE
+        specific match, not a season aggregate or sub-market.
+
+        Base 100. Bonuses/penalties:
+          +30  question contains 'vs' (typical match-question shape)
+          -50  contains season/playoff/championship/tournament/split keyword
+          -20  contains map/game/handicap/total-maps sub-market keyword
+                  (still valid but more granular than full-match)
+        """
+        score = 100.0
+        if " vs " in question_lc or " vs. " in question_lc:
+            score += 30.0
+        season_terms = ("season", "playoff", "championship", "tournament",
+                        "regular season", "split")
+        for term in season_terms:
+            if term in question_lc:
+                score -= 50.0
+                break
+        sub_terms = ("- map ", "- game ", "map winner", "game winner",
+                     "handicap", "total maps", " over ", " under ",
+                     "first blood", "first kill")
+        for term in sub_terms:
+            if term in question_lc:
+                score -= 20.0
+                break
+        return score
 
     async def find_markets_for_match(
         self,
@@ -227,12 +280,11 @@ class EsportsMarketScanner:
         if team_names:
             keywords.extend(team_names)
 
-        # S195: pre-load alias expansion for both teams so the per-market
-        # loop below doesn't pay a DB round-trip per market.
-        expanded_aliases: List[str] = []
+        # S195: pre-load alias map for both teams so the per-market loop
+        # below doesn't pay a DB round-trip per market.
+        alias_map: Dict[str, List[str]] = {}
         if team_names:
             alias_map = await self._get_alias_map(game)
-            expanded_aliases = self._expand_team_aliases(team_names, alias_map)
 
         # S195: track the closest near-miss for the unmatched-tracker.
         # Recorded only if zero markets matched — gives a human reviewing
@@ -241,6 +293,12 @@ class EsportsMarketScanner:
         _best_near_miss_score = 0.0
         _best_near_miss_question: Optional[str] = None
         _candidate_count = 0
+
+        # S195 deeper fix: collect (specificity_score, market_dict) pairs
+        # then sort by specificity descending before returning. The first
+        # result wins downstream in _find_polymarket_for_match — we want
+        # match-specific questions ranked above season/handicap variants.
+        scored_results: List[Tuple[float, Dict[str, Any]]] = []
 
         for market in (all_markets or []):
             question = str(market.get("question", "")).lower()
@@ -252,14 +310,27 @@ class EsportsMarketScanner:
 
             _candidate_count += 1
 
-            # S195: alias-aware team name matching with fuzzy fallback.
-            if team_names:
-                matched, score = self._team_match_score(
-                    team_names, question, expanded_aliases,
+            # S195 deeper fix: require BOTH teams in the question, not either.
+            # Was `any(team in question)` — accepted markets mentioning only
+            # one team (typically the famous one), which surfaced season-long
+            # markets and games against unrelated opponents.
+            if team_names and len(team_names) >= 2:
+                both_ok, score_a, score_b = self._both_teams_present(
+                    team_names, question, alias_map,
                 )
-                if not matched:
-                    if score > _best_near_miss_score:
-                        _best_near_miss_score = score
+                if not both_ok:
+                    near = max(score_a, score_b)
+                    if near > _best_near_miss_score:
+                        _best_near_miss_score = near
+                        _best_near_miss_question = market.get("question")
+                    continue
+            elif team_names:
+                # Only 1 team given — fall back to single-team gate
+                # (preserves callers that only pass one name).
+                ok, sc = self._team_present(team_names[0], question, alias_map)
+                if not ok:
+                    if sc > _best_near_miss_score:
+                        _best_near_miss_score = sc
                         _best_near_miss_question = market.get("question")
                     continue
 
@@ -278,7 +349,7 @@ class EsportsMarketScanner:
             except (ValueError, TypeError):
                 price = None
 
-            results.append({
+            market_dict = {
                 "market_id": str(market.get("id", "")),
                 "token_id": str(token.get("tokenId") or token.get("token_id", "")),
                 "price": price,
@@ -295,7 +366,13 @@ class EsportsMarketScanner:
                 "no_price": market.get("no_price"),
                 "id": market.get("id"),
                 "condition_id": market.get("condition_id"),
-            })
+            }
+            spec = self._specificity_score(question)
+            scored_results.append((spec, market_dict))
+
+        # Sort by specificity descending — match-specific questions win.
+        scored_results.sort(key=lambda x: -x[0])
+        results = [m for (_, m) in scored_results]
 
         # S195: log any shadow prediction whose match scored zero markets.
         # Idempotent — DB does ON CONFLICT DO NOTHING on (match_id, team_a, team_b).
