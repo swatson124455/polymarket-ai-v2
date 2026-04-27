@@ -12,15 +12,26 @@ Ack classes (each gated by a distinct safety filter):
             resolved via run_reconciliation() rewrite + new
             TradedMarketsStatusDriftCheck shipped d60ae17; remaining
             STALE_POSITION rows are pre-S184 legacy)
+  Class 5 — Quiescent SIZE_INVARIANT/TEMPORAL_ORDER/DUPLICATE_ENTRY
+            (S196). Markets with no trade_events activity in the past 7
+            days have frozen disposal vs entry sums — no further events
+            will unfreeze the relationship. ACK silences the daily audit
+            noise. The S196 audit auto-close (commits e7149eb + 037c603)
+            handles same-key supersede on each daily run; Class 5 then
+            silences the canonical today's row for permanently-frozen
+            data. Re-run periodically as new markets quiesce.
 
-Skipped (audit-check rewrite required, ack would re-raise immediately):
-  FK_MISSING_MARKET / SIZE_INVARIANT / POSITION_SIZE_MISMATCH per S185
-  reclassification (FIX_AUDIT_CHECK, not FIX_ROOT). S186 shipped the
-  POSITION_SIZE_MISMATCH check fix; FK_MISSING_MARKET + SIZE_INVARIANT
-  check fixes are still pending. Acking now wastes effort because the
-  next audit run re-emits.
+S196 update: SIZE_INVARIANT was previously skipped per S185 reclassification.
+After S196 forward-audit, the audit check is correct and the data is real.
+The Phase 4b-alt fix (commit 0e1f2e0) closed the upstream emission gap; the
+RESOLUTION over-size guard (commit a76d9d8) is defense-in-depth. Class 5
+addresses the historical residue that the now-corrected source can't reach.
 
-Safety: only OPEN → ACKNOWLEDGED.  Never touches current-day violations.
+Safety: only OPEN → ACKNOWLEDGED.  Never touches current-day violations
+in Classes 1-4. Class 5 may touch current-day rows if the underlying market
+has been quiescent for 7+ days — the recon_date is incidental, the data
+state is the gate.
+
 Run on VPS:
   PYTHONPATH=/opt/polymarket-ai-v2 /opt/pa2-shared/venv/bin/python scripts/bulk_ack_violations.py
 """
@@ -122,6 +133,35 @@ async def main() -> None:
         class4_count = class4_result.rowcount
         print(f"Class 4 (STALE_POSITION pre-S184):       {class4_count} acked")
 
+        # ── Class 5: Quiescent SIZE_INVARIANT/TEMPORAL_ORDER/DUPLICATE_ENTRY ──
+        # S196 forward-audit: after commits 0e1f2e0 (Phase 4b-alt size fix) +
+        # a76d9d8 (RESOLUTION over-size guard) closed the inflation source,
+        # remaining OPEN violations on (bot, market) pairs with no
+        # trade_events activity in the past 7 days represent frozen
+        # historical data — no further events can unfreeze the
+        # SUM(disposal) vs SUM(ENTRY) relationship. ACK silences the
+        # daily audit re-emission for these quiescent markets.
+        # Safety: 7-day quiescent window is conservative — a recently-
+        # active market stays OPEN for triage. Re-run as more markets
+        # quiesce; idempotent (NOT EXISTS only matches current-OPEN rows).
+        class5_result = await session.execute(text("""
+            UPDATE reconciliation_breaks rb
+            SET status = 'ACKNOWLEDGED',
+                resolution_note = 'S196 bulk-ack: quiescent (bot, market) — no trade_events in past 7 days; data frozen post-Phase 4b-alt fix (0e1f2e0)'
+            WHERE rb.status = 'OPEN'
+              AND rb.recon_type IN (
+                  'SIZE_INVARIANT', 'TEMPORAL_ORDER', 'DUPLICATE_ENTRY'
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM trade_events te
+                  WHERE te.bot_name = rb.bot_name
+                    AND te.market_id = rb.market_id
+                    AND te.event_time >= NOW() - INTERVAL '7 days'
+              )
+        """))
+        class5_count = class5_result.rowcount
+        print(f"Class 5 (S196 quiescent historical):     {class5_count} acked")
+
         await session.commit()
 
         # ── Post-counts ─────────────────────────────────────────────
@@ -137,7 +177,7 @@ async def main() -> None:
         print(f"  {'TOTAL':40s} {total_after:>6d}")
 
         print(f"\nSummary: {total_before} → {total_after} OPEN violations "
-              f"({class1_count + class2_count + class3_count + class4_count} acknowledged)")
+              f"({class1_count + class2_count + class3_count + class4_count + class5_count} acknowledged)")
 
 
 if __name__ == "__main__":
