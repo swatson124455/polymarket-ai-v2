@@ -106,7 +106,7 @@ async def bot_pnl(bot_name: str, hours: int = 24):
             realized_res += rpnl
             print(f"    {e[7].strftime('%H:%M')} {e[1][:12]}.. pnl=${rpnl:+.2f}")
 
-        # 3. All-time from trade_events
+        # 3. All-time from trade_events (RAW — includes any contaminated markets)
         r3 = await s.execute(text("""
             SELECT event_type,
                    COUNT(*),
@@ -118,7 +118,7 @@ async def bot_pnl(bot_name: str, hours: int = 24):
             ORDER BY event_type
         """), {"bot": bot_name})
         stats = r3.fetchall()
-        print(f"\nALL-TIME TRADE EVENTS:")
+        print(f"\nALL-TIME TRADE EVENTS (raw — includes contaminated markets):")
         total_realized = 0.0
         total_fees = 0.0
         for st in stats:
@@ -128,6 +128,69 @@ async def bot_pnl(bot_name: str, hours: int = 24):
             total_fees += fees
             print(f"  {st[0]:<12} count={st[1]:<5} realized=${rpnl:>+10.2f}  fees=${fees:>8.2f}")
         print(f"  {'TOTAL':<12} {'':5} realized=${total_realized:>+10.2f}  fees=${total_fees:>8.2f}")
+
+        # 3b. All-time from trade_events (CLEAN — excludes markets with size
+        # invariant violations). S196 forward-audit found that some EXIT and
+        # RESOLUTION events have inflated `size` (e.g., positions.size diverged
+        # from trade_events ENTRY truth pre-Phase-4b-alt fix). Their realized_pnl
+        # is over-stated proportionally. The CLEAN view excludes any (bot, market)
+        # whose SUM(EXIT+RESOLUTION size) exceeds SUM(ENTRY size) — same threshold
+        # the audit's size_invariant_check uses (1.001 tolerance). Use the CLEAN
+        # total for any downstream analysis (Phase 7 elevation gate, etc.).
+        r3_clean = await s.execute(text("""
+            WITH contaminated AS (
+                SELECT market_id
+                FROM trade_events
+                WHERE bot_name = :bot
+                  AND event_type IN ('ENTRY', 'EXIT', 'RESOLUTION')
+                  AND size IS NOT NULL
+                GROUP BY market_id
+                HAVING SUM(CASE WHEN event_type IN ('EXIT', 'RESOLUTION')
+                                THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END)
+                     > SUM(CASE WHEN event_type = 'ENTRY'
+                                THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) * 1.001
+            )
+            SELECT event_type,
+                   COUNT(*),
+                   COALESCE(SUM(CAST(realized_pnl AS DOUBLE PRECISION)), 0),
+                   COALESCE(SUM(CAST(fees AS DOUBLE PRECISION)), 0)
+            FROM trade_events
+            WHERE bot_name = :bot
+              AND market_id NOT IN (SELECT market_id FROM contaminated)
+            GROUP BY event_type
+            ORDER BY event_type
+        """), {"bot": bot_name})
+        stats_clean = r3_clean.fetchall()
+        # Count contaminated markets explicitly so the header has it before
+        # the integrity-check block (block 4) populates `violations`.
+        r3_excluded = await s.execute(text("""
+            SELECT COUNT(*) FROM (
+                SELECT market_id
+                FROM trade_events
+                WHERE bot_name = :bot
+                  AND event_type IN ('ENTRY', 'EXIT', 'RESOLUTION')
+                  AND size IS NOT NULL
+                GROUP BY market_id
+                HAVING SUM(CASE WHEN event_type IN ('EXIT', 'RESOLUTION')
+                                THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END)
+                     > SUM(CASE WHEN event_type = 'ENTRY'
+                                THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) * 1.001
+            ) c
+        """), {"bot": bot_name})
+        excluded_count = int(r3_excluded.scalar() or 0)
+        print(f"\nALL-TIME TRADE EVENTS (clean — {excluded_count} contaminated markets excluded):")
+        total_realized_clean = 0.0
+        total_fees_clean = 0.0
+        for st in stats_clean:
+            rpnl = float(st[2])
+            fees = float(st[3])
+            total_realized_clean += rpnl
+            total_fees_clean += fees
+            print(f"  {st[0]:<12} count={st[1]:<5} realized=${rpnl:>+10.2f}  fees=${fees:>8.2f}")
+        print(f"  {'TOTAL':<12} {'':5} realized=${total_realized_clean:>+10.2f}  fees=${total_fees_clean:>8.2f}")
+        if excluded_count > 0:
+            print(f"  ↑ Use this CLEAN total for downstream analysis "
+                  f"(Phase 7 elevation gate, retune evaluations, etc.).")
 
         # 4. Data integrity check — detect impossible states (S120 guardrail)
         # S163: Group by market_id only (not side). Historical EXIT events used
@@ -165,8 +228,11 @@ async def bot_pnl(bot_name: str, hours: int = 24):
         print(f"  Unrealized P&L:     ${total_upnl:+.2f}")
         print(f"  Realized (exits):   ${realized_exit:+.2f}  (last {hours}h)")
         print(f"  Realized (resol):   ${realized_res:+.2f}  (last {hours}h)")
-        print(f"  All-time realized:  ${total_realized:+.2f}")
-        print(f"  Net P&L (window):   ${total_upnl + realized_exit + realized_res:+.2f}")
+        print(f"  All-time realized (raw):    ${total_realized:+.2f}")
+        if excluded_count > 0:
+            print(f"  All-time realized (clean):  ${total_realized_clean:+.2f}  "
+                  f"← canonical for downstream analysis")
+        print(f"  Net P&L (window):           ${total_upnl + realized_exit + realized_res:+.2f}")
 
         # 5. WeatherBot dimensional breakdowns (S159)
         if bot_name == "WeatherBot":
