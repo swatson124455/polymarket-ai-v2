@@ -394,3 +394,224 @@ async def test_method_runs_unconditionally_no_upstream_gate():
         f"expected >=4 execute calls (Phase 4b + 4b-alt SET LOCAL + SELECT), "
         f"got {session.execute.await_count} — gate may have been re-introduced"
     )
+
+
+# ── S196 forward-audit: Phase 4b-alt size correctness ────────────────────────
+# Pre-fix Phase 4b-alt emitted RESOLUTION with raw `positions.size`, blindly
+# trusting a value that can diverge from trade_events ENTRY truth (Bug A on WB:
+# positions.size=437.27 vs ENTRY total=158.65). This produced SIZE_INVARIANT
+# violations whose data the audit correctly flagged. The fix clamps the emitted
+# size to `max(0, min(p.size, total_entry) − total_exit)`, mirroring Phase 4b's
+# correctness pattern. The legacy JOIN-mismatch use case (no trade_events ENTRY
+# for the market+bot) is preserved via COALESCE → falls back to positions.size.
+
+def test_phase4b_alt_query_joins_trade_events_entry_and_exit_aggregates():
+    """Phase 4b-alt's outer query MUST LEFT JOIN aggregated trade_events
+    ENTRY and EXIT sums. Without these joins, the size emitted into RESOLUTION
+    is whatever positions.size happens to hold — which the WB Bug A case proved
+    is unreliable.
+    """
+    import inspect
+    from base_engine.data.database import Database
+
+    source = inspect.getsource(Database.backfill_trade_events_resolution)
+    assert "te_entry_agg" in source, (
+        "Phase 4b-alt query must LEFT JOIN aggregated trade_events ENTRY sums "
+        "(te_entry_agg) so size can be capped by ENTRY truth"
+    )
+    assert "te_exit_agg" in source, (
+        "Phase 4b-alt query must LEFT JOIN aggregated trade_events EXIT sums "
+        "(te_exit_agg) so size can subtract prior disposals"
+    )
+
+
+def test_phase4b_alt_query_clamps_effective_size_in_where():
+    """The Phase 4b-alt query MUST filter out rows whose effective_size <= 0
+    using the GREATEST/LEAST clamp at the SQL layer. This avoids emitting
+    RESOLUTION for already-fully-disposed positions.
+    """
+    import inspect
+    from base_engine.data.database import Database
+
+    source = inspect.getsource(Database.backfill_trade_events_resolution)
+    assert "GREATEST(0.0, LEAST(p.size," in source, (
+        "Phase 4b-alt WHERE clause must clamp via "
+        "GREATEST(0.0, LEAST(p.size, total_entry) - total_exit) > 0"
+    )
+
+
+def test_phase4b_alt_emission_uses_effective_size_not_raw_positions_size():
+    """The Python emit MUST pass `_effective_size` to insert_trade_event,
+    not raw `_size` (positions.size). Regression guard: the bug was passing
+    `size=float(_size)` directly, which carried positions.size inflation
+    straight into trade_events.RESOLUTION rows.
+    """
+    import inspect
+    from base_engine.data.database import Database
+
+    source = inspect.getsource(Database.backfill_trade_events_resolution)
+
+    # Locate the Phase 4b-alt block by its marker comment.
+    alt_marker = source.find("Phase 4b-alt: positions-driven RESOLUTION emission")
+    assert alt_marker != -1, "Phase 4b-alt section marker not found"
+    alt_section = source[alt_marker:]
+
+    # The emit call must use _effective_size for size=
+    # NOT `size=float(_size)` (the pre-fix shape).
+    assert "size=_effective_size" in alt_section, (
+        "Phase 4b-alt emit must use _effective_size for size= parameter "
+        "(was using raw positions.size — caused SIZE_INVARIANT violations)"
+    )
+    assert "size=float(_size)" not in alt_section, (
+        "Phase 4b-alt emit must NOT use raw float(_size) — that's the "
+        "pre-fix shape that allowed positions.size inflation through"
+    )
+
+
+@pytest.mark.asyncio
+async def test_phase4b_alt_clamps_size_when_positions_size_exceeds_entry_truth():
+    """Behavioral guard: when positions.size = 437.27 but trade_events
+    ENTRY total = 158.65 and EXIT total = 40.31, the emit MUST receive
+    size = 158.65 − 40.31 = 118.34 (the actual remaining disposal).
+    This is the exact WB Bug A shape from prod data 2026-04-26.
+    """
+    from base_engine.data.database import Database
+    import datetime as _dt
+
+    db = Database.__new__(Database)
+    db.session_factory = MagicMock()
+
+    # Phase 4b returns nothing.
+    empty_result = MagicMock()
+    empty_result.fetchall = MagicMock(return_value=[])
+
+    session_4b = AsyncMock()
+    session_4b.execute = AsyncMock(side_effect=[
+        MagicMock(),    # SET LOCAL
+        empty_result,   # Phase 4b main SELECT (0 rows)
+    ])
+    session_4b.commit = AsyncMock()
+    ctx_4b = AsyncMock()
+    ctx_4b.__aenter__ = AsyncMock(return_value=session_4b)
+    ctx_4b.__aexit__ = AsyncMock(return_value=False)
+
+    # Phase 4b-alt returns ONE row matching the WB Bug A shape.
+    # New SELECT order: market_id, source_bot, side, size (positions),
+    #   entry_price, resolution, resolved_at, exit_pnl_already, entry_game,
+    #   te_total_entry, te_total_exit
+    alt_row = (
+        "0xWBBugA",          # market_id
+        "WeatherBot",        # source_bot
+        "NO",                # side (positions)
+        437.27,              # p.size — INFLATED
+        0.6700,              # entry_price
+        "NO",                # resolution
+        _dt.datetime(2026, 4, 13, 12, 0),  # resolved_at
+        -0.65,               # exit_pnl_already
+        None,                # entry_game
+        158.65,              # te_total_entry — trade_events truth
+        40.31,               # te_total_exit
+    )
+    alt_result = MagicMock()
+    alt_result.fetchall = MagicMock(return_value=[alt_row])
+
+    session_alt = AsyncMock()
+    session_alt.execute = AsyncMock(side_effect=[
+        MagicMock(),    # SET LOCAL
+        alt_result,     # Phase 4b-alt main SELECT (1 row)
+        MagicMock(),    # UPDATE positions SET status='closed', size=0 inside begin_nested
+    ])
+    session_alt.commit = AsyncMock()
+    # begin_nested returns an async context manager.
+    nested_ctx = AsyncMock()
+    nested_ctx.__aenter__ = AsyncMock(return_value=MagicMock())
+    nested_ctx.__aexit__ = AsyncMock(return_value=False)
+    session_alt.begin_nested = MagicMock(return_value=nested_ctx)
+    ctx_alt = AsyncMock()
+    ctx_alt.__aenter__ = AsyncMock(return_value=session_alt)
+    ctx_alt.__aexit__ = AsyncMock(return_value=False)
+
+    db.get_session = MagicMock(side_effect=[ctx_4b, ctx_alt])
+    db.insert_trade_event = AsyncMock(return_value=42)
+
+    await db.backfill_trade_events_resolution()
+
+    # Exactly one RESOLUTION emit, with size clamped.
+    assert db.insert_trade_event.await_count == 1, (
+        f"expected 1 emit, got {db.insert_trade_event.await_count}"
+    )
+    emit_kwargs = db.insert_trade_event.call_args.kwargs
+    assert emit_kwargs["event_type"] == "RESOLUTION"
+    expected_size = min(437.27, 158.65) - 40.31  # = 118.34
+    assert abs(emit_kwargs["size"] - expected_size) < 1e-6, (
+        f"expected size={expected_size:.4f} (min(p.size, te_entry) - te_exit), "
+        f"got {emit_kwargs['size']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_phase4b_alt_falls_back_to_positions_size_when_no_trade_events_entry():
+    """Backward-compat guard for Phase 4b-alt's original use case: when
+    trade_events has NO ENTRY for the (market, bot) — the JOIN-mismatch
+    scenario from S109 — the SQL COALESCE falls back to positions.size,
+    so effective_size = positions.size − 0 = positions.size. This row's
+    `te_total_entry` reflects that COALESCE behaviour.
+    """
+    from base_engine.data.database import Database
+    import datetime as _dt
+
+    db = Database.__new__(Database)
+    db.session_factory = MagicMock()
+
+    empty_result = MagicMock()
+    empty_result.fetchall = MagicMock(return_value=[])
+    session_4b = AsyncMock()
+    session_4b.execute = AsyncMock(side_effect=[MagicMock(), empty_result])
+    session_4b.commit = AsyncMock()
+    ctx_4b = AsyncMock()
+    ctx_4b.__aenter__ = AsyncMock(return_value=session_4b)
+    ctx_4b.__aexit__ = AsyncMock(return_value=False)
+
+    # SQL COALESCE produces te_total_entry = positions.size when no ENTRY exists.
+    alt_row = (
+        "0xJoinMismatch",
+        "MirrorBot",
+        "YES",
+        50.0,                # p.size
+        0.55,
+        "YES",
+        _dt.datetime(2026, 4, 25, 12, 0),
+        0.0,
+        None,
+        50.0,                # te_total_entry — COALESCE fallback to p.size
+        0.0,                 # te_total_exit
+    )
+    alt_result = MagicMock()
+    alt_result.fetchall = MagicMock(return_value=[alt_row])
+
+    session_alt = AsyncMock()
+    session_alt.execute = AsyncMock(side_effect=[
+        MagicMock(), alt_result, MagicMock(),
+    ])
+    session_alt.commit = AsyncMock()
+    nested_ctx = AsyncMock()
+    nested_ctx.__aenter__ = AsyncMock(return_value=MagicMock())
+    nested_ctx.__aexit__ = AsyncMock(return_value=False)
+    session_alt.begin_nested = MagicMock(return_value=nested_ctx)
+    ctx_alt = AsyncMock()
+    ctx_alt.__aenter__ = AsyncMock(return_value=session_alt)
+    ctx_alt.__aexit__ = AsyncMock(return_value=False)
+
+    db.get_session = MagicMock(side_effect=[ctx_4b, ctx_alt])
+    db.insert_trade_event = AsyncMock(return_value=42)
+
+    await db.backfill_trade_events_resolution()
+
+    assert db.insert_trade_event.await_count == 1
+    emit_kwargs = db.insert_trade_event.call_args.kwargs
+    # No ENTRY events → COALESCE → te_total_entry = p.size.
+    # No EXIT events → te_total_exit = 0. Effective size = p.size = 50.0.
+    assert abs(emit_kwargs["size"] - 50.0) < 1e-6, (
+        f"backward-compat: legacy JOIN-mismatch case must emit p.size when "
+        f"no trade_events ENTRY exists. Got {emit_kwargs['size']}, expected 50.0"
+    )

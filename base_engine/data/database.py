@@ -3627,6 +3627,16 @@ class Database:
             logger.warning("phase4b outer failure: %s", _te_outer_err)
 
         # ── Phase 4b-alt: positions-driven RESOLUTION emission ─────────────
+        # S196 forward-audit: effective_size capped by trade_events truth.
+        # Pre-fix used positions.size directly, which inflates RESOLUTION when
+        # positions.size diverges from SUM(trade_events ENTRY) — produces
+        # SIZE_INVARIANT violations whose data the audit correctly flags
+        # (e.g., WB market 0x5d36... had positions.size=437.27 vs ENTRY total=158.65,
+        # over-emitting RESOLUTION at the inflated size). effective_size clamps to
+        # min(positions.size, SUM(ENTRY)) − SUM(EXIT). When trade_events has no
+        # ENTRY for this (market, bot) — Phase 4b-alt's original JOIN-mismatch
+        # use case — the COALESCE falls back to positions.size, preserving the
+        # legacy behaviour.
         try:
             _fee_rate = getattr(
                 __import__("config.settings", fromlist=["settings"]),
@@ -3647,10 +3657,28 @@ class Database:
                     "       (SELECT te_g.event_data->>'game' FROM trade_events te_g "
                     "        WHERE te_g.market_id = p.market_id AND te_g.bot_name = p.source_bot "
                     "        AND te_g.event_type = 'ENTRY' AND te_g.event_data->>'game' IS NOT NULL "
-                    "        LIMIT 1) AS entry_game "
+                    "        LIMIT 1) AS entry_game, "
+                    "       COALESCE(te_entry_agg.total_entry, p.size) AS te_total_entry, "
+                    "       COALESCE(te_exit_agg.total_exit, 0) AS te_total_exit "
                     "FROM positions p "
                     "JOIN markets m ON (p.market_id = CAST(m.id AS TEXT) "
                     "                   OR p.market_id = m.condition_id) "
+                    "LEFT JOIN ("
+                    "  SELECT market_id, bot_name, "
+                    "         SUM(CAST(size AS DOUBLE PRECISION)) AS total_entry "
+                    "  FROM trade_events "
+                    "  WHERE event_type = 'ENTRY' "
+                    "  GROUP BY market_id, bot_name"
+                    ") te_entry_agg ON te_entry_agg.market_id = p.market_id "
+                    "              AND te_entry_agg.bot_name = p.source_bot "
+                    "LEFT JOIN ("
+                    "  SELECT market_id, bot_name, "
+                    "         SUM(CAST(size AS DOUBLE PRECISION)) AS total_exit "
+                    "  FROM trade_events "
+                    "  WHERE event_type = 'EXIT' "
+                    "  GROUP BY market_id, bot_name"
+                    ") te_exit_agg ON te_exit_agg.market_id = p.market_id "
+                    "             AND te_exit_agg.bot_name = p.source_bot "
                     "WHERE p.status IN ('open', 'closed') "
                     "  AND m.resolution IN ('YES', 'NO') "
                     "  AND NOT EXISTS ("
@@ -3659,15 +3687,28 @@ class Database:
                     "      AND te.bot_name = p.source_bot "
                     "      AND te.event_type = 'RESOLUTION'"
                     "  ) "
+                    "  AND GREATEST(0.0, LEAST(p.size, "
+                    "        COALESCE(te_entry_agg.total_entry, p.size)) "
+                    "        - COALESCE(te_exit_agg.total_exit, 0)) > 0 "
                     "ORDER BY p.id "
                     "LIMIT 500"
                 ))
                 for row in _pos_resolved.fetchall():
                     try:
-                        _mid, _bot, _side, _size, _entry, _res, _res_at, _exit_pnl, _entry_game = row
+                        (_mid, _bot, _side, _size, _entry, _res, _res_at,
+                         _exit_pnl, _entry_game, _te_entry, _te_exit) = row
                         _side_upper = str(_side).upper() if _side else ""
                         _res_upper = str(_res).upper()
                         _payout = 1.0 if _side_upper == _res_upper else 0.0
+                        # Effective size: positions.size capped by trade_events
+                        # ENTRY truth, less prior EXIT disposals. SQL WHERE
+                        # already filters > 0, but recompute defensively.
+                        _effective_size = max(
+                            0.0,
+                            min(float(_size), float(_te_entry)) - float(_te_exit),
+                        )
+                        if _effective_size <= 0:
+                            continue
                         _gross_pnl = (_payout - float(_entry)) * float(_size)
                         _fee = _payout * float(_size) * _fee_rate
                         _net_pnl = _gross_pnl - _fee
@@ -3678,7 +3719,7 @@ class Database:
                             bot_name=_bot,
                             market_id=_mid,
                             side=_side_upper,
-                            size=float(_size),
+                            size=_effective_size,
                             price=_payout,
                             realized_pnl=round(_remaining_pnl, 4),
                             correlation_id=f"resolution:{_mid}",
