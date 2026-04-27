@@ -112,16 +112,27 @@ async def store_check_results(
 
 
 async def auto_close_resolved_violations(
-    session, run_id: int, results: List[CheckResult]
+    session, run_id: int, results: List[CheckResult],
+    today: Optional[date] = None,
 ) -> int:
     """
-    Close OPEN reconciliation_breaks rows whose (recon_type, bot_name, market_id)
-    was NOT detected by any successfully-completed check in this audit run.
+    Close OPEN reconciliation_breaks rows that today's clean check run has
+    superseded or self-resolved.
 
-    Self-resolution semantics: if a check ran cleanly today and produced violations
-    of recon_type X for some (bot, market) keys, then any OPEN row of recon_type X
-    whose key is NOT in today's set has self-resolved — subsequent events (or a
-    fix-forward) brought the underlying invariant back into balance.
+    Two close rules (both gated by "this recon_type was detected today by a
+    successfully-completed check"):
+
+      1. SELF-RESOLVED — OPEN row whose (bot_name, market_id) is NOT in
+         today's detected set for its recon_type. The condition no longer
+         holds; a subsequent event (or a fix-forward commit) brought the
+         underlying invariant back into balance.
+
+      2. SUPERSEDED — OPEN row whose key IS in today's detected set AND
+         recon_date < today. The audit creates a new row each day for the
+         same (recon_type, bot, market) when the issue persists; the latest
+         detection is the canonical OPEN row, earlier snapshots are stale.
+         Without this rule, permanently-inflated historical data accumulates
+         one OPEN row per day per market — drowning the audit signal.
 
     Conservative scope:
       - Only fires for recon_types that today's run produced AT LEAST ONE
@@ -133,8 +144,11 @@ async def auto_close_resolved_violations(
         size_invariant check emits both SIZE_INVARIANT and NEGATIVE_SIZE —
         each type's auto-close is gated by today's detection of that type).
 
-    Returns count of rows transitioned OPEN → RESOLVED.
+    Returns total count of rows transitioned OPEN → RESOLVED across both rules.
     """
+    if today is None:
+        today = date.today()
+
     detected_by_type: Dict[str, Set[Tuple[str, str]]] = defaultdict(set)
     for result in results:
         # Skip checks that didn't complete cleanly — we don't have ground truth.
@@ -152,23 +166,29 @@ async def auto_close_resolved_violations(
         if not detected_keys:
             continue
 
-        # Fetch all OPEN rows of this recon_type. The detected set is the
-        # ground truth for "still active today"; everything else is stale.
+        # Fetch all OPEN rows of this recon_type with their recon_date.
+        # Today's detected set is the ground truth for "still active today";
+        # we close everything else (self-resolved) plus older same-key rows
+        # superseded by today's fresh detection.
         rows = await session.execute(
             text(
-                "SELECT break_id, bot_name, market_id "
+                "SELECT break_id, bot_name, market_id, recon_date "
                 "FROM reconciliation_breaks "
                 "WHERE status = 'OPEN' AND recon_type = :recon_type"
             ),
             {"recon_type": recon_type},
         )
-        ids_to_close: List[int] = []
+        ids_self_resolved: List[int] = []
+        ids_superseded: List[int] = []
         for row in rows.fetchall():
             key = (row[1] or "", row[2] or "")
+            row_date = row[3]
             if key not in detected_keys:
-                ids_to_close.append(int(row[0]))
+                ids_self_resolved.append(int(row[0]))
+            elif row_date is not None and row_date < today:
+                ids_superseded.append(int(row[0]))
 
-        if ids_to_close:
+        if ids_self_resolved:
             await session.execute(
                 text(
                     "UPDATE reconciliation_breaks "
@@ -178,7 +198,7 @@ async def auto_close_resolved_violations(
                     "WHERE break_id = ANY(:ids) AND status = 'OPEN'"
                 ),
                 {
-                    "ids": ids_to_close,
+                    "ids": ids_self_resolved,
                     "note": (
                         f"S196 auto-close: condition self-resolved "
                         f"(run #{run_id} did not detect {recon_type} "
@@ -186,7 +206,27 @@ async def auto_close_resolved_violations(
                     ),
                 },
             )
-            closed_total += len(ids_to_close)
+            closed_total += len(ids_self_resolved)
+
+        if ids_superseded:
+            await session.execute(
+                text(
+                    "UPDATE reconciliation_breaks "
+                    "SET status = 'RESOLVED', "
+                    "    resolved_at = NOW(), "
+                    "    resolution_note = :note "
+                    "WHERE break_id = ANY(:ids) AND status = 'OPEN'"
+                ),
+                {
+                    "ids": ids_superseded,
+                    "note": (
+                        f"S196 auto-close: superseded by run #{run_id} "
+                        f"(today's detection of {recon_type} for this "
+                        f"bot/market is the canonical OPEN row)"
+                    ),
+                },
+            )
+            closed_total += len(ids_superseded)
 
     if closed_total > 0:
         await session.commit()

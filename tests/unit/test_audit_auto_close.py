@@ -1,15 +1,20 @@
 """S196 — Contract tests for auto_close_resolved_violations.
 
-Purpose:
-  - OPEN reconciliation_breaks rows whose condition self-resolved must
-    transition to RESOLVED on the next clean audit run.
-  - Conservative scope: do NOT auto-close based on incomplete (timed-out
-    or errored) check runs. Do NOT auto-close based on zero-violation runs
-    of a recon_type — only fires when today's run produced AT LEAST ONE
-    violation of that type from a clean check.
-  - Multi-type checks are handled per recon_type independently.
+Two close rules covered:
+  1. SELF-RESOLVED — OPEN row whose (bot, market) is NOT in today's detected
+     set transitions to RESOLVED. The condition no longer holds.
+  2. SUPERSEDED — OPEN row whose key IS in today's detected set AND
+     recon_date < today transitions to RESOLVED. Today's detection is the
+     canonical OPEN row; earlier-day snapshots are stale.
+
+Conservative scope:
+  - Do NOT auto-close based on incomplete (timed-out or errored) check runs.
+  - Do NOT auto-close based on zero-violation runs of a recon_type — only
+    fires when today's run produced AT LEAST ONE violation of that type
+    from a clean check.
+  - Multi-type checks handled per recon_type independently.
 """
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -71,11 +76,13 @@ def _mock_session(open_rows=None):
 async def test_auto_close_resolves_stale_rows_not_in_todays_detected_set():
     """Today's run found violations for (botA, mkt1). An OPEN row exists for
     (botA, mkt2) of the same recon_type — that row must auto-close because
-    it's NOT in today's detected set."""
+    it's NOT in today's detected set. Detected mkt1 row stays OPEN (recon_date=today).
+    """
+    today = date.today()
     open_rows = [
-        (101, "botA", "mkt1"),  # in today's detected set → stays OPEN
-        (102, "botA", "mkt2"),  # NOT in today's set → auto-close
-        (103, "botA", "mkt3"),  # NOT in today's set → auto-close
+        (101, "botA", "mkt1", today),  # in detected set, recon_date=today → stays OPEN
+        (102, "botA", "mkt2", today),  # NOT in detected set → self-resolved auto-close
+        (103, "botA", "mkt3", today),  # NOT in detected set → self-resolved auto-close
     ]
     select_result = MagicMock(fetchall=MagicMock(return_value=open_rows))
     session = AsyncMock()
@@ -86,7 +93,9 @@ async def test_auto_close_resolves_stale_rows_not_in_todays_detected_set():
         _check_result("size_invariant", [_v("SIZE_INVARIANT", "botA", "mkt1")]),
     ]
 
-    closed = await auto_close_resolved_violations(session, run_id=42, results=results)
+    closed = await auto_close_resolved_violations(
+        session, run_id=42, results=results, today=today,
+    )
 
     assert closed == 2, f"expected 2 stale rows auto-closed, got {closed}"
     # Verify the UPDATE was called with the correct break_ids.
@@ -94,6 +103,7 @@ async def test_auto_close_resolves_stale_rows_not_in_todays_detected_set():
     update_kwargs = update_call[0][1]
     assert sorted(update_kwargs["ids"]) == [102, 103]
     assert "S196 auto-close" in update_kwargs["note"]
+    assert "self-resolved" in update_kwargs["note"]
     assert "SIZE_INVARIANT" in update_kwargs["note"]
     session.commit.assert_awaited_once()
 
@@ -174,29 +184,22 @@ async def test_auto_close_handles_multi_type_check_per_recon_type():
     SIZE_INVARIANT detected for (botA, mkt1) — auto-close stale SIZE_INVARIANT
     rows. NEGATIVE_SIZE detected for (botB, mkt9) — auto-close stale
     NEGATIVE_SIZE rows. Cross-type contamination must NOT happen."""
-    # First SELECT: SIZE_INVARIANT OPEN rows. Second SELECT: NEGATIVE_SIZE OPEN.
+    today = date.today()
     si_open_rows = [
-        (201, "botA", "mkt1"),  # detected → keep OPEN
-        (202, "botA", "mkt5"),  # stale → auto-close
+        (201, "botA", "mkt1", today),  # detected, today → keep OPEN
+        (202, "botA", "mkt5", today),  # stale (key not in set) → auto-close
     ]
     ns_open_rows = [
-        (301, "botB", "mkt9"),  # detected → keep OPEN
-        (302, "botC", "mkt9"),  # stale → auto-close
+        (301, "botB", "mkt9", today),  # detected → keep OPEN
+        (302, "botC", "mkt9", today),  # stale → auto-close
     ]
     si_select = MagicMock(fetchall=MagicMock(return_value=si_open_rows))
     ns_select = MagicMock(fetchall=MagicMock(return_value=ns_open_rows))
     update_mock = MagicMock()
 
     session = AsyncMock()
-    # Order may vary based on dict iteration — set up both possible orders.
-    # We'll instead capture by SQL parameter inspection.
-    call_sequence = []
 
     async def execute_side_effect(stmt, params=None):
-        call_sequence.append((str(stmt.text), params))
-        sql_text = str(stmt.text)
-        if "SIZE_INVARIANT" in str(params or {}).upper() if params else False:
-            return si_select
         if params and params.get("recon_type") == "SIZE_INVARIANT":
             return si_select
         if params and params.get("recon_type") == "NEGATIVE_SIZE":
@@ -216,7 +219,9 @@ async def test_auto_close_handles_multi_type_check_per_recon_type():
         ),
     ]
 
-    closed = await auto_close_resolved_violations(session, run_id=42, results=results)
+    closed = await auto_close_resolved_violations(
+        session, run_id=42, results=results, today=today,
+    )
 
     assert closed == 2, f"expected 1+1=2 auto-closed (one per type), got {closed}"
 
@@ -226,7 +231,8 @@ async def test_auto_close_uses_resolved_status_not_acknowledged():
     """The CHECK constraint allows ('OPEN', 'RESOLVED', 'ACKNOWLEDGED'). Auto-close
     must use 'RESOLVED' (semantically: condition no longer holds), not
     'ACKNOWLEDGED' (semantically: human reviewed and dismissed)."""
-    open_rows = [(101, "botA", "mkt2")]  # stale
+    today = date.today()
+    open_rows = [(101, "botA", "mkt2", today)]  # stale (key not detected)
     select_result = MagicMock(fetchall=MagicMock(return_value=open_rows))
     session = AsyncMock()
     session.execute = AsyncMock(side_effect=[select_result, MagicMock()])
@@ -236,7 +242,9 @@ async def test_auto_close_uses_resolved_status_not_acknowledged():
         _check_result("size_invariant", [_v("SIZE_INVARIANT", "botA", "mkt1")]),
     ]
 
-    await auto_close_resolved_violations(session, run_id=42, results=results)
+    await auto_close_resolved_violations(
+        session, run_id=42, results=results, today=today,
+    )
 
     update_call = session.execute.call_args_list[1]
     update_sql = str(update_call[0][0].text)
@@ -271,11 +279,13 @@ async def test_auto_close_returns_zero_when_no_open_rows_of_detected_type():
 @pytest.mark.asyncio
 async def test_auto_close_preserves_currently_detected_violations():
     """Belt-and-suspenders: a row whose (bot, market) is in today's detected
-    set must NOT be in the auto-close ids list."""
+    set AND recon_date=today must NOT be in the auto-close ids list (neither
+    self-resolved nor superseded)."""
+    today = date.today()
     open_rows = [
-        (101, "botA", "mkt1"),
-        (102, "botA", "mkt2"),
-        (103, "botA", "mkt3"),
+        (101, "botA", "mkt1", today),  # detected, today → stays OPEN
+        (102, "botA", "mkt2", today),  # not detected → self-resolved
+        (103, "botA", "mkt3", today),  # detected, today → stays OPEN
     ]
     select_result = MagicMock(fetchall=MagicMock(return_value=open_rows))
     session = AsyncMock()
@@ -292,10 +302,116 @@ async def test_auto_close_preserves_currently_detected_violations():
         ),
     ]
 
-    closed = await auto_close_resolved_violations(session, run_id=42, results=results)
+    closed = await auto_close_resolved_violations(
+        session, run_id=42, results=results, today=today,
+    )
 
     assert closed == 1
     update_kwargs = session.execute.call_args_list[1][0][1]
     assert update_kwargs["ids"] == [102], (
         f"only mkt2 should auto-close; mkt1 and mkt3 are still detected. Got {update_kwargs['ids']}"
     )
+
+
+# ── Supersede rule ──────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_auto_close_supersedes_yesterdays_row_when_today_still_detects():
+    """The dominant accumulator: same (bot, market) flagged daily for permanent
+    inflation. Yesterday's OPEN row must transition to RESOLVED when today's
+    fresh detection supersedes it. Today's row stays OPEN as the canonical."""
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+    open_rows = [
+        (901, "botA", "mkt1", yesterday),  # superseded → close
+        (902, "botA", "mkt1", today),       # canonical today's row → stays OPEN
+    ]
+    select_result = MagicMock(fetchall=MagicMock(return_value=open_rows))
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=[select_result, MagicMock()])
+    session.commit = AsyncMock()
+
+    results = [
+        _check_result("size_invariant", [_v("SIZE_INVARIANT", "botA", "mkt1")]),
+    ]
+
+    closed = await auto_close_resolved_violations(
+        session, run_id=99, results=results, today=today,
+    )
+
+    assert closed == 1
+    update_call = session.execute.call_args_list[1]
+    update_kwargs = update_call[0][1]
+    assert update_kwargs["ids"] == [901], (
+        f"only yesterday's row should be superseded; today's row is canonical. Got {update_kwargs['ids']}"
+    )
+    assert "superseded by run #99" in update_kwargs["note"]
+    assert "SIZE_INVARIANT" in update_kwargs["note"]
+
+
+@pytest.mark.asyncio
+async def test_auto_close_supersedes_multiple_old_rows_for_same_key():
+    """Permanent issue with N days of accumulation: all N-1 older rows
+    transition to RESOLVED on a single audit run; only today's row stays OPEN."""
+    today = date.today()
+    open_rows = [
+        (1001, "botA", "mkt1", today - timedelta(days=10)),
+        (1002, "botA", "mkt1", today - timedelta(days=5)),
+        (1003, "botA", "mkt1", today - timedelta(days=1)),
+        (1004, "botA", "mkt1", today),  # canonical
+    ]
+    select_result = MagicMock(fetchall=MagicMock(return_value=open_rows))
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=[select_result, MagicMock()])
+    session.commit = AsyncMock()
+
+    results = [
+        _check_result("size_invariant", [_v("SIZE_INVARIANT", "botA", "mkt1")]),
+    ]
+
+    closed = await auto_close_resolved_violations(
+        session, run_id=99, results=results, today=today,
+    )
+
+    assert closed == 3, f"expected 3 superseded rows, got {closed}"
+    update_kwargs = session.execute.call_args_list[1][0][1]
+    assert sorted(update_kwargs["ids"]) == [1001, 1002, 1003]
+
+
+@pytest.mark.asyncio
+async def test_auto_close_self_resolved_and_superseded_in_same_run():
+    """Both rules fire in one audit run: self-resolved rows on stale keys
+    AND superseded rows on still-detected keys with old recon_date. Total
+    closed count equals sum across both rules."""
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+    open_rows = [
+        (1101, "botA", "mkt1", today),       # detected, today → keep OPEN
+        (1102, "botA", "mkt1", yesterday),   # detected, old → SUPERSEDED
+        (1103, "botA", "mkt2", yesterday),   # NOT detected → SELF-RESOLVED
+        (1104, "botA", "mkt3", today),       # NOT detected, today → SELF-RESOLVED
+    ]
+    select_result = MagicMock(fetchall=MagicMock(return_value=open_rows))
+    session = AsyncMock()
+    # 3 executes total: SELECT, UPDATE self-resolved, UPDATE superseded.
+    session.execute = AsyncMock(side_effect=[
+        select_result, MagicMock(), MagicMock(),
+    ])
+    session.commit = AsyncMock()
+
+    results = [
+        _check_result("size_invariant", [_v("SIZE_INVARIANT", "botA", "mkt1")]),
+    ]
+
+    closed = await auto_close_resolved_violations(
+        session, run_id=99, results=results, today=today,
+    )
+
+    assert closed == 3, f"expected 1 superseded + 2 self-resolved = 3, got {closed}"
+    # Two UPDATE calls: self-resolved first (per code order), then superseded.
+    self_resolved_kwargs = session.execute.call_args_list[1][0][1]
+    superseded_kwargs = session.execute.call_args_list[2][0][1]
+    assert sorted(self_resolved_kwargs["ids"]) == [1103, 1104]
+    assert "self-resolved" in self_resolved_kwargs["note"]
+    assert superseded_kwargs["ids"] == [1102]
+    assert "superseded" in superseded_kwargs["note"]
