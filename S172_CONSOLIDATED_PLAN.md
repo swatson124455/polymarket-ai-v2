@@ -1297,6 +1297,14 @@ All three verified live (config files contain the new values, reloads returned o
 
 ---
 
+### S198 Hygiene Backlog
+
+**bot_pnl.py CLEAN as gate signal — time-window caveat.** The CLEAN block at `scripts/bot_pnl.py:132-193` (S197 commit `cd9c5cf`) computes all-time realized P&L excluding contaminated markets. The S172 v7 Phase 7 elevation gate at §439-446 asks for `P(edge>0) ≥ 0.30 on 500+ post-fix trades` — a windowed distributional metric, not an all-time total. Any reference to "bot_pnl.py CLEAN total" as a Phase 7 gate signal must specify the time window or be explicitly labeled as directional/qualitative only. The all-time CLEAN total conflates pre- and post-deploy data, and a session that read it as "the gate signal" is over-reading the tool. **Resolution path:** add `--since DEPLOY_TIMESTAMP` flag to the CLEAN block (~20 lines), with a parallel extension to `scripts/edge_verification.py` that adds the same flag plus a CLEAN filter and updates the script's stale gate thresholds to match v7 (≥0.30 / 0.10–0.30 / <0.10, replacing the existing ≥0.9 / 0.7–0.9 / <0.7). Combined ~30 lines. **Forward annotation:** S197 close framed Phase 7 MB elevation gate as "UNBLOCKED via CLEAN total" — that framing was over-scoped. The unblock is the *existence* of a contamination-aware view, not the windowing the formal gate requires. Until the `--since` extensions land, references to CLEAN as a gate signal must carry the directional-only marker.
+
+**Orphan `trade_events` rows + `SHADOW_ENTRY` FK auto-heal bypass.** S193's commit `73bc623` added auto-heal at `insert_trade_event` for ENTRY rows whose `markets` FK target was missing — stub markets are inserted then the FK is re-checked. Audit's FK_INTEGRITY check (`audit_triage.py` "trade_events → markets (no market)" line) reports orphan trade_events with the newest event_time post-S193 deploy. Post-deploy orphans observed are `SHADOW_ENTRY` events. **Structural finding (not just a count):** SHADOW_ENTRY appears to use a write path that bypasses `insert_trade_event` and therefore bypasses S193's FK auto-heal. **Subtasks for next session:** (a) identify the SHADOW_ENTRY writer path — grep for `SHADOW_ENTRY` in writer code (`grep -rn "SHADOW_ENTRY" --include="*.py"` + trace back to the `INSERT INTO trade_events` site that doesn't route through `insert_trade_event`); (b) decide remediation — either route SHADOW_ENTRY through `insert_trade_event` (uniform FK enforcement), apply equivalent FK auto-heal at the SHADOW_ENTRY write site (per-site fix), or accept SHADOW_ENTRY as a separate category exempt from FK enforcement (rule the noise expected). **Parallel to Bug A in shape:** both are writers that touch a trading-state table without going through the canonical write path. Treat with the same investigative discipline as Bug A — identify the writer first, decide remediation second.
+
+---
+
 ## Protocols
 
 Binding rules for all future sessions. Each protocol exists because a real hypothesis-inversion or false-finding would have shipped a wrong fix in its absence. Added incrementally as new failure modes are caught during execution.
@@ -1525,6 +1533,43 @@ S185's handoff §2.2 named the fourth-instance promotion trigger explicitly. Thi
 | 3 | S190 | §4.1 PSM verification required raw `positions.size` / `trade_events` sums / reconciliation delta as evidence; operator explicitly demanded raw SQL output as the verification standard; hook fired on the raw output AND fired again on the explanation response, demonstrating the protocol text's hook-interpretation was broader than the rule's intent | Hook fired twice (raw output + explanation); codification landed |
 
 Codified S190 with boundary clause to prevent loophole abuse.
+
+---
+
+### Protocol 11 — Per-mention citation: close the adjacent-paragraph loophole
+
+**Mandate.** Every mention of a P&L / win-rate / trade-count number in user-visible output must carry an inline `bot_pnl.py` citation in the same paragraph, sentence, or table cell. The "adjacent paragraph that unambiguously binds the number" clause from Protocol 6's Minimum-evidence section is superseded — the stop-hook does not honor it semantically; it pattern-matches on per-paragraph adjacency. Six chain-instances of stop-hook firings have shown that reliance on the adjacent-paragraph clause produces violations. The protocol text must match the enforcement reality. Tables with explicit Source columns satisfy citation for their rows; prose paraphrasing or deriving from those rows must re-cite per mention.
+
+**Why this is a separate protocol, not a Protocol 6 amendment.** Amending Protocol 6 in place would erase the audit trail behind the original adjacent-paragraph allowance. Protocol 11 supersedes the clause as a sharpening, preserves the audit trail, and makes the enforcement standard explicit so future sessions do not re-discover it through hook firings.
+
+**Forbidden patterns.**
+- Paraphrase of a number from earlier sourced output without inline citation (e.g., "all-time -$116K" referring to `-$116,509.63` shown in an earlier table).
+- Derived numbers (sums, deltas) presented without inline derivation (e.g., "n=59 closed events" derived from "23 + 36" upstream, with no in-paragraph derivation shown).
+- Qualitative framings that imply a specific number without citing it ("heavily negative," "tiny sample," "well above the threshold").
+
+**Compliant patterns.**
+- Reference by location instead of restatement: "see row 1," "per the SUMMARY block above."
+- Inline derivation with citation: `RAW − CLEAN = -$116,868.99 − -$116,509.63 = -$359.36` (bot_pnl.py output).
+- Tables with a Source column for every numeric row.
+
+**Recovery procedure (when stop-hook fires).** Same as Protocol 6: strip offending numbers, retain qualitative findings that survive without them, re-cite for any number that must remain. Additionally — where the violation is a paraphrase from sourced output, prefer "see row N" over restatement.
+
+**Out of scope.** Identical to Protocol 6's exemptions: configuration values from source code with file:line, arithmetic from config values, test counts, commit SHAs, deploy IDs, audit_runs.run_id, wall-clock times, schema_migrations rows. Protocol 6a's audit-check internal values carveout continues to apply when the surrounding claim is about check correctness rather than trading state.
+
+**Evidence of origin.** Seven stop-hook firings across the S195 → S198(this) chain, each a Protocol 6 adjacent-paragraph-loophole instance:
+
+| # | Session | Pattern | How caught |
+|---|---------|---------|------------|
+| 1-3 | S195 + S196 | Three documented in S196 close memo | Stop-hook |
+| 4-5 | S197 | Two documented in S197 close memo | Stop-hook |
+| 6 | S198 (this session) | Paraphrased "all-time -$116K"; derived "n=59 closed events" without inline derivation; "tiny sample" qualitative framing implying the n=59 derivation | Stop-hook |
+| 7 | S198 (this session, codification response) | Cited "769 orphan `trade_events` rows" from `audit_triage.py` FK_INTEGRITY output without bot_pnl.py citation, in a side-findings paragraph of the same response that codified Protocol 11 | Stop-hook |
+
+The Protocol 6 4-instance trigger was hit at #4 (S197); promotion deferred through #5 and #6. Codification at the 6-instance mark closes the trigger. Instance #7 fired on the codification response itself — an in-the-act catch. This validates that the mechanical hook is calibrated correctly; it does **not** validate that the underlying cognitive pattern producing the violation is trained out. Codifying the protocol is necessary for that training, not sufficient. If instance 8 occurs in the next session despite codification, the signal is to investigate why the cognitive pattern persists at the prevention level, not to add Protocol 12. What's working today is the catch-and-recover loop. Whether the prevent-side behavior is changed is a question future sessions answer, not this one.
+
+**Interaction with stop-hook.** Protocol 11 aligns the protocol text with the stop-hook's actual mechanical behavior. Future sessions reading Protocol 11 will know per-paragraph adjacency is hard, not soft. The stop-hook pattern is the reference implementation; Protocol 11 is the human-readable description of what the hook enforces. If the hook ever surfaces a refinement of its matcher, Protocol 11 updates accordingly.
+
+**Numbering note.** Protocols 7-10 are reserved for candidates filed in earlier sessions (diagnostic-inverts-remediation-space, triple-blind verification, architectural-cleanup-not-substitute-for-root-cause, silent-loop emission). Protocol 11 lands at the next available slot without preempting those reservations. When 7-10 promote, Protocol 11 retains its number — no renumbering — to preserve cross-session references.
 
 ---
 
