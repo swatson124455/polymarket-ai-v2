@@ -19,6 +19,7 @@ from structlog import get_logger
 from base_engine.audit.check_result import CheckResult
 from base_engine.audit.checks.base_check import BaseCheck
 from base_engine.audit.result_store import (
+    auto_close_resolved_violations,
     create_audit_run,
     store_check_results,
     complete_audit_run,
@@ -109,6 +110,23 @@ class AuditOrchestrator:
         except Exception as e:
             logger.warning("audit_store_results_failed", run_id=run_id, error=str(e))
             error_message = f"store_check_results failed: {e}"
+
+        # S196: Auto-close OPEN rows whose condition self-resolved. Only fires
+        # for recon_types whose check ran cleanly AND produced at least one
+        # violation today — defensive against buggy-check zero-result false-clears.
+        try:
+            async with self._audit_session_factory() as autoclose_session:
+                _closed = await auto_close_resolved_violations(
+                    autoclose_session, run_id, results
+                )
+                if _closed > 0:
+                    logger.info(
+                        "audit_auto_closed_resolved",
+                        count=_closed,
+                        run_id=run_id,
+                    )
+        except Exception as e:
+            logger.warning("audit_auto_close_failed", run_id=run_id, error=str(e))
 
         # Finalise run metadata with trend deltas
         summary: Dict[str, Any] = {}

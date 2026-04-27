@@ -7,11 +7,16 @@ Key design decisions:
 - Trend delta: requires n>=5 completed runs before computing regression flag.
   Cold-start safe.
 - All writes use raw SQL via sqlalchemy.text() matching existing database.py patterns.
+- S196: auto_close_resolved_violations transitions OPEN rows to RESOLVED when
+  today's clean check run no longer detects them (self-resolution). Conservative
+  scope: only fires on recon_types that today's run produced AT LEAST ONE
+  violation of, so a buggy check returning empty results never mass-closes.
 """
 import hashlib
 import json
+from collections import defaultdict
 from datetime import date, datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import text
 from structlog import get_logger
@@ -104,6 +109,88 @@ async def store_check_results(
                 logger.warning("audit_result_store_insert_failed", error=str(e), recon_type=v.recon_type)
     await session.commit()
     return inserted
+
+
+async def auto_close_resolved_violations(
+    session, run_id: int, results: List[CheckResult]
+) -> int:
+    """
+    Close OPEN reconciliation_breaks rows whose (recon_type, bot_name, market_id)
+    was NOT detected by any successfully-completed check in this audit run.
+
+    Self-resolution semantics: if a check ran cleanly today and produced violations
+    of recon_type X for some (bot, market) keys, then any OPEN row of recon_type X
+    whose key is NOT in today's set has self-resolved — subsequent events (or a
+    fix-forward) brought the underlying invariant back into balance.
+
+    Conservative scope:
+      - Only fires for recon_types that today's run produced AT LEAST ONE
+        violation of from a successfully-completed check. A check that timed
+        out, errored, or produced 0 violations of its type does NOT trigger
+        auto-close. This mitigates the failure mode where a buggy check
+        returning empty results would mass-close legitimate OPEN rows.
+      - Multi-type checks are handled per-type independently (e.g., the
+        size_invariant check emits both SIZE_INVARIANT and NEGATIVE_SIZE —
+        each type's auto-close is gated by today's detection of that type).
+
+    Returns count of rows transitioned OPEN → RESOLVED.
+    """
+    detected_by_type: Dict[str, Set[Tuple[str, str]]] = defaultdict(set)
+    for result in results:
+        # Skip checks that didn't complete cleanly — we don't have ground truth.
+        if result.timed_out:
+            continue
+        if result.summary and result.summary.startswith("error:"):
+            continue
+        for v in result.violations:
+            detected_by_type[v.recon_type].add(
+                (v.bot_name or "", v.market_id or "")
+            )
+
+    closed_total = 0
+    for recon_type, detected_keys in detected_by_type.items():
+        if not detected_keys:
+            continue
+
+        # Fetch all OPEN rows of this recon_type. The detected set is the
+        # ground truth for "still active today"; everything else is stale.
+        rows = await session.execute(
+            text(
+                "SELECT break_id, bot_name, market_id "
+                "FROM reconciliation_breaks "
+                "WHERE status = 'OPEN' AND recon_type = :recon_type"
+            ),
+            {"recon_type": recon_type},
+        )
+        ids_to_close: List[int] = []
+        for row in rows.fetchall():
+            key = (row[1] or "", row[2] or "")
+            if key not in detected_keys:
+                ids_to_close.append(int(row[0]))
+
+        if ids_to_close:
+            await session.execute(
+                text(
+                    "UPDATE reconciliation_breaks "
+                    "SET status = 'RESOLVED', "
+                    "    resolved_at = NOW(), "
+                    "    resolution_note = :note "
+                    "WHERE break_id = ANY(:ids) AND status = 'OPEN'"
+                ),
+                {
+                    "ids": ids_to_close,
+                    "note": (
+                        f"S196 auto-close: condition self-resolved "
+                        f"(run #{run_id} did not detect {recon_type} "
+                        f"for this bot/market)"
+                    ),
+                },
+            )
+            closed_total += len(ids_to_close)
+
+    if closed_total > 0:
+        await session.commit()
+    return closed_total
 
 
 async def _compute_trend_delta(session, check_name: str, today_count: int) -> Dict[str, Any]:
