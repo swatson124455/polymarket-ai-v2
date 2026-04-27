@@ -15,9 +15,16 @@ class TestInsertTradeEventResolutionGuard:
     async def test_resolution_blocked_when_fully_exited(self):
         """ENTRY(100) -> EXIT(100) -> RESOLUTION should return None.
 
-        The WHERE NOT EXISTS (fully-exited) clause in the INSERT...SELECT
-        causes 0 rows inserted when EXIT size >= ENTRY size.
-        fetchone() returns None -> insert_trade_event() returns None.
+        The inline SQL fully-exited guard in INSERT...SELECT causes 0 rows
+        inserted when EXIT size >= ENTRY size. fetchone() returns None →
+        insert_trade_event() returns None.
+
+        S196: RESOLUTION now has 3 execute calls:
+          [0] SET LOCAL synchronous_commit
+          [1] RESOLUTION over-size pre-check (S196 guard) — pass non-blocking
+              values (entry=200, disposal=50) so the SQL guard is the path
+              under test, not the Python pre-check.
+          [2] INSERT...SELECT — fetchone returns None (SQL guard blocks)
         """
         from base_engine.data.database import Database
 
@@ -26,12 +33,15 @@ class TestInsertTradeEventResolutionGuard:
 
         mock_session = AsyncMock()
         mock_result_sync_commit = MagicMock()  # SET LOCAL
+        mock_result_size_check = MagicMock()
+        mock_result_size_check.fetchone.return_value = (200.0, 50.0)  # entry=200, disposal=50
         mock_result_insert = MagicMock()
-        mock_result_insert.fetchone.return_value = None  # blocked by WHERE NOT EXISTS
+        mock_result_insert.fetchone.return_value = None  # blocked by SQL fully-exited guard
 
         mock_session.execute = AsyncMock(side_effect=[
-            mock_result_sync_commit,  # SET LOCAL synchronous_commit
-            mock_result_insert,       # INSERT...SELECT returns 0 rows
+            mock_result_sync_commit,    # SET LOCAL synchronous_commit
+            mock_result_size_check,     # RESOLUTION over-size pre-check (S196)
+            mock_result_insert,         # INSERT...SELECT returns 0 rows
         ])
         mock_session.commit = AsyncMock()
 
@@ -52,15 +62,22 @@ class TestInsertTradeEventResolutionGuard:
         )
 
         assert seq is None, "RESOLUTION should be blocked for fully-exited position"
-        # Verify the SQL contains the fully-exited guard
-        call_args = mock_session.execute.call_args_list[1]
+        # Verify the INSERT SQL still contains the inline fully-exited guard.
+        # The INSERT is the 3rd execute call (index 2) post-S196.
+        call_args = mock_session.execute.call_args_list[2]
         sql_text = str(call_args[0][0].text)
         assert "te_exit" in sql_text, "SQL must contain the fully-exited guard (te_exit alias)"
         assert "HAVING SUM" in sql_text, "SQL must contain HAVING SUM for exit size check"
 
     @pytest.mark.asyncio
     async def test_resolution_allowed_when_not_exited(self):
-        """ENTRY(100) -> no exit -> RESOLUTION should succeed."""
+        """ENTRY(100) -> no exit -> RESOLUTION should succeed.
+
+        S196: RESOLUTION now has 3 execute calls:
+          [0] SET LOCAL
+          [1] RESOLUTION over-size pre-check (entry=100, disposal=0 → passes)
+          [2] INSERT — returns sequence_num=42
+        """
         from base_engine.data.database import Database
 
         db = Database.__new__(Database)
@@ -68,11 +85,14 @@ class TestInsertTradeEventResolutionGuard:
 
         mock_session = AsyncMock()
         mock_result_sync = MagicMock()
+        mock_result_size_check = MagicMock()
+        mock_result_size_check.fetchone.return_value = (100.0, 0.0)  # entry=100, disposal=0
         mock_result_insert = MagicMock()
         mock_result_insert.fetchone.return_value = (42,)  # inserted, returns sequence_num
 
         mock_session.execute = AsyncMock(side_effect=[
             mock_result_sync,
+            mock_result_size_check,
             mock_result_insert,
         ])
         mock_session.commit = AsyncMock()
@@ -290,8 +310,11 @@ class TestS167ResolutionDedupNoSide:
             price=0.0,
         )
 
-        # The RESOLUTION INSERT is the 2nd execute call (after SET LOCAL)
-        insert_call = mock_session.execute.call_args_list[1]
+        # S196: RESOLUTION now has 3 execute calls — SET LOCAL [0],
+        # over-size pre-check [1], INSERT [2]. The mock's return_value applies
+        # uniformly so the pre-check's fetchone returns None and the guard
+        # skips (allowing the INSERT to run).
+        insert_call = mock_session.execute.call_args_list[2]
         sql = str(insert_call[0][0].text)
         # The first NOT EXISTS block (RESOLUTION dedup) must NOT contain "te.side"
         # Split at the second NOT EXISTS to isolate the first guard
@@ -383,6 +406,161 @@ class TestS167ExitOversizeGuard:
         )
 
         assert seq == 42, "EXIT with SELL side should pass (side-agnostic guard)"
+
+
+class TestS196ResolutionOversizeGuard:
+    """S196: RESOLUTION events must be rejected when total disposal
+    (existing EXITs + RESOLUTIONs) plus the new emit's size would exceed
+    total ENTRY size. Mirrors the S167 EXIT over-size guard but for the
+    RESOLUTION emission path — closes the partial-EXIT + RESOLUTION
+    over-emit case that the inline SQL fully-exited guard misses (the
+    SQL guard only blocks when SUM(EXIT) >= SUM(ENTRY), not partial)."""
+
+    @pytest.mark.asyncio
+    async def test_resolution_rejected_when_oversize_partial_exit(self):
+        """ENTRY=100, EXIT=20 (partial), RESOLUTION emit size=85.
+        Total disposal = 20 + 85 = 105 > 100 → reject.
+
+        This is the exact RC-2 shape from prod data. The inline SQL
+        fully-exited guard would NOT block this (SUM(EXIT)=20 < SUM(ENTRY)=100),
+        but the new Python pre-check does.
+        """
+        from base_engine.data.database import Database
+
+        db = Database.__new__(Database)
+        db.session_factory = MagicMock()
+
+        mock_session = AsyncMock()
+        mock_size = MagicMock()
+        mock_size.fetchone.return_value = (100.0, 20.0)  # entry=100, disposal=20
+
+        mock_session.execute = AsyncMock(side_effect=[
+            MagicMock(),  # SET LOCAL
+            mock_size,    # RESOLUTION over-size pre-check (S196): 20+85=105 > 100 → reject
+        ])
+        mock_session.commit = AsyncMock()
+
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        db.get_session = MagicMock(return_value=mock_cm)
+
+        seq = await db.insert_trade_event(
+            event_type="RESOLUTION",
+            bot_name="TestBot",
+            market_id="0xtest",
+            side="YES",
+            size=85.0,
+            price=1.0,
+            realized_pnl=72.0,
+        )
+
+        assert seq is None, (
+            "RESOLUTION should be rejected when total disposal would exceed ENTRY"
+        )
+        # Only 2 execute calls: SET LOCAL + size check. INSERT never reached.
+        assert mock_session.execute.await_count == 2, (
+            f"expected 2 execute calls (SET LOCAL + size check), got "
+            f"{mock_session.execute.await_count} — guard may have allowed INSERT through"
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolution_allowed_when_disposal_plus_size_fits_entry(self):
+        """ENTRY=100, EXIT=20, RESOLUTION size=80. Total disposal = 20 + 80 = 100 ≤ 100 → allow."""
+        from base_engine.data.database import Database
+
+        db = Database.__new__(Database)
+        db.session_factory = MagicMock()
+
+        mock_session = AsyncMock()
+        mock_size = MagicMock()
+        mock_size.fetchone.return_value = (100.0, 20.0)  # entry=100, disposal=20
+
+        mock_insert = MagicMock()
+        mock_insert.fetchone.return_value = (99,)
+
+        mock_session.execute = AsyncMock(side_effect=[
+            MagicMock(),  # SET LOCAL
+            mock_size,    # size check passes
+            mock_insert,  # INSERT
+        ])
+        mock_session.commit = AsyncMock()
+
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        db.get_session = MagicMock(return_value=mock_cm)
+
+        seq = await db.insert_trade_event(
+            event_type="RESOLUTION",
+            bot_name="TestBot",
+            market_id="0xtest",
+            side="YES",
+            size=80.0,
+            price=1.0,
+        )
+
+        assert seq == 99, "RESOLUTION should succeed when disposal+size fits entry"
+
+    @pytest.mark.asyncio
+    async def test_resolution_size_check_query_sums_exit_and_resolution(self):
+        """The S196 size check query MUST aggregate disposal as
+        EXIT + RESOLUTION (not just EXIT). Defensive against future runs
+        where a stale RESOLUTION already exists (the dedup check would block
+        the new emit, but the size check should also account for it)."""
+        from base_engine.data.database import Database
+
+        db = Database.__new__(Database)
+        db.session_factory = MagicMock()
+
+        mock_session = AsyncMock()
+        mock_size = MagicMock()
+        mock_size.fetchone.return_value = (100.0, 0.0)
+        mock_insert = MagicMock()
+        mock_insert.fetchone.return_value = (1,)
+
+        mock_session.execute = AsyncMock(side_effect=[
+            MagicMock(), mock_size, mock_insert,
+        ])
+        mock_session.commit = AsyncMock()
+
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        db.get_session = MagicMock(return_value=mock_cm)
+
+        await db.insert_trade_event(
+            event_type="RESOLUTION",
+            bot_name="TestBot",
+            market_id="0xtest",
+            side="YES",
+            size=10.0,
+            price=1.0,
+        )
+
+        # The size check is the 2nd execute (after SET LOCAL).
+        size_check_sql = str(mock_session.execute.call_args_list[1][0][0].text)
+        assert "EXIT" in size_check_sql and "RESOLUTION" in size_check_sql, (
+            "S196 size check must aggregate disposal as EXIT + RESOLUTION"
+        )
+        assert "total_disposal" in size_check_sql, (
+            "S196 size check must compute total_disposal column"
+        )
+
+    def test_resolution_guard_pinned_in_source(self):
+        """Source-string regression guard: the S196 RESOLUTION over-size
+        guard must remain in insert_trade_event. If anyone removes it,
+        this test fails immediately with a clear message."""
+        import inspect
+        from base_engine.data.database import Database
+
+        source = inspect.getsource(Database.insert_trade_event)
+        assert "RESOLUTION over-size rejected" in source, (
+            "S196 RESOLUTION over-size guard removed from insert_trade_event. "
+            "This guard is the structural fix for RC-2 partial-EXIT + RESOLUTION "
+            "over-emit (e.g., Phase 4b-alt with stale positions.size). "
+            "Restore the pre-INSERT _res_size_check block."
+        )
 
 
 class TestS167FKValidation:

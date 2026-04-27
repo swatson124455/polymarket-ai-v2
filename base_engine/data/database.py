@@ -5560,6 +5560,40 @@ class Database:
                     "event_data": json.dumps(event_data or {}, default=str),
                 }
                 if event_type == "RESOLUTION":
+                    # S196 forward-audit: RESOLUTION over-size guard — mirrors S167
+                    # EXIT guard pattern below. Reject when total disposal (existing
+                    # EXITs + existing RESOLUTIONs) plus this emit's size would exceed
+                    # total ENTRY size for same (bot_name, market_id). The inline SQL
+                    # NOT EXISTS guard below blocks only the full-exit case
+                    # (SUM(EXIT) >= SUM(ENTRY)); this Python pre-check is strictly
+                    # tighter, blocking partial-EXIT + over-emit RESOLUTION (e.g.,
+                    # Phase 4b-alt with stale positions.size before the same-session
+                    # 0e1f2e0 fix). Side-agnostic.
+                    _res_size_check = await session.execute(
+                        _sa_text(
+                            "SELECT"
+                            "  COALESCE(SUM(CASE WHEN te.event_type = 'ENTRY' THEN te.size ELSE 0 END), 0) AS total_entry,"
+                            "  COALESCE(SUM(CASE WHEN te.event_type IN ('EXIT', 'RESOLUTION') THEN te.size ELSE 0 END), 0) AS total_disposal"
+                            " FROM trade_events te"
+                            " WHERE te.bot_name = :bot_name"
+                            "   AND te.market_id = :market_id"
+                            "   AND te.event_type IN ('ENTRY', 'EXIT', 'RESOLUTION')"
+                        ),
+                        {"bot_name": bot_name, "market_id": market_id},
+                    )
+                    _res_sz = _res_size_check.fetchone()
+                    if _res_sz:
+                        _res_total_entry = float(_res_sz[0])
+                        _res_total_disposal = float(_res_sz[1])
+                        if _res_total_disposal + size > _res_total_entry + 1e-6:
+                            logger.warning(
+                                "RESOLUTION over-size rejected: bot=%s market=%s "
+                                "res_size=%.6f existing_disposal=%.6f total_entries=%.6f",
+                                bot_name, market_id, size,
+                                _res_total_disposal, _res_total_entry,
+                            )
+                            return None
+
                     # Atomic INSERT...SELECT to prevent duplicates.
                     # ON CONFLICT (idempotency_key, event_time) is broken on partitioned
                     # tables because different event_time = no conflict detected.
