@@ -24,11 +24,18 @@ P&L math rules (uniform for YES and NO):
 NEVER invert the formula for NO positions. Prices are already side-specific.
 The position_manager uses (current - entry) * size uniformly.
 
-S199: --since DEPLOY_TIMESTAMP windows blocks 3, 3b, 4 (all-time RAW, all-time
-CLEAN, integrity check) to event_time >= the parsed timestamp. Required for
-formal Phase 7 elevation gate evaluation per S172_CONSOLIDATED_PLAN.md:441-446
+S199: --since DEPLOY_TIMESTAMP windows blocks 3, 3b (all-time RAW, all-time
+CLEAN totals) to event_time >= the parsed timestamp. Required for formal
+Phase 7 elevation gate evaluation per S172_CONSOLIDATED_PLAN.md:441-446
 (post-fix window is 20260414_132211 onwards). Block 1 (open positions) and
 block 2 (last N hours) are unaffected by --since.
+
+S200: block 4 is split into 4a (whole-history structural integrity — always
+all-time, never windowed) and 4b (windowed event-count diagnostic — only
+present when --since is set, no entry-vs-disposal compare). The original
+`--since`-windowed block 4 produced false positives for markets with
+pre-window ENTRY and in-window RESOLUTION (the cohort artifact that
+mis-anchored Bug A through S196→S199 — see AGENT_HANDOFF_S200_CLOSE.md §2.2).
 """
 import argparse
 import asyncio
@@ -48,14 +55,55 @@ def parse_deploy_timestamp(ts: str) -> datetime:
     return datetime.strptime(ts, "%Y%m%d_%H%M%S")
 
 
+# 4a. Whole-history structural integrity — aggregates over ALL trade_events for
+# the bot, never windowed. Integrity is a property of a market's full lifetime:
+# `event_time >=` filtering inside the per-market HAVING aggregation strips
+# pre-window ENTRYs, so a market with pre-window ENTRY + in-window RESOLUTION
+# evaluates to `entry_sz=0, disposal>0` and falsely trips. Same design rationale
+# as block 3b's contamination CTE (whole-history, no `--since`).
+_INTEGRITY_SQL_ALL_TIME = """
+    SELECT market_id,
+           SUM(CASE WHEN event_type = 'ENTRY' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS entry_sz,
+           SUM(CASE WHEN event_type = 'EXIT' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS exit_sz,
+           SUM(CASE WHEN event_type = 'RESOLUTION' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS res_sz
+    FROM trade_events
+    WHERE bot_name = :bot
+    GROUP BY market_id
+    HAVING SUM(CASE WHEN event_type IN ('EXIT', 'RESOLUTION') THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END)
+         > SUM(CASE WHEN event_type = 'ENTRY' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) * 1.001
+"""
+
+# 4b. Windowed event-count diagnostic — counts in-window events per market by
+# type. Only runs when --since is set. Operational visibility for "what
+# happened in the evaluation window"; does NOT compare entry vs disposal sums
+# (no `* 1.001` tolerance, no integrity verdict). Markets with zero in-window
+# events are excluded by GROUP BY semantics; LIMIT 50 keeps console output
+# bounded for high-volume windows.
+_WINDOWED_EVENT_COUNT_SQL = """
+    SELECT market_id,
+           SUM(CASE WHEN event_type = 'ENTRY' THEN 1 ELSE 0 END) AS n_entry,
+           SUM(CASE WHEN event_type = 'EXIT' THEN 1 ELSE 0 END) AS n_exit,
+           SUM(CASE WHEN event_type = 'RESOLUTION' THEN 1 ELSE 0 END) AS n_res
+    FROM trade_events
+    WHERE bot_name = :bot
+      AND event_time >= :since_ts
+    GROUP BY market_id
+    ORDER BY (SUM(CASE WHEN event_type IN ('EXIT', 'RESOLUTION') THEN 1 ELSE 0 END)) DESC,
+             market_id
+    LIMIT 50
+"""
+
+
 async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None):
     db = Database()
     await db.init()
     async with db.get_session() as s:
         from sqlalchemy import text
 
-        # Build the optional time-window clause shared by blocks 3, 3b, 4.
-        # When --since is None, behavior is identical to pre-S199 (all-time).
+        # Build the optional time-window clause shared by blocks 3, 3b. Block
+        # 4a is whole-history (no since filter); block 4b uses :since_ts
+        # directly when --since is set. When --since is None, behavior is
+        # identical to pre-S199 (all-time).
         since_clause = "AND event_time >= :since_ts" if since is not None else ""
         since_params = {"since_ts": since} if since is not None else {}
         window_label = f"POST-{since.strftime('%Y%m%d_%H%M%S')}" if since is not None else "ALL-TIME"
@@ -225,32 +273,40 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
             print(f"  ↑ Use this CLEAN total for downstream analysis "
                   f"(Phase 7 elevation gate, retune evaluations, etc.).")
 
-        # 4. Data integrity check — detect impossible states (S120 guardrail)
-        # S163: Group by market_id only (not side). Historical EXIT events used
-        # side='SELL' while ENTRYs used YES/NO, causing false positives on per-side
-        # matching. event_type is the correct discriminator, not side.
-        r4 = await s.execute(text(f"""
-            SELECT market_id,
-                   SUM(CASE WHEN event_type = 'ENTRY' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS entry_sz,
-                   SUM(CASE WHEN event_type = 'EXIT' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS exit_sz,
-                   SUM(CASE WHEN event_type = 'RESOLUTION' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS res_sz
-            FROM trade_events
-            WHERE bot_name = :bot
-              {since_clause}
-            GROUP BY market_id
-            HAVING SUM(CASE WHEN event_type IN ('EXIT', 'RESOLUTION') THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END)
-                 > SUM(CASE WHEN event_type = 'ENTRY' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) * 1.001
-        """), {"bot": bot_name, **since_params})
+        # 4a. Whole-history structural integrity check (S120 guardrail; SQL at
+        # _INTEGRITY_SQL_ALL_TIME). S163: group by market_id only (not side) —
+        # historical EXIT events used side='SELL' while ENTRYs used YES/NO,
+        # causing false positives on per-side matching. event_type is the
+        # correct discriminator. S200: no `--since` filter at this layer (see
+        # constant docstring).
+        r4 = await s.execute(text(_INTEGRITY_SQL_ALL_TIME), {"bot": bot_name})
         violations = r4.fetchall()
         if violations:
             print(f"\n{'!'*50}")
-            print(f"DATA INTEGRITY WARNINGS ({len(violations)}):")
+            print(f"WHOLE-HISTORY DATA INTEGRITY WARNINGS ({len(violations)}):")
             print(f"{'!'*50}")
             for v in violations:
                 mid = v[0][:14] + ".." if len(v[0]) > 14 else v[0]
                 print(f"  {mid}: entry={float(v[1]):.1f} exit={float(v[2]):.1f} res={float(v[3]):.1f} "
                       f"(disposal {float(v[2]) + float(v[3]):.1f} > entry {float(v[1]):.1f})")
             print(f"{'!'*50}")
+
+        # 4b. Windowed event-count diagnostic (only when --since is set). SQL
+        # at _WINDOWED_EVENT_COUNT_SQL. Operational visibility for in-window
+        # event volume per market — NOT an integrity check.
+        if since is not None:
+            r4b = await s.execute(
+                text(_WINDOWED_EVENT_COUNT_SQL),
+                {"bot": bot_name, "since_ts": since},
+            )
+            in_window = r4b.fetchall()
+            if in_window:
+                print(f"\n{window_label} EVENT-COUNT DIAGNOSTIC (top 50 by disposal volume):")
+                print(f"  {'Market':<16} {'#ENTRY':>7} {'#EXIT':>7} {'#RES':>7}")
+                print(f"  {'-'*42}")
+                for r in in_window:
+                    mid = r[0][:14] + ".." if len(r[0]) > 14 else r[0]
+                    print(f"  {mid:<16} {int(r[1]):>7} {int(r[2]):>7} {int(r[3]):>7}")
 
         # Summary
         print(f"\n{'='*50}")

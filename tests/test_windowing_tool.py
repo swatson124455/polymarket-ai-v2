@@ -153,3 +153,100 @@ class TestV7Verdict:
         # n=500 is the minimum; n=499 is below.
         assert edge_verification.v7_verdict(0.50, 500)[0] == "PROCEED"
         assert edge_verification.v7_verdict(0.50, 499)[0] == "INSUFFICIENT SAMPLE"
+
+
+class TestBlock4Split:
+    """S200 block 4 architectural split — whole-history integrity vs windowed counts.
+
+    Regression: pre-S200 block 4 applied `--since` at the per-row aggregation
+    layer, so a market with pre-window ENTRY + in-window RESOLUTION was scored
+    as `entry_sz=0, disposal>0` and falsely flagged as a violation. The 32-
+    market MB cohort that anchored Bug A diagnostic through S196→S199 was this
+    artifact (AGENT_HANDOFF_S200_CLOSE.md §2.2). The split below pins both
+    invariants so a future edit cannot silently re-introduce the windowing
+    contamination on the integrity check, and cannot silently turn the
+    windowed event-count diagnostic back into an integrity comparison.
+    """
+
+    def test_integrity_sql_constant_exported(self):
+        # Both constants are module-level so the test can pin the SQL shape
+        # offline (DB execution is verified during prod runs).
+        assert hasattr(bot_pnl, "_INTEGRITY_SQL_ALL_TIME")
+        assert hasattr(bot_pnl, "_WINDOWED_EVENT_COUNT_SQL")
+
+    def test_integrity_sql_is_whole_history_no_since_filter(self):
+        # The load-bearing assertion: integrity SQL must not filter by
+        # event_time. If this fails, the S196→S199 cohort artifact is back.
+        sql = bot_pnl._INTEGRITY_SQL_ALL_TIME
+        assert "event_time" not in sql, (
+            "integrity SQL must not filter by event_time — windowing at the "
+            "per-row level produces false positives for markets with "
+            "pre-window ENTRY + in-window RESOLUTION"
+        )
+        assert ":since_ts" not in sql, (
+            "integrity SQL must not bind :since_ts — it is whole-history"
+        )
+
+    def test_integrity_sql_keeps_disposal_vs_entry_check(self):
+        # The integrity check itself must remain — the fix is to apply it
+        # whole-history, not to remove it.
+        sql = bot_pnl._INTEGRITY_SQL_ALL_TIME
+        assert "HAVING" in sql
+        assert "* 1.001" in sql, "1.001 disposal-vs-entry tolerance must be preserved"
+        assert "EXIT" in sql and "RESOLUTION" in sql and "ENTRY" in sql
+
+    def test_integrity_sql_takes_only_bot_param(self):
+        # No leak of windowing-era parameters.
+        sql = bot_pnl._INTEGRITY_SQL_ALL_TIME
+        assert ":bot" in sql
+        # Single bound name expected; sanity-check by counting placeholder
+        # tokens that are not inside CAST() or CASE keywords.
+        assert sql.count(":") == sql.count(":bot"), (
+            "integrity SQL should bind only :bot"
+        )
+
+    def test_windowed_event_count_filters_by_since(self):
+        # The windowed diagnostic IS time-bounded — that's its whole purpose.
+        sql = bot_pnl._WINDOWED_EVENT_COUNT_SQL
+        assert "event_time >= :since_ts" in sql
+
+    def test_windowed_event_count_has_no_integrity_comparison(self):
+        # No `* 1.001` tolerance. No HAVING that compares disposal-sum to
+        # entry-sum. (A simple `HAVING n_event > 0` filter would still be
+        # OK, but the current SQL drops HAVING entirely; both the tolerance
+        # token and the disposal-vs-entry SUM compare must be absent.)
+        sql = bot_pnl._WINDOWED_EVENT_COUNT_SQL
+        assert "1.001" not in sql, (
+            "windowed event-count diagnostic must not perform integrity "
+            "comparison — that is block 4a's job"
+        )
+
+    def test_windowed_event_count_uses_count_not_size(self):
+        # The windowed diagnostic counts events; it does not aggregate `size`.
+        # Mixing the two would tempt a future edit to reintroduce the
+        # entry-vs-disposal compare via size sums.
+        sql = bot_pnl._WINDOWED_EVENT_COUNT_SQL
+        assert "THEN 1 ELSE 0" in sql, "expected count-style aggregation"
+        assert "CAST(size AS DOUBLE PRECISION)" not in sql, (
+            "windowed event-count must not aggregate size — counts only"
+        )
+
+    def test_windowed_event_count_bounded_output(self):
+        # LIMIT keeps console output usable even on high-volume windows.
+        sql = bot_pnl._WINDOWED_EVENT_COUNT_SQL
+        assert "LIMIT" in sql
+
+    def test_block4_regression_cohort_signature(self):
+        # End-to-end shape check on the bug we eliminated:
+        # a market with one pre-window ENTRY and one in-window RESOLUTION
+        # had `entry_sz=0, res_sz>0` under the old block 4, falsely matching
+        # `disposal > entry * 1.001`. Under the split, that pattern is
+        # whole-history-balanced (entry == disposal) so block 4a does NOT
+        # match. Block 4b reports the in-window event volume only.
+        integrity = bot_pnl._INTEGRITY_SQL_ALL_TIME
+        windowed = bot_pnl._WINDOWED_EVENT_COUNT_SQL
+        # The two queries must address different concerns — the simplest
+        # statement of that is: integrity has the tolerance, windowed does
+        # not; windowed has the time bound, integrity does not.
+        assert "1.001" in integrity and "1.001" not in windowed
+        assert "event_time" not in integrity and "event_time" in windowed
