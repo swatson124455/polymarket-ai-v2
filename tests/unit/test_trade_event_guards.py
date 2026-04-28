@@ -790,3 +790,159 @@ class TestS167FKValidation:
         assert mock_session.execute.call_count == 2, (
             "RESOLUTION should have exactly 2 execute calls (no FK check)"
         )
+
+
+class TestS199ShadowEntryFKAutoHeal:
+    """S199: SHADOW_ENTRY joins the FK auto-heal path.
+
+    Pre-S199 the auto-heal guard at database.py:5490 was ENTRY/EXIT only;
+    SHADOW_ENTRY emissions on unknown markets fell through to INSERT, and
+    since `trade_events` has no DB-level FK to `markets` (verified
+    2026-04-28), those rows were silently inserted as orphans — the
+    post-S193 orphan footprint diagnosed in S198 §2.3.
+
+    SHADOW_ENTRY is "would-have-been entry" (zero-Kelly / negative-EV /
+    capped). It has no preceding state to corrupt by stub-healing, so
+    ENTRY semantics (heal + insert) is the correct treatment.
+    """
+
+    @pytest.mark.asyncio
+    async def test_shadow_entry_auto_heals_when_market_missing(self):
+        """SHADOW_ENTRY on a market not in DB should auto-heal via stub insert."""
+        from base_engine.data.database import Database
+
+        db = Database.__new__(Database)
+        db.session_factory = MagicMock()
+
+        _fk_miss = MagicMock(); _fk_miss.fetchone.return_value = None
+        _stub_ok = MagicMock()
+        _fk_hit = MagicMock(); _fk_hit.fetchone.return_value = (1,)
+        _final_insert = MagicMock(); _final_insert.fetchone.return_value = (202,)
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(side_effect=[
+            MagicMock(),     # SET LOCAL
+            _fk_miss,        # FK check 1 (miss)
+            _stub_ok,        # stub INSERT (ON CONFLICT DO NOTHING)
+            _fk_hit,         # FK recheck (hit)
+            _final_insert,   # main INSERT...SELECT
+        ])
+        mock_session.commit = AsyncMock()
+
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        db.get_session = MagicMock(return_value=mock_cm)
+
+        seq = await db.insert_trade_event(
+            event_type="SHADOW_ENTRY",
+            bot_name="WeatherBot",
+            market_id="0xunknownshadow",
+            side="YES",
+            size=10.0,
+            price=0.5,
+        )
+
+        assert seq == 202, "SHADOW_ENTRY should succeed after auto-heal"
+        assert mock_session.execute.call_count == 5, (
+            "Auto-heal path expects 5 execute calls: "
+            "SET LOCAL + FK + stub + recheck + INSERT"
+        )
+
+    @pytest.mark.asyncio
+    async def test_shadow_entry_returns_none_when_auto_heal_fails(self):
+        """SHADOW_ENTRY: if stub INSERT does not satisfy FK recheck, return None."""
+        from base_engine.data.database import Database
+
+        db = Database.__new__(Database)
+        db.session_factory = MagicMock()
+
+        _fk_miss_1 = MagicMock(); _fk_miss_1.fetchone.return_value = None
+        _fk_miss_2 = MagicMock(); _fk_miss_2.fetchone.return_value = None
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(side_effect=[
+            MagicMock(),   # SET LOCAL
+            _fk_miss_1,    # FK check 1
+            MagicMock(),   # stub INSERT (no-op)
+            _fk_miss_2,    # FK recheck — still miss
+        ])
+        mock_session.commit = AsyncMock()
+
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        db.get_session = MagicMock(return_value=mock_cm)
+
+        seq = await db.insert_trade_event(
+            event_type="SHADOW_ENTRY",
+            bot_name="WeatherBot",
+            market_id="bogus_shadow_mid",
+            side="YES",
+            size=1.0,
+            price=0.5,
+        )
+
+        assert seq is None, "Auto-heal failure must return None for SHADOW_ENTRY"
+        assert mock_session.execute.call_count == 4, (
+            "Failed auto-heal stops after recheck — 4 execute calls, no main INSERT"
+        )
+
+    @pytest.mark.asyncio
+    async def test_shadow_entry_no_heal_when_market_present(self):
+        """SHADOW_ENTRY on a market already in DB should skip stub-insert path."""
+        from base_engine.data.database import Database
+
+        db = Database.__new__(Database)
+        db.session_factory = MagicMock()
+
+        _fk_hit = MagicMock(); _fk_hit.fetchone.return_value = (1,)
+        _final_insert = MagicMock(); _final_insert.fetchone.return_value = (303,)
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(side_effect=[
+            MagicMock(),     # SET LOCAL
+            _fk_hit,         # FK check 1 — hit, no heal
+            _final_insert,   # main INSERT
+        ])
+        mock_session.commit = AsyncMock()
+
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        db.get_session = MagicMock(return_value=mock_cm)
+
+        seq = await db.insert_trade_event(
+            event_type="SHADOW_ENTRY",
+            bot_name="WeatherBot",
+            market_id="0xknownmkt",
+            side="NO",
+            size=5.0,
+            price=0.4,
+        )
+
+        assert seq == 303
+        assert mock_session.execute.call_count == 3, (
+            "FK-present path: SET LOCAL + FK check + INSERT (no stub, no recheck)"
+        )
+
+    def test_shadow_entry_in_heal_guard_pinned_in_source(self):
+        """Source-string regression guard: SHADOW_ENTRY must be in the
+        auto-heal type list at database.py:5490. If anyone reverts the
+        guard to ENTRY/EXIT only, this test fires immediately.
+        """
+        from base_engine.data.database import Database
+        source = inspect.getsource(Database.insert_trade_event)
+        # The outer guard tuple must include SHADOW_ENTRY alongside ENTRY/EXIT.
+        assert '"ENTRY", "EXIT", "SHADOW_ENTRY"' in source, (
+            "S199: SHADOW_ENTRY removed from FK auto-heal guard at "
+            "database.py:5490. Restore the tuple `(\"ENTRY\", \"EXIT\", "
+            "\"SHADOW_ENTRY\")`. Without SHADOW_ENTRY in the guard, "
+            "shadow events on unknown markets become orphan trade_events "
+            "rows (no DB-level FK enforces it)."
+        )
+        # The inner heal-vs-fail-closed branch must include SHADOW_ENTRY in heal.
+        assert '"ENTRY", "SHADOW_ENTRY"' in source, (
+            "S199: SHADOW_ENTRY removed from heal branch. SHADOW_ENTRY must "
+            "be treated like ENTRY (auto-heal stub), not like EXIT (fail-closed)."
+        )

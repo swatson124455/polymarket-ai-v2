@@ -5487,7 +5487,15 @@ class Database:
                 # UPDATE enriches the stub with full data. EXIT keeps fail-closed: EXIT
                 # on an unknown market implies a missing prior ENTRY — auto-healing
                 # would mask a deeper inconsistency rather than fix one.
-                if event_type in ("ENTRY", "EXIT"):
+                # S199: SHADOW_ENTRY joins the auto-heal path. Pre-S199 the guard was
+                # ENTRY/EXIT only, so SHADOW_ENTRY emissions on unknown markets fell
+                # through to the INSERT below. trade_events has no DB-level FK to
+                # markets (verified 2026-04-28), so those INSERTs succeed silently as
+                # orphan rows — exactly the post-S193 orphan footprint S198 §2.3
+                # diagnosed. SHADOW_ENTRY is "would-have-been entry" (zero-Kelly /
+                # negative-EV / capped); it has no preceding state to corrupt by
+                # stub-healing, so ENTRY semantics (heal + insert) is correct.
+                if event_type in ("ENTRY", "EXIT", "SHADOW_ENTRY"):
                     _fk_check = await session.execute(
                         _sa_text(
                             "SELECT 1 FROM markets "
@@ -5497,7 +5505,7 @@ class Database:
                         {"mid": market_id},
                     )
                     if _fk_check.fetchone() is None:
-                        if event_type == "ENTRY":
+                        if event_type in ("ENTRY", "SHADOW_ENTRY"):
                             _cid_val = market_id if str(market_id).startswith("0x") else None
                             await session.execute(
                                 _sa_text(
@@ -5522,8 +5530,8 @@ class Database:
                                 )
                                 return None
                             logger.info(
-                                "trade_event market auto-healed: bot=%s market=%s",
-                                bot_name, market_id,
+                                "trade_event market auto-healed: bot=%s market=%s event=%s",
+                                bot_name, market_id, event_type,
                             )
                         else:
                             logger.warning(
