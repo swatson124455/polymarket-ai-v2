@@ -1576,7 +1576,7 @@ Codified S190 with boundary clause to prevent loophole abuse.
 
 **Recovery procedure when MIIV falsifies a hypothesis.** Treat the falsification as a primary finding, not a setback. File the falsified hypothesis explicitly (with its original framing preserved for audit-trail), name the actual finding distinctly, and re-scope the remediation. The pattern is "hypothesis-disproved-by-deeper-investigation" — every instance is information about how the system actually behaves vs. how the prior session thought it behaved. Discard the framing of "we wasted time on the wrong hypothesis"; it's "we just learned something the prior session couldn't have learned."
 
-**Evidence of origin.** Five-to-six in-session hypothesis inversions across S195 → S199:
+**Evidence of origin.** Six in-session hypothesis inversions across S195 → S200:
 
 | # | Session | Inherited hypothesis | Actual finding (after independent verification) |
 |---|---------|----------------------|--------------------------------------------------|
@@ -1585,8 +1585,18 @@ Codified S190 with boundary clause to prevent loophole abuse.
 | 3 | S198 | bot_pnl.py CLEAN total UNBLOCKS Phase 7 elevation gate | All-time CLEAN conflates pre/post-deploy; gate needs windowing first |
 | 4 | S199 | SHADOW_ENTRY uses a write path that bypasses `insert_trade_event` | SHADOW_ENTRY routes through `insert_trade_event` but skips FK auto-heal due to incomplete type-check tuple at `database.py:5490` |
 | 5 | S199 | Bug A is averaging-up new-fill overwrite of `positions.size` via `confirm_position` | Caller does pass new-fill, but SQL UPDATE is gated by `WHERE status='closed'` so averaging-up is a DB no-op; actual mechanism still unknown |
+| 6 | S200 | Bug A's lead candidate is partial-fill UPDATEs at `mirror_bot.py:1410`/`:2390` overwriting `positions.size` without `insert_trade_event` | Falsified — `pt_yes_no_rows=1` across all 32 cohort markets, no chunking. Deeper finding: the 32-cohort itself is a `bot_pnl.py --since` integrity-check windowing artifact (pre-window ENTRY + in-window EXIT/RESOLUTION), disjoint from the real Bug A cohort of 73 all-time markets (64 WB + 9 MB + 1 EB). The inherited *framing* — "Bug A is MB-shaped, partial-fill-related" — was wrong on cohort, mechanism, and bot-focus. |
 
-Five inversions across four sessions (S197 ran clean; S199 produced two inversions — SHADOW_ENTRY and Bug A — both on the same session's MIIV pass against inherited hypotheses). Each inversion was caught at the verification step, before the wrong fix shipped. The user-audit at S199 close named the codification trigger explicitly; landing Protocol 7 closes it.
+Six inversions across five sessions (S197 ran clean; S199 produced two; S200 produced one with cohort-redefining implications). Each inversion was caught at the verification step, before the wrong fix shipped. The user-audit at S199 close named the codification trigger; the user-audit at S200 close named the framings-vs-hypotheses extension below.
+
+**Framings vs hypotheses (S200 extension).** MIIV applies to inherited *framings*, not just inherited *hypotheses* — verify the cohort definition, not just the candidate mechanism. A framing is the set of assumptions a hypothesis sits inside: which cohort the bug lives in, which bot is implicated, what shape the bug takes (mechanism family), what tooling output defines the cohort. Framings inherit the same authority as hypotheses — they survive handoffs unchallenged because each session inherits the prior session's scope-of-investigation. The S196→S199 framing of "Bug A as MB-shaped, partial-fill-related, `trade_coordinator.py`-rooted" survived four sessions until S200's MIIV cross-cohort verification revealed the cohort itself was wrong (32 windowed markets disjoint from the 9 all-time-entry-zero MB markets, and dwarfed by 64 WB markets).
+
+**Practical rule.** Before running MIIV on a candidate hypothesis, verify the framing the candidate sits inside:
+- Does the cohort the candidate operates on actually contain what the framing claims it contains? (e.g., "is the 32-market cohort actually the Bug A cohort, or is it a tooling-derived subset?")
+- Does the bot-focus match the data? (e.g., "is the bug really MB-shaped, or is the prior framing just MB-biased because the diagnostic happened to start with MB?")
+- Does the mechanism-family match the symptom shape? (e.g., "does partial-fill explain `entry=0` when partial-fills would still record the first chunk's ENTRY?")
+
+If the framing fails any of these, the hypothesis-level MIIV is moot — the candidate may be falsifying within a wrong universe. Re-anchor the cohort before running candidate verification.
 
 **Numbering note.** Protocol 7 takes the slot reserved for "triple-blind verification" candidate. Slots 8-10 remain reserved for the prior-session candidates per memory: diagnostic-inverts-remediation-space, cleanup-not-substitute-for-root-cause, silent-loop emission. Protocol 11's number is preserved per its own numbering note (no renumbering, audit trail).
 
