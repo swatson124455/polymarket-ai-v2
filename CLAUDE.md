@@ -6,6 +6,20 @@ This is a live 15-bot Polymarket automated trading system. Real capital is at ri
 
 Working code is sacred. Fix only what is broken. Fix it at the root. Prove it before and after. If you cannot explain exactly why a line needs to change and exactly what breaks if you don't change it, do not change it.
 
+## Project Boundaries — No Cross-Project Bleed
+
+The working tree is bounded to `C:/lockes-picks/polymarket-ai-v2/` (the git repo root, see `git rev-parse --show-toplevel`). A separate, unrelated project (Locke's Picks best-ball draft assistant) lives at the parent directory `C:/lockes-picks/` — its files include `ADP_*.md`, `AGENT_BACKTEST.md`, `AGENT_ORCHESTRATOR.md`, and ~200 other docs/scripts at the parent level. That project is OUT OF SCOPE for this Claude session.
+
+### Rules (non-negotiable):
+1. **Do not read, write, modify, list, or reference files outside `C:/lockes-picks/polymarket-ai-v2/`.** This includes the drafter project at `C:/lockes-picks/`, any other directory under `C:/`, and any path that resolves outside the repo via `..`, absolute paths, symlinks, or shell expansion.
+2. **Do not cite drafter content even from prior session memory.** If a session transcript or stale memory entry mentions ADP, best-ball, Underdog BBM, Locke's Picks, or fantasy-sports drafting, treat it as out-of-scope context — do not pull it into reasoning, suggestions, or output for this project.
+3. **No git operations on parent paths.** `git add ../foo`, `git -C C:/lockes-picks/...`, or any operation that escapes the repo root is forbidden. The parent directory is intentionally not a git repo; do not initialize one there.
+4. **Exception only on explicit user request.** If the user explicitly says "look at the drafter file X" or "read C:/lockes-picks/Y", that's a one-time scoped permission. Do not generalize to "drafter context is now in scope" — each cross-project read needs its own explicit ask.
+5. **Verification reads are not exceptions.** "I just need to ls the parent to confirm isolation" is not a justification post-codification. Use `git rev-parse --show-toplevel` to confirm scope; do not enumerate the parent directory.
+
+### Why this matters:
+Filesystem proximity (drafters as parent dir) creates real bleed risk: a careless prompt asking for "related design docs" could pull drafter content into a polymarket diagnostic; a careless `cd ..` in a Bash command could stage drafter files for commit (blocked by git scope, but the read still happens). Drafter context in a polymarket session would also pollute future memory writes if I save anything that references it.
+
 ## PAPER TRADING IS PRODUCTION
 
 Paper trading is NOT a sandbox, prototype, or test environment. Paper trading is LIVE PRODUCTION with a $0 execution flag.
