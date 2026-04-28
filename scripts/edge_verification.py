@@ -1,21 +1,30 @@
 #!/usr/bin/env python3
 """
-1I: Edge Verification — S172 Phase 1 HARD GATE for Phases 5-7.
+1I: Edge Verification — Phase 7 elevation gate evaluator.
 
 Bootstrap P(edge > 0) and Kelly fraction per bot from trade_events.
 Uses only RESOLUTION + EXIT events with realized_pnl (closed trades).
 
-Graduated response:
-  P(edge>0) >= 0.9  → FULL elevation (Phases 5-7 proceed as planned)
-  0.7 <= P < 0.9    → CORE ONLY (skip speculative items)
-  P < 0.7           → ROOT-CAUSE INVESTIGATION replaces elevation
+Phase 7 v7 gate (S172_CONSOLIDATED_PLAN.md:441-446) — applies to MirrorBot
+on post-Day-2 data (--since 20260414_132211 --clean):
+  P(edge>0) >= 0.30  → PROCEED (directionally positive, Phase 7 elevation)
+  0.10 <= P < 0.30   → AMBIGUOUS (continue collecting, re-run weekly)
+  P < 0.10           → INVESTIGATE (remaining loss drivers — do not elevate)
+  n < 500 closed     → INSUFFICIENT SAMPLE (gate not yet evaluable)
 
 Usage:
-    python scripts/edge_verification.py              # All 3 bots
-    python scripts/edge_verification.py EsportsBot   # Single bot
+    python scripts/edge_verification.py                          # All 3 bots, all-time, raw
+    python scripts/edge_verification.py EsportsBot               # Single bot, all-time, raw
+    python scripts/edge_verification.py MirrorBot --since 20260414_132211 --clean
+        # MirrorBot post-Day-2 trades on whole-history-clean markets — formal Phase 7 gate.
+
+S199: --since windows trades to event_time >= the parsed UTC stamp; --clean
+excludes (bot, market) pairs whose all-time disposal exceeds entry by >0.1%
+(matching scripts/bot_pnl.py CLEAN logic). Both default off (pre-S199 behavior).
 """
+import argparse
 import asyncio
-import sys
+from datetime import datetime
 import numpy as np
 from base_engine.data.database import Database
 from dotenv import load_dotenv
@@ -24,19 +33,84 @@ load_dotenv()
 N_BOOTSTRAP = 10_000
 RNG_SEED = 42
 
+# Phase 7 v7 thresholds. See module docstring for context.
+V7_PROCEED_THRESHOLD = 0.30
+V7_INVESTIGATE_THRESHOLD = 0.10
+V7_MIN_SAMPLE = 500
 
-async def edge_verification(bot_name: str | None = None):
+
+def parse_deploy_timestamp(ts: str) -> datetime:
+    """Parse a deploy-stamp string `YYYYMMDD_HHMMSS` into a naive UTC datetime.
+
+    Mirrors scripts/bot_pnl.py:parse_deploy_timestamp — same format expected.
+    """
+    return datetime.strptime(ts, "%Y%m%d_%H%M%S")
+
+
+def v7_verdict(p_edge_positive: float, n_closed: int) -> tuple[str, str]:
+    """Map (P(edge>0), n_closed) → (verdict, detail) per S172 v7 gate.
+
+    Sample-size check is independent — even a high P(edge>0) is INSUFFICIENT
+    SAMPLE below n=500. Above n=500, the threshold ladder applies.
+    """
+    if n_closed < V7_MIN_SAMPLE:
+        return ("INSUFFICIENT SAMPLE",
+                f"n={n_closed} < {V7_MIN_SAMPLE}: gate not yet evaluable; collect more trades")
+    if p_edge_positive >= V7_PROCEED_THRESHOLD:
+        return ("PROCEED",
+                "Directionally positive — Phase 7 elevation may proceed")
+    if p_edge_positive >= V7_INVESTIGATE_THRESHOLD:
+        return ("AMBIGUOUS",
+                "Mid-range — continue collecting; re-run weekly until decisive")
+    return ("INVESTIGATE",
+            "Below floor — investigate remaining loss drivers before any elevation")
+
+
+async def edge_verification(
+    bot_name: str | None = None,
+    since: datetime | None = None,
+    clean: bool = False,
+):
     db = Database()
     await db.init()
 
     bots = [bot_name] if bot_name else ["WeatherBot", "MirrorBot", "EsportsBot"]
 
+    # Optional clauses shared across bots. --since filters event_time; --clean
+    # excludes whole markets that ever exhibited size_invariant contamination
+    # (CTE matches scripts/bot_pnl.py:140 — single source of truth for the
+    # contamination definition: SUM(EXIT+RESOLUTION size) > SUM(ENTRY size) * 1.001).
+    since_clause = "AND event_time >= :since_ts" if since is not None else ""
+    clean_clause = (
+        "AND market_id NOT IN ("
+        "  SELECT market_id FROM trade_events"
+        "  WHERE bot_name = :bot"
+        "    AND event_type IN ('ENTRY', 'EXIT', 'RESOLUTION')"
+        "    AND size IS NOT NULL"
+        "  GROUP BY market_id"
+        "  HAVING SUM(CASE WHEN event_type IN ('EXIT', 'RESOLUTION')"
+        "                  THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END)"
+        "       > SUM(CASE WHEN event_type = 'ENTRY'"
+        "                  THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) * 1.001"
+        ")"
+        if clean else ""
+    )
+    filter_label = []
+    if since is not None:
+        filter_label.append(f"since {since.strftime('%Y%m%d_%H%M%S')}")
+    if clean:
+        filter_label.append("clean")
+    filter_str = f" [{' + '.join(filter_label)}]" if filter_label else ""
+
     async with db.get_session() as s:
         from sqlalchemy import text
 
         for bot in bots:
+            params: dict = {"bot": bot}
+            if since is not None:
+                params["since_ts"] = since
             # Fetch all closed-trade P&L and stake amounts
-            r = await s.execute(text("""
+            r = await s.execute(text(f"""
                 SELECT
                     CAST(realized_pnl AS DOUBLE PRECISION) AS pnl,
                     CAST(COALESCE(
@@ -48,13 +122,15 @@ async def edge_verification(bot_name: str | None = None):
                 WHERE bot_name = :bot
                   AND event_type IN ('RESOLUTION', 'EXIT')
                   AND realized_pnl IS NOT NULL
+                  {since_clause}
+                  {clean_clause}
                 ORDER BY event_time
-            """), {"bot": bot})
+            """), params)
             rows = r.fetchall()
 
             if not rows:
                 print(f"\n{'='*60}")
-                print(f"  {bot}: NO CLOSED TRADES — cannot verify edge")
+                print(f"  {bot}{filter_str}: NO CLOSED TRADES — cannot verify edge")
                 print(f"{'='*60}")
                 continue
 
@@ -102,20 +178,12 @@ async def edge_verification(bot_name: str | None = None):
             else:
                 kelly_full = kelly_half = 0.0
 
-            # --- Graduated decision ---
-            if p_edge_positive >= 0.9:
-                verdict = "FULL ELEVATION"
-                verdict_detail = "Phases 5-7 proceed as planned"
-            elif p_edge_positive >= 0.7:
-                verdict = "CORE ONLY"
-                verdict_detail = "Skip speculative items in elevation phases"
-            else:
-                verdict = "ROOT-CAUSE INVESTIGATION"
-                verdict_detail = "Replace elevation with investigation"
+            # --- Graduated decision (v7) ---
+            verdict, verdict_detail = v7_verdict(p_edge_positive, len(pnls))
 
             # --- Output ---
             print(f"\n{'='*60}")
-            print(f"  EDGE VERIFICATION: {bot}")
+            print(f"  EDGE VERIFICATION: {bot}{filter_str}")
             print(f"{'='*60}")
             print(f"  Closed trades:     {len(pnls):>6}  (RES={n_res}, EXIT={n_exit})")
             print(f"  Win/Loss/Flat:     {n_win}/{n_loss}/{n_flat}  (WR={win_rate:.1%})")
@@ -139,6 +207,21 @@ async def edge_verification(bot_name: str | None = None):
     await db.close()
 
 
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """CLI parser. Preserves pre-S199 invocation: `edge_verification.py [bot]`."""
+    p = argparse.ArgumentParser(description="Edge verification — Phase 7 v7 gate evaluator")
+    p.add_argument("bot_name", nargs="?", default=None,
+                   help="Bot name (default: all 3 bots)")
+    p.add_argument("--since", type=parse_deploy_timestamp, default=None,
+                   metavar="YYYYMMDD_HHMMSS",
+                   help="Filter trades to event_time >= this UTC stamp. "
+                        "Day 2 deploy is 20260414_132211.")
+    p.add_argument("--clean", action="store_true", default=False,
+                   help="Exclude whole-history-contaminated markets "
+                        "(matches scripts/bot_pnl.py CLEAN logic).")
+    return p.parse_args(argv)
+
+
 if __name__ == "__main__":
-    bot = sys.argv[1] if len(sys.argv) > 1 else None
-    asyncio.run(edge_verification(bot))
+    args = _parse_args()
+    asyncio.run(edge_verification(args.bot_name, since=args.since, clean=args.clean))

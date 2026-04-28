@@ -3,9 +3,10 @@
 Bot P&L Report — Canonical calculation from trade_events + positions.
 
 Usage:
-    python scripts/bot_pnl.py                    # WeatherBot, last 24h
-    python scripts/bot_pnl.py EsportsBot         # Specific bot, last 24h
-    python scripts/bot_pnl.py WeatherBot 8       # Specific bot, last 8h
+    python scripts/bot_pnl.py                              # WeatherBot, last 24h
+    python scripts/bot_pnl.py EsportsBot                   # Specific bot, last 24h
+    python scripts/bot_pnl.py WeatherBot 8                 # Specific bot, last 8h
+    python scripts/bot_pnl.py MirrorBot --since 20260414_132211   # Post-fix windowed totals
 
 EXIT side transition (S163, deployed 2026-04-08):
   - Before 2026-04-08T16:01:40Z: EXIT events have side='SELL' (hardcoded)
@@ -22,19 +23,42 @@ P&L math rules (uniform for YES and NO):
 
 NEVER invert the formula for NO positions. Prices are already side-specific.
 The position_manager uses (current - entry) * size uniformly.
+
+S199: --since DEPLOY_TIMESTAMP windows blocks 3, 3b, 4 (all-time RAW, all-time
+CLEAN, integrity check) to event_time >= the parsed timestamp. Required for
+formal Phase 7 elevation gate evaluation per S172_CONSOLIDATED_PLAN.md:441-446
+(post-fix window is 20260414_132211 onwards). Block 1 (open positions) and
+block 2 (last N hours) are unaffected by --since.
 """
+import argparse
 import asyncio
-import sys
+from datetime import datetime
 from base_engine.data.database import Database
 from dotenv import load_dotenv
 load_dotenv()
 
 
-async def bot_pnl(bot_name: str, hours: int = 24):
+def parse_deploy_timestamp(ts: str) -> datetime:
+    """Parse a deploy-stamp string `YYYYMMDD_HHMMSS` into a naive UTC datetime.
+
+    Deploy timestamps in this codebase are UTC by convention (e.g.
+    `20260414_132211` is Day 2 deploy, S172_CONSOLIDATED_PLAN.md:441).
+    Returned naive datetime compares correctly against `event_time` columns.
+    """
+    return datetime.strptime(ts, "%Y%m%d_%H%M%S")
+
+
+async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None):
     db = Database()
     await db.init()
     async with db.get_session() as s:
         from sqlalchemy import text
+
+        # Build the optional time-window clause shared by blocks 3, 3b, 4.
+        # When --since is None, behavior is identical to pre-S199 (all-time).
+        since_clause = "AND event_time >= :since_ts" if since is not None else ""
+        since_params = {"since_ts": since} if since is not None else {}
+        window_label = f"POST-{since.strftime('%Y%m%d_%H%M%S')}" if since is not None else "ALL-TIME"
 
         # 1. Open positions — mark-to-market
         r1 = await s.execute(text("""
@@ -107,18 +131,19 @@ async def bot_pnl(bot_name: str, hours: int = 24):
             print(f"    {e[7].strftime('%H:%M')} {e[1][:12]}.. pnl=${rpnl:+.2f}")
 
         # 3. All-time from trade_events (RAW — includes any contaminated markets)
-        r3 = await s.execute(text("""
+        r3 = await s.execute(text(f"""
             SELECT event_type,
                    COUNT(*),
                    COALESCE(SUM(CAST(realized_pnl AS DOUBLE PRECISION)), 0),
                    COALESCE(SUM(CAST(fees AS DOUBLE PRECISION)), 0)
             FROM trade_events
             WHERE bot_name = :bot
+              {since_clause}
             GROUP BY event_type
             ORDER BY event_type
-        """), {"bot": bot_name})
+        """), {"bot": bot_name, **since_params})
         stats = r3.fetchall()
-        print(f"\nALL-TIME TRADE EVENTS (raw — includes contaminated markets):")
+        print(f"\n{window_label} TRADE EVENTS (raw — includes contaminated markets):")
         total_realized = 0.0
         total_fees = 0.0
         for st in stats:
@@ -129,15 +154,22 @@ async def bot_pnl(bot_name: str, hours: int = 24):
             print(f"  {st[0]:<12} count={st[1]:<5} realized=${rpnl:>+10.2f}  fees=${fees:>8.2f}")
         print(f"  {'TOTAL':<12} {'':5} realized=${total_realized:>+10.2f}  fees=${total_fees:>8.2f}")
 
-        # 3b. All-time from trade_events (CLEAN — excludes markets with size
-        # invariant violations). S196 forward-audit found that some EXIT and
-        # RESOLUTION events have inflated `size` (e.g., positions.size diverged
-        # from trade_events ENTRY truth pre-Phase-4b-alt fix). Their realized_pnl
-        # is over-stated proportionally. The CLEAN view excludes any (bot, market)
-        # whose SUM(EXIT+RESOLUTION size) exceeds SUM(ENTRY size) — same threshold
-        # the audit's size_invariant_check uses (1.001 tolerance). Use the CLEAN
-        # total for any downstream analysis (Phase 7 elevation gate, etc.).
-        r3_clean = await s.execute(text("""
+        # 3b. CLEAN totals — excludes markets with size-invariant violations.
+        # S196 forward-audit found that some EXIT and RESOLUTION events have
+        # inflated `size` (positions.size diverged from trade_events ENTRY truth
+        # pre-Phase-4b-alt fix). Their realized_pnl is over-stated proportionally.
+        # CLEAN excludes any (bot, market) whose all-time SUM(EXIT+RESOLUTION size)
+        # exceeds SUM(ENTRY size) — same threshold the audit's size_invariant_check
+        # uses (1.001 tolerance). Use the CLEAN total for downstream analysis
+        # (Phase 7 elevation gate, etc.).
+        #
+        # S199: contamination is a property of the market's whole history, so
+        # the CTE intentionally does NOT apply --since. A market contaminated
+        # pre-deploy stays excluded even if its post-deploy events look healthy,
+        # because realized_pnl on those events still depends on the diverged
+        # cost-basis recorded earlier. The outer SELECT applies --since so totals
+        # reflect only post-fix activity on whole-history-clean markets.
+        r3_clean = await s.execute(text(f"""
             WITH contaminated AS (
                 SELECT market_id
                 FROM trade_events
@@ -157,12 +189,13 @@ async def bot_pnl(bot_name: str, hours: int = 24):
             FROM trade_events
             WHERE bot_name = :bot
               AND market_id NOT IN (SELECT market_id FROM contaminated)
+              {since_clause}
             GROUP BY event_type
             ORDER BY event_type
-        """), {"bot": bot_name})
+        """), {"bot": bot_name, **since_params})
         stats_clean = r3_clean.fetchall()
-        # Count contaminated markets explicitly so the header has it before
-        # the integrity-check block (block 4) populates `violations`.
+        # Count contaminated markets (whole-history, no --since filter — see
+        # comment above on why CTE deliberately ignores --since).
         r3_excluded = await s.execute(text("""
             SELECT COUNT(*) FROM (
                 SELECT market_id
@@ -178,7 +211,7 @@ async def bot_pnl(bot_name: str, hours: int = 24):
             ) c
         """), {"bot": bot_name})
         excluded_count = int(r3_excluded.scalar() or 0)
-        print(f"\nALL-TIME TRADE EVENTS (clean — {excluded_count} contaminated markets excluded):")
+        print(f"\n{window_label} TRADE EVENTS (clean — {excluded_count} contaminated markets excluded):")
         total_realized_clean = 0.0
         total_fees_clean = 0.0
         for st in stats_clean:
@@ -196,17 +229,18 @@ async def bot_pnl(bot_name: str, hours: int = 24):
         # S163: Group by market_id only (not side). Historical EXIT events used
         # side='SELL' while ENTRYs used YES/NO, causing false positives on per-side
         # matching. event_type is the correct discriminator, not side.
-        r4 = await s.execute(text("""
+        r4 = await s.execute(text(f"""
             SELECT market_id,
                    SUM(CASE WHEN event_type = 'ENTRY' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS entry_sz,
                    SUM(CASE WHEN event_type = 'EXIT' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS exit_sz,
                    SUM(CASE WHEN event_type = 'RESOLUTION' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS res_sz
             FROM trade_events
             WHERE bot_name = :bot
+              {since_clause}
             GROUP BY market_id
             HAVING SUM(CASE WHEN event_type IN ('EXIT', 'RESOLUTION') THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END)
                  > SUM(CASE WHEN event_type = 'ENTRY' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) * 1.001
-        """), {"bot": bot_name})
+        """), {"bot": bot_name, **since_params})
         violations = r4.fetchall()
         if violations:
             print(f"\n{'!'*50}")
@@ -228,9 +262,10 @@ async def bot_pnl(bot_name: str, hours: int = 24):
         print(f"  Unrealized P&L:     ${total_upnl:+.2f}")
         print(f"  Realized (exits):   ${realized_exit:+.2f}  (last {hours}h)")
         print(f"  Realized (resol):   ${realized_res:+.2f}  (last {hours}h)")
-        print(f"  All-time realized (raw):    ${total_realized:+.2f}")
+        _label = window_label.lower()
+        print(f"  {_label} realized (raw):    ${total_realized:+.2f}")
         if excluded_count > 0:
-            print(f"  All-time realized (clean):  ${total_realized_clean:+.2f}  "
+            print(f"  {_label} realized (clean):  ${total_realized_clean:+.2f}  "
                   f"← canonical for downstream analysis")
         print(f"  Net P&L (window):           ${total_upnl + realized_exit + realized_res:+.2f}")
 
@@ -399,7 +434,20 @@ async def bot_pnl(bot_name: str, hours: int = 24):
     await db.close()
 
 
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """CLI parser. Preserves pre-S199 positional invocation: `bot_pnl.py [bot] [hours]`."""
+    p = argparse.ArgumentParser(description="Bot P&L Report (canonical)")
+    p.add_argument("bot_name", nargs="?", default="WeatherBot",
+                   help="Bot name (default: WeatherBot)")
+    p.add_argument("hours", nargs="?", type=int, default=24,
+                   help="Window for block 2 'recent events' display, in hours (default: 24)")
+    p.add_argument("--since", type=parse_deploy_timestamp, default=None,
+                   metavar="YYYYMMDD_HHMMSS",
+                   help="Filter all-time RAW/CLEAN totals to event_time >= this UTC stamp. "
+                        "Format matches deploy timestamps (e.g., 20260414_132211).")
+    return p.parse_args(argv)
+
+
 if __name__ == "__main__":
-    bot = sys.argv[1] if len(sys.argv) > 1 else "WeatherBot"
-    hrs = int(sys.argv[2]) if len(sys.argv) > 2 else 24
-    asyncio.run(bot_pnl(bot, hrs))
+    args = _parse_args()
+    asyncio.run(bot_pnl(args.bot_name, args.hours, since=args.since))
