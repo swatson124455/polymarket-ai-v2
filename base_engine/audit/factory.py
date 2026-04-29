@@ -5,8 +5,15 @@ SIGNAL_REQUIRED_BOTS: opt-in list for CRITICAL rogue-trade detection.
 Starts empty — populate once you've verified that each bot reliably
 writes trade_signals rows for every ENTRY.
 
-TODO (2026-04-30): populate SIGNAL_REQUIRED_BOTS after confirming signal write
-coverage per bot. Verify with:
+State as of 2026-04-29 (S203):
+  VPS .env has `SIGNAL_REQUIRED_BOTS=EsportsBot` (one bot enforced).
+  Default deploy template (.env.example) recommends `EsportsBot,EsportsBotV2`
+  in preparation for the EsportsBotV2 flag flip — see
+  S203_EB_ROUTING_AUDIT.md §3.3 + §5.3 for the routing-audit rationale.
+
+TODO: extend VPS env to `SIGNAL_REQUIRED_BOTS=EsportsBot,EsportsBotV2`
+BEFORE flipping `ESPORTS_V2_DRY_RUN=false`. Per-bot signal-write coverage
+verification:
   SELECT DISTINCT bot_name FROM trade_signals;
   vs
   SELECT DISTINCT bot_name FROM trade_events WHERE event_type='ENTRY';
