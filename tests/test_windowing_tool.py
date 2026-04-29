@@ -370,3 +370,89 @@ class TestExpandBotFamily:
     def test_windowed_sql_uses_any_bot_family(self):
         sql = bot_pnl._WINDOWED_EVENT_COUNT_SQL
         assert "ANY(:bot_family)" in sql
+
+
+class TestContaminationCteBody:
+    """S203 hygiene #12: shared contamination CTE body — single source of
+    truth for "which markets are size-invariant-violating across their
+    whole history". Used by block 3b (CLEAN total) and block 5 (WB-specific
+    breakdowns when --clean is set).
+
+    Pinned because:
+      - The CTE shape encodes the contamination definition. A drift here
+        silently changes which markets are excluded from CLEAN totals.
+      - The contamination check is whole-history by deliberate design (see
+        scripts/bot_pnl.py block 3b comment) — a regression that adds
+        :since_ts inside the CTE would re-introduce the windowing artifact
+        that mis-anchored Bug A through S196→S199.
+    """
+
+    def test_constant_exported(self):
+        assert hasattr(bot_pnl, "_CONTAMINATION_CTE_BODY")
+        assert isinstance(bot_pnl._CONTAMINATION_CTE_BODY, str)
+
+    def test_uses_any_bot_family(self):
+        # Family-union compatibility: the CTE must use the same bot-name
+        # binding as every other query in the script.
+        assert "ANY(:bot_family)" in bot_pnl._CONTAMINATION_CTE_BODY
+
+    def test_no_since_filter(self):
+        # Whole-history scope by design — NEVER add :since_ts here.
+        assert ":since_ts" not in bot_pnl._CONTAMINATION_CTE_BODY
+        assert "event_time >=" not in bot_pnl._CONTAMINATION_CTE_BODY
+
+    def test_keeps_disposal_vs_entry_check(self):
+        # The contamination signature is preserved.
+        sql = bot_pnl._CONTAMINATION_CTE_BODY
+        assert "HAVING" in sql
+        assert "* 1.001" in sql
+        assert "EXIT" in sql and "RESOLUTION" in sql and "ENTRY" in sql
+
+    def test_returns_market_id(self):
+        # Consumers exclude rows via `market_id NOT IN (CTE)`.
+        assert "SELECT market_id" in bot_pnl._CONTAMINATION_CTE_BODY
+
+
+class TestBotPnlCleanFlag:
+    """S203 hygiene #12: bot_pnl.py --clean wires block 5 WB-specific
+    breakdowns into the same CLEAN scope as block 3b. Pre-S203 block 5
+    was all-time-only, blocking bot_pnl.py-citable verification of the
+    Track 5 H0' next-session lead.
+
+    Pinned because:
+      - The CLI flag is the operator-facing surface; default-off matches
+        backward-compat with all pre-S203 invocations.
+      - The bot_pnl() function signature accepts `clean` as the fourth
+        keyword arg; a regression to positional-only would silently
+        ignore the flag for callers that pass since= as kwarg.
+    """
+
+    def test_clean_flag_default_false(self):
+        a = bot_pnl._parse_args([])
+        assert a.clean is False
+
+    def test_clean_flag_true_when_passed(self):
+        a = bot_pnl._parse_args(["WeatherBot", "--clean"])
+        assert a.clean is True
+
+    def test_clean_combines_with_since(self):
+        a = bot_pnl._parse_args([
+            "WeatherBot", "--since", "20260414_132211", "--clean"
+        ])
+        assert a.clean is True
+        assert a.since == datetime(2026, 4, 14, 13, 22, 11)
+
+    def test_bot_pnl_signature_accepts_clean_kwarg(self):
+        import inspect
+        sig = inspect.signature(bot_pnl.bot_pnl)
+        assert "clean" in sig.parameters
+        # Default must be False so all pre-S203 callers behave unchanged.
+        assert sig.parameters["clean"].default is False
+
+    def test_bot_pnl_signature_keeps_pre_s203_params(self):
+        # Preserve the existing parameter names — callers may invoke as
+        # bot_pnl(name, hours, since=...) and must not break.
+        import inspect
+        sig = inspect.signature(bot_pnl.bot_pnl)
+        for required in ("bot_name", "hours", "since"):
+            assert required in sig.parameters

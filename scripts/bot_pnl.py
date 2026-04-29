@@ -36,6 +36,15 @@ present when --since is set, no entry-vs-disposal compare). The original
 `--since`-windowed block 4 produced false positives for markets with
 pre-window ENTRY and in-window RESOLUTION (the cohort artifact that
 mis-anchored Bug A through S196→S199 — see AGENT_HANDOFF_S200_CLOSE.md §2.2).
+
+S203 hygiene #12: block 5 (WB-specific per-side / per-city / per-lead-time /
+side x lead-time breakdowns) now honors `--since` and `--clean`. Pre-S203
+block 5 was all-time only, which made the post-Day-2 CLEAN per-side
+breakdown that drove the S203 Track 5 hypothesis-test a non-bot_pnl.py
+output (Protocol 11 citation gap). The new flags wire block 5 into the
+same windowing+contamination semantics as block 3b. Operators evaluating
+WB Phase 6 NO-side-calibration H0' should run:
+    python scripts/bot_pnl.py WeatherBot --since 20260414_132211 --clean
 """
 import argparse
 import asyncio
@@ -74,6 +83,28 @@ def _expand_bot_family(bot_name: str) -> list[str]:
     handles the singleton and family cases uniformly.
     """
     return list(_BOT_FAMILIES.get(bot_name, [bot_name]))
+
+
+# Contamination CTE body — single source of truth for "which markets are
+# size-invariant-violating across their whole history." Used by block 3b
+# CLEAN total and (S203 hygiene #12) by block 5 WB-specific breakdowns
+# when --clean is set. Whole-history scope is deliberate: contamination
+# is a property of a market's whole lifetime, not a windowed slice (a
+# market contaminated pre-deploy stays excluded even if its post-deploy
+# events look healthy, because realized_pnl on those events still depends
+# on the diverged cost-basis recorded earlier).
+_CONTAMINATION_CTE_BODY = """
+    SELECT market_id
+    FROM trade_events
+    WHERE bot_name = ANY(:bot_family)
+      AND event_type IN ('ENTRY', 'EXIT', 'RESOLUTION')
+      AND size IS NOT NULL
+    GROUP BY market_id
+    HAVING SUM(CASE WHEN event_type IN ('EXIT', 'RESOLUTION')
+                    THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END)
+         > SUM(CASE WHEN event_type = 'ENTRY'
+                    THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) * 1.001
+"""
 
 
 # 4a. Whole-history structural integrity — aggregates over ALL trade_events for
@@ -115,7 +146,8 @@ _WINDOWED_EVENT_COUNT_SQL = """
 """
 
 
-async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None):
+async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
+                  clean: bool = False):
     db = Database()
     await db.init()
 
@@ -134,6 +166,24 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
         since_clause = "AND event_time >= :since_ts" if since is not None else ""
         since_params = {"since_ts": since} if since is not None else {}
         window_label = f"POST-{since.strftime('%Y%m%d_%H%M%S')}" if since is not None else "ALL-TIME"
+
+        # S203 hygiene #12: optional CLEAN scope for block 5 WB-specific
+        # breakdowns. Block 3b already always-emits a CLEAN total alongside
+        # RAW; block 5 (per-side / per-city / per-lead-time / cross-tab)
+        # was previously all-time-only and could not honor --since or
+        # --clean. The hygiene fix wires both into block 5 via the prefix
+        # (CTE), since clause (event_time filter), and clean clause (market
+        # exclusion). r5/r6/r7/r9 reference `r.event_time` so the since
+        # filter applies at disposal time, matching block 3's semantic.
+        block5_clean_prefix = (
+            f"WITH contaminated AS ({_CONTAMINATION_CTE_BODY}) "
+            if clean else ""
+        )
+        block5_clean_clause = (
+            "AND r.market_id NOT IN (SELECT market_id FROM contaminated)"
+            if clean else ""
+        )
+        block5_since_clause = "AND r.event_time >= :since_ts" if since is not None else ""
 
         # 1. Open positions — mark-to-market
         r1 = await s.execute(text("""
@@ -248,18 +298,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
         # cost-basis recorded earlier. The outer SELECT applies --since so totals
         # reflect only post-fix activity on whole-history-clean markets.
         r3_clean = await s.execute(text(f"""
-            WITH contaminated AS (
-                SELECT market_id
-                FROM trade_events
-                WHERE bot_name = ANY(:bot_family)
-                  AND event_type IN ('ENTRY', 'EXIT', 'RESOLUTION')
-                  AND size IS NOT NULL
-                GROUP BY market_id
-                HAVING SUM(CASE WHEN event_type IN ('EXIT', 'RESOLUTION')
-                                THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END)
-                     > SUM(CASE WHEN event_type = 'ENTRY'
-                                THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) * 1.001
-            )
+            WITH contaminated AS ({_CONTAMINATION_CTE_BODY})
             SELECT event_type,
                    COUNT(*),
                    COALESCE(SUM(CAST(realized_pnl AS DOUBLE PRECISION)), 0),
@@ -274,19 +313,8 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
         stats_clean = r3_clean.fetchall()
         # Count contaminated markets (whole-history, no --since filter — see
         # comment above on why CTE deliberately ignores --since).
-        r3_excluded = await s.execute(text("""
-            SELECT COUNT(*) FROM (
-                SELECT market_id
-                FROM trade_events
-                WHERE bot_name = ANY(:bot_family)
-                  AND event_type IN ('ENTRY', 'EXIT', 'RESOLUTION')
-                  AND size IS NOT NULL
-                GROUP BY market_id
-                HAVING SUM(CASE WHEN event_type IN ('EXIT', 'RESOLUTION')
-                                THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END)
-                     > SUM(CASE WHEN event_type = 'ENTRY'
-                                THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) * 1.001
-            ) c
+        r3_excluded = await s.execute(text(f"""
+            SELECT COUNT(*) FROM ({_CONTAMINATION_CTE_BODY}) c
         """), {"bot_family": bot_family})
         excluded_count = int(r3_excluded.scalar() or 0)
         print(f"\n{window_label} TRADE EVENTS (clean — {excluded_count} contaminated markets excluded):")
@@ -355,12 +383,18 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
                   f"← canonical for downstream analysis")
         print(f"  Net P&L (window):           ${total_upnl + realized_exit + realized_res:+.2f}")
 
-        # 5. WeatherBot dimensional breakdowns (S159)
+        # 5. WeatherBot dimensional breakdowns (S159; --since/--clean wired S203 hygiene #12)
         if bot_name == "WeatherBot":
+            _block5_scope_label = (
+                f"{window_label.lower()}, "
+                f"{'CLEAN' if clean else 'RAW'}, "
+                f"resolution+exit"
+            )
             # Per-side breakdown: JOIN resolution/exit to their ENTRY for side.
             # WB-16: DISTINCT ON picks latest ENTRY side — if market re-entered on
             # opposite side, earlier exits misattributed. Rare for WeatherBot.
-            r5 = await s.execute(text("""
+            r5 = await s.execute(text(f"""
+                {block5_clean_prefix}
                 SELECT e_entry.side,
                        COUNT(*) AS cnt,
                        SUM(CASE WHEN r.realized_pnl > 0 THEN 1 ELSE 0 END) AS wins,
@@ -375,13 +409,15 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
                 WHERE r.bot_name = ANY(:bot_family)
                   AND r.event_type IN ('RESOLUTION', 'EXIT')
                   AND r.realized_pnl IS NOT NULL
+                  {block5_since_clause}
+                  {block5_clean_clause}
                 GROUP BY e_entry.side
                 ORDER BY e_entry.side
-            """), {"bot_family": bot_family})
+            """), {"bot_family": bot_family, **since_params})
             side_rows = r5.fetchall()
             if side_rows:
                 print(f"\n{'='*50}")
-                print(f"PER-SIDE BREAKDOWN (all-time, resolution+exit)")
+                print(f"PER-SIDE BREAKDOWN ({_block5_scope_label})")
                 print(f"{'='*50}")
                 print(f"  {'Side':<6} {'Count':>6} {'Wins':>6} {'WR%':>7} {'P&L':>12}")
                 print(f"  {'-'*40}")
@@ -390,7 +426,8 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
                     print(f"  {sr[0]:<6} {sr[1]:>6} {sr[2]:>6} {wr:>6.1f}% ${float(sr[3]):>+11.2f}")
 
             # Per-city breakdown
-            r6 = await s.execute(text("""
+            r6 = await s.execute(text(f"""
+                {block5_clean_prefix}
                 SELECT e_entry.event_data->>'city' AS city,
                        COUNT(*) AS cnt,
                        SUM(CASE WHEN r.realized_pnl > 0 THEN 1 ELSE 0 END) AS wins,
@@ -406,13 +443,15 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
                   AND r.event_type IN ('RESOLUTION', 'EXIT')
                   AND r.realized_pnl IS NOT NULL
                   AND e_entry.event_data->>'city' IS NOT NULL
+                  {block5_since_clause}
+                  {block5_clean_clause}
                 GROUP BY e_entry.event_data->>'city'
                 ORDER BY total_pnl DESC
-            """), {"bot_family": bot_family})
+            """), {"bot_family": bot_family, **since_params})
             city_rows = r6.fetchall()
             if city_rows:
                 print(f"\n{'='*50}")
-                print(f"PER-CITY BREAKDOWN (all-time, resolution+exit)")
+                print(f"PER-CITY BREAKDOWN ({_block5_scope_label})")
                 print(f"{'='*50}")
                 print(f"  {'City':<20} {'Count':>6} {'Wins':>6} {'WR%':>7} {'P&L':>12}")
                 print(f"  {'-'*55}")
@@ -421,7 +460,8 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
                     print(f"  {(cr[0] or 'unknown'):<20} {cr[1]:>6} {cr[2]:>6} {wr:>6.1f}% ${float(cr[3]):>+11.2f}")
 
             # Per-lead-time bucket
-            r7 = await s.execute(text("""
+            r7 = await s.execute(text(f"""
+                {block5_clean_prefix}
                 SELECT CASE
                          WHEN (e_entry.event_data->>'lead_time_hours')::float < 24 THEN '<24h'
                          WHEN (e_entry.event_data->>'lead_time_hours')::float < 48 THEN '24-48h'
@@ -443,13 +483,15 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
                   AND r.event_type IN ('RESOLUTION', 'EXIT')
                   AND r.realized_pnl IS NOT NULL
                   AND e_entry.event_data->>'lead_time_hours' IS NOT NULL
+                  {block5_since_clause}
+                  {block5_clean_clause}
                 GROUP BY bucket
                 ORDER BY MIN((e_entry.event_data->>'lead_time_hours')::float)
-            """), {"bot_family": bot_family})
+            """), {"bot_family": bot_family, **since_params})
             lt_rows = r7.fetchall()
             if lt_rows:
                 print(f"\n{'='*50}")
-                print(f"PER-LEAD-TIME BREAKDOWN (all-time, resolution+exit)")
+                print(f"PER-LEAD-TIME BREAKDOWN ({_block5_scope_label})")
                 print(f"{'='*50}")
                 print(f"  {'Bucket':<10} {'Count':>6} {'Wins':>6} {'WR%':>7} {'P&L':>12}")
                 print(f"  {'-'*45}")
@@ -458,7 +500,8 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
                     print(f"  {lr[0]:<10} {lr[1]:>6} {lr[2]:>6} {wr:>6.1f}% ${float(lr[3]):>+11.2f}")
 
             # S162: Side x Lead-time cross-tabulation
-            r9 = await s.execute(text("""
+            r9 = await s.execute(text(f"""
+                {block5_clean_prefix}
                 SELECT e_entry.side,
                        CASE
                          WHEN (e_entry.event_data->>'lead_time_hours')::float < 24 THEN '<24h'
@@ -481,13 +524,15 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
                   AND r.event_type IN ('RESOLUTION', 'EXIT')
                   AND r.realized_pnl IS NOT NULL
                   AND e_entry.event_data->>'lead_time_hours' IS NOT NULL
+                  {block5_since_clause}
+                  {block5_clean_clause}
                 GROUP BY e_entry.side, bucket
                 ORDER BY e_entry.side, MIN((e_entry.event_data->>'lead_time_hours')::float)
-            """), {"bot_family": bot_family})
+            """), {"bot_family": bot_family, **since_params})
             xt_rows = r9.fetchall()
             if xt_rows:
                 print(f"\n{'='*60}")
-                print(f"SIDE x LEAD-TIME CROSS-TAB (all-time, resolution+exit)")
+                print(f"SIDE x LEAD-TIME CROSS-TAB ({_block5_scope_label})")
                 print(f"{'='*60}")
                 print(f"  {'Side':<5} {'Bucket':<10} {'Count':>6} {'Wins':>6} {'WR%':>7} {'P&L':>12}")
                 print(f"  {'-'*50}")
@@ -531,9 +576,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    metavar="YYYYMMDD_HHMMSS",
                    help="Filter all-time RAW/CLEAN totals to event_time >= this UTC stamp. "
                         "Format matches deploy timestamps (e.g., 20260414_132211).")
+    p.add_argument("--clean", action="store_true", default=False,
+                   help="Apply CLEAN (whole-history-contamination-excluded) scope to "
+                        "block 5 WB-specific breakdowns (per-side, per-city, per-lead-time, "
+                        "side x lead-time). S203 hygiene #12. Mirrors edge_verification.py "
+                        "--clean semantic. Block 3b (CLEAN total) always emits regardless.")
     return p.parse_args(argv)
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    asyncio.run(bot_pnl(args.bot_name, args.hours, since=args.since))
+    asyncio.run(bot_pnl(args.bot_name, args.hours, since=args.since, clean=args.clean))
