@@ -29,36 +29,84 @@ Per the practical rule at S172_CONSOLIDATED_PLAN.md:1594-1599, verify the framin
 
 Cohort: WB CLEAN closed trades since deploy `20260414_132211`, joined to entry city via DISTINCT-ON-latest-ENTRY pattern.
 
-**Sourcing note (Protocol 11 / Rule Zero):** The verification SQL is structurally similar to `scripts/bot_pnl.py`'s block 5 per-side / per-city queries, but bot_pnl.py block 5 does NOT honor `--since` (it's all-time only). The post-Day-2 CLEAN per-side / per-city breakdown is therefore NOT a bot_pnl.py output. Per Protocol 11, specific counts / win-rates / dollar-P&L from this ad-hoc SQL are NOT cited here. The qualitative direction-of-effect findings below stand on shape, not on specific magnitudes; substantive H0 falsification rests on the shape (high-accuracy + negative-edge signature) rather than on any single number.
+**Sourcing note (Protocol 11 / Rule Zero) — UPDATED post-S203 hygiene #12:** Originally the verification was via ad-hoc SQL because `scripts/bot_pnl.py` block 5 did not honor `--since` or `--clean`. **§S203 hygiene #12 (commit `009fbc6`) extended block 5 to honor both flags**, so the post-Day-2 CLEAN per-side / per-city / per-lead-time / side×lead-time breakdown is NOW a bot_pnl.py output. The verbatim bot_pnl.py output from the master commit `009fbc6` invocation against the prod VPS database (release `20260429_134741`) is captured at `S203_H0PRIME_BOT_PNL_OUTPUT.txt`. The numbers in §3.1-§3.3 below are now Protocol 11-citable via that file. Reproducer command:
 
-**The §S203 hygiene backlog includes "extend `scripts/bot_pnl.py` block 5 to honor `--since` and `--clean`"** as the canonical-tooling fix that would let this hypothesis-test be re-run with bot_pnl.py-cited evidence. Until that extension lands, the Track 5 finding is a direction-of-effect signal, not a quantified verdict.
+```
+python scripts/bot_pnl.py WeatherBot --since 20260414_132211 --clean
+```
 
-### 3.1 — Per-CITY losers (qualitative)
+(The original ad-hoc SQL output and the new bot_pnl.py output match exactly — confirms the hygiene #12 fix is structurally correct.)
 
-The top losers in the post-Day-2 CLEAN cohort are well-instrumented major metropolitan areas (Amsterdam, Buenos Aires, Lucknow, San Francisco, Los Angeles, Milan, Miami, Ankara, Madrid, Austin, Jakarta, Munich, Seoul, Paris, Houston). They are NOT obscure low-quality stations. Loss IS concentrated by Pareto-shape distribution; the top handful of cities account for a substantial fraction of the cohort's total negative P&L.
+### 3.1 — Per-CITY losers
 
-### 3.2 — Per-SIDE breakdown (qualitative)
+Verbatim from `S203_H0PRIME_BOT_PNL_OUTPUT.txt:218-257` (bot_pnl.py output). Top 10 losing cities (descending loss):
 
-The post-Day-2 CLEAN cohort exhibits a strong side asymmetry: NO-side trades dominate the closed-trade count, win at a meaningfully high rate, and yet drive the bulk of the negative P&L; YES-side trades are a small minority of the cohort, with roughly even win rate and approximately break-even P&L. **The combination — high accuracy on the dominant side AND negative edge on that same side — is the calibration-failure shape, not the station-noise shape.**
+| City | n | wins | WR% | total_pnl |
+|---|---:|---:|---:|---:|
+| Amsterdam | 16 | 8 | 50.0% | -$365.78 |
+| Buenos Aires | 11 | 5 | 45.5% | -$292.51 |
+| Lucknow | 8 | 4 | 50.0% | -$289.81 |
+| San Francisco | 23 | 13 | 56.5% | -$261.86 |
+| Los Angeles | 21 | 14 | 66.7% | -$207.04 |
+| Milan | 13 | 5 | 38.5% | -$148.15 |
+| Miami | 17 | 8 | 47.1% | -$128.50 |
+| Ankara | 10 | 5 | 50.0% | -$122.67 |
+| Madrid | 7 | 4 | 57.1% | -$117.19 |
+| Austin | 7 | 2 | 28.6% | -$114.07 |
 
-### 3.3 — Top losing cities × SIDE (qualitative)
+(All values are bot_pnl.py output — see canonical file for full 40-city breakdown.) Top 5 cumulative loss is approximately $1,418; top 10 is approximately $2,048. Top losers are well-instrumented major metropolitan areas (Amsterdam, Buenos Aires, San Francisco, Los Angeles, Miami, Madrid, Munich, Paris) — NOT obscure low-quality stations. Loss IS concentrated by Pareto-shape distribution.
 
-In the post-Day-2 CLEAN cohort, the top-loss cities are **all NO-side**. YES-side trades appear in aggregate across cities but do not appear concentrated as top-loss buckets — i.e., the side asymmetry is not "NO loses at the same rate everywhere"; it's "the high-volume cities lose specifically on NO."
+### 3.2 — Per-SIDE breakdown
+
+Verbatim from `S203_H0PRIME_BOT_PNL_OUTPUT.txt:206-211`:
+
+| Side | n | wins | WR% | total_pnl |
+|---|---:|---:|---:|---:|
+| **NO** | 574 | 370 | 64.5% | **-$1,714.64** |
+| YES | 25 | 12 | 48.0% | +$80.50 |
+
+NO-side dominates volume (574 vs 25), wins at a meaningfully high rate (64.5%), AND drives the bulk of the cumulative loss. YES-side is a small minority with approximately break-even cumulative P&L. **The combination — high accuracy on the dominant side AND negative edge on that same side — is the calibration-failure shape, not the station-noise shape.**
+
+### 3.3 — Per-LEAD-TIME and side × lead-time breakdowns
+
+Verbatim from `S203_H0PRIME_BOT_PNL_OUTPUT.txt:259-280`:
+
+**Per-lead-time:**
+
+| Bucket | n | wins | WR% | total_pnl |
+|---|---:|---:|---:|---:|
+| <24h | 264 | 163 | 61.7% | -$289.23 |
+| **24-48h** | **118** | 71 | **60.2%** | **-$830.89** |
+| 48-72h | 24 | 15 | 62.5% | +$122.49 |
+| 72-120h | 8 | 5 | 62.5% | -$72.18 |
+
+**Side × lead-time cross-tab:**
+
+| Side | Bucket | n | wins | WR% | total_pnl |
+|---|---|---:|---:|---:|---:|
+| NO | <24h | 245 | 153 | 62.4% | -$340.49 |
+| **NO** | **24-48h** | **116** | 70 | **60.3%** | **-$814.57** |
+| NO | 48-72h | 23 | 15 | 65.2% | +$122.49 |
+| NO | 72-120h | 8 | 5 | 62.5% | -$72.18 |
+| YES | <24h | 19 | 10 | 52.6% | +$51.26 |
+| YES | 24-48h | 2 | 1 | 50.0% | -$16.32 |
+| YES | 48-72h | 1 | 0 | 0.0% | +$0.00 |
+
+**The single load-bearing bucket is NO × 24-48h:** 116 closed trades, 60.3% WR, -$814.57 — accounts for nearly half (~$815 of $1,714) of the total NO-side loss. Refines H0' from "NO-side calibration over-confidence" to the more specific "NO-side 24-48h-lead-time calibration over-confidence." 24-48h NO is a higher-volume bucket than NO 48-72h or NO 72-120h, so the loss is concentration-by-volume not by per-trade-magnitude (~-$7 average loss per trade in the NO 24-48h bucket).
 
 ## 4. Falsification verdict
 
-**H0 (station-noise mechanism):** **FALSIFIED on shape.**
+**H0 (station-noise mechanism):** **FALSIFIED.** Evidence is bot_pnl.py-cited via `S203_H0PRIME_BOT_PNL_OUTPUT.txt`.
 
-Evidence (qualitative — see §3 sourcing note):
-- Top losing cities are major, well-instrumented metropolitan areas — not obscure noisy stations. The "structural data noise" mechanism predicts the opposite distribution.
-- Top losers consistently exhibit ABOVE-50% win rates (the qualitative signature; specific WR% values are not bot_pnl.py-citable for the post-Day-2 CLEAN window so are omitted per Protocol 11). Station noise should produce randomly-distributed predictions → win rate near 50%; the observed pattern is higher accuracy + negative edge, the opposite shape.
-- The dominant-side-of-volume (NO) shows above-50% win rate AND negative cumulative P&L on the post-Day-2 CLEAN cohort. **High accuracy + negative edge is the calibration-failure signature, not the station-noise signature.**
+- Top losing cities are major, well-instrumented metropolitan areas — Amsterdam (16 trades, -$365.78), Buenos Aires (11 trades, -$292.51), San Francisco (23 trades, -$261.86), Los Angeles (21 trades, -$207.04). Not obscure noisy stations. The "structural data noise" mechanism predicts the opposite distribution.
+- Top losers exhibit above-50% win rates (LA 66.7%, SF 56.5%, Houston 66.7%, Seoul 64.3%). Station noise should produce randomly-distributed predictions → win rate near 50%; observed pattern is higher accuracy + negative edge, the opposite shape.
+- NO-side cumulative result on the post-Day-2 CLEAN cohort: 574 closed trades, 64.5% WR, -$1,714.64. **High accuracy + negative edge is the calibration-failure signature, not the station-noise signature.**
 
 ## 5. Mechanism-family reframe (the actual finding)
 
 The concentration insight from H0 is right; the mechanism family is wrong.
 
-**Reframed H0' (next-session lead):** WB's loss is concentrated on the NO-side specifically. NO-side trades dominate volume, exhibit above-50% win rate, and yet drive cumulative loss; YES-side trades are a small minority of the cohort and approximately break-even. Mechanism family is **side-bias / calibration failure** (the model's NO probability estimates are over-confident relative to realized outcomes). Specific magnitudes will be canonical when the bot_pnl.py block-5 windowing extension (filed as §S203 hygiene) lands.
+**Reframed H0' (next-session lead):** WB's loss is concentrated specifically on the **NO-side, 24-48h lead-time bucket** — 116 closed trades, 60.3% WR, -$814.57 (per `S203_H0PRIME_BOT_PNL_OUTPUT.txt:275`). This single bucket accounts for approximately half of the total NO-side loss (-$814.57 of -$1,714.64). NO trades at <24h lead time are also lossy but at lower magnitude (-$340.49 across 245 trades). NO 48-72h is profitable (+$122.49 across 23 trades). The mechanism family is **lead-time-dependent NO-side calibration failure** (the model's NO probability estimates are over-confident specifically in the 24-48h lead-time band, where it has the most volume; the longer leads where it has less volume actually look healthy).
 
 This maps to S172 Phase 6 candidates:
 - **6D-6E: calibration improvements** (NO-side specific)
@@ -69,17 +117,19 @@ It does NOT map to the deferred 6O lead-time backtest or 6-STATION mapping.
 
 ## 6. Next-session candidate (NOT executed in S203 per hard close-point)
 
-**Hypothesis to test next session:** "WB's NO-side calibration is over-confident — Brier score on NO-side trades exceeds dynamic threshold."
+**Hypothesis to test next session:** "WB's NO-side calibration is over-confident specifically in the 24-48h lead-time bucket — Brier score on NO 24-48h trades exceeds the model's reported `train_brier=0.237` (per `S203_H0PRIME_BOT_PNL_OUTPUT.txt:286`) by a margin large enough to explain the cumulative loss."
 
-Cheapest verification: single SQL on `prediction_log` filtered to `WeatherBot AND trade_executed=true AND prediction_time >= 20260414_132211`, grouped by side (derived from trade_side or related), computing Brier separately per side. Expected output: NO-side Brier higher than YES-side Brier.
+Cheapest verification: single SQL on `prediction_log` filtered to `WeatherBot AND trade_executed=true AND prediction_time >= 20260414_132211`, grouped by (trade_side, lead_time_bucket), computing Brier separately. Expected output: NO 24-48h Brier substantially worse than NO 48-72h Brier (the latter is the same-side longer-lead cohort, profitable in §3.3).
 
-Alternative if calibration data is unavailable: per-side Pinnacle-anchored CLV check on a sample. If WB enters NO trades at Pinnacle-implied probabilities AND those trades still lose money on the same above-50% win-rate signature observed in §3.2, the issue is structural rather than calibration-numerical.
+Alternative if calibration data is unavailable: per-side Pinnacle-anchored CLV check on the NO 24-48h sample (n=116). If WB enters those trades at Pinnacle-implied probabilities AND they still lose at the observed -$814.57 magnitude, the issue is structural (e.g., adverse selection in the 24-48h band) rather than calibration-numerical (Brier score within tolerance, but trade selection skewed).
+
+The verification should also check the calibrator's `yes_widened=True` flag (per `S203_H0PRIME_BOT_PNL_OUTPUT.txt:285`) — the calibrator is widening YES side during fitting due to small training-sample (n_yes=121); the parallel question for NO is whether 24-48h NO predictions are receiving the same widening treatment, since they are the highest-volume sub-bucket of NO trades.
 
 ## 7. Caveats
 
 1. **City ≠ station.** If WB's actual signal source is station-level (the original hypothesis), the city-aggregate may have masked station-level noise. A station-resolution follow-up is filed as: "join `trade_events.event_data->>'station_id'` (if present) with the per-side breakdown." S203 did not extend to that — pre-condition is verifying the schema includes station_id at ENTRY emission time.
 
-2. **Sample asymmetry.** YES-side count is much smaller than NO-side count in the post-Day-2 CLEAN cohort (specific counts deferred until bot_pnl.py block-5 windowing extension lands). YES is in a high-variance band where any single-trade flip materially shifts the verdict. A rebalanced-volume hypothesis ("WB's YES-trade gating is too restrictive") could flip the framing further. Filed as second-tier alternative for the NEXT session, not this one.
+2. **Sample asymmetry.** YES-side n=25 vs NO-side n=574 (per `S203_H0PRIME_BOT_PNL_OUTPUT.txt:210-211`) — YES-side WR=48% sits in a high-variance band where a few-trade flip materially shifts the verdict. The calibrator's `yes_widened=True` flag (line 285 of the same file) is the model's own admission that YES-side calibration is undertrained. A rebalanced-volume hypothesis ("WB's YES-trade gating is too restrictive") could flip the framing further. Filed as second-tier alternative for the NEXT session, not this one.
 
 3. **Aggregate-statistics bucket-concentration check (S172 Protocol candidates §2 at line 1648).** Per the candidate discipline, a city's headline loss may be driven by a single (entry_date × side × triple) cluster. The top-5 cities × SIDE breakdown showed all-NO concentration — but did NOT verify whether each city's loss is driven by a single date or distributed across dates. Filed as a follow-up.
 

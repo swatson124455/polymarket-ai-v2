@@ -1,0 +1,287 @@
+=== WeatherBot P&L Report (last 24h) ===
+
+OPEN POSITIONS (1):
+Market         Side   Shares   Entry    Curr      Cost     Value      uPnL
+--------------------------------------------------------------------------------
+0x00800b9db7..   NO     22.0  0.8300  0.0005 $   18.26 $    0.01 $  -18.25
+--------------------------------------------------------------------------------
+TOTAL                                        $   18.26 $    0.01 $  -18.25
+
+TRADE EVENTS (last 24h):
+  Entries: 1
+    02:22 0x00800b9db7.. NO sz=22.0 @ 0.8500 fee=$0.00
+  Exits: 0
+  Resolutions: 1
+    09:37 0x0cac32fb1a.. pnl=$+17.36
+
+POST-20260414_132211 TRADE EVENTS (raw — includes contaminated markets):
+  ENTRY        count=370   realized=$     +0.00  fees=$    0.00
+  EXIT         count=88    realized=$    +94.69  fees=$    0.00
+  RESOLUTION   count=547   realized=$  -2074.06  fees=$    0.00
+  SHADOW_ENTRY count=201   realized=$     +0.00  fees=$    0.00
+  TOTAL              realized=$  -1979.37  fees=$    0.00
+
+POST-20260414_132211 TRADE EVENTS (clean — 101 contaminated markets excluded):
+  ENTRY        count=357   realized=$     +0.00  fees=$    0.00
+  EXIT         count=80    realized=$    +70.55  fees=$    0.00
+  RESOLUTION   count=519   realized=$  -1704.69  fees=$    0.00
+  SHADOW_ENTRY count=195   realized=$     +0.00  fees=$    0.00
+  TOTAL              realized=$  -1634.14  fees=$    0.00
+  ↑ Use this CLEAN total for downstream analysis (Phase 7 elevation gate, retune evaluations, etc.).
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+WHOLE-HISTORY DATA INTEGRITY WARNINGS (101):
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  0x02f61153ab9b..: entry=0.1 exit=0.0 res=5.0 (disposal 5.0 > entry 0.1)
+  0x052591da21e7..: entry=0.8 exit=0.0 res=50.5 (disposal 50.5 > entry 0.8)
+  0x078d34285f81..: entry=0.0 exit=0.0 res=1.4 (disposal 1.4 > entry 0.0)
+  0x085bf9a7c7f6..: entry=0.0 exit=0.0 res=1.9 (disposal 1.9 > entry 0.0)
+  0x093e72054027..: entry=0.1 exit=0.0 res=2.8 (disposal 2.8 > entry 0.1)
+  0x0dc4f218a0da..: entry=61.2 exit=0.0 res=94.3 (disposal 94.3 > entry 61.2)
+  0x0e29abba3c6d..: entry=62.4 exit=40.2 res=40.2 (disposal 80.5 > entry 62.4)
+  0x0e946ed7ad76..: entry=0.1 exit=0.0 res=5.0 (disposal 5.0 > entry 0.1)
+  0x14ba16606bc6..: entry=1.3 exit=0.0 res=62.5 (disposal 62.5 > entry 1.3)
+  0x15031071b692..: entry=102.3 exit=70.4 res=70.2 (disposal 140.6 > entry 102.3)
+  0x1b30c38b1774..: entry=0.1 exit=0.0 res=3.0 (disposal 3.0 > entry 0.1)
+  0x1b55a2a9c706..: entry=111.0 exit=62.3 res=62.3 (disposal 124.6 > entry 111.0)
+  0x1e20ae25d17e..: entry=0.2 exit=0.0 res=8.8 (disposal 8.8 > entry 0.2)
+  0x1f48ca87e770..: entry=50.4 exit=26.0 res=26.0 (disposal 52.0 > entry 50.4)
+  0x217da87f05bb..: entry=54.7 exit=32.8 res=32.8 (disposal 65.7 > entry 54.7)
+  0x22225c9d1dea..: entry=0.0 exit=0.0 res=2.1 (disposal 2.1 > entry 0.0)
+  0x23420b92b32a..: entry=0.1 exit=0.0 res=2.7 (disposal 2.7 > entry 0.1)
+  0x24479048cbf3..: entry=0.3 exit=0.0 res=17.0 (disposal 17.0 > entry 0.3)
+  0x25430c5da51f..: entry=68.2 exit=31.3 res=102.2 (disposal 133.5 > entry 68.2)
+  0x26b0e8b95d8d..: entry=0.1 exit=0.0 res=5.0 (disposal 5.0 > entry 0.1)
+  0x2916e05c83a8..: entry=0.0 exit=0.0 res=2.1 (disposal 2.1 > entry 0.0)
+  0x2b05151c91bf..: entry=80.6 exit=30.2 res=74.1 (disposal 104.3 > entry 80.6)
+  0x2f8550f828b9..: entry=0.0 exit=0.0 res=0.5 (disposal 0.5 > entry 0.0)
+  0x318e6ed049c0..: entry=101.3 exit=35.3 res=129.9 (disposal 165.2 > entry 101.3)
+  0x34cacb9414bf..: entry=193.0 exit=155.4 res=155.4 (disposal 310.9 > entry 193.0)
+  0x34f456f5b347..: entry=0.7 exit=0.0 res=34.1 (disposal 34.1 > entry 0.7)
+  0x38cdb140cbee..: entry=86.4 exit=46.1 res=46.1 (disposal 92.2 > entry 86.4)
+  0x3c6be6b89e92..: entry=0.3 exit=0.0 res=14.1 (disposal 14.1 > entry 0.3)
+  0x3d25519a0416..: entry=0.4 exit=0.0 res=21.4 (disposal 21.4 > entry 0.4)
+  0x45beeb00af44..: entry=1.6 exit=0.0 res=79.1 (disposal 79.1 > entry 1.6)
+  0x4689e52f5b9e..: entry=0.1 exit=0.0 res=3.3 (disposal 3.3 > entry 0.1)
+  0x49634b7b65f8..: entry=0.1 exit=0.0 res=3.1 (disposal 3.1 > entry 0.1)
+  0x4ec03aa7bd9d..: entry=0.1 exit=0.0 res=5.0 (disposal 5.0 > entry 0.1)
+  0x51f0668fba49..: entry=35.6 exit=0.0 res=279.4 (disposal 279.4 > entry 35.6)
+  0x5543dd8e6588..: entry=0.3 exit=0.0 res=12.7 (disposal 12.7 > entry 0.3)
+  0x562e6a4cd106..: entry=0.7 exit=0.0 res=43.9 (disposal 43.9 > entry 0.7)
+  0x57e1ba8e4a15..: entry=1.3 exit=0.0 res=84.5 (disposal 84.5 > entry 1.3)
+  0x5b0ae9a54c75..: entry=0.0 exit=0.0 res=2.0 (disposal 2.0 > entry 0.0)
+  0x5c2611cc7512..: entry=0.0 exit=0.0 res=0.1 (disposal 0.1 > entry 0.0)
+  0x5d3615b1d929..: entry=158.7 exit=40.3 res=437.3 (disposal 477.6 > entry 158.7)
+  0x5ee7f9865c6a..: entry=42.3 exit=0.0 res=87.2 (disposal 87.2 > entry 42.3)
+  0x660a7c610c09..: entry=168.9 exit=0.0 res=399.9 (disposal 399.9 > entry 168.9)
+  0x66e0d437bcfd..: entry=0.0 exit=0.0 res=1.0 (disposal 1.0 > entry 0.0)
+  0x679eb040114a..: entry=135.9 exit=101.3 res=80.2 (disposal 181.4 > entry 135.9)
+  0x67dfcb372506..: entry=1.1 exit=0.0 res=53.4 (disposal 53.4 > entry 1.1)
+  0x6cd5d4095bf1..: entry=0.2 exit=0.0 res=11.2 (disposal 11.2 > entry 0.2)
+  0x6d417eccfc02..: entry=0.7 exit=0.0 res=34.8 (disposal 34.8 > entry 0.7)
+  0x6f1869b73de8..: entry=1.8 exit=0.0 res=119.9 (disposal 119.9 > entry 1.8)
+  0x7309f1e999e4..: entry=0.1 exit=0.0 res=5.9 (disposal 5.9 > entry 0.1)
+  0x744bf7b8a7ab..: entry=64.5 exit=0.0 res=180.3 (disposal 180.3 > entry 64.5)
+  0x7c2970804a0d..: entry=21.9 exit=0.0 res=22.2 (disposal 22.2 > entry 21.9)
+  0x7f1961693b16..: entry=22.1 exit=0.0 res=52.4 (disposal 52.4 > entry 22.1)
+  0x7f2d643a3bc1..: entry=0.4 exit=0.0 res=18.5 (disposal 18.5 > entry 0.4)
+  0x7f3972df7f58..: entry=48.9 exit=0.0 res=135.4 (disposal 135.4 > entry 48.9)
+  0x800d33674a3b..: entry=0.0 exit=0.0 res=0.2 (disposal 0.2 > entry 0.0)
+  0x83d03e84e4a4..: entry=0.4 exit=0.0 res=19.3 (disposal 19.3 > entry 0.4)
+  0x8699e2904163..: entry=0.3 exit=0.0 res=13.8 (disposal 13.8 > entry 0.3)
+  0x8a05b73b0546..: entry=0.0 exit=0.0 res=0.1 (disposal 0.1 > entry 0.0)
+  0x8ec34aa63f96..: entry=45.4 exit=32.4 res=32.4 (disposal 64.9 > entry 45.4)
+  0x91414a9456e6..: entry=205.7 exit=0.0 res=856.8 (disposal 856.8 > entry 205.7)
+  0x92c5cb953c42..: entry=61.0 exit=22.8 res=47.2 (disposal 70.0 > entry 61.0)
+  0x9308414b72c0..: entry=8.0 exit=0.6 res=8.0 (disposal 8.6 > entry 8.0)
+  0x93e96bf09ad3..: entry=106.5 exit=61.0 res=58.9 (disposal 119.9 > entry 106.5)
+  0x974756e07f99..: entry=0.4 exit=0.0 res=20.3 (disposal 20.3 > entry 0.4)
+  0x991c81547156..: entry=0.5 exit=0.0 res=24.0 (disposal 24.0 > entry 0.5)
+  0x9b9c90341bd8..: entry=0.4 exit=0.0 res=25.5 (disposal 25.5 > entry 0.4)
+  0x9c7f563fa78d..: entry=0.1 exit=0.0 res=5.0 (disposal 5.0 > entry 0.1)
+  0xa3ed0e5afd93..: entry=0.1 exit=0.0 res=4.7 (disposal 4.7 > entry 0.1)
+  0xa3f706b6a724..: entry=92.5 exit=52.9 res=301.9 (disposal 354.7 > entry 92.5)
+  0xa57b33ecb55f..: entry=3.3 exit=0.0 res=222.0 (disposal 222.0 > entry 3.3)
+  0xa764ccd5add0..: entry=1.0 exit=0.0 res=67.8 (disposal 67.8 > entry 1.0)
+  0xa83c6c88311d..: entry=0.1 exit=0.0 res=4.0 (disposal 4.0 > entry 0.1)
+  0xa91712110abb..: entry=0.3 exit=0.0 res=17.5 (disposal 17.5 > entry 0.3)
+  0xaf8f597404d7..: entry=1.6 exit=0.0 res=104.2 (disposal 104.2 > entry 1.6)
+  0xb33634ade7fc..: entry=173.3 exit=124.2 res=205.8 (disposal 329.9 > entry 173.3)
+  0xb35fd31acd70..: entry=164.8 exit=0.0 res=168.0 (disposal 168.0 > entry 164.8)
+  0xbbc435130661..: entry=0.3 exit=0.0 res=15.8 (disposal 15.8 > entry 0.3)
+  0xbbd11420de0f..: entry=81.8 exit=69.9 res=196.6 (disposal 266.5 > entry 81.8)
+  0xc1d74c9ea77a..: entry=0.1 exit=0.0 res=5.0 (disposal 5.0 > entry 0.1)
+  0xc206a70ddc40..: entry=134.5 exit=69.9 res=67.7 (disposal 137.6 > entry 134.5)
+  0xc61fdda5829c..: entry=0.1 exit=0.0 res=3.6 (disposal 3.6 > entry 0.1)
+  0xca233e6b4aa0..: entry=82.2 exit=25.7 res=84.2 (disposal 109.8 > entry 82.2)
+  0xcb0e08af8845..: entry=0.4 exit=0.0 res=21.0 (disposal 21.0 > entry 0.4)
+  0xcb43e0437c1f..: entry=69.8 exit=36.4 res=71.3 (disposal 107.8 > entry 69.8)
+  0xce0a0500bb2f..: entry=0.0 exit=0.0 res=2.0 (disposal 2.0 > entry 0.0)
+  0xd3f2795d3787..: entry=2.6 exit=0.0 res=176.5 (disposal 176.5 > entry 2.6)
+  0xd54044b85d6f..: entry=95.3 exit=35.9 res=150.5 (disposal 186.4 > entry 95.3)
+  0xd66e52a016a8..: entry=0.1 exit=0.0 res=4.5 (disposal 4.5 > entry 0.1)
+  0xd835ac6c6c01..: entry=0.0 exit=0.0 res=0.1 (disposal 0.1 > entry 0.0)
+  0xda6f0fa7d609..: entry=0.2 exit=0.0 res=14.6 (disposal 14.6 > entry 0.2)
+  0xe0c1a994d9db..: entry=181.8 exit=123.4 res=116.5 (disposal 239.9 > entry 181.8)
+  0xe20ceca5ae5f..: entry=74.0 exit=46.3 res=120.5 (disposal 166.8 > entry 74.0)
+  0xe891f6925f7c..: entry=0.2 exit=0.0 res=8.6 (disposal 8.6 > entry 0.2)
+  0xe9268194e0cd..: entry=0.1 exit=0.0 res=5.0 (disposal 5.0 > entry 0.1)
+  0xeeb472dd0b8a..: entry=0.6 exit=0.0 res=28.6 (disposal 28.6 > entry 0.6)
+  0xf0ab30740709..: entry=0.1 exit=0.0 res=5.0 (disposal 5.0 > entry 0.1)
+  0xf1a7ed35cb2e..: entry=11.5 exit=0.9 res=11.5 (disposal 12.5 > entry 11.5)
+  0xf4de2e042733..: entry=0.1 exit=0.0 res=5.0 (disposal 5.0 > entry 0.1)
+  0xf82f0d4a8485..: entry=160.7 exit=30.7 res=223.5 (disposal 254.2 > entry 160.7)
+  0xfde1599f8811..: entry=0.5 exit=0.0 res=25.0 (disposal 25.0 > entry 0.5)
+  0xfed74aae10fb..: entry=0.1 exit=0.0 res=5.2 (disposal 5.2 > entry 0.1)
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+POST-20260414_132211 EVENT-COUNT DIAGNOSTIC (top 50 by disposal volume):
+  Market            #ENTRY   #EXIT    #RES
+  ------------------------------------------
+  0x00bfe149b087..       1       1       1
+  0x02cc6619c99f..       1       1       1
+  0x0307657d3b0b..       2       1       1
+  0x031adde26966..       2       1       1
+  0x03bc2dd9dc3b..       2       1       1
+  0x0545a3c285aa..       1       1       1
+  0x06dc49737b48..       2       1       1
+  0x07a47b2480fa..       2       1       1
+  0x0e2702d34727..       1       1       1
+  0x0e29abba3c6d..       1       1       1
+  0x11402aeadcbf..       1       1       1
+  0x123d577f6142..       2       1       1
+  0x127d1524cc3f..       2       1       1
+  0x12f1b1ebc1c4..       2       1       1
+  0x1644a9726f47..       2       1       1
+  0x1ad56eee1163..       2       1       1
+  0x1b55a2a9c706..       1       1       1
+  0x1f48ca87e770..       1       1       1
+  0x2459679fcf2c..       2       1       1
+  0x25430c5da51f..       2       1       1
+  0x318e6ed049c0..       2       1       1
+  0x362c989436a0..       2       1       1
+  0x389907f73aa6..       0       1       1
+  0x3faa94bd94d9..       2       1       1
+  0x484d84c08c59..       2       1       1
+  0x4a6ad916590f..       2       1       1
+  0x4d33ec1bc6e9..       2       1       1
+  0x51a524cf9130..       2       1       1
+  0x5ac92fde4b2d..       2       1       1
+  0x624db43d700f..       1       1       1
+  0x6723961855ae..       2       1       1
+  0x71f33d51cd70..       2       1       1
+  0x750bd8bd136b..       2       1       1
+  0x76d9af80b7e2..       0       1       1
+  0x8dfe55bf7648..       2       1       1
+  0x8e6cca821a71..       0       1       1
+  0x92c5cb953c42..       2       1       1
+  0x941a4a162df2..       2       1       1
+  0xa17d04c3da6f..       0       1       1
+  0xa2019ed14684..       2       1       1
+  0xa865b860cb55..       1       1       1
+  0xbe47c4384e80..       1       1       1
+  0xc2ae65565602..       2       1       1
+  0xcb43e0437c1f..       2       1       1
+  0xcc087c71149d..       2       1       1
+  0xd942af78363e..       2       1       1
+  0xda84e5d99276..       1       1       1
+  0xda9b4023aed7..       3       1       1
+  0xe0c1a994d9db..       2       1       1
+  0xf5fbd3c8d9fd..       2       1       1
+
+==================================================
+SUMMARY
+==================================================
+  Open positions:     1
+  Total cost basis:   $18.26
+  Total mkt value:    $0.01
+  Unrealized P&L:     $-18.25
+  Realized (exits):   $+0.00  (last 24h)
+  Realized (resol):   $+17.36  (last 24h)
+  post-20260414_132211 realized (raw):    $-1979.37
+  post-20260414_132211 realized (clean):  $-1634.14  ← canonical for downstream analysis
+  Net P&L (window):           $-0.89
+
+==================================================
+PER-SIDE BREAKDOWN (post-20260414_132211, CLEAN, resolution+exit)
+==================================================
+  Side    Count   Wins     WR%          P&L
+  ----------------------------------------
+  NO        574    370   64.5% $   -1714.64
+  YES        25     12   48.0% $     +80.50
+
+==================================================
+PER-CITY BREAKDOWN (post-20260414_132211, CLEAN, resolution+exit)
+==================================================
+  City                  Count   Wins     WR%          P&L
+  -------------------------------------------------------
+  New York City            15     13   86.7% $    +177.04
+  Seattle                  20     13   65.0% $    +168.07
+  Wellington                8      6   75.0% $    +161.22
+  Wuhan                     2      2  100.0% $    +145.80
+  São Paulo                10      8   80.0% $    +141.55
+  Atlanta                  19     13   68.4% $    +140.82
+  London                   23     15   65.2% $    +112.94
+  Tokyo                    13      8   61.5% $     +96.29
+  Hong Kong                 8      5   62.5% $     +76.76
+  Chengdu                   2      2  100.0% $     +44.15
+  Chicago                   9      6   66.7% $     +38.84
+  Tel Aviv                 10      7   70.0% $     +35.34
+  Singapore                 7      6   85.7% $     +35.26
+  Beijing                   2      2  100.0% $     +33.82
+  Helsinki                  3      2   66.7% $     +18.90
+  Chongqing                 2      1   50.0% $     +17.77
+  Warsaw                    8      5   62.5% $     +16.13
+  Shanghai                  6      4   66.7% $      -1.92
+  Dallas                   16      9   56.2% $      -9.46
+  Mexico City               2      1   50.0% $     -14.56
+  Istanbul                  8      6   75.0% $     -15.30
+  Denver                   11      5   45.5% $     -20.15
+  Toronto                  17     11   64.7% $     -20.76
+  Moscow                    5      4   80.0% $     -21.57
+  Shenzhen                  1      0    0.0% $     -35.13
+  Houston                  12      8   66.7% $     -47.71
+  Paris                    15      8   53.3% $     -58.54
+  Seoul                    14      9   64.3% $     -60.80
+  Munich                   11      6   54.5% $     -69.29
+  Jakarta                   2      1   50.0% $    -107.75
+  Austin                    7      2   28.6% $    -114.07
+  Madrid                    7      4   57.1% $    -117.19
+  Ankara                   10      5   50.0% $    -122.67
+  Miami                    17      8   47.1% $    -128.50
+  Milan                    13      5   38.5% $    -148.15
+  Los Angeles              21     14   66.7% $    -207.04
+  San Francisco            23     13   56.5% $    -261.86
+  Lucknow                   8      4   50.0% $    -289.81
+  Buenos Aires             11      5   45.5% $    -292.51
+  Amsterdam                16      8   50.0% $    -365.78
+
+==================================================
+PER-LEAD-TIME BREAKDOWN (post-20260414_132211, CLEAN, resolution+exit)
+==================================================
+  Bucket      Count   Wins     WR%          P&L
+  ---------------------------------------------
+  <24h          264    163   61.7% $    -289.23
+  24-48h        118     71   60.2% $    -830.89
+  48-72h         24     15   62.5% $    +122.49
+  72-120h         8      5   62.5% $     -72.18
+
+============================================================
+SIDE x LEAD-TIME CROSS-TAB (post-20260414_132211, CLEAN, resolution+exit)
+============================================================
+  Side  Bucket      Count   Wins     WR%          P&L
+  --------------------------------------------------
+  NO    <24h          245    153   62.4% $    -340.49
+  NO    24-48h        116     70   60.3% $    -814.57
+  NO    48-72h         23     15   65.2% $    +122.49
+  NO    72-120h         8      5   62.5% $     -72.18
+  YES   <24h           19     10   52.6% $     +51.26
+  YES   24-48h          2      1   50.0% $     -16.32
+  YES   48-72h          1      0    0.0% $      +0.00
+
+==================================================
+CALIBRATOR STATUS (latest fit)
+==================================================
+  n_no=420  n_yes=121  holdout=valid  yes_widened=True
+  train_brier=0.237  oos_brier=None  raw_oos_brier=None
+  fitted=True  ts=2026-04-29T17:53:38.722751+00:00
