@@ -195,14 +195,16 @@ class TestBlock4Split:
         assert "* 1.001" in sql, "1.001 disposal-vs-entry tolerance must be preserved"
         assert "EXIT" in sql and "RESOLUTION" in sql and "ENTRY" in sql
 
-    def test_integrity_sql_takes_only_bot_param(self):
-        # No leak of windowing-era parameters.
+    def test_integrity_sql_takes_only_bot_family_param(self):
+        # No leak of windowing-era parameters. S203: param renamed from
+        # :bot to :bot_family to support EsportsBot/EsportsBotV2 union.
         sql = bot_pnl._INTEGRITY_SQL_ALL_TIME
-        assert ":bot" in sql
+        assert ":bot_family" in sql
         # Single bound name expected; sanity-check by counting placeholder
-        # tokens that are not inside CAST() or CASE keywords.
-        assert sql.count(":") == sql.count(":bot"), (
-            "integrity SQL should bind only :bot"
+        # tokens. :since_ts must NOT be present — block 4a is whole-history.
+        assert ":since_ts" not in sql
+        assert sql.count(":") == sql.count(":bot_family"), (
+            "integrity SQL should bind only :bot_family"
         )
 
     def test_windowed_event_count_filters_by_since(self):
@@ -250,3 +252,62 @@ class TestBlock4Split:
         # not; windowed has the time bound, integrity does not.
         assert "1.001" in integrity and "1.001" not in windowed
         assert "event_time" not in integrity and "event_time" in windowed
+
+
+class TestExpandBotFamily:
+    """S203 EB family-union: bot_pnl.py treats EsportsBot+EsportsBotV2 as one
+    cohort because v1 stops trading at the v2 flag flip. Other bots map to
+    themselves. This test class pins the routing rule offline (DB execution
+    is verified during prod runs).
+
+    Why pinned: this is the load-bearing rule that prevents post-flip silent
+    cohort-split when an operator runs `bot_pnl.py EsportsBot` and EB v2 has
+    rows in trade_events. Without this rule, the canonical Protocol 6/11
+    P&L source would mis-report. See S203_EB_ROUTING_AUDIT.md §3.1.
+    """
+
+    def test_esports_v1_expands_to_family(self):
+        family = bot_pnl._expand_bot_family("EsportsBot")
+        assert family == ["EsportsBot", "EsportsBotV2"]
+
+    def test_esports_v2_expands_to_family(self):
+        # Symmetric: querying with v2 name returns the same union, so the
+        # operator gets the family regardless of which name they pass.
+        family = bot_pnl._expand_bot_family("EsportsBotV2")
+        assert family == ["EsportsBot", "EsportsBotV2"]
+
+    def test_weatherbot_is_singleton(self):
+        family = bot_pnl._expand_bot_family("WeatherBot")
+        assert family == ["WeatherBot"]
+
+    def test_mirrorbot_is_singleton(self):
+        family = bot_pnl._expand_bot_family("MirrorBot")
+        assert family == ["MirrorBot"]
+
+    def test_unknown_bot_is_singleton(self):
+        # Default branch: any bot not in the family map maps to itself.
+        # Prevents silent omission for new bots added to BOT_REGISTRY.
+        family = bot_pnl._expand_bot_family("FutureBotV3")
+        assert family == ["FutureBotV3"]
+
+    def test_returns_new_list_each_call(self):
+        # Must NOT return a shared reference — caller could mutate the
+        # canonical family list otherwise. The helper returns list(...) of
+        # the cached entry; assert that two calls produce distinct objects.
+        a = bot_pnl._expand_bot_family("EsportsBot")
+        b = bot_pnl._expand_bot_family("EsportsBot")
+        assert a == b
+        assert a is not b
+
+    def test_sql_uses_any_bot_family_not_exact_match(self):
+        # The integrity SQL must use ANY(:bot_family) — exact-match
+        # `bot_name = :bot` is the pre-S203 shape and would silently drop
+        # cross-family rows.
+        sql = bot_pnl._INTEGRITY_SQL_ALL_TIME
+        assert "ANY(:bot_family)" in sql
+        assert "bot_name = :bot " not in sql
+        assert "bot_name = :bot\n" not in sql
+
+    def test_windowed_sql_uses_any_bot_family(self):
+        sql = bot_pnl._WINDOWED_EVENT_COUNT_SQL
+        assert "ANY(:bot_family)" in sql

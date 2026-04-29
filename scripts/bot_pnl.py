@@ -55,6 +55,27 @@ def parse_deploy_timestamp(ts: str) -> datetime:
     return datetime.strptime(ts, "%Y%m%d_%H%M%S")
 
 
+# S203: EsportsBot and EsportsBotV2 are the same logical bot family for P&L
+# reporting — v1 stops trading at the v2 flag flip and v2 takes over the same
+# capital allocation. Querying by either name returns the union so the
+# operator's "how is the EB family doing" question survives the transition
+# without silent cohort-split. See S203_EB_ROUTING_AUDIT.md §3.1.
+_BOT_FAMILIES = {
+    "EsportsBot": ["EsportsBot", "EsportsBotV2"],
+    "EsportsBotV2": ["EsportsBot", "EsportsBotV2"],
+}
+
+
+def _expand_bot_family(bot_name: str) -> list[str]:
+    """Map a bot_name to its query-family list.
+
+    Returns a list with at least one element. Other bots map to themselves.
+    Use the result with `WHERE bot_name = ANY(:bot_family)` so the SQL
+    handles the singleton and family cases uniformly.
+    """
+    return list(_BOT_FAMILIES.get(bot_name, [bot_name]))
+
+
 # 4a. Whole-history structural integrity — aggregates over ALL trade_events for
 # the bot, never windowed. Integrity is a property of a market's full lifetime:
 # `event_time >=` filtering inside the per-market HAVING aggregation strips
@@ -67,7 +88,7 @@ _INTEGRITY_SQL_ALL_TIME = """
            SUM(CASE WHEN event_type = 'EXIT' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS exit_sz,
            SUM(CASE WHEN event_type = 'RESOLUTION' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) AS res_sz
     FROM trade_events
-    WHERE bot_name = :bot
+    WHERE bot_name = ANY(:bot_family)
     GROUP BY market_id
     HAVING SUM(CASE WHEN event_type IN ('EXIT', 'RESOLUTION') THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END)
          > SUM(CASE WHEN event_type = 'ENTRY' THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) * 1.001
@@ -85,7 +106,7 @@ _WINDOWED_EVENT_COUNT_SQL = """
            SUM(CASE WHEN event_type = 'EXIT' THEN 1 ELSE 0 END) AS n_exit,
            SUM(CASE WHEN event_type = 'RESOLUTION' THEN 1 ELSE 0 END) AS n_res
     FROM trade_events
-    WHERE bot_name = :bot
+    WHERE bot_name = ANY(:bot_family)
       AND event_time >= :since_ts
     GROUP BY market_id
     ORDER BY (SUM(CASE WHEN event_type IN ('EXIT', 'RESOLUTION') THEN 1 ELSE 0 END)) DESC,
@@ -97,6 +118,12 @@ _WINDOWED_EVENT_COUNT_SQL = """
 async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None):
     db = Database()
     await db.init()
+
+    # S203: union v1+v2 for the EB family so post-flag-flip queries return a
+    # single cohort regardless of which name the operator passes. Singletons
+    # for all other bots — see _expand_bot_family docstring.
+    bot_family = _expand_bot_family(bot_name)
+
     async with db.get_session() as s:
         from sqlalchemy import text
 
@@ -113,13 +140,16 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
             SELECT p.market_id, p.side, p.size, p.entry_price, p.current_price,
                    p.unrealized_pnl, p.opened_at
             FROM positions p
-            WHERE (p.bot_id = :bot OR p.source_bot = :bot)
+            WHERE (p.bot_id = ANY(:bot_family) OR p.source_bot = ANY(:bot_family))
               AND p.status = 'open'
             ORDER BY p.opened_at DESC
-        """), {"bot": bot_name})
+        """), {"bot_family": bot_family})
         positions = r1.fetchall()
 
-        print(f"=== {bot_name} P&L Report (last {hours}h) ===\n")
+        print(f"=== {bot_name} P&L Report (last {hours}h) ===")
+        if bot_family != [bot_name]:
+            print(f"    [family-union: querying {bot_family}]")
+        print()
 
         total_cost = 0.0
         total_upnl = 0.0
@@ -149,10 +179,10 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
             SELECT event_type, market_id, side, size, price, fees,
                    realized_pnl, event_time, correlation_id
             FROM trade_events
-            WHERE bot_name = :bot
+            WHERE bot_name = ANY(:bot_family)
               AND event_time > NOW() - INTERVAL '1 hour' * :hours
             ORDER BY event_time DESC
-        """), {"bot": bot_name, "hours": hours})
+        """), {"bot_family": bot_family, "hours": hours})
         events = r2.fetchall()
 
         entries = [e for e in events if e[0] == 'ENTRY']
@@ -185,11 +215,11 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
                    COALESCE(SUM(CAST(realized_pnl AS DOUBLE PRECISION)), 0),
                    COALESCE(SUM(CAST(fees AS DOUBLE PRECISION)), 0)
             FROM trade_events
-            WHERE bot_name = :bot
+            WHERE bot_name = ANY(:bot_family)
               {since_clause}
             GROUP BY event_type
             ORDER BY event_type
-        """), {"bot": bot_name, **since_params})
+        """), {"bot_family": bot_family, **since_params})
         stats = r3.fetchall()
         print(f"\n{window_label} TRADE EVENTS (raw — includes contaminated markets):")
         total_realized = 0.0
@@ -221,7 +251,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
             WITH contaminated AS (
                 SELECT market_id
                 FROM trade_events
-                WHERE bot_name = :bot
+                WHERE bot_name = ANY(:bot_family)
                   AND event_type IN ('ENTRY', 'EXIT', 'RESOLUTION')
                   AND size IS NOT NULL
                 GROUP BY market_id
@@ -235,12 +265,12 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
                    COALESCE(SUM(CAST(realized_pnl AS DOUBLE PRECISION)), 0),
                    COALESCE(SUM(CAST(fees AS DOUBLE PRECISION)), 0)
             FROM trade_events
-            WHERE bot_name = :bot
+            WHERE bot_name = ANY(:bot_family)
               AND market_id NOT IN (SELECT market_id FROM contaminated)
               {since_clause}
             GROUP BY event_type
             ORDER BY event_type
-        """), {"bot": bot_name, **since_params})
+        """), {"bot_family": bot_family, **since_params})
         stats_clean = r3_clean.fetchall()
         # Count contaminated markets (whole-history, no --since filter — see
         # comment above on why CTE deliberately ignores --since).
@@ -248,7 +278,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
             SELECT COUNT(*) FROM (
                 SELECT market_id
                 FROM trade_events
-                WHERE bot_name = :bot
+                WHERE bot_name = ANY(:bot_family)
                   AND event_type IN ('ENTRY', 'EXIT', 'RESOLUTION')
                   AND size IS NOT NULL
                 GROUP BY market_id
@@ -257,7 +287,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
                      > SUM(CASE WHEN event_type = 'ENTRY'
                                 THEN CAST(size AS DOUBLE PRECISION) ELSE 0 END) * 1.001
             ) c
-        """), {"bot": bot_name})
+        """), {"bot_family": bot_family})
         excluded_count = int(r3_excluded.scalar() or 0)
         print(f"\n{window_label} TRADE EVENTS (clean — {excluded_count} contaminated markets excluded):")
         total_realized_clean = 0.0
@@ -279,7 +309,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
         # causing false positives on per-side matching. event_type is the
         # correct discriminator. S200: no `--since` filter at this layer (see
         # constant docstring).
-        r4 = await s.execute(text(_INTEGRITY_SQL_ALL_TIME), {"bot": bot_name})
+        r4 = await s.execute(text(_INTEGRITY_SQL_ALL_TIME), {"bot_family": bot_family})
         violations = r4.fetchall()
         if violations:
             print(f"\n{'!'*50}")
@@ -297,7 +327,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
         if since is not None:
             r4b = await s.execute(
                 text(_WINDOWED_EVENT_COUNT_SQL),
-                {"bot": bot_name, "since_ts": since},
+                {"bot_family": bot_family, "since_ts": since},
             )
             in_window = r4b.fetchall()
             if in_window:
@@ -339,15 +369,15 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
                 JOIN (
                     SELECT DISTINCT ON (market_id) market_id, side
                     FROM trade_events
-                    WHERE bot_name = :bot AND event_type = 'ENTRY'
+                    WHERE bot_name = ANY(:bot_family) AND event_type = 'ENTRY'
                     ORDER BY market_id, event_time DESC
                 ) e_entry ON e_entry.market_id = r.market_id
-                WHERE r.bot_name = :bot
+                WHERE r.bot_name = ANY(:bot_family)
                   AND r.event_type IN ('RESOLUTION', 'EXIT')
                   AND r.realized_pnl IS NOT NULL
                 GROUP BY e_entry.side
                 ORDER BY e_entry.side
-            """), {"bot": bot_name})
+            """), {"bot_family": bot_family})
             side_rows = r5.fetchall()
             if side_rows:
                 print(f"\n{'='*50}")
@@ -369,16 +399,16 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
                 JOIN (
                     SELECT DISTINCT ON (market_id) market_id, event_data
                     FROM trade_events
-                    WHERE bot_name = :bot AND event_type = 'ENTRY'
+                    WHERE bot_name = ANY(:bot_family) AND event_type = 'ENTRY'
                     ORDER BY market_id, event_time DESC
                 ) e_entry ON e_entry.market_id = r.market_id
-                WHERE r.bot_name = :bot
+                WHERE r.bot_name = ANY(:bot_family)
                   AND r.event_type IN ('RESOLUTION', 'EXIT')
                   AND r.realized_pnl IS NOT NULL
                   AND e_entry.event_data->>'city' IS NOT NULL
                 GROUP BY e_entry.event_data->>'city'
                 ORDER BY total_pnl DESC
-            """), {"bot": bot_name})
+            """), {"bot_family": bot_family})
             city_rows = r6.fetchall()
             if city_rows:
                 print(f"\n{'='*50}")
@@ -406,16 +436,16 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
                 JOIN (
                     SELECT DISTINCT ON (market_id) market_id, event_data
                     FROM trade_events
-                    WHERE bot_name = :bot AND event_type = 'ENTRY'
+                    WHERE bot_name = ANY(:bot_family) AND event_type = 'ENTRY'
                     ORDER BY market_id, event_time DESC
                 ) e_entry ON e_entry.market_id = r.market_id
-                WHERE r.bot_name = :bot
+                WHERE r.bot_name = ANY(:bot_family)
                   AND r.event_type IN ('RESOLUTION', 'EXIT')
                   AND r.realized_pnl IS NOT NULL
                   AND e_entry.event_data->>'lead_time_hours' IS NOT NULL
                 GROUP BY bucket
                 ORDER BY MIN((e_entry.event_data->>'lead_time_hours')::float)
-            """), {"bot": bot_name})
+            """), {"bot_family": bot_family})
             lt_rows = r7.fetchall()
             if lt_rows:
                 print(f"\n{'='*50}")
@@ -444,16 +474,16 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None)
                 JOIN (
                     SELECT DISTINCT ON (market_id) market_id, side, event_data
                     FROM trade_events
-                    WHERE bot_name = :bot AND event_type = 'ENTRY'
+                    WHERE bot_name = ANY(:bot_family) AND event_type = 'ENTRY'
                     ORDER BY market_id, event_time DESC
                 ) e_entry ON e_entry.market_id = r.market_id
-                WHERE r.bot_name = :bot
+                WHERE r.bot_name = ANY(:bot_family)
                   AND r.event_type IN ('RESOLUTION', 'EXIT')
                   AND r.realized_pnl IS NOT NULL
                   AND e_entry.event_data->>'lead_time_hours' IS NOT NULL
                 GROUP BY e_entry.side, bucket
                 ORDER BY e_entry.side, MIN((e_entry.event_data->>'lead_time_hours')::float)
-            """), {"bot": bot_name})
+            """), {"bot_family": bot_family})
             xt_rows = r9.fetchall()
             if xt_rows:
                 print(f"\n{'='*60}")
