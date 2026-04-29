@@ -254,6 +254,65 @@ class TestBlock4Split:
         assert "event_time" not in integrity and "event_time" in windowed
 
 
+class TestEdgeVerificationDefaultBots:
+    """S203 edge_verification.py default bot list — EsportsBotV2 added so
+    default invocation does not silently skip v2 post-flag-flip. v1 and v2
+    are DISJOINT entries here (gate-evaluation independence) — DIFFERENT
+    semantics from scripts/bot_pnl.py family-union. See
+    S203_EB_ROUTING_AUDIT.md §3.2 for the principled split.
+    """
+
+    def test_default_bots_includes_esports_v2(self):
+        # The load-bearing rule: post-flag-flip default invocation must
+        # exercise v2 evaluation. Removing EsportsBotV2 here re-introduces
+        # the silent-omission failure documented in the audit.
+        assert "EsportsBotV2" in edge_verification._DEFAULT_BOTS
+
+    def test_default_bots_includes_legacy_three(self):
+        # v1 and v2 listed disjoint (not unioned) — gate-evaluation needs
+        # v2 scored independently of v1's frozen shadow-window cohort.
+        for bot in ("WeatherBot", "MirrorBot", "EsportsBot"):
+            assert bot in edge_verification._DEFAULT_BOTS
+
+    def test_default_bots_count(self):
+        # Exactly 4 bots in the default list. If a 5th is added, the count
+        # is the canary that the addition was deliberate (and reviewers
+        # should pair it with a per-bot gate-criteria review).
+        assert len(edge_verification._DEFAULT_BOTS) == 4
+
+    def test_default_bots_v1_and_v2_distinct(self):
+        # Both EsportsBot and EsportsBotV2 must be present as separate
+        # entries — not deduplicated into one. Phase 5v2-D requires v2
+        # alone, so a dedup would silently drop v1's frozen cohort from
+        # the default sweep.
+        bots = edge_verification._DEFAULT_BOTS
+        assert bots.count("EsportsBot") == 1
+        assert bots.count("EsportsBotV2") == 1
+
+
+class TestPhase5v2dThresholds:
+    """S203 Phase 5v2-D thresholds (S172_CONSOLIDATED_PLAN.md:347, :357, :556).
+    Different from v7 gate — pinned because mis-applying v7's 0.30 threshold
+    to EB v2 promotion would be a structurally wrong elevation decision.
+    """
+
+    def test_p_edge_threshold_is_zero_seventy(self):
+        # Plan-cited threshold; not mutable without plan amendment.
+        assert edge_verification.PHASE_5V2D_P_EDGE_THRESHOLD == 0.70
+
+    def test_min_sample_is_one_hundred(self):
+        # Plan-cited sample-size floor; matches "100+ resolved predictions"
+        # at S172:556 (different from v7's n=500 floor).
+        assert edge_verification.PHASE_5V2D_MIN_SAMPLE == 100
+
+    def test_phase_5v2d_thresholds_distinct_from_v7(self):
+        # Sanity: v2 gate is strictly stricter than v7's PROCEED line.
+        # If these collapse to equality, the v7-vs-5v2D distinction has
+        # been silently lost.
+        assert edge_verification.PHASE_5V2D_P_EDGE_THRESHOLD > edge_verification.V7_PROCEED_THRESHOLD
+        assert edge_verification.PHASE_5V2D_MIN_SAMPLE < edge_verification.V7_MIN_SAMPLE
+
+
 class TestExpandBotFamily:
     """S203 EB family-union: bot_pnl.py treats EsportsBot+EsportsBotV2 as one
     cohort because v1 stops trading at the v2 flag flip. Other bots map to

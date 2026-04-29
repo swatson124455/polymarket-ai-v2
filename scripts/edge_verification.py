@@ -6,21 +6,35 @@ Bootstrap P(edge > 0) and Kelly fraction per bot from trade_events.
 Uses only RESOLUTION + EXIT events with realized_pnl (closed trades).
 
 Phase 7 v7 gate (S172_CONSOLIDATED_PLAN.md:441-446) — applies to MirrorBot
-on post-Day-2 data (--since 20260414_132211 --clean):
+and WeatherBot on post-Day-2 data (--since 20260414_132211 --clean):
   P(edge>0) >= 0.30  → PROCEED (directionally positive, Phase 7 elevation)
   0.10 <= P < 0.30   → AMBIGUOUS (continue collecting, re-run weekly)
   P < 0.10           → INVESTIGATE (remaining loss drivers — do not elevate)
   n < 500 closed     → INSUFFICIENT SAMPLE (gate not yet evaluable)
 
+EsportsBotV2 has a SEPARATE gate — Phase 5v2-D paper-trading promotion
+(S172_CONSOLIDATED_PLAN.md:347, :357, :556):
+  P(edge>0) >= 0.70 — different threshold from v7's 0.30 PROCEED line
+  n >= 100 resolved predictions — different sample-size from v7's 500
+  Plus accuracy >55%, wl_ratio >0.80, max drawdown <25% (not measured here)
+The v7_verdict() function below applies the v7 ladder uniformly. For EB v2
+the operator must read the printed P(edge>0) and compare to 0.70 manually
+(rather than trust the v7 verdict label). EB v1 (legacy 'EsportsBot') and
+EB v2 ('EsportsBotV2') are DISJOINT cohorts in this tool — Phase 5v2-D
+evaluates v2 alone, independent of v1's frozen-sample shadow window.
+
 Usage:
-    python scripts/edge_verification.py                          # All 3 bots, all-time, raw
-    python scripts/edge_verification.py EsportsBot               # Single bot, all-time, raw
+    python scripts/edge_verification.py                          # All 4 bots, all-time, raw
+    python scripts/edge_verification.py EsportsBotV2             # Phase 5v2-D candidate
     python scripts/edge_verification.py MirrorBot --since 20260414_132211 --clean
         # MirrorBot post-Day-2 trades on whole-history-clean markets — formal Phase 7 gate.
 
 S199: --since windows trades to event_time >= the parsed UTC stamp; --clean
 excludes (bot, market) pairs whose all-time disposal exceeds entry by >0.1%
 (matching scripts/bot_pnl.py CLEAN logic). Both default off (pre-S199 behavior).
+
+S203: default bot list expanded to include EsportsBotV2 so default
+invocation does not silently skip v2 post-flag-flip.
 """
 import argparse
 import asyncio
@@ -37,6 +51,16 @@ RNG_SEED = 42
 V7_PROCEED_THRESHOLD = 0.30
 V7_INVESTIGATE_THRESHOLD = 0.10
 V7_MIN_SAMPLE = 500
+
+# Phase 5v2-D thresholds — apply to EsportsBotV2 only. See module docstring.
+PHASE_5V2D_P_EDGE_THRESHOLD = 0.70
+PHASE_5V2D_MIN_SAMPLE = 100
+
+# Default bot list when no positional arg is passed. S203: EsportsBotV2 added
+# alongside the legacy 3 so default invocation does not silently skip v2.
+# v1 and v2 are DISJOINT entries here (gate-evaluation independence) — see
+# S203_EB_ROUTING_AUDIT.md §3.2.
+_DEFAULT_BOTS = ["WeatherBot", "MirrorBot", "EsportsBot", "EsportsBotV2"]
 
 
 def parse_deploy_timestamp(ts: str) -> datetime:
@@ -74,7 +98,7 @@ async def edge_verification(
     db = Database()
     await db.init()
 
-    bots = [bot_name] if bot_name else ["WeatherBot", "MirrorBot", "EsportsBot"]
+    bots = [bot_name] if bot_name else list(_DEFAULT_BOTS)
 
     # Optional clauses shared across bots. --since filters event_time; --clean
     # excludes whole markets that ever exhibited size_invariant contamination
@@ -202,6 +226,16 @@ async def edge_verification(
             print(f"")
             print(f"  >>> VERDICT: {verdict}")
             print(f"      {verdict_detail}")
+            if bot == "EsportsBotV2":
+                # S203: v7 ladder does not apply to EB v2 — different gate
+                # (Phase 5v2-D, S172_CONSOLIDATED_PLAN.md:347, :357, :556).
+                # The v7 verdict label above is informational only for v2;
+                # this annotation is the load-bearing pass/fail for the gate.
+                v2_meets_p_edge = p_edge_positive >= PHASE_5V2D_P_EDGE_THRESHOLD
+                v2_meets_n      = len(pnls) >= PHASE_5V2D_MIN_SAMPLE
+                v2_marker = "MEETS" if (v2_meets_p_edge and v2_meets_n) else "DOES NOT MEET"
+                print(f"      [Phase 5v2-D gate: P(edge>0)>={PHASE_5V2D_P_EDGE_THRESHOLD} "
+                      f"AND n>={PHASE_5V2D_MIN_SAMPLE} → {v2_marker}]")
             print(f"{'='*60}")
 
     await db.close()
