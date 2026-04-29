@@ -1654,3 +1654,64 @@ Flagged mid-session; not yet binding rules. Listed so they don't get lost betwee
 ### Out-of-scope for this protocols section
 
 Session-specific narratives (what a particular session decided, what commit landed where) belong in handoff files and memory, not here. This section is for **durable binding rules** only. Every addition must be a rule generalizable across bots and sessions, and every protocol must carry a scope clause, an out-of-scope clause, and an evidence-of-origin entry so future agents can judge applicability to their own context.
+
+---
+
+## Bug A Diagnostic Closure
+
+**Status:** Diagnostic project closed (S202, 2026-04-29). Bug at the system level: see (h) re-open conditions and (i) closure scope. **Not** unconditionally closed — closure is scoped to the diagnostic question, not to the bug as a system invariant.
+
+**Bug A history.** Active diagnostic from S178 through S201 across the WB → MB → WB-corrected framing arc. Symptom population: markets where `bot_pnl.py` block 4 reported lifetime `SUM(EXIT+RESOLUTION) > SUM(ENTRY) * 1.001`. Triggered SIZE_INVARIANT, ORPHAN_RESOLUTION, POSITION_SIZE_MISMATCH audit checks. S196-S199 working framing was MB-shaped + partial-fill-related; S200 cohort re-anchor (commit `5bc6aa4`) revealed the real cohort was 73-market WB-dominant (64 WB + 9 MB + 1 EB; the per-bot breakdown sums to 74 — the "73" in S200/S201 prose was an arithmetic typo, **the actual cohort has always been 74**). S201 converged on the inflator mechanism. S202 backfilled the historical residue and traced the one ongoing post-ledger residual.
+
+### (a) Inflator mechanism — pre-ledger UPSERT cumulation
+
+Pre-ledger writers UPSERTed `positions` rows on `(market, side, bot)` keyed re-entries. Each re-entry cumulated `positions.size` into the existing row while preserving `positions.entry_cost` at the first-entry value. Without a `trade_events` ledger to track per-entry increments, the cumulative sum looked like a single inflated entry post-resolution. Inflation factor: ~67× consistent across 5/5 sampled markets in S201 (verified per S201 handoff §2.3, market `0x562e6a4cd106e6bd8f55f6a5ba5de91c71c817464ba787c83cc7185cd082745d` and 4 generalization picks).
+
+### (b) Emitter — Phase 4b-alt RESOLUTION sweep
+
+The downstream symptom propagator is `backfill_trade_events_resolution` at [base_engine/data/database.py:3629-3739](base_engine/data/database.py:3629). Pre-S197 read `positions.size` directly. S197 commit `0e1f2e0` added GREATEST/LEAST clamp via `trade_events.ENTRY` truth at [database.py:3661](base_engine/data/database.py:3661), but preserved `COALESCE(te_entry_agg.total_entry, p.size)` as backward-compat fallback for markets without ENTRY events.
+
+### (c) S197 partial protection scope
+
+S197's clamp protects RESOLUTION emission only when `te_entry_agg.total_entry IS NOT NULL`. The S202 backfill (see (e)) populates ENTRY events for the historical cohort, lifting them into S197's protected path going forward. For pre-S202 RESOLUTION emissions, the historical inflated values are already in `trade_events.RESOLUTION` rows; the S202 backfill does NOT rewrite those — it adds correct-original-size ENTRY events alongside, leaving the residual as a SIZE_INVARIANT marker (see (e) intent).
+
+### (d) Post-ledger residual risk profile
+
+Per S201 handoff §2.4: 4 firings in 46 days, all `size=0` symptom-not-propagated. Inflator is "extremely-low-frequency" not "closed." Pre-S202 latest known firing was 2026-04-10. **S202 trace re-classified the 2026-04-10 incident as a different mechanism (see (f)) — not pre-ledger UPSERT cumulation.** The original 4-firings-in-46-days framing therefore over-attributes residual risk to the inflator mechanism; the actual post-ledger inflator residual rate is unknown but the all-`size=0` empirical bound still holds: zero post-ledger firings of (b)'s mechanism have produced a propagated symptom.
+
+### (e) Backfill execution outcome (S202)
+
+`scripts/backfill_pre_ledger_entries.py` (commit `db57194`) deployed and executed against prod 2026-04-29 (release `20260429_134741`). Pre-flight: cohort=74 (matches documented split modulo prose typo), in-scope=67 position rows, distinct in-scope markets=65, OPEN ORPHAN_RESOLUTION=65. Post-execution: ENTRY events inserted=65, skipped (NOT EXISTS guard)=2, ORPHAN_RESOLUTION breaks closed=65, OPEN ORPHAN_RESOLUTION (in-scope)=0. SIZE_INVARIANT residue preserved as historical-inflation marker per script docstring intent.
+
+Two hygiene findings from execution (filed in §S202 hygiene backlog):
+- The script's post-flight `in_scope_still_orphan == 0` assertion fired (1 residual) due to a cross-bot-share artifact: market `0xed49c99283ad7c5cfe2c0a` is in cohort under both EB (positions joinable) and MB (no positions); EB got backfilled, MB residue persisted. The assertion is overstrict relative to the script's actual cleanup intent.
+- The `(bot, market)` NOT EXISTS guard dropped second-side ENTRY events on 2 dual-sided markets (`0x052591da21e7bb3db95aae`, `0x57e1ba8e4a1581d005bbee`). By-design idempotency but reduces fidelity for markets with both YES + NO positions.
+
+### (f) 2026-04-10 trace finding (S202) — different mechanism class
+
+Phase 4 trace of market `0xe05169d4db5253e574af2bcdc4db0eee2019706c97e36d2756d4280edb71427d` converged on a different mechanism than the pre-ledger UPSERT cumulation: **pre-S193 FK race condition.** The bot traded the market at 2026-04-10 18:16:51 (paper_trade.submitted_at) but the market record was inserted into `markets` at 18:17:56 — 65 seconds later. Pre-S193, `insert_trade_event` returned `None` silently when FK on `market_id` failed; paper_trade was committed via the asyncio.gather None-swallow path identified in S199; positions row was created via a separate write path that has no FK constraint; ENTRY trade_event was never emitted. The mechanism is fully closed going forward by S193 commit `73bc623` (deployed 2026-04-23, release `20260423_212538`) — auto-heal inserts a stub markets row + retries.
+
+Class size at S202: 17 (bot, market) NO+SELL position pairs without ENTRY trade_events (15 WB + 2 EB). 16 are pre-ledger-era (2026-03-08 to 2026-03-12); 1 is the 2026-04-10 target. Zero post-S193-deploy instances. Class is bounded and closed.
+
+The "1 OPEN ORPHAN_RESOLUTION on `0xe05169d4db52...`" remains as documented historical residue (filed for operator decision: ACK or leave OPEN as documented incident). Phase 4b-alt's RESOLUTION emission for this market correctly had `size=0` (no inflation propagation) — the symptom is purely the audit's missing-ENTRY check, not a downstream consumer reading inflated state.
+
+### (g) Residual writer surface — S197 COALESCE fallback
+
+The `COALESCE(te_entry_agg.total_entry, p.size)` at [database.py:3661](base_engine/data/database.py:3661) intentionally preserves backward-compat for markets without ENTRY events. For any FUTURE inflator firing that produces a market with `size > 0` at disposal AND no ENTRY events, the COALESCE fallback would copy the inflated value into RESOLUTION. S202 backfill removes the historical cohort from this risk surface (they now have ENTRY events). Mitigation candidates filed as design discussion (S201 handoff §3 item 5), not action this session.
+
+### (h) Re-open conditions (the falsifiability clause)
+
+Bug A returns to active-diagnostic status if **any** of the following triggers fire:
+
+- **Trigger H1**: a single occurrence of inflated `positions.size` reaches a non-RESOLUTION downstream consumer — Kelly sizing, balance display, exposure cap evaluator, audit-visible symptom in non-RESOLUTION path. A SIZE_INVARIANT alert on a post-S202 market (i.e., not in the 64-WB + 1-EB historical cohort) is the canary signal.
+- **Trigger H2**: a fifth post-ledger inflator firing brings the post-ledger frequency above 1-per-month. Currently 4 firings in 46 days = 1 / 11.5 days per S201 (and S202 re-classified the 2026-04-10 firing — true inflator post-ledger residual rate is unknown but bounded below 4 / 46 days). Threshold tightens once cohort enlarges; floor is operator-judgmental.
+- **Trigger H3**: Phase 4b-alt's `WHERE effective_size > 0` filter is modified, lighting up the 174 un-disposed positions that are currently inert (S201 handoff §3 item 4). Backfilling them would create artifact ENTRY events for trades that didn't happen — explicit out-of-scope.
+- **Trigger H4**: the COALESCE fallback at [database.py:3661](base_engine/data/database.py:3661) is exercised for a market with `size > 0` at disposal — i.e., the post-S202 ENTRY-emission path regressed and a market reached RESOLUTION sweep without an ENTRY event AND with positions.size > 0.
+
+### (i) Diagnostic vs system closure distinction
+
+This section closes the **diagnostic project** for Bug A: mechanism is identified (a), emitter is identified (b), the historical cohort is bounded (e), the one ongoing residual is reclassified to a different mechanism (f), and the going-forward surface is documented (g, h).
+
+It does **not** close the bug at the system level. Residual writer surface (g) remains as intentional backward-compat. Un-disposed-position contingent risk (h H3) remains as inert-but-tripwire-ready. Unaudited consumer paths (h H1) remain — only RESOLUTION-emission has been explicitly hardened. Future sessions encountering Bug A symptoms should reference (h) re-open conditions to determine whether to re-open as active.
+
+The closure is therefore: **scoped, bounded, and falsifiable** — not unconditional.
