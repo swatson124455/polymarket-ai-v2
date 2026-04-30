@@ -420,7 +420,20 @@ class LearningPattern(Base):
 
 
 class PredictionLog(Base):
-    """Drift detection, live performance tracking. Log every prediction for post-resolution analysis."""
+    """Drift detection, live performance tracking. Log every prediction for post-resolution analysis.
+
+    NOTE on trade-marking columns (`trade_executed`, `trade_side`, `trade_size`, `trade_price`,
+    `trade_pnl`): these are populated only by EnsembleBot via `mark_prediction_traded()` at
+    `bots/ensemble_bot.py:1816` after place_order success. WeatherBot, MirrorBot, and
+    EsportsBot/V2 call `insert_prediction_log()` WITHOUT trade-marking parameters; their rows
+    have `trade_executed=False` (column default) and `trade_side`/`trade_size`/`trade_price`/
+    `trade_pnl` as NULL by design — NOT a bug. This is system-wide by-design asymmetry.
+
+    For cross-bot trade-existence/side analysis, JOIN to `trade_events` rows with
+    `event_type='ENTRY'` (canonical source). Reading `prediction_log.trade_executed` directly
+    will silently undercount WB/MB/EB trades. See `S172_CONSOLIDATED_PLAN.md` §Corrections
+    Log §S205 + §S205 Hygiene Backlog item 3 for the rationale and decision log.
+    """
     __tablename__ = "prediction_log"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     market_id = Column(String, nullable=False, index=True)
@@ -3239,7 +3252,14 @@ class Database:
         correlation_id: Optional[str] = None,
         bot_name: Optional[str] = None,
     ) -> None:
-        """Log a prediction for drift detection and live performance tracking. No-op if no db or table missing."""
+        """Log a prediction for drift detection and live performance tracking. No-op if no db or table missing.
+
+        Trade-marking columns (`trade_executed`, `trade_side`, `trade_size`, `trade_price`,
+        `trade_pnl`) are intentionally NOT parameters here. They are populated only by
+        EnsembleBot via `mark_prediction_traded()` after place_order. WB/MB/EB do not call
+        `mark_prediction_traded()`; their rows leave the trade-marking columns at default
+        (False / NULL) by design. See `PredictionLog` class docstring + S172 plan §S205.
+        """
         if self.session_factory is None:
             return
         edge = predicted_prob - market_price
@@ -3334,7 +3354,13 @@ class Database:
         trade_size: float,
         trade_price: float,
     ) -> None:
-        """Mark the most recent prediction_log entry for this market/token as traded."""
+        """Mark the most recent prediction_log entry for this market/token as traded.
+
+        BY-DESIGN ASYMMETRY: only EnsembleBot calls this method (per
+        `bots/ensemble_bot.py:1816`). WB/MB/EB do not call it; their `prediction_log` rows
+        have `trade_executed=False` and `trade_side` NULL — see `PredictionLog` class
+        docstring + S172 plan §Corrections Log §S205 + §S205 Hygiene Backlog item 3.
+        """
         if self.session_factory is None:
             return
         try:
