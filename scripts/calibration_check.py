@@ -7,12 +7,23 @@ Usage:
     python scripts/calibration_check.py WeatherBot       # Specific bot
     python scripts/calibration_check.py --cutoff 2026-04-08T16:01:40Z  # Explicit cutoff
     python scripts/calibration_check.py --days 30        # Custom rolling window
+    python scripts/calibration_check.py WeatherBot --since 20260414_132211 --clean
+        # S204 hygiene #1: deploy-stamp window + CLEAN contamination filter +
+        # WB-only per-(trade_side x lead_time_bucket) Brier breakdown for the
+        # S203 Track 5 H0' verification.
 
 Reads from prediction_log (not trade_events) for maximum data volume.
 Reports: per-bot calibration curve (10 bins), Brier score, per-category breakdown.
 
 S172 1B: Rolling 90-day window, min 50 resolved + 5/bin gate,
          CRPS + PIT + KS test for WeatherBot, exclude EnsembleBot + NULL bot_name.
+
+S204: --since DEPLOY_TIMESTAMP overrides --cutoff/--days for both the main
+calibration view and the per-side x lead-time analysis. --clean wires the
+canonical contamination CTE from bot_pnl.py into the new analysis only
+(not the main view, since the main view spans all bots and contamination
+is a WB-cohort property). The per-side x lead-time analysis is gated on
+bot_name == "WeatherBot" — that's where the H0' framing lives.
 """
 import asyncio
 import sys
@@ -23,17 +34,35 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from base_engine.data.database import Database
+# Single source of truth for `--since` parsing and the contamination CTE body.
+# Cross-script import; requires PYTHONPATH=. (project root) when invoking.
+from scripts.bot_pnl import parse_deploy_timestamp, _CONTAMINATION_CTE_BODY
 
 
-async def calibration_check(bot_name: str = "", cutoff: str = "", days: int = 90):
+async def calibration_check(
+    bot_name: str = "",
+    cutoff: str = "",
+    days: int = 90,
+    since: datetime | None = None,
+    clean: bool = False,
+):
     """Run calibration analysis on resolved predictions.
 
     Args:
         bot_name: Filter to specific bot (empty = all active bots).
         cutoff: Explicit ISO timestamp cutoff. Overrides rolling window.
         days: Rolling window in days (default 90). Ignored if cutoff provided.
+        since: Deploy-stamp datetime. When set, overrides --cutoff/--days for
+            the main fetch and pins the per-side x lead-time analysis to
+            event_time/prediction_time >= this stamp.
+        clean: When True (and bot_name == "WeatherBot"), wires the canonical
+            contamination CTE from bot_pnl.py into the per-side x lead-time
+            analysis to mirror bot_pnl.py block 5 CLEAN scope.
     """
-    if not cutoff:
+    if since is not None:
+        cutoff_dt = since
+        print(f"Deploy-stamp window (--since): cutoff = {cutoff_dt.isoformat()}")
+    elif not cutoff:
         cutoff_dt = (datetime.now(timezone.utc) - timedelta(days=days)).replace(tzinfo=None)
         print(f"Rolling {days}-day window: cutoff = {cutoff_dt.isoformat()}")
     else:
@@ -120,6 +149,10 @@ async def calibration_check(bot_name: str = "", cutoff: str = "", days: int = 90
             brier = sum((p - o) ** 2 for p, o in entries) / len(entries)
             wr = sum(o for _, o in entries) / len(entries)
             print(f"  {cat:<30} n={len(entries):>5}  Brier={brier:.4f}  base_rate={wr:.2f}")
+
+        # S204: per-(side x lead-time) Brier — WB-only, S203 Track 5 H0' verification.
+        if bot_name == "WeatherBot":
+            await _print_per_side_lead_time_brier(s, cutoff_dt, clean)
 
     await db.close()
 
@@ -243,23 +276,166 @@ def _print_crps_pit(entries):
         print(f"  PASS: Cannot reject uniform PIT (p={ks_pvalue:.4f} ≥ 0.05)")
 
 
-if __name__ == "__main__":
-    bot = ""
-    cutoff = ""
-    days = 90
-    args = sys.argv[1:]
-    i = 0
-    while i < len(args):
-        if args[i] == "--cutoff" and i + 1 < len(args):
-            cutoff = args[i + 1]
-            i += 2
-        elif args[i] == "--days" and i + 1 < len(args):
-            days = int(args[i + 1])
-            i += 2
-        elif not args[i].startswith("-"):
-            bot = args[i]
-            i += 1
-        else:
-            i += 1
+def _build_per_side_lead_time_sql(clean: bool) -> str:
+    """Build the per-(trade_side x lead_time_bucket) fetch SQL.
 
-    asyncio.run(calibration_check(bot, cutoff, days))
+    S204: WB-only H0' verification. Joins prediction_log to trade_events ENTRY
+    via DISTINCT-ON-latest pattern (mirrors bot_pnl.py block 5) to pull
+    lead_time_hours from event_data. Optionally wraps in the canonical
+    contamination CTE from bot_pnl.py for the --clean scope. Pulled out
+    as a helper so unit tests can verify the SQL shape without a live DB.
+    """
+    contamination_prefix = ""
+    contamination_clause = ""
+    if clean:
+        # Reuse the canonical CTE body from bot_pnl.py (single source of truth).
+        # Note: the CTE filters by `bot_name = ANY(:bot_family)` — we pass the
+        # singleton ["WeatherBot"] so the CTE expression doesn't change shape.
+        contamination_prefix = f"WITH contaminated AS ({_CONTAMINATION_CTE_BODY})\n"
+        contamination_clause = "AND pl.market_id NOT IN (SELECT market_id FROM contaminated)\n"
+
+    return f"""
+        {contamination_prefix}
+        SELECT pl.predicted_prob,
+               CASE WHEN pl.resolution = 'YES' THEN 1 ELSE 0 END AS outcome,
+               pl.trade_side,
+               (e_entry.event_data->>'lead_time_hours')::float AS lead_time_hours
+        FROM prediction_log pl
+        JOIN (
+            SELECT DISTINCT ON (market_id) market_id, event_data
+            FROM trade_events
+            WHERE bot_name = 'WeatherBot' AND event_type = 'ENTRY'
+            ORDER BY market_id, event_time DESC
+        ) e_entry ON e_entry.market_id = pl.market_id
+        WHERE pl.bot_name = 'WeatherBot'
+          AND pl.trade_executed = true
+          AND pl.resolution IS NOT NULL
+          AND pl.prediction_time >= :since_dt
+          AND pl.trade_side IS NOT NULL
+          AND e_entry.event_data->>'lead_time_hours' IS NOT NULL
+          {contamination_clause}
+        ORDER BY pl.trade_side, lead_time_hours
+    """
+
+
+def _bucket_for_lead_time(lt: float) -> str:
+    """Bucketize lead time in hours. Mirrors bot_pnl.py block 5 boundaries."""
+    if lt < 24:
+        return "<24h"
+    if lt < 48:
+        return "24-48h"
+    if lt < 72:
+        return "48-72h"
+    if lt < 120:
+        return "72-120h"
+    return ">=120h"
+
+
+async def _print_per_side_lead_time_brier(s, since_dt: datetime, clean: bool):
+    """S204 H0' verification: per-(trade_side x lead_time_bucket) Brier on WB CLEAN cohort.
+
+    Verbatim per the S203 close handoff §6 Lead 1 prescription:
+      "Single SQL on prediction_log filtered to WeatherBot AND trade_executed=true
+       AND prediction_time >= 20260414_132211, grouped by (trade_side,
+       lead_time_bucket), computing Brier separately."
+
+    Expected (per H0'): NO 24-48h Brier substantially worse than NO 48-72h Brier
+    (the latter is the same-side longer-lead within-bot control identified in
+    the S203 Track 5 hypothesis-test). Per Protocol 11, specific P&L magnitudes
+    from prior-session bot_pnl.py output are NOT inlined here — operators
+    re-run the canonical command in-session to produce fresh comparisons.
+    """
+    from sqlalchemy import text
+
+    sql = _build_per_side_lead_time_sql(clean)
+    params = {"since_dt": since_dt}
+    if clean:
+        params["bot_family"] = ["WeatherBot"]
+
+    rows = (await s.execute(text(sql), params)).fetchall()
+    if not rows:
+        print(f"\n{'=' * 60}")
+        print(f"PER-(SIDE x LEAD-TIME) BRIER (WB, since={since_dt.isoformat()}, "
+              f"{'CLEAN' if clean else 'RAW'}) — no rows")
+        print(f"{'=' * 60}")
+        return
+
+    # Group: (side, bucket) -> [(p, o), ...]
+    by_side_bucket: dict[tuple[str, str], list[tuple[float, int]]] = defaultdict(list)
+    for prob, outcome, side, lt in rows:
+        by_side_bucket[(str(side), _bucket_for_lead_time(float(lt)))].append(
+            (float(prob), int(outcome))
+        )
+
+    scope = f"since={since_dt.isoformat()}, {'CLEAN' if clean else 'RAW'}"
+    print(f"\n{'=' * 60}")
+    print(f"PER-(SIDE x LEAD-TIME) BRIER ({scope})")
+    print(f"{'=' * 60}")
+    print(f"  {'Side':<5} {'Bucket':<10} {'N':>5}  {'Brier':>7}  {'Acc':>6}  {'BaseRate':>9}  {'BSS':>+8}")
+    print(f"  {'-' * 65}")
+
+    bucket_order = ["<24h", "24-48h", "48-72h", "72-120h", ">=120h"]
+    for side in sorted({k[0] for k in by_side_bucket}):
+        for bucket in bucket_order:
+            entries = by_side_bucket.get((side, bucket))
+            if not entries:
+                continue
+            n = len(entries)
+            brier = sum((p - o) ** 2 for p, o in entries) / n
+            acc = sum(1 for p, o in entries if (p >= 0.5) == (o == 1)) / n
+            base_rate = sum(o for _, o in entries) / n
+            brier_clim = base_rate * (1 - base_rate)
+            bss = 1.0 - (brier / brier_clim) if brier_clim > 0 else 0.0
+            print(f"  {side:<5} {bucket:<10} {n:>5}  {brier:>7.4f}  {acc:>5.1%}  "
+                  f"{base_rate:>9.3f}  {bss:>+8.4f}")
+
+    # H0' verdict line: compare NO 24-48h Brier to NO 48-72h Brier (within-bot control).
+    no_24_48 = by_side_bucket.get(("NO", "24-48h"))
+    no_48_72 = by_side_bucket.get(("NO", "48-72h"))
+    if no_24_48 and no_48_72:
+        b_24_48 = sum((p - o) ** 2 for p, o in no_24_48) / len(no_24_48)
+        b_48_72 = sum((p - o) ** 2 for p, o in no_48_72) / len(no_48_72)
+        print()
+        print(f"  H0' check: NO 24-48h Brier={b_24_48:.4f} (n={len(no_24_48)})  "
+              f"vs NO 48-72h Brier={b_48_72:.4f} (n={len(no_48_72)})")
+        if b_24_48 > b_48_72:
+            print(f"  → 24-48h Brier worse by {(b_24_48 - b_48_72):.4f} "
+                  f"({(b_24_48 - b_48_72) / b_48_72:.1%}). Consistent with H0'.")
+        else:
+            print(f"  → 24-48h Brier NOT worse than 48-72h. H0' falsified by Brier comparison; "
+                  f"loss is not calibration-driven on this slice.")
+
+
+def _parse_args(argv: list[str] | None = None):
+    """Parse CLI args. Mirrors bot_pnl.py manual loop for backward-compat with
+    positional bot_name. Returns a tuple (bot, cutoff, days, since, clean).
+    Pulled out as a function so unit tests can verify flag handling without
+    invoking asyncio.
+    """
+    import argparse
+    p = argparse.ArgumentParser(description="Calibration Check (canonical)")
+    p.add_argument("bot_name", nargs="?", default="",
+                   help="Bot name (default: all bots)")
+    p.add_argument("--cutoff", default="",
+                   help="Explicit ISO timestamp cutoff. Overrides --days.")
+    p.add_argument("--days", type=int, default=90,
+                   help="Rolling window in days (default 90). Ignored if --cutoff or --since.")
+    p.add_argument("--since", type=parse_deploy_timestamp, default=None,
+                   metavar="YYYYMMDD_HHMMSS",
+                   help="S204: deploy-stamp window. Overrides --cutoff/--days. "
+                        "Format matches deploy timestamps (e.g., 20260414_132211).")
+    p.add_argument("--clean", action="store_true", default=False,
+                   help="S204: apply contamination CTE from bot_pnl.py to the "
+                        "per-(side x lead-time) Brier analysis. WB-only.")
+    return p.parse_args(argv)
+
+
+if __name__ == "__main__":
+    ns = _parse_args(sys.argv[1:])
+    asyncio.run(calibration_check(
+        bot_name=ns.bot_name,
+        cutoff=ns.cutoff,
+        days=ns.days,
+        since=ns.since,
+        clean=ns.clean,
+    ))
