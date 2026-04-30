@@ -3460,6 +3460,29 @@ class WeatherBot(BaseBot):
         if _lt_mult != 1.0:
             _raw_size *= _lt_mult
 
+        # S205 6Q: Confidence-tail sizing dampener (config-gated, default off).
+        # PIT-KS rejects WB calibration on the [0.9-1.0) bin (S204 analysis); S205
+        # H0''-H0'''(c) eliminated three feature-engineering candidates at the
+        # station drill-down level. Pivot to confidence-scaled sizing — apply a
+        # smooth multiplicative taper above THRESHOLD to reduce exposure on the
+        # high-conf tail without a discontinuous cliff. Acts AFTER bankroll-manager
+        # base sizing, BEFORE the negative-EV gate and exposure-cap clamp.
+        _conf_damp = 1.0
+        if getattr(settings, "WEATHER_CONFIDENCE_DAMPENER_ENABLED", False):
+            _ct_thresh = float(getattr(settings, "WEATHER_CONFIDENCE_DAMPENER_THRESHOLD", 0.85))
+            if opp["confidence"] >= _ct_thresh:
+                _ct_slope = float(getattr(settings, "WEATHER_CONFIDENCE_DAMPENER_SLOPE", 2.0))
+                _ct_floor = float(getattr(settings, "WEATHER_CONFIDENCE_DAMPENER_FLOOR", 0.30))
+                _conf_damp = max(_ct_floor, 1.0 - _ct_slope * (opp["confidence"] - _ct_thresh))
+                _raw_size *= _conf_damp
+                logger.info(
+                    "weatherbot_confidence_dampener",
+                    market_id=opp["market_id"], city=opp.get("city", ""),
+                    confidence=round(opp["confidence"], 4),
+                    dampener=round(_conf_damp, 3),
+                    raw_size_after=round(_raw_size, 2),
+                )
+
         # S124: Negative-EV gate — if calibrated confidence < price, the trade is
         # negative EV regardless of sizing path (Kelly or S-T). The S-T allocator
         # distributes budget by edge ratio and doesn't check Kelly's EV signal,
@@ -3623,6 +3646,8 @@ class WeatherBot(BaseBot):
                 "yes_price_dampener": round(_yes_price_damp, 3),
                 "yes_identity_conf_damp": round(opp.get("_yes_identity_damp", 1.0), 3),
                 "lead_time_mult": round(_lt_mult, 3),
+                # S205 6Q: confidence-tail dampener factor (1.0 = no-op, default; <1.0 if applied).
+                "conf_dampener": round(_conf_damp, 3),
             },
         )
 

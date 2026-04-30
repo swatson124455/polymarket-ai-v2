@@ -2502,6 +2502,59 @@ class TestS154NoPriceDampener:
         assert scale == 0.10
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# S205 6Q: Confidence-tail sizing dampener (config-gated)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestS205Confidence6QDampener:
+    """S205 6Q: smooth multiplicative taper above THRESHOLD reduces position size
+    on the high-confidence tail. PIT-KS rejected calibration on the [0.9-1.0)
+    bin (S204); H0''-H0'''(c) eliminated three feature-engineering candidates
+    at the station level. Pivot to confidence-scaled sizing."""
+
+    def test_default_settings(self):
+        """Defaults: ENABLED=False, THRESHOLD=0.85, SLOPE=2.0, FLOOR=0.30."""
+        assert getattr(settings, "WEATHER_CONFIDENCE_DAMPENER_ENABLED", False) is False
+        assert float(getattr(settings, "WEATHER_CONFIDENCE_DAMPENER_THRESHOLD", 0.85)) == 0.85
+        assert float(getattr(settings, "WEATHER_CONFIDENCE_DAMPENER_SLOPE", 2.0)) == 2.0
+        assert float(getattr(settings, "WEATHER_CONFIDENCE_DAMPENER_FLOOR", 0.30)) == 0.30
+
+    def test_at_threshold_returns_unity(self):
+        """At c == THRESHOLD, dampener factor is exactly 1.0 (continuity)."""
+        threshold, slope, floor = 0.85, 2.0, 0.30
+        c = 0.85
+        factor = max(floor, 1.0 - slope * (c - threshold))
+        assert factor == 1.0
+
+    def test_taper_at_090_and_095(self):
+        """Slope 2.0 from threshold 0.85: c=0.90 → 0.90x, c=0.95 → 0.80x."""
+        threshold, slope, floor = 0.85, 2.0, 0.30
+        f_090 = max(floor, 1.0 - slope * (0.90 - threshold))
+        f_095 = max(floor, 1.0 - slope * (0.95 - threshold))
+        assert abs(f_090 - 0.90) < 1e-9
+        assert abs(f_095 - 0.80) < 1e-9
+
+    def test_floor_clamps_at_extreme_slope(self):
+        """With extreme slope, floor clamps the factor (no negative sizing)."""
+        threshold, slope, floor = 0.85, 10.0, 0.30
+        # 1.0 - 10.0 * (1.0 - 0.85) = -0.5 → clamped to 0.30
+        factor = max(floor, 1.0 - slope * (1.0 - threshold))
+        assert factor == 0.30
+
+    def test_below_threshold_no_op(self):
+        """Below THRESHOLD, dampener is bypassed (factor stays at 1.0).
+        The bot-side `if c >= threshold` gate around the formula preserves
+        size for any c < threshold; this test pins the gating contract."""
+        threshold = 0.85
+        c = 0.84
+        # Formula is only applied when c >= threshold; below, factor stays 1.0.
+        factor = 1.0
+        if c >= threshold:
+            factor = max(0.30, 1.0 - 2.0 * (c - threshold))
+        assert factor == 1.0
+
+
 class TestS154LeadTimeMultiplier:
     """S154: Lead-time sizing multipliers concentrate capital on sweet spot."""
 

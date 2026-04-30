@@ -869,6 +869,19 @@ class Settings(BaseSettings):
     # Slope 6.0 reaches floor 0.10 at hard cap $0.85. Formula: max(0.10, 1.0 - slope*(price-soft_cap))
     WEATHER_NO_PRICE_SOFT_CAP: float = float(os.getenv("WEATHER_NO_PRICE_SOFT_CAP", "0.70"))
     WEATHER_NO_PRICE_DAMPENER_SLOPE: float = float(os.getenv("WEATHER_NO_PRICE_DAMPENER_SLOPE", "6.0"))
+    # S205 6Q: Confidence-tail sizing dampener — config-gated, default off.
+    # PIT-KS rejects WB calibration on the [0.9-1.0) bin (S204 analysis); S205
+    # H0''-H0'''(c) eliminated three feature-engineering candidates (boundary_risk,
+    # rolling station MAE, city-volatility) at station-level drill-down. Pivot
+    # to confidence-scaled sizing: reduce position size on high-conf trades to
+    # address asymmetric tail-loss exposure (a small upside reduction trades for
+    # a large tail-risk reduction). Smooth taper to avoid threshold cliffs:
+    # factor = max(FLOOR, 1.0 - SLOPE*(c - THRESHOLD))  for c >= THRESHOLD
+    # Defaults: c=0.85→1.0x (continuity), c=0.90→0.90x, c=0.95→0.80x, c=1.0→0.70x.
+    WEATHER_CONFIDENCE_DAMPENER_ENABLED: bool = os.getenv("WEATHER_CONFIDENCE_DAMPENER_ENABLED", "false").lower() == "true"
+    WEATHER_CONFIDENCE_DAMPENER_THRESHOLD: float = float(os.getenv("WEATHER_CONFIDENCE_DAMPENER_THRESHOLD", "0.85"))
+    WEATHER_CONFIDENCE_DAMPENER_SLOPE: float = float(os.getenv("WEATHER_CONFIDENCE_DAMPENER_SLOPE", "2.0"))
+    WEATHER_CONFIDENCE_DAMPENER_FLOOR: float = float(os.getenv("WEATHER_CONFIDENCE_DAMPENER_FLOOR", "0.30"))
     # S118: Max buckets per city+date group — limits correlated blowup risk.
     WEATHER_MAX_BUCKETS_PER_GROUP: int = int(os.getenv("WEATHER_MAX_BUCKETS_PER_GROUP", "5"))  # S122: 3→5
     # S118: Confidence discount for high-price NO trades — reduces Kelly sizing.
