@@ -81,10 +81,18 @@ class TestBuildPerSideLeadTimeSql:
         # Inner subquery filters trade_events to WeatherBot ENTRY events.
         assert "bot_name = 'WeatherBot' AND event_type = 'ENTRY'" in sql
 
-    def test_sql_filters_to_executed_resolved_predictions(self):
+    def test_sql_filters_to_resolved_predictions_with_entry_event(self):
+        """prediction_log.trade_executed and trade_side are NULL for WeatherBot
+        rows in production. The trade-existence indicator is the JOIN to
+        trade_events ENTRY (which itself filters bot_name=WeatherBot,
+        event_type=ENTRY in the inner subquery), and the side comes from
+        trade_events.side, not prediction_log.trade_side."""
         sql = _build_per_side_lead_time_sql(clean=False)
-        assert "pl.trade_executed = true" in sql
         assert "pl.resolution IS NOT NULL" in sql
+        # Side comes from trade_events, not prediction_log
+        assert "e_entry.side AS trade_side" in sql
+        assert "pl.trade_executed" not in sql
+        assert "pl.trade_side" not in sql
 
     def test_sql_uses_since_param(self):
         sql = _build_per_side_lead_time_sql(clean=False)
@@ -96,22 +104,24 @@ class TestBuildPerSideLeadTimeSql:
         assert "e_entry.event_data->>'lead_time_hours' IS NOT NULL" in sql
 
     def test_sql_uses_distinct_on_pattern(self):
-        """Mirrors bot_pnl.py block 5: latest ENTRY per market wins."""
+        """Mirrors bot_pnl.py block 5: latest ENTRY per market wins.
+        Selects side AND event_data so we can pull lead_time_hours and trade
+        side from the same row."""
         sql = _build_per_side_lead_time_sql(clean=False)
-        assert "DISTINCT ON (market_id)" in sql
+        assert "DISTINCT ON (market_id) market_id, side, event_data" in sql
         assert "ORDER BY market_id, event_time DESC" in sql
 
     def test_sql_selects_required_columns(self):
         sql = _build_per_side_lead_time_sql(clean=False)
         assert "pl.predicted_prob" in sql
         assert "CASE WHEN pl.resolution = 'YES' THEN 1 ELSE 0 END AS outcome" in sql
-        assert "pl.trade_side" in sql
+        assert "e_entry.side AS trade_side" in sql
 
     def test_sql_orders_by_side_then_lead_time(self):
-        """ORDER BY pl.trade_side, lead_time_hours keeps deterministic output
+        """ORDER BY e_entry.side, lead_time_hours keeps deterministic output
         order for downstream Python grouping."""
         sql = _build_per_side_lead_time_sql(clean=False)
-        assert "ORDER BY pl.trade_side, lead_time_hours" in sql
+        assert "ORDER BY e_entry.side, lead_time_hours" in sql
 
 
 class TestParseArgs:

@@ -298,23 +298,21 @@ def _build_per_side_lead_time_sql(clean: bool) -> str:
         {contamination_prefix}
         SELECT pl.predicted_prob,
                CASE WHEN pl.resolution = 'YES' THEN 1 ELSE 0 END AS outcome,
-               pl.trade_side,
+               e_entry.side AS trade_side,
                (e_entry.event_data->>'lead_time_hours')::float AS lead_time_hours
         FROM prediction_log pl
         JOIN (
-            SELECT DISTINCT ON (market_id) market_id, event_data
+            SELECT DISTINCT ON (market_id) market_id, side, event_data
             FROM trade_events
             WHERE bot_name = 'WeatherBot' AND event_type = 'ENTRY'
             ORDER BY market_id, event_time DESC
         ) e_entry ON e_entry.market_id = pl.market_id
         WHERE pl.bot_name = 'WeatherBot'
-          AND pl.trade_executed = true
           AND pl.resolution IS NOT NULL
           AND pl.prediction_time >= :since_dt
-          AND pl.trade_side IS NOT NULL
           AND e_entry.event_data->>'lead_time_hours' IS NOT NULL
           {contamination_clause}
-        ORDER BY pl.trade_side, lead_time_hours
+        ORDER BY e_entry.side, lead_time_hours
     """
 
 
@@ -371,7 +369,7 @@ async def _print_per_side_lead_time_brier(s, since_dt: datetime, clean: bool):
     print(f"\n{'=' * 60}")
     print(f"PER-(SIDE x LEAD-TIME) BRIER ({scope})")
     print(f"{'=' * 60}")
-    print(f"  {'Side':<5} {'Bucket':<10} {'N':>5}  {'Brier':>7}  {'Acc':>6}  {'BaseRate':>9}  {'BSS':>+8}")
+    print(f"  {'Side':<5} {'Bucket':<10} {'N':>5}  {'Brier':>7}  {'Acc':>6}  {'BaseRate':>9}  {'BSS':>8}")
     print(f"  {'-' * 65}")
 
     bucket_order = ["<24h", "24-48h", "48-72h", "72-120h", ">=120h"]
