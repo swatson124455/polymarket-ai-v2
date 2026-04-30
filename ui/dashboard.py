@@ -41,9 +41,11 @@ from bots.sports_injury_bot import SportsInjuryBot
 from bots.sports_live_bot import SportsLiveBot
 from bots.sports_arb_bot import SportsArbBot
 from bots.esports_bot import EsportsBot
+from bots.esports_bot_v2 import EsportsBotV2
 from bots.esports_live_bot import EsportsLiveBot
 from bots.logical_arb_bot import LogicalArbBot
 from config.settings import settings
+from main import BOT_REGISTRY  # S204: source-of-truth registry count for caption display
 
 import base_engine.data.data_ingestion
 importlib.reload(base_engine.data.data_ingestion)
@@ -362,7 +364,7 @@ async def init_system(wallet_private_key: str = "", wallet_address: str = ""):
             "LogicalArbBot": LogicalArbBot(base_engine),
         }
         # Esports bots fail fast if PANDASCORE_API_KEY not set — add only if available
-        for _name, _cls in [("EsportsBot", EsportsBot), ("EsportsLiveBot", EsportsLiveBot)]:
+        for _name, _cls in [("EsportsBot", EsportsBot), ("EsportsBotV2", EsportsBotV2), ("EsportsLiveBot", EsportsLiveBot)]:
             try:
                 bots[_name] = _cls(base_engine)
             except (ValueError, Exception):
@@ -581,7 +583,7 @@ def show_overview():
     _phase = getattr(settings, "TRADING_PHASE", "paper")
     _bots = st.session_state.get("bots") or {}
     _enabled_count = sum(1 for n in _bots if st.session_state.get(f"enable_{n}", True))
-    st.caption(f"**Phase:** {_phase.upper()} | **Bots registered:** {len(_bots)} | **Enabled:** {_enabled_count} | **BOT_REGISTRY:** 16")
+    st.caption(f"**Phase:** {_phase.upper()} | **Bots registered:** {len(_bots)} | **Enabled:** {_enabled_count} | **BOT_REGISTRY:** {len(BOT_REGISTRY)}")
 
     # Metrics row
     col1, col2, col3, col4 = st.columns(4)
@@ -3391,9 +3393,10 @@ def show_settings():
     _gcols2[1].metric("Weather Hold hrs", str(getattr(settings, "WEATHER_HOLD_HOURS_BEFORE_RESOLUTION", 48.0)))
     _gcols2[2].metric("LogicalArbBot", "✅ ON" if getattr(settings, "BOT_ENABLED_LOGICAL_ARB", False) else "⭕ OFF")
     st.caption("Esports")
-    _ecols = st.columns(2)
+    _ecols = st.columns(3)
     _ecols[0].metric("EsportsBot", "✅" if getattr(settings, "BOT_ENABLED_ESPORTS", False) else "⭕")
-    _ecols[1].metric("EsportsLiveBot", "✅" if getattr(settings, "BOT_ENABLED_ESPORTS_LIVE", False) else "⭕")
+    _ecols[1].metric("EsportsBotV2", "✅" if getattr(settings, "BOT_ENABLED_ESPORTS_V2", False) else "⭕")
+    _ecols[2].metric("EsportsLiveBot", "✅" if getattr(settings, "BOT_ENABLED_ESPORTS_LIVE", False) else "⭕")
 
     if st.button("💾 Save Settings", type="primary"):
         st.success("Settings saved! (Note: Some settings require restart to take effect)")

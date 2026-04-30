@@ -312,6 +312,7 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
                     "LogicalArbBot": "BOT_ENABLED_LOGICAL_ARB",
                     "WeatherBot": "BOT_ENABLED_WEATHER",
                     "EsportsBot": "BOT_ENABLED_ESPORTS",
+                    "EsportsBotV2": "BOT_ENABLED_ESPORTS_V2",  # S204: align heartbeat dict with BOT_REGISTRY (route v2 stale events to its own enable flag)
                     "EsportsLiveBot": "BOT_ENABLED_ESPORTS_LIVE",
                     "EsportsSeriesBot": "BOT_ENABLED_ESPORTS_SERIES",  # merged into EsportsBot; suppress stale heartbeat
                 }
