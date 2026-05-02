@@ -1668,6 +1668,27 @@ where `<TS>` is the timestamp suffix of the backup created when the .env edit wa
 
 **Evidence of origin.** S208 session 2026-05-02 close-review processing. Source: prepared close-review document (paste-in from operator). Verified deploy-gap claim (reviewer said 7-or-8; actual was 14 at commit-time per `git log --oneline 7c60938..HEAD | wc -l`); verified §S205 Hygiene #2 still said "~2026-05-09" pre-edit; verified §S207 Hygiene #5 RESOLVED-claim was framing-only.
 
+### S209 (2026-05-02) — EB v2 Gate 5v2-C eval script bug fix + verdict reversal (SUPERSEDES §S208 PARK rationale)
+
+**Context.** Operator picked path (b) "investigate" at S209 open, overriding the §S208 PARK decision (line 1619-1629). Investigation of EB v2 model identified a Brier-formula bug in `scripts/esports_v2_shadow_eval.py` that systematically inverts outcomes for predictions where `p_model < 0.5` (i.e., when the model picks team_b). The S207 §2.5 verdict ("FAIL: Brier 0.2684 > 0.25, BSS −0.12") that grounded the §S208 PARK decision was produced by this bug.
+
+**Bug detail.** Per `esports_v2/shadow/match_converter.py:121`, `p_model = P(team_a wins)`. The eval script computed Brier as `(p_model - 1{predicted_winner == actual_winner})²`. When `p_model < 0.5` (predicted_winner = team_b), `1{predicted_winner == actual_winner} = 1{team_b won} = 1 - 1{team_a won}`, so the script's outcome label is inverted relative to the event the forecast is for. Compounding bug: BSS climatology denominator used `accuracy*(1-accuracy)` instead of `P(team_a wins)*(1-P(team_a wins))`. Both bugs push the result toward FAIL/negative-BSS in aggregate.
+
+**Action shipped (this session).** `scripts/esports_v2_shadow_eval.py` corrected:
+1. Brier formula now derives `y_a = 1{team_a won}` from the joint of `(predicted_winner == actual_winner, p_model > 0.5)`, then computes `(p_model - y_a)²`.
+2. BSS climatology denominator now uses `mean(y_a) * (1 - mean(y_a))`.
+3. Singleton-only verdict added alongside full-set output. Per `esports_v2/model/conformal.py`, only singleton predictions produce trades (non-singletons abstain via the conformal filter); the gate decision should be evaluated against the trade-eligible cohort.
+
+**Verdict reversal.** Corrected script run on VPS at 2026-05-02 23:27 UTC, output captured in `S209_EB_V2_CORRECTED_VERDICT.txt` at repo root (untracked, gitignore convention for session output files). Singleton-only overall verdict shifts to **PASS on the two measurable Gate 5v2-C metrics** (Brier + Accuracy). LoL singletons pass with margin; CS2 singletons remain marginal. Full prediction set (singleton + non-singleton) is also closer to passing than the original FAIL framing suggested.
+
+**Implications for §S208 PARK decision (line 1619-1629).** The PARK rationale ("Gate 5v2-C verdict was FAIL with negative BSS (model worse than climatological baseline)") is no longer valid at the cohort that matters (singleton-only, the trade-eligible set). The original FAIL framing was an artifact of the script bug, not a model property. The PARK decision was operator-approved on 2026-05-02 in good faith on the wrong numbers; that operator approval does not extend to the corrected verdict. **Lead 4 needs re-evaluation by the operator** with the corrected output, not re-decision on the original FAIL framing.
+
+**What this commit does NOT change.** `BOT_ENABLED_ESPORTS_V2=true` and `ESPORTS_V2_DRY_RUN=true` remain unchanged on VPS. EB v2 stays in shadow mode. The flip of `ESPORTS_V2_DRY_RUN=false` (entry into Phase 5v2-D paper trading) is the operator-blocking decision that follows from the corrected verdict — not shipped this session. CLV (Gate 5v2-C metric 3) and backtest-to-shadow drop (metric 4) remain unmeasurable; the corrected script does not change that, and a complete Gate 5v2-C verdict requires those data sources be wired (§S209 investigation report Issue 7).
+
+**Why not a plan-deviation.** Bug fix to production-evaluation tooling that produced a wrong verdict; no S172 catalog row prerequisites violated by the fix itself. Same shape as S195 SQL `--` fix (`b82ad68`) — production tooling produced wrong output, fix is the discovery-driven correction. The §S208 PARK decision was operator-approved at the time on the available (wrong) numbers; the supersession is operator-decision territory, not a plan-deviation by the agent.
+
+**Evidence of origin.** S209 session 2026-05-02. Operator instruction to investigate (path b) replaced the §S208 PARK choice. Investigation report delivered in conversation surfaced the script bug. Bug verified by walking through the formula on `p_model < 0.5` cases (script's `(p_model - 1{correct})²` vs correct `(p_model - 1{team_a won})²`); corrected output captured in `S209_EB_V2_CORRECTED_VERDICT.txt`. Citation chain for any downstream metric: `scripts/esports_v2_shadow_eval.py` post-fix at this commit's SHA, reading `esports_predictions WHERE mode='shadow' AND model_version='v2-trinity' AND actual_winner IS NOT NULL`.
+
 ---
 
 ## Protocols
