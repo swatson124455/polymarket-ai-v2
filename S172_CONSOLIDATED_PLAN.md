@@ -1532,7 +1532,47 @@ Reality is $5 (the .env override is what takes effect at runtime). Memory was st
 
 **7. Audit script extension — `getattr(settings, ...)` follow-through (S208, deferred).** Current audit only catches direct `os.getenv("KEY")` and `os.environ.get("KEY")` calls. Bots commonly read via `getattr(settings, "KEY", default)` — same env var ultimately, but the read indirection is invisible to the AST walker. **Action (deferred):** extend the script to (a) walk `config/settings.py` to extract `class Settings` attribute → env-var mappings; (b) walk all bot code for `getattr(settings, "KEY", ...)` and resolve to the underlying env-var; (c) reduce false-orphan rate in the ENV-ORPHANS bucket. Estimated effort: ~30-60 min. Promote when the next ENV-ORPHAN false-positive matters operationally.
 
+**8. Three training-tuning flags deferred to next session for review (S208, operator-deferred via §S208 training-cluster re-enable action below).** §S208 Hygiene #2 surfaced 8 training-related "off" flags. Six are wholesale disables and were re-enabled this session (see §S208 Corrections Log entry "Training cluster re-enable" below). Three are tuning-class items — not strict disables — and were deferred for review next session:
+- `USE_PRICE_HISTORY_TRAINING_FALLBACK=false` (vs default `true`) — fallback data source. Currently off; could be intentional if primary sources (paper_trades + prediction_log) are sufficient. **Question:** is the fallback ever needed in the current data-availability state? Re-enable for safety net or keep off if redundant?
+- `TRAINING_RECENCY_LAMBDA=3.0` (vs default `1.0`) — aggressive recency weighting. Current value triple-weights recent data. **Question:** does the regime volatility justify it? Or revert to 1.0 for stable training?
+- `TRAINING_MIN_VOLUME=0` (vs default `500`) — admits all data including thin markets. **Question:** does max-data outweigh noise? Or restore the 500 floor?
+
+**Action (next session):** review each on its own merits; either (a) document the current value as intentional with rationale in a §Corrections Log entry, or (b) revert to default. Bundle as one .env edit when decided.
+
 **Evidence of origin.** S208 session 2026-05-02. Audit script committed `8495671`. Output captured in `S208_CONFIG_DRIFT_AUDIT_OUTPUT.txt` (untracked, session-local per §Operational Procedures convention). Triggered by §S208 Corrections Log "Handoff-vs-reality finding" — the WEATHER_MIN_TRADE_USD $5-vs-$15 drift exposed the broader question "what other config drift exists?", answered comprehensively by this audit. Findings serve as third-instance evidence base for promoting "Hierarchical infrastructure verification" Protocol candidate to Protocol 13 (next commit).
+
+### S208 (2026-05-02) — Training cluster re-enable: 6 flags shipped, 3 deferred (operator-approved)
+
+**Context.** §S208 Hygiene Backlog #2 (audit-derived via `scripts/config_drift_audit.py`) flagged 8 training-related env vars consistently set to "training off" patterns. Operator review (2026-05-02): unintentional drift from a paper-trading-mode freeze that was never re-enabled. Action: re-enable training across all bots; defer 3 tuning-class items to next session for review (§S208 Hygiene #8).
+
+**Flags re-enabled this session (6).** All applied via VPS `/opt/pa2-shared/.env` edit; the 3 active trading bot services restarted.
+
+| Flag | Pre | Post | Effect |
+|---|---|---|---|
+| `TRAIN_ON_PAPER_TRADES` | `false` | `true` | Paper trade outcomes feed training data |
+| `TRAIN_ON_PREDICTION_LOG` | `false` | `true` | Resolved markets feed training data via `prediction_log` |
+| `AUTO_RETRAIN_ON_DEGRADATION` | `false` | `true` | Models self-retrain when performance degrades |
+| `RETRAIN_INTERVAL_HOURS` | `999999` | `24` | Daily retrain cadence (default 6 = 4×/day; 24 = 1×/day, conservative for paper) |
+| `ESPORTS_RETRAIN_INTERVAL_HOURS` | `999999` | `24` | Esports-specific daily retrain cadence |
+| `MIRROR_USE_CALIBRATION` | `false` | `true` | 7K Venn-ABERS calibration active for MirrorBot signals |
+
+**Deferred to next session (3).** See §S208 Hygiene Backlog #8. Tunings, not disables — `USE_PRICE_HISTORY_TRAINING_FALLBACK`, `TRAINING_RECENCY_LAMBDA`, `TRAINING_MIN_VOLUME`.
+
+**Why operator-approved.** §S208 Hygiene #2 surfaced the cluster as INTENT UNCLEAR; operator review concluded "unintentional, fix it." Re-enable comes with the rollback path documented below — same .env-backup pattern as S208 D1 Stage 1 flip earlier this session.
+
+**Rollback procedure (single command).**
+```
+ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 \
+  'sudo cp /opt/pa2-shared/.env.bak.s208.<TS> /opt/pa2-shared/.env && \
+   sudo systemctl restart polymarket-weather polymarket-mirror polymarket-esports'
+```
+where `<TS>` is the timestamp suffix of the backup created when the .env edit was applied.
+
+**Verification.** Post-restart, env vars present in `/proc/<PID>/environ` for each restarted service; calibration_check.py / model retraining cycles should resume on the new cadence (24h interval).
+
+**Why not a plan-deviation.** Discovery-driven fix to §S208 Hygiene #2 (audit-found drift). No S172 catalog row with prerequisites is being violated; an unintentional disable is being un-done. Same shape-class as the D1 staged WB min-trade flip earlier this session; same shape as the S195 SQL `--` fix and S201/S202 block 4 split (both rejected from plan-deviation count in §S208 audit-corrections commit `4ea441e`).
+
+**Evidence of origin.** S208 session 2026-05-02. Operator approval in conversation: "do all 6 and add 3 to next handoff." Audit findings filed in §S208 Hygiene Backlog #2 (count from `scripts/config_drift_audit.py` first run). VPS .env edit + service restart applied this session; backup created with timestamp suffix `<TS>` (recorded in shipped command output).
 
 ---
 
