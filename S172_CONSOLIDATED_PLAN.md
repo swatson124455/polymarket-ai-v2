@@ -1465,6 +1465,34 @@ The same numbers had also landed in three artifacts as load-bearing evidence: (a
 
 ---
 
+### S208 (2026-05-02) — D1 staged WB min-trade flip + handoff-vs-reality finding (operator-approved, trigger pre-committed)
+
+**Context.** §S207 Hygiene Backlog #1 documented WB throughput collapse with high-shadow-to-trade ratio over a 7-day window, ~87% of rejections being orderbook-constraint failures (`slippage_cap_exceeded` + `depth_exceeded`). S207 close §2.4 identified `WEATHER_MIN_TRADE_USD` floor as the root bottleneck.
+
+**Handoff-vs-reality finding (S208 audit, Protocol 7-shape catch).** S207 close §2.4 stated: "Real bottleneck: `WEATHER_MIN_TRADE_USD = $5.0` (config/settings.py + weather_bot.py:3339)." Pre-flip verification of VPS `/opt/pa2-shared/.env` returned `WEATHER_MIN_TRADE_USD=15` at line 280. The handoff cited the source-code default ($5 from `os.getenv("WEATHER_MIN_TRADE_USD", "5.0")` at [config/settings.py:845](config/settings.py:845)) as if it were the running value; the actual running override is $15 via .env. Inherited-testimony-vs-primary-evidence pattern — same Protocol 7 shape that has fired 12 times across 8 sessions. The 6Q dampener evaluation framing in §S207 close §1 / Lead 1 should be re-read with this correction; "$5 floor" interpretations may need adjustment.
+
+**D1 staged action (operator-approved 2026-05-02 with B-path: stage $15→$5 first).** Two-stage flip with sample-based rollback trigger between stages. No calendar timer ("day timer is nonsense" — operator).
+
+**Stage 1 — $15 → $5 (THIS COMMIT'S ACTION).**
+- Apply: VPS `/opt/pa2-shared/.env` line 280 `WEATHER_MIN_TRADE_USD=15` → `=5`; restart `polymarket-weather`.
+- Trigger: P(edge>0) on the $5–$15 marginal cohort, evaluated over 30 closed trades minimum.
+- Pass: P(edge>0) ≥ 0.40 → proceed to Stage 2.
+- Fail: P(edge>0) < 0.40 → revert to $15 via `sudo cp /opt/pa2-shared/.env.bak.s208.<TS> /opt/pa2-shared/.env && sudo systemctl restart polymarket-weather`.
+
+**Stage 2 — $5 → $1 (PENDING, awaits Stage 1 pass).**
+- Apply: VPS .env edit `WEATHER_MIN_TRADE_USD=5` → `=1`; restart.
+- Trigger: P(edge>0) on the $1–$5 marginal cohort, evaluated over 30 closed trades minimum.
+- Pass: hold at $1.
+- Fail: revert to $5.
+
+**Why staged + trigger pre-committed.** Per §S207 close §7 #2 reviewer recommendation: D1 should not become a second "shipped without prerequisite" instance after S205 6Q. Trigger committed before action = audit trail; staged flip = bounded blast radius (3× smaller per stage given $15 actual baseline vs $5 assumed). Operator approved B-path after handoff-vs-reality finding surfaced.
+
+**Why not a plan-deviation.** D1 is a discovery-driven fix to §S207 Hygiene #1's throughput-collapse finding; no S172 catalog row with prerequisites is being violated. Same shape-class as S195 SQL `--` fix and S201/S202 block 4 split (both rejected from plan-deviation count in S208's earlier audit-corrections commit). Filed in §Corrections Log for the audit trail and for the trigger / rollback discipline.
+
+**Evidence of origin.** S208 session 2026-05-02. Operator approval in conversation: initial sign-off "do it but just wait to get 30 trades day timer is nonsense"; B-path selection "b" after handoff-vs-reality finding ($5 → $15 actual) was surfaced. Stage 1 .env edit + service restart applied this session; Stage 2 deferred until Stage 1 trigger sample (30 closed $5–$15 cohort trades) accumulates and passes.
+
+---
+
 ## Protocols
 
 Binding rules for all future sessions. Each protocol exists because a real hypothesis-inversion or false-finding would have shipped a wrong fix in its absence. Added incrementally as new failure modes are caught during execution.
