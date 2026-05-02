@@ -1537,7 +1537,7 @@ Reality is $5 (the .env override is what takes effect at runtime). Memory was st
 - `TRAINING_RECENCY_LAMBDA=3.0` (vs default `1.0`) — aggressive recency weighting. Current value triple-weights recent data. **Question:** does the regime volatility justify it? Or revert to 1.0 for stable training?
 - `TRAINING_MIN_VOLUME=0` (vs default `500`) — admits all data including thin markets. **Question:** does max-data outweigh noise? Or restore the 500 floor?
 
-**Action (next session):** review each on its own merits; either (a) document the current value as intentional with rationale in a §Corrections Log entry, or (b) revert to default. Bundle as one .env edit when decided.
+**Action (next session):** review each on its own merits; either (a) document the current value as intentional with rationale in a §Corrections Log entry, or (b) revert to default. Bundle as one .env edit when decided. **RESOLVED 2026-05-02 (S208, same session) via option (b) for all three.** See §S208 Corrections Log entry "Deferred-3 training tunings reverted to defaults" below for the per-flag reasoning + settings.py inline-comment citations.
 
 **Evidence of origin.** S208 session 2026-05-02. Audit script committed `8495671`. Output captured in `S208_CONFIG_DRIFT_AUDIT_OUTPUT.txt` (untracked, session-local per §Operational Procedures convention). Triggered by §S208 Corrections Log "Handoff-vs-reality finding" — the WEATHER_MIN_TRADE_USD $5-vs-$15 drift exposed the broader question "what other config drift exists?", answered comprehensively by this audit. Findings serve as third-instance evidence base for promoting "Hierarchical infrastructure verification" Protocol candidate to Protocol 13 (next commit).
 
@@ -1573,6 +1573,36 @@ where `<TS>` is the timestamp suffix of the backup created when the .env edit wa
 **Why not a plan-deviation.** Discovery-driven fix to §S208 Hygiene #2 (audit-found drift). No S172 catalog row with prerequisites is being violated; an unintentional disable is being un-done. Same shape-class as the D1 staged WB min-trade flip earlier this session; same shape as the S195 SQL `--` fix and S201/S202 block 4 split (both rejected from plan-deviation count in §S208 audit-corrections commit `4ea441e`).
 
 **Evidence of origin.** S208 session 2026-05-02. Operator approval in conversation: "do all 6 and add 3 to next handoff." Audit findings filed in §S208 Hygiene Backlog #2 (count from `scripts/config_drift_audit.py` first run). VPS .env edit + service restart applied this session; backup created with timestamp suffix `<TS>` (recorded in shipped command output).
+
+### S208 (2026-05-02) — Deferred-3 training tunings reverted to defaults (operator-approved)
+
+**Context.** §S208 Hygiene Backlog #8 filed 3 training-tuning flags as deferred-to-next-session, post the §S208 training-cluster re-enable action. Operator review (2026-05-02): "do deferred items." Each flag was reviewed against `config/settings.py` inline documentation; no rationale was found for the current operational override; reverted to code defaults.
+
+**Flags reverted this session (3).** All applied via VPS `/opt/pa2-shared/.env` edit; the 3 active trading bot services restarted.
+
+| Flag | Pre | Post | Rationale (settings.py inline comment) |
+|---|---|---|---|
+| `USE_PRICE_HISTORY_TRAINING_FALLBACK` | `false` | `true` | [config/settings.py:303](config/settings.py:303). Fallback data source — safety net when primary sources (`paper_trades` + `prediction_log`) hiccup. No code-comment rationale for disabling; no operational rationale found in plan / handoffs. |
+| `TRAINING_RECENCY_LAMBDA` | `3.0` | `1.0` | [config/settings.py:983-986](config/settings.py:983) documents: "1.0 = moderate recency bias. 0.0 = uniform weights (disabled). 2.0+ = strong recency." 3.0 was "strong"; no documented rationale. With retraining now on a 24h cadence (per S208 training-cluster re-enable), recent-data weighting is partially captured by the cadence itself. |
+| `TRAINING_MIN_VOLUME` | `0` | `500` | [config/settings.py:350-351](config/settings.py:350) documents: "Exclude low-volume markets from training (reduces thin-market noise bias)." Setting to 0 admits all markets including thin ones with noisy outcomes. Default 500 is the documented noise filter. |
+
+**Closes §S208 Hygiene Backlog #8.** All three previously-deferred items dispositioned in this session. No further follow-up needed for the training cluster.
+
+**Why operator-approved.** §S208 Hygiene #8 framed this as operator-pending: review each on its own merits; either (a) document the current value as intentional with rationale, or (b) revert to default. Operator chose (b) for all three after seeing settings.py comments document the reasoning behind the defaults.
+
+**Rollback procedure (single command).**
+```
+ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 \
+  'sudo cp /opt/pa2-shared/.env.bak.s208-deferred.<TS> /opt/pa2-shared/.env && \
+   sudo systemctl restart polymarket-weather polymarket-mirror polymarket-esports'
+```
+where `<TS>` is the timestamp suffix of the backup created when the .env edit was applied.
+
+**Verification.** Post-restart, env vars present in `/proc/<PID>/environ` for each restarted service.
+
+**Why not a plan-deviation.** Discovery-driven fix to §S208 Hygiene #8 (audit-found drift, operator-reviewed). Same shape as the training-cluster re-enable earlier this session. No S172 catalog row with prerequisites being violated; an unintentional drift from defaults is being un-done.
+
+**Evidence of origin.** S208 session 2026-05-02. Operator approval in conversation: "do deferred items." Audit findings filed in §S208 Hygiene Backlog #8 (count from `scripts/config_drift_audit.py` first run). VPS .env edit + service restart applied this session; backup created with timestamp suffix `<TS>` (recorded in shipped command output).
 
 ---
 
