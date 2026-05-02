@@ -1491,6 +1491,49 @@ The same numbers had also landed in three artifacts as load-bearing evidence: (a
 
 **Evidence of origin.** S208 session 2026-05-02. Operator approval in conversation: initial sign-off "do it but just wait to get 30 trades day timer is nonsense"; B-path selection "b" after handoff-vs-reality finding ($5 → $15 actual) was surfaced. Stage 1 .env edit + service restart applied this session; Stage 2 deferred until Stage 1 trigger sample (30 closed $5–$15 cohort trades) accumulates and passes.
 
+### S208 Hygiene Backlog
+
+**1. Config drift audit — first run (S208, RESOLVED via `scripts/config_drift_audit.py` 2026-05-02).** Triggered by S208's S207-handoff-vs-reality finding ($5 source-code default vs $15 actual on `WEATHER_MIN_TRADE_USD`). Audit covers source-code `os.getenv` defaults vs running VPS `.env` runtime values across 814 unique env keys in code + 117 keys in .env. Output captured in untracked `S208_CONFIG_DRIFT_AUDIT_OUTPUT.txt` (per session-local script convention §Operational Procedures). Categorized counts: DRIFT 57, REDUNDANT 37, NO-DEFAULT-MISSING 44, ENV-ORPHANS 18, MULTI-DEFAULT 10, ALIGNED 671. Most drifts are intentional operational tuning (bot enable/disable, DB pool, slippage caps, sizing); three clusters worth dispositioning (items 2-4 below). **Action SHIPPED:** [scripts/config_drift_audit.py](scripts/config_drift_audit.py) committed `8495671`; output captured.
+
+**2. Training-disabled cluster (S208, INTENT UNCLEAR — operator review needed).** Eight env vars all set to "training off" patterns:
+- `AUTO_RETRAIN_ON_DEGRADATION`: code `true` → .env `false`
+- `RETRAIN_INTERVAL_HOURS`: `6` → `999999` (effectively never)
+- `ESPORTS_RETRAIN_INTERVAL_HOURS`: `24` → `999999`
+- `TRAIN_ON_PAPER_TRADES`: `true` → `false`
+- `TRAIN_ON_PREDICTION_LOG`: `true` → `false`
+- `USE_PRICE_HISTORY_TRAINING_FALLBACK`: `true` → `false`
+- `TRAINING_MIN_VOLUME`: `500` → `0`
+- `TRAINING_RECENCY_LAMBDA`: `1.0` → `3.0`
+
+Models effectively frozen in production. Paper-trading-mode freeze is plausible but not documented; could equally be accumulated drift from a prior session that disabled training and never re-enabled. **Action:** operator confirms intentional vs unintentional. If intentional, add comment-block to .env explaining the freeze. If unintentional, file as a separate corrections entry with re-enable plan.
+
+**3. MirrorBot calibration toggle off (S208, INTENT UNCLEAR — operator review needed).** `MIRROR_USE_CALIBRATION`: code `true` → .env `false`. 7K (Venn-ABERS calibration for MirrorBot) is shipped per §Phase 7 catalog and the toggle is off. Could be pending validation, accidentally off, or deliberately disabled while observing behavior under no-calibration baseline. **Action:** operator confirms intent; either document the gating reason in a §Corrections Log entry, or flip the toggle.
+
+**4. Memory drift on MirrorBot whale gate (S208, RESOLVED via memory edit).** Three-way disagreement surfaced by audit:
+- Code default at [config/settings.py:456](config/settings.py:456): `100.0`
+- VPS .env override: `5`
+- MEMORY.md "MirrorBot S132+ traps" entry said: `$50 min whale gate`
+
+Reality is $5 (the .env override is what takes effect at runtime). Memory was stale. **Action SHIPPED:** MEMORY.md trap entry corrected to "$5 min whale gate (per .env override; code default $100; memory was stale at $50 per S208 audit)."
+
+**5. ENV-ORPHANS — 18 keys in .env with no `os.getenv` reference in code (S208, partial action).** Categorized:
+- **Confirmed dead:** `BOT_ENABLED_ESPORTS_SERIES=true` — EsportsSeriesBot was merged into EsportsBot per `56c1d70 refactor(esports): merge EsportsSeriesBot into EsportsBot + batch handoff docs`. **Action:** remove from .env (operator-blocking; .env edits gated to operator approval; not a session-blocker).
+- **Likely false-orphans (read via `getattr(settings, ...)` rather than direct `os.getenv`):** `ESPORTS_CONFLUENCE_MIN`, `ESPORTS_MAX_EDGE`, `MIRROR_FORCE_EXIT_HOURS`, `MIRROR_USE_CONFORMAL`, `RISK_MIN_PRICE_WEATHERBOT`, `RISK_MIN_VOL_*BOT`, `WEATHER_EXIT_MIN_EDGE`, `WEATHER_MID_LIFE_EXIT_ENABLED`. **Action (deferred):** see item 7 (audit script extension).
+- **Hardcoded URLs / infra meta:** `POLYMARKET_*_API`, `POLYMARKET_WS`, `LIGHTSAIL_INSTANCE_NAME`, `MIRROR_ML_MODEL_PATH`, `MIRROR_ML_QTABLE_PATH` — base URLs are likely hardcoded in client code (not env-overridable) and infra metadata. Keep.
+
+**6. MULTI-DEFAULT internal code inconsistencies (S208, audit-derived).** Same env key has different defaults in different files (or even within the same file). Most concerning:
+- `RUN_INGESTION_MAX_SECONDS`: `'900'` at [config/settings.py:63](config/settings.py:63) vs `'2400'` at [config/settings.py:741](config/settings.py:741) — same file, different defaults. Whichever is read last wins per Python attribute-assignment order; this is brittle.
+- `INGESTION_TIMEOUT_SECONDS`: `'300'` at [config/settings.py:64](config/settings.py:64) vs `'600'` at [config/settings.py:738](config/settings.py:738) — same pattern.
+- `LLM_PROBABILITY_CACHE_TTL`: `'3600'` at config/settings.py vs `str(DEFAULT_CACHE_TTL)` at base_engine/features/llm_probability.py:30.
+- `DATABASE_URL`: 15 references across the codebase with mixed defaults (`''`, `None`, no-default-subscript). Most are scripts that should fail-fast if `DATABASE_URL` isn't set; the `''` defaults silently mask missing-config bugs.
+- `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`: similar mixed-default pattern.
+
+**Action:** file as code-hygiene investigation for a future session; not session-blocking. Recommended fix: pick one default per key and propagate; require config/settings.py to be the single source of default truth for cross-cutting keys.
+
+**7. Audit script extension — `getattr(settings, ...)` follow-through (S208, deferred).** Current audit only catches direct `os.getenv("KEY")` and `os.environ.get("KEY")` calls. Bots commonly read via `getattr(settings, "KEY", default)` — same env var ultimately, but the read indirection is invisible to the AST walker. **Action (deferred):** extend the script to (a) walk `config/settings.py` to extract `class Settings` attribute → env-var mappings; (b) walk all bot code for `getattr(settings, "KEY", ...)` and resolve to the underlying env-var; (c) reduce false-orphan rate in the ENV-ORPHANS bucket. Estimated effort: ~30-60 min. Promote when the next ENV-ORPHAN false-positive matters operationally.
+
+**Evidence of origin.** S208 session 2026-05-02. Audit script committed `8495671`. Output captured in `S208_CONFIG_DRIFT_AUDIT_OUTPUT.txt` (untracked, session-local per §Operational Procedures convention). Triggered by §S208 Corrections Log "Handoff-vs-reality finding" — the WEATHER_MIN_TRADE_USD $5-vs-$15 drift exposed the broader question "what other config drift exists?", answered comprehensively by this audit. Findings serve as third-instance evidence base for promoting "Hierarchical infrastructure verification" Protocol candidate to Protocol 13 (next commit).
+
 ---
 
 ## Protocols
