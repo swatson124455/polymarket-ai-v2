@@ -1523,7 +1523,7 @@ Models effectively frozen in production. Paper-trading-mode freeze is plausible 
 Reality is $5 (the .env override is what takes effect at runtime). Memory was stale. **Action SHIPPED:** MEMORY.md trap entry corrected to "$5 min whale gate (per .env override; code default $100; memory was stale at $50 per S208 audit)."
 
 **5. ENV-ORPHANS — 18 keys in .env with no `os.getenv` reference in code (S208, partial action).** Categorized:
-- **Confirmed dead:** `BOT_ENABLED_ESPORTS_SERIES=true` — EsportsSeriesBot was merged into EsportsBot per `56c1d70 refactor(esports): merge EsportsSeriesBot into EsportsBot + batch handoff docs`. **Action:** remove from .env (operator-blocking; .env edits gated to operator approval; not a session-blocker).
+- **Confirmed dead:** `BOT_ENABLED_ESPORTS_SERIES=true` — EsportsSeriesBot was merged into EsportsBot per `56c1d70 refactor(esports): merge EsportsSeriesBot into EsportsBot + batch handoff docs`. **RESOLVED 2026-05-02 (S208, same session, operator-approved).** Line removed from VPS .env via sed; 3 trading services restarted; backup at `/opt/pa2-shared/.env.bak.s208-deadflag.20260502_181516`. See §S208 Corrections Log entry "Dead env flag removal" below.
 - **Likely false-orphans (read via `getattr(settings, ...)` rather than direct `os.getenv`):** `ESPORTS_CONFLUENCE_MIN`, `ESPORTS_MAX_EDGE`, `MIRROR_FORCE_EXIT_HOURS`, `MIRROR_USE_CONFORMAL`, `RISK_MIN_PRICE_WEATHERBOT`, `RISK_MIN_VOL_*BOT`, `WEATHER_EXIT_MIN_EDGE`, `WEATHER_MID_LIFE_EXIT_ENABLED`. **Action (deferred):** see item 7 (audit script extension).
 - **Hardcoded URLs / infra meta:** `POLYMARKET_*_API`, `POLYMARKET_WS`, `LIGHTSAIL_INSTANCE_NAME`, `MIRROR_ML_MODEL_PATH`, `MIRROR_ML_QTABLE_PATH` — base URLs are likely hardcoded in client code (not env-overridable) and infra metadata. Keep.
 
@@ -1546,6 +1546,8 @@ Reality is $5 (the .env override is what takes effect at runtime). Memory was st
 **Action (next session):** review each on its own merits; either (a) document the current value as intentional with rationale in a §Corrections Log entry, or (b) revert to default. Bundle as one .env edit when decided. **RESOLVED 2026-05-02 (S208, same session) via option (b) for all three.** See §S208 Corrections Log entry "Deferred-3 training tunings reverted to defaults" below for the per-flag reasoning + settings.py inline-comment citations.
 
 **9. Protocol 7 row 2/8 substantive audit (DEFERRED, S208 close-review carry).** Filed by the §S207 Hygiene #5 close-review clarification. The framing-correction shipped in S208 commit `4ea441e` (replaced "gitignored / blocked / pending / unverifiable" wording with "audit deferred (handoff readable)"). The substantive audit — actually opening `AGENT_HANDOFF_S196_CLOSE.md` (Row 2 SIZE_INVARIANT FIX_AUDIT_CHECK→FIX_EMISSION rescoping attribution) and `AGENT_HANDOFF_S202_CLOSE.md` (Row 8 plan-revision-approach inversion attribution) and verifying each row's stated claim against the handoff content — is still pending. **Action (next session):** ~30-minute audit; if either row's attribution turns out wrong, file as §Corrections Log row-correction same way as S206's Row 1 fix. If both verify, mark §S207 Hygiene #5 fully RESOLVED and close. Estimated effort matches S206 Hygiene #1 row 1-10 audit (~30 min for the 2 remaining rows).
+
+**11. Audit-corrections-bundling pattern — codification deferred per operator review (S208 close-question Q6).** S208 commit `177ac75` is a worked example: 4 plan corrections + 2 hygiene additions, all of one logical type (close-review incorporation), shipped as one docs-only commit. Cleaner than 6 separate commits; preserves "one fix per commit" because the corrections share a common §Corrections Log entry. Operator decision (close-question Q6): "Add to handoffs to review" — defer formal codification to §Operational Procedures; carry the proposal to next-session handoffs for review against accumulated examples. **Action:** future session-close handoffs should explicitly evaluate whether this session's commit pattern matched the bundling shape, accumulating evidence for or against codification. Promotion-to-§Operational-Procedures threshold: 3+ session-close handoffs reviewing the pattern in agreement that it should be codified, OR 2+ examples in a single session that fit the pattern. Until then, the pattern is informal and applied case-by-case.
 
 **10. Plan-deviation candidate completeness sweep (DEFERRED, S208 close-review carry).** S208 commit `4ea441e` corrected over-counting (3 → 1 instance) but did not run a positive sweep for under-counting. Genuine plan-deviation instances may exist in S198–S203 sessions that weren't caught by the §S206 retrofit framing. **Action (next session):** ~30-minute sweep across the 5-session diagnostic chain (S198–S202 plus S203) for shipped commits with the shape "code shipped before catalog row prerequisites met OR catalog row exists with explicit prerequisites violated." If 1+ additional instance found, append to §Protocol candidates Plan-deviation evidence-of-origin and adjust the candidate's promotion-threshold accordingly. If 0 found, leave the candidate at 1-instance, monitor-for-2nd disposition (current state) and note the sweep result.
 
@@ -1613,6 +1615,30 @@ where `<TS>` is the timestamp suffix of the backup created when the .env edit wa
 **Why not a plan-deviation.** Discovery-driven fix to §S208 Hygiene #8 (audit-found drift, operator-reviewed). Same shape as the training-cluster re-enable earlier this session. No S172 catalog row with prerequisites being violated; an unintentional drift from defaults is being un-done.
 
 **Evidence of origin.** S208 session 2026-05-02. Operator approval in conversation: "do deferred items." Audit findings filed in §S208 Hygiene Backlog #8 (count from `scripts/config_drift_audit.py` first run). VPS .env edit + service restart applied this session; backup created with timestamp suffix `<TS>` (recorded in shipped command output).
+
+### S208 (2026-05-02) — EB v2 verdict response: PARK (operator-approved)
+
+**Context.** S207 §2.5 produced Gate 5v2-C eval (via `scripts/esports_v2_shadow_eval.py`) verdict = FAIL on EB v2 shadow predictions. Three response paths offered in S207 §6 Lead 4: (a) park (`ESPORTS_V2_DRY_RUN=true` stays, no further work); (b) investigate model (multi-week ML work); (c) hold and re-evaluate in 1-2 months.
+
+**Decision (operator-approved 2026-05-02).** Path (a) — park. `ESPORTS_V2_DRY_RUN=true` remains (already set; no .env change needed this session). EB v2 stays in shadow mode generating predictions to `esports_predictions`; no live trading. Cheapest path with no further session work.
+
+**Rationale.** Gate 5v2-C verdict was FAIL with negative BSS (model worse than climatological baseline) on n=389 across CS2 + LoL — structural, not a sample-size artifact. Path (b) is multi-week ML investigation work; path (c) hopes for natural improvement without retraining (unlikely to produce a different verdict). Path (a) preserves the option of revisiting if operator priorities change while incurring zero ongoing engineering cost.
+
+**Closes §S207 Lead 4.** EB v2 verdict-response decision recorded. The `BOT_ENABLED_ESPORTS_V2=true` flag stays (bot continues to generate shadow predictions for future Gate 5v2-C re-evaluation if revisited); only the `ESPORTS_V2_DRY_RUN=false` flip is parked indefinitely.
+
+**Evidence of origin.** S208 session 2026-05-02. Operator approval in conversation: "1 a" (response to Q1 in close-question round). No VPS state change required — `ESPORTS_V2_DRY_RUN=true` was already set; the parking decision is a non-action acknowledgment.
+
+### S208 (2026-05-02) — Dead env flag removal: BOT_ENABLED_ESPORTS_SERIES=true (operator-approved)
+
+**Context.** §S208 Hygiene Backlog #5 flagged `BOT_ENABLED_ESPORTS_SERIES=true` in VPS `/opt/pa2-shared/.env` line 233 as dead config — EsportsSeriesBot was merged into EsportsBot per `56c1d70 refactor(esports): merge EsportsSeriesBot into EsportsBot + batch handoff docs`. Verified by audit script: not referenced from any `os.getenv` / `os.environ.get` / `os.environ[]` call in the codebase.
+
+**Action shipped (this session).** VPS .env line 233 deleted via `sudo sed -i "/^BOT_ENABLED_ESPORTS_SERIES=/d"`. All 3 trading services restarted; new PIDs weather=2977235, mirror=2977244, esports=2977240, all `active`. Backup at `/opt/pa2-shared/.env.bak.s208-deadflag.20260502_181516`.
+
+**Closes §S208 Hygiene Backlog #5 partially.** The confirmed-dead flag is removed. The 8 likely-false-orphans (`ESPORTS_CONFLUENCE_MIN`, `ESPORTS_MAX_EDGE`, `MIRROR_FORCE_EXIT_HOURS`, `MIRROR_USE_CONFORMAL`, `RISK_MIN_PRICE_WEATHERBOT`, `RISK_MIN_VOL_*BOT`, `WEATHER_EXIT_MIN_EDGE`, `WEATHER_MID_LIFE_EXIT_ENABLED`) remain — they need the audit script extension (§S208 Hygiene #7) to walk `getattr(settings, ...)` reads before being verified as truly dead vs read-via-indirection. The 5 hardcoded URLs / infra-meta keys (`POLYMARKET_*_API`, `POLYMARKET_WS`, `LIGHTSAIL_INSTANCE_NAME`, `MIRROR_ML_MODEL_PATH`, `MIRROR_ML_QTABLE_PATH`) keep — these are intentional non-os.getenv keys.
+
+**Rollback.** `sudo cp /opt/pa2-shared/.env.bak.s208-deadflag.20260502_181516 /opt/pa2-shared/.env && sudo systemctl restart polymarket-weather polymarket-mirror polymarket-esports`. Restores the `=true` line at position 233. Unlikely to be needed (line had no consumer in code).
+
+**Evidence of origin.** S208 session 2026-05-02. Operator approval in conversation: "2 a" (response to Q2 in close-question round). VPS .env edit + service restart applied this session.
 
 ### S208 (2026-05-02) — In-message Protocol 11 strip on first leads-table (recovered same-message)
 
