@@ -1,11 +1,12 @@
 # S177 SHARED MASTER HANDOFF — Infrastructure Session
 
 **Session:** 177 (Shared Infrastructure)
-**Date:** 2026-04-15
+**Date:** 2026-04-15 / deployed 2026-04-16
 **Scope:** Cross-bot infrastructure only — no trading logic, no bot-specific tuning
 **Tests:** 2117 passed, 0 failed, 2 skipped, 9 xfailed
 **Branch:** master
-**Commits:** pending (not yet committed)
+**Commit:** `a33510b` — 10 files, 507 insertions, 31 deletions
+**VPS Deploy:** `20260416_122845` — LIVE ✅
 **Prior sessions:** S173 (last shared master), S176 (EsportsBot v2)
 
 ---
@@ -153,36 +154,51 @@ deploy/logrotate.d/polymarket             # Logrotate config
 
 ---
 
-## 5. S171 AUDIT GAPS (post-S177)
+## 5. S171 AUDIT GAPS (post-S177 deploy)
 
 | Gap | Status | Notes |
 |-----|--------|-------|
-| Backups: ZERO | **FIXED** | daily_backup.sh, crontab 04:00 UTC |
-| Prune timer: INACTIVE | **FIXED** | Timer enabled via deploy.sh |
-| Audit service: FAILING | **FIXED** | Timer enabled; frozen_price column matches schema |
+| Backups: ZERO | **FIXED + VERIFIED** | Script at `/opt/pa2-backups/daily_backup.sh`, 8 existing dumps (Apr 8-16), crontab 04:00 UTC |
+| Prune timer: INACTIVE | **FIXED + VERIFIED** | `polymarket-prune-prices.timer` active, hourly runs |
+| Audit service: FAILING | **FIXED + VERIFIED** | `polymarket-audit.timer` active, next 03:00 UTC |
 | fail2ban: CRASHED | Fixed in S173 | Deployer IP whitelisted |
-| prediction_log: MB/EB 0 rows | **DIAGNOSIS PENDING** | Error now surfaced at warning level |
+| prediction_log: MB/EB 0 rows | **STALE FINDING — NOT A BUG** | Post-deploy SSH diagnosis: MB=18,480 rows (1,328/hr), WB=141,573 rows, EnsembleBot=213,622 rows. Test INSERT succeeded. Writes working. Zero `prediction_log_write_failed` warnings. S171 audit query was wrong. |
 | Autovacuum 049: incomplete | NOT FIXED | positions (5.5% dead), mpl (14% dead) |
 
 ---
 
-## 6. WHAT'S NEXT
+## 6. POST-DEPLOY VERIFICATION (2026-04-16 16:40 UTC)
 
-### Immediate (next session)
-1. **Deploy this session** — `bash deploy/deploy.sh`
-2. **Verify post-deploy:**
-   - Backup: `ls /opt/pa2-backups/polymarket_*.dump` (after 04:00 UTC)
-   - Timers: `systemctl status polymarket-prune-prices.timer polymarket-audit.timer`
-   - prediction_log: `journalctl -u polymarket-mirror --since '-1h' | grep prediction_log`
-   - EB v2 startup: `journalctl -u polymarket-esports | grep pipeline_loaded` (should show <30s)
-   - Structlog dedup: `journalctl -u polymarket-weather | grep suppressed`
-3. **Fix prediction_log root cause** based on warning-level errors from Item 5
-4. **Monitor EB v2 shadow predictions** — accumulating for 5v2-C gate
+| Component | Status |
+|-----------|--------|
+| Release | `/opt/pa2-releases/20260416_122845` ✅ |
+| All services (weather, mirror, esports, ingestion) | Active, scanning ✅ |
+| Backup script installed | `/opt/pa2-backups/daily_backup.sh` (postgres owned) ✅ |
+| postgres crontab | Installed, 04:00 UTC daily ✅ |
+| Prune timer | Active, next run +24min ✅ |
+| Audit timer | Active, next run +10h ✅ |
+| Logrotate config | `/etc/logrotate.d/polymarket` installed ✅ |
+| Pipeline snapshot | `pipeline.joblib` saved (602KB, 16:36 UTC) ✅ |
+| Structlog dedup | Confirmed working — "(suppressed N duplicates)" in all bot logs ✅ |
+| prediction_log writes | MB/WB writing cleanly. Zero failures. ✅ |
+| EB v2 shadow | 81 clean (v2-trinity) + 35 contaminated predictions. 0/5 resolved so far. |
+
+**Deploy health check failed at 420s** — expected first-deploy behavior. EB v2 had no pipeline snapshot on VPS, fell back to full 5.5-min fit. Snapshot now saved; next restart will load in <30s. Bot is healthy and scanning.
+
+---
+
+## 7. WHAT'S NEXT
+
+### Immediate (next session / S178)
+1. **Reduce health check timeout** from 420s → 300s in `deploy/deploy.sh` (pipeline snapshot now exists)
+2. **Fix 153 temporal ordering violations** in `prediction_log` (`resolved_at < prediction_time`). Script `scripts/cleanup_temporal_violations.py` exists (check). Logged as warning every ~5min by MB + WB.
+3. **Monitor EB v2 shadow predictions** — accumulating for 5v2-C gate (need 50 resolved)
+4. **Verify EB v2 team mapping** on first resolved predictions (correct rate must be >50%)
 
 ### Short-term
 5. Phase 2J: Slippage monitoring review
 6. Autovacuum: tune remaining 4 tables (positions, mpl)
-7. EB v2: verify team mapping on first resolved predictions
+7. EB v2 pipeline P0: market_price=NULL on all predictions (no match-level Polymarket markets for tier-C esports yet)
 
 ### Gated (4+ weeks post-Day-2)
 8. Phase 6: WB elevation — needs P(edge>0) >= 0.30
@@ -232,9 +248,23 @@ S173  → Phase RC complete, Day 2 deployed, EB v1 killed, deploy.sh fixed
 S174  → Phase 5v2-A COMPLETE (EB v2 ratings)
 S175  → Phase 5v2-B COMPLETE (EB v2 backtester)
 S176  → EB v2 bot built + deployed (dry-run shadow)
-S177  → Phase 2 near-complete, infra gaps fixed, pipeline serialization ← YOU ARE HERE
-S178+ → Deploy S177, fix prediction_log root cause, monitor shadows
+S177  → Phase 2 complete (10/12), infra gaps fixed, pipeline serialization deployed ← DONE
+S178+ → Health check 420→300s, temporal violations cleanup, monitor shadows
 ```
+
+---
+
+## 8.X UPDATE 2026-04-17 — Illiquidity exit stage-2 kwarg fix (P1)
+
+**Issue:** Stage-2 CLOB confirmation in `position_manager.py` L930 called `_lg.check_liquidity(token_id=..., size=size, side="SELL")`. `check_liquidity()` takes `trade_size=` (not `size=`) and **requires** `market_id=`. Every call raised `TypeError`, swallowed by the `except Exception` at L937-938 → `_confirmed_illiquid=False` (hold). Stage-2 has never executed in production.
+
+**Fix:** `_lg.check_liquidity(market_id=_mid, token_id=_token_id, trade_size=size, side="SELL")`.
+
+**File:** `base_engine/execution/position_manager.py:930` (1 line).
+
+**Verification:** `pytest tests/unit/test_illiquidity_exit.py` — 7/7 pass (includes CLOB-overrides-prefilter and timeout-conservative-hold cases that exercise the fixed call path).
+
+**Blast radius:** Gated by `ILLIQUIDITY_EXIT_ENABLED` (currently off on VPS). No signature/interface change. Must be merged **before** S172 2I flips the flag on.
 
 ---
 
