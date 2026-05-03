@@ -34,12 +34,20 @@ Read-only — no DB, no .env writes, no service restarts.
 """
 import argparse
 import ast
+import os
 import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+# REPO_ROOT defaults to the script's own grandparent, but can be overridden
+# via CONFIG_DRIFT_REPO_ROOT env var so the script can be run from a temp
+# location (e.g., SCP'd to /tmp on VPS) without walking the entire filesystem.
+# S210: previous "VPS hang" was actually filesystem-wide rglob from /tmp where
+# REPO_ROOT resolved to '/' via parent.parent — not doubled I/O as initially
+# suspected.
+_repo_env = os.environ.get("CONFIG_DRIFT_REPO_ROOT")
+REPO_ROOT = Path(_repo_env).resolve() if _repo_env else Path(__file__).resolve().parent.parent
 
 # Default VPS connection (can be overridden by env / args)
 DEFAULT_SSH_KEY = str(Path.home() / ".ssh" / "LightsailDefaultKey-eu-west-1.pem")
@@ -59,27 +67,14 @@ SKIP_DIRS = {
 }
 
 
-def extract_getenv_calls(filepath: Path):
-    """Yield (key, default_repr, lineno) for each os.getenv-shape call.
+def _extract_getenv_from_tree(tree: ast.AST):
+    """Yield (key, default_repr, lineno) for each os.getenv-shape call in a
+    pre-parsed AST tree. See `extract_getenv_calls` for the matching rules.
 
-    Matches:
-        os.getenv("KEY")
-        os.getenv("KEY", default)
-        os.environ.get("KEY")
-        os.environ.get("KEY", default)
-        os.environ["KEY"]               (recorded as no-default key access)
-
-    Skips dynamic keys (f-strings, variables).
+    S210: hot path for `collect_code_defaults` — read+parse each file once,
+    walk the AST twice with this and `_extract_getattr_settings_from_tree`.
+    Eliminates the 2× file-read + 2× ast.parse cost of the wrapper functions.
     """
-    try:
-        src = filepath.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return
-    try:
-        tree = ast.parse(src, filename=str(filepath))
-    except SyntaxError:
-        return
-
     for node in ast.walk(tree):
         # Function-call form: os.getenv / os.environ.get
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
@@ -127,35 +122,11 @@ def extract_getenv_calls(filepath: Path):
                     yield slice_node.value, "<no-default-subscript>", node.lineno
 
 
-def extract_getattr_settings_calls(filepath: Path):
-    """Yield (key, default_repr, lineno) for getattr(settings, "KEY", default).
-
-    Many env vars in this codebase are accessed via the pydantic-settings
-    object rather than os.getenv directly: pydantic auto-loads .env into the
-    Settings class, then code does `getattr(settings, "KEY", default)`. The
-    field name on the Settings class equals the env-var name (the Settings
-    class uses case_sensitive=True), so the literal string passed to getattr
-    is the same key that appears in the .env file. Treating these as code
-    references prevents false-positive ENV-ORPHAN flags.
-
-    Matches:
-        getattr(settings, "KEY")
-        getattr(settings, "KEY", default)
-
-    Skips:
-      * dynamic key (variable / f-string second-arg)
-      * first-arg name other than `settings`
-      * builtin getattr on non-settings objects
+def _extract_getattr_settings_from_tree(tree: ast.AST):
+    """Yield (key, default_repr, lineno) for `getattr(settings, "KEY", default)`
+    in a pre-parsed AST tree. See `extract_getattr_settings_calls` for the
+    matching rules. S210 hot-path counterpart to `_extract_getenv_from_tree`.
     """
-    try:
-        src = filepath.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return
-    try:
-        tree = ast.parse(src, filename=str(filepath))
-    except SyntaxError:
-        return
-
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
             continue
@@ -183,16 +154,93 @@ def extract_getattr_settings_calls(filepath: Path):
         yield key, default_repr, node.lineno
 
 
+def extract_getenv_calls(filepath: Path):
+    """Yield (key, default_repr, lineno) for each os.getenv-shape call.
+
+    Matches:
+        os.getenv("KEY")
+        os.getenv("KEY", default)
+        os.environ.get("KEY")
+        os.environ.get("KEY", default)
+        os.environ["KEY"]               (recorded as no-default key access)
+
+    Skips dynamic keys (f-strings, variables).
+
+    Backward-compat wrapper around `_extract_getenv_from_tree`. The S210
+    `collect_code_defaults` hot path calls the tree-form extractor directly
+    to share one parse across both extractors.
+    """
+    try:
+        src = filepath.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return
+    try:
+        tree = ast.parse(src, filename=str(filepath))
+    except SyntaxError:
+        return
+    yield from _extract_getenv_from_tree(tree)
+
+
+def extract_getattr_settings_calls(filepath: Path):
+    """Yield (key, default_repr, lineno) for getattr(settings, "KEY", default).
+
+    Many env vars in this codebase are accessed via the pydantic-settings
+    object rather than os.getenv directly: pydantic auto-loads .env into the
+    Settings class, then code does `getattr(settings, "KEY", default)`. The
+    field name on the Settings class equals the env-var name (the Settings
+    class uses case_sensitive=True), so the literal string passed to getattr
+    is the same key that appears in the .env file. Treating these as code
+    references prevents false-positive ENV-ORPHAN flags.
+
+    Matches:
+        getattr(settings, "KEY")
+        getattr(settings, "KEY", default)
+
+    Skips:
+      * dynamic key (variable / f-string second-arg)
+      * first-arg name other than `settings`
+      * builtin getattr on non-settings objects
+
+    Backward-compat wrapper around `_extract_getattr_settings_from_tree`.
+    The S210 `collect_code_defaults` hot path calls the tree-form extractor
+    directly to share one parse across both extractors.
+    """
+    try:
+        src = filepath.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return
+    try:
+        tree = ast.parse(src, filename=str(filepath))
+    except SyntaxError:
+        return
+    yield from _extract_getattr_settings_from_tree(tree)
+
+
 def collect_code_defaults():
-    """Walk repo, collect all (key -> [(default_repr, location), ...])."""
+    """Walk repo, collect all (key -> [(default_repr, location), ...]).
+
+    S210: read+parse each .py file ONCE, then walk the parsed AST twice via
+    the two extractor helpers. Halves the I/O + parse cost vs the original
+    "call each filepath-form extractor (which re-reads + re-parses) per file"
+    pattern, which suspected as the cause of the live-VPS-run hang during
+    initial validation (each .py file walked twice ⇒ 2× I/O on slow disk).
+    """
     refs: dict[str, list[tuple[str | None, str]]] = defaultdict(list)
     for py_file in REPO_ROOT.rglob("*.py"):
         if any(part in SKIP_DIRS for part in py_file.parts):
             continue
         rel = py_file.relative_to(REPO_ROOT).as_posix()
-        for key, default, lineno in extract_getenv_calls(py_file):
+        try:
+            src = py_file.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        try:
+            tree = ast.parse(src, filename=str(py_file))
+        except SyntaxError:
+            continue
+        for key, default, lineno in _extract_getenv_from_tree(tree):
             refs[key].append((default, f"{rel}:{lineno}"))
-        for key, default, lineno in extract_getattr_settings_calls(py_file):
+        for key, default, lineno in _extract_getattr_settings_from_tree(tree):
             refs[key].append((default, f"{rel}:{lineno}"))
     return dict(refs)
 
