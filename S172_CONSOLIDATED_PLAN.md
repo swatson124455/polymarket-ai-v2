@@ -1716,6 +1716,34 @@ where `<TS>` is the timestamp suffix of the backup created when the .env edit wa
 
 ---
 
+### S210 (2026-05-02) — EB v2 trade flip (a-unrestricted) + wiring fix prerequisite (operator-approved)
+
+**Context.** Operator selected Lead 4 sub-option (a-unrestricted) per the §S209 batched-decision block: flip both LoL and CS2 to live paper trading. Operator explicitly waived the rollback-trigger pre-commit recommended by the §S209 handoff §6 Lead 2 (a-unrestricted) entry — preferring a 1-week handoff-review checkpoint as the kill-switch instead of a code-level auto-disable. Operator instruction: "have all games working and running we can review later, verify they have all they need to succeed."
+
+**Pre-flip verification surfaced 5 wiring gaps.** The pre-flip "verify they have all they need to succeed" check identified that EsportsBotV2 was not registered in BotBankrollManager defaults or risk_manager bot-name checks — flipping `ESPORTS_V2_DRY_RUN=false` without code fixes would have produced trades blocked or undersized:
+
+1. **`base_engine/risk/bankroll_manager.py:46`** — `_DEFAULT_BOT_CONFIGS` missing `EsportsBotV2`. Fell to `_FALLBACK_CONFIG` (capital=$1K, max_bet_usd=$100, max_daily_usd=$500) instead of the EsportsBot parity config ($20K / $300 / $10K). VPS `BOT_BANKROLL_CONFIG` JSON only has `EsportsBot`/`MirrorBot` keys; no override.
+2. **`base_engine/risk/risk_manager.py:306`** — `bot_name == "EsportsBot"` check excluded v2; bot would use `MIN_CONFIDENCE_THRESHOLD` default (~0.55) instead of VPS `ESPORTS_MIN_CONFIDENCE=0.20`. Most predictions would fail the place_order confidence floor.
+3. **`base_engine/risk/risk_manager.py:419`** (fast-path) — `bot_name in ("EsportsBot", "EsportsLiveBot")` excluded v2; bot would use global `RISK_MAX_TOTAL_EXPOSURE_USD` ($500 default) summed across ALL bots instead of bot-isolated. Total exposure across MirrorBot/EsportsBot/etc. already exceeds $500, so v2 trades would be hard-blocked.
+4. **`base_engine/risk/risk_manager.py:484`** (DB-fallback path) — same exclusion as #3.
+5. **`base_engine/risk/risk_manager.py:675/704`** — `_HARD_STOP_DEFAULTS` missing v2 (fell to 0.30 vs EsportsBot's 0.50); `_prefix_map` missing v2 (would fall to `"ESPORTSV2"` env-var prefix lookups which don't exist). Aliased to `"ESPORTS"` so v2 reads the same `ESPORTS_*` env vars already on VPS.
+
+**Action shipped (commit `354c84e`).** Pure additive — added `EsportsBotV2` alongside `EsportsBot` in all 5 places. No behavior change for any other bot. All 2281 unit tests pass. Deployed via `deploy.sh` to VPS as release `20260502_202509`. Atomic symlink swap + service restart per §Operational Procedures rollback path. Pre-S203 routing-audit work (commit `... ` per §S203 EB routing audit) had already pre-staged `SIGNAL_REQUIRED_BOTS=EsportsBot,EsportsBotV2` on VPS — that prerequisite was in place.
+
+**Action shipped (VPS .env edit, NOT git-tracked).** `/opt/pa2-shared/.env` edited via `sed -i` to flip `ESPORTS_V2_DRY_RUN=true → false`. Backup preserved at `/opt/pa2-shared/.env.s210-pre-flip` for rollback. `polymarket-esports` service restarted at 2026-05-03 00:38:02 UTC (PID 2994963). Cold-start expected ~5.5 min before first trade-eligible scan cycle.
+
+**CS2 risk acknowledgment (per §S209 Critical Reminder #5).** CS2 singletons fail the Brier gate post-fix in all-time and 14d windows; marginal in 7d (per `S209_EB_V2_RECENCY_*` outputs at repo root). Trading on CS2 carries explicit expected-loss risk relative to the model's per-game gate. The (a-unrestricted) decision accepts this risk on the operator's authority. LoL singletons pass the gate cleanly across all windows; trading risk on LoL is the model's normal calibration error, not a known gate failure.
+
+**1-week review checkpoint (2026-05-09 per operator request).** At checkpoint, evaluate per-game P&L + edge realization vs the corrected verdict's predictions. Decision space: continue both, restrict to LoL only (revert to a-restricted shape via per-game env var), park back to shadow (full revert). Review marker also lives in [memory/feedback_eb_v2_trade_flip_review.md](C:/Users/samwa/.claude/projects/C--lockes-picks-polymarket-ai-v2/memory/feedback_eb_v2_trade_flip_review.md) and the next session's close handoff.
+
+**Rollback path.** Code: `git revert 354c84e && bash deploy/rollback.sh`. .env: `ssh ubuntu@VPS 'sudo cp /opt/pa2-shared/.env.s210-pre-flip /opt/pa2-shared/.env && sudo systemctl restart polymarket-esports'`. Note: rollback restores DRY_RUN=true; existing positions opened in the live-trading window remain in `positions` table and reconcile via standard exit flows.
+
+**Why not a plan-deviation.** Wiring fix is a discovery-driven correction to enable a Phase 5v2-D operation that the catalog row already requires (the §Phase 5v2-D rows assume EB v2 trades through the same place_order gates as EsportsBot). No catalog row prerequisites violated; the missing wiring was an artifact of EsportsBotV2 being a newer bot added after the original 5-bot risk_manager wiring. Flip itself is operator-approved per Lead 4 (a-unrestricted) selection.
+
+**Evidence of origin.** S210 session 2026-05-02. Operator selection of (a-unrestricted) at S210 mid-session, with explicit waiver of the rollback-trigger pre-commit recommendation. Pre-flip verification per operator instruction "verify they have all they need to succeed" surfaced the 5 wiring gaps. Code fix verified by direct comparison of wired EsportsBot paths vs unwired EsportsBotV2 paths. Trade-eligible cohort visible in `esports_predictions` table (mode='shadow', model_version='v2-trinity', is_singleton=true, market_price IS NOT NULL, edge >= 0.05) — last 7d direct query returned LoL=9, CS2=2 trade-eligible singletons. Verbatim cohort query at `feedback_eb_v2_trade_flip_review.md`.
+
+---
+
 ## Protocols
 
 Binding rules for all future sessions. Each protocol exists because a real hypothesis-inversion or false-finding would have shipped a wrong fix in its absence. Added incrementally as new failure modes are caught during execution.
