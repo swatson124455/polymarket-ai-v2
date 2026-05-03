@@ -303,7 +303,7 @@ class RiskManager:
         _min_conf = settings.MIN_CONFIDENCE_THRESHOLD
         if bot_name == "WeatherBot":
             _min_conf = getattr(settings, "WEATHER_MIN_CONFIDENCE", _min_conf)
-        elif bot_name == "EsportsBot":
+        elif bot_name in ("EsportsBot", "EsportsBotV2"):
             _min_conf = getattr(settings, "ESPORTS_MIN_CONFIDENCE", _min_conf)
         if confidence < _min_conf:
             checks["allowed"] = False
@@ -416,7 +416,7 @@ class RiskManager:
                 total_exposure = og.get_bot_exposure_usd(bot_name)
                 max_total = getattr(settings, "WEATHER_MAX_TOTAL_EXPOSURE_USD", max_total)
             # EsportsBot variants: same pattern — isolate from MirrorBot/WeatherBot exposure.
-            elif bot_name in ("EsportsBot", "EsportsLiveBot"):
+            elif bot_name in ("EsportsBot", "EsportsLiveBot", "EsportsBotV2"):
                 total_exposure = og.get_bot_exposure_usd(bot_name)
                 max_total = getattr(settings, "ESPORTS_MAX_TOTAL_EXPOSURE_USD", max_total)
             if total_exposure + position_value > max_total:
@@ -481,7 +481,7 @@ class RiskManager:
                 if bot_name == "WeatherBot":
                     max_total = getattr(settings, "WEATHER_MAX_TOTAL_EXPOSURE_USD", max_total)
                     _total_exp_filter.append(or_(Position.bot_id == bot_name, Position.source_bot == bot_name))
-                elif bot_name in ("EsportsBot", "EsportsLiveBot"):
+                elif bot_name in ("EsportsBot", "EsportsLiveBot", "EsportsBotV2"):
                     max_total = getattr(settings, "ESPORTS_MAX_TOTAL_EXPOSURE_USD", max_total)
                     _total_exp_filter.append(or_(Position.bot_id == bot_name, Position.source_bot == bot_name))
                 total_exposure_query = await session.execute(
@@ -673,6 +673,7 @@ class RiskManager:
         "WeatherBot": 0.25,
         "MirrorBot": 0.30,
         "EsportsBot": 0.50,
+        "EsportsBotV2": 0.50,  # S210: parity with EsportsBot
     }
     # Absolute code-level floor — no env var can loosen beyond this.
     _HARD_STOP_ABSOLUTE_FLOOR = 0.50
@@ -702,6 +703,7 @@ class RiskManager:
             "WeatherBot": "WEATHER",
             "MirrorBot": "MIRROR",
             "EsportsBot": "ESPORTS",
+            "EsportsBotV2": "ESPORTS",  # S210: route v2 through ESPORTS_* env vars
         }
         _prefix = _prefix_map.get(bot_name, bot_name.upper().replace("BOT", ""))
 

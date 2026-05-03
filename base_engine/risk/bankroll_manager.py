@@ -43,6 +43,7 @@ _DEFAULT_BOT_CONFIGS: Dict[str, Dict[str, Any]] = {
     "LogicalArbBot":       {"capital": 500,  "kelly_fraction": 0.20, "max_bet_usd": 200, "max_daily_usd": 500},
     "EsportsBot":          {"capital": 20000, "kelly_fraction": 0.25, "max_bet_usd": 300, "max_daily_usd": 10000},
     "EsportsLiveBot":      {"capital": 20000, "kelly_fraction": 0.25, "max_bet_usd": 300, "max_daily_usd": 10000},
+    "EsportsBotV2":        {"capital": 20000, "kelly_fraction": 0.25, "max_bet_usd": 300, "max_daily_usd": 10000},  # S210: parity with EsportsBot — Phase 5v2-D paper trading
 }
 
 _FALLBACK_CONFIG: Dict[str, Any] = {
