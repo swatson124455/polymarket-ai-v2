@@ -127,6 +127,62 @@ def extract_getenv_calls(filepath: Path):
                     yield slice_node.value, "<no-default-subscript>", node.lineno
 
 
+def extract_getattr_settings_calls(filepath: Path):
+    """Yield (key, default_repr, lineno) for getattr(settings, "KEY", default).
+
+    Many env vars in this codebase are accessed via the pydantic-settings
+    object rather than os.getenv directly: pydantic auto-loads .env into the
+    Settings class, then code does `getattr(settings, "KEY", default)`. The
+    field name on the Settings class equals the env-var name (the Settings
+    class uses case_sensitive=True), so the literal string passed to getattr
+    is the same key that appears in the .env file. Treating these as code
+    references prevents false-positive ENV-ORPHAN flags.
+
+    Matches:
+        getattr(settings, "KEY")
+        getattr(settings, "KEY", default)
+
+    Skips:
+      * dynamic key (variable / f-string second-arg)
+      * first-arg name other than `settings`
+      * builtin getattr on non-settings objects
+    """
+    try:
+        src = filepath.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return
+    try:
+        tree = ast.parse(src, filename=str(filepath))
+    except SyntaxError:
+        return
+
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+            continue
+        if node.func.id != "getattr":
+            continue
+        if len(node.args) < 2:
+            continue
+        target = node.args[0]
+        # Restrict to `getattr(settings, ...)` — the project convention. We do
+        # not match arbitrary objects (e.g. `getattr(self, ...)`) because the
+        # second arg there is an attribute name on a class instance, not an
+        # env-var key, and matching it would produce its own false positives.
+        if not (isinstance(target, ast.Name) and target.id == "settings"):
+            continue
+        key_node = node.args[1]
+        if not (isinstance(key_node, ast.Constant) and isinstance(key_node.value, str)):
+            continue  # dynamic key, skip
+        key = key_node.value
+        default_repr = None
+        if len(node.args) >= 3:
+            try:
+                default_repr = ast.unparse(node.args[2])
+            except AttributeError:
+                default_repr = "<unparse-unavailable>"
+        yield key, default_repr, node.lineno
+
+
 def collect_code_defaults():
     """Walk repo, collect all (key -> [(default_repr, location), ...])."""
     refs: dict[str, list[tuple[str | None, str]]] = defaultdict(list)
@@ -135,6 +191,8 @@ def collect_code_defaults():
             continue
         rel = py_file.relative_to(REPO_ROOT).as_posix()
         for key, default, lineno in extract_getenv_calls(py_file):
+            refs[key].append((default, f"{rel}:{lineno}"))
+        for key, default, lineno in extract_getattr_settings_calls(py_file):
             refs[key].append((default, f"{rel}:{lineno}"))
     return dict(refs)
 
