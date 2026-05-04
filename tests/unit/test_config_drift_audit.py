@@ -330,3 +330,81 @@ def test_settings_attribute_prevents_env_orphan_verdict(
     orphan_keys = {entry[0] for entry in buckets["env_orphan"]}
     assert "POLYMARKET_GAMMA_API" not in orphan_keys, \
         f"Key flagged as ENV-ORPHAN despite settings.KEY reference: {orphan_keys}"
+
+
+# ───── SKIP_DIRS / SKIP_DIRS_AT_ROOT — S212 over-broad-skip fix ──────────────
+
+def test_nested_data_dir_not_skipped(audit, tmp_path: Path, monkeypatch) -> None:
+    """S212: `base_engine/data/foo.py` (and similar nested source dirs whose
+    basename collides with the top-level data/ convention) must be walked,
+    not silently skipped. This is the regression fix for ~37 source files
+    that the pre-S212 basename-anywhere rule was masking."""
+    src = 'import os\nx = os.getenv("FROM_NESTED_DATA", "1")\n'
+    pkg = tmp_path / "base_engine" / "data"
+    pkg.mkdir(parents=True)
+    _write(pkg, "foo.py", src)
+
+    monkeypatch.setattr(audit, "REPO_ROOT", tmp_path)
+    refs = audit.collect_code_defaults()
+    assert "FROM_NESTED_DATA" in refs
+
+
+def test_nested_output_dir_not_skipped(audit, tmp_path: Path, monkeypatch) -> None:
+    """S212: nested 'output' directories likewise must be walked."""
+    src = 'import os\nx = os.getenv("FROM_NESTED_OUTPUT", "1")\n'
+    pkg = tmp_path / "pkg" / "output"
+    pkg.mkdir(parents=True)
+    _write(pkg, "foo.py", src)
+
+    monkeypatch.setattr(audit, "REPO_ROOT", tmp_path)
+    refs = audit.collect_code_defaults()
+    assert "FROM_NESTED_OUTPUT" in refs
+
+
+def test_root_data_dir_still_skipped(audit, tmp_path: Path, monkeypatch) -> None:
+    """S212: top-level data/ at REPO_ROOT remains skipped (its only purpose
+    is data files; any .py inside should not contribute to the audit)."""
+    src = 'import os\nx = os.getenv("FROM_ROOT_DATA", "1")\n'
+    pkg = tmp_path / "data"
+    pkg.mkdir()
+    _write(pkg, "foo.py", src)
+
+    monkeypatch.setattr(audit, "REPO_ROOT", tmp_path)
+    refs = audit.collect_code_defaults()
+    assert "FROM_ROOT_DATA" not in refs
+
+
+def test_root_output_dir_still_skipped(audit, tmp_path: Path, monkeypatch) -> None:
+    """S212: top-level output/ at REPO_ROOT remains skipped (scratch dir)."""
+    src = 'import os\nx = os.getenv("FROM_ROOT_OUTPUT", "1")\n'
+    pkg = tmp_path / "output"
+    pkg.mkdir()
+    _write(pkg, "foo.py", src)
+
+    monkeypatch.setattr(audit, "REPO_ROOT", tmp_path)
+    refs = audit.collect_code_defaults()
+    assert "FROM_ROOT_OUTPUT" not in refs
+
+
+def test_pycache_skipped_anywhere(audit, tmp_path: Path, monkeypatch) -> None:
+    """SKIP_DIRS (skip-anywhere) preserved: __pycache__ at any depth skipped."""
+    src = 'import os\nx = os.getenv("FROM_PYCACHE", "1")\n'
+    deep = tmp_path / "pkg" / "sub" / "__pycache__"
+    deep.mkdir(parents=True)
+    _write(deep, "foo.py", src)
+
+    monkeypatch.setattr(audit, "REPO_ROOT", tmp_path)
+    refs = audit.collect_code_defaults()
+    assert "FROM_PYCACHE" not in refs
+
+
+def test_venv_skipped_anywhere(audit, tmp_path: Path, monkeypatch) -> None:
+    """SKIP_DIRS (skip-anywhere) preserved: venv at any depth skipped."""
+    src = 'import os\nx = os.getenv("FROM_VENV", "1")\n'
+    deep = tmp_path / "pkg" / "venv" / "lib"
+    deep.mkdir(parents=True)
+    _write(deep, "foo.py", src)
+
+    monkeypatch.setattr(audit, "REPO_ROOT", tmp_path)
+    refs = audit.collect_code_defaults()
+    assert "FROM_VENV" not in refs

@@ -54,7 +54,10 @@ DEFAULT_SSH_KEY = str(Path.home() / ".ssh" / "LightsailDefaultKey-eu-west-1.pem"
 DEFAULT_SSH_HOST = "ubuntu@18.201.216.0"
 DEFAULT_VPS_ENV = "/opt/pa2-shared/.env"
 
-# Skip these directories during code walk
+# Skip these directories during code walk.
+# SKIP_DIRS — basename matched ANYWHERE in the repo-relative path. These
+# names are never valid source modules in this repo regardless of nesting
+# (cache/artifact directories, vendored snapshots).
 SKIP_DIRS = {
     "review_package",  # vendored review snapshots
     "venv",
@@ -62,8 +65,25 @@ SKIP_DIRS = {
     "__pycache__",
     "node_modules",
     ".git",
-    "data",            # data files, not source
-    "output",          # session-local outputs
+}
+
+# SKIP_DIRS_AT_ROOT — basename matched ONLY at REPO_ROOT (i.e. as the first
+# component of the repo-relative path). These names exist as legitimate
+# nested source directories elsewhere in the tree (base_engine/data/,
+# esports/data/, sports/data/, esports_v2/data/), so the basename-anywhere
+# rule used by SKIP_DIRS would over-broadly exclude ~37 source modules
+# containing 100+ env-var references — masking ENV-ORPHAN resolutions and
+# undercounting code defaults across the whole audit.
+#
+# S212: split out from SKIP_DIRS after Lead 7 verification surfaced
+# POLYMARKET_DATA_API / POLYMARKET_WS as false ENV-ORPHANs. Those keys are
+# referenced via `settings.POLYMARKET_DATA_API` / `settings.POLYMARKET_WS`
+# at base_engine/data/polymarket_client.py:157,158 but the entire
+# base_engine/data/ subtree was silently skipped by the old "data" basename
+# rule. Same class of skip applies to "output" (top-level scratch dir).
+SKIP_DIRS_AT_ROOT = {
+    "data",    # top-level data files (data/cs2/, data/lol/, *.jsonl)
+    "output",  # top-level session-local outputs
 }
 
 
@@ -288,7 +308,12 @@ def collect_code_defaults():
     """
     refs: dict[str, list[tuple[str | None, str]]] = defaultdict(list)
     for py_file in REPO_ROOT.rglob("*.py"):
-        if any(part in SKIP_DIRS for part in py_file.parts):
+        rel_parts = py_file.relative_to(REPO_ROOT).parts
+        # Skip-anywhere (cache/artifact names that never house source)
+        if any(part in SKIP_DIRS for part in rel_parts):
+            continue
+        # Skip-at-root (convention names that ARE valid source dirs when nested)
+        if rel_parts and rel_parts[0] in SKIP_DIRS_AT_ROOT:
             continue
         rel = py_file.relative_to(REPO_ROOT).as_posix()
         try:
