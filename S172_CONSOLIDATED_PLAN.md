@@ -1803,6 +1803,30 @@ where `<TS>` is the timestamp suffix of the backup created when the .env edit wa
 
 ---
 
+### S211 (2026-05-04) — Plan-state alignment from S210 review-rebuttal exchange (Bundle A)
+
+S211 was a multi-pass review-rebuttal session reconciling S210 close artifacts against an independent reviewer's audit. Triple-blind verified 11 reviewer claims (3 fully correct, 5 partial, 3 wrong); reviewer pass-2 conceded all 3 errors and contributed 7 refinements. Bundle A consolidates 5 plan-state corrections + observations into one docs commit per the audit-corrections-bundling pattern.
+
+**1. S210 handoff §4 commit count corrected: 7 → 6.** Initial enumeration included a phantom 7th line "(current branch HEAD pointer)" that wasn't a commit. Verified via `git log --oneline 354c84e..HEAD | wc -l` = 6. Edit applied to working-tree-only handoff file (gitignored per `.gitignore:147`); not git-tracked but the canonical session-close artifact. Going-forward discipline: future handoffs verify commit count via the `git log` invocation, not via prose enumeration.
+
+**2. 2026-05-09 EB v2 trade-flip 1-week review pre-conditions filed.** Per S211 reviewer pass-2 refinement: "Calendar-gated review checkpoints should have explicit pre-conditions verified within 24-48 hours of review trigger, not at review trigger." If 2026-05-09 fires with zero v2 trades landed, the review collapses (cannot evaluate trade-flip when path wasn't exercised) and the calendar-gated discipline failed. **Pre-condition spec:** at 2026-05-08 (24h pre-review), run `python scripts/bot_pnl.py EsportsBotV2 168` and verify ≥3 EB v2 trades landed (threshold for per-game P&L visibility). If pre-condition not met, **pivot the review** to "investigate why path is still blocked" rather than firing as planned. Decision matrix in [feedback_eb_v2_trade_flip_review.md](C:/Users/samwa/.claude/projects/C--lockes-picks-polymarket-ai-v2/memory/feedback_eb_v2_trade_flip_review.md) remains the authority for the post-pre-condition decision shape (continue both / restrict to LoL only / park back to shadow).
+
+**3. +64 cross-environment match elevated as finding (not correction).** §S208 Hygiene #7 closure data point worth surfacing as standalone observation: the audit-script `getattr(settings, ...)` extension shipped in S210 commit `4142cbd` recovered EXACTLY +64 unique code-referenced keys (814 → 878) when run locally on Windows AND when run on VPS production Linux. The cross-environment match is structurally significant — it proves the extension's logic is environment-independent: no env-var-dependent code paths, no platform-specific keys missed by the AST walker, no production-specific keys hidden from the local extraction. Filed as **finding** (per S211 reviewer pass-2 refinement: §Corrections Log shape is "what changed/was wrong"; finding-elevation needs "what we learned that wasn't the planned outcome" shape) — not a correction since nothing was wrong; just a verification artifact worth elevating from buried "matches local" parenthetical to standalone evidence.
+
+**4. Audit-corrections-bundling pattern promotion verified — no-op.** S211 review pass-1 recommended promoting the pattern at "4 instances now (S208/S209/S210/S211)." Verification: pattern was ALREADY promoted in S210 commit `f0b405b` (per §Operational Procedures bullet "Audit-corrections-bundling pattern (codified S210, 2026-05-02)" above and S210 close handoff §2.3). Reviewer's recommendation was redundant. Confirmation entry filed for audit trail.
+
+**5. Path(__file__).resolve().parent.parent pattern fix-recipe filed.** Grep across the codebase surfaced ~28 instances of the pattern in scripts/, base_engine/, ui/, tests/. The bug class (REPO_ROOT resolving to `/` causing filesystem-wide rglob walk) only fires when scripts are SCP'd to /tmp before running — currently a one-script-specific issue, fixed in S210 via `CONFIG_DRIFT_REPO_ROOT` env-var override per [scripts/config_drift_audit.py:50](scripts/config_drift_audit.py:50). **Fix recipe (file as actionable artifact, not as tracked observation per S211 reviewer pass-2 refinement):** when next instance fires (a script run from /tmp produces filesystem-walk-class hangs), apply the same env-var-override pattern from `scripts/config_drift_audit.py` rather than refactoring proactively. The 28 affected files are NOT being refactored — refactor cost greatly exceeds current benefit; proactive widening would create change-surface without operational gain. The CONFIG_DRIFT_REPO_ROOT precedent is in the codebase as a working example for the next firing.
+
+**Evidence of origin.** S211 session 2026-05-04. Triggered by S210 close-review (2026-05-04 review session) → agent triple-blind verification → reviewer pass-2 concession of 3 errors + 7 refinements → operator approval. The exchange itself is a 3rd in-the-wild instance of the review-rebuttal-action chain pattern (S208→S209, S210→S210-review, S211→S211-rebuttal) — meta-validating the pattern's promotion in Bundle B same-session.
+
+---
+
+### S211 Hygiene Backlog
+
+All items closed in-session via Bundle A (above) + Bundle B (Verdict-driving tooling → Protocol 15 promotion + Review-rebuttal-exchange → §Operational Procedures promotion + Verify-primary-evidence-before-structural-inference candidate filing — see §Protocol candidates below). No items deferred. See `AGENT_HANDOFF_S211_CLOSE.md` §6 Plan to proceed for the consolidated S212+ leads list (carries from S210 + S211).
+
+---
+
 ## Protocols
 
 Binding rules for all future sessions. Each protocol exists because a real hypothesis-inversion or false-finding would have shipped a wrong fix in its absence. Added incrementally as new failure modes are caught during execution.
