@@ -408,3 +408,182 @@ def test_venv_skipped_anywhere(audit, tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(audit, "REPO_ROOT", tmp_path)
     refs = audit.collect_code_defaults()
     assert "FROM_VENV" not in refs
+
+
+# ───── Settings-class field extractor (S212 NO-DEFAULT triage root fix) ─────
+
+def test_settings_class_field_int_constant(audit, tmp_path: Path) -> None:
+    src = (
+        "class Settings(BaseSettings):\n"
+        "    RATE_LIMIT_BURST: int = 200\n"
+    )
+    f = _write(tmp_path, "c1.py", src)
+    out = list(audit._extract_settings_class_fields_from_tree(
+        __import__('ast').parse(f.read_text())
+    ))
+    assert out == [("RATE_LIMIT_BURST", "200", 2)]
+
+
+def test_settings_class_field_string_constant(audit, tmp_path: Path) -> None:
+    src = (
+        "class Settings(BaseSettings):\n"
+        '    LOG_LEVEL: str = "INFO"\n'
+    )
+    f = _write(tmp_path, "c2.py", src)
+    out = list(audit._extract_settings_class_fields_from_tree(
+        __import__('ast').parse(f.read_text())
+    ))
+    # ast.unparse normalizes string literals to single quotes
+    assert out == [("LOG_LEVEL", "'INFO'", 2)]
+
+
+def test_settings_class_field_bool_constant(audit, tmp_path: Path) -> None:
+    src = (
+        "class Settings(BaseSettings):\n"
+        "    FEATURE_FLAG: bool = True\n"
+    )
+    f = _write(tmp_path, "c3.py", src)
+    out = list(audit._extract_settings_class_fields_from_tree(
+        __import__('ast').parse(f.read_text())
+    ))
+    assert out == [("FEATURE_FLAG", "True", 2)]
+
+
+def test_settings_class_field_unannotated_assign(audit, tmp_path: Path) -> None:
+    """`KEY = 100` (no annotation) inside a Settings class — also yielded."""
+    src = (
+        "class Settings(BaseSettings):\n"
+        "    BARE_FIELD = 5\n"
+    )
+    f = _write(tmp_path, "c4.py", src)
+    out = list(audit._extract_settings_class_fields_from_tree(
+        __import__('ast').parse(f.read_text())
+    ))
+    assert out == [("BARE_FIELD", "5", 2)]
+
+
+def test_settings_class_field_name_reference_skipped(audit, tmp_path: Path) -> None:
+    """Opaque module-level Name references like `_DEFAULT_DATA` are skipped
+    rather than recorded — recording the unparse (`'_DEFAULT_DATA'`) would
+    mis-categorize as DRIFT when the .env value happens to equal the
+    resolved string."""
+    src = (
+        '_DEFAULT_DATA = "https://example.com"\n'
+        "class Settings(BaseSettings):\n"
+        "    POLYMARKET_DATA_API: str = _DEFAULT_DATA\n"
+    )
+    f = _write(tmp_path, "c5.py", src)
+    out = list(audit._extract_settings_class_fields_from_tree(
+        __import__('ast').parse(f.read_text())
+    ))
+    assert out == []
+
+
+def test_settings_class_field_call_value_skipped(audit, tmp_path: Path) -> None:
+    """Call values like `int(os.getenv(...))` are skipped — the os-getenv
+    extractor already records the readable fallback string from the inner
+    call, and unparse-ing the wrapper Call would produce a confusing repr."""
+    src = (
+        "import os\n"
+        "class Settings(BaseSettings):\n"
+        '    CACHE_TTL_PREDICTIONS: int = int(os.getenv("CACHE_TTL_PREDICTIONS", "60"))\n'
+    )
+    f = _write(tmp_path, "c6.py", src)
+    out = list(audit._extract_settings_class_fields_from_tree(
+        __import__('ast').parse(f.read_text())
+    ))
+    # Class-field extractor yields nothing; getenv extractor still picks up '60'
+    assert out == []
+
+
+def test_settings_class_field_lowercase_skipped(audit, tmp_path: Path) -> None:
+    """Lowercase fields aren't env-var-shaped — skip."""
+    src = (
+        "class Settings(BaseSettings):\n"
+        "    helper_field: int = 1\n"
+        "    UPPER: int = 2\n"
+    )
+    f = _write(tmp_path, "c7.py", src)
+    out = list(audit._extract_settings_class_fields_from_tree(
+        __import__('ast').parse(f.read_text())
+    ))
+    assert out == [("UPPER", "2", 3)]
+
+
+def test_settings_class_field_non_settings_class_skipped(audit, tmp_path: Path) -> None:
+    """Class without BaseSettings base — fields not yielded."""
+    src = (
+        "class Foo(SomethingElse):\n"
+        "    KEY: int = 100\n"
+    )
+    f = _write(tmp_path, "c8.py", src)
+    out = list(audit._extract_settings_class_fields_from_tree(
+        __import__('ast').parse(f.read_text())
+    ))
+    assert out == []
+
+
+# ───── categorize() order-fix (S212 NO-DEFAULT triage root fix, part 2) ─────
+
+def test_categorize_prefers_non_none_default_when_mixed(audit) -> None:
+    """When a key has BOTH None and concrete defaults across refs, the
+    categorize step must pick the concrete one — the walk-order of refs[0]
+    would otherwise mis-route the key into NO-DEFAULT half the time."""
+    # None first (simulates settings.X access site walked before settings.py)
+    refs = {"K": [(None, "pkg/foo.py:1"), ("100", "config/settings.py:2")]}
+    env = {}
+    buckets = audit.categorize(refs, env)
+    aligned = {entry[0] for entry in buckets["aligned_no_override"]}
+    assert "K" in aligned, \
+        f"Expected K in aligned_no_override, got buckets={buckets}"
+
+
+def test_categorize_prefers_non_none_default_reversed_order(audit) -> None:
+    """Same as above with the ref order reversed — verdict must be stable."""
+    refs = {"K": [("100", "config/settings.py:2"), (None, "pkg/foo.py:1")]}
+    env = {}
+    buckets = audit.categorize(refs, env)
+    aligned = {entry[0] for entry in buckets["aligned_no_override"]}
+    assert "K" in aligned
+
+
+def test_categorize_all_none_stays_no_default(audit) -> None:
+    """When all refs are None-like, categorize correctly routes to NO-DEFAULT."""
+    refs = {"K": [(None, "pkg/foo.py:1"), (None, "pkg/bar.py:2")]}
+    env = {}
+    buckets = audit.categorize(refs, env)
+    no_def = {entry[0] for entry in buckets["no_default_missing"]}
+    assert "K" in no_def
+
+
+# ───── verdict-level: settings.X + class-field default end-to-end ───────────
+
+def test_settings_attribute_with_class_default_no_longer_no_default(
+    audit, tmp_path: Path, monkeypatch
+) -> None:
+    """S212 root fix verdict: a key with `settings.X` access and a Constant
+    class-level default in a Settings(BaseSettings) class no longer falsely
+    routes through the NO-DEFAULT buckets — even though the access site
+    records None, the class-field extractor + categorize order-fix together
+    surface the concrete default for correct routing."""
+    # File 1: settings.X access (records None)
+    pkg = tmp_path / "consumer"
+    pkg.mkdir()
+    _write(pkg, "client.py", "x = settings.MY_RATE_LIMIT\n")
+    # File 2: Settings class declaration (records '100')
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    _write(cfg, "settings.py", (
+        "class Settings(BaseSettings):\n"
+        "    MY_RATE_LIMIT: int = 100\n"
+    ))
+
+    monkeypatch.setattr(audit, "REPO_ROOT", tmp_path)
+    refs = audit.collect_code_defaults()
+    assert "MY_RATE_LIMIT" in refs
+    # No .env entry — should land in aligned_no_override (default applies)
+    buckets = audit.categorize(refs, env={})
+    aligned = {entry[0] for entry in buckets["aligned_no_override"]}
+    no_def = {entry[0] for entry in buckets["no_default_missing"]}
+    assert "MY_RATE_LIMIT" in aligned
+    assert "MY_RATE_LIMIT" not in no_def

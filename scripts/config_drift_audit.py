@@ -174,6 +174,87 @@ def _extract_getattr_settings_from_tree(tree: ast.AST):
         yield key, default_repr, node.lineno
 
 
+def _extract_settings_class_fields_from_tree(tree: ast.AST):
+    """Yield (key, default_repr, lineno) for class-level field defaults
+    declared on pydantic Settings classes.
+
+    Pydantic-settings declares env-var-backed fields as annotated class
+    attributes whose default expression IS the runtime fallback when .env
+    doesn't override:
+
+        class Settings(BaseSettings):
+            RATE_LIMIT_REQUESTS_PER_SECOND: int = 100
+            CACHE_TTL_MARKETS: int = 60
+
+    The S211 Lead 7 `settings.X` extractor records `default=None` at access
+    sites because the access AST cannot see the class-level fallback. Those
+    None records mis-route through the NO-DEFAULT buckets when they're the
+    only refs for a key. This extractor surfaces the class-level Constant
+    default so categorize() routes the key correctly (DRIFT/REDUNDANT/
+    ALIGNED-NO-OVERRIDE rather than NO-DEFAULT).
+
+    Filters:
+      * ClassDef must have a base named 'BaseSettings' (covers
+        `class Settings(BaseSettings)` and direct subclasses; the
+        codebase convention).
+      * Body statements: AnnAssign or simple single-target Assign whose
+        target is a Name. The target name must start with an uppercase
+        letter (env-var convention).
+      * Value must be `ast.Constant` — yields only literal defaults
+        (`100`, `60`, `True`, `"https://..."`). Skips Name references to
+        module-level constants, function calls, BinOps, etc.; those are
+        either already covered by the os-getenv extractor (when wrapped
+        in `int(os.getenv(...))`) or remain unresolved (e.g. opaque
+        module-level Name like `_DEFAULT_DATA`). Recording the unparse
+        of a Name like `_DEFAULT_DATA` would mis-route through DRIFT
+        when the .env value happens to equal the resolved constant.
+    """
+    for cls in ast.walk(tree):
+        if not isinstance(cls, ast.ClassDef):
+            continue
+        is_settings_class = any(
+            isinstance(b, ast.Name) and b.id == "BaseSettings"
+            for b in cls.bases
+        )
+        if not is_settings_class:
+            continue
+        for stmt in cls.body:
+            target_name: str | None = None
+            value_node: ast.AST | None = None
+            lineno: int | None = None
+            if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                target_name = stmt.target.id
+                value_node = stmt.value
+                lineno = stmt.lineno
+            elif (
+                isinstance(stmt, ast.Assign)
+                and len(stmt.targets) == 1
+                and isinstance(stmt.targets[0], ast.Name)
+            ):
+                target_name = stmt.targets[0].id
+                value_node = stmt.value
+                lineno = stmt.lineno
+            else:
+                continue
+            if (
+                target_name is None
+                or value_node is None
+                or lineno is None
+                or not target_name[0].isupper()
+            ):
+                continue
+            # Yield only literal Constant defaults; non-Constant values
+            # are either getenv-wrapped (handled elsewhere) or opaque
+            # references whose unparse would mis-categorize.
+            if not isinstance(value_node, ast.Constant):
+                continue
+            try:
+                default_repr = ast.unparse(value_node)
+            except AttributeError:
+                default_repr = "<unparse-unavailable>"
+            yield target_name, default_repr, lineno
+
+
 def _extract_settings_attribute_from_tree(tree: ast.AST):
     """Yield (key, default_repr, lineno) for `settings.KEY` direct-attribute
     reads in a pre-parsed AST tree.
@@ -330,6 +411,8 @@ def collect_code_defaults():
             refs[key].append((default, f"{rel}:{lineno}"))
         for key, default, lineno in _extract_settings_attribute_from_tree(tree):
             refs[key].append((default, f"{rel}:{lineno}"))
+        for key, default, lineno in _extract_settings_class_fields_from_tree(tree):
+            refs[key].append((default, f"{rel}:{lineno}"))
     return dict(refs)
 
 
@@ -427,12 +510,22 @@ def categorize(code: dict, env: dict) -> dict:
             continue
 
         refs = code[key]
-        # Take first observed default (most-cited usage)
-        first_default = refs[0][0]
+        # S212: prefer the first NON-NONE default across all refs rather
+        # than refs[0][0]. Walk order is non-deterministic (rglob returns
+        # filesystem-order), and a key may have BOTH a None ref (from a
+        # `settings.X` access site) and a concrete default ref (from a
+        # `class Settings(BaseSettings)` field declaration). Picking
+        # refs[0][0] would mis-route the key into NO-DEFAULT half the time
+        # depending on which file the walk happens to visit first.
+        _NONE_LIKE = (None, "<no-default-subscript>", "None")
+        first_default = next(
+            (d for d, _ in refs if d not in _NONE_LIKE),
+            refs[0][0],
+        )
         first_default_norm = normalize(first_default)
 
         # Treat the magic markers as "no default"
-        no_default = first_default in (None, "<no-default-subscript>", "None")
+        no_default = first_default in _NONE_LIKE
 
         if no_default:
             if env_value is None:
