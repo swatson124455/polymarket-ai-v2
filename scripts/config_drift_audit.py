@@ -154,6 +154,45 @@ def _extract_getattr_settings_from_tree(tree: ast.AST):
         yield key, default_repr, node.lineno
 
 
+def _extract_settings_attribute_from_tree(tree: ast.AST):
+    """Yield (key, default_repr, lineno) for `settings.KEY` direct-attribute
+    reads in a pre-parsed AST tree.
+
+    Many env vars in this codebase are accessed via direct attribute lookup on
+    the pydantic Settings object — `settings.MY_KEY` — rather than via
+    `getattr(settings, "MY_KEY", default)`. The Settings class field name
+    equals the env-var name (case_sensitive=True), so the attribute name is
+    the same key as the .env entry. Treating these as code references prevents
+    false-positive ENV-ORPHAN flags (S211 Lead 7 — extends the S208-era
+    `getattr(settings, ...)` extractor for keys that bypass the getattr form).
+
+    Default value is recorded as None: pydantic-class-defined defaults live on
+    the Settings class body, not at the access site, so they cannot be
+    extracted from the access AST alone. The downstream categorize() may
+    therefore route these references through the NO-DEFAULT buckets —
+    accepted trade-off; the goal here is reducing ENV-ORPHAN noise.
+
+    False-positive hardening:
+      * ctx must be ast.Load — skips assignment targets and del statements
+      * value must be a bare ast.Name with id="settings" — skips nested
+        attribute chains (e.g. `obj.settings.KEY`, `mock_settings.KEY`)
+      * attr must start with an uppercase letter — env-var convention is
+        UPPER_SNAKE_CASE; this excludes pydantic builtins like
+        settings.dict / settings.json / settings.copy and dunder names
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute):
+            continue
+        if not isinstance(node.ctx, ast.Load):
+            continue
+        if not (isinstance(node.value, ast.Name) and node.value.id == "settings"):
+            continue
+        attr = node.attr
+        if not attr or not attr[0].isupper():
+            continue
+        yield attr, None, node.lineno
+
+
 def extract_getenv_calls(filepath: Path):
     """Yield (key, default_repr, lineno) for each os.getenv-shape call.
 
@@ -216,14 +255,36 @@ def extract_getattr_settings_calls(filepath: Path):
     yield from _extract_getattr_settings_from_tree(tree)
 
 
+def extract_settings_attribute_calls(filepath: Path):
+    """Yield (key, default_repr, lineno) for `settings.KEY` direct-attribute
+    reads. See `_extract_settings_attribute_from_tree` for matching rules.
+
+    Backward-compat wrapper around `_extract_settings_attribute_from_tree`.
+    The `collect_code_defaults` hot path calls the tree-form extractor
+    directly to share one parse across all extractors.
+    """
+    try:
+        src = filepath.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return
+    try:
+        tree = ast.parse(src, filename=str(filepath))
+    except SyntaxError:
+        return
+    yield from _extract_settings_attribute_from_tree(tree)
+
+
 def collect_code_defaults():
     """Walk repo, collect all (key -> [(default_repr, location), ...]).
 
-    S210: read+parse each .py file ONCE, then walk the parsed AST twice via
-    the two extractor helpers. Halves the I/O + parse cost vs the original
+    S210: read+parse each .py file ONCE, then walk the parsed AST via each
+    extractor helper. Halves the I/O + parse cost vs the original
     "call each filepath-form extractor (which re-reads + re-parses) per file"
-    pattern, which suspected as the cause of the live-VPS-run hang during
-    initial validation (each .py file walked twice ⇒ 2× I/O on slow disk).
+    pattern.
+
+    S211 Lead 7: third extractor `_extract_settings_attribute_from_tree`
+    catches the `settings.KEY` direct-attribute pattern (~21 sites that
+    bypass `getattr(settings, ...)`).
     """
     refs: dict[str, list[tuple[str | None, str]]] = defaultdict(list)
     for py_file in REPO_ROOT.rglob("*.py"):
@@ -241,6 +302,8 @@ def collect_code_defaults():
         for key, default, lineno in _extract_getenv_from_tree(tree):
             refs[key].append((default, f"{rel}:{lineno}"))
         for key, default, lineno in _extract_getattr_settings_from_tree(tree):
+            refs[key].append((default, f"{rel}:{lineno}"))
+        for key, default, lineno in _extract_settings_attribute_from_tree(tree):
             refs[key].append((default, f"{rel}:{lineno}"))
     return dict(refs)
 
