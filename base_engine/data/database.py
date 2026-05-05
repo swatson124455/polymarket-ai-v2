@@ -5973,6 +5973,10 @@ class Database:
                         "MirrorBot": float(getattr(_settings, "MIRROR_TOTAL_CAPITAL", 20000)),
                         "EsportsBot": float(getattr(_settings, "ESPORTS_TOTAL_CAPITAL", 5000)),
                         "EsportsLiveBot": float(getattr(_settings, "ESPORTS_TOTAL_CAPITAL", 5000)),
+                        # S213: complete S210 354c84e wiring — v2 was falling to fallback
+                        # 1000.0 total_capital (used for drawdown calc), giving false halts
+                        # versus the actual $20K capital configured in BotBankrollManager.
+                        "EsportsBotV2": float(getattr(_settings, "ESPORTS_TOTAL_CAPITAL", 5000)),
                     }
                     total_capital = _bot_capitals.get(bot_name, 1000.0)
                     current_equity = total_capital + realized + unrealized_pnl

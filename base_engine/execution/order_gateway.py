@@ -545,7 +545,9 @@ class OrderGateway:
             try:
                 # S97: WeatherBot skips CVaR Monte Carlo — has own group/city exposure limits
                 # S133: EsportsBot skips CVaR — has own per-game/tournament/team exposure caps
-                _skip_cvar = (bot_name in ("WeatherBot", "EsportsBot"))
+                # S213: EsportsBotV2 also skips — same exposure-cap rationale as EsportsBot
+                # (parity with the S210 354c84e wiring fix completing in S213)
+                _skip_cvar = (bot_name in ("WeatherBot", "EsportsBot", "EsportsBotV2"))
                 risk_check = await self.risk_manager.check_risk_limits(
                     bot_name, market_id, size, price, confidence, prediction=prediction,
                     skip_cvar=_skip_cvar,
@@ -643,7 +645,7 @@ class OrderGateway:
                     _depth_mult = settings.LIQUIDITY_DEPTH_MULT_WB
                 elif bot_name == "MirrorBot":
                     _depth_mult = settings.LIQUIDITY_DEPTH_MULT_MB
-                elif bot_name in ("EsportsBot", "EsportsLiveBot", "EsportsSeriesBot"):
+                elif bot_name in ("EsportsBot", "EsportsLiveBot", "EsportsSeriesBot", "EsportsBotV2"):
                     _depth_mult = settings.LIQUIDITY_DEPTH_MULT_EB
                 else:
                     _depth_mult = settings.LIQUIDITY_DEPTH_DEFAULT
