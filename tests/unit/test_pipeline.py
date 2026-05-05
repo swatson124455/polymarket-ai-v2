@@ -324,3 +324,117 @@ class TestEsportsPipeline:
         record["market_price"] = 0.5  # No edge
         result = pipeline.predict(record)
         assert result["stake"] == 0.0
+
+
+class TestComputeSizing:
+    """S213 root-cause fix: extracted Kelly sizing helper.
+
+    Pins the sizing math so callers (esports_bot_v2 _predict_upcoming_matches)
+    can recompute stake AFTER overriding market_price post-predict() without
+    re-running the full ML pipeline. Pre-S213 the bot only overrode
+    `market_price` and `edge` fields, leaving `stake` computed against the
+    default-stub market_price=0.5 — silently breaking Kelly math whenever
+    real market_price differed from 0.5."""
+
+    def test_compute_sizing_no_edge(self):
+        # p_model == market_price → edge=0 → stake=0
+        out = EsportsPipeline.compute_sizing(p_model=0.5, is_singleton=True, market_price=0.5)
+        assert out == {"edge": 0.0, "kelly_fraction": 0.0, "stake": 0.0}
+
+    def test_compute_sizing_below_min_edge(self):
+        # 0.04 edge < 0.05 MIN_EDGE → stake=0 even if singleton
+        out = EsportsPipeline.compute_sizing(p_model=0.54, is_singleton=True, market_price=0.5)
+        assert out["edge"] == pytest.approx(0.04)
+        assert out["kelly_fraction"] == 0.0
+        assert out["stake"] == 0.0
+
+    def test_compute_sizing_not_singleton(self):
+        # Non-singleton → stake=0 regardless of edge
+        out = EsportsPipeline.compute_sizing(p_model=0.9, is_singleton=False, market_price=0.5)
+        assert out["edge"] == pytest.approx(0.4)
+        assert out["kelly_fraction"] == 0.0
+        assert out["stake"] == 0.0
+
+    def test_compute_sizing_yes_side_kelly(self):
+        # p_model > 0.5 → bet YES side, b = 1/market_price - 1
+        # Real production case: p_model=0.766, market_price=0.255 → edge=0.511
+        out = EsportsPipeline.compute_sizing(
+            p_model=0.7663, is_singleton=True, market_price=0.255,
+        )
+        assert out["edge"] == pytest.approx(0.5113, abs=1e-3)
+        # b = 1/0.255 - 1 = 2.9216
+        # raw_kelly = (b*p - q)/b = (2.9216*0.7663 - 0.2337)/2.9216 ≈ 0.6863
+        # quartered = 0.6863 * 0.25 ≈ 0.1716
+        assert out["kelly_fraction"] == pytest.approx(0.1716, abs=1e-3)
+        # stake = min(0.1716 * 20000, 100, 1000) = min(3432, 100, 1000) = 100 (capped)
+        assert out["stake"] == pytest.approx(100.0)
+
+    def test_compute_sizing_no_side_kelly(self):
+        # p_model < 0.5 → bet NO side, b = 1/(1-market_price) - 1
+        # Real production case: p_model=0.286, market_price=0.165 → bet NO at price 0.835
+        # YES-side prob of model is 0.286, so NO-side prob is 0.714
+        out = EsportsPipeline.compute_sizing(
+            p_model=0.286, is_singleton=True, market_price=0.165,
+        )
+        assert out["edge"] == pytest.approx(0.121, abs=1e-3)
+        # b = 1/(1-0.165) - 1 = 0.1976
+        # p (NO side) = 1 - 0.286 = 0.714
+        # raw_kelly = (b*p - q)/b = (0.1976*0.714 - 0.286)/0.1976 ≈ -0.733
+        # max(0, -0.733) = 0 — no bet
+        assert out["kelly_fraction"] == 0.0
+        assert out["stake"] == 0.0
+
+    def test_compute_sizing_capped_by_max_bet(self):
+        # Massive edge — kelly*bankroll would exceed MAX_BET_USD ($100)
+        out = EsportsPipeline.compute_sizing(
+            p_model=0.95, is_singleton=True, market_price=0.10,
+        )
+        assert out["stake"] == pytest.approx(100.0)  # MAX_BET_USD cap
+
+    def test_predict_uses_compute_sizing(self):
+        # Verify pipeline.predict() routes sizing through the new helper
+        # (no behavior change for predict() callers — same output shape).
+        records = _make_training_set(300)
+        pipeline = EsportsPipeline(
+            xgb_params={"n_estimators": 10, "max_depth": 2},
+        )
+        pipeline.fit(records)
+        record = _make_record(p_elo=0.85, p_glicko=0.83, p_openskill=0.87)
+        record["market_price"] = 0.5
+        result = pipeline.predict(record)
+        # Compare to direct compute_sizing call
+        direct = EsportsPipeline.compute_sizing(
+            p_model=result["p_model"],
+            is_singleton=result["is_singleton"],
+            market_price=0.5,
+        )
+        assert result["edge"] == direct["edge"]
+        assert result["kelly_fraction"] == direct["kelly_fraction"]
+        assert result["stake"] == direct["stake"]
+
+    def test_recomputed_stake_differs_from_default_stub(self):
+        # The S213 root-cause symptom: predict() with stub market_price=0.5
+        # gave a non-zero stake (because high p_model → big edge against 0.5).
+        # Caller's later compute_sizing with REAL market_price=0.255 gives a
+        # DIFFERENT stake (different Kelly because b changes with the price).
+        records = _make_training_set(300)
+        pipeline = EsportsPipeline(
+            xgb_params={"n_estimators": 10, "max_depth": 2},
+        )
+        pipeline.fit(records)
+        record = _make_record(p_elo=0.85, p_glicko=0.85, p_openskill=0.85)
+        # No market_price → predict() uses the stub default 0.5
+        result_stub = pipeline.predict(record)
+        # If predict produced a tradable signal, recomputing at the real
+        # market_price 0.255 should produce a DIFFERENT edge and (typically)
+        # a different kelly even though stake is capped at MAX_BET_USD.
+        if result_stub["is_singleton"] and result_stub["stake"] > 0:
+            result_real = EsportsPipeline.compute_sizing(
+                p_model=result_stub["p_model"],
+                is_singleton=result_stub["is_singleton"],
+                market_price=0.255,
+            )
+            # Edges should differ — that's the bug we fixed.
+            assert result_real["edge"] != result_stub["edge"]
+            # Kelly fractions should differ — different `b` parameter.
+            assert result_real["kelly_fraction"] != result_stub["kelly_fraction"]

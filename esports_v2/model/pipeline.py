@@ -143,15 +143,59 @@ class EsportsPipeline:
         # Conformal filter
         conf = self._conformal.predict(p_model)
 
-        # Sizing
+        # Sizing — uses record's market_price (default 0.5 stub if caller
+        # doesn't have it yet). Callers that look up the real market_price
+        # AFTER predict() must call compute_sizing() to refresh edge/kelly/
+        # stake — overriding only `market_price` and `edge` in the result
+        # dict produces stale Kelly/stake (S213 root-cause fix in
+        # bots/esports_bot_v2.py:_predict_upcoming_matches).
         market_price = record.get("market_price", 0.5)
+        sizing = self.compute_sizing(p_model, conf["is_singleton"], market_price)
+
+        return {
+            "p_raw": p_raw,
+            "p_model": p_model,
+            "p_lower": p_lower,
+            "p_upper": p_upper,
+            "conformal_set": conf["conformal_set"],
+            "is_singleton": conf["is_singleton"],
+            "kelly_fraction": sizing["kelly_fraction"],
+            "stake": sizing["stake"],
+            "edge": sizing["edge"],
+            "market_price": market_price,
+        }
+
+    @staticmethod
+    def compute_sizing(
+        p_model: float,
+        is_singleton: bool,
+        market_price: float,
+    ) -> Dict[str, float]:
+        """Compute Kelly sizing for a given calibrated probability and market
+        price. Returns {"edge", "kelly_fraction", "stake"}.
+
+        Extracted so callers can recompute sizing AFTER overriding
+        market_price (e.g. when predict() is invoked with a default-stub
+        market_price=0.5 at feature-record build time, then the actual
+        Polymarket price is found later during the same scan iteration).
+        Recomputing only the override fields ("market_price", "edge") and
+        leaving "stake" stale was the S213 root-cause for v2's queued-but-
+        never-traded predictions: stake was computed against the stub price
+        and would coincidentally cap at MAX_BET_USD for high-prob predictions
+        regardless of the real market — but the real market price could put
+        the trade on the wrong side of the edge gate at place_order time
+        downstream.
+
+        Same Kelly criterion as the original inline path: f = (bp - q) / b
+        where b = (1/market_price - 1), p = model prob of winning the
+        chosen side, q = 1 - p. Quarter-Kelly applied. Stake clamped by
+        per-bet and per-bankroll-pct caps.
+        """
         edge = abs(p_model - market_price)
         kelly = 0.0
         stake = 0.0
 
-        if conf["is_singleton"] and edge >= MIN_EDGE:
-            # Kelly criterion: f = (bp - q) / b
-            # where b = (1/market_price - 1), p = model prob of winning, q = 1-p
+        if is_singleton and edge >= MIN_EDGE:
             if p_model > 0.5:
                 b = (1.0 / market_price) - 1.0 if market_price > 0 else 1.0
                 p = p_model
@@ -166,16 +210,9 @@ class EsportsPipeline:
                 stake = min(kelly * BANKROLL, MAX_BET_USD, BANKROLL * MAX_BANKROLL_PCT)
 
         return {
-            "p_raw": p_raw,
-            "p_model": p_model,
-            "p_lower": p_lower,
-            "p_upper": p_upper,
-            "conformal_set": conf["conformal_set"],
-            "is_singleton": conf["is_singleton"],
+            "edge": edge,
             "kelly_fraction": kelly,
             "stake": stake,
-            "edge": edge,
-            "market_price": market_price,
         }
 
     # ── Serialization (S177) ─────────────────────────────────────────────

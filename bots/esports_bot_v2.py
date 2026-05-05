@@ -511,10 +511,25 @@ class EsportsBotV2(BaseBot):
                 market_price = market_info.get("price") if market_info else None
                 market_id = market_info.get("market_id") if market_info else None
 
-                # Override edge with Polymarket price if available
+                # Override edge AND recompute Kelly sizing with the real
+                # market price. Earlier code only overrode market_price and
+                # edge but left pipeline_result["stake"] computed against the
+                # default-stub market_price=0.5 from inside pipeline.predict().
+                # That meant the queueing condition (singleton + edge>=0.05)
+                # would pass with the real price while stake was set against
+                # the stub price — coincidentally non-zero for high-prob
+                # predictions due to MAX_BET_USD cap, but the underlying
+                # Kelly math was wrong. S213 root-cause fix: re-run sizing.
                 if market_price is not None:
                     pipeline_result["market_price"] = market_price
-                    pipeline_result["edge"] = abs(pipeline_result["p_model"] - market_price)
+                    sizing = self._pipeline.compute_sizing(
+                        p_model=pipeline_result["p_model"],
+                        is_singleton=pipeline_result["is_singleton"],
+                        market_price=market_price,
+                    )
+                    pipeline_result["edge"] = sizing["edge"]
+                    pipeline_result["kelly_fraction"] = sizing["kelly_fraction"]
+                    pipeline_result["stake"] = sizing["stake"]
 
                 # Phase 1 write: INSERT prediction (actual_winner=NULL)
                 pred_record = build_prediction_record(
