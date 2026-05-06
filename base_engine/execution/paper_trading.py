@@ -824,20 +824,19 @@ class PaperTradingEngine:
             cash_remaining=round(self.cash, 2),
         )
 
-        # S115: Record shadow fill for every executed BUY trade
-        if side == "BUY":
-            await self._record_shadow_fill(
-                bot_name=bot_name, market_id=market_id, token_id=token_id,
-                side=side, order_size_shares=size, order_size_usd=size * price,
-                signal_price=original_price, confidence=confidence,
-                latency_ms=latency_ms, book_snapshot=_book_snapshot,
-                best_ask=_best_ask, best_bid=_best_bid, spread=_spread,
-                depth_at_best_usd=_depth_at_best_usd, total_depth_usd=_total_depth_usd,
-                vwap_fill_price=price, book_walk_slippage=_book_walk_slippage,
-                fill_fraction=_fill_frac, trade_executed=True,
-                execution_price=price, correlation_id=correlation_id,
-                model_name=model_name, event_data=event_data,
-            )
+        # S115/P0.5: Record shadow fill for executed trades (BUY and SELL)
+        await self._record_shadow_fill(
+            bot_name=bot_name, market_id=market_id, token_id=token_id,
+            side=side, order_size_shares=size, order_size_usd=size * price,
+            signal_price=original_price, confidence=confidence,
+            latency_ms=latency_ms, book_snapshot=_book_snapshot,
+            best_ask=_best_ask, best_bid=_best_bid, spread=_spread,
+            depth_at_best_usd=_depth_at_best_usd, total_depth_usd=_total_depth_usd,
+            vwap_fill_price=price, book_walk_slippage=_book_walk_slippage,
+            fill_fraction=_fill_frac, trade_executed=True,
+            execution_price=price, correlation_id=correlation_id,
+            model_name=model_name, event_data=event_data,
+        )
 
         # S121: Update book depletion state — subtract filled shares from book
         # so the next fill on same token in this scan sees reduced depth.
@@ -884,6 +883,8 @@ class PaperTradingEngine:
         try:
             _edge_at_signal = (confidence - signal_price) if confidence else None
             _edge_at_vwap = (confidence - vwap_fill_price) if confidence else None
+            # P0.5: Extract intended-walk fields passed via event_data from order_gateway.
+            _ed = event_data or {}
             await self.db.insert_shadow_fill(
                 bot_name=bot_name,
                 market_id=market_id,
@@ -910,9 +911,13 @@ class PaperTradingEngine:
                 correlation_id=correlation_id,
                 model_name=model_name,
                 event_data=event_data,
+                vwap_at_intended=_ed.get("_intended_vwap"),
+                slippage_at_intended=_ed.get("_intended_slippage"),
+                fill_frac_at_intended=_ed.get("_intended_fill_frac"),
+                intended_walk_error=_ed.get("_intended_walk_error"),
             )
         except Exception as _sf_err:
-            logger.debug("shadow_fill_record_failed", error=str(_sf_err), market_id=market_id)
+            logger.critical("shadow_fill_insert_failed", error=str(_sf_err), market_id=market_id, bot_name=bot_name)
 
     async def _persist_exit_event(
         self, bot_name, market_id, token_id, side, size, price, realized_pnl,

@@ -420,8 +420,8 @@ class OrderGateway:
                                 trade_executed=False, correlation_id=correlation_id,
                                 rejection_type="kill_switch", event_data=event_data,
                             )
-                        except Exception:
-                            pass
+                        except Exception as _sf_err:
+                            logger.critical("shadow_fill_insert_failed", error=str(_sf_err), bot_name=bot_name, market_id=market_id, rejection_type="kill_switch")
                     return {"success": False, "error": "Kill switch engaged (multi-layer)"}
             except Exception as e:
                 logger.warning("Multi kill switch check failed, falling back to basic: %s", e)
@@ -441,8 +441,8 @@ class OrderGateway:
                             trade_executed=False, correlation_id=correlation_id,
                             rejection_type="kill_switch", event_data=event_data,
                         )
-                    except Exception:
-                        pass
+                    except Exception as _sf_err:
+                        logger.critical("shadow_fill_insert_failed", error=str(_sf_err), bot_name=bot_name, market_id=market_id, rejection_type="kill_switch")
                 return {"success": False, "error": "Kill switch engaged"}
 
         # S172 1E-b: Pre-trade market validation — resolve aliases, warn on unknown
@@ -607,8 +607,8 @@ class OrderGateway:
                                     trade_executed=False, correlation_id=correlation_id,
                                     rejection_type="risk_cap", event_data=event_data,
                                 )
-                            except Exception:
-                                pass
+                            except Exception as _sf_err:
+                                logger.critical("shadow_fill_insert_failed", error=str(_sf_err), bot_name=bot_name, market_id=market_id, rejection_type="risk_cap")
                         return {"success": False, "error": msg, "reasons": reasons, "rejection_type": "risk_cap"}
                     else:
                         msg = "; ".join(reasons) if reasons else "Risk limits exceeded"
@@ -949,8 +949,8 @@ class OrderGateway:
                             fill_frac_at_intended=_intended_fill_frac,
                             intended_walk_error=_intended_walk_error,
                         )
-                    except Exception:
-                        pass
+                    except Exception as _sf_err:
+                        logger.critical("shadow_fill_insert_failed", error=str(_sf_err), bot_name=bot_name, market_id=market_id, rejection_type="edge_eroded")
                 if self.trade_coordinator is not None:
                     try:
                         await self.trade_coordinator.release_reservation(market_id, side, bot_id=bot_name)
@@ -979,6 +979,11 @@ class OrderGateway:
                 event_data["_shadow_spread"] = _shadow_spread
                 event_data["_shadow_depth_best"] = _shadow_depth_best
                 event_data["_shadow_total_depth"] = _shadow_total_depth
+                # P0.5: Pass intended-walk results so paper_trading can write them to shadow_fills.
+                event_data["_intended_vwap"] = _intended_vwap
+                event_data["_intended_slippage"] = _intended_slippage
+                event_data["_intended_fill_frac"] = _intended_fill_frac
+                event_data["_intended_walk_error"] = _intended_walk_error
             try:
                 _t_coord_end = time.monotonic()
                 t0 = time.monotonic()
@@ -1264,8 +1269,8 @@ class OrderGateway:
                             fill_frac_at_intended=_intended_fill_frac,
                             intended_walk_error=_intended_walk_error,
                         )
-                    except Exception:
-                        pass
+                    except Exception as _sf_err:
+                        logger.critical("shadow_fill_insert_failed", error=str(_sf_err), bot_name=bot_name, market_id=market_id)
 
             return result
         except Exception as e:
