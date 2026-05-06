@@ -3972,12 +3972,12 @@ class WeatherBot(BaseBot):
                         market_id=mid, group_key=group_key, city=city,
                         cost_usd=round(exit_cost, 2),
                     )
-                # 4. Place SELL order to close position
+                # 4. Place exit order (side flipped from entry per CLAUDE.md YES/NO mandate)
                 try:
                     _exit_result = await self.place_order(
                         market_id=mid,
                         token_id=token_id,
-                        side="SELL",
+                        side="NO" if side == "YES" else "YES",
                         size=size_shares,
                         price=max(0.01, current_price),
                         confidence=0.0,

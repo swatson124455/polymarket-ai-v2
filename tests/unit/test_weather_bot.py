@@ -2685,9 +2685,10 @@ class TestMidLifeExitEvaluator:
             with patch.object(settings, "WEATHER_EXIT_MIN_EDGE", 0.05, create=True):
                 await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
         # S160 WB-1: now calls self.place_order() wrapper, not base_engine.place_order()
+        # S214: exit side flipped YES → NO per CLAUDE.md YES/NO mandate (was "SELL")
         bot.place_order.assert_called_once()
         call_kwargs = bot.place_order.call_args
-        assert call_kwargs.kwargs["side"] == "SELL"
+        assert call_kwargs.kwargs["side"] == "NO"
         assert call_kwargs.kwargs["token_id"] == "yes_tok"
         assert call_kwargs.kwargs["size"] == 15.0
         assert "mkt1" in bot._recently_exited
@@ -2709,9 +2710,10 @@ class TestMidLifeExitEvaluator:
             with patch.object(settings, "WEATHER_EXIT_MIN_EDGE", 0.05, create=True):
                 await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
         # S160 WB-1: now calls self.place_order() wrapper, not base_engine.place_order()
+        # S214: exit side flipped NO → YES per CLAUDE.md YES/NO mandate (was "SELL")
         bot.place_order.assert_called_once()
         call_kwargs = bot.place_order.call_args
-        assert call_kwargs.kwargs["side"] == "SELL"
+        assert call_kwargs.kwargs["side"] == "YES"
         assert call_kwargs.kwargs["token_id"] == "no_tok"
         assert bot._exit_reasons["mkt2"] == "REVERSAL"
 
