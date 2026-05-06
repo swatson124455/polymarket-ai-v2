@@ -652,6 +652,8 @@ class Settings(BaseSettings):
     # S120: Balance & fill confirmation settings (live trading)
     BALANCE_WARNING_THRESHOLD_USD: float = float(os.getenv("BALANCE_WARNING_THRESHOLD_USD", "100.0"))
     ORDER_FILL_TIMEOUT_S: float = float(os.getenv("ORDER_FILL_TIMEOUT_S", "60.0"))
+    # P0.17: MATIC balance alert threshold (live mode only). Alert fires when MATIC < this value.
+    MATIC_MIN_BALANCE_WARN: float = float(os.getenv("MATIC_MIN_BALANCE_WARN", "1.0"))
     
     # Price Ingestion Configuration
     # Polymarket moved to CLOB (order book) system - blockchain pricing is outdated

@@ -1449,6 +1449,25 @@ class BaseEngine:
             except Exception as _bal_err:
                 logger.debug("Startup balance query failed (non-critical): %s", _bal_err)
 
+        # P0.17: MATIC pre-flight + ongoing 10min monitor (live mode only)
+        if not getattr(settings, "SIMULATION_MODE", True):
+            from base_engine.execution.clob_adapter import check_matic_balance as _check_matic
+            _matic_thresh = float(getattr(settings, "MATIC_MIN_BALANCE_WARN", 1.0))
+            _discord = getattr(settings, "DISCORD_WEBHOOK_URL", None)
+            try:
+                await _check_matic(threshold_matic=_matic_thresh, discord_webhook=_discord)
+            except Exception as _me:
+                logger.debug("MATIC preflight failed (non-critical): %s", _me)
+
+            async def _matic_monitor_loop():
+                while True:
+                    await asyncio.sleep(600)
+                    try:
+                        await _check_matic(threshold_matic=_matic_thresh, discord_webhook=_discord)
+                    except Exception:
+                        pass
+            asyncio.create_task(_matic_monitor_loop())
+
         # Initialize oracle monitor (P5-06)
         if self.oracle_monitor:
             try:

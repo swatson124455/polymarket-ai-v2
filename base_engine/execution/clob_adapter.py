@@ -6,6 +6,7 @@ import asyncio
 from typing import Any, Dict, Optional
 from structlog import get_logger
 from config.settings import settings
+import httpx
 
 logger = get_logger()
 
@@ -177,3 +178,76 @@ class ClobAdapter:
             return await ac.get_order_book(token_id)
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, lambda: _get_order_book_sync(token_id))
+
+
+async def check_matic_balance(
+    threshold_matic: float = 1.0,
+    discord_webhook: Optional[str] = None,
+) -> Optional[float]:
+    """P0.17: Query wallet MATIC balance via Polygon JSON-RPC.
+
+    Fires logger.critical + Discord alert if balance < threshold_matic.
+    Returns balance in MATIC, or None when RPC/wallet config is missing or fails.
+    Called at startup (preflight) and every 10min via base_engine monitor loop.
+    Only meaningful in live mode (SIMULATION_MODE=false); callers should gate.
+    """
+    wallet = (getattr(settings, "WALLET_ADDRESS", None) or "").strip()
+    rpc = (
+        getattr(settings, "POLYGON_RPC", None)
+        or getattr(settings, "POLYGON_RPC_URL", None)
+        or ""
+    ).strip()
+
+    if not wallet or not rpc:
+        logger.debug("matic_balance_check_skipped: WALLET_ADDRESS or POLYGON_RPC not configured")
+        return None
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(rpc, json={
+                "jsonrpc": "2.0",
+                "method": "eth_getBalance",
+                "params": [wallet, "latest"],
+                "id": 1,
+            })
+            resp.raise_for_status()
+            data = resp.json()
+
+        if "error" in data:
+            logger.warning("matic_balance_rpc_error", error=data["error"])
+            return None
+
+        balance_matic = int(data.get("result", "0x0"), 16) / 10 ** 18
+
+        if balance_matic < threshold_matic:
+            logger.critical(
+                "matic_balance_low",
+                balance_matic=round(balance_matic, 4),
+                threshold_matic=threshold_matic,
+                wallet=wallet[:8] + "...",
+            )
+            if discord_webhook:
+                try:
+                    async with httpx.AsyncClient(timeout=5.0) as dc:
+                        await dc.post(discord_webhook, json={
+                            "content": (
+                                f"MATIC LOW on {wallet[:8]}...: "
+                                f"{balance_matic:.4f} MATIC "
+                                f"(threshold {threshold_matic}). "
+                                "Trades may fail due to gas underflow."
+                            )
+                        })
+                except Exception as _dw_err:
+                    logger.debug("matic_discord_alert_failed: %s", _dw_err)
+        else:
+            logger.info(
+                "matic_balance_ok",
+                balance_matic=round(balance_matic, 4),
+                threshold_matic=threshold_matic,
+            )
+
+        return balance_matic
+
+    except Exception as _e:
+        logger.warning("matic_balance_check_failed: %s", _e)
+        return None
