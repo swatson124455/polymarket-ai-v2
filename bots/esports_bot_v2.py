@@ -51,6 +51,12 @@ _RETRAIN_MIN_INTERVAL = int(os.getenv("ESPORTS_V2_RETRAIN_MIN_INTERVAL", "3600")
 _UPCOMING_HOURS = int(os.getenv("ESPORTS_V2_UPCOMING_HOURS", "48"))
 _PAST_DAYS = int(os.getenv("ESPORTS_V2_PAST_DAYS", "7"))
 _STALE_DAYS = int(os.getenv("ESPORTS_V2_STALE_DAYS", "45"))
+# Item 2: in-memory pending-prediction roll-over window. Items not
+# traded within this many hours of being queued are pruned at the next
+# _execute_trades. 4h is generous enough to survive a deploy-cycle
+# (~5.5 min cold-start) plus a normal scan interval; short enough that
+# market prices used at sizing time are still meaningful.
+_PENDING_STALE_HOURS = float(os.getenv("ESPORTS_V2_PENDING_STALE_HOURS", "4.0"))
 _SNAPSHOT_DIR = Path(os.getenv("ESPORTS_V2_SNAPSHOT_DIR", "data/snapshots"))
 # S181 #3: fail-open prediction_log write for cross-bot observability parity
 # with MB/WB (mirror_bot.py:2810, weather_bot.py:881). Flip to false in .env +
@@ -470,7 +476,10 @@ class EsportsBotV2(BaseBot):
         if not db:
             return
 
-        self._pending_predictions.clear()
+        # Item 2: do NOT clear _pending_predictions — items roll over across
+        # scans within the stale window so deploy-induced restarts and mid-scan
+        # exceptions don't strand work that's about to be traded. Pruning of
+        # traded/stale items happens in _execute_trades.
         self._scan_counters = {"upcoming_seen": 0, "singletons": 0, "matched": 0, "queued": 0}
         now = datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -597,11 +606,31 @@ class EsportsBotV2(BaseBot):
                         "pipeline_result": pipeline_result,
                         "market_price": market_price,
                         "pred_record": pred_record,
+                        "created_at": now,
+                        "traded_at": None,
                     })
                     self._scan_counters["queued"] += 1
 
     async def _execute_trades(self) -> None:
-        """Place paper trades for singletons with sufficient edge."""
+        """Place paper trades for singletons with sufficient edge.
+
+        Item 2 invariants:
+          - Items with traded_at set are skipped (idempotency).
+          - Items past the stale window are pruned (not retried at outdated prices).
+          - place_order success path sets traded_at; exceptions leave it None
+            so the next scan retries (deploy-restart resilience).
+        """
+        from datetime import timedelta
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        stale = timedelta(hours=_PENDING_STALE_HOURS)
+        # Prune: drop already-traded items + anything past the stale window.
+        # Items missing created_at (defensive — pre-Item-2 holdovers) are also pruned.
+        self._pending_predictions = [
+            item for item in self._pending_predictions
+            if item.get("traded_at") is None
+               and item.get("created_at") is not None
+               and (now - item["created_at"]) <= stale
+        ]
         logger.info(
             "esports_v2_scan_funnel",
             pending=len(self._pending_predictions),
@@ -650,6 +679,12 @@ class EsportsBotV2(BaseBot):
                     confidence=result["p_model"],
                     prediction=(1.0 - result["p_model"]) if side == "NO" else result["p_model"],
                 )
+                # Item 2: idempotency — set inside success path. Rejection paths
+                # also reach here (place_order returns dict on rejection without
+                # raising), so the prediction won't be retried at the same price.
+                # The stale window provides eventual cleanup. Only true exceptions
+                # leave traded_at unset → retried at next scan.
+                item["traded_at"] = now
             except Exception as e:
                 logger.warning(f"Trade failed for {match.team_a} vs {match.team_b}: {e}")
 
@@ -898,7 +933,29 @@ class EsportsBotV2(BaseBot):
             logger.warning(f"Snapshot save on shutdown failed: {e}")
 
     async def stop(self):
-        """Graceful shutdown: save snapshot, close PandaScore + market service."""
+        """Graceful shutdown: save snapshot, close PandaScore + market service.
+
+        Item 2: log predictions_stranded_at_shutdown if the queue contains
+        untraded items still within the stale window. These are work the bot
+        was about to do but didn't — invisible to operators without this log.
+        """
+        from datetime import timedelta
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        stale = timedelta(hours=_PENDING_STALE_HOURS)
+        stranded = [
+            item for item in self._pending_predictions
+            if item.get("traded_at") is None
+               and item.get("created_at") is not None
+               and (now - item["created_at"]) <= stale
+        ]
+        if stranded:
+            logger.warning(
+                "predictions_stranded_at_shutdown",
+                count=len(stranded),
+                sample_match_ids=[
+                    str(item["match"].match_id) for item in stranded[:5]
+                ],
+            )
         await self.flush_state()
         if self._pandascore:
             await self._pandascore.close()

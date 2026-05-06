@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -521,6 +521,7 @@ class TestScanCycleSmoke:
         bot._dry_run = False
 
         fake_match = _upcoming_match(match_id=99001, team_a="A", team_b="B")
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         bot._pending_predictions = [{
             "match": fake_match,
             "pipeline_result": {
@@ -528,6 +529,8 @@ class TestScanCycleSmoke:
             },
             "market_price": 0.55,
             "pred_record": {},
+            "created_at": now,
+            "traded_at": None,
         }]
         bot._find_market_info = AsyncMock(return_value={
             "id": "mkt-test-yes",
@@ -559,6 +562,7 @@ class TestScanCycleSmoke:
         bot._dry_run = False
 
         fake_match = _upcoming_match(match_id=99002, team_a="A", team_b="B")
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         bot._pending_predictions = [{
             "match": fake_match,
             "pipeline_result": {
@@ -566,6 +570,8 @@ class TestScanCycleSmoke:
             },
             "market_price": 0.45,
             "pred_record": {},
+            "created_at": now,
+            "traded_at": None,
         }]
         bot._find_market_info = AsyncMock(return_value={
             "id": "mkt-test-no",
@@ -580,6 +586,132 @@ class TestScanCycleSmoke:
         kwargs = mock_order.call_args.kwargs
         assert kwargs["side"] == "NO"
         assert kwargs["prediction"] == pytest.approx(0.7)
+
+    @pytest.mark.asyncio
+    async def test_pending_predictions_carry_over_when_not_traded(self):
+        """Item 2: untraded items remain in queue across _execute_trades calls.
+
+        Pre-Item-2: queue cleared at every _predict_upcoming_matches start →
+        any item not traded in the same scan was lost (deploy restarts, mid-scan
+        exceptions). Post-Item-2: items roll over until traded or stale.
+        """
+        bot, _ = self._make_bot()
+        bot._initialized = True
+        bot._dry_run = False
+
+        fake_match = _upcoming_match(match_id=88001, team_a="A", team_b="B")
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        bot._pending_predictions = [{
+            "match": fake_match,
+            "pipeline_result": {"p_model": 0.7, "is_singleton": True, "edge": 0.15, "stake": 50.0},
+            "market_price": 0.55,
+            "pred_record": {},
+            "created_at": now,
+            "traded_at": None,
+        }]
+        # No market info → execute will continue (skip) without placing order
+        bot._find_market_info = AsyncMock(return_value=None)
+
+        with patch.object(bot, "place_order", new_callable=AsyncMock) as mock_order:
+            await bot._execute_trades()
+
+        mock_order.assert_not_called()
+        assert len(bot._pending_predictions) == 1
+        assert bot._pending_predictions[0]["traded_at"] is None
+
+    @pytest.mark.asyncio
+    async def test_pending_predictions_stale_filter_drops_old_items(self):
+        """Item 2: items past ESPORTS_V2_PENDING_STALE_HOURS are pruned at execute.
+
+        Stops the queue from retrying predictions sized against market prices
+        that have since moved.
+        """
+        bot, _ = self._make_bot()
+        bot._initialized = True
+        bot._dry_run = False
+
+        fake_match = _upcoming_match(match_id=88002, team_a="A", team_b="B")
+        old_ts = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=10)
+        bot._pending_predictions = [{
+            "match": fake_match,
+            "pipeline_result": {"p_model": 0.7, "is_singleton": True, "edge": 0.15, "stake": 50.0},
+            "market_price": 0.55,
+            "pred_record": {},
+            "created_at": old_ts,
+            "traded_at": None,
+        }]
+        bot._find_market_info = AsyncMock(return_value={
+            "id": "m1", "yes_token_id": "yt", "no_token_id": "nt",
+        })
+
+        with patch.object(bot, "place_order", new_callable=AsyncMock) as mock_order:
+            await bot._execute_trades()
+
+        mock_order.assert_not_called()
+        assert bot._pending_predictions == []
+
+    @pytest.mark.asyncio
+    async def test_pending_predictions_idempotency_traded_blocks_retry(self):
+        """Item 2: place_order success path sets traded_at; subsequent execute
+        calls prune that item, preventing double-trading the same prediction."""
+        bot, _ = self._make_bot()
+        bot._initialized = True
+        bot._dry_run = False
+
+        fake_match = _upcoming_match(match_id=88003, team_a="A", team_b="B")
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        bot._pending_predictions = [{
+            "match": fake_match,
+            "pipeline_result": {"p_model": 0.7, "is_singleton": True, "edge": 0.15, "stake": 50.0},
+            "market_price": 0.55,
+            "pred_record": {},
+            "created_at": now,
+            "traded_at": None,
+        }]
+        bot._find_market_info = AsyncMock(return_value={
+            "id": "m1", "yes_token_id": "yt", "no_token_id": "nt",
+        })
+
+        with patch.object(bot, "place_order", new_callable=AsyncMock) as mock_order:
+            await bot._execute_trades()
+            await bot._execute_trades()
+
+        # Two execute calls, but only one place_order: second call's prune
+        # drops the traded item before iteration.
+        assert mock_order.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_stop_logs_predictions_stranded_when_queue_nonempty(self):
+        """Item 2: stop() emits predictions_stranded_at_shutdown for untraded
+        items still in the stale window. Makes deploy-restart loss observable."""
+        from bots.base_bot import BaseBot
+        bot, _ = self._make_bot()
+        bot._initialized = True
+
+        fake_match = _upcoming_match(match_id=88004, team_a="A", team_b="B")
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        bot._pending_predictions = [{
+            "match": fake_match,
+            "pipeline_result": {"p_model": 0.7},
+            "market_price": 0.55,
+            "pred_record": {},
+            "created_at": now,
+            "traded_at": None,
+        }]
+        bot._pandascore = None
+        bot._market_service = None
+
+        with patch("bots.esports_bot_v2.logger") as mock_logger, \
+             patch.object(bot, "flush_state", new_callable=AsyncMock), \
+             patch.object(BaseBot, "stop", new_callable=AsyncMock):
+            await bot.stop()
+
+        stranded_calls = [
+            c for c in mock_logger.warning.call_args_list
+            if c.args and c.args[0] == "predictions_stranded_at_shutdown"
+        ]
+        assert len(stranded_calls) == 1
+        assert stranded_calls[0].kwargs["count"] == 1
 
 
 # ── S181 #3: prediction_log integration tests ──────────────────────────
