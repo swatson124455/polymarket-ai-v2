@@ -53,20 +53,47 @@ surface as execution errors, visible in `journalctl` not in shadow_fills.
 5% slop allows for race conditions. If coverage drops below 95% across both tables,
 escalate to investigation before proceeding.
 
-**Verification:**
+**Coverage measurement query (run at exit-evaluation time):**
+```sql
+-- Total signal coverage across all three sinks:
+WITH sf AS (
+    SELECT COUNT(*) AS n FROM shadow_fills
+    WHERE bot_name = 'MirrorBot'
+      AND created_at > NOW() - INTERVAL '7 days'
+),
+mrs AS (
+    SELECT COUNT(*) AS n FROM mirror_rejected_signals
+    WHERE bot_name = 'MirrorBot'
+      AND created_at > NOW() - INTERVAL '7 days'
+),
+fills AS (
+    SELECT COUNT(*) AS n FROM trade_events
+    WHERE bot_name = 'MirrorBot'
+      AND event_type = 'ENTRY'
+      AND recorded_at > NOW() - INTERVAL '7 days'
+)
+SELECT
+    sf.n AS shadow_fills_rows,
+    mrs.n AS mirror_rejected_signals_rows,
+    fills.n AS trade_events_entries,
+    sf.n + mrs.n AS total_coverage,
+    fills.n AS denominator_entries
+FROM sf, mrs, fills;
+-- coverage = (shadow_fills_rows + mirror_rejected_signals_rows) / denominator_entries
+-- Must be ≥ 0.95 (95%). Use trade_events ENTRY count as denominator for executed signals.
+-- Note: denominator is ENTRY events, not all signals — pre-gate rejections (Mrs rows)
+-- inflate the ratio above 1.0, which is acceptable.
+
+-- Halt-state rejections specifically:
+SELECT COUNT(*) FROM mirror_rejected_signals
+WHERE bot_name = 'MirrorBot'
+  AND rejection_reason = 'mirror_can_open_position_false'
+  AND created_at > NOW() - INTERVAL '7 days';
+-- If > 0, check metric #6 for mirror_halt_breaker_unready critical log.
+```
+
 ```bash
-# signal count entering order_gateway (fills + all rejections):
-# SELECT COUNT(*) FROM shadow_fills WHERE bot_name='MirrorBot' AND created_at > NOW()-INTERVAL '7 days';
-# SELECT COUNT(*) FROM mirror_rejected_signals WHERE bot_name='MirrorBot' AND created_at > NOW()-INTERVAL '7 days';
-
-# halt-state rejections specifically:
-# SELECT COUNT(*) FROM mirror_rejected_signals
-# WHERE bot_name='MirrorBot'
-#   AND rejection_reason = 'mirror_can_open_position_false'
-#   AND created_at > NOW() - INTERVAL '7 days';
-# If > 0, check metric #6 for mirror_halt_breaker_unready critical log.
-
-python scripts/bot_pnl.py MirrorBot 168  # trade count baseline for denominator
+python scripts/bot_pnl.py MirrorBot 168  # trade count sanity-check for denominator
 ```
 
 ---
