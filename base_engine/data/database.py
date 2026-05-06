@@ -5763,6 +5763,13 @@ class Database:
         correlation_id: Optional[str] = None,
         model_name: Optional[str] = None,
         event_data: Optional[Dict] = None,
+        intended_size_shares: Optional[float] = None,
+        intended_size_usd: Optional[float] = None,
+        vwap_at_intended: Optional[float] = None,
+        slippage_at_intended: Optional[float] = None,
+        fill_frac_at_intended: Optional[float] = None,
+        intended_walk_error: Optional[str] = None,
+        rejection_type: Optional[str] = None,
     ) -> Optional[int]:
         """S115: Record a shadow fill row for retroactive P&L analysis.
 
@@ -5785,7 +5792,10 @@ class Database:
                         "  depth_at_best_usd, total_depth_usd,"
                         "  vwap_fill_price, book_walk_slippage, fill_fraction,"
                         "  edge_at_vwap, trade_executed, execution_price,"
-                        "  correlation_id, model_name, event_data"
+                        "  correlation_id, model_name, event_data,"
+                        "  intended_size_shares, intended_size_usd,"
+                        "  vwap_at_intended, slippage_at_intended, fill_frac_at_intended,"
+                        "  intended_walk_error, rejection_type"
                         ") VALUES ("
                         "  :bot_name, :market_id, :token_id, :side,"
                         "  :order_size_shares, :order_size_usd, :signal_price,"
@@ -5794,7 +5804,10 @@ class Database:
                         "  :depth_at_best_usd, :total_depth_usd,"
                         "  :vwap_fill_price, :book_walk_slippage, :fill_fraction,"
                         "  :edge_at_vwap, :trade_executed, :execution_price,"
-                        "  :correlation_id, :model_name, CAST(:event_data AS jsonb)"
+                        "  :correlation_id, :model_name, CAST(:event_data AS jsonb),"
+                        "  :intended_size_shares, :intended_size_usd,"
+                        "  :vwap_at_intended, :slippage_at_intended, :fill_frac_at_intended,"
+                        "  :intended_walk_error, :rejection_type"
                         ") RETURNING id"
                     ),
                     {
@@ -5823,6 +5836,13 @@ class Database:
                         "correlation_id": correlation_id,
                         "model_name": model_name,
                         "event_data": _json.dumps(event_data) if event_data else None,
+                        "intended_size_shares": intended_size_shares,
+                        "intended_size_usd": intended_size_usd,
+                        "vwap_at_intended": vwap_at_intended,
+                        "slippage_at_intended": slippage_at_intended,
+                        "fill_frac_at_intended": fill_frac_at_intended,
+                        "intended_walk_error": intended_walk_error,
+                        "rejection_type": rejection_type,
                     },
                 )
                 row = result.fetchone()
