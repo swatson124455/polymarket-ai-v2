@@ -472,6 +472,43 @@ class TestScanCycleSmoke:
         preds = [s for s, _ in fake_db.session.executed if "INSERT INTO esports_predictions" in s]
         assert len(preds) == 1
 
+    @pytest.mark.asyncio
+    async def test_execute_trades_emits_scan_funnel_log(self):
+        """_execute_trades emits esports_v2_scan_funnel info log with all 5 counters.
+
+        Closes the observability gap between _predict_upcoming_matches and
+        _execute_trades — without this log, debugging the trade funnel
+        requires DB queries instead of journal grep.
+        """
+        bot, fake_db = self._make_bot()
+        bot._initialized = True
+        bot._dry_run = False  # so _execute_trades runs
+        self._seed_trinity(bot)
+
+        upcoming = [_upcoming_match(match_id=95001, team_a="TeamA", team_b="TeamB")]
+        bot._pandascore = AsyncMock()
+        bot._pandascore.get_upcoming_matches = AsyncMock(return_value=upcoming)
+        bot._pandascore.get_past_matches = AsyncMock(return_value=[])
+        bot._market_scanner = None  # market_price stays None → matched=0
+
+        with patch("bots.esports_bot_v2.logger") as mock_logger, \
+             patch.object(bot, "place_order", new_callable=AsyncMock):
+            await bot.scan_and_trade()
+
+        funnel_calls = [
+            c for c in mock_logger.info.call_args_list
+            if c.args and c.args[0] == "esports_v2_scan_funnel"
+        ]
+        assert len(funnel_calls) == 1, (
+            f"expected 1 funnel log emission, got {len(funnel_calls)}"
+        )
+        kwargs = funnel_calls[0].kwargs
+        for key in ("pending", "upcoming_seen", "singletons", "matched", "queued"):
+            assert key in kwargs, f"missing counter key: {key}"
+            assert isinstance(kwargs[key], int), f"{key} should be int, got {type(kwargs[key])}"
+        assert kwargs["upcoming_seen"] == 1
+        assert kwargs["matched"] == 0  # no scanner → no market match
+
 
 # ── S181 #3: prediction_log integration tests ──────────────────────────
 

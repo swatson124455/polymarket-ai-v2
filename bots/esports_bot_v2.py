@@ -87,6 +87,15 @@ class EsportsBotV2(BaseBot):
         self._last_retrain_time = 0.0
         self._initialized = False
         self._pending_predictions: List[dict] = []  # predictions awaiting trade execution
+        # Per-scan funnel counters logged at _execute_trades entry; reset in
+        # _predict_upcoming_matches. Defensive init in case execute is called
+        # before predict (shouldn't happen by scan_and_trade contract).
+        self._scan_counters: Dict[str, int] = {
+            "upcoming_seen": 0,
+            "singletons": 0,
+            "matched": 0,
+            "queued": 0,
+        }
         # S195 Day 2: heavy init (snapshot/DB rebuild + pipeline fit) runs as
         # a background task so the BaseEngine 120s startup-hold is not blocked
         # by the cold-fit (~5.5 min). scan_and_trade() gates on this task
@@ -462,6 +471,7 @@ class EsportsBotV2(BaseBot):
             return
 
         self._pending_predictions.clear()
+        self._scan_counters = {"upcoming_seen": 0, "singletons": 0, "matched": 0, "queued": 0}
         now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         for game in self._games:
@@ -470,6 +480,8 @@ class EsportsBotV2(BaseBot):
             except Exception as e:
                 logger.warning(f"PandaScore get_upcoming_matches failed game={game}: {e}")
                 continue
+
+            self._scan_counters["upcoming_seen"] += len(upcoming)
 
             for match in upcoming:
                 match_id = f"ps_{match.match_id}"
@@ -503,6 +515,9 @@ class EsportsBotV2(BaseBot):
                 record = build_feature_record(raw, trinity_pred)
                 pipeline_result = self._pipeline.predict(record)
 
+                if pipeline_result.get("is_singleton"):
+                    self._scan_counters["singletons"] += 1
+
                 # Find Polymarket market (both price and market_id). S181 #3:
                 # captures market_id in addition to price so the prediction_log
                 # write below can reference it. _get_market_price kept unchanged
@@ -510,6 +525,9 @@ class EsportsBotV2(BaseBot):
                 market_info = await self._find_polymarket_for_match(match, game)
                 market_price = market_info.get("price") if market_info else None
                 market_id = market_info.get("market_id") if market_info else None
+
+                if market_price is not None:
+                    self._scan_counters["matched"] += 1
 
                 # Override edge AND recompute Kelly sizing with the real
                 # market price. Earlier code only overrode market_price and
@@ -580,9 +598,18 @@ class EsportsBotV2(BaseBot):
                         "market_price": market_price,
                         "pred_record": pred_record,
                     })
+                    self._scan_counters["queued"] += 1
 
     async def _execute_trades(self) -> None:
         """Place paper trades for singletons with sufficient edge."""
+        logger.info(
+            "esports_v2_scan_funnel",
+            pending=len(self._pending_predictions),
+            upcoming_seen=self._scan_counters.get("upcoming_seen", 0),
+            singletons=self._scan_counters.get("singletons", 0),
+            matched=self._scan_counters.get("matched", 0),
+            queued=self._scan_counters.get("queued", 0),
+        )
         for item in self._pending_predictions:
             match = item["match"]
             result = item["pipeline_result"]
