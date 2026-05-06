@@ -258,6 +258,53 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
             realized_res += rpnl
             print(f"    {e[7].strftime('%H:%M')} {e[1][:12]}.. pnl=${rpnl:+.2f}")
 
+        # 2b. Day-by-day rollup over the same window. Operator question
+        # "show me last N days day-by-day" was previously unanswerable from
+        # block 2 (which only prints HH:MM per event). Sums realized_pnl per
+        # UTC day for ENTRY/EXIT/RESOLUTION; net P&L per day = exit_pnl + res_pnl.
+        r2b = await s.execute(text("""
+            SELECT DATE(event_time) AS day,
+                   event_type,
+                   COUNT(*) AS cnt,
+                   COALESCE(SUM(CAST(realized_pnl AS DOUBLE PRECISION)), 0) AS rpnl
+            FROM trade_events
+            WHERE bot_name = ANY(:bot_family)
+              AND event_time > NOW() - INTERVAL '1 hour' * :hours
+              AND event_type IN ('ENTRY', 'EXIT', 'RESOLUTION')
+            GROUP BY DATE(event_time), event_type
+            ORDER BY day DESC, event_type
+        """), {"bot_family": bot_family, "hours": hours})
+        day_rows = r2b.fetchall()
+        if day_rows:
+            from collections import defaultdict
+            day_agg = defaultdict(lambda: {"entries": 0, "exits": 0, "resolutions": 0,
+                                           "exit_pnl": 0.0, "res_pnl": 0.0})
+            for d, etype, cnt, rpnl in day_rows:
+                bucket = day_agg[d]
+                if etype == "ENTRY":
+                    bucket["entries"] = int(cnt)
+                elif etype == "EXIT":
+                    bucket["exits"] = int(cnt)
+                    bucket["exit_pnl"] = float(rpnl)
+                elif etype == "RESOLUTION":
+                    bucket["resolutions"] = int(cnt)
+                    bucket["res_pnl"] = float(rpnl)
+            print(f"\nDAY-BY-DAY ROLLUP (last {hours}h):")
+            print(f"  {'Day':<12} {'Entries':>8} {'Exits':>6} {'Resols':>7} "
+                  f"{'Exit P&L':>10} {'Res P&L':>10} {'Net P&L':>10}")
+            print(f"  {'-'*72}")
+            total_net = 0.0
+            for d in sorted(day_agg.keys(), reverse=True):
+                a = day_agg[d]
+                net = a["exit_pnl"] + a["res_pnl"]
+                total_net += net
+                print(f"  {str(d):<12} {a['entries']:>8} {a['exits']:>6} "
+                      f"{a['resolutions']:>7} ${a['exit_pnl']:>+9.2f} "
+                      f"${a['res_pnl']:>+9.2f} ${net:>+9.2f}")
+            print(f"  {'-'*72}")
+            print(f"  {'TOTAL':<12} {'':>8} {'':>6} {'':>7} {'':>10} {'':>10} "
+                  f"${total_net:>+9.2f}")
+
         # 3. All-time from trade_events (RAW — includes any contaminated markets)
         r3 = await s.execute(text(f"""
             SELECT event_type,
@@ -540,6 +587,56 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
                     wr = (float(xr[3]) / float(xr[2]) * 100) if xr[2] > 0 else 0
                     print(f"  {xr[0]:<5} {xr[1]:<10} {xr[2]:>6} {xr[3]:>6} {wr:>6.1f}% ${float(xr[4]):>+11.2f}")
 
+            # WB per-confidence-bin breakdown (windowed by `hours`).
+            # Uses `trade_events.confidence` directly — WB populates this column
+            # natively at ENTRY (bots/weather_bot.py:887). Same DISTINCT ON
+            # latest-ENTRY join pattern as MB block 5b. Disposal events are
+            # filtered by event_time so the breakdown reflects the same
+            # window as block 2 (e.g. `WeatherBot 168` = last 7 days).
+            r_wb_conf = await s.execute(text("""
+                SELECT CASE
+                         WHEN e_entry.confidence IS NULL THEN 'NULL'
+                         WHEN e_entry.confidence < 0.50 THEN '<0.50'
+                         WHEN e_entry.confidence < 0.55 THEN '0.50-0.54'
+                         WHEN e_entry.confidence < 0.60 THEN '0.55-0.59'
+                         WHEN e_entry.confidence < 0.65 THEN '0.60-0.64'
+                         WHEN e_entry.confidence < 0.70 THEN '0.65-0.69'
+                         WHEN e_entry.confidence < 0.75 THEN '0.70-0.74'
+                         WHEN e_entry.confidence < 0.80 THEN '0.75-0.79'
+                         WHEN e_entry.confidence < 0.85 THEN '0.80-0.84'
+                         WHEN e_entry.confidence < 0.90 THEN '0.85-0.89'
+                         ELSE '0.90+'
+                       END AS conf_bin,
+                       COUNT(*) AS cnt,
+                       SUM(CASE WHEN r.realized_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+                       COALESCE(SUM(CAST(r.realized_pnl AS DOUBLE PRECISION)), 0) AS total_pnl
+                FROM trade_events r
+                JOIN (
+                    SELECT DISTINCT ON (market_id) market_id, confidence
+                    FROM trade_events
+                    WHERE bot_name = ANY(:bot_family) AND event_type = 'ENTRY'
+                    ORDER BY market_id, event_time DESC
+                ) e_entry ON e_entry.market_id = r.market_id
+                WHERE r.bot_name = ANY(:bot_family)
+                  AND r.event_type IN ('RESOLUTION', 'EXIT')
+                  AND r.realized_pnl IS NOT NULL
+                  AND r.event_time > NOW() - INTERVAL '1 hour' * :hours
+                GROUP BY conf_bin
+                ORDER BY MIN(e_entry.confidence)
+            """), {"bot_family": bot_family, "hours": hours})
+            wb_conf_rows = r_wb_conf.fetchall()
+            if wb_conf_rows:
+                print(f"\n{'='*60}")
+                print(f"PER-CONFIDENCE-BIN BREAKDOWN (last {hours}h, resolution+exit)")
+                print(f"  Confidence source: trade_events.confidence (WB writes natively)")
+                print(f"{'='*60}")
+                print(f"  {'Bin':<11} {'Count':>6} {'Wins':>6} {'WR%':>7} {'P&L':>12}")
+                print(f"  {'-'*48}")
+                for wcr in wb_conf_rows:
+                    win_pct = (float(wcr[2]) / float(wcr[1]) * 100) if wcr[1] > 0 else 0
+                    print(f"  {(wcr[0] or 'unknown'):<11} {wcr[1]:>6} {wcr[2]:>6} "
+                          f"{win_pct:>6.1f}% ${float(wcr[3]):>+11.2f}")
+
             # S159: Calibrator status from system_kv
             r8 = await s.execute(text(
                 "SELECT value FROM system_kv WHERE key = 'weatherbot_cal_fit_history'"
@@ -561,6 +658,113 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
                     _rob = _latest.get('raw_oos_brier')
                     print(f"  train_brier={_tb}  oos_brier={_ob}  raw_oos_brier={_rob}")
                     print(f"  fitted={_latest.get('fitted')}  ts={_latest.get('ts','?')}")
+
+        # 5b. MirrorBot per-confidence-bin breakdown (S213 follow-up).
+        # S213 Bug 3 documents three confidence sources in trade_events;
+        # COALESCE(confidence, conf_base + adjustments) is the formula
+        # mirror_conf_charts.py:53-57 uses to reconstruct the value the
+        # bot acted on at entry-decision time. Same JOIN pattern as WB
+        # block 5 — DISTINCT ON (market_id) latest ENTRY for the
+        # confidence reading; r.event_time honors --since.
+        if bot_name == "MirrorBot":
+            _block5_scope_label = (
+                f"{window_label.lower()}, "
+                f"{'CLEAN' if clean else 'RAW'}, "
+                f"resolution+exit"
+            )
+            r_mb_conf = await s.execute(text(f"""
+                {block5_clean_prefix}
+                SELECT CASE
+                         WHEN e_entry.final_conf IS NULL THEN 'NULL'
+                         WHEN e_entry.final_conf < 0.50 THEN '<0.50'
+                         WHEN e_entry.final_conf < 0.55 THEN '0.50-0.54'
+                         WHEN e_entry.final_conf < 0.60 THEN '0.55-0.59'
+                         WHEN e_entry.final_conf < 0.65 THEN '0.60-0.64'
+                         WHEN e_entry.final_conf < 0.70 THEN '0.65-0.69'
+                         WHEN e_entry.final_conf < 0.75 THEN '0.70-0.74'
+                         WHEN e_entry.final_conf < 0.80 THEN '0.75-0.79'
+                         WHEN e_entry.final_conf < 0.85 THEN '0.80-0.84'
+                         WHEN e_entry.final_conf < 0.90 THEN '0.85-0.89'
+                         ELSE '0.90+'
+                       END AS conf_bin,
+                       COUNT(*) AS cnt,
+                       SUM(CASE WHEN r.realized_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+                       COALESCE(SUM(CAST(r.realized_pnl AS DOUBLE PRECISION)), 0) AS total_pnl
+                FROM trade_events r
+                JOIN (
+                    SELECT DISTINCT ON (market_id) market_id,
+                           COALESCE(confidence,
+                                    (event_data->>'conf_base')::float
+                                    + COALESCE((event_data->>'conf_cat_adj')::float, 0)
+                                    + COALESCE((event_data->>'conf_price_adj')::float, 0)
+                                    + COALESCE((event_data->>'conf_conv_adj')::float, 0)
+                           ) AS final_conf
+                    FROM trade_events
+                    WHERE bot_name = ANY(:bot_family) AND event_type = 'ENTRY'
+                    ORDER BY market_id, event_time DESC
+                ) e_entry ON e_entry.market_id = r.market_id
+                WHERE r.bot_name = ANY(:bot_family)
+                  AND r.event_type IN ('RESOLUTION', 'EXIT')
+                  AND r.realized_pnl IS NOT NULL
+                  {block5_since_clause}
+                  {block5_clean_clause}
+                GROUP BY conf_bin
+                ORDER BY MIN(e_entry.final_conf)
+            """), {"bot_family": bot_family, **since_params})
+            mb_conf_rows = r_mb_conf.fetchall()
+            if mb_conf_rows:
+                print(f"\n{'='*60}")
+                print(f"PER-CONFIDENCE-BIN BREAKDOWN ({_block5_scope_label})")
+                print(f"  Confidence source: COALESCE(top-level confidence, "
+                      f"conf_base + conf_cat_adj + conf_price_adj + conf_conv_adj)")
+                print(f"  See S213 Bug 3 for source-of-truth rationale.")
+                print(f"{'='*60}")
+                print(f"  {'Bin':<11} {'Count':>6} {'Wins':>6} {'WR%':>7} {'P&L':>12}")
+                print(f"  {'-'*48}")
+                for mr in mb_conf_rows:
+                    wr = (float(mr[2]) / float(mr[1]) * 100) if mr[1] > 0 else 0
+                    print(f"  {(mr[0] or 'unknown'):<11} {mr[1]:>6} {mr[2]:>6} {wr:>6.1f}% ${float(mr[3]):>+11.2f}")
+
+            # Confidence-threshold aggregate — single canonical line per side
+            # of the 0.60 split. Avoids requiring downstream arithmetic on the
+            # per-bin output for common operator questions like "what's the
+            # P&L on high-confidence trades."
+            r_mb_thresh = await s.execute(text(f"""
+                {block5_clean_prefix}
+                SELECT CASE WHEN e_entry.final_conf >= 0.60 THEN '>=0.60' ELSE '<0.60' END AS conf_split,
+                       COUNT(*) AS cnt,
+                       SUM(CASE WHEN r.realized_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+                       COALESCE(SUM(CAST(r.realized_pnl AS DOUBLE PRECISION)), 0) AS total_pnl
+                FROM trade_events r
+                JOIN (
+                    SELECT DISTINCT ON (market_id) market_id,
+                           COALESCE(confidence,
+                                    (event_data->>'conf_base')::float
+                                    + COALESCE((event_data->>'conf_cat_adj')::float, 0)
+                                    + COALESCE((event_data->>'conf_price_adj')::float, 0)
+                                    + COALESCE((event_data->>'conf_conv_adj')::float, 0)
+                           ) AS final_conf
+                    FROM trade_events
+                    WHERE bot_name = ANY(:bot_family) AND event_type = 'ENTRY'
+                    ORDER BY market_id, event_time DESC
+                ) e_entry ON e_entry.market_id = r.market_id
+                WHERE r.bot_name = ANY(:bot_family)
+                  AND r.event_type IN ('RESOLUTION', 'EXIT')
+                  AND r.realized_pnl IS NOT NULL
+                  AND e_entry.final_conf IS NOT NULL
+                  {block5_since_clause}
+                  {block5_clean_clause}
+                GROUP BY conf_split
+                ORDER BY conf_split DESC
+            """), {"bot_family": bot_family, **since_params})
+            mb_thresh_rows = r_mb_thresh.fetchall()
+            if mb_thresh_rows:
+                print(f"\n  CONFIDENCE-THRESHOLD AGGREGATE (split at 0.60):")
+                print(f"  {'Split':<11} {'Count':>6} {'Wins':>6} {'WR%':>7} {'P&L':>12}")
+                print(f"  {'-'*48}")
+                for tr in mb_thresh_rows:
+                    wr = (float(tr[2]) / float(tr[1]) * 100) if tr[1] > 0 else 0
+                    print(f"  {tr[0]:<11} {tr[1]:>6} {tr[2]:>6} {wr:>6.1f}% ${float(tr[3]):>+11.2f}")
 
     await db.close()
 
