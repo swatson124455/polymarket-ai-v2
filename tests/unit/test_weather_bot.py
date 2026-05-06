@@ -2904,3 +2904,115 @@ class TestYesIdentityDampener:
         # neg-EV gate: confidence < price → reject
         assert dampened < 0.81  # would block at $0.81+
         assert dampened > 0.80  # would allow at $0.80
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# S214 C1: Regression tests for the hard-stop event_type kwarg bug
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestS214HardStopKwargRegression:
+    """S214 C1: Regression tests for the event_type kwarg bug.
+
+    Pre-S214: weather_bot.py:3814 + :3921 passed event_type="EXIT" to
+    base_engine.place_order, which doesn't accept that kwarg. Every
+    hard-stop EXIT raised TypeError silently (caught by the surrounding
+    except Exception, logged as weatherbot_hard_stop_order_failed).
+    The position stayed open through hard-stop conditions.
+
+    Two sites exercised here:
+      Site 1 — _check_hard_stop_all_positions (was line 3814)
+      Site 2 — _evaluate_mid_life_exits hard-stop branch (was line 3921)
+    """
+
+    @pytest.mark.asyncio
+    async def test_standalone_hard_stop_no_event_type_kwarg(self, weather_bot, mock_engine):
+        """Site 1: _check_hard_stop_all_positions calls place_order without event_type."""
+        mock_engine.order_gateway._position_details = {
+            "WeatherBot:mkt_hs1": {
+                "side": "YES",
+                "price": 0.50,
+                "current_price": 0.35,  # -30% pnl_pct → triggers -25% hard stop
+                "size": 10.0,
+                "token_id": "tok_yes_hs1",
+            },
+        }
+        mock_engine.risk_manager.check_hard_stop_loss = MagicMock(
+            return_value={"should_exit": True, "reason": "hard_stop_loss", "details": {}}
+        )
+        weather_bot._save_exit_to_redis = AsyncMock()
+
+        await weather_bot._check_hard_stop_all_positions()
+
+        assert mock_engine.place_order.called, (
+            "base_engine.place_order must fire when hard-stop triggers"
+        )
+        call_kwargs = mock_engine.place_order.call_args.kwargs
+        assert "event_type" not in call_kwargs, (
+            f"event_type kwarg leaked into base_engine.place_order at site 1; "
+            f"got kwargs: {sorted(call_kwargs.keys())}"
+        )
+        assert call_kwargs["side"] == "NO", "exit side must flip YES → NO"
+        assert call_kwargs["bot_name"] == "WeatherBot"
+        assert "mkt_hs1" in weather_bot._recently_exited
+        assert weather_bot._exit_reasons["mkt_hs1"] == "HARD_STOP_LOSS"
+
+    @pytest.mark.asyncio
+    async def test_mid_life_exit_hard_stop_no_event_type_kwarg(self):
+        """Site 2: _evaluate_mid_life_exits hard-stop branch calls place_order without event_type."""
+        import asyncio as _asyncio
+        from bots.weather_bot import WeatherBot
+
+        bot = MagicMock()
+        bot.bot_name = "WeatherBot"
+        bot._recently_exited = {}
+        bot._exit_reasons = {}
+        bot._exit_cooldown_secs = 14400.0
+        bot._exposure_lock = _asyncio.Lock()
+        bot._group_exposure = {}
+        bot._city_exposure = {}
+        bot._market_group_cache = {}
+        bot._save_exit_to_redis = AsyncMock()
+        bot.base_engine = MagicMock()
+        bot.base_engine.db = None
+        bot.base_engine.order_gateway = MagicMock()
+        bot.base_engine.order_gateway._position_details = {
+            "WeatherBot:mkt_hs2": {
+                "side": "YES", "price": 0.60, "size": 10.0,
+                "token_id": "tok_yes_hs2", "current_price": 0.40,
+            }
+        }
+        # Force hard-stop branch to fire (S172 D7: this branch fires regardless of mid-life flag)
+        bot.base_engine.risk_manager.check_hard_stop_loss = MagicMock(
+            return_value={"should_exit": True, "reason": "hard_stop_loss", "details": {}}
+        )
+        bot.base_engine.place_order = AsyncMock(return_value={"success": True})
+        # Wrapper used by mid-life-exit (NOT hard-stop) branch — left as default MagicMock
+        bot.place_order = AsyncMock(return_value={"success": True})
+        bot.running = True
+
+        bucket = TemperatureBucket(
+            market_id="mkt_hs2",
+            bucket_type="range",
+            low_bound=70.0, high_bound=75.0,
+            yes_price=0.40, token_id="tok_yes_hs2", no_token_id="n_hs2",
+            temp_unit="F",
+        )
+        group = MagicMock()
+        group.buckets = [bucket]
+        analyzed = [([], group, {"mkt_hs2": 0.40})]
+
+        with patch.object(settings, "WEATHER_MID_LIFE_EXIT_ENABLED", True, create=True):
+            with patch.object(settings, "WEATHER_EXIT_MIN_EDGE", 0.05, create=True):
+                await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
+
+        assert bot.base_engine.place_order.called, (
+            "base_engine.place_order must fire from mid-life-exit hard-stop branch"
+        )
+        call_kwargs = bot.base_engine.place_order.call_args.kwargs
+        assert "event_type" not in call_kwargs, (
+            f"event_type kwarg leaked into base_engine.place_order at site 2; "
+            f"got kwargs: {sorted(call_kwargs.keys())}"
+        )
+        assert call_kwargs["side"] == "NO", "exit side must flip YES → NO"
+        assert call_kwargs["bot_name"] == "WeatherBot"
