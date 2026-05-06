@@ -3811,7 +3811,6 @@ class WeatherBot(BaseBot):
                     market_id=mid, token_id=token_id,
                     side=_exit_side, size=size, price=current_price,
                     bot_name=self.bot_name, confidence=0.0,
-                    event_type="EXIT",
                 )
             except Exception as _err:
                 logger.warning("weatherbot_hard_stop_order_failed",
@@ -3918,7 +3917,6 @@ class WeatherBot(BaseBot):
                             price=current_price,
                             bot_name=self.bot_name,
                             confidence=0.0,
-                            event_type="EXIT",
                         )
                     except Exception as _exit_err:
                         logger.warning("weatherbot_hard_stop_order_failed",
