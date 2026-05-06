@@ -409,6 +409,19 @@ class OrderGateway:
             try:
                 if not await self.multi_kill_switch.should_trade(bot_name):
                     logger.warning("Order blocked: multi-layer kill switch", bot_name=bot_name, market_id=market_id)
+                    _db_rej = self.db or (getattr(self.paper_trading_engine, "db", None) if self.paper_trading_engine else None)
+                    if _db_rej and hasattr(_db_rej, "insert_shadow_fill"):
+                        try:
+                            await _db_rej.insert_shadow_fill(
+                                bot_name=bot_name, market_id=market_id, token_id=token_id,
+                                side=side, order_size_shares=size,
+                                order_size_usd=round(size * price, 4),
+                                signal_price=price, confidence=confidence,
+                                trade_executed=False, correlation_id=correlation_id,
+                                rejection_type="kill_switch", event_data=event_data,
+                            )
+                        except Exception:
+                            pass
                     return {"success": False, "error": "Kill switch engaged (multi-layer)"}
             except Exception as e:
                 logger.warning("Multi kill switch check failed, falling back to basic: %s", e)
@@ -417,6 +430,19 @@ class OrderGateway:
         if self.kill_switch is not None:
             if await self.kill_switch.is_engaged():
                 logger.warning("Order blocked: kill switch engaged", bot_name=bot_name, market_id=market_id)
+                _db_rej = self.db or (getattr(self.paper_trading_engine, "db", None) if self.paper_trading_engine else None)
+                if _db_rej and hasattr(_db_rej, "insert_shadow_fill"):
+                    try:
+                        await _db_rej.insert_shadow_fill(
+                            bot_name=bot_name, market_id=market_id, token_id=token_id,
+                            side=side, order_size_shares=size,
+                            order_size_usd=round(size * price, 4),
+                            signal_price=price, confidence=confidence,
+                            trade_executed=False, correlation_id=correlation_id,
+                            rejection_type="kill_switch", event_data=event_data,
+                        )
+                    except Exception:
+                        pass
                 return {"success": False, "error": "Kill switch engaged"}
 
         # S172 1E-b: Pre-trade market validation — resolve aliases, warn on unknown
@@ -560,7 +586,6 @@ class OrderGateway:
                     non_size_reasons = [r for r in reasons if r not in size_reasons and r not in exposure_reasons]
                     if not non_size_reasons and (size_reasons or exposure_reasons):
                         # P0.A: Hard reject — silent clamp removed. Risk cap must be respected exactly.
-                        # Downstream: P0.18 writes this rejection to shadow_fills via rejection_type key.
                         msg = "; ".join(reasons) if reasons else "Risk cap exceeded"
                         logger.critical(
                             "order_risk_cap_hard_rejected",
@@ -570,6 +595,20 @@ class OrderGateway:
                             requested_value_usd=round(size * price, 2),
                             reasons=reasons,
                         )
+                        # P0.18: Record cap rejection in shadow_fills for P0.20 coverage tracking.
+                        _db_rej = self.db or (getattr(self.paper_trading_engine, "db", None) if self.paper_trading_engine else None)
+                        if _db_rej and hasattr(_db_rej, "insert_shadow_fill"):
+                            try:
+                                await _db_rej.insert_shadow_fill(
+                                    bot_name=bot_name, market_id=market_id, token_id=token_id,
+                                    side=side, order_size_shares=size,
+                                    order_size_usd=round(size * price, 4),
+                                    signal_price=price, confidence=confidence,
+                                    trade_executed=False, correlation_id=correlation_id,
+                                    rejection_type="risk_cap", event_data=event_data,
+                                )
+                            except Exception:
+                                pass
                         return {"success": False, "error": msg, "reasons": reasons, "rejection_type": "risk_cap"}
                     else:
                         msg = "; ".join(reasons) if reasons else "Risk limits exceeded"
