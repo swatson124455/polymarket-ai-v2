@@ -3553,6 +3553,14 @@ class Database:
         _phase4b_alt_emitted = 0
 
         # ── Phase 4b: paper_trades-driven RESOLUTION emission ──────────────
+        # S214 Tier 4: materialize the SELECT into a Python list, then close
+        # the outer session BEFORE iterating. Pre-fix held the outer connection
+        # `idle in transaction` 60-300+s during the per-row insert_trade_event
+        # loop (each opens its own session — see line 5499), eventually
+        # exceeding idle_in_transaction_session_timeout=5min → PG kills outer
+        # connection → "phase4b outer failure: connection is closed" (~19/hr
+        # measured in S214 WB CLOSE). insert_trade_event is fully independent,
+        # so iterating after the outer session closes is functionally identical.
         try:
             async with self.get_session() as _te_sess:
                 # S158: Extended timeout — Phase 4b joins 3 full aggregates + NOT EXISTS.
@@ -3621,34 +3629,37 @@ class Database:
                     "AND e.total_entry_size - COALESCE(x.total_exit_size, 0) > 0 "
                     "LIMIT 500"
                 ))
-                for row in _resolved.fetchall():
-                    try:
-                        _computed_pnl = float(row[3]) if row[3] is not None else 0.0
-                        _exit_pnl = float(row[7]) if row[7] is not None else 0.0
-                        _adj_pnl = _computed_pnl
-                        _market_resolution = str(row[8]).upper() if row[8] else ""
-                        _resolution_price = 1.0 if _market_resolution == str(row[2]).upper() else 0.0
-                        _res_event_data = {"game": row[9]} if row[9] else None
-                        await self.insert_trade_event(
-                            event_type="RESOLUTION",
-                            bot_name=row[1],
-                            market_id=row[0],
-                            side=row[2],
-                            size=float(row[5]) if row[5] is not None else 0.0,
-                            price=_resolution_price,
-                            realized_pnl=_adj_pnl,
-                            correlation_id=f"resolution:{row[0]}",
-                            event_time=row[4],
-                            event_data=_res_event_data,
-                        )
-                        _phase4b_emitted += 1
-                    except Exception as _te_err:
-                        # S195: warning (was debug). Per-row failures here were
-                        # the silent-zero source — the insert_trade_event SQL
-                        # comment bug went undetected for 17 days because this
-                        # was at debug level. Keep visible at warning.
-                        logger.warning("phase4b emission failed for %s/%s: %s",
-                                       row[1], str(row[0])[:20], _te_err)
+                _phase4b_rows = list(_resolved.fetchall())
+            # Outer session closed. Per-row inserts run on independent sessions
+            # and cannot hold the outer connection idle.
+            for row in _phase4b_rows:
+                try:
+                    _computed_pnl = float(row[3]) if row[3] is not None else 0.0
+                    _exit_pnl = float(row[7]) if row[7] is not None else 0.0
+                    _adj_pnl = _computed_pnl
+                    _market_resolution = str(row[8]).upper() if row[8] else ""
+                    _resolution_price = 1.0 if _market_resolution == str(row[2]).upper() else 0.0
+                    _res_event_data = {"game": row[9]} if row[9] else None
+                    await self.insert_trade_event(
+                        event_type="RESOLUTION",
+                        bot_name=row[1],
+                        market_id=row[0],
+                        side=row[2],
+                        size=float(row[5]) if row[5] is not None else 0.0,
+                        price=_resolution_price,
+                        realized_pnl=_adj_pnl,
+                        correlation_id=f"resolution:{row[0]}",
+                        event_time=row[4],
+                        event_data=_res_event_data,
+                    )
+                    _phase4b_emitted += 1
+                except Exception as _te_err:
+                    # S195: warning (was debug). Per-row failures here were
+                    # the silent-zero source — the insert_trade_event SQL
+                    # comment bug went undetected for 17 days because this
+                    # was at debug level. Keep visible at warning.
+                    logger.warning("phase4b emission failed for %s/%s: %s",
+                                   row[1], str(row[0])[:20], _te_err)
         except Exception as _te_outer_err:
             logger.warning("phase4b outer failure: %s", _te_outer_err)
 
