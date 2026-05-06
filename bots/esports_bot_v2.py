@@ -648,7 +648,7 @@ class EsportsBotV2(BaseBot):
                     size=stake,
                     price=price,
                     confidence=result["p_model"],
-                    prediction=result["p_model"],
+                    prediction=(1.0 - result["p_model"]) if side == "NO" else result["p_model"],
                 )
             except Exception as e:
                 logger.warning(f"Trade failed for {match.team_a} vs {match.team_b}: {e}")

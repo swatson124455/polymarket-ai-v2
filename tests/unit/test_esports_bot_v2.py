@@ -509,6 +509,78 @@ class TestScanCycleSmoke:
         assert kwargs["upcoming_seen"] == 1
         assert kwargs["matched"] == 0  # no scanner → no market match
 
+    @pytest.mark.asyncio
+    async def test_execute_trades_yes_side_passes_p_model_unchanged(self):
+        """Item 1: YES-side trade passes p_model unchanged to place_order.
+
+        With p_model=0.7 > 0.5, side='YES' is selected; risk gate expects
+        prediction = probability of side being bought = 0.7.
+        """
+        bot, _ = self._make_bot()
+        bot._initialized = True
+        bot._dry_run = False
+
+        fake_match = _upcoming_match(match_id=99001, team_a="A", team_b="B")
+        bot._pending_predictions = [{
+            "match": fake_match,
+            "pipeline_result": {
+                "p_model": 0.7, "is_singleton": True, "edge": 0.15, "stake": 50.0,
+            },
+            "market_price": 0.55,
+            "pred_record": {},
+        }]
+        bot._find_market_info = AsyncMock(return_value={
+            "id": "mkt-test-yes",
+            "yes_token_id": "yt-test", "no_token_id": "nt-test",
+            "condition_id": "cond-test",
+        })
+
+        with patch.object(bot, "place_order", new_callable=AsyncMock) as mock_order:
+            await bot._execute_trades()
+
+        mock_order.assert_called_once()
+        kwargs = mock_order.call_args.kwargs
+        assert kwargs["side"] == "YES"
+        assert kwargs["prediction"] == 0.7
+
+    @pytest.mark.asyncio
+    async def test_execute_trades_no_side_passes_complement(self):
+        """Item 1 (Bug A fix): NO-side trade passes (1.0 - p_model) to place_order.
+
+        With p_model=0.3 < 0.5, side='NO' is selected (price = 1.0 - market_price).
+        The risk gate computes edge = prediction - price; for the prediction
+        to represent the probability of the side being bought (NO), it must be
+        (1.0 - p_model), not p_model. Pre-fix this passed 0.3 against NO-side
+        price 0.55, producing edge = -0.25 → "Edge below threshold" rejection.
+        Post-fix: prediction = 0.7 against NO-side price 0.55, edge = +0.15.
+        """
+        bot, _ = self._make_bot()
+        bot._initialized = True
+        bot._dry_run = False
+
+        fake_match = _upcoming_match(match_id=99002, team_a="A", team_b="B")
+        bot._pending_predictions = [{
+            "match": fake_match,
+            "pipeline_result": {
+                "p_model": 0.3, "is_singleton": True, "edge": 0.15, "stake": 50.0,
+            },
+            "market_price": 0.45,
+            "pred_record": {},
+        }]
+        bot._find_market_info = AsyncMock(return_value={
+            "id": "mkt-test-no",
+            "yes_token_id": "yt-test", "no_token_id": "nt-test",
+            "condition_id": "cond-test",
+        })
+
+        with patch.object(bot, "place_order", new_callable=AsyncMock) as mock_order:
+            await bot._execute_trades()
+
+        mock_order.assert_called_once()
+        kwargs = mock_order.call_args.kwargs
+        assert kwargs["side"] == "NO"
+        assert kwargs["prediction"] == pytest.approx(0.7)
+
 
 # ── S181 #3: prediction_log integration tests ──────────────────────────
 
