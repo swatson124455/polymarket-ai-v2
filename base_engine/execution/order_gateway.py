@@ -816,6 +816,11 @@ class OrderGateway:
         _shadow_slippage = 0.0
         _shadow_fill_frac = 1.0
         _shadow_book_walk_used = False
+        # P0.3: intended-walk results (populated when intended_size_usd present in event_data)
+        _intended_vwap: Optional[float] = None
+        _intended_slippage: Optional[float] = None
+        _intended_fill_frac: Optional[float] = None
+        _intended_walk_error: Optional[str] = None
 
         if self._orderbook_tracker and token_id:
             try:
@@ -876,6 +881,19 @@ class OrderGateway:
                         if _bw:
                             _shadow_vwap, _shadow_fill_frac, _shadow_slippage = _bw
                             _shadow_book_walk_used = True
+                    # P0.3: Walk at intended Kelly size (pre-cap) for counterfactual analysis.
+                    _intended_size_usd_val = (event_data or {}).get("intended_size_usd")
+                    if _shadow_book_walk_used and _intended_size_usd_val and effective_price > 0:
+                        _intended_shares = _intended_size_usd_val / effective_price
+                        try:
+                            if _is_buy:
+                                _bw_int = _vwap_from_book(_raw_asks, _intended_shares, _whale_shares)
+                            else:
+                                _bw_int = _vwap_from_bids(_raw_bids, _intended_shares)
+                            if _bw_int:
+                                _intended_vwap, _intended_fill_frac, _intended_slippage = _bw_int
+                        except Exception as _bw_int_err:
+                            _intended_walk_error = str(_bw_int_err)
             except Exception as _bw_err:
                 logger.debug("order_gateway_book_walk_failed", error=str(_bw_err), market_id=market_id)
 
@@ -926,6 +944,10 @@ class OrderGateway:
                             trade_executed=False, execution_price=None,
                             correlation_id=correlation_id,
                             model_name=None, event_data=event_data,
+                            vwap_at_intended=_intended_vwap,
+                            slippage_at_intended=_intended_slippage,
+                            fill_frac_at_intended=_intended_fill_frac,
+                            intended_walk_error=_intended_walk_error,
                         )
                     except Exception:
                         pass
@@ -1237,6 +1259,10 @@ class OrderGateway:
                             trade_executed=True, execution_price=_live_fill_price,
                             correlation_id=correlation_id,
                             model_name=None, event_data=event_data,
+                            vwap_at_intended=_intended_vwap,
+                            slippage_at_intended=_intended_slippage,
+                            fill_frac_at_intended=_intended_fill_frac,
+                            intended_walk_error=_intended_walk_error,
                         )
                     except Exception:
                         pass

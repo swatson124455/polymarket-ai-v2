@@ -322,6 +322,14 @@ class BaseBot(ABC):
             return {"success": False, "error": "Bot stopped"}
         self.mark_latency("order_start")
         _order_t0 = time.monotonic()
+        # P0.3: Plumb intended_size_usd from last calculate_bot_position_size() call.
+        _intended_usd = getattr(self, "_last_intended_size_usd", None)
+        self._last_intended_size_usd = None  # clear after reading
+        if _intended_usd:
+            if event_data is None:
+                event_data = {}
+            event_data = dict(event_data)
+            event_data["intended_size_usd"] = _intended_usd
         result = await self.base_engine.place_order(
             bot_name=self.bot_name,
             market_id=market_id,
@@ -561,6 +569,7 @@ class BaseBot(ABC):
         Pass category for category-specific Kelly fractions.
         Pass conformal_interval (p_low, p_high) for conservative Kelly sizing (Session 82)."""
         try:
+            self._last_intended_size_usd: Optional[float] = None  # P0.3: reset each call
             # Session 47: Use per-bot bankroll manager when available
             if self.bankroll is not None:
                 size_usd, _intended_usd = await self.bankroll.get_bet_size(
@@ -570,6 +579,7 @@ class BaseBot(ABC):
                     category=category,
                     conformal_interval=conformal_interval,
                 )
+                self._last_intended_size_usd = _intended_usd  # P0.3: stash for place_order
                 # Convert USD to shares for compatibility with downstream code
                 if price > 0 and size_usd > 0:
                     return size_usd / price
