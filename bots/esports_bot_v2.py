@@ -57,6 +57,22 @@ _STALE_DAYS = int(os.getenv("ESPORTS_V2_STALE_DAYS", "45"))
 # (~5.5 min cold-start) plus a normal scan interval; short enough that
 # market prices used at sizing time are still meaningful.
 _PENDING_STALE_HOURS = float(os.getenv("ESPORTS_V2_PENDING_STALE_HOURS", "4.0"))
+# Item 6: CS2 tier-1 league filter applied at predict-emit. Per S214 audit
+# §10.4, CS2 has ~1.8% match rate dominantly because Polymarket does not
+# create markets for tier-2/3 CS2 events; the matcher correctly rejects
+# them, but every prediction still floods the esports_unmatched_predictions
+# table. Filtering at predict-emit eliminates the noise without losing
+# tradeable signal. LoL is intentionally NOT filtered — its 22.7% match
+# rate spans many tiers and the gap is alias-mapping, not tier.
+# Default explicitly excludes bare "Major" (would substring-match any
+# tournament with "major" in the name). Each entry is treated as a
+# case-insensitive substring against (match.tournament or match.league).
+_TIER1_LEAGUES_CS2 = [
+    s.strip() for s in os.getenv(
+        "ESPORTS_V2_TIER1_LEAGUES_CS2",
+        "BLAST,IEM,PGL Major,ESL Pro League",
+    ).split(",") if s.strip()
+]
 _SNAPSHOT_DIR = Path(os.getenv("ESPORTS_V2_SNAPSHOT_DIR", "data/snapshots"))
 # S181 #3: fail-open prediction_log write for cross-bot observability parity
 # with MB/WB (mirror_bot.py:2810, weather_bot.py:881). Flip to false in .env +
@@ -513,6 +529,25 @@ class EsportsBotV2(BaseBot):
                 # Stale rating guard: both teams must have recent matches
                 if not self._teams_are_fresh(match.team_a, match.team_b, now):
                     continue
+
+                # Item 6: CS2 tier filter — only emit predictions for matches
+                # in tier-1 leagues where Polymarket actually creates markets.
+                # Tier-2/3 CS2 events historically have no markets and just
+                # flood esports_unmatched_predictions. LoL gap is alias not
+                # tier, so this filter is CS2-only by intent.
+                if game == "cs2":
+                    tournament_text = (
+                        (getattr(match, "tournament", None) or "")
+                        + " "
+                        + (getattr(match, "league", None) or "")
+                    ).strip().lower()
+                    if not tournament_text:
+                        # No tournament info → can't classify as tier-1 → skip.
+                        # Explicit branch so future relaxation of this rule
+                        # is a deliberate change, not a silent edge-case.
+                        continue
+                    if not any(tag.lower() in tournament_text for tag in _TIER1_LEAGUES_CS2):
+                        continue
 
                 # Get Trinity prediction (predict only, don't update ratings)
                 trinity_pred = self._trinity.predict(match.team_a, match.team_b, game)

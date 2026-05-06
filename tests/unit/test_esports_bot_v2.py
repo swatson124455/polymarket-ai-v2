@@ -53,7 +53,12 @@ def _finished_match(**kwargs) -> FakeMatch:
 
 
 def _upcoming_match(**kwargs) -> FakeMatch:
-    defaults = {"status": "not_started", "score_a": 0, "score_b": 0}
+    # tournament default chosen to pass Item 6 CS2 tier filter; tests that
+    # exercise the filter override tournament/league explicitly.
+    defaults = {
+        "status": "not_started", "score_a": 0, "score_b": 0,
+        "tournament": "PGL Major",
+    }
     defaults.update(kwargs)
     return FakeMatch(**defaults)
 
@@ -775,6 +780,112 @@ class TestScanCycleSmoke:
         mock_order.assert_not_called()
         # Item not traded → traded_at still None → would carry over for stale_window
         assert bot._pending_predictions[0]["traded_at"] is None
+
+    @pytest.mark.asyncio
+    async def test_cs2_tier1_filter_blocks_non_tier1_tournament(self):
+        """Item 6: CS2 prediction with non-tier-1 tournament is filtered
+        before pipeline.predict — no INSERT into esports_predictions."""
+        bot, fake_db = self._make_bot()
+        bot._initialized = True
+        self._seed_trinity(bot)
+
+        upcoming = [_upcoming_match(
+            match_id=82001, game="cs2",
+            team_a="TeamA", team_b="TeamB",
+            tournament="Random Cup", league="",
+        )]
+        bot._pandascore = AsyncMock()
+        bot._pandascore.get_upcoming_matches = AsyncMock(return_value=upcoming)
+        bot._pandascore.get_past_matches = AsyncMock(return_value=[])
+        bot._market_scanner = None
+
+        await bot.scan_and_trade()
+
+        inserts = [s for s, _ in fake_db.session.executed if "INSERT INTO esports_predictions" in s]
+        assert len(inserts) == 0
+
+    @pytest.mark.asyncio
+    async def test_cs2_tier1_filter_passes_pgl_major(self):
+        """Item 6: CS2 prediction in tier-1 tournament (PGL Major substring
+        match) reaches pipeline.predict and is INSERTed."""
+        bot, fake_db = self._make_bot()
+        bot._initialized = True
+        self._seed_trinity(bot)
+
+        upcoming = [_upcoming_match(
+            match_id=82002, game="cs2",
+            team_a="TeamA", team_b="TeamB",
+            tournament="PGL Major Stockholm 2026",
+            league="",
+        )]
+        bot._pandascore = AsyncMock()
+        bot._pandascore.get_upcoming_matches = AsyncMock(return_value=upcoming)
+        bot._pandascore.get_past_matches = AsyncMock(return_value=[])
+        bot._market_scanner = None
+
+        await bot.scan_and_trade()
+
+        inserts = [s for s, _ in fake_db.session.executed if "INSERT INTO esports_predictions" in s]
+        assert len(inserts) == 1
+
+    @pytest.mark.asyncio
+    async def test_cs2_tier1_filter_blocks_empty_tournament_and_league(self):
+        """Item 6: CS2 prediction with NO tournament/league info is filtered.
+        Explicit branch — future relaxation should be deliberate."""
+        bot, fake_db = self._make_bot()
+        bot._initialized = True
+        self._seed_trinity(bot)
+
+        upcoming = [_upcoming_match(
+            match_id=82003, game="cs2",
+            team_a="TeamA", team_b="TeamB",
+            tournament="", league="",
+        )]
+        bot._pandascore = AsyncMock()
+        bot._pandascore.get_upcoming_matches = AsyncMock(return_value=upcoming)
+        bot._pandascore.get_past_matches = AsyncMock(return_value=[])
+        bot._market_scanner = None
+
+        await bot.scan_and_trade()
+
+        inserts = [s for s, _ in fake_db.session.executed if "INSERT INTO esports_predictions" in s]
+        assert len(inserts) == 0
+
+    @pytest.mark.asyncio
+    async def test_lol_no_tier_filter_applied(self):
+        """Item 6: LoL games are NOT filtered by tier — the tier filter is
+        CS2-only by design (LoL has 22.7% match rate spanning many tiers
+        per S214 audit; LoL gap is alias-mapping, not tier)."""
+        bot, _ = self._make_bot()
+        bot._initialized = True
+        bot._games = ["lol"]
+        self._seed_trinity(bot)
+
+        # Mark TeamA/TeamB as fresh for lol
+        from datetime import datetime
+        bot._team_last_match["TeamA"] = datetime(2026, 5, 1)
+        bot._team_last_match["TeamB"] = datetime(2026, 5, 1)
+
+        upcoming = [_upcoming_match(
+            match_id=82004, game="lol",
+            team_a="TeamA", team_b="TeamB",
+            tournament="Some Random LoL Tournament",
+            league="",
+        )]
+        bot._pandascore = AsyncMock()
+        bot._pandascore.get_upcoming_matches = AsyncMock(return_value=upcoming)
+        bot._pandascore.get_past_matches = AsyncMock(return_value=[])
+        bot._market_scanner = None
+
+        # Spy on Trinity.predict — if tier filter wrongly applied to LoL,
+        # predict would never be called for this match.
+        original_predict = bot._trinity.predict
+        spy = MagicMock(side_effect=original_predict)
+        bot._trinity.predict = spy
+
+        await bot.scan_and_trade()
+
+        spy.assert_called()
 
     @pytest.mark.asyncio
     async def test_predict_writes_live_mode_when_not_dry_run(self):
