@@ -116,6 +116,7 @@ class MirrorBot(BaseBot):
 
         # S99: Portfolio circuit breaker — pause entries when unrealized P&L < threshold
         self._circuit_breaker_until: float = 0.0  # monotonic time when pause expires
+        self._halt_breaker_unready: bool = False  # P0.10: True when restore failed 3x at startup
         # S99b: Post-reset cooldown — prevent burst of trades after daily exposure reset
         self._daily_reset_cooldown: float = 0.0
 
@@ -426,11 +427,36 @@ class MirrorBot(BaseBot):
 
         # S168 Phase 8: Restore DB-authoritative state (cooldowns, circuit breaker).
         # OUTSIDE the main try block — failure here must NOT block core state restore.
+        # P0.10: circuit breaker restore retries 3x (1s/4s/16s). Persistent failure
+        # sets _halt_breaker_unready; _can_open_position() refuses all trades until
+        # operator sets MIRROR_BREAKER_BYPASS=true and restarts.
+        if getattr(settings, "MIRROR_BREAKER_BYPASS", False):
+            logger.info("mirror_circuit_breaker_restore_bypassed: MIRROR_BREAKER_BYPASS=true")
+        else:
+            for _attempt, _delay in enumerate([0, 1, 4, 16]):
+                if _delay:
+                    await asyncio.sleep(_delay)
+                try:
+                    await self._restore_circuit_breaker()
+                    break
+                except Exception as _cb_err:
+                    if _attempt < 3:
+                        logger.warning(
+                            "mirror_circuit_breaker_restore_retry",
+                            attempt=_attempt + 1,
+                            error=str(_cb_err),
+                        )
+                    else:
+                        logger.critical(
+                            "mirror_halt_breaker_unready",
+                            attempts=4,
+                            error=str(_cb_err),
+                        )
+                        self._halt_breaker_unready = True
         try:
-            await self._restore_circuit_breaker()
             await self._restore_cooldowns()
         except Exception as _s8_err:
-            logger.debug("mirror_phase8_restore_skipped: %s", _s8_err)
+            logger.debug("mirror_cooldown_restore_skipped: %s", _s8_err)
 
         # S144: Immediately sync fresh prices from DB so stop-loss has accurate
         # current_price right after restart, not 45s later on first scan cycle.
@@ -1689,25 +1715,25 @@ class MirrorBot(BaseBot):
             logger.debug("mirror_save_circuit_breaker_failed: %s", _e)
 
     async def _restore_circuit_breaker(self) -> None:
-        """S168 Phase 8: Restore circuit breaker from DB on startup."""
-        try:
-            from sqlalchemy import text
-            import time as _t
-            async with self.base_engine.db.get_session() as _s:
-                _r = await _s.execute(text(
-                    "SELECT value_json FROM mirror_state"
-                    " WHERE key = 'circuit_breaker' AND expires_at > NOW()"
-                ))
-                _row = _r.fetchone()
-                if _row and _row[0]:
-                    _val = _row[0] if isinstance(_row[0], dict) else __import__("json").loads(_row[0])
-                    _wall_resume = float(_val.get("resume_at", 0))
-                    _remaining = _wall_resume - _t.time()
-                    if _remaining > 0:
-                        self._circuit_breaker_until = _t.monotonic() + _remaining
-                        logger.info("mirror_circuit_breaker_restored", remaining_s=round(_remaining, 0))
-        except Exception as _e:
-            logger.debug("mirror_restore_circuit_breaker_failed: %s", _e)
+        """S168 Phase 8: Restore circuit breaker from DB on startup.
+
+        Raises on DB failure — caller (P0.10 retry loop) handles retries and HALT.
+        """
+        from sqlalchemy import text
+        import time as _t
+        async with self.base_engine.db.get_session() as _s:
+            _r = await _s.execute(text(
+                "SELECT value_json FROM mirror_state"
+                " WHERE key = 'circuit_breaker' AND expires_at > NOW()"
+            ))
+            _row = _r.fetchone()
+            if _row and _row[0]:
+                _val = _row[0] if isinstance(_row[0], dict) else __import__("json").loads(_row[0])
+                _wall_resume = float(_val.get("resume_at", 0))
+                _remaining = _wall_resume - _t.time()
+                if _remaining > 0:
+                    self._circuit_breaker_until = _t.monotonic() + _remaining
+                    logger.info("mirror_circuit_breaker_restored", remaining_s=round(_remaining, 0))
 
     async def _save_cooldown(self, market_id: str, ttl_secs: float) -> None:
         """S168 Phase 8: Persist market cooldown to DB."""
@@ -1840,6 +1866,12 @@ class MirrorBot(BaseBot):
 
         Returns False with a specific INFO log identifying WHICH limit was hit.
         """
+        # P0.10: Refuse new positions if circuit breaker state could not be restored.
+        # Clear by setting MIRROR_BREAKER_BYPASS=true in env and restarting.
+        if self._halt_breaker_unready:
+            logger.warning("mirror_halt_breaker_unready: refusing trade — restart with MIRROR_BREAKER_BYPASS=true to override")
+            return False
+
         # S99b: Post-reset cooldown — spread trades after midnight reset
         if _time.monotonic() < self._daily_reset_cooldown:
             return False
