@@ -49,7 +49,26 @@ python -m pytest tests/unit/ --tb=short -q 2>&1 || {
 }
 # Verify SSH key exists
 [ -f "$KEY" ] || { echo "ABORT: SSH key not found at $KEY"; exit 1; }
-echo "  OK — syntax clean, tests passed, SSH key present"
+# Bug-class pattern check (P0.0) — enforced on full codebase regardless of hook bypass
+_bcp_violations=0
+_bcp_hits=$(grep -rn --include="*.py" 'place_order.*event_type=' \
+    "$LOCAL_DIR/bots/" "$LOCAL_DIR/base_engine/" "$LOCAL_DIR/esports/" "$LOCAL_DIR/config/" \
+    2>/dev/null | grep -v '^\s*#' || true)
+if [ -n "$_bcp_hits" ]; then
+    echo "ABORT [M1]: place_order() called with event_type= kwarg (P0.0 bug-class check):"
+    echo "$_bcp_hits"
+    _bcp_violations=$((_bcp_violations + 1))
+fi
+_bcp_hits=$(grep -rn --include="*.py" -E 'asyncio\.create_task\(.*write_through' \
+    "$LOCAL_DIR/bots/" "$LOCAL_DIR/base_engine/" "$LOCAL_DIR/esports/" \
+    2>/dev/null | grep -v '^\s*#' || true)
+if [ -n "$_bcp_hits" ]; then
+    echo "ABORT [CLAUDE.md]: asyncio.create_task() wrapping write_through (P0.0 bug-class check):"
+    echo "$_bcp_hits"
+    _bcp_violations=$((_bcp_violations + 1))
+fi
+[ "$_bcp_violations" -eq 0 ] || { echo "ABORT: deploy cancelled — fix bug-class violations first"; exit 1; }
+echo "  OK — syntax clean, tests passed, SSH key present, bug-class patterns clean"
 
 # ── 2. Build archive ──────────────────────────────────────────────────────────
 echo ""

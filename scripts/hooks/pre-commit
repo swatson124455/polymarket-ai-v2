@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# P0.0 — Pre-commit bug-class pattern check
+# Checks staged Python changes only. Three patterns:
+#   M1:       place_order() called with event_type= kwarg (invalid kwarg propagation)
+#   CLAUDE.md: asyncio.create_task wrapping financial write-through (fire-and-forget ban)
+#   A4:       new _daily_exposure write outside approved paths
+#
+# Bypass only with explicit justification: git commit --no-verify
+# Note: deploy.sh also enforces M1 + CLAUDE.md on the full codebase.
+
+set -uo pipefail
+
+STAGED_PY=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null | grep '\.py$' || true)
+if [ -z "$STAGED_PY" ]; then
+    exit 0
+fi
+
+VIOLATIONS=0
+STAGED_DIFF=$(git diff --cached --unified=0 -- "*.py" 2>/dev/null || true)
+# New/modified lines only (exclude diff headers and deletions)
+STAGED_LINES=$(echo "$STAGED_DIFF" | grep '^+[^+]' || true)
+
+# ── Pattern 1: place_order() with event_type= kwarg (M1) ─────────────────────
+P1=$(echo "$STAGED_LINES" | grep -E 'place_order.*event_type=' | grep -v '^\s*#' || true)
+if [ -n "$P1" ]; then
+    echo ""
+    echo "HOOK [M1] place_order() called with event_type= — this kwarg is not in the signature."
+    echo "  Fix: remove event_type= or replace with the correct kwarg (event_data=)."
+    echo "$P1" | sed 's/^/  /'
+    VIOLATIONS=$((VIOLATIONS + 1))
+fi
+
+# ── Pattern 2: asyncio.create_task wrapping financial write-throughs ──────────
+P2=$(echo "$STAGED_LINES" | grep -E 'asyncio\.create_task\(.*write_through' | grep -v '^\s*#' || true)
+if [ -n "$P2" ]; then
+    echo ""
+    echo "HOOK [CLAUDE.md] asyncio.create_task() wrapping a financial write-through."
+    echo "  Fix: await the write directly. Fire-and-forget on financial state is banned."
+    echo "$P2" | sed 's/^/  /'
+    VIOLATIONS=$((VIOLATIONS + 1))
+fi
+
+# ── Pattern 3: new _daily_exposure write in staged change (A4) ───────────────
+P3=$(echo "$STAGED_LINES" | grep -E 'self\._daily_exposure\s*[+\-\*]?=' | grep -v '^\s*#' || true)
+if [ -n "$P3" ]; then
+    echo ""
+    echo "HOOK [A4] Staged change adds a write to self._daily_exposure."
+    echo "  Verify: is this inside an approved update path in mirror_bot.py?"
+    echo "  If yes, use git commit --no-verify with a comment explaining the approved path."
+    echo "$P3" | sed 's/^/  /'
+    VIOLATIONS=$((VIOLATIONS + 1))
+fi
+
+if [ "$VIOLATIONS" -gt 0 ]; then
+    echo ""
+    echo "[$VIOLATIONS pattern violation(s)] Fix before committing, or use --no-verify with justification."
+    echo "deploy.sh enforces M1 + CLAUDE.md independently regardless of --no-verify."
+    exit 1
+fi
+
+exit 0
