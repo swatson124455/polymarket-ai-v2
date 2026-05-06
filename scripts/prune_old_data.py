@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-2B: Prune old trade_events, reconciliation_breaks, and paper_trades rows.
+2B: Prune old trade_events, reconciliation_breaks, paper_trades, and shadow_fills rows.
 
 Follows the same batch ctid-delete pattern as prune_market_prices.py.
 Dry-run by default — pass --execute to actually delete.
@@ -39,6 +39,7 @@ DEFAULT_RETENTION = {
     "trade_events": 90,
     "reconciliation_breaks": 60,
     "paper_trades": 90,
+    "shadow_fills": 90,
 }
 
 # Delete queries per table.  trade_events has a safety guard; others are simple date-based.
@@ -72,6 +73,14 @@ DELETE_QUERIES = {
             LIMIT :batch
         )
     """,
+    "shadow_fills": """
+        DELETE FROM shadow_fills
+        WHERE ctid IN (
+            SELECT ctid FROM shadow_fills
+            WHERE created_at < NOW() - make_interval(days => :days)
+            LIMIT :batch
+        )
+    """,
 }
 
 # Existence-check queries for dry-run
@@ -93,6 +102,13 @@ EXISTS_QUERIES = {
     "paper_trades": """
         SELECT COUNT(*) FROM (
             SELECT 1 FROM paper_trades
+            WHERE created_at < NOW() - make_interval(days => :days)
+            LIMIT 1
+        ) sub
+    """,
+    "shadow_fills": """
+        SELECT COUNT(*) FROM (
+            SELECT 1 FROM shadow_fills
             WHERE created_at < NOW() - make_interval(days => :days)
             LIMIT 1
         ) sub
@@ -190,7 +206,7 @@ def main():
     parser = argparse.ArgumentParser(description="Prune old trade data rows")
     parser.add_argument(
         "--table",
-        choices=["trade_events", "reconciliation_breaks", "paper_trades", "all"],
+        choices=["trade_events", "reconciliation_breaks", "paper_trades", "shadow_fills", "all"],
         default="all",
         help="Which table(s) to prune (default: all)",
     )
