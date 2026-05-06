@@ -18,12 +18,34 @@ journalctl -u polymarket-mirror --since "7 days ago" | grep "critical" \
 
 python scripts/counterfactual_pnl.py --bot MirrorBot --days 7
 # Must exit 0
-
-python scripts/bot_pnl.py MirrorBot 168
-# Review open positions section — operator decision required on any open paper position
 ```
 
 If any criterion fails, STOP. Fix the criterion before proceeding.
+
+---
+
+## Pre-flip hard gate: open-position disposition
+
+Before flipping the cap, the operator must make an explicit written decision
+about any open MB positions from the shadow-live week.
+
+```bash
+python scripts/bot_pnl.py MirrorBot 720
+# Read the OPEN POSITIONS section at the top of the output.
+```
+
+**If OPEN POSITIONS shows zero entries:** proceed.
+
+**If OPEN POSITIONS shows existing entries:** choose one of:
+
+| Option | Action | When to use |
+|--------|--------|-------------|
+| **Grandfather** | Let them run; they were opened at $1 cap; new orders at $25 | Positions are healthy (unrealized P&L ≥ 0) |
+| **Close first** | Manually exit each position before flipping, then flip | Positions are underwater or you want a clean baseline |
+| **Accept and note** | Flip with open positions; record the current cost basis in the session handoff | Mixed P&L; operator explicitly accepts the carry-over |
+
+**Write the decision in the session handoff before proceeding to Step 1.**
+Example: _"2026-05-15: 3 open positions ($74.02 cost), grandfathered — all in-the-money."_
 
 ---
 
@@ -152,6 +174,14 @@ Criteria for ramping from $25 to full-target cap:
 2. **counterfactual_pnl.py alignment** — intended_size fields populated (P0.2/P0.3 shipped),
    `fill_frac_at_intended` > 0.80 median, `vwap_at_intended` within 0.5¢ of `vwap_fill_price`.
    Low gap = book walk at $25 reasonably predicts actual fill.
+
+   **Bias warning:** `counterfactual_pnl.py` fires a WARNING banner when
+   `max_bet_usd < 50` (threshold locked at $50 — fires at both $1 shadow-live and $25 ramp;
+   suppresses only at ≥$50 where the cap/intended ratio is manageable).
+   At $25 cap the bias factor is ~12× (intended_size ~$300, actual fill $25). The
+   counterfactual is an upper bound on potential P&L, not an authoritative estimate.
+   Use it to verify plumbing correctness and directional consistency, NOT to justify
+   the $25 → full-target ramp.
 
 3. **Zero P0.20 regression** — all 7 exit criteria from shadow-live still pass at $25 cap.
 

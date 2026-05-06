@@ -32,21 +32,41 @@ an order was attempted but neither filled nor explicitly rejected within the wri
 
 ---
 
-### 2. ≥95% submitted-order coverage in shadow_fills ∪ rejection writer
+### 2. ≥95% submitted-order coverage in shadow_fills ∪ rejection writers
 
-At least 95% of trade signals that reach `OrderGateway.place_order` must have a
-corresponding row in `shadow_fills` (either `trade_executed=true` for fills, or
-`trade_executed=false` with a `rejection_type` for rejections).
+At least 95% of trade signals that enter the order path must have a corresponding row
+in one of two rejection/fill tables:
 
-5% slop allows for race conditions. If coverage drops below 95%, escalate to
-investigation before proceeding.
+| Signal type | Written to |
+|-------------|------------|
+| Fill (paper or live success) | `shadow_fills` (`trade_executed=true`) |
+| Kill-switch rejection | `shadow_fills` (`rejection_type='kill_switch'`) |
+| Risk-cap rejection (P0.A) | `shadow_fills` (`rejection_type='risk_cap'`) |
+| Edge-eroded rejection | `shadow_fills` (`trade_executed=false`, no rejection_type) |
+| MB pre-gate rejections (position cap, category cap, etc.) | `mirror_rejected_signals` |
+| HALT_BREAKER_UNREADY state blocks | `mirror_rejected_signals` (reason=`mirror_can_open_position_false`) + `logger.critical("mirror_halt_breaker_unready")` caught by metric #6 |
+
+**Note on MATIC underflow:** `check_matic_balance` (P0.17) is a monitoring function —
+it fires alerts but does NOT reject individual orders. MATIC-induced CLOB failures
+surface as execution errors, visible in `journalctl` not in shadow_fills.
+
+5% slop allows for race conditions. If coverage drops below 95% across both tables,
+escalate to investigation before proceeding.
 
 **Verification:**
 ```bash
-# Count shadow_fills rows for MB in the past 7 days
-python scripts/bot_pnl.py MirrorBot 168
-# Cross-check trade count vs shadow_fills row count:
+# signal count entering order_gateway (fills + all rejections):
 # SELECT COUNT(*) FROM shadow_fills WHERE bot_name='MirrorBot' AND created_at > NOW()-INTERVAL '7 days';
+# SELECT COUNT(*) FROM mirror_rejected_signals WHERE bot_name='MirrorBot' AND created_at > NOW()-INTERVAL '7 days';
+
+# halt-state rejections specifically:
+# SELECT COUNT(*) FROM mirror_rejected_signals
+# WHERE bot_name='MirrorBot'
+#   AND rejection_reason = 'mirror_can_open_position_false'
+#   AND created_at > NOW() - INTERVAL '7 days';
+# If > 0, check metric #6 for mirror_halt_breaker_unready critical log.
+
+python scripts/bot_pnl.py MirrorBot 168  # trade count baseline for denominator
 ```
 
 ---
@@ -68,19 +88,31 @@ journalctl -u polymarket-mirror --since "7 days ago" | grep "matic_balance_ok\|m
 
 ---
 
-### 4. Zero unintended live activations on other 13 bots
+### 4. Zero ENTRY events for the 13 disabled bots
 
-All 13 non-MirrorBot bots must show zero live activity during the shadow-live week.
+All 13 non-MirrorBot bots must show zero ENTRY events in `trade_events` during the
+shadow-live week. "ENTRY events" specifically — not trades generically — because
+`trade_events` is the P&L authority and ENTRY is the record of capital deployment.
 Verified daily.
 
 **Verification:**
 ```bash
-# Run for each non-MB bot — should show empty TRADE EVENTS section
+# Run for each non-MB bot — "Entries: 0" must appear for all 13
 for bot in ArbitrageBot CrossPlatformArbBot OracleBot SportsBot LLMForecasterBot \
            WeatherBot SportsInjuryBot SportsLiveBot SportsArbBot \
            EsportsBot EsportsBotV2 EsportsLiveBot LogicalArbBot; do
-    python scripts/bot_pnl.py $bot 24 | grep -E "Entries:|0 trade"
+    result=$(python scripts/bot_pnl.py $bot 24 | grep "Entries:")
+    echo "$bot: $result"
 done
+# Every line must show "Entries: 0"
+
+# Secondary check — raw query (confirms no bot_pnl.py parsing gap):
+# SELECT bot_name, COUNT(*) FROM trade_events
+# WHERE event_type = 'ENTRY'
+#   AND recorded_at > NOW() - INTERVAL '24 hours'
+#   AND bot_name != 'MirrorBot'
+# GROUP BY bot_name;
+# Must return zero rows.
 ```
 
 ---
