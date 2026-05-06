@@ -155,7 +155,7 @@ When a bot accumulates in-memory financial state that must survive a restart, pi
 
 ## Key Architecture Facts
 
-- **15 bots** in BOT_REGISTRY (MomentumBot DELETED)
+- **14 bots** in BOT_REGISTRY (MomentumBot DELETED) — verified at [main.py:79-97](main.py:79)
 - **BotBankrollManager** handles SIZING; **risk_manager** handles LIMITS. Both must pass.
 - `risk_manager.calculate_position_size()` is DEPRECATED — BotBankrollManager used instead
 - Paper trading phase: PHASE_MAX_BET_USD=$1000, but per-bot BotBankrollManager max_bet_usd is the real cap ($300 for Weather/Mirror/Esports, $100 fallback for unknown bots)
