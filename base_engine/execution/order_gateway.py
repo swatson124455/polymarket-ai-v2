@@ -816,11 +816,16 @@ class OrderGateway:
         _shadow_slippage = 0.0
         _shadow_fill_frac = 1.0
         _shadow_book_walk_used = False
-        # P0.3: intended-walk results (populated when intended_size_usd present in event_data)
+        # P0.3/P0.3b: intended-walk results and sizing (from event_data set by base_bot.place_order)
         _intended_vwap: Optional[float] = None
         _intended_slippage: Optional[float] = None
         _intended_fill_frac: Optional[float] = None
         _intended_walk_error: Optional[str] = None
+        _intended_size_usd_for_write: Optional[float] = (event_data or {}).get("intended_size_usd")
+        _intended_size_shares_for_write: Optional[float] = (
+            _intended_size_usd_for_write / effective_price
+            if _intended_size_usd_for_write and effective_price > 0 else None
+        )
 
         if self._orderbook_tracker and token_id:
             try:
@@ -948,6 +953,8 @@ class OrderGateway:
                             slippage_at_intended=_intended_slippage,
                             fill_frac_at_intended=_intended_fill_frac,
                             intended_walk_error=_intended_walk_error,
+                            intended_size_usd=_intended_size_usd_for_write,
+                            intended_size_shares=_intended_size_shares_for_write,
                         )
                     except Exception as _sf_err:
                         logger.critical("shadow_fill_insert_failed", error=str(_sf_err), bot_name=bot_name, market_id=market_id, rejection_type="edge_eroded")
@@ -1268,6 +1275,8 @@ class OrderGateway:
                             slippage_at_intended=_intended_slippage,
                             fill_frac_at_intended=_intended_fill_frac,
                             intended_walk_error=_intended_walk_error,
+                            intended_size_usd=_intended_size_usd_for_write,
+                            intended_size_shares=_intended_size_shares_for_write,
                         )
                     except Exception as _sf_err:
                         logger.critical("shadow_fill_insert_failed", error=str(_sf_err), bot_name=bot_name, market_id=market_id)

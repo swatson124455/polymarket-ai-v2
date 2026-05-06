@@ -915,6 +915,12 @@ class PaperTradingEngine:
                 slippage_at_intended=_ed.get("_intended_slippage"),
                 fill_frac_at_intended=_ed.get("_intended_fill_frac"),
                 intended_walk_error=_ed.get("_intended_walk_error"),
+                intended_size_usd=_ed.get("intended_size_usd"),
+                intended_size_shares=(
+                    _ed["intended_size_usd"] / signal_price
+                    if _ed.get("intended_size_usd") and signal_price and signal_price > 0
+                    else None
+                ),
             )
         except Exception as _sf_err:
             logger.critical("shadow_fill_insert_failed", error=str(_sf_err), market_id=market_id, bot_name=bot_name)
