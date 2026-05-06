@@ -554,40 +554,23 @@ class OrderGateway:
                 )
                 if not risk_check.get("allowed", True):
                     reasons = risk_check.get("reasons", [])
-                    # Auto-clamp: if the ONLY issue is position size or exposure, reduce size to fit
+                    # Classify rejection reasons to distinguish cap hits from other limit types
                     size_reasons = [r for r in reasons if "Position $" in r and "exceeds max" in r]
                     exposure_reasons = [r for r in reasons if "Total exposure" in r and "exceeds max" in r]
                     non_size_reasons = [r for r in reasons if r not in size_reasons and r not in exposure_reasons]
-                    if not non_size_reasons and (size_reasons or exposure_reasons) and price > 0:
-                        # Clamp to the tightest limit (0.99x to avoid floating-point edge hitting exact limit)
-                        max_pos_usd = getattr(settings, "RISK_MAX_POSITION_SIZE_USD", 100.0)
-                        max_total_usd = getattr(settings, "RISK_MAX_TOTAL_EXPOSURE_USD", 500.0)
-                        clamped_value = min(max_pos_usd, max_total_usd) * 0.99
-                        clamped_size = clamped_value / price
-                        if clamped_size >= 1.0:  # Only trade if at least 1 unit
-                            logger.info(
-                                "Order size clamped to risk limit",
-                                bot_name=bot_name,
-                                market_id=market_id,
-                                original_size=size,
-                                clamped_size=round(clamped_size, 2),
-                                max_value_usd=clamped_value,
-                            )
-                            size = clamped_size
-                            # Re-check with clamped size
-                            risk_check2 = await self.risk_manager.check_risk_limits(
-                                bot_name, market_id, size, price, confidence, prediction=prediction,
-                                skip_cvar=_skip_cvar,
-                            )
-                            if not risk_check2.get("allowed", True):
-                                reasons2 = risk_check2.get("reasons", [])
-                                msg = "; ".join(reasons2) if reasons2 else "Risk limits exceeded (after clamp)"
-                                logger.warning("Order blocked after clamp: risk limits", bot_name=bot_name, market_id=market_id, reasons=reasons2)
-                                return {"success": False, "error": msg, "reasons": reasons2}
-                        else:
-                            msg = "; ".join(reasons) if reasons else "Risk limits exceeded"
-                            logger.warning("Order blocked: risk limits (clamped size too small)", bot_name=bot_name, market_id=market_id, reasons=reasons)
-                            return {"success": False, "error": msg, "reasons": reasons}
+                    if not non_size_reasons and (size_reasons or exposure_reasons):
+                        # P0.A: Hard reject — silent clamp removed. Risk cap must be respected exactly.
+                        # Downstream: P0.18 writes this rejection to shadow_fills via rejection_type key.
+                        msg = "; ".join(reasons) if reasons else "Risk cap exceeded"
+                        logger.critical(
+                            "order_risk_cap_hard_rejected",
+                            bot_name=bot_name,
+                            market_id=market_id,
+                            requested_size=round(size, 4),
+                            requested_value_usd=round(size * price, 2),
+                            reasons=reasons,
+                        )
+                        return {"success": False, "error": msg, "reasons": reasons, "rejection_type": "risk_cap"}
                     else:
                         msg = "; ".join(reasons) if reasons else "Risk limits exceeded"
                         logger.warning("Order blocked: risk limits", bot_name=bot_name, market_id=market_id, reasons=reasons)
