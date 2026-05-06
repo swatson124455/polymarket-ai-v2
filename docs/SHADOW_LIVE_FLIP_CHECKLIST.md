@@ -14,13 +14,20 @@ Run these checks and confirm each passes before touching any env var.
 ### 1. P0 items shipped and deployed
 
 ```bash
-# Confirm all Batch 1–5 commits are in the active release:
+# Confirm all Batch 1–5 + P0.1 commits are in the active release:
 ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 \
   "ls -la /opt/polymarket-ai-v2 && cat /opt/polymarket-ai-v2/deploy/VERSION 2>/dev/null || echo 'no VERSION file'"
 # Expect: symlink points to a release >= 20260505_220545
 
-git log --oneline | head -10
-# Confirm: p0.3b, p0.6, p0.7 commits present (4b1dfc8, f09c5c1, this commit)
+git log --oneline | head -15
+# Confirm these commits present (in order newest→oldest):
+#   721844e feat(p0.1): loop guard
+#   c64af53 feat(p0.7): SHADOW_LIVE_FLIP_CHECKLIST
+#   f09c5c1 feat(p0.6): counterfactual_pnl.py
+#   4b1dfc8 feat(p0.3b): intended_size_usd/shares wire
+#   1b00fd6 feat(p0.5): shadow_fills completeness
+#   3a1e01e feat(p0.3): twin book-walk
+#   ac30768 feat(p0.2): get_bet_size tuple return
 ```
 
 ### 2. Schema migration applied
