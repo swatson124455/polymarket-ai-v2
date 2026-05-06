@@ -601,6 +601,12 @@ class EsportsBotV2(BaseBot):
 
                 # Queue for trading if singleton with edge
                 if pipeline_result.get("is_singleton") and pipeline_result.get("edge", 0) >= 0.05:
+                    # Item 8: cache the inner market dict (with paired tokens)
+                    # so _execute_trades doesn't re-query the matcher. Mitigates
+                    # the cache-eviction route-mismatch risk where the trade
+                    # could land on a different market than the prediction
+                    # was sized against.
+                    cached_market = market_info.get("market") if market_info else None
                     self._pending_predictions.append({
                         "match": match,
                         "pipeline_result": pipeline_result,
@@ -608,6 +614,7 @@ class EsportsBotV2(BaseBot):
                         "pred_record": pred_record,
                         "created_at": now,
                         "traded_at": None,
+                        "market_info": cached_market,
                     })
                     self._scan_counters["queued"] += 1
 
@@ -660,8 +667,12 @@ class EsportsBotV2(BaseBot):
             if stake <= 0:
                 continue
 
-            # Find market + token for trading
-            market_info = await self._find_market_info(match, match.game)
+            # Item 8: use the market dict cached at predict time. The previous
+            # _find_market_info call here was a redundant matcher round-trip
+            # against the same scanner with a 120s TTL; if eviction happened
+            # between predict and execute, the trade could land on a different
+            # market than the one used for sizing.
+            market_info = item.get("market_info")
             if not market_info:
                 continue
 
@@ -701,8 +712,15 @@ class EsportsBotV2(BaseBot):
         (market_id + price + other fields) instead of just the price. Used by
         _generate_predictions to capture market_id for the prediction_log write.
 
-        Returns dict with keys {market_id, price, ...} or None if no market found.
-        Internally mirrors _get_market_price's filter logic (0.03 < price < 0.97).
+        Item 8: also requires paired tokens (yes_token_id + no_token_id) so the
+        cached market dict on _pending_predictions is sufficient for routing the
+        trade at execute time — eliminating the second matcher round-trip that
+        previously happened in _execute_trades via _find_market_info. Markets
+        passing the price+market_id filter but lacking paired tokens are logged
+        once (Protocol 10: silent-loop emission must be observable).
+
+        Returns dict with keys {market_id, price, market} where the inner
+        `market` dict has the paired tokens (used by _execute_trades).
         """
         if not self._market_scanner:
             logger.debug("market_dict_skip_no_scanner", match_id=match.match_id)
@@ -713,13 +731,34 @@ class EsportsBotV2(BaseBot):
                 game=game,
                 team_names=[match.team_a, match.team_b],
             )
-            if markets:
-                for m in markets:
-                    price = m.get("yes_price")
-                    if price is not None and 0.03 < price < 0.97:
-                        mid = m.get("market_id")
-                        if mid is not None:
-                            return {"market_id": str(mid), "price": float(price), "market": m}
+            if not markets:
+                return None
+            missing_yes = 0
+            missing_no = 0
+            for m in markets:
+                price = m.get("yes_price")
+                if price is None or not (0.03 < price < 0.97):
+                    continue
+                mid = m.get("market_id")
+                if mid is None:
+                    continue
+                yes_tok = m.get("yes_token_id")
+                no_tok = m.get("no_token_id")
+                if yes_tok and no_tok:
+                    return {"market_id": str(mid), "price": float(price), "market": m}
+                if not yes_tok:
+                    missing_yes += 1
+                if not no_tok:
+                    missing_no += 1
+            if missing_yes or missing_no:
+                logger.warning(
+                    "esports_v2_market_info_no_token_pair",
+                    match_id=str(match.match_id),
+                    game=game,
+                    markets_returned=len(markets),
+                    missing_yes=missing_yes,
+                    missing_no=missing_no,
+                )
             return None
         except Exception as e:
             logger.debug("market_dict_lookup_failed", match_id=match.match_id, error=str(e))
@@ -758,57 +797,6 @@ class EsportsBotV2(BaseBot):
             )
         except Exception as e:
             logger.warning("market_price_lookup_error", match_id=match.match_id, error=str(e))
-        return None
-
-    async def _find_market_info(self, match, game: str) -> Optional[dict]:
-        """Find full market info (id, tokens) for trading.
-
-        Requires both yes_token_id AND no_token_id on the market — without
-        both, place_order() can't route the trade. S195 §4.1 deferred this
-        as "likely non-issue post-matcher-fix"; Protocol 10 (silent-loop
-        emission must be observable) mandates that we still surface the
-        case where the matcher returns candidate markets that all lack a
-        token, so drift here doesn't recur unobserved.
-        """
-        if not self._market_scanner:
-            return None
-        try:
-            markets = await self._market_scanner.find_markets_for_match(
-                match_id=str(match.match_id),
-                game=game,
-                team_names=[match.team_a, match.team_b],
-            )
-            if markets:
-                missing_yes = 0
-                missing_no = 0
-                for m in markets:
-                    yes = m.get("yes_token_id")
-                    no = m.get("no_token_id")
-                    if yes and no:
-                        return m
-                    if not yes:
-                        missing_yes += 1
-                    if not no:
-                        missing_no += 1
-                # Markets returned but none had both tokens — observable now.
-                logger.warning(
-                    "esports_v2_market_info_no_token_pair",
-                    match_id=str(match.match_id),
-                    game=game,
-                    team_a=match.team_a,
-                    team_b=match.team_b,
-                    candidate_count=len(markets),
-                    missing_yes_token=missing_yes,
-                    missing_no_token=missing_no,
-                )
-        except Exception as e:
-            logger.warning(
-                "esports_v2_market_info_lookup_failed",
-                match_id=str(match.match_id),
-                game=game,
-                error=str(e),
-                error_type=type(e).__name__,
-            )
         return None
 
     # ── Snapshot persistence ──────────────────────────────────────

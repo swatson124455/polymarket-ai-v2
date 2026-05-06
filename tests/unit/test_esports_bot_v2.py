@@ -531,12 +531,12 @@ class TestScanCycleSmoke:
             "pred_record": {},
             "created_at": now,
             "traded_at": None,
+            "market_info": {
+                "id": "mkt-test-yes",
+                "yes_token_id": "yt-test", "no_token_id": "nt-test",
+                "condition_id": "cond-test",
+            },
         }]
-        bot._find_market_info = AsyncMock(return_value={
-            "id": "mkt-test-yes",
-            "yes_token_id": "yt-test", "no_token_id": "nt-test",
-            "condition_id": "cond-test",
-        })
 
         with patch.object(bot, "place_order", new_callable=AsyncMock) as mock_order:
             await bot._execute_trades()
@@ -572,12 +572,12 @@ class TestScanCycleSmoke:
             "pred_record": {},
             "created_at": now,
             "traded_at": None,
+            "market_info": {
+                "id": "mkt-test-no",
+                "yes_token_id": "yt-test", "no_token_id": "nt-test",
+                "condition_id": "cond-test",
+            },
         }]
-        bot._find_market_info = AsyncMock(return_value={
-            "id": "mkt-test-no",
-            "yes_token_id": "yt-test", "no_token_id": "nt-test",
-            "condition_id": "cond-test",
-        })
 
         with patch.object(bot, "place_order", new_callable=AsyncMock) as mock_order:
             await bot._execute_trades()
@@ -608,9 +608,8 @@ class TestScanCycleSmoke:
             "pred_record": {},
             "created_at": now,
             "traded_at": None,
+            "market_info": None,  # no market cached → execute skips
         }]
-        # No market info → execute will continue (skip) without placing order
-        bot._find_market_info = AsyncMock(return_value=None)
 
         with patch.object(bot, "place_order", new_callable=AsyncMock) as mock_order:
             await bot._execute_trades()
@@ -639,10 +638,8 @@ class TestScanCycleSmoke:
             "pred_record": {},
             "created_at": old_ts,
             "traded_at": None,
+            "market_info": {"id": "m1", "yes_token_id": "yt", "no_token_id": "nt"},
         }]
-        bot._find_market_info = AsyncMock(return_value={
-            "id": "m1", "yes_token_id": "yt", "no_token_id": "nt",
-        })
 
         with patch.object(bot, "place_order", new_callable=AsyncMock) as mock_order:
             await bot._execute_trades()
@@ -667,10 +664,8 @@ class TestScanCycleSmoke:
             "pred_record": {},
             "created_at": now,
             "traded_at": None,
+            "market_info": {"id": "m1", "yes_token_id": "yt", "no_token_id": "nt"},
         }]
-        bot._find_market_info = AsyncMock(return_value={
-            "id": "m1", "yes_token_id": "yt", "no_token_id": "nt",
-        })
 
         with patch.object(bot, "place_order", new_callable=AsyncMock) as mock_order:
             await bot._execute_trades()
@@ -712,6 +707,108 @@ class TestScanCycleSmoke:
         ]
         assert len(stranded_calls) == 1
         assert stranded_calls[0].kwargs["count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_execute_uses_cached_market_info_no_recall(self):
+        """Item 8: _execute_trades reads item['market_info'] directly; no
+        second matcher call. The previous _find_market_info call risked
+        cache eviction routing the trade to a different market than the
+        one used at sizing time."""
+        bot, _ = self._make_bot()
+        bot._initialized = True
+        bot._dry_run = False
+
+        fake_match = _upcoming_match(match_id=85001, team_a="A", team_b="B")
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        bot._pending_predictions = [{
+            "match": fake_match,
+            "pipeline_result": {"p_model": 0.7, "is_singleton": True, "edge": 0.15, "stake": 50.0},
+            "market_price": 0.55,
+            "pred_record": {},
+            "created_at": now,
+            "traded_at": None,
+            "market_info": {
+                "id": "mkt-cached",
+                "yes_token_id": "yt-cached",
+                "no_token_id": "nt-cached",
+                "condition_id": "cond-cached",
+            },
+        }]
+        # market_scanner left as MagicMock (truthy) — but it should NOT be
+        # invoked at execute time because market_info is cached.
+        bot._market_scanner = MagicMock()
+        bot._market_scanner.find_markets_for_match = AsyncMock()
+
+        with patch.object(bot, "place_order", new_callable=AsyncMock) as mock_order:
+            await bot._execute_trades()
+
+        bot._market_scanner.find_markets_for_match.assert_not_called()
+        mock_order.assert_called_once()
+        kwargs = mock_order.call_args.kwargs
+        assert kwargs["market_id"] == "mkt-cached"
+        assert kwargs["token_id"] == "yt-cached"
+
+    @pytest.mark.asyncio
+    async def test_execute_skips_when_market_info_missing(self):
+        """Item 8: items with market_info=None (predict-time matcher returned
+        nothing or no paired tokens) are skipped at execute — same observable
+        outcome as pre-Item-8 _find_market_info returning None."""
+        bot, _ = self._make_bot()
+        bot._initialized = True
+        bot._dry_run = False
+
+        fake_match = _upcoming_match(match_id=85002, team_a="A", team_b="B")
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        bot._pending_predictions = [{
+            "match": fake_match,
+            "pipeline_result": {"p_model": 0.7, "is_singleton": True, "edge": 0.15, "stake": 50.0},
+            "market_price": 0.55,
+            "pred_record": {},
+            "created_at": now,
+            "traded_at": None,
+            "market_info": None,
+        }]
+
+        with patch.object(bot, "place_order", new_callable=AsyncMock) as mock_order:
+            await bot._execute_trades()
+
+        mock_order.assert_not_called()
+        # Item not traded → traded_at still None → would carry over for stale_window
+        assert bot._pending_predictions[0]["traded_at"] is None
+
+    @pytest.mark.asyncio
+    async def test_find_polymarket_for_match_requires_paired_tokens(self):
+        """Item 8: tightened predict-time filter — markets without both
+        yes_token_id AND no_token_id are rejected (carries over the check
+        formerly performed at execute time by _find_market_info).
+
+        Also: when markets exist but none have paired tokens, emits the
+        Protocol-10 esports_v2_market_info_no_token_pair warning."""
+        bot, _ = self._make_bot()
+
+        class _FakeMatch:
+            match_id = 84001
+            team_a = "TeamA"
+            team_b = "TeamB"
+
+        # Scanner returns two markets: first lacks no_token_id, second lacks yes_token_id
+        bot._market_scanner = MagicMock()
+        bot._market_scanner.find_markets_for_match = AsyncMock(return_value=[
+            {"market_id": "m1", "yes_price": 0.5, "yes_token_id": "yt", "no_token_id": None},
+            {"market_id": "m2", "yes_price": 0.6, "yes_token_id": None, "no_token_id": "nt"},
+        ])
+
+        with patch("bots.esports_bot_v2.logger") as mock_logger:
+            result = await bot._find_polymarket_for_match(_FakeMatch(), "cs2")
+
+        assert result is None
+        no_pair_calls = [
+            c for c in mock_logger.warning.call_args_list
+            if c.args and c.args[0] == "esports_v2_market_info_no_token_pair"
+        ]
+        assert len(no_pair_calls) == 1
+        assert no_pair_calls[0].kwargs["missing_yes"] == 1
+        assert no_pair_calls[0].kwargs["missing_no"] == 1
 
 
 # ── S181 #3: prediction_log integration tests ──────────────────────────
