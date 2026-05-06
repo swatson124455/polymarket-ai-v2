@@ -94,16 +94,32 @@ async def insert_match(session, match: dict) -> None:
     )
 
 
-async def prediction_exists(session, match_id: str, mode: str = "shadow") -> bool:
-    """Check if we already have a prediction for this match + mode."""
-    result = await session.execute(
-        text("""
-            SELECT 1 FROM esports_predictions
-            WHERE match_id = :mid AND mode = :mode
-            LIMIT 1
-        """),
-        {"mid": match_id, "mode": mode},
-    )
+async def prediction_exists(session, match_id: str, mode: Optional[str] = None) -> bool:
+    """Check if we already have a prediction for this match.
+
+    mode=None (default): match across any mode — typical dedup use case where
+        the bot just wants to know "have I predicted this match already?",
+        regardless of whether the prior prediction was shadow or live.
+    mode="shadow"/"live": filter to a specific mode.
+    """
+    if mode is None:
+        result = await session.execute(
+            text("""
+                SELECT 1 FROM esports_predictions
+                WHERE match_id = :mid
+                LIMIT 1
+            """),
+            {"mid": match_id},
+        )
+    else:
+        result = await session.execute(
+            text("""
+                SELECT 1 FROM esports_predictions
+                WHERE match_id = :mid AND mode = :mode
+                LIMIT 1
+            """),
+            {"mid": match_id, "mode": mode},
+        )
     return result.fetchone() is not None
 
 
@@ -134,47 +150,82 @@ async def insert_prediction(session, pred: dict) -> None:
 
 
 async def resolve_prediction(
-    session, match_id: str, actual_winner: str, correct: bool
+    session, match_id: str, actual_winner: str, correct: bool,
+    mode: Optional[str] = None,
 ) -> int:
     """
-    Phase 2 write: UPDATE actual_winner and correct for shadow predictions.
+    Phase 2 write: UPDATE actual_winner and correct for predictions.
+
+    mode=None (default): resolve across any mode — typical case where the
+        match outcome resolves whichever predictions exist for it.
+    mode="shadow"/"live": restrict resolution to one mode.
 
     Returns number of rows updated.
     """
-    result = await session.execute(
-        text("""
-            UPDATE esports_predictions
-            SET actual_winner = :winner, correct = :correct
-            WHERE match_id = :mid AND mode = 'shadow' AND actual_winner IS NULL
-        """),
-        {"mid": match_id, "winner": actual_winner, "correct": correct},
-    )
+    if mode is None:
+        result = await session.execute(
+            text("""
+                UPDATE esports_predictions
+                SET actual_winner = :winner, correct = :correct
+                WHERE match_id = :mid AND actual_winner IS NULL
+            """),
+            {"mid": match_id, "winner": actual_winner, "correct": correct},
+        )
+    else:
+        result = await session.execute(
+            text("""
+                UPDATE esports_predictions
+                SET actual_winner = :winner, correct = :correct
+                WHERE match_id = :mid AND mode = :mode AND actual_winner IS NULL
+            """),
+            {"mid": match_id, "winner": actual_winner, "correct": correct, "mode": mode},
+        )
     n = result.rowcount
     if n > 0:
         logger.info(
             f"shadow_prediction_resolved match_id={match_id} "
-            f"winner={actual_winner} correct={correct}"
+            f"winner={actual_winner} correct={correct} mode={mode or 'any'}"
         )
     return n
 
 
-async def get_unresolved_match_ids(session) -> List[str]:
-    """Get match_ids of shadow predictions where actual_winner IS NULL."""
-    result = await session.execute(
-        text("""
-            SELECT DISTINCT match_id FROM esports_predictions
-            WHERE mode = 'shadow' AND actual_winner IS NULL
-        """)
-    )
+async def get_unresolved_match_ids(session, mode: Optional[str] = None) -> List[str]:
+    """Get match_ids of predictions where actual_winner IS NULL.
+
+    mode=None: any mode. mode="shadow"/"live": specific mode only.
+    """
+    if mode is None:
+        result = await session.execute(
+            text("""
+                SELECT DISTINCT match_id FROM esports_predictions
+                WHERE actual_winner IS NULL
+            """)
+        )
+    else:
+        result = await session.execute(
+            text("""
+                SELECT DISTINCT match_id FROM esports_predictions
+                WHERE mode = :mode AND actual_winner IS NULL
+            """),
+            {"mode": mode},
+        )
     return [r[0] for r in result.fetchall()]
 
 
-async def get_shadow_stats(session, model_version: str = "v2-trinity") -> Dict:
+async def get_shadow_stats(
+    session, model_version: str = "v2-trinity", mode: str = "shadow",
+) -> Dict:
     """
-    Compute current shadow gate metrics from esports_predictions.
+    Compute current gate metrics from esports_predictions.
 
     Filters by model_version to exclude contaminated predictions
     (v2-trinity-contaminated = pre-OpenSkill-guard data).
+
+    mode default kept as "shadow" for back-compat with shadow_report.py
+    (which intentionally wants shadow-only stats). Pass mode="live" to
+    compute the same metrics on live-mode predictions; the function
+    name is kept for back-compat — we may rename in a separate cleanup
+    pass once the live mode is established.
 
     Returns dict with counts, accuracy, Brier, CLV — or empty if no data.
     """
@@ -195,9 +246,9 @@ async def get_shadow_stats(session, model_version: str = "v2-trinity") -> Dict:
                         ABS(p_model) - market_price
                 END) AS clv_mean
             FROM esports_predictions
-            WHERE mode = 'shadow' AND model_version = :mv
+            WHERE mode = :mode AND model_version = :mv
         """),
-        {"mv": model_version},
+        {"mv": model_version, "mode": mode},
     )
     row = result.fetchone()
     if not row or row[0] == 0:

@@ -158,3 +158,22 @@ class TestBuildPredictionRecord:
         )
         assert pred["conformal_set"] == ["0", "1"]
         assert pred["is_singleton"] is False
+
+    def test_default_mode_is_shadow(self):
+        """Item 4: default mode preserved as 'shadow' for back-compat with
+        the 4 test sites above + shadow_report.py + any external scripts."""
+        result = {"p_model": 0.6, "is_singleton": True, "kelly_fraction": 0.0, "stake": 0}
+        pred = build_prediction_record(
+            "ps_5", "cs2", "A", "B", result, market_price=0.5,
+        )
+        assert pred["mode"] == "shadow"
+
+    def test_explicit_mode_propagates_to_record(self):
+        """Item 4: writer accepts a mode parameter so EsportsBotV2 can stamp
+        live-mode predictions with mode='live' once dry_run=False, letting
+        eval queries split the boundary cleanly."""
+        result = {"p_model": 0.7, "is_singleton": True, "kelly_fraction": 0.05, "stake": 100}
+        pred = build_prediction_record(
+            "ps_6", "lol", "A", "B", result, market_price=0.5, mode="live",
+        )
+        assert pred["mode"] == "live"

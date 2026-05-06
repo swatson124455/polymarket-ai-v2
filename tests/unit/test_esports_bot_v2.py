@@ -777,6 +777,34 @@ class TestScanCycleSmoke:
         assert bot._pending_predictions[0]["traded_at"] is None
 
     @pytest.mark.asyncio
+    async def test_predict_writes_live_mode_when_not_dry_run(self):
+        """Item 4: when self._dry_run is False, INSERTed predictions carry
+        mode='live'. Pre-S215 the writer hardcoded 'shadow' regardless,
+        which would have silently corrupted the eval pipeline post live-flip."""
+        bot, fake_db = self._make_bot()
+        bot._initialized = True
+        bot._dry_run = False  # live-mode bot
+        self._seed_trinity(bot)
+
+        upcoming = [_upcoming_match(match_id=83001, team_a="TeamA", team_b="TeamB")]
+        bot._pandascore = AsyncMock()
+        bot._pandascore.get_upcoming_matches = AsyncMock(return_value=upcoming)
+        bot._pandascore.get_past_matches = AsyncMock(return_value=[])
+        bot._market_scanner = None
+
+        # Mock place_order so execute path doesn't try to trade
+        with patch.object(bot, "place_order", new_callable=AsyncMock):
+            await bot.scan_and_trade()
+
+        inserts = [
+            (sql, p) for sql, p in fake_db.session.executed
+            if "INSERT INTO esports_predictions" in sql
+        ]
+        assert len(inserts) == 1
+        _, params = inserts[0]
+        assert params["mode"] == "live"
+
+    @pytest.mark.asyncio
     async def test_find_polymarket_for_match_requires_paired_tokens(self):
         """Item 8: tightened predict-time filter — markets without both
         yes_token_id AND no_token_id are rejected (carries over the check

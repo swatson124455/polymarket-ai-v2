@@ -422,7 +422,10 @@ class EsportsBotV2(BaseBot):
 
                 new_matches += 1
 
-                # Phase 2 write: resolve any shadow predictions
+                # Phase 2 write: resolve any predictions for this match
+                # (shadow OR live — both want the same actual_winner result;
+                # filtering by mode here would silently strand live-mode
+                # predictions once Item 4 mode-parameterization lands).
                 winner = raw.winner
                 if winner:
                     async with db.get_session() as session:
@@ -435,7 +438,6 @@ class EsportsBotV2(BaseBot):
                                 SET actual_winner = :winner,
                                     correct = (predicted_winner = :winner)
                                 WHERE match_id = :mid
-                                  AND mode = 'shadow'
                                   AND actual_winner IS NULL
                             """),
                             {"mid": match_id, "winner": winner},
@@ -558,7 +560,11 @@ class EsportsBotV2(BaseBot):
                     pipeline_result["kelly_fraction"] = sizing["kelly_fraction"]
                     pipeline_result["stake"] = sizing["stake"]
 
-                # Phase 1 write: INSERT prediction (actual_winner=NULL)
+                # Phase 1 write: INSERT prediction (actual_winner=NULL).
+                # Item 4: mode reflects the bot's actual run mode so eval
+                # queries can split shadow vs live cleanly post-flip. Pre-S215
+                # the writer hardcoded "shadow" — eval pipeline would have
+                # silently conflated the two once dry_run flipped.
                 pred_record = build_prediction_record(
                     match_id=match_id,
                     game=game,
@@ -566,6 +572,7 @@ class EsportsBotV2(BaseBot):
                     team_b=match.team_b,
                     pipeline_result=pipeline_result,
                     market_price=market_price,
+                    mode="live" if not self._dry_run else "shadow",
                 )
 
                 async with db.get_session() as session:

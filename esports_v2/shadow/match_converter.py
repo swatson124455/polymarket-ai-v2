@@ -110,12 +110,18 @@ def build_prediction_record(
     team_b: str,
     pipeline_result: dict,
     market_price: Optional[float],
+    mode: str = "shadow",
 ) -> dict:
     """
     Build dict for esports_predictions INSERT (Phase 1 write).
 
     predicted_winner determined by p_model: >0.5 = team_a, else team_b.
     actual_winner and correct are NULL (filled at resolution).
+
+    mode: "shadow" for paper-trading predictions, "live" for live-mode.
+    Caller passes the appropriate value based on the bot's dry_run flag.
+    Pre-S215 the value was hardcoded to "shadow" — eval queries now must
+    filter explicitly to compare across the boundary.
     """
     p_model = pipeline_result["p_model"]
     predicted_winner = team_a if p_model > 0.5 else team_b
@@ -140,6 +146,6 @@ def build_prediction_record(
         "kelly_fraction": pipeline_result.get("kelly_fraction"),
         "actual_winner": None,
         "correct": None,
-        "mode": "shadow",
+        "mode": mode,
         "model_version": "v2-trinity",
     }
