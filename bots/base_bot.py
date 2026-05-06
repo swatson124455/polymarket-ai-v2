@@ -563,7 +563,7 @@ class BaseBot(ABC):
         try:
             # Session 47: Use per-bot bankroll manager when available
             if self.bankroll is not None:
-                size_usd = await self.bankroll.get_bet_size(
+                size_usd, _intended_usd = await self.bankroll.get_bet_size(
                     confidence=confidence,
                     price=price,
                     calibration_quality=calibration_quality,

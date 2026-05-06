@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from structlog import get_logger
 
@@ -128,7 +128,7 @@ class BotBankrollManager:
         calibration_quality: Optional[Dict[str, float]] = None,
         category: str = "",
         conformal_interval: Optional[tuple] = None,
-    ) -> float:
+    ) -> Tuple[float, float]:
         """
         Compute Kelly-sized bet in USD with per-bot capital, fraction, and caps.
 
@@ -141,13 +141,15 @@ class BotBankrollManager:
                 When provided, Kelly uses p_low instead of point estimate for conservative sizing.
 
         Returns:
-            Bet size in USD (0.0 means do not bet).
+            (final_size_usd, intended_size_usd) tuple.
+            final_size_usd: Capped bet size — 0.0 means do not bet.
+            intended_size_usd: Pre-cap Kelly size for counterfactual analysis (P0.3).
         """
         # Validate inputs
         if price <= 0 or price >= 1 or confidence <= 0 or confidence >= 1:
-            return 0.0
+            return 0.0, 0.0
         if confidence <= price:
-            return 0.0  # No positive edge — don't bet
+            return 0.0, 0.0  # No positive edge — don't bet
 
         # S91: Conformal-aware Kelly via width-based dampening.
         # Old approach: used p_low as kelly_confidence. With binary outcomes and
@@ -167,11 +169,11 @@ class BotBankrollManager:
         #   p = confidence (point estimate), b = (1 - price) / price, q = 1 - p
         b = (1.0 - price) / price
         if b <= 0:
-            return 0.0
+            return 0.0, 0.0
         q = 1.0 - confidence
         kelly_full = (confidence * b - q) / b
         if kelly_full <= 0:
-            return 0.0
+            return 0.0, 0.0
 
         # Apply fraction (category-specific override if available)
         fraction = self.kelly_fraction
@@ -212,8 +214,9 @@ class BotBankrollManager:
         # S91: Apply conformal width-based dampener to fraction
         fraction *= _conformal_dampener
 
-        # Compute USD size
+        # Compute USD size (pre-cap = intended for counterfactual analysis)
         size_usd = kelly_full * fraction * self.capital
+        intended_size_usd = size_usd
 
         # Per-bet cap
         size_usd = min(size_usd, self.max_bet_usd)
@@ -229,9 +232,10 @@ class BotBankrollManager:
 
         # Minimum meaningful bet ($1 for paper trading)
         if size_usd < 1.0:
-            return 0.0
+            return 0.0, round(intended_size_usd, 2)
 
         result = round(size_usd, 2)
+        intended_result = round(intended_size_usd, 2)
 
         logger.info(
             "BotBankrollManager.get_bet_size",
@@ -242,11 +246,12 @@ class BotBankrollManager:
             fraction=round(fraction, 4),
             capital=self.capital,
             size_usd=result,
+            intended_size_usd=intended_result,
             daily_spent=round(daily_spent, 2),
             category=category or "?",
         )
 
-        return result
+        return result, intended_result
 
     def _get_daily_spent(self) -> float:
         """Read today's daily exposure for this bot from OrderGateway (day-rollover aware)."""

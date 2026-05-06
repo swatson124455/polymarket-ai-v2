@@ -124,7 +124,7 @@ class TestNoEdge:
         with patch("base_engine.risk.bankroll_manager.settings") as ms:
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
             ms.SIMULATION_MODE = False
-            result = await mgr.get_bet_size(confidence=0.50, price=0.55)
+            result, _ = await mgr.get_bet_size(confidence=0.50, price=0.55)
         assert result == 0.0
 
     @pytest.mark.asyncio
@@ -134,7 +134,7 @@ class TestNoEdge:
         with patch("base_engine.risk.bankroll_manager.settings") as ms:
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
             ms.SIMULATION_MODE = False
-            result = await mgr.get_bet_size(confidence=0.60, price=0.60)
+            result, _ = await mgr.get_bet_size(confidence=0.60, price=0.60)
         assert result == 0.0
 
     @pytest.mark.asyncio
@@ -144,7 +144,7 @@ class TestNoEdge:
         with patch("base_engine.risk.bankroll_manager.settings") as ms:
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
             ms.SIMULATION_MODE = False
-            result = await mgr.get_bet_size(confidence=0.60, price=0.0)
+            result, _ = await mgr.get_bet_size(confidence=0.60, price=0.0)
         assert result == 0.0
 
     @pytest.mark.asyncio
@@ -154,7 +154,7 @@ class TestNoEdge:
         with patch("base_engine.risk.bankroll_manager.settings") as ms:
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
             ms.SIMULATION_MODE = False
-            result = await mgr.get_bet_size(confidence=0.60, price=1.0)
+            result, _ = await mgr.get_bet_size(confidence=0.60, price=1.0)
         assert result == 0.0
 
     @pytest.mark.asyncio
@@ -164,7 +164,7 @@ class TestNoEdge:
         with patch("base_engine.risk.bankroll_manager.settings") as ms:
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
             ms.SIMULATION_MODE = False
-            result = await mgr.get_bet_size(confidence=0.0, price=0.50)
+            result, _ = await mgr.get_bet_size(confidence=0.0, price=0.50)
         assert result == 0.0
 
     @pytest.mark.asyncio
@@ -174,7 +174,7 @@ class TestNoEdge:
         with patch("base_engine.risk.bankroll_manager.settings") as ms:
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
             ms.SIMULATION_MODE = False
-            result = await mgr.get_bet_size(confidence=1.0, price=0.50)
+            result, _ = await mgr.get_bet_size(confidence=1.0, price=0.50)
         assert result == 0.0
 
     @pytest.mark.asyncio
@@ -185,11 +185,11 @@ class TestNoEdge:
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
             ms.SIMULATION_MODE = False
             # confidence barely above price
-            result = await mgr.get_bet_size(confidence=0.51, price=0.50)
+            result, _ = await mgr.get_bet_size(confidence=0.51, price=0.50)
         # Very small edge: kelly = (0.51*1 - 0.49)/1 = 0.02
         # 0.02 * 0.25 * 8000 = $40.0 — actually positive.
         # Try even smaller
-        result2 = await mgr.get_bet_size(confidence=0.501, price=0.50)
+        result2, _ = await mgr.get_bet_size(confidence=0.501, price=0.50)
         # kelly = (0.501*1 - 0.499)/1 = 0.002 → 0.002 * 0.25 * 8000 = $4.0
         assert result2 >= 0.0  # Either a valid small bet or zero
 
@@ -207,7 +207,7 @@ class TestPositiveEdge:
         with patch("base_engine.risk.bankroll_manager.settings") as ms:
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
             ms.SIMULATION_MODE = False
-            result = await mgr.get_bet_size(confidence=0.65, price=0.50)
+            result, _ = await mgr.get_bet_size(confidence=0.65, price=0.50)
         assert result > 0.0
 
     @pytest.mark.asyncio
@@ -224,7 +224,7 @@ class TestPositiveEdge:
             # kelly_full = (0.65 * 1.0 - 0.35) / 1.0 = 0.30
             # size_usd = 0.30 * 0.25 * 20000 = 1500.0
             # Capped at max_bet_usd = 300.0 (phase_max_bet_usd = 9999 from make_manager mock)
-            result = await mgr.get_bet_size(confidence=0.65, price=0.50)
+            result, _ = await mgr.get_bet_size(confidence=0.65, price=0.50)
         assert result == pytest.approx(300.0, abs=0.01)
 
     @pytest.mark.asyncio
@@ -240,7 +240,7 @@ class TestPositiveEdge:
             # kelly_full = (0.52*1.0 - 0.48) / 1.0 = 0.04
             # size_usd = 0.04 * 0.25 * 20000 = 200.0
             # Under max_bet_usd (300) -> uncapped
-            result = await mgr.get_bet_size(confidence=0.52, price=0.50)
+            result, _ = await mgr.get_bet_size(confidence=0.52, price=0.50)
         assert result == pytest.approx(200.0, abs=1.0)
         assert result < 300.0
 
@@ -257,7 +257,7 @@ class TestPositiveEdge:
             # q = 0.20
             # kelly_full = (0.80 * 0.4286 - 0.20) / 0.4286 = (0.3429 - 0.20) / 0.4286 = 0.3333
             # size_usd = 0.3333 * 0.25 * 20000 = 1666.67 -> capped at 300
-            result = await mgr.get_bet_size(confidence=0.80, price=0.70)
+            result, _ = await mgr.get_bet_size(confidence=0.80, price=0.70)
         assert result == pytest.approx(300.0, abs=0.01)
 
 
@@ -276,7 +276,7 @@ class TestPerBetCap:
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
             ms.SIMULATION_MODE = False
             # Big edge
-            result = await mgr.get_bet_size(confidence=0.80, price=0.40)
+            result, _ = await mgr.get_bet_size(confidence=0.80, price=0.40)
         assert result <= mgr.max_bet_usd
 
     @pytest.mark.asyncio
@@ -286,7 +286,7 @@ class TestPerBetCap:
         with patch("base_engine.risk.bankroll_manager.settings") as ms:
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
             ms.SIMULATION_MODE = False
-            result = await mgr.get_bet_size(confidence=0.70, price=0.50)
+            result, _ = await mgr.get_bet_size(confidence=0.70, price=0.50)
         assert result <= 50.0
 
 
@@ -305,7 +305,7 @@ class TestDailyCap:
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
             ms.SIMULATION_MODE = False
             # Kelly would give ~$300 but only $10 remaining
-            result = await mgr.get_bet_size(confidence=0.65, price=0.50)
+            result, _ = await mgr.get_bet_size(confidence=0.65, price=0.50)
         assert result <= 10.0
         assert result > 0.0
 
@@ -316,7 +316,7 @@ class TestDailyCap:
         with patch("base_engine.risk.bankroll_manager.settings") as ms:
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
             ms.SIMULATION_MODE = False
-            result = await mgr.get_bet_size(confidence=0.65, price=0.50)
+            result, _ = await mgr.get_bet_size(confidence=0.65, price=0.50)
         assert result == 0.0
 
     @pytest.mark.asyncio
@@ -326,7 +326,7 @@ class TestDailyCap:
         with patch("base_engine.risk.bankroll_manager.settings") as ms:
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
             ms.SIMULATION_MODE = False
-            result = await mgr.get_bet_size(confidence=0.65, price=0.50)
+            result, _ = await mgr.get_bet_size(confidence=0.65, price=0.50)
         assert result == 0.0
 
     @pytest.mark.asyncio
@@ -339,7 +339,7 @@ class TestDailyCap:
         with patch("base_engine.risk.bankroll_manager.settings") as ms:
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
             ms.SIMULATION_MODE = False
-            result = await mgr.get_bet_size(confidence=0.65, price=0.50)
+            result, _ = await mgr.get_bet_size(confidence=0.65, price=0.50)
         # ArbitrageBot's exposure doesn't count — EnsembleBot has 0 spent
         assert result > 0.0
 
@@ -363,7 +363,7 @@ class TestMinimumBetSize:
             # b = 1.0, q = 0.495
             # kelly_full = (0.505 - 0.495) / 1.0 = 0.01
             # size = 0.01 * 0.10 * 50 = $0.05 -> below $1 minimum
-            result = await mgr.get_bet_size(confidence=0.505, price=0.50)
+            result, _ = await mgr.get_bet_size(confidence=0.505, price=0.50)
         assert result == 0.0
 
 
@@ -382,10 +382,10 @@ class TestCalibrationScaling:
             ms.SIMULATION_MODE = False
             good_cal = {"brier": 0.10, "count": 100}
             # Use small edge (0.52) so result is below $100 cap
-            result_good = await mgr.get_bet_size(
+            result_good, _ = await mgr.get_bet_size(
                 confidence=0.52, price=0.50, calibration_quality=good_cal
             )
-            no_cal = await mgr.get_bet_size(confidence=0.52, price=0.50)
+            no_cal, _ = await mgr.get_bet_size(confidence=0.52, price=0.50)
         # Good calibration should give same or similar result as no calibration
         assert result_good == pytest.approx(no_cal, abs=1.0)
 
@@ -398,10 +398,10 @@ class TestCalibrationScaling:
             ms.SIMULATION_MODE = False
             poor_cal = {"brier": 0.25, "count": 100}
             # Use small edge (0.52 vs 0.50) so both results are under $100 cap
-            result_poor = await mgr.get_bet_size(
+            result_poor, _ = await mgr.get_bet_size(
                 confidence=0.52, price=0.50, calibration_quality=poor_cal
             )
-            no_cal = await mgr.get_bet_size(confidence=0.52, price=0.50)
+            no_cal, _ = await mgr.get_bet_size(confidence=0.52, price=0.50)
         # Poor calibration should give smaller bet (uncapped)
         assert result_poor < no_cal
 
@@ -414,10 +414,10 @@ class TestCalibrationScaling:
             ms.SIMULATION_MODE = False
             few_samples = {"brier": 0.30, "count": 10}  # Below 20 threshold
             # Use small edge so result is below cap
-            result_few = await mgr.get_bet_size(
+            result_few, _ = await mgr.get_bet_size(
                 confidence=0.52, price=0.50, calibration_quality=few_samples
             )
-            no_cal = await mgr.get_bet_size(confidence=0.52, price=0.50)
+            no_cal, _ = await mgr.get_bet_size(confidence=0.52, price=0.50)
         # Should be same as no calibration
         assert result_few == pytest.approx(no_cal, abs=0.01)
 
@@ -436,13 +436,13 @@ class TestCategoryFractions:
             ms.CATEGORY_KELLY_FRACTIONS = json.dumps({"crypto": 0.125})
             ms.SIMULATION_MODE = False
             # Use small edge (0.52) so result is below $100 cap
-            result_crypto = await mgr.get_bet_size(
+            result_crypto, _ = await mgr.get_bet_size(
                 confidence=0.52, price=0.50, category="crypto"
             )
         with patch("base_engine.risk.bankroll_manager.settings") as ms:
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
             ms.SIMULATION_MODE = False
-            result_default = await mgr.get_bet_size(
+            result_default, _ = await mgr.get_bet_size(
                 confidence=0.52, price=0.50, category=""
             )
         # Crypto fraction (0.125) < default fraction (0.25) -> smaller bet
@@ -456,13 +456,13 @@ class TestCategoryFractions:
             ms.CATEGORY_KELLY_FRACTIONS = json.dumps({"crypto": 0.125})
             ms.SIMULATION_MODE = False
             # Use small edge so result is below cap
-            result = await mgr.get_bet_size(
+            result, _ = await mgr.get_bet_size(
                 confidence=0.52, price=0.50, category="science"
             )
         with patch("base_engine.risk.bankroll_manager.settings") as ms:
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
             ms.SIMULATION_MODE = False
-            result_no_cat = await mgr.get_bet_size(confidence=0.52, price=0.50)
+            result_no_cat, _ = await mgr.get_bet_size(confidence=0.52, price=0.50)
         assert result == pytest.approx(result_no_cat, abs=0.01)
 
 
@@ -565,7 +565,7 @@ class TestPerBotKellyIndependence:
             # confidence=0.52, price=0.50
             # kelly_full = 0.04
             # size = 0.04 * 0.25 * 20000 = $200.0
-            result = await mgr.get_bet_size(confidence=0.52, price=0.50)
+            result, _ = await mgr.get_bet_size(confidence=0.52, price=0.50)
         # Each bot uses own capital, no divisor
         assert result == pytest.approx(200.0, abs=1.0)
 
@@ -580,7 +580,7 @@ class TestPerBotKellyIndependence:
             # confidence=0.52, price=0.50
             # kelly_full = 0.04
             # size = 0.04 * 0.25 * 1000 = $10.0
-            result = await mgr.get_bet_size(confidence=0.52, price=0.50)
+            result, _ = await mgr.get_bet_size(confidence=0.52, price=0.50)
         assert result == pytest.approx(10.0, abs=1.0)
 
     @pytest.mark.asyncio
@@ -636,5 +636,5 @@ class TestPhaseCap:
             gw.get_daily_exposure_usd = lambda bot_name: 0.0
             mgr = BotBankrollManager("EnsembleBot", order_gateway=gw, db=None)
             # confidence=0.65, price=0.50 -> Kelly wants $1500 -> per-bot cap $300 -> phase cap $50
-            result = await mgr.get_bet_size(confidence=0.65, price=0.50)
+            result, _ = await mgr.get_bet_size(confidence=0.65, price=0.50)
         assert result == pytest.approx(50.0, abs=0.01)

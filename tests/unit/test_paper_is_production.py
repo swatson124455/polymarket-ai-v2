@@ -250,7 +250,7 @@ class TestKellyCalibrationFloorUnified:
             ms.SIMULATION_MODE = True
             ms.BOT_BANKROLL_CONFIG = "{}"
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
-            size_paper = await mgr.get_bet_size(
+            size_paper, _ = await mgr.get_bet_size(
                 confidence=0.70, price=0.50,
                 calibration_quality={"brier": 0.35, "count": 50},
             )
@@ -259,7 +259,7 @@ class TestKellyCalibrationFloorUnified:
             ms.SIMULATION_MODE = False
             ms.BOT_BANKROLL_CONFIG = "{}"
             ms.CATEGORY_KELLY_FRACTIONS = "{}"
-            size_live = await mgr.get_bet_size(
+            size_live, _ = await mgr.get_bet_size(
                 confidence=0.70, price=0.50,
                 calibration_quality={"brier": 0.35, "count": 50},
             )
@@ -495,7 +495,7 @@ class TestBankrollManagerModeParity:
                 ms.SIMULATION_MODE = sim_mode
                 ms.BOT_BANKROLL_CONFIG = "{}"
                 ms.CATEGORY_KELLY_FRACTIONS = "{}"
-                size = await mgr.get_bet_size(
+                size, _ = await mgr.get_bet_size(
                     confidence=0.65, price=0.50,
                     calibration_quality={"brier": 0.10, "count": 50},
                 )
@@ -513,7 +513,7 @@ class TestBankrollManagerModeParity:
                 ms.SIMULATION_MODE = sim_mode
                 ms.BOT_BANKROLL_CONFIG = "{}"
                 ms.CATEGORY_KELLY_FRACTIONS = "{}"
-                size = await mgr.get_bet_size(
+                size, _ = await mgr.get_bet_size(
                     confidence=0.65, price=0.50,
                     calibration_quality={"brier": 0.35, "count": 50},
                 )
@@ -531,6 +531,6 @@ class TestBankrollManagerModeParity:
                 ms.SIMULATION_MODE = sim_mode
                 ms.BOT_BANKROLL_CONFIG = "{}"
                 ms.CATEGORY_KELLY_FRACTIONS = "{}"
-                size = await mgr.get_bet_size(confidence=0.65, price=0.50)
+                size, _ = await mgr.get_bet_size(confidence=0.65, price=0.50)
                 sizes[sim_mode] = size
         assert sizes[True] == sizes[False], f"{bot_name}: no-cal sizing differs"
