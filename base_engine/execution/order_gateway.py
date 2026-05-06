@@ -58,6 +58,8 @@ class OrderGateway:
         self._market_index: Optional[Dict[str, Dict[str, Any]]] = None  # Set by base_engine after construction
         self._market_index_by_cid: Dict[str, Dict[str, Any]] = {}  # S100: condition_id index, set by base_engine
         self._bot_names_used: Set[str] = set()  # For shutdown: release reservations for all bots in this process
+        # P0.1: Loop guard — track entry timestamps per (bot_name, market_id)
+        self._entry_timestamps: Dict[str, List[float]] = {}
         # S115: OrderBookTracker for pre-trade book walk (wired by base_engine)
         self._orderbook_tracker = None
         # In-memory position tracker for ms-latency reactive path
@@ -484,6 +486,24 @@ class OrderGateway:
             and str(correlation_id).startswith("rtds:")
             and getattr(settings, "MIRROR_RTDS_FAST_PATH", False)
         )
+
+        # P0.1: Loop guard — halt entry if same (bot, market) entered N times in M minutes
+        if not _is_sell:
+            _lg_key = f"{bot_name}:{market_id}"
+            _lg_now = time.monotonic()
+            _lg_window = float(getattr(settings, "LOOP_GUARD_WINDOW_SECS", 600.0))
+            _lg_max = int(getattr(settings, "LOOP_GUARD_MAX_ENTRIES", 5))
+            _lg_ts = self._entry_timestamps.get(_lg_key, [])
+            _lg_ts = [t for t in _lg_ts if _lg_now - t < _lg_window]
+            _lg_ts.append(_lg_now)
+            self._entry_timestamps[_lg_key] = _lg_ts
+            if len(_lg_ts) >= _lg_max:
+                logger.critical(
+                    "loop_guard_halt",
+                    bot_name=bot_name, market_id=market_id,
+                    entry_count=len(_lg_ts), window_secs=_lg_window, max_entries=_lg_max,
+                )
+                return {"success": False, "error": f"loop_guard_halt: {len(_lg_ts)} entries in {_lg_window}s"}
 
         # Drawdown controller: graduated position reduction during losing streaks
         # S94: Skip for RTDS fast-path (MirrorBot has own daily caps + position limits)

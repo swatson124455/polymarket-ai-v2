@@ -179,6 +179,75 @@ class TestMirrorBotRtdsFastPath:
         gw.risk_manager.check_risk_limits.assert_not_awaited()
 
 
+# ── P0.1: Loop guard ────────────────────────────────────────────────────────
+
+class TestLoopGuard:
+    """P0.1: Repeated entries into the same (bot, market) within window are halted."""
+
+    def _run_entry(self, gw, bot_name="MirrorBot", market_id="0xlooptest"):
+        with patch.object(type(gw), "_can_exit", return_value=True):
+            return _run(
+                gw.place_order(
+                    bot_name=bot_name,
+                    market_id=market_id,
+                    token_id="0xlooptest",
+                    side="YES",
+                    size=1.0,
+                    price=0.5,
+                )
+            )
+
+    def test_first_four_entries_pass(self):
+        gw = _make_gateway(risk_allowed=True)
+        for i in range(4):
+            result = self._run_entry(gw)
+            assert result["success"] is True, f"entry {i+1} should pass, got {result!r}"
+
+    def test_fifth_entry_halts(self):
+        gw = _make_gateway(risk_allowed=True)
+        for _ in range(4):
+            self._run_entry(gw)
+        result = self._run_entry(gw)
+        assert result["success"] is False, f"5th entry should halt, got {result!r}"
+        assert "loop_guard_halt" in result.get("error", ""), (
+            f"error should mention loop_guard_halt, got {result!r}"
+        )
+
+    def test_sell_not_counted(self):
+        """SELL orders must not count toward the entry loop guard."""
+        gw = _make_gateway(risk_allowed=True)
+        # Exhaust the limit with 4 entries (1 below threshold)
+        for _ in range(4):
+            self._run_entry(gw)
+        # A SELL should not trigger halt even after 4 BUYs
+        gw._open_position_markets["MirrorBot"] = {"0xlooptest"}
+        with patch.object(type(gw), "_can_exit", return_value=True):
+            result = _run(
+                gw.place_order(
+                    bot_name="MirrorBot",
+                    market_id="0xlooptest",
+                    token_id="0xlooptest",
+                    side="SELL",
+                    size=1.0,
+                    price=0.5,
+                )
+            )
+        assert "loop_guard_halt" not in result.get("error", ""), (
+            f"SELL should not trigger loop_guard_halt, got {result!r}"
+        )
+
+    def test_different_markets_independent(self):
+        """Loop guard is per-(bot, market) — different market should not be blocked."""
+        gw = _make_gateway(risk_allowed=True)
+        for _ in range(4):
+            self._run_entry(gw, market_id="0xlooptest1")
+        # Different market — should pass even after 4 entries on looptest1
+        result = self._run_entry(gw, market_id="0xlooptest2")
+        assert result["success"] is True, (
+            f"different market should not be blocked, got {result!r}"
+        )
+
+
 # ── Skip stubs for items not yet landed ─────────────────────────────────────
 
 class TestIntendedSizeInShadowFill:
