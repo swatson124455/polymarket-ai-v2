@@ -3018,3 +3018,146 @@ class TestS214HardStopKwargRegression:
         )
         assert call_kwargs["side"] == "NO", "exit side must flip YES → NO"
         assert call_kwargs["bot_name"] == "WeatherBot"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# S215: _ensure_markets_in_db batching regression
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestEnsureMarketsInDbBatching:
+    """S215: _ensure_markets_in_db must batch all rows into ≤2 statements.
+
+    Pre-fix: 200 markets → 200 INSERT INTO markets + up to 400
+    INSERT INTO market_prices_latest, all sequential per-row execute() calls
+    inside one outer transaction. ms_discovery p99=44s, max=58.9s vs 60s
+    scan timeout. Post-fix issues ≤2 statements regardless of N.
+    """
+
+    @pytest.fixture
+    def batched_engine(self):
+        engine = MagicMock()
+        engine.trade_coordinator = None
+        engine.cache = None
+        engine.risk_manager = MagicMock()
+        engine.order_gateway = MagicMock()
+        engine.order_gateway._open_position_markets = {"WeatherBot": set()}
+        engine.get_all_tradeable_markets = AsyncMock(return_value=[])
+        engine.place_order = AsyncMock(return_value={"success": True, "order_id": "t1"})
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock()
+        mock_session.commit = AsyncMock()
+
+        class _AsyncCM:
+            async def __aenter__(self_inner):
+                return mock_session
+            async def __aexit__(self_inner, exc_type, exc, tb):
+                return False
+
+        mock_db = MagicMock()
+        mock_db.get_session = MagicMock(side_effect=lambda: _AsyncCM())
+        engine.db = mock_db
+        engine._mock_session = mock_session
+        return engine
+
+    @pytest.fixture
+    def bot(self, batched_engine):
+        from bots.weather_bot import WeatherBot
+        return WeatherBot(batched_engine)
+
+    @pytest.mark.asyncio
+    async def test_batches_200_markets_into_two_executes(self, bot, batched_engine):
+        markets = [
+            {
+                "id": f"m{i}",
+                "condition_id": f"c{i}",
+                "question": f"q{i}",
+                "slug": f"s{i}",
+                "yes_token_id": f"yt{i}",
+                "no_token_id": f"nt{i}",
+                "yes_price": 0.5,
+                "no_price": 0.5,
+                "volume": 100,
+            }
+            for i in range(200)
+        ]
+        await bot._ensure_markets_in_db(markets)
+        n_calls = batched_engine._mock_session.execute.call_count
+        assert n_calls <= 2, (
+            f"S215 perf regression: expected <=2 batched executes for 200 markets, "
+            f"got {n_calls} (pre-fix would be 600)"
+        )
+        batched_engine._mock_session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_empty_markets_no_session_acquired(self, bot, batched_engine):
+        await bot._ensure_markets_in_db([])
+        assert batched_engine._mock_session.execute.call_count == 0
+        batched_engine._mock_session.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_db_returns_early(self, bot, batched_engine):
+        batched_engine.db = None
+        await bot._ensure_markets_in_db([
+            {"id": "m1", "yes_token_id": "yt1", "no_token_id": "nt1",
+             "yes_price": 0.5, "no_price": 0.5}
+        ])
+        assert batched_engine._mock_session.execute.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_filters_empty_id_and_invalid_prices(self, bot, batched_engine):
+        markets = [
+            {"id": "", "yes_token_id": "yt0", "no_token_id": "nt0",
+             "yes_price": 0.5, "no_price": 0.5,
+             "condition_id": "c0", "question": "q", "slug": "s", "volume": 0},
+            {"id": "m1", "yes_token_id": "yt1", "no_token_id": "nt1",
+             "yes_price": 0.0, "no_price": 1.0,
+             "condition_id": "c1", "question": "q", "slug": "s", "volume": 0},
+            {"id": "m2", "yes_token_id": "yt2", "no_token_id": "nt2",
+             "yes_price": 0.5, "no_price": 0.5,
+             "condition_id": "c2", "question": "q", "slug": "s", "volume": 0},
+        ]
+        await bot._ensure_markets_in_db(markets)
+        assert batched_engine._mock_session.execute.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_dedupes_duplicate_token_ids(self, bot, batched_engine):
+        markets = [
+            {"id": "m1", "yes_token_id": "shared_tid", "no_token_id": "nt1",
+             "yes_price": 0.3, "no_price": 0.7,
+             "condition_id": "c1", "question": "q", "slug": "s", "volume": 0},
+            {"id": "m2", "yes_token_id": "shared_tid", "no_token_id": "nt2",
+             "yes_price": 0.4, "no_price": 0.6,
+             "condition_id": "c2", "question": "q", "slug": "s", "volume": 0},
+        ]
+        await bot._ensure_markets_in_db(markets)
+        assert batched_engine._mock_session.execute.call_count == 2
+        prices_call = batched_engine._mock_session.execute.call_args_list[1]
+        prices_params = prices_call.args[1]
+        shared_count = sum(1 for v in prices_params.values() if v == "shared_tid")
+        assert shared_count == 1, (
+            f"shared_tid should be deduped to 1 occurrence; found {shared_count}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_batched_sql_uses_multi_row_values(self, bot, batched_engine):
+        markets = [
+            {"id": "m1", "yes_token_id": "yt1", "no_token_id": "nt1",
+             "yes_price": 0.3, "no_price": 0.7,
+             "condition_id": "c1", "question": "q", "slug": "s", "volume": 0},
+            {"id": "m2", "yes_token_id": "yt2", "no_token_id": "nt2",
+             "yes_price": 0.4, "no_price": 0.6,
+             "condition_id": "c2", "question": "q", "slug": "s", "volume": 0},
+        ]
+        await bot._ensure_markets_in_db(markets)
+        markets_sql = str(batched_engine._mock_session.execute.call_args_list[0].args[0])
+        assert ":id_0" in markets_sql and ":id_1" in markets_sql, (
+            f"markets batch SQL missing multi-row VALUES tuples: {markets_sql}"
+        )
+        assert "ON CONFLICT (id) DO NOTHING" in markets_sql
+        prices_sql = str(batched_engine._mock_session.execute.call_args_list[1].args[0])
+        assert ":tid_0" in prices_sql and ":tid_1" in prices_sql, (
+            f"prices batch SQL missing multi-row VALUES tuples: {prices_sql}"
+        )
+        assert "ON CONFLICT (token_id) DO UPDATE" in prices_sql

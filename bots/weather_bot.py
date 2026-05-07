@@ -4113,55 +4113,103 @@ class WeatherBot(BaseBot):
         exist in memory.  The trade_event FK check (database.py:4886) rejects ENTRY
         events when the market isn't in the DB.  This upsert ensures the FK check
         passes without changing any existing market rows (ON CONFLICT DO NOTHING).
+
+        S215: batched multi-row VALUES inserts. Pre-fix did per-row
+        await session.execute() inside one outer transaction — 200 markets +
+        up to 400 token rows = ~600 sequential round-trips per discovery
+        cache miss, dominating ms_discovery (p99=44s, max=58.9s, scan_timeout=60s).
+        Post-fix issues at most 2 statements regardless of N. ON CONFLICT
+        semantics preserved. Intra-batch dedup on token_id is required
+        because ON CONFLICT DO UPDATE on market_prices_latest cannot affect
+        the same target row twice in one statement (PG raises
+        "command cannot affect row a second time"). Markets table uses
+        DO NOTHING which tolerates intra-batch dupes, but we dedup anyway
+        to keep bind-param count tight.
         """
         if not markets:
             return
         _db = getattr(self.base_engine, "db", None)
         if not _db:
             return
+
+        _seen_mids: set = set()
+        _market_rows: List[Dict] = []
+        for m in markets:
+            mid = m.get("id", "")
+            if not mid or mid in _seen_mids:
+                continue
+            _seen_mids.add(mid)
+            _market_rows.append({
+                "id": mid,
+                "cid": m.get("condition_id", ""),
+                "q": m.get("question", ""),
+                "slug": m.get("slug", ""),
+                "cat": "weather",
+                "yes_tid": m.get("yes_token_id", ""),
+                "no_tid": m.get("no_token_id", ""),
+                "yes_p": m.get("yes_price"),
+                "no_p": m.get("no_price"),
+                "vol": m.get("volume", 0),
+                "active": True,
+            })
+
+        _seen_tids: set = set()
+        _price_rows: List[Dict] = []
+        for m in markets:
+            for _side_key, _price_key in [("yes_token_id", "yes_price"), ("no_token_id", "no_price")]:
+                _tid = m.get(_side_key, "")
+                _price = m.get(_price_key)
+                if not _tid or _tid in _seen_tids:
+                    continue
+                if _price is None or not (0 < _price < 1):
+                    continue
+                _seen_tids.add(_tid)
+                _price_rows.append({"tid": _tid, "price": _price})
+
+        if not _market_rows and not _price_rows:
+            return
+
         try:
             async with _db.get_session() as session:
                 from sqlalchemy import text as _sa_text
-                _sql = _sa_text(
-                    "INSERT INTO markets (id, condition_id, question, slug, category,"
-                    " yes_token_id, no_token_id, yes_price, no_price, volume, active)"
-                    " VALUES (:id, :cid, :q, :slug, :cat, :yes_tid, :no_tid,"
-                    " :yes_p, :no_p, :vol, :active)"
-                    " ON CONFLICT (id) DO NOTHING"
-                )
-                for m in markets:
-                    mid = m.get("id", "")
-                    if not mid:
-                        continue
-                    await session.execute(_sql, {
-                        "id": mid,
-                        "cid": m.get("condition_id", ""),
-                        "q": m.get("question", ""),
-                        "slug": m.get("slug", ""),
-                        "cat": "weather",
-                        "yes_tid": m.get("yes_token_id", ""),
-                        "no_tid": m.get("no_token_id", ""),
-                        "yes_p": m.get("yes_price"),
-                        "no_p": m.get("no_price"),
-                        "vol": m.get("volume", 0),
-                        "active": True,
-                    })
-                # Also seed market_prices_latest so position_manager tier 0
-                # finds these tokens immediately — avoids "unpriced_positions"
-                # warnings for Gamma-discovered markets not yet in the price table.
-                _mpl_sql = _sa_text(
-                    "INSERT INTO market_prices_latest (token_id, price, timestamp)"
-                    " VALUES (:tid, :price, NOW())"
-                    " ON CONFLICT (token_id) DO UPDATE SET price = EXCLUDED.price,"
-                    " timestamp = EXCLUDED.timestamp"
-                    " WHERE market_prices_latest.timestamp < EXCLUDED.timestamp"
-                )
-                for m in markets:
-                    for _side_key, _price_key in [("yes_token_id", "yes_price"), ("no_token_id", "no_price")]:
-                        _tid = m.get(_side_key, "")
-                        _price = m.get(_price_key)
-                        if _tid and _price and 0 < _price < 1:
-                            await session.execute(_mpl_sql, {"tid": _tid, "price": _price})
+
+                if _market_rows:
+                    _ph = ",".join(
+                        f"(:id_{i}, :cid_{i}, :q_{i}, :slug_{i}, :cat_{i},"
+                        f" :yes_tid_{i}, :no_tid_{i}, :yes_p_{i}, :no_p_{i},"
+                        f" :vol_{i}, :active_{i})"
+                        for i in range(len(_market_rows))
+                    )
+                    _params: Dict[str, Any] = {}
+                    for i, row in enumerate(_market_rows):
+                        for k, v in row.items():
+                            _params[f"{k}_{i}"] = v
+                    _sql = _sa_text(
+                        "INSERT INTO markets (id, condition_id, question, slug, category,"
+                        " yes_token_id, no_token_id, yes_price, no_price, volume, active)"
+                        f" VALUES {_ph}"
+                        " ON CONFLICT (id) DO NOTHING"
+                    )
+                    await session.execute(_sql, _params)
+
+                if _price_rows:
+                    _ph = ",".join(
+                        f"(:tid_{i}, :price_{i}, NOW())"
+                        for i in range(len(_price_rows))
+                    )
+                    _params = {}
+                    for i, row in enumerate(_price_rows):
+                        _params[f"tid_{i}"] = row["tid"]
+                        _params[f"price_{i}"] = row["price"]
+                    _mpl_sql = _sa_text(
+                        "INSERT INTO market_prices_latest (token_id, price, timestamp)"
+                        f" VALUES {_ph}"
+                        " ON CONFLICT (token_id) DO UPDATE SET price = EXCLUDED.price,"
+                        " timestamp = EXCLUDED.timestamp"
+                        " WHERE market_prices_latest.timestamp < EXCLUDED.timestamp"
+                    )
+                    await session.execute(_mpl_sql, _params)
+
                 await session.commit()
         except Exception as exc:
             logger.debug("weatherbot_ensure_markets_failed", error=str(exc))
