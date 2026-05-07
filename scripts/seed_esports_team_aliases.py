@@ -83,7 +83,18 @@ async def _load_pandascore_teams(db, game: Optional[str]) -> Dict[str, Set[str]]
 async def _load_polymarket_esports_questions(
     db, game: Optional[str],
 ) -> List[str]:
-    """Active Polymarket esports market questions."""
+    """Active Polymarket esports market questions.
+
+    Polymarket miscategorizes esports markets as 'sports', 'crypto', and
+    other tags — the runtime matcher in esports/markets/esports_market_service.py
+    works around this by filtering on a keyword set rather than category.
+    The seed loader must mirror that universe; otherwise ~half the
+    esports-keyword-matching markets (sports/crypto-tagged) never reach
+    the variant extractor and we under-seed aliases.
+
+    KEEP IN SYNC with esports_market_service.py:178-198. If the matcher's
+    keyword list changes, update this WHERE clause too.
+    """
     from sqlalchemy import text
 
     async with db.get_session() as s:
@@ -92,16 +103,56 @@ async def _load_polymarket_esports_questions(
             # caller game-filter via the keyword set in the scanner.
             r = await s.execute(text("""
                 SELECT question FROM markets
-                WHERE LOWER(category) = 'esports'
-                  AND active = TRUE
+                WHERE active = TRUE
                   AND question IS NOT NULL
+                  AND (
+                    question ILIKE '%esports%'
+                    OR question ILIKE '%league of legends%'
+                    OR question ILIKE '%counter-strike%'
+                    OR question ILIKE '%cs2%'
+                    OR question ILIKE '%csgo%'
+                    OR question ILIKE '%blast premier%'
+                    OR question ILIKE '%dota%'
+                    OR question ILIKE '%the international%'
+                    OR question ILIKE '%valorant%'
+                    OR question ILIKE '%champions tour%'
+                    OR question ILIKE '%call of duty%'
+                    OR question ILIKE '%rainbow six%'
+                    OR question ILIKE '%six invitational%'
+                    OR question ILIKE '%starcraft%'
+                    OR question ILIKE '%sc2%'
+                    OR question ILIKE '%brood war%'
+                    OR question ILIKE '%rocket league%'
+                    OR question ILIKE '%rlcs%'
+                    OR question ~* '\\y(lol|lck|lec|lpl|lcs|msi|esl|pgl|iem|dpc|cdl|gsl|asl|vct|r6|cod|ti)\\y'
+                  )
             """))
         else:
             r = await s.execute(text("""
                 SELECT question FROM markets
-                WHERE LOWER(category) = 'esports'
-                  AND active = TRUE
+                WHERE active = TRUE
                   AND question IS NOT NULL
+                  AND (
+                    question ILIKE '%esports%'
+                    OR question ILIKE '%league of legends%'
+                    OR question ILIKE '%counter-strike%'
+                    OR question ILIKE '%cs2%'
+                    OR question ILIKE '%csgo%'
+                    OR question ILIKE '%blast premier%'
+                    OR question ILIKE '%dota%'
+                    OR question ILIKE '%the international%'
+                    OR question ILIKE '%valorant%'
+                    OR question ILIKE '%champions tour%'
+                    OR question ILIKE '%call of duty%'
+                    OR question ILIKE '%rainbow six%'
+                    OR question ILIKE '%six invitational%'
+                    OR question ILIKE '%starcraft%'
+                    OR question ILIKE '%sc2%'
+                    OR question ILIKE '%brood war%'
+                    OR question ILIKE '%rocket league%'
+                    OR question ILIKE '%rlcs%'
+                    OR question ~* '\\y(lol|lck|lec|lpl|lcs|msi|esl|pgl|iem|dpc|cdl|gsl|asl|vct|r6|cod|ti)\\y'
+                  )
             """))
         return [str(row[0]) for row in r.fetchall()]
 
