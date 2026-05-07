@@ -292,3 +292,217 @@ class TestPartialFillReconciliation:
         assert fill_response["filled_size"] == fill_response["requested_size"], (
             "P0.19: position should record filled_size; currently records requested_size"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S215 Phase 2: depth-gate soft-clamp for WeatherBot
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _make_gateway_with_liq_guard(liq_response):
+    """Build OrderGateway with a mocked liquidity_guardian that returns liq_response."""
+    from base_engine.execution.order_gateway import OrderGateway
+
+    risk_manager = MagicMock()
+    risk_manager.check_risk_limits = AsyncMock(return_value={"allowed": True, "reasons": []})
+
+    kill_switch = MagicMock()
+    kill_switch.is_engaged = AsyncMock(return_value=False)
+
+    paper_engine = MagicMock()
+    paper_engine.enabled = True
+    paper_engine.cash = 999_999.0
+    paper_engine.place_order = AsyncMock(return_value={"success": True, "order_id": "paper-soft"})
+    paper_engine.realized_pnl_today = {}
+
+    liq_guardian = MagicMock()
+    liq_guardian.check_liquidity = AsyncMock(return_value=liq_response)
+
+    gw = OrderGateway(
+        kill_switch=kill_switch,
+        risk_manager=risk_manager,
+        trade_coordinator=None,
+        execution_engine=None,
+        paper_trading_engine=paper_engine,
+        liquidity_guardian=liq_guardian,
+    )
+    gw._open_position_markets["_negRisk_test"] = set()
+    return gw
+
+
+class TestDepthGateSoftClampWB:
+    """S215 Phase 2: WB depth_exceeded gets soft-clamped to max_safe.
+
+    Pre-fix: 118 depth_exceeded hard-rejects/24h on WB. The guardian already
+    returns max_safe; the caller (this gate) was discarding it. Soft-clamp
+    resizes the order to fit and proceeds, so identified edges actually
+    become trades. Scope intentionally bot-restricted to WeatherBot.
+    """
+
+    def test_wb_depth_exceeded_soft_clamps_and_proceeds(self):
+        """WB + depth_exceeded + max_safe>0 + clamped above floor → resized order placed."""
+        liq_response = {
+            "can_execute": False,
+            "reason": "depth_exceeded",
+            "trade_size": 100.0,
+            "liquidity_depth": 50.0,
+            "max_safe": 25.0,  # 100 → 25*0.95 = 23.75 shares; at price 0.50 = $11.875 (above $5 floor)
+            "depth_multiplier": 5.0,
+            "recommendation": "reduce_size",
+        }
+        gw = _make_gateway_with_liq_guard(liq_response)
+        with patch.object(type(gw), "_can_exit", return_value=True):
+            result = _run(
+                gw.place_order(
+                    bot_name="WeatherBot",
+                    market_id="0xdead",
+                    token_id="0xdead",
+                    side="YES",
+                    size=100.0,
+                    price=0.50,
+                )
+            )
+        assert result["success"] is True, f"expected success after soft-clamp, got {result!r}"
+        # Paper engine must have been called with the clamped size, not the original
+        paper_call = gw.paper_trading_engine.place_order.call_args
+        # Find the size argument (positional or kwarg)
+        clamped_size = paper_call.kwargs.get("size") if "size" in paper_call.kwargs else paper_call.args[3]
+        assert clamped_size < 100.0, f"size not reduced: {clamped_size}"
+        assert clamped_size <= 25.0 * 0.95 + 1e-6, (
+            f"clamped size should be ≤ max_safe*0.95 (≤{25.0 * 0.95}), got {clamped_size}"
+        )
+
+    def test_wb_depth_exceeded_clamped_below_floor_aborts(self):
+        """WB + max_safe so small that clamped_usd < $5 floor → still rejects."""
+        liq_response = {
+            "can_execute": False,
+            "reason": "depth_exceeded",
+            "trade_size": 100.0,
+            "liquidity_depth": 5.0,
+            "max_safe": 5.0,  # 5 * 0.95 = 4.75 shares × price 0.10 = $0.475 << $5 floor
+            "depth_multiplier": 1.0,
+            "recommendation": "reduce_size",
+        }
+        gw = _make_gateway_with_liq_guard(liq_response)
+        with patch.object(type(gw), "_can_exit", return_value=True):
+            result = _run(
+                gw.place_order(
+                    bot_name="WeatherBot",
+                    market_id="0xdead",
+                    token_id="0xdead",
+                    side="YES",
+                    size=100.0,
+                    price=0.10,
+                )
+            )
+        assert result["success"] is False
+        assert "soft-clamp below floor" in result["error"], (
+            f"expected soft-clamp-below-floor abort, got {result!r}"
+        )
+        # Paper engine must NOT have been called
+        gw.paper_trading_engine.place_order.assert_not_awaited()
+
+    def test_wb_depth_exceeded_max_safe_zero_aborts(self):
+        """WB + max_safe=0 (no resize possible) → keeps hard-reject."""
+        liq_response = {
+            "can_execute": False,
+            "reason": "depth_exceeded",
+            "trade_size": 100.0,
+            "liquidity_depth": 0.0,
+            "max_safe": 0.0,
+            "depth_multiplier": 5.0,
+            "recommendation": "reduce_size",
+        }
+        gw = _make_gateway_with_liq_guard(liq_response)
+        with patch.object(type(gw), "_can_exit", return_value=True):
+            result = _run(
+                gw.place_order(
+                    bot_name="WeatherBot",
+                    market_id="0xdead",
+                    token_id="0xdead",
+                    side="YES",
+                    size=100.0,
+                    price=0.50,
+                )
+            )
+        assert result["success"] is False
+        # Falls into the else-branch: standard "Order blocked: liquidity" message
+        assert "depth_exceeded" in result["error"]
+        assert "soft-clamp" not in result["error"], (
+            "max_safe=0 should not trigger soft-clamp path"
+        )
+        gw.paper_trading_engine.place_order.assert_not_awaited()
+
+    def test_mirrorbot_depth_exceeded_still_hard_rejects(self):
+        """MB + depth_exceeded → keeps hard-reject (soft-clamp scoped to WB only)."""
+        liq_response = {
+            "can_execute": False,
+            "reason": "depth_exceeded",
+            "trade_size": 100.0,
+            "liquidity_depth": 50.0,
+            "max_safe": 25.0,
+            "depth_multiplier": 2.0,
+            "recommendation": "reduce_size",
+        }
+        gw = _make_gateway_with_liq_guard(liq_response)
+        with patch.object(type(gw), "_can_exit", return_value=True):
+            result = _run(
+                gw.place_order(
+                    bot_name="MirrorBot",
+                    market_id="0xdead",
+                    token_id="0xdead",
+                    side="YES",
+                    size=100.0,
+                    price=0.50,
+                )
+            )
+        assert result["success"] is False
+        assert "depth_exceeded" in result["error"]
+        gw.paper_trading_engine.place_order.assert_not_awaited()
+
+    def test_wb_other_liquidity_reasons_still_hard_reject(self):
+        """WB + non-depth_exceeded liquidity failure (e.g., no_orderbook_data) → hard-reject."""
+        liq_response = {
+            "can_execute": False,
+            "reason": "no_orderbook_data",
+            "recommendation": "abort",
+        }
+        gw = _make_gateway_with_liq_guard(liq_response)
+        with patch.object(type(gw), "_can_exit", return_value=True):
+            result = _run(
+                gw.place_order(
+                    bot_name="WeatherBot",
+                    market_id="0xdead",
+                    token_id="0xdead",
+                    side="YES",
+                    size=100.0,
+                    price=0.50,
+                )
+            )
+        assert result["success"] is False
+        assert "no_orderbook_data" in result["error"]
+        assert "soft-clamp" not in result["error"]
+        gw.paper_trading_engine.place_order.assert_not_awaited()
+
+    def test_wb_depth_exceeded_recommendation_not_reduce_size_hard_rejects(self):
+        """WB + depth_exceeded but recommendation != 'reduce_size' → hard-reject (defensive)."""
+        liq_response = {
+            "can_execute": False,
+            "reason": "depth_exceeded",
+            "max_safe": 25.0,
+            "recommendation": "abort",  # Hypothetical future variant
+        }
+        gw = _make_gateway_with_liq_guard(liq_response)
+        with patch.object(type(gw), "_can_exit", return_value=True):
+            result = _run(
+                gw.place_order(
+                    bot_name="WeatherBot",
+                    market_id="0xdead",
+                    token_id="0xdead",
+                    side="YES",
+                    size=100.0,
+                    price=0.50,
+                )
+            )
+        assert result["success"] is False
+        gw.paper_trading_engine.place_order.assert_not_awaited()

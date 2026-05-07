@@ -712,8 +712,55 @@ class OrderGateway:
                 if not liq_result.get("can_execute", True):
                     rec = liq_result.get("recommendation", "abort")
                     reason = liq_result.get("reason", "liquidity check failed")
-                    logger.warning("Order blocked: liquidity", market_id=market_id, reason=reason, rec=rec)
-                    return {"success": False, "error": f"Liquidity check: {reason} ({rec})"}
+                    # S215 Phase 2: depth_exceeded soft-clamp for WeatherBot.
+                    # The guardian already returns max_safe — resize the order to
+                    # fit and proceed. Blast radius scoped to WB by explicit
+                    # bot_name check; other bots keep hard-reject until separately
+                    # verified. Pre-fix: 118 depth_exceeded hard-rejects/24h on WB
+                    # (95.4% of identified edges were blocked at this gate +
+                    # downstream slippage cap). Phase 3 (slippage shadow entries)
+                    # is a separate design question, not addressed here.
+                    _max_safe = float(liq_result.get("max_safe", 0) or 0)
+                    if (
+                        bot_name == "WeatherBot"
+                        and reason == "depth_exceeded"
+                        and rec == "reduce_size"
+                        and _max_safe > 0
+                    ):
+                        _orig_size = size
+                        _floor_usd = float(getattr(settings, "LIQUIDITY_SOFT_CLAMP_FLOOR_USD", 5.0))
+                        # 0.95× safety margin: re-check would use strict >, but
+                        # float jitter / racing book updates can flip the inequality.
+                        _clamped_size = min(size, _max_safe * 0.95)
+                        _clamped_usd = _clamped_size * price
+                        if _clamped_usd < _floor_usd:
+                            logger.info(
+                                "Order blocked: liquidity (soft-clamp below floor)",
+                                bot_name=bot_name, market_id=market_id,
+                                orig_size=round(_orig_size, 4),
+                                max_safe=round(_max_safe, 4),
+                                clamped_size=round(_clamped_size, 4),
+                                clamped_usd=round(_clamped_usd, 2),
+                                floor_usd=_floor_usd,
+                                reason=reason,
+                            )
+                            return {"success": False, "error": f"Liquidity check: {reason} (soft-clamp below floor ${_floor_usd:.2f})"}
+                        size = _clamped_size
+                        logger.info(
+                            "Order soft-clamped: liquidity",
+                            bot_name=bot_name, market_id=market_id,
+                            orig_size=round(_orig_size, 4),
+                            clamped_size=round(size, 4),
+                            max_safe=round(_max_safe, 4),
+                            liquidity_depth=round(liq_result.get("liquidity_depth", 0), 2),
+                            depth_multiplier=liq_result.get("depth_multiplier", 0),
+                            reduction_pct=round(1.0 - size / _orig_size, 4) if _orig_size > 0 else 0,
+                            clamped_usd=round(size * price, 2),
+                        )
+                        # Fall through — order proceeds at reduced size
+                    else:
+                        logger.warning("Order blocked: liquidity", market_id=market_id, reason=reason, rec=rec)
+                        return {"success": False, "error": f"Liquidity check: {reason} ({rec})"}
 
         # Pre-validation: check paper trading balance before reserving position
         # YES/NO/BUY all require cash (buying tokens); only SELL is closing a position
