@@ -4223,57 +4223,111 @@ class WeatherBot(BaseBot):
 
         Returns market dicts with yes_price/no_price pre-populated from outcomePrices,
         eliminating the need for per-token CLOB midpoint enrichment.
+
+        S215: hybrid pagination + retry + tighter timeout.
+        - Parallel-fetch first 4 pages concurrently (covers 400 markets in single
+          round-trip latency); sequentially extend to pages 4-9 only if page 3
+          comes back full (>=100 results).
+        - Retry once on transient 429/5xx with 500ms backoff (was no retry — single
+          transient 503 forced full-scan fallback path).
+        - Per-page timeout 7s (was 15s); 4 pages × 7s = 28s worst-case stage 1,
+          well under the 60s scan timeout. Pre-fix: 10 sequential × 15s = 150s
+          worst-case (would always trip scan timeout first).
         """
         client = getattr(self.base_engine, "client", None)
         if not client:
             return []
 
+        url = f"{client.gamma_api}/events"
+        _MAX_PAGES = 10  # S142: raised 5→10 (hard cap 1000 events)
+        _PARALLEL_BATCH = 4  # S215: first N pages fetched concurrently
+        _PER_PAGE_TIMEOUT = 7  # S215: was 15
+        _RETRY_STATUSES = {429, 500, 502, 503, 504}
+        _RETRIES = 1  # S215: 1 retry → 2 total attempts; was 0
+
+        _session = getattr(self._forecast_client, '_session', None)
+        if _session is None or _session.closed:
+            await self._forecast_client._ensure_session()
+            _session = self._forecast_client._session
+
+        async def _fetch_page(page_num: int) -> Tuple[int, Optional[List], Optional[int]]:
+            """Returns (page_num, events_list_or_None, last_http_status_or_None).
+            events_list is None on retry-exhausted failure.
+            """
+            params = {
+                "active": "true",
+                "closed": "false",
+                "tag_slug": "temperature",
+                "limit": "100",
+                "offset": str(page_num * 100),
+            }
+            _last_status: Optional[int] = None
+            for _attempt in range(_RETRIES + 1):
+                try:
+                    async with _session.get(url, params=params,
+                                            timeout=aiohttp.ClientTimeout(total=_PER_PAGE_TIMEOUT)) as resp:
+                        _last_status = resp.status
+                        if resp.status == 200:
+                            data = await resp.json(content_type=None)
+                            return page_num, (data if isinstance(data, list) else []), 200
+                        if resp.status in _RETRY_STATUSES and _attempt < _RETRIES:
+                            await asyncio.sleep(0.5 * (2 ** _attempt))
+                            continue
+                        return page_num, None, resp.status
+                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    if _attempt < _RETRIES:
+                        await asyncio.sleep(0.5 * (2 ** _attempt))
+                        continue
+                    logger.debug("weatherbot_tag_fetch_page_error", page=page_num, error=str(exc))
+                    return page_num, None, _last_status
+            return page_num, None, _last_status
+
+        events: list = []
+        _pages_fetched = 0
+        _last_page_size = 0
+
         try:
-            # Gamma API supports tag_slug filter on /events endpoint
-            # S101b: Paginate to fetch ALL events (was limit=100, missing overflow)
-            # S159: Use aiohttp instead of httpx (shared dep, no extra TCP overhead)
-            url = f"{client.gamma_api}/events"
-            _MAX_PAGES = 10  # S142: raised 5→10 (hard cap 1000 events)
-            events: list = []
-            _pages_fetched = 0
-            _last_page_size = 0
-            _session = getattr(self._forecast_client, '_session', None)
-            if _session is None or _session.closed:
-                await self._forecast_client._ensure_session()
-                _session = self._forecast_client._session
-            for _page in range(_MAX_PAGES):
-                params = {
-                    "active": "true",
-                    "closed": "false",
-                    "tag_slug": "temperature",
-                    "limit": "100",
-                    "offset": str(_page * 100),
-                }
-                async with _session.get(url, params=params,
-                                        timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                    if resp.status != 200:
-                        if _page == 0:
-                            logger.warning("weatherbot_tag_fetch_failed", status=resp.status)
-                            _alerting = getattr(self.base_engine, "alerting_system", None)
-                            if _alerting:
-                                await _alerting.send_alert(
-                                    title="WeatherBot Tag Fetch Failed",
-                                    message=f"Gamma API tag_slug=temperature returned {resp.status}.",
-                                    severity=AlertSeverity.WARNING,
-                                    source="WeatherBot",
-                                    metadata={"status_code": resp.status},
-                                )
-                            return []
-                        break  # Non-first page failure — use what we have
-                    page_data = await resp.json(content_type=None)
-                    if not isinstance(page_data, list) or len(page_data) == 0:
+            _first_batch_n = min(_PARALLEL_BATCH, _MAX_PAGES)
+            batch_results = await asyncio.gather(*[_fetch_page(p) for p in range(_first_batch_n)])
+            batch_results.sort(key=lambda x: x[0])
+
+            _continue_to_seq = False
+            for page_num, data, status in batch_results:
+                if data is None:
+                    if page_num == 0:
+                        logger.warning("weatherbot_tag_fetch_failed", status=status)
+                        _alerting = getattr(self.base_engine, "alerting_system", None)
+                        if _alerting:
+                            await _alerting.send_alert(
+                                title="WeatherBot Tag Fetch Failed",
+                                message=f"Gamma API tag_slug=temperature returned {status} after retries.",
+                                severity=AlertSeverity.WARNING,
+                                source="WeatherBot",
+                                metadata={"status_code": status},
+                            )
+                        return []
+                    break
+                if len(data) == 0:
+                    break
+                events.extend(data)
+                _pages_fetched = page_num + 1
+                _last_page_size = len(data)
+                if len(data) < 100:
+                    break
+                if page_num == _first_batch_n - 1:
+                    _continue_to_seq = True
+
+            if _continue_to_seq and _MAX_PAGES > _PARALLEL_BATCH:
+                for page_num in range(_PARALLEL_BATCH, _MAX_PAGES):
+                    _pn, data, status = await _fetch_page(page_num)
+                    if data is None or len(data) == 0:
                         break
-                    events.extend(page_data)
-                    _pages_fetched = _page + 1
-                    _last_page_size = len(page_data)
-                    if _last_page_size < 100:
-                        break  # Last page (partial)
-            # S142: warn if we hit the hard cap — there may be more markets
+                    events.extend(data)
+                    _pages_fetched = _pn + 1
+                    _last_page_size = len(data)
+                    if len(data) < 100:
+                        break
+
             if _pages_fetched == _MAX_PAGES and _last_page_size == 100:
                 logger.warning(
                     "weatherbot_pagination_overflow_risk",

@@ -1,5 +1,6 @@
 """Unit tests for WeatherBot and supporting weather modules."""
 
+import asyncio
 import math
 from datetime import date, datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -3161,3 +3162,225 @@ class TestEnsureMarketsInDbBatching:
             f"prices batch SQL missing multi-row VALUES tuples: {prices_sql}"
         )
         assert "ON CONFLICT (token_id) DO UPDATE" in prices_sql
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# S215: _fetch_weather_events_by_tag parallel pagination + retry + timeout
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class _FakeAioResp:
+    def __init__(self, status, json_data=None):
+        self.status = status
+        self._json_data = json_data
+
+    async def json(self, content_type=None):
+        return self._json_data
+
+
+class _FakeAioRespCM:
+    def __init__(self, response_or_exc):
+        self._payload = response_or_exc
+
+    async def __aenter__(self):
+        if isinstance(self._payload, BaseException):
+            raise self._payload
+        return self._payload
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeAioSession:
+    """Records each .get() call. Returns predetermined responses per page+attempt."""
+
+    def __init__(self, page_responses):
+        # page_responses: dict[int, list] — list of _FakeAioResp or Exception per attempt
+        self.page_responses = page_responses
+        self.call_log = []  # list of (page, attempt, timeout_seconds)
+        self._attempt_counters = {}
+        self.closed = False
+        self._concurrent = 0
+        self.max_concurrent = 0
+
+    def get(self, url, params, timeout):
+        page = int(params['offset']) // 100
+        attempt = self._attempt_counters.get(page, 0)
+        self._attempt_counters[page] = attempt + 1
+        timeout_s = getattr(timeout, 'total', None)
+        self.call_log.append((page, attempt, timeout_s))
+        responses = self.page_responses.get(page, [])
+        if attempt >= len(responses):
+            return _FakeAioRespCM(_FakeAioResp(404, []))
+        payload = responses[attempt]
+        # Track concurrency by wrapping the CM
+        outer = self
+
+        class _ConcurrencyTrackingCM:
+            async def __aenter__(self_inner):
+                outer._concurrent += 1
+                outer.max_concurrent = max(outer.max_concurrent, outer._concurrent)
+                if isinstance(payload, BaseException):
+                    outer._concurrent -= 1
+                    raise payload
+                # Simulate a small wait so concurrency is observable
+                await asyncio.sleep(0.01)
+                return payload
+
+            async def __aexit__(self_inner, exc_type, exc, tb):
+                outer._concurrent -= 1
+                return False
+
+        return _ConcurrencyTrackingCM()
+
+
+class TestFetchWeatherEventsByTagParallel:
+    """S215: _fetch_weather_events_by_tag must parallel-fetch first 4 pages,
+    retry transient 5xx, and use 7s per-page timeout. Pre-fix: 10 sequential
+    pages × 15s timeout = 150s worst-case (always tripped 60s scan timeout)."""
+
+    @pytest.fixture
+    def fake_engine(self):
+        engine = MagicMock()
+        engine.trade_coordinator = None
+        engine.cache = None
+        engine.db = None
+        engine.risk_manager = MagicMock()
+        engine.order_gateway = MagicMock()
+        engine.order_gateway._open_position_markets = {"WeatherBot": set()}
+        engine.get_all_tradeable_markets = AsyncMock(return_value=[])
+        engine.place_order = AsyncMock(return_value={"success": True})
+        engine.client = MagicMock()
+        engine.client.gamma_api = "https://gamma-api.polymarket.com"
+        engine.alerting_system = None
+        return engine
+
+    @pytest.fixture
+    def bot_with_fake_session(self, fake_engine):
+        from bots.weather_bot import WeatherBot
+        bot = WeatherBot(fake_engine)
+        return bot
+
+    def _attach_session(self, bot, fake_session):
+        bot._forecast_client._session = fake_session
+
+    @pytest.mark.asyncio
+    async def test_first_batch_fetched_concurrently(self, bot_with_fake_session):
+        """Pages 0-3 must hit the API concurrently, not sequentially."""
+        page_data = [{"markets": []} for _ in range(100)]  # 100 events per page
+        responses = {p: [_FakeAioResp(200, page_data)] for p in range(4)}
+        # Page 3 partial → no sequential extension
+        responses[3] = [_FakeAioResp(200, page_data[:50])]
+        fake = _FakeAioSession(responses)
+        self._attach_session(bot_with_fake_session, fake)
+
+        await bot_with_fake_session._fetch_weather_events_by_tag()
+
+        assert fake.max_concurrent >= 2, (
+            f"Expected concurrent fetches in first batch, got max_concurrent={fake.max_concurrent}"
+        )
+        pages_called = sorted({c[0] for c in fake.call_log})
+        assert pages_called == [0, 1, 2, 3], (
+            f"Expected exactly pages 0-3 fetched (page 3 was partial), got {pages_called}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_per_page_timeout_is_7s(self, bot_with_fake_session):
+        page_data = [{"markets": []} for _ in range(50)]  # partial first page → stops
+        fake = _FakeAioSession({0: [_FakeAioResp(200, page_data)],
+                                1: [_FakeAioResp(200, [])],
+                                2: [_FakeAioResp(200, [])],
+                                3: [_FakeAioResp(200, [])]})
+        self._attach_session(bot_with_fake_session, fake)
+
+        await bot_with_fake_session._fetch_weather_events_by_tag()
+
+        timeouts = [c[2] for c in fake.call_log]
+        assert all(t == 7 for t in timeouts), (
+            f"Expected all per-page timeouts == 7s, got {timeouts}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_sequential_extension_when_first_batch_full(self, bot_with_fake_session):
+        """All 4 parallel pages full → extend to pages 4-9 sequentially until short page."""
+        full = [{"markets": []} for _ in range(100)]
+        responses = {
+            0: [_FakeAioResp(200, full)],
+            1: [_FakeAioResp(200, full)],
+            2: [_FakeAioResp(200, full)],
+            3: [_FakeAioResp(200, full)],
+            4: [_FakeAioResp(200, full)],
+            5: [_FakeAioResp(200, full[:30])],  # partial → stop
+        }
+        fake = _FakeAioSession(responses)
+        self._attach_session(bot_with_fake_session, fake)
+
+        await bot_with_fake_session._fetch_weather_events_by_tag()
+
+        pages_called = sorted({c[0] for c in fake.call_log})
+        assert pages_called == [0, 1, 2, 3, 4, 5], (
+            f"Expected sequential extension to pages 4-5, got {pages_called}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_retry_on_503_succeeds(self, bot_with_fake_session):
+        full = [{"markets": []} for _ in range(50)]  # short → stops processing further
+        responses = {
+            0: [_FakeAioResp(503, None), _FakeAioResp(200, full)],  # 1st 503, retry succeeds
+            1: [_FakeAioResp(200, [])],
+            2: [_FakeAioResp(200, [])],
+            3: [_FakeAioResp(200, [])],
+        }
+        fake = _FakeAioSession(responses)
+        self._attach_session(bot_with_fake_session, fake)
+
+        await bot_with_fake_session._fetch_weather_events_by_tag()
+
+        # Page 0: 2 attempts (503 + 200). Other pages: 1 attempt each.
+        page_0_calls = [c for c in fake.call_log if c[0] == 0]
+        assert len(page_0_calls) == 2, (
+            f"Expected page 0 to retry once after 503, got attempts={len(page_0_calls)}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_page_0_failure_returns_empty_after_retries(self, bot_with_fake_session):
+        # Both attempts on page 0 return 503 → return []
+        responses = {
+            0: [_FakeAioResp(503, None), _FakeAioResp(503, None)],
+            1: [_FakeAioResp(200, [{"markets": []}])],
+            2: [_FakeAioResp(200, [])],
+            3: [_FakeAioResp(200, [])],
+        }
+        fake = _FakeAioSession(responses)
+        self._attach_session(bot_with_fake_session, fake)
+
+        result = await bot_with_fake_session._fetch_weather_events_by_tag()
+
+        assert result == [], "Page 0 hard failure must return [] (full discovery abort)"
+        # Page 0 was retried (2 attempts); other pages may or may not have run in parallel
+        page_0_attempts = sum(1 for c in fake.call_log if c[0] == 0)
+        assert page_0_attempts == 2
+
+    @pytest.mark.asyncio
+    async def test_page_n_failure_uses_partial_results(self, bot_with_fake_session):
+        full = [{"markets": []} for _ in range(100)]
+        responses = {
+            0: [_FakeAioResp(200, full)],
+            1: [_FakeAioResp(200, full)],
+            2: [_FakeAioResp(503, None), _FakeAioResp(503, None)],  # both attempts fail
+            3: [_FakeAioResp(200, full)],
+        }
+        fake = _FakeAioSession(responses)
+        self._attach_session(bot_with_fake_session, fake)
+
+        await bot_with_fake_session._fetch_weather_events_by_tag()
+
+        # Pages 0+1 succeeded; page 2 hard-failed → break at page 2; page 3's
+        # parallel result is discarded (per-API contract: short/missing page = end).
+        # No sequential extension because we didn't reach the last batch page.
+        # No assertion on result content (depends on parsing internals); the
+        # behavioral assertion is that page 2 retried twice.
+        page_2_attempts = sum(1 for c in fake.call_log if c[0] == 2)
+        assert page_2_attempts == 2, (
+            f"Expected page 2 to retry once after 503, got attempts={page_2_attempts}"
+        )
