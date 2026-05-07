@@ -78,29 +78,76 @@ ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 \
 # Expect: matic_balance_ok with balance > 1.0 MATIC
 # At $1 cap ~10 trades/day: gas ~$0.01-0.05/trade → ~$0.35/week
 # Minimum recommended balance: 2.0 MATIC before flip.
+# NOTE: matic_balance_check is silently skipped when WALLET_ADDRESS or
+#       POLYGON_RPC are unset (base_engine/execution/clob_adapter.py:202).
+#       If grep returns nothing, fail check #7 first — the cause is missing
+#       wallet config, not low balance.
+```
+
+### 7. Wallet and RPC configured for live trading
+
+```bash
+ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 \
+  "grep -E '^(WALLET_ADDRESS|PRIVATE_KEY|POLYGON_RPC)=' /opt/pa2-shared/.env \
+   | sed 's/=.*/=<redacted>/'"
+# Must show three UNCOMMENTED lines (no leading #):
+#   WALLET_ADDRESS=<redacted>
+#   PRIVATE_KEY=<redacted>
+#   POLYGON_RPC=<redacted>
+#
+# If any are commented or missing, the OPERATOR must set them before flipping.
+# Without these:
+#   - check_matic_balance() returns None silently (clob_adapter.py:202)
+#   - The CLOB adapter cannot sign or submit live orders
+#   - First live order will fail
+#
+# Claude must NOT handle PRIVATE_KEY — operator-only per safety rules.
+# After fixing, restart polymarket-mirror and re-run checks #5, #6, #7.
+```
+
+### 8. BOT_BANKROLL_CONFIG at shadow-live values
+
+```bash
+ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 \
+  "grep BOT_BANKROLL_CONFIG /opt/pa2-shared/.env"
+# MirrorBot block MUST show: "max_bet_usd": 1, "max_daily_usd": 10
+#
+# If it shows max_bet_usd=300 or max_daily_usd=999999 (the paper-trading
+# default), BOT_BANKROLL_CONFIG must be edited BEFORE the flip. This is
+# paper-safe — SIMULATION_MODE is still true during the edit + restart.
+#
+# The shared .env line bundles multiple bots in one JSON dict. Edit only the
+# MirrorBot block; leave EsportsBot and other bots' blocks unchanged.
+#
+# After editing, restart polymarket-mirror and re-run checks #5 and #8.
 ```
 
 ---
 
 ## .env values at flip time
 
-**Record these values in the session handoff before changing anything.**
+**Record CURRENT values before changing anything. Do not assume — verify.**
 
-Current paper-trading config (verify against running service):
+```bash
+ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 \
+  "grep -nE '^(#[[:space:]]*)?(SIMULATION_MODE|BOT_BANKROLL_CONFIG|WALLET_ADDRESS|POLYGON_RPC)=' /opt/pa2-shared/.env"
 ```
-SIMULATION_MODE=true
-BOT_BANKROLL_CONFIG='{"MirrorBot": {"capital": 20000, "kelly_fraction": 0.25, "max_bet_usd": 1, "max_daily_usd": 10}}'
-```
 
-> Note: `max_bet_usd=1` and `max_daily_usd=10` are already set for shadow-live sizing.
-> The ONLY change at this flip is `SIMULATION_MODE: true → false`.
-> BOT_BANKROLL_CONFIG does NOT change here — it changes at the cap-flip event (P0.22).
-
-Shadow-live target config:
+Shadow-live target config (what each line must look like AFTER pre-flip checks pass):
 ```
 SIMULATION_MODE=false
-BOT_BANKROLL_CONFIG='{"MirrorBot": {"capital": 20000, "kelly_fraction": 0.25, "max_bet_usd": 1, "max_daily_usd": 10}}'
+BOT_BANKROLL_CONFIG='...{"MirrorBot": {"capital": 20000, "kelly_fraction": 0.25, "max_bet_usd": 1, "max_daily_usd": 10}}...'
+WALLET_ADDRESS=<operator-supplied>
+PRIVATE_KEY=<operator-supplied>
+POLYGON_RPC=<operator-supplied>
 ```
+
+> NOTE (post-S215 verification): The S214 MB CLOSE plan asserted shadow-live
+> sizing was already in place. Verification (S216) found the actual state was
+> max_bet_usd=300, max_daily_usd=999999 for MirrorBot, and WALLET_ADDRESS /
+> PRIVATE_KEY / POLYGON_RPC all commented out in every .env file on the VPS.
+> Pre-flip checks #7 and #8 catch this drift class — always run them, never
+> assume prior session claims hold.
 
 ---
 
@@ -118,20 +165,27 @@ ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 \
 
 ## Step 2 — Apply .env change
 
+Pre-flip checks #7 (wallet/RPC) and #8 (BOT_BANKROLL_CONFIG at $1/$10) must
+have already passed. Step 2 is ONLY the SIMULATION_MODE flip — if bankroll
+config or wallet config still need editing, go back to the pre-flip gate and
+fix those first (paper-safe).
+
 SSH to VPS and edit the shared env file:
 
 ```bash
 ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0
 
-# Edit SIMULATION_MODE only — do not touch BOT_BANKROLL_CONFIG here:
+# Edit SIMULATION_MODE only — bankroll + wallet must already be correct
+# per pre-flip checks #7 and #8.
 nano /opt/pa2-shared/.env
 ```
 
-Change:
+The current line is typically commented (defaults to `true` per
+config/settings.py:603):
 ```
-SIMULATION_MODE=true
+# SIMULATION_MODE=true
 ```
-To:
+Change to (uncommented, explicit `false`):
 ```
 SIMULATION_MODE=false
 ```
