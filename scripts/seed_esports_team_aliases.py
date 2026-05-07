@@ -50,9 +50,24 @@ load_dotenv()
 MIN_FUZZY_LINK = 85.0   # rapidfuzz token_set_ratio threshold for auto-aliases
 MIN_TEAM_NAME_LEN = 2   # skip suspicious 1-char team names
 
-# Capitalized 2+ word runs — the candidate-variant extractor.
-# Matches "Team Liquid", "Aalborg Esport", "Fire Flux Esports", etc.
-_VARIANT_RE = re.compile(r"\b(?:[A-Z][a-z0-9]+(?:\s+[A-Z][a-z0-9]+){1,4})\b")
+# Variant extractors — multiple patterns target the major team-name
+# shapes Polymarket uses in question text:
+#   (a) Multi-word capitalized orgs:  "Hanwha Life Esports", "KT Rolster",
+#                                     "Aalborg Esport", "Fire Flux Esports"
+#   (b) All-caps acronyms (2-6 chars, with digits): "T1", "G2", "DRX",
+#                                                   "FNC", "GSE", "C9"
+#   (c) Dotted names:                 "Gen.G", "devils.one", "OG.Seed"
+# Pattern (b) and (c) added in Bug 2 fix — pre-fix the script missed
+# single-word and dotted team names entirely (LoL "T1" never matched
+# any variant; the canonical was extracted but no Polymarket-side form
+# was learned). Per-pattern shape is conservative; common-word false
+# positives like "USA"/"PRO" survive extraction but are filtered downstream
+# by the MIN_FUZZY_LINK threshold against canonical PandaScore names.
+_VARIANT_PATTERNS = [
+    re.compile(r"\b(?:[A-Z][a-z0-9]+(?:\s+[A-Z][a-z0-9]+){1,4})\b"),  # (a)
+    re.compile(r"\b[A-Z][A-Z0-9]{1,5}\b"),                             # (b)
+    re.compile(r"\b[A-Za-z][a-zA-Z0-9]+\.[A-Za-z][a-zA-Z0-9]*\b"),    # (c)
+]
 
 
 async def _load_pandascore_teams(db, game: Optional[str]) -> Dict[str, Set[str]]:
@@ -158,11 +173,24 @@ async def _load_polymarket_esports_questions(
 
 
 def _extract_variants(question: str) -> List[str]:
-    """Return candidate alias variants from a question — capitalized
-    multi-word runs that look like org names. Conservative on purpose."""
+    """Return candidate alias variants from a question.
+
+    Runs every shape-pattern in _VARIANT_PATTERNS over the question and
+    deduplicates while preserving discovery order. The patterns target
+    multi-word org names, all-caps acronyms, and dotted names — see the
+    _VARIANT_PATTERNS comment for shape examples. Common-word false
+    positives are filtered downstream by the MIN_FUZZY_LINK threshold.
+    """
     if not question:
         return []
-    return _VARIANT_RE.findall(question)
+    seen_set: Set[str] = set()
+    out: List[str] = []
+    for pattern in _VARIANT_PATTERNS:
+        for v in pattern.findall(question):
+            if v not in seen_set:
+                seen_set.add(v)
+                out.append(v)
+    return out
 
 
 def _build_identity_rows(
