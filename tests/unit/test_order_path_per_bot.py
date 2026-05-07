@@ -8,9 +8,6 @@ Intentional SKIP stubs (populated as those items land):
   - P0.2: intended_size captured pre-cap in shadow_fill row
   - P0.3: twin book-walk VWAP at intended size
   - P0.5: SELL path and paper success write intended fields
-
-Intentional XFAIL stub (P0.19 deferred to P1):
-  - partial-fill position size reconciliation
 """
 from __future__ import annotations
 
@@ -266,29 +263,105 @@ class TestIntendedSizeInShadowFill:
         pass
 
 
-# ── xfail: P0.19 deferred to P1 ─────────────────────────────────────────────
+# ── P0.19: Partial-fill position reconciliation ─────────────────────────────
 
 class TestPartialFillReconciliation:
-    """P0.19 (deferred P1): position.size must equal filled_size, not requested_size."""
+    """P0.19: position.size must equal filled_size on partial fills, with
+    matching adjustment to in-memory exposure trackers."""
 
-    @pytest.mark.xfail(
-        reason=(
-            "P0.19 deferred to P1: partial fill leaves position.size = requested_size "
-            "instead of filled_size. Must ship before P0.22 cap-flip event."
-        ),
-        strict=False,
-    )
-    def test_partial_fill_position_size_equals_filled_size(self):
-        """On partial fill, positions table should record filled_size, not order_size."""
-        # Arrange: order for 100 shares, CLOB returns 60 shares filled
-        fill_response = {
-            "success": True,
-            "order_id": "clob-partial-001",
-            "filled_size": 60.0,
-            "requested_size": 100.0,
+    @staticmethod
+    def _make_db_with_position(initial_size: float = 100.0):
+        """Mock DB whose session yields a Position-like row with mutable size/entry_cost."""
+        pos = MagicMock()
+        pos.size = initial_size
+        pos.entry_cost = 0.0
+
+        result = MagicMock()
+        result.scalar_one_or_none = MagicMock(return_value=pos)
+
+        session = MagicMock()
+        session.execute = AsyncMock(return_value=result)
+        session.commit = AsyncMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+
+        db = MagicMock()
+        db.session_factory = MagicMock()  # truthy
+        db.get_session = MagicMock(return_value=session)
+        return db, session, pos
+
+    def test_partial_fill_updates_position_size(self):
+        """Partial fill (60/100): position.size should become 60, exposure rescaled."""
+        gw = _make_gateway()
+        db, _session, pos = self._make_db_with_position(initial_size=100.0)
+        gw.db = db
+        gw._pending_orders["clob-partial-001"] = {
+            "market_id": "0xMARKET",
+            "token_id": "tok-1",
+            "side": "BUY",
+            "size": 100.0,
+            "price": 0.50,
+            "bot_name": "MirrorBot",
+            "submitted_at": 0.0,
+            "correlation_id": "corr-1",
         }
-        # This test intentionally fails until P0.19 is implemented.
-        # The assertion below documents the desired behaviour.
-        assert fill_response["filled_size"] == fill_response["requested_size"], (
-            "P0.19: position should record filled_size; currently records requested_size"
-        )
+        gw._position_exposure["MirrorBot"] = {"0xMARKET": 50.0}  # 100 * 0.50
+        gw._total_exposure_usd = 50.0
+
+        _run(gw._on_order_filled({"id": "clob-partial-001", "size": 60.0, "price": 0.50}))
+
+        assert pos.size == 60.0, f"expected pos.size=60.0, got {pos.size}"
+        assert gw._position_exposure["MirrorBot"]["0xMARKET"] == 30.0  # 60 * 0.50
+        assert gw._total_exposure_usd == 30.0
+
+    def test_full_fill_does_not_adjust_position(self):
+        """Full fill (100/100): no DB call to adjust position."""
+        gw = _make_gateway()
+        db, session, pos = self._make_db_with_position(initial_size=100.0)
+        gw.db = db
+        gw._pending_orders["clob-full-001"] = {
+            "market_id": "0xMARKET",
+            "token_id": "tok-1",
+            "side": "BUY",
+            "size": 100.0,
+            "price": 0.50,
+            "bot_name": "MirrorBot",
+            "submitted_at": 0.0,
+            "correlation_id": "corr-1",
+        }
+
+        _run(gw._on_order_filled({"id": "clob-full-001", "size": 100.0, "price": 0.50}))
+
+        assert pos.size == 100.0  # unchanged — adjust path not entered
+        # full-fill path doesn't open a session for adjustment
+        db.get_session.assert_not_called()
+
+    def test_sell_side_skipped(self):
+        """SELL is skipped — no DB call, no exception."""
+        gw = _make_gateway()
+        db, _session, pos = self._make_db_with_position(initial_size=100.0)
+        gw.db = db
+
+        _run(gw._adjust_position_for_partial_fill(
+            bot_name="MirrorBot",
+            market_id="0xMARKET",
+            side="SELL",
+            new_size=60.0,
+            fill_price=0.50,
+        ))
+
+        assert pos.size == 100.0
+        db.get_session.assert_not_called()
+
+    def test_no_db_no_op(self):
+        """When db is None, helper returns silently (no exception)."""
+        gw = _make_gateway()
+        gw.db = None
+        # Should not raise
+        _run(gw._adjust_position_for_partial_fill(
+            bot_name="MirrorBot",
+            market_id="0xMARKET",
+            side="BUY",
+            new_size=60.0,
+            fill_price=0.50,
+        ))
