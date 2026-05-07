@@ -1,0 +1,10 @@
+# Force LF line endings for files where CRLF breaks the consumer.
+# core.autocrlf=true (Windows default) would otherwise convert these on
+# checkout, leading to "bad minute" cron parser errors and similar
+# breakage on the deploy target.
+deploy/crontabs/*.crontab text eol=lf
+deploy/*.service text eol=lf
+deploy/*.timer text eol=lf
+deploy/*.sh text eol=lf
+deploy/logrotate.d/* text eol=lf
+scripts/*.sh text eol=lf
