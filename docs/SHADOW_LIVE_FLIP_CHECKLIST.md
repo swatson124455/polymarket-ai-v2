@@ -84,25 +84,37 @@ ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 \
 #       wallet config, not low balance.
 ```
 
-### 7. Wallet and RPC configured for live trading
+### 7. Live-trading credentials configured
 
 ```bash
 ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 \
-  "grep -E '^(WALLET_ADDRESS|PRIVATE_KEY|POLYGON_RPC)=' /opt/pa2-shared/.env \
+  "grep -E '^(WALLET_ADDRESS|PRIVATE_KEY|POLYGON_RPC|CLOB_API_KEY|CLOB_SECRET|CLOB_PASSPHRASE|USER_ORDER_WS_ENABLED)=' /opt/pa2-shared/.env \
    | sed 's/=.*/=<redacted>/'"
-# Must show three UNCOMMENTED lines (no leading #):
+# Must show ALL of the following UNCOMMENTED (no leading #):
 #   WALLET_ADDRESS=<redacted>
 #   PRIVATE_KEY=<redacted>
-#   POLYGON_RPC=<redacted>
+#   POLYGON_RPC=<redacted>          (or POLYGON_RPC_URL)
+#   CLOB_API_KEY=<redacted>
+#   CLOB_SECRET=<redacted>
+#   CLOB_PASSPHRASE=<redacted>
+#   USER_ORDER_WS_ENABLED=true
 #
-# If any are commented or missing, the OPERATOR must set them before flipping.
-# Without these:
-#   - check_matic_balance() returns None silently (clob_adapter.py:202)
-#   - The CLOB adapter cannot sign or submit live orders
-#   - First live order will fail
+# Why each is required:
+#   WALLET_ADDRESS / PRIVATE_KEY / POLYGON_RPC:
+#     - clob_adapter signs/submits live orders (no signing → first order fails)
+#     - check_matic_balance() returns None silently when WALLET_ADDRESS unset
+#       (base_engine/execution/clob_adapter.py:202)
+#   CLOB_API_KEY / CLOB_SECRET / CLOB_PASSPHRASE:
+#     - UserOrderWebSocket init gates on these (base_engine.py:688). Without
+#       them, fill_confirmed events don't reach the EventBus, so the P0.19
+#       partial-fill reconciliation handler can't fire — position.size stays
+#       at requested size on partial fills.
+#   USER_ORDER_WS_ENABLED=true:
+#     - Master switch for the WS subsystem.
 #
-# Claude must NOT handle PRIVATE_KEY — operator-only per safety rules.
-# After fixing, restart polymarket-mirror and re-run checks #5, #6, #7.
+# Claude must NOT handle PRIVATE_KEY / CLOB_SECRET — operator-only per
+# safety rules. After fixing, restart polymarket-mirror and re-run checks
+# #5, #6, #7.
 ```
 
 ### 8. BOT_BANKROLL_CONFIG at shadow-live values
