@@ -364,6 +364,14 @@ class EsportsBotV2(BaseBot):
         load / DB rebuild / pipeline fit), this returns early so the scan
         loop ticks but does not attempt to predict against an unfit model.
         Fails loud if the warmup task ended with an exception.
+
+        Latency instrumentation: BaseBot brackets this call with `scan_start`
+        / `scan_done` marks on `self._latency_tracker`. Marking after each
+        of the three phases produces a `Latency breakdown` log with
+        per-phase elapsed-ms keys (scan_start>resolve_done = resolve time,
+        resolve_done>predict_done = predict time, predict_done>scan_done =
+        execute time) — needed because the scan was logging only the
+        end-to-end elapsed and a 16–21s steady-state was unattributable.
         """
         if not self._warmup_complete():
             logger.info("esports_bot_v2_scan_skipped_warmup_in_progress")
@@ -371,9 +379,11 @@ class EsportsBotV2(BaseBot):
 
         # 1. Process resolved matches (ratings update + Phase 2 writes)
         await self._resolve_finished_matches()
+        self.mark_latency("resolve_done")
 
         # 2. Predict upcoming matches (Phase 1 writes)
         await self._predict_upcoming_matches()
+        self.mark_latency("predict_done")
 
         # 3. Execute trades for singletons with edge
         if not self._dry_run:
