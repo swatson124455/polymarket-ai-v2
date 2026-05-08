@@ -3165,6 +3165,97 @@ class TestEnsureMarketsInDbBatching:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# S215: WB seeds BaseEngine._market_index after Gamma discovery
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestWBSeedsMarketIndex:
+    """S215: WB must call base_engine.update_market_index(weather_markets)
+    after Gamma fetch. WB-only gap pre-fix: MirrorBot, EnsembleBot,
+    ArbitrageBot all do this; WB didn't. Without it, OrderGateway's depth
+    check hit gateway_unknown_market on every WB trade and returned
+    max_safe=0, masking Phase 2 soft-clamp.
+    """
+
+    @pytest.mark.asyncio
+    async def test_scan_calls_update_market_index_after_gamma_fetch(self):
+        from bots.weather_bot import WeatherBot
+
+        engine = MagicMock()
+        engine.trade_coordinator = None
+        engine.cache = None
+        engine.db = None
+        engine.risk_manager = MagicMock()
+        engine.order_gateway = MagicMock()
+        engine.order_gateway._open_position_markets = {"WeatherBot": set()}
+        engine.get_all_tradeable_markets = AsyncMock(return_value=[])
+        engine.place_order = AsyncMock(return_value={"success": True})
+        engine.update_market_index = MagicMock()
+
+        bot = WeatherBot(engine)
+
+        fake_markets = [
+            {"id": "m1", "condition_id": "c1", "yes_token_id": "yt1",
+             "no_token_id": "nt1", "yes_price": 0.5, "no_price": 0.5,
+             "question": "q", "slug": "s", "volume": 0},
+            {"id": "m2", "condition_id": "c2", "yes_token_id": "yt2",
+             "no_token_id": "nt2", "yes_price": 0.4, "no_price": 0.6,
+             "question": "q", "slug": "s", "volume": 0},
+        ]
+        # Stub Gamma fetch + group_markets so scan reaches the seeding step
+        bot._fetch_weather_events_by_tag = AsyncMock(return_value=fake_markets)
+        bot._market_mapper.group_markets = MagicMock(return_value=[])  # no groups → early return after seed
+        bot._cache_warmed = True  # skip startup-only branch
+        bot._ensure_markets_in_db = AsyncMock(return_value=None)
+
+        await bot.scan_and_trade()
+
+        # update_market_index must have been called with the fake_markets list
+        engine.update_market_index.assert_called_once()
+        called_with = engine.update_market_index.call_args.args[0]
+        assert called_with == fake_markets, (
+            f"update_market_index called with wrong markets: {called_with}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_seed_happens_before_ensure_markets_in_db(self):
+        """update_market_index must run BEFORE _ensure_markets_in_db so the
+        index is populated when downstream order placement runs."""
+        from bots.weather_bot import WeatherBot
+
+        engine = MagicMock()
+        engine.trade_coordinator = None
+        engine.cache = None
+        engine.db = None
+        engine.risk_manager = MagicMock()
+        engine.order_gateway = MagicMock()
+        engine.order_gateway._open_position_markets = {"WeatherBot": set()}
+        engine.get_all_tradeable_markets = AsyncMock(return_value=[])
+        engine.place_order = AsyncMock(return_value={"success": True})
+
+        call_order: list[str] = []
+        engine.update_market_index = MagicMock(side_effect=lambda m: call_order.append("update_index"))
+
+        bot = WeatherBot(engine)
+        bot._fetch_weather_events_by_tag = AsyncMock(return_value=[
+            {"id": "m1", "condition_id": "c1", "yes_token_id": "yt1",
+             "no_token_id": "nt1", "yes_price": 0.5, "no_price": 0.5,
+             "question": "q", "slug": "s", "volume": 0},
+        ])
+        bot._market_mapper.group_markets = MagicMock(return_value=[])
+        bot._cache_warmed = True
+
+        async def _ensure_recorder(markets):
+            call_order.append("ensure_db")
+        bot._ensure_markets_in_db = _ensure_recorder
+
+        await bot.scan_and_trade()
+        assert call_order == ["update_index", "ensure_db"], (
+            f"Expected update_index before ensure_db, got order: {call_order}"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # S215: _fetch_weather_events_by_tag parallel pagination + retry + timeout
 # ═══════════════════════════════════════════════════════════════════════════
 

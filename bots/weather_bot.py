@@ -1721,6 +1721,19 @@ class WeatherBot(BaseBot):
             scan_limit = getattr(settings, "SCAN_MARKET_LIMIT", 800)
             weather_markets = weather_markets[:scan_limit]
 
+            # S215: Seed BaseEngine._market_index (shared with OrderGateway).
+            # WB-only gap: MirrorBot, EnsembleBot, ArbitrageBot all call this
+            # after fetching markets; WB was the lone holdout. Without it,
+            # OrderGateway hits gateway_unknown_market on every WB trade,
+            # which makes condition_id empty in check_liquidity, which makes
+            # the orderbook fetch return empty, which makes top5_depth=0,
+            # which makes max_safe=0, which makes the depth gate hard-reject
+            # 100% of WB orders for Gamma-discovered markets (verified via
+            # 8h post-Phase-2 sample: 12/12 depth_exceeded preceded by
+            # gateway_unknown_market). Pre-fix this was the dominant
+            # depth-gate failure mode masking the Phase-2 soft-clamp.
+            self.base_engine.update_market_index(weather_markets)
+
             # S177: Persist discovered markets to DB so trade_event FK check passes.
             # Without this, markets from Gamma API exist only in memory and
             # insert_trade_event() rejects ENTRY events with "market not in DB".
