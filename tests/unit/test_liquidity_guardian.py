@@ -98,3 +98,65 @@ async def test_depth_check_uses_top_5_levels_only():
     assert result["can_execute"] is False
     assert result["reason"] == "depth_exceeded"
     assert result["liquidity_depth"] == 500.0  # confirms top-5 window
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S215: split top5_depth=0 (no orderbook data) from real depth_exceeded
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_top5_depth_zero_returns_no_orderbook_data():
+    """top-5 depth = 0 (empty/zero-size levels) → no_orderbook_data, NOT depth_exceeded.
+
+    Pre-fix: any non-empty levels list with all-zero sizes returned reason=depth_exceeded
+    with max_safe=0, conflating 'book genuinely thin' with 'no usable depth at all'.
+    The 8h post-Phase-2 sample showed 12/12 hard-rejects were the latter case (markets
+    not in OrderGateway._market_index → empty orderbook fetch). Splitting them lets
+    Phase 2 soft-clamp fire on the recoverable case while keeping the unrecoverable
+    case clearly diagnosable.
+    """
+    asks = [{"price": 0.50, "size": 0.0} for _ in range(5)]  # levels exist, sizes 0
+    g = _make_guardian(asks=asks)
+    result = await g.check_liquidity(
+        market_id="mkt1", token_id="tok1", trade_size=100.0, side="BUY",
+        depth_multiplier=5.0,
+    )
+    assert result["can_execute"] is False
+    assert result["reason"] == "no_orderbook_data", (
+        f"top5_depth=0 must report no_orderbook_data (not depth_exceeded), "
+        f"got reason={result.get('reason')!r}"
+    )
+    assert result["recommendation"] == "abort"
+    assert result["liquidity_depth"] == 0.0
+    assert result["max_safe"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_real_depth_exceeded_still_returns_depth_exceeded():
+    """Sanity: top5_depth>0 but trade > max_safe → still reason=depth_exceeded
+    with reduce_size recommendation (preserves Phase 2 soft-clamp eligibility)."""
+    asks = [{"price": 0.50, "size": 10.0} for _ in range(5)]  # top5 = 50
+    g = _make_guardian(asks=asks)
+    # max_safe = 50/5 = 10; trade 100 > 10 → real depth_exceeded
+    result = await g.check_liquidity(
+        market_id="mkt1", token_id="tok1", trade_size=100.0, side="BUY",
+        depth_multiplier=5.0,
+    )
+    assert result["can_execute"] is False
+    assert result["reason"] == "depth_exceeded"
+    assert result["recommendation"] == "reduce_size"
+    assert result["max_safe"] > 0
+
+
+@pytest.mark.asyncio
+async def test_no_levels_at_all_returns_no_liquidity():
+    """Empty levels list (existing pre-fix behavior) → reason=no_liquidity, distinct
+    from no_orderbook_data which fires when levels exist but all have size=0."""
+    g = _make_guardian(asks=[])
+    result = await g.check_liquidity(
+        market_id="mkt1", token_id="tok1", trade_size=100.0, side="BUY",
+        depth_multiplier=5.0,
+    )
+    assert result["can_execute"] is False
+    assert result["reason"] == "no_liquidity"

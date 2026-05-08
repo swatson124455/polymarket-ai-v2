@@ -83,6 +83,25 @@ class LiquidityGuardian:
         # depth_multiplier == 0.
         if depth_multiplier > 0:
             _top5_depth = sum(float(lvl.get("size", 0)) for lvl in levels[:5])
+            # S215: distinguish "no orderbook data" from "real depth_exceeded".
+            # Pre-fix, an empty top-5 (top5_depth=0 → max_safe=0) returned
+            # reason=depth_exceeded with max_safe=0, conflating two failure modes:
+            # (a) book is genuinely too thin for our size [recoverable via soft-clamp]
+            # (b) book has no usable depth at all [not recoverable].
+            # The 8h post-Phase-2 sample showed 12/12 hard-rejects were case (b),
+            # masking the Phase-2 soft-clamp. Splitting them lets the soft-clamp
+            # fire on (a) and lets case (b) be diagnosed clearly upstream
+            # (typically a missing _market_index entry → empty orderbook fetch).
+            if _top5_depth == 0:
+                return {
+                    "can_execute": False,
+                    "reason": "no_orderbook_data",
+                    "trade_size": trade_size,
+                    "liquidity_depth": 0.0,
+                    "max_safe": 0.0,
+                    "depth_multiplier": depth_multiplier,
+                    "recommendation": "abort",
+                }
             _max_safe = _top5_depth / depth_multiplier if depth_multiplier > 0 else float("inf")
             if trade_size > _max_safe:
                 return {
