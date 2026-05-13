@@ -3313,8 +3313,20 @@ class MirrorBot(BaseBot):
             )
             return False
 
-        # S157: Single dust gate (cold-start override removed — sizing floor handles cold-start)
-        _min_trade_usd = float(getattr(settings, "MIRROR_MIN_TRADE_USD", 25.0))
+        # S217: Dust floor coupled to bankroll cap to prevent cap/floor drift.
+        # Historical bug: max_bet_usd=$1 with hardcoded $25 floor silent-throttled
+        # MB for 6+ days. Fix expresses the constraint relationship in code:
+        # floor = max(abs_floor, min(ceiling, cap)).
+        #   - abs_floor protects against degenerate cap=$0 (default $0.10)
+        #   - ceiling = fee-economics floor for full-cap trades (default $25)
+        #   - cap = self.bankroll.max_bet_usd (operator policy)
+        # bankroll=None at this point is a structural failure — raise, don't default.
+        _abs_floor = float(getattr(settings, "MIRROR_DUST_ABS_FLOOR_USD", 0.10))
+        _ceiling = float(getattr(settings, "MIRROR_DUST_CEILING_USD", 25.0))
+        if self.bankroll is None:
+            raise RuntimeError("mirror_dust_gate_bankroll_uninitialized")
+        _cap = float(self.bankroll.max_bet_usd)
+        _min_trade_usd = max(_abs_floor, min(_ceiling, _cap))
         _trade_value_usd = size * price
         if _trade_value_usd < _min_trade_usd:
             logger.info("mirror_dust_skipped", trade_usd=round(_trade_value_usd, 2),
