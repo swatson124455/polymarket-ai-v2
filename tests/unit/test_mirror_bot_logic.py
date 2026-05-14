@@ -771,6 +771,7 @@ class TestExecuteMirrorTrade:
         """Successful entry trade increments _daily_exposure and updates position size."""
         bot, engine = _make_bot()
         bot.bankroll = MagicMock()
+        bot.bankroll.max_bet_usd = 300.0  # S218: prevent float(MagicMock())=1.0 dust-trip
         bot.bankroll.capital = 3000.0
         bot.bankroll.max_daily_usd = 10000
         # S142: 300 shares so BM shrinkage (k≈0.42) still yields >$50 trade.
@@ -839,6 +840,7 @@ class TestExecuteMirrorTrade:
             "volume_24h": 100000.0, "liquidity": 50000.0,  # S137 C8: pass volume gate
         })
         bot.bankroll = MagicMock()
+        bot.bankroll.max_bet_usd = 300.0  # S218: prevent float(MagicMock())=1.0 dust-trip
         bot.bankroll.capital = 3000.0
         bot.bankroll.max_daily_usd = 10000
         # S142: 200 shares; WR=0.85 → confidence=0.75 (cap) → BM k=0.914 → 182 shares → $100 > $50.
@@ -880,6 +882,7 @@ class TestExecuteMirrorTrade:
             "volume_24h": 100000.0, "liquidity": 50000.0,
         })
         bot.bankroll = MagicMock()
+        bot.bankroll.max_bet_usd = 300.0  # S218: prevent float(MagicMock())=1.0 dust-trip
         bot.bankroll.capital = 3000.0
         bot.bankroll.max_daily_usd = 10000
         bot.calculate_bot_position_size = AsyncMock(return_value=200.0)
@@ -1038,6 +1041,7 @@ class TestExecuteMirrorTrade:
         """Entry trade size is capped at MIRROR_MAX_PER_MARKET / price."""
         bot, engine = _make_bot()
         bot.bankroll = MagicMock()
+        bot.bankroll.max_bet_usd = 300.0  # S218: prevent float(MagicMock())=1.0 dust-trip
         bot.bankroll.max_daily_usd = 10000
         bot.bankroll.capital = 3000.0
         bot._reliability_tracker = None  # disable to avoid domain drift halving confidence
@@ -1080,6 +1084,7 @@ class TestExecuteMirrorTrade:
         """Entry trade size is limited by remaining daily exposure."""
         bot, engine = _make_bot()
         bot.bankroll = MagicMock()
+        bot.bankroll.max_bet_usd = 300.0  # S218: prevent float(MagicMock())=1.0 dust-trip
         bot.bankroll.max_daily_usd = 100.0  # only $100 daily
         bot.bankroll.capital = 3000.0
         bot._daily_exposure = 90.0  # already spent $90
@@ -1122,6 +1127,7 @@ class TestExecuteMirrorTrade:
         """If sizing yields zero after caps, trade is skipped."""
         bot, engine = _make_bot()
         bot.bankroll = MagicMock()
+        bot.bankroll.max_bet_usd = 300.0  # S218: prevent float(MagicMock())=1.0 dust-trip
         bot.bankroll.max_daily_usd = 100.0
         bot._daily_exposure = 100.0  # fully spent
         bot.calculate_bot_position_size = AsyncMock(return_value=100.0)
@@ -1147,6 +1153,7 @@ class TestExecuteMirrorTrade:
         """If place_order fails, _daily_exposure and position size unchanged."""
         bot, engine = _make_bot()
         bot.bankroll = MagicMock()
+        bot.bankroll.max_bet_usd = 300.0  # S218: prevent float(MagicMock())=1.0 dust-trip
         bot.bankroll.max_daily_usd = 10000
         bot.bankroll.capital = 3000.0
         bot._reliability_tracker = None
@@ -1282,6 +1289,7 @@ class TestCanOpenPositionBankroll:
         """When bankroll is set, max_daily_usd comes from bankroll, not settings."""
         bot, _ = _make_bot()
         bot.bankroll = MagicMock()
+        bot.bankroll.max_bet_usd = 300.0  # S218: prevent float(MagicMock())=1.0 dust-trip
         bot.bankroll.max_daily_usd = 5000
         bot._daily_exposure = 4999.0
 
@@ -1302,6 +1310,7 @@ class TestCanOpenPositionBankroll:
         _can_open_position no longer checks daily exposure."""
         bot, _ = _make_bot()
         bot.bankroll = MagicMock()
+        bot.bankroll.max_bet_usd = 300.0  # S218: prevent float(MagicMock())=1.0 dust-trip
         bot.bankroll.max_daily_usd = 5000
         bot._daily_exposure = 5000.0  # at cap
 
@@ -1876,6 +1885,7 @@ class TestS154GapFixes:
             "volume_24h": 100000.0, "liquidity": 50000.0,
         })
         bot.bankroll = MagicMock()
+        bot.bankroll.max_bet_usd = 300.0  # S218: prevent float(MagicMock())=1.0 dust-trip
         bot.bankroll.capital = 3000.0
         bot.bankroll.max_daily_usd = 10000
         bot.calculate_bot_position_size = AsyncMock(return_value=200.0)
@@ -1909,6 +1919,7 @@ class TestS154GapFixes:
             "volume_24h": 100000.0, "liquidity": 50000.0,
         })
         bot.bankroll = MagicMock()
+        bot.bankroll.max_bet_usd = 300.0  # S218: prevent float(MagicMock())=1.0 dust-trip
         bot.bankroll.capital = 3000.0
         bot.bankroll.max_daily_usd = 10000
         bot.calculate_bot_position_size = AsyncMock(return_value=200.0)

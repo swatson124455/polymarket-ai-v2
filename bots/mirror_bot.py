@@ -3121,7 +3121,17 @@ class MirrorBot(BaseBot):
         # Default $30 — clears MIRROR_MIN_TRADE_USD ($25 dust gate) after risk
         # budget deductions (typical ~0.88x → $26.40 > $25).
         # Plan originally said $1-2 but that's below dust gate and spread-dominated.
-        _flat_usd = float(getattr(settings, "MIRROR_FLAT_POSITION_SIZE_USD", 30.0))
+        # S218: Flat-size clamped to bankroll.max_bet_usd. Symmetric to S217 dust
+        # gate (max(floor, min(ceiling, cap))) — flat is the upper bound, cap is
+        # the policy ceiling. Without this, MIRROR_FLAT_POSITION_SIZE_USD=$30
+        # bypasses max_bet_usd=$1 (shadow-live cap) and orders go through at
+        # ~$4 instead of $1 after downstream dampeners. bankroll=None at this
+        # site is a structural failure (production guarantees bankroll exists).
+        if self.bankroll is None:
+            raise RuntimeError("mirror_sizing_bankroll_uninitialized")
+        _cap_usd = float(self.bankroll.max_bet_usd)
+        _flat_usd_cfg = float(getattr(settings, "MIRROR_FLAT_POSITION_SIZE_USD", 30.0))
+        _flat_usd = min(_flat_usd_cfg, _cap_usd)
         if _flat_usd > 0 and price > 0:
             size = _flat_usd / price
         else:
@@ -3135,6 +3145,8 @@ class MirrorBot(BaseBot):
         )
         logger.debug("mirror_flat_vs_kelly",
                       flat_usd=round(_flat_usd, 2),
+                      flat_usd_cfg=round(_flat_usd_cfg, 2),
+                      cap_usd=round(_cap_usd, 2),
                       flat_shares=round(size, 4),
                       kelly_shares=round(_kelly_size, 4),
                       price=round(price, 4))
@@ -3312,6 +3324,21 @@ class MirrorBot(BaseBot):
                                  "daily_exposure": self._daily_exposure},
             )
             return False
+
+        # S218: Final-clamp invariant. size*price MUST NOT exceed bankroll.max_bet_usd
+        # regardless of which sizing branch produced the value. Defense-in-depth
+        # paired with the S218 source-clamp at the flat-sizing site above. Under
+        # normal operation this is a silent no-op — the source clamp + monotonic-
+        # non-increasing dampener chain guarantees size*price ≤ _cap_usd. If this
+        # log ever fires it means a new sizing path was added that bypasses the
+        # source clamp; treat the log as a regression signal, not a normal event.
+        _size_usd = size * price
+        if _size_usd > _cap_usd:
+            size = _cap_usd / price
+            logger.warning("mirror_size_capped_at_invariant",
+                           pre_cap_usd=round(_size_usd, 2),
+                           cap_usd=round(_cap_usd, 2),
+                           market_id=str(market_id)[:16])
 
         # S217: Dust floor coupled to bankroll cap to prevent cap/floor drift.
         # Historical bug: max_bet_usd=$1 with hardcoded $25 floor silent-throttled
