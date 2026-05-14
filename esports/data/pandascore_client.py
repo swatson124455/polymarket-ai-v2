@@ -175,12 +175,21 @@ class PandaScoreClient:
         logger.info("PandaScoreClient: initialised", base_url=_BASE_URL)
 
     async def close(self) -> None:
-        """Close persistent HTTP client."""
+        """Close persistent HTTP client. Defensive — cleanup-path errors
+        should never crash a shutdown, but they also shouldn't be totally
+        silent: a leaked httpx connection pool burns OS file descriptors
+        and a sustained pattern matters operationally. Log at debug so
+        normal shutdowns stay quiet but the trace is available when
+        someone goes looking."""
         if self._client:
             try:
                 await self._client.aclose()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(
+                    "PandaScoreClient.close: aclose failed",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
             self._client = None
 
     # ── Public API methods ──────────────────────────────────────────────
