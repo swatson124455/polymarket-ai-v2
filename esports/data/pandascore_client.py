@@ -449,6 +449,7 @@ class PandaScoreClient:
                 )
                 return None
 
+        _last_error: Optional[str] = None
         for attempt in range(3):
             try:
                 resp = await self._client.get(path, params=params)
@@ -499,6 +500,7 @@ class PandaScoreClient:
 
             except Exception as exc:
                 self._consecutive_failures += 1
+                _last_error = str(exc)
                 backoff = min(
                     _BASE_BACKOFF * (2 ** attempt),
                     _MAX_BACKOFF,
@@ -507,7 +509,7 @@ class PandaScoreClient:
                     "PandaScoreClient: request failed",
                     path=path,
                     attempt=attempt + 1,
-                    error=str(exc),
+                    error=_last_error,
                     backoff_s=backoff,
                 )
                 if attempt < 2:
@@ -515,6 +517,19 @@ class PandaScoreClient:
                     jitter = random.uniform(0.0, backoff * 0.1)
                     await asyncio.sleep(backoff + jitter)
 
+        # All 3 retries exhausted — surface at WARNING so the caller's None
+        # return isn't silently mistaken for "no data". Per-attempt failures
+        # stay at DEBUG (expected noise) but exhaustion is a real signal:
+        # downstream get_past_matches / get_upcoming_matches treat None as
+        # an empty result, so without this log a sustained PandaScore outage
+        # would manifest only as "0 upcoming matches" with no error trail.
+        logger.warning(
+            "PandaScoreClient: retries exhausted, returning None",
+            path=path,
+            attempts=3,
+            last_error=_last_error,
+            consecutive_failures=self._consecutive_failures,
+        )
         return None
 
     @staticmethod
