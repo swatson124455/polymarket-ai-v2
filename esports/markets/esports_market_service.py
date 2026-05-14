@@ -301,10 +301,39 @@ class EsportsMarketService:
                     # Env flag ESPORTS_MARKETS_REFRESH_V2_ENABLED (default true)
                     # toggles the ORDER BY. Pre-existing behavior (no ordering)
                     # restored via flag-off rollback without code revert.
+                    # S216 Thread C: broaden refresh universe from category='esports'
+                    # to the matcher's keyword filter. Polymarket miscategorizes ~half
+                    # of LoL/CS2 markets as 'sports' or 'crypto', and the matcher at
+                    # get_tradeable_esports_markets already uses the keyword filter
+                    # (not category) — so prior to this fix, the matcher SAW those
+                    # markets but they got stale prices because refresh ignored them.
+                    # KEEP IN SYNC with get_tradeable_esports_markets keyword filter
+                    # (~line 178-198 of this file).
+                    _KW_FILTER = """(
+                        question ILIKE '%esports%'
+                        OR question ILIKE '%league of legends%'
+                        OR question ILIKE '%counter-strike%'
+                        OR question ILIKE '%cs2%'
+                        OR question ILIKE '%csgo%'
+                        OR question ILIKE '%blast premier%'
+                        OR question ILIKE '%dota%'
+                        OR question ILIKE '%the international%'
+                        OR question ILIKE '%valorant%'
+                        OR question ILIKE '%champions tour%'
+                        OR question ILIKE '%call of duty%'
+                        OR question ILIKE '%rainbow six%'
+                        OR question ILIKE '%six invitational%'
+                        OR question ILIKE '%starcraft%'
+                        OR question ILIKE '%sc2%'
+                        OR question ILIKE '%brood war%'
+                        OR question ILIKE '%rocket league%'
+                        OR question ILIKE '%rlcs%'
+                        OR question ~* '\\y(lol|lck|lec|lpl|lcs|msi|esl|pgl|iem|dpc|cdl|gsl|asl|vct|r6|cod|ti)\\y'
+                    )"""
                     if _MARKETS_REFRESH_V2_ENABLED:
-                        _query_sql = """
+                        _query_sql = f"""
                             SELECT id, condition_id FROM markets
-                            WHERE category = 'esports'
+                            WHERE {_KW_FILTER}
                               AND active = true
                               AND (resolved = false OR resolved IS NULL)
                               AND condition_id IS NOT NULL
@@ -313,9 +342,9 @@ class EsportsMarketService:
                             LIMIT 1000
                         """
                     else:
-                        _query_sql = """
+                        _query_sql = f"""
                             SELECT id, condition_id FROM markets
-                            WHERE category = 'esports'
+                            WHERE {_KW_FILTER}
                               AND active = true
                               AND (resolved = false OR resolved IS NULL)
                               AND condition_id IS NOT NULL
