@@ -257,7 +257,13 @@ if [ "$PROBE_EXIT" -eq 0 ]; then
         'ls -1dt /opt/pa2-releases/*/ 2>/dev/null | tail -n +6 | xargs -r sudo rm -rf'
 
     # Report PgBouncer pool size warning if below threshold.
-    _PGB_POOL=$(echo "$HEALTH_RESULT" | grep -oP 'PGB_POOL=\K[0-9]+' || echo "0")
+    # grep -oP \K is PCRE-only and fails on non-UTF-8 locales with
+    # "grep: -P supports only unibyte and UTF-8 locales", which made the
+    # extraction silently return empty → "0" → false low-pool warning
+    # fired on every deploy regardless of actual pool size. POSIX-portable
+    # awk replacement extracts the value reliably under any locale.
+    _PGB_POOL=$(echo "$HEALTH_RESULT" | awk -F= '/^PGB_POOL=/{print $2; exit}')
+    _PGB_POOL=${_PGB_POOL:-0}
     if [ "$_PGB_POOL" -lt 40 ] 2>/dev/null; then
         echo "  WARNING: PgBouncer default_pool_size=$_PGB_POOL (< 40). Risk of pool exhaustion with 3 bots."
     else
