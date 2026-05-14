@@ -242,7 +242,12 @@ class ContractManager:
                 logger.warning(f"Failed to get gas price, using default: {str(e)}")
                 gas_price = 30_000_000_000
             
-            transaction = contract.functions.approve(
+            # S218: self.w3 is AsyncWeb3 (AsyncHTTPProvider + AsyncEth), so
+            # contract.functions.approve(...).build_transaction(...) returns a
+            # coroutine and must be awaited. Pre-fix, the unawaited coroutine
+            # was passed to sign_transaction() which raised "transaction_dict
+            # must be dict-like", crashing the bot at startup pre-approval.
+            transaction = await contract.functions.approve(
                 checksum_spender,
                 amount
             ).build_transaction({
