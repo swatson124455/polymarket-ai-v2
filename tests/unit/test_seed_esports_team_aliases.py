@@ -101,6 +101,53 @@ def test_extract_variants_deduplicates_repeated_match():
     assert variants.count("Hanwha Life Esports") == 1
 
 
+# ── Bug 3: token-subset contamination filter (from S216 dry-run) ────────────
+
+
+def test_subset_filter_rejects_cross_team_academy_fp():
+    """LoL FP from dry-run: T1 Esports Academy → Nongshim Esports Academy
+    scored 0.9091 on token_set_ratio (shared {esports, academy}) but they
+    are different orgs. Filter must reject."""
+    assert not seed._passes_subset_filter("T1 Esports Academy", "Nongshim Esports Academy")
+    assert not seed._passes_subset_filter("Team BDS Academy", "Team Heretics Academy")
+    assert not seed._passes_subset_filter("UCAM Esports Academy", "Nongshim Esports Academy")
+    assert not seed._passes_subset_filter("Team WE Academy", "Team Heretics Academy")
+
+
+def test_subset_filter_rejects_cross_team_cs2_fps():
+    """CS2 FPs from dry-run — same shape as LoL but with different generic
+    suffix words ('Esports Club', 'Pandas')."""
+    assert not seed._passes_subset_filter("R2 Esports Club", "Frites Esports Club")
+    assert not seed._passes_subset_filter("R2 Esports Club", "Esports Club")
+    assert not seed._passes_subset_filter("9 Pandas", "Arctic Pandas")
+
+
+def test_subset_filter_accepts_subset_aliases():
+    """Verified-good pairs from LoL dry-run that the filter MUST keep."""
+    # alias is a strict token-subset of canonical
+    assert seed._passes_subset_filter("T1 Esports Academy", "T1 Academy")
+    assert seed._passes_subset_filter("T1 Esports Academy", "T1")
+    assert seed._passes_subset_filter("NRG Esports", "NRG")
+    assert seed._passes_subset_filter("DRX Academy", "DRX")
+    assert seed._passes_subset_filter("HANJIN BRION Academy", "HANJIN")
+    assert seed._passes_subset_filter("Orbit Anonymo Esports", "Orbit Anonymo")
+    assert seed._passes_subset_filter("BBL Dark Passage", "Dark Passage")
+    assert seed._passes_subset_filter("INTZ Academy", "INTZ")
+    assert seed._passes_subset_filter("Karmine Corp Blue Stars", "Karmine Corp Blue")
+
+
+def test_subset_filter_rejects_when_no_shared_non_generic_token():
+    """All-generic shared set means alias has no distinguishing content."""
+    assert not seed._passes_subset_filter("Acme Esports", "Foo Esports")  # only 'esports' shared
+    assert not seed._passes_subset_filter("Team Alpha", "Team Beta")  # only 'team' shared
+
+
+def test_subset_filter_rejects_disjoint_canonicals():
+    """No shared tokens at all → reject."""
+    assert not seed._passes_subset_filter("T1", "Gen.G")
+    assert not seed._passes_subset_filter("FNC", "G2")
+
+
 def test_extract_variants_known_gap_acronym_plus_word():
     """Documented gap, NOT a feature: 'KT Rolster' currently extracts
     only 'KT' (pattern b) — pattern (a) requires lowercase after the

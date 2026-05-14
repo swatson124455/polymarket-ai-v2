@@ -50,6 +50,18 @@ load_dotenv()
 MIN_FUZZY_LINK = 85.0   # rapidfuzz token_set_ratio threshold for auto-aliases
 MIN_TEAM_NAME_LEN = 2   # skip suspicious 1-char team names
 
+# Generic esports-suffix tokens that don't distinguish teams. Used by the
+# cross-team contamination filter in _build_fuzzy_link_rows — token_set_ratio
+# is set-comparison, so canonicals like "T1 Esports Academy" and aliases like
+# "Nongshim Esports Academy" score high (2/3 shared tokens) even though they
+# refer to different orgs. Requiring a shared NON-GENERIC token rejects the
+# cross-team noise without losing legitimate variants like "DRX Academy"→"DRX".
+_GENERIC_TOKENS: Set[str] = {
+    "esports", "esport", "e-sports",
+    "academy", "youth", "challengers", "challenger", "junior",
+    "club", "gaming", "team",
+}
+
 # Variant extractors — multiple patterns target the major team-name
 # shapes Polymarket uses in question text:
 #   (a) Multi-word capitalized orgs:  "Hanwha Life Esports", "KT Rolster",
@@ -210,6 +222,36 @@ def _build_identity_rows(
     return rows
 
 
+def _passes_subset_filter(canonical: str, alias: str) -> bool:
+    """Cross-team contamination check for fuzzy-link alias candidates.
+
+    token_set_ratio is order-blind, so canonical "T1 Esports Academy" and
+    alias "Nongshim Esports Academy" score 90+ on their 2/3 shared tokens
+    even though they refer to different orgs. Without this filter, those
+    bad pairs land in esports_team_aliases and the matcher routes T1
+    predictions onto Nongshim markets — real correctness hazard.
+
+    Two combined rules:
+      (a) Shared NON-GENERIC token must exist. Filters all-generic shared
+          sets like {esports, club} (the "R2 Esports Club" → "Esports Club"
+          FP shape).
+      (b) Smaller token set must be a subset of the larger. Filters
+          cross-team cases like "9 Pandas" → "Arctic Pandas" where both
+          contain the brand word but diverge on the distinguishing token.
+
+    Returns True iff the pair passes both rules.
+    """
+    canonical_tokens = set(canonical.lower().split())
+    alias_tokens = set(alias.lower().split())
+    non_generic_shared = (alias_tokens & canonical_tokens) - _GENERIC_TOKENS
+    if not non_generic_shared:
+        return False
+    if not (alias_tokens.issubset(canonical_tokens)
+            or canonical_tokens.issubset(alias_tokens)):
+        return False
+    return True
+
+
 def _build_fuzzy_link_rows(
     pandascore_teams: Dict[str, Set[str]],
     polymarket_questions: List[str],
@@ -248,6 +290,8 @@ def _build_fuzzy_link_rows(
                         best_variant_score = s
                         best_variant = v
                 if not best_variant or best_variant_score < MIN_FUZZY_LINK:
+                    continue
+                if not _passes_subset_filter(canonical, best_variant):
                     continue
                 key = (canonical, best_variant, game)
                 if key in seen:
