@@ -16,6 +16,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import time
 from collections import OrderedDict
@@ -45,6 +46,19 @@ def _get_rate_config():
 
 _RATE_LIMIT, _CB_BUFFER = _get_rate_config()
 _HARD_LIMIT = _RATE_LIMIT - _CB_BUFFER
+
+# Inter-page sleep during paginated calls (e.g. get_past_matches). The
+# hardcoded 4.0s here was set so 1 req / 4s yields 900 req/hr — comfortably
+# under the 1000 req/hr free-tier budget. But that math assumed continuous
+# pagination, while real usage is bursty: EB v2 scans every 120s and consumes
+# ~240 req/hr total (24% of budget). The 4-sec gap was costing 13-27s of
+# scan latency to defend a budget that's never close to being hit.
+# Dropping to 1.0s yields a 3600 req/hr ceiling (still well above realistic
+# usage even if all 3 esports bots reactivated simultaneously) while reducing
+# scan latency by ~75%. Env override PANDASCORE_INTER_PAGE_DELAY lets the
+# operator widen the gap if budget pressure ever changes — the existing
+# circuit-breaker at _HARD_LIMIT still hard-stops requests at 950/hr.
+_INTER_PAGE_DELAY = float(os.getenv("PANDASCORE_INTER_PAGE_DELAY", "1.0"))
 
 # PandaScore game slug mapping
 GAME_SLUGS = {
@@ -311,8 +325,9 @@ class PandaScoreClient:
                 break  # Last page
 
             page += 1
-            # Rate limit: 1 req/4s = 900 req/hr (under 1K limit)
-            await asyncio.sleep(4.0)
+            # Rate-limit pacing — see _INTER_PAGE_DELAY constant for rationale
+            # (was 4.0s hardcoded; load-bearing for scan latency on EB v2).
+            await asyncio.sleep(_INTER_PAGE_DELAY)
 
         logger.info(
             "PandaScoreClient: fetched past matches",
