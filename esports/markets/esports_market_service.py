@@ -464,7 +464,15 @@ class EsportsMarketService:
 
             except Exception as exc:
                 stats["errors"] += 1
-                logger.debug(
+                # S216: was logger.debug → invisible at default INFO level.
+                # The cycle-end heartbeat surfaces aggregate `errors=N` but
+                # without per-error context you can't tell whether the
+                # failures are (a) a single transient CLOB hiccup or (b) a
+                # sustained outage affecting a specific market subset.
+                # WARNING with truncated market_id + error string gives
+                # the operator triage data; structlog will suppress dupes
+                # when the same error string repeats across markets.
+                logger.warning(
                     "EsportsMarketService: CLOB refresh failed",
                     market_id=market_id[:20] if market_id else "",
                     error=str(exc),
