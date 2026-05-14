@@ -79,6 +79,19 @@ class ContractManager:
                     from web3 import Web3
                     from web3.eth import AsyncEth
                     self.w3 = Web3(Web3.AsyncHTTPProvider(self.rpc_url), modules={"eth": (AsyncEth,)})
+                # S216: Polygon is a PoA chain; extraData field exceeds 32 bytes.
+                # Inject middleware so web3.py accepts the longer extraData and
+                # bor-style RPC endpoints (e.g. polygon-bor-rpc.publicnode.com) work.
+                try:
+                    from web3.middleware import ExtraDataToPOAMiddleware
+                    self.w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+                except ImportError:
+                    try:
+                        # web3.py v6 fallback
+                        from web3.middleware import geth_poa_middleware
+                        self.w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+                    except ImportError:
+                        pass
                 # Verify connection - Web3.py v6+ compatibility
                 # is_connected() was deprecated/removed in Web3.py v6+
                 # Use get_block('latest') as connectivity test instead

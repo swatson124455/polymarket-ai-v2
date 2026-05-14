@@ -106,6 +106,22 @@ class BaseBot(ABC):
     async def start(self):
         self.running = True
         logger.info("Bot started", bot_name=self.bot_name)
+        # S217: Wallet-derived bankroll init. No-op for bots where
+        # BOT_WALLET_BANKROLL_ENABLED is off (which is all of them by default
+        # except per-bot opt-in like MirrorBot). Raises and aborts start() on
+        # cold-start wallet-read failure for opted-in bots — that's intentional;
+        # an opted-in bot must not run against fake config capital.
+        if self.bankroll is not None:
+            try:
+                await self.bankroll.init_wallet_bankroll()
+            except Exception as _bk_err:
+                logger.critical(
+                    "wallet_bankroll_init_failed",
+                    bot_name=self.bot_name,
+                    error=str(_bk_err),
+                )
+                self.running = False
+                raise
         # BUG FIX: Add error handling for scan task to prevent silent failures
         self.scan_task = asyncio.create_task(self._scan_loop())
         self.scan_task.add_done_callback(self._task_error_handler)

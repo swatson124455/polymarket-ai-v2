@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any, Dict, Optional, Tuple
 
 from structlog import get_logger
@@ -82,6 +83,33 @@ class BotBankrollManager:
         self.kelly_fraction: float = cfg["kelly_fraction"]
         self.max_bet_usd: float = cfg["max_bet_usd"]
         self.max_daily_usd: float = cfg["max_daily_usd"]
+        # S217: per-bot wallet-derived bankroll (replaces BOT_BANKROLL_CONFIG capital
+        # fiction with on-chain USDC.e balance). kelly_fraction / max_bet_usd /
+        # max_daily_usd remain config-driven — those are operator policy, not
+        # capacity facts. Gated per-bot via BOT_WALLET_BANKROLL_ENABLED JSON.
+        self._wallet_bankroll_enabled: bool = self._is_wallet_bankroll_enabled(bot_name)
+        self._last_wallet_capital: Optional[float] = None
+        self._last_wallet_read_ts: float = 0.0  # monotonic; 0 = never initialized
+        self._wallet_refresh_task: Optional[asyncio.Task] = None
+        # Defensive float coercion — MagicMock settings (test fixtures) have
+        # auto-attribute __float__ that returns 1.0; would silently set 1.0 here.
+        def _safe_float(name: str, default: float) -> float:
+            raw = getattr(settings, name, default)
+            if isinstance(raw, (int, float)):
+                return float(raw)
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                return default
+        # Only meaningful when _wallet_bankroll_enabled is True; harmless otherwise.
+        self._wallet_stale_threshold_s: float = (
+            _safe_float("WALLET_BANKROLL_STALE_THRESHOLD_S", 3600.0)
+            if self._wallet_bankroll_enabled else 3600.0
+        )
+        self._wallet_refresh_interval_s: float = (
+            _safe_float("WALLET_BANKROLL_REFRESH_INTERVAL_S", 600.0)
+            if self._wallet_bankroll_enabled else 600.0
+        )
         # Day 2 (S173): Shared phase cap across all bots via PHASE_MAX_BET_USD JSON + TRADING_PHASE
         # Parsed from risk_manager.py:934-946 pattern. Read here for bankroll-level enforcement.
         try:
@@ -121,6 +149,145 @@ class BotBankrollManager:
             "max_daily_usd": float(merged["max_daily_usd"]),
         }
 
+    @staticmethod
+    def _is_wallet_bankroll_enabled(bot_name: str) -> bool:
+        """S217: per-bot opt-in for wallet-derived capital. JSON form:
+        BOT_WALLET_BANKROLL_ENABLED='{"MirrorBot": true}'.
+        Defaults False for all bots — the 13 unmigrated bots keep config capital.
+        Defensive against MagicMock (test fixtures patch `settings` to MagicMock,
+        whose auto-attributes are truthy): only string-JSON or dict accepted."""
+        raw = getattr(settings, "BOT_WALLET_BANKROLL_ENABLED", "{}")
+        try:
+            if isinstance(raw, str):
+                cfg = json.loads(raw)
+            elif isinstance(raw, dict):
+                cfg = raw
+            else:
+                return False
+            if not isinstance(cfg, dict):
+                return False
+            return bool(cfg.get(bot_name, False))
+        except Exception:
+            return False
+
+    async def init_wallet_bankroll(self) -> None:
+        """S217: Read wallet USDC.e balance and set `capital` accordingly.
+        No-op if BOT_WALLET_BANKROLL_ENABLED is off for this bot.
+
+        Cold-start guarantees:
+          - Raises RuntimeError if wallet read fails (after one retry).
+          - Raises RuntimeError if wallet balance is $0.
+          - Spawns background refresh loop on success.
+
+        Idempotent: subsequent calls are no-ops if refresh loop already running.
+        Called from base_bot.start() after constructor.
+        """
+        if not self._wallet_bankroll_enabled:
+            return
+        if self._wallet_refresh_task is not None and not self._wallet_refresh_task.done():
+            return  # already initialized
+        wallet = (getattr(settings, "WALLET_ADDRESS", None) or "").strip()
+        if not wallet:
+            raise RuntimeError(
+                f"BotBankrollManager[{self.bot_name}]: BOT_WALLET_BANKROLL_ENABLED but "
+                "WALLET_ADDRESS not set in env. Refusing to start."
+            )
+        from base_engine.execution.clob_adapter import check_usdc_balance
+        balance = await check_usdc_balance(wallet_address=wallet)
+        if balance is None:
+            # one retry with backoff
+            await asyncio.sleep(2.0)
+            balance = await check_usdc_balance(wallet_address=wallet)
+        if balance is None:
+            raise RuntimeError(
+                f"BotBankrollManager[{self.bot_name}]: cold-start wallet read failed "
+                "after retry. Refusing to start with config-fallback capital."
+            )
+        if balance <= 0:
+            raise RuntimeError(
+                f"BotBankrollManager[{self.bot_name}]: wallet balance is $0 "
+                f"({wallet[:8]}...). Refusing to start — fund the wallet first."
+            )
+        _old_capital = self.capital
+        self.capital = float(balance)
+        self._last_wallet_capital = float(balance)
+        self._last_wallet_read_ts = time.monotonic()
+        logger.info(
+            "bankroll_initialized_from_wallet",
+            bot_name=self.bot_name,
+            capital=round(balance, 4),
+            source="wallet",
+            config_capital_overridden=_old_capital,
+            wallet=wallet[:8] + "...",
+        )
+        self._wallet_refresh_task = asyncio.create_task(self._wallet_refresh_loop())
+
+    async def _wallet_refresh_loop(self) -> None:
+        """S217: Periodic wallet-balance refresh (10 min default).
+        Material changes (>20%) are logged. Read failures hold last-known-good;
+        get_bet_size() refuses to size once read is older than stale threshold."""
+        from base_engine.execution.clob_adapter import check_usdc_balance
+        while True:
+            try:
+                await asyncio.sleep(self._wallet_refresh_interval_s)
+                balance = await check_usdc_balance()
+                if balance is None:
+                    await asyncio.sleep(5.0)
+                    balance = await check_usdc_balance()
+                age = time.monotonic() - self._last_wallet_read_ts
+                if balance is None:
+                    logger.critical(
+                        "bankroll_wallet_read_failed",
+                        bot_name=self.bot_name,
+                        last_known_capital=self._last_wallet_capital,
+                        stale_age_s=round(age, 1),
+                        stale_threshold_s=self._wallet_stale_threshold_s,
+                    )
+                    continue
+                if balance <= 0:
+                    logger.critical(
+                        "bankroll_wallet_zero_balance",
+                        bot_name=self.bot_name,
+                        previous_capital=self._last_wallet_capital,
+                    )
+                    self._last_wallet_capital = 0.0
+                    self._last_wallet_read_ts = time.monotonic()
+                    self.capital = 0.0
+                    continue
+                # material-change watch
+                if self._last_wallet_capital and self._last_wallet_capital > 0:
+                    pct = abs(balance - self._last_wallet_capital) / self._last_wallet_capital
+                    if pct > 0.20:
+                        logger.info(
+                            "bankroll_wallet_material_change",
+                            bot_name=self.bot_name,
+                            old_capital=round(self._last_wallet_capital, 4),
+                            new_capital=round(balance, 4),
+                            pct_change=round(pct * 100, 1),
+                        )
+                self.capital = float(balance)
+                self._last_wallet_capital = float(balance)
+                self._last_wallet_read_ts = time.monotonic()
+            except asyncio.CancelledError:
+                break
+            except Exception as _err:
+                logger.warning(
+                    "bankroll_wallet_refresh_loop_error",
+                    bot_name=self.bot_name,
+                    error=str(_err),
+                )
+
+    def _wallet_bankroll_fresh(self) -> bool:
+        """S217: True when wallet bankroll is fresh enough to size against,
+        OR when wallet bankroll is disabled (config-capital path). False
+        when wallet read is older than stale threshold."""
+        if not self._wallet_bankroll_enabled:
+            return True
+        if self._last_wallet_read_ts == 0:
+            return False  # never initialized
+        age = time.monotonic() - self._last_wallet_read_ts
+        return age <= self._wallet_stale_threshold_s
+
     async def get_bet_size(
         self,
         confidence: float,
@@ -150,6 +317,22 @@ class BotBankrollManager:
             return 0.0, 0.0
         if confidence <= price:
             return 0.0, 0.0  # No positive edge — don't bet
+
+        # S217: wallet-bankroll freshness + zero-balance guards. Both no-op when
+        # this bot is on the config-capital path (BOT_WALLET_BANKROLL_ENABLED off).
+        if self._wallet_bankroll_enabled:
+            if not self._wallet_bankroll_fresh():
+                logger.warning(
+                    "bankroll_stale_refusing_to_size",
+                    bot_name=self.bot_name,
+                    stale_age_s=round(time.monotonic() - self._last_wallet_read_ts, 1)
+                    if self._last_wallet_read_ts else None,
+                    stale_threshold_s=self._wallet_stale_threshold_s,
+                )
+                return 0.0, 0.0
+            if self.capital <= 0:
+                logger.warning("bankroll_zero_capital_refusing_to_size", bot_name=self.bot_name)
+                return 0.0, 0.0
 
         # S91: Conformal-aware Kelly via width-based dampening.
         # Old approach: used p_low as kelly_confidence. With binary outcomes and

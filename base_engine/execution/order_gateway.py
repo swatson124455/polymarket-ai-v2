@@ -165,7 +165,10 @@ class OrderGateway:
     async def _on_order_filled(self, payload: Dict[str, Any]) -> None:
         """S120: Handle order_filled event from UserOrderWebSocket via EventBus.
         Confirms actual fill size/price and logs latency. Position already tracked
-        optimistically at submission time — this validates the fill."""
+        optimistically at submission time — this validates the fill.
+        P0.19: On partial fill, also reconciles DB position.size to filled amount.
+        Without this, position.size remains at the optimistically-set requested
+        size, causing exposure overstatement and over-sized exit attempts."""
         order_id = payload.get("id")
         if not order_id or order_id not in self._pending_orders:
             return
@@ -192,6 +195,78 @@ class OrderGateway:
                 requested=pending["size"],
                 remaining=round(pending["size"] - filled_size, 6),
             )
+            try:
+                await self._adjust_position_for_partial_fill(
+                    bot_name=pending["bot_name"],
+                    market_id=pending["market_id"],
+                    side=pending["side"],
+                    new_size=filled_size,
+                    fill_price=filled_price,
+                )
+            except Exception as _adj_err:
+                logger.error(
+                    "partial_fill_position_adjust_failed",
+                    order_id=order_id,
+                    bot_name=pending["bot_name"],
+                    market_id=pending["market_id"],
+                    error=str(_adj_err),
+                )
+
+    async def _adjust_position_for_partial_fill(
+        self,
+        bot_name: str,
+        market_id: str,
+        side: str,
+        new_size: float,
+        fill_price: float,
+    ) -> None:
+        """P0.19: Reconcile position.size in DB and in-memory exposure when the
+        CLOB partial-fills a live entry. SELL is skipped — SELL orders never
+        enter _pending_orders (place_order:1245), and residual position after
+        partial SELL is a separate concern."""
+        if (side or "").upper() == "SELL":
+            return
+        if not self.db or not getattr(self.db, "session_factory", None):
+            return
+        from sqlalchemy import select
+        from base_engine.data.database import Position
+        async with self.db.get_session() as session:
+            r = await session.execute(
+                select(Position).where(
+                    Position.bot_id == bot_name,
+                    Position.market_id == market_id,
+                    Position.side == side,
+                    Position.status == "open",
+                ).limit(1).with_for_update()
+            )
+            pos = r.scalar_one_or_none()
+            if pos is None:
+                logger.warning(
+                    "partial_fill_no_position_found",
+                    bot_name=bot_name, market_id=market_id, side=side,
+                )
+                return
+            old_size = float(pos.size or 0)
+            pos.size = new_size
+            # Mirror confirm_position's entry_cost formula (size * price * cost_rate)
+            _cost_rate = (
+                getattr(settings, "FIXED_SLIPPAGE_BPS", 50)
+                + getattr(settings, "TAKER_FEE_BPS", 150)
+            ) / 10000.0
+            pos.entry_cost = new_size * fill_price * _cost_rate
+            await session.commit()
+            logger.info(
+                "partial_fill_position_adjusted",
+                bot_name=bot_name, market_id=market_id, side=side,
+                old_size=old_size, new_size=new_size,
+            )
+        # In-memory exposure tracker (used by check_risk_limits hot path)
+        bot_exposure = self._position_exposure.get(bot_name)
+        if bot_exposure and market_id in bot_exposure:
+            old_value = float(bot_exposure[market_id] or 0)
+            new_value = new_size * fill_price
+            bot_exposure[market_id] = new_value
+            self._total_exposure_usd = max(0.0, self._total_exposure_usd - old_value + new_value)
 
     async def _reap_stale_orders(self) -> None:
         """S120: Cancel orders that exceeded fill timeout. Called periodically from BaseEngine."""

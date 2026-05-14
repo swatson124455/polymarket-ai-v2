@@ -70,7 +70,17 @@ def _make_bot(**kwargs):
         # S172 D8: Flat sizing default for tests — $100 passes dust gate ($25 min)
         ms.MIRROR_FLAT_POSITION_SIZE_USD = 30.0
         bot = MirrorBot(engine)
-    bot.bankroll = None  # Disable bankroll so daily cap uses settings path
+    # S217: dust gate at mirror_bot.py:3317 requires bankroll.max_bet_usd.
+    # Setting bankroll=None now raises (intentional — bankroll-None is structural
+    # failure in prod). Tests use a minimal MagicMock with max_bet_usd=25 so the
+    # dust gate computes floor=$25 (preserves pre-S217 effective behavior where
+    # MIRROR_MIN_TRADE_USD=25 was the hardcoded floor) and high max_daily so
+    # daily cap doesn't interfere unless a specific test overrides it.
+    _bk = MagicMock()
+    _bk.max_bet_usd = 25.0
+    _bk.max_daily_usd = 10000.0
+    _bk.capital = 10000.0
+    bot.bankroll = _bk
     bot._adaptive_safety = None  # Disable adaptive safety so tests control limits via settings
     return bot, engine
 

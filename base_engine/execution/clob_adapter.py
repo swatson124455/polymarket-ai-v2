@@ -180,6 +180,58 @@ class ClobAdapter:
         return await loop.run_in_executor(None, lambda: _get_order_book_sync(token_id))
 
 
+async def check_usdc_balance(
+    wallet_address: Optional[str] = None,
+    rpc_url: Optional[str] = None,
+) -> Optional[float]:
+    """S217: Query wallet USDC.e balance via Polygon JSON-RPC.
+
+    USDC.e (the bridged variant used by Polymarket markets) at the canonical
+    Polygon contract. Returns balance in USD (float), or None when RPC/wallet
+    config is missing or fails. Read-only — no signing required.
+
+    Called by BotBankrollManager at startup and every 10 min to derive
+    bot capital from actual on-chain wallet capacity (S217 root fix —
+    replaces the BOT_BANKROLL_CONFIG `capital` fiction).
+    """
+    wallet = (wallet_address or getattr(settings, "WALLET_ADDRESS", None) or "").strip()
+    rpc = (
+        rpc_url
+        or getattr(settings, "POLYGON_RPC", None)
+        or getattr(settings, "POLYGON_RPC_URL", None)
+        or ""
+    ).strip()
+    if not wallet or not rpc:
+        logger.debug("usdc_balance_check_skipped: WALLET_ADDRESS or POLYGON_RPC not configured")
+        return None
+    # USDC.e contract address on Polygon (bridged, used by Polymarket)
+    USDC_E = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+    # balanceOf(address) selector = 0x70a08231, address right-padded to 32 bytes
+    data = "0x70a08231" + wallet.lower().replace("0x", "").rjust(64, "0")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(rpc, json={
+                "jsonrpc": "2.0",
+                "method": "eth_call",
+                "params": [{"to": USDC_E, "data": data}, "latest"],
+                "id": 1,
+            })
+            resp.raise_for_status()
+            j = resp.json()
+        if "error" in j:
+            logger.warning("usdc_balance_rpc_error", error=j["error"])
+            return None
+        result = j.get("result", "0x0")
+        if not result or result == "0x":
+            return 0.0
+        # USDC.e has 6 decimals
+        balance_usd = int(result, 16) / 10 ** 6
+        return balance_usd
+    except Exception as _e:
+        logger.warning("usdc_balance_check_failed: %s", _e)
+        return None
+
+
 async def check_matic_balance(
     threshold_matic: float = 1.0,
     discord_webhook: Optional[str] = None,
