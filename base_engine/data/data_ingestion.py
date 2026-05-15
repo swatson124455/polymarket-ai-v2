@@ -1141,10 +1141,8 @@ class DataIngestionService:
                                     if raw_ts:
                                         resolved_at_val = self._parse_timestamp(raw_ts)
                                         break
-                                # Fallback: use end_date_iso as resolved_at proxy for resolved markets
-                                # without an explicit resolution timestamp (prevents data leakage in training)
-                                if resolved_at_val is None and resolved_flag and end_date:
-                                    resolved_at_val = end_date
+                                # No end_date_iso fallback — that's scheduled close, not resolution moment.
+                                # Leave NULL if no explicit timestamp; resolution_backfill stamps NOW() on observation.
                                 # Build market data with V2 fields
                                 market_data.append({
                                     "id": market_id,
@@ -2050,14 +2048,7 @@ class DataIngestionService:
                         resolved_at = datetime.fromisoformat(closed_at_raw.replace('Z', '+00:00'))
                     except (ValueError, AttributeError, TypeError):
                         pass
-                # Fallback: use endDate as resolved_at proxy (prevents NULL resolved_at)
-                if resolved_at is None:
-                    end_date_raw = market.get("endDate") or market.get("end_date_iso")
-                    if isinstance(end_date_raw, str):
-                        try:
-                            resolved_at = datetime.fromisoformat(end_date_raw.replace('Z', '+00:00'))
-                        except (ValueError, AttributeError, TypeError):
-                            pass
+                # No endDate fallback — that's scheduled close, not resolution moment.
 
                 result = {
                     "resolved": True,

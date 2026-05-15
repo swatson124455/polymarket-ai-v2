@@ -3684,7 +3684,7 @@ class Database:
                 _pos_resolved = await _pr_sess.execute(text(
                     "SELECT p.market_id, p.source_bot, p.side, p.size, p.entry_price, "
                     "       m.resolution, "
-                    "       COALESCE(m.resolved_at, m.end_date_iso) AS resolved_at, "
+                    "       m.resolved_at AS resolved_at, "
                     "       COALESCE(("
                     "         SELECT SUM(te_x.realized_pnl) FROM trade_events te_x "
                     "         WHERE te_x.market_id = p.market_id "
@@ -3718,6 +3718,7 @@ class Database:
                     "             AND te_exit_agg.bot_name = p.source_bot "
                     "WHERE p.status IN ('open', 'closed') "
                     "  AND m.resolution IN ('YES', 'NO') "
+                    "  AND m.resolved_at IS NOT NULL "
                     "  AND NOT EXISTS ("
                     "    SELECT 1 FROM trade_events te "
                     "    WHERE te.market_id = p.market_id "
@@ -5504,6 +5505,21 @@ class Database:
         else:
             idem_key = f"{bot_name}:{market_id}:{side}:{order_id or correlation_id or ''}"
         evt_time = _naive_utc(event_time) if event_time else _naive_utc(datetime.now(timezone.utc))
+
+        # Reject future-dated event_time (5-min clock-skew tolerance).
+        # Catches scheduled-close-as-resolution-time corruption at the insertion boundary,
+        # independent of which writer produced the bad value.
+        _now_naive = _naive_utc(datetime.now(timezone.utc))
+        if evt_time > _now_naive + timedelta(minutes=5):
+            logger.warning(
+                "trade_event_rejected_future_event_time",
+                bot_name=bot_name,
+                market_id=market_id,
+                event_type=event_type,
+                evt_time=evt_time.isoformat(),
+                now=_now_naive.isoformat(),
+            )
+            return None
 
         try:
             from sqlalchemy import text as _sa_text
