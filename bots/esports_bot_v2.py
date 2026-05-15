@@ -199,6 +199,19 @@ class EsportsBotV2(BaseBot):
         except Exception as e:
             logger.warning(f"Market scanner init failed: {e}")
 
+        # Signal exposure-restored to base_engine's startup-hold gate.
+        # EB v2 has no in-memory daily-exposure counter to restore (unlike
+        # MirrorBot's paper_trades SUM or WeatherBot's group/city exposure),
+        # so there's nothing to recover — but the base_engine still gates
+        # ready_to_trade on this flag (base_engine.py:1272). Pre-fix the
+        # flag never fired, the 120s startup_hold watchdog fired on every
+        # restart, the bot entered degraded mode, and `missing=['exposure_restored']`
+        # showed up in journal at every cold start. _heavy_warmup runs
+        # async in background and gates predictions via _warmup_complete()
+        # so signaling exposure-restored here doesn't risk premature trading.
+        if getattr(self, "base_engine", None) is not None:
+            self.base_engine.mark_exposure_restored()
+
     async def _heavy_warmup(self) -> None:
         """Snapshot load / DB rebuild / pipeline fit — the slow cold path.
 
