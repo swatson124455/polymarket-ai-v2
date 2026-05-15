@@ -8,13 +8,14 @@ upper bound (`if not sites: return 0`).
 Purpose: insert `event_time <= NOW()` / `resolved_at <= NOW()` upper-bound
 clauses after every unguarded windowing lower bound across the codebase.
 
-Handles 3 shapes:
-  (a) Triple-quoted SQL block: `              AND event_time >= NOW() - INTERVAL '...'`
-       → insert a new line below with same indent
-  (b) Python string concat: `            " AND event_time >= NOW() - INTERVAL '...'"`
+Handles 3 SQL-fragment shapes (the docstring uses <COL> as a placeholder to
+keep its own examples from matching the detector regex):
+  (a) Triple-quoted SQL block: bare SQL line like  AND <COL> >= NOW - INTERVAL '...'
+       → insert a new line below with same indent + matching upper bound
+  (b) Python string concat: quoted SQL fragment like " AND <COL> >= NOW - INTERVAL '...'"
        → insert a new string-element line below
-  (c) Inline f-string / assignment: `time_filter = f"AND e.event_time >= NOW() - ..."`
-       → append ` AND e.event_time <= NOW()` before the closing quote
+  (c) Inline f-string / assignment ending with closing quote
+       → append the upper bound before the closing quote
 
 The detector logic lives in tests/unit/test_bot_pnl_windowing.py. This patcher
 imports `_find_unguarded_windowing` from there as the single source of truth
