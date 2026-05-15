@@ -202,7 +202,7 @@ async def main():
             "    (e.event_data->>'confidence')::float as conf"
             "  FROM trade_events e"
             "  WHERE e.bot_name = 'MirrorBot' AND e.event_type = 'ENTRY'"
-            "  AND e.event_time >= NOW() - INTERVAL '7 days'"
+            "  AND e.event_time >= NOW() - INTERVAL '7 days' AND e.event_time <= NOW()"
             "), resolutions AS ("
             "  SELECT market_id, side, realized_pnl"
             "  FROM trade_events"
@@ -231,7 +231,7 @@ async def main():
             "    (e.event_data->>'confidence')::float as conf"
             "  FROM trade_events e"
             "  WHERE e.bot_name = 'MirrorBot' AND e.event_type = 'ENTRY'"
-            "  AND e.event_time >= NOW() - INTERVAL '7 days'"
+            "  AND e.event_time >= NOW() - INTERVAL '7 days' AND e.event_time <= NOW()"
             "), resolutions AS ("
             "  SELECT market_id, side, realized_pnl"
             "  FROM trade_events"
@@ -271,7 +271,7 @@ async def main():
             "SELECT COUNT(*), ROUND(SUM(realized_pnl)::numeric, 2)"
             " FROM trade_events"
             " WHERE bot_name = 'MirrorBot' AND event_type = 'RESOLUTION'"
-            " AND event_time >= NOW() - INTERVAL '24 hours'"
+            " AND event_time >= NOW() - INTERVAL '24 hours' AND event_time <= NOW()"
         ))
         row9 = r9.fetchone()
         print(f"Resolutions last 24h: {row9[0]}, P&L: {row9[1]}")
@@ -279,7 +279,7 @@ async def main():
         r10 = await s.execute(text(
             "SELECT COUNT(*) FROM trade_events"
             " WHERE bot_name = 'MirrorBot' AND event_type = 'ENTRY'"
-            " AND event_time >= NOW() - INTERVAL '24 hours'"
+            " AND event_time >= NOW() - INTERVAL '24 hours' AND event_time <= NOW()"
         ))
         print(f"Entries last 24h: {r10.scalar()}")
 

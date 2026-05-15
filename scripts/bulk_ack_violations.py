@@ -157,6 +157,7 @@ async def main() -> None:
                   WHERE te.bot_name = rb.bot_name
                     AND te.market_id = rb.market_id
                     AND te.event_time >= NOW() - INTERVAL '7 days'
+                    AND te.event_time <= NOW()
               )
         """))
         class5_count = class5_result.rowcount

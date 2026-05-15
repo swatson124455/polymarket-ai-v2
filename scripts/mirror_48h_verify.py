@@ -15,7 +15,7 @@ async def main():
             "SELECT te.market_id, te.side, te.realized_pnl, te.event_data, te.idempotency_key "
             "FROM trade_events te "
             "WHERE te.bot_name='MirrorBot' AND te.event_type IN ('EXIT','RESOLUTION') "
-            "AND te.event_time >= NOW() - INTERVAL '48 hours' "
+            "AND te.event_time >= NOW() - INTERVAL '48 hours' AND te.event_time <= NOW()"
             "AND COALESCE(te.event_data->>'calibration_exclude','')=''"
         ))
 

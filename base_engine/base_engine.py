@@ -1718,6 +1718,7 @@ class BaseEngine:
                                     WHERE resolution IN ('YES', 'NO')
                                       AND was_correct IS NOT NULL
                                       AND resolved_at >= NOW() - INTERVAL '5 minutes'
+                                      AND resolved_at <= NOW()
                                     ORDER BY resolved_at DESC
                                     LIMIT 100
                                 """))

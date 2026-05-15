@@ -17,6 +17,7 @@ WITH entries AS (
     WHERE te.bot_name = 'MirrorBot'
       AND te.event_type = 'ENTRY'
       AND te.event_time >= NOW() - INTERVAL '48 hours'
+      AND te.event_time <= NOW()
       AND COALESCE(te.event_data->>'calibration_exclude', '') = ''
 ),
 resolutions AS (
@@ -29,6 +30,7 @@ resolutions AS (
       AND te.event_type IN ('EXIT', 'RESOLUTION')
       AND te.realized_pnl IS NOT NULL
       AND te.event_time >= NOW() - INTERVAL '48 hours'
+      AND te.event_time <= NOW()
     ORDER BY te.market_id, te.token_id, te.event_time DESC
 )
 SELECT
@@ -61,6 +63,7 @@ FROM trade_events te
 WHERE te.bot_name = 'MirrorBot'
   AND te.event_type = 'ENTRY'
   AND te.event_time >= NOW() - INTERVAL '48 hours'
+  AND te.event_time <= NOW()
   AND NOT EXISTS (
       SELECT 1 FROM trade_events r
       WHERE r.bot_name = 'MirrorBot'
@@ -79,6 +82,7 @@ FROM trade_events
 WHERE bot_name = 'MirrorBot'
   AND event_type = 'ENTRY'
   AND event_time >= NOW() - INTERVAL '48 hours'
+  AND event_time <= NOW()
 """)
 
 

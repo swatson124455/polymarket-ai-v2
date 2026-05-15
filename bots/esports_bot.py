@@ -1138,7 +1138,7 @@ class EsportsBot(BaseBot):
                             "SELECT DISTINCT market_id, side FROM trade_events "
                             "WHERE bot_name IN ('EsportsBot', 'EsportsLiveBot', 'EsportsSeriesBot') "
                             "AND event_type = 'ENTRY' AND side IN ('YES', 'NO') "
-                            "AND event_time >= NOW() - INTERVAL '30 days'"
+                            "AND event_time >= NOW() - INTERVAL '30 days' AND event_time <= NOW()"
                         )
                     )
                     for _mr in _ems_rows.fetchall():
@@ -1900,7 +1900,7 @@ class EsportsBot(BaseBot):
                             "FROM trade_events "
                             "WHERE bot_name = 'EsportsBot' "
                             "  AND event_type = 'ENTRY' "
-                            "  AND event_time >= NOW() - INTERVAL '1 hour' * :hours "
+                            "  AND event_time >= NOW() - INTERVAL '1 hour' * :hours AND event_time <= NOW()"
                             "ORDER BY event_time"
                         ),
                         {"hours": _window_h},
@@ -2498,6 +2498,7 @@ class EsportsBot(BaseBot):
                       AND te.realized_pnl IS NOT NULL
                       AND te.side IN ('YES', 'NO')
                       AND te.event_time > NOW() - INTERVAL '1 day' * :backfill_days
+                      AND te.event_time <= NOW()
                 """),
                 {"backfill_days": _backfill_days},
             )

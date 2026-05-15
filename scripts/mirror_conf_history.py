@@ -86,6 +86,7 @@ async def main():
         WHERE bot_name = 'MirrorBot'
           AND resolved_at IS NOT NULL
           AND resolved_at >= NOW() - INTERVAL '24 hours'
+          AND resolved_at <= NOW()
         GROUP BY 1
         ORDER BY 1
     """)

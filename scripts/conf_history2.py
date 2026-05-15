@@ -20,7 +20,7 @@ async def main():
             "  ROUND(MAX((event_data->>'confidence')::numeric), 3) as max_conf"
             " FROM trade_events"
             " WHERE bot_name = 'MirrorBot' AND event_type = 'ENTRY'"
-            " AND event_time >= NOW() - INTERVAL '21 days'"
+            " AND event_time >= NOW() - INTERVAL '21 days' AND event_time <= NOW()"
             " AND event_data->>'confidence' IS NOT NULL"
             " GROUP BY 1 ORDER BY 1"
         ))
@@ -41,7 +41,7 @@ async def main():
             "  event_data->>'conf_cal_shadow' as conf_cal_shadow"
             " FROM trade_events"
             " WHERE bot_name = 'MirrorBot' AND event_type = 'ENTRY'"
-            " AND event_time >= NOW() - INTERVAL '2 hours'"
+            " AND event_time >= NOW() - INTERVAL '2 hours' AND event_time <= NOW()"
             " AND event_data->>'conf_base' IS NOT NULL"
             " ORDER BY event_time DESC LIMIT 15"
         ))
@@ -60,7 +60,7 @@ async def main():
             "  entry_price as te_price"
             " FROM trade_events"
             " WHERE bot_name = 'MirrorBot' AND event_type = 'ENTRY'"
-            " AND event_time >= NOW() - INTERVAL '2 hours'"
+            " AND event_time >= NOW() - INTERVAL '2 hours' AND event_time <= NOW()"
             " ORDER BY event_time DESC LIMIT 10"
         ))
         print("=== trade_events columns vs event_data ===")
@@ -80,7 +80,7 @@ async def main():
             "  ROUND(MAX(confidence)::numeric, 3) as max_conf"
             " FROM trade_events"
             " WHERE bot_name = 'MirrorBot' AND event_type = 'ENTRY'"
-            " AND event_time >= NOW() - INTERVAL '21 days'"
+            " AND event_time >= NOW() - INTERVAL '21 days' AND event_time <= NOW()"
             " GROUP BY 1 ORDER BY 1"
         ))
         print("=== trade_events.confidence COLUMN BY DAY ===")

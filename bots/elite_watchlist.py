@@ -571,8 +571,8 @@ class EliteWatchlist:
                     _exit_time_filter = "AND te.event_time >= :regime_start"
                     _params["regime_start"] = _regime
                 else:
-                    _entry_time_filter = "AND event_time >= NOW() - INTERVAL '30 days'"
-                    _exit_time_filter = "AND te.event_time >= NOW() - INTERVAL '30 days'"
+                    _entry_time_filter = "AND event_time >= NOW() - INTERVAL '30 days' AND event_time <= NOW()"
+                    _exit_time_filter = "AND te.event_time >= NOW() - INTERVAL '30 days' AND te.event_time <= NOW()"
                 async with self._db.get_session(timeout=15) as session:
                     _result = await session.execute(text(f"""
                         WITH entry_trader AS (

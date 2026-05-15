@@ -1,13 +1,14 @@
-"""Static regression guard: every windowed `event_time > NOW() - INTERVAL ...`
-or `resolved_at > NOW() - INTERVAL ...` clause in scripts/ must be paired with
-an upper-bound `<= NOW()` clause nearby.
+"""Static regression guard: every windowed `<col> > NOW() - INTERVAL ...` or
+`<col> >= NOW() - INTERVAL ...` clause (where col is event_time or resolved_at)
+must be paired with an upper-bound `<= NOW()` clause within 5 lines, using the
+same alias.
 
 Without the upper bound, forward-dated rows (the temporal-corruption bug class)
 inflate windowed results. This test fails if any caller forgets the upper
-bound, including new scripts added in the future.
+bound, including new code added in the future.
 
-Scope: scripts/ — diagnostic + reporting tools. Live bot reader queries are
-covered by separate tests in their own test files.
+Scope: scripts/, bots/, base_engine/, ui/ — every directory where code queries
+resolution-observation timestamps. Tests/ excluded.
 """
 import re
 from pathlib import Path
@@ -15,10 +16,10 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-SCRIPTS_DIR = REPO_ROOT / "scripts"
+SCAN_DIRS = ["scripts", "bots", "base_engine", "ui"]
 
 # Files explicitly known to NOT contain the windowing pattern (skip optimization).
-# Empty for now — every script with the pattern should be covered.
+# Empty for now — every file with the pattern should be covered.
 KNOWN_CLEAN: set[str] = set()
 
 
@@ -36,7 +37,7 @@ def _find_unguarded_windowing(content: str) -> list[tuple[int, str]]:
     unguarded: list[tuple[int, str]] = []
 
     lower_bound_re = re.compile(
-        r"(\w+\.)?(event_time|resolved_at)\s*>\s*NOW\(\)\s*-"
+        r"(\w+\.)?(event_time|resolved_at)\s*>=?\s*NOW\(\)\s*-"
     )
 
     for i, line in enumerate(lines):
@@ -66,20 +67,32 @@ def _find_unguarded_windowing(content: str) -> list[tuple[int, str]]:
     return unguarded
 
 
-@pytest.mark.parametrize("path", sorted(SCRIPTS_DIR.glob("*.py")))
-def test_scripts_have_upper_bound_on_event_time_windowing(path: Path):
-    """For every script in scripts/, every `event_time > NOW() - ...` lower
-    bound must be paired with an upper bound `<= NOW()` within 5 lines.
+def _all_scan_paths() -> list[Path]:
+    paths: list[Path] = []
+    for d in SCAN_DIRS:
+        root = REPO_ROOT / d
+        if root.is_dir():
+            paths.extend(sorted(root.rglob("*.py")))
+    return paths
+
+
+@pytest.mark.parametrize("path", _all_scan_paths())
+def test_files_have_upper_bound_on_event_time_windowing(path: Path):
+    """For every .py file in scripts/, bots/, base_engine/, ui/, every
+    `<col> > NOW() - ...` or `<col> >= NOW() - ...` lower bound must be
+    paired with an upper bound `<= NOW()` within 5 lines, using the same
+    alias.
 
     This guards against the temporal-corruption bug class: forward-dated rows
-    bypass lower-only bounds and inflate windowed P&L / diagnostics.
+    bypass lower-only bounds and inflate windowed P&L / diagnostics, and can
+    pollute live trading control flow (calibration, dedup, drift tracking).
     """
     if path.name in KNOWN_CLEAN:
         pytest.skip(f"{path.name} explicitly marked clean")
     content = path.read_text(encoding="utf-8", errors="replace")
     unguarded = _find_unguarded_windowing(content)
     assert not unguarded, (
-        f"{path.name}: found {len(unguarded)} unguarded windowing site(s):\n"
+        f"{path.relative_to(REPO_ROOT)}: {len(unguarded)} unguarded windowing site(s):\n"
         + "\n".join(f"  line {ln}: {txt}" for ln, txt in unguarded)
     )
 

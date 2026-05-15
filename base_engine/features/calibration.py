@@ -392,7 +392,7 @@ class HorizonBiasCalibrator:
                     "  FROM trade_events te"
                     "  WHERE te.event_type = 'ENTRY'"
                     "    AND te.side IN ('YES', 'NO')"
-                    "    AND te.event_time > NOW() - INTERVAL '1 day' * :interval_days"
+                    "    AND te.event_time > NOW() - INTERVAL '1 day' * :interval_days AND te.event_time <= NOW()"
                     "), resolutions AS ("
                     "  SELECT te.market_id, te.bot_name, te.side, te.realized_pnl"
                     "  FROM trade_events te"
