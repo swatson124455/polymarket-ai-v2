@@ -49,6 +49,7 @@ from base_engine.audit.checks.frozen_price_check import FrozenPriceCheck
 from base_engine.audit.checks.prices_coverage_check import PricesCoverageCheck
 from base_engine.audit.checks.bot_health_state_check import BotHealthStateCheck
 from base_engine.audit.checks.resolution_verification_check import ResolutionVerificationCheck
+from base_engine.audit.checks.temporal_future_check import TemporalFutureCheck
 
 if TYPE_CHECKING:
     from base_engine.data.database import Database
@@ -114,6 +115,7 @@ def build_audit_orchestrator(db: "Database", alerting=None) -> AuditOrchestrator
     orchestrator.register_check(PricesCoverageCheck())       # S167: open positions with no price data
     orchestrator.register_check(BotHealthStateCheck())
     orchestrator.register_check(ResolutionVerificationCheck())  # S169: duplicate RESOLUTION detection
+    orchestrator.register_check(TemporalFutureCheck())  # guards 6 resolution-observation cols against future-dated writes
 
     logger.info(
         "audit_orchestrator_built",
