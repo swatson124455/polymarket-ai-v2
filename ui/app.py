@@ -165,6 +165,7 @@ async def api_pnl_windows():
                     FROM trade_events
                     WHERE bot_name = :bot
                       AND event_time > NOW() - INTERVAL '1 hour' * :hours
+                      AND event_time <= NOW()
                 """), {"bot": bot, "hours": w})
                 rpnl, wins, losses, entries = r.fetchone()
                 bot_windows[str(w)] = {
@@ -237,6 +238,7 @@ async def api_trades(bot: str | None = None, hours: int = 24, limit: int = 50):
             LEFT JOIN markets m ON m.id = te.market_id
             WHERE te.event_type IN ('ENTRY', 'EXIT', 'RESOLUTION')
               AND te.event_time > NOW() - INTERVAL '1 hour' * :hours
+              AND te.event_time <= NOW()
               {clause}
             ORDER BY te.event_time DESC
             LIMIT :lim

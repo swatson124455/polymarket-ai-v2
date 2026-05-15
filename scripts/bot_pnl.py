@@ -231,6 +231,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
             FROM trade_events
             WHERE bot_name = ANY(:bot_family)
               AND event_time > NOW() - INTERVAL '1 hour' * :hours
+              AND event_time <= NOW()
             ORDER BY event_time DESC
         """), {"bot_family": bot_family, "hours": hours})
         events = r2.fetchall()
@@ -270,6 +271,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
             FROM trade_events
             WHERE bot_name = ANY(:bot_family)
               AND event_time > NOW() - INTERVAL '1 hour' * :hours
+              AND event_time <= NOW()
               AND event_type IN ('ENTRY', 'EXIT', 'RESOLUTION')
             GROUP BY DATE(event_time), event_type
             ORDER BY day DESC, event_type
@@ -621,6 +623,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
                   AND r.event_type IN ('RESOLUTION', 'EXIT')
                   AND r.realized_pnl IS NOT NULL
                   AND r.event_time > NOW() - INTERVAL '1 hour' * :hours
+                  AND r.event_time <= NOW()
                 GROUP BY conf_bin
                 ORDER BY MIN(e_entry.confidence)
             """), {"bot_family": bot_family, "hours": hours})

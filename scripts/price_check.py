@@ -24,7 +24,7 @@ async def main():
             "  ROUND(MAX(confidence)::numeric, 3) as max_conf"
             " FROM trade_events"
             " WHERE bot_name = 'MirrorBot' AND event_type = 'ENTRY'"
-            " AND event_time >= NOW() - INTERVAL '7 days'"
+            " AND event_time >= NOW() - INTERVAL '7 days' AND event_time <= NOW()"
             " GROUP BY 1 ORDER BY 1"
         ))
         print("=== ENTRY PRICE vs CONFIDENCE (7 days) ===")
@@ -41,7 +41,7 @@ async def main():
             "  COUNT(*) as total"
             " FROM trade_events"
             " WHERE bot_name = 'MirrorBot' AND event_type = 'ENTRY'"
-            " AND event_time >= NOW() - INTERVAL '7 days'"
+            " AND event_time >= NOW() - INTERVAL '7 days' AND event_time <= NOW()"
         ))
         row2 = r2.fetchone()
         print(f"Confidence > Price (Kelly sizes >0): {row2[0]}/{row2[2]}")
@@ -55,7 +55,7 @@ async def main():
             "  CASE WHEN confidence > price THEN 'EDGE' ELSE 'NO_EDGE' END as edge"
             " FROM trade_events"
             " WHERE bot_name = 'MirrorBot' AND event_type = 'ENTRY'"
-            " AND event_time >= NOW() - INTERVAL '2 hours'"
+            " AND event_time >= NOW() - INTERVAL '2 hours' AND event_time <= NOW()"
             " ORDER BY event_time DESC LIMIT 10"
         ))
         print("=== RECENT ENTRIES: conf vs price vs size ===")

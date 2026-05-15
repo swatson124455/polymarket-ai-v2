@@ -20,7 +20,7 @@ async def main():
             "  ROUND(MAX(confidence)::numeric, 3) as max_conf"
             " FROM trade_events"
             " WHERE bot_name = 'MirrorBot' AND event_type = 'ENTRY'"
-            " AND event_time >= NOW() - INTERVAL '21 days'"
+            " AND event_time >= NOW() - INTERVAL '21 days' AND event_time <= NOW()"
             " GROUP BY 1 ORDER BY 1"
         ))
         print("=== trade_events.confidence COLUMN BY DAY ===")
@@ -72,7 +72,7 @@ async def main():
             "  (event_data->>'conf_upstream')::float as upstream"
             " FROM trade_events"
             " WHERE bot_name = 'MirrorBot' AND event_type = 'ENTRY'"
-            " AND event_time >= NOW() - INTERVAL '2 hours'"
+            " AND event_time >= NOW() - INTERVAL '2 hours' AND event_time <= NOW()"
             " AND event_data->>'conf_base' IS NOT NULL"
             " ORDER BY event_time DESC LIMIT 10"
         ))

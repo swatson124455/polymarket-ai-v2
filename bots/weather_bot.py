@@ -192,6 +192,7 @@ class WeatherConfidenceCalibrator:
                         FROM trade_events
                         WHERE bot_name = 'WeatherBot' AND event_type = 'ENTRY'
                           AND event_time >= NOW() - INTERVAL '1 day' * :window_days
+                          AND event_time <= NOW()
                           AND confidence IS NOT NULL
                           AND price >= 0.08
                           AND (event_data->>'lead_time_hours')::float >= 48.0
@@ -385,6 +386,7 @@ class WeatherConfidenceCalibrator:
                                     FROM trade_events
                                     WHERE bot_name = 'WeatherBot' AND event_type = 'ENTRY'
                                       AND event_time >= NOW() - INTERVAL '1 day' * :window_days
+                                      AND event_time <= NOW()
                                       AND confidence IS NOT NULL AND price >= 0.08
                                       AND (event_data->>'lead_time_hours')::float >= 48.0
                                       AND confidence >= :min_conf_yes AND side = 'YES'
@@ -921,7 +923,7 @@ class WeatherBot(BaseBot):
                     "SELECT model_name, was_correct, confidence, market_id FROM prediction_log "
                     "WHERE bot_name = 'WeatherBot' "
                     "AND was_correct IS NOT NULL "
-                    "AND resolved_at > NOW() - INTERVAL '1 hour'"
+                    "AND resolved_at > NOW() - INTERVAL '1 hour' AND resolved_at <= NOW()"
                 ))
                 _rows = result.fetchall()
                 for row in _rows:
@@ -1452,7 +1454,7 @@ class WeatherBot(BaseBot):
                     "    SELECT te.market_id FROM trade_events te "
                     "    WHERE te.bot_name = 'WeatherBot' "
                     "    AND te.event_type = 'EXIT' "
-                    "    AND te.event_time > NOW() - INTERVAL '24 hours'"
+                    "    AND te.event_time > NOW() - INTERVAL '24 hours' AND te.event_time <= NOW()"
                     "  )"
                     ") "
                     "RETURNING market_id"

@@ -20,7 +20,7 @@ async def main():
             "  ROUND(PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY (event_data->>'confidence')::float)::numeric, 3) as p75"
             " FROM trade_events"
             " WHERE bot_name = 'MirrorBot' AND event_type = 'ENTRY'"
-            " AND event_time >= NOW() - INTERVAL '21 days'"
+            " AND event_time >= NOW() - INTERVAL '21 days' AND event_time <= NOW()"
             " GROUP BY 1 ORDER BY 1"
         ))
         print("=== CONFIDENCE DISTRIBUTION BY DAY ===")
@@ -41,7 +41,7 @@ async def main():
             "  event_data->>'entry_price' as entry_price"
             " FROM trade_events"
             " WHERE bot_name = 'MirrorBot' AND event_type = 'ENTRY'"
-            " AND event_time >= NOW() - INTERVAL '2 hours'"
+            " AND event_time >= NOW() - INTERVAL '2 hours' AND event_time <= NOW()"
             " ORDER BY event_time DESC LIMIT 10"
         ))
         print("=== RECENT 10 ENTRIES — CONFIDENCE BREAKDOWN ===")
@@ -59,7 +59,7 @@ async def main():
             "  CASE WHEN (event_data->>'confidence')::float = (event_data->>'entry_price')::float THEN 'SAME' ELSE 'DIFF' END as match"
             " FROM trade_events"
             " WHERE bot_name = 'MirrorBot' AND event_type = 'ENTRY'"
-            " AND event_time >= NOW() - INTERVAL '6 hours'"
+            " AND event_time >= NOW() - INTERVAL '6 hours' AND event_time <= NOW()"
             " AND event_data->>'confidence' IS NOT NULL"
             " AND event_data->>'entry_price' IS NOT NULL"
             " ORDER BY event_time DESC LIMIT 20"
@@ -81,7 +81,7 @@ async def main():
             "  (event_data->>'entry_price')::float as ed_entry_price"
             " FROM trade_events"
             " WHERE bot_name = 'MirrorBot' AND event_type = 'ENTRY'"
-            " AND event_time >= NOW() - INTERVAL '2 hours'"
+            " AND event_time >= NOW() - INTERVAL '2 hours' AND event_time <= NOW()"
             " ORDER BY event_time DESC LIMIT 5"
         ))
         print("=== trade_events.confidence vs event_data.confidence ===")

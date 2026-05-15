@@ -65,6 +65,7 @@ async def extract_training_data(db, days: int = 90):
           AND te_entry.event_type = 'ENTRY'
           AND te_entry.event_data IS NOT NULL
           AND te_entry.event_time >= NOW() - MAKE_INTERVAL(days => :days)
+          AND te_entry.event_time <= NOW()
           AND COALESCE(te_entry.event_data->>'calibration_exclude', '') = ''
           AND COALESCE(te_res.realized_pnl, pt.realized_pnl) IS NOT NULL
         ORDER BY te_entry.event_time

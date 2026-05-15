@@ -42,6 +42,7 @@ async def main():
             WHERE te.bot_name = 'MirrorBot'
               AND te.event_type = 'ENTRY'
               AND te.event_time >= NOW() - MAKE_INTERVAL(hours => :hours)
+              AND te.event_time <= NOW()
               AND te.event_data ? 'ml_score_xgb'
         ),
         resolutions AS (

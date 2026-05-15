@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 
 from structlog import get_logger
 from base_engine.data.data_ingestion import _infer_category
+from base_engine.data.resolution_observation import record_resolution_observation
 
 logger = get_logger()
 
@@ -430,8 +431,13 @@ async def run_resolution_backfill(
                     await _record_check_result(mid)
                     continue
                 _source = "clob_api" if _from_clob else "gamma_api"
-                # Pass end_date as resolved_at; fallback to now() so resolved_at is never NULL
-                _resolved_at = _end_dt_parsed or datetime.now(timezone.utc).replace(tzinfo=None)
+                # Always NOW() — end_date_iso is scheduled close, not resolution moment.
+                _resolved_at = record_resolution_observation(
+                    datetime.now(timezone.utc).replace(tzinfo=None),
+                    market_id=str(mid),
+                    scheduled_close=_end_dt_parsed,
+                    source="resolution_backfill",
+                )
                 await db.save_market_resolution(mid, True, str(res).upper(), _source, _resolved_at)
                 # Update traded_markets index + write RESOLUTION events
                 try:
