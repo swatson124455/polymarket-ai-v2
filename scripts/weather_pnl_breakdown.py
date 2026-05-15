@@ -31,7 +31,7 @@ async def weather_pnl_breakdown(hours: int = 0):
         time_filter = ""
         params: dict = {"bot": "WeatherBot"}
         if hours > 0:
-            time_filter = "AND te.event_time > NOW() - INTERVAL '1 hour' * :hours"
+            time_filter = "AND te.event_time > NOW() - INTERVAL '1 hour' * :hours AND te.event_time <= NOW()"
             params["hours"] = hours
 
         # ── 1. Realized P&L from trade_events (EXIT + RESOLUTION) ────────

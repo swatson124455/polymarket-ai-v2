@@ -24,7 +24,7 @@ async def brier_by_side(hours: int = 0):
 
         time_filter = ""
         if hours > 0:
-            time_filter = f"AND e.event_time > NOW() - INTERVAL '{hours} hours'"
+            time_filter = f"AND e.event_time > NOW() - INTERVAL '{hours} hours' AND e.event_time <= NOW()"
 
         # Get ENTRY events with their RESOLUTION outcomes
         rows = await s.execute(text(f"""

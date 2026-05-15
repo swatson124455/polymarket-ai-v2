@@ -53,6 +53,7 @@ async def main():
                 FROM trade_events
                 WHERE bot_name = :bot AND event_type = 'ENTRY'
                   AND event_time > NOW() - make_interval(days => :days)
+                  AND event_time <= NOW()
                   AND event_data->>'slippage_bps' IS NOT NULL
                 ORDER BY event_time
             """), {"bot": bot, "days": days})

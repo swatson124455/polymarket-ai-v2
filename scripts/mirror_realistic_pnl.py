@@ -37,7 +37,7 @@ async def run(hours: int = 0):
         where_time = ""
         params = {"bot": "MirrorBot"}
         if hours > 0:
-            where_time = "AND event_time > NOW() - INTERVAL '1 hour' * :hours"
+            where_time = "AND event_time > NOW() - INTERVAL '1 hour' * :hours AND event_time <= NOW()"
             params["hours"] = hours
 
         entries_q = await s.execute(text(f"""

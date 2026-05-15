@@ -58,6 +58,7 @@ async def main():
                     WHERE bot_name = 'WeatherBot'
                       AND event_type = 'ENTRY'
                       AND event_time > NOW() - make_interval(days => :days)
+                      AND event_time <= NOW()
                       AND predicted_probability IS NOT NULL
                 ),
                 resolutions AS (
@@ -68,6 +69,7 @@ async def main():
                     WHERE bot_name = 'WeatherBot'
                       AND event_type = 'RESOLUTION'
                       AND event_time > NOW() - make_interval(days => :days)
+                      AND event_time <= NOW()
                     ORDER BY market_id, event_time DESC
                 )
                 SELECT

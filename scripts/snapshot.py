@@ -179,6 +179,7 @@ async def snapshot(bot_filter: str | None = None):
                     WHERE bot_name = :bot
                       AND event_type IN ('EXIT', 'RESOLUTION')
                       AND event_time > NOW() - INTERVAL '1 hour' * :hours
+                      AND event_time <= NOW()
                 """), {"bot": bot, "hours": w})
                 rpnl = float(r.scalar() or 0)
                 window_totals[w] += rpnl
@@ -209,6 +210,7 @@ async def snapshot(bot_filter: str | None = None):
                     WHERE bot_name = :bot
                       AND event_type = 'ENTRY'
                       AND event_time > NOW() - INTERVAL '1 hour' * :hours
+                      AND event_time <= NOW()
                 """), {"bot": bot, "hours": w})
                 cnt = int(r.scalar() or 0)
                 print(f" {cnt:>12}", end="")

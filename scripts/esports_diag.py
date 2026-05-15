@@ -25,6 +25,7 @@ async def diag():
                 FROM trade_events te
                 WHERE te.bot_name = :bot
                   AND te.event_time > NOW() - INTERVAL '16 hours'
+                  AND te.event_time <= NOW()
                 ORDER BY te.event_time ASC
             """), {"bot": bot})
             events = r.fetchall()
@@ -71,6 +72,7 @@ async def diag():
             WHERE te.bot_name IN {BOTS_CLAUSE}
               AND te.event_type = 'EXIT'
               AND te.event_time > NOW() - INTERVAL '16 hours'
+              AND te.event_time <= NOW()
             ORDER BY te.event_time ASC
         """))
         closed = r4.fetchall()
@@ -90,6 +92,7 @@ async def diag():
             WHERE te.bot_name IN {BOTS_CLAUSE}
               AND te.event_type = 'RESOLUTION'
               AND te.event_time > NOW() - INTERVAL '16 hours'
+              AND te.event_time <= NOW()
             ORDER BY te.event_time ASC
         """))
         resolutions = r5.fetchall()
