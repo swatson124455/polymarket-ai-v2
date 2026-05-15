@@ -219,3 +219,62 @@ async def test_exception_logs_at_debug_when_flag_off(monkeypatch):
     )
     assert legacy_taken, \
         f"expected legacy debug path to be taken; debug_calls={debug_calls}"
+
+
+# ---------------------------------------------------------------------------
+# S216 Item 5-v2: keyword filter false-positive coverage.
+# Same module as the refresh fixes above; the keyword filter is what gates
+# which markets even reach the refresh path, so the tests live together.
+# ---------------------------------------------------------------------------
+
+class TestKeywordFilterFalsePositives:
+    """_is_real_esports() must reject non-esports markets that contain
+    short esports-adjacent tokens (e.g. 'COD' as in COD Mekn\xe8s soccer club)."""
+
+    def test_cod_meknes_soccer_rejected(self):
+        """COD Mekn\xe8s is a Moroccan soccer club. Markets about its matches
+        (vs Wydad, FathUnionSport, RS Berkane) must NOT be classified as
+        esports. S215 found 18+ such markets in DB; S216 drops the bare
+        'cod ' substring to eliminate the dormant FP class."""
+        soccer_questions = [
+            "Will COD Mekn\xe8s win on 2026-04-29?",
+            "AS FAR vs. COD Mekn\xe8s: O/U 4.5",
+            "Will COD Mekn\xe8s vs. RS Berkane end in a draw?",
+            "Wydad Athletic Club vs. COD Mekn\xe8s: O/U 2.5",
+            "Will FathUnionSport vs. COD Mekn\xe8s end in a draw?",
+            "COD Mekn\xe8s vs. RS Berkane: Both Teams to Score",
+            "Spread: COD Mekn\xe8s (-2.5)",
+        ]
+        for q in soccer_questions:
+            assert not ems._is_real_esports(q), \
+                f"expected FP rejection for soccer question: {q!r}"
+
+    def test_call_of_duty_branded_still_accepted(self):
+        """The unambiguous 'call of duty' substring must still classify
+        Polymarket's branded CoD markets as esports."""
+        cod_questions = [
+            "Who wins the Call of Duty League 2026 Championship?",
+            "Will OpTic Texas win the Call of Duty Major IV?",
+            "Call of Duty Major V winner",
+        ]
+        for q in cod_questions:
+            assert ems._is_real_esports(q), \
+                f"expected esports classification: {q!r}"
+
+    def test_cdl_acronym_still_accepted(self):
+        """The \\bcdl\\b boundary regex must still classify CDL-prefixed
+        markets as esports (alternate path when 'call of duty' is omitted)."""
+        cdl_questions = [
+            "Will Atlanta FaZe win the CDL Major IV?",
+            "CDL Champs 2026 winner",
+        ]
+        for q in cdl_questions:
+            assert ems._is_real_esports(q), \
+                f"expected esports classification via CDL: {q!r}"
+
+    def test_other_esports_unaffected(self):
+        """Spot-check that the cod-substring removal didn't break other games."""
+        assert ems._is_real_esports("LoL: Movistar KOI vs GIANTX (BO3)")
+        assert ems._is_real_esports("Will FUT Esports win VCT 2026: EMEA League Stage 1?")
+        assert ems._is_real_esports("Counter-Strike Major 2026 winner")
+        assert ems._is_real_esports("Will Team Spirit win The International 2026?")

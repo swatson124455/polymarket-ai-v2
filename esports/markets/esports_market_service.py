@@ -58,7 +58,13 @@ _ESPORTS_GAME_KEYWORDS: Dict[str, List[str]] = {
     "cs2": ["counter-strike", "cs2", "csgo", "blast premier"],
     "dota2": ["dota 2", "dota2", "dota:"],
     "valorant": ["valorant", "vct ", "champions tour"],
-    "cod": ["call of duty", "cod ", "call of duty league"],
+    # S216 Item 5-v2: removed bare "cod " substring — matched "COD Meknès"
+    # (Moroccan soccer club Wydad/FathUnionSport/RS Berkane opponents). The
+    # \bcdl\b boundary regex in _BOUNDARY_KEYWORDS still catches CDL Major
+    # markets, and "call of duty" substring still catches branded markets.
+    # Direct-data audit 2026-05-14: 0 active markets matched cod-only path
+    # (excluding "call of duty"/cdl), so recall cost = 0 at fix time.
+    "cod": ["call of duty", "call of duty league"],
     "r6": ["rainbow six", "r6 ", "six invitational", "r6 siege"],
     "sc2": ["starcraft", "sc2", "brood war"],
     "rl": ["rocket league", "rlcs"],
@@ -205,7 +211,7 @@ class EsportsMarketService:
                         OR question ILIKE '%brood war%'
                         OR question ILIKE '%rocket league%'
                         OR question ILIKE '%rlcs%'
-                        OR question ~* '\\y(lol|lck|lec|lpl|lcs|msi|esl|pgl|iem|dpc|cdl|gsl|asl|vct|r6|cod|ti)\\y'
+                        OR question ~* '\\y(lol|lck|lec|lpl|lcs|msi|esl|pgl|iem|dpc|cdl|gsl|asl|vct|r6|ti)\\y'
                       )
                     ORDER BY volume DESC NULLS LAST
                     LIMIT 5000
@@ -339,7 +345,7 @@ class EsportsMarketService:
                         OR question ILIKE '%brood war%'
                         OR question ILIKE '%rocket league%'
                         OR question ILIKE '%rlcs%'
-                        OR question ~* '\\y(lol|lck|lec|lpl|lcs|msi|esl|pgl|iem|dpc|cdl|gsl|asl|vct|r6|cod|ti)\\y'
+                        OR question ~* '\\y(lol|lck|lec|lpl|lcs|msi|esl|pgl|iem|dpc|cdl|gsl|asl|vct|r6|ti)\\y'
                     )"""
                     if _MARKETS_REFRESH_V2_ENABLED:
                         _query_sql = f"""
