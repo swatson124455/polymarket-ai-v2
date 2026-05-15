@@ -174,6 +174,17 @@ class EsportsMarketService:
                     FROM markets
                     WHERE active = true
                       AND (resolved = false OR resolved IS NULL)
+                      -- S216 Thread D root fix: exclude markets whose scheduled
+                      -- end is in the past. Polymarket's resolution backfill
+                      -- runs on a delay, so a freshly-closed market can still
+                      -- have active=true + resolved=false for minutes before
+                      -- the backfill marks it resolved + backdates resolved_at
+                      -- to the actual close time. Without this filter, the bot
+                      -- predicts on closed markets and the prediction_time ends
+                      -- up > the (later-written) resolved_at — the 385-row
+                      -- temporal-ordering violation backlog cleanup script keeps
+                      -- finding.
+                      AND (end_date_iso IS NULL OR end_date_iso > NOW())
                       AND yes_price BETWEEN 0.03 AND 0.97
                       AND (
                         question ILIKE '%esports%'
