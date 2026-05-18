@@ -525,6 +525,51 @@ class TestTraderSellExitDetection:
         # Re-validation actually happened.
         engine.orderbook_tracker.snapshot_order_book.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_hard_stop_proceeds_when_live_bid_is_implausible(self):
+        """A.2 hardening: implausibly low live_bid (format mismatch) must not cause spurious abort —
+        fall back to existing hard_stop behavior so the exit still attempts."""
+        bot, engine = _make_bot()
+        pos_key = "mkt1:tok-no"
+        bot._open_positions[pos_key] = {
+            "side": "NO", "size": 50.0,
+            "entry_price": 0.20,
+            "current_price": 0.10,
+            "timestamp": (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat(),
+            "traders": {"addr1"},
+        }
+        bot.place_order = AsyncMock(return_value={"success": True})
+        bot.validate_price = MagicMock(return_value=0.10)
+        bot._sync_prices_from_db = AsyncMock()
+
+        # Format mismatch: implausibly low bid (below 0.005 sanity bound).
+        engine.orderbook_tracker = MagicMock()
+        engine.orderbook_tracker.snapshot_order_book = AsyncMock(return_value={
+            "bids": [{"price": 0.0001, "size": 100.0}],
+            "asks": [{"price": 0.21, "size": 100.0}],
+        })
+        engine.risk_manager.check_hard_stop_loss = MagicMock(return_value={
+            "should_exit": True, "reason": "hard_stop_loss", "details": {},
+        })
+
+        with patch("bots.mirror_bot.settings") as ms:
+            ms.MIRROR_STOP_LOSS_PCT = 0.15
+            ms.MIRROR_TAKE_PROFIT_PCT = 0.25
+            ms.MIRROR_STOP_LOSS_TIGHTEN_24H = -0.06
+            ms.MIRROR_STOP_LOSS_TIGHTEN_48H = -0.10
+            ms.MIRROR_STOP_LOSS_TIGHTEN_72H = -0.15
+            ms.MIRROR_FORCE_EXIT_HOURS = 96
+            ms.MIRROR_CIRCUIT_BREAKER_THRESHOLD = -0.20
+            ms.MIRROR_CIRCUIT_BREAKER_PAUSE_MINUTES = 15
+            ms.MIRROR_EXIT_ENABLED = True
+            ms.MIRROR_STOP_LOSS_GRACE_HOURS = 0.0
+            ms.MIRROR_STOP_LOSS_NEAR_RES_HOURS = 24.0
+            ms.MIRROR_MAX_HOLD_FRACTION = 0.80
+            await bot._check_and_execute_exits()
+
+        # Implausible bid discarded → no abort → trade attempts (existing behavior).
+        bot.place_order.assert_called_once()
+
 
 # ── Deduplication / pruning ───────────────────────────────────────────────────
 

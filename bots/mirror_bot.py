@@ -1381,8 +1381,12 @@ class MirrorBot(BaseBot):
                         _bids = (_book or {}).get("bids") or []
                         if _bids:
                             _bid_px = float(_bids[0].get("price", 0))
-                            if _bid_px > 0:
+                            # Polymarket tick prices are [0.01, 0.99]; outside this band = format mismatch or API shape change.
+                            if 0.005 <= _bid_px <= 0.999:
                                 _live_bid = _bid_px
+                            elif _bid_px > 0:
+                                logger.warning("mirror_exit_live_bid_implausible",
+                                               market=market_id[:20], raw_bid=_bid_px)
                     except Exception as _re_err:
                         logger.warning("mirror_exit_price_revalidate_failed",
                                        market=market_id[:20], error=str(_re_err)[:200])
