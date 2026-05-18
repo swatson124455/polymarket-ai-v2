@@ -2248,6 +2248,34 @@ S203's own execution is the sixth confirming instance: the session plan listed T
 
 ---
 
+### Protocol 16 — Audit pattern completeness
+
+**Mandate.** Audits constructed to find instances of a bug class must verify the pattern set is complete relative to the bug class, not relative to the patterns initially considered. At audit-close, before declaring scope complete, run a deliberate variant-search across the bug class — for regex-based detectors, vary the operator/quantifier shape (`>` vs `>=`, `=` vs `IS NOT NULL`, etc.); for semantic audits, vary the alias/case/synonym set; for consumer-audits, enumerate the dimensions of "consumer" (code-import, env-loader, systemd-unit, cron, etc.). The discriminator question at audit-close is: "would a sibling-shape variant of this pattern slip through the audit I just ran?" — if yes, the audit is incomplete.
+
+**Verification minimum (any ONE of):**
+(a) **Variant-grep pass.** For regex-based detectors: enumerate the operator/quantifier variants the bug class admits, run the grep with each, surface the union. Example: an `event_time > NOW() - INTERVAL` audit must also cover `>=`, `BETWEEN`, and `>` with explicit upper-bound omission.
+(b) **Sibling-shape inventory.** For semantic audits: enumerate the synonyms/aliases the audit subject can be expressed as (e.g., "wallet capital" can also be "bankroll", "max_bet", "BotBankrollManager.max_bet_usd"), then verify each is in the audit pattern set.
+(c) **Dimension enumeration.** For consumer-audits (env vars, config files, shared state): enumerate the dimensions of "consumer" (Python-import, systemd-unit `EnvironmentFile=`, cron, init script, externally-mounted), then verify each dimension was searched. The S221 shared-env case shows code-consumer-only audits silently exclude systemd-loader-only consumers.
+
+**Why this is a separate protocol, not a Protocol 5 amendment.** Protocol 5 governs canonical-source verification for individual claims; Protocol 16 governs pattern-set completeness at audit-construction time. Distinct enforcement layer. Protocol 5 catches "this number is wrong"; Protocol 16 catches "this audit looked at the wrong pattern set." The S220 temporal-windowing case is the canonical separation: each individual `event_time > NOW() - INTERVAL` site was correctly identified (Protocol 5 surface was clean) but the pattern set didn't admit the `>=` variant — Protocol 16 surface fired.
+
+**Out of scope.** Normal code review (not pattern-audit construction). Pre-commit syntactic checks. One-shot diagnostic queries whose output is read once and discarded. Protocol 16 applies to audit work that produces a list of instances claimed to be exhaustive.
+
+**Evidence of origin (5 documented instances).**
+1. **Cap-coupling (MirrorBot S217-ish)** — single-accessor / multiple-write-sites pattern. Per-site patches caught some instances; the structural-coupling pattern catch caught all. The per-site audit was a proper subset of the structural-coupling bug class. Cited as instance #1 by the operator in the S217+S218 chain.
+2. **Bucket-concentration → Protocol 14 (S210)** — aggregate-statistic apparent confirmation overturned by per-bucket drill-down. Aggregate vs per-bucket can flip the conclusion; aggregate-only audit was a proper subset of the bucket-aware bug class.
+3. **Verify-before-claim (open sister candidate, 4+ instances)** — observation-window asymmetry. Pre/post window-length asymmetry was the missing dimension; equal-window audit was a proper subset of the cycle-time-aware bug class.
+4. **Temporal-windowing (S220, 2026-05-14 → 05-17)** — `event_time > NOW() - INTERVAL` detector caught 15 sites; followup grep with `>=?` variant found 47 more sites the strict-`>` detector missed. The strict-`>` pattern was a proper subset of the temporal-windowing bug class. Caught mid-execution; patched programmatically across all 47 sites in `1d82060`.
+5. **Shared-env restart scope (S221, 2026-05-18)** — fix to `DB_EFFECTIVE_POOL_SIZE` in `/opt/pa2-shared/.env` planned as "3-bot restart" based on code-consumer audit (`database.py` + `health_runner.py` read the env, called by 3 trading bot processes). Audit missed the systemd-loader dimension: `polymarket-ingestion` ALSO loads `/opt/pa2-shared/.env` per its unit file but isn't a trading bot so wasn't in the code-consumer audit. Caught in post-fix observation when 4 residual CRITICALs all came from `polymarket-ingestion` (still on stale env value 40). Pattern-set "code consumers of this env var" was a proper subset of bug class "all processes that load this env file." Fix scope corrected mid-execution; ingestion restarted; residual brought to expected baseline.
+
+**Promoted from `feedback_audit_pattern_completeness.md` (memory candidate) in 2026-05-17 EB-scoped session** at 5 evidence points per operator "proceed" authorization. The promotion trigger was the user-stated convention "promote the Protocol after this lands" (where "this" = S220 temporal-windowing chain landing on master at `cc4a55c`). Instance #5 (S221 shared-env) reinforced the threshold but didn't alter the action. The 5-instance evidence base exceeds the S210/S211 2-instance precedent and the Protocol 12 5-instance precedent.
+
+**Renaming note.** Originally filed in the memory candidate file as "cap-coupling" (S217 framing); renamed to "audit pattern completeness" in S210 per operator guidance toward a "more-general framing." The "cap-coupling" name is preserved in the evidence-of-origin section as instance #1 but the Protocol's binding mandate is the pattern-set-completeness shape, which generalizes across all 5 evidence families.
+
+**Numbering note.** Protocol 16 takes the next available numeric slot after Protocol 15. Slots 8-10 remain reserved per Protocol 11's numbering note.
+
+---
+
 ### Protocol candidates — awaiting next protocol-hygiene round
 
 Flagged mid-session; not yet binding rules. Listed so they don't get lost between sessions, and so the evidence base can accumulate before promotion.
