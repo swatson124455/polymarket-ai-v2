@@ -2276,6 +2276,39 @@ S203's own execution is the sixth confirming instance: the session plan listed T
 
 ---
 
+### Protocol 17 — Verify-before-claim observation window length
+
+**Mandate.** Claims about rates, frequencies, "improvement," or steady-state behavior must be backed by an observation window that spans at least one full operational cycle of the affected system. Pre/post comparisons with asymmetric window lengths (e.g., 24h baseline vs 5min post-fix) are the failure mode. Default minimum: **≥50 operational cycles** in the observation window for any steady-state claim. Restart-transient periods (first ~5 min after service restart) are excluded from steady-state assessment by construction.
+
+**Verification minimum (any ONE of):**
+(a) **Cycle-scaled equal-length windows.** Measure the operational cycle period of the system being claimed about (scan interval, request rate, decision cadence). Use SAME-LENGTH windows on both sides of the comparison, each ≥50 cycles. Pre = 24h × 60s-scan-period = 1440 cycles; post window must also be ≥50 cycles (e.g., ≥50min for that scan rate).
+(b) **Cycle-period documented inline.** When asymmetric windows are unavoidable (e.g., a brand-new feature has no pre-history), state the cycle period and the number of post-fix cycles observed in the claim itself ("19 cycles observed; conclusion provisional until 50+ cycles").
+(c) **Negative-claim explicit.** If the only available window is short, frame the claim explicitly as not-yet-validated ("Initial sample shows X; re-verification at 50-cycle horizon scheduled for [time]"). Round numbers like "near-zero" or "~99% reduction" without per-side window duration are anti-pattern triggers.
+
+**Why this is a separate protocol, not a Protocol 5 amendment.** Protocol 5 governs canonical-source verification for individual claims ("this number came from `bot_pnl.py`"); Protocol 17 governs the temporal scope behind any aggregate-rate claim. Distinct enforcement surfaces: a Protocol-5-clean number from a too-short window is still Protocol-17-suspect. Also distinct from Protocol 16 (audit-pattern-completeness) which governs pattern-set completeness at audit-construction time, not observation-window scope at claim-making time.
+
+**Why this is a separate protocol, not a Protocol 16 amendment.** Protocol 16 (Audit pattern completeness) and Protocol 17 are sister disciplines but apply to different surfaces. Protocol 16: audit-time pattern-set incompleteness ("did the audit's pattern set cover the whole bug class?"). Protocol 17: claim-time observation-window inadequacy ("did the measurement window cover enough cycles to support the rate/improvement claim?"). The S216 EB CLOSE Item 5-v2 case is the canonical separation: Protocol 16 covered the keyword-pattern-set audit construction; Protocol 17 covered the direct-data preflight that overturned the prior framing's confidence by sampling actual market state.
+
+**Out of scope.** Single-event observations (no rate claim). One-shot verification queries where the claim is point-in-time, not rate-derived. Per-trade verification (Protocol 5/6/11 surface). Protocol 17 applies to claims that aggregate behavior over time — rates, frequencies, "X happens N times per hour," "improvement of N%," "near-zero," "negligible."
+
+**Evidence of origin (5 instances at promotion).**
+1. **S214 audit ELEVATION #2 rejection.** Mid-life-exit `side="SELL"` co-bug claim — verified before accepting elevation. Pre-emptive Protocol 17 application: the claim was not yet supported by the observation window.
+2. **S214 plan v2→v3 bleed verification.** Reviewer's W-findings against draft state — verified before integrating. Same shape.
+3. **S214 Tier 1 effectiveness re-measurement.** Initial sample: 5min post-restart, 0 kill-switch fails → claimed "~99% reduction." Re-verification: 11.7h steady-state, 222 fails / 11.7h = 19/hr (vs 21.5/hr pre-fix baseline) → actual ~12% reduction. The 5min window caught a startup-quiet transient (pool empty after cycle, queries finishing fast). 11.7h surfaced the residual mid-tx death loop that Tier 1 didn't fix. **Canonical failure-mode instance** — Protocol 17 fired retroactively, correction applied to handoff after fact.
+4. **S215 EB CLOSE — 3 fresh instances in one session** (2026-05-06). Alias-enrichment framing overturned by direct-data → category-narrow framing overturned by direct-data → keyword-filter-weakness framing emerged as the actual blocker. Separately, the "10× lift" estimate falsified to 4.3× by matcher-equivalent recount. All 4 corrections shipped via direct-data preflight before action.
+5. **S216 EB CLOSE — 4th+ cross-session instance** (2026-05-14). S215's broad keyword-sweep audit framing (cod/ti/lol/vct/r6/sc2 each suspect) overturned by direct-data showing 0 active FPs across LOL (11)/VCT (13)/CS2 (2)/TI (0)/R6 (0)/SC2 (0). Scope narrowed from 6-token sweep to single-token COD drop. COD itself moved from "active FP" assumption to "dormant FP" (18+ Meknès soccer markets in DB but `active=false`). Pre-action preflight prevented an overscoped fix.
+
+**Promoted from `feedback_verify_before_claim_window_length.md` (memory candidate) on 2026-05-18 EB-scoped session** per operator "proceed as recommended" authorization. The promotion trigger was the candidate's own threshold (≥4 cross-session instances) being met multiple times over without action; MEMORY.md flag was "promote at next session start; this is overdue." The 5-instance evidence base mirrors the Protocol 12 5-instance precedent.
+
+**Sister protocols:**
+- Protocol 16 — Audit pattern completeness (sister-shape; different surface)
+- `feedback_audit_self_validation.md` — Audit handoffs must self-validate findings before reporting (related discipline, no Protocol number yet)
+- Protocol 11 — Per-mention citation (handles single-number citation; Protocol 17 handles aggregate-window scope)
+
+**Numbering note.** Protocol 17 takes the next available numeric slot after Protocol 16. Slots 8-10 remain reserved per Protocol 11's numbering note.
+
+---
+
 ### Protocol candidates — awaiting next protocol-hygiene round
 
 Flagged mid-session; not yet binding rules. Listed so they don't get lost between sessions, and so the evidence base can accumulate before promotion.
