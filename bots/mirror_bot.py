@@ -1371,6 +1371,82 @@ class MirrorBot(BaseBot):
                         logger.warning("mirror_force_close_zero_size_db_fail: %s", _zs_err)
                     continue
 
+                # current_price is mid from position_manager; exit fills against live top-of-book bid — re-read so we can detect stale-mid drift and abort false hard_stops.
+                _decision_price = exit_price
+                _live_bid: Optional[float] = None
+                _tracker = getattr(self.base_engine, "orderbook_tracker", None)
+                if _tracker is not None:
+                    try:
+                        _book = await _tracker.snapshot_order_book(token_id, condition_id=market_id)
+                        _bids = (_book or {}).get("bids") or []
+                        if _bids:
+                            _bid_px = float(_bids[0].get("price", 0))
+                            if _bid_px > 0:
+                                _live_bid = _bid_px
+                    except Exception as _re_err:
+                        logger.warning("mirror_exit_price_revalidate_failed",
+                                       market=market_id[:20], error=str(_re_err)[:200])
+
+                if _live_bid is not None and _decision_price > 0:
+                    _drift = (_live_bid - _decision_price) / _decision_price
+                    if abs(_drift) > 0.05:
+                        logger.warning("mirror_exit_price_drift",
+                                       market=market_id[:20],
+                                       decision_price=round(_decision_price, 4),
+                                       live_bid=round(_live_bid, 4),
+                                       drift_pct=round(_drift * 100, 2),
+                                       exit_reason=_exit_event_data.get("exit_reason", "unknown"))
+                        # Only hard_stop_loss is price-stale-sensitive — other exits fire on time/profit/trader.
+                        if _exit_event_data.get("exit_reason") == "hard_stop_loss":
+                            _entry = float(pos.get("entry_price", 0) or 0)
+                            if _entry > 0:
+                                _live_pnl_pct = (_live_bid - _entry) / _entry
+                                _live_stop = self.base_engine.risk_manager.check_hard_stop_loss(
+                                    bot_name=self.bot_name,
+                                    pnl_pct=_live_pnl_pct,
+                                )
+                                if not _live_stop.get("should_exit"):
+                                    logger.warning("mirror_hard_stop_aborted_stale_price",
+                                                   market=market_id[:20],
+                                                   entry=round(_entry, 4),
+                                                   decision_price=round(_decision_price, 4),
+                                                   live_bid=round(_live_bid, 4),
+                                                   live_pnl_pct=round(_live_pnl_pct, 4))
+                                    pos["current_price"] = _live_bid
+                                    # Persist via S141 pattern so _sync_prices_from_db doesn't pull the stale mid back next scan.
+                                    try:
+                                        _db = getattr(self.base_engine, "db", None)
+                                        if _db and getattr(_db, "session_factory", None):
+                                            from sqlalchemy import text as _refresh_sql
+                                            async with _db.get_session() as _rs:
+                                                await _rs.execute(_refresh_sql(
+                                                    "UPDATE positions SET current_price = :p "
+                                                    "WHERE token_id = :tid AND status = 'open' "
+                                                    "  AND COALESCE(source_bot, bot_id) = 'MirrorBot'"
+                                                ), {"p": _live_bid, "tid": token_id})
+                                                await _rs.execute(_refresh_sql(
+                                                    "INSERT INTO market_prices_latest "
+                                                    "(token_id, market_id, price, timestamp) "
+                                                    "VALUES (:tid, :mid, :p, :ts) "
+                                                    "ON CONFLICT (token_id) DO UPDATE SET "
+                                                    "  price = EXCLUDED.price, "
+                                                    "  market_id = EXCLUDED.market_id, "
+                                                    "  timestamp = EXCLUDED.timestamp "
+                                                    "WHERE EXCLUDED.timestamp > "
+                                                    "  market_prices_latest.timestamp"
+                                                ), {"tid": token_id, "mid": market_id, "p": _live_bid,
+                                                    "ts": datetime.now(timezone.utc).replace(tzinfo=None)})
+                                                await _rs.commit()
+                                    except Exception as _rd_err:
+                                        logger.warning("mirror_exit_price_refresh_db_failed",
+                                                       market=market_id[:20], error=str(_rd_err)[:200])
+                                    continue
+
+                _exit_event_data = dict(_exit_event_data)
+                _exit_event_data["decision_price"] = round(_decision_price, 6)
+                if _live_bid is not None:
+                    _exit_event_data["pre_exec_live_bid"] = round(_live_bid, 6)
+
                 order = await self.place_order(
                     market_id=market_id,
                     token_id=token_id,

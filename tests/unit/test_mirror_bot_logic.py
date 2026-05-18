@@ -471,6 +471,60 @@ class TestTraderSellExitDetection:
             ms.MIRROR_STOP_LOSS_NEAR_RES_HOURS = 24.0
             await bot._check_and_execute_exits()
 
+    @pytest.mark.asyncio
+    async def test_hard_stop_aborts_when_live_bid_disagrees_with_stale_mid(self):
+        """A.2: When hard_stop fires on stale current_price (mid), re-check with live bid;
+        if hard_stop doesn't fire on the live price, abort the exit and refresh in-memory price."""
+        bot, engine = _make_bot()
+        pos_key = "mkt1:tok-no"
+        bot._open_positions[pos_key] = {
+            "side": "NO", "size": 50.0,
+            "entry_price": 0.20,
+            "current_price": 0.10,  # stale mid → -50% pnl_pct triggers stop-loss
+            "timestamp": (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat(),
+            "traders": {"addr1"},
+        }
+        bot.place_order = AsyncMock(return_value={"success": True})
+        bot.validate_price = MagicMock(return_value=0.10)
+        bot._sync_prices_from_db = AsyncMock()
+
+        # Live top-of-book bid is 0.20 — matches entry, so live pnl is 0%.
+        engine.orderbook_tracker = MagicMock()
+        engine.orderbook_tracker.snapshot_order_book = AsyncMock(return_value={
+            "bids": [{"price": 0.20, "size": 100.0}],
+            "asks": [{"price": 0.21, "size": 100.0}],
+        })
+
+        # Stop check: fires for stale (-50%) pnl, passes for live (0%) pnl.
+        def _stop_check(bot_name, pnl_pct):
+            if pnl_pct < -0.05:
+                return {"should_exit": True, "reason": "hard_stop_loss", "details": {}}
+            return {"should_exit": False, "reason": "", "details": {}}
+        engine.risk_manager.check_hard_stop_loss = MagicMock(side_effect=_stop_check)
+
+        with patch("bots.mirror_bot.settings") as ms:
+            ms.MIRROR_STOP_LOSS_PCT = 0.15
+            ms.MIRROR_TAKE_PROFIT_PCT = 0.25
+            ms.MIRROR_STOP_LOSS_TIGHTEN_24H = -0.06
+            ms.MIRROR_STOP_LOSS_TIGHTEN_48H = -0.10
+            ms.MIRROR_STOP_LOSS_TIGHTEN_72H = -0.15
+            ms.MIRROR_FORCE_EXIT_HOURS = 96
+            ms.MIRROR_CIRCUIT_BREAKER_THRESHOLD = -0.20
+            ms.MIRROR_CIRCUIT_BREAKER_PAUSE_MINUTES = 15
+            ms.MIRROR_EXIT_ENABLED = True
+            ms.MIRROR_STOP_LOSS_GRACE_HOURS = 0.0
+            ms.MIRROR_STOP_LOSS_NEAR_RES_HOURS = 24.0
+            ms.MIRROR_MAX_HOLD_FRACTION = 0.80
+            await bot._check_and_execute_exits()
+
+        # Exit was aborted — position still open, no SELL placed.
+        assert pos_key in bot._open_positions
+        bot.place_order.assert_not_called()
+        # In-memory current_price refreshed to live_bid.
+        assert abs(bot._open_positions[pos_key]["current_price"] - 0.20) < 0.001
+        # Re-validation actually happened.
+        engine.orderbook_tracker.snapshot_order_book.assert_called_once()
+
 
 # ── Deduplication / pruning ───────────────────────────────────────────────────
 
