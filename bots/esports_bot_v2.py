@@ -745,9 +745,28 @@ class EsportsBotV2(BaseBot):
             if not token_id:
                 continue
 
+            # Branch B prep: per-attempt diagnostic + post-attempt rejection
+            # log. S215 EB CLOSE §2.4 noted the risk_manager rejection log
+            # lacks a side= field, so NO-side Bug A investigation had no
+            # inline context. These two logs add it at the EB v2 layer —
+            # grep `side=NO` in journalctl surfaces the trade-attempt chain.
+            _edge = float(result.get("edge", 0.0))
+            _market_id_str = str(market_info.get("id", market_info.get("condition_id", "")))
+            logger.info(
+                "esports_v2_trade_attempt",
+                side=side,
+                p_model=round(float(p_model), 4),
+                market_price=round(float(market_price), 4),
+                effective_price=round(float(price), 4),
+                edge=round(_edge, 4),
+                stake_usd=round(float(stake), 2),
+                market_id=_market_id_str,
+                team_a=match.team_a,
+                team_b=match.team_b,
+            )
             try:
-                await self.place_order(
-                    market_id=str(market_info.get("id", market_info.get("condition_id", ""))),
+                order_result = await self.place_order(
+                    market_id=_market_id_str,
                     token_id=token_id,
                     side=side,
                     size=stake,
@@ -755,6 +774,15 @@ class EsportsBotV2(BaseBot):
                     confidence=result["p_model"],
                     prediction=(1.0 - result["p_model"]) if side == "NO" else result["p_model"],
                 )
+                if isinstance(order_result, dict) and not order_result.get("success", False):
+                    logger.info(
+                        "esports_v2_trade_rejected",
+                        side=side,
+                        p_model=round(float(p_model), 4),
+                        effective_price=round(float(price), 4),
+                        edge=round(_edge, 4),
+                        error=str(order_result.get("error", "unknown")),
+                    )
                 # Item 2: idempotency — set inside success path. Rejection paths
                 # also reach here (place_order returns dict on rejection without
                 # raising), so the prediction won't be retried at the same price.

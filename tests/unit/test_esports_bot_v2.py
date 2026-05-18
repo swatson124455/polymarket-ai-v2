@@ -593,6 +593,110 @@ class TestScanCycleSmoke:
         assert kwargs["prediction"] == pytest.approx(0.7)
 
     @pytest.mark.asyncio
+    async def test_execute_trades_emits_trade_attempt_log_with_side_field(self):
+        """Branch B prep: every place_order call is preceded by an
+        esports_v2_trade_attempt info log carrying side/p_model/edge fields.
+
+        Closes the S215 EB CLOSE §2.4 gap: the risk_manager rejection log
+        lacks a side= field, so NO-side Bug A investigation had no inline
+        context. This per-attempt log adds it at the EB v2 layer."""
+        bot, _ = self._make_bot()
+        bot._initialized = True
+        bot._dry_run = False
+
+        fake_match = _upcoming_match(match_id=99003, team_a="TeamX", team_b="TeamY")
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        bot._pending_predictions = [{
+            "match": fake_match,
+            "pipeline_result": {
+                "p_model": 0.3, "is_singleton": True, "edge": 0.15, "stake": 50.0,
+            },
+            "market_price": 0.45,
+            "pred_record": {},
+            "created_at": now,
+            "traded_at": None,
+            "market_info": {
+                "id": "mkt-branch-b-test",
+                "yes_token_id": "yt-test", "no_token_id": "nt-test",
+                "condition_id": "cond-test",
+            },
+        }]
+
+        with patch("bots.esports_bot_v2.logger") as mock_logger, \
+             patch.object(bot, "place_order", new_callable=AsyncMock,
+                          return_value={"success": True}):
+            await bot._execute_trades()
+
+        attempt_calls = [
+            c for c in mock_logger.info.call_args_list
+            if c.args and c.args[0] == "esports_v2_trade_attempt"
+        ]
+        assert len(attempt_calls) == 1, (
+            f"expected 1 trade_attempt log, got {len(attempt_calls)}"
+        )
+        kwargs = attempt_calls[0].kwargs
+        assert kwargs["side"] == "NO"
+        assert kwargs["p_model"] == pytest.approx(0.3)
+        assert kwargs["market_price"] == pytest.approx(0.45)
+        assert kwargs["effective_price"] == pytest.approx(0.55)
+        assert kwargs["edge"] == pytest.approx(0.15)
+        assert kwargs["stake_usd"] == pytest.approx(50.0)
+        assert kwargs["team_a"] == "TeamX"
+        assert kwargs["team_b"] == "TeamY"
+
+    @pytest.mark.asyncio
+    async def test_execute_trades_emits_rejected_log_on_failed_place_order(self):
+        """Branch B prep: when place_order returns success=False, an
+        esports_v2_trade_rejected info log fires with side/error context.
+
+        The pre-existing risk_manager log line lacks side=. This bot-side
+        layer captures (side, p_model, effective_price, edge, error) so
+        journalctl grep `esports_v2_trade_rejected.*side=NO` reveals the
+        Bug A rejection chain inline."""
+        bot, _ = self._make_bot()
+        bot._initialized = True
+        bot._dry_run = False
+
+        fake_match = _upcoming_match(match_id=99004, team_a="TeamP", team_b="TeamQ")
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        bot._pending_predictions = [{
+            "match": fake_match,
+            "pipeline_result": {
+                "p_model": 0.3, "is_singleton": True, "edge": 0.15, "stake": 50.0,
+            },
+            "market_price": 0.45,
+            "pred_record": {},
+            "created_at": now,
+            "traded_at": None,
+            "market_info": {
+                "id": "mkt-rej-test",
+                "yes_token_id": "yt-test", "no_token_id": "nt-test",
+                "condition_id": "cond-test",
+            },
+        }]
+
+        with patch("bots.esports_bot_v2.logger") as mock_logger, \
+             patch.object(
+                 bot, "place_order", new_callable=AsyncMock,
+                 return_value={"success": False, "error": "Edge below threshold"},
+             ):
+            await bot._execute_trades()
+
+        rejected_calls = [
+            c for c in mock_logger.info.call_args_list
+            if c.args and c.args[0] == "esports_v2_trade_rejected"
+        ]
+        assert len(rejected_calls) == 1, (
+            f"expected 1 trade_rejected log, got {len(rejected_calls)}"
+        )
+        kwargs = rejected_calls[0].kwargs
+        assert kwargs["side"] == "NO"
+        assert kwargs["p_model"] == pytest.approx(0.3)
+        assert kwargs["effective_price"] == pytest.approx(0.55)
+        assert kwargs["edge"] == pytest.approx(0.15)
+        assert kwargs["error"] == "Edge below threshold"
+
+    @pytest.mark.asyncio
     async def test_pending_predictions_carry_over_when_not_traded(self):
         """Item 2: untraded items remain in queue across _execute_trades calls.
 
