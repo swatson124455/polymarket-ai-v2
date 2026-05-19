@@ -366,8 +366,8 @@ class TestComputeSizing:
         # raw_kelly = (b*p - q)/b = (2.9216*0.7663 - 0.2337)/2.9216 ≈ 0.6863
         # quartered = 0.6863 * 0.25 ≈ 0.1716
         assert out["kelly_fraction"] == pytest.approx(0.1716, abs=1e-3)
-        # stake = min(0.1716 * 20000, 100, 1000) = min(3432, 100, 1000) = 100 (capped)
-        assert out["stake"] == pytest.approx(100.0)
+        # stake = min(0.1716 * 20000, 300, 1000) = min(3432, 300, 1000) = 300 (capped by MAX_BET_USD)
+        assert out["stake"] == pytest.approx(300.0)
 
     def test_compute_sizing_no_side_kelly(self):
         # p_model < 0.5 → bet NO side, b = 1/(1-market_price) - 1
@@ -385,11 +385,11 @@ class TestComputeSizing:
         assert out["stake"] == 0.0
 
     def test_compute_sizing_capped_by_max_bet(self):
-        # Massive edge — kelly*bankroll would exceed MAX_BET_USD ($100)
+        # Massive edge — kelly*bankroll would exceed MAX_BET_USD ($300)
         out = EsportsPipeline.compute_sizing(
             p_model=0.95, is_singleton=True, market_price=0.10,
         )
-        assert out["stake"] == pytest.approx(100.0)  # MAX_BET_USD cap
+        assert out["stake"] == pytest.approx(300.0)  # MAX_BET_USD cap
 
     def test_predict_uses_compute_sizing(self):
         # Verify pipeline.predict() routes sizing through the new helper

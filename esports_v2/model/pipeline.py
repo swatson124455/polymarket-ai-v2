@@ -40,7 +40,12 @@ logger = logging.getLogger(__name__)
 
 # Sizing constants (Phase 5v2 risk controls)
 KELLY_FRACTION = 0.25   # Quarter-Kelly
-MAX_BET_USD = 100.0
+# S216 Item 7: matched to BotBankrollManager.max_bet_usd ($300) per S215
+# EB CLOSE §0 item 2 + operator decision 2026-05-18. Pre-fix value $100
+# was a Phase 5v2 paper-trading floor that pre-dated the bankroll manager;
+# the two layers were never reconciled. Final-clamp invariant in
+# BotBankrollManager.get_bet_size is still the load-bearing cap.
+MAX_BET_USD = 300.0
 MAX_BANKROLL_PCT = 0.05
 MIN_EDGE = 0.05          # 5% minimum edge to bet
 BANKROLL = 20_000.0      # Paper bankroll for sizing
