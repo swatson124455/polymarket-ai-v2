@@ -918,6 +918,12 @@ class TestWeatherBot:
             "price": 0.30, "confidence": 0.8, "model_prob": 0.50,
             "edge": 0.20, "abs_edge": 0.20, "city": "New York City",
         }
+        # S221 Phase 2: populate market index so _check_executable_edge passes
+        # and the daily-loss-limit gate is what actually rejects (preserves
+        # this test's stated intent rather than my new check rejecting first).
+        weather_bot.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.28, "bestAsk": 0.32}
+        }
         await weather_bot._execute_weather_trade(opp, group)
         assert not weather_bot.base_engine.place_order.called
 
@@ -1255,6 +1261,11 @@ class TestWeatherBotOpportunities:
         weather_bot._daily_pnl_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         weather_bot._daily_pnl = 0.0
         weather_bot.running = True
+        # S221 Phase 2: populate market index so _check_executable_edge passes.
+        # YES side, model 0.50, bestAsk 0.32 → honest_edge = 0.18 > 0 → accept.
+        weather_bot.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.28, "bestAsk": 0.32}
+        }
 
         await weather_bot._execute_weather_trade(opp, group)
         # Trade should be attempted (with boosted size)
@@ -3612,3 +3623,135 @@ class TestS221ThinMarketFilter:
             "best_bid": 0.48, "best_ask": 0.52,
         }
         assert bot._filter_thin_markets([m_alt]) == [m_alt]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# S221 Phase 2 (2026-05-18): _check_executable_edge — entry-validation backstop
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestS221ExecutableEdgeCheck:
+    """S221 Phase 2: Backstop check at entry validation. Recomputes edge using
+    bestAsk (for YES buys) / 1-bestBid (for NO buys) instead of midpoint, and
+    rejects when honest edge is below the WEATHER_MIN_EXECUTABLE_EDGE floor
+    (default 0.0 — kills clearly-negative-edge signals only).
+
+    Complement to _filter_thin_markets (which catches at discovery) — this
+    fires on any liquid-but-still-mispriced market that slipped through.
+    """
+
+    @pytest.fixture
+    def bot_with_index(self):
+        """Bot with a controllable OrderGateway._market_index for tests."""
+        from bots.weather_bot import WeatherBot
+        engine = MagicMock()
+        engine.trade_coordinator = None
+        engine.cache = None
+        engine.db = None
+        engine.risk_manager = MagicMock()
+        engine.order_gateway = MagicMock()
+        engine.order_gateway._market_index = {}  # populated per-test
+        engine.order_gateway._open_position_markets = {"WeatherBot": set()}
+        engine.get_all_tradeable_markets = AsyncMock(return_value=[])
+        engine.place_order = AsyncMock(return_value={"success": True})
+        return WeatherBot(engine)
+
+    def test_passes_liquid_yes_with_positive_executable_edge(self, bot_with_index):
+        """YES side, model 0.72, bestAsk 0.50 → honest_edge = +0.22, accept."""
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.48, "bestAsk": 0.50}
+        }
+        opp = {"market_id": "m1", "side": "YES", "model_prob": 0.72,
+               "price": 0.49, "edge": 0.23}
+        assert bot_with_index._check_executable_edge(opp) is True
+
+    def test_passes_liquid_no_with_positive_executable_edge(self, bot_with_index):
+        """NO side, model 0.72 (of NO), bestBid_YES 0.20 → exec_NO_ask = 0.80,
+        honest_edge = 0.72 - 0.80 = -0.08. Should REJECT.
+        """
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.20, "bestAsk": 0.22}
+        }
+        opp = {"market_id": "m1", "side": "NO", "model_prob": 0.72,
+               "price": 0.79, "edge": 0.51}
+        assert bot_with_index._check_executable_edge(opp) is False
+
+    def test_rejects_2106427_no_side_profile(self, bot_with_index):
+        """The exact failure mode: bestBid_YES=0.15, bestAsk_YES=0.80.
+        WB wants to BUY NO, model_prob_NO = 0.722.
+        exec_NO_ask = 1 - 0.15 = 0.85. honest_edge = 0.722 - 0.85 = -0.128.
+        """
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "2106427": {"bestBid": 0.15, "bestAsk": 0.80}
+        }
+        opp = {"market_id": "2106427", "side": "NO", "model_prob": 0.722,
+               "price": 0.475, "edge": 0.247}  # midpoint edge was +0.247
+        assert bot_with_index._check_executable_edge(opp) is False, (
+            "2106427 NO-side trade (midpoint edge +0.247, honest edge -0.128) "
+            "MUST be rejected by Phase 2"
+        )
+
+    def test_rejects_when_market_not_in_index(self, bot_with_index):
+        """Fail-closed: no book data → cannot validate → reject."""
+        bot_with_index.base_engine.order_gateway._market_index = {}
+        opp = {"market_id": "nope", "side": "YES", "model_prob": 0.80,
+               "price": 0.50, "edge": 0.30}
+        assert bot_with_index._check_executable_edge(opp) is False
+
+    def test_rejects_when_bestbid_zero(self, bot_with_index):
+        """bestBid=0 → cannot compute NO-side executable price → fail-closed."""
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0, "bestAsk": 0.55}
+        }
+        opp = {"market_id": "m1", "side": "YES", "model_prob": 0.80,
+               "price": 0.50, "edge": 0.30}
+        assert bot_with_index._check_executable_edge(opp) is False
+
+    def test_rejects_when_bestask_zero(self, bot_with_index):
+        """bestAsk=0 → cannot compute YES-side executable price → fail-closed."""
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.45, "bestAsk": 0}
+        }
+        opp = {"market_id": "m1", "side": "YES", "model_prob": 0.80,
+               "price": 0.50, "edge": 0.30}
+        assert bot_with_index._check_executable_edge(opp) is False
+
+    def test_escape_valve_disables_check(self, bot_with_index, monkeypatch):
+        """WEATHER_MIN_EXECUTABLE_EDGE <= -1.0 in .env disables the entire check."""
+        monkeypatch.setattr(settings, "WEATHER_MIN_EXECUTABLE_EDGE", -1.0)
+        # Even with no market index entry (would normally fail-closed), accept
+        bot_with_index.base_engine.order_gateway._market_index = {}
+        opp = {"market_id": "anything", "side": "YES", "model_prob": 0.5}
+        assert bot_with_index._check_executable_edge(opp) is True
+
+    def test_threshold_tunable_upward(self, bot_with_index, monkeypatch):
+        """Set higher threshold; check rejects positive-but-marginal edge."""
+        monkeypatch.setattr(settings, "WEATHER_MIN_EXECUTABLE_EDGE", 0.10)
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.48, "bestAsk": 0.55}
+        }
+        # YES side, exec_price=0.55, model=0.60, honest_edge=0.05 < 0.10 → reject
+        opp = {"market_id": "m1", "side": "YES", "model_prob": 0.60,
+               "price": 0.52, "edge": 0.08}
+        assert bot_with_index._check_executable_edge(opp) is False
+
+    def test_alt_field_names_in_market_index(self, bot_with_index):
+        """Index entries may use best_bid/best_ask (snake_case)."""
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"best_bid": 0.48, "best_ask": 0.52}
+        }
+        opp = {"market_id": "m1", "side": "YES", "model_prob": 0.80,
+               "price": 0.50, "edge": 0.30}
+        assert bot_with_index._check_executable_edge(opp) is True
+
+    def test_accepts_high_edge_yes_at_low_executable_price(self, bot_with_index):
+        """The model-vs-market case that SHOULD trade: strong YES conviction
+        and a reasonable bestAsk. Honest edge well above default 0.0 threshold.
+        """
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.28, "bestAsk": 0.32}
+        }
+        opp = {"market_id": "m1", "side": "YES", "model_prob": 0.65,
+               "price": 0.30, "edge": 0.35}
+        # honest_edge = 0.65 - 0.32 = 0.33 > 0
+        assert bot_with_index._check_executable_edge(opp) is True

@@ -919,6 +919,15 @@ class Settings(BaseSettings):
     WEATHER_MIN_MARKET_LIQUIDITY_USD: float = float(os.getenv("WEATHER_MIN_MARKET_LIQUIDITY_USD", "1000"))
     WEATHER_MIN_MARKET_VOLUME_USD: float = float(os.getenv("WEATHER_MIN_MARKET_VOLUME_USD", "100"))
     WEATHER_MAX_MARKET_SPREAD_PCT: float = float(os.getenv("WEATHER_MAX_MARKET_SPREAD_PCT", "0.20"))
+    # S221 Phase 2 (2026-05-18): Executable-edge sanity check at entry validation
+    # (weather_bot.py:_check_executable_edge). Recomputes edge using bestAsk
+    # (for BUY YES) or 1-bestBid (for BUY NO) instead of the midpoint that
+    # signal generation used. Rejects if honest edge < this threshold.
+    # Default 0.0 = only kill clear negative-edge cases (the 2106427 failure
+    # mode where midpoint edge +0.197 was reality -0.13 on executable price).
+    # Tune up to match WEATHER_MIN_EDGE (0.08) for stricter; set <= -1.0 in
+    # .env to disable the check entirely.
+    WEATHER_MIN_EXECUTABLE_EDGE: float = float(os.getenv("WEATHER_MIN_EXECUTABLE_EDGE", "0.0"))
     # S99: Fill probability floor (price-depth factor)
     WEATHER_MIN_FILL_PROB_ESTIMATE: float = float(os.getenv("WEATHER_MIN_FILL_PROB_ESTIMATE", "0.15"))  # S101: 0.25→0.15 — pre-flight only, full model still gates
     # S99: PSW every-other-scan

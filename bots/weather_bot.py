@@ -3425,6 +3425,15 @@ class WeatherBot(BaseBot):
             )
             return False
 
+        # S221 Phase 2 (2026-05-18): Executable-edge sanity check.
+        # The S140 spread gate above measures absolute spread and fails-open
+        # when the market isn't in _market_index. _check_executable_edge
+        # recomputes edge using the side-correct executable price (bestAsk
+        # for YES, 1-bestBid for NO) and is fail-closed on missing data.
+        # See _check_executable_edge docstring for details.
+        if not self._check_executable_edge(opp):
+            return False
+
         # S149: YES-side price floor — blocks low-price YES bets (9% WR at <10c)
         _yes_min_price = float(getattr(settings, "WEATHER_YES_MIN_PRICE", 0.10))
         if opp["side"] == "YES" and opp["price"] < _yes_min_price:
@@ -4244,6 +4253,84 @@ class WeatherBot(BaseBot):
                 await session.commit()
         except Exception as exc:
             logger.debug("weatherbot_ensure_markets_failed", error=str(exc))
+
+    def _check_executable_edge(self, opp: Dict) -> bool:
+        """S221 Phase 2 (2026-05-18): Validate edge against EXECUTABLE price.
+
+        Initial edge math uses outcomePrices midpoint (the Gamma-reported price).
+        For thin / wide-spread books, midpoint diverges from what the order
+        will actually fill at — bestAsk for BUY YES, 1-bestBid (=bestAsk_NO)
+        for BUY NO. Recompute edge with the executable price and reject if
+        the honest answer is below WEATHER_MIN_EXECUTABLE_EDGE (default 0.0).
+
+        Concrete bug this catches when midpoint-based gates pass: market 2106427
+        had midpoint 0.525 vs bestAsk_NO = 1 - 0.15 = 0.85 (we wanted to buy NO).
+        Initial edge math: 0.722 - 0.475 = +0.247. Honest math: 0.722 - 0.85 =
+        -0.128. Initial gate passed; honest gate rejects. (Phase 1 normally
+        catches 2106427 first via the spread filter at discovery; Phase 2 is
+        a backstop for any liquid-but-still-mispriced market that gets through.)
+
+        Returns False (reject) if:
+        - Market not in OrderGateway _market_index (no book data → cannot validate)
+        - bestBid<=0 OR bestAsk<=0 in the index entry
+        - Honest edge < WEATHER_MIN_EXECUTABLE_EDGE
+
+        Returns True (accept) immediately if check disabled
+        (WEATHER_MIN_EXECUTABLE_EDGE<=-1.0 in .env).
+
+        Complement to the S140 spread gate at _execute_weather_trade (which
+        measures absolute spread but fails-open when market is absent from
+        index). This gate is side-correct and fails-closed on missing data.
+        """
+        _min_exec_edge = float(getattr(settings, "WEATHER_MIN_EXECUTABLE_EDGE", 0.0))
+        if _min_exec_edge <= -1.0:
+            return True  # disabled via .env
+
+        _midx = getattr(self.base_engine.order_gateway, "_market_index", None)
+        _mdata = _midx.get(str(opp["market_id"])) if _midx else None
+        if not _mdata:
+            logger.info(
+                "weatherbot_executable_edge_no_market",
+                market_id=opp.get("market_id"),
+                side=opp.get("side", ""),
+                note="market not in OrderGateway _market_index — fail-closed",
+            )
+            return False
+
+        _bb = float(_mdata.get("bestBid") or _mdata.get("best_bid") or 0)
+        _ba = float(_mdata.get("bestAsk") or _mdata.get("best_ask") or 0)
+        if _bb <= 0 or _ba <= 0:
+            logger.info(
+                "weatherbot_executable_edge_no_book",
+                market_id=opp.get("market_id"),
+                side=opp.get("side", ""),
+                bb=_bb, ba=_ba,
+                note="bestBid/bestAsk missing — cannot validate executable edge",
+            )
+            return False
+
+        _side = opp.get("side", "YES")
+        if _side == "YES":
+            _exec_price = _ba  # lift the ask to buy YES
+        else:  # NO
+            _exec_price = 1.0 - _bb  # NO ask = 1 - YES bid
+
+        _exec_edge = float(opp.get("model_prob", 0.0)) - _exec_price
+        if _exec_edge < _min_exec_edge:
+            logger.info(
+                "weatherbot_executable_edge_reject",
+                market_id=opp.get("market_id"),
+                side=_side,
+                model_prob=round(float(opp.get("model_prob", 0)), 4),
+                midpoint_edge=round(float(opp.get("edge", 0)), 4),
+                exec_price=round(_exec_price, 4),
+                exec_edge=round(_exec_edge, 4),
+                min_exec_edge=_min_exec_edge,
+                bb=_bb, ba=_ba,
+            )
+            return False
+
+        return True
 
     def _filter_thin_markets(self, markets: List[Dict]) -> List[Dict]:
         """S221 (2026-05-18): Filter markets too thin to actually trade.
