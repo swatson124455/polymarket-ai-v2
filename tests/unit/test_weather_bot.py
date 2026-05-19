@@ -857,6 +857,13 @@ class TestWeatherBot:
                 "no_token_id": "tok_no",
                 "yes_price": 0.70,  # S159: lowered from 0.85 — YES identity dampener (0.85x) blocks conf 0.8075 < 0.85
                 "slug": "nyc-temp-future",
+                # S221: liquidity/volume added so the new _filter_thin_markets
+                # gate accepts this fixture (default $1000/$100 floors).
+                # bestBid/bestAsk omitted intentionally — DB fallback path
+                # doesn't populate them, and the filter's spread check
+                # opts-out when both are 0.
+                "liquidity": 5000,
+                "volume": 5000,
             },
         ])
 
@@ -1292,6 +1299,10 @@ class TestWeatherBotOpportunities:
                 "no_token_id": "tok_no",
                 "yes_price": 0.98,  # No edge (market == model)
                 "slug": "nyc-temp",
+                # S221: liquidity/volume added so the new _filter_thin_markets
+                # gate accepts this fixture (default $1000/$100 floors).
+                "liquidity": 5000,
+                "volume": 5000,
             },
         ])
         fake_forecast = CombinedForecast(
@@ -3194,13 +3205,17 @@ class TestWBSeedsMarketIndex:
 
         bot = WeatherBot(engine)
 
+        # S221: liquidity/volume/bestBid/bestAsk added so markets pass
+        # the new _filter_thin_markets gate (default $1000/$100/20% thresholds).
         fake_markets = [
             {"id": "m1", "condition_id": "c1", "yes_token_id": "yt1",
              "no_token_id": "nt1", "yes_price": 0.5, "no_price": 0.5,
-             "question": "q", "slug": "s", "volume": 0},
+             "question": "q", "slug": "s", "volume": 5000,
+             "liquidity": 5000, "bestBid": 0.48, "bestAsk": 0.52},
             {"id": "m2", "condition_id": "c2", "yes_token_id": "yt2",
              "no_token_id": "nt2", "yes_price": 0.4, "no_price": 0.6,
-             "question": "q", "slug": "s", "volume": 0},
+             "question": "q", "slug": "s", "volume": 5000,
+             "liquidity": 5000, "bestBid": 0.38, "bestAsk": 0.42},
         ]
         # Stub Gamma fetch + group_markets so scan reaches the seeding step
         bot._fetch_weather_events_by_tag = AsyncMock(return_value=fake_markets)
@@ -3237,10 +3252,12 @@ class TestWBSeedsMarketIndex:
         engine.update_market_index = MagicMock(side_effect=lambda m: call_order.append("update_index"))
 
         bot = WeatherBot(engine)
+        # S221: liquid-market fields added so _filter_thin_markets accepts.
         bot._fetch_weather_events_by_tag = AsyncMock(return_value=[
             {"id": "m1", "condition_id": "c1", "yes_token_id": "yt1",
              "no_token_id": "nt1", "yes_price": 0.5, "no_price": 0.5,
-             "question": "q", "slug": "s", "volume": 0},
+             "question": "q", "slug": "s", "volume": 5000,
+             "liquidity": 5000, "bestBid": 0.48, "bestAsk": 0.52},
         ])
         bot._market_mapper.group_markets = MagicMock(return_value=[])
         bot._cache_warmed = True
@@ -3475,3 +3492,123 @@ class TestFetchWeatherEventsByTagParallel:
         assert page_2_attempts == 2, (
             f"Expected page 2 to retry once after 503, got attempts={page_2_attempts}"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# S221 (2026-05-18): _filter_thin_markets — discovery-time gate
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestS221ThinMarketFilter:
+    """S221: Pre-discovery filter rejects markets where executable price diverges
+    from midpoint. Concrete failure mode: market 2106427 (NYC weather, end-May)
+    had liq=$269 vol=$95 spread=137% — 137 attempts in 24h, all failed at
+    slippage gate. This filter rejects pre-scan so signals are never generated.
+    """
+
+    @pytest.fixture
+    def bot(self):
+        from bots.weather_bot import WeatherBot
+        engine = MagicMock()
+        engine.trade_coordinator = None
+        engine.cache = None
+        engine.db = None
+        engine.risk_manager = MagicMock()
+        engine.order_gateway = MagicMock()
+        engine.order_gateway._open_position_markets = {"WeatherBot": set()}
+        engine.get_all_tradeable_markets = AsyncMock(return_value=[])
+        engine.place_order = AsyncMock(return_value={"success": True})
+        return WeatherBot(engine)
+
+    # The 2106427 failure-mode profile, captured from production logs:
+    # liquidity=$269, volume=$95, bestBid=0.15, bestAsk=0.80 → spread 137%.
+    THIN_MARKET = {
+        "id": "2106427", "question": "NYC May 31", "yes_price": 0.525,
+        "liquidity": 269, "volume": 95, "bestBid": 0.15, "bestAsk": 0.80,
+    }
+
+    # A healthy market that should pass all three gates.
+    LIQUID_MARKET = {
+        "id": "1234567", "question": "NYC Apr 30", "yes_price": 0.50,
+        "liquidity": 5000, "volume": 25000, "bestBid": 0.48, "bestAsk": 0.52,
+    }
+
+    def test_rejects_2106427_profile(self, bot):
+        """The exact failure mode this fix targets: should be filtered out."""
+        result = bot._filter_thin_markets([self.THIN_MARKET])
+        assert result == [], (
+            f"Market 2106427 (liq=$269, vol=$95, spread=137%) MUST be rejected; "
+            f"filter returned {len(result)} markets"
+        )
+
+    def test_accepts_liquid_market(self, bot):
+        """Liquid market with tight spread passes unchanged."""
+        result = bot._filter_thin_markets([self.LIQUID_MARKET])
+        assert result == [self.LIQUID_MARKET]
+
+    def test_mixed_input_drops_thin_keeps_liquid(self, bot):
+        """Filter is per-market; both populations coexist in the same list."""
+        result = bot._filter_thin_markets([self.THIN_MARKET, self.LIQUID_MARKET])
+        assert result == [self.LIQUID_MARKET]
+
+    def test_rejects_low_liquidity_only(self, bot):
+        """Liquidity below WEATHER_MIN_MARKET_LIQUIDITY_USD (default $1000)."""
+        m = {**self.LIQUID_MARKET, "liquidity": 500}  # below $1000 floor
+        assert bot._filter_thin_markets([m]) == []
+
+    def test_rejects_low_volume_only(self, bot):
+        """Volume below WEATHER_MIN_MARKET_VOLUME_USD (default $100)."""
+        m = {**self.LIQUID_MARKET, "volume": 50}  # below $100 floor
+        assert bot._filter_thin_markets([m]) == []
+
+    def test_rejects_wide_spread_only(self, bot):
+        """Spread above WEATHER_MAX_MARKET_SPREAD_PCT (default 20%)."""
+        m = {**self.LIQUID_MARKET, "bestBid": 0.30, "bestAsk": 0.70}
+        # mid = 0.50, spread = 0.40 / 0.50 = 80%
+        assert bot._filter_thin_markets([m]) == []
+
+    def test_spread_check_skipped_when_bid_ask_absent(self, bot):
+        """Fallback paths (DB / direct probe) may not populate bestBid/bestAsk.
+        When BOTH are missing/0, spread check is opt-out (entry-validation
+        gate at weather_bot.py:3388 catches it later).
+        """
+        m = {**self.LIQUID_MARKET, "bestBid": 0, "bestAsk": 0}
+        assert bot._filter_thin_markets([m]) == [m]
+
+    def test_spread_check_fail_closed_when_one_side_missing(self, bot):
+        """If bestBid > 0 but bestAsk = 0 (or vice versa), we have partial
+        info and cannot compute spread reliably — fail-closed.
+        """
+        m_no_ask = {**self.LIQUID_MARKET, "bestBid": 0.45, "bestAsk": 0}
+        m_no_bid = {**self.LIQUID_MARKET, "bestBid": 0, "bestAsk": 0.55}
+        assert bot._filter_thin_markets([m_no_ask]) == []
+        assert bot._filter_thin_markets([m_no_bid]) == []
+
+    def test_escape_valve_disables_filter(self, bot, monkeypatch):
+        """Setting min_liq=0, min_vol=0, max_spread_pct>=1.0 bypasses entirely."""
+        monkeypatch.setattr(settings, "WEATHER_MIN_MARKET_LIQUIDITY_USD", 0)
+        monkeypatch.setattr(settings, "WEATHER_MIN_MARKET_VOLUME_USD", 0)
+        monkeypatch.setattr(settings, "WEATHER_MAX_MARKET_SPREAD_PCT", 1.0)
+        # 2106427 must pass when filter is disabled
+        result = bot._filter_thin_markets([self.THIN_MARKET])
+        assert result == [self.THIN_MARKET], (
+            "Escape valve (all-three-disabled) must return input unchanged"
+        )
+
+    def test_empty_input_returns_empty(self, bot):
+        assert bot._filter_thin_markets([]) == []
+
+    def test_non_dict_entries_silently_dropped(self, bot):
+        """Defensive: filter skips non-dict entries without crashing."""
+        result = bot._filter_thin_markets([self.LIQUID_MARKET, None, "garbage", 42])
+        assert result == [self.LIQUID_MARKET]
+
+    def test_alt_field_names_recognized(self, bot):
+        """Filter accepts liquidityNum / volumeNum / best_bid / best_ask aliases.
+        Gamma API has historically returned both casings/spellings."""
+        m_alt = {
+            "id": "alt", "question": "alt",
+            "liquidityNum": 5000, "volumeNum": 25000,
+            "best_bid": 0.48, "best_ask": 0.52,
+        }
+        assert bot._filter_thin_markets([m_alt]) == [m_alt]

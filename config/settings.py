@@ -907,6 +907,18 @@ class Settings(BaseSettings):
     # S99: Fill-failure cooldown
     WEATHER_FILL_FAIL_COOLDOWN_SCANS: int = int(os.getenv("WEATHER_FILL_FAIL_COOLDOWN_SCANS", "2"))
     WEATHER_FILL_FAIL_COOLDOWN_SECS: float = float(os.getenv("WEATHER_FILL_FAIL_COOLDOWN_SECS", "120"))  # S101: 900→120s — IOC gas negligible, 2min = 1 scan cycle
+    # S221 (2026-05-18): Pre-discovery thin-market gate (WeatherBot-only).
+    # Markets where midpoint (used in edge math) diverges from executable price
+    # waste signal-gen cycles and deterministically fail at the slippage gate.
+    # Example: market 2106427 (NYC weather, end-May 2026) had liquidity=$269,
+    # volume=$95, spread=137% (bb=0.15 ba=0.80). Midpoint 0.525 vs walked ask
+    # 0.85 = 60% slippage > 10% limit. 137 of 154 gateway_unknown_market events
+    # in 24h came from this single market; 100% failed at execution. Filter at
+    # discovery to skip pre-scan. Fail-closed on missing liq/vol fields.
+    # Set all three to 0/0/1.0 in .env to disable.
+    WEATHER_MIN_MARKET_LIQUIDITY_USD: float = float(os.getenv("WEATHER_MIN_MARKET_LIQUIDITY_USD", "1000"))
+    WEATHER_MIN_MARKET_VOLUME_USD: float = float(os.getenv("WEATHER_MIN_MARKET_VOLUME_USD", "100"))
+    WEATHER_MAX_MARKET_SPREAD_PCT: float = float(os.getenv("WEATHER_MAX_MARKET_SPREAD_PCT", "0.20"))
     # S99: Fill probability floor (price-depth factor)
     WEATHER_MIN_FILL_PROB_ESTIMATE: float = float(os.getenv("WEATHER_MIN_FILL_PROB_ESTIMATE", "0.15"))  # S101: 0.25→0.15 — pre-flight only, full model still gates
     # S99: PSW every-other-scan

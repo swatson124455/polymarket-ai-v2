@@ -1701,6 +1701,10 @@ class WeatherBot(BaseBot):
             #    tag_slug=temperature returns all live temperature events with prices
             #    pre-populated from outcomePrices (no CLOB enrichment needed).
             weather_markets = await self._fetch_weather_events_by_tag()
+            # S221: Reject thin markets (liq < $1000 OR vol < $100 OR spread > 20%)
+            # before scan. Eliminates 100%-fail signal-gen on illiquid books
+            # (root cause of slippage-gate rejections in 24h log review).
+            weather_markets = self._filter_thin_markets(weather_markets)
 
             if not weather_markets:
                 # Fallback: DB-based discovery (for markets already ingested)
@@ -1710,12 +1714,17 @@ class WeatherBot(BaseBot):
                 if weather_markets:
                     # DB markets lack prices — enrich via CLOB midpoint
                     weather_markets = await self._enrich_with_live_prices(weather_markets)
+                    # S221: liq/vol filter (spread skipped — DB rows may lack bestBid/bestAsk;
+                    # the entry-validation spread gate at weather_bot.py:3388 catches those).
+                    weather_markets = self._filter_thin_markets(weather_markets)
 
             if not weather_markets:
                 # Last resort: direct Gamma API probe (rate-limited)
                 if _now_mono - self._last_direct_probe >= self._direct_probe_interval:
                     self._last_direct_probe = _now_mono
                     weather_markets = await self._fetch_weather_markets_direct()
+                    # S221: same filter on direct-probe path (consistency).
+                    weather_markets = self._filter_thin_markets(weather_markets)
                 if not weather_markets:
                     logger.info("weatherbot_no_weather_markets")
                     return
@@ -2110,6 +2119,13 @@ class WeatherBot(BaseBot):
                 mkt["id"] = mkt.get("id") or mkt.get("conditionId", "")
                 markets.append(mkt)
 
+        if not markets:
+            return 0
+
+        # S221: thin-market filter on PSW (precip/snow/wind) discovery path too.
+        # PSW markets pass through original Gamma mkt dicts so liquidity/bestBid/
+        # bestAsk fields are present and the spread check runs.
+        markets = self._filter_thin_markets(markets)
         if not markets:
             return 0
 
@@ -4229,6 +4245,92 @@ class WeatherBot(BaseBot):
         except Exception as exc:
             logger.debug("weatherbot_ensure_markets_failed", error=str(exc))
 
+    def _filter_thin_markets(self, markets: List[Dict]) -> List[Dict]:
+        """S221 (2026-05-18): Filter markets too thin to actually trade.
+
+        Rejects markets where executable price diverges from the midpoint that
+        WB uses in edge math, eliminating signal-gen cycles + slippage-gate
+        rejections on illiquid books.
+
+        Concrete failure mode this fixes (market 2106427, NYC weather, end-May
+        2026): liq=$269, vol=$95, spread=137% (bb=0.15 ba=0.80). WB reads
+        outcomePrices midpoint 0.525, computes edge=+0.197 vs model_prob=0.722,
+        sends order at 0.53, paper_book_walk fills at vwap=0.85, slippage gate
+        rejects at 60.4% > 10% limit. 137 such failures in 24h from this one
+        market. With this filter at WEATHER_MIN_MARKET_LIQUIDITY_USD=1000 +
+        WEATHER_MIN_MARKET_VOLUME_USD=100 + WEATHER_MAX_MARKET_SPREAD_PCT=0.20,
+        the market is rejected at discovery and never reaches signal gen.
+
+        Behavior:
+        - liquidity / volume checks always run (fail-closed: missing field → drop)
+        - spread check only runs when both bestBid AND bestAsk > 0 (DB / direct
+          fallback paths may not populate these; the entry-validation spread
+          gate at weather_bot.py:3388 catches those)
+        - escape valve: set min_liq=0, min_vol=0, max_spread_pct>=1.0 in .env
+          to bypass entirely (returns input list unchanged)
+        """
+        min_liq = float(getattr(settings, "WEATHER_MIN_MARKET_LIQUIDITY_USD", 1000))
+        min_vol = float(getattr(settings, "WEATHER_MIN_MARKET_VOLUME_USD", 100))
+        max_spread_pct = float(getattr(settings, "WEATHER_MAX_MARKET_SPREAD_PCT", 0.20))
+
+        # Escape valve — all-three-disabled bypasses the filter entirely
+        if min_liq <= 0 and min_vol <= 0 and max_spread_pct >= 1.0:
+            return markets
+
+        kept: List[Dict] = []
+        dropped_liq = 0
+        dropped_vol = 0
+        dropped_spread = 0
+        for m in markets:
+            if not isinstance(m, dict):
+                continue
+            try:
+                liq = float(m.get("liquidity") or m.get("liquidityNum") or 0)
+                vol = float(m.get("volume") or m.get("volumeNum") or 0)
+                bb = float(m.get("bestBid") or m.get("best_bid") or 0)
+                ba = float(m.get("bestAsk") or m.get("best_ask") or 0)
+            except (TypeError, ValueError):
+                # Field-parse failure on a market dict — cannot validate so skip.
+                # Counted under dropped_spread for telemetry simplicity.
+                dropped_spread += 1
+                continue
+            if min_liq > 0 and liq < min_liq:
+                dropped_liq += 1
+                continue
+            if min_vol > 0 and vol < min_vol:
+                dropped_vol += 1
+                continue
+            # Spread check is opt-out when bestBid/bestAsk absent (fallback paths).
+            # When present, enforce strictly — bb<=0 OR ba<=0 with the check on
+            # means we can't compute spread, so fail-closed.
+            if max_spread_pct < 1.0 and (bb > 0 or ba > 0):
+                if bb <= 0 or ba <= 0:
+                    dropped_spread += 1
+                    continue
+                mid = (ba + bb) / 2.0
+                if mid <= 0:
+                    dropped_spread += 1
+                    continue
+                spread_pct = (ba - bb) / mid
+                if spread_pct > max_spread_pct:
+                    dropped_spread += 1
+                    continue
+            kept.append(m)
+
+        if (len(markets) - len(kept)) > 0:
+            logger.info(
+                "weatherbot_thin_market_filter",
+                input_count=len(markets),
+                kept=len(kept),
+                dropped_liquidity=dropped_liq,
+                dropped_volume=dropped_vol,
+                dropped_spread_or_invalid=dropped_spread,
+                min_liq_usd=min_liq,
+                min_vol_usd=min_vol,
+                max_spread_pct=max_spread_pct,
+            )
+        return kept
+
     async def _fetch_weather_events_by_tag(self) -> List[Dict]:
         """Fetch live temperature-bucket markets via Gamma API tag_slug=temperature.
 
@@ -4417,6 +4519,14 @@ class WeatherBot(BaseBot):
                     "yes_token_id": yes_token_id,
                     "no_token_id": no_token_id,
                     "volume": m.get("volumeNum") or m.get("volume") or 0,
+                    # S221: liquidity + bestBid + bestAsk for thin-market filter
+                    # (_filter_thin_markets). Also re-used by the spread-gate at
+                    # entry validation (weather_bot.py:3388) so it no longer
+                    # silently fails open when the market is missing from the
+                    # OrderGateway _market_index.
+                    "liquidity": m.get("liquidityNum") or m.get("liquidity") or 0,
+                    "bestBid": m.get("bestBid") or 0,
+                    "bestAsk": m.get("bestAsk") or 0,
                     "active": True,
                     "category": "weather",
                     "slug": m.get("slug") or "",
