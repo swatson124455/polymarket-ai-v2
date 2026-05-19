@@ -1400,8 +1400,13 @@ class MirrorBot(BaseBot):
                                        live_bid=round(_live_bid, 4),
                                        drift_pct=round(_drift * 100, 2),
                                        exit_reason=_exit_event_data.get("exit_reason", "unknown"))
-                        # Only hard_stop_loss is price-stale-sensitive — other exits fire on time/profit/trader.
-                        if _exit_event_data.get("exit_reason") == "hard_stop_loss":
+                        # A.5: Both hard_stop_loss and graduated stop_loss fire on a -threshold pnl_pct
+                        # computed from pos['current_price'] (the stale mid). Re-check each against the
+                        # live bid so a stale-mid-driven false trigger aborts before SELL fires.
+                        # Other exits (force_exit, take_profit, near-resolution) gate on time/price-target,
+                        # not on a current_price-derived pnl threshold, so don't need re-validation.
+                        _exit_reason = _exit_event_data.get("exit_reason")
+                        if _exit_reason == "hard_stop_loss":
                             _entry = float(pos.get("entry_price", 0) or 0)
                             if _entry > 0:
                                 _live_pnl_pct = (_live_bid - _entry) / _entry
@@ -1417,33 +1422,26 @@ class MirrorBot(BaseBot):
                                                    live_bid=round(_live_bid, 4),
                                                    live_pnl_pct=round(_live_pnl_pct, 4))
                                     pos["current_price"] = _live_bid
-                                    # Persist via S141 pattern so _sync_prices_from_db doesn't pull the stale mid back next scan.
-                                    try:
-                                        _db = getattr(self.base_engine, "db", None)
-                                        if _db and getattr(_db, "session_factory", None):
-                                            from sqlalchemy import text as _refresh_sql
-                                            async with _db.get_session() as _rs:
-                                                await _rs.execute(_refresh_sql(
-                                                    "UPDATE positions SET current_price = :p "
-                                                    "WHERE token_id = :tid AND status = 'open' "
-                                                    "  AND COALESCE(source_bot, bot_id) = 'MirrorBot'"
-                                                ), {"p": _live_bid, "tid": token_id})
-                                                await _rs.execute(_refresh_sql(
-                                                    "INSERT INTO market_prices_latest "
-                                                    "(token_id, market_id, price, timestamp) "
-                                                    "VALUES (:tid, :mid, :p, :ts) "
-                                                    "ON CONFLICT (token_id) DO UPDATE SET "
-                                                    "  price = EXCLUDED.price, "
-                                                    "  market_id = EXCLUDED.market_id, "
-                                                    "  timestamp = EXCLUDED.timestamp "
-                                                    "WHERE EXCLUDED.timestamp > "
-                                                    "  market_prices_latest.timestamp"
-                                                ), {"tid": token_id, "mid": market_id, "p": _live_bid,
-                                                    "ts": datetime.now(timezone.utc).replace(tzinfo=None)})
-                                                await _rs.commit()
-                                    except Exception as _rd_err:
-                                        logger.warning("mirror_exit_price_refresh_db_failed",
-                                                       market=market_id[:20], error=str(_rd_err)[:200])
+                                    await self._persist_refreshed_exit_price(token_id, market_id, _live_bid)
+                                    continue
+                        elif _exit_reason == "stop_loss":
+                            # Graduated stop_loss stores its computed effective threshold in event_data
+                            # at the evaluation site (mirror_bot.py:1278). Read it back rather than
+                            # recompute — avoids re-deriving _effective_stop from entry_confidence + hours_held.
+                            _entry = float(pos.get("entry_price", 0) or 0)
+                            _eff_stop = float(_exit_event_data.get("threshold", 0.30))
+                            if _entry > 0:
+                                _live_pnl_pct = (_live_bid - _entry) / _entry
+                                if _live_pnl_pct > -_eff_stop:
+                                    logger.warning("mirror_stop_loss_aborted_stale_price",
+                                                   market=market_id[:20],
+                                                   entry=round(_entry, 4),
+                                                   decision_price=round(_decision_price, 4),
+                                                   live_bid=round(_live_bid, 4),
+                                                   live_pnl_pct=round(_live_pnl_pct, 4),
+                                                   effective_stop=round(_eff_stop, 4))
+                                    pos["current_price"] = _live_bid
+                                    await self._persist_refreshed_exit_price(token_id, market_id, _live_bid)
                                     continue
 
                 _exit_event_data = dict(_exit_event_data)
@@ -1550,6 +1548,54 @@ class MirrorBot(BaseBot):
             self._open_positions.pop(_zk, None)
             self._slippage_fail_count.pop(_zk, None)
             self._slippage_backoff.pop(_zk, None)
+
+    async def _persist_refreshed_exit_price(
+        self,
+        token_id: str,
+        market_id: str,
+        new_price: float,
+    ) -> None:
+        """A.5: Persist a price refresh decision from the exit re-validation path.
+
+        Writes new_price to both positions.current_price and market_prices_latest
+        via the S141 timestamp-guard UPSERT pattern, so position_manager's next
+        10s sync doesn't pull the stale mid back over our refresh.
+
+        Best-effort: any DB failure logs `mirror_exit_price_refresh_db_failed`
+        but never raises. Caller already updated `pos['current_price']` in memory,
+        so the next scan cycle still sees the refreshed value even if the DB
+        persistence path is degraded.
+
+        Used by both the hard_stop_loss and graduated stop_loss abort branches
+        in `_check_and_execute_exits` — extracted to a single helper so the
+        UPSERT pattern has one source of truth.
+        """
+        _db = getattr(self.base_engine, "db", None)
+        if not (_db and getattr(_db, "session_factory", None)):
+            return
+        try:
+            from sqlalchemy import text as _refresh_sql
+            async with _db.get_session() as _rs:
+                await _rs.execute(_refresh_sql(
+                    "UPDATE positions SET current_price = :p "
+                    "WHERE token_id = :tid AND status = 'open' "
+                    "  AND COALESCE(source_bot, bot_id) = 'MirrorBot'"
+                ), {"p": new_price, "tid": token_id})
+                await _rs.execute(_refresh_sql(
+                    "INSERT INTO market_prices_latest "
+                    "(token_id, market_id, price, timestamp) "
+                    "VALUES (:tid, :mid, :p, :ts) "
+                    "ON CONFLICT (token_id) DO UPDATE SET "
+                    "  price = EXCLUDED.price, "
+                    "  market_id = EXCLUDED.market_id, "
+                    "  timestamp = EXCLUDED.timestamp "
+                    "WHERE EXCLUDED.timestamp > market_prices_latest.timestamp"
+                ), {"tid": token_id, "mid": market_id, "p": new_price,
+                    "ts": datetime.now(timezone.utc).replace(tzinfo=None)})
+                await _rs.commit()
+        except Exception as _rd_err:
+            logger.warning("mirror_exit_price_refresh_db_failed",
+                           market=market_id[:20], error=str(_rd_err)[:200])
 
     async def _reap_resolved_positions(self) -> None:
         """S85: Delete positions on markets that have already resolved.
