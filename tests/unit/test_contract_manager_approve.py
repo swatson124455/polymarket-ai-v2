@@ -41,7 +41,7 @@ class TestApproveTokenBuildTransactionAwaited:
                 f"sign_transaction got non-dict (likely unawaited coroutine): {type(tx).__name__}"
             )
             mock_signed = MagicMock()
-            mock_signed.rawTransaction = b"\x00" * 32
+            mock_signed.raw_transaction = b"\x00" * 32
             return mock_signed
         mock_account.sign_transaction = _sign_transaction
 

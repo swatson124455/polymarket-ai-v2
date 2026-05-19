@@ -259,7 +259,7 @@ class ContractManager:
             })
             
             signed_txn = self.account.sign_transaction(transaction)
-            tx_hash = await self.w3.eth.send_raw_transaction(signed_txn.rawTransaction)
+            tx_hash = await self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
             
             receipt = await self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
             
