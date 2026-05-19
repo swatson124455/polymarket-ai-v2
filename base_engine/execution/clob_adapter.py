@@ -1,6 +1,11 @@
 """
-CLOB Adapter - Wraps py-clob-client for order placement and orderbook.
+CLOB Adapter - Wraps py-clob-client-v2 for order placement and orderbook.
 ExecutionEngine uses this when CLOB credentials are configured; otherwise falls back to PolymarketClient (httpx).
+
+Polymarket migrated CLOB to V2 on 2026-04-28. V1 SDK (py-clob-client) is incompatible
+and returns `order_version_mismatch` on every order placement. V2 SDK targets the
+new Exchange contract at 0xE111180000d2663C0091e4f400237545B87B996B with EIP-712
+domain version="2".
 """
 import asyncio
 from typing import Any, Dict, Optional
@@ -19,10 +24,10 @@ def _get_clob_client():
     if _CLOB_CLIENT is not None:
         return _CLOB_CLIENT
     try:
-        from py_clob_client.client import ClobClient
-        from py_clob_client.clob_types import ApiCreds
+        from py_clob_client_v2.client import ClobClient
+        from py_clob_client_v2.clob_types import ApiCreds
     except ImportError:
-        logger.debug("py-clob-client not installed; CLOB adapter disabled")
+        logger.debug("py-clob-client-v2 not installed; CLOB adapter disabled")
         return None
     host = (getattr(settings, "POLYMARKET_CLOB_API", None) or "").rstrip("/")
     key = (getattr(settings, "PRIVATE_KEY", None) or "").strip()
@@ -38,7 +43,7 @@ def _get_clob_client():
     try:
         creds = ApiCreds(api_key=api_key, api_secret=api_secret, api_passphrase=api_passphrase)
         _CLOB_CLIENT = ClobClient(host=host, chain_id=chain_id, key=key, creds=creds)
-        logger.info("CLOB adapter initialized with py-clob-client")
+        logger.info("CLOB adapter initialized with py-clob-client-v2")
         return _CLOB_CLIENT
     except Exception as e:
         logger.warning("Failed to build ClobClient: %s", e)
@@ -51,7 +56,7 @@ def _place_order_sync(market_id: str, token_id: str, side: str, size: float, pri
     if not client:
         return {"success": False, "error": "CLOB client not configured"}
     try:
-        from py_clob_client.clob_types import OrderArgs
+        from py_clob_client_v2.clob_types import OrderArgs
         side_upper = (side or "").upper()
         if side_upper not in ("BUY", "SELL"):
             if side_upper in ("YES", "NO"):
