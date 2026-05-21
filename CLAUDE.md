@@ -2,6 +2,18 @@
 
 This is a live 15-bot Polymarket automated trading system. Real capital is at risk. Every change can break something that currently works and costs money.
 
+## SESSION PRIORITY — MIRRORBOT HAS ALL PRIORITIES
+
+**MirrorBot (MB) is the highest-priority bot in the system.** When sessions contend for shared resources, MB wins. Non-negotiable.
+
+1. **Deploys.** MB sessions deploy first. If an MB session is mid-deploy, about to deploy, or has uncommitted work pending deploy, EB and WB sessions DEFER. Never initiate a deploy that could race against MB work — even if your own work is "ready."
+2. **Master merges.** MB has right-of-way to land on master. EB/WB rebases against MB's master state, not vice versa. If a master merge from EB/WB would block or complicate a pending MB merge, defer the EB/WB merge.
+3. **Shared modules** (`base_engine/**`, `paper_trading/**`, `position_manager.py`, `database.py`, `deploy.sh`, `BotBankrollManager`, `risk_manager`, etc.): MB session's changes take precedence. EB/WB sessions assume MB is the source of truth for shared infrastructure; do not modify shared modules in EB/WB sessions without explicit operator authorization on top of MB session signoff.
+4. **Env / config conflicts.** `/opt/pa2-shared/.env` and other shared env files: MB session decides. EB-specific `.env.esports` and WB-specific `.env.weather` are owned by their respective sessions, but if a value in a per-bot file affects MB behavior, MB decides.
+5. **Time and bandwidth.** If operator attention or system resources are scarce, MB ships first. EB/WB sessions stand by.
+
+EB and WB sessions are SUBORDINATE. When in doubt, stop and ask.
+
 ## Prime Directive
 
 Working code is sacred. Fix only what is broken. Fix it at the root. Prove it before and after. If you cannot explain exactly why a line needs to change and exactly what breaks if you don't change it, do not change it.
