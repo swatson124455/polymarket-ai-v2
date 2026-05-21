@@ -4,6 +4,11 @@ This is a live 15-bot Polymarket automated trading system. Real capital is at ri
 
 ## SESSION PRIORITY — MIRRORBOT HAS ALL PRIORITIES
 
+**Two layers, both binding:**
+
+1. **Scope.** A bot-scoped session works ONLY on its own bot's code. WB session touches WB files; EB session touches EB files; MB session touches MB files. Per `feedback_bot_sessions.md` — this is independent of priority.
+2. **Priority for shared resources.** ALL shared resources (deploys, master, shared modules, shared env files, operator attention) are secondary to MB. Not just "on contention" — always. If you are an EB or WB session and the work you need to do touches a shared resource, default-assume MB has primary claim and defer until you have explicit operator authorization that names the MB-state interaction.
+
 **MirrorBot (MB) is the highest-priority bot in the system.** When sessions contend for shared resources, MB wins. Non-negotiable.
 
 1. **Deploys.** MB sessions deploy first. If an MB session is mid-deploy, about to deploy, or has uncommitted work pending deploy, EB and WB sessions DEFER. Never initiate a deploy that could race against MB work — even if your own work is "ready."
