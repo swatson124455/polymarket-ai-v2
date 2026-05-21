@@ -37,13 +37,35 @@ def _get_clob_client():
     api_secret = (getattr(settings, "CLOB_SECRET", None) or "").strip()
     api_passphrase = (getattr(settings, "CLOB_PASSPHRASE", None) or "").strip()
     chain_id = getattr(settings, "POLYGON_CHAIN_ID", 137)
+    funder = (getattr(settings, "DEPOSIT_WALLET_ADDRESS", None) or "").strip()
     if not api_key or not api_secret or not api_passphrase:
         logger.debug("CLOB_API_KEY/SECRET/PASSPHRASE not set; CLOB adapter disabled")
         return None
     try:
         creds = ApiCreds(api_key=api_key, api_secret=api_secret, api_passphrase=api_passphrase)
-        _CLOB_CLIENT = ClobClient(host=host, chain_id=chain_id, key=key, creds=creds)
-        logger.info("CLOB adapter initialized with py-clob-client-v2")
+        # V2 deposit-wallet flow: signature_type=3 (POLY_1271) + funder=deposit_wallet.
+        # Polymarket V2 (post 2026-04-28) rejects EOA-as-maker; orders must be attributed
+        # to the deposit wallet. EOA still signs (via private key + EIP-1271 lookup).
+        if funder:
+            _CLOB_CLIENT = ClobClient(
+                host=host,
+                chain_id=chain_id,
+                key=key,
+                creds=creds,
+                signature_type=3,
+                funder=funder,
+            )
+            logger.info(
+                "CLOB adapter initialized with py-clob-client-v2 (POLY_1271 deposit wallet flow)",
+                funder=funder,
+            )
+        else:
+            _CLOB_CLIENT = ClobClient(host=host, chain_id=chain_id, key=key, creds=creds)
+            logger.warning(
+                "CLOB adapter initialized WITHOUT DEPOSIT_WALLET_ADDRESS — V2 orders will be "
+                "rejected with 'maker address not allowed'. Set DEPOSIT_WALLET_ADDRESS in .env "
+                "to the Polymarket-provisioned deposit wallet address."
+            )
         return _CLOB_CLIENT
     except Exception as e:
         logger.warning("Failed to build ClobClient: %s", e)

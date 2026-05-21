@@ -637,6 +637,14 @@ class Settings(BaseSettings):
     # Wallet
     PRIVATE_KEY: Optional[str] = os.getenv("PRIVATE_KEY")
     WALLET_ADDRESS: Optional[str] = os.getenv("WALLET_ADDRESS")
+    # Polymarket V2 deposit wallet — per-user proxy provisioned by Polymarket's relayer.
+    # Required as the `funder` for CLOB V2 POLY_1271 orders (post 2026-04-28 migration).
+    # Empty string falls back to V1-style EOA-as-maker (will be rejected by V2 CLOB).
+    DEPOSIT_WALLET_ADDRESS: Optional[str] = os.getenv("DEPOSIT_WALLET_ADDRESS")
+    # Polymarket Relayer API key — enables gasless on-chain operations (deposit, approval).
+    # Optional: only needed if we route on-chain ops through Polymarket's relayer instead of
+    # paying gas ourselves from the EOA.
+    RELAYER_API_KEY: Optional[str] = os.getenv("RELAYER_API_KEY")
 
     # CLOB API (py-clob-client L2: optional; if set, ExecutionEngine uses official client for orders)
     CLOB_API_KEY: Optional[str] = os.getenv("CLOB_API_KEY")
