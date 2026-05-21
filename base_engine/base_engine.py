@@ -1438,16 +1438,31 @@ class BaseEngine:
                 logger.debug("Pre-approval at startup failed (non-critical): %s", e)
 
         # S120: Log wallet USDC balance at startup
+        # S226: Also log pUSD at deposit wallet when V2 mode (DEPOSIT_WALLET_ADDRESS set) —
+        # real buying power under CLOB V2. EOA USDC.e is no longer canonical capital but
+        # is still logged for visibility (holds MATIC gas + USDC.e residue).
         if self.execution_engine and getattr(self.execution_engine, "contract_manager", None):
+            _threshold = getattr(settings, "BALANCE_WARNING_THRESHOLD_USD", 100.0)
             try:
                 _bal = await self.execution_engine.contract_manager.get_usdce_balance()
                 if _bal.get("success"):
-                    logger.info("wallet_balance_usd", balance=_bal["balance_usd"])
-                    _threshold = getattr(settings, "BALANCE_WARNING_THRESHOLD_USD", 100.0)
+                    logger.info("wallet_balance_usd", balance=_bal["balance_usd"], source="usdce@eoa")
                     if _bal["balance_usd"] < _threshold:
-                        logger.warning("wallet_balance_low", balance=_bal["balance_usd"], threshold=_threshold)
+                        logger.warning("wallet_balance_low", balance=_bal["balance_usd"], threshold=_threshold, source="usdce@eoa")
             except Exception as _bal_err:
-                logger.debug("Startup balance query failed (non-critical): %s", _bal_err)
+                logger.debug("Startup USDC.e balance query failed (non-critical): %s", _bal_err)
+
+            _deposit_wallet = (getattr(settings, "DEPOSIT_WALLET_ADDRESS", None) or "").strip()
+            if _deposit_wallet:
+                try:
+                    from base_engine.execution.clob_adapter import check_pusd_balance
+                    _pusd_bal = await check_pusd_balance(wallet_address=_deposit_wallet)
+                    if _pusd_bal is not None:
+                        logger.info("wallet_balance_usd", balance=_pusd_bal, source="pusd@deposit_wallet")
+                        if _pusd_bal < _threshold:
+                            logger.warning("wallet_balance_low", balance=_pusd_bal, threshold=_threshold, source="pusd@deposit_wallet")
+                except Exception as _pusd_err:
+                    logger.debug("Startup pUSD balance query failed (non-critical): %s", _pusd_err)
 
         # P0.17: MATIC pre-flight + ongoing 10min monitor (live mode only)
         if not getattr(settings, "SIMULATION_MODE", True):
