@@ -170,9 +170,29 @@ class BotBankrollManager:
         except Exception:
             return False
 
+    @staticmethod
+    def _get_balance_reader():
+        """S226: Pick V2 (pUSD@deposit_wallet) vs V1 (USDC.e@EOA) balance reader.
+
+        Returns (reader_func, wallet_address, source_label). Routes by
+        DEPOSIT_WALLET_ADDRESS presence — when set (V2 CLOB), pUSD at the
+        deposit wallet is canonical buying power; otherwise V1 path reads
+        EOA USDC.e.
+        """
+        deposit_wallet = (getattr(settings, "DEPOSIT_WALLET_ADDRESS", None) or "").strip()
+        if deposit_wallet:
+            from base_engine.execution.clob_adapter import check_pusd_balance
+            return check_pusd_balance, deposit_wallet, "pusd@deposit_wallet"
+        wallet = (getattr(settings, "WALLET_ADDRESS", None) or "").strip()
+        from base_engine.execution.clob_adapter import check_usdc_balance
+        return check_usdc_balance, wallet, "usdce@eoa"
+
     async def init_wallet_bankroll(self) -> None:
-        """S217: Read wallet USDC.e balance and set `capital` accordingly.
+        """S217: Read wallet balance and set `capital` accordingly.
         No-op if BOT_WALLET_BANKROLL_ENABLED is off for this bot.
+
+        S226: Reader is V2-aware — DEPOSIT_WALLET_ADDRESS set → pUSD at
+        deposit wallet (V2 collateral); else USDC.e at EOA (V1 path).
 
         Cold-start guarantees:
           - Raises RuntimeError if wallet read fails (after one retry).
@@ -186,18 +206,17 @@ class BotBankrollManager:
             return
         if self._wallet_refresh_task is not None and not self._wallet_refresh_task.done():
             return  # already initialized
-        wallet = (getattr(settings, "WALLET_ADDRESS", None) or "").strip()
+        reader, wallet, source = self._get_balance_reader()
         if not wallet:
             raise RuntimeError(
                 f"BotBankrollManager[{self.bot_name}]: BOT_WALLET_BANKROLL_ENABLED but "
-                "WALLET_ADDRESS not set in env. Refusing to start."
+                "neither DEPOSIT_WALLET_ADDRESS nor WALLET_ADDRESS set in env. Refusing to start."
             )
-        from base_engine.execution.clob_adapter import check_usdc_balance
-        balance = await check_usdc_balance(wallet_address=wallet)
+        balance = await reader(wallet_address=wallet)
         if balance is None:
             # one retry with backoff
             await asyncio.sleep(2.0)
-            balance = await check_usdc_balance(wallet_address=wallet)
+            balance = await reader(wallet_address=wallet)
         if balance is None:
             raise RuntimeError(
                 f"BotBankrollManager[{self.bot_name}]: cold-start wallet read failed "
@@ -216,7 +235,7 @@ class BotBankrollManager:
             "bankroll_initialized_from_wallet",
             bot_name=self.bot_name,
             capital=round(balance, 4),
-            source="wallet",
+            source=source,
             config_capital_overridden=_old_capital,
             wallet=wallet[:8] + "...",
         )
@@ -225,15 +244,17 @@ class BotBankrollManager:
     async def _wallet_refresh_loop(self) -> None:
         """S217: Periodic wallet-balance refresh (10 min default).
         Material changes (>20%) are logged. Read failures hold last-known-good;
-        get_bet_size() refuses to size once read is older than stale threshold."""
-        from base_engine.execution.clob_adapter import check_usdc_balance
+        get_bet_size() refuses to size once read is older than stale threshold.
+
+        S226: Reader is V2-aware via _get_balance_reader()."""
         while True:
             try:
                 await asyncio.sleep(self._wallet_refresh_interval_s)
-                balance = await check_usdc_balance()
+                reader, wallet, _source = self._get_balance_reader()
+                balance = await reader(wallet_address=wallet) if wallet else None
                 if balance is None:
                     await asyncio.sleep(5.0)
-                    balance = await check_usdc_balance()
+                    balance = await reader(wallet_address=wallet) if wallet else None
                 age = time.monotonic() - self._last_wallet_read_ts
                 if balance is None:
                     logger.critical(

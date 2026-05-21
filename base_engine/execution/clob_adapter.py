@@ -274,6 +274,57 @@ async def check_usdc_balance(
         return None
 
 
+async def check_pusd_balance(
+    wallet_address: Optional[str] = None,
+    rpc_url: Optional[str] = None,
+) -> Optional[float]:
+    """S226: Query pUSD balance via Polygon JSON-RPC.
+
+    pUSD (Polymarket USD) is the V2 collateral token held at the per-user
+    deposit wallet provisioned by Polymarket's relayer (not the EOA).
+    Under CLOB V2, this is the canonical buying-power source — EOA USDC.e
+    via check_usdc_balance() is no longer authoritative.
+
+    Defaults to settings.DEPOSIT_WALLET_ADDRESS when wallet_address is None.
+    Returns balance in USD (float), or None when RPC/wallet config is
+    missing or fails. Read-only — no signing required.
+    """
+    wallet = (wallet_address or getattr(settings, "DEPOSIT_WALLET_ADDRESS", None) or "").strip()
+    rpc = (
+        rpc_url
+        or getattr(settings, "POLYGON_RPC", None)
+        or getattr(settings, "POLYGON_RPC_URL", None)
+        or ""
+    ).strip()
+    if not wallet or not rpc:
+        logger.debug("pusd_balance_check_skipped: DEPOSIT_WALLET_ADDRESS or POLYGON_RPC not configured")
+        return None
+    # pUSD contract address on Polygon (Polymarket V2 collateral, 6 decimals — verified on-chain 2026-05-20)
+    PUSD = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+    data = "0x70a08231" + wallet.lower().replace("0x", "").rjust(64, "0")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(rpc, json={
+                "jsonrpc": "2.0",
+                "method": "eth_call",
+                "params": [{"to": PUSD, "data": data}, "latest"],
+                "id": 1,
+            })
+            resp.raise_for_status()
+            j = resp.json()
+        if "error" in j:
+            logger.warning("pusd_balance_rpc_error", error=j["error"])
+            return None
+        result = j.get("result", "0x0")
+        if not result or result == "0x":
+            return 0.0
+        balance_usd = int(result, 16) / 10 ** 6
+        return balance_usd
+    except Exception as _e:
+        logger.warning("pusd_balance_check_failed: %s", _e)
+        return None
+
+
 async def check_matic_balance(
     threshold_matic: float = 1.0,
     discord_webhook: Optional[str] = None,
