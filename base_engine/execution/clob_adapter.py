@@ -137,15 +137,30 @@ def _get_order_book_sync(token_id: str) -> Dict[str, Any]:
 
 
 def _cancel_order_sync(order_id: str) -> bool:
-    """Sync cancel order via py-clob-client (run in executor)."""
+    """Sync cancel order via py-clob-client-v2 (run in executor).
+
+    V2 SDK note: client.cancel() expects a SignedOrder object (with .orderID attr),
+    not a string. For cancel-by-ID we use cancel_orders([order_id]) which returns
+    {"canceled": [...ids...], "not_canceled": {...id: reason...}}.
+    """
     client = _get_clob_client()
     if not client:
         return False
     try:
-        client.cancel(order_id)
-        return True
+        result = client.cancel_orders([order_id])
+        canceled = result.get("canceled", []) if isinstance(result, dict) else []
+        if order_id in canceled:
+            return True
+        not_canceled = result.get("not_canceled", {}) if isinstance(result, dict) else {}
+        logger.warning(
+            "py-clob-client-v2 cancel returned but order not in canceled list",
+            order_id=order_id,
+            canceled=canceled,
+            not_canceled=not_canceled,
+        )
+        return False
     except Exception as e:
-        logger.warning("py-clob-client cancel_order failed: %s (order_id=%s)", e, order_id)
+        logger.warning("py-clob-client-v2 cancel_orders failed: %s (order_id=%s)", e, order_id)
         return False
 
 
