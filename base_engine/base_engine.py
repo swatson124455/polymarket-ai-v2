@@ -1458,9 +1458,12 @@ class BaseEngine:
                     from base_engine.execution.clob_adapter import check_pusd_balance
                     _pusd_bal = await check_pusd_balance(wallet_address=_deposit_wallet)
                     if _pusd_bal is not None:
-                        logger.info("wallet_balance_usd", balance=_pusd_bal, source="pusd@deposit_wallet")
+                        # Distinct event names from V1's wallet_balance_usd/_low — S177 _DedupProcessor
+                        # drops duplicate (event, level) pairs within 60s, so reusing V1 names would
+                        # silently suppress the V2 emit when V1 fires first ~400ms earlier.
+                        logger.info("deposit_wallet_balance_pusd", balance=_pusd_bal, source="pusd@deposit_wallet")
                         if _pusd_bal < _threshold:
-                            logger.warning("wallet_balance_low", balance=_pusd_bal, threshold=_threshold, source="pusd@deposit_wallet")
+                            logger.warning("deposit_wallet_balance_low", balance=_pusd_bal, threshold=_threshold, source="pusd@deposit_wallet")
                 except Exception as _pusd_err:
                     logger.debug("Startup pUSD balance query failed (non-critical): %s", _pusd_err)
 
