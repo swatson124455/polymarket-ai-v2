@@ -485,7 +485,37 @@ class BaseEngine:
                 except Exception as e:
                     logger.debug("FeatureStore init failed (non-critical): %s", e)
             self.execution_engine = ExecutionEngine(self.client, self.risk_manager, self.db, private_key=pk)
-            
+
+            # S227 Bug 7: Wire CLOB V2 adapter into execution_engine. Without this,
+            # execution_engine.clob_adapter stays None (initialized at execution_engine.py:100
+            # with comment "Set by BaseEngine if CLOB creds available") and the V2 order-
+            # placement path at execution_engine.py:300 is dead code — every order falls to
+            # the V1 polymarket_client.place_order which Polymarket retired in 2026-04
+            # (returns HTTP 401 Unauthorized). Surfaced during S227 live flip — 49+
+            # consecutive 401s before pre-authorized rollback. Gated on DEPOSIT_WALLET_ADDRESS
+            # + CLOB_API_KEY so bots without V2 config keep V1 fallback unchanged. Paper-mode
+            # bots (SIMULATION_MODE=true) never reach execution_engine.place_order — orders
+            # route to PaperTradingEngine — so this wiring is irrelevant for them.
+            if (self.execution_engine
+                    and getattr(settings, "DEPOSIT_WALLET_ADDRESS", None)
+                    and getattr(settings, "CLOB_API_KEY", None)):
+                try:
+                    from base_engine.execution.clob_adapter import ClobAdapter
+                    _adapter = ClobAdapter()
+                    if _adapter.available:
+                        self.execution_engine.clob_adapter = _adapter
+                        logger.info("clob_adapter_v2_wired", adapter_class="ClobAdapter")
+                    else:
+                        logger.warning(
+                            "clob_adapter_v2_unavailable_falling_back_to_v1",
+                            hint="check py-clob-client-v2 install + CLOB_API_KEY/SECRET/PASSPHRASE",
+                        )
+                except Exception as _adapter_err:
+                    logger.warning(
+                        "clob_adapter_v2_wiring_failed_falling_back_to_v1",
+                        error=str(_adapter_err),
+                    )
+
             # Level 4: Monitoring Systems
             self.health_monitor = HealthMonitor(db=self.db, cache=self.cache, client=self.client)
             self.alerting_system = AlertingSystem(
