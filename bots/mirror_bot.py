@@ -3482,19 +3482,28 @@ class MirrorBot(BaseBot):
         _min_trade_usd = max(_abs_floor, min(_ceiling, _cap))
         _trade_value_usd = size * price
         if _trade_value_usd < _min_trade_usd:
-            logger.info("mirror_dust_skipped", trade_usd=round(_trade_value_usd, 2),
-                        min_usd=_min_trade_usd, market_id=str(market_id)[:16])
-            await self._log_rejection(
-                trader_address=trader_address, market_id=str(market_id),
-                rejection_reason="mirror_dust_skipped",
-                rejection_stage="post_gate",
-                token_id=token_id, side=side, price=price,
-                whale_trade_usd=whale_trade_usd,
-                signal_metadata={"trade_usd": _trade_value_usd,
-                                 "min_trade_usd": _min_trade_usd,
-                                 "size": size},
-            )
-            return False
+            # S227: Clamp size UP to floor instead of rejecting. Operator spec —
+            # dust gate's only legitimate purpose is ensuring the order meets
+            # CLOB minimum; downstream dampener chain (NO-side ×0.75, favorable,
+            # risk_budget) shrinks max_bet=$1 trades below the $1 floor, making
+            # entries mathematically blocked. Rejection here was the wrong
+            # semantic. Order then flows to place_order → CLOB; Polymarket
+            # acceptance becomes the authoritative halt. Kelly intent preserved
+            # via mirror_force_min_clamped shadow event (original_size +
+            # original_trade_usd captures what dampened sizing would have done).
+            _original_size = size
+            _original_trade_usd = _trade_value_usd
+            if price > 0:
+                size = _min_trade_usd / price
+                _trade_value_usd = size * price
+            logger.info("mirror_force_min_clamped",
+                        original_size=round(_original_size, 4),
+                        original_trade_usd=round(_original_trade_usd, 2),
+                        clamped_size=round(size, 4),
+                        clamped_trade_usd=round(_trade_value_usd, 2),
+                        floor_usd=_min_trade_usd,
+                        price=round(price, 4),
+                        market_id=str(market_id)[:16])
 
         # Session 82: Tag RTDS trades so order_gateway can skip liquidity check (saves 100-300ms).
         if source == "rtds":
