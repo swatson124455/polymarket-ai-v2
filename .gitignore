@@ -1,5 +1,10 @@
 # SECURITY FIX: Comprehensive .gitignore to protect sensitive files
 
+# EB SPLINTER: dedicated git worktree for eb/main isolation (see EB-SPLINTER.md).
+# Other branches/sessions do not see this dir; EB sessions cd into it before any
+# work to avoid shared-working-tree HEAD interference.
+.eb-worktree/
+
 # Sensitive Configuration
 .env
 .env.local
