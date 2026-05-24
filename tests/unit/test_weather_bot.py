@@ -8,23 +8,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
-from config.settings import settings
+from bots.weather.engine.config.settings import settings
 
-from base_engine.weather.station_registry import (
+from bots.weather.engine.base_engine.weather.station_registry import (
     STATION_REGISTRY,
     StationHealthMonitor,
     US_CITY_NAMES,
     WeatherStation,
     lookup_station,
 )
-from base_engine.weather.market_mapper import (
+from bots.weather.engine.base_engine.weather.market_mapper import (
     TemperatureBucket,
     WeatherMarketGroup,
     WeatherMarketMapper,
     _parse_date,
 )
-from base_engine.weather.probability_engine import WeatherProbabilityEngine
-from base_engine.weather.forecast_client import CombinedForecast, WeatherForecastClient
+from bots.weather.engine.base_engine.weather.probability_engine import WeatherProbabilityEngine
+from bots.weather.engine.base_engine.weather.forecast_client import CombinedForecast, WeatherForecastClient
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -746,7 +746,7 @@ class TestWeatherForecastClient:
     @pytest.mark.asyncio
     async def test_nbm_used_as_deterministic_high_for_us_station(self):
         """get_combined_forecast uses NBM as deterministic_high for US stations (temp_unit=F)."""
-        from base_engine.weather.station_registry import STATION_REGISTRY
+        from bots.weather.engine.base_engine.weather.station_registry import STATION_REGISTRY
         client = WeatherForecastClient()
         station = STATION_REGISTRY["new_york_city"]  # temp_unit="F"
 
@@ -772,7 +772,7 @@ class TestWeatherForecastClient:
     @pytest.mark.asyncio
     async def test_nbm_not_called_for_international_station(self):
         """get_combined_forecast skips NBM fetch for non-US stations (temp_unit=C)."""
-        from base_engine.weather.station_registry import STATION_REGISTRY
+        from bots.weather.engine.base_engine.weather.station_registry import STATION_REGISTRY
         client = WeatherForecastClient()
         station = STATION_REGISTRY.get("london") or STATION_REGISTRY.get("paris")
         if station is None:
@@ -906,7 +906,7 @@ class TestWeatherBot:
         weather_bot._daily_pnl_date = datetime.now().strftime("%Y-%m-%d")
 
         # Even with edge, should not trade
-        from base_engine.weather.market_mapper import WeatherMarketGroup
+        from bots.weather.engine.base_engine.weather.market_mapper import WeatherMarketGroup
         group = WeatherMarketGroup(
             city="New York City",
             target_date=date.today(),
@@ -1138,7 +1138,7 @@ class TestECMWFEnsembleMerging:
     @pytest.mark.asyncio
     async def test_combined_forecast_uses_all_members(self):
         """P5/P6: Combined forecast incorporates ECMWF IFS members; AIFS=None falls back cleanly."""
-        from base_engine.weather.station_registry import STATION_REGISTRY
+        from bots.weather.engine.base_engine.weather.station_registry import STATION_REGISTRY
         client = WeatherForecastClient()
         station = STATION_REGISTRY["new_york_city"]
 
@@ -1190,7 +1190,7 @@ class TestWeatherBotOpportunities:
         }
 
     def _make_group(self, city: str):
-        from base_engine.weather.market_mapper import WeatherMarketGroup
+        from bots.weather.engine.base_engine.weather.market_mapper import WeatherMarketGroup
         key = city.lower().replace(" ", "_")
         station = STATION_REGISTRY.get(key, STATION_REGISTRY["new_york_city"])
         return WeatherMarketGroup(
@@ -1245,7 +1245,7 @@ class TestWeatherBotOpportunities:
     @pytest.mark.asyncio
     async def test_near_expiry_kelly_boost(self, weather_bot):
         """Near-expiry (<24h) → 1.5x Kelly multiplier applied."""
-        from base_engine.weather.market_mapper import WeatherMarketGroup
+        from bots.weather.engine.base_engine.weather.market_mapper import WeatherMarketGroup
         group = WeatherMarketGroup(
             city="New York City",
             target_date=date.today(),
@@ -1543,21 +1543,21 @@ class TestMetarClientParseGroup:
     """Unit tests for the T-group parser (pure function, no I/O)."""
 
     def test_parse_t_group_positive_temp(self):
-        from base_engine.weather.metar_client import MetarClient
+        from bots.weather.engine.base_engine.weather.metar_client import MetarClient
         # T02890267 → +28.9°C
         assert MetarClient.parse_t_group("METAR KLGA ... RMK T02890267") == pytest.approx(28.9, abs=0.01)
 
     def test_parse_t_group_negative_temp(self):
-        from base_engine.weather.metar_client import MetarClient
+        from bots.weather.engine.base_engine.weather.metar_client import MetarClient
         # T11001267 → -10.0°C
         assert MetarClient.parse_t_group("T11001267") == pytest.approx(-10.0, abs=0.01)
 
     def test_parse_t_group_no_match_returns_none(self):
-        from base_engine.weather.metar_client import MetarClient
+        from bots.weather.engine.base_engine.weather.metar_client import MetarClient
         assert MetarClient.parse_t_group("METAR KLGA 061856Z 28010KT") is None
 
     def test_parse_t_group_zero_temp(self):
-        from base_engine.weather.metar_client import MetarClient
+        from bots.weather.engine.base_engine.weather.metar_client import MetarClient
         # T00000267 → 0.0°C
         assert MetarClient.parse_t_group("T00000267") == pytest.approx(0.0, abs=0.01)
 
@@ -1567,7 +1567,7 @@ class TestMetarClientAPI:
 
     @pytest.mark.asyncio
     async def test_get_latest_metar_success(self):
-        from base_engine.weather.metar_client import MetarClient
+        from bots.weather.engine.base_engine.weather.metar_client import MetarClient
         client = MetarClient()
         mock_resp = MagicMock()
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
@@ -1593,7 +1593,7 @@ class TestMetarClientAPI:
 
     @pytest.mark.asyncio
     async def test_get_running_daily_max_fahrenheit(self):
-        from base_engine.weather.metar_client import MetarClient
+        from bots.weather.engine.base_engine.weather.metar_client import MetarClient
         client = MetarClient()
         mock_resp = MagicMock()
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
@@ -1619,7 +1619,7 @@ class TestMetarClientAPI:
     @pytest.mark.asyncio
     async def test_get_running_daily_max_cache(self):
         """Second call returns cached result without hitting the API."""
-        from base_engine.weather.metar_client import MetarClient
+        from bots.weather.engine.base_engine.weather.metar_client import MetarClient
         client = MetarClient()
         mock_resp = MagicMock()
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
@@ -1642,7 +1642,7 @@ class TestMetarClientAPI:
 
     @pytest.mark.asyncio
     async def test_get_running_daily_max_api_error_returns_none(self):
-        from base_engine.weather.metar_client import MetarClient
+        from bots.weather.engine.base_engine.weather.metar_client import MetarClient
         client = MetarClient()
         mock_resp = MagicMock()
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
@@ -1662,7 +1662,7 @@ class TestMetarResolutionDayOverride:
 
     def _make_group(self, city: str = "NYC", target_date: date = date(2026, 3, 6)):
         """Build a minimal WeatherMarketGroup with a range of buckets."""
-        from base_engine.weather.station_registry import STATION_REGISTRY
+        from bots.weather.engine.base_engine.weather.station_registry import STATION_REGISTRY
         station = STATION_REGISTRY.get("new_york_city")
         buckets = [
             TemperatureBucket(

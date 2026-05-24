@@ -32,28 +32,28 @@ import aiohttp
 
 from structlog import get_logger
 
-from bots.base_bot import BaseBot
-from base_engine.base_engine import BaseEngine
-from base_engine.monitoring.alerting import AlertSeverity
-from base_engine.weather.forecast_client import CombinedForecast, WeatherForecastClient
-from base_engine.weather.metar_client import MetarClient
-from base_engine.weather.market_mapper import (
+from bots.weather.engine.base_bot import BaseBot
+from bots.weather.engine.base_engine.base_engine import BaseEngine
+from bots.weather.engine.base_engine.monitoring.alerting import AlertSeverity
+from bots.weather.engine.base_engine.weather.forecast_client import CombinedForecast, WeatherForecastClient
+from bots.weather.engine.base_engine.weather.metar_client import MetarClient
+from bots.weather.engine.base_engine.weather.market_mapper import (
     PrecipitationMarketGroup,
     TemperatureBucket,
     WeatherMarketGroup,
     WeatherMarketMapper,
 )
-from base_engine.weather.precipitation_engine import PrecipitationProbabilityEngine
-from base_engine.weather.probability_engine import WeatherProbabilityEngine
-from base_engine.weather.station_registry import (
+from bots.weather.engine.base_engine.weather.precipitation_engine import PrecipitationProbabilityEngine
+from bots.weather.engine.base_engine.weather.probability_engine import WeatherProbabilityEngine
+from bots.weather.engine.base_engine.weather.station_registry import (
     STATION_REGISTRY,
     StationHealthMonitor,
     WeatherStation,
 )
-from base_engine.weather.model_run_monitor import ModelRunMonitor
-from base_engine.weather.metar_monitor import MetarMonitor
-from base_engine.data.daily_counter import increment_counter as _inc_daily, restore_counters as _restore_daily
-from config.settings import settings
+from bots.weather.engine.base_engine.weather.model_run_monitor import ModelRunMonitor
+from bots.weather.engine.base_engine.weather.metar_monitor import MetarMonitor
+from bots.weather.engine.base_engine.data.daily_counter import increment_counter as _inc_daily, restore_counters as _restore_daily
+from bots.weather.engine.config.settings import settings
 
 logger = get_logger()
 
@@ -692,7 +692,7 @@ class WeatherBot(BaseBot):
             self._forecast_client.set_redis_cache(redis_cache)
         self._metar_client = MetarClient()
         if getattr(settings, "ASOS_1MIN_ENABLED", False):
-            from base_engine.weather.asos_onemin_client import AsosOneMinClient
+            from bots.weather.engine.base_engine.weather.asos_onemin_client import AsosOneMinClient
             self._metar_client.set_asos_client(AsosOneMinClient())
         self._prob_engine = WeatherProbabilityEngine()
         self._precip_engine = PrecipitationProbabilityEngine()
@@ -1344,7 +1344,7 @@ class WeatherBot(BaseBot):
         if not db:
             return
         try:
-            from base_engine.learning.calibration_tracker import DriftDetector
+            from bots.weather.engine.base_engine.learning.calibration_tracker import DriftDetector
             from sqlalchemy import text as sa_text
             async with db.get_session() as session:
                 result = await session.execute(sa_text(
@@ -1652,7 +1652,7 @@ class WeatherBot(BaseBot):
             await self._rebuild_market_group_cache()
             await self._close_stale_positions()
             # Pre-load previously auto-discovered cities into lookup_station()
-            from base_engine.weather.station_registry import load_dynamic_stations_from_db
+            from bots.weather.engine.base_engine.weather.station_registry import load_dynamic_stations_from_db
             await load_dynamic_stations_from_db(db)
             self._cache_warmed = True
 
@@ -1772,7 +1772,7 @@ class WeatherBot(BaseBot):
                 # lookup_station() in-process cache immediately.
                 _still_unmatched: set = set()
                 _any_autodiscovered = False
-                from base_engine.weather.city_autodiscovery import try_auto_register
+                from bots.weather.engine.base_engine.weather.city_autodiscovery import try_auto_register
                 _db = getattr(self.base_engine, "db", None)
                 for _city in _new_unmatched:
                     try:
@@ -1795,7 +1795,7 @@ class WeatherBot(BaseBot):
                     _alerting = getattr(self.base_engine, "alerting_system", None)
                     if _alerting:
                         try:
-                            from base_engine.monitoring.alerting import AlertSeverity
+                            from bots.weather.engine.base_engine.monitoring.alerting import AlertSeverity
                             await _alerting.send_alert(
                                 title="WeatherBot: New Unmatched Cities",
                                 message=f"Polymarket has weather markets for cities not in station registry: {sorted(_still_unmatched)}. Auto-discovery failed (low confidence). Run scripts/onboard_weather_cities.py to add manually.",
@@ -1993,7 +1993,7 @@ class WeatherBot(BaseBot):
         if not city_text or not target_date:
             return None
 
-        from base_engine.weather.station_registry import lookup_station
+        from bots.weather.engine.base_engine.weather.station_registry import lookup_station
         station = lookup_station(city_text)
         if not station:
             return None
@@ -2201,7 +2201,7 @@ class WeatherBot(BaseBot):
                     ndfd_pop = sum(p for _, p, _ in pop_data[:2]) / max(len(pop_data[:2]), 1)
 
         # Convert PrecipitationBucket → PrecipBucket for the engine
-        from base_engine.weather.precipitation_engine import PrecipBucket
+        from bots.weather.engine.base_engine.weather.precipitation_engine import PrecipBucket
         engine_buckets = [
             PrecipBucket(
                 market_id=b.market_id,
@@ -2299,7 +2299,7 @@ class WeatherBot(BaseBot):
             return []
 
         # Convert SnowfallBucket → PrecipBucket for the engine
-        from base_engine.weather.precipitation_engine import PrecipBucket
+        from bots.weather.engine.base_engine.weather.precipitation_engine import PrecipBucket
         engine_buckets = [
             PrecipBucket(
                 market_id=b.market_id,
@@ -4980,7 +4980,7 @@ class WeatherBot(BaseBot):
             return
         try:
             from sqlalchemy import text
-            from base_engine.weather.station_registry import STATION_REGISTRY
+            from bots.weather.engine.base_engine.weather.station_registry import STATION_REGISTRY
 
             # Build station_id → station map for coordinate lookup
             station_map = {s.station_id: s for s in STATION_REGISTRY.values()}
