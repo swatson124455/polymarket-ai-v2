@@ -32,28 +32,28 @@ import aiohttp
 
 from structlog import get_logger
 
-from bots.base_bot import BaseBot
-from base_engine.base_engine import BaseEngine
-from base_engine.monitoring.alerting import AlertSeverity
-from base_engine.weather.forecast_client import CombinedForecast, WeatherForecastClient
-from base_engine.weather.metar_client import MetarClient
-from base_engine.weather.market_mapper import (
+from bots.weather.engine.base_bot import BaseBot
+from bots.weather.engine.base_engine.base_engine import BaseEngine
+from bots.weather.engine.base_engine.monitoring.alerting import AlertSeverity
+from bots.weather.engine.base_engine.weather.forecast_client import CombinedForecast, WeatherForecastClient
+from bots.weather.engine.base_engine.weather.metar_client import MetarClient
+from bots.weather.engine.base_engine.weather.market_mapper import (
     PrecipitationMarketGroup,
     TemperatureBucket,
     WeatherMarketGroup,
     WeatherMarketMapper,
 )
-from base_engine.weather.precipitation_engine import PrecipitationProbabilityEngine
-from base_engine.weather.probability_engine import WeatherProbabilityEngine
-from base_engine.weather.station_registry import (
+from bots.weather.engine.base_engine.weather.precipitation_engine import PrecipitationProbabilityEngine
+from bots.weather.engine.base_engine.weather.probability_engine import WeatherProbabilityEngine
+from bots.weather.engine.base_engine.weather.station_registry import (
     STATION_REGISTRY,
     StationHealthMonitor,
     WeatherStation,
 )
-from base_engine.weather.model_run_monitor import ModelRunMonitor
-from base_engine.weather.metar_monitor import MetarMonitor
-from base_engine.data.daily_counter import increment_counter as _inc_daily, restore_counters as _restore_daily
-from config.settings import settings
+from bots.weather.engine.base_engine.weather.model_run_monitor import ModelRunMonitor
+from bots.weather.engine.base_engine.weather.metar_monitor import MetarMonitor
+from bots.weather.engine.base_engine.data.daily_counter import increment_counter as _inc_daily, restore_counters as _restore_daily
+from bots.weather.engine.config.settings import settings
 
 logger = get_logger()
 
@@ -692,7 +692,7 @@ class WeatherBot(BaseBot):
             self._forecast_client.set_redis_cache(redis_cache)
         self._metar_client = MetarClient()
         if getattr(settings, "ASOS_1MIN_ENABLED", False):
-            from base_engine.weather.asos_onemin_client import AsosOneMinClient
+            from bots.weather.engine.base_engine.weather.asos_onemin_client import AsosOneMinClient
             self._metar_client.set_asos_client(AsosOneMinClient())
         self._prob_engine = WeatherProbabilityEngine()
         self._precip_engine = PrecipitationProbabilityEngine()
@@ -1344,7 +1344,7 @@ class WeatherBot(BaseBot):
         if not db:
             return
         try:
-            from base_engine.learning.calibration_tracker import DriftDetector
+            from bots.weather.engine.base_engine.learning.calibration_tracker import DriftDetector
             from sqlalchemy import text as sa_text
             async with db.get_session() as session:
                 result = await session.execute(sa_text(
@@ -1652,7 +1652,7 @@ class WeatherBot(BaseBot):
             await self._rebuild_market_group_cache()
             await self._close_stale_positions()
             # Pre-load previously auto-discovered cities into lookup_station()
-            from base_engine.weather.station_registry import load_dynamic_stations_from_db
+            from bots.weather.engine.base_engine.weather.station_registry import load_dynamic_stations_from_db
             await load_dynamic_stations_from_db(db)
             self._cache_warmed = True
 
@@ -1701,6 +1701,10 @@ class WeatherBot(BaseBot):
             #    tag_slug=temperature returns all live temperature events with prices
             #    pre-populated from outcomePrices (no CLOB enrichment needed).
             weather_markets = await self._fetch_weather_events_by_tag()
+            # S221: Reject thin markets (liq < $1000 OR vol < $100 OR spread > 20%)
+            # before scan. Eliminates 100%-fail signal-gen on illiquid books
+            # (root cause of slippage-gate rejections in 24h log review).
+            weather_markets = self._filter_thin_markets(weather_markets)
 
             if not weather_markets:
                 # Fallback: DB-based discovery (for markets already ingested)
@@ -1710,12 +1714,17 @@ class WeatherBot(BaseBot):
                 if weather_markets:
                     # DB markets lack prices — enrich via CLOB midpoint
                     weather_markets = await self._enrich_with_live_prices(weather_markets)
+                    # S221: liq/vol filter (spread skipped — DB rows may lack bestBid/bestAsk;
+                    # the entry-validation spread gate at weather_bot.py:3388 catches those).
+                    weather_markets = self._filter_thin_markets(weather_markets)
 
             if not weather_markets:
                 # Last resort: direct Gamma API probe (rate-limited)
                 if _now_mono - self._last_direct_probe >= self._direct_probe_interval:
                     self._last_direct_probe = _now_mono
                     weather_markets = await self._fetch_weather_markets_direct()
+                    # S221: same filter on direct-probe path (consistency).
+                    weather_markets = self._filter_thin_markets(weather_markets)
                 if not weather_markets:
                     logger.info("weatherbot_no_weather_markets")
                     return
@@ -1763,7 +1772,7 @@ class WeatherBot(BaseBot):
                 # lookup_station() in-process cache immediately.
                 _still_unmatched: set = set()
                 _any_autodiscovered = False
-                from base_engine.weather.city_autodiscovery import try_auto_register
+                from bots.weather.engine.base_engine.weather.city_autodiscovery import try_auto_register
                 _db = getattr(self.base_engine, "db", None)
                 for _city in _new_unmatched:
                     try:
@@ -1786,7 +1795,7 @@ class WeatherBot(BaseBot):
                     _alerting = getattr(self.base_engine, "alerting_system", None)
                     if _alerting:
                         try:
-                            from base_engine.monitoring.alerting import AlertSeverity
+                            from bots.weather.engine.base_engine.monitoring.alerting import AlertSeverity
                             await _alerting.send_alert(
                                 title="WeatherBot: New Unmatched Cities",
                                 message=f"Polymarket has weather markets for cities not in station registry: {sorted(_still_unmatched)}. Auto-discovery failed (low confidence). Run scripts/onboard_weather_cities.py to add manually.",
@@ -1984,7 +1993,7 @@ class WeatherBot(BaseBot):
         if not city_text or not target_date:
             return None
 
-        from base_engine.weather.station_registry import lookup_station
+        from bots.weather.engine.base_engine.weather.station_registry import lookup_station
         station = lookup_station(city_text)
         if not station:
             return None
@@ -2113,6 +2122,13 @@ class WeatherBot(BaseBot):
         if not markets:
             return 0
 
+        # S221: thin-market filter on PSW (precip/snow/wind) discovery path too.
+        # PSW markets pass through original Gamma mkt dicts so liquidity/bestBid/
+        # bestAsk fields are present and the spread check runs.
+        markets = self._filter_thin_markets(markets)
+        if not markets:
+            return 0
+
         groups = grouper_func(markets)
         if not groups:
             logger.debug(f"weatherbot_{market_type}_no_groups", markets=len(markets))
@@ -2185,7 +2201,7 @@ class WeatherBot(BaseBot):
                     ndfd_pop = sum(p for _, p, _ in pop_data[:2]) / max(len(pop_data[:2]), 1)
 
         # Convert PrecipitationBucket → PrecipBucket for the engine
-        from base_engine.weather.precipitation_engine import PrecipBucket
+        from bots.weather.engine.base_engine.weather.precipitation_engine import PrecipBucket
         engine_buckets = [
             PrecipBucket(
                 market_id=b.market_id,
@@ -2283,7 +2299,7 @@ class WeatherBot(BaseBot):
             return []
 
         # Convert SnowfallBucket → PrecipBucket for the engine
-        from base_engine.weather.precipitation_engine import PrecipBucket
+        from bots.weather.engine.base_engine.weather.precipitation_engine import PrecipBucket
         engine_buckets = [
             PrecipBucket(
                 market_id=b.market_id,
@@ -3409,6 +3425,15 @@ class WeatherBot(BaseBot):
             )
             return False
 
+        # S221 Phase 2 (2026-05-18): Executable-edge sanity check.
+        # The S140 spread gate above measures absolute spread and fails-open
+        # when the market isn't in _market_index. _check_executable_edge
+        # recomputes edge using the side-correct executable price (bestAsk
+        # for YES, 1-bestBid for NO) and is fail-closed on missing data.
+        # See _check_executable_edge docstring for details.
+        if not self._check_executable_edge(opp):
+            return False
+
         # S149: YES-side price floor — blocks low-price YES bets (9% WR at <10c)
         _yes_min_price = float(getattr(settings, "WEATHER_YES_MIN_PRICE", 0.10))
         if opp["side"] == "YES" and opp["price"] < _yes_min_price:
@@ -4229,6 +4254,170 @@ class WeatherBot(BaseBot):
         except Exception as exc:
             logger.debug("weatherbot_ensure_markets_failed", error=str(exc))
 
+    def _check_executable_edge(self, opp: Dict) -> bool:
+        """S221 Phase 2 (2026-05-18): Validate edge against EXECUTABLE price.
+
+        Initial edge math uses outcomePrices midpoint (the Gamma-reported price).
+        For thin / wide-spread books, midpoint diverges from what the order
+        will actually fill at — bestAsk for BUY YES, 1-bestBid (=bestAsk_NO)
+        for BUY NO. Recompute edge with the executable price and reject if
+        the honest answer is below WEATHER_MIN_EXECUTABLE_EDGE (default 0.0).
+
+        Concrete bug this catches when midpoint-based gates pass: market 2106427
+        had midpoint 0.525 vs bestAsk_NO = 1 - 0.15 = 0.85 (we wanted to buy NO).
+        Initial edge math: 0.722 - 0.475 = +0.247. Honest math: 0.722 - 0.85 =
+        -0.128. Initial gate passed; honest gate rejects. (Phase 1 normally
+        catches 2106427 first via the spread filter at discovery; Phase 2 is
+        a backstop for any liquid-but-still-mispriced market that gets through.)
+
+        Returns False (reject) if:
+        - Market not in OrderGateway _market_index (no book data → cannot validate)
+        - bestBid<=0 OR bestAsk<=0 in the index entry
+        - Honest edge < WEATHER_MIN_EXECUTABLE_EDGE
+
+        Returns True (accept) immediately if check disabled
+        (WEATHER_MIN_EXECUTABLE_EDGE<=-1.0 in .env).
+
+        Complement to the S140 spread gate at _execute_weather_trade (which
+        measures absolute spread but fails-open when market is absent from
+        index). This gate is side-correct and fails-closed on missing data.
+        """
+        _min_exec_edge = float(getattr(settings, "WEATHER_MIN_EXECUTABLE_EDGE", 0.0))
+        if _min_exec_edge <= -1.0:
+            return True  # disabled via .env
+
+        _midx = getattr(self.base_engine.order_gateway, "_market_index", None)
+        _mdata = _midx.get(str(opp["market_id"])) if _midx else None
+        if not _mdata:
+            logger.info(
+                "weatherbot_executable_edge_no_market",
+                market_id=opp.get("market_id"),
+                side=opp.get("side", ""),
+                note="market not in OrderGateway _market_index — fail-closed",
+            )
+            return False
+
+        _bb = float(_mdata.get("bestBid") or _mdata.get("best_bid") or 0)
+        _ba = float(_mdata.get("bestAsk") or _mdata.get("best_ask") or 0)
+        if _bb <= 0 or _ba <= 0:
+            logger.info(
+                "weatherbot_executable_edge_no_book",
+                market_id=opp.get("market_id"),
+                side=opp.get("side", ""),
+                bb=_bb, ba=_ba,
+                note="bestBid/bestAsk missing — cannot validate executable edge",
+            )
+            return False
+
+        _side = opp.get("side", "YES")
+        if _side == "YES":
+            _exec_price = _ba  # lift the ask to buy YES
+        else:  # NO
+            _exec_price = 1.0 - _bb  # NO ask = 1 - YES bid
+
+        _exec_edge = float(opp.get("model_prob", 0.0)) - _exec_price
+        if _exec_edge < _min_exec_edge:
+            logger.info(
+                "weatherbot_executable_edge_reject",
+                market_id=opp.get("market_id"),
+                side=_side,
+                model_prob=round(float(opp.get("model_prob", 0)), 4),
+                midpoint_edge=round(float(opp.get("edge", 0)), 4),
+                exec_price=round(_exec_price, 4),
+                exec_edge=round(_exec_edge, 4),
+                min_exec_edge=_min_exec_edge,
+                bb=_bb, ba=_ba,
+            )
+            return False
+
+        return True
+
+    def _filter_thin_markets(self, markets: List[Dict]) -> List[Dict]:
+        """S221 (2026-05-18): Filter markets too thin to actually trade.
+
+        Rejects markets where executable price diverges from the midpoint that
+        WB uses in edge math, eliminating signal-gen cycles + slippage-gate
+        rejections on illiquid books.
+
+        Concrete failure mode this fixes (market 2106427, NYC weather, end-May
+        2026): liq=$269, vol=$95, spread=137% (bb=0.15 ba=0.80). WB reads
+        outcomePrices midpoint 0.525, computes edge=+0.197 vs model_prob=0.722,
+        sends order at 0.53, paper_book_walk fills at vwap=0.85, slippage gate
+        rejects at 60.4% > 10% limit. 137 such failures in 24h from this one
+        market. With this filter at WEATHER_MIN_MARKET_LIQUIDITY_USD=1000 +
+        WEATHER_MIN_MARKET_VOLUME_USD=100 + WEATHER_MAX_MARKET_SPREAD_PCT=0.20,
+        the market is rejected at discovery and never reaches signal gen.
+
+        Behavior:
+        - liquidity / volume checks always run (fail-closed: missing field → drop)
+        - spread check only runs when both bestBid AND bestAsk > 0 (DB / direct
+          fallback paths may not populate these; the entry-validation spread
+          gate at weather_bot.py:3388 catches those)
+        - escape valve: set min_liq=0, min_vol=0, max_spread_pct>=1.0 in .env
+          to bypass entirely (returns input list unchanged)
+        """
+        min_liq = float(getattr(settings, "WEATHER_MIN_MARKET_LIQUIDITY_USD", 1000))
+        min_vol = float(getattr(settings, "WEATHER_MIN_MARKET_VOLUME_USD", 100))
+        max_spread_pct = float(getattr(settings, "WEATHER_MAX_MARKET_SPREAD_PCT", 0.20))
+
+        # Escape valve — all-three-disabled bypasses the filter entirely
+        if min_liq <= 0 and min_vol <= 0 and max_spread_pct >= 1.0:
+            return markets
+
+        kept: List[Dict] = []
+        dropped_liq = 0
+        dropped_vol = 0
+        dropped_spread = 0
+        for m in markets:
+            if not isinstance(m, dict):
+                continue
+            try:
+                liq = float(m.get("liquidity") or m.get("liquidityNum") or 0)
+                vol = float(m.get("volume") or m.get("volumeNum") or 0)
+                bb = float(m.get("bestBid") or m.get("best_bid") or 0)
+                ba = float(m.get("bestAsk") or m.get("best_ask") or 0)
+            except (TypeError, ValueError):
+                # Field-parse failure on a market dict — cannot validate so skip.
+                # Counted under dropped_spread for telemetry simplicity.
+                dropped_spread += 1
+                continue
+            if min_liq > 0 and liq < min_liq:
+                dropped_liq += 1
+                continue
+            if min_vol > 0 and vol < min_vol:
+                dropped_vol += 1
+                continue
+            # Spread check is opt-out when bestBid/bestAsk absent (fallback paths).
+            # When present, enforce strictly — bb<=0 OR ba<=0 with the check on
+            # means we can't compute spread, so fail-closed.
+            if max_spread_pct < 1.0 and (bb > 0 or ba > 0):
+                if bb <= 0 or ba <= 0:
+                    dropped_spread += 1
+                    continue
+                mid = (ba + bb) / 2.0
+                if mid <= 0:
+                    dropped_spread += 1
+                    continue
+                spread_pct = (ba - bb) / mid
+                if spread_pct > max_spread_pct:
+                    dropped_spread += 1
+                    continue
+            kept.append(m)
+
+        if (len(markets) - len(kept)) > 0:
+            logger.info(
+                "weatherbot_thin_market_filter",
+                input_count=len(markets),
+                kept=len(kept),
+                dropped_liquidity=dropped_liq,
+                dropped_volume=dropped_vol,
+                dropped_spread_or_invalid=dropped_spread,
+                min_liq_usd=min_liq,
+                min_vol_usd=min_vol,
+                max_spread_pct=max_spread_pct,
+            )
+        return kept
+
     async def _fetch_weather_events_by_tag(self) -> List[Dict]:
         """Fetch live temperature-bucket markets via Gamma API tag_slug=temperature.
 
@@ -4417,6 +4606,14 @@ class WeatherBot(BaseBot):
                     "yes_token_id": yes_token_id,
                     "no_token_id": no_token_id,
                     "volume": m.get("volumeNum") or m.get("volume") or 0,
+                    # S221: liquidity + bestBid + bestAsk for thin-market filter
+                    # (_filter_thin_markets). Also re-used by the spread-gate at
+                    # entry validation (weather_bot.py:3388) so it no longer
+                    # silently fails open when the market is missing from the
+                    # OrderGateway _market_index.
+                    "liquidity": m.get("liquidityNum") or m.get("liquidity") or 0,
+                    "bestBid": m.get("bestBid") or 0,
+                    "bestAsk": m.get("bestAsk") or 0,
                     "active": True,
                     "category": "weather",
                     "slug": m.get("slug") or "",
@@ -4783,7 +4980,7 @@ class WeatherBot(BaseBot):
             return
         try:
             from sqlalchemy import text
-            from base_engine.weather.station_registry import STATION_REGISTRY
+            from bots.weather.engine.base_engine.weather.station_registry import STATION_REGISTRY
 
             # Build station_id → station map for coordinate lookup
             station_map = {s.station_id: s for s in STATION_REGISTRY.values()}

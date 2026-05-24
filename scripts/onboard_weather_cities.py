@@ -23,6 +23,7 @@ import argparse
 import asyncio
 import math
 import sys
+from pathlib import Path
 from typing import Optional
 
 import aiohttp
@@ -57,8 +58,10 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 def _nearest_icao_from_registry(lat: float, lon: float) -> tuple[str, float]:
     """Return (icao_code, distance_km) of closest station in static registry."""
-    # Import here to avoid circular issues at module level
-    sys.path.insert(0, str(__file__).replace("scripts/onboard_weather_cities.py", ""))
+    # Import here to avoid circular issues at module level.
+    # Path-based parent.parent works on both Windows (backslash) and POSIX (forward-slash);
+    # the prior string.replace("scripts/...") only matched POSIX separators.
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from base_engine.weather.station_registry import STATION_REGISTRY
 
     best_icao = ""
