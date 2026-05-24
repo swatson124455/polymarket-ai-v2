@@ -3044,6 +3044,102 @@ class TestS214HardStopKwargRegression:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# S228 A.2 + bound: pre-execution price re-validation in hard_stop path
+# (port of MB 298fc99 + c1e8406)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestS228HardStopExitRevalidation:
+    """S228 A.2 + bound: _check_hard_stop_all_positions re-reads live top-of-book
+    bid before firing the stop and aborts the trigger if a fresh pnl_pct no
+    longer breaches the threshold.
+
+    Pre-fix: stop fired on stale current_price from position_manager (10s
+    cycle); a stale mid below entry could falsely trigger an exit when the
+    live bid showed the position was healthy. Premature-exit problem.
+
+    Bound (S228 port of MB c1e8406): live_bid is rejected if outside
+    [0.005, 0.999] — Polymarket tick prices are [0.01, 0.99]; outside that
+    signals API format mismatch, not a real bid. Out-of-band → _live_bid
+    stays None → no abort → stop proceeds (pre-A.2 behavior).
+    """
+
+    @pytest.mark.asyncio
+    async def test_hard_stop_aborts_when_live_bid_disagrees_with_stale_mid(
+        self, weather_bot, mock_engine
+    ):
+        """Stale mid 0.35 says -30% (stop fires); live bid 0.45 says -10%
+        (within tolerance) → re-validate → abort, no place_order, no cooldown."""
+        mock_engine.order_gateway._position_details = {
+            "WeatherBot:mkt_stale": {
+                "side": "YES",
+                "price": 0.50,           # entry
+                "current_price": 0.35,   # stale, -30%
+                "size": 10.0,
+                "token_id": "tok_stale",
+            },
+        }
+        # First call uses stale pnl_pct (-30%) → should_exit=True
+        # Second call uses live pnl_pct (-10%) → should_exit=False (abort)
+        mock_engine.risk_manager.check_hard_stop_loss = MagicMock(side_effect=[
+            {"should_exit": True, "reason": "hard_stop_loss", "details": {}},
+            {"should_exit": False, "reason": "", "details": {}},
+        ])
+        mock_engine.orderbook_tracker = MagicMock()
+        mock_engine.orderbook_tracker.snapshot_order_book = AsyncMock(
+            return_value={"bids": [{"price": "0.45", "size": "100"}]}
+        )
+        weather_bot._save_exit_to_redis = AsyncMock()
+
+        await weather_bot._check_hard_stop_all_positions()
+
+        assert not mock_engine.place_order.called, (
+            "Stop must abort — place_order should not fire when live bid disagrees with stale mid"
+        )
+        assert "mkt_stale" not in weather_bot._recently_exited, (
+            "Recently-exited cooldown should not be set when stop is aborted"
+        )
+        # _det refreshed to live_bid so subsequent scans don't re-trigger on stale mid
+        assert (
+            mock_engine.order_gateway._position_details["WeatherBot:mkt_stale"]["current_price"]
+            == 0.45
+        )
+
+    @pytest.mark.asyncio
+    async def test_hard_stop_proceeds_when_live_bid_is_implausible(
+        self, weather_bot, mock_engine
+    ):
+        """Live bid 0.0001 (garbage / API format mismatch) → bound rejects →
+        _live_bid stays None → no abort, stop proceeds as if A.2 absent."""
+        mock_engine.order_gateway._position_details = {
+            "WeatherBot:mkt_bad_bid": {
+                "side": "YES",
+                "price": 0.50,
+                "current_price": 0.35,
+                "size": 10.0,
+                "token_id": "tok_bad_bid",
+            },
+        }
+        mock_engine.risk_manager.check_hard_stop_loss = MagicMock(
+            return_value={"should_exit": True, "reason": "hard_stop_loss", "details": {}}
+        )
+        mock_engine.orderbook_tracker = MagicMock()
+        mock_engine.orderbook_tracker.snapshot_order_book = AsyncMock(
+            return_value={"bids": [{"price": "0.0001", "size": "999"}]}
+        )
+        weather_bot._save_exit_to_redis = AsyncMock()
+
+        await weather_bot._check_hard_stop_all_positions()
+
+        assert mock_engine.place_order.called, (
+            "Stop must proceed when live bid is out-of-band garbage — bound short-circuits abort logic"
+        )
+        assert "mkt_bad_bid" in weather_bot._recently_exited, (
+            "Recently-exited cooldown should be set when stop proceeds"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # S215: _ensure_markets_in_db batching regression
 # ═══════════════════════════════════════════════════════════════════════════
 
