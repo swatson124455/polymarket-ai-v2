@@ -295,10 +295,22 @@ class ContractManager:
     async def ensure_usdce_approved(self, amount_usd: Optional[float] = None) -> Dict:
         if not self.account:
             return {"success": False, "error": "No wallet configured"}
-        
+
         if amount_usd is not None and amount_usd < 0:
             return {"success": False, "error": "Amount cannot be negative"}
-        
+
+        # S228 Bug 8: under CLOB V2 deposit-wallet flow, buying power is the
+        # deposit wallet's pUSD — not the EOA's USDC.e. EOA-side USDC.e
+        # allowance is "UNLIMITED but moot" (verified on-chain S226 §2);
+        # the legacy V1 check passes silently but does no useful work and
+        # costs a per-order RPC round-trip. Skip when V2 is active.
+        if getattr(settings, "DEPOSIT_WALLET_ADDRESS", "").strip():
+            logger.debug(
+                "usdce_approval_skipped_v2",
+                reason="deposit_wallet_handles_buying_power",
+            )
+            return {"success": True, "already_approved": True, "v2_skipped": True}
+
         owner = self.account.address
         spender = POLYMARKET_EXCHANGE_CONTRACT
         
@@ -403,10 +415,27 @@ class ContractManager:
     ) -> Dict:
         if not self.account:
             return {"success": False, "error": "No wallet configured"}
-        
+
+        # S228 Bug 8: under CLOB V2 deposit-wallet flow, outcome tokens are
+        # ERC-1155 CTF positions (single contract 0x4D97..., identified by
+        # UInt256 token_id) held by the deposit wallet — not ERC-20 contracts
+        # owned by the EOA. The token_address parameter receives a UInt256
+        # token_id (not a hex address), so the V1 _is_valid_address check
+        # below would reject every SELL trade. Polymarket's relayer
+        # provisions the deposit-wallet-side CTF→V2_Exchange approval at
+        # sign-in; verified on-chain via isApprovedForAll(deposit_wallet,
+        # V2_Exchange) on CTF = true. EOA-side per-order approval is moot.
+        if getattr(settings, "DEPOSIT_WALLET_ADDRESS", "").strip():
+            logger.debug(
+                "outcome_token_approval_skipped_v2",
+                reason="deposit_wallet_handles_approval",
+                token_id_prefix=str(token_address)[:16],
+            )
+            return {"success": True, "already_approved": True, "v2_skipped": True}
+
         if not _is_valid_address(token_address):
             return {"success": False, "error": f"Invalid token address: {token_address}"}
-        
+
         if amount_tokens is not None and amount_tokens < 0:
             return {"success": False, "error": "Amount cannot be negative"}
         
