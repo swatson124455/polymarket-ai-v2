@@ -11,6 +11,7 @@ Scope: scripts/, bots/, base_engine/, ui/ — every directory where code queries
 resolution-observation timestamps. Tests/ excluded.
 """
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -68,12 +69,37 @@ def _find_unguarded_windowing(content: str) -> list[tuple[int, str]]:
 
 
 def _all_scan_paths() -> list[Path]:
-    paths: list[Path] = []
-    for d in SCAN_DIRS:
-        root = REPO_ROOT / d
-        if root.is_dir():
-            paths.extend(sorted(root.rglob("*.py")))
-    return paths
+    """Return .py files under SCAN_DIRS that are tracked in git.
+
+    Filtering to git-tracked files (instead of rglob over disk) prevents
+    untracked scratch/WIP scripts from triggering this regression guard.
+    Untracked files are by definition outside the safety-relevant codebase
+    — they're not on master, not deployed, not in CI. Failing the guard on
+    a developer's local scratch script blocks unrelated deploys (eb/main
+    splinter Phase 4, 2026-05-24 — five untracked scratch scripts under
+    scripts/ tripped this guard and blocked the first splinter deploy).
+
+    Falls back to disk-rglob if git is unavailable (e.g. CI environments
+    that unpack a tarball without .git history). On fallback the guard
+    behaves as before.
+    """
+    try:
+        out = subprocess.check_output(
+            ["git", "-C", str(REPO_ROOT), "ls-files", "--", *SCAN_DIRS],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        # Fallback: scan disk (git unavailable / not a repo)
+        paths: list[Path] = []
+        for d in SCAN_DIRS:
+            root = REPO_ROOT / d
+            if root.is_dir():
+                paths.extend(sorted(root.rglob("*.py")))
+        return paths
+    return sorted(
+        REPO_ROOT / p for p in out.splitlines() if p.endswith(".py")
+    )
 
 
 @pytest.mark.parametrize("path", _all_scan_paths())
