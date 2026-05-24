@@ -3571,6 +3571,39 @@ class MirrorBot(BaseBot):
         # Two concurrent RTDS callbacks can both pass the cap check and both place
         # orders, overshooting the daily cap by N * trade_size.
         _trade_usd = size * price
+
+        # S228 Bug 11B: BUY-side capital guard for live mode. Without this, a
+        # BUY signal that exceeds deposit-wallet pUSD balance reaches CLOB and
+        # wastes 3 OrderGateway retries on the same "balance: 0" rejection.
+        # self.bankroll.capital is the wallet-refreshed pUSD balance (S226
+        # Bug 6) — O(1) cached read, no extra RPC per signal. Defense-in-depth
+        # to Bug 11A's restore-filter fix. Skip in paper mode (no real capital
+        # movement) and when bankroll is missing. Placed BEFORE the exposure
+        # lock to avoid serializing concurrent whale-signal handlers on this
+        # cheap-but-not-free check.
+        if not bool(getattr(settings, "SIMULATION_MODE", True)):
+            _live_capital = getattr(self.bankroll, "capital", None) if self.bankroll else None
+            if _live_capital is not None and _live_capital > 0 and _trade_usd > _live_capital:
+                logger.warning(
+                    "mirror_buy_capital_guard_reject",
+                    trader_address=trader_address,
+                    market_id=str(market_id),
+                    side=side,
+                    trade_usd=round(_trade_usd, 2),
+                    available_pusd=round(float(_live_capital), 2),
+                    note="deposit wallet pUSD balance insufficient for BUY",
+                )
+                await self._log_rejection(
+                    trader_address=trader_address, market_id=str(market_id),
+                    rejection_reason="mirror_buy_capital_guard_reject",
+                    rejection_stage="post_gate",
+                    token_id=token_id, side=side, price=price,
+                    whale_trade_usd=whale_trade_usd,
+                    signal_metadata={"trade_usd": _trade_usd,
+                                     "available_pusd": float(_live_capital)},
+                )
+                return False
+
         async with self._exposure_lock:
             # Re-verify daily cap under lock (stale check at L1337 is pre-lock)
             if self.bankroll:
