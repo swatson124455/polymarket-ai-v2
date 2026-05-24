@@ -323,6 +323,16 @@ class MirrorBot(BaseBot):
 
                 # 2. Rebuild _open_positions from positions table (YES/NO only).
                 # trader_addresses column added by migration 035 — falls back to '{}' on older rows.
+                # S228 Bug 11: filter by is_paper to match SIMULATION_MODE. The positions
+                # table mixes paper and live rows (is_paper column is the discriminator).
+                # Pre-fix, restore loaded ALL rows indiscriminately, so live-mode exits
+                # tried to SELL paper-derived positions via real CLOB. Surfaced S228 live
+                # flip #4 (2026-05-24): paper position 0xba7ab705… triggered SELL signal
+                # under live mode → CLOB rejected with "not enough balance / allowance:
+                # balance: 0". Schema column existed since at least S85 (see
+                # _reap_resolved_positions at line 1616); restore wiring was the gap —
+                # same root-cause class as S227 Bug 7 (V2 adapter built but not wired).
+                _is_paper_mode = bool(getattr(settings, "SIMULATION_MODE", True))
                 rows = await session.execute(
                     _text(
                         "SELECT market_id, token_id, side, size, entry_price, "
@@ -330,9 +340,15 @@ class MirrorBot(BaseBot):
                         "       COALESCE(trader_addresses, '{}') AS trader_addresses "
                         "FROM positions "
                         "WHERE (bot_id = :bot OR source_bot = :bot) "
-                        "  AND status = 'open' AND side IN ('YES', 'NO')"
+                        "  AND status = 'open' AND side IN ('YES', 'NO') "
+                        "  AND is_paper = :is_paper"
                     ),
-                    {"bot": self.bot_name},
+                    {"bot": self.bot_name, "is_paper": _is_paper_mode},
+                )
+                logger.info(
+                    "mirror_restore_filter_applied",
+                    simulation_mode=_is_paper_mode,
+                    expected_is_paper=_is_paper_mode,
                 )
                 restored = 0
                 for r in rows.fetchall():
