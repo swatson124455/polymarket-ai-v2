@@ -201,10 +201,22 @@ class EsportsPipeline:
         stake = 0.0
 
         if is_singleton and edge >= MIN_EDGE:
-            if p_model > 0.5:
+            # Bug A2 fix (eb/main, 2026-05-24): select bet side by edge direction
+            # (p_model vs market_price), NOT by p_model > 0.5. Pre-fix bug:
+            # when p_model and market_price were on the same side of 0.5 but
+            # the model was less extreme than the market (e.g., p_model=0.55,
+            # market_price=0.65 — model leans YES, market leans YES harder),
+            # the old `p_model > 0.5` branch selected YES sizing. Kelly for
+            # YES at 0.65 with p=0.55 is negative → clamped to 0 → stake=0
+            # → _execute_trades continue gate trips → silent no-trade.
+            # Correct EV-positive bet here is NO at 0.35¢ (kelly>0). Five days
+            # of 0 `esports_v2_trade_attempt` logs on EB v2 traced to this.
+            # MUST stay in sync with bots/esports_bot_v2.py:_execute_trades
+            # side selection — both use p_model vs market_price now.
+            if p_model > market_price:  # Edge favors YES (model thinks YES more likely than market)
                 b = (1.0 / market_price) - 1.0 if market_price > 0 else 1.0
                 p = p_model
-            else:
+            else:  # Edge favors NO (model thinks YES less likely than market → bet NO)
                 b = (1.0 / (1 - market_price)) - 1.0 if market_price < 1 else 1.0
                 p = 1 - p_model
 

@@ -370,19 +370,76 @@ class TestComputeSizing:
         assert out["stake"] == pytest.approx(300.0)
 
     def test_compute_sizing_no_side_kelly(self):
-        # p_model < 0.5 → bet NO side, b = 1/(1-market_price) - 1
-        # Real production case: p_model=0.286, market_price=0.165 → bet NO at price 0.835
-        # YES-side prob of model is 0.286, so NO-side prob is 0.714
+        # Correct NO-side case: edge favors NO when p_model < market_price.
+        # p_model=0.40 (model says YES is 40% likely)
+        # market_price=0.55 (market prices YES at 55% — overpriced relative to model)
+        # → Bet NO at 0.45¢ (cost). Win $1 if NO wins (60% per model).
         out = EsportsPipeline.compute_sizing(
-            p_model=0.286, is_singleton=True, market_price=0.165,
+            p_model=0.40, is_singleton=True, market_price=0.55,
         )
-        assert out["edge"] == pytest.approx(0.121, abs=1e-3)
-        # b = 1/(1-0.165) - 1 = 0.1976
-        # p (NO side) = 1 - 0.286 = 0.714
-        # raw_kelly = (b*p - q)/b = (0.1976*0.714 - 0.286)/0.1976 ≈ -0.733
-        # max(0, -0.733) = 0 — no bet
-        assert out["kelly_fraction"] == 0.0
-        assert out["stake"] == 0.0
+        assert out["edge"] == pytest.approx(0.15, abs=1e-3)
+        # b for NO = 1/(1-0.55) - 1 = 1.222
+        # p (NO win prob) = 1 - 0.40 = 0.60
+        # q = 0.40
+        # raw_kelly = (1.222*0.60 - 0.40)/1.222 ≈ 0.2727
+        # quartered = 0.2727 * 0.25 ≈ 0.0682
+        assert out["kelly_fraction"] == pytest.approx(0.0682, abs=1e-3)
+        # stake = min(0.0682 * 20000, 300, 1000) = min(1364, 300, 1000) = $300
+        assert out["stake"] == pytest.approx(300.0)
+
+    def test_compute_sizing_bug_a2_same_side_disagreement_lower_p(self):
+        """Bug A2 regression (eb/main, 2026-05-24): when p_model and market_price
+        are on the same side of 0.5 but the model is LESS extreme than the market
+        (model less confident in YES than market is), the EV-positive bet is NO.
+
+        Pre-fix the side was selected by `p_model > 0.5` which picked YES, then
+        sized Kelly for YES → negative → clamped to 0 → stake=0 → silent
+        no-trade. Post-fix the side is selected by `p_model > market_price` (edge
+        direction) which correctly picks NO and sizes positive Kelly.
+
+        Five days of 0 esports_v2_trade_attempt logs on EB v2 (2026-05-19→05-24)
+        traced to this. See bots/esports_bot_v2.py:_execute_trades and
+        esports_v2/model/pipeline.py:compute_sizing.
+        """
+        # p_model=0.55 (model leans YES at 55%)
+        # market_price=0.65 (market leans YES harder at 65% — overpriced YES)
+        # Correct bet: NO at 0.35¢
+        out = EsportsPipeline.compute_sizing(
+            p_model=0.55, is_singleton=True, market_price=0.65,
+        )
+        assert out["edge"] == pytest.approx(0.10, abs=1e-3)
+        # b for NO = 1/(1-0.65) - 1 = 1.857
+        # p (NO win prob) = 1 - 0.55 = 0.45
+        # q = 0.55
+        # raw_kelly = (1.857*0.45 - 0.55)/1.857 ≈ 0.1538
+        # quartered ≈ 0.0385
+        assert out["kelly_fraction"] == pytest.approx(0.0385, abs=1e-3)
+        # stake = min(0.0385 * 20000, 300, 1000) = $300 (capped)
+        assert out["stake"] == pytest.approx(300.0)
+
+    def test_compute_sizing_bug_a2_same_side_disagreement_higher_p(self):
+        """Bug A2 mirror case: p_model and market_price both below 0.5, but model
+        is LESS bearish (closer to 0.5) than market. Correct bet is YES.
+
+        Pre-fix: `p_model > 0.5` was False → NO side selected → Kelly negative →
+        stake=0 → silent no-trade. Post-fix: `p_model > market_price` is True →
+        YES side selected → positive Kelly.
+        """
+        # p_model=0.40 (model gives YES 40%)
+        # market_price=0.30 (market prices YES at 30% — model thinks YES MORE
+        # likely than market does)
+        # Correct bet: YES at 0.30¢
+        out = EsportsPipeline.compute_sizing(
+            p_model=0.40, is_singleton=True, market_price=0.30,
+        )
+        assert out["edge"] == pytest.approx(0.10, abs=1e-3)
+        # b for YES = 1/0.30 - 1 = 2.333
+        # p = 0.40, q = 0.60
+        # raw_kelly = (2.333*0.40 - 0.60)/2.333 ≈ 0.1429
+        # quartered ≈ 0.0357
+        assert out["kelly_fraction"] == pytest.approx(0.0357, abs=1e-3)
+        # stake = min(0.0357 * 20000, 300, 1000) = $300 (capped)
+        assert out["stake"] == pytest.approx(300.0)
 
     def test_compute_sizing_capped_by_max_bet(self):
         # Massive edge — kelly*bankroll would exceed MAX_BET_USD ($300)

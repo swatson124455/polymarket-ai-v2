@@ -719,9 +719,19 @@ class EsportsBotV2(BaseBot):
             if market_price is None:
                 continue  # No Polymarket market found
 
-            # Determine trade side
+            # Determine trade side — Bug A2 fix (eb/main, 2026-05-24):
+            # Select side by edge direction (p_model vs market_price), NOT by
+            # p_model > 0.5. Pre-fix bug: when p_model and market_price were on
+            # the same side of 0.5 but the model was less extreme than the market
+            # (e.g., p_model=0.55, market_price=0.65), code picked YES (because
+            # p_model > 0.5) but EV-positive bet was NO. Sizing (which used the
+            # same wrong selector) returned Kelly=0 → stake=0 → continue at line
+            # below → silent no-trade. Five days of 0 esports_v2_trade_attempt
+            # logs traced here. MUST stay in sync with the side-selection branch
+            # in esports_v2/model/pipeline.py:compute_sizing — both use
+            # `p_model > market_price` now.
             p_model = result["p_model"]
-            if p_model > 0.5:
+            if p_model > market_price:
                 side = "YES"
                 price = market_price
             else:
