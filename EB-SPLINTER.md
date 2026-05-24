@@ -142,8 +142,61 @@ If master's deploy applies a migration that drops or alters a table EB reads (e.
 ### Per-bot env at `/opt/pa2-shared/.env`
 Master may change shared `.env` values (e.g., `DB_EFFECTIVE_POOL_SIZE`) that affect all bots including EB. EB observes and adapts; doesn't try to revert.
 
-### Shared working tree
-This repo's working tree is sometimes used concurrently by other sessions (WB, MB) on different branches. The branch pointer `HEAD` can change without notice when another session does `git checkout`. **Mitigation:** EB sessions verify `cat .git/HEAD` before any commit, and use git stash to park their state before any branch switch. Files in `.git/HEAD` and the file system are shared; refs and commits on `eb/main` are not (commits are immutable once made).
+### Shared working tree (mitigated by dedicated worktree — see next section)
+The main repo dir `C:/lockes-picks/polymarket-ai-v2/` is used concurrently by WB and MB sessions checking out different branches. Before the worktree silo was set up, the `HEAD` pointer in the main dir could change without notice when another session did `git checkout`. **Mitigation: EB session works exclusively in its own dedicated worktree.** See next section.
+
+---
+
+## Worktree silo (autonomy from shared-tree interference)
+
+EB session works EXCLUSIVELY in a dedicated git worktree at:
+
+```
+C:/lockes-picks/polymarket-ai-v2/.claude/worktrees/eb-main/
+```
+
+This worktree is locked to `eb/main` (git enforces one-branch-per-worktree). Other sessions checking out branches in the main dir or other worktrees cannot affect this worktree's HEAD pointer. The worktree is gitignored at the `.claude/` parent level (line 47 of `.gitignore`).
+
+### Per-session entry protocol (binding)
+
+```bash
+# 1. cd into the EB worktree (NEVER work from the main repo dir)
+cd C:/lockes-picks/polymarket-ai-v2/.claude/worktrees/eb-main
+
+# 2. Verify HEAD is on eb/main (this should always be true; if not, abort)
+cat .git/HEAD   # must print "ref: refs/heads/eb/main"
+
+# 3. Verify worktree integrity
+git worktree list | grep "eb-main.*eb/main"   # must find a match
+
+# 4. All subsequent git, file edit, deploy, test commands run here
+```
+
+### What this silo prevents
+
+- Another session's `git checkout other-branch` in the main dir does NOT change EB's HEAD (EB's worktree has its own HEAD).
+- Another session's `git commit` to a different branch in their own worktree is invisible to EB until EB pulls (which it never auto-does).
+- Another session's `git stash pop` or working-tree edits in their dir cannot land in EB's working tree.
+
+### What this silo does NOT prevent
+
+- Shared `.git` objects directory. Branch refs are global. If another session deletes `eb/main` ref (with `--force`), EB loses its branch (commits remain reachable via reflog). Operator-authorized only.
+- Shared VPS — the `polymarket-esports` systemd unit and `/opt/polymarket-ai-v2-esports` symlink are shared infrastructure. EB owns them by convention; physical sharing is unavoidable.
+- Concurrent EB sessions in the same worktree — only one EB session at a time per worktree. If multiple EB sessions need to work in parallel, each creates a sub-worktree off `eb/main` (e.g., `eb/feature-X` branches) and works there.
+
+### Worktree maintenance
+
+```bash
+# List all worktrees (run from anywhere in the repo)
+git worktree list
+
+# Recreate the EB worktree if it was accidentally removed
+cd C:/lockes-picks/polymarket-ai-v2   # main dir
+git worktree add .claude/worktrees/eb-main eb/main
+
+# Remove the EB worktree (only if rescinding the splinter)
+git worktree remove .claude/worktrees/eb-main
+```
 
 ---
 
@@ -168,8 +221,13 @@ This splinter can be retired only by explicit operator directive ("retire `eb/ma
 ## Quick-reference for next EB session
 
 ```bash
-# Verify you're on eb/main before any work (shared working tree → trust nothing)
-cat .git/HEAD   # must print "ref: refs/heads/eb/main"
+# ALWAYS start in the EB worktree silo — never the main repo dir
+cd C:/lockes-picks/polymarket-ai-v2/.claude/worktrees/eb-main
+
+# Verify worktree integrity before any work
+cat .git/HEAD                                              # must print "ref: refs/heads/eb/main"
+git worktree list | grep "eb-main.*eb/main"                # must find a match
+git rev-parse --show-toplevel                              # must print the worktree path
 
 # Run EB tests
 PYTHONPATH=. python -m pytest tests/unit/test_esports_bot_v2.py \
@@ -178,7 +236,7 @@ PYTHONPATH=. python -m pytest tests/unit/test_esports_bot_v2.py \
        tests/unit/test_scanner_contract.py \
        tests/unit/test_esports_team_alias_matcher.py
 
-# Deploy splinter to VPS
+# Deploy splinter to VPS (from worktree)
 bash deploy/deploy.sh
 
 # Rollback splinter
@@ -188,6 +246,7 @@ bash deploy/rollback.sh
 KEY=~/.ssh/LightsailDefaultKey-eu-west-1.pem
 ssh -i "$KEY" ubuntu@18.201.216.0 "
 readlink /opt/polymarket-ai-v2-esports
+readlink /opt/pa2-esports-shared/venv 2>&1 | head -1; ls -d /opt/pa2-esports-shared/venv
 systemctl show polymarket-esports -p MainPID,ActiveState,WorkingDirectory
 systemctl is-active polymarket-weather polymarket-mirror polymarket-ingestion
 cat /etc/systemd/system/polymarket-esports.service.d/00-splinter.conf"
