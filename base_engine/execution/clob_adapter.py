@@ -174,16 +174,14 @@ class ClobAdapter:
         self._async_client: Optional[Any] = None
 
     def _get_async_client(self) -> Optional[Any]:
-        if self._async_client is not None:
-            return self._async_client
-        try:
-            from base_engine.execution.async_clob_client import AsyncClobClient
-            self._async_client = AsyncClobClient()
-            if self._async_client.available:
-                return self._async_client
-        except Exception as e:
-            logger.debug("AsyncClobClient not used: %s", e)
-        self._async_client = None
+        # S228 Bug 9: AsyncClobClient imports py_clob_client (V1) at file top,
+        # then isinstance-checks the V2 ClobClient instance against the V1 class
+        # — always False under V2 → _build_post_order_request returns None →
+        # AsyncClobClient.place_order returns {success:False, error:'CLOB
+        # client or request build failed'}. Surfaced S228 live flip #3 as a
+        # retry storm of fake "Order placed" events (Bug 10 misclassified the
+        # failure as success). Force the sync V2 path (_place_order_sync via
+        # run_in_executor) until async_clob_client.py is ported to V2.
         return None
 
     @property
