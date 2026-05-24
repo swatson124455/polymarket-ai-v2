@@ -32,10 +32,12 @@ set -euo pipefail
 KEY="${SSH_KEY:-$HOME/.ssh/LightsailDefaultKey-eu-west-1.pem}"
 VPS="${VPS_HOST:-ubuntu@18.201.216.0}"
 SSH_OPTS="-o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3"
-# SPLINTER: EB has its own release path + symlink (isolated from master's
-# /opt/pa2-releases + /opt/polymarket-ai-v2). MB/WB/ingestion stay on master.
+# SPLINTER: EB has its own release path + symlink + venv (isolated from
+# master's /opt/pa2-releases + /opt/polymarket-ai-v2 + /opt/pa2-shared/venv).
+# MB/WB/ingestion stay on master. Read-only sharing: .env, data, saved_models.
 RELEASES="/opt/pa2-esports-releases"
 SHARED="/opt/pa2-shared"
+ESPORTS_SHARED="/opt/pa2-esports-shared"   # EB-owned shared dir (venv lives here)
 CURRENT="/opt/polymarket-ai-v2-esports"
 LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
@@ -135,22 +137,24 @@ sudo chown -R polymarket:polymarket "$NEW_RELEASE"
 rm -f "\$TARFILE"
 echo "  Extracted to $NEW_RELEASE"
 
-# Symlink shared resources into release (code dir stays read-only)
-sudo ln -sfn $SHARED/.env          $NEW_RELEASE/.env
-sudo ln -sfn $SHARED/data          $NEW_RELEASE/data
-sudo ln -sfn $SHARED/saved_models  $NEW_RELEASE/saved_models
-sudo ln -sfn $SHARED/venv          $NEW_RELEASE/venv
+# Symlink shared resources into release (code dir stays read-only).
+# .env / data / saved_models = shared with master (read-only from EB perspective).
+# venv = EB-owned at $ESPORTS_SHARED/venv (decoupled from master pip-installs).
+sudo ln -sfn $SHARED/.env                  $NEW_RELEASE/.env
+sudo ln -sfn $SHARED/data                  $NEW_RELEASE/data
+sudo ln -sfn $SHARED/saved_models          $NEW_RELEASE/saved_models
+sudo ln -sfn $ESPORTS_SHARED/venv          $NEW_RELEASE/venv
 sudo chown -h polymarket:polymarket \
     $NEW_RELEASE/.env \
     $NEW_RELEASE/data \
     $NEW_RELEASE/saved_models \
     $NEW_RELEASE/venv
 
-# SPLINTER: Migrations SKIPPED per EB-SPLINTER.md charter.
-# EB never proposes migrations; DB schema is MB-canonical. If EB needs a schema
-# change, surface to MB session for a master-side migration. The splinter's
-# alembic/ directory is frozen-at-clone-time reference, not for application.
-echo "  Migrations skipped (splinter charter: MB owns schema)"
+# SPLINTER: Migrations skipped per EB-SPLINTER.md charter — EB applies
+# migrations to EB-scoped tables only, wired when first needed with a
+# scope check that rejects references to non-EB tables. Today: no EB
+# migrations pending, so this step is a no-op.
+echo "  Migrations skipped (no EB-scoped migrations pending)"
 REMOTE
 
 # ── 5. Atomic symlink swap ────────────────────────────────────────────────────
