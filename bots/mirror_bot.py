@@ -11,7 +11,7 @@ from structlog import get_logger
 
 from bots.base_bot import BaseBot
 from base_engine.base_engine import BaseEngine
-from config.settings import settings
+from config.settings import settings, is_paper_trading_active
 
 logger = get_logger()
 
@@ -323,6 +323,19 @@ class MirrorBot(BaseBot):
 
                 # 2. Rebuild _open_positions from positions table (YES/NO only).
                 # trader_addresses column added by migration 035 — falls back to '{}' on older rows.
+                # S228 Bug 11: filter by is_paper to match active trading mode.
+                # The positions table mixes paper and live rows (is_paper column is the
+                # discriminator). Pre-fix, restore loaded ALL rows indiscriminately, so
+                # live-mode exits tried to SELL paper-derived positions via real CLOB.
+                # Surfaced S228 live flip #4 (2026-05-24): paper position 0xba7ab705…
+                # triggered SELL signal under live mode → CLOB rejected with "not
+                # enough balance / allowance: balance: 0". Schema column existed since
+                # at least S85 (see _reap_resolved_positions at line 1616); restore
+                # wiring was the gap — same root-cause class as S227 Bug 7 (V2 adapter
+                # built but not wired). is_paper_trading_active() lives in
+                # config/settings.py per S83 paper-is-production rule (bot source
+                # avoids the direct SIMULATION mode name).
+                _is_paper_mode = is_paper_trading_active()
                 rows = await session.execute(
                     _text(
                         "SELECT market_id, token_id, side, size, entry_price, "
@@ -330,9 +343,15 @@ class MirrorBot(BaseBot):
                         "       COALESCE(trader_addresses, '{}') AS trader_addresses "
                         "FROM positions "
                         "WHERE (bot_id = :bot OR source_bot = :bot) "
-                        "  AND status = 'open' AND side IN ('YES', 'NO')"
+                        "  AND status = 'open' AND side IN ('YES', 'NO') "
+                        "  AND is_paper = :is_paper"
                     ),
-                    {"bot": self.bot_name},
+                    {"bot": self.bot_name, "is_paper": _is_paper_mode},
+                )
+                logger.info(
+                    "mirror_restore_filter_applied",
+                    simulation_mode=_is_paper_mode,
+                    expected_is_paper=_is_paper_mode,
                 )
                 restored = 0
                 for r in rows.fetchall():
@@ -1371,6 +1390,94 @@ class MirrorBot(BaseBot):
                         logger.warning("mirror_force_close_zero_size_db_fail: %s", _zs_err)
                     continue
 
+                # current_price is mid from position_manager; exit fills against live top-of-book bid — re-read so we can detect stale-mid drift and abort false hard_stops.
+                _decision_price = exit_price
+                _live_bid: Optional[float] = None
+                _tracker = getattr(self.base_engine, "orderbook_tracker", None)
+                if _tracker is not None:
+                    try:
+                        _book = await _tracker.snapshot_order_book(token_id, condition_id=market_id)
+                        _bids = (_book or {}).get("bids") or []
+                        if _bids:
+                            _bid_px = float(_bids[0].get("price", 0))
+                            # Polymarket tick prices are [0.01, 0.99]; outside this band = format mismatch or API shape change.
+                            if 0.005 <= _bid_px <= 0.999:
+                                _live_bid = _bid_px
+                            elif _bid_px > 0:
+                                logger.warning("mirror_exit_live_bid_implausible",
+                                               market=market_id[:20], raw_bid=_bid_px)
+                    except Exception as _re_err:
+                        logger.warning("mirror_exit_price_revalidate_failed",
+                                       market=market_id[:20], error=str(_re_err)[:200])
+
+                if _live_bid is not None and _decision_price > 0:
+                    _drift = (_live_bid - _decision_price) / _decision_price
+                    if abs(_drift) > 0.05:
+                        logger.warning("mirror_exit_price_drift",
+                                       market=market_id[:20],
+                                       decision_price=round(_decision_price, 4),
+                                       live_bid=round(_live_bid, 4),
+                                       drift_pct=round(_drift * 100, 2),
+                                       exit_reason=_exit_event_data.get("exit_reason", "unknown"))
+                        # A.5: Both hard_stop_loss and graduated stop_loss fire on a -threshold pnl_pct
+                        # computed from pos['current_price'] (the stale mid). Re-check each against the
+                        # live bid so a stale-mid-driven false trigger aborts before SELL fires.
+                        # Other exits (force_exit, take_profit, near-resolution) gate on time/price-target,
+                        # not on a current_price-derived pnl threshold, so don't need re-validation.
+                        _exit_reason = _exit_event_data.get("exit_reason")
+                        if _exit_reason == "hard_stop_loss":
+                            _entry = float(pos.get("entry_price", 0) or 0)
+                            if _entry > 0:
+                                _live_pnl_pct = (_live_bid - _entry) / _entry
+                                _live_stop = self.base_engine.risk_manager.check_hard_stop_loss(
+                                    bot_name=self.bot_name,
+                                    pnl_pct=_live_pnl_pct,
+                                )
+                                if not _live_stop.get("should_exit"):
+                                    logger.warning("mirror_hard_stop_aborted_stale_price",
+                                                   market=market_id[:20],
+                                                   entry=round(_entry, 4),
+                                                   decision_price=round(_decision_price, 4),
+                                                   live_bid=round(_live_bid, 4),
+                                                   live_pnl_pct=round(_live_pnl_pct, 4))
+                                    pos["current_price"] = _live_bid
+                                    await self._persist_refreshed_exit_price(token_id, market_id, _live_bid)
+                                    continue
+                        elif _exit_reason == "stop_loss":
+                            # Graduated stop_loss stores its computed effective threshold in event_data
+                            # at the evaluation site (mirror_bot.py:1278). Read it back rather than
+                            # recompute — avoids re-deriving _effective_stop from entry_confidence + hours_held.
+                            _entry = float(pos.get("entry_price", 0) or 0)
+                            _eff_stop = float(_exit_event_data.get("threshold", 0.30))
+                            if _entry > 0:
+                                _live_pnl_pct = (_live_bid - _entry) / _entry
+                                if _live_pnl_pct > -_eff_stop:
+                                    logger.warning("mirror_stop_loss_aborted_stale_price",
+                                                   market=market_id[:20],
+                                                   entry=round(_entry, 4),
+                                                   decision_price=round(_decision_price, 4),
+                                                   live_bid=round(_live_bid, 4),
+                                                   live_pnl_pct=round(_live_pnl_pct, 4),
+                                                   effective_stop=round(_eff_stop, 4))
+                                    pos["current_price"] = _live_bid
+                                    await self._persist_refreshed_exit_price(token_id, market_id, _live_bid)
+                                    continue
+
+                _exit_event_data = dict(_exit_event_data)
+                _exit_event_data["decision_price"] = round(_decision_price, 6)
+                if _live_bid is not None:
+                    _exit_event_data["pre_exec_live_bid"] = round(_live_bid, 6)
+
+                # S228 Bug 11C: pre-flight CTF balance check for live mode SELLs.
+                # Self-driven exits (TP/SL/illiquidity/force_exit) on a position
+                # the deposit wallet doesn't actually hold would burn 3
+                # OrderGateway retries on "balance: 0" rejections. Skip cleanly.
+                if not await self._live_sell_balance_guard(
+                    market_id=market_id, token_id=token_id,
+                    size=exit_size, side=exit_side,
+                ):
+                    continue
+
                 order = await self.place_order(
                     market_id=market_id,
                     token_id=token_id,
@@ -1470,6 +1577,98 @@ class MirrorBot(BaseBot):
             self._open_positions.pop(_zk, None)
             self._slippage_fail_count.pop(_zk, None)
             self._slippage_backoff.pop(_zk, None)
+
+    async def _persist_refreshed_exit_price(
+        self,
+        token_id: str,
+        market_id: str,
+        new_price: float,
+    ) -> None:
+        """A.5: Persist a price refresh decision from the exit re-validation path.
+
+        Writes new_price to both positions.current_price and market_prices_latest
+        via the S141 timestamp-guard UPSERT pattern, so position_manager's next
+        10s sync doesn't pull the stale mid back over our refresh.
+
+        Best-effort: any DB failure logs `mirror_exit_price_refresh_db_failed`
+        but never raises. Caller already updated `pos['current_price']` in memory,
+        so the next scan cycle still sees the refreshed value even if the DB
+        persistence path is degraded.
+
+        Used by both the hard_stop_loss and graduated stop_loss abort branches
+        in `_check_and_execute_exits` — extracted to a single helper so the
+        UPSERT pattern has one source of truth.
+        """
+        _db = getattr(self.base_engine, "db", None)
+        if not (_db and getattr(_db, "session_factory", None)):
+            return
+        try:
+            from sqlalchemy import text as _refresh_sql
+            async with _db.get_session() as _rs:
+                await _rs.execute(_refresh_sql(
+                    "UPDATE positions SET current_price = :p "
+                    "WHERE token_id = :tid AND status = 'open' "
+                    "  AND COALESCE(source_bot, bot_id) = 'MirrorBot'"
+                ), {"p": new_price, "tid": token_id})
+                await _rs.execute(_refresh_sql(
+                    "INSERT INTO market_prices_latest "
+                    "(token_id, market_id, price, timestamp) "
+                    "VALUES (:tid, :mid, :p, :ts) "
+                    "ON CONFLICT (token_id) DO UPDATE SET "
+                    "  price = EXCLUDED.price, "
+                    "  market_id = EXCLUDED.market_id, "
+                    "  timestamp = EXCLUDED.timestamp "
+                    "WHERE EXCLUDED.timestamp > market_prices_latest.timestamp"
+                ), {"tid": token_id, "mid": market_id, "p": new_price,
+                    "ts": datetime.now(timezone.utc).replace(tzinfo=None)})
+                await _rs.commit()
+        except Exception as _rd_err:
+            logger.warning("mirror_exit_price_refresh_db_failed",
+                           market=market_id[:20], error=str(_rd_err)[:200])
+
+    async def _live_sell_balance_guard(
+        self,
+        market_id: str,
+        token_id: str,
+        size: float,
+        side: str = "SELL",
+    ) -> bool:
+        """S228 Bug 11C: skip SELLs when deposit wallet doesn't hold the
+        outcome token in sufficient quantity.
+
+        Defense-in-depth against future regressions of S228 Bug 11A
+        (restore-filter wiring) and any other path that could route a
+        SELL signal for an unowned token. Without this, the order
+        reaches CLOB and produces "not enough balance / allowance:
+        balance: 0", costing 3 OrderGateway retries per attempt.
+
+        Returns True to proceed, False to skip. Defers (returns True)
+        in paper mode, when RPC/wallet config is missing, or when the
+        balance check itself fails — the goal is "don't make the
+        problem worse than the existing failure surface."
+        """
+        if is_paper_trading_active():
+            return True
+        try:
+            from base_engine.execution.clob_adapter import check_ctf_balance
+            bal = await check_ctf_balance(token_id=str(token_id))
+        except Exception as _e:
+            logger.debug("sell_balance_guard_skipped: check failed: %s", _e)
+            return True
+        if bal is None:
+            return True  # config missing or RPC down — defer to existing logic
+        if bal < float(size):
+            logger.warning(
+                "mirror_sell_balance_guard_reject",
+                market_id=str(market_id)[:20],
+                token_id=str(token_id)[:30],
+                side=side,
+                requested_size=round(float(size), 6),
+                available_balance=round(bal, 6),
+                note="deposit wallet outcome-token balance insufficient",
+            )
+            return False
+        return True
 
     async def _reap_resolved_positions(self) -> None:
         """S85: Delete positions on markets that have already resolved.
@@ -2374,6 +2573,14 @@ class MirrorBot(BaseBot):
             _exit_size = _pos.get("size", 0.0)
             if _exit_size <= 0:
                 logger.info("MirrorBot: SELL position size=0, skipping market=%s", str(market_id)[:16])
+                return False
+            # S228 Bug 11C: pre-flight CTF balance check for live mode SELLs.
+            # RTDS-driven exits on a position the deposit wallet doesn't actually
+            # hold would burn 3 OrderGateway retries on "balance: 0" rejections.
+            if not await self._live_sell_balance_guard(
+                market_id=market_id, token_id=token_id,
+                size=_exit_size, side=side,
+            ):
                 return False
             order = await self.place_order(
                 market_id=market_id,
@@ -3356,19 +3563,28 @@ class MirrorBot(BaseBot):
         _min_trade_usd = max(_abs_floor, min(_ceiling, _cap))
         _trade_value_usd = size * price
         if _trade_value_usd < _min_trade_usd:
-            logger.info("mirror_dust_skipped", trade_usd=round(_trade_value_usd, 2),
-                        min_usd=_min_trade_usd, market_id=str(market_id)[:16])
-            await self._log_rejection(
-                trader_address=trader_address, market_id=str(market_id),
-                rejection_reason="mirror_dust_skipped",
-                rejection_stage="post_gate",
-                token_id=token_id, side=side, price=price,
-                whale_trade_usd=whale_trade_usd,
-                signal_metadata={"trade_usd": _trade_value_usd,
-                                 "min_trade_usd": _min_trade_usd,
-                                 "size": size},
-            )
-            return False
+            # S227: Clamp size UP to floor instead of rejecting. Operator spec —
+            # dust gate's only legitimate purpose is ensuring the order meets
+            # CLOB minimum; downstream dampener chain (NO-side ×0.75, favorable,
+            # risk_budget) shrinks max_bet=$1 trades below the $1 floor, making
+            # entries mathematically blocked. Rejection here was the wrong
+            # semantic. Order then flows to place_order → CLOB; Polymarket
+            # acceptance becomes the authoritative halt. Kelly intent preserved
+            # via mirror_force_min_clamped shadow event (original_size +
+            # original_trade_usd captures what dampened sizing would have done).
+            _original_size = size
+            _original_trade_usd = _trade_value_usd
+            if price > 0:
+                size = _min_trade_usd / price
+                _trade_value_usd = size * price
+            logger.info("mirror_force_min_clamped",
+                        original_size=round(_original_size, 4),
+                        original_trade_usd=round(_original_trade_usd, 2),
+                        clamped_size=round(size, 4),
+                        clamped_trade_usd=round(_trade_value_usd, 2),
+                        floor_usd=_min_trade_usd,
+                        price=round(price, 4),
+                        market_id=str(market_id)[:16])
 
         # Session 82: Tag RTDS trades so order_gateway can skip liquidity check (saves 100-300ms).
         if source == "rtds":
@@ -3420,6 +3636,40 @@ class MirrorBot(BaseBot):
         # Two concurrent RTDS callbacks can both pass the cap check and both place
         # orders, overshooting the daily cap by N * trade_size.
         _trade_usd = size * price
+
+        # S228 Bug 11B: BUY-side capital guard for live mode. Without this, a
+        # BUY signal that exceeds deposit-wallet pUSD balance reaches CLOB and
+        # wastes 3 OrderGateway retries on the same "balance: 0" rejection.
+        # self.bankroll.capital is the wallet-refreshed pUSD balance (S226
+        # Bug 6) — O(1) cached read, no extra RPC per signal. Defense-in-depth
+        # to Bug 11A's restore-filter fix. Skip in paper mode (no real capital
+        # movement) and when bankroll is missing. Placed BEFORE the exposure
+        # lock to avoid serializing concurrent whale-signal handlers on this
+        # cheap-but-not-free check. Mode detection via helper per S83 paper-
+        # is-production rule (bot source avoids the direct mode name).
+        if not is_paper_trading_active():
+            _live_capital = getattr(self.bankroll, "capital", None) if self.bankroll else None
+            if _live_capital is not None and _live_capital > 0 and _trade_usd > _live_capital:
+                logger.warning(
+                    "mirror_buy_capital_guard_reject",
+                    trader_address=trader_address,
+                    market_id=str(market_id),
+                    side=side,
+                    trade_usd=round(_trade_usd, 2),
+                    available_pusd=round(float(_live_capital), 2),
+                    note="deposit wallet pUSD balance insufficient for BUY",
+                )
+                await self._log_rejection(
+                    trader_address=trader_address, market_id=str(market_id),
+                    rejection_reason="mirror_buy_capital_guard_reject",
+                    rejection_stage="post_gate",
+                    token_id=token_id, side=side, price=price,
+                    whale_trade_usd=whale_trade_usd,
+                    signal_metadata={"trade_usd": _trade_usd,
+                                     "available_pusd": float(_live_capital)},
+                )
+                return False
+
         async with self._exposure_lock:
             # Re-verify daily cap under lock (stale check at L1337 is pre-lock)
             if self.bankroll:

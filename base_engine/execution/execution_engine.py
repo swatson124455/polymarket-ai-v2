@@ -325,7 +325,14 @@ class ExecutionEngine:
                         delay = min(0.1 * (2 ** attempt), 2.0)
                         await asyncio.sleep(delay)
                         continue
-                    self.circuit_breaker.record_success()
+                    # S228 Bug 10: distinguish actual success vs non-retryable
+                    # failure for circuit-breaker state. Pre-fix, any break-
+                    # path called record_success() — including non-retryable
+                    # CLOB failures — which incorrectly cleared prior failures.
+                    if isinstance(order_result, dict) and order_result.get("success"):
+                        self.circuit_breaker.record_success()
+                    else:
+                        self.circuit_breaker.record_failure()
                     break
                 except asyncio.TimeoutError as e:
                     self.circuit_breaker.record_failure()
@@ -353,7 +360,33 @@ class ExecutionEngine:
                     "success": False,
                     "error": "Invalid order result from API"
                 }
-            
+
+            # S228 Bug 10: CLOB-side failures must surface as failure, not as
+            # "Order placed" with order_id=None. Pre-fix, a non-retryable
+            # {success: False, error: ...} response broke the retry loop and
+            # fell through to the success path — caller received {success:
+            # True, order_id: None} and could not tell the order failed.
+            # Surfaced S228 live flip #3 when Bug 9's AsyncClobClient produced
+            # 4 distinct "CLOB client or request build failed" responses, each
+            # logged as a fake "Order placed" event.
+            if not order_result.get("success"):
+                _err = order_result.get("error", "unknown CLOB failure")
+                logger.warning(
+                    "order_placement_failed",
+                    bot_name=bot_name,
+                    market_id=market_id,
+                    side=side,
+                    size=size,
+                    price=price,
+                    error=_err,
+                )
+                return {
+                    "success": False,
+                    "error": _err,
+                    "market_id": market_id,
+                    "side": side,
+                }
+
             order_id = order_result.get("id") or order_result.get("order_id")
             if not order_id:
                 logger.warning("Order placed but no order_id returned", result_keys=list(order_result.keys()))

@@ -557,16 +557,19 @@ class PaperTradingEngine:
                             trimmed_size=round(size, 4),
                             bot_name=bot_name)
 
-        # Relative slippage guard — reject fills with excessive price impact
-        _slip_abs = abs(price - original_price)
-        if _book_walk_used and _slip_abs >= 0.005:  # Skip sub-half-cent moves
-            _slip_pct = _slip_abs / max(original_price, 0.01)
+        # Directional slippage guard — reject only ADVERSE fills (BUY above original, SELL below)
+        if side == "BUY":
+            _adverse_abs = max(0.0, price - original_price)
+        else:
+            _adverse_abs = max(0.0, original_price - price)
+        if _book_walk_used and _adverse_abs >= 0.005:  # Skip sub-half-cent moves
+            _slip_pct = _adverse_abs / max(original_price, 0.01)
             _max_slip = 0.10 if original_price >= 0.20 else 0.20
             if _slip_pct > _max_slip:
                 return {
                     "success": False,
-                    "error": f"Slippage {_slip_pct:.1%} exceeds {_max_slip:.0%} limit "
-                             f"(original={original_price:.4f}, fill={price:.4f})",
+                    "error": f"Adverse slippage {_slip_pct:.1%} exceeds {_max_slip:.0%} limit "
+                             f"(side={side}, original={original_price:.4f}, fill={price:.4f})",
                     "fail_code": FAIL_SLIPPAGE,
                 }
 

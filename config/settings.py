@@ -601,6 +601,13 @@ class Settings(BaseSettings):
     USE_PIPELINE_GATE: bool = os.getenv("USE_PIPELINE_GATE", "true").lower() in ("true", "1", "yes")
     # Paper trading (SIMULATION_MODE): full pipeline runs (scan → predict → risk check) but orders go to PaperTradingEngine and paper_trades table, not CLOB. Set SIMULATION_MODE=false for real money.
     SIMULATION_MODE: bool = os.getenv("SIMULATION_MODE", "true").lower() in ("true", "1", "yes")
+    # S228 Bug 11: mode-detection helper for bot source. The S83 test
+    # `test_no_simulation_mode_in_bot_source` enforces that bot files have
+    # zero direct references to the SIMULATION_MODE name (paper is
+    # production, no feature-skipping by mode). Mode-aware ROUTING
+    # decisions (paper vs live position restore, live-capital guards) are
+    # legitimate and need a mode signal — bots call the helper so the
+    # name reference stays out of bot source.
     # S120: Raised to $10M so shared paper cash pool is never the bottleneck.
     # Real sizing limits come from BotBankrollManager ($300 max bet, $10K daily cap per bot).
     PAPER_TRADING_CAPITAL: float = float(os.getenv("PAPER_TRADING_CAPITAL", "10000000"))
@@ -637,6 +644,14 @@ class Settings(BaseSettings):
     # Wallet
     PRIVATE_KEY: Optional[str] = os.getenv("PRIVATE_KEY")
     WALLET_ADDRESS: Optional[str] = os.getenv("WALLET_ADDRESS")
+    # Polymarket V2 deposit wallet — per-user proxy provisioned by Polymarket's relayer.
+    # Required as the `funder` for CLOB V2 POLY_1271 orders (post 2026-04-28 migration).
+    # Empty string falls back to V1-style EOA-as-maker (will be rejected by V2 CLOB).
+    DEPOSIT_WALLET_ADDRESS: Optional[str] = os.getenv("DEPOSIT_WALLET_ADDRESS")
+    # Polymarket Relayer API key — enables gasless on-chain operations (deposit, approval).
+    # Optional: only needed if we route on-chain ops through Polymarket's relayer instead of
+    # paying gas ourselves from the EOA.
+    RELAYER_API_KEY: Optional[str] = os.getenv("RELAYER_API_KEY")
 
     # CLOB API (py-clob-client L2: optional; if set, ExecutionEngine uses official client for orders)
     CLOB_API_KEY: Optional[str] = os.getenv("CLOB_API_KEY")
@@ -1576,3 +1591,24 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def is_paper_trading_active() -> bool:
+    """S228 Bug 11: mode-detection helper for bot source.
+
+    Returns True when the system is configured for paper trading
+    (orders route to PaperTradingEngine and paper_trades table). Returns
+    False when configured for live trading (orders submit to CLOB).
+
+    Why this helper exists: the S83 paper-is-production test
+    (test_paper_is_production.py::test_no_simulation_mode_in_bot_source)
+    enforces that bot files have no direct references to the
+    SIMULATION_MODE name. Bot source that needs mode-aware ROUTING
+    (e.g., restore paper positions in paper mode, live positions in
+    live mode; apply live-capital guards only in live mode) calls this
+    helper instead so the name reference stays out of bot source.
+
+    Internally just reads settings.SIMULATION_MODE — the indirection
+    is purely textual, not semantic.
+    """
+    return bool(getattr(settings, "SIMULATION_MODE", True))

@@ -42,6 +42,7 @@ class TestWalletDerivedBankroll:
              patch("base_engine.execution.clob_adapter.check_usdc_balance",
                    new=AsyncMock(return_value=40.0)):
             st.WALLET_ADDRESS = "0xd6a5e2d75fae67739749af380c54b0544878627f"
+            st.DEPOSIT_WALLET_ADDRESS = ""  # V1 path (USDC.e@EOA)
             st.BOT_BANKROLL_CONFIG = json.dumps({"MirrorBot": {"capital": 20000, "kelly_fraction": 0.25, "max_bet_usd": 1, "max_daily_usd": 20}})
             st.BOT_WALLET_BANKROLL_ENABLED = json.dumps({"MirrorBot": True})
             st.WALLET_BANKROLL_STALE_THRESHOLD_S = 3600.0
@@ -69,6 +70,7 @@ class TestWalletDerivedBankroll:
              patch("base_engine.risk.bankroll_manager.settings") as st, \
              patch("base_engine.execution.clob_adapter.check_usdc_balance", new=mock_check):
             st.WALLET_ADDRESS = "0xd6a5e2d75fae67739749af380c54b0544878627f"
+            st.DEPOSIT_WALLET_ADDRESS = ""  # V1 path
             st.BOT_BANKROLL_CONFIG = "{}"
             st.WALLET_BANKROLL_STALE_THRESHOLD_S = 3600.0
             st.WALLET_BANKROLL_REFRESH_INTERVAL_S = 600.0
@@ -91,6 +93,7 @@ class TestWalletDerivedBankroll:
              patch("base_engine.execution.clob_adapter.check_usdc_balance",
                    new=AsyncMock(return_value=0.0)):
             st.WALLET_ADDRESS = "0xd6a5e2d75fae67739749af380c54b0544878627f"
+            st.DEPOSIT_WALLET_ADDRESS = ""  # V1 path
             st.BOT_BANKROLL_CONFIG = "{}"
             st.PHASE_MAX_BET_USD = "{}"
             st.TRADING_PHASE = "paper"
@@ -105,6 +108,7 @@ class TestWalletDerivedBankroll:
              patch("base_engine.execution.clob_adapter.check_usdc_balance",
                    new=AsyncMock(return_value=None)):
             st.WALLET_ADDRESS = "0xd6a5e2d75fae67739749af380c54b0544878627f"
+            st.DEPOSIT_WALLET_ADDRESS = ""  # V1 path
             st.BOT_BANKROLL_CONFIG = json.dumps({"MirrorBot": {"capital": 20000, "kelly_fraction": 0.25, "max_bet_usd": 1, "max_daily_usd": 20}})
             st.PHASE_MAX_BET_USD = "{}"
             st.TRADING_PHASE = "paper"
@@ -125,6 +129,7 @@ class TestWalletDerivedBankroll:
              patch("base_engine.execution.clob_adapter.check_usdc_balance",
                    new=AsyncMock(return_value=40.0)):
             st.WALLET_ADDRESS = "0xd6a5e2d75fae67739749af380c54b0544878627f"
+            st.DEPOSIT_WALLET_ADDRESS = ""  # V1 path
             st.BOT_BANKROLL_CONFIG = json.dumps({"MirrorBot": {"capital": 20000, "kelly_fraction": 0.25, "max_bet_usd": 1, "max_daily_usd": 20}})
             st.WALLET_BANKROLL_STALE_THRESHOLD_S = 3600.0
             st.WALLET_BANKROLL_REFRESH_INTERVAL_S = 600.0
@@ -147,6 +152,7 @@ class TestWalletDerivedBankroll:
         with patch("base_engine.risk.bankroll_manager.settings") as st, \
              patch("base_engine.execution.clob_adapter.check_usdc_balance",
                    new=AsyncMock(return_value=40.0)) as mock_check:
+            st.DEPOSIT_WALLET_ADDRESS = ""  # V1 path (test still validates V1-side gating)
             st.BOT_BANKROLL_CONFIG = json.dumps({"WeatherBot": {"capital": 20000, "kelly_fraction": 0.25, "max_bet_usd": 200, "max_daily_usd": 20000}})
             st.BOT_WALLET_BANKROLL_ENABLED = json.dumps({"MirrorBot": True})  # WB NOT opted in
             st.PHASE_MAX_BET_USD = "{}"
@@ -159,3 +165,56 @@ class TestWalletDerivedBankroll:
             assert mgr.capital == 20000.0  # unchanged from config
             # Freshness check trivially True when disabled (config path)
             assert mgr._wallet_bankroll_fresh()
+
+    # ── S226 V2 mode tests ──────────────────────────────────────────────
+
+    def test_v2_mode_reads_pusd_at_deposit_wallet(self):
+        """DEPOSIT_WALLET_ADDRESS set → init_wallet_bankroll calls check_pusd_balance
+        with deposit-wallet address, not check_usdc_balance with EOA. capital reflects
+        pUSD balance (V2 collateral), not USDC.e (V1 path)."""
+        with patch.object(BotBankrollManager, "_is_wallet_bankroll_enabled", return_value=True), \
+             patch("base_engine.risk.bankroll_manager.settings") as st, \
+             patch("base_engine.execution.clob_adapter.check_pusd_balance",
+                   new=AsyncMock(return_value=5.0)) as mock_pusd, \
+             patch("base_engine.execution.clob_adapter.check_usdc_balance",
+                   new=AsyncMock(return_value=15.99)) as mock_usdc:
+            st.WALLET_ADDRESS = "0xd6a5e2d75fae67739749af380c54b0544878627f"
+            st.DEPOSIT_WALLET_ADDRESS = "0xBB3988D74a853ddC16f22eEC52fa53E3Cedd2247"
+            st.BOT_BANKROLL_CONFIG = json.dumps({"MirrorBot": {"capital": 20000, "kelly_fraction": 0.25, "max_bet_usd": 1, "max_daily_usd": 20}})
+            st.BOT_WALLET_BANKROLL_ENABLED = json.dumps({"MirrorBot": True})
+            st.WALLET_BANKROLL_STALE_THRESHOLD_S = 3600.0
+            st.WALLET_BANKROLL_REFRESH_INTERVAL_S = 600.0
+            st.PHASE_MAX_BET_USD = "{}"
+            st.TRADING_PHASE = "paper"
+            mgr = _make_mgr()
+            _run(mgr.init_wallet_bankroll())
+            assert mgr.capital == 5.0  # pUSD balance, not USDC.e
+            mock_pusd.assert_called_once_with(wallet_address="0xBB3988D74a853ddC16f22eEC52fa53E3Cedd2247")
+            mock_usdc.assert_not_called()  # V2 path skips USDC.e read
+            if mgr._wallet_refresh_task:
+                mgr._wallet_refresh_task.cancel()
+
+    def test_v1_mode_unchanged_when_no_deposit_wallet(self):
+        """DEPOSIT_WALLET_ADDRESS unset → init_wallet_bankroll calls check_usdc_balance
+        with EOA (current V1 behavior preserved). Regression guard for V1 path."""
+        with patch.object(BotBankrollManager, "_is_wallet_bankroll_enabled", return_value=True), \
+             patch("base_engine.risk.bankroll_manager.settings") as st, \
+             patch("base_engine.execution.clob_adapter.check_pusd_balance",
+                   new=AsyncMock(return_value=5.0)) as mock_pusd, \
+             patch("base_engine.execution.clob_adapter.check_usdc_balance",
+                   new=AsyncMock(return_value=15.99)) as mock_usdc:
+            st.WALLET_ADDRESS = "0xd6a5e2d75fae67739749af380c54b0544878627f"
+            st.DEPOSIT_WALLET_ADDRESS = ""  # V1 path
+            st.BOT_BANKROLL_CONFIG = json.dumps({"MirrorBot": {"capital": 20000, "kelly_fraction": 0.25, "max_bet_usd": 1, "max_daily_usd": 20}})
+            st.BOT_WALLET_BANKROLL_ENABLED = json.dumps({"MirrorBot": True})
+            st.WALLET_BANKROLL_STALE_THRESHOLD_S = 3600.0
+            st.WALLET_BANKROLL_REFRESH_INTERVAL_S = 600.0
+            st.PHASE_MAX_BET_USD = "{}"
+            st.TRADING_PHASE = "paper"
+            mgr = _make_mgr()
+            _run(mgr.init_wallet_bankroll())
+            assert mgr.capital == 15.99  # USDC.e@EOA balance
+            mock_usdc.assert_called_once_with(wallet_address="0xd6a5e2d75fae67739749af380c54b0544878627f")
+            mock_pusd.assert_not_called()  # V1 path skips pUSD read
+            if mgr._wallet_refresh_task:
+                mgr._wallet_refresh_task.cancel()

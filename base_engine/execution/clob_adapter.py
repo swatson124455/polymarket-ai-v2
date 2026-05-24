@@ -1,6 +1,11 @@
 """
-CLOB Adapter - Wraps py-clob-client for order placement and orderbook.
+CLOB Adapter - Wraps py-clob-client-v2 for order placement and orderbook.
 ExecutionEngine uses this when CLOB credentials are configured; otherwise falls back to PolymarketClient (httpx).
+
+Polymarket migrated CLOB to V2 on 2026-04-28. V1 SDK (py-clob-client) is incompatible
+and returns `order_version_mismatch` on every order placement. V2 SDK targets the
+new Exchange contract at 0xE111180000d2663C0091e4f400237545B87B996B with EIP-712
+domain version="2".
 """
 import asyncio
 from typing import Any, Dict, Optional
@@ -19,10 +24,10 @@ def _get_clob_client():
     if _CLOB_CLIENT is not None:
         return _CLOB_CLIENT
     try:
-        from py_clob_client.client import ClobClient
-        from py_clob_client.clob_types import ApiCreds
+        from py_clob_client_v2.client import ClobClient
+        from py_clob_client_v2.clob_types import ApiCreds
     except ImportError:
-        logger.debug("py-clob-client not installed; CLOB adapter disabled")
+        logger.debug("py-clob-client-v2 not installed; CLOB adapter disabled")
         return None
     host = (getattr(settings, "POLYMARKET_CLOB_API", None) or "").rstrip("/")
     key = (getattr(settings, "PRIVATE_KEY", None) or "").strip()
@@ -32,13 +37,35 @@ def _get_clob_client():
     api_secret = (getattr(settings, "CLOB_SECRET", None) or "").strip()
     api_passphrase = (getattr(settings, "CLOB_PASSPHRASE", None) or "").strip()
     chain_id = getattr(settings, "POLYGON_CHAIN_ID", 137)
+    funder = (getattr(settings, "DEPOSIT_WALLET_ADDRESS", None) or "").strip()
     if not api_key or not api_secret or not api_passphrase:
         logger.debug("CLOB_API_KEY/SECRET/PASSPHRASE not set; CLOB adapter disabled")
         return None
     try:
         creds = ApiCreds(api_key=api_key, api_secret=api_secret, api_passphrase=api_passphrase)
-        _CLOB_CLIENT = ClobClient(host=host, chain_id=chain_id, key=key, creds=creds)
-        logger.info("CLOB adapter initialized with py-clob-client")
+        # V2 deposit-wallet flow: signature_type=3 (POLY_1271) + funder=deposit_wallet.
+        # Polymarket V2 (post 2026-04-28) rejects EOA-as-maker; orders must be attributed
+        # to the deposit wallet. EOA still signs (via private key + EIP-1271 lookup).
+        if funder:
+            _CLOB_CLIENT = ClobClient(
+                host=host,
+                chain_id=chain_id,
+                key=key,
+                creds=creds,
+                signature_type=3,
+                funder=funder,
+            )
+            logger.info(
+                "CLOB adapter initialized with py-clob-client-v2 (POLY_1271 deposit wallet flow)",
+                funder=funder,
+            )
+        else:
+            _CLOB_CLIENT = ClobClient(host=host, chain_id=chain_id, key=key, creds=creds)
+            logger.warning(
+                "CLOB adapter initialized WITHOUT DEPOSIT_WALLET_ADDRESS — V2 orders will be "
+                "rejected with 'maker address not allowed'. Set DEPOSIT_WALLET_ADDRESS in .env "
+                "to the Polymarket-provisioned deposit wallet address."
+            )
         return _CLOB_CLIENT
     except Exception as e:
         logger.warning("Failed to build ClobClient: %s", e)
@@ -51,7 +78,7 @@ def _place_order_sync(market_id: str, token_id: str, side: str, size: float, pri
     if not client:
         return {"success": False, "error": "CLOB client not configured"}
     try:
-        from py_clob_client.clob_types import OrderArgs
+        from py_clob_client_v2.clob_types import OrderArgs
         side_upper = (side or "").upper()
         if side_upper not in ("BUY", "SELL"):
             if side_upper in ("YES", "NO"):
@@ -110,15 +137,30 @@ def _get_order_book_sync(token_id: str) -> Dict[str, Any]:
 
 
 def _cancel_order_sync(order_id: str) -> bool:
-    """Sync cancel order via py-clob-client (run in executor)."""
+    """Sync cancel order via py-clob-client-v2 (run in executor).
+
+    V2 SDK note: client.cancel() expects a SignedOrder object (with .orderID attr),
+    not a string. For cancel-by-ID we use cancel_orders([order_id]) which returns
+    {"canceled": [...ids...], "not_canceled": {...id: reason...}}.
+    """
     client = _get_clob_client()
     if not client:
         return False
     try:
-        client.cancel(order_id)
-        return True
+        result = client.cancel_orders([order_id])
+        canceled = result.get("canceled", []) if isinstance(result, dict) else []
+        if order_id in canceled:
+            return True
+        not_canceled = result.get("not_canceled", {}) if isinstance(result, dict) else {}
+        logger.warning(
+            "py-clob-client-v2 cancel returned but order not in canceled list",
+            order_id=order_id,
+            canceled=canceled,
+            not_canceled=not_canceled,
+        )
+        return False
     except Exception as e:
-        logger.warning("py-clob-client cancel_order failed: %s (order_id=%s)", e, order_id)
+        logger.warning("py-clob-client-v2 cancel_orders failed: %s (order_id=%s)", e, order_id)
         return False
 
 
@@ -132,16 +174,14 @@ class ClobAdapter:
         self._async_client: Optional[Any] = None
 
     def _get_async_client(self) -> Optional[Any]:
-        if self._async_client is not None:
-            return self._async_client
-        try:
-            from base_engine.execution.async_clob_client import AsyncClobClient
-            self._async_client = AsyncClobClient()
-            if self._async_client.available:
-                return self._async_client
-        except Exception as e:
-            logger.debug("AsyncClobClient not used: %s", e)
-        self._async_client = None
+        # S228 Bug 9: AsyncClobClient imports py_clob_client (V1) at file top,
+        # then isinstance-checks the V2 ClobClient instance against the V1 class
+        # — always False under V2 → _build_post_order_request returns None →
+        # AsyncClobClient.place_order returns {success:False, error:'CLOB
+        # client or request build failed'}. Surfaced S228 live flip #3 as a
+        # retry storm of fake "Order placed" events (Bug 10 misclassified the
+        # failure as success). Force the sync V2 path (_place_order_sync via
+        # run_in_executor) until async_clob_client.py is ported to V2.
         return None
 
     @property
@@ -229,6 +269,127 @@ async def check_usdc_balance(
         return balance_usd
     except Exception as _e:
         logger.warning("usdc_balance_check_failed: %s", _e)
+        return None
+
+
+async def check_pusd_balance(
+    wallet_address: Optional[str] = None,
+    rpc_url: Optional[str] = None,
+) -> Optional[float]:
+    """S226: Query pUSD balance via Polygon JSON-RPC.
+
+    pUSD (Polymarket USD) is the V2 collateral token held at the per-user
+    deposit wallet provisioned by Polymarket's relayer (not the EOA).
+    Under CLOB V2, this is the canonical buying-power source — EOA USDC.e
+    via check_usdc_balance() is no longer authoritative.
+
+    Defaults to settings.DEPOSIT_WALLET_ADDRESS when wallet_address is None.
+    Returns balance in USD (float), or None when RPC/wallet config is
+    missing or fails. Read-only — no signing required.
+    """
+    wallet = (wallet_address or getattr(settings, "DEPOSIT_WALLET_ADDRESS", None) or "").strip()
+    rpc = (
+        rpc_url
+        or getattr(settings, "POLYGON_RPC", None)
+        or getattr(settings, "POLYGON_RPC_URL", None)
+        or ""
+    ).strip()
+    if not wallet or not rpc:
+        logger.debug("pusd_balance_check_skipped: DEPOSIT_WALLET_ADDRESS or POLYGON_RPC not configured")
+        return None
+    # pUSD contract address on Polygon (Polymarket V2 collateral, 6 decimals — verified on-chain 2026-05-20)
+    PUSD = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+    data = "0x70a08231" + wallet.lower().replace("0x", "").rjust(64, "0")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(rpc, json={
+                "jsonrpc": "2.0",
+                "method": "eth_call",
+                "params": [{"to": PUSD, "data": data}, "latest"],
+                "id": 1,
+            })
+            resp.raise_for_status()
+            j = resp.json()
+        if "error" in j:
+            logger.warning("pusd_balance_rpc_error", error=j["error"])
+            return None
+        result = j.get("result", "0x0")
+        if not result or result == "0x":
+            return 0.0
+        balance_usd = int(result, 16) / 10 ** 6
+        return balance_usd
+    except Exception as _e:
+        logger.warning("pusd_balance_check_failed: %s", _e)
+        return None
+
+
+async def check_ctf_balance(
+    token_id: str,
+    wallet_address: Optional[str] = None,
+    rpc_url: Optional[str] = None,
+) -> Optional[float]:
+    """S228 Bug 11C: Query CTF outcome-token balance via Polygon JSON-RPC.
+
+    Polymarket's outcome positions are ERC1155 holdings in the
+    ConditionalTokens contract (0x4D97DCd97eC945f40cF65F87097ACe5EA0476045
+    on Polygon) identified by a UInt256 token_id. The deposit wallet
+    holds these on behalf of the user under V2.
+
+    Used by MirrorBot's SELL-side balance guard to detect signals that
+    would fail at CLOB with 'not enough balance / allowance: balance: 0'
+    (Bug 11A's failure mode). Defense-in-depth against future regressions
+    of the restore-filter fix.
+
+    Defaults to settings.DEPOSIT_WALLET_ADDRESS when wallet_address is
+    None. Returns balance in tokens (float, 6 decimals matching CTF), or
+    None when RPC/wallet config is missing or fails. Read-only — no
+    signing required.
+    """
+    wallet = (wallet_address or getattr(settings, "DEPOSIT_WALLET_ADDRESS", None) or "").strip()
+    rpc = (
+        rpc_url
+        or getattr(settings, "POLYGON_RPC", None)
+        or getattr(settings, "POLYGON_RPC_URL", None)
+        or ""
+    ).strip()
+    if not wallet or not rpc or not token_id:
+        logger.debug("ctf_balance_check_skipped: DEPOSIT_WALLET_ADDRESS, POLYGON_RPC, or token_id not configured")
+        return None
+    # Polymarket ConditionalTokens contract on Polygon (verified on-chain 2026-05-24)
+    CTF = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+    # ERC1155 balanceOf(address account, uint256 id) selector
+    selector = "0x00fdd58e"
+    try:
+        token_id_int = int(token_id)
+    except (TypeError, ValueError):
+        logger.debug("ctf_balance_check_skipped: token_id not parseable as int: %s", token_id)
+        return None
+    data = (
+        selector
+        + wallet.lower().replace("0x", "").rjust(64, "0")
+        + hex(token_id_int)[2:].rjust(64, "0")
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(rpc, json={
+                "jsonrpc": "2.0",
+                "method": "eth_call",
+                "params": [{"to": CTF, "data": data}, "latest"],
+                "id": 1,
+            })
+            resp.raise_for_status()
+            j = resp.json()
+        if "error" in j:
+            logger.warning("ctf_balance_rpc_error", error=j["error"], token_id=str(token_id)[:30])
+            return None
+        result = j.get("result", "0x0")
+        if not result or result == "0x":
+            return 0.0
+        # CTF outcome tokens use 6 decimals (matches USDC.e collateral)
+        balance = int(result, 16) / 10 ** 6
+        return balance
+    except Exception as _e:
+        logger.warning("ctf_balance_check_failed: %s token_id=%s", _e, str(token_id)[:30])
         return None
 
 
