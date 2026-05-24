@@ -1,5 +1,8 @@
 [Unit]
-Description=Polymarket AI V2 — EsportsBot
+# SPLINTER (eb/main): EB runs from /opt/polymarket-ai-v2-esports (its own release
+# path + symlink), isolated from MB/WB/ingestion which stay on /opt/polymarket-ai-v2.
+# See EB-SPLINTER.md on branch eb/main for the splinter charter.
+Description=Polymarket AI V2 — EsportsBot (splinter)
 After=network.target postgresql.service redis.service
 Wants=postgresql.service redis.service
 
@@ -7,12 +10,12 @@ Wants=postgresql.service redis.service
 Type=simple
 User=polymarket
 Group=polymarket
-WorkingDirectory=/opt/polymarket-ai-v2
+WorkingDirectory=/opt/polymarket-ai-v2-esports
 Environment=PYTHONUNBUFFERED=1
 Environment="PYTHONWARNINGS=ignore::UserWarning:sklearn,ignore::FutureWarning:sklearn"
 EnvironmentFile=/opt/pa2-shared/.env
 EnvironmentFile=/opt/pa2-shared/.env.esports
-ExecStart=/opt/polymarket-ai-v2/venv/bin/python main.py
+ExecStart=/opt/polymarket-ai-v2-esports/venv/bin/python main.py
 Restart=always
 RestartSec=10
 TimeoutStopSec=30

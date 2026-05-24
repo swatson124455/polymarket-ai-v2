@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
-# Polymarket AI V2 — Deploy to AWS Lightsail (Git Bash / Linux / macOS)
+# Polymarket AI V2 — EB SPLINTER Deploy to AWS Lightsail
+# Branch: eb/main (long-lived splinter, see EB-SPLINTER.md)
 # Usage: bash deploy/deploy.sh
+#
+# SPLINTER SEMANTICS (differs from master deploy.sh):
+#   - Release path:  /opt/pa2-esports-releases/<stamp>  (separate from MB/WB)
+#   - Symlink:       /opt/polymarket-ai-v2-esports      (separate from MB/WB)
+#   - Restarts:      ONLY polymarket-esports.service    (does NOT touch
+#                    polymarket-mirror, polymarket-weather, polymarket-ingestion)
+#   - Migrations:    SKIPPED (EB never proposes migrations; surface to MB session)
+#   - Shared timers/crontab: SKIPPED (MB owns shared maintenance jobs)
+#   - Health probe:  EB-only via deploy/healthcheck_probe.sh (splinter version
+#                    on eb/main scopes BOT_SERVICES/SCAN_SERVICES to esports only)
 #
 # Requirements: ssh, scp, tar in PATH (all present in Git for Windows)
 # Prerequisite: deploy/migrate-to-releases.sh must have been run once on the VPS.
@@ -10,20 +21,22 @@
 #   2. Build tar archive excluding venv/.env/data
 #   3. Upload archive to VPS, extract to timestamped release dir
 #   4. Create symlinks: .env → shared, data → shared, venv → shared
-#   5. Run migrations (abort + cleanup on failure)
-#   6. Atomic symlink swap: /opt/polymarket-ai-v2 → new release
-#   7. Restart service + 90s health check
-#   8. Auto-rollback if health check fails
-#   9. Prune old releases (keep last 5)
+#      (Migrations SKIPPED per splinter charter — MB owns DB schema)
+#   5. Atomic symlink swap: /opt/polymarket-ai-v2-esports → new release
+#   6. Install polymarket-esports.service ONLY + restart polymarket-esports ONLY
+#   7. EB-scoped health check + auto-rollback on failure
+#   8. Prune old EB-splinter releases (keep last 5)
 
 set -euo pipefail
 
 KEY="${SSH_KEY:-$HOME/.ssh/LightsailDefaultKey-eu-west-1.pem}"
 VPS="${VPS_HOST:-ubuntu@18.201.216.0}"
 SSH_OPTS="-o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3"
-RELEASES="/opt/pa2-releases"
+# SPLINTER: EB has its own release path + symlink (isolated from master's
+# /opt/pa2-releases + /opt/polymarket-ai-v2). MB/WB/ingestion stay on master.
+RELEASES="/opt/pa2-esports-releases"
 SHARED="/opt/pa2-shared"
-CURRENT="/opt/polymarket-ai-v2"
+CURRENT="/opt/polymarket-ai-v2-esports"
 LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 NEW_RELEASE="$RELEASES/$TIMESTAMP"
@@ -84,6 +97,7 @@ tar czf "$TMPTAR" \
     --exclude='./venv' \
     --exclude='./.venv' \
     --exclude='pa2-releases' \
+    --exclude='pa2-esports-releases' \
     --exclude='pa2-shared' \
     --exclude='*.egg-info' \
     --exclude='.pytest_cache' \
@@ -132,25 +146,11 @@ sudo chown -h polymarket:polymarket \
     $NEW_RELEASE/saved_models \
     $NEW_RELEASE/venv
 
-# Run migrations — abort + clean up on failure
-# cd first so pydantic-settings resolves .env relative to the release dir
-# S144: Bypass PgBouncer for migrations — connect directly to postgres via unix socket.
-# Bots consume most of PgBouncer's 25 connections; migration only needs 1 for a few seconds.
-cd $NEW_RELEASE
-# S157: Extract DB password using Python urlparse (sed breaks on passwords containing @)
-_DB_PW=\$(python3 -c "from urllib.parse import urlparse; import os; print(urlparse(open('$SHARED/.env').read().split('DATABASE_URL=')[1].split('\\\\n')[0].strip()).password)" 2>/dev/null || grep '^DATABASE_URL=' $SHARED/.env | sed -n 's|.*://[^:]*:\([^@]*\)@.*|\1|p')
-if [ -z "\$_DB_PW" ]; then
-    echo "ABORT: Could not extract DB password from $SHARED/.env"
-    sudo rm -rf "$NEW_RELEASE"
-    exit 1
-fi
-MIGRATION_DB_URL="postgresql://polymarket:\${_DB_PW}@/polymarket?host=/var/run/postgresql"
-sudo -u polymarket DATABASE_URL="\$MIGRATION_DB_URL" $SHARED/venv/bin/python scripts/run_migrations.py || {
-    echo "MIGRATION FAILED — removing release $NEW_RELEASE"
-    sudo rm -rf "$NEW_RELEASE"
-    exit 1
-}
-echo "  Migrations OK"
+# SPLINTER: Migrations SKIPPED per EB-SPLINTER.md charter.
+# EB never proposes migrations; DB schema is MB-canonical. If EB needs a schema
+# change, surface to MB session for a master-side migration. The splinter's
+# alembic/ directory is frozen-at-clone-time reference, not for application.
+echo "  Migrations skipped (splinter charter: MB owns schema)"
 REMOTE
 
 # ── 5. Atomic symlink swap ────────────────────────────────────────────────────
@@ -164,76 +164,52 @@ sudo mv -T "\$SWAP_TMP" "$CURRENT"
 echo "  $CURRENT -> $NEW_RELEASE"
 REMOTE
 
-# ── 5b. Install postgres crontab (backup job) ────────────────────────────────
+# ── 5b. SPLINTER: postgres crontab + daily_backup SKIPPED ────────────────────
+# These are shared maintenance jobs owned by MB session. EB splinter does NOT
+# install/update them; they remain on master's cadence. If MB drifts on backup
+# config, surface to MB session — do NOT touch from here.
 echo ""
-echo "[5b/7] Installing postgres crontab..."
-ssh $SSH_OPTS -i "$KEY" "$VPS" bash <<REMOTE
-set -euo pipefail
-# Ensure backup directory and script exist
-sudo mkdir -p /opt/pa2-backups
-if [ -f "$NEW_RELEASE/deploy/daily_backup.sh" ]; then
-    sudo cp "$NEW_RELEASE/deploy/daily_backup.sh" /opt/pa2-backups/daily_backup.sh
-    sudo chmod +x /opt/pa2-backups/daily_backup.sh
-    sudo chown postgres:postgres /opt/pa2-backups/daily_backup.sh
-    echo "  daily_backup.sh installed to /opt/pa2-backups/"
-fi
-if [ -f "$NEW_RELEASE/deploy/crontabs/postgres.crontab" ]; then
-    sudo -u postgres crontab "$NEW_RELEASE/deploy/crontabs/postgres.crontab"
-    echo "  postgres crontab installed from deploy/crontabs/postgres.crontab"
-else
-    echo "  WARNING: deploy/crontabs/postgres.crontab not found, skipping"
-fi
-REMOTE
+echo "[5b/7] Postgres crontab + daily_backup skipped (splinter charter: MB owns shared maintenance)"
 
-# ── 6. Install service files + restart per-bot services ──────────────────────
+# ── 6. SPLINTER: Install polymarket-esports.service ONLY + restart it ONLY ───
+# Does NOT touch polymarket-weather, polymarket-mirror, polymarket-ingestion.
+# Those are master-owned and stay pointed at /opt/polymarket-ai-v2.
 echo ""
-echo "[6/7] Installing service files + restarting services..."
+echo "[6/7] Installing polymarket-esports.service + restarting (splinter-scoped)..."
 ssh $SSH_OPTS -i "$KEY" "$VPS" bash <<REMOTE
 set -euo pipefail
-# Install per-bot service files
-for SVC in polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion; do
-    sudo cp "$NEW_RELEASE/deploy/\${SVC}.service" /etc/systemd/system/
-done
-# Ensure per-bot override env files exist (second EnvironmentFile wins over shared .env)
-[ -f $SHARED/.env.weather   ] || sudo cp $SHARED/.env $SHARED/.env.weather
-[ -f $SHARED/.env.mirror    ] || sudo cp $SHARED/.env $SHARED/.env.mirror
-[ -f $SHARED/.env.esports   ] || sudo cp $SHARED/.env $SHARED/.env.esports
-[ -f $SHARED/.env.ingestion ] || sudo cp $SHARED/.env $SHARED/.env.ingestion
-sudo chown polymarket:polymarket $SHARED/.env.weather $SHARED/.env.mirror $SHARED/.env.esports $SHARED/.env.ingestion
+# Install ONLY the EB service file (splinter version points at /opt/polymarket-ai-v2-esports)
+sudo cp "$NEW_RELEASE/deploy/polymarket-esports.service" /etc/systemd/system/
+# Ensure .env.esports exists (EB's per-bot env override). Do NOT touch
+# .env.weather/.env.mirror/.env.ingestion — those belong to MB/WB sessions.
+[ -f $SHARED/.env.esports ] || sudo cp $SHARED/.env $SHARED/.env.esports
+sudo chown polymarket:polymarket $SHARED/.env.esports
 sudo systemctl daemon-reload
-# Stop and disable the old monolithic service (if running)
-sudo systemctl stop polymarket-ai 2>/dev/null || true
-sudo systemctl disable polymarket-ai 2>/dev/null || true
-# S145: Explicit stop before start — frees all PgBouncer slots before new code loads.
-# Without this, old processes hold connections during the restart window, causing
-# pool exhaustion if the new processes also try to connect simultaneously.
-sudo systemctl enable polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion
-sudo systemctl stop polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion 2>/dev/null || true
+# S145 lineage: stop-before-start to free PgBouncer slots before new code loads.
+# Splinter scope: only polymarket-esports is stopped/started. MB/WB/ingestion
+# are untouched — they continue running on their /opt/polymarket-ai-v2 release.
+sudo systemctl enable polymarket-esports
+sudo systemctl stop polymarket-esports 2>/dev/null || true
 sleep 2  # Let PgBouncer reclaim slots
-sudo systemctl start polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion
-echo "  polymarket-weather, polymarket-mirror, polymarket-esports, polymarket-ingestion started (clean)"
+sudo systemctl start polymarket-esports
+echo "  polymarket-esports started (splinter, clean)"
+# Defensive cross-check: confirm other services did NOT restart as a side effect.
+for SVC in polymarket-weather polymarket-mirror polymarket-ingestion; do
+    if systemctl is-active --quiet "\$SVC"; then
+        echo "  \$SVC: active (untouched, as expected)"
+    else
+        echo "  WARNING: \$SVC is not active — investigate (splinter deploy should NOT have stopped it)"
+    fi
+done
 REMOTE
 echo "  Restarting..."
 
-# ── 6b. Install + enable systemd timers (prune, audit) ───────────────────────
+# ── 6b. SPLINTER: shared systemd timers + logrotate SKIPPED ──────────────────
+# polymarket-prune-prices, polymarket-audit, polymarket-prune-data, and
+# /etc/logrotate.d/polymarket are shared maintenance owned by MB. EB splinter
+# does NOT install/refresh them. Surface to MB session if drift suspected.
 echo ""
-echo "[6b/7] Installing systemd timers..."
-ssh $SSH_OPTS -i "$KEY" "$VPS" bash <<REMOTE
-set -euo pipefail
-for TIMER_SVC in polymarket-prune-prices polymarket-audit polymarket-prune-data; do
-    if [ -f "$NEW_RELEASE/deploy/\${TIMER_SVC}.service" ] && [ -f "$NEW_RELEASE/deploy/\${TIMER_SVC}.timer" ]; then
-        sudo cp "$NEW_RELEASE/deploy/\${TIMER_SVC}.service" "$NEW_RELEASE/deploy/\${TIMER_SVC}.timer" /etc/systemd/system/
-        sudo systemctl daemon-reload
-        sudo systemctl enable --now "\${TIMER_SVC}.timer"
-        echo "  \${TIMER_SVC}.timer enabled"
-    fi
-done
-# S177: Install logrotate config
-if [ -f "$NEW_RELEASE/deploy/logrotate.d/polymarket" ]; then
-    sudo cp "$NEW_RELEASE/deploy/logrotate.d/polymarket" /etc/logrotate.d/polymarket
-    echo "  logrotate config installed"
-fi
-REMOTE
+echo "[6b/7] Shared timers + logrotate skipped (splinter charter: MB owns shared maintenance)"
 
 # ── 7. Health check (tiered 3-gate, via healthcheck_probe.sh) ────────────────
 # S180: Replaced single-gate 420s scan_ms loop with tiered check in
@@ -252,9 +228,10 @@ HEALTH_RESULT=$(ssh $SSH_OPTS -i "$KEY" "$VPS" \
 echo "$HEALTH_RESULT" | grep -v '^$'
 
 if [ "$PROBE_EXIT" -eq 0 ]; then
-    # Post-success bookkeeping that the probe does not do: prune old releases.
+    # Post-success bookkeeping that the probe does not do: prune old EB splinter
+    # releases (does NOT touch /opt/pa2-releases — that's MB's release path).
     ssh $SSH_OPTS -i "$KEY" "$VPS" \
-        'ls -1dt /opt/pa2-releases/*/ 2>/dev/null | tail -n +6 | xargs -r sudo rm -rf'
+        'ls -1dt /opt/pa2-esports-releases/*/ 2>/dev/null | tail -n +6 | xargs -r sudo rm -rf'
 
     # Report PgBouncer pool size warning if below threshold.
     # grep -oP \K is PCRE-only and fails on non-UTF-8 locales with

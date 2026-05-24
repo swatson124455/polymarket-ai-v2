@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
-# healthcheck_probe.sh — Standalone VPS health probe using the 3-gate tiered check.
+# healthcheck_probe.sh — EB SPLINTER health probe (3-gate tiered check).
+# Branch: eb/main (long-lived splinter, see EB-SPLINTER.md)
+#
+# SPLINTER SEMANTICS:
+#   - BOT_SERVICES = polymarket-esports ONLY (no weather/mirror/ingestion).
+#   - Splinter probe deliberately ignores MB/WB/ingestion health — those are
+#     master's responsibility. If MB/WB are down for unrelated reasons, splinter
+#     deploys should still succeed.
 #
 # Purpose:
 #   (1) Extracted gate logic from deploy.sh step 7 so it can be dry-run against
@@ -35,8 +42,8 @@ set -euo pipefail
 NO_WAIT=false
 [ "${1:-}" = "--no-wait" ] && NO_WAIT=true
 
-BOT_SERVICES=(polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion)
-SCAN_SERVICES=(polymarket-weather polymarket-mirror polymarket-esports)  # bots that emit scan_ms
+BOT_SERVICES=(polymarket-esports)
+SCAN_SERVICES=(polymarket-esports)  # bots that emit scan_ms
 
 # ── Gate 1: T+30s services active ─────────────────────────────────────────────
 echo "[Gate 1] Checking services active..."
