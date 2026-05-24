@@ -171,29 +171,38 @@ REMOTE
 echo ""
 echo "[5b/7] Postgres crontab + daily_backup skipped (splinter charter: MB owns shared maintenance)"
 
-# ── 6. SPLINTER: Install polymarket-esports.service ONLY + restart it ONLY ───
-# Does NOT touch polymarket-weather, polymarket-mirror, polymarket-ingestion.
-# Those are master-owned and stay pointed at /opt/polymarket-ai-v2.
+# ── 6. SPLINTER: Install systemd drop-in override + restart polymarket-esports ─
+# AUTONOMY DESIGN: Splinter does NOT install or modify the main service file at
+# /etc/systemd/system/polymarket-esports.service. Master's deploy can overwrite
+# that file freely. Splinter instead installs a drop-in override at
+# /etc/systemd/system/polymarket-esports.service.d/00-splinter.conf which
+# redirects WorkingDirectory + ExecStart to the splinter release path.
+# Standard systemd drop-in semantics: override loads ON TOP of whatever main
+# service file exists. So even if master's deploy clobbers the main file with
+# a version pointing at /opt/polymarket-ai-v2, this override wins and EB keeps
+# running on the splinter. EB is autonomous — no coordination needed.
 echo ""
-echo "[6/7] Installing polymarket-esports.service + restarting (splinter-scoped)..."
+echo "[6/7] Installing systemd drop-in override + restarting (splinter-scoped)..."
 ssh $SSH_OPTS -i "$KEY" "$VPS" bash <<REMOTE
 set -euo pipefail
-# Install ONLY the EB service file (splinter version points at /opt/polymarket-ai-v2-esports)
-sudo cp "$NEW_RELEASE/deploy/polymarket-esports.service" /etc/systemd/system/
-# Ensure .env.esports exists (EB's per-bot env override). Do NOT touch
-# .env.weather/.env.mirror/.env.ingestion — those belong to MB/WB sessions.
+# Install splinter drop-in override (decoupled from master's main service file)
+sudo mkdir -p /etc/systemd/system/polymarket-esports.service.d
+sudo cp "$NEW_RELEASE/deploy/polymarket-esports.service.d/00-splinter.conf" \
+    /etc/systemd/system/polymarket-esports.service.d/00-splinter.conf
+# Ensure .env.esports exists (EB-owned per-bot env). Splinter manages it
+# autonomously.
 [ -f $SHARED/.env.esports ] || sudo cp $SHARED/.env $SHARED/.env.esports
 sudo chown polymarket:polymarket $SHARED/.env.esports
 sudo systemctl daemon-reload
 # S145 lineage: stop-before-start to free PgBouncer slots before new code loads.
 # Splinter scope: only polymarket-esports is stopped/started. MB/WB/ingestion
-# are untouched — they continue running on their /opt/polymarket-ai-v2 release.
+# untouched.
 sudo systemctl enable polymarket-esports
 sudo systemctl stop polymarket-esports 2>/dev/null || true
 sleep 2  # Let PgBouncer reclaim slots
 sudo systemctl start polymarket-esports
-echo "  polymarket-esports started (splinter, clean)"
-# Defensive cross-check: confirm other services did NOT restart as a side effect.
+echo "  polymarket-esports started (splinter, override-driven, clean)"
+# Defensive cross-check: confirm other services did NOT restart as side effect.
 for SVC in polymarket-weather polymarket-mirror polymarket-ingestion; do
     if systemctl is-active --quiet "\$SVC"; then
         echo "  \$SVC: active (untouched, as expected)"
@@ -201,6 +210,14 @@ for SVC in polymarket-weather polymarket-mirror polymarket-ingestion; do
         echo "  WARNING: \$SVC is not active — investigate (splinter deploy should NOT have stopped it)"
     fi
 done
+# Verify the override is the effective config (drop-in must override main file)
+EFFECTIVE_CWD=\$(systemctl show polymarket-esports -p WorkingDirectory --value)
+if [ "\$EFFECTIVE_CWD" = "/opt/polymarket-ai-v2-esports" ]; then
+    echo "  override verified: WorkingDirectory=\$EFFECTIVE_CWD"
+else
+    echo "  ERROR: drop-in override not effective; got WorkingDirectory=\$EFFECTIVE_CWD"
+    exit 1
+fi
 REMOTE
 echo "  Restarting..."
 
