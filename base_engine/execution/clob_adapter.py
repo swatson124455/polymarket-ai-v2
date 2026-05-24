@@ -323,6 +323,76 @@ async def check_pusd_balance(
         return None
 
 
+async def check_ctf_balance(
+    token_id: str,
+    wallet_address: Optional[str] = None,
+    rpc_url: Optional[str] = None,
+) -> Optional[float]:
+    """S228 Bug 11C: Query CTF outcome-token balance via Polygon JSON-RPC.
+
+    Polymarket's outcome positions are ERC1155 holdings in the
+    ConditionalTokens contract (0x4D97DCd97eC945f40cF65F87097ACe5EA0476045
+    on Polygon) identified by a UInt256 token_id. The deposit wallet
+    holds these on behalf of the user under V2.
+
+    Used by MirrorBot's SELL-side balance guard to detect signals that
+    would fail at CLOB with 'not enough balance / allowance: balance: 0'
+    (Bug 11A's failure mode). Defense-in-depth against future regressions
+    of the restore-filter fix.
+
+    Defaults to settings.DEPOSIT_WALLET_ADDRESS when wallet_address is
+    None. Returns balance in tokens (float, 6 decimals matching CTF), or
+    None when RPC/wallet config is missing or fails. Read-only — no
+    signing required.
+    """
+    wallet = (wallet_address or getattr(settings, "DEPOSIT_WALLET_ADDRESS", None) or "").strip()
+    rpc = (
+        rpc_url
+        or getattr(settings, "POLYGON_RPC", None)
+        or getattr(settings, "POLYGON_RPC_URL", None)
+        or ""
+    ).strip()
+    if not wallet or not rpc or not token_id:
+        logger.debug("ctf_balance_check_skipped: DEPOSIT_WALLET_ADDRESS, POLYGON_RPC, or token_id not configured")
+        return None
+    # Polymarket ConditionalTokens contract on Polygon (verified on-chain 2026-05-24)
+    CTF = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+    # ERC1155 balanceOf(address account, uint256 id) selector
+    selector = "0x00fdd58e"
+    try:
+        token_id_int = int(token_id)
+    except (TypeError, ValueError):
+        logger.debug("ctf_balance_check_skipped: token_id not parseable as int: %s", token_id)
+        return None
+    data = (
+        selector
+        + wallet.lower().replace("0x", "").rjust(64, "0")
+        + hex(token_id_int)[2:].rjust(64, "0")
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(rpc, json={
+                "jsonrpc": "2.0",
+                "method": "eth_call",
+                "params": [{"to": CTF, "data": data}, "latest"],
+                "id": 1,
+            })
+            resp.raise_for_status()
+            j = resp.json()
+        if "error" in j:
+            logger.warning("ctf_balance_rpc_error", error=j["error"], token_id=str(token_id)[:30])
+            return None
+        result = j.get("result", "0x0")
+        if not result or result == "0x":
+            return 0.0
+        # CTF outcome tokens use 6 decimals (matches USDC.e collateral)
+        balance = int(result, 16) / 10 ** 6
+        return balance
+    except Exception as _e:
+        logger.warning("ctf_balance_check_failed: %s token_id=%s", _e, str(token_id)[:30])
+        return None
+
+
 async def check_matic_balance(
     threshold_matic: float = 1.0,
     discord_webhook: Optional[str] = None,

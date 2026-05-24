@@ -11,7 +11,7 @@ from structlog import get_logger
 
 from bots.base_bot import BaseBot
 from base_engine.base_engine import BaseEngine
-from config.settings import settings
+from config.settings import settings, is_paper_trading_active
 
 logger = get_logger()
 
@@ -323,16 +323,19 @@ class MirrorBot(BaseBot):
 
                 # 2. Rebuild _open_positions from positions table (YES/NO only).
                 # trader_addresses column added by migration 035 — falls back to '{}' on older rows.
-                # S228 Bug 11: filter by is_paper to match SIMULATION_MODE. The positions
-                # table mixes paper and live rows (is_paper column is the discriminator).
-                # Pre-fix, restore loaded ALL rows indiscriminately, so live-mode exits
-                # tried to SELL paper-derived positions via real CLOB. Surfaced S228 live
-                # flip #4 (2026-05-24): paper position 0xba7ab705… triggered SELL signal
-                # under live mode → CLOB rejected with "not enough balance / allowance:
-                # balance: 0". Schema column existed since at least S85 (see
-                # _reap_resolved_positions at line 1616); restore wiring was the gap —
-                # same root-cause class as S227 Bug 7 (V2 adapter built but not wired).
-                _is_paper_mode = bool(getattr(settings, "SIMULATION_MODE", True))
+                # S228 Bug 11: filter by is_paper to match active trading mode.
+                # The positions table mixes paper and live rows (is_paper column is the
+                # discriminator). Pre-fix, restore loaded ALL rows indiscriminately, so
+                # live-mode exits tried to SELL paper-derived positions via real CLOB.
+                # Surfaced S228 live flip #4 (2026-05-24): paper position 0xba7ab705…
+                # triggered SELL signal under live mode → CLOB rejected with "not
+                # enough balance / allowance: balance: 0". Schema column existed since
+                # at least S85 (see _reap_resolved_positions at line 1616); restore
+                # wiring was the gap — same root-cause class as S227 Bug 7 (V2 adapter
+                # built but not wired). is_paper_trading_active() lives in
+                # config/settings.py per S83 paper-is-production rule (bot source
+                # avoids the direct SIMULATION mode name).
+                _is_paper_mode = is_paper_trading_active()
                 rows = await session.execute(
                     _text(
                         "SELECT market_id, token_id, side, size, entry_price, "
@@ -1465,6 +1468,16 @@ class MirrorBot(BaseBot):
                 if _live_bid is not None:
                     _exit_event_data["pre_exec_live_bid"] = round(_live_bid, 6)
 
+                # S228 Bug 11C: pre-flight CTF balance check for live mode SELLs.
+                # Self-driven exits (TP/SL/illiquidity/force_exit) on a position
+                # the deposit wallet doesn't actually hold would burn 3
+                # OrderGateway retries on "balance: 0" rejections. Skip cleanly.
+                if not await self._live_sell_balance_guard(
+                    market_id=market_id, token_id=token_id,
+                    size=exit_size, side=exit_side,
+                ):
+                    continue
+
                 order = await self.place_order(
                     market_id=market_id,
                     token_id=token_id,
@@ -1612,6 +1625,50 @@ class MirrorBot(BaseBot):
         except Exception as _rd_err:
             logger.warning("mirror_exit_price_refresh_db_failed",
                            market=market_id[:20], error=str(_rd_err)[:200])
+
+    async def _live_sell_balance_guard(
+        self,
+        market_id: str,
+        token_id: str,
+        size: float,
+        side: str = "SELL",
+    ) -> bool:
+        """S228 Bug 11C: skip SELLs when deposit wallet doesn't hold the
+        outcome token in sufficient quantity.
+
+        Defense-in-depth against future regressions of S228 Bug 11A
+        (restore-filter wiring) and any other path that could route a
+        SELL signal for an unowned token. Without this, the order
+        reaches CLOB and produces "not enough balance / allowance:
+        balance: 0", costing 3 OrderGateway retries per attempt.
+
+        Returns True to proceed, False to skip. Defers (returns True)
+        in paper mode, when RPC/wallet config is missing, or when the
+        balance check itself fails — the goal is "don't make the
+        problem worse than the existing failure surface."
+        """
+        if is_paper_trading_active():
+            return True
+        try:
+            from base_engine.execution.clob_adapter import check_ctf_balance
+            bal = await check_ctf_balance(token_id=str(token_id))
+        except Exception as _e:
+            logger.debug("sell_balance_guard_skipped: check failed: %s", _e)
+            return True
+        if bal is None:
+            return True  # config missing or RPC down — defer to existing logic
+        if bal < float(size):
+            logger.warning(
+                "mirror_sell_balance_guard_reject",
+                market_id=str(market_id)[:20],
+                token_id=str(token_id)[:30],
+                side=side,
+                requested_size=round(float(size), 6),
+                available_balance=round(bal, 6),
+                note="deposit wallet outcome-token balance insufficient",
+            )
+            return False
+        return True
 
     async def _reap_resolved_positions(self) -> None:
         """S85: Delete positions on markets that have already resolved.
@@ -2516,6 +2573,14 @@ class MirrorBot(BaseBot):
             _exit_size = _pos.get("size", 0.0)
             if _exit_size <= 0:
                 logger.info("MirrorBot: SELL position size=0, skipping market=%s", str(market_id)[:16])
+                return False
+            # S228 Bug 11C: pre-flight CTF balance check for live mode SELLs.
+            # RTDS-driven exits on a position the deposit wallet doesn't actually
+            # hold would burn 3 OrderGateway retries on "balance: 0" rejections.
+            if not await self._live_sell_balance_guard(
+                market_id=market_id, token_id=token_id,
+                size=_exit_size, side=side,
+            ):
                 return False
             order = await self.place_order(
                 market_id=market_id,
@@ -3580,8 +3645,9 @@ class MirrorBot(BaseBot):
         # to Bug 11A's restore-filter fix. Skip in paper mode (no real capital
         # movement) and when bankroll is missing. Placed BEFORE the exposure
         # lock to avoid serializing concurrent whale-signal handlers on this
-        # cheap-but-not-free check.
-        if not bool(getattr(settings, "SIMULATION_MODE", True)):
+        # cheap-but-not-free check. Mode detection via helper per S83 paper-
+        # is-production rule (bot source avoids the direct mode name).
+        if not is_paper_trading_active():
             _live_capital = getattr(self.bankroll, "capital", None) if self.bankroll else None
             if _live_capital is not None and _live_capital > 0 and _trade_usd > _live_capital:
                 logger.warning(

@@ -89,12 +89,17 @@ class TestRestoreFilterStructural:
             "Python bool. Without it the query will fail at execution."
         )
 
-    def test_restore_reads_simulation_mode(self):
+    def test_restore_reads_mode_via_helper(self):
+        """Restore must read the trading mode to determine paper/live
+        filter direction. Per S83 paper-is-production rule, bot source
+        avoids the direct mode-name reference; it calls the helper
+        is_paper_trading_active() from config.settings instead.
+        Hardcoding would break the bot in the opposite mode."""
         src = inspect.getsource(mb_mod.MirrorBot._restore_state_on_startup)
-        assert "SIMULATION_MODE" in src, (
-            "Restore must read SIMULATION_MODE from settings to determine "
-            "paper/live filter direction. Hardcoding would break the bot "
-            "in the opposite mode."
+        assert "is_paper_trading_active" in src, (
+            "Restore must call is_paper_trading_active() to determine "
+            "filter direction. Direct SIMULATION mode-name reference is "
+            "blocked by S83 test_no_simulation_mode_in_bot_source."
         )
 
     def test_restore_emits_filter_applied_log(self):
@@ -109,17 +114,18 @@ class TestRestoreFilterPaperLiveSymmetry:
     """The filter must symmetric — bool(SIMULATION_MODE) value passes directly."""
 
     def test_paper_mode_loads_paper_rows(self):
-        """When SIMULATION_MODE=True, the filter value should be True
+        """When paper trading is active, the filter value should be True
         (loading is_paper=true rows). Asserted via source inspection."""
         src = inspect.getsource(mb_mod.MirrorBot._restore_state_on_startup)
-        # The function should pass bool(SIMULATION_MODE) directly as is_paper.
-        # We don't simulate a real DB call here — that's an integration test
-        # surface — but we assert the wiring shape via source.
-        assert "SIMULATION_MODE" in src and "is_paper" in src
-        # The value passed to :is_paper should be SIMULATION_MODE-derived,
+        # The function should pass is_paper_trading_active() result as
+        # the is_paper parameter. We don't simulate a real DB call here
+        # — that's an integration test surface — but we assert the
+        # wiring shape via source.
+        assert "is_paper_trading_active" in src and "is_paper" in src
+        # The value passed to :is_paper should be helper-derived,
         # not a literal True/False
         assert ': True' not in src.split("is_paper = :is_paper")[-1].split(")")[0] or \
                ': False' not in src.split("is_paper = :is_paper")[-1].split(")")[0], (
-            "is_paper parameter must be dynamic from SIMULATION_MODE, not a "
-            "hardcoded literal — otherwise mode-flipping doesn't work."
+            "is_paper parameter must be dynamic from is_paper_trading_active(), "
+            "not a hardcoded literal — otherwise mode-flipping doesn't work."
         )

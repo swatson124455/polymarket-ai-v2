@@ -65,19 +65,21 @@ class TestBuyCapitalGuardStructural:
             "Guard reject log event missing — operator visibility broken."
         )
 
-    def test_guard_gated_on_simulation_mode_false(self):
-        """The guard MUST be inside `if not SIMULATION_MODE` so paper mode
-        is unaffected. Hardcoded behaviour either way breaks one mode."""
+    def test_guard_gated_on_live_mode_via_helper(self):
+        """The guard MUST short-circuit in paper mode. Per S83 paper-is-
+        production rule, mode detection in bot source goes through
+        is_paper_trading_active() helper (config.settings).
+        Hardcoded behaviour either way breaks one mode."""
         src = inspect.getsource(mb_mod)
         # Find the BUY guard block
         guard_idx = src.find("mirror_buy_capital_guard_reject")
         assert guard_idx > 0
-        # Look backwards a reasonable distance for the SIMULATION_MODE gate
+        # Look backwards a reasonable distance for the helper gate
         window = src[max(0, guard_idx - 1500):guard_idx]
-        assert "SIMULATION_MODE" in window, (
-            "Guard must be gated on SIMULATION_MODE — otherwise paper mode "
-            "would be incorrectly blocked by pUSD checks against a wallet "
-            "that paper mode doesn't actually spend from."
+        assert "is_paper_trading_active" in window, (
+            "Guard must be gated on is_paper_trading_active() — otherwise "
+            "paper mode would be incorrectly blocked by pUSD checks "
+            "against a wallet paper mode doesn't actually spend from."
         )
 
     def test_guard_reads_bankroll_capital(self):
