@@ -879,10 +879,54 @@ class WeatherBot(BaseBot):
         db = getattr(self.base_engine, "db", None)
         if not db:
             return
+        # S229: Structural invariant — predicted_prob persisted to
+        # prediction_log must lie strictly in (0, 1). Mirrors the
+        # [0.001, 0.999] clamp in probability_engine.bucket_probabilities
+        # (probability_engine.py:206) but applied at the persistence layer
+        # so any upstream override path that bypasses the engine clamp
+        # cannot corrupt the brier/accuracy metric.
+        #
+        # Context: 2026-05-04→2026-05-25 corruption window. An override
+        # path (suspected: _apply_metar_resolution_day_override interaction
+        # with empirical/parametric tail) produced exact model_prob=1.0
+        # values for ~864 temperature rows. Auto-retrain alert fired at
+        # Brier=0.31/acc=4% because every recently-resolved row had pp=1.
+        # Root cause not yet identified — see weatherbot_metar_override_*
+        # instrumentation below. This clamp is the structural-invariant
+        # layer; the root fix lives upstream when found.
+        #
+        # The `weatherbot_prob_clamp_applied` warning is the post-deploy
+        # health signal. test_predicted_prob_clamp.py asserts it fires
+        # whenever the clamp engages — if the logging breaks silently,
+        # we lose the dashboard.
+        try:
+            _val = float(model_prob)
+        except (TypeError, ValueError):
+            _val = float("nan")
+        _pp_clamped = _val
+        _clamp_reason: Optional[str] = None
+        if not math.isfinite(_val):
+            _pp_clamped = 0.5
+            _clamp_reason = "non_finite"
+        elif _val < 0.001:
+            _pp_clamped = 0.001
+            _clamp_reason = "below_open_interval"
+        elif _val > 0.999:
+            _pp_clamped = 0.999
+            _clamp_reason = "above_open_interval"
+        if _clamp_reason is not None:
+            logger.warning(
+                "weatherbot_prob_clamp_applied",
+                market_id=market_id,
+                original=repr(model_prob),
+                clamped=_pp_clamped,
+                reason=_clamp_reason,
+                market_type=market_type,
+            )
         try:
             await db.insert_prediction_log(
                 market_id=market_id,
-                predicted_prob=model_prob,
+                predicted_prob=_pp_clamped,
                 market_price=market_price,
                 model_name=f"weather_{market_type}",
                 bot_name="WeatherBot",
@@ -2970,11 +3014,49 @@ class WeatherBot(BaseBot):
                         n_buckets=len(updated), reason="all_buckets_outside_range")
             return model_probs
 
+        # S229: Instrumentation for the predicted_prob=1.0 root-cause hunt.
+        # Capture the pre-renorm distribution whenever this function actually
+        # mutated probabilities (updated != model_probs). Paired with the
+        # post-renorm log below, this gives the exact input pattern that
+        # produces predicted_prob=1.0 — the smoking gun we haven't yet
+        # identified. Conditional on `_override_applied` to bound log
+        # volume — most temperature markets in the 12h pre-resolution
+        # window will trigger an override, but cycles × markets is still
+        # manageable. Sample/debug-downgrade if disk pressure shows up.
+        _override_applied = updated != model_probs
+        if _override_applied:
+            logger.info(
+                "weatherbot_metar_override_pre_renorm",
+                station=group.station.station_id,
+                date=group.target_date.isoformat(),
+                running_max=round(running_max, 2),
+                lead_time_hours=round(lead_time_hours, 2),
+                pre_renorm=dict(updated),
+                original=dict(model_probs),
+                n_buckets=len(updated),
+            )
+
         # Renormalize so probabilities sum to 1.0
         total = sum(updated.values())
         if total > 0:
             for mid in updated:
                 updated[mid] /= total
+
+        if _override_applied:
+            # `exact_one_present` is the smoking-gun field: True means this
+            # call produced a post-renorm value of exactly 1.0. The pre/post
+            # pair captures the input that caused it.
+            _max_post = max(updated.values()) if updated else 0.0
+            logger.info(
+                "weatherbot_metar_override_post_renorm",
+                station=group.station.station_id,
+                date=group.target_date.isoformat(),
+                running_max=round(running_max, 2),
+                post_renorm=dict(updated),
+                total_pre_renorm=round(total, 6),
+                max_value=_max_post,
+                exact_one_present=any(v == 1.0 for v in updated.values()),
+            )
 
         return updated
 

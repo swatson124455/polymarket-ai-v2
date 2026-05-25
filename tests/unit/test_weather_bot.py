@@ -3851,3 +3851,180 @@ class TestS221ExecutableEdgeCheck:
                "price": 0.30, "edge": 0.35}
         # honest_edge = 0.65 - 0.32 = 0.33 > 0
         assert bot_with_index._check_executable_edge(opp) is True
+
+
+class TestPredictedProbClamp:
+    """S229: Structural invariant on persisted predicted_prob.
+
+    Bug context (2026-05-04 → 2026-05-25): an upstream override path produced
+    model_prob=1.0 for ~864 temperature rows in prediction_log. The
+    learning_scheduler auto-retrain trigger fired at Brier=0.31 / acc=4%
+    because every recently-resolved row had predicted_prob=1, making 47/50
+    rows "wrong" against their actual NO resolutions. Direct DB query
+    confirmed: avg_pp=1.0, predicted_yes=50/50, resolved_yes=3/50.
+
+    The fix is two layers:
+      - Layer A (THIS TEST): write-site clamp at _log_weather_prediction.
+        Persisted predicted_prob is always in [0.001, 0.999]. Mirrors the
+        engine clamp at probability_engine.py:206.
+      - Layer B (root-cause investigation, separate work): find the
+        override path that bypasses the engine clamp. Pre/post-renorm
+        instrumentation in _apply_metar_resolution_day_override emits
+        weatherbot_metar_override_pre_renorm / _post_renorm events to
+        capture the input pattern.
+
+    Layer A is the structural invariant. Even after Layer B fixes the root,
+    this clamp + these tests stay as belt-and-suspenders. The
+    `weatherbot_prob_clamp_applied` warning is the post-deploy health
+    counter — these tests bind the assertion to the observability so the
+    dashboard cannot silently break.
+    """
+
+    @pytest.mark.asyncio
+    async def test_clamp_caps_above_open_interval(self, weather_bot, mock_engine):
+        """model_prob=1.0 → persisted 0.999, weatherbot_prob_clamp_applied fires."""
+        mock_engine.db = MagicMock()
+        mock_engine.db.insert_prediction_log = AsyncMock()
+        weather_bot.base_engine = mock_engine
+        weather_bot._prediction_log_cache.clear()
+
+        with patch("bots.weather_bot.logger") as mock_logger:
+            await weather_bot._log_weather_prediction(
+                market_id="mkt_test",
+                model_prob=1.0,
+                market_price=0.15,
+                confidence=0.8075,
+                market_type="temperature",
+            )
+
+        # The persisted value must be 0.999, not 1.0.
+        mock_engine.db.insert_prediction_log.assert_called_once()
+        call_kwargs = mock_engine.db.insert_prediction_log.call_args.kwargs
+        assert call_kwargs["predicted_prob"] == 0.999, (
+            f"Expected predicted_prob=0.999 (clamped from 1.0), "
+            f"got {call_kwargs['predicted_prob']}"
+        )
+
+        # The clamp_applied warning must fire — this is the health-signal
+        # counter operators watch post-deploy. Binding the test to the log
+        # event ensures the dashboard cannot silently break.
+        _warning_calls = [
+            c for c in mock_logger.warning.call_args_list
+            if c.args and c.args[0] == "weatherbot_prob_clamp_applied"
+        ]
+        assert len(_warning_calls) == 1, (
+            f"Expected exactly one weatherbot_prob_clamp_applied warning, "
+            f"got {len(_warning_calls)}"
+        )
+        assert _warning_calls[0].kwargs["reason"] == "above_open_interval"
+        assert _warning_calls[0].kwargs["clamped"] == 0.999
+
+    @pytest.mark.asyncio
+    async def test_clamp_floors_below_open_interval(self, weather_bot, mock_engine):
+        """model_prob=0.0 → persisted 0.001, weatherbot_prob_clamp_applied fires."""
+        mock_engine.db = MagicMock()
+        mock_engine.db.insert_prediction_log = AsyncMock()
+        weather_bot.base_engine = mock_engine
+        weather_bot._prediction_log_cache.clear()
+
+        with patch("bots.weather_bot.logger") as mock_logger:
+            await weather_bot._log_weather_prediction(
+                market_id="mkt_test_lo",
+                model_prob=0.0,
+                market_price=0.5,
+                confidence=0.5,
+                market_type="temperature",
+            )
+
+        call_kwargs = mock_engine.db.insert_prediction_log.call_args.kwargs
+        assert call_kwargs["predicted_prob"] == 0.001
+        _warning_calls = [
+            c for c in mock_logger.warning.call_args_list
+            if c.args and c.args[0] == "weatherbot_prob_clamp_applied"
+        ]
+        assert len(_warning_calls) == 1
+        assert _warning_calls[0].kwargs["reason"] == "below_open_interval"
+
+    @pytest.mark.asyncio
+    async def test_clamp_passes_in_range_value(self, weather_bot, mock_engine):
+        """model_prob=0.42 → persisted 0.42, no warning fires."""
+        mock_engine.db = MagicMock()
+        mock_engine.db.insert_prediction_log = AsyncMock()
+        weather_bot.base_engine = mock_engine
+        weather_bot._prediction_log_cache.clear()
+
+        with patch("bots.weather_bot.logger") as mock_logger:
+            await weather_bot._log_weather_prediction(
+                market_id="mkt_test_mid",
+                model_prob=0.42,
+                market_price=0.30,
+                confidence=0.42,
+                market_type="temperature",
+            )
+
+        call_kwargs = mock_engine.db.insert_prediction_log.call_args.kwargs
+        assert call_kwargs["predicted_prob"] == 0.42
+        _warning_calls = [
+            c for c in mock_logger.warning.call_args_list
+            if c.args and c.args[0] == "weatherbot_prob_clamp_applied"
+        ]
+        assert len(_warning_calls) == 0, (
+            "No clamp warning should fire for in-range values"
+        )
+
+    @pytest.mark.asyncio
+    async def test_clamp_handles_non_finite(self, weather_bot, mock_engine):
+        """NaN / Inf / -Inf → persisted 0.5 with reason='non_finite'."""
+        mock_engine.db = MagicMock()
+        mock_engine.db.insert_prediction_log = AsyncMock()
+        weather_bot.base_engine = mock_engine
+
+        for bad_val in [float("nan"), float("inf"), float("-inf")]:
+            weather_bot._prediction_log_cache.clear()
+            mock_engine.db.insert_prediction_log.reset_mock()
+            with patch("bots.weather_bot.logger") as mock_logger:
+                await weather_bot._log_weather_prediction(
+                    market_id=f"mkt_nf_{bad_val}",
+                    model_prob=bad_val,
+                    market_price=0.5,
+                    confidence=0.5,
+                    market_type="temperature",
+                )
+            call_kwargs = mock_engine.db.insert_prediction_log.call_args.kwargs
+            assert call_kwargs["predicted_prob"] == 0.5, (
+                f"Non-finite {bad_val} should fall back to 0.5"
+            )
+            _warnings = [
+                c for c in mock_logger.warning.call_args_list
+                if c.args and c.args[0] == "weatherbot_prob_clamp_applied"
+            ]
+            assert len(_warnings) == 1
+            assert _warnings[0].kwargs["reason"] == "non_finite"
+
+    @pytest.mark.asyncio
+    async def test_clamp_boundary_values_pass_through(self, weather_bot, mock_engine):
+        """model_prob=0.001 and 0.999 are inside the closed clamp — pass through."""
+        mock_engine.db = MagicMock()
+        mock_engine.db.insert_prediction_log = AsyncMock()
+        weather_bot.base_engine = mock_engine
+
+        for boundary in [0.001, 0.999]:
+            weather_bot._prediction_log_cache.clear()
+            mock_engine.db.insert_prediction_log.reset_mock()
+            with patch("bots.weather_bot.logger") as mock_logger:
+                await weather_bot._log_weather_prediction(
+                    market_id=f"mkt_bnd_{boundary}",
+                    model_prob=boundary,
+                    market_price=0.5,
+                    confidence=0.5,
+                    market_type="temperature",
+                )
+            call_kwargs = mock_engine.db.insert_prediction_log.call_args.kwargs
+            assert call_kwargs["predicted_prob"] == boundary
+            _warnings = [
+                c for c in mock_logger.warning.call_args_list
+                if c.args and c.args[0] == "weatherbot_prob_clamp_applied"
+            ]
+            assert len(_warnings) == 0, (
+                f"Boundary value {boundary} should not trigger clamp warning"
+            )
