@@ -3722,6 +3722,112 @@ class TestS221ThinMarketFilter:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# S229 (2026-05-25): _filter_thin_markets db_fallback=True path
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestS229ThinMarketFilterFallback:
+    """S229: When called from the DB-fallback or direct-probe-fallback path,
+    `_filter_thin_markets` skips the liquidity/volume/spread structural
+    gates because those rows don't populate the fields. Entry-validation
+    gates downstream catch real-world thin markets at trade time.
+
+    Context: post-restart on 2026-05-25, the splinter saw
+    `weatherbot_thin_market_filter dropped_liquidity=200 kept=0` followed
+    by `weatherbot_no_weather_markets` every scan. Primary Gamma path was
+    returning empty, DB fallback returned 200 rows with liquidity=0, and
+    the filter dropped all 200. With db_fallback=True the same rows pass
+    through; the slippage gate at weather_bot.py:3318 and spread gate at
+    weather_bot.py:3417 still catch genuinely thin markets at trade time.
+    """
+
+    @pytest.fixture
+    def bot(self):
+        from bots.weather_bot import WeatherBot
+        engine = MagicMock()
+        engine.trade_coordinator = None
+        engine.cache = None
+        engine.db = None
+        engine.risk_manager = MagicMock()
+        engine.order_gateway = MagicMock()
+        engine.order_gateway._open_position_markets = {"WeatherBot": set()}
+        engine.get_all_tradeable_markets = AsyncMock(return_value=[])
+        engine.place_order = AsyncMock(return_value={"success": True})
+        return WeatherBot(engine)
+
+    # The post-restart 2026-05-25 failure-mode profile: liquidity=0,
+    # volume=0, no bestBid/bestAsk. 200 such rows dropped the entire
+    # discovery cycle until this fix.
+    DB_FALLBACK_ROW = {
+        "id": "mkt_db_fallback",
+        "question": "Will the highest temperature in Atlanta be 48-49°F on Jun 1, 2026?",
+        "yes_price": 0.15,
+        "liquidity": 0,
+        "volume": 0,
+        # bestBid / bestAsk intentionally absent — DB column not populated
+    }
+
+    def test_db_fallback_accepts_unpopulated_rows(self, bot):
+        """The exact failure mode this fix targets: 200 rows of liquidity=0
+        should pass through when db_fallback=True instead of being dropped."""
+        result = bot._filter_thin_markets([self.DB_FALLBACK_ROW], db_fallback=True)
+        assert result == [self.DB_FALLBACK_ROW], (
+            f"DB-fallback row (liq=0, no bb/ba) must pass when db_fallback=True; "
+            f"filter returned {len(result)} markets"
+        )
+
+    def test_db_fallback_still_drops_non_dict(self, bot):
+        """Defensive non-dict filtering still runs on the fallback path."""
+        result = bot._filter_thin_markets(
+            [self.DB_FALLBACK_ROW, None, "garbage", 42],
+            db_fallback=True,
+        )
+        assert result == [self.DB_FALLBACK_ROW]
+
+    def test_db_fallback_empty_input(self, bot):
+        """Empty input returns empty regardless of flag."""
+        assert bot._filter_thin_markets([], db_fallback=True) == []
+
+    def test_db_fallback_accepts_mixed_populated_and_unpopulated(self, bot):
+        """Mixed rows: a properly-populated row AND a DB-fallback row should
+        both pass when db_fallback=True. The flag relaxes the gates uniformly
+        — we trust entry-validation gates to handle per-market thinness."""
+        liquid = {
+            "id": "liquid", "question": "q", "yes_price": 0.5,
+            "liquidity": 5000, "volume": 25000,
+            "bestBid": 0.48, "bestAsk": 0.52,
+        }
+        result = bot._filter_thin_markets([liquid, self.DB_FALLBACK_ROW], db_fallback=True)
+        assert result == [liquid, self.DB_FALLBACK_ROW]
+
+    def test_default_call_unchanged_for_db_fallback_row(self, bot):
+        """Regression guard: without db_fallback=True, the DB-fallback row
+        is still dropped by the default liquidity gate. This protects the
+        Gamma-primary path from accidentally letting through unpopulated
+        rows when someone forgets the flag."""
+        result = bot._filter_thin_markets([self.DB_FALLBACK_ROW])
+        assert result == [], (
+            "Default call (db_fallback=False) must still drop liquidity=0 rows"
+        )
+
+    def test_signature_backward_compatible(self, bot):
+        """All existing callers pass markets as a single positional arg.
+        The new `db_fallback` parameter must be keyword-only-by-default
+        and not change the existing single-arg call contract."""
+        # Single positional arg works (existing call shape)
+        liquid = {
+            "id": "liquid", "question": "q", "yes_price": 0.5,
+            "liquidity": 5000, "volume": 25000,
+            "bestBid": 0.48, "bestAsk": 0.52,
+        }
+        result_positional = bot._filter_thin_markets([liquid])
+        assert result_positional == [liquid]
+        # Explicit db_fallback=False matches default
+        result_explicit = bot._filter_thin_markets([liquid], db_fallback=False)
+        assert result_explicit == result_positional
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # S221 Phase 2 (2026-05-18): _check_executable_edge — entry-validation backstop
 # ═══════════════════════════════════════════════════════════════════════════
 

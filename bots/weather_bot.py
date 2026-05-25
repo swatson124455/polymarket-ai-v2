@@ -1758,17 +1758,31 @@ class WeatherBot(BaseBot):
                 if weather_markets:
                     # DB markets lack prices — enrich via CLOB midpoint
                     weather_markets = await self._enrich_with_live_prices(weather_markets)
-                    # S221: liq/vol filter (spread skipped — DB rows may lack bestBid/bestAsk;
-                    # the entry-validation spread gate at weather_bot.py:3388 catches those).
-                    weather_markets = self._filter_thin_markets(weather_markets)
+                    # S229 (2026-05-25): db_fallback=True. DB rows lack
+                    # liquidity / volume / bestBid / bestAsk (the columns
+                    # store 0 or null on this path). Original S221 intent —
+                    # apply liq/vol, skip spread — assumed the rows had
+                    # liq/vol; in production they don't, so the unconditional
+                    # filter dropped 100% of fallback rows (post-restart
+                    # state: dropped_liquidity=200 kept=0). Skip all three
+                    # structural gates here; entry-validation gates at
+                    # weather_bot.py:3318 (slippage) and 3417 (spread)
+                    # catch real-world thin markets at trade time.
+                    weather_markets = self._filter_thin_markets(weather_markets, db_fallback=True)
 
             if not weather_markets:
                 # Last resort: direct Gamma API probe (rate-limited)
                 if _now_mono - self._last_direct_probe >= self._direct_probe_interval:
                     self._last_direct_probe = _now_mono
                     weather_markets = await self._fetch_weather_markets_direct()
-                    # S221: same filter on direct-probe path (consistency).
-                    weather_markets = self._filter_thin_markets(weather_markets)
+                    # S229 (2026-05-25): db_fallback=True for symmetry with
+                    # the DB fallback above. The direct-probe Gamma endpoint
+                    # also omits liquidity / volume / bestBid / bestAsk on
+                    # the rows it returns. Same rationale as above —
+                    # entry-validation gates catch thin markets at trade
+                    # time. Without this, direct-probe was also dropping
+                    # 100% of rows when invoked.
+                    weather_markets = self._filter_thin_markets(weather_markets, db_fallback=True)
                 if not weather_markets:
                     logger.info("weatherbot_no_weather_markets")
                     return
@@ -4495,7 +4509,7 @@ class WeatherBot(BaseBot):
 
         return True
 
-    def _filter_thin_markets(self, markets: List[Dict]) -> List[Dict]:
+    def _filter_thin_markets(self, markets: List[Dict], db_fallback: bool = False) -> List[Dict]:
         """S221 (2026-05-18): Filter markets too thin to actually trade.
 
         Rejects markets where executable price diverges from the midpoint that
@@ -4511,14 +4525,41 @@ class WeatherBot(BaseBot):
         WEATHER_MIN_MARKET_VOLUME_USD=100 + WEATHER_MAX_MARKET_SPREAD_PCT=0.20,
         the market is rejected at discovery and never reaches signal gen.
 
-        Behavior:
+        Args:
+            markets: market dicts to filter (from Gamma primary, DB fallback,
+                direct-probe fallback, or PSW Gamma path).
+            db_fallback: True when the caller is the DB-fallback or
+                direct-probe path. S229 (2026-05-25): these paths return rows
+                whose `liquidity` / `volume` / `bestBid` / `bestAsk` fields
+                are not populated (the DB stores 0/null; the direct-probe
+                Gamma endpoint omits them). The original S221 intent — apply
+                liq/vol but skip spread on these paths — assumed the rows
+                HAD liq/vol populated; in production they don't, and the
+                filter rejected 100% of fallback rows
+                (weatherbot_thin_market_filter dropped_liquidity=200 kept=0
+                seen post-restart). When db_fallback=True the structural-
+                metadata gates (liq, vol, spread) are all skipped; the
+                entry-validation spread gate at weather_bot.py:3417 and
+                liquidity_guardian slippage check at weather_bot.py:3318
+                catch real-world thin markets at trade time instead.
+
+        Behavior (default, Gamma populated path):
         - liquidity / volume checks always run (fail-closed: missing field → drop)
-        - spread check only runs when both bestBid AND bestAsk > 0 (DB / direct
-          fallback paths may not populate these; the entry-validation spread
-          gate at weather_bot.py:3388 catches those)
+        - spread check only runs when both bestBid AND bestAsk > 0
         - escape valve: set min_liq=0, min_vol=0, max_spread_pct>=1.0 in .env
           to bypass entirely (returns input list unchanged)
+
+        Behavior (db_fallback=True):
+        - all three structural gates skipped; returns input list unchanged
+          (defensive non-dict filtering still applied)
+        - relies on entry-validation gates to catch real thin markets
         """
+        # S229: db_fallback path skips structural-metadata gates because
+        # those fields aren't populated on this path. Defensive non-dict
+        # filtering still runs.
+        if db_fallback:
+            return [m for m in markets if isinstance(m, dict)]
+
         min_liq = float(getattr(settings, "WEATHER_MIN_MARKET_LIQUIDITY_USD", 1000))
         min_vol = float(getattr(settings, "WEATHER_MIN_MARKET_VOLUME_USD", 100))
         max_spread_pct = float(getattr(settings, "WEATHER_MAX_MARKET_SPREAD_PCT", 0.20))
