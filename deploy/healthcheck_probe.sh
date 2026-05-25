@@ -1,42 +1,18 @@
 #!/usr/bin/env bash
-# healthcheck_probe.sh — Standalone VPS health probe using the 3-gate tiered check.
+# healthcheck_probe.sh — WB SPLINTER health probe (3-gate tiered check).
+# Branch: wb/main (long-lived splinter, see WB-SPLINTER.md)
 #
-# Purpose:
-#   (1) Extracted gate logic from deploy.sh step 7 so it can be dry-run against
-#       live VPS before shipping a deploy.sh rewrite. Closes the test-surface gap
-#       where the new health check is deployed by the thing it replaces.
-#   (2) On-demand health snapshot that an operator can run any time.
-#
-# Gates (ascending severity of failure):
-#   Gate 1 (T+30s):  systemctl is-active --quiet for all enabled bot services
-#                    → exit 1 if any dead. Uses --quiet to avoid `activating`
-#                      false-positives during legitimate restarts.
-#   Gate 2 (T+60s):  journalctl -p err --since "60 seconds ago" must be empty
-#                    → exit 1 if error spam detected.
-#   Gate 3 (T+420s): Loop waiting for `scan_ms` log line from each bot.
-#                    Success → exit 0 "HEALTH_OK".
-#                    Timeout with services still active + no errors → exit 0
-#                    "HEALTH_WARN" (likely EB v2 cold-start fit, not a failure).
-#                    Timeout with a service dead → exit 1 "HEALTH_FAIL".
-#
-# Usage:
-#   # Dry-run against current live state (skips T+30s/T+60s sleeps):
-#   bash healthcheck_probe.sh --no-wait
-#
-#   # Real run as used post-deploy:
-#   bash healthcheck_probe.sh
-#
-# Exit codes:
-#   0 = HEALTH_OK or HEALTH_WARN (services active)
-#   1 = HEALTH_FAIL (gate 1 or gate 2 tripped, or service died in gate 3)
+# SPLINTER SEMANTICS:
+#   - BOT_SERVICES = polymarket-weather ONLY (no mirror/esports/ingestion).
+#   - Splinter probe deliberately ignores MB/EB/ingestion health.
 
 set -euo pipefail
 
 NO_WAIT=false
 [ "${1:-}" = "--no-wait" ] && NO_WAIT=true
 
-BOT_SERVICES=(polymarket-weather polymarket-mirror polymarket-esports polymarket-ingestion)
-SCAN_SERVICES=(polymarket-weather polymarket-mirror polymarket-esports)  # bots that emit scan_ms
+BOT_SERVICES=(polymarket-weather)
+SCAN_SERVICES=(polymarket-weather)
 
 # ── Gate 1: T+30s services active ─────────────────────────────────────────────
 echo "[Gate 1] Checking services active..."
@@ -67,7 +43,6 @@ fi
 ERRORS_FOUND=false
 for SVC in "${BOT_SERVICES[@]}"; do
     systemctl is-enabled "$SVC" &>/dev/null || continue
-    # -p err = priority err(3) and higher (err/crit/alert/emerg)
     ERR_LINES=$(journalctl -u "$SVC" --since "60 seconds ago" -p err --no-pager 2>/dev/null | grep -v '^-- ' | head -20 || true)
     if [ -n "$ERR_LINES" ]; then
         echo "HEALTH_FAIL_GATE2: $SVC has error-level log entries in last 60s:"
@@ -81,17 +56,8 @@ if [ "$ERRORS_FOUND" = true ]; then
 fi
 echo "  no error-level entries in last 60s"
 
-# ── Gate 3: up to T+420s soft-wait for scan_ms from each bot ──────────────────
-# Observed scan_ms cadence on live VPS (2026-04-17, 4h into soak):
-#   polymarket-weather:  ~2 scan_ms per 5min (~150s between scans)
-#   polymarket-mirror:   ~5 scan_ms per 5min (~60s between scans)
-#   polymarket-esports:  ~3 scan_ms per 5min (~100s between scans)
-# The MAX_WAIT window MUST exceed the slowest cadence (weather, 150s) by a
-# margin that accommodates EB v2 cold-start fit (~5.5min). 420s = 7min is that
-# margin. Tightening MAX_WAIT below ~180s would produce spurious HEALTH_FAIL on
-# legitimate slow-scan bots. If future tuning shortens bot scan intervals, this
-# bound can be reduced — do NOT reduce without re-measuring live cadence.
-echo "[Gate 3] Waiting for scan_ms from each enabled bot (soft, up to 420s)..."
+# ── Gate 3: up to T+420s soft-wait for scan_ms from polymarket-weather ───────
+echo "[Gate 3] Waiting for scan_ms from polymarket-weather (soft, up to 420s)..."
 MAX_WAIT=420
 INTERVAL=10
 ELAPSED=0
@@ -111,11 +77,9 @@ while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
     done
 
     if [ "$CHECKED" -gt 0 ] && [ "$ALL_OK" = true ]; then
-        echo "HEALTH_OK at ${ELAPSED}s — all $CHECKED scan-emitting bots scanning"
-        # PgBouncer pool size
+        echo "HEALTH_OK at ${ELAPSED}s — polymarket-weather scanning"
         PGB=$(sudo grep -oP 'default_pool_size\s*=\s*\K[0-9]+' /etc/pgbouncer/pgbouncer.ini 2>/dev/null || echo "0")
         echo "PGB_POOL=$PGB"
-        # Backup staleness
         if ! find /opt/pa2-backups -name '*.dump' -mmin -1500 2>/dev/null | grep -q .; then
             echo "BACKUP_STALE"
         fi
@@ -124,8 +88,7 @@ while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
     echo "  Waiting... ${ELAPSED}s" >&2
 done
 
-# Gate 3 timeout — distinguish soft vs hard failure.
-echo "[Gate 3] scan_ms not seen from all bots after ${MAX_WAIT}s. Checking services still active..."
+echo "[Gate 3] scan_ms not seen after ${MAX_WAIT}s. Checking service still active..."
 for SVC in "${BOT_SERVICES[@]}"; do
     systemctl is-enabled "$SVC" &>/dev/null || continue
     if ! systemctl is-active --quiet "$SVC"; then
@@ -135,16 +98,13 @@ for SVC in "${BOT_SERVICES[@]}"; do
     fi
 done
 
-echo "HEALTH_WARN: scan_ms not observed within ${MAX_WAIT}s from all bots,"
-echo "             but all bot services are still active. Most likely EB v2 cold-start"
-echo "             pipeline fit (~5.5 min). Continuing deploy. Monitor via:"
-echo "             journalctl -u polymarket-esports -f | grep pipeline_ready"
+echo "HEALTH_WARN: scan_ms not observed within ${MAX_WAIT}s from polymarket-weather,"
+echo "             but service still active. Continuing deploy."
 
-# Still report PGB + backup staleness on warn path
 PGB=$(sudo grep -oP 'default_pool_size\s*=\s*\K[0-9]+' /etc/pgbouncer/pgbouncer.ini 2>/dev/null || echo "0")
 echo "PGB_POOL=$PGB"
 if ! find /opt/pa2-backups -name '*.dump' -mmin -1500 2>/dev/null | grep -q .; then
     echo "BACKUP_STALE"
 fi
 
-exit 0  # soft success
+exit 0
