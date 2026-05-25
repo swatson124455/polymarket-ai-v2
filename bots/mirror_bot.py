@@ -1657,7 +1657,17 @@ class MirrorBot(BaseBot):
             return True
         if bal is None:
             return True  # config missing or RPC down — defer to existing logic
-        if bal < float(size):
+        # S228 Bug 11C rounding: on-chain CTF is 6-decimal; DB stores the
+        # higher-precision REQUESTED size from order placement (e.g., 8.695652)
+        # while the FILLED on-chain balance is 6-decimal exact (e.g., 8.690000).
+        # Sub-cent gaps are 6-decimal rounding artifacts, not phantom positions.
+        # Block only when the gap is more than 0.01 tokens (~1 cent at $1
+        # trades). The proper fix is to write filled size (not requested) at
+        # position-write time — see AGENT_HANDOFF for Bug 12 trace — but until
+        # that lands, the epsilon prevents the guard from blocking legitimate
+        # exits while still catching genuinely-unbacked SELL attempts.
+        _SELL_EPSILON_TOKENS = 0.01
+        if bal < float(size) - _SELL_EPSILON_TOKENS:
             logger.warning(
                 "mirror_sell_balance_guard_reject",
                 market_id=str(market_id)[:20],
@@ -1665,7 +1675,8 @@ class MirrorBot(BaseBot):
                 side=side,
                 requested_size=round(float(size), 6),
                 available_balance=round(bal, 6),
-                note="deposit wallet outcome-token balance insufficient",
+                gap=round(float(size) - bal, 6),
+                note="deposit wallet outcome-token balance insufficient (gap exceeds 0.01 token epsilon)",
             )
             return False
         return True

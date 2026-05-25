@@ -169,3 +169,53 @@ class TestExitSiteWiring:
             f"definition + 2 call-site comments — one or more sites may "
             f"have been reverted."
         )
+
+
+class TestSellBalanceGuardEpsilonTolerance:
+    """S228 Bug 11C rounding fix: small gaps between DB size (high-precision
+    requested) and on-chain balance (6-decimal filled) are 6-decimal rounding
+    artifacts, not phantom positions. The guard must allow exits when the
+    gap is within a 0.01-token epsilon, otherwise the CLOB and the bot end
+    up in a stable mutual-block when a legitimate live position was filled
+    at a marginally smaller size than requested."""
+
+    def test_epsilon_constant_in_source(self):
+        src = inspect.getsource(mb_mod.MirrorBot._live_sell_balance_guard)
+        assert "_SELL_EPSILON_TOKENS" in src, (
+            "Epsilon tolerance constant missing from guard — the rounding "
+            "fix may have been reverted. Without it, the canonical example "
+            "(DB size 8.695652 vs on-chain 8.690000) blocks every legitimate "
+            "exit until the filled-size write-path is fixed."
+        )
+
+    def test_epsilon_value_is_0_01(self):
+        src = inspect.getsource(mb_mod.MirrorBot._live_sell_balance_guard)
+        # The constant must be exactly 0.01 — a value of 0.001 wouldn't
+        # cover the canonical 0.0057-token gap, and a value of 0.1 would
+        # allow real phantom positions through.
+        assert "_SELL_EPSILON_TOKENS = 0.01" in src, (
+            "Epsilon tolerance must be 0.01 tokens — too small and the "
+            "guard blocks legitimate 6-decimal rounded exits; too large "
+            "and it lets phantom positions through."
+        )
+
+    def test_reject_uses_epsilon_minus(self):
+        """The rejection branch must compare bal < size - epsilon, NOT
+        bal < size. Without this, the guard is identical to pre-fix
+        behavior and the epsilon constant is dead code."""
+        src = inspect.getsource(mb_mod.MirrorBot._live_sell_balance_guard)
+        assert "bal < float(size) - _SELL_EPSILON_TOKENS" in src, (
+            "Guard rejection branch must use 'bal < float(size) - "
+            "_SELL_EPSILON_TOKENS' — the bare 'bal < float(size)' check "
+            "ignores the epsilon entirely."
+        )
+
+    def test_reject_log_emits_gap(self):
+        """When the guard rejects, the log must include the actual gap so
+        operators can distinguish 6-decimal rounding (gap ~0.005) from
+        genuinely empty positions (gap = full size)."""
+        src = inspect.getsource(mb_mod.MirrorBot._live_sell_balance_guard)
+        assert "gap=" in src, (
+            "Rejection log missing 'gap' field — operator can't tell "
+            "small rounding gaps from real phantom positions without it."
+        )
