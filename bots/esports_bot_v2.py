@@ -740,6 +740,20 @@ class EsportsBotV2(BaseBot):
 
             stake = result.get("stake", 0)
             if stake <= 0:
+                # Observability for the zero-stake silent-skip class
+                # (Bug A2 post-fix audit gap, 2026-05-25). Emit so a
+                # regression that silently re-zeroes stakes is visible
+                # in journalctl. Path should be rare post-A2.
+                logger.info(
+                    "esports_v2_zero_stake_skip",
+                    side=side,
+                    p_model=round(float(p_model), 4),
+                    market_price=round(float(market_price), 4),
+                    edge=round(float(result.get("edge", 0.0)), 4),
+                    stake=round(float(stake), 4),
+                    team_a=match.team_a,
+                    team_b=match.team_b,
+                )
                 continue
 
             # Item 8: use the market dict cached at predict time. The previous
