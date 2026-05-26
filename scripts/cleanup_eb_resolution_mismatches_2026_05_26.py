@@ -29,6 +29,11 @@ Mechanism for each mismatched market:
     snapshot taken at discovery time).
   - UPDATE markets SET resolution = '<chain>' WHERE condition_id = '<mid>'
     AND resolution != '<chain>' (idempotent).
+  - UPDATE paper_trades SET resolution = '<chain>' WHERE market_id = '<mid>'
+    AND bot_name IN (EB family) AND resolution != '<chain>' (idempotent).
+    Note: realized_pnl on these rows reflects the OLD buggy resolution and is
+    NOT re-computed here. Canonical P&L reads from trade_events via
+    bot_pnl.py, so the paper_trades.realized_pnl drift is recordkeeping only.
   - DELETE FROM trade_events WHERE event_type = 'RESOLUTION'
     AND market_id = '<mid>' AND bot_name IN (EB family).
   - Audit trail: prints before+after counts, the chain-truth, the deleted
@@ -129,6 +134,7 @@ async def main(apply: bool) -> int:
     chain_disagreement_count = 0
     deleted_count = 0
     updated_count = 0
+    paper_updated_count = 0
 
     try:
         for condition_id, expected_chain, note in MISMATCHED_MARKETS:
@@ -174,8 +180,21 @@ async def main(apply: bool) -> int:
             for ex in existing:
                 print(f"    {ex[0]} side={ex[1]} price={ex[2]} realized_pnl={ex[3]} (canonical, matches bot_pnl.py per-event display)")
 
+            # Count paper_trades rows needing resolution UPDATE (EB family)
+            async with db.get_session() as s:
+                r = await s.execute(text(
+                    "SELECT bot_name, side, resolution, realized_pnl "
+                    "FROM paper_trades WHERE market_id = :cid "
+                    "AND bot_name = ANY(:bots)"
+                ), {"cid": condition_id, "bots": list(EB_BOTS)})
+                paper_rows = r.fetchall()
+            paper_rows_needing_update = [p for p in paper_rows if p[2] != chain_now]
+            print(f"  paper_trades rows (EB family): {len(paper_rows)} total, {len(paper_rows_needing_update)} need resolution UPDATE")
+            for p in paper_rows_needing_update:
+                print(f"    {p[0]} side={p[1]} resolution={p[2]} (stale; realized_pnl={p[3]} preserved)")
+
             if not apply:
-                print(f"  DRY-RUN: would UPDATE markets.resolution to '{chain_now}' if != current, and DELETE {len(existing)} trade_events row(s)\n")
+                print(f"  DRY-RUN: would UPDATE markets.resolution to '{chain_now}' if != current, UPDATE {len(paper_rows_needing_update)} paper_trades row(s), and DELETE {len(existing)} trade_events row(s)\n")
                 continue
 
             # APPLY mutations — one transaction per market
@@ -186,6 +205,14 @@ async def main(apply: bool) -> int:
                     ), {"new": chain_now, "cid": condition_id})
                     updated_count += 1
                     print(f"  UPDATED markets.resolution -> {chain_now}")
+                if paper_rows_needing_update:
+                    r2 = await s.execute(text(
+                        "UPDATE paper_trades SET resolution = :new "
+                        "WHERE market_id = :cid AND bot_name = ANY(:bots) "
+                        "AND resolution IS DISTINCT FROM :new"
+                    ), {"new": chain_now, "cid": condition_id, "bots": list(EB_BOTS)})
+                    paper_updated_count += r2.rowcount or 0
+                    print(f"  UPDATED {r2.rowcount} paper_trades.resolution row(s) -> {chain_now}")
                 if existing:
                     await s.execute(text(
                         "DELETE FROM trade_events WHERE event_type = 'RESOLUTION' "
@@ -204,6 +231,7 @@ async def main(apply: bool) -> int:
     print(f"  Chain disagreement (skipped):    {chain_disagreement_count}")
     if apply:
         print(f"  markets.resolution updates:      {updated_count}")
+        print(f"  paper_trades.resolution updates: {paper_updated_count}")
         print(f"  trade_events.RESOLUTION deletes: {deleted_count}")
         print()
         print("Next steps:")
