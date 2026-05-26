@@ -2553,8 +2553,26 @@ class WeatherBot(BaseBot):
         )
         lead_time = (target_noon - now_utc).total_seconds() / 3600.0
         if lead_time < 0.0:
+            # S229 diagnostic: was silent; needed to find why ms_analysis=2ms
+            # with groups_with_edge=0. weatherbot_analyze_skip is the canonical
+            # event for any early-return from _analyze_group; `reason` discriminates.
+            logger.info(
+                "weatherbot_analyze_skip",
+                reason="lead_time_expired",
+                city=group.city,
+                date=group.target_date.isoformat(),
+                lead_time_h=round(lead_time, 2),
+            )
             return [], {}
         if lead_time > self._max_lead_time:
+            logger.info(
+                "weatherbot_analyze_skip",
+                reason="lead_time_too_far",
+                city=group.city,
+                date=group.target_date.isoformat(),
+                lead_time_h=round(lead_time, 2),
+                max_lead_h=self._max_lead_time,
+            )
             return [], {}
 
         # Station health check
@@ -2577,10 +2595,18 @@ class WeatherBot(BaseBot):
             group.station, group.target_date,
         )
         if not forecast:
-            logger.debug(
-                "weatherbot_no_forecast",
+            # S229 diagnostic: upgraded debug→info. The previous debug level
+            # masked this as the dominant short-circuit when forecast cache
+            # is empty for a (station, date) pair and the API call returns
+            # None. Pair with weatherbot_analyze_skip to count distinct
+            # short-circuit reasons per scan.
+            logger.info(
+                "weatherbot_analyze_skip",
+                reason="no_forecast",
+                city=group.city,
                 station=group.station.station_id,
                 date=group.target_date.isoformat(),
+                lead_time_h=round(lead_time, 2),
             )
             return [], {}
 
@@ -2623,13 +2649,41 @@ class WeatherBot(BaseBot):
                             _any_edge = True
                             break
                     if not _any_edge:
+                        # S229 diagnostic: pre-screen rejected — all buckets too
+                        # close to 0.50 for any to clear min_edge after calibration.
+                        logger.info(
+                            "weatherbot_analyze_skip",
+                            reason="prescreen_dead_zone",
+                            city=group.city,
+                            date=group.target_date.isoformat(),
+                            n_buckets=len(group.buckets),
+                            ens_mean=round(_ens_mean, 2),
+                        )
                         return [], {}
 
         # S97: Early exposure cap check — skip EMOS if group/city at cap
         _group_key = f"{group.city}:{group.target_date.isoformat()}"
         if self._group_exposure.get(_group_key, 0.0) >= self._max_per_group:
+            # S229 diagnostic: group already at exposure cap before EMOS runs.
+            logger.info(
+                "weatherbot_analyze_skip",
+                reason="group_cap_reached",
+                city=group.city,
+                date=group.target_date.isoformat(),
+                current_exp=round(self._group_exposure.get(_group_key, 0.0), 2),
+                cap=self._max_per_group,
+            )
             return [], {}
         if self._city_exposure.get(group.city, 0.0) >= self._max_correlated:
+            # S229 diagnostic: city already at correlation cap.
+            logger.info(
+                "weatherbot_analyze_skip",
+                reason="city_cap_reached",
+                city=group.city,
+                date=group.target_date.isoformat(),
+                current_exp=round(self._city_exposure.get(group.city, 0.0), 2),
+                cap=self._max_correlated,
+            )
             return [], {}
 
         # S168 Phase 2A: Use empirical CDF when we have enough ensemble members (≥50).
@@ -2649,7 +2703,16 @@ class WeatherBot(BaseBot):
                 forecast.lead_time_hours,
             )
             if not model_probs:
-                logger.debug("weatherbot_empirical_degenerate_skip", city=group.city)
+                # S229 diagnostic: upgraded debug→info to surface when empirical
+                # CDF produces a degenerate distribution (e.g., all members at
+                # the same value or NaN-dominated).
+                logger.info(
+                    "weatherbot_analyze_skip",
+                    reason="empirical_degenerate",
+                    city=group.city,
+                    date=group.target_date.isoformat(),
+                    n_clean=_n_clean,
+                )
                 return [], {}
             # Parametric fit still needed for model_spread logging and other downstream consumers
             try:
@@ -2667,7 +2730,16 @@ class WeatherBot(BaseBot):
                     group.station.station_id,
                 )
             except ValueError as exc:
-                logger.debug("weatherbot_fit_failed", station=group.station.station_id, city=group.city, error=str(exc))
+                # S229 diagnostic: upgraded debug→info to surface when the
+                # parametric skew-normal MLE fit fails (typically degenerate
+                # ensemble — all members identical, or insufficient finite data).
+                logger.info(
+                    "weatherbot_analyze_skip",
+                    reason="parametric_fit_failed",
+                    city=group.city,
+                    station=group.station.station_id,
+                    error=str(exc),
+                )
                 return [], {}
 
             # T3B: Climate normal Bayesian prior — blend toward climatology at long lead times.
