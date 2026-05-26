@@ -1929,6 +1929,17 @@ class WeatherBot(BaseBot):
                     total_markets=len(weather_markets),
                 )
 
+        # S230 (2026-05-26): Eager /book fetch for surviving groups so
+        # S221 Phase 2 _check_executable_edge has bestBid/bestAsk to
+        # validate against. Without this, every WB candidate rejects at
+        # the gate with weatherbot_executable_edge_no_book (weather
+        # markets are excluded from WS subscription due to liquidity=0,
+        # and _enrich_with_live_prices only fetches /midpoint not /book).
+        # Placed outside the discovery cache if/else so book data refreshes
+        # every scan regardless of cache state — books go stale in seconds.
+        # See _enrich_groups_with_books docstring for full context.
+        await self._enrich_groups_with_books(groups, weather_markets)
+
         _t_discovery = time.monotonic()
 
         # Pre-fetch NWS severe weather alerts for all US stations in one pass
@@ -5047,6 +5058,109 @@ class WeatherBot(BaseBot):
             truncated=_truncated,
         )
         return list(enriched)
+
+    async def _enrich_groups_with_books(
+        self,
+        groups: list,
+        weather_markets: List[Dict],
+    ) -> int:
+        """S230 (2026-05-26): Fetch CLOB /book per surviving group, populate
+        bestBid/bestAsk on the matching market dicts so S221 Phase 2
+        _check_executable_edge gate ([weather_bot.py:_check_executable_edge])
+        has live book data instead of fail-closing on bestBid=0/bestAsk=0.
+
+        Why this exists: _enrich_with_live_prices only fetches /midpoint
+        (yes_price/no_price). Weather markets have liquidity=0 so they're
+        excluded from the 1000-token WS subscription, so bestBid/bestAsk
+        never land in _market_index via any path. S221's gate (added
+        2026-05-18) fails-closed on missing book data → every WB trade
+        rejected with weatherbot_executable_edge_no_book.
+
+        Placement: AFTER stale-group filter — only fetches books for
+        groups that will be analyzed (~2-15 unique market_ids per scan
+        vs ~800 if placed in _enrich_with_live_prices pre-filter).
+
+        Side effect: re-calls update_market_index so OrderGateway sees
+        the refreshed bestBid/bestAsk entries.
+
+        Returns count of market_ids successfully enriched.
+        """
+        if not getattr(settings, "WEATHER_ENRICH_FETCH_BOOK", True):
+            return 0
+        client = getattr(self.base_engine, "client", None)
+        if not client or not groups:
+            return 0
+
+        # Collect unique market_id -> yes_token_id pairs across all group buckets.
+        market_to_token: Dict[str, str] = {}
+        for g in groups:
+            for b in getattr(g, "buckets", []) or []:
+                mid = str(getattr(b, "market_id", "") or "")
+                tid = str(getattr(b, "token_id", "") or "")
+                if mid and tid and mid not in market_to_token:
+                    market_to_token[mid] = tid
+        if not market_to_token:
+            return 0
+
+        _concurrency = max(1, int(getattr(settings, "WEATHER_BOOK_FETCH_CONCURRENCY", 10)))
+        sem = asyncio.Semaphore(_concurrency)
+
+        async def _fetch_book_top(market_id: str, token_id: str):
+            async with sem:
+                try:
+                    book = await client.get_orderbook(market_id, token_id)
+                except Exception as exc:
+                    logger.debug(
+                        "weatherbot_book_fetch_error",
+                        market_id=market_id, token_id=token_id[:20], error=str(exc),
+                    )
+                    return (market_id, None, None)
+            if not isinstance(book, dict):
+                return (market_id, None, None)
+            bids = book.get("bids") or []
+            asks = book.get("asks") or []
+            if not bids or not asks:
+                return (market_id, None, None)
+            try:
+                best_bid = max(float(x.get("price", 0)) for x in bids)
+                best_ask = min(float(x.get("price", 0)) for x in asks)
+            except (ValueError, TypeError):
+                return (market_id, None, None)
+            if best_bid <= 0 or best_ask <= 0 or best_bid >= best_ask:
+                return (market_id, None, None)
+            return (market_id, best_bid, best_ask)
+
+        results = await asyncio.gather(
+            *[_fetch_book_top(mid, tid) for mid, tid in market_to_token.items()]
+        )
+        book_data = {mid: (bb, ba) for mid, bb, ba in results if bb is not None}
+
+        # Mutate matching market dicts in-place. Update_market_index keys by
+        # m["id"] — the WB market mapper stores condition_id there.
+        enriched = 0
+        for m in weather_markets:
+            mid_str = str(m.get("id") or "")
+            cid_str = str(m.get("condition_id") or "")
+            for key in (mid_str, cid_str):
+                if key and key in book_data:
+                    bb, ba = book_data[key]
+                    m["bestBid"] = bb
+                    m["bestAsk"] = ba
+                    enriched += 1
+                    break
+
+        # Refresh OrderGateway's view (same dict reference, but be explicit).
+        if enriched:
+            self.base_engine.update_market_index(weather_markets)
+
+        logger.info(
+            "weatherbot_books_enriched",
+            groups=len(groups),
+            unique_markets=len(market_to_token),
+            enriched=enriched,
+            skipped=len(market_to_token) - enriched,
+        )
+        return enriched
 
     async def _save_backoff_to_redis(self) -> None:
         """Persist adaptive backoff counter to Redis so it survives restarts."""

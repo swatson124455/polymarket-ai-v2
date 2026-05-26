@@ -928,6 +928,18 @@ class Settings(BaseSettings):
     # Tune up to match WEATHER_MIN_EDGE (0.08) for stricter; set <= -1.0 in
     # .env to disable the check entirely.
     WEATHER_MIN_EXECUTABLE_EDGE: float = float(os.getenv("WEATHER_MIN_EXECUTABLE_EDGE", "0.0"))
+    # S230 (2026-05-26): Eager /book fetch for surviving groups so the S221
+    # Phase 2 _check_executable_edge gate has bestBid/bestAsk to validate
+    # against. Weather markets have liquidity=0 so they're outside the
+    # 1000-token WS subscription; _enrich_with_live_prices only fetches
+    # /midpoint, not /book. Without this, S221 gate fires
+    # weatherbot_executable_edge_no_book on every WB candidate and rejects.
+    # Placed AFTER stale-group filter so only ~2-15 token IDs fetched per
+    # scan (vs ~800 if placed in _enrich_with_live_prices pre-filter).
+    # Set to False in .env to disable (gate then always fail-closed → 0 trades).
+    WEATHER_ENRICH_FETCH_BOOK: bool = os.getenv("WEATHER_ENRICH_FETCH_BOOK", "true").lower() in ("true", "1", "yes")
+    # S230 concurrency cap on CLOB /book fetches per scan (parallel asyncio.gather).
+    WEATHER_BOOK_FETCH_CONCURRENCY: int = int(os.getenv("WEATHER_BOOK_FETCH_CONCURRENCY", "10"))
     # S99: Fill probability floor (price-depth factor)
     WEATHER_MIN_FILL_PROB_ESTIMATE: float = float(os.getenv("WEATHER_MIN_FILL_PROB_ESTIMATE", "0.15"))  # S101: 0.25→0.15 — pre-flight only, full model still gates
     # S99: PSW every-other-scan

@@ -4134,3 +4134,242 @@ class TestPredictedProbClamp:
             assert len(_warnings) == 0, (
                 f"Boundary value {boundary} should not trigger clamp warning"
             )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# S230 (2026-05-26): _enrich_groups_with_books — populates bestBid/bestAsk
+# on surviving-group market dicts so S221 Phase 2 gate can validate.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestS230EnrichGroupsWithBooks:
+    """S230: After stale-group filter, fetch CLOB /book for each surviving
+    bucket's yes_token_id and populate bestBid/bestAsk on the matching
+    weather_markets dict. Re-call update_market_index so OrderGateway sees
+    the refreshed entries before _check_executable_edge runs at trade time.
+
+    Pre-fix failure mode: weather markets have liquidity=0 so they're
+    outside the 1000-token WS subscription, and _enrich_with_live_prices
+    only fetches /midpoint (yes_price/no_price) — bestBid/bestAsk never
+    land in _market_index by any path. S221 Phase 2 gate (added
+    2026-05-18) fail-closes on missing book data → every WB trade
+    rejected with weatherbot_executable_edge_no_book. Silent until S229
+    fixed the upstream stale-ghost discovery blocker.
+    """
+
+    @pytest.fixture
+    def bot_factory(self):
+        """Build a WeatherBot with a stub client whose get_orderbook is patchable."""
+        from bots.weather_bot import WeatherBot
+
+        def _make(book_responses):
+            """book_responses: dict {token_id: book_dict OR Exception}"""
+            engine = MagicMock()
+            engine.trade_coordinator = None
+            engine.cache = None
+            engine.db = None
+            engine.risk_manager = MagicMock()
+            engine.order_gateway = MagicMock()
+            engine.order_gateway._market_index = {}
+            engine.order_gateway._open_position_markets = {"WeatherBot": set()}
+            engine.get_all_tradeable_markets = AsyncMock(return_value=[])
+            engine.place_order = AsyncMock(return_value={"success": True})
+            engine._market_index = {}
+            engine._market_index_by_cid = {}
+
+            async def _fake_orderbook(market_id, token_id):
+                resp = book_responses.get(token_id)
+                if isinstance(resp, Exception):
+                    raise resp
+                return resp
+
+            client = MagicMock()
+            client.get_orderbook = AsyncMock(side_effect=_fake_orderbook)
+            engine.client = client
+
+            def _fake_update_index(markets):
+                for m in markets:
+                    mid = m.get("id")
+                    cid = m.get("condition_id") or ""
+                    if mid is not None:
+                        engine._market_index[str(mid)] = m
+                        engine.order_gateway._market_index[str(mid)] = m
+                    if cid:
+                        engine._market_index_by_cid[cid] = m
+
+            engine.update_market_index = _fake_update_index
+            return WeatherBot(engine)
+
+        return _make
+
+    @staticmethod
+    def _group(market_id, token_id, no_token_id="no_tid"):
+        from bots.weather.engine.base_engine.weather.market_mapper import (
+            TemperatureBucket,
+            WeatherMarketGroup,
+        )
+        from datetime import date as _date
+
+        station = MagicMock()
+        station.icao = "TEST"
+        bucket = TemperatureBucket(
+            market_id=market_id,
+            token_id=token_id,
+            no_token_id=no_token_id,
+            yes_price=0.5,
+            bucket_type="range",
+            low_bound=80.0,
+            high_bound=81.0,
+            temp_unit="F",
+        )
+        return WeatherMarketGroup(
+            city="Miami",
+            target_date=_date(2026, 5, 28),
+            station=station,
+            buckets=[bucket],
+        )
+
+    @pytest.mark.asyncio
+    async def test_populates_bestbid_bestask_on_matching_market_dict(self, bot_factory):
+        """Happy path: /book returns a populated book; bestBid/bestAsk land
+        on the market dict and the index reflects the update."""
+        bot = bot_factory({
+            "tid_yes_1": {
+                "bids": [{"price": "0.30", "size": "10"}, {"price": "0.34", "size": "25"}],
+                "asks": [{"price": "0.38", "size": "22"}, {"price": "0.40", "size": "15"}],
+            },
+        })
+        groups = [self._group("0xMIAMI28_86_87", "tid_yes_1")]
+        markets = [{"id": "0xMIAMI28_86_87", "condition_id": "0xMIAMI28_86_87", "yes_price": 0.355}]
+
+        n = await bot._enrich_groups_with_books(groups, markets)
+
+        assert n == 1
+        assert markets[0]["bestBid"] == 0.34
+        assert markets[0]["bestAsk"] == 0.38
+        # OrderGateway view refreshed
+        idx_entry = bot.base_engine.order_gateway._market_index["0xMIAMI28_86_87"]
+        assert idx_entry["bestBid"] == 0.34
+        assert idx_entry["bestAsk"] == 0.38
+
+    @pytest.mark.asyncio
+    async def test_skips_when_kill_switch_disabled(self, bot_factory, monkeypatch):
+        """WEATHER_ENRICH_FETCH_BOOK=False is the kill-switch — no /book calls,
+        no enrichment, returns 0. Existing market dicts untouched."""
+        bot = bot_factory({})
+        monkeypatch.setattr(settings, "WEATHER_ENRICH_FETCH_BOOK", False)
+        groups = [self._group("0xA", "tid_a")]
+        markets = [{"id": "0xA", "condition_id": "0xA", "yes_price": 0.5}]
+
+        n = await bot._enrich_groups_with_books(groups, markets)
+
+        assert n == 0
+        assert "bestBid" not in markets[0]
+        bot.base_engine.client.get_orderbook.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_empty_groups(self, bot_factory):
+        """No groups → no work, no calls."""
+        bot = bot_factory({})
+        n = await bot._enrich_groups_with_books([], [{"id": "0xA"}])
+        assert n == 0
+        bot.base_engine.client.get_orderbook.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_when_book_empty(self, bot_factory):
+        """An empty book (no bids OR no asks) is treated as non-populated —
+        market dict left unchanged, index not refreshed."""
+        bot = bot_factory({
+            "tid_empty_asks": {"bids": [{"price": "0.20", "size": "5"}], "asks": []},
+            "tid_empty_bids": {"bids": [], "asks": [{"price": "0.80", "size": "5"}]},
+        })
+        groups = [
+            self._group("0xA", "tid_empty_asks"),
+            self._group("0xB", "tid_empty_bids"),
+        ]
+        markets = [
+            {"id": "0xA", "condition_id": "0xA"},
+            {"id": "0xB", "condition_id": "0xB"},
+        ]
+        n = await bot._enrich_groups_with_books(groups, markets)
+        assert n == 0
+        for m in markets:
+            assert "bestBid" not in m
+            assert "bestAsk" not in m
+
+    @pytest.mark.asyncio
+    async def test_skips_when_book_crossed(self, bot_factory):
+        """Crossed book (bid >= ask) is malformed — don't populate."""
+        bot = bot_factory({
+            "tid_crossed": {
+                "bids": [{"price": "0.50", "size": "10"}],
+                "asks": [{"price": "0.45", "size": "10"}],
+            },
+        })
+        groups = [self._group("0xC", "tid_crossed")]
+        markets = [{"id": "0xC", "condition_id": "0xC"}]
+        n = await bot._enrich_groups_with_books(groups, markets)
+        assert n == 0
+        assert "bestBid" not in markets[0]
+
+    @pytest.mark.asyncio
+    async def test_book_fetch_exception_skips_silently(self, bot_factory):
+        """/book error (timeout, 5xx, 'No orderbook exists' surface) →
+        skip that market, continue with others. No partial corruption."""
+        bot = bot_factory({
+            "tid_ok": {
+                "bids": [{"price": "0.30", "size": "10"}],
+                "asks": [{"price": "0.35", "size": "10"}],
+            },
+            "tid_err": Exception("network down"),
+        })
+        groups = [
+            self._group("0xOK", "tid_ok"),
+            self._group("0xERR", "tid_err"),
+        ]
+        markets = [
+            {"id": "0xOK", "condition_id": "0xOK"},
+            {"id": "0xERR", "condition_id": "0xERR"},
+        ]
+        n = await bot._enrich_groups_with_books(groups, markets)
+        assert n == 1
+        assert markets[0]["bestBid"] == 0.30
+        assert markets[0]["bestAsk"] == 0.35
+        assert "bestBid" not in markets[1]
+
+    @pytest.mark.asyncio
+    async def test_match_by_condition_id_when_id_differs(self, bot_factory):
+        """Bucket.market_id is the condition_id. Match weather_markets row
+        by `id` first then `condition_id` so either field shape works."""
+        bot = bot_factory({
+            "tid_x": {
+                "bids": [{"price": "0.22", "size": "10"}],
+                "asks": [{"price": "0.26", "size": "10"}],
+            },
+        })
+        # bucket points at "0xABC" but market dict's `id` is numeric/different
+        groups = [self._group("0xABC", "tid_x")]
+        markets = [{"id": "12345", "condition_id": "0xABC"}]
+        n = await bot._enrich_groups_with_books(groups, markets)
+        assert n == 1
+        assert markets[0]["bestBid"] == 0.22
+        assert markets[0]["bestAsk"] == 0.26
+
+    @pytest.mark.asyncio
+    async def test_deduplicates_market_ids_across_buckets(self, bot_factory):
+        """Two buckets pointing at the same market_id should fetch /book
+        only once (deduplication via market_to_token dict)."""
+        bot = bot_factory({
+            "tid_first": {
+                "bids": [{"price": "0.30", "size": "10"}],
+                "asks": [{"price": "0.35", "size": "10"}],
+            },
+        })
+        # Two groups both referencing the same market_id
+        g1 = self._group("0xDUP", "tid_first")
+        g2 = self._group("0xDUP", "tid_first")
+        markets = [{"id": "0xDUP", "condition_id": "0xDUP"}]
+        n = await bot._enrich_groups_with_books([g1, g2], markets)
+        assert n == 1
+        # /book called exactly once for the dedup'd market
+        assert bot.base_engine.client.get_orderbook.call_count == 1
