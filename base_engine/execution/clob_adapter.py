@@ -136,6 +136,36 @@ def _get_order_book_sync(token_id: str) -> Dict[str, Any]:
         return {}
 
 
+def _refresh_balance_allowance_sync(asset_type: str = "COLLATERAL") -> bool:
+    """S230 Bug 13: force Polymarket CLOB to refresh its cached balance/allowance.
+
+    Polymarket's matching engine caches per-funder balance/allowance state
+    internally. After operator-side deposits, conversions, or redemptions,
+    that cache lags actual on-chain pUSD balance. First BUY attempt hits
+    "balance: 0" even though the deposit wallet IS funded.
+
+    Calling /balance-allowance/update with asset_type=COLLATERAL forces the
+    cache to re-read from chain. Non-fatal on failure — returns False and
+    bot proceeds (next trade attempt will retry).
+
+    Discovered S230 smoke test: 3 BUYs rejected with "balance: 0" despite
+    $23.14993 pUSD on deposit wallet. After this call ran manually, /balance-
+    allowance reported correct balance and all V2 spender allowances at MAX.
+    """
+    client = _get_clob_client()
+    if client is None:
+        return False
+    try:
+        from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
+        at = AssetType.COLLATERAL if asset_type.upper() == "COLLATERAL" else AssetType.CONDITIONAL
+        params = BalanceAllowanceParams(asset_type=at, signature_type=3)
+        client.update_balance_allowance(params)
+        return True
+    except Exception as e:
+        logger.warning("clob_balance_allowance_refresh_failed", error=str(e)[:200])
+        return False
+
+
 def _cancel_order_sync(order_id: str) -> bool:
     """Sync cancel order via py-clob-client-v2 (run in executor).
 
@@ -210,6 +240,17 @@ class ClobAdapter:
         """Cancel an open order on the CLOB. Returns True if cancelled successfully."""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, lambda: _cancel_order_sync(order_id))
+
+    async def refresh_balance_allowance(self, asset_type: str = "COLLATERAL") -> bool:
+        """S230 Bug 13: force CLOB to refresh cached balance/allowance for funder.
+
+        Bots call this on first live-trade attempt after restart to avoid
+        the stale-cache "balance: 0" rejection pattern surfaced in S230
+        smoke test. Returns True on success, False on any error.
+        See _refresh_balance_allowance_sync for details.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, lambda: _refresh_balance_allowance_sync(asset_type))
 
     async def get_order_book(self, token_id: str) -> Dict[str, Any]:
         """Get order book via AsyncClobClient or sync client in thread."""

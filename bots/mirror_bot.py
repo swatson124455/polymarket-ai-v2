@@ -100,6 +100,15 @@ class MirrorBot(BaseBot):
         # closing paper). Sentinel None = restore hasn't run yet; treat as
         # "no guard" until populated.
         self._state_restore_mode_is_paper: Optional[bool] = None
+        # S230 Bug 13 guard: Polymarket CLOB caches balance/allowance per
+        # funder. After operator-side deposits/conversions/redemptions, the
+        # cache lags on-chain reality and first BUY rejects with "balance: 0"
+        # despite the deposit wallet being funded. Bot calls
+        # ClobAdapter.refresh_balance_allowance() on the FIRST live trade
+        # attempt of a session to sync the cache. Set True after one
+        # successful (or attempted-and-logged) call so we don't spam the
+        # /balance-allowance/update endpoint each scan.
+        self._clob_cache_refreshed: bool = False
         # M4: Startup leader reconciliation — run on scan 3 (after watchlist initialized)
         self._recon_done: bool = False
 
@@ -1063,10 +1072,38 @@ class MirrorBot(BaseBot):
         except Exception as e:
             logger.debug("mirror_sync_prices_from_db failed: %s", e)
 
+    async def _refresh_clob_cache_once_if_live(self) -> None:
+        """S230 Bug 13: refresh CLOB balance/allowance cache on first live trade
+        attempt of a session. Polymarket caches per-funder state; without this,
+        first BUY post-restart rejects with stale "balance: 0" even when funded.
+        Idempotent — runs at most once per session via _clob_cache_refreshed flag.
+        Paper mode skips (no CLOB involved). Non-fatal on failure.
+        """
+        if self._clob_cache_refreshed:
+            return
+        if is_paper_trading_active():
+            # Paper mode does not use CLOB; mark refreshed to skip future calls.
+            self._clob_cache_refreshed = True
+            return
+        try:
+            from base_engine.execution.clob_adapter import ClobAdapter
+            adapter = ClobAdapter()
+            ok = await adapter.refresh_balance_allowance(asset_type="COLLATERAL")
+            logger.info("bug13_clob_cache_refresh_attempted", success=bool(ok))
+        except Exception as _refresh_err:
+            logger.warning("bug13_clob_cache_refresh_exception", error=str(_refresh_err)[:200])
+        finally:
+            # Mark refreshed regardless — non-fatal, will retry on actual order failure
+            # via the underlying retry path if needed. Avoids spamming the endpoint.
+            self._clob_cache_refreshed = True
+
     async def _check_and_execute_exits(self):
         """Mirror exits when tracked traders close their positions."""
         if not self._open_positions:
             return
+
+        # S230 Bug 13: sync CLOB cache before any live trade attempt.
+        await self._refresh_clob_cache_once_if_live()
 
         # S230 Bug 12 guard: refuse to execute exits if the paper/live trading
         # mode has flipped mid-runtime since _restore_state_on_startup populated
@@ -2328,6 +2365,9 @@ class MirrorBot(BaseBot):
         whale_trade_usd: float = 0.0,
     ) -> bool:
         """Execute a mirror trade with reliability weighting and exposure caps."""
+        # S230 Bug 13: sync CLOB cache before any live trade attempt.
+        await self._refresh_clob_cache_once_if_live()
+
         # S230 Bug 12 guard: refuse to open new positions if the paper/live
         # trading mode has flipped mid-runtime since restore. Same root cause
         # as the exit guard in _check_and_execute_exits. Returning False
