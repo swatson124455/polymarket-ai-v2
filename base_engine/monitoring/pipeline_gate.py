@@ -197,8 +197,17 @@ class PipelineGate:
             return f"orphan check failed: {e}"
 
     async def _check_end_date_iso_population(self) -> Optional[str]:
-        """Return warning if >80% of active markets are missing end_date_iso.
-        Catches the endDateISO vs endDate field name mismatch that caused 100% NULL end dates.
+        """Return warning if >95% of active markets are missing end_date_iso.
+
+        Originally fired at >80% to catch a 100% NULL field-name mismatch bug.
+        Per S222 close, ~88% NULL is the steady-state upstream Polymarket API
+        absence rate (most markets simply don't return endDate at ingestion
+        time; end_date_iso is backfilled by resolution_backfill.py:431 on
+        resolution). The field-name fallback at data_ingestion.py:1011-1013
+        already covers all 5 variants (endDateISO/endDateIso/endDate/end_date/
+        end_date_iso) so the original failure mode is no longer reachable from
+        the ingestion code path. Threshold raised to 0.95 to catch a genuine
+        regression toward 100% NULL while suppressing the steady-state noise.
         """
         if not self.db or not getattr(self.db, "session_factory", None):
             return None  # non-blocking
@@ -219,10 +228,11 @@ class PipelineGate:
             if total < 10:
                 return None  # not enough data
             null_pct = null_count / total
-            if null_pct > 0.80:
+            if null_pct > 0.95:
                 return (
                     f"Schema conformance: {null_pct:.0%} of active markets have NULL end_date_iso "
-                    f"({null_count}/{total}) — ingestion field name mismatch (endDate vs endDateISO)"
+                    f"({null_count}/{total}) — exceeds steady-state ~88% upstream API absence; "
+                    f"check data_ingestion.py:1011-1013 fallback and resolution_backfill.py:431 backfill."
                 )
             return None
         except Exception as e:
