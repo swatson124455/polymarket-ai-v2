@@ -1810,11 +1810,53 @@ class WeatherBot(BaseBot):
 
             # 2. Group by (city, date)
             groups = self._market_mapper.group_markets(weather_markets)
+
+            # S229 (2026-05-26): Defensive filter for stale-data groups whose
+            # target_date is in the past. Root cause: the DB has 50+ weather
+            # markets still flagged active=true / resolved=false with old
+            # dates in their question text (e.g., "Lucknow on March 15") and
+            # NULL end_date_iso — the resolution pipeline missed them. These
+            # crowd out fresh markets in the 200-market discovery quota and
+            # every analyze cycle was 130-of-130 groups skipping on
+            # lead_time_expired (suppressed 130 duplicates).
+            #
+            # _analyze_group already skips past-dated groups at
+            # weather_bot.py:2555 (lead_time<0 check), so this filter is
+            # defense-in-depth — it prunes at discovery so:
+            #   - the discovery cache doesn't carry stale groups for 5min TTL
+            #   - city_universe / digest logs reflect tradeable cities
+            #   - scan_done.groups counts what we actually evaluate
+            #   - structlog suppression doesn't lump all skips under one
+            #     lead_time_expired event
+            #
+            # Properly fixing the data (resolved=true on those markets) is
+            # operator-scoped — the DB is shared with MB/EB/ingestion and a
+            # bulk UPDATE on `markets` needs cross-bot signoff. This filter
+            # is the WB-scoped defensive layer that doesn't touch shared
+            # state.
+            from datetime import datetime as _dt
+            _today = _dt.now(timezone.utc).date()
+            _cutoff_days = int(getattr(settings, "WEATHER_STALE_GROUP_CUTOFF_DAYS", 1))
+            _pre_filter_count = len(groups)
+            groups = [
+                g for g in groups
+                if (_today - g.target_date).days <= _cutoff_days
+            ]
+            _dropped = _pre_filter_count - len(groups)
+            if _dropped > 0:
+                logger.info(
+                    "weatherbot_stale_groups_dropped",
+                    dropped=_dropped,
+                    kept=len(groups),
+                    cutoff_days=_cutoff_days,
+                    pre_filter_count=_pre_filter_count,
+                )
+
             if not groups:
                 logger.info("weatherbot_no_groups_parsed", weather_markets=len(weather_markets))
                 return
 
-            # Cache discovery result
+            # Cache discovery result (post-stale-filter)
             self._discovery_cache = (time.monotonic(), weather_markets, groups)
 
             # S101b: City universe log + unmatched city alert + daily digest
