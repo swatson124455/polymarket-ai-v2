@@ -1001,7 +1001,7 @@ class RiskManager:
                         unrealized_pnl=0.0,
                         opened_at=datetime.now(timezone.utc),
                         status="open",
-                        is_paper=bool(getattr(settings, "SIMULATION_MODE", False)),
+                        is_paper=bool(getattr(settings, "SIMULATION_MODE", True)),
                     )
                     session.add(position)
             except Exception as e:

@@ -138,7 +138,7 @@ class TradeCoordinator:
                     # Postgres: ON CONFLICT (bot_id, market_id, side) DO UPDATE
                     # Re-use closed position rows (reset to 'reserving') to avoid unique constraint blocking.
                     # Only update if the existing row is closed — open/reserving rows stay blocked.
-                    _is_paper = bool(getattr(settings, "SIMULATION_MODE", False))
+                    _is_paper = bool(getattr(settings, "SIMULATION_MODE", True))
                     result = await session.execute(
                         text("""
                             INSERT INTO positions (bot_id, market_id, token_id, side, size, entry_price, current_price, unrealized_pnl, opened_at, status, is_paper)
@@ -245,7 +245,7 @@ class TradeCoordinator:
                     # S103 FIX: No reserving row found — reserve was skipped
                     # (e.g. WEATHER_SKIP_COORDINATOR_BUY). Insert directly as open.
                     now = datetime.now(timezone.utc).replace(tzinfo=None)
-                    _is_paper = bool(getattr(settings, "SIMULATION_MODE", False))
+                    _is_paper = bool(getattr(settings, "SIMULATION_MODE", True))
                     await session.execute(
                         text("""
                             INSERT INTO positions (bot_id, source_bot, market_id, token_id, side, size,

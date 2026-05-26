@@ -839,7 +839,7 @@ class OrderGateway:
 
         # Pre-validation: check paper trading balance before reserving position
         # YES/NO/BUY all require cash (buying tokens); only SELL is closing a position
-        if getattr(settings, "SIMULATION_MODE", False) and self.paper_trading_engine and self.paper_trading_engine.enabled:
+        if getattr(settings, "SIMULATION_MODE", True) and self.paper_trading_engine and self.paper_trading_engine.enabled:
             order_cost = size * price
             if side.upper() != "SELL" and order_cost > self.paper_trading_engine.cash:
                 logger.debug(
@@ -1065,7 +1065,7 @@ class OrderGateway:
                             signal_price=round(effective_price, 4),
                             edge_at_fill=round(_edge_at_fill, 4),
                             bot_name=bot_name,
-                            mode="paper" if getattr(settings, "SIMULATION_MODE", False) else "live")
+                            mode="paper" if getattr(settings, "SIMULATION_MODE", True) else "live")
                 # Record shadow fill for rejected trade
                 _db = self.db or (self.paper_trading_engine.db if self.paper_trading_engine else None)
                 if _db and hasattr(_db, "insert_shadow_fill"):
@@ -1108,7 +1108,7 @@ class OrderGateway:
                 return {"success": False, "error": f"Edge eroded: conf={confidence:.4f} <= vwap={_shadow_vwap:.4f}"}
 
         # Paper trading: full pipeline (risk, coordinator) then record order instead of CLOB
-        if getattr(settings, "SIMULATION_MODE", False) and self.paper_trading_engine and self.paper_trading_engine.enabled:
+        if getattr(settings, "SIMULATION_MODE", True) and self.paper_trading_engine and self.paper_trading_engine.enabled:
             # In binary prediction markets, YES/NO indicate which token to buy, not trade direction.
             # Both YES and NO are BUY orders (buying that side's token).
             # SELL only happens when closing an existing position.

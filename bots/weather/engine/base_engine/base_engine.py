@@ -1399,7 +1399,7 @@ class BaseEngine:
         )
 
         # Enable paper trading when SIMULATION_MODE=true (orders go to PaperTradingEngine, not real API)
-        if getattr(settings, "SIMULATION_MODE", False) and self.paper_trading:
+        if getattr(settings, "SIMULATION_MODE", True) and self.paper_trading:
             self.paper_trading.enable()
             # Seed paper positions from DB so SELL exits work for positions opened in prior sessions
             await self.paper_trading.seed_positions_from_db()
