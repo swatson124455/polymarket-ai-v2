@@ -92,6 +92,14 @@ class MirrorBot(BaseBot):
 
         # Startup state restoration flag — run once on first scan.
         self._state_restored: bool = False
+        # S230 Bug 12 guard: snapshot of is_paper_trading_active() at the moment
+        # _restore_state_on_startup populates _open_positions. Any subsequent
+        # mid-runtime trading-mode flip will trip the guard in
+        # _check_and_execute_exits and _execute_mirror_trade so we never route
+        # an exit/entry through the wrong engine (paper-closing live OR live-
+        # closing paper). Sentinel None = restore hasn't run yet; treat as
+        # "no guard" until populated.
+        self._state_restore_mode_is_paper: Optional[bool] = None
         # M4: Startup leader reconciliation — run on scan 3 (after watchlist initialized)
         self._recon_done: bool = False
 
@@ -336,6 +344,10 @@ class MirrorBot(BaseBot):
                 # config/settings.py per S83 paper-is-production rule (bot source
                 # avoids the direct SIMULATION mode name).
                 _is_paper_mode = is_paper_trading_active()
+                # S230 Bug 12 guard anchor: capture restore-time mode so
+                # _check_and_execute_exits / _execute_mirror_trade can detect a
+                # mid-runtime mode flip and refuse to act on stale state.
+                self._state_restore_mode_is_paper = _is_paper_mode
                 rows = await session.execute(
                     _text(
                         "SELECT market_id, token_id, side, size, entry_price, "
@@ -1054,6 +1066,24 @@ class MirrorBot(BaseBot):
     async def _check_and_execute_exits(self):
         """Mirror exits when tracked traders close their positions."""
         if not self._open_positions:
+            return
+
+        # S230 Bug 12 guard: refuse to execute exits if the paper/live trading
+        # mode has flipped mid-runtime since _restore_state_on_startup populated
+        # _open_positions. Bug 11A only filters at startup; a mid-runtime mode
+        # flip (env reload without service restart) would route exits through
+        # the WRONG engine — paper-closing live positions OR vice versa —
+        # recreating the Bug 12 phantom-close pattern (S229).
+        # Operator workflow: ALWAYS restart polymarket-mirror when changing
+        # trading mode. The guard surfaces violations rather than masking.
+        if (self._state_restore_mode_is_paper is not None
+                and is_paper_trading_active() != self._state_restore_mode_is_paper):
+            logger.warning(
+                "bug12_mode_flip_detected_exits_skipped",
+                restore_mode_is_paper=self._state_restore_mode_is_paper,
+                current_mode_is_paper=is_paper_trading_active(),
+                open_positions=len(self._open_positions),
+            )
             return
 
         # B2: Sync DB prices into in-memory dict so stop-loss sees real prices
@@ -2298,6 +2328,21 @@ class MirrorBot(BaseBot):
         whale_trade_usd: float = 0.0,
     ) -> bool:
         """Execute a mirror trade with reliability weighting and exposure caps."""
+        # S230 Bug 12 guard: refuse to open new positions if the paper/live
+        # trading mode has flipped mid-runtime since restore. Same root cause
+        # as the exit guard in _check_and_execute_exits. Returning False
+        # rather than raising — caller treats False as a reject and continues
+        # scanning.
+        if (self._state_restore_mode_is_paper is not None
+                and is_paper_trading_active() != self._state_restore_mode_is_paper):
+            logger.warning(
+                "bug12_mode_flip_detected_entry_skipped",
+                restore_mode_is_paper=self._state_restore_mode_is_paper,
+                current_mode_is_paper=is_paper_trading_active(),
+                market_id=str(market_id)[:16],
+                trader=str(trader_address)[:10],
+            )
+            return False
         # ── S91: Tier 0 in-memory filters (<0.01ms) ─────────────────────
         # Short-circuit garbage trades before any DB/cache/API hit.
         _is_sell = str(side).upper() == "SELL"
