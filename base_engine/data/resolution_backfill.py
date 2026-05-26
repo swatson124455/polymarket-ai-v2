@@ -76,20 +76,38 @@ def _clob_to_market_format(clob: dict, condition_id: str) -> dict:
                     pass
     closed = clob.get("closed", False)
     res = None
-    if closed and tokens:
-        for idx, t in enumerate(tokens):
-            if t.get("winner"):
-                o = (t.get("outcome") or "").upper()
-                if "YES" in o or o == "YES":
-                    res = "YES"
+    if closed and tokens and len(tokens) >= 2:
+        # 2026-05-26: derive resolution from numeric token prices FIRST.
+        # The winner flag has been observed to be missing or wrong for some
+        # markets (chain-verification on 9-of-361 EB-family RESOLUTION rows
+        # found bidirectional mismatches at write time). Token prices [1,0]
+        # or [0,1] reliably reflect UMA on-chain settlement. Winner-flag
+        # iteration kept as fallback only when prices are ambiguous.
+        try:
+            _p0 = float(tokens[0].get("price") or 0)
+            _p1 = float(tokens[1].get("price") or 0)
+            if _p0 >= 0.99 and _p1 <= 0.01:
+                res = "YES"
+            elif _p0 <= 0.01 and _p1 >= 0.99:
+                res = "NO"
+        except (ValueError, TypeError):
+            pass
+        # Fallback: winner flag (legacy path, kept for cases where token.price
+        # is not populated on the CLOB response yet).
+        if res is None:
+            for idx, t in enumerate(tokens):
+                if t.get("winner"):
+                    o = (t.get("outcome") or "").upper()
+                    if "YES" in o or o == "YES":
+                        res = "YES"
+                        break
+                    if "NO" in o or o == "NO":
+                        res = "NO"
+                        break
+                    # S85 FIX: Non-YES/NO outcomes (team names in esports/sports).
+                    # First token = YES outcome, second token = NO outcome.
+                    res = "YES" if idx == 0 else "NO"
                     break
-                if "NO" in o or o == "NO":
-                    res = "NO"
-                    break
-                # S85 FIX: Non-YES/NO outcomes (team names in esports/sports).
-                # First token = YES outcome, second token = NO outcome.
-                res = "YES" if idx == 0 else "NO"
-                break
     # Volume: CLOB may provide volume or we leave 0.0 (refreshed later by EsportsMarketService)
     vol = 0.0
     for vk in ("volume", "volumeNum", "volume_num"):
@@ -423,9 +441,25 @@ async def run_resolution_backfill(
                     _skipped_open += 1
                     await _record_check_result(mid)
                     continue
-                res = m.get("resolution") or m.get("outcome") or m.get("resolutionPrice")
+                # 2026-05-26: outcome_prices (numeric, reliable) is now PRIMARY.
+                # Text fields (resolution / outcome / resolutionPrice) are
+                # fallback only. Polymarket gamma-api has been observed to
+                # return null or stale-"Pending" text for some closed/settled
+                # markets — outcome_prices numeric array reliably reflects
+                # UMA on-chain settlement. Chain-verification on 9-of-361
+                # EB-family RESOLUTION rows showed bidirectional mismatches
+                # caused by trusting the text fields.
+                res = _infer_resolution_from_outcome_prices(m)
                 if res is None:
-                    res = _infer_resolution_from_outcome_prices(m)
+                    _text_res = m.get("resolution") or m.get("outcome") or m.get("resolutionPrice")
+                    # Reject stale-text values that Polymarket sometimes leaves
+                    # on settled markets (e.g. "Pending - market scheduled for
+                    # May 20, 2026 at 06:00:00 UTC" on 0xb184cfef89).
+                    if isinstance(_text_res, str):
+                        _trimmed = _text_res.strip().lower()
+                        if _trimmed.startswith("pending") or _trimmed in ("", "tbd", "n/a", "none", "null", "scheduled"):
+                            _text_res = None
+                    res = _text_res
                 if not res or str(res).upper() not in ("YES", "NO"):
                     _skipped_no_res += 1
                     await _record_check_result(mid)
