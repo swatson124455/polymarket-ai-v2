@@ -49,6 +49,7 @@ class EsportsLiveBot(BaseBot):
         self._live_trigger = None
         self._scanner = None
         self._bankroll_mgr = None
+        self._market_service = None  # populated in start(); pre-init keeps stop() safe.
         self._monitor_task: Optional[asyncio.Task] = None
 
     def _get_scan_interval_seconds(self) -> float:
@@ -183,6 +184,24 @@ class EsportsLiveBot(BaseBot):
                 await self._monitor_task
             except asyncio.CancelledError:
                 pass
+        # 2026-05-26: close _market_service to prevent CLOSE-WAIT socket
+        # leak. EsportsLiveBot extends BaseBot (not EsportsBot), so the
+        # parent's stop() does not know about _market_service. Pre-fix the
+        # httpx.AsyncClient + background refresh task in EsportsMarketService
+        # were orphaned at shutdown (S230 measured 103 CLOSE-WAIT sockets
+        # on EB pid 95495 pre-restart). The service was created in start()
+        # at line 108 but never closed here.
+        if self._market_service:
+            try:
+                await self._market_service.close()
+            except Exception as _ms_err:
+                # Mirror the pattern in EsportsBot.stop() — never let
+                # cleanup-path errors mask the parent stop() call.
+                from structlog import get_logger
+                get_logger().warning(
+                    "esports_live_bot_market_service_close_failed",
+                    error=str(_ms_err),
+                )
         await super().stop()
 
     async def on_price_update(self, event: dict) -> None:
