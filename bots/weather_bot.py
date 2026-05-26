@@ -4252,6 +4252,92 @@ class WeatherBot(BaseBot):
                     pnl_pct=_pnl_pct,
                 )
                 if _stop_check["should_exit"]:
+                    # S230 (2026-05-26): A.2 mirror at Site 2. Site 1
+                    # (_check_hard_stop_all_positions) uses position_manager's
+                    # stale mid; this Site 2 uses bucket.yes_price which is
+                    # set at discovery and can be up to ~5min stale when the
+                    # discovery cache hits (TTL 5min). Same failure mode: live
+                    # top-of-book bid may disagree enough that hard_stop no
+                    # longer applies on a fresh pnl_pct. Bound accepted
+                    # live_bid to [0.005, 0.999] to reject garbage values.
+                    # Mirrors commit 1d426c6's logic with source="midlife" tag.
+                    _decision_price = current_price
+                    _live_bid: Optional[float] = None
+                    _tracker = getattr(self.base_engine, "orderbook_tracker", None)
+                    if _tracker is not None and token_id:
+                        try:
+                            _book = await _tracker.snapshot_order_book(token_id, condition_id=mid)
+                            _bids = (_book or {}).get("bids") or []
+                            if _bids:
+                                _bid_px = float(_bids[0].get("price", 0))
+                                if 0.005 <= _bid_px <= 0.999:
+                                    _live_bid = _bid_px
+                                elif _bid_px > 0:
+                                    logger.warning("weatherbot_exit_live_bid_implausible",
+                                                   market=mid[:20], raw_bid=_bid_px,
+                                                   source="midlife")
+                        except Exception as _re_err:
+                            logger.warning("weatherbot_exit_price_revalidate_failed",
+                                           market=mid[:20], error=str(_re_err)[:200],
+                                           source="midlife")
+
+                    if _live_bid is not None and _decision_price > 0:
+                        _drift = (_live_bid - _decision_price) / _decision_price
+                        if abs(_drift) > 0.05:
+                            logger.warning("weatherbot_exit_price_drift",
+                                           market=mid[:20],
+                                           decision_price=round(_decision_price, 4),
+                                           live_bid=round(_live_bid, 4),
+                                           drift_pct=round(_drift * 100, 2),
+                                           exit_reason="hard_stop_loss",
+                                           source="midlife")
+                            _live_pnl_pct = (_live_bid - entry_price) / max(entry_price, 1e-6)
+                            _live_stop = self.base_engine.risk_manager.check_hard_stop_loss(
+                                bot_name=self.bot_name,
+                                pnl_pct=_live_pnl_pct,
+                            )
+                            if not _live_stop.get("should_exit"):
+                                logger.warning("weatherbot_hard_stop_aborted_stale_price",
+                                               market=mid[:20],
+                                               entry=round(entry_price, 4),
+                                               decision_price=round(_decision_price, 4),
+                                               live_bid=round(_live_bid, 4),
+                                               live_pnl_pct=round(_live_pnl_pct, 4),
+                                               source="midlife")
+                                # Refresh og._position_details so subsequent
+                                # scans use live data (Site 1 also reads it).
+                                details["current_price"] = _live_bid
+                                # Persist via S141 pattern so _sync_prices_from_db
+                                # doesn't pull the stale mid back next scan.
+                                try:
+                                    _db = getattr(self.base_engine, "db", None)
+                                    if _db and getattr(_db, "session_factory", None):
+                                        from sqlalchemy import text as _refresh_sql
+                                        async with _db.get_session() as _rs:
+                                            await _rs.execute(_refresh_sql(
+                                                "UPDATE positions SET current_price = :p "
+                                                "WHERE token_id = :tid AND status = 'open' "
+                                                "  AND COALESCE(source_bot, bot_id) = 'WeatherBot'"
+                                            ), {"p": _live_bid, "tid": token_id})
+                                            await _rs.execute(_refresh_sql(
+                                                "INSERT INTO market_prices_latest "
+                                                "(token_id, market_id, price, timestamp) "
+                                                "VALUES (:tid, :mid, :p, :ts) "
+                                                "ON CONFLICT (token_id) DO UPDATE SET "
+                                                "  price = EXCLUDED.price, "
+                                                "  market_id = EXCLUDED.market_id, "
+                                                "  timestamp = EXCLUDED.timestamp "
+                                                "WHERE EXCLUDED.timestamp > "
+                                                "  market_prices_latest.timestamp"
+                                            ), {"tid": token_id, "mid": mid, "p": _live_bid,
+                                                "ts": datetime.now(timezone.utc).replace(tzinfo=None)})
+                                            await _rs.commit()
+                                except Exception as _rd_err:
+                                    logger.warning("weatherbot_exit_price_refresh_db_failed",
+                                                   market=mid[:20], error=str(_rd_err)[:200],
+                                                   source="midlife")
+                                continue  # Skip exit; bucket re-evaluated next scan.
+
                     logger.info(
                         "weatherbot_shared_hard_stop",
                         market_id=mid,

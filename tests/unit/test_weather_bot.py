@@ -3193,6 +3193,210 @@ class TestS228HardStopExitRevalidation:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# S230 (2026-05-26): A.2 mirror at Site 2 — _evaluate_mid_life_exits hard_stop
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestS230Site2HardStopRevalidation:
+    """S230: Mirror of S228 A.2 at Site 2 (_evaluate_mid_life_exits hard_stop
+    branch). Site 1 (commit 1d426c6) covers position_manager stale mid; Site 2
+    covers bucket.yes_price which is set at discovery (up to ~5min stale on
+    discovery-cache hit). Same fail-safe: re-validate hard_stop against live
+    top-of-book bid before exit, abort if stop no longer applies on fresh
+    pnl_pct, refresh og._position_details + DB so next scan uses live data.
+    """
+
+    def _make_bot(self):
+        import asyncio
+        from bots.weather_bot import WeatherBot
+        bot = MagicMock(spec=WeatherBot)
+        bot.bot_name = "WeatherBot"
+        bot._recently_exited = {}
+        bot._exit_reasons = {}
+        bot._exit_cooldown_secs = 14400.0
+        bot._exposure_lock = asyncio.Lock()
+        bot._group_exposure = {}
+        bot._city_exposure = {}
+        bot._market_group_cache = {}
+        bot._save_exit_to_redis = AsyncMock()
+        bot.base_engine = MagicMock()
+        bot.base_engine.db = None
+        bot.base_engine.order_gateway = MagicMock()
+        bot.base_engine.order_gateway._position_details = {}
+        bot.base_engine.place_order = AsyncMock(return_value={"success": True})
+        bot.place_order = AsyncMock(return_value={"success": True})
+        bot.base_engine.orderbook_tracker = None  # set per-test
+        bot.running = True
+        return bot
+
+    def _make_bucket(self, market_id, yes_price, token_id="t1", no_token_id="n1"):
+        return TemperatureBucket(
+            market_id=market_id,
+            bucket_type="range",
+            low_bound=70.0,
+            high_bound=75.0,
+            yes_price=yes_price,
+            token_id=token_id,
+            no_token_id=no_token_id,
+            temp_unit="F",
+        )
+
+    def _make_analyzed(self, bucket, fresh_prob):
+        group = MagicMock()
+        group.buckets = [bucket]
+        return [([], group, {bucket.market_id: fresh_prob})]
+
+    @pytest.mark.asyncio
+    async def test_aborts_when_live_bid_disagrees_with_stale_bucket(self):
+        """Stale bucket.yes_price 0.35 says -30% (stop fires); live bid 0.45
+        says -10% (within tolerance) → re-validate → abort, no place_order."""
+        from bots.weather_bot import WeatherBot
+        bot = self._make_bot()
+        bucket = self._make_bucket("mkt_stale_s2", yes_price=0.35, token_id="yes_s2")
+        bot.base_engine.order_gateway._position_details = {
+            "WeatherBot:mkt_stale_s2": {"side": "YES", "price": 0.50, "size": 10.0}
+        }
+        # First call uses stale pnl_pct (-30%) → should_exit=True
+        # Second call uses live pnl_pct (-10%) → should_exit=False (abort)
+        bot.base_engine.risk_manager.check_hard_stop_loss = MagicMock(side_effect=[
+            {"should_exit": True, "reason": "hard_stop_loss", "details": {}},
+            {"should_exit": False, "reason": "", "details": {}},
+        ])
+        bot.base_engine.orderbook_tracker = MagicMock()
+        bot.base_engine.orderbook_tracker.snapshot_order_book = AsyncMock(
+            return_value={"bids": [{"price": "0.45", "size": "100"}]}
+        )
+
+        analyzed = self._make_analyzed(bucket, 0.50)
+        await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
+
+        assert not bot.base_engine.place_order.called, (
+            "Site 2: stop must abort — place_order should not fire when "
+            "live bid disagrees with stale bucket price"
+        )
+        assert "mkt_stale_s2" not in bot._recently_exited, (
+            "Site 2: recently-exited cooldown should not be set on abort"
+        )
+        # details refreshed to live_bid so subsequent scans see live data
+        assert (
+            bot.base_engine.order_gateway._position_details["WeatherBot:mkt_stale_s2"]["current_price"]
+            == 0.45
+        )
+
+    @pytest.mark.asyncio
+    async def test_proceeds_when_live_bid_is_implausible(self):
+        """Live bid 0.0001 (garbage) → bound rejects → fall through to exit."""
+        from bots.weather_bot import WeatherBot
+        bot = self._make_bot()
+        bucket = self._make_bucket("mkt_bad_s2", yes_price=0.35, token_id="yes_s2bad")
+        bot.base_engine.order_gateway._position_details = {
+            "WeatherBot:mkt_bad_s2": {"side": "YES", "price": 0.50, "size": 10.0}
+        }
+        bot.base_engine.risk_manager.check_hard_stop_loss = MagicMock(
+            return_value={"should_exit": True, "reason": "hard_stop_loss", "details": {}}
+        )
+        bot.base_engine.orderbook_tracker = MagicMock()
+        bot.base_engine.orderbook_tracker.snapshot_order_book = AsyncMock(
+            return_value={"bids": [{"price": "0.0001", "size": "999"}]}
+        )
+
+        analyzed = self._make_analyzed(bucket, 0.50)
+        await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
+
+        assert bot.base_engine.place_order.called, (
+            "Site 2: stop must proceed when live bid is out-of-band garbage — "
+            "bound short-circuits abort logic"
+        )
+        assert "mkt_bad_s2" in bot._recently_exited, (
+            "Site 2: recently-exited cooldown should be set when stop proceeds"
+        )
+
+    @pytest.mark.asyncio
+    async def test_proceeds_when_no_orderbook_tracker(self):
+        """No orderbook_tracker available → _live_bid stays None → no abort."""
+        from bots.weather_bot import WeatherBot
+        bot = self._make_bot()
+        bucket = self._make_bucket("mkt_nt_s2", yes_price=0.35, token_id="yes_s2nt")
+        bot.base_engine.order_gateway._position_details = {
+            "WeatherBot:mkt_nt_s2": {"side": "YES", "price": 0.50, "size": 10.0}
+        }
+        bot.base_engine.risk_manager.check_hard_stop_loss = MagicMock(
+            return_value={"should_exit": True, "reason": "hard_stop_loss", "details": {}}
+        )
+        bot.base_engine.orderbook_tracker = None  # explicit
+
+        analyzed = self._make_analyzed(bucket, 0.50)
+        await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
+
+        assert bot.base_engine.place_order.called, (
+            "Site 2: stop must proceed when orderbook_tracker is unavailable"
+        )
+
+    @pytest.mark.asyncio
+    async def test_proceeds_when_drift_below_threshold(self):
+        """Drift |0.36-0.35|/0.35 = 2.86% < 5% → no re-validation, exit."""
+        from bots.weather_bot import WeatherBot
+        bot = self._make_bot()
+        bucket = self._make_bucket("mkt_low_drift", yes_price=0.35, token_id="yes_s2ld")
+        bot.base_engine.order_gateway._position_details = {
+            "WeatherBot:mkt_low_drift": {"side": "YES", "price": 0.50, "size": 10.0}
+        }
+        bot.base_engine.risk_manager.check_hard_stop_loss = MagicMock(
+            return_value={"should_exit": True, "reason": "hard_stop_loss", "details": {}}
+        )
+        bot.base_engine.orderbook_tracker = MagicMock()
+        bot.base_engine.orderbook_tracker.snapshot_order_book = AsyncMock(
+            return_value={"bids": [{"price": "0.36", "size": "100"}]}
+        )
+
+        analyzed = self._make_analyzed(bucket, 0.50)
+        await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
+
+        # Below-threshold drift skips re-validation (only one check_hard_stop_loss call)
+        assert bot.base_engine.risk_manager.check_hard_stop_loss.call_count == 1, (
+            "Site 2: drift below 5% must NOT trigger re-validation call"
+        )
+        assert bot.base_engine.place_order.called, (
+            "Site 2: stop must proceed when drift is within tolerance"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_side_uses_no_token_orderbook(self):
+        """NO-side position: snapshot must be called with bucket.no_token_id
+        (not yes token), so the live bid is the NO-side bid."""
+        from bots.weather_bot import WeatherBot
+        bot = self._make_bot()
+        # NO position: entry was at 0.70 (YES=0.30), current YES=0.85 → NO_price=0.15
+        # pnl_pct = (0.15 - 0.70) / 0.70 = -78.6% → stop fires
+        bucket = self._make_bucket("mkt_no_s2", yes_price=0.85,
+                                    token_id="yes_no_s2", no_token_id="no_s2live")
+        bot.base_engine.order_gateway._position_details = {
+            "WeatherBot:mkt_no_s2": {"side": "NO", "price": 0.70, "size": 8.0}
+        }
+        bot.base_engine.risk_manager.check_hard_stop_loss = MagicMock(side_effect=[
+            {"should_exit": True, "reason": "hard_stop_loss", "details": {}},
+            {"should_exit": False, "reason": "", "details": {}},
+        ])
+        bot.base_engine.orderbook_tracker = MagicMock()
+        # NO-side live bid 0.60 → pnl_pct = (0.60-0.70)/0.70 = -14% → no stop
+        bot.base_engine.orderbook_tracker.snapshot_order_book = AsyncMock(
+            return_value={"bids": [{"price": "0.60", "size": "100"}]}
+        )
+
+        analyzed = self._make_analyzed(bucket, 0.85)
+        await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
+
+        # snapshot must be called with the NO token, not YES
+        call_args = bot.base_engine.orderbook_tracker.snapshot_order_book.call_args
+        assert call_args.args[0] == "no_s2live", (
+            f"NO-side hard-stop re-validation must snapshot the NO orderbook "
+            f"(got token_id={call_args.args[0]!r}, expected 'no_s2live')"
+        )
+        # Abort path: no exit
+        assert not bot.base_engine.place_order.called
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # S215: _ensure_markets_in_db batching regression
 # ═══════════════════════════════════════════════════════════════════════════
 
