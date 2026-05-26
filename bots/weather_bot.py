@@ -4974,12 +4974,29 @@ class WeatherBot(BaseBot):
         included in the 1000-token WebSocket subscription (they have liquidity=0).
         Without a real price, compute_edges() skips every bucket (price <= 0.0 guard).
 
-        Calls CLOB /midpoint per market's yes_token_id — only runs once per 30 min
-        (rate-limited by _fetch_weather_markets_direct's _last_direct_probe timer).
-        Capped at 200 markets (was 50) to avoid missing mispriced buckets.
+        Calls CLOB /midpoint per market's yes_token_id only when the existing
+        yes_price is missing/zero. Markets already priced from the DB pass
+        through unchanged with no CLOB call. With ~98% of weather markets
+        having stored prices, the actual CLOB-call load is tiny even with
+        a large cap.
 
         Note: Gamma API /markets/{id} rejects hex condition IDs (DB id format).
         CLOB /midpoint accepts the numeric yes_token_id and returns {"mid": "0.48"}.
+
+        S229 (2026-05-26): Cap raised from hardcoded 200 to configurable
+        WEATHER_ENRICH_MAX_MARKETS (default 2500 = current DB weather pool).
+        The previous [:200] cap was acting as a list TRUNCATION (the
+        function returns only the enriched slice; everything beyond 200
+        was dropped from the output list entirely). With the DB containing
+        50+ stale `active=true, resolved=false, end_date_iso=NULL` weather
+        markets at low IDs that come first in default DB query order, the
+        old 200-cap meant the bot's 200-market working set was 100% stale
+        ghosts (verified via post-S229 stale_groups_dropped log:
+        `dropped=128 kept=0`). The fresh May 27/28 markets sat at higher
+        positions and never made it through. Raising the cap to 2500 lets
+        the full weather pool into the downstream pipeline; the
+        weatherbot_stale_groups_dropped filter (4e1393e) then prunes the
+        stale ones, leaving fresh markets in the working set.
         """
         client = getattr(self.base_engine, "client", None)
         if not client:
@@ -5011,7 +5028,10 @@ class WeatherBot(BaseBot):
                     )
             return m
 
-        enriched = await asyncio.gather(*[_fetch_midpoint(m) for m in markets[:200]])
+        _max_enrich = int(getattr(settings, "WEATHER_ENRICH_MAX_MARKETS", 2500))
+        _input_count = len(markets)
+        _truncated = _input_count > _max_enrich
+        enriched = await asyncio.gather(*[_fetch_midpoint(m) for m in markets[:_max_enrich]])
         enriched_count = sum(1 for m in enriched if m.get("_enriched"))
         # Clean up transient flag
         for m in enriched:
@@ -5020,8 +5040,11 @@ class WeatherBot(BaseBot):
         logger.info(
             "weatherbot_price_enriched",
             total=len(enriched),
+            input_count=_input_count,
             enriched=enriched_count,
             skipped=len(enriched) - enriched_count,
+            cap=_max_enrich,
+            truncated=_truncated,
         )
         return list(enriched)
 
