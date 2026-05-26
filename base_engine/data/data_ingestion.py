@@ -2251,6 +2251,21 @@ class DataIngestionService:
                 await self.ingest_elite_trader_activity()
             except Exception as ea:
                 logger.warning("Elite trader activity ingest failed (non-fatal): %s", ea)
+        except asyncio.CancelledError:
+            # IngestionScheduler enforces a 600s timeout on ingest_everything;
+            # when it fires, this branch handles the resulting cancellation
+            # without producing a full traceback in journalctl. Phase 2 keeps
+            # partial progress via resume_from_checkpoint=True.
+            logger.warning(
+                "ingest_everything cancelled — IngestionScheduler timeout boundary; "
+                "Phase 2 partial progress preserved by checkpointing"
+            )
+            result["error"] = "cancelled (timeout)"
+            try:
+                await self._log_sync_run("full", started_at, "failure", error_message="cancelled (timeout)")
+            except Exception:
+                pass  # Best-effort sync_log cleanup on cancellation
+            raise  # CancelledError must propagate up to the scheduler
         except BaseException as e:
             logger.exception("ingest_everything failed")
             result["error"] = str(e)
