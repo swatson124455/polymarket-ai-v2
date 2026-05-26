@@ -224,6 +224,7 @@ class EsportsBot(BaseBot):
         self._api_key = api_key
         self._pandascore = None       # Lazy init in start()
         self._patch_drift = None      # PatchDriftDetector instance
+        self._riot_client = None      # RiotApiClient — held by PatchDriftDetector, must close on stop()
         self._market_scanner = None   # EsportsMarketScanner instance
         self._market_service = None   # EsportsMarketService instance (Commit 4/5)
         self._lol_model = None       # LoLWinModel
@@ -490,15 +491,14 @@ class EsportsBot(BaseBot):
         await self._pandascore.init()
 
         riot_key = getattr(settings, "RIOT_API_KEY", None)
-        riot_client = None
         if riot_key:
             from esports.data.riot_api_client import RiotApiClient
-            riot_client = RiotApiClient(api_key=riot_key)
-            await riot_client.init()
+            self._riot_client = RiotApiClient(api_key=riot_key)
+            await self._riot_client.init()
 
         _obs_hours = int(getattr(settings, "ESPORTS_OBSERVATION_HOURS", 48))
         self._patch_drift = PatchDriftDetector(
-            riot_client=riot_client, observation_hours=_obs_hours,
+            riot_client=self._riot_client, observation_hours=_obs_hours,
         )
 
         # OpenDota client — free Dota2 hero + team form data (no auth needed)
@@ -756,6 +756,19 @@ class EsportsBot(BaseBot):
             await self._market_service.close()
         if self._pandascore:
             await self._pandascore.close()
+        # 2026-05-26: close RiotApiClient. Pre-fix it was held only inside
+        # PatchDriftDetector (via riot_client param) with no close-call here,
+        # leaving its httpx.AsyncClient open at shutdown — contributing to
+        # CLOSE-WAIT accumulation on EB pid (S230). Now stored as
+        # self._riot_client in start() so close() can be invoked here.
+        if self._riot_client:
+            try:
+                await self._riot_client.close()
+            except Exception as _rc_err:
+                logger.warning(
+                    "esports_bot_riot_client_close_failed",
+                    error=str(_rc_err),
+                )
         await super().stop()
 
     def _passes_ws_entry_gates(
