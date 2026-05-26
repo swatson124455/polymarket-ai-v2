@@ -2820,6 +2820,24 @@ class WeatherBot(BaseBot):
         # Compute edges
         edges = self._prob_engine.compute_edges(model_probs, market_prices)
 
+        # S229 diagnostic: unconditional per-group skip log when compute_edges
+        # returns empty. This catches the silent path through the parametric
+        # branch: bucket_probabilities() can return empty under M1 degenerate-
+        # distribution guard (probability_engine.py:200), producing
+        # model_probs={} that flows through M7 and compute_edges silently.
+        # Without this, the loop completes with 0 edges and no log fires.
+        if not edges:
+            logger.info(
+                "weatherbot_analyze_skip",
+                reason="compute_edges_empty",
+                city=group.city,
+                date=group.target_date.isoformat(),
+                n_buckets=len(group.buckets),
+                model_probs_count=len(model_probs),
+                priced_count=priced_count,
+                sample_yes_price=round(next(iter(market_prices.values()), 0.0), 4) if market_prices else None,
+            )
+
         # Diagnostic: log raw edges before filtering
         if edges:
             best_raw = max(e["abs_edge"] for e in edges)
