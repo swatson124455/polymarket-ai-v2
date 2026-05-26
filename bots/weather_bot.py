@@ -5365,48 +5365,63 @@ class WeatherBot(BaseBot):
     # ── DB helpers (P1, P2, P3) ──────────────────────────────────────────
 
     async def _handle_daily_boundary(self) -> None:
-        """Reset daily state at UTC day boundary; restore P&L from DB (P2)."""
+        """Reset daily state at UTC day boundary; restore P&L from DB every scan.
+
+        S230 (2026-05-26): _restore_daily_pnl_from_db now runs on EVERY call
+        (not just on day boundary). Pre-fix: _daily_pnl was set at startup
+        and stayed static all day (no in-memory increment site exists), so
+        mid-day fills/resolutions never reflected in the daily loss limit
+        gate at lines 3313, 3421, 6614. Behavior change is intentional —
+        the bug WAS the stale-mid-day behavior. Sole caller is the scan
+        loop (~2-3min cadence). Cost: ~5ms indexed range scan per call.
+        """
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        if self._daily_pnl_date == today:
-            return
+        is_new_day = self._daily_pnl_date != today
 
-        # New day — reset in-memory state
-        self._daily_pnl = 0.0
-        self._daily_pnl_date = today
-        self._group_exposure.clear()
-        self._city_exposure.clear()
-        self._market_group_cache.clear()  # S104: stale date mappings from yesterday
+        if is_new_day:
+            # New UTC day — reset in-memory cohort + cache state.
+            # _daily_pnl reset to 0.0 is a fallback; the restore below
+            # repopulates from today's events (filtered by today_start so
+            # returns 0 if no events yet today).
+            self._daily_pnl = 0.0
+            self._daily_pnl_date = today
+            self._group_exposure.clear()
+            self._city_exposure.clear()
+            self._market_group_cache.clear()  # S104: stale date mappings from yesterday
 
-        # S155: Prune unbounded session-lifetime caches (memory leak mitigation).
-        # These dicts grow without bounds; clear at day boundary to prevent OOM.
-        self._prediction_log_cache.clear()
-        self._written_forecasts.clear()
-        self._alerted_unmatched_cities.clear()
-        self._liquidity_cache.clear()  # S159: was never pruned (TTL at read prevents stale data)
-        # TTL-based eviction for timed caches
-        _now_mono = time.monotonic()
-        self._afd_cache = {k: v for k, v in self._afd_cache.items() if v[0] > _now_mono}
-        self._station_mse_cache = {k: v for k, v in self._station_mse_cache.items()
-                                   if _now_mono - v[1] < 3600}
-        self._psw_discovery_cache = {k: v for k, v in self._psw_discovery_cache.items()
-                                      if _now_mono - v[0] < 1200}
-        # S160 WB-3: Prune expired exit cooldown entries (unbounded memory leak).
-        # Only remove entries past the max cooldown TTL (4h for RESOLUTION, 30m
-        # for REVERSAL). Active cooldowns are preserved.
-        _max_cd = max(self._exit_cooldown_secs, 1800.0)
-        _expired = [mid for mid, t in self._recently_exited.items()
-                    if _now_mono - t > _max_cd]
-        for mid in _expired:
-            self._recently_exited.pop(mid, None)
-            self._exit_reasons.pop(mid, None)
+            # S155: Prune unbounded session-lifetime caches (memory leak mitigation).
+            # These dicts grow without bounds; clear at day boundary to prevent OOM.
+            self._prediction_log_cache.clear()
+            self._written_forecasts.clear()
+            self._alerted_unmatched_cities.clear()
+            self._liquidity_cache.clear()  # S159: was never pruned (TTL at read prevents stale data)
+            # TTL-based eviction for timed caches
+            _now_mono = time.monotonic()
+            self._afd_cache = {k: v for k, v in self._afd_cache.items() if v[0] > _now_mono}
+            self._station_mse_cache = {k: v for k, v in self._station_mse_cache.items()
+                                       if _now_mono - v[1] < 3600}
+            self._psw_discovery_cache = {k: v for k, v in self._psw_discovery_cache.items()
+                                          if _now_mono - v[0] < 1200}
+            # S160 WB-3: Prune expired exit cooldown entries (unbounded memory leak).
+            # Only remove entries past the max cooldown TTL (4h for RESOLUTION, 30m
+            # for REVERSAL). Active cooldowns are preserved.
+            _max_cd = max(self._exit_cooldown_secs, 1800.0)
+            _expired = [mid for mid, t in self._recently_exited.items()
+                        if _now_mono - t > _max_cd]
+            for mid in _expired:
+                self._recently_exited.pop(mid, None)
+                self._exit_reasons.pop(mid, None)
 
-        # P2: Restore today's realized P&L from paper_trades so restarts
-        # don't reset the daily loss limit check to $0.
+            # Calibration feedback runs once per UTC day boundary (cost-bound).
+            await self._maybe_update_calibration_actuals()
+
+        # P2 + S230 live update: Restore today's realized P&L from trade_events
+        # on EVERY scan so the daily loss limit gate reflects fills/resolutions
+        # that landed since the previous scan. Pre-S230 this only ran on
+        # day boundary (or first scan after restart), leaving _daily_pnl
+        # static mid-day. Query is filtered to event_time >= today_start so
+        # cost is bounded (~5ms via indexed range scan).
         await self._restore_daily_pnl_from_db()
-
-        # Calibration feedback: fill actual_temp for past forecast rows so
-        # bias correction accumulates over time.
-        await self._maybe_update_calibration_actuals()
 
     async def _restore_daily_pnl_from_db(self) -> None:
         """Query today's WeatherBot realized P&L from trade_events DB."""

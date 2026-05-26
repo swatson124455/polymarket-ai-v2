@@ -946,20 +946,73 @@ class TestWeatherBot:
         weather_bot._restore_daily_pnl_from_db.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_handle_daily_boundary_same_day_no_op(self, weather_bot):
-        """Same-day call to _handle_daily_boundary → no reset."""
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d") if True else ""
-        # Need to import timezone for the strftime
+    async def test_handle_daily_boundary_same_day_no_reset_but_restore_runs(self, weather_bot):
+        """S230 (2026-05-26): Same-day call does NOT trigger reset/clears,
+        but DB restore now runs on every call so the daily loss limit gate
+        reflects fills/resolutions since the previous scan.
+        """
         from datetime import timezone as _tz
         today = datetime.now(_tz.utc).strftime("%Y-%m-%d")
         weather_bot._daily_pnl = -50.0
         weather_bot._daily_pnl_date = today
+        weather_bot._group_exposure = {"NYC:2026-05-26": 50.0}
         weather_bot._restore_daily_pnl_from_db = AsyncMock()
+        weather_bot._maybe_update_calibration_actuals = AsyncMock()
 
         await weather_bot._handle_daily_boundary()
 
-        assert weather_bot._daily_pnl == -50.0  # Unchanged
-        weather_bot._restore_daily_pnl_from_db.assert_not_called()
+        # No same-day reset of cohort state
+        assert weather_bot._group_exposure == {"NYC:2026-05-26": 50.0}
+        # Calibration actuals update is also one-per-day, not every scan
+        weather_bot._maybe_update_calibration_actuals.assert_not_called()
+        # But restore IS called on every scan — the S230 fix
+        weather_bot._restore_daily_pnl_from_db.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_handle_daily_boundary_restores_on_every_call(self, weather_bot):
+        """S230 regression guard: three back-to-back same-day calls must
+        each trigger _restore_daily_pnl_from_db. Pre-fix: only the first
+        call (first-scan-after-restart) refreshed the value; subsequent
+        scans saw a stale _daily_pnl until the next UTC day boundary.
+        """
+        from datetime import timezone as _tz
+        today = datetime.now(_tz.utc).strftime("%Y-%m-%d")
+        weather_bot._daily_pnl_date = today
+        weather_bot._restore_daily_pnl_from_db = AsyncMock()
+        weather_bot._maybe_update_calibration_actuals = AsyncMock()
+
+        for _ in range(3):
+            await weather_bot._handle_daily_boundary()
+
+        assert weather_bot._restore_daily_pnl_from_db.call_count == 3, (
+            "S230 fix: restore must run on every scan, not just at day "
+            "boundary or first-scan-after-restart"
+        )
+
+    @pytest.mark.asyncio
+    async def test_handle_daily_boundary_new_day_resets_then_restores(self, weather_bot):
+        """New UTC day path: resets in-memory state, runs calibration
+        actuals (day-boundary-only), AND runs the DB restore. Restore is
+        the single source of truth — explicit _daily_pnl=0.0 in the reset
+        block is a fallback only.
+        """
+        weather_bot._daily_pnl = -123.45
+        weather_bot._daily_pnl_date = "2025-01-01"  # stale date
+        weather_bot._group_exposure = {"old:2025-01-01": 99.0}
+        weather_bot._city_exposure = {"old": 99.0}
+        weather_bot._restore_daily_pnl_from_db = AsyncMock()
+        weather_bot._maybe_update_calibration_actuals = AsyncMock()
+
+        await weather_bot._handle_daily_boundary()
+
+        from datetime import timezone as _tz
+        today = datetime.now(_tz.utc).strftime("%Y-%m-%d")
+        assert weather_bot._daily_pnl_date == today
+        assert weather_bot._daily_pnl == 0.0  # Fallback reset; restore mock didn't repopulate
+        assert weather_bot._group_exposure == {}
+        assert weather_bot._city_exposure == {}
+        weather_bot._maybe_update_calibration_actuals.assert_called_once()
+        weather_bot._restore_daily_pnl_from_db.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_stop_closes_forecast_client(self, weather_bot):
