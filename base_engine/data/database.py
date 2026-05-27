@@ -3627,6 +3627,7 @@ class Database:
                     "    AND te.event_type = 'RESOLUTION'"
                     ") "
                     "AND e.total_entry_size - COALESCE(x.total_exit_size, 0) > 0 "
+                    "ORDER BY pt_pnl.resolved_at ASC NULLS LAST "
                     "LIMIT 500"
                 ))
                 _phase4b_rows = list(_resolved.fetchall())
