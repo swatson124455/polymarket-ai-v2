@@ -615,3 +615,49 @@ async def test_phase4b_alt_falls_back_to_positions_size_when_no_trade_events_ent
         f"backward-compat: legacy JOIN-mismatch case must emit p.size when "
         f"no trade_events ENTRY exists. Got {emit_kwargs['size']}, expected 50.0"
     )
+
+
+# ── ROOT CAUSE regression guard: phase4b candidate ordering ──────────────────
+
+def test_phase4b_select_has_order_by_resolved_at():
+    """Phase 4b SELECT must ORDER BY pt_pnl.resolved_at ASC before LIMIT 500.
+
+    Without ORDER BY, PostgreSQL picks rows in heap order which is
+    nondeterministic. With >500 candidates (observed: 722 across all bots),
+    the same ~222 rows can be perpetually skipped — a starvation bug.
+    Concrete case: market 0x7abae048de.. (EsportsBot NO, remaining=590.27)
+    sat at heap-order position past the 500-row cutoff and never emitted
+    RESOLUTION for 24h+ post-cleanup, while 8 of 10 sibling markets re-emitted
+    normally within minutes.
+
+    Regression guard: if anyone removes the ORDER BY or changes the ordering
+    column away from a time-monotone field, this test fails.
+    """
+    import inspect
+    import re
+
+    from base_engine.data.database import Database
+
+    source = inspect.getsource(Database.backfill_trade_events_resolution)
+
+    # The phase4b SELECT and the phase4b-alt SELECT both end in `LIMIT 500`.
+    # Phase 4b is the first one in source order. The ORDER BY must immediately
+    # precede its LIMIT 500.
+    # Collapse string-concat artifacts: join `"..."  "..."` chunks into one
+    # logical line so the regex can match across Python concat boundaries.
+    collapsed = re.sub(r'"\s*\n\s*"', "", source)
+
+    # First LIMIT 500 = phase4b's outer LIMIT.
+    first_limit_idx = collapsed.find("LIMIT 500")
+    assert first_limit_idx != -1, "phase4b SELECT must still have LIMIT 500"
+
+    # Look backward up to ~400 chars for ORDER BY on pt_pnl.resolved_at.
+    window = collapsed[max(0, first_limit_idx - 400):first_limit_idx]
+    assert re.search(r"ORDER BY\s+pt_pnl\.resolved_at\s+ASC", window), (
+        "phase4b SELECT must have `ORDER BY pt_pnl.resolved_at ASC` "
+        "immediately before its `LIMIT 500`. Without it, PostgreSQL picks "
+        "rows in nondeterministic heap order; with >500 candidates this "
+        "perpetually starves the same ~222 rows. Confirmed starvation in "
+        "production 2026-05-27 for EB market 0x7abae048de.. (24h+ no emit).\n\n"
+        f"Window before first LIMIT 500:\n{window}"
+    )
