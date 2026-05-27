@@ -100,47 +100,14 @@ class OrderGateway:
         return self._daily_exposure_usd.get(bot_name, 0.0)
 
     def _can_exit(self, market_id: str) -> bool:
-        """Check if tokens for this market can be sold.
-
-        S230 Bug 14: tightened to block ALL neg-risk markets (was
-        `neg_risk AND outcome_count > 2`).
-
-        OPERATOR CLARIFICATION (S230, 2026-05-26): neg-risk is NOT about
-        multi-outcome support. The bot already supports betting on markets
-        with multiple outcomes — the constraint is one position per market
-        (enforced via `mirror_opposing_side_blocked` and the
-        `_entered_market_sides` set restored at startup). Multi-outcome
-        and neg-risk are ORTHOGONAL concepts:
-          - "Multi-outcome" = a question with >2 possible answers (rare in
-            isolation; usually implemented as a NegRisk umbrella of binaries)
-          - "Neg-risk"     = contract-routing mechanism. Trades route through
-            NegRiskExchange V2 (0xe2222d279d…) instead of Exchange V2
-            (0xE111180000…). Individual NegRisk submarkets are typically
-            BINARY (Yes/No), grouped under a `neg_risk_market_id` umbrella
-            for shared liquidity and the negative-risk property (sum of
-            outcome probs can be < 100%).
-
-        The block exists because NegRiskExchange V2 routing exercises
-        codepaths — exit confirmation, resolution backfill, redemption,
-        balance/allowance cache — that aren't currently validated against
-        the NegRisk contract. Bug 13 (cache-refresh) covers the open-side
-        cache issue; exit/redemption against NegRisk is untested. Until we
-        full-cycle a NegRisk position (open → exit → redeem) and verify the
-        bot handles it correctly, block the routing.
-
-        Surfaced S230 live smoke test: 2 of 3 failed BUYs were binary neg-risk
-        (Knicks NBA Finals, Spurs NBA Western per live Gamma). DB had stale
-        `neg_risk=false` for both; live Gamma showed `neg_risk=true`. Plus the
-        original `outcome_count > 2` filter never fired in practice because
-        NegRisk submarkets are usually binary.
-
-        Returns True to allow, False to block.
-        """
+        """Check if tokens for this market can be sold. Blocks NegRisk multi-outcome markets
+        where tokens may be unsellable through normal CLOB orders."""
         if not self._market_index:
             return True  # No index loaded yet, allow (conservative: don't block cold-start)
         market = self._market_index.get(str(market_id), {})
         neg_risk = market.get("neg_risk") or market.get("negRisk") or False
-        if neg_risk:
+        outcome_count = market.get("outcome_count", 2) or 2
+        if neg_risk and outcome_count > 2:
             return False
         return True
 
