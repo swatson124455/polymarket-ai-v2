@@ -4721,13 +4721,24 @@ class WeatherBot(BaseBot):
         else:  # NO
             _exec_price = 1.0 - _bb  # NO ask = 1 - YES bid
 
-        _exec_edge = float(opp.get("model_prob", 0.0)) - _exec_price
+        # S230: opp["model_prob"] is the YES-side bucket probability ([weather_bot.py:2136]).
+        # For a NO bet, the gate's edge math must use P(NO wins) = 1 - P(YES wins).
+        # Pre-fix bug: gate used raw YES-side model_prob for both sides — every NO bet
+        # got exec_edge = P(YES) - P(NO_price) ≈ 2·P(YES) - 1, which is strongly
+        # negative whenever the bot has high NO conviction (low P(YES)). Result: every
+        # NO bet rejected post-S230 once book data started arriving. Side-aware flip
+        # matches the existing convention at [weather_bot.py:3252] and the tests'
+        # documented semantics ("model_prob_NO = 0.722").
+        _model_prob_yes = float(opp.get("model_prob", 0.0))
+        _side_prob = _model_prob_yes if _side == "YES" else (1.0 - _model_prob_yes)
+        _exec_edge = _side_prob - _exec_price
         if _exec_edge < _min_exec_edge:
             logger.info(
                 "weatherbot_executable_edge_reject",
                 market_id=opp.get("market_id"),
                 side=_side,
-                model_prob=round(float(opp.get("model_prob", 0)), 4),
+                model_prob=round(_model_prob_yes, 4),
+                side_prob=round(_side_prob, 4),
                 midpoint_edge=round(float(opp.get("edge", 0)), 4),
                 exec_price=round(_exec_price, 4),
                 exec_edge=round(_exec_edge, 4),

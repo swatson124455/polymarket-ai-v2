@@ -4124,9 +4124,12 @@ class TestS221ExecutableEdgeCheck:
                "price": 0.49, "edge": 0.23}
         assert bot_with_index._check_executable_edge(opp) is True
 
-    def test_passes_liquid_no_with_positive_executable_edge(self, bot_with_index):
-        """NO side, model 0.72 (of NO), bestBid_YES 0.20 → exec_NO_ask = 0.80,
-        honest_edge = 0.72 - 0.80 = -0.08. Should REJECT.
+    def test_rejects_no_when_side_prob_below_exec_price(self, bot_with_index):
+        """NO side, model_prob (YES) = 0.72 → P(NO wins) = 0.28; bestBid_YES = 0.20 →
+        exec_NO_ask = 0.80; honest_edge = 0.28 - 0.80 = -0.52. Should REJECT.
+
+        S230: opp["model_prob"] is the YES-side bucket probability ([weather_bot.py:2136]);
+        the gate flips to P(NO) = 1 - model_prob_yes for NO bets.
         """
         bot_with_index.base_engine.order_gateway._market_index = {
             "m1": {"bestBid": 0.20, "bestAsk": 0.22}
@@ -4136,9 +4139,9 @@ class TestS221ExecutableEdgeCheck:
         assert bot_with_index._check_executable_edge(opp) is False
 
     def test_rejects_2106427_no_side_profile(self, bot_with_index):
-        """The exact failure mode: bestBid_YES=0.15, bestAsk_YES=0.80.
-        WB wants to BUY NO, model_prob_NO = 0.722.
-        exec_NO_ask = 1 - 0.15 = 0.85. honest_edge = 0.722 - 0.85 = -0.128.
+        """The exact 2106427 failure mode: bestBid_YES=0.15, bestAsk_YES=0.80.
+        WB wants to BUY NO. model_prob (YES) = 0.722 → P(NO wins) = 0.278.
+        exec_NO_ask = 1 - 0.15 = 0.85. honest_edge = 0.278 - 0.85 = -0.572. REJECT.
         """
         bot_with_index.base_engine.order_gateway._market_index = {
             "2106427": {"bestBid": 0.15, "bestAsk": 0.80}
@@ -4146,8 +4149,25 @@ class TestS221ExecutableEdgeCheck:
         opp = {"market_id": "2106427", "side": "NO", "model_prob": 0.722,
                "price": 0.475, "edge": 0.247}  # midpoint edge was +0.247
         assert bot_with_index._check_executable_edge(opp) is False, (
-            "2106427 NO-side trade (midpoint edge +0.247, honest edge -0.128) "
+            "2106427 NO-side trade (midpoint edge +0.247, honest edge -0.572) "
             "MUST be rejected by Phase 2"
+        )
+
+    def test_accepts_no_bet_with_positive_side_prob_edge(self, bot_with_index):
+        """S230 regression: when YES is unlikely (model_prob_yes=0.12 → P(NO)=0.88)
+        and YES bid is 0.40 (NO ask = 0.60), the NO bet has +0.28 honest edge and
+        MUST PASS. Pre-fix bug: gate used raw model_prob (0.12) instead of
+        side-corrected 0.88, computing exec_edge = 0.12 - 0.60 = -0.48 and
+        wrongly rejecting all NO bets post-S230 (book data finally arrived).
+        """
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.40, "bestAsk": 0.42}
+        }
+        # opp["model_prob"] is YES-side per [weather_bot.py:2136]; gate flips for NO.
+        opp = {"market_id": "m1", "side": "NO", "model_prob": 0.12,
+               "price": 0.60, "edge": -0.30}
+        assert bot_with_index._check_executable_edge(opp) is True, (
+            "NO bet with P(NO wins)=0.88 at NO_ask=0.60 has +0.28 honest edge — must accept"
         )
 
     def test_rejects_when_market_not_in_index(self, bot_with_index):
