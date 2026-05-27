@@ -35,6 +35,8 @@ class CircuitBreaker:
         failure_threshold: int = 5,
         cooldown_seconds: float = 60.0,
         half_open_max_calls: int = 1,
+        escalation_threshold: int = 10,
+        escalation_cooldown_seconds: float = 1800.0,
     ):
         self.failure_threshold = failure_threshold
         self.cooldown_seconds = cooldown_seconds
@@ -43,13 +45,48 @@ class CircuitBreaker:
         self.failure_count = 0
         self.last_failure_time: float = 0.0
         self.half_open_calls = 0
+        # S230 Bug 17 (2026-05-27): in-process kill-switch escalation.
+        # Counts consecutive HALF_OPEN → OPEN re-openings since the last
+        # success. When this hits escalation_threshold, the breaker
+        # "escalates": allow_request() returns False for the next
+        # escalation_cooldown_seconds regardless of state. After cooldown,
+        # the escalation auto-clears and the normal HALF_OPEN probe cycle
+        # resumes — if the underlying issue persists, re-escalation fires
+        # on the next pattern detection.
+        # Bug 17 addresses the gap surfaced in S230 live re-flip: 13+
+        # consecutive re-opens under Bug 16's NO → SELL pattern with no
+        # automatic escalation; the CircuitBreaker throttled the API but
+        # the bot kept attempting orders forever with no rollback.
+        self.escalation_threshold = escalation_threshold
+        self.escalation_cooldown_seconds = escalation_cooldown_seconds
+        self.consecutive_reopens = 0
+        self.escalated = False
+        self.escalated_at: float = 0.0
 
     def allow_request(self) -> bool:
         """Check if a request should be allowed through."""
+        now = time.monotonic()
+        # S230 Bug 17: escalation gate fires BEFORE the normal state machine.
+        # If escalated, block all requests until cooldown elapses; auto-clear
+        # then falls through to the existing CLOSED/OPEN/HALF_OPEN logic so
+        # the breaker can probe and confirm recovery (or re-escalate).
+        if self.escalated:
+            if (now - self.escalated_at) >= self.escalation_cooldown_seconds:
+                logger.info(
+                    "Circuit breaker escalation auto-cleared",
+                    elapsed_seconds=round(now - self.escalated_at, 1),
+                    consecutive_reopens_at_engage=self.consecutive_reopens,
+                )
+                self.escalated = False
+                # Leave state and consecutive_reopens as-is; next probe via
+                # HALF_OPEN will exercise recovery. If it fails, record_failure
+                # will detect the pattern and re-escalate.
+            else:
+                return False
         if self.state == self.CLOSED:
             return True
         if self.state == self.OPEN:
-            elapsed = time.monotonic() - self.last_failure_time
+            elapsed = now - self.last_failure_time
             if elapsed >= self.cooldown_seconds:
                 self.state = self.HALF_OPEN
                 self.half_open_calls = 0
@@ -60,20 +97,41 @@ class CircuitBreaker:
         return self.half_open_calls < self.half_open_max_calls
 
     def record_success(self) -> None:
-        """Record a successful call. Resets breaker to CLOSED."""
+        """Record a successful call. Resets breaker to CLOSED.
+
+        S230 Bug 17: also resets consecutive_reopens — a single successful
+        request indicates the system is healthy enough to count as recovery.
+        Does NOT auto-clear self.escalated; only the cooldown timer clears
+        escalation, so a single noise-success can't unwedge a pathological
+        bot before the 30-min observation window completes.
+        """
         if self.state == self.HALF_OPEN:
             logger.info("Circuit breaker closing (probe succeeded)")
         self.state = self.CLOSED
         self.failure_count = 0
         self.half_open_calls = 0
+        self.consecutive_reopens = 0
 
     def record_failure(self) -> None:
-        """Record a failed call. Opens breaker if threshold exceeded."""
+        """Record a failed call. Opens breaker if threshold exceeded.
+
+        S230 Bug 17: track consecutive HALF_OPEN → OPEN re-openings. When
+        the count hits escalation_threshold, engage in-process kill switch.
+        """
         self.failure_count += 1
         self.last_failure_time = time.monotonic()
         if self.state == self.HALF_OPEN:
             self.state = self.OPEN
-            logger.warning("Circuit breaker re-opened (probe failed)", failures=self.failure_count)
+            self.consecutive_reopens += 1
+            logger.warning(
+                "Circuit breaker re-opened (probe failed)",
+                failures=self.failure_count,
+                consecutive_reopens=self.consecutive_reopens,
+            )
+            # Bug 17 escalation trigger
+            if (self.consecutive_reopens >= self.escalation_threshold
+                    and not self.escalated):
+                self._engage_escalation()
         elif self.failure_count >= self.failure_threshold:
             self.state = self.OPEN
             logger.warning(
@@ -81,6 +139,36 @@ class CircuitBreaker:
                 failures=self.failure_count,
                 cooldown_seconds=self.cooldown_seconds,
             )
+
+    def _engage_escalation(self) -> None:
+        """S230 Bug 17: escalate from API throttling to in-process kill switch.
+
+        Triggered after escalation_threshold consecutive HALF_OPEN → OPEN
+        re-openings without a single intervening success. This pattern
+        indicates a structural failure (wrong-side orders, wallet not
+        provisioned, contract drift, etc.) that the cooldown-and-retry loop
+        cannot resolve on its own.
+
+        Behavior: blocks all allow_request() calls for
+        escalation_cooldown_seconds (default 30 min). The block is
+        in-process — no DB write, no env mutation, no service restart.
+        Auto-clears after cooldown to allow recovery from transient causes;
+        if the issue persists, the next probe re-triggers escalation.
+
+        Operator visibility: CRITICAL log with enough context to identify
+        the failure pattern and decide whether to leave auto-clear or
+        intervene (e.g., flip to paper, restart service, ship a fix).
+        """
+        self.escalated = True
+        self.escalated_at = time.monotonic()
+        logger.critical(
+            "Circuit breaker escalated to in-process kill switch",
+            consecutive_reopens=self.consecutive_reopens,
+            failure_count=self.failure_count,
+            cooldown_seconds=self.escalation_cooldown_seconds,
+            reason="pathological_failure_pattern",
+            action="all live order placement blocked; auto-clear after cooldown",
+        )
 
 
 class ExecutionEngine:
@@ -279,12 +367,24 @@ class ExecutionEngine:
             if self.kill_switch is not None and await self.kill_switch.is_engaged():
                 return {"success": False, "error": "Kill switch engaged (pre-execution)"}
 
-            # Circuit breaker: reject immediately if CLOB API is known-down
+            # Circuit breaker: reject immediately if CLOB API is known-down.
+            # S230 Bug 17: differentiate normal CB open from escalation block so
+            # operator log analysis can distinguish "API hiccup" from
+            # "pathological failure pattern caught by in-process kill switch."
             if not self.circuit_breaker.allow_request():
-                return {
-                    "success": False,
-                    "error": "Circuit breaker OPEN — CLOB API temporarily unavailable, retrying in %ds" % int(self.circuit_breaker.cooldown_seconds),
-                }
+                if self.circuit_breaker.escalated:
+                    _cooldown = int(self.circuit_breaker.escalation_cooldown_seconds)
+                    _err = (
+                        f"Circuit breaker ESCALATED — in-process kill switch active "
+                        f"(consecutive_reopens={self.circuit_breaker.consecutive_reopens}, "
+                        f"auto-clear in up to {_cooldown}s)"
+                    )
+                else:
+                    _err = (
+                        f"Circuit breaker OPEN — CLOB API temporarily unavailable, "
+                        f"retrying in {int(self.circuit_breaker.cooldown_seconds)}s"
+                    )
+                return {"success": False, "error": _err}
 
             # Phase 3: retry on transient failures (timeout, 5xx, rate limit). Phase 6: colocated uses fewer retries.
             profile = getattr(settings, "SPEED_PROFILE", "default")
