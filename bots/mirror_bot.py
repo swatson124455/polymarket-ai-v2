@@ -15,6 +15,16 @@ from config.settings import settings, is_paper_trading_active
 
 logger = get_logger()
 
+# S230 Bug 15: CLOB balance/allowance cache re-refresh interval.
+# Polymarket's matching engine caches per-funder balance/allowance with a
+# short TTL — observed staleness within ~6 min during S230 live re-flip
+# 2026-05-27. Bug 13's once-per-session refresh fired on an early-rejected
+# signal at 01:05; by the time the first real order attempted at 01:11 the
+# cache had already gone stale and every subsequent order hit "balance: 0".
+# Re-refreshing every N seconds keeps the cache warm without spamming the
+# endpoint. 30s is conservative — at most 2 calls/min.
+_CLOB_CACHE_TTL_SECONDS = 30.0
+
 
 class MirrorBot(BaseBot):
     """
@@ -104,11 +114,13 @@ class MirrorBot(BaseBot):
         # funder. After operator-side deposits/conversions/redemptions, the
         # cache lags on-chain reality and first BUY rejects with "balance: 0"
         # despite the deposit wallet being funded. Bot calls
-        # ClobAdapter.refresh_balance_allowance() on the FIRST live trade
-        # attempt of a session to sync the cache. Set True after one
-        # successful (or attempted-and-logged) call so we don't spam the
-        # /balance-allowance/update endpoint each scan.
-        self._clob_cache_refreshed: bool = False
+        # ClobAdapter.refresh_balance_allowance() before live trade
+        # attempts to sync the cache. S230 Bug 15 (2026-05-27) replaced the
+        # original once-per-session bool with a monotonic timestamp so the
+        # refresh re-fires every _CLOB_CACHE_TTL_SECONDS — the once-flag
+        # fired on an early-rejected signal during the live re-flip, leaving
+        # the actual first order with a stale cache 6 min later.
+        self._clob_cache_refreshed_at: Optional[float] = None
         # M4: Startup leader reconciliation — run on scan 3 (after watchlist initialized)
         self._recon_done: bool = False
 
@@ -1073,29 +1085,45 @@ class MirrorBot(BaseBot):
             logger.debug("mirror_sync_prices_from_db failed: %s", e)
 
     async def _refresh_clob_cache_once_if_live(self) -> None:
-        """S230 Bug 13: refresh CLOB balance/allowance cache on first live trade
-        attempt of a session. Polymarket caches per-funder state; without this,
-        first BUY post-restart rejects with stale "balance: 0" even when funded.
-        Idempotent — runs at most once per session via _clob_cache_refreshed flag.
-        Paper mode skips (no CLOB involved). Non-fatal on failure.
+        """S230 Bug 13 + Bug 15: keep CLOB balance/allowance cache warm in live mode.
+
+        Polymarket's matching engine caches per-funder balance/allowance with a
+        short TTL. Bug 13 (2026-05-26) refreshed once on first live trade
+        attempt. Bug 15 (2026-05-27) replaced the once-per-session flag with a
+        timestamped TTL because the once-flag fired on an early-rejected signal
+        at 01:05; the cache had gone stale again by the time the first real
+        order attempted at 01:11 — and every subsequent order in the live
+        session hit "balance: 0".
+
+        Calls ClobAdapter.refresh_balance_allowance() at most once per
+        _CLOB_CACHE_TTL_SECONDS. Paper mode no-ops. Non-fatal on failure —
+        timestamp is updated regardless so failed refreshes don't hammer the
+        endpoint at signal rate (~2.6 calls/sec at peak in S230).
+
+        Method name retained from Bug 13 for grep continuity — see Rule 2
+        in CLAUDE.md. "once" is now a misnomer; method gates by TTL.
         """
-        if self._clob_cache_refreshed:
-            return
         if is_paper_trading_active():
-            # Paper mode does not use CLOB; mark refreshed to skip future calls.
-            self._clob_cache_refreshed = True
             return
+        now = _time.monotonic()
+        last = self._clob_cache_refreshed_at
+        if last is not None and (now - last) < _CLOB_CACHE_TTL_SECONDS:
+            return
+        # Update timestamp BEFORE I/O so concurrent re-entry sees the in-flight
+        # refresh and skips. Failure still updates so a CLOB outage doesn't
+        # trigger refresh-per-signal hammering.
+        self._clob_cache_refreshed_at = now
         try:
             from base_engine.execution.clob_adapter import ClobAdapter
             adapter = ClobAdapter()
             ok = await adapter.refresh_balance_allowance(asset_type="COLLATERAL")
-            logger.info("bug13_clob_cache_refresh_attempted", success=bool(ok))
+            logger.info(
+                "bug13_clob_cache_refresh_attempted",
+                success=bool(ok),
+                since_last_refresh_s=round(now - last, 1) if last is not None else None,
+            )
         except Exception as _refresh_err:
             logger.warning("bug13_clob_cache_refresh_exception", error=str(_refresh_err)[:200])
-        finally:
-            # Mark refreshed regardless — non-fatal, will retry on actual order failure
-            # via the underlying retry path if needed. Avoids spamming the endpoint.
-            self._clob_cache_refreshed = True
 
     async def _check_and_execute_exits(self):
         """Mirror exits when tracked traders close their positions."""
