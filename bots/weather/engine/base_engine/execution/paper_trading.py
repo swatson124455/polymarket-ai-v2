@@ -453,12 +453,32 @@ class PaperTradingEngine:
 
         # B4: Use spread-side anchor when bid/ask available (buys fill at ask, sells at bid).
         # Falls back to mid-price when bid/ask not provided (backward-compatible default).
-        if bid > 0.0 and ask > 0.0:
+        #
+        # S231 (WB-splinter): Prefer REAL top-of-book from order_gateway's live book
+        # fetch (_shadow_best_ask / _shadow_best_bid) over the synthetic bid/ask the
+        # gateway constructs at order_gateway.py:1165 as `effective_price ± _spread/2`.
+        # The synthetic values are computed from cached token metadata (YES/NO mid
+        # prices in _market_index) and systematically diverge from the live top-of-book
+        # on thin markets. Since the slippage check below compares book-walk VWAP
+        # (always REAL via _shadow_vwap) against original_price, using the synthetic
+        # anchor caused 100% of WB trade attempts to fail on thin books (see S230
+        # audit: original=0.40 vs fill=0.65 = 62% adverse on Helsinki market
+        # 0xa7e39c..., all 11 post-fix attempts rejected). Real top-of-book
+        # (_shadow_best_ask=0.65) makes the anchor consistent with the walk. The
+        # _shadow_* keys are populated whenever order_gateway runs a book walk
+        # (order_gateway.py:979-988 sets them from _raw_asks[0]/_raw_bids[0]; passed
+        # via event_data at :1126-1127). When absent (legacy callers, no book
+        # fetched), falls through to the synthetic bid/ask params unchanged.
+        _event = event_data or {}
+        _real_best_ask = _event.get("_shadow_best_ask")
+        _real_best_bid = _event.get("_shadow_best_bid")
+        if _real_best_ask and _real_best_bid and _real_best_ask > 0 and _real_best_bid > 0:
+            price = _real_best_ask if side == "BUY" else _real_best_bid
+        elif bid > 0.0 and ask > 0.0:
             price = ask if side == "BUY" else bid
 
         # S115: Use VWAP from order_gateway's book walk (passed via event_data)
         # to set realistic fill price. Edge check already done by order_gateway.
-        _event = event_data or {}
         _order_size_usd = size * price
         original_price = price
         _submitted_at = datetime.now(timezone.utc).replace(tzinfo=None)
