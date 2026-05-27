@@ -82,7 +82,19 @@ def _place_order_sync(market_id: str, token_id: str, side: str, size: float, pri
         side_upper = (side or "").upper()
         if side_upper not in ("BUY", "SELL"):
             if side_upper in ("YES", "NO"):
-                side_upper = "BUY" if side_upper == "YES" else "SELL"
+                # S230 Bug 16 (2026-05-27): both YES and NO entries are BUYs in
+                # the V2 per-outcome-token model. The caller passes token_id =
+                # yes_token_id (for "YES") or no_token_id (for "NO"); side just
+                # encodes BUY (entry) vs SELL (exit). The original "BUY if YES
+                # else SELL" translation was a V1-era artifact: V1 used a single
+                # token per market and "sell YES" was the way to express NO
+                # conviction. V2 has distinct YES/NO CTF tokens (verified 170/170
+                # recent NO-positions have token_id=no_token_id). Exits arrive as
+                # side="SELL" already (see bots/mirror_bot.py:1438 exit_side="SELL")
+                # and bypass this branch. NO → SELL caused every live NO order
+                # to hit "balance: 0" because the bot doesn't own NO tokens to
+                # sell at entry time.
+                side_upper = "BUY"
             else:
                 return {"success": False, "error": f"Invalid side: {side}"}
         order_args = OrderArgs(
