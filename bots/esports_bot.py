@@ -5567,8 +5567,16 @@ class EsportsBot(BaseBot):
                                 game=_cal_game, n_samples=_cal._n_samples,
                                 min_required=_cal.min_samples)
             except Exception as exc:
-                logger.debug("esportsbot_beta_cal_fit_failed",
-                             game=_cal_game, error=str(exc))
+                # S231: promoted from debug to info — debug-level was
+                # invisible under journald default, hiding silent
+                # calibration failures. Valorant (n_resolved=33) and
+                # Dota2 (n_resolved=49) showed ZERO calibrator log
+                # activity in 14d window despite being above
+                # min_samples=15, while LoL/CS2/COD logged normally.
+                # Promotion surfaces the actual exception text so the
+                # underlying failure mode can be diagnosed.
+                logger.info("esportsbot_beta_cal_fit_failed",
+                            game=_cal_game, error=str(exc))
 
         # S136 Phase 4B: Hierarchical pooled BetaCal — pool all games for global calibrator
         try:
