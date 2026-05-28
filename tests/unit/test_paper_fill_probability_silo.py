@@ -12,7 +12,11 @@ locked to the silo.
 import pytest
 from unittest.mock import patch
 
-from bots.weather.engine.base_engine.execution.paper_trading import PaperTradingEngine
+from bots.weather.engine.base_engine.execution.paper_trading import (
+    PaperTradingEngine,
+    _vwap_from_book,
+    _vwap_from_bids,
+)
 
 
 class TestSiloDirectionalSlippage:
@@ -166,6 +170,63 @@ class TestSiloDirectionalSlippage:
             )
         assert result["success"] is True, f"expected success after S231 fix, got {result}"
         assert abs(result["price"] - 0.35) < 0.001
+
+    # ── S232: walker phantom-level filter contract ──
+    # These tests establish the invariant that the order_gateway S232 fix
+    # depends on: _vwap_from_book / _vwap_from_bids skip size=0 phantom
+    # levels at the top of book. The order_gateway fix (line 977-1018)
+    # mirrors this same filtering to compute _shadow_best_ask /
+    # _shadow_best_bid so the slippage-check anchor matches the walker.
+
+    def test_s232_vwap_from_book_skips_size_zero_phantom_top(self):
+        """Walker contract: a size=0 level at the best ask is treated as
+        non-existent. The first NON-PHANTOM level is the effective best_ask.
+        Replicates the production book shape for 0xe7b4ced4 (2026-05-28)."""
+        asks = [
+            {"price": 0.38, "size": 0},     # phantom — top of raw, but size=0
+            {"price": 0.65, "size": 50.0},  # real first level
+            {"price": 0.70, "size": 100.0},
+        ]
+        result = _vwap_from_book(asks, order_size_shares=10.0)
+        assert result is not None
+        vwap, fill_frac, slippage = result
+        # All 10 shares fill at 0.65 (skipping the size-0 phantom at 0.38)
+        assert abs(vwap - 0.65) < 1e-6
+        assert abs(fill_frac - 1.0) < 1e-6
+        # slippage = vwap - best_ask where best_ask is the FILTERED best
+        # (the walker's `levels[0][0]` after parse-and-filter). For a 10-share
+        # fill entirely at one price level, slippage must be 0.
+        assert abs(slippage) < 1e-6
+
+    def test_s232_vwap_from_bids_skips_size_zero_phantom_top(self):
+        """Walker contract mirror for the bid side."""
+        bids = [
+            {"price": 0.62, "size": 0},     # phantom
+            {"price": 0.35, "size": 50.0},  # real first level
+            {"price": 0.30, "size": 100.0},
+        ]
+        result = _vwap_from_bids(bids, order_size_shares=10.0)
+        assert result is not None
+        vwap, fill_frac, slippage = result
+        assert abs(vwap - 0.35) < 1e-6
+        assert abs(fill_frac - 1.0) < 1e-6
+        assert abs(slippage) < 1e-6
+
+    def test_s232_vwap_from_book_skips_invalid_price_and_dust_size(self):
+        """Walker filters anything that isn't p>0 and s>0. Validates the same
+        filter used by the order_gateway S232 fix so they stay symmetric."""
+        asks = [
+            {"price": 0, "size": 100.0},      # price=0 — filtered
+            {"price": 0.38, "size": 0.0},     # size=0 — filtered
+            {"price": -0.1, "size": 100.0},   # negative price — filtered
+            {"price": 0.50, "size": -5.0},    # negative size — filtered
+            {"price": "invalid", "size": 100.0},  # string price — filtered (ValueError)
+            {"price": 0.65, "size": 50.0},    # first valid
+        ]
+        result = _vwap_from_book(asks, order_size_shares=10.0)
+        assert result is not None
+        vwap, _, _ = result
+        assert abs(vwap - 0.65) < 1e-6
 
     @pytest.mark.asyncio
     async def test_s231_anchor_falls_back_to_bid_ask_when_shadow_absent(self):
