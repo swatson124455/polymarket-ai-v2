@@ -296,6 +296,43 @@ class TradeCoordinator:
                             "confirm_position: inserted directly (reserve skipped)",
                             market_id=market_id, bot=which_bot, side=side, size=size,
                         )
+                # S232 Bug 20: emit the trade_events audit row after the
+                # positions write succeeds. Pre-fix the ONLY ENTRY writer
+                # lived in paper_trading.py:993 (paper path), so live entries
+                # never landed in trade_events — bot_pnl.py and every other
+                # downstream consumer was blind to live trades. Now confirm_position
+                # is the single source for both ENTRY (BUY) and EXIT (SELL)
+                # audit rows, mirroring the paper/live split via execution_mode.
+                # Non-fatal on failure: positions row is canonical, trade_events
+                # is audit-only — we log and continue rather than retry the
+                # whole confirm_position.
+                try:
+                    _exec_mode = "paper" if bool(getattr(settings, "SIMULATION_MODE", False)) else "live"
+                    _evt_type = "EXIT" if _is_sell else "ENTRY"
+                    _cost_rate_evt = (
+                        getattr(settings, "FIXED_SLIPPAGE_BPS", 50)
+                        + getattr(settings, "TAKER_FEE_BPS", 150)
+                    ) / 10000.0
+                    await self.db.insert_trade_event(
+                        event_type=_evt_type,
+                        bot_name=which_bot,
+                        market_id=market_id,
+                        side=side,
+                        size=size,
+                        price=entry_price,
+                        execution_mode=_exec_mode,
+                        token_id=token_id or None,
+                        fees=size * entry_price * _cost_rate_evt,
+                    )
+                except Exception as _te_err:
+                    logger.warning(
+                        "confirm_position_trade_event_emit_failed",
+                        market_id=market_id,
+                        bot_id=which_bot,
+                        side=side,
+                        event_type=("EXIT" if _is_sell else "ENTRY"),
+                        error=str(_te_err)[:200],
+                    )
                 return  # success
             except Exception as e:
                 _last_err = e
