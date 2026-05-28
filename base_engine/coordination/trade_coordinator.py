@@ -170,119 +170,154 @@ class TradeCoordinator:
         bot_id: Optional[str] = None,
         token_id: str = "",
     ) -> None:
-        """Confirm reserved position after successful trade. bot_id: which bot reserved (must match reserve). source_bot enables per-bot P&L attribution."""
+        """Confirm reserved position after successful trade. bot_id: which bot reserved (must match reserve). source_bot enables per-bot P&L attribution.
+
+        S232 Bug 19: persist failure here creates an in-memory orphan — the
+        caller (order_gateway) has already updated _open_positions and the
+        Polymarket order has filled, but the DB row never lands. On restart
+        the position is invisible to the bot. Defense: single retry on any
+        DB error, then CRITICAL log with structured fields so operator can
+        reconcile manually. We do NOT raise — the order succeeded on-chain
+        and the caller's in-memory state is authoritative; raising would
+        make the caller mark the trade as failed and the on-chain position
+        becomes completely unmanaged.
+        """
         if not self.db.session_factory:
             return
         which_bot = bot_id if bot_id is not None else self.bot_id
         from sqlalchemy import select
         _is_sell = side == "SELL"
-        try:
-            async with self.db.get_session() as session:
-                r = await session.execute(
-                    select(Position).where(
-                        Position.bot_id == which_bot,
-                        Position.market_id == market_id,
-                        Position.side == side,
-                        Position.status == "reserving",
-                    ).limit(1).with_for_update()
-                )
-                pos = r.scalar_one_or_none()
-                _cost_rate = (
-                    getattr(settings, "FIXED_SLIPPAGE_BPS", 50)
-                    + getattr(settings, "TAKER_FEE_BPS", 150)
-                ) / 10000.0
-                if pos:
-                    pos.size = size
-                    pos.entry_price = entry_price
-                    pos.current_price = entry_price
-                    pos.entry_cost = size * entry_price * _cost_rate
-                    pos.breakeven_price = entry_price * (1.0 + 2 * _cost_rate)
-                    if source_bot is not None:
-                        pos.source_bot = source_bot
-                    if _is_sell:
-                        # SELL = exit: mark the SELL record as closed (it's an audit trail only)
-                        # and close the original YES/NO position row for this market.
-                        pos.status = "closed"
-                        r2 = await session.execute(
-                            select(Position).where(
-                                Position.bot_id == which_bot,
-                                Position.market_id == market_id,
-                                Position.side.in_(["YES", "NO"]),
-                                Position.status == "open",
-                            ).limit(1).with_for_update()
-                        )
-                        orig = r2.scalar_one_or_none()
-                        if orig:
-                            orig.status = "closed"
-                        else:
-                            # H3 FIX: YES/NO row missing — try any open position for same (bot, market).
-                            # Without this, ghost rows reappear on next restart via seed_positions_from_db.
-                            r3 = await session.execute(
+        _MAX_PERSIST_ATTEMPTS = 2  # S232 Bug 19: 1 initial + 1 retry
+        _RETRY_BACKOFF_S = 1.0
+        _last_err: Optional[Exception] = None
+        for _attempt in range(_MAX_PERSIST_ATTEMPTS):
+            try:
+                async with self.db.get_session() as session:
+                    r = await session.execute(
+                        select(Position).where(
+                            Position.bot_id == which_bot,
+                            Position.market_id == market_id,
+                            Position.side == side,
+                            Position.status == "reserving",
+                        ).limit(1).with_for_update()
+                    )
+                    pos = r.scalar_one_or_none()
+                    _cost_rate = (
+                        getattr(settings, "FIXED_SLIPPAGE_BPS", 50)
+                        + getattr(settings, "TAKER_FEE_BPS", 150)
+                    ) / 10000.0
+                    if pos:
+                        pos.size = size
+                        pos.entry_price = entry_price
+                        pos.current_price = entry_price
+                        pos.entry_cost = size * entry_price * _cost_rate
+                        pos.breakeven_price = entry_price * (1.0 + 2 * _cost_rate)
+                        if source_bot is not None:
+                            pos.source_bot = source_bot
+                        if _is_sell:
+                            # SELL = exit: mark the SELL record as closed (it's an audit trail only)
+                            # and close the original YES/NO position row for this market.
+                            pos.status = "closed"
+                            r2 = await session.execute(
                                 select(Position).where(
                                     Position.bot_id == which_bot,
                                     Position.market_id == market_id,
+                                    Position.side.in_(["YES", "NO"]),
                                     Position.status == "open",
                                 ).limit(1).with_for_update()
                             )
-                            fallback = r3.scalar_one_or_none()
-                            if fallback:
-                                fallback.status = "closed"
-                                logger.warning(
-                                    "confirm_position: YES/NO row not found for market %s bot %s — "
-                                    "closed fallback open row (side=%s) to prevent ghost position",
-                                    market_id, which_bot, fallback.side,
-                                )
+                            orig = r2.scalar_one_or_none()
+                            if orig:
+                                orig.status = "closed"
                             else:
-                                logger.error(
-                                    "confirm_position: no open position found for market %s bot %s "
-                                    "on SELL confirm — DB may be inconsistent (check seed on next restart)",
-                                    market_id, which_bot,
+                                # H3 FIX: YES/NO row missing — try any open position for same (bot, market).
+                                # Without this, ghost rows reappear on next restart via seed_positions_from_db.
+                                r3 = await session.execute(
+                                    select(Position).where(
+                                        Position.bot_id == which_bot,
+                                        Position.market_id == market_id,
+                                        Position.status == "open",
+                                    ).limit(1).with_for_update()
                                 )
-                    else:
-                        pos.status = "open"
-                    await session.commit()
-                elif not _is_sell:
-                    # S103 FIX: No reserving row found — reserve was skipped
-                    # (e.g. WEATHER_SKIP_COORDINATOR_BUY). Insert directly as open.
-                    now = datetime.now(timezone.utc).replace(tzinfo=None)
-                    _is_paper = bool(getattr(settings, "SIMULATION_MODE", False))
-                    await session.execute(
-                        text("""
-                            INSERT INTO positions (bot_id, source_bot, market_id, token_id, side, size,
-                                entry_price, current_price, unrealized_pnl, opened_at, status, is_paper,
-                                entry_cost, breakeven_price)
-                            VALUES (:bot_id, :source_bot, :market_id, :token_id, :side, :size,
-                                :entry_price, :entry_price, 0, :opened_at, 'open', :is_paper,
-                                :entry_cost, :breakeven_price)
-                            ON CONFLICT (bot_id, market_id, side) DO UPDATE
-                                SET status = 'open', size = :size, entry_price = :entry_price,
-                                    current_price = :entry_price, unrealized_pnl = 0,
-                                    opened_at = :opened_at, is_paper = :is_paper,
-                                    source_bot = :source_bot, token_id = :token_id,
-                                    entry_cost = :entry_cost, breakeven_price = :breakeven_price
-                                WHERE positions.status = 'closed'
-                        """),
-                        {
-                            "bot_id": which_bot,
-                            "source_bot": source_bot or which_bot,
-                            "market_id": market_id,
-                            "token_id": token_id,
-                            "side": side,
-                            "size": size,
-                            "entry_price": entry_price,
-                            "opened_at": now,
-                            "is_paper": _is_paper,
-                            "entry_cost": size * entry_price * _cost_rate,
-                            "breakeven_price": entry_price * (1.0 + 2 * _cost_rate),
-                        },
-                    )
-                    await session.commit()
-                    logger.info(
-                        "confirm_position: inserted directly (reserve skipped)",
-                        market_id=market_id, bot=which_bot, side=side, size=size,
-                    )
-        except Exception as e:
-            logger.warning("confirm_position failed: %s", e)
+                                fallback = r3.scalar_one_or_none()
+                                if fallback:
+                                    fallback.status = "closed"
+                                    logger.warning(
+                                        "confirm_position: YES/NO row not found for market %s bot %s — "
+                                        "closed fallback open row (side=%s) to prevent ghost position",
+                                        market_id, which_bot, fallback.side,
+                                    )
+                                else:
+                                    logger.error(
+                                        "confirm_position: no open position found for market %s bot %s "
+                                        "on SELL confirm — DB may be inconsistent (check seed on next restart)",
+                                        market_id, which_bot,
+                                    )
+                        else:
+                            pos.status = "open"
+                        await session.commit()
+                    elif not _is_sell:
+                        # S103 FIX: No reserving row found — reserve was skipped
+                        # (e.g. WEATHER_SKIP_COORDINATOR_BUY). Insert directly as open.
+                        now = datetime.now(timezone.utc).replace(tzinfo=None)
+                        _is_paper = bool(getattr(settings, "SIMULATION_MODE", False))
+                        await session.execute(
+                            text("""
+                                INSERT INTO positions (bot_id, source_bot, market_id, token_id, side, size,
+                                    entry_price, current_price, unrealized_pnl, opened_at, status, is_paper,
+                                    entry_cost, breakeven_price)
+                                VALUES (:bot_id, :source_bot, :market_id, :token_id, :side, :size,
+                                    :entry_price, :entry_price, 0, :opened_at, 'open', :is_paper,
+                                    :entry_cost, :breakeven_price)
+                                ON CONFLICT (bot_id, market_id, side) DO UPDATE
+                                    SET status = 'open', size = :size, entry_price = :entry_price,
+                                        current_price = :entry_price, unrealized_pnl = 0,
+                                        opened_at = :opened_at, is_paper = :is_paper,
+                                        source_bot = :source_bot, token_id = :token_id,
+                                        entry_cost = :entry_cost, breakeven_price = :breakeven_price
+                                    WHERE positions.status = 'closed'
+                            """),
+                            {
+                                "bot_id": which_bot,
+                                "source_bot": source_bot or which_bot,
+                                "market_id": market_id,
+                                "token_id": token_id,
+                                "side": side,
+                                "size": size,
+                                "entry_price": entry_price,
+                                "opened_at": now,
+                                "is_paper": _is_paper,
+                                "entry_cost": size * entry_price * _cost_rate,
+                                "breakeven_price": entry_price * (1.0 + 2 * _cost_rate),
+                            },
+                        )
+                        await session.commit()
+                        logger.info(
+                            "confirm_position: inserted directly (reserve skipped)",
+                            market_id=market_id, bot=which_bot, side=side, size=size,
+                        )
+                return  # success
+            except Exception as e:
+                _last_err = e
+                if _attempt < _MAX_PERSIST_ATTEMPTS - 1:
+                    await asyncio.sleep(_RETRY_BACKOFF_S)
+                    continue
+        # S232 Bug 19: all retries exhausted — escalate to CRITICAL with
+        # structured fields. In-memory state is authoritative; operator must
+        # reconcile DB <-> on-chain manually until alerting bridge (Bug 18)
+        # surfaces this automatically. LogMiner pattern catches this line.
+        logger.critical(
+            "confirm_position_persist_failed",
+            market_id=market_id,
+            bot_id=which_bot,
+            side=side,
+            size=size,
+            entry_price=entry_price,
+            is_sell=_is_sell,
+            attempts=_MAX_PERSIST_ATTEMPTS,
+            error=str(_last_err)[:300] if _last_err else "unknown",
+            action="manual reconcile required: in-memory + on-chain position exists, DB row missing",
+        )
 
     async def release_reservation(self, market_id: str, side: str, bot_id: Optional[str] = None) -> None:
         """Release reservation if trade failed. bot_id: which bot reserved (must match reserve)."""
