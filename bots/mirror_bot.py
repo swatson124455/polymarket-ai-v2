@@ -25,6 +25,32 @@ logger = get_logger()
 # endpoint. 30s is conservative — at most 2 calls/min.
 _CLOB_CACHE_TTL_SECONDS = 30.0
 
+# Bug 21 (S233): live CLOB rejections that mean a SELL can NEVER fill on this
+# market — the position is terminal because the market resolved (token pinned to
+# 0.0/1.0, outside the CLOB (0.001, 0.999) price band → "invalid price (1.0)")
+# or was delisted (orderbook removed → "the orderbook ... does not exist").
+# These are distinct from transient/retryable failures (rate-limit, nonce,
+# timeout) and from slippage (handled by the backoff path). Matched
+# case-insensitively against the order-result `error` string in the exit failure
+# branch. Kept deliberately NARROW: "insufficient" (balance) is intentionally NOT
+# here — that path is owned by _live_sell_balance_guard and can be a transient
+# on-chain sync gap, not a dead market. Closing a position on it could orphan a
+# live holding the wallet still owns.
+MIRROR_TERMINAL_EXIT_PATTERNS = (
+    "invalid price",      # resolved: token at 0.0/1.0, outside CLOB (0.001, 0.999) band
+    "does not exist",     # delisted: "the orderbook <token_id> does not exist"
+    "market closed",
+    "delisted",
+    "market is closed",
+    "already resolved",
+)
+# Bug 21: require this many CONSECUTIVE terminal rejections on the same position
+# before closing it, so a single transient CLOB blip can't orphan a live
+# position. Two scans (~1–4 min at MB cadence) is negligible vs. the 24h+ these
+# markets sit stuck, and keeps total doomed attempts far below the circuit
+# breaker's 10-reopen escalation threshold (Bug 17).
+_MIRROR_TERMINAL_REJECT_CONFIRM = 2
+
 
 class MirrorBot(BaseBot):
     """
@@ -139,6 +165,11 @@ class MirrorBot(BaseBot):
         # TODO: Investigate and implement the missing slippage backoff feature.
         self._slippage_fail_count: Dict[str, int] = {}
         self._slippage_backoff: Dict[str, float] = {}
+        # Bug 21 (S233): consecutive terminal-rejection counter per position
+        # (resolved/delisted markets). Mirrors _slippage_fail_count semantics —
+        # increments on each terminal SELL rejection, resets on any non-terminal
+        # outcome, and triggers _close_position_terminal at the confirm threshold.
+        self._terminal_reject_count: Dict[str, int] = {}
 
         # S178 7J: ADWIN-U prediction drift detector — lazy-initialized on first check
         self._prediction_drift: Any = None
@@ -1608,6 +1639,7 @@ class MirrorBot(BaseBot):
                         del self._open_positions[pos_key]
                         self._slippage_fail_count.pop(pos_key, None)
                         self._slippage_backoff.pop(pos_key, None)
+                        self._terminal_reject_count.pop(pos_key, None)  # Bug 21
                     else:
                         _remaining = max(0.0, pos["size"] - _filled_exit)
                         self._open_positions[pos_key]["size"] = _remaining
@@ -1652,7 +1684,43 @@ class MirrorBot(BaseBot):
                     # S160: Track slippage failures for exponential backoff.
                     # After 3 consecutive slippage failures, back off 100s→200s→400s (cap 900s).
                     _fail_code = order.get("fail_code", "")
-                    if _fail_code == "slippage":
+                    _err_str = str(order.get("error", "")).lower()
+                    _failure_kind = self._classify_exit_failure(_err_str, _fail_code)
+                    if _failure_kind == "terminal":
+                        # Bug 21 (S233): the market resolved (token pinned to the
+                        # 0.001/0.999 boundary → "invalid price") or was delisted
+                        # ("orderbook ... does not exist"). A SELL can NEVER fill, so
+                        # the old `else` branch re-attempted it every scan, driving
+                        # the live CircuitBreaker into the Bug 17 kill-switch
+                        # escalation cycle. Confirm across consecutive scans (guard
+                        # against a transient CLOB blip), then close the position
+                        # instead of retrying forever.
+                        self._slippage_fail_count.pop(pos_key, None)
+                        _tcount = self._terminal_reject_count.get(pos_key, 0) + 1
+                        self._terminal_reject_count[pos_key] = _tcount
+                        logger.warning("mirror_exit_terminal_reject",
+                                       market=market_id[:20], token=token_id[:20],
+                                       count=_tcount,
+                                       confirm_at=_MIRROR_TERMINAL_REJECT_CONFIRM,
+                                       error=_err_str[:160],
+                                       exit_reason=_exit_event_data.get("exit_reason", "unknown"))
+                        if _tcount >= _MIRROR_TERMINAL_REJECT_CONFIRM:
+                            if "invalid price" in _err_str:
+                                # Resolved market. current_price is pinned near the
+                                # winning token's value: ~1.0 = WON (redeemable),
+                                # ~0.0 = LOST (worthless write-off).
+                                _reason = "resolved"
+                                _cp = float(pos.get("current_price", 0) or 0)
+                                _redeemable = _cp >= 0.5
+                            else:
+                                # Delisted / orderbook gone — not redeemable via CLOB.
+                                _reason = "delisted"
+                                _redeemable = False
+                            await self._close_position_terminal(
+                                pos_key, pos, market_id, token_id, exit_size,
+                                reason=_reason, redeemable=_redeemable,
+                            )
+                    elif _failure_kind == "slippage":
                         _count = self._slippage_fail_count.get(pos_key, 0) + 1
                         self._slippage_fail_count[pos_key] = _count
                         if _count >= 3:
@@ -1660,8 +1728,19 @@ class MirrorBot(BaseBot):
                             self._slippage_backoff[pos_key] = _now_mono + _backoff_secs
                             logger.info("mirror_slippage_backoff", market=market_id[:20],
                                         count=_count, backoff_s=round(_backoff_secs))
+                        # Slippage proves the order reached the CLOB → not terminal.
+                        self._terminal_reject_count.pop(pos_key, None)
                     else:
-                        # Non-slippage failure: clear slippage streak
+                        # "inconclusive": non-slippage, non-terminal. Almost always a
+                        # PRE-CLOB gate (circuit-breaker / kill-switch / cascade /
+                        # rl-timing / drawdown) — the order never reached the CLOB, so
+                        # it tells us NOTHING about whether the market is terminal.
+                        # Clear the slippage streak (unchanged S160 behavior) but
+                        # PRESERVE the terminal streak: otherwise an interleaved
+                        # kill-switch-blocked scan would reset progress and deadlock
+                        # cleanup of a genuinely resolved/delisted market (Bug 21
+                        # surfaced precisely while the CB was escalating). A real exit
+                        # success still clears it via the on-fill pop above.
                         self._slippage_fail_count.pop(pos_key, None)
             except Exception as e:
                 logger.warning("Failed to execute mirror exit for %s: %s", pos_key, e)
@@ -1672,6 +1751,122 @@ class MirrorBot(BaseBot):
             self._open_positions.pop(_zk, None)
             self._slippage_fail_count.pop(_zk, None)
             self._slippage_backoff.pop(_zk, None)
+            self._terminal_reject_count.pop(_zk, None)  # Bug 21
+
+    @staticmethod
+    def _classify_exit_failure(error: str, fail_code: str) -> str:
+        """Bug 21 (S233): classify a failed SELL exit so the exit loop reacts
+        correctly.
+
+          * "terminal"     → market resolved/delisted, SELL can NEVER fill
+                             ("invalid price" → token at the 0.0/1.0 boundary;
+                             "does not exist" → orderbook removed). Confirm + close.
+          * "slippage"     → order reached the CLOB but missed on price. Back off.
+          * "inconclusive" → everything else. Almost always a PRE-CLOB gate
+                             (circuit-breaker / kill-switch / cascade / rl-timing /
+                             drawdown): the order never hit the CLOB, so it says
+                             NOTHING about whether the market is terminal. The exit
+                             loop must NOT reset the terminal-confirm streak on this,
+                             or an interleaved kill-switch-blocked scan would deadlock
+                             cleanup of a genuinely dead market.
+
+        Pure function (no I/O, no state) — unit-tested directly.
+        """
+        s = str(error).lower()
+        if any(p in s for p in MIRROR_TERMINAL_EXIT_PATTERNS):
+            return "terminal"
+        if fail_code == "slippage":
+            return "slippage"
+        return "inconclusive"
+
+    async def _close_position_terminal(
+        self,
+        pos_key: str,
+        pos: dict,
+        market_id: str,
+        token_id: str,
+        exit_size: float,
+        reason: str,
+        redeemable: bool,
+    ) -> None:
+        """Bug 21 (S233): close a position whose market is resolved or delisted.
+
+        A SELL can never fill on such a market (resolved → token pinned to the
+        0.001/0.999 price boundary; delisted → orderbook removed), so the bot
+        must stop re-attempting the SELL every scan — left unchecked, the repeated
+        live-order rejections drive the CircuitBreaker into the Bug 17 in-process
+        kill-switch escalation cycle and freeze all new entries.
+
+        Mirrors the on-success full-close bookkeeping: drop from in-memory
+        tracking, decrement daily + category exposure under the exposure lock
+        (freeing the slot exactly as _reap_resolved_positions does for paper),
+        and mark the DB row status='closed' with the same 3-retry pattern the
+        normal exit path uses. Books NO P&L row — resolution P&L is captured
+        independently by the resolution backfill path, the same contract the
+        normal close path relies on.
+
+        Resolved WINNERS (redeemable=True) cannot be auto-redeemed — the CTF
+        redemption ABI wall is documented in PHASE_N_REDEMPTION_AUTOMATION.md — so
+        this logs an operator-actionable `mirror_redemption_pending` line. Manual
+        redemption follows OPERATOR_GUARDIANS_REDEMPTION.md.
+        """
+        # 1. Drop from in-memory tracking + clear all per-position counters.
+        self._open_positions.pop(pos_key, None)
+        self._slippage_fail_count.pop(pos_key, None)
+        self._slippage_backoff.pop(pos_key, None)
+        self._terminal_reject_count.pop(pos_key, None)
+
+        # 2. Free exposure (cost basis = size × entry_price) under the lock —
+        #    matches the entry reservation, on-success exit, and reap decrements.
+        _entry_price = float(pos.get("entry_price", 0.0) or 0.0)
+        _size = float(exit_size or pos.get("size", 0.0) or 0.0)
+        _cost = _size * _entry_price
+        if _cost > 0:
+            async with self._exposure_lock:
+                self._daily_exposure = max(0.0, self._daily_exposure - _cost)
+                _pos_cat = pos.get("category", "")
+                if _pos_cat:
+                    self._category_exposure[_pos_cat] = max(
+                        0.0, self._category_exposure.get(_pos_cat, 0.0) - _cost
+                    )
+
+        # 3. Mark the DB row closed (3-retry, mirrors the normal exit close).
+        from sqlalchemy import text as _sql
+        for _attempt in range(3):
+            try:
+                async with self.base_engine.db.get_session() as _cs:
+                    await _cs.execute(_sql(
+                        "UPDATE positions SET status = 'closed' "
+                        "WHERE market_id = :mid AND token_id = :tid "
+                        "  AND COALESCE(source_bot, bot_id) = 'MirrorBot' "
+                        "  AND status = 'open'"
+                    ), {"mid": market_id, "tid": token_id})
+                    await _cs.commit()
+                break
+            except Exception as _db_err:
+                if _attempt < 2:
+                    await asyncio.sleep(0.5)
+                else:
+                    logger.warning("mirror_terminal_close_db_fail market=%s attempt=%d: %s",
+                                   market_id[:20], _attempt + 1, _db_err)
+
+        # 4. Operator-facing log. Winners need manual on-chain redemption.
+        if redeemable:
+            logger.warning(
+                "mirror_redemption_pending",
+                market=market_id, token=token_id,
+                size=round(_size, 4), entry_price=round(_entry_price, 4),
+                est_value_usd=round(_size * 1.0, 2), reason=reason,
+                note="resolved WINNER closed in tracking; redeem on-chain via UI "
+                     "(OPERATOR_GUARDIANS_REDEMPTION.md) — auto-redemption ABI-walled",
+            )
+        else:
+            logger.warning(
+                "mirror_terminal_position_closed",
+                market=market_id[:20], token=token_id[:20],
+                reason=reason, size=round(_size, 4),
+                note="resolved-loser/delisted position closed in tracking; SELL impossible",
+            )
 
     async def _persist_refreshed_exit_price(
         self,
