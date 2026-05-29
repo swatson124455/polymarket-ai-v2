@@ -478,6 +478,18 @@ class PandaScoreClient:
                 if resp.status_code == 404:
                     return None
 
+                if resp.status_code == 403:
+                    # S233: 403 Forbidden is plan/scope-gated (e.g.
+                    # /{game}/teams/{id}/stats requires a higher PandaScore tier
+                    # than the current key grants). It is never transient, so the
+                    # 3-attempt retry loop below only wastes 3 requests + backoff
+                    # per call and always ends in None. Short-circuit to None —
+                    # callers already fall back to defaults — mirroring the 404
+                    # fast-path above. Root fix (plan upgrade) is operator-scoped;
+                    # see EB_COORDINATION_SCAN_STALL_DBLOAD.md.
+                    logger.warning("pandascore_forbidden", path=path)
+                    return None
+
                 resp.raise_for_status()
                 self._consecutive_failures = 0
                 # Shared rate-limit counter (class-level, all 3 esports bot instances).
