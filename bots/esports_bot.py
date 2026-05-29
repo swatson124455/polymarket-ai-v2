@@ -244,6 +244,9 @@ class EsportsBot(BaseBot):
         self._bg_train_tasks: Dict[str, asyncio.Task] = {}  # game → background train task
         # S156: Limit concurrent training tasks to prevent CPU/memory spikes on 16GB VPS
         self._train_semaphore = asyncio.Semaphore(3)
+        # S233: handle for the scan-stall self-watchdog (started in start(),
+        # cancelled in stop()). Recovers a hung scan loop via systemd restart.
+        self._stall_watchdog_task = None
 
         # Per-game/tournament/team exposure tracking (USD deployed)
         self._game_exposure: Dict[str, float] = {}        # game → USD
@@ -663,6 +666,15 @@ class EsportsBot(BaseBot):
         self._form_prefetch_task = asyncio.create_task(self._background_form_prefetch())
         self._form_prefetch_task.add_done_callback(self._task_error_handler)  # S156: log if task dies
 
+        # S233: scan-stall self-watchdog. The main.py heartbeat watchdog only
+        # ALERTS on staleness — it has no recovery path for a bot that is
+        # running=True but hung inside scan_and_trade() (a wedged asyncpg pool
+        # after a statement_timeout cancellation blocks every later DB await, so
+        # the scan never returns). Observed 2026-05-28: scan loop hung ~18.75h
+        # with zero recovery. This task exits for a systemd restart on stall.
+        self._stall_watchdog_task = asyncio.create_task(self._scan_stall_watchdog())
+        self._stall_watchdog_task.add_done_callback(self._task_error_handler)
+
         # Initialize dedicated esports market service — bypasses broken Gamma API.
         # Queries DB directly for esports markets + background CLOB price refresh.
         try:
@@ -752,6 +764,13 @@ class EsportsBot(BaseBot):
                 await self._form_prefetch_task
             except asyncio.CancelledError:
                 pass
+        # S233: stop the scan-stall self-watchdog
+        if self._stall_watchdog_task and not self._stall_watchdog_task.done():
+            self._stall_watchdog_task.cancel()
+            try:
+                await self._stall_watchdog_task
+            except asyncio.CancelledError:
+                pass
         if self._market_service:
             await self._market_service.close()
         if self._pandascore:
@@ -770,6 +789,51 @@ class EsportsBot(BaseBot):
                     error=str(_rc_err),
                 )
         await super().stop()
+
+    async def _scan_stall_watchdog(self) -> None:
+        """S233: Recover a hung scan loop by exiting for a systemd restart.
+
+        Background: the main.py heartbeat watchdog DETECTS scan staleness but
+        only emits a WARNING alert — it has no recovery path for a bot that is
+        running=True yet hung inside scan_and_trade(). Observed 2026-05-28: a
+        statement_timeout cancellation wedged the asyncpg pool, every later DB
+        await blocked, scan_and_trade() never returned, and the scan loop sat
+        dead ~18.75h while the process stayed alive (0 completed scans in 36h).
+
+        This task watches self._scan_start_mono (refreshed at the top of every
+        scan_and_trade(), ~L1130). If no new scan has STARTED within the stall
+        threshold — and at least one scan has started, so cold-start is safe —
+        it SIGTERMs its own process so systemd (Restart=always) restarts with a
+        clean DB pool.
+
+        Purely time-based: it does NOT wrap or cancel any DB operation. Client
+        cancellation of a DB await is exactly what corrupts asyncpg connections
+        (RULE ZERO rule 6 / S162) — i.e. the failure we are recovering from.
+        The root cause (why scans hang: shared-DB contention) is shared infra,
+        tracked in EB_COORDINATION_SCAN_STALL_DBLOAD.md.
+        """
+        import os
+        import signal
+        _interval = float(getattr(settings, "ESPORTS_STALL_WATCHDOG_INTERVAL_S", 60.0))
+        _threshold = float(getattr(settings, "ESPORTS_STALL_RESTART_THRESHOLD_S", 900.0))
+        while self.running:
+            await asyncio.sleep(_interval)
+            _start_mono = getattr(self, "_scan_start_mono", 0.0) or 0.0
+            if _start_mono <= 0.0:
+                continue  # no scan has started yet — not armed (cold-start safe)
+            _age = time.monotonic() - _start_mono
+            if _age > _threshold:
+                logger.critical(
+                    "esportsbot_scan_stall_self_restart",
+                    scan_age_s=round(_age, 1),
+                    threshold_s=_threshold,
+                    scan_count=getattr(self, "_scan_count", -1),
+                    detail=("scan loop has not started a new cycle within "
+                            "threshold (likely wedged DB pool) — exiting for "
+                            "systemd restart"),
+                )
+                os.kill(os.getpid(), signal.SIGTERM)
+                return
 
     def _passes_ws_entry_gates(
         self, market_id: str, side: str, game: str, trade_price: float,
