@@ -304,10 +304,16 @@ class TestScanCycleSmoke:
             bot._training_records.append(record)
             bot._processed_match_ids.add(f"seed_{i}")
 
-            # Track freshness
-            from datetime import datetime
-            bot._team_last_match[a] = datetime(2026, 4, 14)
-            bot._team_last_match[b] = datetime(2026, 4, 14)
+            # Track freshness. Seed relative to NOW so the production
+            # _teams_are_fresh() guard (now - _STALE_DAYS) always passes,
+            # regardless of the wall-clock date the suite runs on. Was a
+            # hardcoded datetime(2026, 4, 14) — a time-bomb that went stale
+            # once wall-clock crossed _STALE_DAYS=45 past it (i.e. 2026-05-29),
+            # silently failing 7 scan/prediction-log tests and blocking deploy.
+            from datetime import datetime, timezone, timedelta
+            _fresh_dt = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)
+            bot._team_last_match[a] = _fresh_dt
+            bot._team_last_match[b] = _fresh_dt
 
         # Fit pipeline
         bot._pipeline.fit(bot._training_records)
