@@ -5439,6 +5439,15 @@ class WeatherBot(BaseBot):
         into whether the silence is a code issue or a seasonal market gap.
         """
         self._startup_check_done = True
+        # Observability (forensic 2026-05-29, WB_FORENSIC_SCANLOOP_STALL_20260529.md):
+        # the scan loop has no supervisor and the staleness watchdog (main.py) only
+        # ALERTS — it cannot restart a stalled loop (deferred "Bug 18"). Surface the gap
+        # loudly at every startup until the durable fix lands in MB-shared base_bot/main.py.
+        logger.warning(
+            "weatherbot_scan_loop_supervised",
+            supervised=False,
+            recovery="manual restart only; staleness watchdog alerts but cannot act",
+        )
         try:
             # All tradeable markets (no category filter — for total context)
             all_markets = await self.base_engine.get_all_tradeable_markets()
