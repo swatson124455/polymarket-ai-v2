@@ -112,7 +112,7 @@ Dota2 (49 resolved) and valorant (33 resolved) are both well above `min_samples=
 
 **Evidence:** EsportsBotV2 `scan_ms=94812.2` (94.8s) and `scan_ms=161924.7` (161.9s) in `Slow scan cycle` warnings post-restart — well above typical 30-60s budget.
 
-**Suggested next-session fix:** Wrap `_cal.fit_from_db(...)` in `asyncio.wait_for(..., timeout=N)` so the hang becomes a `TimeoutError` that the now-info-level visibility fix catches. Single-commit change in `esports_bot.py:5559`.
+**Suggested next-session fix:** ⚠ **DO NOT SHIP AS WRITTEN — see §11.** Wrapping `_cal.fit_from_db(...)` (a DB call) in `asyncio.wait_for(..., timeout=N)` is a **RULE ZERO rule-6 violation** — client-side cancellation corrupts asyncpg connections (S162, ~200 errors/10min). It would re-trigger the exact failure class this is trying to recover from. §11 has the correct path (server-side `statement_timeout` + trace whether valorant/dota2 even enter the loop).
 
 ---
 
@@ -138,7 +138,7 @@ Dota2 (49 resolved) and valorant (33 resolved) are both well above `min_samples=
 | # | Decision | Owner | Notes |
 |---|---|---|---|
 | 1 | Master deploy of `b16a0c5` + `09f4719` (carries MB Bug 15/16/17 too) | Operator / MB session | Phase 4b ORDER BY won't fully drain backlog for MB+WB+ingestion paths without master deploy. |
-| 2 | Ship `asyncio.wait_for` wrapper for `fit_from_db` (force hang → exception) | EB session | Single-commit fix; needed for the visibility fix to actually catch the dota2/valorant failures. |
+| 2 | ⚠ **DO NOT SHIP AS WRITTEN** — ~~Ship `asyncio.wait_for` wrapper for `fit_from_db`~~ | EB session | **RULE ZERO rule-6 violation** (`asyncio.wait_for` on a DB call → asyncpg corruption, S162). See §11 for the correct path. Confirmed live 2026-05-29: the post-deploy re-wedge (`cannot switch to state … another operation in progress`) is asyncpg connection-sharing, NOT a fit-hang — so this "fix" is also aimed at the wrong layer. |
 | 3 | Investigate LoL `n=0` anomaly (per-game cal vs global pooled disagree) | EB session | High priority — LoL is highest-traded game; an undetected query bug could affect calibration. |
 | 4 | Task #21a: 6 active-loop accounting drift markets | EB session (deferred) | Bounded waste (6/500 slot tax). |
 | 5 | Task #21b: 17 historical-overflow markets | EB session (deferred) | Already excluded from bot_pnl.py "clean" total. |
