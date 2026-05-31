@@ -89,3 +89,25 @@ readlink /opt/polymarket-ai-v2-esports   # → .../20260530_213432
 # 2) If contention eased (steady "Scan cycle done"): pick up P1 — V2 matched=0.
 # 3) The cure is operator/MB (D1/D2 in EB_COORDINATION_SCAN_STALL_DBLOAD.md).
 ```
+
+---
+
+## §11 — UPDATE (later 2026-05-31 UTC): Bug 3 (SIGTERM-limbo) + matched=0 root cause
+
+After §1–§10 deployed (`20260530_213432`), an end-to-end fire monitor caught a THIRD bug — and the matcher read surfaced the `matched=0` root cause.
+
+### Bug 3 — the watchdog fired but the process did NOT restart
+At **02:04:43 UTC both watchdogs fired correctly** (`esportsbot_scan_stall_self_restart scan_age_s=1014.4`; `esports_v2_… 992.8`) — arming + stale-detection + fire all PROVEN in production (the thing §5 said was unproven). **But the process stayed alive** (PID 367955 unchanged, `active (running)`, uptime climbing). Root cause: `os.kill(os.getpid(), signal.SIGTERM)` invokes main.py's graceful-shutdown handler, which **hangs on the same wedged asyncpg pool** the watchdog is escaping (post-fire journal: asyncpg `CancelledError` in `_start_transaction`, `db_pool_health` still ticking 3 min later). **systemd does NOT apply `TimeoutStopSec` to a self-sent SIGTERM** (only to `systemctl stop`), so the process sticks in shutdown-limbo forever.
+
+**Fix (`b7c4bb3`, deploy `20260530_221754`):** both watchdogs now `os._exit(1)` (+ `sys.stdout/stderr.flush()` so the critical log survives the abrupt exit) — bypasses all handlers → immediate exit → systemd `Restart=always` restarts with a clean pool. State is DB-backed, nothing lost. 8 watchdog tests updated (assert `os._exit(1)`), full preflight green. **Both watchdogs re-armed under PID 372390 @ 02:24.** A restart-confirmation monitor (watching for the PID to actually change on the next fire) was running at handoff — check its result; `os._exit→restart` is otherwise guaranteed by composition (immediate exit + `Restart=always`, no hidden handler like SIGTERM had).
+
+Lesson: §6's "limitation" (start-based watchdog doesn't catch cycle-but-never-complete) is actually CORRECT behavior under contention — restarting a still-cycling loop just re-wedges + adds cold-start DB load. The watchdog rightly fires only on a TERMINAL wedge (loop fully stops). Under sustained contention this is a periodic restart-cycle = the loud signal for operator/MB to fix D1/D2.
+
+### matched=0 root cause (answers §8 P1)
+`EsportsMarketScanner.find_markets_for_match` (`esports/markets/esports_market_scanner.py:231`) fetches markets via `await asyncio.wait_for(self._market_service.get_tradeable_esports_markets(...), timeout=10.0)` (**:261**), and on timeout/exception **silently** (`logger.debug`) sets `all_markets = []` → the matcher loop has nothing to iterate → `matched=0`. There ARE markets (DB: **606 future-active** esports-ish markets), so `matched=0` is **largely downstream of the contention** (that query times out), NOT a matcher-logic bug. Whether a matcher bug ALSO exists can only be tested once scans complete cleanly (post-contention-fix).
+
+**NEW high-priority EB lead:** that `asyncio.wait_for(DB_call, timeout=10.0)` at **:261 and :271** is itself a **RULE ZERO rule-6 violation** (wait_for wrapping a DB await — cancellation on timeout corrupts asyncpg, the `cannot switch to state N` signature). The S233 §2 rule-6 audit listed `position_manager:305` + `prediction_engine` L561/591/3131 as hardened but **MISSED this scanner path** (Protocol 16 audit-completeness gap). It may *contribute* to the corruption cascade. Fix = replace with a server-side `statement_timeout` (the rule-6-compliant pattern) or drop the wait_for. **Needs isolated verification** (confirm it's hit; confirm `get_tradeable_esports_markets` shares a corruptible connection) — do NOT hot-patch mid-contention.
+
+### Other
+- Weather restarted independently @ 02:25:52 (4 min after my 02:21:54 esports deploy — NOT my deploy; it's WB's own scan-loop-stall under the same system-wide contention: `weatherbot_scan_loop_supervised supervised=False`). Confirms the contention is fleet-wide.
+- **Current VPS:** release `20260530_221754`, PID 372390. Commits on `eb/main`: `442064d`, `1cd5611`, `910174e` (docs), `b7c4bb3`.
