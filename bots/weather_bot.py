@@ -1308,7 +1308,7 @@ class WeatherBot(BaseBot):
                             ON CONFLICT (station_id, target_date, lead_time_hours) DO NOTHING
                         """), {
                             "sid": station.station_id,
-                            "td": target_date_str,
+                            "td": date.fromisoformat(target_date_str),  # asyncpg requires date, not str
                             "ft": forecast_temp,
                             "at": actual_temp,
                             "lt": lead_hours,
