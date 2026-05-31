@@ -207,14 +207,48 @@ class _SemaphoreSession:
             # SET statement_timeout (without LOCAL) is session-scoped and survives COMMIT.
             await result.commit()
         except Exception as _set_err:
+            _err_str = str(_set_err)
             import structlog as _sl
-            _sl.get_logger().warning("set_statement_timeout_failed", timeout_ms=_timeout_ms, error=str(_set_err))
+            _sl.get_logger().warning("set_statement_timeout_failed", timeout_ms=_timeout_ms, error=_err_str)
             # S168: Rollback poisoned session to prevent "Can't reconnect until invalid
             # transaction is rolled back" cascading to all downstream operations.
             try:
                 await result.rollback()
             except Exception:
                 pass
+            # S235: asyncpg protocol-corruption — "cannot switch to state N; another
+            # operation (2) is in progress" or ConnectionDoesNotExistError means the
+            # physical connection's asyncpg state machine is broken. Returning this
+            # session (pre-S235 behavior) spreads the corruption: the next caller
+            # checks out the same broken connection, its own SET statement_timeout
+            # also fails, and the error cascades across unrelated scan-path operations.
+            # Fix: close the session fully and raise. Python semantics: __aexit__ is
+            # NOT called when __aenter__ raises, so we release the semaphore here.
+            _CORRUPT_SIGS = (
+                "cannot switch to state",
+                "another operation",
+                "ConnectionDoesNotExistError",
+                "connection was closed in the middle",
+            )
+            if any(sig in _err_str for sig in _CORRUPT_SIGS):
+                try:
+                    await self.session.__aexit__(type(_set_err), _set_err, None)
+                except Exception:
+                    pass
+                self.session = None   # __aexit__ guards `if self.session:` — safe
+                if self._timeout_ctx is not None:
+                    try:
+                        await self._timeout_ctx.__aexit__(type(_set_err), _set_err, None)
+                    except Exception:
+                        pass
+                    self._timeout_ctx = None
+                if self.semaphore:
+                    self.semaphore.release()
+                raise DatabaseError(
+                    f"asyncpg connection corrupted (discarded): {_err_str[:100]}",
+                    operation="get_session",
+                    table=None,
+                ) from _set_err
         return result
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
