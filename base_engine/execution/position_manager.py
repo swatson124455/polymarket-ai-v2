@@ -300,8 +300,12 @@ class AutomatedPositionManager:
                 # Step 1: Read positions — isolated session, expunge immediately.
                 # Detached ORM objects keep __dict__ — pure Python attr access, no
                 # session, no greenlet, no lazy-load for all downstream operations.
+                # S235: get_raw_session() (no semaphore) so the monitoring read does
+                # not consume a semaphore slot that the scan path needs. This is a
+                # fast, read-only SELECT — the semaphore docstring explicitly allows
+                # "lightweight operations that must not deadlock with semaphore."
                 from sqlalchemy import select
-                async with self.db.get_session() as _read_session:
+                async with self.db.get_raw_session() as _read_session:
                     result = await _read_session.execute(
                         select(Position).where(Position.status.in_(["open", "reserving"]))
                     )
