@@ -162,7 +162,7 @@ async def try_auto_register(city_text: str, db: "PolymarketDatabase") -> bool:
     timezone: str = top.get("timezone", "UTC")
     country_code: str = top.get("country_code", "")
     temp_unit: str = _derive_temp_unit(country_code)
-    confidence: float = round(top_score, 4)
+    confidence: float = 1.0  # passed the structural gate (Open-Meteo returns no geocoder score)
     aliases = [station_key]  # at minimum, the normalised key
 
     # Insert into dynamic_stations
