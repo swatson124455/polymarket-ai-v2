@@ -1324,18 +1324,18 @@ class TestScanStallWatchdogV2:
         return EsportsBotV2(MagicMock())
 
     @pytest.mark.asyncio
-    async def test_stale_scan_triggers_sigterm(self):
-        """No new scan started within threshold → SIGTERM for systemd restart."""
+    async def test_stale_scan_triggers_force_exit(self):
+        """No new scan started within threshold → os._exit for systemd restart."""
         import os
         import signal
         import time as _time
         bot = self._make_bot()
         bot._scan_start_mono = _time.monotonic() - 10_000.0  # scan hung long ago
-        with patch("config.settings.settings") as ms, patch("os.kill") as mock_kill:
+        with patch("config.settings.settings") as ms, patch("os._exit") as mock_exit:
             ms.ESPORTS_STALL_WATCHDOG_INTERVAL_S = 0.01
             ms.ESPORTS_STALL_RESTART_THRESHOLD_S = 0.05
             await asyncio.wait_for(bot._scan_stall_watchdog(), timeout=2.0)
-        mock_kill.assert_called_once_with(os.getpid(), signal.SIGTERM)
+        mock_exit.assert_called_once_with(1)
 
     @pytest.mark.asyncio
     async def test_fresh_scan_does_not_trigger(self):
@@ -1343,7 +1343,7 @@ class TestScanStallWatchdogV2:
         import time as _time
         bot = self._make_bot()
         bot._scan_start_mono = _time.monotonic()  # just started
-        with patch("config.settings.settings") as ms, patch("os.kill") as mock_kill:
+        with patch("config.settings.settings") as ms, patch("os._exit") as mock_exit:
             ms.ESPORTS_STALL_WATCHDOG_INTERVAL_S = 0.01
             ms.ESPORTS_STALL_RESTART_THRESHOLD_S = 5.0
             task = asyncio.create_task(bot._scan_stall_watchdog())
@@ -1353,14 +1353,14 @@ class TestScanStallWatchdogV2:
                 await asyncio.wait_for(task, timeout=2.0)
             except asyncio.CancelledError:
                 pass
-        mock_kill.assert_not_called()
+        mock_exit.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_not_armed_before_first_scan(self):
         """Before the first scan (_scan_start_mono == 0) the watchdog is inert."""
         bot = self._make_bot()
         bot._scan_start_mono = 0.0  # no scan has started yet
-        with patch("config.settings.settings") as ms, patch("os.kill") as mock_kill:
+        with patch("config.settings.settings") as ms, patch("os._exit") as mock_exit:
             ms.ESPORTS_STALL_WATCHDOG_INTERVAL_S = 0.01
             ms.ESPORTS_STALL_RESTART_THRESHOLD_S = 0.05
             task = asyncio.create_task(bot._scan_stall_watchdog())
@@ -1370,7 +1370,7 @@ class TestScanStallWatchdogV2:
                 await asyncio.wait_for(task, timeout=2.0)
             except asyncio.CancelledError:
                 pass
-        mock_kill.assert_not_called()
+        mock_exit.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stale_scan_fires_even_when_running_false(self):
@@ -1384,8 +1384,8 @@ class TestScanStallWatchdogV2:
         bot = self._make_bot()
         bot.running = False  # startup race / max-consecutive-failures stop
         bot._scan_start_mono = _time.monotonic() - 10_000.0
-        with patch("config.settings.settings") as ms, patch("os.kill") as mock_kill:
+        with patch("config.settings.settings") as ms, patch("os._exit") as mock_exit:
             ms.ESPORTS_STALL_WATCHDOG_INTERVAL_S = 0.01
             ms.ESPORTS_STALL_RESTART_THRESHOLD_S = 0.05
             await asyncio.wait_for(bot._scan_stall_watchdog(), timeout=2.0)
-        mock_kill.assert_called_once_with(os.getpid(), signal.SIGTERM)
+        mock_exit.assert_called_once_with(1)

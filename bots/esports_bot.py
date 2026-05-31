@@ -813,7 +813,6 @@ class EsportsBot(BaseBot):
         tracked in EB_COORDINATION_SCAN_STALL_DBLOAD.md.
         """
         import os
-        import signal
         _interval = float(getattr(settings, "ESPORTS_STALL_WATCHDOG_INTERVAL_S", 60.0))
         _threshold = float(getattr(settings, "ESPORTS_STALL_RESTART_THRESHOLD_S", 900.0))
         # S235: loop unconditionally — do NOT gate on `self.running`. Every
@@ -847,11 +846,25 @@ class EsportsBot(BaseBot):
                     threshold_s=_threshold,
                     scan_count=getattr(self, "_scan_count", -1),
                     detail=("scan loop has not started a new cycle within "
-                            "threshold (likely wedged DB pool) — exiting for "
-                            "systemd restart"),
+                            "threshold (likely wedged DB pool) — force-exiting "
+                            "for systemd restart"),
                 )
-                os.kill(os.getpid(), signal.SIGTERM)
-                return
+                # S235: os._exit, NOT os.kill(SIGTERM). The watchdog only fires
+                # when the process is already wedged, so SIGTERM's graceful
+                # shutdown handler hangs on the SAME wedged pool — and systemd
+                # does NOT force-kill a self-sent SIGTERM (TimeoutStopSec applies
+                # only to `systemctl stop`), so the process sticks in
+                # shutdown-limbo and never restarts (observed 2026-05-30 02:04
+                # UTC: both watchdogs fired, process hung 5min+, PID unchanged).
+                # os._exit bypasses all handlers → immediate exit → systemd
+                # Restart=always restarts with a clean pool. State is DB-backed
+                # (State Persistence), so a forced exit loses nothing.
+                import sys  # flush the critical log first — os._exit does no
+                sys.stdout.flush()  # buffer flushing and stdout→journald is
+                sys.stderr.flush()  # block-buffered, so the line would be lost
+                os._exit(1)
+                return  # unreachable in prod (os._exit never returns); kept so
+                #         unit tests that mock os._exit exit the loop deterministically
 
     def _passes_ws_entry_gates(
         self, market_id: str, side: str, game: str, trade_price: float,
