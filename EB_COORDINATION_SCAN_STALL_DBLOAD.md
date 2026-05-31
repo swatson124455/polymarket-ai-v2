@@ -59,3 +59,15 @@ ssh ... 'for s in esports mirror weather ingestion; do echo -n "$s: "; journalct
 
 ---
 *EB session is out of scope for the shared fixes (D/E) per RULE ONE-A / MB priority. This memo hands them to operator + MB. EB's backstop keeps EsportsBot self-recovering in the meantime.*
+
+---
+
+## UPDATE 2026-05-30 (S235) — backstop was BROKEN, now fixed; contention still ACTIVE
+
+**The "backstop keeps EsportsBot self-recovering" claim above was false** — the S233 watchdog never once fired. It recurred: a fresh wedge left both esports bots dead **~13h** (2026-05-30, PID 345158). Root cause = two EB-owned watchdog bugs (now fixed, `eb/main` `442064d` + `1cd5611`, deploy `20260530_213432`):
+1. V1 watchdog created before `super().start()` set `running=True` → `while self.running` saw False on first schedule → task returned silently, never ran. (Never fired in any incident.)
+2. EsportsBotV2 (sibling of EsportsBot) had **no watchdog at all** — the primary trader was uncovered.
+
+Fix: watchdog loops `while True` (exit only on cancellation); V2 gets its own. Both **proven armed in production** (`esportsbot_/esports_v2_scan_stall_watchdog_armed` logs under PID 367955). Now the failure is **loud + self-recovering** instead of a silent multi-hour death.
+
+**The shared root cause (D1/D2) is UNCHANGED and ACTIVE/SEVERE:** the manual-restore process (PID 366175, 01:15 UTC) re-wedged within **~6 min** (kill-switch + `scan_and_trade()` timeouts by 01:21). With the watchdog now working, sustained contention → EB will **restart-cycle** (terminal wedge → SIGTERM → restart → re-wedge), each restart adding cold-start DB load. **This raises, not lowers, the urgency of D1/D2.** The watchdog converts silent death into a visible restart loop — please action the shared fixes.
