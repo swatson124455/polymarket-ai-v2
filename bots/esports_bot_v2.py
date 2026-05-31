@@ -124,6 +124,14 @@ class EsportsBotV2(BaseBot):
         # being done before predicting.
         self._warmup_task: Optional[asyncio.Task[None]] = None
 
+        # S235: scan-stall self-watchdog state. EsportsBotV2 is a sibling of
+        # EsportsBot (both extend BaseBot); the watchdog added to EsportsBot in
+        # S233 never covered V2 — the primary trader. _scan_start_mono is
+        # refreshed at the top of every scan_and_trade(); the watchdog SIGTERMs
+        # the process (systemd Restart=always) if it stalls past threshold.
+        self._scan_start_mono: float = 0.0
+        self._stall_watchdog_task: Optional[asyncio.Task[None]] = None
+
         # Config
         self._games = [g.strip() for g in _GAMES]
         self._dry_run = _DRY_RUN
@@ -136,6 +144,70 @@ class EsportsBotV2(BaseBot):
                 self._heavy_warmup(), name="esports_bot_v2_warmup",
             )
         await super().start()
+        # S235: launch the scan-stall watchdog AFTER super().start() (which sets
+        # running=True and starts the scan loop). Not gated on running — see
+        # _scan_stall_watchdog for why.
+        self._stall_watchdog_task = asyncio.create_task(self._scan_stall_watchdog())
+        self._stall_watchdog_task.add_done_callback(self._task_error_handler)
+
+    async def stop(self) -> None:
+        """S235: cancel the scan-stall watchdog, then run BaseBot cleanup."""
+        if self._stall_watchdog_task and not self._stall_watchdog_task.done():
+            self._stall_watchdog_task.cancel()
+            try:
+                await self._stall_watchdog_task
+            except asyncio.CancelledError:
+                pass
+        await super().stop()
+
+    async def _scan_stall_watchdog(self) -> None:
+        """S235: Recover a hung scan loop by exiting for a systemd restart.
+
+        Mirrors EsportsBot._scan_stall_watchdog (added S233) — which only ever
+        covered V1. EsportsBotV2 is the primary trader and had no backstop: a
+        scan loop wedged on a corrupted asyncpg connection (shared-DB
+        contention) sat dead with no recovery (observed 2026-05-30, ~13h: both
+        esports bots stale, the V1 watchdog never armed, V2 had none).
+
+        Watches self._scan_start_mono (refreshed at the top of scan_and_trade).
+        If no scan has started within the stall threshold — and at least one
+        has, so cold-start is safe — it SIGTERMs its own process so systemd
+        (Restart=always) restarts with a clean DB pool.
+
+        Loops unconditionally (NOT `while self.running`): the failure modes it
+        recovers from leave it disarmed if gated on running (startup race before
+        super().start() sets running=True; base_bot setting running=False after
+        max scan failures). Only intended exit is cancellation from stop().
+        Purely time-based: it wraps/cancels no DB operation — client-side
+        cancellation of a DB await is exactly what corrupts asyncpg (RULE ZERO
+        rule 6 / S162), i.e. the failure we recover from.
+        """
+        import signal
+        from config.settings import settings
+        _interval = float(getattr(settings, "ESPORTS_STALL_WATCHDOG_INTERVAL_S", 60.0))
+        _threshold = float(getattr(settings, "ESPORTS_STALL_RESTART_THRESHOLD_S", 900.0))
+        logger.info(
+            "esports_v2_scan_stall_watchdog_armed",
+            interval_s=_interval,
+            threshold_s=_threshold,
+        )
+        while True:
+            await asyncio.sleep(_interval)
+            _start_mono = getattr(self, "_scan_start_mono", 0.0) or 0.0
+            if _start_mono <= 0.0:
+                continue  # no scan has started yet — not armed (cold-start safe)
+            _age = time.monotonic() - _start_mono
+            if _age > _threshold:
+                logger.critical(
+                    "esports_v2_scan_stall_self_restart",
+                    scan_age_s=round(_age, 1),
+                    threshold_s=_threshold,
+                    detail=("scan loop has not started a new cycle within "
+                            "threshold (likely wedged DB pool) — exiting for "
+                            "systemd restart"),
+                )
+                os.kill(os.getpid(), signal.SIGTERM)
+                return
 
     async def _initialize(self) -> None:
         """Back-compat shim: synchronous init for callers that still expect
@@ -386,6 +458,10 @@ class EsportsBotV2(BaseBot):
         execute time) — needed because the scan was logging only the
         end-to-end elapsed and a 16–21s steady-state was unattributable.
         """
+        # S235: feed the scan-stall watchdog at scan-loop entry — before the
+        # warmup gate, so a healthy loop merely warming up keeps the watchdog
+        # fed, while a wedged loop freezes this timestamp past threshold.
+        self._scan_start_mono = time.monotonic()
         if not self._warmup_complete():
             logger.info("esports_bot_v2_scan_skipped_warmup_in_progress")
             return
