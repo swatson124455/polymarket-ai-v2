@@ -397,8 +397,34 @@ class AutomatedPositionManager:
 
                 await asyncio.sleep(self.check_interval_seconds)
             except Exception as e:
-                logger.error(f"Error monitoring positions: {str(e)}", exc_info=True)
-                await asyncio.sleep(self.check_interval_seconds)
+                _err_str = str(e)
+                # S235: asyncpg protocol-corruption signature — "cannot switch to
+                # state N; another operation (2) is in progress" or
+                # ConnectionDoesNotExistError. The 10s default retry hammers a
+                # corrupted pool and extends the corruption window. Back off 30s
+                # instead: enough time for existing pool connections to expire and
+                # be replaced by fresh ones via SQLAlchemy's pool recycle logic.
+                # Individual step failures (price update, persist) are caught and
+                # logged by the step-level try/except blocks above — this handler
+                # only fires for structural errors that escape those inner guards.
+                _CORRUPT_SIGS = (
+                    "cannot switch to state",
+                    "another operation",
+                    "ConnectionDoesNotExistError",
+                    "connection was closed in the middle",
+                )
+                if any(sig in _err_str for sig in _CORRUPT_SIGS):
+                    logger.warning(
+                        "position_monitor_pool_corrupt_backoff",
+                        error=_err_str[:120],
+                        backoff_s=30,
+                    )
+                    await asyncio.sleep(30)
+                else:
+                    logger.error(
+                        "Error monitoring positions: %s", _err_str, exc_info=True
+                    )
+                    await asyncio.sleep(self.check_interval_seconds)
     
     async def _close_expired_positions(self, session, positions: list) -> list:
         """Close positions on markets past end_date_iso. Returns remaining active positions.
