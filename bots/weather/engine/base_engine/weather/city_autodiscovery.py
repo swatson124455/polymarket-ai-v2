@@ -26,9 +26,11 @@ if TYPE_CHECKING:
 
 logger = get_logger()
 
-# Confidence thresholds for auto-registration
-_CONF_THRESHOLD = 0.8       # minimum score for top result
-_CONF_GAP = 0.2             # minimum gap between top-2 scores (ambiguity check)
+# Confidence thresholds for auto-registration.
+# NOTE (2026-05-31): Open-Meteo geocoding returns NO relevance "score" field, so
+# confidence is reconstructed from name match + feature_code + population in
+# try_auto_register() — the old score-based gate rejected 100% of cities.
+_MIN_POPULATION = 5000      # reject geocoding noise / tiny places below this population
 
 # Cache: station_key → monotonic time of last insert (avoids repeated geocode calls)
 _registered_cache: dict[str, float] = {}
@@ -113,23 +115,43 @@ async def try_auto_register(city_text: str, db: "PolymarketDatabase") -> bool:
         return False
 
     top = results[0]
-    top_score: float = float(top.get("score", 0.0))
+    # 2026-05-31 FIX: Open-Meteo geocoding returns NO "score" field, so the old
+    # top.get("score", 0.0) defaulted to 0.0 for EVERY city → the gate always failed
+    # → nothing was ever auto-registered. Reconstruct confidence from real fields:
+    #   (1) exact normalised name match, (2) a populated-place feature_code (PPL*),
+    #   (3) a population floor; plus a same-name ambiguity guard.
+    _top_name_key = _to_station_key(str(top.get("name", "")))
+    _name_match = _top_name_key == station_key
+    _feature_code = str(top.get("feature_code", "") or "")
+    _is_populated_place = _feature_code.startswith("PPL")
+    try:
+        _population = int(top.get("population") or 0)
+    except (TypeError, ValueError):
+        _population = 0
 
-    # Ambiguity check: require a clear gap between top-2 results
-    if len(results) >= 2:
-        second_score: float = float(results[1].get("score", 0.0))
-        gap = top_score - second_score
-    else:
-        gap = top_score  # only one result → no ambiguity
+    # Ambiguity: a different result sharing the SAME name must not rival the top by
+    # population (two real cities named the same → require a clear >=2x winner).
+    _ambiguous = False
+    for _other in results[1:]:
+        if _to_station_key(str(_other.get("name", ""))) == _top_name_key:
+            try:
+                _other_pop = int(_other.get("population") or 0)
+            except (TypeError, ValueError):
+                _other_pop = 0
+            if _other_pop * 2 > max(_population, 1):
+                _ambiguous = True
+            break
 
-    if top_score < _CONF_THRESHOLD or gap < _CONF_GAP:
+    if not (_name_match and _is_populated_place and _population >= _MIN_POPULATION) or _ambiguous:
         logger.warning(
             "city_autodiscovery_low_confidence",
             city=city_text,
-            top_score=round(top_score, 3),
-            gap=round(gap, 3),
-            threshold=_CONF_THRESHOLD,
-            required_gap=_CONF_GAP,
+            top_name=top.get("name"),
+            name_match=_name_match,
+            feature_code=_feature_code,
+            population=_population,
+            ambiguous=_ambiguous,
+            min_population=_MIN_POPULATION,
         )
         return False
 
