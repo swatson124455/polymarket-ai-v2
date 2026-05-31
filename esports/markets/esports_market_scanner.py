@@ -258,9 +258,18 @@ class EsportsMarketScanner:
         all_markets = []
         if self._market_service:
             try:
-                all_markets = await asyncio.wait_for(
-                    self._market_service.get_tradeable_esports_markets(game=game),
-                    timeout=10.0,
+                # S235: removed asyncio.wait_for — it was a RULE ZERO rule-6
+                # violation (client-side cancellation of a DB coroutine corrupts
+                # the asyncpg connection state machine, producing "cannot switch
+                # to state N; another operation (2) in progress"). The server-side
+                # statement_timeout (15s, set by _SemaphoreSession.__aenter__ in
+                # database.py) safely handles slow queries via QueryCanceledError
+                # without corrupting the pool. get_tradeable_esports_markets has
+                # its own try/except that returns [] on any error. Strategy 2
+                # (Polymarket HTTP API below) keeps its wait_for — HTTP clients
+                # handle cancellation cleanly, unlike asyncpg.
+                all_markets = await self._market_service.get_tradeable_esports_markets(
+                    game=game,
                 )
             except (asyncio.TimeoutError, Exception) as exc:
                 logger.debug("EsportsMarketScanner: market service failed", error=str(exc))
@@ -414,9 +423,11 @@ class EsportsMarketScanner:
         all_markets = []
         if self._market_service:
             try:
-                all_markets = await asyncio.wait_for(
-                    self._market_service.get_tradeable_esports_markets(game=game),
-                    timeout=15.0,
+                # S235: removed asyncio.wait_for (same rule-6 fix as
+                # find_markets_for_match above — DB coroutine cancellation
+                # corrupts asyncpg; server-side statement_timeout handles it).
+                all_markets = await self._market_service.get_tradeable_esports_markets(
+                    game=game,
                 )
             except (asyncio.TimeoutError, Exception) as exc:
                 logger.debug("EsportsMarketScanner: market service failed", error=str(exc))
