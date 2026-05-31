@@ -110,4 +110,42 @@ Lesson: §6's "limitation" (start-based watchdog doesn't catch cycle-but-never-c
 
 ### Other
 - Weather restarted independently @ 02:25:52 (4 min after my 02:21:54 esports deploy — NOT my deploy; it's WB's own scan-loop-stall under the same system-wide contention: `weatherbot_scan_loop_supervised supervised=False`). Confirms the contention is fleet-wide.
-- **Current VPS:** release `20260530_221754`, PID 372390. Commits on `eb/main`: `442064d`, `1cd5611`, `910174e` (docs), `b7c4bb3`.
+- **Current VPS (§11):** release `20260530_221754`, PID 372390.
+
+---
+
+## §12 — UPDATE (2026-05-31 03:26 UTC): Rule-6 fix in EsportsMarketScanner + restart confirmed
+
+### os._exit restart CONFIRMED end-to-end
+Monitor caught PID 372390 → 376101 with `FIRE=1` (iter 13 of the restart monitor). `os._exit(1)` actually restarted the process — confirming what SIGTERM could not do (SIGTERM → graceful-shutdown-on-wedged-pool → limbo forever). The watchdog chain is now fully proven: **arm → detect stale scan → fire → force-exit → systemd restart**. No more silent multi-hour deaths.
+
+### Scanner rule-6 fix (`061b348`, deploy `20260530_232112`)
+§11 flagged `asyncio.wait_for(get_tradeable_esports_markets(...), timeout=10.0)` at `esports_market_scanner.py:261` as a rule-6 violation. It was hit on every 120s cache miss — the market-service DB call was being cancelled (asyncpg corruption) every time DB was slow >10s. A second instance existed at line 417 (`find_all_esports_markets`).
+
+**Fix:** removed `asyncio.wait_for` from both sites. The server-side `statement_timeout` (15s, set by `_SemaphoreSession.__aenter__` in `database.py:203`) handles slow queries safely via `QueryCanceledError` caught by the existing `except Exception` — returning `[]` without pool corruption. Strategy 2 (HTTP Polymarket API) keeps its `wait_for` (HTTP handles cancellation cleanly).
+
+Protocol 16 note: the S233 rule-6 audit named `position_manager:305` + `prediction_engine` violations but missed this scanner path. Fixed here.
+
+**Post-deploy state:** HEALTH_OK at 100s, release `20260530_232112`, PID 377352, both watchdogs armed, MB/WB isolated. V2 still in cold-fit warmup at time of writing — funnel logs expected once fit completes (~5.5 min). Ingestion PID change (346498→376368 at 03:05) confirmed independent (20 min before deploy).
+
+**Can't fully verify yet:** whether `matched > 0` in V2 scan funnel after this fix. The cache miss path was the corruption source; with it fixed, the market-service fetch should complete and return markets (DB: 606 future-active esports markets confirmed). But DB contention (D1/D2) may still cause market-service query failures via server-side `statement_timeout` — returning `[]` safely now (no corruption), but still empty. A warmup monitor was running at handoff; check its result.
+
+### Carry-forward (updated)
+| # | Item | Owner | Notes |
+|---|---|---|---|
+| **P0** | Shared DB contention D1/D2 (the cure) | operator/MB | Still active/severe. EB will restart-cycle until fixed — now loudly, with auto-recovery. |
+| **P1** | V2 `matched > 0` verification | EB | Confirmed via funnel log once warmup completes post-deploy. If still 0: matcher-logic bug (separate from rule-6/contention). |
+| P2 | Calibrator anomalies (valorant/dota2 silent; LoL n=0) | EB | Untouched this session. |
+| P3 | CLOSE-WAIT leak (httpx) | EB | `EB_COORDINATION_CLOSE_WAIT_LEAK.md` — still open. |
+
+### §12 next-session §0
+```bash
+cd C:/lockes-picks/polymarket-ai-v2/.claude/worktrees/eb-main
+git log --oneline -4        # expect 061b348 on top
+readlink /opt/polymarket-ai-v2-esports  # → .../20260530_232112
+# 1) Did watchdog restart-cycle since 03:26? (contention active):
+ssh -i KEY ubuntu@18.201.216.0 'journalctl -u polymarket-esports --since "today" | grep -c scan_stall_self_restart'
+# 2) V2 scan funnel: matched > 0?
+ssh -i KEY ubuntu@18.201.216.0 'journalctl -u polymarket-esports --since "today" | grep esports_v2_scan_funnel | tail -5'
+# 3) If matched still 0 after steady scans: investigate matcher logic (separate bug)
+```
