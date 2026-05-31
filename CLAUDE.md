@@ -2,6 +2,20 @@
 
 This is a live 15-bot Polymarket automated trading system. Real capital is at risk. Every change can break something that currently works and costs money.
 
+## NEG-RISK MARKETS ARE IN SCOPE (HARDCODED 2026-05-26)
+
+**The bot bets on neg-risk markets.** Elections (multiple candidates), tournament brackets (multiple teams), "which of N options wins" — these are all valid signal sources for MirrorBot. They route through `NegRiskExchange V2` (`0xe2222d279d…`) instead of `Exchange V2` (`0xE111180000…`); that contract routing is fine.
+
+**The actual constraint is ONE BET PER MARKET.** Enforced by existing guards:
+- `_entered_market_sides` set (cross-session, restored at startup)
+- `mirror_opposing_side_blocked` (cross-scan)
+- `mirror_opposing_side_blocked_historical` (cross-session)
+- `mirrored_trades` OrderedDict (same-side dedup)
+
+**DO NOT add a `neg_risk=True` filter** to `order_gateway._can_exit`, `_execute_mirror_trade`, the base_engine signal SQL, or anywhere else. Bug 14 (`59aa0e1`) tried that block. It was reverted (`f66ed43`) because it cut all elections and tournament markets. If a future session sees a NegRiskExchange V2 codepath bug (exit / redemption / resolution backfill), fix that specific path — do NOT blanket-block neg-risk markets.
+
+If you think you need to block neg-risk, you don't. Read `feedback_negrisk_routing_distinction.md` and the revert commit `f66ed43` before doing anything.
+
 ## SESSION PRIORITY — MIRRORBOT HAS ALL PRIORITIES
 
 **Two layers, both binding:**
