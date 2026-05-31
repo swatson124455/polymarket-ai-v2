@@ -816,7 +816,25 @@ class EsportsBot(BaseBot):
         import signal
         _interval = float(getattr(settings, "ESPORTS_STALL_WATCHDOG_INTERVAL_S", 60.0))
         _threshold = float(getattr(settings, "ESPORTS_STALL_RESTART_THRESHOLD_S", 900.0))
-        while self.running:
+        # S235: loop unconditionally — do NOT gate on `self.running`. Every
+        # failure mode this watchdog must recover leaves it disarmed if gated:
+        #   - Startup race: this task is created in start() BEFORE super().start()
+        #     sets running=True. Gated on running, its first schedule (at the
+        #     Redis-restore awaits) sees running=False and the task returns
+        #     immediately and SILENTLY (clean return → no _task_error_handler
+        #     log). Root cause of the 2026-05-30 ~13h silent hang and the
+        #     2026-05-28 ~18.75h one: the watchdog had never run its loop body.
+        #   - Mid-run stop: base_bot sets running=False after max consecutive
+        #     scan failures (base_bot.py:907) — a running-gated watchdog exits
+        #     exactly when a restart is needed.
+        # The only intended exit is task cancellation from stop() (already
+        # awaited there). Still purely time-based: no DB await is wrapped.
+        logger.info(
+            "esportsbot_scan_stall_watchdog_armed",
+            interval_s=_interval,
+            threshold_s=_threshold,
+        )
+        while True:
             await asyncio.sleep(_interval)
             _start_mono = getattr(self, "_scan_start_mono", 0.0) or 0.0
             if _start_mono <= 0.0:

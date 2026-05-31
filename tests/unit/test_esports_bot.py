@@ -1162,8 +1162,11 @@ class TestScanStallWatchdog:
             ms.ESPORTS_STALL_RESTART_THRESHOLD_S = 5.0
             task = asyncio.create_task(bot._scan_stall_watchdog())
             await asyncio.sleep(0.1)   # several checks; none should fire
-            bot.running = False
-            await asyncio.wait_for(task, timeout=2.0)
+            task.cancel()              # S235: cancellation is the only stop
+            try:
+                await asyncio.wait_for(task, timeout=2.0)
+            except asyncio.CancelledError:
+                pass
         mock_kill.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1178,6 +1181,28 @@ class TestScanStallWatchdog:
             ms.ESPORTS_STALL_RESTART_THRESHOLD_S = 0.05
             task = asyncio.create_task(bot._scan_stall_watchdog())
             await asyncio.sleep(0.1)
-            bot.running = False
-            await asyncio.wait_for(task, timeout=2.0)
+            task.cancel()              # S235: cancellation is the only stop
+            try:
+                await asyncio.wait_for(task, timeout=2.0)
+            except asyncio.CancelledError:
+                pass
         mock_kill.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stale_scan_fires_even_when_running_false(self):
+        """S235 regression: the watchdog is NOT gated on self.running. A stale
+        scan must SIGTERM even with running=False — the exact startup-race /
+        post-max-failures state that silently disarmed the pre-S235 watchdog
+        (created before super().start() set running=True → it never ran)."""
+        import asyncio
+        import os
+        import signal
+        import time as _time
+        bot = make_bot()
+        bot.running = False  # startup race / max-consecutive-failures stop
+        bot._scan_start_mono = _time.monotonic() - 10_000.0  # scan hung long ago
+        with patch("bots.esports_bot.settings") as ms, patch("os.kill") as mock_kill:
+            ms.ESPORTS_STALL_WATCHDOG_INTERVAL_S = 0.01
+            ms.ESPORTS_STALL_RESTART_THRESHOLD_S = 0.05
+            await asyncio.wait_for(bot._scan_stall_watchdog(), timeout=2.0)
+        mock_kill.assert_called_once_with(os.getpid(), signal.SIGTERM)
