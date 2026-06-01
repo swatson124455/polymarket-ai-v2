@@ -142,7 +142,13 @@ class LiquidityGuardian:
         
         # Calculate slippage
         avg_price = total_cost / trade_size
-        best_price = prices_touched[0] if prices_touched else 0
+        # S237 HIGH-1: anchor to the first level with REAL size, not a phantom size-0
+        # top-of-book. CLOB books can carry size-0 levels at the best price (the S231/S232
+        # bug class); measuring slippage against a phantom best price is wrong.
+        best_price = next(
+            (float(lvl.get("price", 0)) for lvl in levels if float(lvl.get("size", 0)) > 0),
+            0,
+        )
         slippage = abs(avg_price - best_price) / best_price if best_price > 0 else 0
         
         # Check if slippage is acceptable
@@ -190,7 +196,16 @@ class LiquidityGuardian:
         if not levels:
             return 0.0
 
-        best_price = float(levels[0].get("price", 0.5))
+        # S237 HIGH-1: anchor to the first level with REAL size, not a phantom size-0
+        # top-of-book (the S231/S232 bug class). Anchoring max_price to a phantom best
+        # price mis-computes the safe size and mis-clamps every WeatherBot fill (flat-$100
+        # sizing means this cap determines actual fill size on thin books).
+        best_price = next(
+            (float(lvl.get("price", 0.5)) for lvl in levels if float(lvl.get("size", 0)) > 0),
+            None,
+        )
+        if best_price is None:
+            return 0.0  # no level with real depth
         max_price = best_price * (1 + max_slippage_pct) if _is_buy else best_price * (1 - max_slippage_pct)
 
         # Calculate how much we can buy/sell before exceeding max_price

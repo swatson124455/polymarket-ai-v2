@@ -7,6 +7,12 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from base_engine.risk.liquidity_guardian import LiquidityGuardian
+# S237 HIGH-1: the phantom size-0 anchor fix lives in the VENDORED copy WeatherBot runs.
+# The import above is the repo-root copy (MB-owned, byte-identical pre-fix); the phantom
+# tests at the bottom target the silo copy that carries the fix.
+from bots.weather.engine.base_engine.risk.liquidity_guardian import (
+    LiquidityGuardian as _SiloLiquidityGuardian,
+)
 
 
 def _make_guardian(asks=None, bids=None):
@@ -160,3 +166,81 @@ async def test_no_levels_at_all_returns_no_liquidity():
     )
     assert result["can_execute"] is False
     assert result["reason"] == "no_liquidity"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S237 HIGH-1: phantom size-0 top-of-book anchoring (vendored / WeatherBot copy).
+#
+# get_max_safe_size() and check_liquidity() must anchor "best price" to the first level
+# with REAL size, not a phantom size-0 top level (the S231/S232 bug class). WeatherBot
+# sizes flat ($100 default), so get_max_safe_size shapes the actual fill size on every
+# thin book — a phantom anchor mis-sizes or falsely shadow-rejects real fills.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _silo_guardian(book):
+    tracker = MagicMock()
+    tracker.snapshot_order_book = AsyncMock(return_value=book)
+    return _SiloLiquidityGuardian(client=None, orderbook_tracker=tracker)
+
+
+class TestGetMaxSafeSizePhantom:
+    @pytest.mark.asyncio
+    async def test_phantom_size0_top_level_is_skipped(self):
+        """Size-0 best ask must NOT anchor max_price.
+
+        Bug: best=0.10 (phantom) → max_price=0.102 → real 0.14 excluded → returns 0 →
+        WeatherBot falsely shadow-rejects a fillable market.
+        Fixed: anchor to 0.14 (first real) → max_price=0.1428 → the 0.14 depth counts.
+        """
+        book = {"asks": [
+            {"price": 0.10, "size": 0},
+            {"price": 0.14, "size": 1000.0},
+            {"price": 0.15, "size": 500.0},
+        ]}
+        g = _silo_guardian(book)
+        size = await g.get_max_safe_size("m1", "tok", side="BUY", max_slippage_pct=0.02)
+        assert size == pytest.approx(1000.0)
+
+    @pytest.mark.asyncio
+    async def test_all_zero_size_returns_zero(self):
+        book = {"asks": [{"price": 0.10, "size": 0}, {"price": 0.14, "size": 0}]}
+        g = _silo_guardian(book)
+        assert await g.get_max_safe_size("m1", "tok", side="BUY", max_slippage_pct=0.02) == 0.0
+
+    @pytest.mark.asyncio
+    async def test_clean_book_unaffected(self):
+        book = {"asks": [{"price": 0.14, "size": 800.0}, {"price": 0.20, "size": 999.0}]}
+        g = _silo_guardian(book)
+        size = await g.get_max_safe_size("m1", "tok", side="BUY", max_slippage_pct=0.02)
+        assert size == pytest.approx(800.0)  # 0.20 > 0.14*1.02 → excluded
+
+
+class TestCheckLiquidityPhantom:
+    @pytest.mark.asyncio
+    async def test_phantom_top_does_not_inflate_slippage(self):
+        """Slippage measured against the first REAL level, not a phantom.
+
+        Bug: best=0.10 (phantom) vs VWAP 0.14 → 40% slippage → blocked.
+        Fixed: best=0.14 (real) vs VWAP 0.14 → ~0% → can_execute=True.
+        """
+        book = {"asks": [{"price": 0.10, "size": 0}, {"price": 0.14, "size": 1000.0}]}
+        g = _silo_guardian(book)
+        res = await g.check_liquidity("m1", "tok", trade_size=100.0, side="BUY")
+        assert res["best_price"] == pytest.approx(0.14)
+        assert res["slippage"] == pytest.approx(0.0, abs=1e-9)
+        assert res["can_execute"] is True
+
+    @pytest.mark.asyncio
+    async def test_real_slippage_still_detected(self):
+        book = {"asks": [
+            {"price": 0.10, "size": 0},
+            {"price": 0.20, "size": 50.0},
+            {"price": 0.30, "size": 1000.0},
+        ]}
+        g = _silo_guardian(book)
+        res = await g.check_liquidity("m1", "tok", trade_size=100.0, side="BUY")
+        # VWAP = (50*0.20 + 50*0.30)/100 = 0.25; anchored to real best 0.20 → 25%.
+        assert res["best_price"] == pytest.approx(0.20)
+        assert res["slippage"] == pytest.approx(0.25, rel=1e-3)
+        assert res["can_execute"] is False
