@@ -68,7 +68,21 @@ if [ -n "$_bcp_hits" ]; then
     _bcp_violations=$((_bcp_violations + 1))
 fi
 [ "$_bcp_violations" -eq 0 ] || { echo "ABORT: deploy cancelled — fix bug-class violations first"; exit 1; }
-echo "  OK — syntax clean, tests passed, SSH key present, bug-class patterns clean"
+# WI-8: Verify positions table CHECK constraints are active on the VPS DB.
+# If a constraint is missing (e.g., after a host rebuild), warn but do NOT
+# block the deploy — the constraints protect against future bad inserts; an
+# absent constraint during deploy is not itself dangerous, but it must be
+# flagged for immediate remediation.
+_wi8_missing=0
+_wi8_result=$(ssh $SSH_OPTS -i "$KEY" "$VPS" \
+    "sudo -u postgres psql -d polymarket -tAc \
+    \"SELECT COUNT(*) FROM pg_constraint WHERE conrelid='positions'::regclass AND conname LIKE 'chk_positions_%'\"" 2>/dev/null || echo "0")
+if [ "${_wi8_result:-0}" -lt 4 ] 2>/dev/null; then
+    echo "  WARNING [WI-8]: positions table is missing CHECK constraints (found ${_wi8_result:-0}/4)."
+    echo "           Run schema/migrations/078_positions_check_constraints.sql as postgres user."
+    _wi8_missing=1
+fi
+echo "  OK — syntax clean, tests passed, SSH key present, bug-class patterns clean${_wi8_missing:+ (WI-8 constraint warning — see above)}"
 
 # ── 2. Build archive ──────────────────────────────────────────────────────────
 echo ""
