@@ -1,9 +1,12 @@
 """S199 windowing-tool tests — bot_pnl.py + edge_verification.py CLI extensions.
 
 Covers the offline-only logic: deploy-stamp parsing, argparse backward compat,
-and v7 verdict mapping. DB-touching paths (the actual SQL execution) are not
-exercised here — they are validated by running the scripts against the prod
-database during the Phase 7 gate evaluation.
+v7 verdict mapping, and (WI-4 / WI-9) mode-segmentation SQL injection.
+DB-touching paths (the actual SQL execution) are not exercised here — they are
+validated by running the scripts against the prod database during the Phase 7
+gate evaluation.  Exception: TestBotPnlModeFlag uses an async mock session to
+capture SQL strings and assert that the correct execution_mode / is_paper
+filters appear when --mode paper|live is set.
 
 Pinned because:
   - parse_deploy_timestamp is consumed by both scripts; format drift would
@@ -15,7 +18,10 @@ Pinned because:
     S172_CONSOLIDATED_PLAN.md:441-446 — a regression here would mis-classify
     Phase 7 elevation readiness.
 """
+import asyncio
+import inspect
 from datetime import datetime
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -456,3 +462,185 @@ class TestBotPnlCleanFlag:
         sig = inspect.signature(bot_pnl.bot_pnl)
         for required in ("bot_name", "hours", "since"):
             assert required in sig.parameters
+
+
+# ── WI-4 / WI-9: mode-segmentation tests ────────────────────────────────────
+
+def _make_mock_db():
+    """Return a mock Database + a list that receives captured SQL strings.
+
+    The mock's get_session() returns an async context manager whose execute()
+    records str(stmt) into the list and returns an empty result set.  This
+    lets callers assert that bot_pnl() injects the right SQL filters without
+    needing a real database connection.
+    """
+    sqls: list[str] = []
+
+    async def _capture_execute(stmt, *args, **kwargs):
+        sqls.append(str(stmt))
+        result = MagicMock()
+        result.fetchall.return_value = []
+        result.scalar.return_value = 0
+        result.scalar_one_or_none.return_value = None
+        result.fetchone.return_value = None
+        return result
+
+    mock_session = MagicMock()
+    mock_session.execute = _capture_execute
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=None)
+
+    mock_db = MagicMock()
+    mock_db.init = AsyncMock()
+    mock_db.close = AsyncMock()
+    mock_db.get_session = MagicMock(return_value=mock_session)
+
+    return mock_db, sqls
+
+
+class TestBotPnlModeFlag:
+    """WI-4 segmentation + WI-9 test suite.
+
+    Pins the --mode {paper, live, all} flag against regression.  Two failure
+    modes this suite catches:
+
+    1. Interface regression: mode parameter removed / default changed.
+       Caught by: test_*_signature_* and test_mode_default_is_all.
+
+    2. SQL filter regression: paper/live filter removed from a query block.
+       Caught by: test_mode_paper_* and test_mode_live_* which capture
+       every SQL string passed to session.execute() and assert the right
+       execution_mode / is_paper clause is present.
+
+    mode='all' regression (silently adding a filter that wasn't there):
+       Caught by: test_mode_all_has_no_segmentation_filter.
+    """
+
+    # ── CLI / signature ──────────────────────────────────────────────────────
+
+    def test_mode_default_is_all(self):
+        a = bot_pnl._parse_args([])
+        assert a.mode == "all"
+
+    def test_mode_paper_parsed(self):
+        a = bot_pnl._parse_args(["MirrorBot", "--mode", "paper"])
+        assert a.mode == "paper"
+
+    def test_mode_live_parsed(self):
+        a = bot_pnl._parse_args(["MirrorBot", "--mode", "live"])
+        assert a.mode == "live"
+
+    def test_mode_invalid_rejected_by_argparse(self):
+        with pytest.raises(SystemExit):
+            bot_pnl._parse_args(["MirrorBot", "--mode", "bogus"])
+
+    def test_mode_combines_with_since(self):
+        a = bot_pnl._parse_args(
+            ["MirrorBot", "--since", "20260414_132211", "--mode", "live"]
+        )
+        assert a.mode == "live"
+        assert a.since == datetime(2026, 4, 14, 13, 22, 11)
+
+    def test_mode_combines_with_clean(self):
+        a = bot_pnl._parse_args(["WeatherBot", "--mode", "paper", "--clean"])
+        assert a.mode == "paper"
+        assert a.clean is True
+
+    def test_bot_pnl_signature_has_mode_param(self):
+        sig = inspect.signature(bot_pnl.bot_pnl)
+        assert "mode" in sig.parameters
+        # Default MUST be 'all' — any other value silently filters pre-WI-4
+        # callers that never pass --mode.
+        assert sig.parameters["mode"].default == "all"
+
+    def test_bot_pnl_signature_preserves_pre_wi4_params(self):
+        """Adding mode= must not break callers using positional/keyword args."""
+        sig = inspect.signature(bot_pnl.bot_pnl)
+        for param in ("bot_name", "hours", "since", "clean"):
+            assert param in sig.parameters
+
+    # ── invalid mode raises before any DB call ───────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_invalid_mode_raises_valueerror_before_db(self):
+        mock_db, sqls = _make_mock_db()
+        with patch("scripts.bot_pnl.Database", return_value=mock_db):
+            with pytest.raises(ValueError, match="mode must be one of"):
+                await bot_pnl.bot_pnl("MirrorBot", mode="not_valid")
+        # No SQL should have been executed — DB was never queried.
+        assert sqls == [], f"DB was queried before the ValueError; got: {sqls[:2]}"
+
+    # ── SQL filter injection: mode='paper' ───────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_mode_paper_adds_is_paper_true_to_positions(self):
+        mock_db, sqls = _make_mock_db()
+        with patch("scripts.bot_pnl.Database", return_value=mock_db):
+            await bot_pnl.bot_pnl("MirrorBot", mode="paper")
+
+        positions_sqls = [s for s in sqls if "FROM positions" in s]
+        assert positions_sqls, "expected at least one query against positions table"
+        assert any("is_paper = TRUE" in s for s in positions_sqls), (
+            "mode='paper': positions query must contain is_paper = TRUE; "
+            f"got: {positions_sqls}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_mode_paper_adds_exec_mode_paper_to_trade_events(self):
+        mock_db, sqls = _make_mock_db()
+        with patch("scripts.bot_pnl.Database", return_value=mock_db):
+            await bot_pnl.bot_pnl("MirrorBot", mode="paper")
+
+        te_sqls = [s for s in sqls if "FROM trade_events" in s]
+        assert te_sqls, "expected at least one query against trade_events table"
+        assert any("execution_mode = 'paper'" in s for s in te_sqls), (
+            "mode='paper': trade_events query must contain execution_mode = 'paper'; "
+            f"got first te SQL: {te_sqls[0][:300] if te_sqls else '(none)'}"
+        )
+
+    # ── SQL filter injection: mode='live' ────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_mode_live_adds_is_paper_false_to_positions(self):
+        mock_db, sqls = _make_mock_db()
+        with patch("scripts.bot_pnl.Database", return_value=mock_db):
+            await bot_pnl.bot_pnl("MirrorBot", mode="live")
+
+        positions_sqls = [s for s in sqls if "FROM positions" in s]
+        assert positions_sqls, "expected at least one query against positions table"
+        assert any("is_paper = FALSE" in s for s in positions_sqls), (
+            "mode='live': positions query must contain is_paper = FALSE; "
+            f"got: {positions_sqls}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_mode_live_adds_exec_mode_live_to_trade_events(self):
+        mock_db, sqls = _make_mock_db()
+        with patch("scripts.bot_pnl.Database", return_value=mock_db):
+            await bot_pnl.bot_pnl("MirrorBot", mode="live")
+
+        te_sqls = [s for s in sqls if "FROM trade_events" in s]
+        assert te_sqls, "expected at least one query against trade_events table"
+        assert any("execution_mode = 'live'" in s for s in te_sqls), (
+            "mode='live': trade_events query must contain execution_mode = 'live'; "
+            f"got first te SQL: {te_sqls[0][:300] if te_sqls else '(none)'}"
+        )
+
+    # ── backward-compat: mode='all' adds NO filter ───────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_mode_all_has_no_segmentation_filter(self):
+        """mode='all' (pre-WI-4 behavior) must NOT inject is_paper or
+        execution_mode filters into any query block.  Regression here would
+        silently drop data from pre-WI-4 callers that never pass --mode."""
+        mock_db, sqls = _make_mock_db()
+        with patch("scripts.bot_pnl.Database", return_value=mock_db):
+            await bot_pnl.bot_pnl("MirrorBot", mode="all")
+
+        for sql in sqls:
+            assert "is_paper" not in sql, (
+                f"mode='all' must not filter is_paper; found in: {sql[:200]}"
+            )
+            assert "execution_mode" not in sql, (
+                f"mode='all' must not filter execution_mode; found in: {sql[:200]}"
+            )
