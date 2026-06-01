@@ -7,6 +7,8 @@ Usage:
     python scripts/bot_pnl.py EsportsBot                   # Specific bot, last 24h
     python scripts/bot_pnl.py WeatherBot 8                 # Specific bot, last 8h
     python scripts/bot_pnl.py MirrorBot --since 20260414_132211   # Post-fix windowed totals
+    python scripts/bot_pnl.py MirrorBot --mode live        # WI-4: live trades only
+    python scripts/bot_pnl.py MirrorBot --mode paper       # WI-4: paper/simulation only
 
 EXIT side transition (S163, deployed 2026-04-08):
   - Before 2026-04-08T16:01:40Z: EXIT events have side='SELL' (hardcoded)
@@ -147,7 +149,7 @@ _WINDOWED_EVENT_COUNT_SQL = """
 
 
 async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
-                  clean: bool = False):
+                  clean: bool = False, mode: str = 'all'):
     db = Database()
     await db.init()
 
@@ -155,6 +157,31 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
     # single cohort regardless of which name the operator passes. Singletons
     # for all other bots — see _expand_bot_family docstring.
     bot_family = _expand_bot_family(bot_name)
+
+    # WI-4: per-bot segmentation — filter by execution mode (paper/live/all).
+    # positions.is_paper (BOOLEAN, migration 016) segments block 1.
+    # trade_events.execution_mode (TEXT 'paper'|'live'|'backtest', migration 050)
+    # segments blocks 2-5. Default 'all' preserves pre-WI-4 behavior.
+    _valid_modes = ('paper', 'live', 'all')
+    if mode not in _valid_modes:
+        raise ValueError(f"mode must be one of {_valid_modes}, got {mode!r}")
+    mode_pos_clause = {
+        'paper': 'AND p.is_paper = TRUE',
+        'live':  'AND p.is_paper = FALSE',
+        'all':   '',
+    }[mode]
+    mode_exec_clause = {
+        'paper': "AND execution_mode = 'paper'",
+        'live':  "AND execution_mode = 'live'",
+        'all':   '',
+    }[mode]
+    # Block 5/5b queries use `r` as the trade_events alias; qualify the column.
+    mode_exec_clause_r = {
+        'paper': "AND r.execution_mode = 'paper'",
+        'live':  "AND r.execution_mode = 'live'",
+        'all':   '',
+    }[mode]
+    mode_label = f" [{mode.upper()} only]" if mode != 'all' else ''
 
     async with db.get_session() as s:
         from sqlalchemy import text
@@ -186,17 +213,18 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
         block5_since_clause = "AND r.event_time >= :since_ts" if since is not None else ""
 
         # 1. Open positions — mark-to-market
-        r1 = await s.execute(text("""
+        r1 = await s.execute(text(f"""
             SELECT p.market_id, p.side, p.size, p.entry_price, p.current_price,
                    p.unrealized_pnl, p.opened_at
             FROM positions p
             WHERE (p.bot_id = ANY(:bot_family) OR p.source_bot = ANY(:bot_family))
               AND p.status = 'open'
+              {mode_pos_clause}
             ORDER BY p.opened_at DESC
         """), {"bot_family": bot_family})
         positions = r1.fetchall()
 
-        print(f"=== {bot_name} P&L Report (last {hours}h) ===")
+        print(f"=== {bot_name} P&L Report (last {hours}h){mode_label} ===")
         if bot_family != [bot_name]:
             print(f"    [family-union: querying {bot_family}]")
         print()
@@ -225,13 +253,14 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
         print(f"{'TOTAL':<14} {'':>4} {'':>8} {'':>7} {'':>7} ${total_cost:>8.2f} ${total_mkt_value:>8.2f} ${total_upnl:>+8.2f}")
 
         # 2. Trade events in window
-        r2 = await s.execute(text("""
+        r2 = await s.execute(text(f"""
             SELECT event_type, market_id, side, size, price, fees,
                    realized_pnl, event_time, correlation_id
             FROM trade_events
             WHERE bot_name = ANY(:bot_family)
               AND event_time > NOW() - INTERVAL '1 hour' * :hours
               AND event_time <= NOW()
+              {mode_exec_clause}
             ORDER BY event_time DESC
         """), {"bot_family": bot_family, "hours": hours})
         events = r2.fetchall()
@@ -263,7 +292,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
         # "show me last N days day-by-day" was previously unanswerable from
         # block 2 (which only prints HH:MM per event). Sums realized_pnl per
         # UTC day for ENTRY/EXIT/RESOLUTION; net P&L per day = exit_pnl + res_pnl.
-        r2b = await s.execute(text("""
+        r2b = await s.execute(text(f"""
             SELECT DATE(event_time) AS day,
                    event_type,
                    COUNT(*) AS cnt,
@@ -273,6 +302,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
               AND event_time > NOW() - INTERVAL '1 hour' * :hours
               AND event_time <= NOW()
               AND event_type IN ('ENTRY', 'EXIT', 'RESOLUTION')
+              {mode_exec_clause}
             GROUP BY DATE(event_time), event_type
             ORDER BY day DESC, event_type
         """), {"bot_family": bot_family, "hours": hours})
@@ -316,6 +346,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
             FROM trade_events
             WHERE bot_name = ANY(:bot_family)
               {since_clause}
+              {mode_exec_clause}
             GROUP BY event_type
             ORDER BY event_type
         """), {"bot_family": bot_family, **since_params})
@@ -356,6 +387,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
             WHERE bot_name = ANY(:bot_family)
               AND market_id NOT IN (SELECT market_id FROM contaminated)
               {since_clause}
+              {mode_exec_clause}
             GROUP BY event_type
             ORDER BY event_type
         """), {"bot_family": bot_family, **since_params})
@@ -386,7 +418,17 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
         # causing false positives on per-side matching. event_type is the
         # correct discriminator. S200: no `--since` filter at this layer (see
         # constant docstring).
-        r4 = await s.execute(text(_INTEGRITY_SQL_ALL_TIME), {"bot_family": bot_family})
+        # WI-4: build a mode-filtered copy of the integrity SQL when needed.
+        # _INTEGRITY_SQL_ALL_TIME is a module-level constant (imported by tests)
+        # and must not be mutated; we build a local copy here instead.
+        _local_integrity_sql = (
+            _INTEGRITY_SQL_ALL_TIME.replace(
+                "WHERE bot_name = ANY(:bot_family)",
+                f"WHERE bot_name = ANY(:bot_family)\n      {mode_exec_clause}",
+                1,  # replace only the first occurrence
+            ) if mode_exec_clause else _INTEGRITY_SQL_ALL_TIME
+        )
+        r4 = await s.execute(text(_local_integrity_sql), {"bot_family": bot_family})
         violations = r4.fetchall()
         if violations:
             print(f"\n{'!'*50}")
@@ -402,8 +444,15 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
         # at _WINDOWED_EVENT_COUNT_SQL. Operational visibility for in-window
         # event volume per market — NOT an integrity check.
         if since is not None:
+            _local_windowed_sql = (
+                _WINDOWED_EVENT_COUNT_SQL.replace(
+                    "WHERE bot_name = ANY(:bot_family)",
+                    f"WHERE bot_name = ANY(:bot_family)\n      {mode_exec_clause}",
+                    1,
+                ) if mode_exec_clause else _WINDOWED_EVENT_COUNT_SQL
+            )
             r4b = await s.execute(
-                text(_WINDOWED_EVENT_COUNT_SQL),
+                text(_local_windowed_sql),
                 {"bot_family": bot_family, "since_ts": since},
             )
             in_window = r4b.fetchall()
@@ -460,6 +509,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
                   AND r.realized_pnl IS NOT NULL
                   {block5_since_clause}
                   {block5_clean_clause}
+                  {mode_exec_clause_r}
                 GROUP BY e_entry.side
                 ORDER BY e_entry.side
             """), {"bot_family": bot_family, **since_params})
@@ -494,6 +544,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
                   AND e_entry.event_data->>'city' IS NOT NULL
                   {block5_since_clause}
                   {block5_clean_clause}
+                  {mode_exec_clause_r}
                 GROUP BY e_entry.event_data->>'city'
                 ORDER BY total_pnl DESC
             """), {"bot_family": bot_family, **since_params})
@@ -534,6 +585,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
                   AND e_entry.event_data->>'lead_time_hours' IS NOT NULL
                   {block5_since_clause}
                   {block5_clean_clause}
+                  {mode_exec_clause_r}
                 GROUP BY bucket
                 ORDER BY MIN((e_entry.event_data->>'lead_time_hours')::float)
             """), {"bot_family": bot_family, **since_params})
@@ -575,6 +627,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
                   AND e_entry.event_data->>'lead_time_hours' IS NOT NULL
                   {block5_since_clause}
                   {block5_clean_clause}
+                  {mode_exec_clause_r}
                 GROUP BY e_entry.side, bucket
                 ORDER BY e_entry.side, MIN((e_entry.event_data->>'lead_time_hours')::float)
             """), {"bot_family": bot_family, **since_params})
@@ -624,6 +677,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
                   AND r.realized_pnl IS NOT NULL
                   AND r.event_time > NOW() - INTERVAL '1 hour' * :hours
                   AND r.event_time <= NOW()
+                  {mode_exec_clause_r}
                 GROUP BY conf_bin
                 ORDER BY MIN(e_entry.confidence)
             """), {"bot_family": bot_family, "hours": hours})
@@ -711,6 +765,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
                   AND r.realized_pnl IS NOT NULL
                   {block5_since_clause}
                   {block5_clean_clause}
+                  {mode_exec_clause_r}
                 GROUP BY conf_bin
                 ORDER BY MIN(e_entry.final_conf)
             """), {"bot_family": bot_family, **since_params})
@@ -757,6 +812,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
                   AND e_entry.final_conf IS NOT NULL
                   {block5_since_clause}
                   {block5_clean_clause}
+                  {mode_exec_clause_r}
                 GROUP BY conf_split
                 ORDER BY conf_split DESC
             """), {"bot_family": bot_family, **since_params})
@@ -788,9 +844,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "block 5 WB-specific breakdowns (per-side, per-city, per-lead-time, "
                         "side x lead-time). S203 hygiene #12. Mirrors edge_verification.py "
                         "--clean semantic. Block 3b (CLEAN total) always emits regardless.")
+    p.add_argument("--mode", choices=("paper", "live", "all"), default="all",
+                   help="WI-4 execution-mode segmentation. 'paper': simulation trades only "
+                        "(positions.is_paper=TRUE, trade_events.execution_mode='paper'). "
+                        "'live': real-capital trades only (is_paper=FALSE, execution_mode='live'). "
+                        "'all': no filter (default — preserves pre-WI-4 behavior).")
     return p.parse_args(argv)
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    asyncio.run(bot_pnl(args.bot_name, args.hours, since=args.since, clean=args.clean))
+    asyncio.run(bot_pnl(args.bot_name, args.hours, since=args.since, clean=args.clean,
+                        mode=args.mode))
