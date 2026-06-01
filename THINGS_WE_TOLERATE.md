@@ -168,3 +168,19 @@ When a session resolves a tolerated condition (e.g., EB leak gets fixed):
 | Item | Bug 12 in `mirror_bot.py` detects SIMULATION_MODE flip mid-runtime and skips exits/entries (`bug12_mode_flip_detected_*` logs) |
 | Status | ACCEPTABLE — permanent guard, not a periodically-firing mechanism. Fires once when flip is detected; requires restart to clear (which reinitializes SIMULATION_MODE from env). |
 | Last verified | S235 2026-05-31 — `grep -n "bug12_mode_flip" bots/mirror_bot.py` |
+
+---
+
+## Review checkpoints (WI-12, S235 2026-05-31)
+
+Operator: add recurring calendar items for the following.
+
+| Checkpoint | Cadence | Trigger for action |
+|---|---|---|
+| Safety-mechanism terminal states (WI-7) | Quarterly | Any PERMANENT_HALT log in journalctl; OR new safety mechanism added to codebase |
+| BotKillSwitch auto-reset | On any code change that wires `kill_bot()` to production | Immediate: add consecutive-kill counter + PERMANENT_HALT before enabling |
+| DB constraints (WI-8 migration 078) | After any host rebuild or DB migration | `SELECT COUNT(*) FROM pg_constraint WHERE conrelid='positions'::regclass AND conname LIKE 'chk_positions_%'` must return 4; deploy.sh preflight warns if not |
+| WI-11 audit discrepancy log | Monthly | `journalctl -u polymarket-mirror | grep "position_audit_discrepancy"` — if >3 consecutive discrepancies for the same market, CRITICAL log should have already fired; investigate root cause |
+| THINGS_WE_TOLERATE review | Monthly | Elevate any tolerated condition that has hit its threshold-for-action |
+| WI-2b deploy-block log | After every deploy block | Update `WORK_PROGRAM.md` deploy-block log; if >1 MB block/month × 2 consecutive months, promote WI-17 |
+| Wallet LEDGER.md | After each trade-significant event (deposit, withdrawal, redemption) | `python scripts/update_wallet_ledger.py` on VPS; verify balance is consistent |
