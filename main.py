@@ -326,17 +326,48 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
                         """),
                         {"threshold": _stale_minutes},
                     )
+                    # S235 E1: stale-bot force-restart threshold — 2× the alert
+                    # threshold (default 30m). A bot stale past this point is
+                    # definitively wedged (not a transient slow scan). The EB esports
+                    # bots have their own per-bot watchdog at 15m; E1 is the
+                    # fleet-wide backstop for bots without a per-bot watchdog AND
+                    # defense-in-depth for EB. Configurable via env var.
+                    _exit_thresh = float(getattr(
+                        settings, "BOT_STALE_EXIT_THRESHOLD_MINUTES",
+                        _stale_minutes * 2,
+                    ))
                     for row in _hb_result.fetchall():
-                        _setting_key = _bot_enabled_map.get(row[0])
+                        _bot_n = row[0]
+                        _setting_key = _bot_enabled_map.get(_bot_n)
                         if _setting_key and not getattr(settings, _setting_key, True):
                             continue  # Bot is intentionally disabled — expected to be stale
                         await _alerting.send_alert(
-                            title=f"Bot {row[0]} is stale",
+                            title=f"Bot {_bot_n} is stale",
                             message=f"Last scan {row[1]:.1f}m ago (threshold: {_stale_minutes}m)",
                             severity=AlertSeverity.WARNING,
                             source="watchdog.heartbeat",
-                            metadata={"bot_name": row[0], "minutes_stale": float(row[1])},
+                            metadata={"bot_name": _bot_n, "minutes_stale": float(row[1])},
                         )
+                        # E1: exit if stale past the force-restart threshold and
+                        # the bot is still registered and running. os._exit bypasses
+                        # graceful shutdown (which hangs on a wedged DB pool — the
+                        # same pattern as the per-bot watchdog). systemd Restart=always
+                        # gives a clean pool on restart.
+                        if float(row[1]) >= _exit_thresh:
+                            if _bot_n in bots and getattr(bots[_bot_n], "running", False):
+                                import sys as _sys
+                                logger.critical(
+                                    "watchdog_stale_bot_force_restart",
+                                    bot_name=_bot_n,
+                                    minutes_stale=float(row[1]),
+                                    exit_threshold_m=_exit_thresh,
+                                    detail="bot stale past exit threshold — "
+                                           "force-exiting for systemd restart",
+                                )
+                                _sys.stdout.flush()
+                                _sys.stderr.flush()
+                                import os as _os
+                                _os._exit(1)
             except Exception as e:
                 logger.debug("Heartbeat staleness check failed: %s", e)
 
