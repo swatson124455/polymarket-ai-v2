@@ -146,3 +146,36 @@ b7c4bb3  fix(esports): watchdog os._exit
 ## §7 — Scope note
 
 All work EB-owned or master-cherry-pick. No MB code touched. EB splinter deploy path used throughout. Master commits (`57ea2f3`, `26419c8`, `49a4ef7`, `e52b11b`) are shared-module fixes benefiting all bots — cherry-picked from eb/main to master. No MB `bots/mirror_bot.py` or MB-specific env touched.
+
+---
+
+## §8 — FINAL STATUS (added post-session)
+
+### All deploys completed
+
+| Release | Path | What |
+|---|---|---|
+| `20260530_213432` | EB splinter | Watchdog V1+V2 |
+| `20260530_221754` | EB splinter | os._exit |
+| `20260530_232112` | EB splinter | Scanner rule-6 |
+| `20260531_195701` | EB splinter | A+B+C+D |
+| `20260531_203235` | EB splinter | E1 (main.py) |
+| `20260531_203534` | **Master** | A+B+C+E1 — all services |
+
+### Master deploy (exit code 2 = post-success shell error, NOT a deploy failure)
+Symlink → `/opt/pa2-releases/20260531_203534`. Mirror/weather/ingestion all restarted (new PIDs ~10 min uptime). Code verified on VPS: fix B=1, fix A=1, E1=1 in master deployed files.
+
+### Ingestion cascade stopped
+`journalctl -u polymarket-ingestion --since "5 min ago" | grep -c "Can.t reconnect"` → **0**
+`journalctl -u polymarket-ingestion --since "5 min ago" | grep -c "asyncpg connection corrupted"` → **0**
+
+Fix B is working — corrupted connections no longer spread through the pool.
+
+### Next session §0 (updated)
+Master deploy is done. On next session:
+1. Check V2 matched > 0 (after contention reduced):
+   `journalctl -u polymarket-esports --since "today" | grep esports_v2_scan_funnel | tail -5`
+2. Monitor for watchdog fire rate (should be lower/zero with fixes in place):
+   `journalctl -u polymarket-esports --since "today" | grep -c scan_stall_self_restart`
+3. Check ingestion still clean (no corruption cascade):
+   `journalctl -u polymarket-ingestion --since "1 hour ago" | grep -c "Can.t reconnect"`
