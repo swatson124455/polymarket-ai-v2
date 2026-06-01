@@ -1539,13 +1539,43 @@ class WeatherBot(BaseBot):
                     date_aware=date_closed,
                     fallback=len(fallback_closed),
                 )
-                # Also evict from in-memory set so the filter unblocks immediately
+                # Also evict from in-memory state so the filters unblock immediately
                 gw = getattr(self.base_engine, "order_gateway", None)
-                if gw and hasattr(gw, "_open_position_markets"):
-                    bot_set = gw._open_position_markets.get("WeatherBot", set())
+                if gw:
+                    bot_set = (gw._open_position_markets.get("WeatherBot", set())
+                               if hasattr(gw, "_open_position_markets") else set())
+                    _pos_details = getattr(gw, "_position_details", None)
+                    _dbh = getattr(self.base_engine, "db", None)
                     for mid in all_closed:
                         bot_set.discard(mid)
-                        self._market_group_cache.pop(mid, None)  # S104: clear stale mappings
+                        # S237 MEDIUM-3: clear _position_details too — it is the PRIMARY
+                        # same-side dedup source (weather_bot.py:3363-3367). Evicting only
+                        # _open_position_markets left the primary dedup still holding the
+                        # stale entry, so a stale-closed market could not be re-entered until
+                        # restart — defeating this function's stated purpose.
+                        if isinstance(_pos_details, dict):
+                            _pos_details.pop(f"WeatherBot:{mid}", None)
+                        # S237 MEDIUM-3: decrement in-memory + daily-counter exposure using the
+                        # cached (group, city, cost). The old code popped the cache WITHOUT
+                        # decrementing, leaking _group/_city_exposure (and the daily_counter)
+                        # until restart → false exposure-cap rejections of new trades. The
+                        # cache pop is atomic, so a concurrent PM-exit path won't double-count.
+                        # (Positions opened in a PRIOR process have no cache entry; their
+                        # exposure is daily-counter based and resets daily, bounding the
+                        # residual to same-day positions.)
+                        _cached = self._market_group_cache.pop(mid, None)
+                        if _cached:
+                            _gk, _city, _cost = _cached
+                            async with self._exposure_lock:
+                                self._group_exposure[_gk] = max(0.0, self._group_exposure.get(_gk, 0.0) - _cost)
+                                self._city_exposure[_city] = max(0.0, self._city_exposure.get(_city, 0.0) - _cost)
+                            if _dbh is not None:
+                                try:
+                                    await _inc_daily(_dbh, "WeatherBot", f"group_{_gk}", -_cost)
+                                    await _inc_daily(_dbh, "WeatherBot", f"city_{_city}", -_cost)
+                                except Exception as _exc:
+                                    logger.warning("weatherbot_stale_close_exposure_db_failed",
+                                                   market_id=mid, error=str(_exc))
         except Exception as exc:
             logger.debug("weatherbot_stale_position_cleanup_failed", error=str(exc))
 
@@ -5330,7 +5360,14 @@ class WeatherBot(BaseBot):
                 # Compute elapsed using reason-specific cooldown duration
                 self._exit_reasons[mid] = reason
                 _cooldown = self._get_exit_cooldown(mid)
-                elapsed = _cooldown - (expire_at - now_wall)
+                # S237 MEDIUM-2: clamp elapsed to >= 0. _get_exit_cooldown is dynamic
+                # (TTL shrinks toward resolution), so at restore the freshly-computed
+                # cooldown can be SMALLER than the genuine remaining time (expire_at -
+                # now_wall, the authoritative quantity). The old unclamped elapsed then
+                # went negative → a FUTURE-dated _recently_exited timestamp → the market
+                # stayed blocked far longer than intended. Clamping treats that case as
+                # "exited now" (block for the current cooldown), which never over-blocks.
+                elapsed = max(0.0, _cooldown - (expire_at - now_wall))
                 self._recently_exited[mid] = now_mono - elapsed
                 count += 1
             if count:
