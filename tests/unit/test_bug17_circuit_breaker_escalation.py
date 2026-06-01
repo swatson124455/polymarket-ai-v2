@@ -409,3 +409,128 @@ class TestBug17EndToEnd:
             "false-positive would mislead operator into thinking the "
             "pathological-failure escalation fired when it didn't."
         )
+
+
+# ── WI-7: PERMANENT_HALT terminal state ──────────────────────────────────────
+
+class TestWI7PermanentHalt:
+    """WI-7 (S235): CircuitBreaker PERMANENT_HALT terminal state.
+
+    After max_consecutive_escalations escalations without a success,
+    permanently_halted=True blocks all requests until explicit reset().
+    Prevents the "keep escalating every 30 min forever" anti-pattern.
+    """
+
+    def _make_cb_at_threshold(self, max_esc: int = 3) -> CircuitBreaker:
+        """Return a CB with consecutive_reopens already at escalation threshold."""
+        cb = CircuitBreaker(
+            escalation_threshold=3,  # low for fast testing
+            max_consecutive_escalations=max_esc,
+        )
+        cb.consecutive_reopens = cb.escalation_threshold
+        return cb
+
+    # --- init ---
+
+    def test_new_fields_have_correct_defaults(self):
+        cb = CircuitBreaker()
+        assert cb.max_consecutive_escalations == 3
+        assert cb.consecutive_escalation_count == 0
+        assert cb.permanently_halted is False
+
+    def test_max_consecutive_escalations_configurable(self):
+        cb = CircuitBreaker(max_consecutive_escalations=5)
+        assert cb.max_consecutive_escalations == 5
+
+    # --- PERMANENT_HALT triggers ---
+
+    def test_permanent_halt_after_max_escalations(self):
+        cb = self._make_cb_at_threshold(max_esc=3)
+        # Trigger 3 escalations; permanently_halted must fire on the 3rd
+        for i in range(3):
+            cb.consecutive_reopens = cb.escalation_threshold
+            cb.escalated = False
+            cb._engage_escalation()
+        assert cb.permanently_halted is True, (
+            "After max_consecutive_escalations escalations, "
+            "permanently_halted must be True"
+        )
+
+    def test_consecutive_escalation_count_increments(self):
+        cb = self._make_cb_at_threshold(max_esc=5)
+        for i in range(3):
+            cb.escalated = False
+            cb._engage_escalation()
+        assert cb.consecutive_escalation_count == 3
+
+    def test_permanent_halt_blocks_allow_request(self):
+        cb = CircuitBreaker()
+        cb.permanently_halted = True
+        assert cb.allow_request() is False, (
+            "permanently_halted=True must block all requests"
+        )
+
+    def test_permanently_halted_blocks_even_when_closed(self):
+        """Permanently halted state wins over CLOSED — normal state machine
+        is irrelevant while permanently halted."""
+        cb = CircuitBreaker()
+        cb.state = CircuitBreaker.CLOSED
+        cb.permanently_halted = True
+        assert cb.allow_request() is False
+
+    # --- reset() clears PERMANENT_HALT ---
+
+    def test_reset_clears_permanent_halt(self):
+        cb = CircuitBreaker()
+        cb.permanently_halted = True
+        cb.reset()
+        assert cb.permanently_halted is False
+        assert cb.state == CircuitBreaker.CLOSED
+        assert cb.allow_request() is True
+
+    def test_reset_clears_all_counters(self):
+        cb = self._make_cb_at_threshold()
+        cb.consecutive_escalation_count = 7
+        cb.consecutive_reopens = 15
+        cb.failure_count = 20
+        cb.reset()
+        assert cb.consecutive_escalation_count == 0
+        assert cb.consecutive_reopens == 0
+        assert cb.failure_count == 0
+        assert cb.escalated is False
+        assert cb.permanently_halted is False
+
+    # --- success resets escalation counter ---
+
+    def test_record_success_resets_escalation_count(self):
+        """A genuine success means the structural issue resolved; the
+        consecutive escalation counter must reset so a fluke cluster
+        doesn't permanently halt an otherwise-healthy bot."""
+        cb = CircuitBreaker()
+        cb.state = CircuitBreaker.HALF_OPEN
+        cb.consecutive_escalation_count = 2
+        cb.record_success()
+        assert cb.consecutive_escalation_count == 0, (
+            "record_success() must reset consecutive_escalation_count to 0"
+        )
+
+    # --- backward compatibility ---
+
+    def test_existing_escalation_behavior_unchanged_below_max(self):
+        """Escalations below max_consecutive_escalations must still auto-clear
+        (Bug 17 behavior preserved)."""
+        cb = self._make_cb_at_threshold(max_esc=5)
+        cb._engage_escalation()  # count=1, below max=5
+        assert cb.escalated is True
+        assert cb.permanently_halted is False, (
+            "Below max escalations, permanently_halted must remain False"
+        )
+
+    def test_existing_tests_unaffected_by_new_defaults(self):
+        """New params have defaults; existing CircuitBreaker() calls work."""
+        cb = CircuitBreaker()
+        assert cb.escalation_threshold == 10
+        assert cb.escalation_cooldown_seconds == 1800.0
+        # New defaults
+        assert cb.max_consecutive_escalations == 3
+        assert cb.permanently_halted is False

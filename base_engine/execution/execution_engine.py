@@ -37,6 +37,7 @@ class CircuitBreaker:
         half_open_max_calls: int = 1,
         escalation_threshold: int = 10,
         escalation_cooldown_seconds: float = 1800.0,
+        max_consecutive_escalations: int = 3,
     ):
         self.failure_threshold = failure_threshold
         self.cooldown_seconds = cooldown_seconds
@@ -62,10 +63,26 @@ class CircuitBreaker:
         self.consecutive_reopens = 0
         self.escalated = False
         self.escalated_at: float = 0.0
+        # WI-7 (S235): PERMANENT_HALT terminal state.
+        # Bug 17 escalation auto-clears after 30 min but re-escalates
+        # immediately on the next probe failure (consecutive_reopens stays
+        # at threshold). Without a ceiling this produces "keep firing every
+        # 30 minutes forever" — the anti-pattern WI-7 targets.
+        # After max_consecutive_escalations consecutive escalations without
+        # an intervening success, the breaker enters PERMANENT_HALT:
+        # allow_request() returns False indefinitely. Only explicit reset()
+        # clears it — requires operator action (restart or direct call).
+        self.max_consecutive_escalations = max_consecutive_escalations
+        self.consecutive_escalation_count = 0
+        self.permanently_halted = False
 
     def allow_request(self) -> bool:
         """Check if a request should be allowed through."""
         now = time.monotonic()
+        # WI-7: PERMANENT_HALT check — fires before all other logic.
+        # Once permanently halted, only reset() clears the state.
+        if self.permanently_halted:
+            return False
         # S230 Bug 17: escalation gate fires BEFORE the normal state machine.
         # If escalated, block all requests until cooldown elapses; auto-clear
         # then falls through to the existing CLOSED/OPEN/HALF_OPEN logic so
@@ -104,6 +121,10 @@ class CircuitBreaker:
         Does NOT auto-clear self.escalated; only the cooldown timer clears
         escalation, so a single noise-success can't unwedge a pathological
         bot before the 30-min observation window completes.
+
+        WI-7: also resets consecutive_escalation_count — a genuine success
+        means the structural issue resolved, so the PERMANENT_HALT counter
+        should reset from scratch.
         """
         if self.state == self.HALF_OPEN:
             logger.info("Circuit breaker closing (probe succeeded)")
@@ -111,6 +132,7 @@ class CircuitBreaker:
         self.failure_count = 0
         self.half_open_calls = 0
         self.consecutive_reopens = 0
+        self.consecutive_escalation_count = 0  # WI-7: reset on recovery
 
     def record_failure(self) -> None:
         """Record a failed call. Opens breaker if threshold exceeded.
@@ -155,20 +177,67 @@ class CircuitBreaker:
         Auto-clears after cooldown to allow recovery from transient causes;
         if the issue persists, the next probe re-triggers escalation.
 
+        WI-7 (S235): PERMANENT_HALT terminal state. After
+        max_consecutive_escalations consecutive escalations without an
+        intervening success, transitions to permanently_halted=True.
+        No auto-clear; requires explicit reset() (operator action: restart
+        service or direct call). Prevents the "keep escalating every 30 min
+        forever" anti-pattern when the underlying fault is structural.
+
         Operator visibility: CRITICAL log with enough context to identify
         the failure pattern and decide whether to leave auto-clear or
         intervene (e.g., flip to paper, restart service, ship a fix).
         """
         self.escalated = True
         self.escalated_at = time.monotonic()
-        logger.critical(
-            "Circuit breaker escalated to in-process kill switch",
-            consecutive_reopens=self.consecutive_reopens,
-            failure_count=self.failure_count,
-            cooldown_seconds=self.escalation_cooldown_seconds,
-            reason="pathological_failure_pattern",
-            action="all live order placement blocked; auto-clear after cooldown",
+        self.consecutive_escalation_count += 1  # WI-7
+        if self.consecutive_escalation_count >= self.max_consecutive_escalations:
+            self.permanently_halted = True
+            logger.critical(
+                "Circuit breaker PERMANENT_HALT — operator action required",
+                consecutive_escalations=self.consecutive_escalation_count,
+                consecutive_reopens=self.consecutive_reopens,
+                failure_count=self.failure_count,
+                reason="structural_failure_max_escalations_reached",
+                action=(
+                    "ALL order placement permanently blocked. "
+                    "Call circuit_breaker.reset() or restart the service to clear. "
+                    "Do NOT clear without diagnosing the root cause."
+                ),
+            )
+        else:
+            logger.critical(
+                "Circuit breaker escalated to in-process kill switch",
+                consecutive_reopens=self.consecutive_reopens,
+                consecutive_escalations=self.consecutive_escalation_count,
+                max_escalations=self.max_consecutive_escalations,
+                failure_count=self.failure_count,
+                cooldown_seconds=self.escalation_cooldown_seconds,
+                reason="pathological_failure_pattern",
+                action="all live order placement blocked; auto-clear after cooldown",
+            )
+
+    def reset(self) -> None:
+        """WI-7: Operator-action reset — clears PERMANENT_HALT and all counters.
+
+        Only call this after diagnosing and resolving the root cause. Calling
+        reset() without a fix re-starts the failure→escalation cycle.
+        Logs a WARNING so the reset is always visible in journalctl.
+        """
+        logger.warning(
+            "Circuit breaker reset by operator — all counters cleared",
+            was_permanently_halted=self.permanently_halted,
+            consecutive_escalations_at_reset=self.consecutive_escalation_count,
+            consecutive_reopens_at_reset=self.consecutive_reopens,
         )
+        self.permanently_halted = False
+        self.consecutive_escalation_count = 0
+        self.consecutive_reopens = 0
+        self.escalated = False
+        self.escalated_at = 0.0
+        self.state = self.CLOSED
+        self.failure_count = 0
+        self.half_open_calls = 0
 
 
 class ExecutionEngine:
