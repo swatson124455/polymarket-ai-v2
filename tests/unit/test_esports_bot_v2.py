@@ -1325,17 +1325,23 @@ class TestScanStallWatchdogV2:
 
     @pytest.mark.asyncio
     async def test_stale_scan_triggers_force_exit(self):
-        """No new scan started within threshold → os._exit for systemd restart."""
+        """No new scan started within threshold → os._exit for systemd restart.
+        Also asserts sys.stdout/stderr.flush() called BEFORE os._exit."""
         import os
         import signal
         import time as _time
         bot = self._make_bot()
         bot._scan_start_mono = _time.monotonic() - 10_000.0  # scan hung long ago
-        with patch("config.settings.settings") as ms, patch("os._exit") as mock_exit:
+        with patch("config.settings.settings") as ms, \
+             patch("os._exit") as mock_exit, \
+             patch("sys.stdout") as mock_stdout, \
+             patch("sys.stderr") as mock_stderr:
             ms.ESPORTS_STALL_WATCHDOG_INTERVAL_S = 0.01
             ms.ESPORTS_STALL_RESTART_THRESHOLD_S = 0.05
             await asyncio.wait_for(bot._scan_stall_watchdog(), timeout=2.0)
         mock_exit.assert_called_once_with(1)
+        mock_stdout.flush.assert_called()
+        mock_stderr.flush.assert_called()
 
     @pytest.mark.asyncio
     async def test_fresh_scan_does_not_trigger(self):

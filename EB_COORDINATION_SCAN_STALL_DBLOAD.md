@@ -62,6 +62,48 @@ ssh ... 'for s in esports mirror weather ingestion; do echo -n "$s: "; journalct
 
 ---
 
+## CRITICAL ADDITION 2026-05-31 (S235 session review): `base_bot.py:811` is likely the PRIMARY corruption source
+
+**Filed at operator request after session review. Read before actioning D1/D2.**
+
+The S235 session fixed `esports_market_scanner.py:261` (rule-6 violation: `asyncio.wait_for` on a DB call). The session review flagged that `base_bot.py:811` is the same class of bug with broader blast radius:
+
+```python
+# C2 FIX (base_bot.py:811)
+_scan_timeout = getattr(settings, "BOT_SCAN_TIMEOUT_SECONDS", 60)  # VPS: 90s
+await asyncio.wait_for(self.scan_and_trade(), timeout=_scan_timeout)
+```
+
+**The mechanism (identical to S162/RULE ZERO rule 6):**
+1. Under DB contention, a query inside `scan_and_trade()` runs slowly (>90s)
+2. `asyncio.wait_for` fires at 90s → `CancelledError` propagates into whatever asyncpg call is mid-flight
+3. asyncpg's protocol state machine is interrupted mid-operation → connection enters `cannot switch to state N; another operation (2) is in progress`
+4. The poisoned connection returns to the pool
+5. The next caller (position_manager, another bot, ingestion) checks out the corrupted connection
+6. `set_statement_timeout_failed` → cascade begins
+
+**Why this changes the D1/D2 diagnosis:**
+The current framing is "ingestion hammers DB → contention → corruption." That's *half* the story. The full chain is: **contention triggers slow query → `wait_for` cancels mid-asyncpg → corrupts pool → all bots and services affected.** Ingestion provides the trigger; `base_bot.py:811` provides the corruption mechanism.
+
+The `set_statement_timeout_failed … cannot switch to state 12; another operation (2) is in progress` errors observed across EB/MB/WB/ingestion could be primarily from `base_bot.py:811` firing on every scan that exceeds 90s — not from the individual ingestion queries.
+
+**Why this is NOT a hot-patch:**
+The C2 FIX was added for a real reason: a hung DB query would block the entire event loop, freezing all bots and WS processing. Removing `wait_for` naively re-introduces that. The correct fix direction:
+- Individual queries already have server-side `statement_timeout` (15s) via `_SemaphoreSession.__aenter__`. If all DB-touching code in `scan_and_trade()` goes through `_SemaphoreSession`, each query is already bounded at 15s.
+- With per-query 15s timeouts in place, `scan_and_trade()` cannot hang indefinitely at the DB level — the original C2 concern is already addressed at the individual query level.
+- Removing `wait_for` at line 811 would stop the client-side cancellation from corrupting asyncpg connections on every 90s+ scan.
+- **Before removing**: audit every DB call in `scan_and_trade()` to confirm they all go through `_SemaphoreSession`. Any that bypass it (raw asyncpg calls, direct pool access) need per-call `statement_timeout` added first.
+
+**Investigation path:**
+1. Confirm: does `asyncio.wait_for(scan_and_trade(), timeout=90)` firing correlate with the `cannot switch to state N` errors in the logs? (Check: do the corruption events happen at ~90s marks after scan starts?)
+2. Audit all DB calls in `scan_and_trade()` for `_SemaphoreSession` coverage
+3. If covered: propose removing `wait_for` from `base_bot.py:811` (shared module, master change, all 14 bots)
+4. If not covered: add per-call `statement_timeout` first, then remove `wait_for`
+
+**Who owns this:** MB session (shared module, all-bots blast radius). EB can do the audit on eb/main and produce the coverage map, then surface as a master cherry-pick proposal. Do NOT hot-patch.
+
+---
+
 ## UPDATE 2026-05-30 (S235) — backstop was BROKEN, now fixed; contention still ACTIVE
 
 **The "backstop keeps EsportsBot self-recovering" claim above was false** — the S233 watchdog never once fired. It recurred: a fresh wedge left both esports bots dead **~13h** (2026-05-30, PID 345158). Root cause = two EB-owned watchdog bugs (now fixed, `eb/main` `442064d` + `1cd5611`, deploy `20260530_213432`):

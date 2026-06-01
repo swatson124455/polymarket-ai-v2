@@ -89,38 +89,43 @@ KEY="C:/Users/samwa/.ssh/LightsailDefaultKey-eu-west-1.pem" VPS="ubuntu@18.201.2
 
 ## §4 — What's still open
 
-| Item | Owner | Notes |
-|---|---|---|
-| **Master deploy** | next session | Gate on Task 2 passing. Command in §3. |
-| **V2 matched=0 confirm** | EB | After master deploy reduces contention: `journalctl -u polymarket-esports \| grep esports_v2_scan_funnel \| tail -5`. If still 0 after 3+ clean scans: separate matcher-logic bug. |
-| **Fix B completeness** | EB (deferred) | `session.__aexit__()` may not fully dispose corrupted asyncpg connection (SQLAlchemy might return it to pool as "valid"). Self-corrects in 2 cycles. Deep fix: `await conn.invalidate()` after close. Low urgency. |
-| **CLOSE-WAIT leak** | EB | httpx not closed somewhere. `EB_COORDINATION_CLOSE_WAIT_LEAK.md`. |
-| **Calibrator anomalies** | EB | valorant/dota2 silent; LoL n=0. Not investigated. |
+| Priority | Item | Owner | Notes |
+|---|---|---|---|
+| **P0** | `base_bot.py:811` — UPSTREAM corruption source | MB/operator | `asyncio.wait_for(scan_and_trade(), timeout=90)` fires S162 cancellation into mid-flight asyncpg on EVERY bot, EVERY 90s+ scan. This is likely the PRIMARY pool corruption source — contention is the trigger, this is the mechanism. **Read `EB_COORDINATION_SCAN_STALL_DBLOAD.md` "CRITICAL ADDITION" section before actioning D1/D2.** NOT a hot-patch; requires audit of all DB calls in `scan_and_trade()` first. |
+| **P1** | Scan-progress watchdog | EB | Watchdog fires on scan-START age (900s). Under sustained contention, scans start and timeout-cancel (refreshing start_mono) → bot cycles indefinitely → never trades, never restarts. Add a "Scan cycle done" count watchdog: if zero completions in e.g. 30min, `os._exit(1)`. Separate commit after base_bot:811 is resolved. |
+| P1 | V2 matched=0 confirm | EB | After contention reduces: `journalctl \| grep esports_v2_scan_funnel \| tail -5`. If still 0 after 3+ clean scans: separate matcher-logic bug. |
+| P1 | Scanner rule-6 isolated verification | EB | **Concrete harness:** write a test that simulates `asyncio.wait_for(db_coroutine(), timeout=0.001)` where `db_coroutine` is a real asyncpg call in progress, then inspect the connection state post-cancellation. Expected: `InFailedSQLTransactionError` or `cannot switch to state N`. If confirmed: propose server-side `statement_timeout` replacement (already 15s per `_SemaphoreSession`; possibly route through it). This is what S162 confirmed for direct calls; scanner's path may differ. |
+| P2 | Flush-before-exit test gap | EB | 8 watchdog tests don't verify `sys.stdout.flush` called before `os._exit`. Add assertion: `mock_flush.assert_called_before(mock_exit)`. Prevents silent regression if flush is removed. |
+| P2 | Fix B completeness | EB | `session.__aexit__()` may not fully dispose corrupted asyncpg connection. Deep fix: `await conn.invalidate()` after close. Self-corrects in 2 cycles. Low urgency. |
+| P3 | CLOSE-WAIT leak | EB | httpx not closed. `EB_COORDINATION_CLOSE_WAIT_LEAK.md`. |
+| P3 | Calibrator anomalies | EB | valorant/dota2 silent; LoL n=0. Not investigated. |
 
 ---
 
 ## §5 — Next-session §0
 
 ```bash
-# 1. Check both tasks completed:
-#    EB splinter: did E1 deploy succeed?
-readlink /opt/polymarket-ai-v2-esports  # should be new release
+# ── CONFIRMED RESULTS (no need to re-check) ──────────────────────────
+# os._exit restart: PROVEN empirically — PID 372390→376101 at iter 13 of restart
+#   monitor (task bmjm65h6c). This is NOT composition-only. Documented in §12.
+# Master deploy: DONE — release 20260531_203534; A+B+C+E1 on all services.
+# Ingestion cascade stopped: 0 "Can't reconnect" / 0 "asyncpg connection corrupted"
+#   at post-deploy check.
 
-#    Master tests: passed?
-cat [bda56r80l output file] | tail -3
+# ── FIRST 60 SECONDS ─────────────────────────────────────────────────
+KEY=~/.ssh/LightsailDefaultKey-eu-west-1.pem; H=ubuntu@18.201.216.0
 
-# 2. If master tests passed and NOT YET deployed:
-cd C:/lockes-picks/polymarket-ai-v2
-KEY="C:/Users/samwa/.ssh/LightsailDefaultKey-eu-west-1.pem" VPS="ubuntu@18.201.216.0" bash deploy/deploy.sh
+# 1. Read the base_bot.py:811 finding BEFORE touching D1/D2:
+#    cat EB_COORDINATION_SCAN_STALL_DBLOAD.md | grep -A 50 "CRITICAL ADDITION"
 
-# 3. Verify master deploy:
-#    All 4 services restarted, fix B in database.py:
-ssh -i $KEY ubuntu@18.201.216.0 'grep -c "asyncpg connection corrupted" /opt/polymarket-ai-v2/base_engine/data/database.py'
-#    Ingestion: no more "Can't reconnect" cascade?
-ssh -i $KEY ubuntu@18.201.216.0 'journalctl -u polymarket-ingestion --since "10 min ago" | grep -c "Can.t reconnect"'
+# 2. Is contention eased? Check watchdog fire rate (should be lower/zero):
+ssh -i $KEY $H 'journalctl -u polymarket-esports --since "today" | grep -c scan_stall_self_restart'
 
-# 4. If contention eased: check V2 matched > 0
-ssh -i $KEY ubuntu@18.201.216.0 'journalctl -u polymarket-esports --since "today" | grep esports_v2_scan_funnel | tail -5'
+# 3. V2 matched > 0?
+ssh -i $KEY $H 'journalctl -u polymarket-esports --since "today" | grep esports_v2_scan_funnel | tail -5'
+
+# 4. Ingestion still clean?
+ssh -i $KEY $H 'journalctl -u polymarket-ingestion --since "1 hour ago" | grep -c "Can.t reconnect"'
 ```
 
 ---
