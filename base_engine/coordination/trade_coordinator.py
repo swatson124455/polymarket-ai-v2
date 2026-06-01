@@ -30,6 +30,9 @@ REAPER_INTERVAL_SECONDS = 60   # How often to run the reaper (was 120s; reduced 
 CROSS_BOT_TOKEN_MUTEX = getattr(settings, "ENABLE_CROSS_BOT_TOKEN_MUTEX", False)
 
 
+_WI11_DISCREPANCY_LIMIT = 3  # consecutive discrepancies → CRITICAL escalation
+
+
 class TradeCoordinator:
     """Prevents multiple bots from taking same position. Uses session-based DB."""
 
@@ -37,6 +40,8 @@ class TradeCoordinator:
         self.db = db
         self.bot_id = bot_id or "default"
         self._reaper_task: Optional[asyncio.Task] = None
+        # WI-11: audit-on-write discrepancy tracking (in-memory, resets on restart)
+        self._wi11_discrepancy_count: int = 0
 
     async def can_take_position(self, market_id: str, side: str) -> bool:
         """Check if any bot already has this position (open or reserving).
@@ -333,6 +338,16 @@ class TradeCoordinator:
                         event_type=("EXIT" if _is_sell else "ENTRY"),
                         error=str(_te_err)[:200],
                     )
+                # WI-11: audit-on-write for live ENTRY positions.
+                # Fire-and-forget (asyncio.create_task): this is a monitoring
+                # check, not a financial write — a 2-3ms audit delay on the
+                # hot path would add latency to every live order placement.
+                if not _is_paper and not _is_sell:
+                    asyncio.create_task(self._wi11_audit_live_entry(
+                        market_id=market_id,
+                        bot_name=which_bot,
+                        entry_cost=size * entry_price * _cost_rate,
+                    ))
                 return  # success
             except Exception as e:
                 _last_err = e
@@ -355,6 +370,94 @@ class TradeCoordinator:
             error=str(_last_err)[:300] if _last_err else "unknown",
             action="manual reconcile required: in-memory + on-chain position exists, DB row missing",
         )
+
+    async def _wi11_audit_live_entry(
+        self,
+        market_id: str,
+        bot_name: str,
+        entry_cost: float,
+    ) -> None:
+        """WI-11 audit-on-write hook for live ENTRY positions.
+
+        Checks two invariants after every live position INSERT:
+        1. A trade_events ENTRY row exists for (market_id, bot_name, execution_mode='live').
+           Missing → WARNING discrepancy log. After _WI11_DISCREPANCY_LIMIT consecutive
+           discrepancies → CRITICAL (structural gap: live positions created without audit trail).
+        2. The most recent deposit wallet balance (from system_kv) was ≥ entry_cost.
+           Missing or insufficient → WARNING (phantom position class: trade with no capital).
+
+        Non-fatal — trading already succeeded; this is observability + operator alerting.
+        Individual failures are expected occasionally (e.g. balance probe hasn't run yet);
+        the consecutive-discrepancy counter surfaces persistent gaps.
+        """
+        if not self.db.session_factory:
+            return
+        try:
+            async with self.db.get_session() as _audit_sess:
+                # Check 1: trade_events ENTRY exists for this live position
+                _te_result = await _audit_sess.execute(text("""
+                    SELECT COUNT(*) FROM trade_events
+                    WHERE market_id = :mid
+                      AND bot_name = :bot
+                      AND event_type = 'ENTRY'
+                      AND execution_mode = 'live'
+                      AND event_time >= NOW() - INTERVAL '120 seconds'
+                """), {"mid": market_id, "bot": bot_name})
+                _te_count = int(_te_result.scalar() or 0)
+                if _te_count == 0:
+                    self._wi11_discrepancy_count += 1
+                    logger.warning(
+                        "position_audit_discrepancy_no_trade_event",
+                        market_id=market_id[:20],
+                        bot_name=bot_name,
+                        consecutive_discrepancies=self._wi11_discrepancy_count,
+                        check="live ENTRY in trade_events within 120s",
+                    )
+                    if self._wi11_discrepancy_count >= _WI11_DISCREPANCY_LIMIT:
+                        logger.critical(
+                            "position_audit_discrepancy_escalated",
+                            consecutive_discrepancies=self._wi11_discrepancy_count,
+                            market_id=market_id[:20],
+                            bot_name=bot_name,
+                            action=(
+                                "Live positions are being created without trade_events audit rows. "
+                                "This indicates a structural gap in the trade recording path. "
+                                "Investigate confirm_position() + insert_trade_event() wiring."
+                            ),
+                        )
+                else:
+                    # Success: reset discrepancy counter
+                    self._wi11_discrepancy_count = 0
+
+                # Check 2: wallet balance ≥ entry_cost
+                _bal_result = await _audit_sess.execute(text("""
+                    SELECT value FROM system_kv WHERE key = 'deposit_wallet_balance_pusd'
+                """))
+                _bal_row = _bal_result.fetchone()
+                if _bal_row is None:
+                    logger.warning(
+                        "position_audit_no_balance_probe",
+                        market_id=market_id[:20],
+                        entry_cost=round(entry_cost, 4),
+                        check="deposit_wallet_balance_pusd not yet in system_kv",
+                    )
+                else:
+                    try:
+                        _balance = float(_bal_row[0])
+                        if _balance < entry_cost:
+                            logger.warning(
+                                "position_audit_insufficient_balance",
+                                market_id=market_id[:20],
+                                bot_name=bot_name,
+                                wallet_balance=round(_balance, 4),
+                                entry_cost=round(entry_cost, 4),
+                                shortfall=round(entry_cost - _balance, 4),
+                                check="wallet balance < entry_cost at time of live ENTRY",
+                            )
+                    except (TypeError, ValueError):
+                        logger.debug("WI-11 balance parse failed: %r", _bal_row[0])
+        except Exception as _audit_err:
+            logger.debug("WI-11 audit_live_entry failed (non-critical): %s", _audit_err)
 
     async def release_reservation(self, market_id: str, side: str, bot_id: Optional[str] = None) -> None:
         """Release reservation if trade failed. bot_id: which bot reserved (must match reserve)."""

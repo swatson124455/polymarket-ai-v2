@@ -1494,6 +1494,19 @@ class BaseEngine:
                         logger.info("deposit_wallet_balance_pusd", balance=_pusd_bal, source="pusd@deposit_wallet")
                         if _pusd_bal < _threshold:
                             logger.warning("deposit_wallet_balance_low", balance=_pusd_bal, threshold=_threshold, source="pusd@deposit_wallet")
+                        # WI-11: persist latest balance to system_kv so audit-on-write hooks
+                        # can check wallet balance vs entry_cost without reading journalctl.
+                        try:
+                            from sqlalchemy import text as _skvtext
+                            async with self.db.get_session() as _skv_sess:
+                                await _skv_sess.execute(_skvtext("""
+                                    INSERT INTO system_kv (key, value)
+                                    VALUES ('deposit_wallet_balance_pusd', :val)
+                                    ON CONFLICT (key) DO UPDATE SET value = :val
+                                """), {"val": str(_pusd_bal)})
+                                await _skv_sess.commit()
+                        except Exception as _skv_err:
+                            logger.debug("WI-11 balance system_kv write failed (non-critical): %s", _skv_err)
                 except Exception as _pusd_err:
                     logger.debug("Startup pUSD balance query failed (non-critical): %s", _pusd_err)
 
