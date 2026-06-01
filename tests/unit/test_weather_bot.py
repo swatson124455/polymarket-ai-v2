@@ -2761,10 +2761,11 @@ class TestMidLifeExitEvaluator:
             with patch.object(settings, "WEATHER_EXIT_MIN_EDGE", 0.05, create=True):
                 await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
         # S160 WB-1: now calls self.place_order() wrapper, not base_engine.place_order()
-        # S214: exit side flipped YES → NO per CLAUDE.md YES/NO mandate (was "SELL")
+        # S237 BLOCKER-1: exits SELL the held token. S214 wrongly flipped the side to the
+        # opposite token, which order_gateway routes as a BUY (double-down), not a close.
         bot.place_order.assert_called_once()
         call_kwargs = bot.place_order.call_args
-        assert call_kwargs.kwargs["side"] == "NO"
+        assert call_kwargs.kwargs["side"] == "SELL"
         assert call_kwargs.kwargs["token_id"] == "yes_tok"
         assert call_kwargs.kwargs["size"] == 15.0
         assert "mkt1" in bot._recently_exited
@@ -2786,10 +2787,10 @@ class TestMidLifeExitEvaluator:
             with patch.object(settings, "WEATHER_EXIT_MIN_EDGE", 0.05, create=True):
                 await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
         # S160 WB-1: now calls self.place_order() wrapper, not base_engine.place_order()
-        # S214: exit side flipped NO → YES per CLAUDE.md YES/NO mandate (was "SELL")
+        # S237 BLOCKER-1: exits SELL the held token (S214 wrongly flipped to the opposite side).
         bot.place_order.assert_called_once()
         call_kwargs = bot.place_order.call_args
-        assert call_kwargs.kwargs["side"] == "YES"
+        assert call_kwargs.kwargs["side"] == "SELL"
         assert call_kwargs.kwargs["token_id"] == "no_tok"
         assert bot._exit_reasons["mkt2"] == "REVERSAL"
 
@@ -3030,7 +3031,7 @@ class TestS214HardStopKwargRegression:
             f"event_type kwarg leaked into base_engine.place_order at site 1; "
             f"got kwargs: {sorted(call_kwargs.keys())}"
         )
-        assert call_kwargs["side"] == "NO", "exit side must flip YES → NO"
+        assert call_kwargs["side"] == "SELL", "S237: exits must SELL the held token, not flip side (non-SELL routes as a BUY → double-down)"
         assert call_kwargs["bot_name"] == "WeatherBot"
         assert "mkt_hs1" in weather_bot._recently_exited
         assert weather_bot._exit_reasons["mkt_hs1"] == "HARD_STOP_LOSS"
@@ -3092,7 +3093,7 @@ class TestS214HardStopKwargRegression:
             f"event_type kwarg leaked into base_engine.place_order at site 2; "
             f"got kwargs: {sorted(call_kwargs.keys())}"
         )
-        assert call_kwargs["side"] == "NO", "exit side must flip YES → NO"
+        assert call_kwargs["side"] == "SELL", "S237: exits must SELL the held token, not flip side (non-SELL routes as a BUY → double-down)"
         assert call_kwargs["bot_name"] == "WeatherBot"
 
 

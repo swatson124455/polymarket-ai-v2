@@ -4166,10 +4166,13 @@ class WeatherBot(BaseBot):
             except Exception:
                 pass
             try:
-                _exit_side = "NO" if side == "YES" else "YES"
+                # S237 BLOCKER-1: exits MUST sell the held token, not buy the opposite
+                # side. place_order treats any side != "SELL" as a BUY
+                # (order_gateway.py:1142), so the old flipped-token side made this
+                # "exit" double-down on the losing position instead of closing it.
                 await self.base_engine.place_order(
                     market_id=mid, token_id=token_id,
-                    side=_exit_side, size=size, price=current_price,
+                    side="SELL", size=size, price=current_price,
                     bot_name=self.bot_name, confidence=0.0,
                 )
             except Exception as _err:
@@ -4355,10 +4358,11 @@ class WeatherBot(BaseBot):
                     except Exception:
                         pass
                     try:
+                        # S237 BLOCKER-1: SELL to close; any side != "SELL" is a BUY.
                         await self.base_engine.place_order(
                             market_id=mid,
                             token_id=token_id,
-                            side="NO" if side == "YES" else "YES",
+                            side="SELL",
                             size=size_shares,
                             price=current_price,
                             bot_name=self.bot_name,
@@ -4418,12 +4422,15 @@ class WeatherBot(BaseBot):
                         market_id=mid, group_key=group_key, city=city,
                         cost_usd=round(exit_cost, 2),
                     )
-                # 4. Place exit order (side flipped from entry per CLAUDE.md YES/NO mandate)
+                # 4. Place exit order. S237 BLOCKER-1: exits are SELL (close the held
+                #    token), NOT a flipped-side BUY. The YES/NO mandate governs ENTRIES;
+                #    a side != "SELL" is routed as a BUY (order_gateway.py:1142) and would
+                #    double-down instead of closing.
                 try:
                     _exit_result = await self.place_order(
                         market_id=mid,
                         token_id=token_id,
-                        side="NO" if side == "YES" else "YES",
+                        side="SELL",
                         size=size_shares,
                         price=max(0.01, current_price),
                         confidence=0.0,
