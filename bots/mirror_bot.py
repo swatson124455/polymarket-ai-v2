@@ -1542,7 +1542,12 @@ class MirrorBot(BaseBot):
                             ), {"mid": market_id})
                             _wt6_row = _wt6_r.fetchone()
                             if _wt6_row:
-                                _is_terminal_db = bool(_wt6_row[0]) or (not bool(_wt6_row[1]))
+                                # Use `is True/False` not `bool()` — MagicMock objects
+                                # are truthy, which would cause false-positives in tests.
+                                # Real asyncpg rows return Python booleans.
+                                _resolved = _wt6_row[0]
+                                _active = _wt6_row[1]
+                                _is_terminal_db = (_resolved is True) or (_active is False)
                     except Exception as _wt6_err:
                         logger.debug("WI-6 market state check failed (non-critical): %s", _wt6_err)
                 if _is_terminal_price or _is_terminal_db:

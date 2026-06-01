@@ -402,6 +402,7 @@ class TradeCoordinator:
                       AND event_type = 'ENTRY'
                       AND execution_mode = 'live'
                       AND event_time >= NOW() - INTERVAL '120 seconds'
+                      AND event_time <= NOW()
                 """), {"mid": market_id, "bot": bot_name})
                 _te_count = int(_te_result.scalar() or 0)
                 if _te_count == 0:
