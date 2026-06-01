@@ -5497,14 +5497,22 @@ class Database:
         """
         if self.session_factory is None:
             return None
+        evt_time = _naive_utc(event_time) if event_time else _naive_utc(datetime.now(timezone.utc))
         # S141: ENTRY idempotency excludes order_id to prevent concurrent duplicate entries.
         # order_id is unique per call, so two concurrent whale signals on the same market
         # would both insert. Using token_id instead deduplicates on (market, token, side).
+        # S237 HIGH-3: also include a MINUTE-resolution timestamp. Without it, a legitimate
+        # RE-ENTRY into the same (market, token, side) after an exit + cooldown was silently
+        # dropped (same key as the first entry → WHERE NOT EXISTS skipped it), leaving an
+        # open position with no matching ENTRY in the P&L-authority table. The minute bucket
+        # still dedups S141's target (concurrent same-(market,token,side) attempts in one
+        # scan, and immediate idempotent retries — both land in the same minute), while a
+        # re-entry minutes/hours later (cooldowns are >= 30 min) falls in a new bucket and
+        # is recorded as its own lot.
         if event_type == "ENTRY":
-            idem_key = f"{bot_name}:{market_id}:{token_id or ''}:{side}:ENTRY"
+            idem_key = f"{bot_name}:{market_id}:{token_id or ''}:{side}:ENTRY:{evt_time:%Y%m%d%H%M}"
         else:
             idem_key = f"{bot_name}:{market_id}:{side}:{order_id or correlation_id or ''}"
-        evt_time = _naive_utc(event_time) if event_time else _naive_utc(datetime.now(timezone.utc))
 
         # Reject future-dated event_time (5-min clock-skew tolerance).
         # Catches scheduled-close-as-resolution-time corruption at the insertion boundary,
