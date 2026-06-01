@@ -1395,3 +1395,133 @@ class TestScanStallWatchdogV2:
             ms.ESPORTS_STALL_RESTART_THRESHOLD_S = 0.05
             await asyncio.wait_for(bot._scan_stall_watchdog(), timeout=2.0)
         mock_exit.assert_called_once_with(1)
+
+
+class TestAwaitingMarketRecheck:
+    """S237: matches predicted before their Polymarket H2H market exists are
+    stashed in _awaiting_market and re-checked on later scans, so the
+    late-created market is traded instead of being skipped forever (the
+    matched=0 / zero-trades root cause)."""
+
+    def _bot(self):
+        smoke = TestScanCycleSmoke()
+        bot, fake_db = smoke._make_bot()
+        bot._initialized = True
+        bot._dry_run = False
+        smoke._seed_trinity(bot)  # fit pipeline so scan_and_trade()'s predict path is exercisable
+        return bot, fake_db
+
+    def _stash(self, bot, now, **pr):
+        """Seed one _awaiting_market entry (a tradeable singleton with no market
+        yet) and return its match."""
+        match = _upcoming_match(match_id=60001, game="cs2", team_a="TeamA", team_b="TeamB")
+        pipeline_result = {"p_model": 0.7, "is_singleton": True, "edge": 0.0, "stake": 0.0}
+        pipeline_result.update(pr)
+        bot._awaiting_market["ps_60001"] = {
+            "match": match, "pipeline_result": pipeline_result,
+            "game": "cs2", "created_at": now,
+        }
+        return match
+
+    @pytest.mark.asyncio
+    async def test_queues_and_removes_when_market_appears(self):
+        """Market created after prediction → re-check queues it once and drops
+        it from the watch set; funnel matched+queued both increment."""
+        bot, _ = self._bot()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        self._stash(bot, now)
+        bot._find_polymarket_for_match = AsyncMock(return_value={
+            "price": 0.55, "market_id": "m1",
+            "market": {"yes_token_id": "y", "no_token_id": "n"},
+        })
+        bot._pipeline.compute_sizing = MagicMock(
+            return_value={"edge": 0.15, "kelly_fraction": 0.1, "stake": 50.0})
+
+        await bot._recheck_awaiting_markets(now)
+
+        assert "ps_60001" not in bot._awaiting_market, "should stop watching once queued"
+        assert len(bot._pending_predictions) == 1
+        item = bot._pending_predictions[0]
+        assert item["market_price"] == 0.55
+        assert item["traded_at"] is None
+        assert item["pred_record"] is None  # shadow prediction already written at predict time
+        assert bot._scan_counters["matched"] == 1
+        assert bot._scan_counters["queued"] == 1
+
+    @pytest.mark.asyncio
+    async def test_keeps_watching_when_still_no_market(self):
+        """Still no market → entry stays in the watch set, nothing queued."""
+        bot, _ = self._bot()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        self._stash(bot, now)
+        bot._find_polymarket_for_match = AsyncMock(return_value=None)
+
+        await bot._recheck_awaiting_markets(now)
+
+        assert "ps_60001" in bot._awaiting_market, "should keep watching"
+        assert bot._pending_predictions == []
+        assert bot._scan_counters["matched"] == 0
+        assert bot._scan_counters["queued"] == 0
+
+    @pytest.mark.asyncio
+    async def test_drops_when_aged_out_of_window(self):
+        """Match older than the lookahead window is pruned without consulting
+        the matcher (it has effectively started)."""
+        import bots.esports_bot_v2 as eb2
+        bot, _ = self._bot()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        old = now - timedelta(hours=eb2._UPCOMING_HOURS + 1)
+        self._stash(bot, old)
+        bot._find_polymarket_for_match = AsyncMock(return_value={"price": 0.55, "market": {}})
+
+        await bot._recheck_awaiting_markets(now)
+
+        assert "ps_60001" not in bot._awaiting_market, "aged-out entry should be pruned"
+        assert bot._pending_predictions == []
+        bot._find_polymarket_for_match.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_market_appears_but_edge_too_low_not_queued(self):
+        """Market exists now but edge < 0.05 → stop watching (a non-edge market
+        won't become edge-worthy by waiting) but do NOT queue a trade."""
+        bot, _ = self._bot()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        self._stash(bot, now)
+        bot._find_polymarket_for_match = AsyncMock(return_value={
+            "price": 0.55, "market_id": "m1", "market": {}})
+        bot._pipeline.compute_sizing = MagicMock(
+            return_value={"edge": 0.01, "kelly_fraction": 0.0, "stake": 0.0})
+
+        await bot._recheck_awaiting_markets(now)
+
+        assert "ps_60001" not in bot._awaiting_market  # market exists → stop watching
+        assert bot._pending_predictions == []          # edge too low → not queued
+        assert bot._scan_counters["matched"] == 1
+        assert bot._scan_counters["queued"] == 0
+
+    @pytest.mark.asyncio
+    async def test_per_entry_failure_is_isolated_not_propagated(self):
+        """A matcher error on one entry is logged and skipped — it must not
+        abort the scan (re-check is auxiliary to resolve/predict/execute)."""
+        bot, _ = self._bot()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        self._stash(bot, now)
+        bot._find_polymarket_for_match = AsyncMock(side_effect=RuntimeError("boom"))
+
+        # Must not raise.
+        await bot._recheck_awaiting_markets(now)
+        assert bot._pending_predictions == []
+
+    @pytest.mark.asyncio
+    async def test_scan_and_trade_invokes_recheck(self):
+        """Wiring: the predict phase calls _recheck_awaiting_markets each scan."""
+        bot, _ = self._bot()
+        upcoming = [_upcoming_match(match_id=60002, game="cs2", team_a="TeamA", team_b="TeamB")]
+        bot._pandascore = AsyncMock()
+        bot._pandascore.get_upcoming_matches = AsyncMock(return_value=upcoming)
+        bot._pandascore.get_past_matches = AsyncMock(return_value=[])
+        bot._find_polymarket_for_match = AsyncMock(return_value=None)
+        with patch.object(bot, "_recheck_awaiting_markets", new_callable=AsyncMock) as spy, \
+             patch.object(bot, "place_order", new_callable=AsyncMock):
+            await bot.scan_and_trade()
+        spy.assert_awaited_once()

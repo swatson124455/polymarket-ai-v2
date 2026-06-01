@@ -109,6 +109,21 @@ class EsportsBotV2(BaseBot):
         self._last_retrain_time = 0.0
         self._initialized = False
         self._pending_predictions: List[dict] = []  # predictions awaiting trade execution
+        # S237 (matched=0 / zero-trades root fix): matches predicted while no
+        # Polymarket market existed yet, kept for re-check on later scans. The
+        # bot predicts up to _UPCOMING_HOURS (48h) ahead, but Polymarket lists
+        # the head-to-head market hours-to-days later (verified 2026-05-31:
+        # every H2H market matching an unmatched team-pair had created_at AFTER
+        # the prediction's event_time). The one-shot prediction guard (line
+        # ~629) then skipped the match forever, so the late-created market was
+        # never traded. _recheck_awaiting_markets() re-runs the matcher for
+        # these until a market appears (queued once + removed) or the match ages
+        # out of the lookahead window. In-memory only: cross-restart recovery
+        # (re-seed from esports_predictions) is a documented follow-up; on
+        # restart these are dropped — never double-traded, since only NEW
+        # in-session predictions are ever added here.
+        # match_id -> {"match", "pipeline_result", "game", "created_at"}
+        self._awaiting_market: Dict[str, dict] = {}
         # Per-scan funnel counters logged at _execute_trades entry; reset in
         # _predict_upcoming_matches. Defensive init in case execute is called
         # before predict (shouldn't happen by scan_and_trade contract).
@@ -613,6 +628,13 @@ class EsportsBotV2(BaseBot):
         self._scan_counters = {"upcoming_seen": 0, "singletons": 0, "matched": 0, "queued": 0}
         now = datetime.now(timezone.utc).replace(tzinfo=None)
 
+        # S237: before predicting new matches, re-check matches predicted on a
+        # prior scan that had no Polymarket market yet — their H2H market may
+        # have been created since. Runs after the counter reset so its matched/
+        # queued increments are reflected in the funnel log emitted by
+        # _execute_trades.
+        await self._recheck_awaiting_markets(now)
+
         for game in self._games:
             try:
                 upcoming = await self._pandascore.get_upcoming_matches(game, hours_ahead=_UPCOMING_HOURS)
@@ -753,8 +775,14 @@ class EsportsBotV2(BaseBot):
                     except Exception as _pl_err:
                         logger.debug("esports_v2_prediction_log_failed", error=str(_pl_err))
 
-                # Queue for trading if singleton with edge
-                if pipeline_result.get("is_singleton") and pipeline_result.get("edge", 0) >= 0.05:
+                # Queue for trading if singleton with edge AND a real Polymarket
+                # market was found. S237: the `market_price is not None` guard is
+                # new. Previously a market-less prediction whose stub-price edge
+                # happened to be >= 0.05 would queue here and then be silently
+                # skipped in _execute_trades (market_price is None → continue) —
+                # a dead queue slot. It now routes to _awaiting_market for
+                # re-check when its market is later created.
+                if market_price is not None and pipeline_result.get("is_singleton") and pipeline_result.get("edge", 0) >= 0.05:
                     # Item 8: cache the inner market dict (with paired tokens)
                     # so _execute_trades doesn't re-query the matcher. Mitigates
                     # the cache-eviction route-mismatch risk where the trade
@@ -771,6 +799,108 @@ class EsportsBotV2(BaseBot):
                         "market_info": cached_market,
                     })
                     self._scan_counters["queued"] += 1
+                elif market_price is None and pipeline_result.get("is_singleton"):
+                    # S237 root fix for matched=0/zero-trades. The match is now
+                    # in _predicted_match_ids, so without this it is skipped
+                    # forever (line ~629) and the H2H market that Polymarket
+                    # creates hours-to-days later is never traded. Stash the
+                    # tradeable-structure (singleton) prediction for
+                    # _recheck_awaiting_markets() to pick up once a market
+                    # appears. Keyed by match_id — idempotent re-stash.
+                    self._awaiting_market[match_id] = {
+                        "match": match,
+                        "pipeline_result": pipeline_result,
+                        "game": game,
+                        "created_at": now,
+                    }
+
+    async def _recheck_awaiting_markets(self, now: datetime) -> None:
+        """S237: re-run the matcher for matches predicted while no Polymarket
+        market existed yet, and queue them once a market appears.
+
+        Root cause this fixes (matched=0 / zero-trades): the bot predicts up to
+        _UPCOMING_HOURS (48h) ahead, but Polymarket lists the head-to-head match
+        market hours-to-days later. The one-shot prediction guard (line ~629)
+        then skips the match on every later scan, so the late-created market is
+        never picked up. Verified 2026-05-31: every H2H market matching an
+        unmatched team-pair had created_at AFTER the prediction's event_time.
+
+        Each _awaiting_market entry is re-checked every scan until either its
+        market appears (then queued once + removed) or it ages past the lookahead
+        window (then dropped — the match has started). The matcher's own 120s
+        result cache bounds the DB cost. In-memory only: dropped on restart, so a
+        match predicted-but-unmatched before a restart is not recovered (the
+        guard at line ~633 skips it). That is deliberate — the predict loop only
+        ever adds NEW in-session predictions here, so a forced restart can never
+        cause a double-trade. Cross-restart recovery (re-seed from
+        esports_predictions) is a documented follow-up.
+
+        Per-entry failures are logged and skipped, never propagated: this is an
+        auxiliary pass and must not abort the core resolve/predict/execute scan.
+        """
+        if not self._awaiting_market:
+            return
+        from datetime import timedelta
+        window = timedelta(hours=_UPCOMING_HOURS)
+        for match_id in list(self._awaiting_market.keys()):
+            try:
+                entry = self._awaiting_market[match_id]
+                # Aged out of the lookahead window — the match has (nearly)
+                # started; a market appearing now is moot. Stop watching.
+                if (now - entry["created_at"]) > window:
+                    del self._awaiting_market[match_id]
+                    continue
+                match = entry["match"]
+                game = entry["game"]
+                pipeline_result = entry["pipeline_result"]
+                market_info = await self._find_polymarket_for_match(match, game)
+                market_price = market_info.get("price") if market_info else None
+                if market_price is None:
+                    continue  # still no market — keep watching on the next scan
+                # Market appeared. Recompute sizing against the real price
+                # (mirrors the predict-loop `if market_price is not None` block)
+                # and apply the same singleton + edge queue gate. Either way the
+                # market now exists, so stop watching this match.
+                del self._awaiting_market[match_id]
+                self._scan_counters["matched"] += 1
+                pipeline_result["market_price"] = market_price
+                sizing = self._pipeline.compute_sizing(
+                    p_model=pipeline_result["p_model"],
+                    is_singleton=pipeline_result["is_singleton"],
+                    market_price=market_price,
+                )
+                pipeline_result["edge"] = sizing["edge"]
+                pipeline_result["kelly_fraction"] = sizing["kelly_fraction"]
+                pipeline_result["stake"] = sizing["stake"]
+                if pipeline_result.get("is_singleton") and pipeline_result.get("edge", 0) >= 0.05:
+                    cached_market = market_info.get("market") if market_info else None
+                    self._pending_predictions.append({
+                        "match": match,
+                        "pipeline_result": pipeline_result,
+                        "market_price": market_price,
+                        # Shadow prediction already written at predict time; the
+                        # trade path does not read pred_record (see _execute_trades).
+                        "pred_record": None,
+                        "created_at": now,
+                        "traded_at": None,
+                        "market_info": cached_market,
+                    })
+                    self._scan_counters["queued"] += 1
+                    logger.info(
+                        "esports_v2_awaiting_market_queued",
+                        match_id=match_id,
+                        team_a=match.team_a,
+                        team_b=match.team_b,
+                        game=game,
+                        market_price=round(float(market_price), 4),
+                        edge=round(float(pipeline_result.get("edge", 0.0)), 4),
+                    )
+            except Exception as e:
+                logger.warning(
+                    "esports_v2_recheck_awaiting_failed",
+                    match_id=match_id,
+                    error=str(e),
+                )
 
     async def _execute_trades(self) -> None:
         """Place paper trades for singletons with sufficient edge.
