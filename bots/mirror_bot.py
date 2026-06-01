@@ -1516,6 +1516,59 @@ class MirrorBot(BaseBot):
                         logger.warning("mirror_force_close_zero_size_db_fail: %s", _zs_err)
                     continue
 
+                # WI-6: Pre-SELL lifecycle state check.
+                # This check MUST precede both place_order (line below) and the
+                # Bug 11C balance guard — per WI-6 design note (S234): RESOLVED/
+                # DELISTED handlers must NOT depend on the SELL path completing.
+                # Bug 21 (_close_position_terminal) was reactive (fired after SELL
+                # failed); WI-6 makes it proactive (fires before SELL is attempted).
+                #
+                # Two signals for "market is terminal":
+                #   1. DB: markets.resolved=TRUE or markets.active=FALSE
+                #   2. In-memory: current_price near 0.0 or 1.0 (token pinned to
+                #      winning/losing boundary — market resolved on-chain but DB
+                #      not yet updated, which WI-15 documented as a latent gap).
+                _cur_px = pos.get("current_price", 0.5)
+                _is_terminal_price = (_cur_px is not None and (_cur_px < 0.01 or _cur_px > 0.99))
+                _is_terminal_db = False
+                if not _is_terminal_price:
+                    try:
+                        from sqlalchemy import text as _wt6_sql
+                        async with self.base_engine.db.get_session() as _wt6_s:
+                            _wt6_r = await _wt6_s.execute(_wt6_sql(
+                                "SELECT resolved, active, resolution "
+                                "FROM markets "
+                                "WHERE id = :mid OR condition_id = :mid LIMIT 1"
+                            ), {"mid": market_id})
+                            _wt6_row = _wt6_r.fetchone()
+                            if _wt6_row:
+                                _is_terminal_db = bool(_wt6_row[0]) or (not bool(_wt6_row[1]))
+                    except Exception as _wt6_err:
+                        logger.debug("WI-6 market state check failed (non-critical): %s", _wt6_err)
+                if _is_terminal_price or _is_terminal_db:
+                    _terminal_reason = (
+                        f"price_pinned({_cur_px:.4f})" if _is_terminal_price
+                        else "db_resolved_or_inactive"
+                    )
+                    logger.info(
+                        "mirror_wi6_terminal_pre_sell",
+                        market=market_id[:20],
+                        reason=_terminal_reason,
+                        current_price=_cur_px,
+                        action="routing to _close_position_terminal without SELL attempt",
+                    )
+                    _redeemable = (_cur_px is not None and _cur_px > 0.99)
+                    await self._close_position_terminal(
+                        pos_key=pos_key,
+                        pos=pos,
+                        market_id=market_id,
+                        token_id=token_id,
+                        exit_size=exit_size,
+                        reason=_terminal_reason,
+                        redeemable=_redeemable,
+                    )
+                    continue  # skip the SELL path entirely
+
                 # current_price is mid from position_manager; exit fills against live top-of-book bid — re-read so we can detect stale-mid drift and abort false hard_stops.
                 _decision_price = exit_price
                 _live_bid: Optional[float] = None
