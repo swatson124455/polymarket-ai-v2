@@ -69,31 +69,88 @@ sudo systemctl daemon-reload
 sudo systemctl restart polymarket-weather   # WB session's call — not MB's
 ```
 
-## Known adjacent drift (NOT addressed here — flagged for a separate item)
+## Resource-limits drop-ins (WI-16, S235 2026-05-31)
 
-Each service also has a VPS-only `limits.conf` drop-in
-(`MemoryMax` / `OOMScoreAdjust`) that is **not** in this repo. Values observed
-on the VPS S235 (2026-05-30): mirror `2560M / -100`, ingestion `512M / +100`,
-weather `2G / -200`, esports `2560M / 0`. These also differ from the `MemoryMax`
-in the base units (e.g. mirror base says `3G`, drop-in says `2560M` — the drop-in
-wins). Same memory≠reality class as the splinter drop-ins, but a different
-category (resource limits, not release-path topology). Left for a dedicated item
-rather than folded into the WI-2 splinter commit.
+Each service has a `*.service.d/limits.conf` drop-in that overrides `MemoryMax`
+and sets `OOMScoreAdjust`. These are now tracked in this repo (same A1 pattern
+as the splinter drop-ins). `deploy.sh` does NOT install them automatically —
+they are for documentation + host-rebuild recovery only.
+
+| Service | Base unit MemoryMax | Drop-in MemoryMax | Actual (drop-in wins) | OOMScoreAdjust |
+|---|---|---|---|---|
+| mirror | 3G | **2560M** | 2560M | -100 (protected) |
+| weather | 2G | 2G | 2G | -200 (most protected) |
+| esports | 2G | **2560M** | 2560M | 0 (neutral) |
+| ingestion | 1G | **512M** | 512M | +100 (most killable) |
+
+Base-unit `MemoryMax` values for mirror, esports, and ingestion are stale
+(the drop-in wins). The base units were not updated to avoid a deploy.sh
+behavior-change; the drop-ins are the source of truth for actual limits.
+
+To restore on a rebuilt host:
+```bash
+for svc in mirror weather esports ingestion; do
+  sudo mkdir -p /etc/systemd/system/polymarket-${svc}.service.d/
+  sudo cp deploy/polymarket-${svc}.service.d/limits.conf \
+       /etc/systemd/system/polymarket-${svc}.service.d/limits.conf
+done
+sudo systemctl daemon-reload
+```
+
+## Orderbook collector (WI-16, S235 2026-05-31)
+
+`deploy/polymarket-orderbook.service` + `deploy/polymarket-orderbook.timer`
+are committed here for documentation + recovery. They were previously VPS-only
+(active and enabled on the VPS, but absent from git). The script they invoke
+(`scripts/orderbook_collector.py`) **is** in git.
+
+The timer runs every minute (`OnCalendar=*:*:00`) and is enabled on the VPS.
+`deploy.sh`'s timer install loop (`for TIMER_SVC in polymarket-prune-prices
+polymarket-audit polymarket-prune-data`) does **not** include
+`polymarket-orderbook` — a future decision: add it to the loop so it gets
+reinstalled on every deploy (correct long-term), or leave as manual-install.
+
+To restore on a rebuilt host:
+```bash
+sudo cp deploy/polymarket-orderbook.service deploy/polymarket-orderbook.timer \
+     /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now polymarket-orderbook.timer
+```
+
+## Adjacent VPS config not in this repo
+
+`/etc/systemd/system/redis-server.service.d/oom.conf` sets
+`OOMScoreAdjust=-500` for Redis (highest OOM protection on the system). This
+is a system Redis config, not a polymarket service file — it is intentionally
+NOT committed to the polymarket repo. Document it here so it is not forgotten
+on a host rebuild:
+```
+[Service]
+OOMScoreAdjust=-500
+```
+
+## dead_man_watchdog.timer — in git but NOT active on VPS
+
+`deploy/dead_man_watchdog.timer` (and its `.service`) exist in git but
+`systemctl is-active dead_man_watchdog.timer` returns `inactive` on the VPS.
+Either it was intentionally not installed, or it was installed and later
+removed. Noted here to avoid confusion — it is not a drift gap in the same
+class as the items above (which were VPS-active-but-not-in-git).
 
 ## Verification
 
-**Last verified:** S235 (2026-05-30).
-**Method** (read-only, triangulated 4 ways):
+**Last verified:** S235 (2026-05-31).
+**Method:**
 ```bash
-# 1. Effective working dir per service
+# Drop-ins (complete inventory)
+find /etc/systemd/system -name "*.conf" -path "*service.d*" | sort
+# Timers
+ls /etc/systemd/system/*.timer
+systemctl is-active polymarket-orderbook.timer
+# Splinter symlinks (4-way check)
 systemctl show polymarket-{mirror,weather,esports,ingestion} -p WorkingDirectory --value
-# 2. Full merged unit + drop-ins
 systemctl cat polymarket-{weather,esports}
-# 3. Resolve the symlinks
 readlink -f /opt/polymarket-ai-v2 /opt/polymarket-ai-v2-weather /opt/polymarket-ai-v2-esports
-# 4. Directory listing of /opt
 ls -la /opt/ | grep -E 'polymarket-ai-v2'
 ```
-All four agreed: mirror+ingestion → `pa2-releases/`, weather → `pa2-weather-releases/`,
-esports → `pa2-esports-releases/`; drop-ins present and active for weather/esports,
-absent (only `limits.conf`) for mirror/ingestion.
