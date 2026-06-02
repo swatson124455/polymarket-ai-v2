@@ -1394,7 +1394,25 @@ class Database:
                         logger.debug("Pre-insert validation skipped market: %s", err)
                         failed_count += 1
                         continue
-                end_date_iso = market_data.get("end_date_iso")
+                # Root fix: the end-date arrives under different keys by source —
+                # CLOB uses "end_date_iso" (snake), Gamma uses "endDate"/"endDateIso",
+                # and several callers pass the raw API dict unnormalized. Reading only
+                # "end_date_iso" stored NULL for ~89% of markets, which made them
+                # invisible to resolution_backfill (NULLS-LAST ordering). Read all
+                # known spellings and parse ISO strings so the chokepoint never
+                # silently drops a date.
+                end_date_iso = (
+                    market_data.get("end_date_iso")
+                    or market_data.get("endDateISO")
+                    or market_data.get("endDateIso")
+                    or market_data.get("endDate")
+                    or market_data.get("end_date")
+                )
+                if isinstance(end_date_iso, str):
+                    try:
+                        end_date_iso = datetime.fromisoformat(end_date_iso.replace("Z", "+00:00"))
+                    except (ValueError, TypeError):
+                        end_date_iso = None
                 if isinstance(end_date_iso, datetime) and getattr(end_date_iso, "tzinfo", None) is not None:
                     end_date_iso = _naive_utc(end_date_iso)
                 _liq = market_data.get("liquidity", 0.0)
@@ -1469,6 +1487,7 @@ class Database:
                     _seen_slugs.add(_sl)
 
         from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from sqlalchemy import func
         processed_count = 0
 
         # S120: Nullify slugs that collide with EXISTING rows under a different id.
@@ -1506,7 +1525,10 @@ class Database:
                             "description": stmt.excluded.description,
                             "category": stmt.excluded.category,
                             "resolution_source": stmt.excluded.resolution_source,
-                            "end_date_iso": stmt.excluded.end_date_iso,
+                            # Preserve an existing non-NULL end-date when a later
+                            # partial re-ingest passes NULL — otherwise the one path
+                            # that extracts the date correctly gets its value wiped.
+                            "end_date_iso": func.coalesce(stmt.excluded.end_date_iso, Market.__table__.c.end_date_iso),
                             "image": stmt.excluded.image,
                             "active": stmt.excluded.active,
                             "liquidity": stmt.excluded.liquidity,
@@ -1541,6 +1563,13 @@ class Database:
                     async with session.begin():
                         for md in valid_dicts:
                             try:
+                                # Mirror the bulk-path COALESCE: if this dict carries a
+                                # NULL end-date, preserve the existing one rather than
+                                # letting merge() overwrite a good value with NULL.
+                                if md.get("end_date_iso") is None and md.get("id") is not None:
+                                    _existing = await session.get(Market, md["id"])
+                                    if _existing is not None and _existing.end_date_iso is not None:
+                                        md["end_date_iso"] = _existing.end_date_iso
                                 async with session.begin_nested():
                                     await session.merge(Market(**md))
                                 processed_count += 1

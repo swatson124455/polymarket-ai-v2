@@ -134,6 +134,11 @@ def _clob_to_market_format(clob: dict, condition_id: str) -> dict:
         "yes_price": yes_price,
         "no_price": no_price,
         "active": not closed,  # Mark closed markets as inactive immediately
+        # Root fix: CLOB returns the end-date under snake_case "end_date_iso".
+        # Include it (with camel fallbacks) so CLOB-sourced markets aren't stored
+        # with a NULL end-date, which strands them in resolution_backfill's
+        # NULLS-LAST queue. bulk_insert_markets parses the ISO string.
+        "end_date_iso": clob.get("end_date_iso") or clob.get("endDateISO") or clob.get("endDate"),
     }
 
 
@@ -221,6 +226,11 @@ async def run_resolution_backfill(
                                 "resolution": None,
                                 "yes_token_id": parsed.get("yes_token_id"),
                                 "no_token_id": parsed.get("no_token_id"),
+                                # Root fix: carry the end-date (any source spelling) so this
+                                # missing-market insert doesn't store a NULL end-date and
+                                # then become invisible to Phase-2 (NULLS-LAST) resolution.
+                                "end_date_iso": (m.get("end_date_iso") or m.get("endDateISO")
+                                                 or m.get("endDateIso") or m.get("endDate") or m.get("end_date")),
                             }
                             if m.get("closed") or m.get("resolved"):
                                 md["resolution"] = _infer_resolution_from_outcome_prices(m)
