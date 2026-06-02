@@ -245,6 +245,121 @@ class TestWatchdogRestartConfig:
             "600s backoff cap not found in _watchdog source"
 
 
+class TestWatchdogStaleExitUptimeGrace:
+    """2026-06-02 (EB): E1 force-exit must be gated on process uptime.
+
+    bot_heartbeats.last_scan_at is shared and persisted across restarts, so a
+    freshly-restarted process inherits the prior process's stale heartbeat.
+    Without an uptime grace window, E1 force-exits the young process before it
+    can complete a scan to refresh the heartbeat — an unrecoverable restart
+    death-spiral (observed 2026-06-01: ~53 restarts in 6h, minutes_stale
+    climbing 403→410→420 monotonically). Force-exit now requires BOTH a stale
+    heartbeat AND watchdog uptime >= threshold.
+    """
+
+    @staticmethod
+    def _exit_threshold_minutes():
+        import main
+        _stale = getattr(main.settings, "BOT_HEARTBEAT_STALE_MINUTES", 15)
+        return float(getattr(main.settings, "BOT_STALE_EXIT_THRESHOLD_MINUTES", _stale * 2))
+
+    @staticmethod
+    def _stale_heartbeat_engine(bot_name, minutes_stale):
+        """MagicMock engine whose heartbeat query returns one stale bot row."""
+        engine = MagicMock()
+        engine.alerting_system = MagicMock()
+        engine.alerting_system.send_alert = AsyncMock()
+        engine.db = MagicMock()
+        engine.db.session_factory = True
+        result = MagicMock()
+        result.fetchall.return_value = [(bot_name, float(minutes_stale))]
+        session = MagicMock()
+        session.execute = AsyncMock(return_value=result)
+
+        class _SessionCM:
+            async def __aenter__(self):
+                return session
+
+            async def __aexit__(self, *exc):
+                return False
+
+        engine.db.get_session = MagicMock(side_effect=lambda: _SessionCM())
+        return engine
+
+    async def _run_watchdog_once(self, bots, engine, uptime_seconds):
+        """Run _watchdog for one iteration with a controlled monotonic clock."""
+        import main
+
+        class _StepClock:
+            """monotonic() → 0.0 on first call (start marker), then uptime_seconds."""
+
+            def __init__(self):
+                self._first = True
+
+            def __call__(self):
+                if self._first:
+                    self._first = False
+                    return 0.0
+                return float(uptime_seconds)
+
+        _sleeps = {"n": 0}
+
+        async def _fake_sleep(_t):
+            # let iteration 1 fully run (heartbeat check), break on iteration 2's
+            # top-of-loop sleep.
+            _sleeps["n"] += 1
+            if _sleeps["n"] >= 2:
+                raise asyncio.CancelledError()
+
+        with patch.object(main.time, "monotonic", _StepClock()), \
+                patch("asyncio.sleep", side_effect=_fake_sleep), \
+                patch("os._exit") as mock_exit:
+            try:
+                await main._watchdog(bots, engine)
+            except asyncio.CancelledError:
+                pass
+        return mock_exit
+
+    @pytest.mark.asyncio
+    async def test_young_process_with_stale_heartbeat_is_spared(self):
+        """A young process must NOT be force-exited despite a deeply stale
+        inherited heartbeat — this is the death-spiral the gate prevents."""
+        thresh = self._exit_threshold_minutes()
+        bot = MagicMock()
+        bot.running = True
+        bots = {"TestBot": bot}  # not in _bot_enabled_map → no enable-flag skip
+        engine = self._stale_heartbeat_engine("TestBot", minutes_stale=thresh * 100)
+        mock_exit = await self._run_watchdog_once(
+            bots, engine, uptime_seconds=thresh * 0.1 * 60  # uptime ≪ threshold
+        )
+        mock_exit.assert_not_called()
+        # the bot is still reported stale (alert fires) — only the kill is gated
+        engine.alerting_system.send_alert.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_old_process_with_stale_heartbeat_force_exits(self):
+        """A process up well past the threshold that is still stale is genuinely
+        wedged — E1 must still force-exit it (intended behavior preserved)."""
+        thresh = self._exit_threshold_minutes()
+        bot = MagicMock()
+        bot.running = True
+        bots = {"TestBot": bot}
+        engine = self._stale_heartbeat_engine("TestBot", minutes_stale=thresh * 100)
+        mock_exit = await self._run_watchdog_once(
+            bots, engine, uptime_seconds=thresh * 2 * 60  # uptime ≫ threshold
+        )
+        mock_exit.assert_called_once_with(1)
+
+    def test_uptime_gate_present_in_source(self):
+        """Guard: the force-exit must remain gated on process uptime."""
+        import inspect
+        import main
+        src = inspect.getsource(main._watchdog)
+        assert "_watchdog_start_mono" in src, "process-start marker missing"
+        assert "_proc_uptime_min" in src, "uptime computation missing"
+        assert "_proc_uptime_min >= _exit_thresh" in src, "force-exit uptime gate missing"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # I21  paper_trading.seed_positions_from_db() — skip zero avg_price
 # ─────────────────────────────────────────────────────────────────────────────

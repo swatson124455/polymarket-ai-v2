@@ -253,6 +253,15 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
     _last_retention_cleanup: float = 0.0  # Session 51: P2-3
     _last_snapshot: float = 0.0  # Session 83: daily equity snapshots
     _last_partition_check: float = 0.0  # Session 83: monthly partition auto-creation
+    # 2026-06-02 (EB): watchdog start, for the E1 force-exit uptime grace below.
+    # bot_heartbeats.last_scan_at is shared + persisted across restarts, so a
+    # freshly-restarted process inherits the prior process's stale heartbeat.
+    # Without a grace window, E1 force-exits the new process before it can
+    # complete a scan to refresh the heartbeat → restart death-spiral
+    # (minutes_stale climbs monotonically across restarts). Gate the force-exit
+    # on watchdog uptime so a young process is never blamed for staleness that
+    # predates it. Watchdog start ≈ process boot (started during main() startup).
+    _watchdog_start_mono: float = time.monotonic()
 
     while True:
         await asyncio.sleep(WATCHDOG_INTERVAL_SECONDS)
@@ -336,6 +345,11 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
                         settings, "BOT_STALE_EXIT_THRESHOLD_MINUTES",
                         _stale_minutes * 2,
                     ))
+                    # E1 uptime grace (2026-06-02): a force-exit is only justified
+                    # once THIS process has had at least _exit_thresh minutes to
+                    # refresh the heartbeat and still failed. A younger process is
+                    # mid-warmup inheriting a stale heartbeat — killing it spirals.
+                    _proc_uptime_min = (time.monotonic() - _watchdog_start_mono) / 60.0
                     for row in _hb_result.fetchall():
                         _bot_n = row[0]
                         _setting_key = _bot_enabled_map.get(_bot_n)
@@ -353,7 +367,7 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
                         # graceful shutdown (which hangs on a wedged DB pool — the
                         # same pattern as the per-bot watchdog). systemd Restart=always
                         # gives a clean pool on restart.
-                        if float(row[1]) >= _exit_thresh:
+                        if float(row[1]) >= _exit_thresh and _proc_uptime_min >= _exit_thresh:
                             if _bot_n in bots and getattr(bots[_bot_n], "running", False):
                                 import sys as _sys
                                 logger.critical(
@@ -361,6 +375,7 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
                                     bot_name=_bot_n,
                                     minutes_stale=float(row[1]),
                                     exit_threshold_m=_exit_thresh,
+                                    proc_uptime_min=round(_proc_uptime_min, 1),
                                     detail="bot stale past exit threshold — "
                                            "force-exiting for systemd restart",
                                 )
