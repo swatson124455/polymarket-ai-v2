@@ -802,19 +802,21 @@ class BaseBot(ABC):
                 self._current_correlation_id = _corr_id
                 self._latency_tracker = _LatencyTracker()
                 self._latency_tracker.mark("scan_start")
-                # C2 FIX: Wrap scan_and_trade() with a timeout. A hung DB query (pool exhausted)
-                # would block the entire event loop indefinitely — blocking all bots and WS
-                # message processing. 60s covers the longest scan interval; anything longer = hang.
-                _scan_timeout = getattr(settings, "BOT_SCAN_TIMEOUT_SECONDS", 60)
+                # C2 FIX REMOVED (2026-06-02, EB — see EB_COORDINATION_BASE_BOT_811_CHERRYPICK.md).
+                # The outer asyncio.wait_for() was itself the primary pool-corruption source:
+                # on a slow scan it fired CancelledError into a mid-flight asyncpg op →
+                # protocol corruption ("cannot switch to state N") → poisoned pooled
+                # connection → SET statement_timeout then fails on reuse → subsequent queries
+                # hang with NO bound → scan_and_trade wedged >900s → per-bot scan-stall
+                # watchdog restart loop (observed live 2026-06-01/02). Every DB call in
+                # scan_and_trade() routes through _SemaphoreSession/get_raw_session, which sets
+                # the 30s server-side statement_timeout (database.py:203) — so the original
+                # event-loop-hang concern is bounded per-query without a corrupting client-side
+                # cancel. Any exception (incl. a clean 30s QueryCanceledError) propagates to the
+                # consecutive-failures handler below, exactly as other scan errors always have.
                 self._idle_event.clear()
                 try:
-                    await asyncio.wait_for(self.scan_and_trade(), timeout=_scan_timeout)
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "scan_and_trade() timed out after %ss — DB or external service may be hung",
-                        _scan_timeout,
-                        bot_name=self.bot_name,
-                    )
+                    await self.scan_and_trade()
                 finally:
                     self._idle_event.set()
                 self._latency_tracker.mark("scan_done")
@@ -846,10 +848,12 @@ class BaseBot(ABC):
                         if self._strategic_timer.should_burst():
                             logger.debug("%s: burst scan triggered", self.bot_name)
                             await asyncio.sleep(self._get_scan_interval() * 0.5)
-                            # C2 FIX: also apply timeout to burst scan
+                            # C2 FIX REMOVED (2026-06-02, EB) — same rationale as the main
+                            # scan above: no corrupting client-side cancel; the per-query 30s
+                            # server-side statement_timeout is the bound.
                             self._idle_event.clear()
                             try:
-                                await asyncio.wait_for(self.scan_and_trade(), timeout=_scan_timeout)
+                                await self.scan_and_trade()
                             finally:
                                 self._idle_event.set()
                     except Exception as e:
