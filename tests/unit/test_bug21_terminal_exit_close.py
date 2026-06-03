@@ -578,11 +578,11 @@ class TestTerminalResolutionEmit:
         assert cap.emitted == []                    # no RESOLUTION emitted
         assert "MKT:TOK" not in bot._open_positions  # but still closed
 
-    def test_row_read_failure_falls_back_to_simulation_mode(self, monkeypatch):
-        # If the SELECT returns no row, execution_mode falls back to the canonical
-        # SIMULATION_MODE idiom rather than guessing.
-        monkeypatch.setattr("config.settings.settings.SIMULATION_MODE", False,
-                            raising=False)
+    def test_row_read_failure_falls_back_to_paper_helper(self, monkeypatch):
+        # If the SELECT returns no row, execution_mode falls back to the sanctioned
+        # is_paper_trading_active() helper rather than guessing. Helper False = live.
+        monkeypatch.setattr("bots.mirror_bot.is_paper_trading_active",
+                            lambda: False)
         pos = {"size": 3.0, "entry_price": 0.40, "side": "YES",
                "category": "sports", "current_price": 1.0}
         bot, cap = self._bot(pos, None)             # SELECT returns no row

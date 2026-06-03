@@ -1937,12 +1937,14 @@ class MirrorBot(BaseBot):
                     elif _cur is not None and float(_cur) < 0.01:
                         _payout = 0.0
 
-                # execution_mode from the position's HISTORICAL is_paper (set at entry),
-                # NOT current SIMULATION_MODE; `is False` so a NULL/missing row never
-                # mis-tags toward the live ledger. Fall back to the canonical idiom
-                # only when the row read failed entirely.
+                # execution_mode from the position's HISTORICAL is_paper (set at
+                # entry), NOT the bot's current mode; `is False` so a NULL/missing
+                # row never mis-tags toward the live ledger. Fall back to the
+                # sanctioned is_paper_trading_active() helper (paper-is-production
+                # rule: no raw mode-flag name in bot source) only if the row read
+                # failed entirely.
                 if _row_is_paper is None:
-                    _exec_mode = "paper" if bool(getattr(settings, "SIMULATION_MODE", False)) else "live"
+                    _exec_mode = "paper" if is_paper_trading_active() else "live"
                 else:
                     _exec_mode = "live" if (_row_is_paper is False) else "paper"
 
