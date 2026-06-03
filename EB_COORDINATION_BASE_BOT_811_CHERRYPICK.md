@@ -10,6 +10,21 @@
 
 ---
 
+## ⚠ UPDATE 2026-06-03 (EB) — EB SHIPPED THESE TO THE SPLINTER (operator-directed, overriding "EB does not fix")
+
+The operator directed EB to stop deferring and fix EB's own splinter. The "EB does not fix / MB lands it" framing below applies to the **master** cherry-pick (all 14 bots); for the **EB splinter** (esports service only), EB shipped the fix chain:
+
+- `965666b` — **base_bot.py:811/:852** `wait_for` removed (scan-loop source). Release `20260602_201802`.
+- `ac45e64` — **B1: order_gateway.py:882** — passes `timeout` to `reserve_position`'s cooperative deadline instead of `asyncio.wait_for` (entry-path source). Release `20260603_105124`.
+- `8f8cec0` — **deploy.sh drain-and-settle** before esports restart (the first base_bot:811 deploy failed Gate 1 on cold-start pool exhaustion after a SIGKILLed wedged predecessor; drain-and-settle fixed it). Not part of the cherry-pick — splinter deploy mechanics only.
+- `daf938e` — **main.py E1 watchdog uptime grace** (separate fix; stopped the inherited-stale-heartbeat restart spiral). Verified: 0 spurious E1 kills.
+
+**Verified:** base_bot:811 removal eliminated the scan-loop cancellation corruption in isolation; E1 holds. **Found after base_bot:811 shipped:** the `cannot switch to state` corruption recurred from **B1 (entry path)** — confirming the audit's "fix B1 first" — so B1 was then shipped; **B1's effect is under live verification** (cannot-switch rate post-warmup). **Residual (not EB-fixable):** `ConnectionDoesNotExist` from the **shared PgBouncer saturation** (65-conn ceiling across 4 services) keeps stalling/cycling EB — cross-service, needs coordination, not an EB-owned wait_for.
+
+**Still the MB ask:** cherry-pick `965666b` + `ac45e64` to **master** for the other 13 bots (all-bots blast radius). Per-bot scan_and_trade coverage should be confirmed (EB's is the worst case — §3). Sequencing/coverage map below stands.
+
+---
+
 ## §1 — TL;DR
 
 `base_bot.py:811` (and its twin `:852`) wrap `await asyncio.wait_for(self.scan_and_trade(), timeout=300s)`. When it fires, `CancelledError` lands in a mid-flight asyncpg op → protocol-state corruption (`cannot switch to state N; another operation in progress`) → poisoned pooled connection → fleet-wide `set_statement_timeout_failed` cascade (S162 / RULE ZERO rule 6).
