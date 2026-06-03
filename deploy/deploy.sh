@@ -203,7 +203,18 @@ sudo systemctl daemon-reload
 # untouched.
 sudo systemctl enable polymarket-esports
 sudo systemctl stop polymarket-esports 2>/dev/null || true
-sleep 2  # Let PgBouncer reclaim slots
+# 2026-06-02 (EB): drain-and-settle before start. A contention-wedged predecessor's
+# graceful shutdown hangs -> SIGKILL, leaving its server-side connections for
+# PgBouncer to reclaim. The old 2s settle was too short: the new process's
+# connection-heavy cold-start then exhausted esports' local pool (10+2) before the
+# slots freed -> Type=simple process crash-looped -> health-gate caught it
+# "deactivating" -> rollback (the base_bot:811 deploy, this date). Confirm the unit
+# is fully inactive, then give PgBouncer a generous reclaim window before the burst.
+for _i in \$(seq 1 15); do
+    systemctl is-active --quiet polymarket-esports || break
+    sleep 1
+done
+sleep 25  # PgBouncer server-side slot reclaim before the cold-start connection burst
 sudo systemctl start polymarket-esports
 echo "  polymarket-esports started (splinter, override-driven, clean)"
 # Defensive cross-check: confirm other services did NOT restart as side effect.
