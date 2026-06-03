@@ -151,15 +151,15 @@ sudo chown -h polymarket:polymarket \
 # S144: Bypass PgBouncer for migrations — connect directly to postgres via unix socket.
 # Bots consume most of PgBouncer's 25 connections; migration only needs 1 for a few seconds.
 cd $NEW_RELEASE
-# S157: Extract DB password using Python urlparse (sed breaks on passwords containing @)
-_DB_PW=\$(python3 -c "from urllib.parse import urlparse; import os; print(urlparse(open('$SHARED/.env').read().split('DATABASE_URL=')[1].split('\\\\n')[0].strip()).password)" 2>/dev/null || grep '^DATABASE_URL=' $SHARED/.env | sed -n 's|.*://[^:]*:\([^@]*\)@.*|\1|p')
-if [ -z "\$_DB_PW" ]; then
-    echo "ABORT: Could not extract DB password from $SHARED/.env"
-    sudo rm -rf "$NEW_RELEASE"
-    exit 1
-fi
-MIGRATION_DB_URL="postgresql://polymarket:\${_DB_PW}@/polymarket?host=/var/run/postgresql"
-sudo -u polymarket DATABASE_URL="\$MIGRATION_DB_URL" $SHARED/venv/bin/python scripts/run_migrations.py || {
+# Migrations run as the postgres superuser (the table owner) so DDL on
+# postgres-owned tables works. TimescaleDB manages many of these tables, so
+# reassigning ownership to 'polymarket' is risky on the live cluster — instead we
+# elevate ONLY this deploy-time migration step; the runtime bots stay
+# least-privilege as 'polymarket'. Peer auth via the unix socket — no password.
+# (Before: ran as polymarket, which cannot ALTER postgres-owned tables, so
+# migration 078 blocked every deploy — 2026-06-02.)
+MIGRATION_DB_URL="postgresql://postgres@/polymarket?host=/var/run/postgresql"
+sudo -u postgres DATABASE_URL="\$MIGRATION_DB_URL" $SHARED/venv/bin/python scripts/run_migrations.py || {
     echo "MIGRATION FAILED — removing release $NEW_RELEASE"
     sudo rm -rf "$NEW_RELEASE"
     exit 1
