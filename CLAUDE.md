@@ -19,6 +19,20 @@ This is a live 15-bot Polymarket automated trading system. Real capital is at ri
 
 EB and WB sessions are SUBORDINATE. When in doubt, stop and ask.
 
+### EB SCOPE — NEVER TOUCH SHARED RUNTIME INFRASTRUCTURE (HARDCODED 2026-06-03)
+
+A distinction that MUST NOT be blurred:
+- **Shared-MODULE CODE EB needs** (`base_engine/**`, `base_bot.py`, `order_gateway.py`, `main.py`, etc.): EB fixes these on `eb/main` and deploys to the **esports splinter ONLY** (runtime-isolated from MB/WB/ingestion; master cherry-picks are PROPOSED, never auto-landed). This IS in EB's lane (RULE ONE-A refinement).
+- **Shared RUNTIME INFRASTRUCTURE** — the live PgBouncer (`pgbouncer.ini`, `pool_mode`, `default_pool_size`, reload/restart), the shared DB connection pool/budget, Postgres config (`max_connections`), `/opt/pa2-shared/.env`, any other service's config/runtime: ONE instance serves all 4 services, so touching it changes MB's live runtime. **EB NEVER touches this. Ever.**
+
+`.env.esports` is EB-owned, but only WITHIN the existing shared budget — size esports' pool so the 4-service total stays under the current PgBouncer `default_pool_size`; NEVER size it such that the shared limit must be raised.
+
+When EB hits a shared-resource limit (connection budget, pooler/Postgres capacity): **diagnose it, write a PROPOSAL (numbers, file:line, rollback) for operator/MB, and HAND IT OFF — do not execute.** Use the EB-only angle (right-size within the existing budget) if one exists; if the fix REQUIRES altering a shared limit, it is not EB's to do.
+
+A broad authorization ("use what you need", "do what it takes", "1-time") does NOT implicitly cover shared runtime infra. Touching shared runtime that affects MB requires explicit, specific, per-action sign-off that NAMES the resource — and even then, prefer to hand execution to MB/operator. **Unsure if it's shared runtime infra? Assume it is. Don't touch it.**
+
+**Precedent (2026-06-03):** EB raised PgBouncer `default_pool_size` 60→80 under a generic "1-time use what you need" authorization to unblock esports. It touched MB's shared pooler, did NOT fix EB (session-mode idle re-saturation at the new ceiling), and was reverted. The correct fix was EB-only: right-size `.env.esports` within the existing 60 budget. Root mistake: conflating "shared-module code fix" license with "shared runtime infra." See `feedback_eb_no_shared_runtime_infra.md`.
+
 ## Prime Directive
 
 Working code is sacred. Fix only what is broken. Fix it at the root. Prove it before and after. If you cannot explain exactly why a line needs to change and exactly what breaks if you don't change it, do not change it.
