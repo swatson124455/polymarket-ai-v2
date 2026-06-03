@@ -902,6 +902,8 @@ class PaperTradingEngine:
     ):
         """S115: Record shadow fill row for retroactive P&L analysis."""
         if not self.db or not hasattr(self.db, "insert_shadow_fill"):
+            # S238 P0-3: label the other candidate drop point (was a silent return).
+            logger.warning("shadow_fill_skipped_no_db", market_id=market_id, has_db=bool(self.db))
             return
         try:
             _edge_at_signal = (confidence - signal_price) if confidence else None

@@ -5928,7 +5928,9 @@ class Database:
                 await session.commit()
                 return row[0] if row else None
         except Exception as e:
-            logger.debug("shadow_fill insert failed for %s: %s", market_id, e)
+            # S238 P0-3: was debug (suppressed in prod) — shadow_fills went dark 05-24
+            # via the silo refactor and this swallowed the cause silently. Surface it.
+            logger.warning("shadow_fill_db_insert_failed", market_id=market_id, error=str(e))
             return None
 
     async def backfill_shadow_resolution(self) -> int:
