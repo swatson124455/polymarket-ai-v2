@@ -325,7 +325,35 @@ async def run_resolution_backfill(
             """), {"lim": _remaining})
             other_ids = [r[0] for r in ot_result.fetchall() if r[0] and r[0] not in _paper_set]
 
-        market_ids = paper_market_ids + other_ids
+        # Positions-driven priority (root fix, 2026-06-02): any market where a bot
+        # holds an OPEN LIVE position MUST be resolution-checked every cycle,
+        # regardless of end_date. Such markets aren't reliably in traded_markets and
+        # get starved by the end_date NULLS-LAST ordering in 2a/2b — which left
+        # resolved-on-chain positions stuck (MirrorBot circuit-breaker loop). Prepend
+        # them so they are never starved; the per-market loop CLOB-resolves them.
+        position_market_ids: list = []
+        try:
+            _pos_res = await session.execute(text("""
+                SELECT DISTINCT p.market_id
+                FROM positions p
+                LEFT JOIN markets m
+                  ON (CAST(m.id AS TEXT) = p.market_id OR m.condition_id = p.market_id)
+                WHERE p.status = 'open' AND p.is_paper = false AND p.market_id IS NOT NULL
+                  AND (m.id IS NULL
+                       OR ((m.resolution IS NULL OR m.resolution NOT IN ('YES', 'NO'))
+                           AND m.resolved IS NOT TRUE))
+            """))
+            position_market_ids = [r[0] for r in _pos_res.fetchall() if r[0]]
+        except Exception as _pos_err:
+            logger.debug("Resolution backfill: positions-driven discovery failed (non-critical): %s", _pos_err)
+
+        # Prepend open-position markets, dedup preserving order.
+        _seen_ids: set = set()
+        market_ids = []
+        for _mid in position_market_ids + paper_market_ids + other_ids:
+            if _mid and _mid not in _seen_ids:
+                _seen_ids.add(_mid)
+                market_ids.append(_mid)
 
     if not market_ids:
         if log_progress:
