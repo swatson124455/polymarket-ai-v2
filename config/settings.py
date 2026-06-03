@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     DB_APPLICATION_NAME: str = os.getenv("DB_APPLICATION_NAME", "")  # S152: per-service name for pg_stat_activity monitoring
     # Ingestion process separation — disable scheduler in bot services
     INGESTION_ENABLED: bool = os.getenv("INGESTION_ENABLED", "true").lower() in ("true", "1", "yes")  # S152: false in bot .env when ingestion runs as separate service
+    # Elite-direction batch refresh loop — set false on services whose bots don't consume elite_direction (esports). Default true keeps mirror/ensemble/ingestion unchanged.
+    ELITE_BATCH_ENABLED: bool = os.getenv("ELITE_BATCH_ENABLED", "true").lower() in ("true", "1", "yes")  # 2026-06-03: false on esports service — no esports bot reads elite_direction; loop only burns esports' DB pool
     # Ingestion scheduler timeouts
     RUN_INGESTION_MAX_SECONDS: float = float(os.getenv("RUN_INGESTION_MAX_SECONDS", "900"))  # S152: master cycle timeout (was 2400)
     INGESTION_TIMEOUT_SECONDS: float = float(os.getenv("INGESTION_TIMEOUT_SECONDS", "300"))  # S152: ingest_everything timeout (was 600)

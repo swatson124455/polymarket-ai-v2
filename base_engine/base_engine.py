@@ -1637,10 +1637,16 @@ class BaseEngine:
 
         # S161: Elite direction batch refresh — independent of feature precompute.
         # Only needs DB, not PE models. Runs every 60s after 180s startup delay.
-        if self.prediction_engine:
+        # 2026-06-03 EB-gate: ELITE_BATCH_ENABLED=false on the esports service. No esports
+        # bot consumes elite_direction (EsportsBot/V2 use their own models), so on that service
+        # the loop only re-queries thousands of elite-trader rows every 60s and burns the small
+        # esports DB pool. Default true → mirror/ensemble/ingestion services unaffected.
+        if self.prediction_engine and getattr(settings, "ELITE_BATCH_ENABLED", True):
             self._elite_batch_task = asyncio.create_task(self._elite_batch_loop())
             self._elite_batch_task.add_done_callback(lambda t: self._on_bg_task_done(t, "elite_batch"))
             logger.info("Elite direction batch refresh loop started")
+        elif self.prediction_engine:
+            logger.info("Elite direction batch refresh loop disabled (ELITE_BATCH_ENABLED=false)")
 
         # Observability SLI loop — always start (lightweight, <1ms per check)
         self._sli_task = asyncio.create_task(self._observability_sli_loop())
