@@ -5761,6 +5761,37 @@ class Database:
                         _params,
                     )
                 row = result.fetchone()
+                if row is None and event_type == "ENTRY" and idem_key:
+                    # S238: ENTRY INSERT ... WHERE NOT EXISTS wrote zero rows. The prior
+                    # code collapsed this into a silent `return None`, conflating a benign
+                    # idempotent skip (an ENTRY with this exact minute-bucketed key already
+                    # exists — the S141 concurrent/retry dedup) with a TRUE non-write (no
+                    # such row → the position stands with no matching ENTRY in the P&L
+                    # authority = a silent phantom; S238 forensics: position 208926).
+                    # Disambiguate so the caller compensates only on a real failure:
+                    #   existing row → benign dedup → return its sequence_num (non-None)
+                    #   no row       → genuine non-write → loud ERROR, return None
+                    _dupe = await session.execute(
+                        _sa_text(
+                            "SELECT sequence_num FROM trade_events "
+                            "WHERE idempotency_key = :k LIMIT 1"
+                        ),
+                        {"k": idem_key},
+                    )
+                    _dupe_row = _dupe.fetchone()
+                    await session.commit()
+                    if _dupe_row is not None:
+                        logger.debug(
+                            "trade_event_entry_idempotent_skip",
+                            market_id=market_id, bot_name=bot_name, side=side,
+                        )
+                        return _dupe_row[0]
+                    logger.error(
+                        "trade_event_entry_wrote_zero_rows",
+                        market_id=market_id, bot_name=bot_name, side=side,
+                        idempotency_key=idem_key,
+                    )
+                    return None
                 await session.commit()
                 return row[0] if row else None
         except Exception as e:
