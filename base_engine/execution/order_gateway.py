@@ -878,17 +878,19 @@ class OrderGateway:
         if not _is_sell and bot_name == "WeatherBot" and getattr(settings, "WEATHER_SKIP_COORDINATOR_BUY", True):
             _skip_coord = True
         if self.trade_coordinator is not None and not _skip_coord:
-            try:
-                _reserved = await asyncio.wait_for(
-                    self.trade_coordinator.reserve_position(market_id, side, token_id, reserving_bot_id=bot_name),
-                    timeout=_coord_timeout,
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "Order blocked: trade coordinator reserve timed out after %.0fs",
-                    _coord_timeout, market_id=market_id, side=side,
-                )
-                return {"success": False, "error": "Trade coordinator reserve timed out"}
+            # 2026-06-03 (EB): pass the timeout to reserve_position's own cooperative
+            # deadline instead of wrapping it in asyncio.wait_for(). The wait_for cancel
+            # fired CancelledError into the mid-flight asyncpg INSERT/advisory op,
+            # corrupting the pooled connection ("cannot switch to state N") — the same
+            # class as base_bot:811, and a confirmed live source (159 cancellation
+            # corruptions/4h after base_bot:811 was removed). reserve_position already
+            # honors `timeout` via an internal deadline/retry loop (returns False on
+            # expiry, never raises TimeoutError) and its queries are server-side
+            # statement_timeout-bounded, so no client-side cancel reaches asyncpg.
+            # See EB_COORDINATION_BASE_BOT_811_CHERRYPICK.md §4 (B1).
+            _reserved = await self.trade_coordinator.reserve_position(
+                market_id, side, token_id, reserving_bot_id=bot_name, timeout=_coord_timeout,
+            )
             if not _reserved:
                 logger.warning("Order blocked: position already taken or could not reserve", market_id=market_id, side=side)
                 return {"success": False, "error": "Position already taken or could not reserve"}
