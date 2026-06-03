@@ -1031,15 +1031,39 @@ class PaperTradingEngine:
                         # Check paper_trade result — if it raised, re-raise for retry logic
                         if isinstance(_results[0], BaseException):
                             raise _results[0]
+                        _event_failed = False
                         if isinstance(_results[1], BaseException):
                             logger.warning("trade_event_entry_emit_failed", error=str(_results[1]), market_id=market_id)
+                            _event_failed = True
                         elif _results[1] is None:
-                            # S193: post auto-heal, None here means the FK retry failed
-                            # or the INSERT itself returned zero rows. Surface so residual
-                            # silent-drop cases are actionable, not audit-only.
+                            # S238: insert_trade_event(ENTRY) now returns the existing
+                            # sequence_num on a benign idempotent skip (S238 fix C), so
+                            # None here means the ENTRY genuinely did NOT land — the
+                            # position would stand with no matching ENTRY in the P&L
+                            # authority (trade_events) = a silent phantom (S238 forensics:
+                            # position 208926, chased by the reconciler for a full day).
                             logger.warning(
                                 "trade_event_entry_returned_none",
                                 market_id=market_id, bot_name=bot_name, side=db_side,
+                            )
+                            _event_failed = True
+                        if _event_failed:
+                            if _attempt < 2:
+                                await asyncio.sleep(0.5 * (_attempt + 1))
+                                logger.warning(
+                                    "trade_event_entry_retry",
+                                    attempt=_attempt + 1, market_id=market_id,
+                                    bot_name=bot_name, side=db_side,
+                                )
+                                continue  # re-run gather; paper_trade UPSERT + ENTRY are idempotent
+                            # Retries exhausted: the position will stand without an ENTRY
+                            # event. Do NOT break silently — emit a loud, durable, queryable
+                            # error so the divergence is owned at creation, not merely
+                            # chased by the periodic reconciler.
+                            logger.error(
+                                "trade_event_entry_phantom_unrecovered",
+                                market_id=market_id, bot_name=bot_name, side=db_side,
+                                token_id=token_id, order_id=trade_id,
                             )
                     else:
                         await _paper_coro
