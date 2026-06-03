@@ -644,3 +644,121 @@ class TestBotPnlModeFlag:
             assert "execution_mode" not in sql, (
                 f"mode='all' must not filter execution_mode; found in: {sql[:200]}"
             )
+
+
+# ── Phase-1: --clob-check DB-vs-CLOB resolution cross-reference ──────────────
+
+def _mock_session_returning(rows):
+    """Async-context-free mock session whose execute().fetchall() yields `rows`.
+    The cross-check helper receives an already-entered session, so no __aenter__
+    is needed here."""
+    result = MagicMock()
+    result.fetchall.return_value = rows
+
+    async def _execute(stmt, *args, **kwargs):
+        return result
+
+    sess = MagicMock()
+    sess.execute = _execute
+    return sess
+
+
+class TestBotPnlClobCheck:
+    """Phase-1 opt-in --clob-check. Two regressions this catches:
+    1. Default-behavior regression — the cross-check must NOT run (no network)
+       unless --clob-check is set; default bot_pnl stays DB-only/offline.
+    2. Mismatch-detection regression — DB-vs-CLOB disagreement must surface."""
+
+    # ── CLI / signature ──────────────────────────────────────────────────────
+
+    def test_clob_check_default_false(self):
+        a = bot_pnl._parse_args(["MirrorBot"])
+        assert a.clob_check is False
+
+    def test_clob_check_flag_parsed(self):
+        a = bot_pnl._parse_args(["MirrorBot", "--clob-check"])
+        assert a.clob_check is True
+
+    def test_clob_check_combines_with_since_and_mode(self):
+        a = bot_pnl._parse_args(
+            ["MirrorBot", "--since", "20260414_132211", "--mode", "live", "--clob-check"]
+        )
+        assert a.clob_check is True and a.mode == "live"
+
+    def test_signature_has_clob_check_default_false(self):
+        sig = inspect.signature(bot_pnl.bot_pnl)
+        assert "clob_check" in sig.parameters
+        # MUST default False — otherwise default runs make network calls.
+        assert sig.parameters["clob_check"].default is False
+
+    # ── default OFF: no cross-check unless the flag is set ────────────────────
+
+    @pytest.mark.asyncio
+    async def test_crosscheck_not_run_by_default(self):
+        mock_db, _ = _make_mock_db()
+        with patch("scripts.bot_pnl.Database", return_value=mock_db), \
+             patch("scripts.bot_pnl._clob_resolution_crosscheck",
+                   new=AsyncMock()) as mock_cc:
+            await bot_pnl.bot_pnl("MirrorBot")
+        mock_cc.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_crosscheck_runs_when_flag_set(self):
+        mock_db, _ = _make_mock_db()
+        with patch("scripts.bot_pnl.Database", return_value=mock_db), \
+             patch("scripts.bot_pnl._clob_resolution_crosscheck",
+                   new=AsyncMock()) as mock_cc:
+            await bot_pnl.bot_pnl("MirrorBot", clob_check=True)
+        mock_cc.assert_awaited_once()
+
+    # ── cross-check behavior ─────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_reports_match_and_mismatch(self, capsys):
+        rows = [
+            ("0xMATCH", "0xMATCHcond", "YES"),  # CLOB says YES → match
+            ("0xMISS", "0xMISScond", "YES"),    # CLOB says NO  → mismatch
+        ]
+        sess = _mock_session_returning(rows)
+
+        async def _fake_fetch(cond_id):
+            return {"cond": cond_id}  # non-empty → format path runs
+
+        def _fake_format(clob, cond_id):
+            return {"resolution": "YES" if cond_id == "0xMATCHcond" else "NO"}
+
+        with patch("base_engine.data.resolution_backfill._fetch_market_by_condition_id",
+                   new=_fake_fetch), \
+             patch("base_engine.data.resolution_backfill._clob_to_market_format",
+                   new=_fake_format):
+            await bot_pnl._clob_resolution_crosscheck(sess, ["MirrorBot"], None, "all")
+
+        out = capsys.readouterr().out
+        assert "RESOLUTION CROSS-CHECK (DB vs CLOB)" in out
+        assert "0xMISS" in out and "MISMATCH" in out
+        assert "match=1" in out and "MISMATCH=1" in out
+        # The matching market must NOT be printed as a mismatch line.
+        assert "0xMATCH.. DB=" not in out
+
+    @pytest.mark.asyncio
+    async def test_failsoft_on_clob_fetch_error(self, capsys):
+        rows = [("0xX", "0xXcond", "YES")]
+        sess = _mock_session_returning(rows)
+
+        async def _boom(cond_id):
+            raise RuntimeError("clob down")
+
+        with patch("base_engine.data.resolution_backfill._fetch_market_by_condition_id",
+                   new=_boom):
+            # Must not raise — fail-soft.
+            await bot_pnl._clob_resolution_crosscheck(sess, ["MirrorBot"], None, "all")
+
+        out = capsys.readouterr().out
+        assert "clob_unavailable=1" in out
+
+    @pytest.mark.asyncio
+    async def test_no_resolved_markets_in_scope(self, capsys):
+        sess = _mock_session_returning([])
+        await bot_pnl._clob_resolution_crosscheck(sess, ["MirrorBot"], None, "all")
+        out = capsys.readouterr().out
+        assert "no resolved markets in scope" in out

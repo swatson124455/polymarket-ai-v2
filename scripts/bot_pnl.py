@@ -149,7 +149,7 @@ _WINDOWED_EVENT_COUNT_SQL = """
 
 
 async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
-                  clean: bool = False, mode: str = 'all'):
+                  clean: bool = False, mode: str = 'all', clob_check: bool = False):
     db = Database()
     await db.init()
 
@@ -825,7 +825,113 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
                     wr = (float(tr[2]) / float(tr[1]) * 100) if tr[1] > 0 else 0
                     print(f"  {tr[0]:<11} {tr[1]:>6} {tr[2]:>6} {wr:>6.1f}% ${float(tr[3]):>+11.2f}")
 
+    # 6. (Phase-1, opt-in --clob-check) DB-vs-CLOB resolution cross-reference.
+    #    Gated behind the flag so default runs stay DB-only / offline / fast and
+    #    byte-identical to pre-Phase-1 behavior. Own session, isolated from the
+    #    report above. On-chain/CLOB is canonical-by-construction (see
+    #    LIVE_ONCHAIN_RECONCILIATION_2026-06-03.md §8) — a mismatch flags ledger drift.
+    if clob_check:
+        async with db.get_session() as cs:
+            await _clob_resolution_crosscheck(cs, bot_family, since, mode)
+
     await db.close()
+
+
+# Cap on markets cross-checked per run (each is one CLOB HTTP fetch). Operator
+# narrows scope with --since; capping is announced, never silent (no-silent-caps).
+_CLOB_CHECK_MARKET_CAP = 200
+
+
+async def _clob_resolution_crosscheck(session, bot_family, since, mode,
+                                      cap: int = _CLOB_CHECK_MARKET_CAP):
+    """Phase-1 (opt-in --clob-check): cross-reference each resolved market's DB
+    resolution against the CLOB/on-chain resolution and flag mismatches.
+
+    On-chain/CLOB is canonical-by-construction (LIVE_ONCHAIN_RECONCILIATION_
+    2026-06-03.md §8); a DB-vs-CLOB disagreement means the DB ledger's resolution
+    drifted from reality, so any realized P&L derived from it is suspect.
+
+    Read-only and fail-soft: a CLOB fetch failure annotates the market
+    CLOB=unavailable and never raises. Reuses the existing CLOB fetch
+    (_fetch_market_by_condition_id + _clob_to_market_format) already used by
+    reconcile_live_onchain.py — no new client. In-process cache per condition_id;
+    capped at `cap` markets with a logged notice if more exist."""
+    from sqlalchemy import text
+    from base_engine.data.resolution_backfill import (
+        _fetch_market_by_condition_id, _clob_to_market_format,
+    )
+
+    _since_clause = "AND te.event_time >= :since_ts" if since is not None else ""
+    _since_params = {"since_ts": since} if since is not None else {}
+    _mode_clause = {
+        "paper": "AND te.execution_mode = 'paper'",
+        "live": "AND te.execution_mode = 'live'",
+        "all": "",
+    }.get(mode, "")
+
+    # Resolved markets this bot traded, in scope. condition_id is the CLOB API key;
+    # fall back to market_id when it's already a 0x condition id.
+    rows = (await session.execute(text(f"""
+        SELECT DISTINCT te.market_id,
+               COALESCE(m.condition_id, te.market_id) AS condition_id,
+               m.resolution
+        FROM trade_events te
+        JOIN markets m ON (CAST(m.id AS TEXT) = te.market_id
+                           OR m.condition_id = te.market_id)
+        WHERE te.bot_name = ANY(:bot_family)
+          AND m.resolved = TRUE
+          AND m.resolution IN ('YES', 'NO')
+          {_since_clause}
+          {_mode_clause}
+        ORDER BY te.market_id
+        LIMIT :cap_plus
+    """), {"bot_family": bot_family, "cap_plus": cap + 1, **_since_params})).fetchall()
+
+    print("\nRESOLUTION CROSS-CHECK (DB vs CLOB):")
+    if not rows:
+        print("  (no resolved markets in scope)")
+        return
+    if len(rows) > cap:
+        rows = rows[:cap]
+        print(f"  NOTE: capped at {cap} markets; more resolved markets exist in "
+              f"scope — re-run with a tighter --since to cover the rest.")
+
+    _cache: dict = {}
+    matches = mismatches = unavailable = 0
+    mismatch_lines = []
+    for mid, cond_id, db_res in rows:
+        db_res_u = str(db_res).upper() if db_res else None
+        if cond_id in _cache:
+            clob_res = _cache[cond_id]
+        else:
+            clob_res = None
+            try:
+                clob_mkt = await _fetch_market_by_condition_id(cond_id)
+                if clob_mkt:
+                    _fmt = _clob_to_market_format(clob_mkt, cond_id) or {}
+                    _r = _fmt.get("resolution")
+                    clob_res = str(_r).upper() if _r else None
+            except Exception:
+                clob_res = None
+            _cache[cond_id] = clob_res
+
+        if clob_res is None:
+            unavailable += 1
+        elif clob_res == db_res_u:
+            matches += 1
+        else:
+            mismatches += 1
+            mismatch_lines.append(
+                f"  {str(mid)[:14]}.. DB={db_res_u} CLOB={clob_res}  ⚠ MISMATCH")
+
+    for line in mismatch_lines:
+        print(line)
+    print(f"  checked={matches + mismatches + unavailable}  match={matches}  "
+          f"MISMATCH={mismatches}  clob_unavailable={unavailable}")
+    if mismatches:
+        print("  ⚠ DB resolution disagrees with CLOB on the markets above — the DB "
+              "ledger has drifted from on-chain truth; do not trust their realized "
+              "P&L until reconciled.")
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -849,10 +955,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "(positions.is_paper=TRUE, trade_events.execution_mode='paper'). "
                         "'live': real-capital trades only (is_paper=FALSE, execution_mode='live'). "
                         "'all': no filter (default — preserves pre-WI-4 behavior).")
+    p.add_argument("--clob-check", action="store_true", default=False,
+                   help="Phase-1: cross-reference each resolved market's DB resolution "
+                        "against the CLOB/on-chain resolution and flag mismatches. OFF by "
+                        "default — default runs stay DB-only/offline. Makes one CLOB HTTP "
+                        "fetch per resolved market in scope (cached, capped, fail-soft); "
+                        "narrow scope with --since.")
     return p.parse_args(argv)
 
 
 if __name__ == "__main__":
     args = _parse_args()
     asyncio.run(bot_pnl(args.bot_name, args.hours, since=args.since, clean=args.clean,
-                        mode=args.mode))
+                        mode=args.mode, clob_check=args.clob_check))
