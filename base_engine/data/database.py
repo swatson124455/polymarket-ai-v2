@@ -3652,11 +3652,14 @@ class Database:
                     "       (SELECT te_g.event_data->>'game' FROM trade_events te_g "
                     "        WHERE te_g.market_id = e.market_id AND te_g.bot_name = e.bot_name "
                     "        AND te_g.event_type = 'ENTRY' AND te_g.event_data->>'game' IS NOT NULL "
-                    "        LIMIT 1) AS entry_game "
+                    "        LIMIT 1) AS entry_game, "
+                    "       e.has_live_execution "
                     "FROM ("
                     "  SELECT market_id, bot_name, side, "
                     "         SUM(COALESCE(size, 0)) AS total_entry_size, "
-                    "         SUM(COALESCE(price, 0) * COALESCE(size, 0)) AS weighted_price "
+                    "         SUM(COALESCE(price, 0) * COALESCE(size, 0)) AS weighted_price, "
+                    "         MAX(CASE WHEN execution_mode = 'live' THEN 1 ELSE 0 END) "
+                    "             AS has_live_execution "
                     "  FROM trade_events "
                     "  WHERE event_type = 'ENTRY' AND side IN ('YES', 'NO') "
                     "  GROUP BY market_id, bot_name, side"
@@ -3704,8 +3707,15 @@ class Database:
                     _market_resolution = str(row[8]).upper() if row[8] else ""
                     _resolution_price = 1.0 if _market_resolution == str(row[2]).upper() else 0.0
                     _res_event_data = {"game": row[9]} if row[9] else None
+                    # Phase-1 live-P&L: tag RESOLUTION from the historical ENTRY mode.
+                    # row[10] = has_live_execution (1 if any ENTRY in the group was live).
+                    # Phase 4b is paper_trades-driven so this is rarely live in practice,
+                    # but tagging from the entry mode keeps it correct if it ever fires
+                    # on a live group (mode follows entry time, not current SIMULATION_MODE).
+                    _exec_mode = "live" if row[10] else "paper"
                     await self.insert_trade_event(
                         event_type="RESOLUTION",
+                        execution_mode=_exec_mode,
                         bot_name=row[1],
                         market_id=row[0],
                         side=row[2],
@@ -3760,7 +3770,8 @@ class Database:
                     "        AND te_g.event_type = 'ENTRY' AND te_g.event_data->>'game' IS NOT NULL "
                     "        LIMIT 1) AS entry_game, "
                     "       COALESCE(te_entry_agg.total_entry, p.size) AS te_total_entry, "
-                    "       COALESCE(te_exit_agg.total_exit, 0) AS te_total_exit "
+                    "       COALESCE(te_exit_agg.total_exit, 0) AS te_total_exit, "
+                    "       p.is_paper "
                     "FROM positions p "
                     "JOIN markets m ON (p.market_id = CAST(m.id AS TEXT) "
                     "                   OR p.market_id = m.condition_id) "
@@ -3798,7 +3809,7 @@ class Database:
                 for row in _pos_resolved.fetchall():
                     try:
                         (_mid, _bot, _side, _size, _entry, _res, _res_at,
-                         _exit_pnl, _entry_game, _te_entry, _te_exit) = row
+                         _exit_pnl, _entry_game, _te_entry, _te_exit, _is_paper) = row
                         _side_upper = str(_side).upper() if _side else ""
                         _res_upper = str(_res).upper()
                         _payout = 1.0 if _side_upper == _res_upper else 0.0
@@ -3816,8 +3827,16 @@ class Database:
                         _net_pnl = _gross_pnl - _fee
                         _remaining_pnl = _net_pnl - float(_exit_pnl)
                         _alt_event_data = {"game": _entry_game} if _entry_game else None
+                        # Phase-1 live-P&L: derive execution_mode from the position's
+                        # historical is_paper (set at entry), NOT current SIMULATION_MODE —
+                        # a paper-entered position resolving after a live-flip must stay
+                        # 'paper'. `is False` mirrors the markets-row idiom (mirror_bot.py
+                        # ~:1548): tag 'live' ONLY when is_paper is explicitly False, so a
+                        # NULL / MagicMock value never mis-tags toward the live ledger.
+                        _alt_exec_mode = "live" if (_is_paper is False) else "paper"
                         await self.insert_trade_event(
                             event_type="RESOLUTION",
+                            execution_mode=_alt_exec_mode,
                             bot_name=_bot,
                             market_id=_mid,
                             side=_side_upper,
