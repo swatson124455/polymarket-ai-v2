@@ -1859,9 +1859,16 @@ class MirrorBot(BaseBot):
         tracking, decrement daily + category exposure under the exposure lock
         (freeing the slot exactly as _reap_resolved_positions does for paper),
         and mark the DB row status='closed' with the same 3-retry pattern the
-        normal exit path uses. Books NO P&L row — resolution P&L is captured
-        independently by the resolution backfill path, the same contract the
-        normal close path relies on.
+        normal exit path uses.
+
+        Phase-1 live-P&L (2026-06-03): emits a P&L-bearing RESOLUTION trade_event
+        tagged with the position's HISTORICAL execution_mode (positions.is_paper),
+        so the close is readable in the ledger instead of vanishing silently. The
+        emit is idempotent + size-budget-guarded vs the resolution backfill
+        (one RESOLUTION per bot+market), and it covers DELISTED markets the
+        backfill cannot (backfill gates on markets.resolution). When the outcome
+        or cost basis is unknown (delisted / cleared entry_cost), it books
+        realized_pnl=NULL with a reconciliation flag rather than a wrong number.
 
         Resolved WINNERS (redeemable=True) cannot be auto-redeemed — the CTF
         redemption ABI wall is documented in PHASE_N_REDEMPTION_AUTOMATION.md — so
@@ -1887,6 +1894,88 @@ class MirrorBot(BaseBot):
                     self._category_exposure[_pos_cat] = max(
                         0.0, self._category_exposure.get(_pos_cat, 0.0) - _cost
                     )
+
+        # 2.5 (Phase-1 live-P&L): emit a P&L-bearing RESOLUTION trade_event so this
+        #     terminal close is readable in the ledger instead of vanishing silently.
+        #     Resolved markets are also picked up by the resolution backfill
+        #     (Phase 4b-alt), but that path gates on markets.resolution — DELISTED
+        #     markets (active=FALSE, no resolution) get a RESOLUTION event ONLY here.
+        #     The emit can never double-count: insert_trade_event allows one
+        #     RESOLUTION per (bot, market) (WHERE NOT EXISTS, side-agnostic) and is
+        #     size-budget guarded, so whichever of WI-6 / backfill fires first wins
+        #     and the other no-ops. Best-effort: failure logs and never blocks close.
+        try:
+            _side_u = str(pos.get("side", "")).upper()
+            if _side_u in ("YES", "NO"):  # never book on corrupted SELL rows (Phase-2)
+                from sqlalchemy import text as _res_sql
+                _resolution = None
+                _row_is_paper = None
+                async with self.base_engine.db.get_session() as _rs:
+                    _rr = await _rs.execute(_res_sql(
+                        "SELECT m.resolution, p.is_paper "
+                        "FROM positions p "
+                        "LEFT JOIN markets m ON (CAST(m.id AS TEXT) = p.market_id "
+                        "                        OR m.condition_id = p.market_id) "
+                        "WHERE p.market_id = :mid AND p.token_id = :tid "
+                        "  AND COALESCE(p.source_bot, p.bot_id) = 'MirrorBot' "
+                        "ORDER BY (p.status = 'open') DESC "
+                        "LIMIT 1"
+                    ), {"mid": market_id, "tid": token_id})
+                    _meta = _rr.fetchone()
+                    if _meta is not None:
+                        _resolution, _row_is_paper = _meta[0], _meta[1]
+
+                # Payout: authoritative from markets.resolution; else the price-pinned
+                # signal (WI-15: on-chain resolved but DB resolution not yet written).
+                _payout = None
+                if _resolution and str(_resolution).upper() in ("YES", "NO"):
+                    _payout = 1.0 if str(_resolution).upper() == _side_u else 0.0
+                else:
+                    _cur = pos.get("current_price")
+                    if _cur is not None and float(_cur) > 0.99:
+                        _payout = 1.0
+                    elif _cur is not None and float(_cur) < 0.01:
+                        _payout = 0.0
+
+                # execution_mode from the position's HISTORICAL is_paper (set at entry),
+                # NOT current SIMULATION_MODE; `is False` so a NULL/missing row never
+                # mis-tags toward the live ledger. Fall back to the canonical idiom
+                # only when the row read failed entirely.
+                if _row_is_paper is None:
+                    _exec_mode = "paper" if bool(getattr(settings, "SIMULATION_MODE", False)) else "live"
+                else:
+                    _exec_mode = "live" if (_row_is_paper is False) else "paper"
+
+                # realized_pnl on the REMAINING size (_size = exit_size; prior partial
+                # exits are booked in their own EXIT events) when outcome AND cost
+                # basis are known — mirrors the Phase 4b-alt formula (database.py
+                # ~:3814). Else NULL + reconciliation flag (cleared entry_cost or
+                # delisted-unknown outcome).
+                _res_event_data = {"reason": reason}
+                if _payout is not None and _entry_price > 0:
+                    _fee_rate = float(getattr(settings, "TAKER_FEE_BPS", 150)) / 10000.0
+                    _realized = round((_payout - _entry_price) * _size
+                                      - _payout * _size * _fee_rate, 4)
+                else:
+                    _realized = None
+                    _res_event_data["reconciliation"] = "pending"
+
+                await self.base_engine.db.insert_trade_event(
+                    event_type="RESOLUTION",
+                    execution_mode=_exec_mode,
+                    bot_name="MirrorBot",
+                    market_id=market_id,
+                    side=_side_u,
+                    size=_size,
+                    price=(_payout if _payout is not None else 0.0),
+                    realized_pnl=_realized,
+                    token_id=token_id,
+                    correlation_id=f"resolution:{market_id}",
+                    event_data=_res_event_data,
+                )
+        except Exception as _res_err:
+            logger.warning("mirror_terminal_resolution_emit_failed market=%s: %s",
+                           market_id[:20], _res_err)
 
         # 3. Mark the DB row closed (3-retry, mirrors the normal exit close).
         from sqlalchemy import text as _sql

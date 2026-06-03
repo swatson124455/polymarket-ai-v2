@@ -27,9 +27,10 @@ Fix (bots/mirror_bot.py, MirrorBot only):
     frees daily + category exposure under the lock, marks the DB row
     status='closed' (3-retry), and logs mirror_redemption_pending (resolved
     WINNER — auto-redemption is ABI-walled per PHASE_N_REDEMPTION_AUTOMATION.md)
-    or mirror_terminal_position_closed (loser/delisted). Books NO P&L — the
-    resolution backfill path owns resolution P&L (same contract as the normal
-    close path).
+    or mirror_terminal_position_closed (loser/delisted). Phase-1 (2026-06-03)
+    additionally emits a P&L-bearing RESOLUTION trade_event tagged with the
+    position's HISTORICAL execution_mode (idempotent + size-budget-guarded vs the
+    resolution backfill); see TestTerminalResolutionEmit.
 
 Cross-bot blast radius:
   - mirror_bot.py only. No shared module touched. order_gateway/base_engine
@@ -82,6 +83,42 @@ class _FakeDB:
 class _FakeEngine:
     def __init__(self, recorder):
         self.db = _FakeDB(recorder)
+
+
+class _CaptureDB:
+    """Fake DB for the Phase-1 RESOLUTION-emit tests. The SELECT for
+    (markets.resolution, positions.is_paper) returns `meta` via fetchone();
+    insert_trade_event records each call's kwargs into `.emitted`."""
+
+    def __init__(self, meta):
+        self._meta = meta  # (resolution, is_paper) tuple, or None for no-row
+        self.emitted = []
+
+    def get_session(self):
+        meta = self._meta
+
+        class _S:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def execute(self, stmt, params=None):
+                class _R:
+                    def fetchone(_self):
+                        return meta  # SELECT row; UPDATE ignores the result
+
+                return _R()
+
+            async def commit(self):
+                pass
+
+        return _S()
+
+    async def insert_trade_event(self, **kwargs):
+        self.emitted.append(kwargs)
+        return 123
 
 
 def _run(coro):
@@ -438,3 +475,131 @@ class TestInitialization:
             "_terminal_reject_count not initialized in __init__ — first terminal "
             "rejection would raise AttributeError and crash the exit loop."
         )
+
+
+class TestTerminalResolutionEmit:
+    """Phase-1 live-P&L: the terminal close must emit a RESOLUTION trade_event
+    tagged with the position's HISTORICAL execution_mode, computing realized_pnl
+    on the remaining size when the outcome AND cost basis are known, else
+    realized_pnl=NULL + a reconciliation flag. Idempotency/over-size dedup live in
+    insert_trade_event (database.py) and are tested there — here we pin the call
+    shape WI-6 produces."""
+
+    @staticmethod
+    def _bot(pos, meta):
+        bot = _make_bot(pos, [])
+        cap = _CaptureDB(meta)
+        bot.base_engine = type("E", (), {"db": cap})()
+        return bot, cap
+
+    @staticmethod
+    def _fee_rate():
+        from config.settings import settings as _s
+        return float(getattr(_s, "TAKER_FEE_BPS", 150)) / 10000.0
+
+    def test_emits_resolution_for_live_winner(self):
+        pos = {"size": 10.0, "entry_price": 0.40, "side": "YES",
+               "category": "sports", "current_price": 1.0}
+        bot, cap = self._bot(pos, ("YES", False))  # resolved YES, is_paper=False
+        _run(bot._close_position_terminal(
+            "MKT:TOK", pos, "MKT", "TOK", 10.0, reason="resolved", redeemable=True))
+        assert len(cap.emitted) == 1
+        ev = cap.emitted[0]
+        assert ev["event_type"] == "RESOLUTION"
+        assert ev["execution_mode"] == "live"      # derived from is_paper=False
+        assert ev["bot_name"] == "MirrorBot"
+        assert ev["side"] == "YES"
+        assert ev["size"] == 10.0
+        assert ev["price"] == 1.0                   # payout (held side won)
+        expected = round((1.0 - 0.40) * 10.0 - 1.0 * 10.0 * self._fee_rate(), 4)
+        assert abs(ev["realized_pnl"] - expected) < 1e-9
+
+    def test_loser_books_full_cost_loss(self):
+        # Held YES, market resolved NO → payout 0 → pnl = -(entry*size), fee on 0 = 0.
+        pos = {"size": 10.0, "entry_price": 0.40, "side": "YES",
+               "category": "sports", "current_price": 0.0}
+        bot, cap = self._bot(pos, ("NO", False))
+        _run(bot._close_position_terminal(
+            "MKT:TOK", pos, "MKT", "TOK", 10.0, reason="resolved", redeemable=False))
+        ev = cap.emitted[0]
+        assert ev["price"] == 0.0
+        assert abs(ev["realized_pnl"] - (-0.40 * 10.0)) < 1e-9
+
+    def test_paper_position_tagged_paper(self):
+        pos = {"size": 5.0, "entry_price": 0.50, "side": "NO",
+               "category": "sports", "current_price": 1.0}
+        bot, cap = self._bot(pos, ("NO", True))     # is_paper=True
+        _run(bot._close_position_terminal(
+            "MKT:TOK", pos, "MKT", "TOK", 5.0, reason="resolved", redeemable=True))
+        assert cap.emitted[0]["execution_mode"] == "paper"
+
+    def test_price_pinned_resolves_payout_when_db_resolution_missing(self):
+        # WI-15 case: DB resolution NULL but current_price pinned at ~1.0 → won.
+        pos = {"size": 4.0, "entry_price": 0.30, "side": "YES",
+               "category": "sports", "current_price": 1.0}
+        bot, cap = self._bot(pos, (None, False))    # no DB resolution
+        _run(bot._close_position_terminal(
+            "MKT:TOK", pos, "MKT", "TOK", 4.0, reason="price_pinned(1.0000)",
+            redeemable=True))
+        ev = cap.emitted[0]
+        assert ev["price"] == 1.0
+        assert ev["realized_pnl"] is not None
+
+    def test_delisted_unknown_outcome_books_null_pnl_with_flag(self):
+        # No DB resolution + price not pinned (mid) → payout indeterminate.
+        pos = {"size": 8.0, "entry_price": 0.55, "side": "YES",
+               "category": "sports", "current_price": 0.55}
+        bot, cap = self._bot(pos, (None, False))
+        _run(bot._close_position_terminal(
+            "MKT:TOK", pos, "MKT", "TOK", 8.0, reason="delisted", redeemable=False))
+        ev = cap.emitted[0]
+        assert ev["realized_pnl"] is None
+        assert ev["event_data"].get("reconciliation") == "pending"
+        assert ev["event_data"].get("reason") == "delisted"
+
+    def test_cleared_entry_cost_books_null_pnl(self):
+        # entry_price 0 (cost basis cleared) → cannot compute pnl even with a payout.
+        pos = {"size": 8.0, "entry_price": 0.0, "side": "YES",
+               "category": "sports", "current_price": 1.0}
+        bot, cap = self._bot(pos, ("YES", False))
+        _run(bot._close_position_terminal(
+            "MKT:TOK", pos, "MKT", "TOK", 8.0, reason="resolved", redeemable=True))
+        assert cap.emitted[0]["realized_pnl"] is None
+        assert cap.emitted[0]["event_data"].get("reconciliation") == "pending"
+
+    def test_sell_side_row_skips_emit_but_still_closes(self):
+        # Corrupted SELL row (Phase-2 cleanup target): never book a RESOLUTION on a
+        # non-outcome side, but the position must still be dropped + closed.
+        pos = {"size": 8.0, "entry_price": 0.55, "side": "SELL",
+               "category": "sports", "current_price": 1.0}
+        bot, cap = self._bot(pos, ("YES", False))
+        _run(bot._close_position_terminal(
+            "MKT:TOK", pos, "MKT", "TOK", 8.0, reason="resolved", redeemable=True))
+        assert cap.emitted == []                    # no RESOLUTION emitted
+        assert "MKT:TOK" not in bot._open_positions  # but still closed
+
+    def test_row_read_failure_falls_back_to_simulation_mode(self, monkeypatch):
+        # If the SELECT returns no row, execution_mode falls back to the canonical
+        # SIMULATION_MODE idiom rather than guessing.
+        monkeypatch.setattr("config.settings.settings.SIMULATION_MODE", False,
+                            raising=False)
+        pos = {"size": 3.0, "entry_price": 0.40, "side": "YES",
+               "category": "sports", "current_price": 1.0}
+        bot, cap = self._bot(pos, None)             # SELECT returns no row
+        _run(bot._close_position_terminal(
+            "MKT:TOK", pos, "MKT", "TOK", 3.0, reason="resolved", redeemable=True))
+        assert cap.emitted[0]["execution_mode"] == "live"
+
+    def test_emit_failure_is_nonfatal(self):
+        # An emit failure must not crash the close — the position is still dropped.
+        pos = {"size": 3.0, "entry_price": 0.40, "side": "YES",
+               "category": "sports", "current_price": 1.0}
+        bot, cap = self._bot(pos, ("YES", False))
+
+        async def _boom(**kwargs):
+            raise RuntimeError("db down")
+
+        cap.insert_trade_event = _boom
+        _run(bot._close_position_terminal(
+            "MKT:TOK", pos, "MKT", "TOK", 3.0, reason="resolved", redeemable=True))
+        assert "MKT:TOK" not in bot._open_positions
