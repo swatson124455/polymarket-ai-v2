@@ -5496,6 +5496,10 @@ class Database:
         Idempotency_key prevents duplicate events on retries.
         """
         if self.session_factory is None:
+            logger.debug(
+                "trade_event_skipped_no_session_factory",
+                event_type=event_type, market_id=market_id,
+            )
             return None
         evt_time = _naive_utc(event_time) if event_time else _naive_utc(datetime.now(timezone.utc))
         # S141: ENTRY idempotency excludes order_id to prevent concurrent duplicate entries.
@@ -5789,11 +5793,20 @@ class Database:
                     logger.error(
                         "trade_event_entry_wrote_zero_rows",
                         market_id=market_id, bot_name=bot_name, side=side,
-                        idempotency_key=idem_key,
+                        idempotency_key=idem_key, result_rowcount=result.rowcount,
                     )
                     return None
                 await session.commit()
-                return row[0] if row else None
+                if row is None:
+                    # S238: ENTRY zero-row is handled+labelled above; a None here is a
+                    # non-ENTRY (EXIT/RESOLUTION/SHADOW) idempotent skip (benign) — label
+                    # at debug so every None-return path is traceable, not silent.
+                    logger.debug(
+                        "trade_event_zero_rows",
+                        event_type=event_type, market_id=market_id, idempotency_key=idem_key,
+                    )
+                    return None
+                return row[0]
         except Exception as e:
             logger.warning("trade_event %s persist failed for %s: %s", event_type, market_id, e)
             return None
