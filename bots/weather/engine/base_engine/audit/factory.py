@@ -1,0 +1,125 @@
+"""
+build_audit_orchestrator() — registers all 24 checks in order.
+
+SIGNAL_REQUIRED_BOTS: opt-in list for CRITICAL rogue-trade detection.
+Starts empty — populate once you've verified that each bot reliably
+writes trade_signals rows for every ENTRY.
+
+State as of 2026-04-29 (S203):
+  VPS .env has `SIGNAL_REQUIRED_BOTS=EsportsBot` (one bot enforced).
+  Default deploy template (.env.example) recommends `EsportsBot,EsportsBotV2`
+  in preparation for the EsportsBotV2 flag flip — see
+  S203_EB_ROUTING_AUDIT.md §3.3 + §5.3 for the routing-audit rationale.
+
+TODO: extend VPS env to `SIGNAL_REQUIRED_BOTS=EsportsBot,EsportsBotV2`
+BEFORE flipping `ESPORTS_V2_DRY_RUN=false`. Per-bot signal-write coverage
+verification:
+  SELECT DISTINCT bot_name FROM trade_signals;
+  vs
+  SELECT DISTINCT bot_name FROM trade_events WHERE event_type='ENTRY';
+"""
+import os
+from typing import List, TYPE_CHECKING
+
+from structlog import get_logger
+
+from bots.weather.engine.base_engine.audit.orchestrator import AuditOrchestrator
+from bots.weather.engine.base_engine.audit.checks.size_invariant_check import SizeInvariantCheck
+from bots.weather.engine.base_engine.audit.checks.orphan_check import OrphanCheck
+from bots.weather.engine.base_engine.audit.checks.temporal_order_check import TemporalOrderCheck
+from bots.weather.engine.base_engine.audit.checks.duplicate_entry_check import DuplicateEntryCheck
+from bots.weather.engine.base_engine.audit.checks.pnl_math_check import PnlMathCheck
+from bots.weather.engine.base_engine.audit.checks.fee_check import FeeCheck
+from bots.weather.engine.base_engine.audit.checks.fk_integrity_check import FkIntegrityCheck
+from bots.weather.engine.base_engine.audit.checks.traded_markets_check import TradedMarketsCheck
+from bots.weather.engine.base_engine.audit.checks.resolution_consistency_check import ResolutionConsistencyCheck
+from bots.weather.engine.base_engine.audit.checks.position_trade_events_check import PositionTradeEventsCheck
+from bots.weather.engine.base_engine.audit.checks.paper_trade_check import PaperTradeCheck
+from bots.weather.engine.base_engine.audit.checks.stale_position_check import StalePositionCheck
+from bots.weather.engine.base_engine.audit.checks.traded_markets_status_drift_check import TradedMarketsStatusDriftCheck
+from bots.weather.engine.base_engine.audit.checks.shadow_fill_check import ShadowFillCheck
+from bots.weather.engine.base_engine.audit.checks.fill_analysis_check import FillAnalysisCheck
+from bots.weather.engine.base_engine.audit.checks.signal_execution_check import SignalExecutionCheck
+from bots.weather.engine.base_engine.audit.checks.prediction_accuracy_check import PredictionAccuracyCheck
+from bots.weather.engine.base_engine.audit.checks.dlq_check import DlqCheck
+from bots.weather.engine.base_engine.audit.checks.equity_snapshot_check import EquitySnapshotCheck
+from bots.weather.engine.base_engine.audit.checks.schema_drift_check import SchemaDriftCheck
+from bots.weather.engine.base_engine.audit.checks.price_integrity_check import PriceIntegrityCheck
+from bots.weather.engine.base_engine.audit.checks.frozen_price_check import FrozenPriceCheck
+from bots.weather.engine.base_engine.audit.checks.prices_coverage_check import PricesCoverageCheck
+from bots.weather.engine.base_engine.audit.checks.bot_health_state_check import BotHealthStateCheck
+from bots.weather.engine.base_engine.audit.checks.resolution_verification_check import ResolutionVerificationCheck
+from bots.weather.engine.base_engine.audit.checks.temporal_future_check import TemporalFutureCheck
+
+if TYPE_CHECKING:
+    from bots.weather.engine.base_engine.data.database import Database
+
+logger = get_logger(__name__)
+
+# TODO: populate by 2026-04-30 after confirming signal write coverage per bot.
+# Verify with: SELECT DISTINCT bot_name FROM trade_signals;
+# vs: SELECT DISTINCT bot_name FROM trade_events WHERE event_type='ENTRY';
+# Leave empty until coverage is confirmed — see plan section 0F.
+SIGNAL_REQUIRED_BOTS: List[str] = []
+
+
+def build_audit_orchestrator(db: "Database", alerting=None) -> AuditOrchestrator:
+    """
+    Build and return an AuditOrchestrator with all 24 checks registered.
+
+    Reads SIGNAL_REQUIRED_BOTS from environment variable if set:
+        SIGNAL_REQUIRED_BOTS=MirrorBot,WeatherBot,EsportsBot
+
+    Falls back to the module-level SIGNAL_REQUIRED_BOTS list (default: empty).
+    """
+    env_bots_raw = os.getenv("SIGNAL_REQUIRED_BOTS", "")
+    signal_required_bots: List[str] = (
+        [b.strip() for b in env_bots_raw.split(",") if b.strip()]
+        if env_bots_raw.strip()
+        else SIGNAL_REQUIRED_BOTS
+    )
+
+    orchestrator = AuditOrchestrator(db=db, alerting=alerting)
+
+    # Phase 2: Trade event integrity
+    orchestrator.register_check(SizeInvariantCheck())
+    orchestrator.register_check(OrphanCheck())
+    orchestrator.register_check(TemporalOrderCheck())
+    orchestrator.register_check(DuplicateEntryCheck())
+
+    # Phase 3: P&L mathematical verification
+    orchestrator.register_check(PnlMathCheck())
+    orchestrator.register_check(FeeCheck())
+
+    # Phase 4: Cross-table referential integrity
+    orchestrator.register_check(FkIntegrityCheck())
+    orchestrator.register_check(TradedMarketsCheck())
+    orchestrator.register_check(ResolutionConsistencyCheck())
+
+    # Phase 5: Position-level reconciliation + data pathway checks
+    orchestrator.register_check(PositionTradeEventsCheck())
+    orchestrator.register_check(PaperTradeCheck())
+    orchestrator.register_check(StalePositionCheck())
+    orchestrator.register_check(TradedMarketsStatusDriftCheck())
+    orchestrator.register_check(ShadowFillCheck())
+    orchestrator.register_check(FillAnalysisCheck())
+    orchestrator.register_check(SignalExecutionCheck(signal_required_bots=signal_required_bots))
+    orchestrator.register_check(PredictionAccuracyCheck())
+
+    # Phase 6: System health integrity
+    orchestrator.register_check(DlqCheck())
+    orchestrator.register_check(EquitySnapshotCheck())
+    orchestrator.register_check(SchemaDriftCheck())
+    orchestrator.register_check(PriceIntegrityCheck())
+    orchestrator.register_check(FrozenPriceCheck())          # S167: stale prices on open positions
+    orchestrator.register_check(PricesCoverageCheck())       # S167: open positions with no price data
+    orchestrator.register_check(BotHealthStateCheck())
+    orchestrator.register_check(ResolutionVerificationCheck())  # S169: duplicate RESOLUTION detection
+    orchestrator.register_check(TemporalFutureCheck())  # guards 6 resolution-observation cols against future-dated writes
+
+    logger.info(
+        "audit_orchestrator_built",
+        checks=len(orchestrator._checks),
+        signal_required_bots=signal_required_bots,
+    )
+    return orchestrator

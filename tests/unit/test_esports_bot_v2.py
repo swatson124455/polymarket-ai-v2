@@ -283,6 +283,14 @@ class TestScanCycleSmoke:
         rng = random.Random(42)
         teams = ["TeamA", "TeamB", "TeamC", "TeamD", "TeamE"]
 
+        # Freshness seed relative to now (NOT a fixed calendar date).
+        # _teams_are_fresh() compares _team_last_match against
+        # datetime.now() - _STALE_DAYS (45). A hardcoded date ages out of that
+        # window as wall-clock time advances, then silently skips every
+        # prediction — which rotted the TestScanCycleSmoke + prediction_log
+        # suites overnight on 2026-05-29 (2026-04-14 fell past the 45-day edge).
+        _seed_fresh_dt = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)
+
         for i in range(n):
             a, b = rng.sample(teams, 2)
             winner = "a" if rng.random() > 0.4 else "b"
@@ -304,16 +312,9 @@ class TestScanCycleSmoke:
             bot._training_records.append(record)
             bot._processed_match_ids.add(f"seed_{i}")
 
-            # Track freshness. Seed relative to NOW so the production
-            # _teams_are_fresh() guard (now - _STALE_DAYS) always passes,
-            # regardless of the wall-clock date the suite runs on. Was a
-            # hardcoded datetime(2026, 4, 14) — a time-bomb that went stale
-            # once wall-clock crossed _STALE_DAYS=45 past it (i.e. 2026-05-29),
-            # silently failing 7 scan/prediction-log tests and blocking deploy.
-            from datetime import datetime, timezone, timedelta
-            _fresh_dt = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)
-            bot._team_last_match[a] = _fresh_dt
-            bot._team_last_match[b] = _fresh_dt
+            # Track freshness (see _seed_fresh_dt above)
+            bot._team_last_match[a] = _seed_fresh_dt
+            bot._team_last_match[b] = _seed_fresh_dt
 
         # Fit pipeline
         bot._pipeline.fit(bot._training_records)
@@ -971,10 +972,12 @@ class TestScanCycleSmoke:
         bot._games = ["lol"]
         self._seed_trinity(bot)
 
-        # Mark TeamA/TeamB as fresh for lol
-        from datetime import datetime
-        bot._team_last_match["TeamA"] = datetime(2026, 5, 1)
-        bot._team_last_match["TeamB"] = datetime(2026, 5, 1)
+        # Mark TeamA/TeamB as fresh for lol — relative to now (NOT a fixed
+        # date), else this seed ages out of the _STALE_DAYS window like the
+        # _seed_trinity dates did on 2026-05-29.
+        _fresh_dt = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)
+        bot._team_last_match["TeamA"] = _fresh_dt
+        bot._team_last_match["TeamB"] = _fresh_dt
 
         upcoming = [_upcoming_match(
             match_id=82004, game="lol",

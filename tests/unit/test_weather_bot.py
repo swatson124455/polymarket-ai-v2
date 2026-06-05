@@ -8,23 +8,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
-from config.settings import settings
+from bots.weather.engine.config.settings import settings
 
-from base_engine.weather.station_registry import (
+from bots.weather.engine.base_engine.weather.station_registry import (
     STATION_REGISTRY,
     StationHealthMonitor,
     US_CITY_NAMES,
     WeatherStation,
     lookup_station,
 )
-from base_engine.weather.market_mapper import (
+from bots.weather.engine.base_engine.weather.market_mapper import (
     TemperatureBucket,
     WeatherMarketGroup,
     WeatherMarketMapper,
     _parse_date,
 )
-from base_engine.weather.probability_engine import WeatherProbabilityEngine
-from base_engine.weather.forecast_client import CombinedForecast, WeatherForecastClient
+from bots.weather.engine.base_engine.weather.probability_engine import WeatherProbabilityEngine
+from bots.weather.engine.base_engine.weather.forecast_client import CombinedForecast, WeatherForecastClient
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -746,7 +746,7 @@ class TestWeatherForecastClient:
     @pytest.mark.asyncio
     async def test_nbm_used_as_deterministic_high_for_us_station(self):
         """get_combined_forecast uses NBM as deterministic_high for US stations (temp_unit=F)."""
-        from base_engine.weather.station_registry import STATION_REGISTRY
+        from bots.weather.engine.base_engine.weather.station_registry import STATION_REGISTRY
         client = WeatherForecastClient()
         station = STATION_REGISTRY["new_york_city"]  # temp_unit="F"
 
@@ -772,7 +772,7 @@ class TestWeatherForecastClient:
     @pytest.mark.asyncio
     async def test_nbm_not_called_for_international_station(self):
         """get_combined_forecast skips NBM fetch for non-US stations (temp_unit=C)."""
-        from base_engine.weather.station_registry import STATION_REGISTRY
+        from bots.weather.engine.base_engine.weather.station_registry import STATION_REGISTRY
         client = WeatherForecastClient()
         station = STATION_REGISTRY.get("london") or STATION_REGISTRY.get("paris")
         if station is None:
@@ -857,6 +857,13 @@ class TestWeatherBot:
                 "no_token_id": "tok_no",
                 "yes_price": 0.70,  # S159: lowered from 0.85 — YES identity dampener (0.85x) blocks conf 0.8075 < 0.85
                 "slug": "nyc-temp-future",
+                # S221: liquidity/volume added so the new _filter_thin_markets
+                # gate accepts this fixture (default $1000/$100 floors).
+                # bestBid/bestAsk omitted intentionally — DB fallback path
+                # doesn't populate them, and the filter's spread check
+                # opts-out when both are 0.
+                "liquidity": 5000,
+                "volume": 5000,
             },
         ])
 
@@ -899,7 +906,7 @@ class TestWeatherBot:
         weather_bot._daily_pnl_date = datetime.now().strftime("%Y-%m-%d")
 
         # Even with edge, should not trade
-        from base_engine.weather.market_mapper import WeatherMarketGroup
+        from bots.weather.engine.base_engine.weather.market_mapper import WeatherMarketGroup
         group = WeatherMarketGroup(
             city="New York City",
             target_date=date.today(),
@@ -910,6 +917,12 @@ class TestWeatherBot:
             "market_id": "m1", "token_id": "t1", "side": "YES",
             "price": 0.30, "confidence": 0.8, "model_prob": 0.50,
             "edge": 0.20, "abs_edge": 0.20, "city": "New York City",
+        }
+        # S221 Phase 2: populate market index so _check_executable_edge passes
+        # and the daily-loss-limit gate is what actually rejects (preserves
+        # this test's stated intent rather than my new check rejecting first).
+        weather_bot.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.28, "bestAsk": 0.32}
         }
         await weather_bot._execute_weather_trade(opp, group)
         assert not weather_bot.base_engine.place_order.called
@@ -1125,7 +1138,7 @@ class TestECMWFEnsembleMerging:
     @pytest.mark.asyncio
     async def test_combined_forecast_uses_all_members(self):
         """P5/P6: Combined forecast incorporates ECMWF IFS members; AIFS=None falls back cleanly."""
-        from base_engine.weather.station_registry import STATION_REGISTRY
+        from bots.weather.engine.base_engine.weather.station_registry import STATION_REGISTRY
         client = WeatherForecastClient()
         station = STATION_REGISTRY["new_york_city"]
 
@@ -1177,7 +1190,7 @@ class TestWeatherBotOpportunities:
         }
 
     def _make_group(self, city: str):
-        from base_engine.weather.market_mapper import WeatherMarketGroup
+        from bots.weather.engine.base_engine.weather.market_mapper import WeatherMarketGroup
         key = city.lower().replace(" ", "_")
         station = STATION_REGISTRY.get(key, STATION_REGISTRY["new_york_city"])
         return WeatherMarketGroup(
@@ -1232,7 +1245,7 @@ class TestWeatherBotOpportunities:
     @pytest.mark.asyncio
     async def test_near_expiry_kelly_boost(self, weather_bot):
         """Near-expiry (<24h) → 1.5x Kelly multiplier applied."""
-        from base_engine.weather.market_mapper import WeatherMarketGroup
+        from bots.weather.engine.base_engine.weather.market_mapper import WeatherMarketGroup
         group = WeatherMarketGroup(
             city="New York City",
             target_date=date.today(),
@@ -1248,6 +1261,11 @@ class TestWeatherBotOpportunities:
         weather_bot._daily_pnl_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         weather_bot._daily_pnl = 0.0
         weather_bot.running = True
+        # S221 Phase 2: populate market index so _check_executable_edge passes.
+        # YES side, model 0.50, bestAsk 0.32 → honest_edge = 0.18 > 0 → accept.
+        weather_bot.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.28, "bestAsk": 0.32}
+        }
 
         await weather_bot._execute_weather_trade(opp, group)
         # Trade should be attempted (with boosted size)
@@ -1292,6 +1310,10 @@ class TestWeatherBotOpportunities:
                 "no_token_id": "tok_no",
                 "yes_price": 0.98,  # No edge (market == model)
                 "slug": "nyc-temp",
+                # S221: liquidity/volume added so the new _filter_thin_markets
+                # gate accepts this fixture (default $1000/$100 floors).
+                "liquidity": 5000,
+                "volume": 5000,
             },
         ])
         fake_forecast = CombinedForecast(
@@ -1521,21 +1543,21 @@ class TestMetarClientParseGroup:
     """Unit tests for the T-group parser (pure function, no I/O)."""
 
     def test_parse_t_group_positive_temp(self):
-        from base_engine.weather.metar_client import MetarClient
+        from bots.weather.engine.base_engine.weather.metar_client import MetarClient
         # T02890267 → +28.9°C
         assert MetarClient.parse_t_group("METAR KLGA ... RMK T02890267") == pytest.approx(28.9, abs=0.01)
 
     def test_parse_t_group_negative_temp(self):
-        from base_engine.weather.metar_client import MetarClient
+        from bots.weather.engine.base_engine.weather.metar_client import MetarClient
         # T11001267 → -10.0°C
         assert MetarClient.parse_t_group("T11001267") == pytest.approx(-10.0, abs=0.01)
 
     def test_parse_t_group_no_match_returns_none(self):
-        from base_engine.weather.metar_client import MetarClient
+        from bots.weather.engine.base_engine.weather.metar_client import MetarClient
         assert MetarClient.parse_t_group("METAR KLGA 061856Z 28010KT") is None
 
     def test_parse_t_group_zero_temp(self):
-        from base_engine.weather.metar_client import MetarClient
+        from bots.weather.engine.base_engine.weather.metar_client import MetarClient
         # T00000267 → 0.0°C
         assert MetarClient.parse_t_group("T00000267") == pytest.approx(0.0, abs=0.01)
 
@@ -1545,7 +1567,7 @@ class TestMetarClientAPI:
 
     @pytest.mark.asyncio
     async def test_get_latest_metar_success(self):
-        from base_engine.weather.metar_client import MetarClient
+        from bots.weather.engine.base_engine.weather.metar_client import MetarClient
         client = MetarClient()
         mock_resp = MagicMock()
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
@@ -1571,7 +1593,7 @@ class TestMetarClientAPI:
 
     @pytest.mark.asyncio
     async def test_get_running_daily_max_fahrenheit(self):
-        from base_engine.weather.metar_client import MetarClient
+        from bots.weather.engine.base_engine.weather.metar_client import MetarClient
         client = MetarClient()
         mock_resp = MagicMock()
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
@@ -1597,7 +1619,7 @@ class TestMetarClientAPI:
     @pytest.mark.asyncio
     async def test_get_running_daily_max_cache(self):
         """Second call returns cached result without hitting the API."""
-        from base_engine.weather.metar_client import MetarClient
+        from bots.weather.engine.base_engine.weather.metar_client import MetarClient
         client = MetarClient()
         mock_resp = MagicMock()
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
@@ -1620,7 +1642,7 @@ class TestMetarClientAPI:
 
     @pytest.mark.asyncio
     async def test_get_running_daily_max_api_error_returns_none(self):
-        from base_engine.weather.metar_client import MetarClient
+        from bots.weather.engine.base_engine.weather.metar_client import MetarClient
         client = MetarClient()
         mock_resp = MagicMock()
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
@@ -1640,7 +1662,7 @@ class TestMetarResolutionDayOverride:
 
     def _make_group(self, city: str = "NYC", target_date: date = date(2026, 3, 6)):
         """Build a minimal WeatherMarketGroup with a range of buckets."""
-        from base_engine.weather.station_registry import STATION_REGISTRY
+        from bots.weather.engine.base_engine.weather.station_registry import STATION_REGISTRY
         station = STATION_REGISTRY.get("new_york_city")
         buckets = [
             TemperatureBucket(
@@ -3022,6 +3044,102 @@ class TestS214HardStopKwargRegression:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# S228 A.2 + bound: pre-execution price re-validation in hard_stop path
+# (port of MB 298fc99 + c1e8406)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestS228HardStopExitRevalidation:
+    """S228 A.2 + bound: _check_hard_stop_all_positions re-reads live top-of-book
+    bid before firing the stop and aborts the trigger if a fresh pnl_pct no
+    longer breaches the threshold.
+
+    Pre-fix: stop fired on stale current_price from position_manager (10s
+    cycle); a stale mid below entry could falsely trigger an exit when the
+    live bid showed the position was healthy. Premature-exit problem.
+
+    Bound (S228 port of MB c1e8406): live_bid is rejected if outside
+    [0.005, 0.999] — Polymarket tick prices are [0.01, 0.99]; outside that
+    signals API format mismatch, not a real bid. Out-of-band → _live_bid
+    stays None → no abort → stop proceeds (pre-A.2 behavior).
+    """
+
+    @pytest.mark.asyncio
+    async def test_hard_stop_aborts_when_live_bid_disagrees_with_stale_mid(
+        self, weather_bot, mock_engine
+    ):
+        """Stale mid 0.35 says -30% (stop fires); live bid 0.45 says -10%
+        (within tolerance) → re-validate → abort, no place_order, no cooldown."""
+        mock_engine.order_gateway._position_details = {
+            "WeatherBot:mkt_stale": {
+                "side": "YES",
+                "price": 0.50,           # entry
+                "current_price": 0.35,   # stale, -30%
+                "size": 10.0,
+                "token_id": "tok_stale",
+            },
+        }
+        # First call uses stale pnl_pct (-30%) → should_exit=True
+        # Second call uses live pnl_pct (-10%) → should_exit=False (abort)
+        mock_engine.risk_manager.check_hard_stop_loss = MagicMock(side_effect=[
+            {"should_exit": True, "reason": "hard_stop_loss", "details": {}},
+            {"should_exit": False, "reason": "", "details": {}},
+        ])
+        mock_engine.orderbook_tracker = MagicMock()
+        mock_engine.orderbook_tracker.snapshot_order_book = AsyncMock(
+            return_value={"bids": [{"price": "0.45", "size": "100"}]}
+        )
+        weather_bot._save_exit_to_redis = AsyncMock()
+
+        await weather_bot._check_hard_stop_all_positions()
+
+        assert not mock_engine.place_order.called, (
+            "Stop must abort — place_order should not fire when live bid disagrees with stale mid"
+        )
+        assert "mkt_stale" not in weather_bot._recently_exited, (
+            "Recently-exited cooldown should not be set when stop is aborted"
+        )
+        # _det refreshed to live_bid so subsequent scans don't re-trigger on stale mid
+        assert (
+            mock_engine.order_gateway._position_details["WeatherBot:mkt_stale"]["current_price"]
+            == 0.45
+        )
+
+    @pytest.mark.asyncio
+    async def test_hard_stop_proceeds_when_live_bid_is_implausible(
+        self, weather_bot, mock_engine
+    ):
+        """Live bid 0.0001 (garbage / API format mismatch) → bound rejects →
+        _live_bid stays None → no abort, stop proceeds as if A.2 absent."""
+        mock_engine.order_gateway._position_details = {
+            "WeatherBot:mkt_bad_bid": {
+                "side": "YES",
+                "price": 0.50,
+                "current_price": 0.35,
+                "size": 10.0,
+                "token_id": "tok_bad_bid",
+            },
+        }
+        mock_engine.risk_manager.check_hard_stop_loss = MagicMock(
+            return_value={"should_exit": True, "reason": "hard_stop_loss", "details": {}}
+        )
+        mock_engine.orderbook_tracker = MagicMock()
+        mock_engine.orderbook_tracker.snapshot_order_book = AsyncMock(
+            return_value={"bids": [{"price": "0.0001", "size": "999"}]}
+        )
+        weather_bot._save_exit_to_redis = AsyncMock()
+
+        await weather_bot._check_hard_stop_all_positions()
+
+        assert mock_engine.place_order.called, (
+            "Stop must proceed when live bid is out-of-band garbage — bound short-circuits abort logic"
+        )
+        assert "mkt_bad_bid" in weather_bot._recently_exited, (
+            "Recently-exited cooldown should be set when stop proceeds"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # S215: _ensure_markets_in_db batching regression
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -3194,13 +3312,17 @@ class TestWBSeedsMarketIndex:
 
         bot = WeatherBot(engine)
 
+        # S221: liquidity/volume/bestBid/bestAsk added so markets pass
+        # the new _filter_thin_markets gate (default $1000/$100/20% thresholds).
         fake_markets = [
             {"id": "m1", "condition_id": "c1", "yes_token_id": "yt1",
              "no_token_id": "nt1", "yes_price": 0.5, "no_price": 0.5,
-             "question": "q", "slug": "s", "volume": 0},
+             "question": "q", "slug": "s", "volume": 5000,
+             "liquidity": 5000, "bestBid": 0.48, "bestAsk": 0.52},
             {"id": "m2", "condition_id": "c2", "yes_token_id": "yt2",
              "no_token_id": "nt2", "yes_price": 0.4, "no_price": 0.6,
-             "question": "q", "slug": "s", "volume": 0},
+             "question": "q", "slug": "s", "volume": 5000,
+             "liquidity": 5000, "bestBid": 0.38, "bestAsk": 0.42},
         ]
         # Stub Gamma fetch + group_markets so scan reaches the seeding step
         bot._fetch_weather_events_by_tag = AsyncMock(return_value=fake_markets)
@@ -3237,10 +3359,12 @@ class TestWBSeedsMarketIndex:
         engine.update_market_index = MagicMock(side_effect=lambda m: call_order.append("update_index"))
 
         bot = WeatherBot(engine)
+        # S221: liquid-market fields added so _filter_thin_markets accepts.
         bot._fetch_weather_events_by_tag = AsyncMock(return_value=[
             {"id": "m1", "condition_id": "c1", "yes_token_id": "yt1",
              "no_token_id": "nt1", "yes_price": 0.5, "no_price": 0.5,
-             "question": "q", "slug": "s", "volume": 0},
+             "question": "q", "slug": "s", "volume": 5000,
+             "liquidity": 5000, "bestBid": 0.48, "bestAsk": 0.52},
         ])
         bot._market_mapper.group_markets = MagicMock(return_value=[])
         bot._cache_warmed = True
@@ -3475,3 +3599,255 @@ class TestFetchWeatherEventsByTagParallel:
         assert page_2_attempts == 2, (
             f"Expected page 2 to retry once after 503, got attempts={page_2_attempts}"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# S221 (2026-05-18): _filter_thin_markets — discovery-time gate
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestS221ThinMarketFilter:
+    """S221: Pre-discovery filter rejects markets where executable price diverges
+    from midpoint. Concrete failure mode: market 2106427 (NYC weather, end-May)
+    had liq=$269 vol=$95 spread=137% — 137 attempts in 24h, all failed at
+    slippage gate. This filter rejects pre-scan so signals are never generated.
+    """
+
+    @pytest.fixture
+    def bot(self):
+        from bots.weather_bot import WeatherBot
+        engine = MagicMock()
+        engine.trade_coordinator = None
+        engine.cache = None
+        engine.db = None
+        engine.risk_manager = MagicMock()
+        engine.order_gateway = MagicMock()
+        engine.order_gateway._open_position_markets = {"WeatherBot": set()}
+        engine.get_all_tradeable_markets = AsyncMock(return_value=[])
+        engine.place_order = AsyncMock(return_value={"success": True})
+        return WeatherBot(engine)
+
+    # The 2106427 failure-mode profile, captured from production logs:
+    # liquidity=$269, volume=$95, bestBid=0.15, bestAsk=0.80 → spread 137%.
+    THIN_MARKET = {
+        "id": "2106427", "question": "NYC May 31", "yes_price": 0.525,
+        "liquidity": 269, "volume": 95, "bestBid": 0.15, "bestAsk": 0.80,
+    }
+
+    # A healthy market that should pass all three gates.
+    LIQUID_MARKET = {
+        "id": "1234567", "question": "NYC Apr 30", "yes_price": 0.50,
+        "liquidity": 5000, "volume": 25000, "bestBid": 0.48, "bestAsk": 0.52,
+    }
+
+    def test_rejects_2106427_profile(self, bot):
+        """The exact failure mode this fix targets: should be filtered out."""
+        result = bot._filter_thin_markets([self.THIN_MARKET])
+        assert result == [], (
+            f"Market 2106427 (liq=$269, vol=$95, spread=137%) MUST be rejected; "
+            f"filter returned {len(result)} markets"
+        )
+
+    def test_accepts_liquid_market(self, bot):
+        """Liquid market with tight spread passes unchanged."""
+        result = bot._filter_thin_markets([self.LIQUID_MARKET])
+        assert result == [self.LIQUID_MARKET]
+
+    def test_mixed_input_drops_thin_keeps_liquid(self, bot):
+        """Filter is per-market; both populations coexist in the same list."""
+        result = bot._filter_thin_markets([self.THIN_MARKET, self.LIQUID_MARKET])
+        assert result == [self.LIQUID_MARKET]
+
+    def test_rejects_low_liquidity_only(self, bot):
+        """Liquidity below WEATHER_MIN_MARKET_LIQUIDITY_USD (default $1000)."""
+        m = {**self.LIQUID_MARKET, "liquidity": 500}  # below $1000 floor
+        assert bot._filter_thin_markets([m]) == []
+
+    def test_rejects_low_volume_only(self, bot):
+        """Volume below WEATHER_MIN_MARKET_VOLUME_USD (default $100)."""
+        m = {**self.LIQUID_MARKET, "volume": 50}  # below $100 floor
+        assert bot._filter_thin_markets([m]) == []
+
+    def test_rejects_wide_spread_only(self, bot):
+        """Spread above WEATHER_MAX_MARKET_SPREAD_PCT (default 20%)."""
+        m = {**self.LIQUID_MARKET, "bestBid": 0.30, "bestAsk": 0.70}
+        # mid = 0.50, spread = 0.40 / 0.50 = 80%
+        assert bot._filter_thin_markets([m]) == []
+
+    def test_spread_check_skipped_when_bid_ask_absent(self, bot):
+        """Fallback paths (DB / direct probe) may not populate bestBid/bestAsk.
+        When BOTH are missing/0, spread check is opt-out (entry-validation
+        gate at weather_bot.py:3388 catches it later).
+        """
+        m = {**self.LIQUID_MARKET, "bestBid": 0, "bestAsk": 0}
+        assert bot._filter_thin_markets([m]) == [m]
+
+    def test_spread_check_fail_closed_when_one_side_missing(self, bot):
+        """If bestBid > 0 but bestAsk = 0 (or vice versa), we have partial
+        info and cannot compute spread reliably — fail-closed.
+        """
+        m_no_ask = {**self.LIQUID_MARKET, "bestBid": 0.45, "bestAsk": 0}
+        m_no_bid = {**self.LIQUID_MARKET, "bestBid": 0, "bestAsk": 0.55}
+        assert bot._filter_thin_markets([m_no_ask]) == []
+        assert bot._filter_thin_markets([m_no_bid]) == []
+
+    def test_escape_valve_disables_filter(self, bot, monkeypatch):
+        """Setting min_liq=0, min_vol=0, max_spread_pct>=1.0 bypasses entirely."""
+        monkeypatch.setattr(settings, "WEATHER_MIN_MARKET_LIQUIDITY_USD", 0)
+        monkeypatch.setattr(settings, "WEATHER_MIN_MARKET_VOLUME_USD", 0)
+        monkeypatch.setattr(settings, "WEATHER_MAX_MARKET_SPREAD_PCT", 1.0)
+        # 2106427 must pass when filter is disabled
+        result = bot._filter_thin_markets([self.THIN_MARKET])
+        assert result == [self.THIN_MARKET], (
+            "Escape valve (all-three-disabled) must return input unchanged"
+        )
+
+    def test_empty_input_returns_empty(self, bot):
+        assert bot._filter_thin_markets([]) == []
+
+    def test_non_dict_entries_silently_dropped(self, bot):
+        """Defensive: filter skips non-dict entries without crashing."""
+        result = bot._filter_thin_markets([self.LIQUID_MARKET, None, "garbage", 42])
+        assert result == [self.LIQUID_MARKET]
+
+    def test_alt_field_names_recognized(self, bot):
+        """Filter accepts liquidityNum / volumeNum / best_bid / best_ask aliases.
+        Gamma API has historically returned both casings/spellings."""
+        m_alt = {
+            "id": "alt", "question": "alt",
+            "liquidityNum": 5000, "volumeNum": 25000,
+            "best_bid": 0.48, "best_ask": 0.52,
+        }
+        assert bot._filter_thin_markets([m_alt]) == [m_alt]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# S221 Phase 2 (2026-05-18): _check_executable_edge — entry-validation backstop
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestS221ExecutableEdgeCheck:
+    """S221 Phase 2: Backstop check at entry validation. Recomputes edge using
+    bestAsk (for YES buys) / 1-bestBid (for NO buys) instead of midpoint, and
+    rejects when honest edge is below the WEATHER_MIN_EXECUTABLE_EDGE floor
+    (default 0.0 — kills clearly-negative-edge signals only).
+
+    Complement to _filter_thin_markets (which catches at discovery) — this
+    fires on any liquid-but-still-mispriced market that slipped through.
+    """
+
+    @pytest.fixture
+    def bot_with_index(self):
+        """Bot with a controllable OrderGateway._market_index for tests."""
+        from bots.weather_bot import WeatherBot
+        engine = MagicMock()
+        engine.trade_coordinator = None
+        engine.cache = None
+        engine.db = None
+        engine.risk_manager = MagicMock()
+        engine.order_gateway = MagicMock()
+        engine.order_gateway._market_index = {}  # populated per-test
+        engine.order_gateway._open_position_markets = {"WeatherBot": set()}
+        engine.get_all_tradeable_markets = AsyncMock(return_value=[])
+        engine.place_order = AsyncMock(return_value={"success": True})
+        return WeatherBot(engine)
+
+    def test_passes_liquid_yes_with_positive_executable_edge(self, bot_with_index):
+        """YES side, model 0.72, bestAsk 0.50 → honest_edge = +0.22, accept."""
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.48, "bestAsk": 0.50}
+        }
+        opp = {"market_id": "m1", "side": "YES", "model_prob": 0.72,
+               "price": 0.49, "edge": 0.23}
+        assert bot_with_index._check_executable_edge(opp) is True
+
+    def test_passes_liquid_no_with_positive_executable_edge(self, bot_with_index):
+        """NO side, model 0.72 (of NO), bestBid_YES 0.20 → exec_NO_ask = 0.80,
+        honest_edge = 0.72 - 0.80 = -0.08. Should REJECT.
+        """
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.20, "bestAsk": 0.22}
+        }
+        opp = {"market_id": "m1", "side": "NO", "model_prob": 0.72,
+               "price": 0.79, "edge": 0.51}
+        assert bot_with_index._check_executable_edge(opp) is False
+
+    def test_rejects_2106427_no_side_profile(self, bot_with_index):
+        """The exact failure mode: bestBid_YES=0.15, bestAsk_YES=0.80.
+        WB wants to BUY NO, model_prob_NO = 0.722.
+        exec_NO_ask = 1 - 0.15 = 0.85. honest_edge = 0.722 - 0.85 = -0.128.
+        """
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "2106427": {"bestBid": 0.15, "bestAsk": 0.80}
+        }
+        opp = {"market_id": "2106427", "side": "NO", "model_prob": 0.722,
+               "price": 0.475, "edge": 0.247}  # midpoint edge was +0.247
+        assert bot_with_index._check_executable_edge(opp) is False, (
+            "2106427 NO-side trade (midpoint edge +0.247, honest edge -0.128) "
+            "MUST be rejected by Phase 2"
+        )
+
+    def test_rejects_when_market_not_in_index(self, bot_with_index):
+        """Fail-closed: no book data → cannot validate → reject."""
+        bot_with_index.base_engine.order_gateway._market_index = {}
+        opp = {"market_id": "nope", "side": "YES", "model_prob": 0.80,
+               "price": 0.50, "edge": 0.30}
+        assert bot_with_index._check_executable_edge(opp) is False
+
+    def test_rejects_when_bestbid_zero(self, bot_with_index):
+        """bestBid=0 → cannot compute NO-side executable price → fail-closed."""
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0, "bestAsk": 0.55}
+        }
+        opp = {"market_id": "m1", "side": "YES", "model_prob": 0.80,
+               "price": 0.50, "edge": 0.30}
+        assert bot_with_index._check_executable_edge(opp) is False
+
+    def test_rejects_when_bestask_zero(self, bot_with_index):
+        """bestAsk=0 → cannot compute YES-side executable price → fail-closed."""
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.45, "bestAsk": 0}
+        }
+        opp = {"market_id": "m1", "side": "YES", "model_prob": 0.80,
+               "price": 0.50, "edge": 0.30}
+        assert bot_with_index._check_executable_edge(opp) is False
+
+    def test_escape_valve_disables_check(self, bot_with_index, monkeypatch):
+        """WEATHER_MIN_EXECUTABLE_EDGE <= -1.0 in .env disables the entire check."""
+        monkeypatch.setattr(settings, "WEATHER_MIN_EXECUTABLE_EDGE", -1.0)
+        # Even with no market index entry (would normally fail-closed), accept
+        bot_with_index.base_engine.order_gateway._market_index = {}
+        opp = {"market_id": "anything", "side": "YES", "model_prob": 0.5}
+        assert bot_with_index._check_executable_edge(opp) is True
+
+    def test_threshold_tunable_upward(self, bot_with_index, monkeypatch):
+        """Set higher threshold; check rejects positive-but-marginal edge."""
+        monkeypatch.setattr(settings, "WEATHER_MIN_EXECUTABLE_EDGE", 0.10)
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.48, "bestAsk": 0.55}
+        }
+        # YES side, exec_price=0.55, model=0.60, honest_edge=0.05 < 0.10 → reject
+        opp = {"market_id": "m1", "side": "YES", "model_prob": 0.60,
+               "price": 0.52, "edge": 0.08}
+        assert bot_with_index._check_executable_edge(opp) is False
+
+    def test_alt_field_names_in_market_index(self, bot_with_index):
+        """Index entries may use best_bid/best_ask (snake_case)."""
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"best_bid": 0.48, "best_ask": 0.52}
+        }
+        opp = {"market_id": "m1", "side": "YES", "model_prob": 0.80,
+               "price": 0.50, "edge": 0.30}
+        assert bot_with_index._check_executable_edge(opp) is True
+
+    def test_accepts_high_edge_yes_at_low_executable_price(self, bot_with_index):
+        """The model-vs-market case that SHOULD trade: strong YES conviction
+        and a reasonable bestAsk. Honest edge well above default 0.0 threshold.
+        """
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.28, "bestAsk": 0.32}
+        }
+        opp = {"market_id": "m1", "side": "YES", "model_prob": 0.65,
+               "price": 0.30, "edge": 0.35}
+        # honest_edge = 0.65 - 0.32 = 0.33 > 0
+        assert bot_with_index._check_executable_edge(opp) is True

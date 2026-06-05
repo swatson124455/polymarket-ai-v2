@@ -13,9 +13,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from config.settings import settings
-from base_engine.weather.probability_engine import WeatherProbabilityEngine
-from base_engine.weather.station_registry import WeatherStation
+from bots.weather.engine.config.settings import settings
+from bots.weather.engine.base_engine.weather.probability_engine import WeatherProbabilityEngine
+from bots.weather.engine.base_engine.weather.station_registry import WeatherStation
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────

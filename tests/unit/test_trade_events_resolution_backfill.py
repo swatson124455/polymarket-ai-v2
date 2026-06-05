@@ -231,16 +231,17 @@ async def test_phase4b_emission_calls_insert_trade_event_per_row():
     db = Database.__new__(Database)
     db.session_factory = MagicMock()
 
-    # Each row = 10 columns matching Phase 4b's SELECT shape:
+    # Each row = 11 columns matching Phase 4b's SELECT shape:
     # market_id, bot_name, side, computed_pnl, resolved_at, remaining_size,
-    # avg_entry_price, exit_pnl_already, market_resolution, entry_game
+    # avg_entry_price, exit_pnl_already, market_resolution, entry_game,
+    # has_live_execution (row[10]: 1 if any ENTRY in the group was live)
     fake_rows = [
         ("0xmkt1", "WeatherBot", "YES", -15.23, _dt.datetime(2026, 4, 25, 12, 0),
-         100.0, 0.50, 0.0, "NO", None),
+         100.0, 0.50, 0.0, "NO", None, 0),
         ("0xmkt2", "MirrorBot", "YES", 5.77, _dt.datetime(2026, 4, 25, 12, 1),
-         50.0, 0.45, 0.0, "YES", None),
+         50.0, 0.45, 0.0, "YES", None, 1),
         ("0xmkt3", "EsportsBot", "NO", -2.10, _dt.datetime(2026, 4, 25, 12, 2),
-         25.0, 0.60, 0.0, "YES", "cs2"),
+         25.0, 0.60, 0.0, "YES", "cs2", 0),
     ]
     phase4b_result = MagicMock()
     phase4b_result.fetchall = MagicMock(return_value=fake_rows)
@@ -291,6 +292,14 @@ async def test_phase4b_emission_calls_insert_trade_event_per_row():
     assert counter_calls[0].kwargs["phase4b_alt"] == 0
     assert counter_calls[0].kwargs["total"] == 3
 
+    # Phase-1 live-P&L: RESOLUTION execution_mode is derived from has_live_execution
+    # (row[10]) — 'live' only when an ENTRY in the group was live, else 'paper'.
+    # Mode follows the entry data, never current SIMULATION_MODE.
+    modes = [c.kwargs.get("execution_mode") for c in db.insert_trade_event.call_args_list]
+    assert modes == ["paper", "live", "paper"], (
+        f"RESOLUTION execution_mode must derive from has_live_execution; got {modes}"
+    )
+
 
 @pytest.mark.asyncio
 async def test_phase4b_emission_counter_correctly_reflects_failed_inserts():
@@ -305,11 +314,13 @@ async def test_phase4b_emission_counter_correctly_reflects_failed_inserts():
     db = Database.__new__(Database)
     db.session_factory = MagicMock()
 
+    # 11 columns (row[10] = has_live_execution); value is irrelevant here
+    # because every insert raises before tagging matters.
     fake_rows = [
         ("0xmkt1", "WeatherBot", "YES", -15.23, _dt.datetime(2026, 4, 25, 12, 0),
-         100.0, 0.50, 0.0, "NO", None),
+         100.0, 0.50, 0.0, "NO", None, 0),
         ("0xmkt2", "MirrorBot", "YES", 5.77, _dt.datetime(2026, 4, 25, 12, 1),
-         50.0, 0.45, 0.0, "YES", None),
+         50.0, 0.45, 0.0, "YES", None, 0),
     ]
     phase4b_result = MagicMock()
     phase4b_result.fetchall = MagicMock(return_value=fake_rows)
@@ -498,7 +509,7 @@ async def test_phase4b_alt_clamps_size_when_positions_size_exceeds_entry_truth()
     # Phase 4b-alt returns ONE row matching the WB Bug A shape.
     # New SELECT order: market_id, source_bot, side, size (positions),
     #   entry_price, resolution, resolved_at, exit_pnl_already, entry_game,
-    #   te_total_entry, te_total_exit
+    #   te_total_entry, te_total_exit, is_paper
     alt_row = (
         "0xWBBugA",          # market_id
         "WeatherBot",        # source_bot
@@ -511,6 +522,7 @@ async def test_phase4b_alt_clamps_size_when_positions_size_exceeds_entry_truth()
         None,                # entry_game
         158.65,              # te_total_entry — trade_events truth
         40.31,               # te_total_exit
+        True,                # is_paper — historical paper position
     )
     alt_result = MagicMock()
     alt_result.fetchall = MagicMock(return_value=[alt_row])
@@ -546,6 +558,10 @@ async def test_phase4b_alt_clamps_size_when_positions_size_exceeds_entry_truth()
     assert abs(emit_kwargs["size"] - expected_size) < 1e-6, (
         f"expected size={expected_size:.4f} (min(p.size, te_entry) - te_exit), "
         f"got {emit_kwargs['size']}"
+    )
+    # Phase-1: is_paper=True historical position → RESOLUTION tagged 'paper'.
+    assert emit_kwargs["execution_mode"] == "paper", (
+        f"is_paper=True must tag paper; got {emit_kwargs.get('execution_mode')}"
     )
 
 
@@ -585,6 +601,7 @@ async def test_phase4b_alt_falls_back_to_positions_size_when_no_trade_events_ent
         None,
         50.0,                # te_total_entry — COALESCE fallback to p.size
         0.0,                 # te_total_exit
+        False,               # is_paper — live MirrorBot position
     )
     alt_result = MagicMock()
     alt_result.fetchall = MagicMock(return_value=[alt_row])
@@ -614,6 +631,11 @@ async def test_phase4b_alt_falls_back_to_positions_size_when_no_trade_events_ent
     assert abs(emit_kwargs["size"] - 50.0) < 1e-6, (
         f"backward-compat: legacy JOIN-mismatch case must emit p.size when "
         f"no trade_events ENTRY exists. Got {emit_kwargs['size']}, expected 50.0"
+    )
+    # Phase-1: is_paper=False (live) → RESOLUTION tagged 'live', even via the
+    # legacy COALESCE-fallback path.
+    assert emit_kwargs["execution_mode"] == "live", (
+        f"is_paper=False must tag live; got {emit_kwargs.get('execution_mode')}"
     )
 
 
@@ -660,4 +682,91 @@ def test_phase4b_select_has_order_by_resolved_at():
         "perpetually starves the same ~222 rows. Confirmed starvation in "
         "production 2026-05-27 for EB market 0x7abae048de.. (24h+ no emit).\n\n"
         f"Window before first LIMIT 500:\n{window}"
+    )
+
+
+# ── Phase-1 live-P&L: execution_mode derives from HISTORICAL mode ─────────────
+# The regime-transition guard — the failure mode that only manifests across a
+# paper→live flip. A position's RESOLUTION must carry the execution_mode it was
+# ENTERED under, never the bot's CURRENT SIMULATION_MODE. Phase 4b-alt derives
+# from positions.is_paper (set at entry). These tests flip SIMULATION_MODE to the
+# OPPOSITE of the historical entry and assert the historical mode still wins — if
+# a future change wires current mode into the derivation, they fail immediately.
+
+def _build_alt_only_db(alt_row):
+    """Database stub: Phase 4b returns 0 rows; Phase 4b-alt returns [alt_row]."""
+    from base_engine.data.database import Database
+
+    db = Database.__new__(Database)
+    db.session_factory = MagicMock()
+
+    empty = MagicMock()
+    empty.fetchall = MagicMock(return_value=[])
+    s4b = AsyncMock()
+    s4b.execute = AsyncMock(side_effect=[MagicMock(), empty])
+    s4b.commit = AsyncMock()
+    c4b = AsyncMock()
+    c4b.__aenter__ = AsyncMock(return_value=s4b)
+    c4b.__aexit__ = AsyncMock(return_value=False)
+
+    altres = MagicMock()
+    altres.fetchall = MagicMock(return_value=[alt_row])
+    salt = AsyncMock()
+    salt.execute = AsyncMock(side_effect=[MagicMock(), altres, MagicMock()])
+    salt.commit = AsyncMock()
+    nested = AsyncMock()
+    nested.__aenter__ = AsyncMock(return_value=MagicMock())
+    nested.__aexit__ = AsyncMock(return_value=False)
+    salt.begin_nested = MagicMock(return_value=nested)
+    calt = AsyncMock()
+    calt.__aenter__ = AsyncMock(return_value=salt)
+    calt.__aexit__ = AsyncMock(return_value=False)
+
+    db.get_session = MagicMock(side_effect=[c4b, calt])
+    db.insert_trade_event = AsyncMock(return_value=42)
+    return db
+
+
+def _regime_alt_row(is_paper):
+    """A resolved (won) MirrorBot position row in Phase 4b-alt's 12-col shape."""
+    import datetime as _dt
+    return (
+        "0xRegimeFlip", "MirrorBot", "YES",
+        20.0,                              # p.size
+        0.40,                             # entry_price
+        "YES",                            # resolution (held side won)
+        _dt.datetime(2026, 5, 30, 12, 0),  # resolved_at
+        0.0,                              # exit_pnl_already
+        None,                             # entry_game
+        20.0,                             # te_total_entry
+        0.0,                              # te_total_exit
+        is_paper,                         # is_paper (historical, set at entry)
+    )
+
+
+@pytest.mark.asyncio
+async def test_phase4b_alt_live_entry_resolving_in_paper_mode_stays_live(monkeypatch):
+    """is_paper=False (entered live) resolving while SIMULATION_MODE=True (paper
+    mode NOW) MUST tag 'live'. The critical Q1 case: if the derivation ever reads
+    current mode instead of the historical flag, this asserts it back."""
+    monkeypatch.setattr("config.settings.SIMULATION_MODE", True, raising=False)
+    db = _build_alt_only_db(_regime_alt_row(is_paper=False))
+    await db.backfill_trade_events_resolution()
+    assert db.insert_trade_event.await_count == 1
+    assert db.insert_trade_event.call_args.kwargs["execution_mode"] == "live", (
+        "live-entered position must stay 'live' even when current mode is paper"
+    )
+
+
+@pytest.mark.asyncio
+async def test_phase4b_alt_paper_entry_resolving_in_live_mode_stays_paper(monkeypatch):
+    """Inverse: is_paper=True (entered paper) resolving while SIMULATION_MODE=False
+    (live mode NOW) MUST stay 'paper' — never pollute the live ledger with a
+    paper-entered outcome."""
+    monkeypatch.setattr("config.settings.SIMULATION_MODE", False, raising=False)
+    db = _build_alt_only_db(_regime_alt_row(is_paper=True))
+    await db.backfill_trade_events_resolution()
+    assert db.insert_trade_event.await_count == 1
+    assert db.insert_trade_event.call_args.kwargs["execution_mode"] == "paper", (
+        "paper-entered position must stay 'paper' even when current mode is live"
     )

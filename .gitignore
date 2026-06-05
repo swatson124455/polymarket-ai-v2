@@ -10,6 +10,17 @@
 private_keys/
 wallet_backup/
 secrets/
+# S235 defensive guardrail — close the "untracked but NOT gitignored" gap that left
+# wallet.txt / upload.bat (found S235, May 15 origin) accidentally stageable by `git add -A`.
+# NARROW patterns only: broad globs would shadow TRACKED files and were deliberately rejected —
+#   *.bat   shadows START_DASHBOARD.bat, START_SIMPLE.bat, run-vps-dashboard.bat, start.bat, scripts/fix_supabase_hosts.bat
+#   *seed*  shadows schema/migrations/040_*_seed.sql, scripts/seed_*.py, the seed test
+#   .env*   shadows tracked .env.example (existing rules list .env variants explicitly for this reason)
+wallet.txt
+wallet*.txt
+upload.bat
+*.seed
+*mnemonic*
 
 # Database
 *.db

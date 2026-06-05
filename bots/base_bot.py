@@ -761,11 +761,53 @@ class BaseBot(ABC):
 
                     _ks_engaged = await asyncio.wait_for(_check_kill_switch(), timeout=10)
                 except asyncio.TimeoutError:
-                    # S159: Fail-CLOSED — when kill switch state is unknown, don't trade.
-                    # The kill switch exists for emergencies; bypassing it during DB outages
-                    # (when you most need it) defeats its purpose.
-                    logger.warning("Kill switch check timed out (10s) — failing closed, skipping scan", bot_name=self.bot_name)
-                    _ks_engaged = True
+                    # S159: Fail-CLOSED on UNKNOWN state. BUT a recent cached kill-switch
+                    # state is NOT "unknown": the kill switch tolerates a 30s propagation
+                    # delay by design (its TTL cache), so a transient slow DB check on the
+                    # scan loop should reuse the last-known state instead of skipping the
+                    # scan. Fail closed ONLY when there is no cached state at all.
+                    # Scope: scan loop ONLY. The execution path (order_gateway /
+                    # execution_engine) keeps the authoritative live check unchanged.
+                    _cached_allow = None
+                    _mlks = getattr(self.base_engine, "multi_kill_switch", None)
+                    if _mlks is not None and hasattr(_mlks, "cached_should_trade"):
+                        try:
+                            _cached_allow = _mlks.cached_should_trade(self.bot_name)
+                        except Exception:
+                            _cached_allow = None
+                    else:
+                        _ks = getattr(self.base_engine, "kill_switch", None)
+                        if _ks is not None and hasattr(_ks, "cached_engaged"):
+                            try:
+                                _ce = _ks.cached_engaged()
+                                _cached_allow = (not _ce) if _ce is not None else None
+                            except Exception:
+                                _cached_allow = None
+                    if _cached_allow is True:
+                        _cache_age = None
+                        _ks = getattr(self.base_engine, "kill_switch", None)
+                        if _ks is not None and hasattr(_ks, "cache_age_seconds"):
+                            try:
+                                _cache_age = _ks.cache_age_seconds()
+                            except Exception:
+                                _cache_age = None
+                        # kill_switch_cache_fallback=True is a PROXY INDICATOR for DB-pool
+                        # pressure: frequent firing means the pool is still being exhausted
+                        # (e.g. the esports engine-leak root fix has not landed / not worked).
+                        logger.warning(
+                            "Kill switch check timed out (10s) — reusing cached DISENGAGED state, continuing scan",
+                            bot_name=self.bot_name,
+                            kill_switch_cache_fallback=True,
+                            cache_age_seconds=_cache_age,
+                        )
+                        _ks_engaged = False
+                    else:
+                        logger.warning(
+                            "Kill switch check timed out (10s) — no safe cached state, failing closed, skipping scan",
+                            bot_name=self.bot_name,
+                            kill_switch_cache_fallback=False,
+                        )
+                        _ks_engaged = True
                 except Exception as e:
                     logger.warning("Kill switch check failed — failing closed", bot_name=self.bot_name, error=str(e))
                     _ks_engaged = True

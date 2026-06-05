@@ -485,7 +485,37 @@ class BaseEngine:
                 except Exception as e:
                     logger.debug("FeatureStore init failed (non-critical): %s", e)
             self.execution_engine = ExecutionEngine(self.client, self.risk_manager, self.db, private_key=pk)
-            
+
+            # S227 Bug 7: Wire CLOB V2 adapter into execution_engine. Without this,
+            # execution_engine.clob_adapter stays None (initialized at execution_engine.py:100
+            # with comment "Set by BaseEngine if CLOB creds available") and the V2 order-
+            # placement path at execution_engine.py:300 is dead code — every order falls to
+            # the V1 polymarket_client.place_order which Polymarket retired in 2026-04
+            # (returns HTTP 401 Unauthorized). Surfaced during S227 live flip — 49+
+            # consecutive 401s before pre-authorized rollback. Gated on DEPOSIT_WALLET_ADDRESS
+            # + CLOB_API_KEY so bots without V2 config keep V1 fallback unchanged. Paper-mode
+            # bots (SIMULATION_MODE=true) never reach execution_engine.place_order — orders
+            # route to PaperTradingEngine — so this wiring is irrelevant for them.
+            if (self.execution_engine
+                    and getattr(settings, "DEPOSIT_WALLET_ADDRESS", None)
+                    and getattr(settings, "CLOB_API_KEY", None)):
+                try:
+                    from base_engine.execution.clob_adapter import ClobAdapter
+                    _adapter = ClobAdapter()
+                    if _adapter.available:
+                        self.execution_engine.clob_adapter = _adapter
+                        logger.info("clob_adapter_v2_wired", adapter_class="ClobAdapter")
+                    else:
+                        logger.warning(
+                            "clob_adapter_v2_unavailable_falling_back_to_v1",
+                            hint="check py-clob-client-v2 install + CLOB_API_KEY/SECRET/PASSPHRASE",
+                        )
+                except Exception as _adapter_err:
+                    logger.warning(
+                        "clob_adapter_v2_wiring_failed_falling_back_to_v1",
+                        error=str(_adapter_err),
+                    )
+
             # Level 4: Monitoring Systems
             self.health_monitor = HealthMonitor(db=self.db, cache=self.cache, client=self.client)
             self.alerting_system = AlertingSystem(
@@ -1438,16 +1468,47 @@ class BaseEngine:
                 logger.debug("Pre-approval at startup failed (non-critical): %s", e)
 
         # S120: Log wallet USDC balance at startup
+        # S226: Also log pUSD at deposit wallet when V2 mode (DEPOSIT_WALLET_ADDRESS set) —
+        # real buying power under CLOB V2. EOA USDC.e is no longer canonical capital but
+        # is still logged for visibility (holds MATIC gas + USDC.e residue).
         if self.execution_engine and getattr(self.execution_engine, "contract_manager", None):
+            _threshold = getattr(settings, "BALANCE_WARNING_THRESHOLD_USD", 100.0)
             try:
                 _bal = await self.execution_engine.contract_manager.get_usdce_balance()
                 if _bal.get("success"):
-                    logger.info("wallet_balance_usd", balance=_bal["balance_usd"])
-                    _threshold = getattr(settings, "BALANCE_WARNING_THRESHOLD_USD", 100.0)
+                    logger.info("wallet_balance_usd", balance=_bal["balance_usd"], source="usdce@eoa")
                     if _bal["balance_usd"] < _threshold:
-                        logger.warning("wallet_balance_low", balance=_bal["balance_usd"], threshold=_threshold)
+                        logger.warning("wallet_balance_low", balance=_bal["balance_usd"], threshold=_threshold, source="usdce@eoa")
             except Exception as _bal_err:
-                logger.debug("Startup balance query failed (non-critical): %s", _bal_err)
+                logger.debug("Startup USDC.e balance query failed (non-critical): %s", _bal_err)
+
+            _deposit_wallet = (getattr(settings, "DEPOSIT_WALLET_ADDRESS", None) or "").strip()
+            if _deposit_wallet:
+                try:
+                    from base_engine.execution.clob_adapter import check_pusd_balance
+                    _pusd_bal = await check_pusd_balance(wallet_address=_deposit_wallet)
+                    if _pusd_bal is not None:
+                        # Distinct event names from V1's wallet_balance_usd/_low — S177 _DedupProcessor
+                        # drops duplicate (event, level) pairs within 60s, so reusing V1 names would
+                        # silently suppress the V2 emit when V1 fires first ~400ms earlier.
+                        logger.info("deposit_wallet_balance_pusd", balance=_pusd_bal, source="pusd@deposit_wallet")
+                        if _pusd_bal < _threshold:
+                            logger.warning("deposit_wallet_balance_low", balance=_pusd_bal, threshold=_threshold, source="pusd@deposit_wallet")
+                        # WI-11: persist latest balance to system_kv so audit-on-write hooks
+                        # can check wallet balance vs entry_cost without reading journalctl.
+                        try:
+                            from sqlalchemy import text as _skvtext
+                            async with self.db.get_session() as _skv_sess:
+                                await _skv_sess.execute(_skvtext("""
+                                    INSERT INTO system_kv (key, value)
+                                    VALUES ('deposit_wallet_balance_pusd', :val)
+                                    ON CONFLICT (key) DO UPDATE SET value = :val
+                                """), {"val": str(_pusd_bal)})
+                                await _skv_sess.commit()
+                        except Exception as _skv_err:
+                            logger.debug("WI-11 balance system_kv write failed (non-critical): %s", _skv_err)
+                except Exception as _pusd_err:
+                    logger.debug("Startup pUSD balance query failed (non-critical): %s", _pusd_err)
 
         # P0.17: MATIC pre-flight + ongoing 10min monitor (live mode only)
         if not getattr(settings, "SIMULATION_MODE", True):

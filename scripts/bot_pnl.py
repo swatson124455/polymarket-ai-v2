@@ -7,6 +7,8 @@ Usage:
     python scripts/bot_pnl.py EsportsBot                   # Specific bot, last 24h
     python scripts/bot_pnl.py WeatherBot 8                 # Specific bot, last 8h
     python scripts/bot_pnl.py MirrorBot --since 20260414_132211   # Post-fix windowed totals
+    python scripts/bot_pnl.py MirrorBot --mode live        # WI-4: live trades only
+    python scripts/bot_pnl.py MirrorBot --mode paper       # WI-4: paper/simulation only
 
 EXIT side transition (S163, deployed 2026-04-08):
   - Before 2026-04-08T16:01:40Z: EXIT events have side='SELL' (hardcoded)
@@ -147,7 +149,7 @@ _WINDOWED_EVENT_COUNT_SQL = """
 
 
 async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
-                  clean: bool = False):
+                  clean: bool = False, mode: str = 'all', clob_check: bool = False):
     db = Database()
     await db.init()
 
@@ -155,6 +157,31 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
     # single cohort regardless of which name the operator passes. Singletons
     # for all other bots — see _expand_bot_family docstring.
     bot_family = _expand_bot_family(bot_name)
+
+    # WI-4: per-bot segmentation — filter by execution mode (paper/live/all).
+    # positions.is_paper (BOOLEAN, migration 016) segments block 1.
+    # trade_events.execution_mode (TEXT 'paper'|'live'|'backtest', migration 050)
+    # segments blocks 2-5. Default 'all' preserves pre-WI-4 behavior.
+    _valid_modes = ('paper', 'live', 'all')
+    if mode not in _valid_modes:
+        raise ValueError(f"mode must be one of {_valid_modes}, got {mode!r}")
+    mode_pos_clause = {
+        'paper': 'AND p.is_paper = TRUE',
+        'live':  'AND p.is_paper = FALSE',
+        'all':   '',
+    }[mode]
+    mode_exec_clause = {
+        'paper': "AND execution_mode = 'paper'",
+        'live':  "AND execution_mode = 'live'",
+        'all':   '',
+    }[mode]
+    # Block 5/5b queries use `r` as the trade_events alias; qualify the column.
+    mode_exec_clause_r = {
+        'paper': "AND r.execution_mode = 'paper'",
+        'live':  "AND r.execution_mode = 'live'",
+        'all':   '',
+    }[mode]
+    mode_label = f" [{mode.upper()} only]" if mode != 'all' else ''
 
     async with db.get_session() as s:
         from sqlalchemy import text
@@ -186,17 +213,18 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
         block5_since_clause = "AND r.event_time >= :since_ts" if since is not None else ""
 
         # 1. Open positions — mark-to-market
-        r1 = await s.execute(text("""
+        r1 = await s.execute(text(f"""
             SELECT p.market_id, p.side, p.size, p.entry_price, p.current_price,
                    p.unrealized_pnl, p.opened_at
             FROM positions p
             WHERE (p.bot_id = ANY(:bot_family) OR p.source_bot = ANY(:bot_family))
               AND p.status = 'open'
+              {mode_pos_clause}
             ORDER BY p.opened_at DESC
         """), {"bot_family": bot_family})
         positions = r1.fetchall()
 
-        print(f"=== {bot_name} P&L Report (last {hours}h) ===")
+        print(f"=== {bot_name} P&L Report (last {hours}h){mode_label} ===")
         if bot_family != [bot_name]:
             print(f"    [family-union: querying {bot_family}]")
         print()
@@ -225,13 +253,14 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
         print(f"{'TOTAL':<14} {'':>4} {'':>8} {'':>7} {'':>7} ${total_cost:>8.2f} ${total_mkt_value:>8.2f} ${total_upnl:>+8.2f}")
 
         # 2. Trade events in window
-        r2 = await s.execute(text("""
+        r2 = await s.execute(text(f"""
             SELECT event_type, market_id, side, size, price, fees,
                    realized_pnl, event_time, correlation_id
             FROM trade_events
             WHERE bot_name = ANY(:bot_family)
               AND event_time > NOW() - INTERVAL '1 hour' * :hours
               AND event_time <= NOW()
+              {mode_exec_clause}
             ORDER BY event_time DESC
         """), {"bot_family": bot_family, "hours": hours})
         events = r2.fetchall()
@@ -263,7 +292,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
         # "show me last N days day-by-day" was previously unanswerable from
         # block 2 (which only prints HH:MM per event). Sums realized_pnl per
         # UTC day for ENTRY/EXIT/RESOLUTION; net P&L per day = exit_pnl + res_pnl.
-        r2b = await s.execute(text("""
+        r2b = await s.execute(text(f"""
             SELECT DATE(event_time) AS day,
                    event_type,
                    COUNT(*) AS cnt,
@@ -273,6 +302,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
               AND event_time > NOW() - INTERVAL '1 hour' * :hours
               AND event_time <= NOW()
               AND event_type IN ('ENTRY', 'EXIT', 'RESOLUTION')
+              {mode_exec_clause}
             GROUP BY DATE(event_time), event_type
             ORDER BY day DESC, event_type
         """), {"bot_family": bot_family, "hours": hours})
@@ -316,6 +346,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
             FROM trade_events
             WHERE bot_name = ANY(:bot_family)
               {since_clause}
+              {mode_exec_clause}
             GROUP BY event_type
             ORDER BY event_type
         """), {"bot_family": bot_family, **since_params})
@@ -356,6 +387,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
             WHERE bot_name = ANY(:bot_family)
               AND market_id NOT IN (SELECT market_id FROM contaminated)
               {since_clause}
+              {mode_exec_clause}
             GROUP BY event_type
             ORDER BY event_type
         """), {"bot_family": bot_family, **since_params})
@@ -386,7 +418,17 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
         # causing false positives on per-side matching. event_type is the
         # correct discriminator. S200: no `--since` filter at this layer (see
         # constant docstring).
-        r4 = await s.execute(text(_INTEGRITY_SQL_ALL_TIME), {"bot_family": bot_family})
+        # WI-4: build a mode-filtered copy of the integrity SQL when needed.
+        # _INTEGRITY_SQL_ALL_TIME is a module-level constant (imported by tests)
+        # and must not be mutated; we build a local copy here instead.
+        _local_integrity_sql = (
+            _INTEGRITY_SQL_ALL_TIME.replace(
+                "WHERE bot_name = ANY(:bot_family)",
+                f"WHERE bot_name = ANY(:bot_family)\n      {mode_exec_clause}",
+                1,  # replace only the first occurrence
+            ) if mode_exec_clause else _INTEGRITY_SQL_ALL_TIME
+        )
+        r4 = await s.execute(text(_local_integrity_sql), {"bot_family": bot_family})
         violations = r4.fetchall()
         if violations:
             print(f"\n{'!'*50}")
@@ -402,8 +444,15 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
         # at _WINDOWED_EVENT_COUNT_SQL. Operational visibility for in-window
         # event volume per market — NOT an integrity check.
         if since is not None:
+            _local_windowed_sql = (
+                _WINDOWED_EVENT_COUNT_SQL.replace(
+                    "WHERE bot_name = ANY(:bot_family)",
+                    f"WHERE bot_name = ANY(:bot_family)\n      {mode_exec_clause}",
+                    1,
+                ) if mode_exec_clause else _WINDOWED_EVENT_COUNT_SQL
+            )
             r4b = await s.execute(
-                text(_WINDOWED_EVENT_COUNT_SQL),
+                text(_local_windowed_sql),
                 {"bot_family": bot_family, "since_ts": since},
             )
             in_window = r4b.fetchall()
@@ -460,6 +509,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
                   AND r.realized_pnl IS NOT NULL
                   {block5_since_clause}
                   {block5_clean_clause}
+                  {mode_exec_clause_r}
                 GROUP BY e_entry.side
                 ORDER BY e_entry.side
             """), {"bot_family": bot_family, **since_params})
@@ -494,6 +544,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
                   AND e_entry.event_data->>'city' IS NOT NULL
                   {block5_since_clause}
                   {block5_clean_clause}
+                  {mode_exec_clause_r}
                 GROUP BY e_entry.event_data->>'city'
                 ORDER BY total_pnl DESC
             """), {"bot_family": bot_family, **since_params})
@@ -534,6 +585,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
                   AND e_entry.event_data->>'lead_time_hours' IS NOT NULL
                   {block5_since_clause}
                   {block5_clean_clause}
+                  {mode_exec_clause_r}
                 GROUP BY bucket
                 ORDER BY MIN((e_entry.event_data->>'lead_time_hours')::float)
             """), {"bot_family": bot_family, **since_params})
@@ -575,6 +627,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
                   AND e_entry.event_data->>'lead_time_hours' IS NOT NULL
                   {block5_since_clause}
                   {block5_clean_clause}
+                  {mode_exec_clause_r}
                 GROUP BY e_entry.side, bucket
                 ORDER BY e_entry.side, MIN((e_entry.event_data->>'lead_time_hours')::float)
             """), {"bot_family": bot_family, **since_params})
@@ -624,6 +677,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
                   AND r.realized_pnl IS NOT NULL
                   AND r.event_time > NOW() - INTERVAL '1 hour' * :hours
                   AND r.event_time <= NOW()
+                  {mode_exec_clause_r}
                 GROUP BY conf_bin
                 ORDER BY MIN(e_entry.confidence)
             """), {"bot_family": bot_family, "hours": hours})
@@ -711,6 +765,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
                   AND r.realized_pnl IS NOT NULL
                   {block5_since_clause}
                   {block5_clean_clause}
+                  {mode_exec_clause_r}
                 GROUP BY conf_bin
                 ORDER BY MIN(e_entry.final_conf)
             """), {"bot_family": bot_family, **since_params})
@@ -757,6 +812,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
                   AND e_entry.final_conf IS NOT NULL
                   {block5_since_clause}
                   {block5_clean_clause}
+                  {mode_exec_clause_r}
                 GROUP BY conf_split
                 ORDER BY conf_split DESC
             """), {"bot_family": bot_family, **since_params})
@@ -769,7 +825,113 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
                     wr = (float(tr[2]) / float(tr[1]) * 100) if tr[1] > 0 else 0
                     print(f"  {tr[0]:<11} {tr[1]:>6} {tr[2]:>6} {wr:>6.1f}% ${float(tr[3]):>+11.2f}")
 
+    # 6. (Phase-1, opt-in --clob-check) DB-vs-CLOB resolution cross-reference.
+    #    Gated behind the flag so default runs stay DB-only / offline / fast and
+    #    byte-identical to pre-Phase-1 behavior. Own session, isolated from the
+    #    report above. On-chain/CLOB is canonical-by-construction (see
+    #    LIVE_ONCHAIN_RECONCILIATION_2026-06-03.md §8) — a mismatch flags ledger drift.
+    if clob_check:
+        async with db.get_session() as cs:
+            await _clob_resolution_crosscheck(cs, bot_family, since, mode)
+
     await db.close()
+
+
+# Cap on markets cross-checked per run (each is one CLOB HTTP fetch). Operator
+# narrows scope with --since; capping is announced, never silent (no-silent-caps).
+_CLOB_CHECK_MARKET_CAP = 200
+
+
+async def _clob_resolution_crosscheck(session, bot_family, since, mode,
+                                      cap: int = _CLOB_CHECK_MARKET_CAP):
+    """Phase-1 (opt-in --clob-check): cross-reference each resolved market's DB
+    resolution against the CLOB/on-chain resolution and flag mismatches.
+
+    On-chain/CLOB is canonical-by-construction (LIVE_ONCHAIN_RECONCILIATION_
+    2026-06-03.md §8); a DB-vs-CLOB disagreement means the DB ledger's resolution
+    drifted from reality, so any realized P&L derived from it is suspect.
+
+    Read-only and fail-soft: a CLOB fetch failure annotates the market
+    CLOB=unavailable and never raises. Reuses the existing CLOB fetch
+    (_fetch_market_by_condition_id + _clob_to_market_format) already used by
+    reconcile_live_onchain.py — no new client. In-process cache per condition_id;
+    capped at `cap` markets with a logged notice if more exist."""
+    from sqlalchemy import text
+    from base_engine.data.resolution_backfill import (
+        _fetch_market_by_condition_id, _clob_to_market_format,
+    )
+
+    _since_clause = "AND te.event_time >= :since_ts" if since is not None else ""
+    _since_params = {"since_ts": since} if since is not None else {}
+    _mode_clause = {
+        "paper": "AND te.execution_mode = 'paper'",
+        "live": "AND te.execution_mode = 'live'",
+        "all": "",
+    }.get(mode, "")
+
+    # Resolved markets this bot traded, in scope. condition_id is the CLOB API key;
+    # fall back to market_id when it's already a 0x condition id.
+    rows = (await session.execute(text(f"""
+        SELECT DISTINCT te.market_id,
+               COALESCE(m.condition_id, te.market_id) AS condition_id,
+               m.resolution
+        FROM trade_events te
+        JOIN markets m ON (CAST(m.id AS TEXT) = te.market_id
+                           OR m.condition_id = te.market_id)
+        WHERE te.bot_name = ANY(:bot_family)
+          AND m.resolved = TRUE
+          AND m.resolution IN ('YES', 'NO')
+          {_since_clause}
+          {_mode_clause}
+        ORDER BY te.market_id
+        LIMIT :cap_plus
+    """), {"bot_family": bot_family, "cap_plus": cap + 1, **_since_params})).fetchall()
+
+    print("\nRESOLUTION CROSS-CHECK (DB vs CLOB):")
+    if not rows:
+        print("  (no resolved markets in scope)")
+        return
+    if len(rows) > cap:
+        rows = rows[:cap]
+        print(f"  NOTE: capped at {cap} markets; more resolved markets exist in "
+              f"scope — re-run with a tighter --since to cover the rest.")
+
+    _cache: dict = {}
+    matches = mismatches = unavailable = 0
+    mismatch_lines = []
+    for mid, cond_id, db_res in rows:
+        db_res_u = str(db_res).upper() if db_res else None
+        if cond_id in _cache:
+            clob_res = _cache[cond_id]
+        else:
+            clob_res = None
+            try:
+                clob_mkt = await _fetch_market_by_condition_id(cond_id)
+                if clob_mkt:
+                    _fmt = _clob_to_market_format(clob_mkt, cond_id) or {}
+                    _r = _fmt.get("resolution")
+                    clob_res = str(_r).upper() if _r else None
+            except Exception:
+                clob_res = None
+            _cache[cond_id] = clob_res
+
+        if clob_res is None:
+            unavailable += 1
+        elif clob_res == db_res_u:
+            matches += 1
+        else:
+            mismatches += 1
+            mismatch_lines.append(
+                f"  {str(mid)[:14]}.. DB={db_res_u} CLOB={clob_res}  ⚠ MISMATCH")
+
+    for line in mismatch_lines:
+        print(line)
+    print(f"  checked={matches + mismatches + unavailable}  match={matches}  "
+          f"MISMATCH={mismatches}  clob_unavailable={unavailable}")
+    if mismatches:
+        print("  ⚠ DB resolution disagrees with CLOB on the markets above — the DB "
+              "ledger has drifted from on-chain truth; do not trust their realized "
+              "P&L until reconciled.")
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -788,9 +950,21 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "block 5 WB-specific breakdowns (per-side, per-city, per-lead-time, "
                         "side x lead-time). S203 hygiene #12. Mirrors edge_verification.py "
                         "--clean semantic. Block 3b (CLEAN total) always emits regardless.")
+    p.add_argument("--mode", choices=("paper", "live", "all"), default="all",
+                   help="WI-4 execution-mode segmentation. 'paper': simulation trades only "
+                        "(positions.is_paper=TRUE, trade_events.execution_mode='paper'). "
+                        "'live': real-capital trades only (is_paper=FALSE, execution_mode='live'). "
+                        "'all': no filter (default — preserves pre-WI-4 behavior).")
+    p.add_argument("--clob-check", action="store_true", default=False,
+                   help="Phase-1: cross-reference each resolved market's DB resolution "
+                        "against the CLOB/on-chain resolution and flag mismatches. OFF by "
+                        "default — default runs stay DB-only/offline. Makes one CLOB HTTP "
+                        "fetch per resolved market in scope (cached, capped, fail-soft); "
+                        "narrow scope with --since.")
     return p.parse_args(argv)
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    asyncio.run(bot_pnl(args.bot_name, args.hours, since=args.since, clean=args.clean))
+    asyncio.run(bot_pnl(args.bot_name, args.hours, since=args.since, clean=args.clean,
+                        mode=args.mode, clob_check=args.clob_check))

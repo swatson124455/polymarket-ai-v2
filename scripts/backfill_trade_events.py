@@ -50,9 +50,14 @@ async def main():
          submitted_at, filled_at, created_at) = r
 
         # ENTRY event
+        # Phase-1 live-P&L: this script backfills from paper_trades, which is
+        # paper-only by construction — so every emit here is execution_mode="paper".
+        # Default is already "paper"; made explicit so intent is unambiguous and this
+        # legacy path never accidentally tags live (Protocol 16 pattern-completeness).
         idem_key = f"backfill:entry:{pt_id}"
         seq = await db.insert_trade_event(
             event_type="ENTRY",
+            execution_mode="paper",
             bot_name=bot_name,
             market_id=market_id,
             side=side,
@@ -72,6 +77,7 @@ async def main():
             res_idem_key = f"backfill:resolution:{pt_id}"
             seq2 = await db.insert_trade_event(
                 event_type="RESOLUTION",
+                execution_mode="paper",
                 bot_name=bot_name,
                 market_id=market_id,
                 side=side,

@@ -75,9 +75,14 @@ def _all_scan_paths() -> list[Path]:
     untracked scratch/WIP scripts from triggering this regression guard.
     Untracked files are by definition outside the safety-relevant codebase
     — they're not on master, not deployed, not in CI. Failing the guard on
-    a developer's local scratch script blocks unrelated deploys (eb/main
-    splinter Phase 4, 2026-05-24 — five untracked scratch scripts under
-    scripts/ tripped this guard and blocked the first splinter deploy).
+    a developer's local scratch script blocks unrelated deploys.
+
+    The eb/main splinter (commit 2eb264f, 2026-05-24) applied this same
+    fix on the EB branch when five untracked S159/rc_*/esports_72h scratch
+    scripts blocked the EB Phase 4 deploy. Per the WB/EB-never-merge-to-
+    master policy, the fix is re-applied here as an MB-session commit so
+    master gets the equivalent guard without cherry-picking from a
+    splinter branch.
 
     Falls back to disk-rglob if git is unavailable (e.g. CI environments
     that unpack a tarball without .git history). On fallback the guard

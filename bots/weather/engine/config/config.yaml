@@ -1,0 +1,51 @@
+# Optional file-based config. Env vars (and config/settings.py) take precedence.
+# Use for monitoring, collection, and backup knobs without code changes.
+
+app:
+  name: "polymarket-ai-v2"
+  environment: "development"  # development, staging, production
+
+rate_limits:
+  polymarket_api: 90   # requests per minute (stay under provider limit)
+  batch_delay: 0.7     # seconds between batches
+
+database:
+  batch_size: 1000
+  max_retries: 3
+
+collection:
+  daily:
+    price_lookback_hours: 25
+    trade_lookback_hours: 25
+  validation:
+    min_question_length: 10
+    max_invalid_percentage: 10
+
+monitoring:
+  health_check_interval_minutes: 60
+  gap_detection_interval_hours: 6
+  thresholds:
+    sync_failure_count: 2
+    data_age_hours: 48
+    gap_duration_hours: 24
+
+backup:
+  retention_days: 7
+  compression: true
+
+logging:
+  level: "INFO"
+  components:
+    httpx: "WARNING"
+    urllib3: "WARNING"
+
+# Arbitrage bot (optional overrides; env vars take precedence)
+arbitrage:
+  min_profit_threshold: 0.01
+  max_profit_threshold: 0.05
+  default_order_size: 100
+  max_markets_per_scan: 500
+  max_opportunities_per_scan: 10
+  order_delay_seconds: 0.5
+  cache_ttl_markets: 30
+  opportunity_dedup_ttl_seconds: 60

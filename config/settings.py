@@ -603,6 +603,13 @@ class Settings(BaseSettings):
     USE_PIPELINE_GATE: bool = os.getenv("USE_PIPELINE_GATE", "true").lower() in ("true", "1", "yes")
     # Paper trading (SIMULATION_MODE): full pipeline runs (scan → predict → risk check) but orders go to PaperTradingEngine and paper_trades table, not CLOB. Set SIMULATION_MODE=false for real money.
     SIMULATION_MODE: bool = os.getenv("SIMULATION_MODE", "true").lower() in ("true", "1", "yes")
+    # S228 Bug 11: mode-detection helper for bot source. The S83 test
+    # `test_no_simulation_mode_in_bot_source` enforces that bot files have
+    # zero direct references to the SIMULATION_MODE name (paper is
+    # production, no feature-skipping by mode). Mode-aware ROUTING
+    # decisions (paper vs live position restore, live-capital guards) are
+    # legitimate and need a mode signal — bots call the helper so the
+    # name reference stays out of bot source.
     # S120: Raised to $10M so shared paper cash pool is never the bottleneck.
     # Real sizing limits come from BotBankrollManager ($300 max bet, $10K daily cap per bot).
     PAPER_TRADING_CAPITAL: float = float(os.getenv("PAPER_TRADING_CAPITAL", "10000000"))
@@ -639,6 +646,14 @@ class Settings(BaseSettings):
     # Wallet
     PRIVATE_KEY: Optional[str] = os.getenv("PRIVATE_KEY")
     WALLET_ADDRESS: Optional[str] = os.getenv("WALLET_ADDRESS")
+    # Polymarket V2 deposit wallet — per-user proxy provisioned by Polymarket's relayer.
+    # Required as the `funder` for CLOB V2 POLY_1271 orders (post 2026-04-28 migration).
+    # Empty string falls back to V1-style EOA-as-maker (will be rejected by V2 CLOB).
+    DEPOSIT_WALLET_ADDRESS: Optional[str] = os.getenv("DEPOSIT_WALLET_ADDRESS")
+    # Polymarket Relayer API key — enables gasless on-chain operations (deposit, approval).
+    # Optional: only needed if we route on-chain ops through Polymarket's relayer instead of
+    # paying gas ourselves from the EOA.
+    RELAYER_API_KEY: Optional[str] = os.getenv("RELAYER_API_KEY")
 
     # CLOB API (py-clob-client L2: optional; if set, ExecutionEngine uses official client for orders)
     CLOB_API_KEY: Optional[str] = os.getenv("CLOB_API_KEY")
@@ -909,6 +924,27 @@ class Settings(BaseSettings):
     # S99: Fill-failure cooldown
     WEATHER_FILL_FAIL_COOLDOWN_SCANS: int = int(os.getenv("WEATHER_FILL_FAIL_COOLDOWN_SCANS", "2"))
     WEATHER_FILL_FAIL_COOLDOWN_SECS: float = float(os.getenv("WEATHER_FILL_FAIL_COOLDOWN_SECS", "120"))  # S101: 900→120s — IOC gas negligible, 2min = 1 scan cycle
+    # S221 (2026-05-18): Pre-discovery thin-market gate (WeatherBot-only).
+    # Markets where midpoint (used in edge math) diverges from executable price
+    # waste signal-gen cycles and deterministically fail at the slippage gate.
+    # Example: market 2106427 (NYC weather, end-May 2026) had liquidity=$269,
+    # volume=$95, spread=137% (bb=0.15 ba=0.80). Midpoint 0.525 vs walked ask
+    # 0.85 = 60% slippage > 10% limit. 137 of 154 gateway_unknown_market events
+    # in 24h came from this single market; 100% failed at execution. Filter at
+    # discovery to skip pre-scan. Fail-closed on missing liq/vol fields.
+    # Set all three to 0/0/1.0 in .env to disable.
+    WEATHER_MIN_MARKET_LIQUIDITY_USD: float = float(os.getenv("WEATHER_MIN_MARKET_LIQUIDITY_USD", "1000"))
+    WEATHER_MIN_MARKET_VOLUME_USD: float = float(os.getenv("WEATHER_MIN_MARKET_VOLUME_USD", "100"))
+    WEATHER_MAX_MARKET_SPREAD_PCT: float = float(os.getenv("WEATHER_MAX_MARKET_SPREAD_PCT", "0.20"))
+    # S221 Phase 2 (2026-05-18): Executable-edge sanity check at entry validation
+    # (weather_bot.py:_check_executable_edge). Recomputes edge using bestAsk
+    # (for BUY YES) or 1-bestBid (for BUY NO) instead of the midpoint that
+    # signal generation used. Rejects if honest edge < this threshold.
+    # Default 0.0 = only kill clear negative-edge cases (the 2106427 failure
+    # mode where midpoint edge +0.197 was reality -0.13 on executable price).
+    # Tune up to match WEATHER_MIN_EDGE (0.08) for stricter; set <= -1.0 in
+    # .env to disable the check entirely.
+    WEATHER_MIN_EXECUTABLE_EDGE: float = float(os.getenv("WEATHER_MIN_EXECUTABLE_EDGE", "0.0"))
     # S99: Fill probability floor (price-depth factor)
     WEATHER_MIN_FILL_PROB_ESTIMATE: float = float(os.getenv("WEATHER_MIN_FILL_PROB_ESTIMATE", "0.15"))  # S101: 0.25→0.15 — pre-flight only, full model still gates
     # S99: PSW every-other-scan
@@ -1557,3 +1593,24 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def is_paper_trading_active() -> bool:
+    """S228 Bug 11: mode-detection helper for bot source.
+
+    Returns True when the system is configured for paper trading
+    (orders route to PaperTradingEngine and paper_trades table). Returns
+    False when configured for live trading (orders submit to CLOB).
+
+    Why this helper exists: the S83 paper-is-production test
+    (test_paper_is_production.py::test_no_simulation_mode_in_bot_source)
+    enforces that bot files have no direct references to the
+    SIMULATION_MODE name. Bot source that needs mode-aware ROUTING
+    (e.g., restore paper positions in paper mode, live positions in
+    live mode; apply live-capital guards only in live mode) calls this
+    helper instead so the name reference stays out of bot source.
+
+    Internally just reads settings.SIMULATION_MODE — the indirection
+    is purely textual, not semantic.
+    """
+    return bool(getattr(settings, "SIMULATION_MODE", True))

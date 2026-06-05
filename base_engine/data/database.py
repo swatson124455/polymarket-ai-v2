@@ -160,6 +160,30 @@ def _coerce_datetimes_naive_utc(session: Session, _flush_context: Any, _instance
 event.listen(Session, "before_flush", _coerce_datetimes_naive_utc)
 
 
+def _handle_error_should_invalidate(exc) -> bool:
+    """True when a DBAPI error means the connection is physically broken and must be
+    invalidated/evicted from the pool rather than returned for reuse.
+
+    Covers (a) dead connections (S136) and (b) asyncpg protocol-corruption left by a
+    cancelled-mid-query asyncio.wait_for (WI-21, 2026-06-04) — the same signatures the
+    REACTIVE _SemaphoreSession._CORRUPT_SIGS guard uses (S235), so they are aligned.
+    Every matched token is a PHYSICAL-connection failure (protocol-state / interface /
+    closed), NOT a benign query / constraint / statement-timeout error, so this does not
+    false-positive-evict healthy connections.
+    """
+    if exc is None:
+        return False
+    msg = str(exc)
+    name = type(exc).__name__
+    return (
+        "connection was closed" in msg
+        or "cannot switch to state" in msg   # WI-21: asyncpg protocol-state corruption
+        or "another operation" in msg        # WI-21: asyncpg concurrent-op corruption
+        or "ConnectionDoesNotExistError" in name
+        or "InterfaceError" in name
+    )
+
+
 class _SemaphoreSession:
     """
     Async context manager that wraps session creation with semaphore.
@@ -1237,12 +1261,14 @@ class Database:
         # Without this, ConnectionDoesNotExistError on mid-query connection death
         # returns the broken connection to the pool for reuse, causing cascading
         # failures across all bots.
+        # WI-21 (2026-06-04): also invalidate on asyncpg protocol-corruption
+        # ("cannot switch to state" / "another operation"). A connection poisoned by a
+        # cancelled-mid-query asyncio.wait_for was previously evicted only REACTIVELY by
+        # the _SemaphoreSession._CORRUPT_SIGS guard on the NEXT checkout (S235); matching
+        # here evicts it PROACTIVELY at error time, so it never re-enters the pool.
         @sa_event.listens_for(self.engine.sync_engine, "handle_error")
         def _on_handle_error(context):
-            _err_str = str(context.original_exception)
-            if ("connection was closed" in _err_str
-                    or "ConnectionDoesNotExistError" in type(context.original_exception).__name__
-                    or "InterfaceError" in type(context.original_exception).__name__):
+            if _handle_error_should_invalidate(context.original_exception):
                 if context.connection is not None:
                     try:
                         context.invalidate_pool_on_disconnect = True
@@ -1394,7 +1420,25 @@ class Database:
                         logger.debug("Pre-insert validation skipped market: %s", err)
                         failed_count += 1
                         continue
-                end_date_iso = market_data.get("end_date_iso")
+                # Root fix: the end-date arrives under different keys by source —
+                # CLOB uses "end_date_iso" (snake), Gamma uses "endDate"/"endDateIso",
+                # and several callers pass the raw API dict unnormalized. Reading only
+                # "end_date_iso" stored NULL for ~89% of markets, which made them
+                # invisible to resolution_backfill (NULLS-LAST ordering). Read all
+                # known spellings and parse ISO strings so the chokepoint never
+                # silently drops a date.
+                end_date_iso = (
+                    market_data.get("end_date_iso")
+                    or market_data.get("endDateISO")
+                    or market_data.get("endDateIso")
+                    or market_data.get("endDate")
+                    or market_data.get("end_date")
+                )
+                if isinstance(end_date_iso, str):
+                    try:
+                        end_date_iso = datetime.fromisoformat(end_date_iso.replace("Z", "+00:00"))
+                    except (ValueError, TypeError):
+                        end_date_iso = None
                 if isinstance(end_date_iso, datetime) and getattr(end_date_iso, "tzinfo", None) is not None:
                     end_date_iso = _naive_utc(end_date_iso)
                 _liq = market_data.get("liquidity", 0.0)
@@ -1469,6 +1513,7 @@ class Database:
                     _seen_slugs.add(_sl)
 
         from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from sqlalchemy import func
         processed_count = 0
 
         # S120: Nullify slugs that collide with EXISTING rows under a different id.
@@ -1506,7 +1551,10 @@ class Database:
                             "description": stmt.excluded.description,
                             "category": stmt.excluded.category,
                             "resolution_source": stmt.excluded.resolution_source,
-                            "end_date_iso": stmt.excluded.end_date_iso,
+                            # Preserve an existing non-NULL end-date when a later
+                            # partial re-ingest passes NULL — otherwise the one path
+                            # that extracts the date correctly gets its value wiped.
+                            "end_date_iso": func.coalesce(stmt.excluded.end_date_iso, Market.__table__.c.end_date_iso),
                             "image": stmt.excluded.image,
                             "active": stmt.excluded.active,
                             "liquidity": stmt.excluded.liquidity,
@@ -1541,6 +1589,13 @@ class Database:
                     async with session.begin():
                         for md in valid_dicts:
                             try:
+                                # Mirror the bulk-path COALESCE: if this dict carries a
+                                # NULL end-date, preserve the existing one rather than
+                                # letting merge() overwrite a good value with NULL.
+                                if md.get("end_date_iso") is None and md.get("id") is not None:
+                                    _existing = await session.get(Market, md["id"])
+                                    if _existing is not None and _existing.end_date_iso is not None:
+                                        md["end_date_iso"] = _existing.end_date_iso
                                 async with session.begin_nested():
                                     await session.merge(Market(**md))
                                 processed_count += 1
@@ -3623,11 +3678,14 @@ class Database:
                     "       (SELECT te_g.event_data->>'game' FROM trade_events te_g "
                     "        WHERE te_g.market_id = e.market_id AND te_g.bot_name = e.bot_name "
                     "        AND te_g.event_type = 'ENTRY' AND te_g.event_data->>'game' IS NOT NULL "
-                    "        LIMIT 1) AS entry_game "
+                    "        LIMIT 1) AS entry_game, "
+                    "       e.has_live_execution "
                     "FROM ("
                     "  SELECT market_id, bot_name, side, "
                     "         SUM(COALESCE(size, 0)) AS total_entry_size, "
-                    "         SUM(COALESCE(price, 0) * COALESCE(size, 0)) AS weighted_price "
+                    "         SUM(COALESCE(price, 0) * COALESCE(size, 0)) AS weighted_price, "
+                    "         MAX(CASE WHEN execution_mode = 'live' THEN 1 ELSE 0 END) "
+                    "             AS has_live_execution "
                     "  FROM trade_events "
                     "  WHERE event_type = 'ENTRY' AND side IN ('YES', 'NO') "
                     "  GROUP BY market_id, bot_name, side"
@@ -3675,8 +3733,15 @@ class Database:
                     _market_resolution = str(row[8]).upper() if row[8] else ""
                     _resolution_price = 1.0 if _market_resolution == str(row[2]).upper() else 0.0
                     _res_event_data = {"game": row[9]} if row[9] else None
+                    # Phase-1 live-P&L: tag RESOLUTION from the historical ENTRY mode.
+                    # row[10] = has_live_execution (1 if any ENTRY in the group was live).
+                    # Phase 4b is paper_trades-driven so this is rarely live in practice,
+                    # but tagging from the entry mode keeps it correct if it ever fires
+                    # on a live group (mode follows entry time, not current SIMULATION_MODE).
+                    _exec_mode = "live" if row[10] else "paper"
                     await self.insert_trade_event(
                         event_type="RESOLUTION",
+                        execution_mode=_exec_mode,
                         bot_name=row[1],
                         market_id=row[0],
                         side=row[2],
@@ -3731,7 +3796,8 @@ class Database:
                     "        AND te_g.event_type = 'ENTRY' AND te_g.event_data->>'game' IS NOT NULL "
                     "        LIMIT 1) AS entry_game, "
                     "       COALESCE(te_entry_agg.total_entry, p.size) AS te_total_entry, "
-                    "       COALESCE(te_exit_agg.total_exit, 0) AS te_total_exit "
+                    "       COALESCE(te_exit_agg.total_exit, 0) AS te_total_exit, "
+                    "       p.is_paper "
                     "FROM positions p "
                     "JOIN markets m ON (p.market_id = CAST(m.id AS TEXT) "
                     "                   OR p.market_id = m.condition_id) "
@@ -3769,7 +3835,7 @@ class Database:
                 for row in _pos_resolved.fetchall():
                     try:
                         (_mid, _bot, _side, _size, _entry, _res, _res_at,
-                         _exit_pnl, _entry_game, _te_entry, _te_exit) = row
+                         _exit_pnl, _entry_game, _te_entry, _te_exit, _is_paper) = row
                         _side_upper = str(_side).upper() if _side else ""
                         _res_upper = str(_res).upper()
                         _payout = 1.0 if _side_upper == _res_upper else 0.0
@@ -3787,8 +3853,16 @@ class Database:
                         _net_pnl = _gross_pnl - _fee
                         _remaining_pnl = _net_pnl - float(_exit_pnl)
                         _alt_event_data = {"game": _entry_game} if _entry_game else None
+                        # Phase-1 live-P&L: derive execution_mode from the position's
+                        # historical is_paper (set at entry), NOT current SIMULATION_MODE —
+                        # a paper-entered position resolving after a live-flip must stay
+                        # 'paper'. `is False` mirrors the markets-row idiom (mirror_bot.py
+                        # ~:1548): tag 'live' ONLY when is_paper is explicitly False, so a
+                        # NULL / MagicMock value never mis-tags toward the live ledger.
+                        _alt_exec_mode = "live" if (_is_paper is False) else "paper"
                         await self.insert_trade_event(
                             event_type="RESOLUTION",
+                            execution_mode=_alt_exec_mode,
                             bot_name=_bot,
                             market_id=_mid,
                             side=_side_upper,

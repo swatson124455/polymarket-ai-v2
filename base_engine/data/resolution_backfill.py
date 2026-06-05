@@ -134,6 +134,11 @@ def _clob_to_market_format(clob: dict, condition_id: str) -> dict:
         "yes_price": yes_price,
         "no_price": no_price,
         "active": not closed,  # Mark closed markets as inactive immediately
+        # Root fix: CLOB returns the end-date under snake_case "end_date_iso".
+        # Include it (with camel fallbacks) so CLOB-sourced markets aren't stored
+        # with a NULL end-date, which strands them in resolution_backfill's
+        # NULLS-LAST queue. bulk_insert_markets parses the ISO string.
+        "end_date_iso": clob.get("end_date_iso") or clob.get("endDateISO") or clob.get("endDate"),
     }
 
 
@@ -221,6 +226,11 @@ async def run_resolution_backfill(
                                 "resolution": None,
                                 "yes_token_id": parsed.get("yes_token_id"),
                                 "no_token_id": parsed.get("no_token_id"),
+                                # Root fix: carry the end-date (any source spelling) so this
+                                # missing-market insert doesn't store a NULL end-date and
+                                # then become invisible to Phase-2 (NULLS-LAST) resolution.
+                                "end_date_iso": (m.get("end_date_iso") or m.get("endDateISO")
+                                                 or m.get("endDateIso") or m.get("endDate") or m.get("end_date")),
                             }
                             if m.get("closed") or m.get("resolved"):
                                 md["resolution"] = _infer_resolution_from_outcome_prices(m)
@@ -315,7 +325,35 @@ async def run_resolution_backfill(
             """), {"lim": _remaining})
             other_ids = [r[0] for r in ot_result.fetchall() if r[0] and r[0] not in _paper_set]
 
-        market_ids = paper_market_ids + other_ids
+        # Positions-driven priority (root fix, 2026-06-02): any market where a bot
+        # holds an OPEN LIVE position MUST be resolution-checked every cycle,
+        # regardless of end_date. Such markets aren't reliably in traded_markets and
+        # get starved by the end_date NULLS-LAST ordering in 2a/2b — which left
+        # resolved-on-chain positions stuck (MirrorBot circuit-breaker loop). Prepend
+        # them so they are never starved; the per-market loop CLOB-resolves them.
+        position_market_ids: list = []
+        try:
+            _pos_res = await session.execute(text("""
+                SELECT DISTINCT p.market_id
+                FROM positions p
+                LEFT JOIN markets m
+                  ON (CAST(m.id AS TEXT) = p.market_id OR m.condition_id = p.market_id)
+                WHERE p.status = 'open' AND p.is_paper = false AND p.market_id IS NOT NULL
+                  AND (m.id IS NULL
+                       OR ((m.resolution IS NULL OR m.resolution NOT IN ('YES', 'NO'))
+                           AND m.resolved IS NOT TRUE))
+            """))
+            position_market_ids = [r[0] for r in _pos_res.fetchall() if r[0]]
+        except Exception as _pos_err:
+            logger.debug("Resolution backfill: positions-driven discovery failed (non-critical): %s", _pos_err)
+
+        # Prepend open-position markets, dedup preserving order.
+        _seen_ids: set = set()
+        market_ids = []
+        for _mid in position_market_ids + paper_market_ids + other_ids:
+            if _mid and _mid not in _seen_ids:
+                _seen_ids.add(_mid)
+                market_ids.append(_mid)
 
     if not market_ids:
         if log_progress:
