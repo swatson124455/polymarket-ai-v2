@@ -62,6 +62,33 @@ class KillSwitch:
         """Alias for check_kill_status for execution-loop use (check before execute)."""
         return await self.check_kill_status()
 
+    def cached_engaged(self) -> Optional[bool]:
+        """Last-known engaged state from the in-memory TTL cache, IGNORING the TTL.
+
+        Non-blocking, performs NO DB I/O — safe to call from a scan-loop timeout
+        handler. Returns:
+          True  — engaged (or hard-killed in-process)
+          False — not engaged per the last successful check (may be stale)
+          None  — no successful check has populated the cache yet (state unknown)
+
+        Deliberately ignores ``_cache_until``: a stale "not engaged" reading is
+        acceptable for the staleness-tolerant scan-loop decision (the next cycle
+        refreshes). NOT used by the execution path, which keeps the live check.
+        """
+        if self._killed:
+            return True
+        return self._cache_engaged
+
+    def cache_age_seconds(self) -> Optional[float]:
+        """Age (seconds) of the cached value, or None if never cached.
+
+        Observability for the scan-loop timeout path: a growing age means the bot
+        keeps timing out without ever refreshing the kill-switch state.
+        """
+        if self._cache_engaged is None:
+            return None
+        return max(0.0, time.monotonic() - (self._cache_until - KILL_CACHE_TTL_SECONDS))
+
     async def engage(self, reason: str = "Manual trigger") -> None:
         """Engage kill switch - stop all trading."""
         self._killed = True
