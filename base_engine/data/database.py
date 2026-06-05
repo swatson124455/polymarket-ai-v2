@@ -160,6 +160,30 @@ def _coerce_datetimes_naive_utc(session: Session, _flush_context: Any, _instance
 event.listen(Session, "before_flush", _coerce_datetimes_naive_utc)
 
 
+def _handle_error_should_invalidate(exc) -> bool:
+    """True when a DBAPI error means the connection is physically broken and must be
+    invalidated/evicted from the pool rather than returned for reuse.
+
+    Covers (a) dead connections (S136) and (b) asyncpg protocol-corruption left by a
+    cancelled-mid-query asyncio.wait_for (WI-21, 2026-06-04) — the same signatures the
+    REACTIVE _SemaphoreSession._CORRUPT_SIGS guard uses (S235), so they are aligned.
+    Every matched token is a PHYSICAL-connection failure (protocol-state / interface /
+    closed), NOT a benign query / constraint / statement-timeout error, so this does not
+    false-positive-evict healthy connections.
+    """
+    if exc is None:
+        return False
+    msg = str(exc)
+    name = type(exc).__name__
+    return (
+        "connection was closed" in msg
+        or "cannot switch to state" in msg   # WI-21: asyncpg protocol-state corruption
+        or "another operation" in msg        # WI-21: asyncpg concurrent-op corruption
+        or "ConnectionDoesNotExistError" in name
+        or "InterfaceError" in name
+    )
+
+
 class _SemaphoreSession:
     """
     Async context manager that wraps session creation with semaphore.
@@ -1237,12 +1261,14 @@ class Database:
         # Without this, ConnectionDoesNotExistError on mid-query connection death
         # returns the broken connection to the pool for reuse, causing cascading
         # failures across all bots.
+        # WI-21 (2026-06-04): also invalidate on asyncpg protocol-corruption
+        # ("cannot switch to state" / "another operation"). A connection poisoned by a
+        # cancelled-mid-query asyncio.wait_for was previously evicted only REACTIVELY by
+        # the _SemaphoreSession._CORRUPT_SIGS guard on the NEXT checkout (S235); matching
+        # here evicts it PROACTIVELY at error time, so it never re-enters the pool.
         @sa_event.listens_for(self.engine.sync_engine, "handle_error")
         def _on_handle_error(context):
-            _err_str = str(context.original_exception)
-            if ("connection was closed" in _err_str
-                    or "ConnectionDoesNotExistError" in type(context.original_exception).__name__
-                    or "InterfaceError" in type(context.original_exception).__name__):
+            if _handle_error_should_invalidate(context.original_exception):
                 if context.connection is not None:
                     try:
                         context.invalidate_pool_on_disconnect = True
