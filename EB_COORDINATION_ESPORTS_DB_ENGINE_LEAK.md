@@ -36,3 +36,54 @@ EsportsBot holds **50 of 80** total app→PgBouncer connections (63%) against a 
 
 ## Why this matters beyond esports
 With esports behaving (≈10–18 like the others), total demand would be ~30–48 vs the 65 ceiling — comfortable headroom, and the cross-bot "pool-pressure → kill-switch / scan-stall" family (MB kill-switch timeouts, WB scan-loop stall, EB scan-stall chain) likely collapses. This single leak is the most probable common driver. See `DB_VPS_WORKLOAD_RESEARCH_2026-06-04.md` for the full system picture.
+
+---
+
+# ADDENDUM — EB diligence verdict (2026-06-08): trigger re-rooted; fix is shared-module; operator chose DIAGNOSIS-ONLY
+
+**Filed by EB session 2026-06-08 (eb/main).** Read-only diligence per the standing "re-verify, don't trust" rule. **No code changed this session.** Operator decision on the fix: **deferred (diagnosis-only)** — this section is the decision input.
+
+## A. The original hypothesis is partially WRONG — verified
+The "per-85s engine re-init" is **NOT** a scan-loop/scheduler constructing a fresh engine each cycle. Verified on eb/main:
+- Engine is constructed **once at startup** — `base_engine.py:442` (`await self.db.init()`), reused thereafter.
+- **No per-cycle engine construction** exists in EB code: grepped `bots/esports_bot.py`, `bots/esports_live.py`, `esports_v2/` (only `esports_v2/scripts/shadow_report.py`, a standalone script, calls `create_async_engine`), and `prediction_engine.py:772` `db.init()` is a one-time startup-race guard in `_background_train`, not periodic.
+- No EB-only commit (the 53 eb/main deltas) touched engine/recovery/health construction.
+
+**Lead #1 in the original diagnosis was the correct one** (`recovery.py`).
+
+## B. Verified root chain (file:line)
+1. EB scan-path DB pressure saturates the pool → shared health check `_check_database()` wraps `get_session()`+`SELECT 1` in `asyncio.timeout(check_timeout_seconds)` (`health_monitor.py:160`) → times out → returns **UNHEALTHY** (`health_monitor.py:174-180`). *(This `asyncio.timeout`-around-`get_session` is itself a WI-21 corruption site — injected `CancelledError` poisons a connection on each timeout.)*
+2. Shared recovery loop `monitor_and_recover(interval_seconds=60)` (`base_engine.py:1672` → `recovery.py:175`) sees UNHEALTHY → `attempt_recovery("database")` → `_recover_database()` → **`self.db.init()`** (`recovery.py:109`) = full engine teardown+rebuild.
+3. `Database.init()` attempts `dispose()` of the old engine (`database.py:1112`); on poisoned/checked-out connections `dispose()` raises → caught at `database.py:1113` → **old engine orphaned undisposed** at `database.py:1115` → its connections pin in **session-mode** PgBouncer → accumulate (~50). *(Terminal mechanism is `database.py` — assigned to **MB** in the original Asks §2.)*
+
+## C. Empirical proof (live VPS, 2026-06-08, read-only — infra-state)
+Journal shows the exact chain repeating: `Attempting recovery for database: Database query timeout` → `Initializing PostgreSQL database` → `DB semaphore initialized`.
+| Metric (last 6h, `journalctl -u polymarket-esports`) | Count |
+|---|---|
+| `Attempting recovery for database` (all "Database query timeout") | 62 |
+| health-check UNHEALTHY (`Database query timeout` / `check failed`) | 62 |
+| `Initializing PostgreSQL database` (engine re-init) | 78 |
+- Δ(78−62)=16 ≈ startup inits across process restarts (PIDs cycled 870387→871309→872163→873495 in the 3h sample).
+- Cadence is **irregular/event-driven** (e.g. 11:32, 11:36, 11:48, 11:51, 11:55, 12:11…), consistent with health-triggered recovery — NOT a fixed per-cycle timer.
+
+## D. WI-21a + Option A are now LIVE in eb/main code (via merge `2738183`, 2026-06-08) — NOT yet deployed
+The eb/main↔master reconciliation merge ported both MB fixes onto eb/main; verified correct & complete:
+- **WI-21a**: `_handle_error_should_invalidate()` (`database.py:163`) — preserves original sigs + adds `"cannot switch to state"`/`"another operation"`; wired at `database.py:1271`.
+- **Option A**: scan-loop kill-switch cached fallback (`base_bot.py:762-813`; `kill_switch.py:65/82`), `kill_switch_cache_fallback` log emitted.
+- These are **in the branch but the splinter has NOT been redeployed**, so the *running* esports process does not have them yet. A deploy is needed to activate them (separate decision; MB-deploy-priority gate applies).
+
+## E. Fix options (all shared `base_engine/**`; splinter-isolated; master cherry-pick = MB sign-off)
+| # | Change | File | Stops leak? | MB risk |
+|---|--------|------|-------------|---------|
+| 1 | `_recover_database()`: probe existing engine first; only `db.init()` if genuinely dead — don't rebuild a live engine on a transient timeout | `recovery.py` | Yes, at the trigger | Low (only the recovery path changes) |
+| 2 | Require N consecutive UNHEALTHY before DB re-init | `recovery.py` | Mostly | Low |
+| 3 | Health probe: transient timeout → DEGRADED not UNHEALTHY + drop the `asyncio.timeout`-around-`get_session` (kills a WI-21 site) | `health_monitor.py` | Yes (removes false trigger) | Low–med (changes health semantics for all bots) |
+| 4 | Hand entire fix to MB | — | — | None for EB |
+
+## F. Recommendation + ownership split
+- **EB lane (the trigger):** Option 1 in `recovery.py` (deploy to esports splinter only; propose cherry-pick to master).
+- **MB lane (the leak mechanism + health semantics):** `database.py` dispose-on-reinit hardening (orphan-without-dispose at `:1115` when `dispose()` raises) per original Asks §2; Option 3 health-probe change if pursued.
+- Neither touches PgBouncer/Postgres config (RULE THREE intact).
+
+## G. Status
+No code changed. Full suite green (3765 passed post-merge); EB scan/prediction-log tests 34 passed. Awaiting operator/MB decision on which option to implement.
