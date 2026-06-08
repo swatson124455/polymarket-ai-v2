@@ -85,5 +85,33 @@ The eb/main↔master reconciliation merge ported both MB fixes onto eb/main; ver
 - **MB lane (the leak mechanism + health semantics):** `database.py` dispose-on-reinit hardening (orphan-without-dispose at `:1115` when `dispose()` raises) per original Asks §2; Option 3 health-probe change if pursued.
 - Neither touches PgBouncer/Postgres config (RULE THREE intact).
 
-## G. Status
+## G. Status (superseded — see H)
 No code changed. Full suite green (3765 passed post-merge); EB scan/prediction-log tests 34 passed. Awaiting operator/MB decision on which option to implement.
+
+---
+
+# H. FIXED + DEPLOYED (2026-06-08) — Option 1 shipped to esports splinter
+
+Operator reversed diagnosis-only → "fix then deploy". **Option 1 implemented + deployed.**
+
+**Fix:** `recovery.py` `_recover_database()` now re-PROBES a live engine (one `SELECT 1`) and returns success WITHOUT rebuilding when it passes; full `db.init()` only on probe-failure or no engine. Commit `ff5b9d4` (eb/main) + 4 regression tests (`tests/unit/test_recovery_db_reprobe.py`). Full suite **3769 passed**.
+
+**Deploy:** EB splinter release `20260608_090017` (esports-only restart; MB/WB/ingestion untouched, verified; PgBouncer left at 60 — RULE THREE intact).
+
+**Post-deploy verification (live, infra-state):**
+| Signal | Before | After |
+|---|---|---|
+| esports→:6432 conns (`sudo ss`, pid 876002) | ~50 | **16** (bounded to 18 cap) |
+| total app→PgBouncer python clients | 80 | **42** (< 65 ceiling) |
+| engine re-inits since start (~9 min) | ~13/hr | **1** (startup only) |
+| recovery on health-timeout | rebuild→leak | **"skipped engine re-init"** (re-probe success) |
+| NRestarts | 167 | **0** |
+| paper-mode | — | `simulation_mode=True` ✓ |
+
+Live chain confirmed: `Attempting recovery for database: Database query timeout` → `Recovery successful for database: Existing DB engine healthy on re-probe — skipped engine re-init`.
+
+**Remaining (separate from the cross-bot leak; NOT regressions):**
+1. esports still saturates its OWN 18-pool (`db_pool_health ... semaphore_available=0`; health intermittently "unhealthy"). Bounded now (no leak). Likely esports workload vs an 18-pool — candidate for the WI-21 scan-path `wait_for` removals (base_bot.py:853 etc.) and/or pool right-size within the shared budget.
+2. The re-probe shares the saturated pool; if it ever fails to get a slot it falls through to a rebuild (the leak path). Observed probes succeed; "re-inits stays ~1" is a ~9-min window.
+
+**MB coordination:** esports' shared-pool footprint dropped ~50→16 and total clients 80→42, so the cross-bot "pool-pressure → kill-switch timeout" family should relieve. **MB: please confirm via your SHOW POOLS before/after baseline and watch `kill_switch_cache_fallback` frequency — it should drop.** Also confirm over a multi-hour window that esports "Initializing PostgreSQL database" stays ~1/process (re-probe not falling through to rebuild under sustained saturation). `database.py` dispose-on-reinit hardening (Asks §2, MB-owned) remains the defense-in-depth net.
