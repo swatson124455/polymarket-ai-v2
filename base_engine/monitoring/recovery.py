@@ -103,11 +103,42 @@ class RecoveryProcedure:
         """Recover database connection."""
         if not self.db:
             return {"success": False, "message": "Database not configured"}
-        
+
+        # EB engine-leak root fix (2026-06-08): a transient health-check timeout
+        # under DB-pool pressure does NOT mean the engine is dead — the pool is
+        # just busy. Re-initializing a LIVE engine here orphans its pooled
+        # connections: Database.init()'s dispose() can raise on
+        # cancellation-poisoned asyncpg conns and is then swallowed, leaving the
+        # old engine undisposed (database.py:1112-1115). On session-mode
+        # PgBouncer those connections pin until GC, accumulating into the
+        # dominant shared-pool saturator (EsportsBot held ~50/80 vs an 18 cap;
+        # recovery fired ~62×/6h, each re-initing the engine).
+        # So when an engine already exists, re-PROBE it non-destructively first;
+        # only fall through to a full re-init when the probe fails with a real
+        # connection error (or no engine/session_factory exists at all).
+        # pool_pre_ping=True + the corruption-eviction guards (S235 reactive +
+        # WI-21a proactive) self-heal dead connections WITHOUT a rebuild.
+        if self.db.session_factory is not None:
+            try:
+                async with self.db.get_session() as session:
+                    from sqlalchemy import text
+                    await session.execute(text("SELECT 1"))
+                return {
+                    "success": True,
+                    "action": RecoveryAction.RECONNECT.value,
+                    "message": "Existing DB engine healthy on re-probe — skipped engine re-init",
+                }
+            except Exception as e:
+                logger.warning(
+                    "DB re-probe failed (%s) — engine appears genuinely broken, re-initializing",
+                    type(e).__name__,
+                )
+                # fall through to full re-init below
+
         try:
             # Try to reinitialize
             await self.db.init()
-            
+
             # Verify it works
             if self.db.session_factory:
                 async with self.db.get_session() as session:
