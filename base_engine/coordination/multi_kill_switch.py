@@ -85,6 +85,10 @@ class PortfolioKillSwitch:
         """Delegates to base KillSwitch."""
         return await self._base.is_engaged()
 
+    def cached_engaged(self) -> Optional[bool]:
+        """Non-blocking, in-memory last-known engaged state (delegates to base). None if uncached."""
+        return self._base.cached_engaged()
+
     async def engage(self, reason: str = "Portfolio limit breach") -> None:
         """Engage portfolio-level kill switch."""
         await self._base.engage(reason)
@@ -202,3 +206,24 @@ class MultiLayerKillSwitch:
         if await self.portfolio.is_engaged():
             return False
         return True
+
+    def cached_should_trade(self, bot_name: str) -> Optional[bool]:
+        """Non-blocking, in-memory-only mirror of should_trade() for the scan-loop
+        timeout-recovery path (base_bot). Performs NO DB I/O. Returns:
+          True  — cached state allows trading
+          False — cached state blocks (bot killed, system killed, or portfolio engaged)
+          None  — no cached info yet → caller should fail closed
+
+        Ignores the base KillSwitch cache TTL: a stale value is acceptable for the
+        staleness-tolerant scan decision (the next cycle refreshes). The execution
+        path does NOT use this — it keeps the authoritative live should_trade().
+        """
+        # Bot-level and system-level are pure in-memory — authoritative even when DB is slow.
+        if self.bot.is_killed(bot_name):
+            return False
+        if self.system._system_killed:
+            return False
+        cached = self.portfolio.cached_engaged()
+        if cached is None:
+            return None
+        return not cached
