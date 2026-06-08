@@ -2,6 +2,12 @@
 
 **Filed:** 2026-06-04 by MB session (MB = shared-infra source-of-truth). **Severity: HIGH.** **Owner: EB** (trigger is eb/main code) + **MB** (shared-code hardening). **Read-only diagnosis — nothing changed.**
 
+> **UPDATE 2026-06-05 (root cause refined + LOAD-BEARING reframe).** The "~85s engine re-init" is now root-caused as a **shared-code recovery→init feedback loop**: `recovery.monitor_and_recover` (60s) → `_recover_database` → `db.init()`, fired by an **over-sensitive health probe** that flags UNHEALTHY when the probe times out on a saturated pool; + 3 leak gaps in `Database.init()` (dominant: the init-FAILURE path nulls the engine without `dispose()`). Live: **48 recovery events / 25 min** on esports. Full root cause + stop+guardrail plan: **`DB_LEAK_STOP_AND_GUARDRAIL_PLAN_2026-06-05.md` (authoritative).** Two facts make the WI-21a port LOAD-BEARING, not housekeeping:
+> 1. **Deployed esports LACKS Option A + WI-21a** (`grep`=0 in `/opt/polymarket-ai-v2-esports/`), though eb/main worktree `2738183` merged them. So the bot GENERATING the corruption has neither the resilience nor the proactive corruption-eviction (WI-21a). **EB action: redeploy eb/main `2738183`** → brings WI-21a (esports is the corruption SOURCE → eviction matters most here) + Option A. ⚠ This does NOT fix the leak (the recovery→init loop is in `2738183` too) — it adds resilience + self-cleanup while the ROOT fix lands.
+> 2. The **ROOT leak fix is MB-owned shared code** (A1 `init()` leak-safety + A2 recovery de-amplification — see the plan doc §A), landing on master then propagating to splinters. **EB-only amplifier:** the stall-watchdog restart loop (`esports_bot.py:793-867`).
+>
+> **Operator elevation:** the splinter architecture means MB's master pool-fixes don't reach esports (the saturator). The EB session must actively work this — else MB stays hardened against a problem esports keeps regenerating at its source.
+
 ## One-line
 EsportsBot holds **50 of 80** total app→PgBouncer connections (63%) against a configured pool max of **18**, because its process **re-initializes the DB engine ~every 85s without disposing the old one**. The leaked engines pin Postgres backends in PgBouncer's **session-mode** pool, exhausting the shared 65-connection ceiling and starving MirrorBot / WeatherBot / ingestion → MB's "Kill switch check timed out" / scan-stall family.
 
