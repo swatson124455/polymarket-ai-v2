@@ -195,6 +195,22 @@ Order-log net ≈ −$3.24 vs probe drop −$3.95: residual ~$0.71 is fill-price
 
 **Positions-row note:** the 06-01/06-02 entries have live ENTRY trade_events (cost basis in recon) but `positions` shows no new rows with `created_at > 05-31` — row-provenance gap of the known S238 phantom/lifecycle family; does not affect the wallet arithmetic above (probes + order log + chain are the money truth).
 
+### Wallet-cash accounting as of 2026-06-10 (source-cited per line)
+
+**This is WALLET-CASH ARITHMETIC, NOT bot-recorded trading P&L.** `bot_pnl.py` cannot produce these figures: the live trade_events ledger is structurally incomplete for historical live data (0 live RESOLUTION events ever; cost basis cleared on close — `LIVE_ONCHAIN_RECONCILIATION_2026-06-03.md` §2). Per the standing rule (recon doc §8), chain is canonical for live positions; this table is the doc-of-record for these figures, each line carrying its own source.
+
+| Line | Amount | Source |
+|---|---|---|
+| Total pUSD in (deposits + redemption) | $26.83 = 5.00 + 20.00 + 1.83 | Money Movement Log above (operator deposits + 05-26 redemption row) |
+| Liquid pUSD now | $0.31782 | journal probe 2026-06-10 14:17 UTC (= system_kv 06-02 value, unchanged) |
+| Winning tokens on-chain, unredeemed | $18.82 | `reconcile_live_onchain.py` 2026-06-10 run (CTF `balanceOf` + CLOB winner; identical to 06-03 baseline §1) |
+| Open-position cost | ~$1.01 | `bot_pnl.py MirrorBot --mode live` 2026-06-10 (1 open, $1.01 cost) — matches recon `0xdbe93b` cost basis |
+| **Recoverable today** | **$20.15** = 0.32 + 18.82 + 1.01 | arithmetic over the three sourced lines above |
+| **Net wallet-cash drawdown** | **≈ −$6.68** = 26.83 − 20.15 | arithmetic; pending the open position's outcome; excludes idle USDC.e ($20.00 deposit-wallet + $15.99 EOA, never bot bankroll) |
+| Outcome tallies (57 live position-rows) | WIN=13 LOSS=32 EXITED=5 OPEN=7 | `reconcile_live_onchain.py` 2026-06-10 run (chain+CLOB outcome per row; NOT a bot_pnl.py figure — bot_pnl's live ledger cannot compute these, see header note) |
+
+Known residuals: ~$0.71 fill-price/fee variance in the 06-01→06-02 window (needs CLOB fill records or Polygonscan); 44/57 rows have no internal cost basis (recon §5) so per-position dollar P&L is not internally computable — the wallet-cash view above is the reliable aggregate.
+
 ## How this ledger is maintained
 
 1. **Every MB session** that touches the deposit wallet, the EOA, or any pUSD/USDC.e/CTF amount must add a row to the relevant section.
