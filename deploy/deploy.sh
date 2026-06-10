@@ -218,6 +218,21 @@ if [ "$PROBE_EXIT" -eq 0 ]; then
     if echo "$HEALTH_RESULT" | grep -q "HEALTH_WARN"; then
         echo "  WARN: scan_ms not seen from polymarket-weather within 420s. Service still active."
     fi
+elif [ "$PROBE_EXIT" -eq 255 ]; then
+    # S241: ssh exit 255 = the TRANSPORT failed (connection reset/timeout — e.g.
+    # fail2ban throttling after the deploy's connection burst), NOT a health
+    # verdict from the probe. The release is already swapped and the service
+    # restarted by step 6; rolling back on a dropped probe SSH reverts a
+    # healthy deploy (observed 2026-06-09: probe died at ~180s -> false
+    # rollback attempt). Leave the deploy in place and verify manually.
+    echo ""
+    echo "WARN: health probe SSH transport failed (exit 255) — NOT a health verdict."
+    echo "      No rollback. Release $TIMESTAMP is swapped and the service restarted."
+    echo "      Verify manually once SSH recovers:"
+    echo "        ssh -i \"$KEY\" $VPS 'systemctl is-active polymarket-weather; journalctl -u polymarket-weather -n 20 --no-pager'"
+    echo ""
+    echo "=== WB SPLINTER Deploy $TIMESTAMP UNVERIFIED (probe transport failure) ==="
+    exit 2
 else
     echo ""
     echo "ERROR: Health check failed (probe exit $PROBE_EXIT) — triggering rollback"
