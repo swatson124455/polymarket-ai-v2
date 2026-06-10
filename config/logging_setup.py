@@ -123,7 +123,17 @@ def configure_logging() -> None:
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
             _DedupProcessor(),  # S177: suppress repeated identical log lines (60s window)
-            structlog.dev.ConsoleRenderer(),
+            # 2026-06-10 (EB scan-wedge root fix): force PLAIN tracebacks. Without an
+            # explicit exception_formatter, ConsoleRenderer auto-upgrades to rich's
+            # traceback renderer (Panel+Syntax+pygments) when rich is importable.
+            # That rendering runs SYNCHRONOUSLY on the event-loop thread at every
+            # exc_info log site; on a fat SQLAlchemy/asyncpg exception, pygments
+            # tokenization blocked the esports event loop for minutes (py-spy-proven:
+            # MainThread pinned in pygments get_tokens_unprocessed across 60s dumps),
+            # freezing the scan loop after cycle 1 -> scan_age>900s -> stall-watchdog
+            # restart churn. plain_traceback is O(n) stdlib formatting; every
+            # non-exception log line is byte-identical to before.
+            structlog.dev.ConsoleRenderer(exception_formatter=structlog.dev.plain_traceback),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(getattr(logging, _log_level, logging.INFO)),
         logger_factory=_TeeLoggerFactory(),
