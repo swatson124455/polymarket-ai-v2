@@ -203,6 +203,67 @@ class OnlinePlattCalibrator:
         return self._available and self._n >= self._min_samples
 
 
+def _log_stalled_task_stacks(max_tasks: int = 100, max_frames: int = 8) -> None:
+    """WI-21b (2026-06-10): name the wedged coroutine before a stall force-exit.
+
+    Post-3a00032 wedges show the event loop ALIVE (py-spy: MainThread idle in
+    asyncio runners) — the block is an awaited coroutine that never resolves,
+    which py-spy thread dumps cannot see (suspended async frames are not on
+    the C stack). This logs every asyncio task's suspended await chain right
+    before the stall watchdog's os._exit, so each restart's journal carries
+    the exact hung await (file:line:function, innermost first).
+
+    Pure introspection: wraps/cancels NOTHING (RULE ZERO rule 6 / S162 — no
+    client-side cancellation near asyncpg). Called only from the watchdogs'
+    already-fatal path, so steady-state cost is zero. Shared by EsportsBot and
+    EsportsBotV2 (lazy-imported there).
+    """
+    import os.path as _osp
+
+    def _await_chain(obj) -> list:
+        # Task.get_stack() is USELESS here: it walks frame.f_back, which is
+        # None for suspended coroutine frames, so it yields only the OUTERMOST
+        # frame. Walk the cr_await / gi_yieldfrom chain instead — one entry
+        # per await level, outermost first, terminal awaitable (Future/lock/
+        # Event waiter) last. That terminal entry IS the hung await.
+        chain = []
+        while obj is not None and len(chain) < max_frames:
+            frame = getattr(obj, "cr_frame", None) or getattr(obj, "gi_frame", None)
+            code = getattr(obj, "cr_code", None) or getattr(obj, "gi_code", None)
+            if frame is not None and code is not None:
+                chain.append(
+                    f"{_osp.basename(code.co_filename)}:{frame.f_lineno}:{code.co_name}"
+                )
+                obj = getattr(obj, "cr_await", None) or getattr(obj, "gi_yieldfrom", None)
+            else:
+                chain.append(f"<{type(obj).__name__}>")  # Future/lock/etc.
+                break
+        return chain
+
+    try:
+        _tasks = asyncio.all_tasks()
+    except Exception as e:
+        logger.critical("scan_stall_task_dump_failed", error=str(e))
+        return
+    logger.critical("scan_stall_task_dump_begin", task_count=len(_tasks))
+    for _i, _t in enumerate(sorted(_tasks, key=lambda t: t.get_name())):
+        if _i >= max_tasks:
+            logger.critical(
+                "scan_stall_task_dump_truncated", shown=max_tasks, total=len(_tasks)
+            )
+            break
+        try:
+            # innermost (hung await) first for grep-ability
+            _chain = " <- ".join(reversed(_await_chain(_t.get_coro()))) or "<no frames>"
+            _coro = getattr(_t.get_coro(), "__qualname__", None) or str(_t.get_coro())[:120]
+        except Exception as e:
+            _chain = f"<introspection failed: {e}>"
+            _coro = "?"
+        logger.critical(
+            "scan_stall_task_stack", task=_t.get_name(), coro=_coro, awaiting=_chain
+        )
+
+
 class EsportsBot(BaseBot):
     """
     Pre-game + live in-play esports trading bot.
@@ -849,6 +910,11 @@ class EsportsBot(BaseBot):
                             "threshold (likely wedged DB pool) — force-exiting "
                             "for systemd restart"),
                 )
+                # WI-21b: name the wedged await in the journal before exiting.
+                try:
+                    _log_stalled_task_stacks()
+                except Exception:
+                    pass
                 # S235: os._exit, NOT os.kill(SIGTERM). The watchdog only fires
                 # when the process is already wedged, so SIGTERM's graceful
                 # shutdown handler hangs on the SAME wedged pool — and systemd

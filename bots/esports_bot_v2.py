@@ -220,6 +220,12 @@ class EsportsBotV2(BaseBot):
                             "threshold (likely wedged DB pool) — force-exiting "
                             "for systemd restart"),
                 )
+                # WI-21b: name the wedged await in the journal before exiting.
+                try:
+                    from bots.esports_bot import _log_stalled_task_stacks
+                    _log_stalled_task_stacks()
+                except Exception:
+                    pass
                 # S235: os._exit, NOT os.kill(SIGTERM). The watchdog only fires
                 # when the process is already wedged, so SIGTERM's graceful
                 # shutdown handler hangs on the SAME wedged pool — and systemd
