@@ -548,6 +548,11 @@ class Settings(BaseSettings):
     LIQUIDITY_DEPTH_MULT_EB: float = float(os.getenv("LIQUIDITY_DEPTH_MULT_EB", "3.0"))
     LIQUIDITY_DEPTH_DEFAULT: float = float(os.getenv("LIQUIDITY_DEPTH_DEFAULT", "5.0"))
     SCAN_MARKET_LIMIT: int = int(os.getenv("SCAN_MARKET_LIMIT", "1500"))  # S101b: raised from 800 — pagination found 1139 markets (114 events)
+    # B1 (S241): category-scoped tradeable-market scans only return markets with
+    # end_date_iso within the last N days (or future). 0 disables the filter
+    # (rollback). Dead never-deactivated rows were crowding fresh markets out of
+    # the liquidity-ordered LIMIT (WB universe collapsed to 1 city, 2026-06-10).
+    CATEGORY_SCAN_FRESHNESS_DAYS: int = int(os.getenv("CATEGORY_SCAN_FRESHNESS_DAYS", "2"))
     USE_GOOGLE_TRENDS: bool = os.getenv("USE_GOOGLE_TRENDS", "true").lower() in ("true", "1", "yes")
     CALIBRATION_TRACKING_ENABLED: bool = os.getenv("CALIBRATION_TRACKING_ENABLED", "true").lower() in ("true", "1", "yes")
     PREDICTION_LOG_ENABLED: bool = os.getenv("PREDICTION_LOG_ENABLED", "true").lower() in ("true", "1", "yes")

@@ -2408,7 +2408,12 @@ class BaseEngine:
             # Cache key includes categories so category-specific queries don't collide
             # with the uncategorised cache used by other bots.
             _cats_key = ",".join(sorted(categories)) if categories else ""
+            # B1 (S241): freshness window for category-scoped scans (see SQL below).
+            # Computed here so the Redis cache key reflects the query shape.
+            _fresh_days = int(getattr(settings, "CATEGORY_SCAN_FRESHNESS_DAYS", 2)) if categories else 0
             _cache_key = f"tradeable_market_ids:{min_liq}:{scan_limit}:{_cats_key}"
+            if _fresh_days > 0:
+                _cache_key += f":f{_fresh_days}"
             if self.cache:
                 try:
                     cached = await self.cache.get(_cache_key)
@@ -2435,6 +2440,22 @@ class BaseEngine:
                             "AND LOWER(COALESCE(m.category, '')) = ANY(:categories) "
                         )
                         sql_params["categories"] = [c.lower() for c in categories]
+                        # B1 (S241): category scans serve trading bots that need CURRENT
+                        # markets (WB daily weather). Without an end-date filter, the
+                        # liquidity-ordered LIMIT fills with dead rows still flagged
+                        # active+unresolved (measured 2026-06-10: 12,416 active weather
+                        # rows, only 95 fresh; 73 of 94 eligible fresh markets crowded
+                        # out -> WB city universe collapsed to 1). NULL end_date_iso is
+                        # excluded on purpose: the dead bulk (10.5k rows) is NULL-dated;
+                        # a just-ingested market lacking end_date_iso is invisible for
+                        # one enrichment cycle only. Non-category callers are unchanged.
+                        # Rollback: CATEGORY_SCAN_FRESHNESS_DAYS=0 + service restart.
+                        if _fresh_days > 0:
+                            from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+                            category_clause += "AND m.end_date_iso >= :fresh_cutoff "
+                            sql_params["fresh_cutoff"] = (
+                                _dt.now(_tz.utc).replace(tzinfo=None) - _td(days=_fresh_days)
+                            )
                     result = await session.execute(sa_text(
                         "SELECT m.id FROM markets m "
                         "WHERE m.active = true "
