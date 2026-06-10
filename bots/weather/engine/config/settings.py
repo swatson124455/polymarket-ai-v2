@@ -553,6 +553,11 @@ class Settings(BaseSettings):
     # (rollback). Dead never-deactivated rows were crowding fresh markets out of
     # the liquidity-ordered LIMIT (WB universe collapsed to 1 city, 2026-06-10).
     CATEGORY_SCAN_FRESHNESS_DAYS: int = int(os.getenv("CATEGORY_SCAN_FRESHNESS_DAYS", "2"))
+    # B2 (S241): ModelRunMonitor mass-refresh horizon (days of target dates per
+    # station). 8d x all stations = ~544 forecast fetches per model-run event,
+    # which 429'd Open-Meteo and starved the scan path (no_forecast every cycle).
+    # WB trades short-lead dailies; 3 days covers them. Set 8 for old behavior.
+    WEATHER_MODEL_RUN_REFRESH_DAYS: int = int(os.getenv("WEATHER_MODEL_RUN_REFRESH_DAYS", "3"))
     USE_GOOGLE_TRENDS: bool = os.getenv("USE_GOOGLE_TRENDS", "true").lower() in ("true", "1", "yes")
     CALIBRATION_TRACKING_ENABLED: bool = os.getenv("CALIBRATION_TRACKING_ENABLED", "true").lower() in ("true", "1", "yes")
     PREDICTION_LOG_ENABLED: bool = os.getenv("PREDICTION_LOG_ENABLED", "true").lower() in ("true", "1", "yes")

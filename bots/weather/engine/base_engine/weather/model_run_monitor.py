@@ -220,8 +220,16 @@ class ModelRunMonitor:
         Populates _model_run_cache and checks for forecast jumps.
         """
         today = date.today()
-        # HRRR only has 48h horizon on extended runs — limit dates for HRRR-only refreshes
-        max_days = 3 if us_only else 8
+        # HRRR only has 48h horizon on extended runs — limit dates for HRRR-only refreshes.
+        # B2 (S241): the full-horizon refresh (8d x all stations = ~544
+        # get_combined_forecast fetches per model-run event) burned the Open-Meteo
+        # quota -> 429 cooldowns -> the scan path's on-demand fetches starved
+        # (weatherbot_analyze_skip reason=no_forecast every cycle). WB trades
+        # short-lead dailies; 3 days covers them. WEATHER_MODEL_RUN_REFRESH_DAYS=8
+        # restores the old horizon.
+        from bots.weather.engine.config.settings import settings as _settings
+        _horizon = max(1, int(getattr(_settings, "WEATHER_MODEL_RUN_REFRESH_DAYS", 3)))
+        max_days = 3 if us_only else _horizon
         target_dates = [today + timedelta(days=d) for d in range(0, max_days)]
 
         _refreshed = 0
@@ -239,6 +247,24 @@ class ModelRunMonitor:
         # Process in batches of 20 to limit concurrent API calls
         _BATCH_SIZE = 20
         for batch_start in range(0, len(pairs), _BATCH_SIZE):
+            # B2 (S241): if any Open-Meteo model is in an active 429 cooldown,
+            # abort the remainder of this refresh round instead of burning the
+            # quota the scan path needs for its on-demand fetches. Cache warming
+            # is an optimization; trading-path forecasts take priority. The next
+            # model-run event retries. (_model_429_until is the forecast client's
+            # per-model cooldown map — this monitor already pokes its private
+            # cache at _model_run_cache, same access pattern.)
+            _cooled = getattr(self._fc, "_model_429_until", None) or {}
+            _now_mono = time.monotonic()
+            _active_cooldowns = sorted(m for m, until in _cooled.items() if _now_mono < until)
+            if _active_cooldowns:
+                logger.warning(
+                    "model_run_refresh_aborted_429",
+                    cooled_models=_active_cooldowns,
+                    done_pairs=batch_start,
+                    total_pairs=len(pairs),
+                )
+                break
             batch = pairs[batch_start:batch_start + _BATCH_SIZE]
             results = await asyncio.gather(
                 *(self._refresh_single(station, td) for station, td in batch),
