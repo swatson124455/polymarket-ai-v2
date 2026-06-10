@@ -1098,6 +1098,7 @@ class Database:
         self.engine = None
         self.session_factory: Optional[async_sessionmaker] = None
         self._engine_loop_id: Optional[int] = None  # id(loop) that created engine; avoid dispose() from other loop
+        self._pool_health_task = None  # A1-GAP-3: cancelled on re-init so each init doesn't orphan a 60s logging task
 
     async def init(self) -> None:
         """
@@ -1106,6 +1107,19 @@ class Database:
         Safe to call multiple times: clears existing engine (dispose only when in same loop to avoid "different loop").
         """
         if self.engine is not None:
+            # A1-GAP-3 (2026-06-08): cancel the prior pool-health task before dropping the
+            # engine. _init_postgres() spawns a new _pool_health_task each call; without this
+            # cancel, re-init orphans the previous one (only close() cancelled it) — a 60s
+            # logging task leaked per re-init.
+            _prev_pht = getattr(self, "_pool_health_task", None)
+            if _prev_pht is not None and not _prev_pht.done():
+                try:
+                    _prev_pht.cancel()
+                except Exception as _pht_err:
+                    # Task pinned to a closed prior loop raises RuntimeError on cancel —
+                    # must not escape init() (same guard as the dispose below).
+                    logger.debug("Cancelling previous pool-health task: %s", _pht_err)
+            self._pool_health_task = None
             try:
                 current_loop_id = id(asyncio.get_running_loop())
                 if current_loop_id == self._engine_loop_id:
