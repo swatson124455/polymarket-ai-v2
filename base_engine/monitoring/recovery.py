@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from structlog import get_logger
 from base_engine.monitoring.health_monitor import HealthMonitor, HealthStatus
-from base_engine.data.database import Database
+from base_engine.data.database import Database, DatabaseError
 from base_engine.data.redis_cache import RedisCache
 
 logger = get_logger()
@@ -100,24 +100,56 @@ class RecoveryProcedure:
             return recovery_result
     
     async def _recover_database(self) -> Dict[str, Any]:
-        """Recover database connection."""
+        """Recover database connection.
+
+        A2 (2026-06-08): distinguish a busy-but-LIVE engine from a genuinely-broken one.
+        A live engine under transient pool pressure must NOT be torn down and re-created
+        — that re-init churn is what drove the connection-leak + sys.exit restart storm
+        (pinned: recovery ~40 events/50min, OS conns tracked the pool with no dispose-leak
+        in the calm state). pool_pre_ping already recycles dead conns, so a full re-init
+        is only warranted when the engine is genuinely gone.
+        """
         if not self.db:
             return {"success": False, "message": "Database not configured"}
-        
+
         try:
-            # Try to reinitialize
+            # Engine present → probe it directly, do NOT re-initialize.
+            if self.db.session_factory is not None:
+                try:
+                    async with self.db.get_session() as session:
+                        from sqlalchemy import text
+                        await session.execute(text("SELECT 1"))
+                    return {
+                        "success": True,
+                        "action": RecoveryAction.RECONNECT.value,
+                        "message": "Database live — no re-init needed",
+                    }
+                except DatabaseError as _transient:
+                    # Semaphore/pool-acquire timeout or single-connection corruption =
+                    # transient back-pressure, NOT a dead engine. Report success so
+                    # recovery neither re-inits (no churn/leak) nor counts a failure
+                    # (no sys.exit restart). pool_pre_ping recycles dead conns next checkout.
+                    return {
+                        "success": True,
+                        "action": RecoveryAction.RECONNECT.value,
+                        "message": f"Database busy (transient, engine live) — skipping re-init: {str(_transient)[:80]}",
+                    }
+                except Exception:
+                    # Genuine connection error on a present engine → fall through to re-init.
+                    pass
+
+            # session_factory is None (engine genuinely gone) OR the live probe raised a
+            # non-transient error → re-create the engine.
             await self.db.init()
-            
-            # Verify it works
+
             if self.db.session_factory:
                 async with self.db.get_session() as session:
                     from sqlalchemy import text
                     await session.execute(text("SELECT 1"))
-                
                 return {
                     "success": True,
                     "action": RecoveryAction.RECONNECT.value,
-                    "message": "Database reconnected successfully"
+                    "message": "Database reconnected (re-initialized)"
                 }
             else:
                 return {
