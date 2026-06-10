@@ -167,6 +167,34 @@ Three positions opened in the S232 live window (2026-05-28). All three markets *
 
 ---
 
+## 2026-06-10 update — gap window 06-01→06-02 closed + fresh on-chain verification
+
+**Balance trail extension (journalctl probes, mirror):**
+
+| Observed (UTC) | Balance | Note |
+|---|---|---|
+| 2026-06-01 18:57 – 06-02 05:21 | $4.26 → $0.32 | **5 live BUYs + 2 live SELLs** (order log below). Net out ≈ $3.95. |
+| 2026-06-02 23:57 | **$0.31782** | Last system_kv write (`deposit_wallet_balance_pusd`). |
+| 2026-06-10 14:17 (journal probe, live) | **$0.31782** | UNCHANGED for 8 days — zero trading activity since 06-02 05:19 (confirmed by `bot_pnl.py --mode live 168`: 0 entries/exits/resolutions). Balance is current, not stale; the system_kv WRITE path stopped updating after 06-02 (probe itself alive in journal — minor WI-11 follow-up). |
+
+**Live orders 06-01→06-02 (journalctl "Order placed", live mode; fills evidenced by "matched orders can't be canceled" / recon EXITED status):**
+
+| UTC | Side | Size@Price | ~pUSD | Market | Outcome today (recon 06-10) |
+|---|---|---|---|---|---|
+| 06-01 18:57 | BUY YES | 1.98@0.51 | −1.01 | `0x5c19f2…` | exited 06-02 (SELL below) |
+| 06-01 19:12 | BUY NO | 3.92@0.26 | −1.02 | `0x65683e…` | **WON — $3.92 redeemable (item #1 of the $18.82)** |
+| 06-01 19:22 | BUY YES | 1.87@0.54 | −1.01 | `0x9188ea…` | LOST |
+| 06-02 03:40 | SELL | 6.06@0.15 | +0.91 | `0xd86a81…` | exited |
+| 06-02 04:08 | BUY YES | 5.05@0.20 | −1.01 | `0xdbe93b…` | **the 1 currently-open position** |
+| 06-02 04:56 | SELL | 1.98@0.46 | +0.91 | `0x5c19f2…` | exited |
+| 06-02 05:19 | BUY NO | 2.53@0.40 | −1.01 | `0x2340fa…` | LOST (resolved after 06-03 baseline) |
+
+Order-log net ≈ −$3.24 vs probe drop −$3.95: residual ~$0.71 is fill-price/fee variance + possibly the 05-31 208932 entry landing after the last 05-31 probe — exact per-fill amounts need CLOB fill records or Polygonscan (the standing phase-b gap). Within the same tolerance the 05-28 window was accepted at.
+
+**Fresh on-chain reconciliation (2026-06-10, `reconcile_live_onchain.py`, read-only):** 57 live positions (unchanged — ZERO new since 06-03). Outcomes: WIN=13 LOSS=32 (was 31; `0x2340fa` NO resolved against us) EXITED=5 OPEN=7. **$18.82 in winning tokens STILL unredeemed on-chain — identical per-token balances to the 06-03 baseline. The operator redemption (recon §1) has NOT been done; the S234 T1 winner is now ~16 days unredeemed.**
+
+**Positions-row note:** the 06-01/06-02 entries have live ENTRY trade_events (cost basis in recon) but `positions` shows no new rows with `created_at > 05-31` — row-provenance gap of the known S238 phantom/lifecycle family; does not affect the wallet arithmetic above (probes + order log + chain are the money truth).
+
 ## How this ledger is maintained
 
 1. **Every MB session** that touches the deposit wallet, the EOA, or any pUSD/USDC.e/CTF amount must add a row to the relevant section.
