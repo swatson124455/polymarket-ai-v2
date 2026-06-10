@@ -1688,10 +1688,24 @@ class BaseEngine:
         # Every 60s, pre-computes feature vectors for all active markets so
         # EnsembleBot scan_and_trade() predict() calls hit the fast path (zero DB queries).
         if self.prediction_engine and self.prediction_engine.initialized:
-            self._feature_precompute_task = asyncio.create_task(self._feature_precompute_loop())
-            self._feature_precompute_task.add_done_callback(lambda t: self._on_bg_task_done(t, "feature_precompute"))
-            logger.info("Feature pre-compute background loop started")
+            # 2026-06-10 EB-gate: FEATURE_PRECOMPUTE_ENABLED=false on the esports service.
+            # No esports bot consumes the PE feature cache (EsportsBot/V2 use their own
+            # models), and batch_precompute_all_features fans out one task per market —
+            # ~2,500 live tasks observed at EVERY scan-stall wedge (WI-21b dump:
+            # _precompute_one x2474 parked on its Semaphore(2)) with the 30+ min batch
+            # restarted every 60s. Default true → mirror/ensemble services unaffected.
+            # Consumers degrade safely when the cache never warms: ensemble_bot:998
+            # skip-loop runs only on services where the flag stays true;
+            # position_manager:1029 AND-gates pe.predict on _feature_cache_warmed
+            # (skips, not blocks); prediction_engine logging paths no-op.
+            if getattr(settings, "FEATURE_PRECOMPUTE_ENABLED", True):
+                self._feature_precompute_task = asyncio.create_task(self._feature_precompute_loop())
+                self._feature_precompute_task.add_done_callback(lambda t: self._on_bg_task_done(t, "feature_precompute"))
+                logger.info("Feature pre-compute background loop started")
+            else:
+                logger.info("Feature pre-compute loop disabled (FEATURE_PRECOMPUTE_ENABLED=false)")
             # B12: KS test regime detection — background check every 30min
+            # (independent of the precompute gate; lightweight sleep-mostly loop)
             self._ks_regime_task = asyncio.create_task(self._ks_regime_detection_loop())
             self._ks_regime_task.add_done_callback(lambda t: self._on_bg_task_done(t, "ks_regime"))
             logger.info("B12 KS regime detection loop started")

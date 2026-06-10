@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     INGESTION_ENABLED: bool = os.getenv("INGESTION_ENABLED", "true").lower() in ("true", "1", "yes")  # S152: false in bot .env when ingestion runs as separate service
     # Elite-direction batch refresh loop — set false on services whose bots don't consume elite_direction (esports). Default true keeps mirror/ensemble/ingestion unchanged.
     ELITE_BATCH_ENABLED: bool = os.getenv("ELITE_BATCH_ENABLED", "true").lower() in ("true", "1", "yes")  # 2026-06-03: false on esports service — no esports bot reads elite_direction; loop only burns esports' DB pool
+    # Feature-precompute loop — set false on services whose bots don't consume the PE feature cache (esports: EsportsBot/V2 use their own models). Default true keeps mirror/ensemble unchanged.
+    FEATURE_PRECOMPUTE_ENABLED: bool = os.getenv("FEATURE_PRECOMPUTE_ENABLED", "true").lower() in ("true", "1", "yes")  # 2026-06-10: false on esports — loop fans out one task per market (~2,500 observed via WI-21b dump) every 60s; dominant task-flood at every scan-stall wedge
     # Ingestion scheduler timeouts
     RUN_INGESTION_MAX_SECONDS: float = float(os.getenv("RUN_INGESTION_MAX_SECONDS", "900"))  # S152: master cycle timeout (was 2400)
     INGESTION_TIMEOUT_SECONDS: float = float(os.getenv("INGESTION_TIMEOUT_SECONDS", "300"))  # S152: ingest_everything timeout (was 600)
