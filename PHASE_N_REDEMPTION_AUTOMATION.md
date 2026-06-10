@@ -67,6 +67,13 @@ Operator authorized a live canary to test programmatic redemption. Result: **the
 
 **Unblock now needs the impl ABI — Path 1 below (Polygonscan/Etherscan key). Until then, manual UI redemption is the only reliable recovery (`OPERATOR_GUARDIANS_REDEMPTION.md`).** Do NOT blind-fire more executor-signature guesses against a funds-holding proxy.
 
+### 2026-06-10 impl bytecode decode (no key — partial)
+`eth_getCode(0x58ca…b1eb)` = 13,804 B, ~70 PUSH4 candidates (some are string-data false positives). The impl is a **UUPS-upgradeable, Ownable, Pausable, EIP-1271 (`isValidSignature` 0x1626ba7e), ERC721/1155-receiver Polymarket proxy** — NOT a Gnosis Safe (no `execTransaction` 0x6a761202). Selectors resolved via 4byte (needs a browser `User-Agent`; default urllib UA is 403'd; openchain 500'd):
+- `0x44004cc1 withdrawERC20(address,address,uint256)` ← the **post-redeem withdraw path** (move USDC.e out of the proxy after redemption)
+- `0x7ae26773 revokeAllowance(address,address)`, `0x5325ad3d authorizedImplementation(address)`, `0xc987336c upgrade(address,bytes)`, `0xeef09bad timelockDelay()`, `0xaf640d0f id()`, `0x90b8ec18 TransferFailed()` (error)
+- **~30 proprietary selectors UNRESOLVED** (not in 4byte/openchain) — the redeem/executor path is among these; bytecode-only naming is the multi-day route and unsafe to brute-force against a funds-holding proxy.
+**CONCLUSION: the build is gated on Path 1 (the verified source via an API key).** With the key, `getsourcecode(0x58ca…b1eb)` gives exact function names → identify the redeem executor → build → ONE canary → batch. `withdrawERC20` is already identified for the conversion/withdraw step. **Operator action: get a free Etherscan V2 key, set `ETHERSCAN_API_KEY=` in `/opt/pa2-shared/.env`; then this build completes.**
+
 ## Three paths to unblock
 
 ### Path 1 — Get the impl ABI (fastest if it works)
