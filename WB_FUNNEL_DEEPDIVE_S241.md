@@ -91,3 +91,14 @@ Tests: B1 6/6, B2 6/6; full suite 3398 pass / 7 pre-existing EB. Release **`2026
 Redis-persisted ensemble cooldowns) · `groups=78, groups_with_edge=1, trades=1` — first entry on first scan.
 **WATCH:** no_forecast skips should fade as the 1h ensemble cooldowns expire; api_calls stays double-digit; entry rate over 24-48h.
 **B3 (markets-table hygiene + ingestion deactivation) remains open** — operator + MB-coordination item.
+
+## ★ B3 EXECUTED (2026-06-10, operator-authorized "clean dead items")
+One-time deactivation of dead weather rows, weather category ONLY (other categories untouched — MB/EB lanes).
+Criteria: active+unresolved weather AND (ended >2d ago OR (NULL end_date_iso AND created >7d ago)) AND no
+open/reserving position (guard matched 0). Dry-run: 11,750 candidates / 0 position conflicts / 646 kept fresh.
+Executed in one transaction: **UPDATE 11750 → post-state 646 active weather rows.**
+**Reversal artifact:** `/home/ubuntu/wb_b3_deactivated_ids_20260610.csv` (11,750 ids);
+undo = `UPDATE markets SET active=true WHERE id IN (csv ids)`. Scripts: `scripts/wb_b3_dead_market_cleanup.sql`
+(dry-run+criteria record) + `scripts/wb_b3_execute.sql`. Post-verify: 4 services active; WB scanning n=38,
+api_calls=20; mirror 0 warnings in 10-min window. NOTE: dead rows will re-accumulate without ingestion-side
+continuous deactivation (shared service = MB-lane); WB itself is immune via B1.
