@@ -245,22 +245,59 @@ def _log_stalled_task_stacks(max_tasks: int = 100, max_frames: int = 8) -> None:
     except Exception as e:
         logger.critical("scan_stall_task_dump_failed", error=str(e))
         return
-    logger.critical("scan_stall_task_dump_begin", task_count=len(_tasks))
-    for _i, _t in enumerate(sorted(_tasks, key=lambda t: t.get_name())):
-        if _i >= max_tasks:
+
+    # Histogram by coroutine qualname FIRST — with a runaway task leak
+    # (observed 2026-06-10: task_count ~2500 at every wedge, ~2/sec spawned)
+    # the dominant coro name IS the leak fingerprint; per-task detail lines
+    # are secondary. One line, dedup-safe (wedges are ~20min apart > 60s).
+    from collections import Counter as _Counter
+    _hist: _Counter = _Counter()
+    for _t in _tasks:
+        try:
+            _hist[getattr(_t.get_coro(), "__qualname__", None) or "?"] += 1
+        except Exception:
+            _hist["?"] += 1
+    logger.critical(
+        "scan_stall_task_dump_begin",
+        task_count=len(_tasks),
+        top_coros="; ".join(f"{_n} x{_c}" for _n, _c in _hist.most_common(15)),
+    )
+
+    # Detail: ONE sample await-chain per DISTINCT coro qualname. Event name
+    # carries a unique suffix — the _DedupProcessor keys on (event, level)
+    # and silently dropped 99/100 identical-event lines in the first field
+    # deployment of this dump (2026-06-10). Never reuse one event name for
+    # a multi-line dump.
+    _seen: set = set()
+    _shown = 0
+    for _t in _tasks:
+        try:
+            _coro = getattr(_t.get_coro(), "__qualname__", None) or str(_t.get_coro())[:120]
+        except Exception:
+            _coro = "?"
+        if _coro in _seen:
+            continue
+        _seen.add(_coro)
+        _shown += 1
+        if _shown > max_tasks:
             logger.critical(
-                "scan_stall_task_dump_truncated", shown=max_tasks, total=len(_tasks)
+                "scan_stall_task_dump_truncated",
+                distinct_shown=max_tasks,
+                distinct_total=len(_hist),
+                task_total=len(_tasks),
             )
             break
         try:
             # innermost (hung await) first for grep-ability
             _chain = " <- ".join(reversed(_await_chain(_t.get_coro()))) or "<no frames>"
-            _coro = getattr(_t.get_coro(), "__qualname__", None) or str(_t.get_coro())[:120]
         except Exception as e:
             _chain = f"<introspection failed: {e}>"
-            _coro = "?"
         logger.critical(
-            "scan_stall_task_stack", task=_t.get_name(), coro=_coro, awaiting=_chain
+            f"scan_stall_task_stack_{_shown:02d}",
+            coro=_coro,
+            count=_hist.get(_coro, 1),
+            task=_t.get_name(),
+            awaiting=_chain,
         )
 
 
