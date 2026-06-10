@@ -32,6 +32,7 @@ The connection leak is **NOT esports-specific code** — it's a **SHARED-code fe
 ## PLAN
 
 ### A. STOP THE LEAK — MB-owned shared code (highest leverage; cross-bot verify all 14 bots)
+> **⚠ SUPERSEDED IN PART (2026-06-08):** Option-B pinning refuted the A1 "init() dispose-leak" mechanism (same-loop dispose already fires; live watch showed OS conns ≤ pool-max, tracking the pool). **Scope reduced to A2 + A1-GAP-3 only; A1 GAP 1/2 DEFERRED** unless OS conns exceed pool-max post-A2 during a saturation window. See the CORRECTION block in `AGENT_PLAN_A1A2_INIT_LEAK_SAFETY_2026-06-05.md`. Also noted there: ingestion doesn't run RecoveryProcedure (A2 no-op for it); eb/main carries a divergent re-probe fix `ff5b9d4` needing deliberate merge reconciliation; WB silo needs the port before `weather_main.py` activation.
 **A1. Make `Database.init()` re-init leak-safe (`database.py`).** The durable fix — caps the leak for *every* service regardless of trigger.
 - Failure path (`:1136-1140`): `await self.engine.dispose()` (best-effort) before nulling. *(GAP 2 — dominant.)*
 - Re-init path (`:1108-1117`): always dispose-before-recreate; cancel `self._pool_health_task` before overwrite (GAP 3); handle cross-loop dispose (schedule on owning loop or restrict re-init to same loop) (GAP 1).
