@@ -58,6 +58,7 @@ CTF = to_checksum_address("0x4D97DCd97eC945f40cF65F87097ACe5EA0476045")         
 PUSD = to_checksum_address("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB")         # CollateralToken (pUSD) — V2 trading collateral
 USDCE = to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")        # USDC.e — CTF/redemption collateral
 FACTORY = to_checksum_address("0x00000000000Fb5C9ADea0298D729A0CB3823Cc07")      # DepositWalletFactory (relayer entrypoint)
+ONRAMP = to_checksum_address("0x93070a847efEf7F70739046A929D47a521F5B8ee")       # Permissionless Collateral Onramp (USDC.e -> pUSD)
 ZERO_ADDR = "0x" + "0" * 40
 ZERO_B32 = "0x" + "0" * 64
 
@@ -72,7 +73,10 @@ HTTP_HDRS = {
 # --- Function selectors (keccak-4) ---
 SEL_REDEEM = "0x" + keccak(text="redeemPositions(address,bytes32,bytes32,uint256[])")[:4].hex()  # 0x01b7037c
 SEL_APPROVE = "0x" + keccak(text="approve(address,uint256)")[:4].hex()                            # 0x095ea7b3
-SEL_WRAP = "0x" + keccak(text="wrap(address,address,uint256,address,bytes)")[:4].hex()            # 0xb97b57c7
+# Conversion goes through the Collateral Onramp's 3-arg wrap (0x62355638), NOT the pUSD
+# token's own wrap — the deposit wallet isn't a direct pUSD wrapper, and the relayer blocks
+# wrap() on the collateral token. The onramp IS an authorized wrapper and is permissionless.
+SEL_ONRAMP_WRAP = "0x" + keccak(text="wrap(address,address,uint256)")[:4].hex()                   # 0x62355638
 SEL_GETCOLLID = "0x" + keccak(text="getCollectionId(bytes32,bytes32,uint256)")[:4].hex()
 SEL_GETPOSID = "0x" + keccak(text="getPositionId(address,bytes32)")[:4].hex()
 SEL_BALANCEOF20 = "0x70a08231"  # ERC20 balanceOf(address)
@@ -148,9 +152,11 @@ def approve_calldata(spender, amount):
     return SEL_APPROVE + abi_encode(["address", "uint256"], [spender, amount]).hex()
 
 
-def wrap_calldata(asset, to_wallet, amount):
-    return SEL_WRAP + abi_encode(["address", "address", "uint256", "address", "bytes"],
-                                 [asset, to_wallet, amount, ZERO_ADDR, b""]).hex()
+def onramp_wrap_calldata(asset, to_wallet, amount):
+    """Onramp.wrap(_asset, _to, _amount): pulls `amount` of `asset` from the caller
+    (the deposit wallet, via approve) and mints pUSD to `to_wallet`."""
+    return SEL_ONRAMP_WRAP + abi_encode(["address", "address", "uint256"],
+                                        [asset, to_wallet, amount]).hex()
 
 
 def usdce_balance(wallet):
@@ -373,11 +379,11 @@ def main():
             amt = usdce_balance(deposit_wallet)
             print(f"\n[CONVERT] deposit-wallet USDC.e balance now: {amt/1e6:.4f}")
             if amt > 0:
-                approve_hex = approve_calldata(PUSD, amt)               # 0x-prefixed
-                wrap_hex = wrap_calldata(USDCE, deposit_wallet, amt)    # 0x-prefixed
+                approve_hex = approve_calldata(ONRAMP, amt)                     # approve USDC.e to the onramp
+                wrap_hex = onramp_wrap_calldata(USDCE, deposit_wallet, amt)     # onramp wraps -> pUSD to deposit wallet
                 conv_calls = [
                     {"target": USDCE, "value": 0, "data": bytes.fromhex(approve_hex[2:]), "data_hex": approve_hex},
-                    {"target": PUSD, "value": 0, "data": bytes.fromhex(wrap_hex[2:]), "data_hex": wrap_hex},
+                    {"target": ONRAMP, "value": 0, "data": bytes.fromhex(wrap_hex[2:]), "data_hex": wrap_hex},
                 ]
                 nonce2 = relayer_nonce(owner)
                 sig2 = sign_batch(deposit_wallet, nonce2, deadline, conv_calls, pk)
@@ -390,9 +396,9 @@ def main():
             else:
                 print("          no USDC.e to convert (redeem may still be settling — re-run convert phase shortly).")
         else:
-            print("\n[CONVERT] (dry-run) redeemed collateral includes USDC.e — after redeem confirms, the loop "
-                  "approves pUSD to spend the landed USDC.e and calls pUSD.wrap(USDC.e, depositWallet, amount) "
-                  "to mint pUSD. Amount is read post-redeem at execute time (depends on actual payout).")
+            amt = usdce_balance(deposit_wallet)
+            print(f"\n[CONVERT] (dry-run) deposit-wallet USDC.e = {amt/1e6:.4f}. On execute, approves the Collateral "
+                  f"Onramp ({ONRAMP}) to spend it and calls Onramp.wrap(USDC.e, depositWallet, amount) to mint pUSD.")
 
     # ---- RETRADE phase ----
     if args.phase == "full":
