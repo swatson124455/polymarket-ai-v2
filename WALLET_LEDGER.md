@@ -31,15 +31,20 @@ If an MB session believes a money move is needed, the session **proposes it in w
 
 ### On-chain balances
 
+**Post redeem-and-retrade loop (2026-06-11 ~19:31 UTC):**
+
 | Wallet | Asset | Balance | Verification source |
 |---|---|---|---|
 | DEPOSIT `0xBB39…2247` | MATIC | 0.0000 | on-chain RPC, S235 2026-05-31 (not re-checked S244) |
-| DEPOSIT `0xBB39…2247` | USDC.e (`0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`) | **$0.0000** ⚠ | eth_call 2026-06-11, confirmed on TWO independent RPCs (env RPC + publicnode). **DISCREPANCY vs the S235 (05-31) row that read $20.0000 — see ⚠ note below this table.** |
-| DEPOSIT `0xBB39…2247` | pUSD | **$0.31782** | eth_call 2026-06-11 (two RPCs); matches journal probe 06-10 14:17 UTC and system_kv (unchanged since 06-02) |
+| DEPOSIT `0xBB39…2247` | **pUSD** | **$19.1378** | eth_call 2026-06-11 post-convert (= $0.31782 prior + $18.82 redeemed→converted). **= bot buying power** (CLOB `balance-allowance` COLLATERAL = 19137820; bankroll capital refreshed $0.32→$19.14 at 19:31:18) |
+| DEPOSIT `0xBB39…2247` | USDC.e (`0x2791…4174`) | **$0.0000** | eth_call 2026-06-11 post-convert (was $18.8200 from redemption; fully wrapped to pUSD via the onramp) |
 | DEPOSIT `0xBB39…2247` | USDC native (`0x3c49…3359`) | $0.0000 | eth_call 2026-06-11 |
 | EOA `0xd6a5…627f` | USDC.e | $15.99566 | eth_call 2026-06-11 (re-verified, matches S235 to the cent) |
 | EOA `0xd6a5…627f` | pUSD | $0.0000 | eth_call 2026-06-11 |
+| EOA `0xd6a5…627f` | MATIC | 9.3617 | eth_call 2026-06-11 (gas; relayer pays redemption gas so this is untouched) |
 | Factory proxy `0xB9Bd…9b7a` (EOA's 2nd proxy, see S242 canary) | USDC.e / pUSD | $0.0000 / $0.0000 | eth_call 2026-06-11 (checked to rule out "ledger read the wrong proxy") |
+
+**Intermediate snapshot (pre-loop, 2026-06-11 ~18:00 UTC):** deposit USDC.e $0.0000, pUSD $0.31782 — see the $20 discrepancy note below, which is independent of the redemption (the redeemed $18.82 USDC.e landed AND was converted between this snapshot and the post-loop one above).
 
 **⚠ $20 USDC.e DISCREPANCY (opened S244 2026-06-11, UNRESOLVED):** the S235 (05-31) snapshot recorded $20.0000 USDC.e at the deposit wallet ("on-chain RPC, this session"); today two independent RPCs read $0.0000, and pUSD did NOT rise correspondingly (flat at $0.31782 since 06-02). Two hypotheses, not yet distinguishable without tx history:
 1. **Double-count (leading):** the "(unknown) $20.00 USDC.e inbound" row and the 05-26 operator "$20 pUSD deposit" are the SAME money — the "Confirm pending deposit" banner click on 05-26 CONVERTED the USDC.e sitting at the deposit wallet into pUSD (+$20 pUSD at exactly that moment). Under this hypothesis the S235 $20-USDC.e read was stale/erroneous (notably S235 did NOT re-verify pUSD on-chain that session either), and no money is missing.
@@ -125,11 +130,27 @@ winnings — no funds left operator control). Gas: relayer-paid (gasless WALLET 
 | Result | deposit-wallet **USDC.e $0.00 → $18.8200**; all **7 winning CTF tokens burned (7/7 → 0)**; pUSD unchanged at $0.31782 |
 | Markets redeemed | 3× CS2 (Tricked/MIBR/KOLESIE), Spurs spread, Roland Garros (Arnaldi), Phillies/Dodgers, T1/KT handicap |
 
-**Closes the S230 redemption gap:** the $18.82 in winning tokens (unredeemed since ~05-24,
-flagged across S230→S242) is recovered. The S242 "ABI wall / Etherscan-key-gated" conclusion
-was wrong — the deposit wallet (`DepositWallet`) + factory (`DepositWalletFactory`) are
-Sourcify/Polygonscan-verified; the relayer accepts the existing `RELAYER_API_KEY` for WALLET
-batches. Convert (USDC.e→pUSD) recorded below once confirmed.
+**Conversion (USDC.e → pUSD), same session:**
+
+| Item | Value |
+|---|---|
+| Tx hash | `0x19eeb09d5b51a1e43b89e8d2608ce638c1dbeff28e405de9a867993559da972c` |
+| Block / status | 88334134 / **1 (success)** |
+| Route | `--phase convert` → `USDC.e.approve(Onramp, amt)` + `Onramp.wrap(USDC.e, depositWallet, amt)` on the **Permissionless Collateral Onramp `0x93070a847efEf7F70739046A929D47a521F5B8ee`** (3-arg `wrap` `0x62355638`) → one DepositWallet WALLET batch (relayer txID `019eb829-7201-7a42-8381-0522719fe021`, STATE_EXECUTED) |
+| Why the onramp | the relayer blocks `wrap()` on the pUSD token directly ("unknown method on collateral token"), and the deposit wallet isn't a direct pUSD wrapper (revert `0x3204506f`); the onramp IS the authorized, permissionless wrapper |
+| Result | deposit-wallet **pUSD $0.31782 → $19.1378**; **USDC.e $18.8200 → $0.0000**; CLOB COLLATERAL buying power $0.31782 → **$19.1378**; MirrorBot bankroll capital refreshed **$0.32 → $19.14** (`bankroll_wallet_material_change`, 19:31:18) → capital guard lifted, bot retrades |
+
+**Closes the S230 redemption gap AND the retrade loop.** The $18.82 in winning tokens
+(unredeemed since ~05-24, flagged across S230→S242) is recovered, converted to tradeable pUSD,
+and recognized as bot buying power — end to end. The S242 "ABI wall / Etherscan-key-gated"
+conclusion was wrong: the `DepositWallet` + `DepositWalletFactory` + `CollateralOnramp` are all
+Sourcify/Polygonscan-verified; the existing `RELAYER_API_KEY` authorizes WALLET batches. The
+loop is automated via `scripts/redeem_and_retrade.py` + the 6h `polymarket-redeem.timer`
+(enabled 2026-06-11). Runbook: `REDEEM_AND_RETRADE_RUNBOOK.md`.
+
+**Note — the $20 USDC.e discrepancy below is SEPARATE** and remains open: the redeemed $18.82
+is fully accounted (winning tokens → USDC.e → pUSD); the $20 question is about a prior S235
+reading and is unaffected by this redemption.
 
 ### Outbound — bot-initiated CTF acquisitions (committed to live positions)
 

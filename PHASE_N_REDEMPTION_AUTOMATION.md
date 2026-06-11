@@ -1,9 +1,56 @@
 # Phase-N Enhancement — CTF Redemption Automation
 
 **Filed:** 2026-05-26 (MB session S230)
-**Status:** Discovery complete; implementation deferred pending trigger condition
-**Priority:** LOW until trigger condition met (see below)
-**Estimated effort:** 4–8 hours engineering once ABI is in hand; 1–3 days if reverse-engineering is needed
+**Status:** ✅ **BUILT, EXECUTED, AND AUTOMATED (2026-06-11, S244).** The closed loop
+(redeem → convert → retrade) runs end-to-end and is verified on-chain. See "✅ RESOLVED" below.
+**Priority:** DONE.
+**Etherscan key:** ⚠ **NEVER NEEDED.** S242's "gated on an Etherscan key" conclusion was wrong —
+the contracts are Sourcify/Polygonscan-verified (keyless).
+
+---
+
+## ✅ RESOLVED 2026-06-11 (S244) — the loop works; the "ABI wall" was a myth
+
+The deposit wallet is a **`DepositWallet`** (impl `0x58ca…b1eb`), its factory is
+**`DepositWalletFactory` `0x00000000000Fb5C9ADea0298D729A0CB3823Cc07`**, and USDC.e→pUSD goes
+through the **Permissionless Collateral Onramp `0x93070a847efEf7F70739046A929D47a521F5B8ee`** —
+**all three verified on Sourcify + Polygonscan, no API key.**
+
+**The proven path (all on-chain-verified):**
+1. **Redeem** — per winning position, `CTF.redeemPositions(USDC.e, 0x0, conditionId, [indexSet])`.
+   Collateral is **derived per position** by matching the held token against
+   `getPositionId(collateral, collectionId)` for pUSD vs USDC.e (the 7 winners were all
+   USDC.e-collateralized — redeeming with pUSD would pay dust, the exact S242 canary failure).
+   Calls are wrapped in a `DepositWallet` EIP-712 Batch (domain `DepositWallet` v1), signed by
+   the owner EOA (our `PRIVATE_KEY`).
+2. **Submit** — gaslessly to `relayer-v2.polymarket.com/submit` type `WALLET`, auth via the
+   existing `RELAYER_API_KEY`. `factory.proxy()` is `OnlyOperator` (`0x27e1f1e5`) → the relayer
+   is the only execution path (EOA can't broadcast directly even with gas).
+3. **Convert** — `USDC.e.approve(Onramp, amt)` + `Onramp.wrap(USDC.e, depositWallet, amt)`
+   (3-arg wrap `0x62355638`). NOT `pUSD.wrap` directly — the relayer blocks that and the wallet
+   isn't a direct wrapper; the onramp is the authorized, permissionless wrapper.
+4. **Retrade** — the bot's `_wallet_refresh_loop` (10-min) picks up the new pUSD as buying power;
+   `_refresh_balance_allowance_sync` nudges the CLOB cache. Bot resumes on next scan.
+
+**Maiden run (2026-06-11, operator-approved): the full $18.82 recovered + converted + tradeable.**
+- Redeem tx `0xa46cdf55…498d` (block 88333681, status 1): 7 winning CTF tokens → USDC.e $18.8200; tokens burned 7/7.
+- Convert tx `0x19eeb09d…972c` (block 88334134, status 1): USDC.e $18.82 → pUSD; deposit pUSD $0.3178 → $19.1378.
+- Retrade: bot bankroll capital $0.32 → $19.14 (`bankroll_wallet_material_change`, 19:31:18); CLOB buying power = $19.1378.
+
+**Automated:** `scripts/redeem_and_retrade.py` (dry-run default; `--execute` broadcasts) +
+`deploy/polymarket-redeem.{service,timer}` (6h cadence, enabled on VPS 2026-06-11; no-op when
+nothing has resolved-to-win). Full ops in **`REDEEM_AND_RETRADE_RUNBOOK.md`**; money trail in
+`WALLET_LEDGER.md` "Redemptions" section.
+
+**Everything below this line is the SUPERSEDED S230→S242 investigation** (kept for history — note
+it concluded the path was blocked on an Etherscan key, which turned out false).
+
+---
+
+**Filed:** 2026-05-26 (MB session S230)
+**Status (historical):** Discovery complete; implementation deferred pending trigger condition
+**Priority (historical):** LOW until trigger condition met (see below)
+**Estimated effort (historical):** 4–8 hours engineering once ABI is in hand; 1–3 days if reverse-engineering is needed
 
 ## Problem statement
 
