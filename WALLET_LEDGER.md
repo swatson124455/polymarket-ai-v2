@@ -27,16 +27,24 @@ If an MB session believes a money move is needed, the session **proposes it in w
 
 **LIVE.** `SIMULATION_MODE=false`. Active release `20260529_154845` (Bug 21 + EB test fix). First live position opened 2026-05-27 21:27 UTC (position 189394, earlier than the S234 "18:44 UTC S232" timestamp which was the WB deploy, not the MB live flip). 8 positions currently open. Most recent balance probe: **$4.26409 pUSD** (from journalctl; not yet in system_kv — system_kv write path added S235/WI-11, will populate on next probe after deploy).
 
-## Current state (last verified: S235 2026-05-31)
+## Current state (last verified: S244 2026-06-11)
 
 ### On-chain balances
 
 | Wallet | Asset | Balance | Verification source |
 |---|---|---|---|
-| DEPOSIT `0xBB39…2247` | MATIC | 0.0000 | on-chain RPC, this session |
-| DEPOSIT `0xBB39…2247` | USDC.e (`0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`) | $20.0000 | on-chain RPC, this session |
-| DEPOSIT `0xBB39…2247` | pUSD | **$4.26409** (most recent journalctl probe; on-chain not re-verified S235) | Trading down from $23.14993 (05-27 baseline). See WI-5 balance history below. |
-| EOA `0xd6a5…627f` | USDC.e | $15.9957 | on-chain RPC, this session |
+| DEPOSIT `0xBB39…2247` | MATIC | 0.0000 | on-chain RPC, S235 2026-05-31 (not re-checked S244) |
+| DEPOSIT `0xBB39…2247` | USDC.e (`0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`) | **$0.0000** ⚠ | eth_call 2026-06-11, confirmed on TWO independent RPCs (env RPC + publicnode). **DISCREPANCY vs the S235 (05-31) row that read $20.0000 — see ⚠ note below this table.** |
+| DEPOSIT `0xBB39…2247` | pUSD | **$0.31782** | eth_call 2026-06-11 (two RPCs); matches journal probe 06-10 14:17 UTC and system_kv (unchanged since 06-02) |
+| DEPOSIT `0xBB39…2247` | USDC native (`0x3c49…3359`) | $0.0000 | eth_call 2026-06-11 |
+| EOA `0xd6a5…627f` | USDC.e | $15.99566 | eth_call 2026-06-11 (re-verified, matches S235 to the cent) |
+| EOA `0xd6a5…627f` | pUSD | $0.0000 | eth_call 2026-06-11 |
+| Factory proxy `0xB9Bd…9b7a` (EOA's 2nd proxy, see S242 canary) | USDC.e / pUSD | $0.0000 / $0.0000 | eth_call 2026-06-11 (checked to rule out "ledger read the wrong proxy") |
+
+**⚠ $20 USDC.e DISCREPANCY (opened S244 2026-06-11, UNRESOLVED):** the S235 (05-31) snapshot recorded $20.0000 USDC.e at the deposit wallet ("on-chain RPC, this session"); today two independent RPCs read $0.0000, and pUSD did NOT rise correspondingly (flat at $0.31782 since 06-02). Two hypotheses, not yet distinguishable without tx history:
+1. **Double-count (leading):** the "(unknown) $20.00 USDC.e inbound" row and the 05-26 operator "$20 pUSD deposit" are the SAME money — the "Confirm pending deposit" banner click on 05-26 CONVERTED the USDC.e sitting at the deposit wallet into pUSD (+$20 pUSD at exactly that moment). Under this hypothesis the S235 $20-USDC.e read was stale/erroneous (notably S235 did NOT re-verify pUSD on-chain that session either), and no money is missing.
+2. **Post-05-31 movement:** the USDC.e genuinely left the wallet between 05-31 and 06-11. No session-initiated tx touched deposit-wallet ERC20s in that window (S242 canary drove the factory proxy, dust only, and re-verified CTF holdings intact) — so this branch would imply an operator UI action (withdrawal/conversion) or relayer sweep.
+**Resolution path:** deposit-wallet tx history via Etherscan/Polygonscan key (trace gap #1), or operator checks their Polymarket UI deposit/withdrawal history for late-May/early-June USDC.e activity. Do NOT treat the $20 as an asset until resolved — the wallet-cash table's "idle USDC.e $20.00 deposit-wallet" footnote is suspended pending this.
 
 ### CTF token positions held on-chain (deposit wallet)
 
@@ -225,6 +233,7 @@ Known residuals: ~$0.71 fill-price/fee variance in the 06-01→06-02 window (nee
 1. **Polygonscan / Etherscan V2 API key** in `/opt/pa2-shared/.env` as `POLYGONSCAN_API_KEY=...` — unlocks unlimited historical tx pulls. Free key from https://polygonscan.com/myapikey. Adding this lets MB sessions trace deposits older than ~28h on demand.
 2. **Tx hashes for the original $20 USDC.e and $16 USDC.e deposits** would close the "(unknown) origin" rows above. Operator can find these in Polymarket UI deposit history or in their own wallet's tx log.
 3. **Guardians redemption** — operator redeems via polymarket.com UI per `OPERATOR_GUARDIANS_REDEMPTION.md`. After redemption, MB session updates this ledger with redemption tx hash + new pUSD balance.
+4. **$20 USDC.e discrepancy (S244 2026-06-11)** — S235 snapshot read $20 USDC.e at the deposit wallet; today it reads $0.00 (two RPCs) with no corresponding pUSD rise. Leading hypothesis: double-count with the 05-26 $20 deposit (the "Confirm pending deposit" click converted it). Resolve via deposit-wallet tx history (needs API key, gap #1) or operator's Polymarket UI deposit/withdrawal history. Full note in "Current state" above.
 
 ## DB resolution-backfill drift (separate concern)
 
