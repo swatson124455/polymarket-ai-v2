@@ -36,20 +36,18 @@ If an MB session believes a money move is needed, the session **proposes it in w
 | Wallet | Asset | Balance | Verification source |
 |---|---|---|---|
 | DEPOSIT `0xBB39…2247` | MATIC | 0.0000 | on-chain RPC, S235 2026-05-31 (not re-checked S244) |
-| DEPOSIT `0xBB39…2247` | **pUSD** | **$19.1378** | eth_call 2026-06-11 post-convert (= $0.31782 prior + $18.82 redeemed→converted). **= bot buying power** (CLOB `balance-allowance` COLLATERAL = 19137820; bankroll capital refreshed $0.32→$19.14 at 19:31:18) |
-| DEPOSIT `0xBB39…2247` | USDC.e (`0x2791…4174`) | **$0.0000** | eth_call 2026-06-11 post-convert (was $18.8200 from redemption; fully wrapped to pUSD via the onramp) |
+| DEPOSIT `0xBB39…2247` | **pUSD** | **$34.1502** | eth_call 2026-06-11 final (= $18.82 redeemed + $15.9957 swept from EOA, both wrapped to pUSD, minus the bot's first post-funding trade). **= bot buying power** (CLOB `balance-allowance` COLLATERAL = 34150200) |
+| DEPOSIT `0xBB39…2247` | USDC.e (`0x2791…4174`) | **$0.0000** | eth_call 2026-06-11 (all wrapped to pUSD via the onramp) |
 | DEPOSIT `0xBB39…2247` | USDC native (`0x3c49…3359`) | $0.0000 | eth_call 2026-06-11 |
-| EOA `0xd6a5…627f` | USDC.e | $15.99566 | eth_call 2026-06-11 (re-verified, matches S235 to the cent) |
+| EOA `0xd6a5…627f` | USDC.e | **$0.0000** | eth_call 2026-06-11 — swept into the trading wallet (was $15.99566; tx `0x2e76de09…`) |
 | EOA `0xd6a5…627f` | pUSD | $0.0000 | eth_call 2026-06-11 |
-| EOA `0xd6a5…627f` | MATIC | 9.3617 | eth_call 2026-06-11 (gas; relayer pays redemption gas so this is untouched) |
+| EOA `0xd6a5…627f` | MATIC | ~9.30 | eth_call 2026-06-11 (gas; spent ~0.06 on the USDC.e sweep) |
 | Factory proxy `0xB9Bd…9b7a` (EOA's 2nd proxy, see S242 canary) | USDC.e / pUSD | $0.0000 / $0.0000 | eth_call 2026-06-11 (checked to rule out "ledger read the wrong proxy") |
 
 **Intermediate snapshot (pre-loop, 2026-06-11 ~18:00 UTC):** deposit USDC.e $0.0000, pUSD $0.31782 — see the $20 discrepancy note below, which is independent of the redemption (the redeemed $18.82 USDC.e landed AND was converted between this snapshot and the post-loop one above).
 
-**⚠ $20 USDC.e DISCREPANCY (opened S244 2026-06-11, UNRESOLVED):** the S235 (05-31) snapshot recorded $20.0000 USDC.e at the deposit wallet ("on-chain RPC, this session"); today two independent RPCs read $0.0000, and pUSD did NOT rise correspondingly (flat at $0.31782 since 06-02). Two hypotheses, not yet distinguishable without tx history:
-1. **Double-count (leading):** the "(unknown) $20.00 USDC.e inbound" row and the 05-26 operator "$20 pUSD deposit" are the SAME money — the "Confirm pending deposit" banner click on 05-26 CONVERTED the USDC.e sitting at the deposit wallet into pUSD (+$20 pUSD at exactly that moment). Under this hypothesis the S235 $20-USDC.e read was stale/erroneous (notably S235 did NOT re-verify pUSD on-chain that session either), and no money is missing.
-2. **Post-05-31 movement:** the USDC.e genuinely left the wallet between 05-31 and 06-11. No session-initiated tx touched deposit-wallet ERC20s in that window (S242 canary drove the factory proxy, dust only, and re-verified CTF holdings intact) — so this branch would imply an operator UI action (withdrawal/conversion) or relayer sweep.
-**Resolution path:** deposit-wallet tx history via Etherscan/Polygonscan key (trace gap #1), or operator checks their Polymarket UI deposit/withdrawal history for late-May/early-June USDC.e activity. Do NOT treat the $20 as an asset until resolved — the wallet-cash table's "idle USDC.e $20.00 deposit-wallet" footnote is suspended pending this.
+**✅ $20 USDC.e DISCREPANCY — RESOLVED 2026-06-11 (on-chain trace, keyless): the $20-USDC.e-at-deposit row was a PHANTOM; no money is/was missing.** Pulled the deposit wallet's COMPLETE USDC.e `Transfer` history via `eth_getLogs` (topic-filtered on the deposit wallet, 24-day window block 87351784→88335784, covering the wallet's entire life — first funded 05-21). Result: **the ONLY USDC.e ever to enter the deposit wallet is (a) today's 7 redemption payouts from CTF `0x4d97dcd9` totaling $18.82 and (b) today's $15.9957 sweep from the EOA. ZERO other inbound, ZERO outbound, ever.** So **$20 USDC.e never sat at the deposit wallet** — the S235 (05-31) "$20.0000 USDC.e" row was an erroneous/misattributed reading (hypothesis #1 confirmed; the operator's real 05-26 $20 deposit arrived/was-held as pUSD and was traded down, consistent with the pUSD balance history). The "idle $20 USDC.e deposit-wallet" footnote in the wallet-cash table is **withdrawn as a phantom**, not suspended. (The Etherscan key was never needed for this either — same false premise as the redemption "ABI wall.")
+**Lesson logged:** an S235 session "on-chain RPC, this session" balance reading was simply wrong and propagated as a discrepancy for 11 days; the authoritative source is the `Transfer` event log, which is keyless via `eth_getLogs`.
 
 ### CTF token positions held on-chain (deposit wallet)
 
@@ -148,9 +146,23 @@ Sourcify/Polygonscan-verified; the existing `RELAYER_API_KEY` authorizes WALLET 
 loop is automated via `scripts/redeem_and_retrade.py` + the 6h `polymarket-redeem.timer`
 (enabled 2026-06-11). Runbook: `REDEEM_AND_RETRADE_RUNBOOK.md`.
 
-**Note — the $20 USDC.e discrepancy below is SEPARATE** and remains open: the redeemed $18.82
-is fully accounted (winning tokens → USDC.e → pUSD); the $20 question is about a prior S235
-reading and is unaffected by this redemption.
+**Note — the $20 USDC.e discrepancy is SEPARATE and now RESOLVED** (✅ note in Current state
+above): on-chain `eth_getLogs` trace shows no $20 USDC.e ever entered the deposit wallet — a
+phantom S235 reading, no money missing.
+
+### EOA → trading-wallet sweep + convert (2026-06-11, operator-approved)
+
+Operator: "review ledger … xfer to be in the active trading wallet." The EOA signer wallet held
+**$15.9957 idle USDC.e** the bot can't trade (wrong wallet + wrong token). Moved it into the
+trading wallet and converted to pUSD:
+
+| Step | Tx | Result |
+|---|---|---|
+| Transfer EOA → deposit | `0x2e76de09dd8336947206ab0aecd9b9a6f208c5c143e696db3416e2ad1f15ef72` (block 88335725, status 1) | EOA USDC.e $15.9957 → $0.00; deposit USDC.e → $15.9957. Plain ERC20 transfer, EOA-signed, EOA gas (~0.06 MATIC). `scripts/fund_trading_wallet_from_eoa.py`. |
+| Convert (onramp) | `0x8e8be0777b127e2d49baacd3393da5144225264a77064fcb4c02161c715b42f0` (STATE_EXECUTED) | deposit USDC.e $15.9957 → $0.00; deposit pUSD → **$34.1502 total**; CLOB buying power = $34.1502. `--phase convert`. |
+
+The EOA is now swept clean; all liquid capital is consolidated as pUSD in the trading wallet
+and recognized as bot buying power.
 
 ### Outbound — bot-initiated CTF acquisitions (committed to live positions)
 
