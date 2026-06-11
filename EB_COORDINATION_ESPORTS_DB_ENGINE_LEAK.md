@@ -115,3 +115,23 @@ Live chain confirmed: `Attempting recovery for database: Database query timeout`
 2. The re-probe shares the saturated pool; if it ever fails to get a slot it falls through to a rebuild (the leak path). Observed probes succeed; "re-inits stays ~1" is a ~9-min window.
 
 **MB coordination:** esports' shared-pool footprint dropped ~50→16 and total clients 80→42, so the cross-bot "pool-pressure → kill-switch timeout" family should relieve. **MB: please confirm via your SHOW POOLS before/after baseline and watch `kill_switch_cache_fallback` frequency — it should drop.** Also confirm over a multi-hour window that esports "Initializing PostgreSQL database" stays ~1/process (re-probe not falling through to rebuild under sustained saturation). `database.py` dispose-on-reinit hardening (Asks §2, MB-owned) remains the defense-in-depth net.
+
+---
+
+# I. FINAL (2026-06-11): full churn chain closed — 5-fix stack live on splinter `20260611_161547`
+
+The restart churn had FIVE stacked causes; each was instrument-proven (WI-21b task dumps + py-spy + pgbouncer/PG logs) and fixed separately on eb/main (operator-authorized; EB SPLINTER FULL AUTONOMY hardcoded this session):
+
+| # | Cause | Fix | Commit |
+|---|-------|-----|--------|
+| 1 | Recovery loop rebuilt the engine on every health timeout → orphaned engines pinned PgBouncer conns (~50/80) | re-probe live engine before re-init | `ff5b9d4` |
+| 2 | structlog dev renderer auto-upgraded to rich/pygments → exc rendering froze the event loop for minutes | pin `plain_traceback` | `3a00032` |
+| 3 | feature_precompute fanned out 1 task/market (~2,474 live tasks at every wedge), batch never finished | `FEATURE_PRECOMPUTE_ENABLED=false` (esports only) | `5e134dc` |
+| 4 | Scan awaited UNBOUNDED on dead/half-open conns (pre-ping at checkout, session close at exit) | opt-in asyncpg `command_timeout` (`DB_COMMAND_TIMEOUT_S=90`, esports only; default 0 everywhere) | `7d5dcad` |
+| 5 | Watchdog killed cold-starting processes whose conns were still healing (PgBouncer `client_login_timeout` ~4min after every restart) → self-sustaining cycle | stall-watchdog startup grace (`ESPORTS_STALL_STARTUP_GRACE_S=1200`) | `231e725` |
+
+**Outcome evidence (journalctl/systemd, 2026-06-11):** after fix #4 flushed the dead-conn backlog (~17:20), the pre-grace process ran ~2.8h with **scan_count=56** and ONE borderline stall (910.4s vs 900 threshold) — vs a forced restart every ~25min before. Fix #5 (live 20:20) covers the remaining cold-start window; late genuine wedges still die at ~35min.
+
+**Watch items (next EB session):** 24h stall count on `20260611_161547` (expect ≈0–2, all late-life); `scan_stall_within_startup_grace` warnings = grace working; one deploy rollback occurred 18:10 with the log lost (transient, redeploy passed clean — if a future deploy rolls back, keep the FULL deploy log).
+
+**Master cherry-pick proposals (MB's to take or leave):** `3a00032` (logging — same freeze class plausibly behind WB dark-outs/MB kill-switch storms), `ff5b9d4` (recovery re-probe), `7d5dcad` (default-off knob, inert without env). The WI-21b dump instrument (`40e17cf`+`4cadb97`) is esports-only but the pattern is portable.
