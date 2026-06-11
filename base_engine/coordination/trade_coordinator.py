@@ -174,8 +174,16 @@ class TradeCoordinator:
         source_bot: Optional[str] = None,
         bot_id: Optional[str] = None,
         token_id: str = "",
+        event_data: Optional[dict] = None,
+        confidence: Optional[float] = None,
     ) -> None:
         """Confirm reserved position after successful trade. bot_id: which bot reserved (must match reserve). source_bot enables per-bot P&L attribution.
+
+        event_data / confidence: signal context (incl. the authorizing gate_score,
+        kelly_prob, conf_base) and the calibrated confidence. Plumbed onto the
+        ENTRY/EXIT trade_event so the real per-trade decision values are auditable
+        from the DB instead of only the ephemeral logs. Optional/None-default keeps
+        every existing caller backward-compatible.
 
         S232 Bug 19: persist failure here creates an in-memory orphan — the
         caller (order_gateway) has already updated _open_positions and the
@@ -328,6 +336,8 @@ class TradeCoordinator:
                         execution_mode=_exec_mode,
                         token_id=token_id or None,
                         fees=size * entry_price * _cost_rate_evt,
+                        confidence=confidence,
+                        event_data=event_data,
                     )
                 except Exception as _te_err:
                     logger.warning(

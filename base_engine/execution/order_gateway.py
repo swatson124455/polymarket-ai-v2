@@ -1245,7 +1245,7 @@ class OrderGateway:
                 if self.trade_coordinator is not None:
                     if result.get("success") and _filled_size > 0:
                         try:
-                            await self.trade_coordinator.confirm_position(market_id, side, _filled_size, effective_price, source_bot=bot_name, bot_id=bot_name, token_id=token_id)
+                            await self.trade_coordinator.confirm_position(market_id, side, _filled_size, effective_price, source_bot=bot_name, bot_id=bot_name, token_id=token_id, event_data=event_data, confidence=confidence)
                         except Exception as _conf_err:
                             # Theoretical hardening: paper trade succeeded (cash deducted) but DB
                             # confirmation failed. In-memory position exists; 5-min reconcile will
@@ -1348,7 +1348,7 @@ class OrderGateway:
 
             if self.trade_coordinator is not None:
                 if result.get("success"):
-                    await self.trade_coordinator.confirm_position(market_id, side, size, effective_price, source_bot=bot_name, bot_id=bot_name, token_id=token_id)
+                    await self.trade_coordinator.confirm_position(market_id, side, size, effective_price, source_bot=bot_name, bot_id=bot_name, token_id=token_id, event_data=event_data, confidence=confidence)
                     if _is_sell:
                         self._track_position_close(bot_name, market_id)  # C3 FIX
                     else:

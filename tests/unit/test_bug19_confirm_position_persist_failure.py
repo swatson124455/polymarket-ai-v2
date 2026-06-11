@@ -48,8 +48,25 @@ class TestBug19RetryShape:
         assert params == [
             "self", "market_id", "side", "size", "entry_price",
             "source_bot", "bot_id", "token_id",
+            # S244: additive, optional — plumb authorizing gate_score (event_data)
+            # + calibrated confidence onto the ENTRY/EXIT trade_event. Backward-compatible.
+            "event_data", "confidence",
         ], f"signature changed: {params}"
         assert sig.return_annotation is None, "return annotation should remain None"
+
+    def test_event_data_and_confidence_plumbed_to_trade_event(self):
+        """S244: confirm_position must forward event_data + confidence into the
+        insert_trade_event call so the authorizing gate_score (in event_data) and
+        the calibrated confidence land on every ENTRY/EXIT trade_event. Pre-fix the
+        live ENTRY writer omitted both, so per-trade confidence was unauditable
+        from the DB (only in ephemeral logs)."""
+        src = inspect.getsource(tc_mod.TradeCoordinator.confirm_position)
+        assert "event_data=event_data" in src, (
+            "confirm_position must pass event_data to insert_trade_event"
+        )
+        assert "confidence=confidence" in src, (
+            "confirm_position must pass confidence to insert_trade_event"
+        )
 
     def test_retry_loop_present(self):
         """A retry loop (for _attempt in range(...)) must wrap the DB ops."""
