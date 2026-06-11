@@ -109,6 +109,28 @@ Bug 11A (deployed 2026-05-25) prevents future phantom-close occurrences. Bug 12 
 
 **Estimated remaining liquid balance:** $4.26 (probed) — but capital in open positions is ~$8.07. These numbers don't add up — $4.26 + $8.07 > $23.15 starting balance. Explanation: (1) the probe balance ($4.26) is what's *left* in the deposit wallet after deploying capital, (2) the deployed capital ($8.07) is in CTF tokens, not in the deposit wallet. The total accounts are: $4.26 liquid + ~$8.07 deployed = $12.33, vs $23.15 starting — net consumed ~$10.82. This matches: ~17 total ENTRY positions × ~$1.01 = $17.17, minus ~6 SELL receipts × ~$1.00 = $6.00, net out = $11.17 (close enough given rounding and fee differences). Gap from $10.82 vs $11.17 estimate: ~$0.35 — within expected fee/slippage variance. **VERDICT: balance history is internally consistent; no unaccounted movements detected.**
 
+### Redemptions — winnings collected on-chain (programmatic, S244)
+
+**2026-06-11 — first programmatic redemption (the redeem-and-retrade loop's maiden run).**
+Approved by operator ("create a loop to redeem and retrade … do it"). Source: the deposit
+wallet's own 7 resolved winning CTF tokens. Destination: the same deposit wallet (collecting
+winnings — no funds left operator control). Gas: relayer-paid (gasless WALLET batch).
+
+| Item | Value |
+|---|---|
+| Tx hash | `0xa46cdf55a69929871ad5056ae3e6bdac53538634830a4aa8605f497c8574498d` |
+| Block / status | 88333681 / **1 (success)**, gasUsed 576158, 30 logs |
+| Route | `scripts/redeem_and_retrade.py --execute --phase redeem` → 7× `CTF.redeemPositions(USDC.e, 0x0, conditionId, [indexSet])` in one DepositWallet EIP-712 Batch → relayer-v2 `/submit` type WALLET (relayer txID `019eb81f-1204-71f2-a0b7-7e6949c5670f`, state STATE_EXECUTED) |
+| Collateral | USDC.e (`0x2791…4174`) — all 7 winners were USDC.e-collateralized (derived per-position via `getPositionId` match) |
+| Result | deposit-wallet **USDC.e $0.00 → $18.8200**; all **7 winning CTF tokens burned (7/7 → 0)**; pUSD unchanged at $0.31782 |
+| Markets redeemed | 3× CS2 (Tricked/MIBR/KOLESIE), Spurs spread, Roland Garros (Arnaldi), Phillies/Dodgers, T1/KT handicap |
+
+**Closes the S230 redemption gap:** the $18.82 in winning tokens (unredeemed since ~05-24,
+flagged across S230→S242) is recovered. The S242 "ABI wall / Etherscan-key-gated" conclusion
+was wrong — the deposit wallet (`DepositWallet`) + factory (`DepositWalletFactory`) are
+Sourcify/Polygonscan-verified; the relayer accepts the existing `RELAYER_API_KEY` for WALLET
+batches. Convert (USDC.e→pUSD) recorded below once confirmed.
+
 ### Outbound — bot-initiated CTF acquisitions (committed to live positions)
 
 | Date (UTC) | Asset | Amount | Direction | Counterparty | Tx hash | Approved by | Trade context |

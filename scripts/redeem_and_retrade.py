@@ -222,16 +222,22 @@ def submit_relayer(owner, deposit_wallet, deadline, calls, signature, relayer_ke
     return json.load(urllib.request.urlopen(req, timeout=30))
 
 
-def poll_relayer(tx_id, timeout_s=180):
+def poll_relayer(tx_id, timeout_s=120):
+    """Poll the relayer for terminal state. The /transaction endpoint returns a
+    list of records; the submit response itself already carries the executed
+    state + on-chain tx hash, so this is confirmation-grade, not the source."""
     deadline = time.time() + timeout_s
+    terminal = ("STATE_CONFIRMED", "STATE_EXECUTED", "STATE_MINED", "STATE_FAILED")
     while time.time() < deadline:
         req = urllib.request.Request(f"{RELAYER}/transaction?id={tx_id}", headers=HTTP_HDRS)
         try:
             j = json.load(urllib.request.urlopen(req, timeout=15))
-            state = j.get("state", "")
-            print(f"    relayer state: {state}")
-            if state in ("STATE_CONFIRMED", "STATE_FAILED", "STATE_MINED"):
-                return j
+            rec = j[0] if isinstance(j, list) and j else (j if isinstance(j, dict) else {})
+            state = rec.get("state", "")
+            if state:
+                print(f"    relayer state: {state}")
+            if state in terminal:
+                return rec
         except Exception as e:
             print(f"    poll error: {e}")
         time.sleep(6)
@@ -332,15 +338,10 @@ def main():
         print(f"  REDEEM {w['side']:3} idx={w['index_set']} bal={w['balance']:.3f} coll={coll_name:6} "
               f"{w['condition_id'][:16]}… {w['question']}")
 
-    if not redeem_calls:
-        print("\nNothing redeemable. Done.")
-        return 0
-
-    coll_set = {c["collateral_name"] for c in redeem_calls}
     deadline = int(time.time()) + args.deadline_secs
 
     # ---- REDEEM phase ----
-    if args.phase in ("redeem", "full"):
+    if args.phase in ("redeem", "full") and redeem_calls:
         nonce = relayer_nonce(owner)
         calls = [{"target": c["target"], "value": c["value"], "data": c["data"], "data_hex": c["data_hex"]}
                  for c in redeem_calls]
@@ -362,11 +363,13 @@ def main():
             else:
                 print(f"         SIMULATION OK (execute-from-factory eth_call returned '{sim['result']}') — "
                       f"all {len(calls)} redeems valid; would not revert via the relayer.")
+    elif args.phase in ("redeem", "full") and not redeem_calls:
+        print("\n[REDEEM] no resolved winning positions to redeem this cycle.")
 
-    # ---- CONVERT phase (USDC.e -> pUSD) ----
-    if args.phase in ("convert", "full") and "USDC.e" in coll_set:
+    # ---- CONVERT phase (USDC.e -> pUSD) — standalone: converts whatever USDC.e the
+    #      deposit wallet holds, independent of whether new winners were redeemed this run.
+    if args.phase in ("convert", "full"):
         if args.execute:
-            # Convert whatever USDC.e is actually in the wallet now (post-redeem).
             amt = usdce_balance(deposit_wallet)
             print(f"\n[CONVERT] deposit-wallet USDC.e balance now: {amt/1e6:.4f}")
             if amt > 0:
