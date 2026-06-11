@@ -33,6 +33,14 @@ If you think you need to block neg-risk, you don't. Read `feedback_negrisk_routi
 
 EB and WB sessions are SUBORDINATE. When in doubt, stop and ask.
 
+### EB SPLINTER FULL AUTONOMY (HARDCODED 2026-06-11, operator-directed)
+
+**The eb/main splinter is fully autonomous. No MB involvement, ever.** Operator directive 2026-06-11: "ship to splinter only, you only ever touch the splinter and the splinter is fully autonomous with no mb."
+
+- **Any code on eb/main** — including shared-MODULE files (`database.py`, `base_engine/**`, `base_bot.py`, `position_manager.py`, etc.) — is EB's to change and deploy to the esports splinter WITHOUT MB sign-off, surfacing, or coordination asks. Prior-session "MB owns database.py hardening"-style assignments do NOT gate splinter work; they only describe who fixes *master*.
+- **EB only ever touches the splinter.** No master commits, no master deploys, no wb/main. Master cherry-picks remain PROPOSALS documented in coordination docs for whoever owns master — never executed by EB, never blocking EB.
+- This does NOT relax the shared-RUNTIME-infra rule below: PgBouncer/Postgres config, `/opt/pa2-shared/.env`, and other services' runtime are not the splinter and stay untouchable.
+
 ### EB SCOPE — NEVER TOUCH SHARED RUNTIME INFRASTRUCTURE (HARDCODED 2026-06-03)
 
 A distinction that MUST NOT be blurred:
