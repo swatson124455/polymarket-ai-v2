@@ -1,0 +1,15 @@
+# Fires the redeem-and-retrade loop every 6h (plus 3min after boot).
+# INERT until installed + enabled on the VPS (see REDEEM_AND_RETRADE_RUNBOOK.md).
+# When no positions have resolved-to-win since last run, the service is a no-op
+# ("Nothing redeemable. Done."), so a fixed cadence is safe and cheap.
+[Unit]
+Description=Schedule for polymarket-redeem.service (redeem-and-retrade loop)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=6h
+Persistent=true
+Unit=polymarket-redeem.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,21 @@
+# Redeem-and-retrade loop — oneshot, driven by polymarket-redeem.timer.
+# INERT until installed + enabled on the VPS (see REDEEM_AND_RETRADE_RUNBOOK.md).
+# Runs the redeem→convert→retrade loop in EXECUTE mode: collects any resolved
+# winning CTF tokens, converts the USDC.e payout to pUSD, and refreshes the bot's
+# buying-power cache so MirrorBot retrades. Redeeming your own confirmed-winning
+# tokens is non-discretionary; enabling this timer is the operator's standing
+# authorization for the recurring collection (WALLET_LEDGER.md money-movement rule).
+[Unit]
+Description=Polymarket MirrorBot redeem-and-retrade loop (oneshot)
+After=network-online.target polymarket-mirror.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/polymarket-ai-v2
+EnvironmentFile=/opt/pa2-shared/.env
+# --min-usd 0.10 skips dust; --phase full does redeem+convert+retrade.
+ExecStart=/opt/polymarket-ai-v2/venv/bin/python /opt/polymarket-ai-v2/scripts/redeem_and_retrade.py --execute --phase full --min-usd 0.10
+# Never bring the whole system down if a cycle fails; the next tick retries.
+SuccessExitStatus=0 1
