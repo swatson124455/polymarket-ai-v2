@@ -1510,6 +1510,44 @@ class BaseEngine:
                 except Exception as _pusd_err:
                     logger.debug("Startup pUSD balance query failed (non-critical): %s", _pusd_err)
 
+                # WI-24 (2026-06-10): redeemed-funds visibility. CTF redemptions pay
+                # USDC.e (position IDs are USDC.e-derived; canary 0x1b25ebb2 PayoutRedemption),
+                # but V2 buying power is pUSD — Exchange V2 0xE111…996B AND NegRiskExchange V2
+                # 0xe2222…0F59 both return 0xC011…82DFB from getCollateral() (verified on-chain
+                # 2026-06-10). USDC.e landing at the deposit wallet after a redemption is
+                # therefore NOT spendable V2 collateral until converted — probe it so
+                # recovered funds don't sit invisible to telemetry and the WI-10 ledger.
+                try:
+                    from base_engine.execution.clob_adapter import check_usdc_balance as _check_usdce_dep
+                    _usdce_dep = await _check_usdce_dep(wallet_address=_deposit_wallet)
+                    if _usdce_dep is not None:
+                        logger.info("deposit_wallet_balance_usdce", balance=_usdce_dep, source="usdce@deposit_wallet")
+                        _redeemed_thresh = float(getattr(settings, "REDEEMED_FUNDS_ALERT_THRESHOLD_USD", 1.0))
+                        if _usdce_dep >= _redeemed_thresh:
+                            logger.warning(
+                                "redeemed_funds_awaiting_conversion",
+                                balance_usdce=_usdce_dep,
+                                threshold=_redeemed_thresh,
+                                source="usdce@deposit_wallet",
+                                note=(
+                                    "USDC.e at deposit wallet is not V2 buying power "
+                                    "(V2 collateral = pUSD); convert before resuming live entries"
+                                ),
+                            )
+                        try:
+                            from sqlalchemy import text as _skvtext2
+                            async with self.db.get_session() as _skv_sess2:
+                                await _skv_sess2.execute(_skvtext2("""
+                                    INSERT INTO system_kv (key, value)
+                                    VALUES ('deposit_wallet_balance_usdce', :val)
+                                    ON CONFLICT (key) DO UPDATE SET value = :val
+                                """), {"val": str(_usdce_dep)})
+                                await _skv_sess2.commit()
+                        except Exception as _skv_err2:
+                            logger.debug("WI-24 usdce system_kv write failed (non-critical): %s", _skv_err2)
+                except Exception as _usdce_err:
+                    logger.debug("Startup deposit-wallet USDC.e query failed (non-critical): %s", _usdce_err)
+
         # P0.17: MATIC pre-flight + ongoing 10min monitor (live mode only)
         if not getattr(settings, "SIMULATION_MODE", True):
             from base_engine.execution.clob_adapter import check_matic_balance as _check_matic

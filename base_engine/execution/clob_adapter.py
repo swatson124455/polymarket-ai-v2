@@ -285,7 +285,9 @@ async def check_usdc_balance(
 
     Called by BotBankrollManager at startup and every 10 min to derive
     bot capital from actual on-chain wallet capacity (S217 root fix —
-    replaces the BOT_BANKROLL_CONFIG `capital` fiction).
+    replaces the BOT_BANKROLL_CONFIG `capital` fiction). Also called by
+    base_engine.start() with wallet_address=DEPOSIT_WALLET_ADDRESS for
+    WI-24 redeemed-funds visibility (CTF redemptions pay USDC.e).
     """
     wallet = (wallet_address or getattr(settings, "WALLET_ADDRESS", None) or "").strip()
     rpc = (
@@ -335,6 +337,15 @@ async def check_pusd_balance(
     deposit wallet provisioned by Polymarket's relayer (not the EOA).
     Under CLOB V2, this is the canonical buying-power source — EOA USDC.e
     via check_usdc_balance() is no longer authoritative.
+
+    WI-24 (2026-06-10): 0xC011 is the CORRECT trading-collateral token —
+    do NOT repoint this probe to USDC.e. Verified on-chain: 0xC011 is
+    symbol=pUSD name="Polymarket USD" (6 decimals), and getCollateral()
+    on BOTH V2 exchanges (Exchange 0xE111…996B, NegRiskExchange
+    0xe2222…0F59) returns 0xC011. USDC.e (0x2791…) is the V1/CTF-layer
+    collateral: redemptions pay USDC.e, which is NOT V2 buying power
+    until converted. Redeemed-funds visibility is handled by the separate
+    deposit-wallet USDC.e probe in base_engine.start() (WI-24).
 
     Defaults to settings.DEPOSIT_WALLET_ADDRESS when wallet_address is None.
     Returns balance in USD (float), or None when RPC/wallet config is
