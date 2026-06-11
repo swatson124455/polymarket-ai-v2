@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     DB_POOL_RECYCLE: int = int(os.getenv("DB_POOL_RECYCLE", "300"))  # S145: 600→300 (5min recycle)
     DB_EFFECTIVE_POOL_SIZE: int = int(os.getenv("DB_EFFECTIVE_POOL_SIZE", "0"))  # S151: 0=auto (pool+overflow); set to PgBouncer default_pool_size (e.g. 40) for accurate warnings
     DB_STATEMENT_TIMEOUT_MS: int = int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "30000"))  # S152: per-connection PG statement_timeout; 30s for bots, 300s for ingestion
+    DB_COMMAND_TIMEOUT_S: float = float(os.getenv("DB_COMMAND_TIMEOUT_S", "0"))  # 2026-06-11 EB: asyncpg client-side command timeout; 0=off (default, all services unchanged). esports bot sets 90 in .env.esports — bounds dead-peer hangs (pre-ping/close on half-open conns) that server-side statement_timeout can't reach. Must exceed the longest legit command on the service that enables it.
     DB_IDLE_IN_TXN_TIMEOUT_MS: int = int(os.getenv("DB_IDLE_IN_TXN_TIMEOUT_MS", "60000"))  # S168: 120s→60s. Kills sessions idle-in-transaction >60s. Was configured since S152 but never applied to connections until S168 database.py fix.
     DB_APPLICATION_NAME: str = os.getenv("DB_APPLICATION_NAME", "")  # S152: per-service name for pg_stat_activity monitoring
     # Ingestion process separation — disable scheduler in bot services

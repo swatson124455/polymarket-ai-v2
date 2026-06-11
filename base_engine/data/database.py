@@ -1214,6 +1214,26 @@ class Database:
         # SET statement_timeout in _SemaphoreSession.__aenter__ (default 60s from
         # DB_STATEMENT_TIMEOUT_MS setting). This is PgBouncer-compatible (proven S157).
         connect_args: dict = {"statement_cache_size": stmt_cache, "timeout": connect_timeout, "ssl": db_ssl}
+        # 2026-06-11 (EB, dead-peer hang fix): optional asyncpg command_timeout.
+        # WI-21b wedge dumps caught the esports scan task awaiting UNBOUNDED on
+        # connection ops against dead/half-open peers — pool_pre_ping's SELECT 1
+        # at checkout (asyncpg _async_ping) and session close at __aexit__
+        # (session.py:1071 <- _SemaphoreSession.__aexit__). No TCP signal arrives
+        # and server-side statement_timeout can't fire (the peer is gone), so the
+        # await never resolves -> scan wedged >900s -> stall-watchdog churn.
+        # asyncpg's command_timeout is its INTERNAL protocol-aware bound (asyncpg
+        # terminates the connection itself on expiry — NOT the corrupting external
+        # wait_for-cancel pattern, see S162); the resulting error invalidates the
+        # conn (WI-21a handle_error) and callers retry on a fresh one. Default
+        # 0 = OMITTED = zero behavior change for every service; the esports bot
+        # service sets DB_COMMAND_TIMEOUT_S=90 in .env.esports (its legit queries
+        # are server-bounded at 15-30s so 90s only fires on dead-peer hangs;
+        # .env.esports feeds ONLY polymarket-esports — ingestion's 600s SET LOCAL
+        # ops never see it).
+        _cmd_timeout_s = float(getattr(settings, "DB_COMMAND_TIMEOUT_S", 0) or 0)
+        if _cmd_timeout_s > 0:
+            connect_args["command_timeout"] = _cmd_timeout_s
+            logger.info("asyncpg command_timeout enabled: %.0fs (DB_COMMAND_TIMEOUT_S)", _cmd_timeout_s)
         _pool_recycle = int(getattr(settings, "DB_POOL_RECYCLE", 600))  # S141: 1h→10min default
         self.engine = create_async_engine(
             url,
