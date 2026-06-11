@@ -200,10 +200,20 @@ class EsportsBotV2(BaseBot):
         from config.settings import settings
         _interval = float(getattr(settings, "ESPORTS_STALL_WATCHDOG_INTERVAL_S", 60.0))
         _threshold = float(getattr(settings, "ESPORTS_STALL_RESTART_THRESHOLD_S", 900.0))
+        # 2026-06-11 startup grace (cycle-breaker) — mirrors EsportsBot.
+        # The restart churn was self-sustaining: force-exit → cold start
+        # (training + conn-open burst) → PgBouncer client_login_timeout kills
+        # nascent conns → scan #1 grinds 90s-bounded dead-conn timeouts past
+        # the 900s threshold → force-exit → repeat (~25min cadence). Suppress
+        # the force-exit until uptime > threshold+grace; genuine wedges still
+        # die at ~35min (vs the 18.75h hangs this watchdog exists for).
+        _grace = float(getattr(settings, "ESPORTS_STALL_STARTUP_GRACE_S", 1200.0))
+        self._stall_watchdog_armed_mono = time.monotonic()
         logger.info(
             "esports_v2_scan_stall_watchdog_armed",
             interval_s=_interval,
             threshold_s=_threshold,
+            startup_grace_s=_grace,
         )
         while True:
             await asyncio.sleep(_interval)
@@ -212,6 +222,20 @@ class EsportsBotV2(BaseBot):
                 continue  # no scan has started yet — not armed (cold-start safe)
             _age = time.monotonic() - _start_mono
             if _age > _threshold:
+                _uptime = time.monotonic() - (
+                    getattr(self, "_stall_watchdog_armed_mono", 0.0) or 0.0
+                )
+                if _uptime < _threshold + _grace:
+                    logger.warning(
+                        "esports_v2_scan_stall_within_startup_grace",
+                        scan_age_s=round(_age, 1),
+                        uptime_s=round(_uptime, 1),
+                        grace_until_uptime_s=round(_threshold + _grace, 1),
+                        detail=("stall detected but process is still inside the "
+                                "cold-start grace window — suppressing force-exit "
+                                "so warmup can finish and the conn pool can heal"),
+                    )
+                    continue
                 logger.critical(
                     "esports_v2_scan_stall_self_restart",
                     scan_age_s=round(_age, 1),

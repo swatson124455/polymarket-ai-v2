@@ -1152,6 +1152,7 @@ class TestScanStallWatchdog:
              patch("sys.stderr") as mock_stderr:
             ms.ESPORTS_STALL_WATCHDOG_INTERVAL_S = 0.01
             ms.ESPORTS_STALL_RESTART_THRESHOLD_S = 0.05
+            ms.ESPORTS_STALL_STARTUP_GRACE_S = 0.0
             await asyncio.wait_for(bot._scan_stall_watchdog(), timeout=2.0)
         mock_exit.assert_called_once_with(1)
         mock_stdout.flush.assert_called()   # flush before exit prevents log loss
@@ -1168,6 +1169,7 @@ class TestScanStallWatchdog:
         with patch("bots.esports_bot.settings") as ms, patch("os._exit") as mock_exit:
             ms.ESPORTS_STALL_WATCHDOG_INTERVAL_S = 0.01
             ms.ESPORTS_STALL_RESTART_THRESHOLD_S = 5.0
+            ms.ESPORTS_STALL_STARTUP_GRACE_S = 0.0
             task = asyncio.create_task(bot._scan_stall_watchdog())
             await asyncio.sleep(0.1)   # several checks; none should fire
             task.cancel()              # S235: cancellation is the only stop
@@ -1187,6 +1189,7 @@ class TestScanStallWatchdog:
         with patch("bots.esports_bot.settings") as ms, patch("os._exit") as mock_exit:
             ms.ESPORTS_STALL_WATCHDOG_INTERVAL_S = 0.01
             ms.ESPORTS_STALL_RESTART_THRESHOLD_S = 0.05
+            ms.ESPORTS_STALL_STARTUP_GRACE_S = 0.0
             task = asyncio.create_task(bot._scan_stall_watchdog())
             await asyncio.sleep(0.1)
             task.cancel()              # S235: cancellation is the only stop
@@ -1212,5 +1215,54 @@ class TestScanStallWatchdog:
         with patch("bots.esports_bot.settings") as ms, patch("os._exit") as mock_exit:
             ms.ESPORTS_STALL_WATCHDOG_INTERVAL_S = 0.01
             ms.ESPORTS_STALL_RESTART_THRESHOLD_S = 0.05
+            ms.ESPORTS_STALL_STARTUP_GRACE_S = 0.0
             await asyncio.wait_for(bot._scan_stall_watchdog(), timeout=2.0)
+        mock_exit.assert_called_once_with(1)
+
+
+class TestScanStallStartupGrace:
+    """2026-06-11 cycle-breaker: stall force-exit suppressed until
+    uptime > threshold + ESPORTS_STALL_STARTUP_GRACE_S. The restart churn was
+    self-sustaining (force-exit -> cold start -> PgBouncer client_login_timeout
+    kills nascent conns -> scan #1 grinds 90s dead-conn timeouts past 900s ->
+    force-exit). Genuine wedges must STILL die once past the grace."""
+
+    @pytest.mark.asyncio
+    async def test_stall_within_grace_is_suppressed(self):
+        import asyncio
+        import time as _time
+        bot = make_bot()
+        bot.running = True
+        bot._scan_start_mono = _time.monotonic() - 10_000.0  # scan hung long ago
+        with patch("bots.esports_bot.settings") as ms, patch("os._exit") as mock_exit:
+            ms.ESPORTS_STALL_WATCHDOG_INTERVAL_S = 0.01
+            ms.ESPORTS_STALL_RESTART_THRESHOLD_S = 0.05
+            ms.ESPORTS_STALL_STARTUP_GRACE_S = 10_000.0  # fresh process: inside grace
+            task = asyncio.create_task(bot._scan_stall_watchdog())
+            await asyncio.sleep(0.2)   # many checks; all must suppress
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=2.0)
+            except asyncio.CancelledError:
+                pass
+        mock_exit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stall_past_grace_still_fires(self):
+        """Backdate the armed timestamp -> uptime exceeds threshold+grace -> exit.
+        Guards the backstop: grace must never become a permanent disarm."""
+        import asyncio
+        import time as _time
+        bot = make_bot()
+        bot.running = True
+        bot._scan_start_mono = _time.monotonic() - 10_000.0
+        with patch("bots.esports_bot.settings") as ms, patch("os._exit") as mock_exit, \
+             patch("sys.stdout"), patch("sys.stderr"):
+            ms.ESPORTS_STALL_WATCHDOG_INTERVAL_S = 0.01
+            ms.ESPORTS_STALL_RESTART_THRESHOLD_S = 0.05
+            ms.ESPORTS_STALL_STARTUP_GRACE_S = 10_000.0
+            task = asyncio.create_task(bot._scan_stall_watchdog())
+            await asyncio.sleep(0.03)  # let the watchdog arm (sets armed_mono)
+            bot._stall_watchdog_armed_mono = _time.monotonic() - 20_000.0  # old process
+            await asyncio.wait_for(task, timeout=2.0)
         mock_exit.assert_called_once_with(1)

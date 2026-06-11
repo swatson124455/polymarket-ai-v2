@@ -1341,6 +1341,7 @@ class TestScanStallWatchdogV2:
              patch("sys.stderr") as mock_stderr:
             ms.ESPORTS_STALL_WATCHDOG_INTERVAL_S = 0.01
             ms.ESPORTS_STALL_RESTART_THRESHOLD_S = 0.05
+            ms.ESPORTS_STALL_STARTUP_GRACE_S = 0.0
             await asyncio.wait_for(bot._scan_stall_watchdog(), timeout=2.0)
         mock_exit.assert_called_once_with(1)
         mock_stdout.flush.assert_called()
@@ -1355,6 +1356,7 @@ class TestScanStallWatchdogV2:
         with patch("config.settings.settings") as ms, patch("os._exit") as mock_exit:
             ms.ESPORTS_STALL_WATCHDOG_INTERVAL_S = 0.01
             ms.ESPORTS_STALL_RESTART_THRESHOLD_S = 5.0
+            ms.ESPORTS_STALL_STARTUP_GRACE_S = 0.0
             task = asyncio.create_task(bot._scan_stall_watchdog())
             await asyncio.sleep(0.1)   # several checks; none should fire
             task.cancel()              # S235: cancellation is the only stop
@@ -1372,6 +1374,7 @@ class TestScanStallWatchdogV2:
         with patch("config.settings.settings") as ms, patch("os._exit") as mock_exit:
             ms.ESPORTS_STALL_WATCHDOG_INTERVAL_S = 0.01
             ms.ESPORTS_STALL_RESTART_THRESHOLD_S = 0.05
+            ms.ESPORTS_STALL_STARTUP_GRACE_S = 0.0
             task = asyncio.create_task(bot._scan_stall_watchdog())
             await asyncio.sleep(0.1)
             task.cancel()
@@ -1396,6 +1399,7 @@ class TestScanStallWatchdogV2:
         with patch("config.settings.settings") as ms, patch("os._exit") as mock_exit:
             ms.ESPORTS_STALL_WATCHDOG_INTERVAL_S = 0.01
             ms.ESPORTS_STALL_RESTART_THRESHOLD_S = 0.05
+            ms.ESPORTS_STALL_STARTUP_GRACE_S = 0.0
             await asyncio.wait_for(bot._scan_stall_watchdog(), timeout=2.0)
         mock_exit.assert_called_once_with(1)
 
@@ -1528,3 +1532,45 @@ class TestAwaitingMarketRecheck:
              patch.object(bot, "place_order", new_callable=AsyncMock):
             await bot.scan_and_trade()
         spy.assert_awaited_once()
+
+
+class TestScanStallStartupGraceV2:
+    """Mirror of V1 TestScanStallStartupGrace — same cycle-breaker semantics."""
+
+    def _make_bot(self):
+        from bots.esports_bot_v2 import EsportsBotV2
+        return EsportsBotV2(MagicMock())
+
+    @pytest.mark.asyncio
+    async def test_stall_within_grace_is_suppressed(self):
+        import time as _time
+        bot = self._make_bot()
+        bot._scan_start_mono = _time.monotonic() - 10_000.0
+        with patch("config.settings.settings") as ms, patch("os._exit") as mock_exit:
+            ms.ESPORTS_STALL_WATCHDOG_INTERVAL_S = 0.01
+            ms.ESPORTS_STALL_RESTART_THRESHOLD_S = 0.05
+            ms.ESPORTS_STALL_STARTUP_GRACE_S = 10_000.0
+            task = asyncio.create_task(bot._scan_stall_watchdog())
+            await asyncio.sleep(0.2)
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=2.0)
+            except asyncio.CancelledError:
+                pass
+        mock_exit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stall_past_grace_still_fires(self):
+        import time as _time
+        bot = self._make_bot()
+        bot._scan_start_mono = _time.monotonic() - 10_000.0
+        with patch("config.settings.settings") as ms, patch("os._exit") as mock_exit, \
+             patch("sys.stdout"), patch("sys.stderr"):
+            ms.ESPORTS_STALL_WATCHDOG_INTERVAL_S = 0.01
+            ms.ESPORTS_STALL_RESTART_THRESHOLD_S = 0.05
+            ms.ESPORTS_STALL_STARTUP_GRACE_S = 10_000.0
+            task = asyncio.create_task(bot._scan_stall_watchdog())
+            await asyncio.sleep(0.03)
+            bot._stall_watchdog_armed_mono = _time.monotonic() - 20_000.0
+            await asyncio.wait_for(task, timeout=2.0)
+        mock_exit.assert_called_once_with(1)

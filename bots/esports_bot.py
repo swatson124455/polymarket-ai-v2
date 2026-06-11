@@ -926,10 +926,23 @@ class EsportsBot(BaseBot):
         #     exactly when a restart is needed.
         # The only intended exit is task cancellation from stop() (already
         # awaited there). Still purely time-based: no DB await is wrapped.
+        # 2026-06-11 startup grace (cycle-breaker): the restart churn was
+        # SELF-SUSTAINING — each force-exit triggered a cold start (model
+        # training + 32k-record builds + connection-open burst) during which
+        # PgBouncer client_login_timeout killed nascent conns (~4min after
+        # every restart, pgbouncer.log) → scan #1 ground through 90s-bounded
+        # dead-conn timeouts → exceeded the 900s threshold → force-exit →
+        # NEW cold start → repeat (~25min cadence). Suppress the force-exit
+        # until the process has had threshold+grace to get healthy; a genuine
+        # wedge still dies at ~threshold+grace (~35min vs the 18.75h hangs
+        # this watchdog exists for). E1 uptime-grace precedent: daf938e.
+        _grace = float(getattr(settings, "ESPORTS_STALL_STARTUP_GRACE_S", 1200.0))
+        self._stall_watchdog_armed_mono = time.monotonic()
         logger.info(
             "esportsbot_scan_stall_watchdog_armed",
             interval_s=_interval,
             threshold_s=_threshold,
+            startup_grace_s=_grace,
         )
         while True:
             await asyncio.sleep(_interval)
@@ -938,6 +951,20 @@ class EsportsBot(BaseBot):
                 continue  # no scan has started yet — not armed (cold-start safe)
             _age = time.monotonic() - _start_mono
             if _age > _threshold:
+                _uptime = time.monotonic() - (
+                    getattr(self, "_stall_watchdog_armed_mono", 0.0) or 0.0
+                )
+                if _uptime < _threshold + _grace:
+                    logger.warning(
+                        "esportsbot_scan_stall_within_startup_grace",
+                        scan_age_s=round(_age, 1),
+                        uptime_s=round(_uptime, 1),
+                        grace_until_uptime_s=round(_threshold + _grace, 1),
+                        detail=("stall detected but process is still inside the "
+                                "cold-start grace window — suppressing force-exit "
+                                "so warmup can finish and the conn pool can heal"),
+                    )
+                    continue
                 logger.critical(
                     "esportsbot_scan_stall_self_restart",
                     scan_age_s=round(_age, 1),
