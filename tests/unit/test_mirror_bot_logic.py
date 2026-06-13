@@ -929,6 +929,8 @@ class TestExecuteMirrorTrade:
     async def test_entry_trade_success(self):
         """Successful entry trade increments _daily_exposure and updates position size."""
         bot, engine = _make_bot()
+        # S244: fresh-price path — live midpoint of the traded token = whale fill (slippage 0)
+        engine.client.get_token_midpoint = AsyncMock(return_value=0.60)
         bot.bankroll = MagicMock()
         bot.bankroll.max_bet_usd = 300.0  # S218: prevent float(MagicMock())=1.0 dust-trip
         bot.bankroll.capital = 3000.0
@@ -993,6 +995,7 @@ class TestExecuteMirrorTrade:
     async def test_spread_gate_allows_tight_spread(self):
         """S133: Trades on markets with spread <= MIRROR_MAX_SPREAD are allowed through."""
         bot, engine = _make_bot()
+        engine.client.get_token_midpoint = AsyncMock(return_value=0.55)  # S244: fresh midpoint = whale fill
         # Override market data to have tight spread (yes=0.55, no=0.45, spread=0.0)
         engine.get_market_from_index = MagicMock(return_value={
             "active": True, "yes_price": 0.55, "no_price": 0.45,
@@ -1036,6 +1039,7 @@ class TestExecuteMirrorTrade:
         Post-S168: additive risk budget with 0.15 floor → trade executes at reduced size.
         """
         bot, engine = _make_bot()
+        engine.client.get_token_midpoint = AsyncMock(return_value=0.55)  # S244: fresh midpoint = whale fill
         engine.get_market_from_index = MagicMock(return_value={
             "active": True, "yes_price": 0.55, "no_price": 0.45,
             "volume_24h": 100000.0, "liquidity": 50000.0,
@@ -1116,6 +1120,7 @@ class TestExecuteMirrorTrade:
         that overall_win_rate was called (gate ran) and did not block.
         """
         bot, engine = _make_bot()
+        engine.client.get_token_midpoint = AsyncMock(return_value=0.55)  # S244: fresh midpoint = whale fill
         bot._reliability_tracker = MagicMock()
         bot._reliability_tracker.total_trade_count = MagicMock(return_value=30)
         bot._reliability_tracker.overall_win_rate = MagicMock(return_value=0.45)
@@ -1199,6 +1204,7 @@ class TestExecuteMirrorTrade:
     async def test_max_per_market_cap(self):
         """Entry trade size is capped at MIRROR_MAX_PER_MARKET / price."""
         bot, engine = _make_bot()
+        engine.client.get_token_midpoint = AsyncMock(return_value=0.50)  # S244: fresh midpoint = whale fill
         bot.bankroll = MagicMock()
         bot.bankroll.max_bet_usd = 300.0  # S218: prevent float(MagicMock())=1.0 dust-trip
         bot.bankroll.max_daily_usd = 10000
@@ -1242,6 +1248,7 @@ class TestExecuteMirrorTrade:
     async def test_daily_cap_limits_size(self):
         """Entry trade size is limited by remaining daily exposure."""
         bot, engine = _make_bot()
+        engine.client.get_token_midpoint = AsyncMock(return_value=0.50)  # S244: fresh midpoint = whale fill
         bot.bankroll = MagicMock()
         bot.bankroll.max_bet_usd = 300.0  # S218: prevent float(MagicMock())=1.0 dust-trip
         bot.bankroll.max_daily_usd = 100.0  # only $100 daily

@@ -1,6 +1,26 @@
 # MirrorBot Price-Freshness Fix — Scoping & Plan (S244, 2026-06-13)
 
-**Status:** SCOPING COMPLETE — awaiting operator sign-off before ANY code.
+> **IMPLEMENTED 2026-06-13 (awaiting independent review + deploy-on-word).** All 4
+> sign-off decisions confirmed by operator. Helper `_fresh_side_price(market_id, side,
+> token_id, market_data)` added to `bots/mirror_bot.py`; wired at the single price-override
+> site (return-False skip on stale, distinct `mirror_skip_stale_price` log + a
+> `mirror_rejected_signals` row at stage `price_freshness`). Live key = the **traded
+> `token_id`** (RTDS asset_id, side-correct by construction — more robust than
+> market_data's `{side}_token_id`, which is a fallback). `_max_age` moved inside the
+> try (malformed config → skip, never crash). 2 Tier-2 knobs in `config/settings.py`:
+> `MIRROR_USE_LIVE_MIDPOINT` (default true; rollback=false), `MIRROR_PRICE_STALENESS_MAX_SEC`
+> (default 300). 15 new unit tests + 6 integration-test mocks updated; full unit suite
+> **3565 passed / 0 failed**.
+>
+> **Pre-deploy baseline (journalctl, last full hour before deploy — for the post-deploy
+> before/after the operator asked for):** of 582 `mirror_split_scoring` lines,
+> `wf_slippage=0.0` in **176 (~30%)**, `geo_mean=0.0` in **248 (~43%)**. Post-deploy on
+> fresh prices: if the spurious vetoes were stale-driven, `wf_slippage=0` should drop
+> substantially. If it does NOT drop → either real fast-market movement (slippage
+> graduation becomes relevant) or the fresh fetch isn't fresh (fix didn't land). Also
+> watch the `mirror_skip_stale_price` rate (live-fetch coverage proxy).
+
+**Status:** IMPLEMENTED — awaiting independent review + deploy-on-word.
 **Origin:** the "graduate slippage" commit's price-freshness precondition found a bigger bug — the price feeding slippage AND entry/cost-basis is median ~57 days stale. This redirects the work.
 **Scope:** read-only investigation (3 subagents + DB queries), all claims file:line-verified. No code changed.
 

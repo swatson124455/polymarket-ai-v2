@@ -2734,6 +2734,79 @@ class MirrorBot(BaseBot):
                            reason=rejection_reason,
                            stage=rejection_stage)
 
+    async def _fresh_side_price(
+        self, market_id: str, side: str, token_id: str,
+        market_data: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Optional[float], str]:
+        """S244: resolve a FRESH, side-specific price for slippage + entry/cost-basis.
+
+        The DB index price (markets.yes_price/no_price) is ~92% >7d stale — using it
+        as the slippage anchor AND the recorded entry was a silent bug (median ~57d
+        stale). This returns a live, side-correct price or None (→ caller SKIPS the
+        signal). Order (per the S244 plan, operator-approved 2026-06-13):
+
+          1. live ``get_token_midpoint(token_id)`` — the EXACT token being traded
+             (RTDS asset_id, side-correct by construction: YES→yes-token, NO→no-token
+             via _get_token_side). Covers every whale market (incl. neg-risk / low-liq
+             tail), self-manages its httpx session (precedent: weather_bot.py:4745
+             calls it bare). market_data's ``{side}_token_id`` is only a fallback.
+          2. DB ``markets.*_price`` ONLY if ``updated_at`` is within
+             ``MIRROR_PRICE_STALENESS_MAX_SEC`` (default 300s) — the transient-blip net.
+          3. else ``(None, "stale")`` — NEVER enter on a >threshold-stale price.
+
+        Note: midpoint = (bid+ask)/2, not the tradeable ask. Correct for slippage
+        (drift from the whale's fill on the SAME token). For cost-basis-expectation it
+        is slightly optimistic vs a buy's actual fill; capturing the real CLOB fill is
+        a SEPARATE work item (execution_engine echoes the submitted price; the true
+        fill is never read back). Returns (price in (0.01, 0.99), source) or (None, reason).
+        """
+        _side_l = str(side).lower()
+        if _side_l not in ("yes", "no"):
+            return None, "bad_side"
+        # The traded token is the canonical, side-correct live key; fall back to
+        # market_data only if the caller somehow lacks it.
+        _tok = (str(token_id or "").strip()
+                or str((market_data or {}).get(f"{_side_l}_token_id") or "").strip())
+
+        # 1. Live CLOB midpoint of the exact token being traded — primary.
+        if getattr(settings, "MIRROR_USE_LIVE_MIDPOINT", True) and _tok:
+            _client = getattr(self.base_engine, "client", None)
+            if _client is not None:
+                try:
+                    _live = await _client.get_token_midpoint(_tok)
+                    if _live is not None and 0.01 <= _live <= 0.99:
+                        return float(_live), "live_midpoint"
+                except Exception as _e:
+                    logger.debug("mirror_live_midpoint_failed",
+                                 market=str(market_id)[:16], side=side, err=str(_e)[:80])
+
+        # 2. DB price ONLY if fresh within the staleness window (transient-blip net).
+        try:
+            _max_age = float(getattr(settings, "MIRROR_PRICE_STALENESS_MAX_SEC", 300) or 300)
+            _db = getattr(self.base_engine, "db", None)
+            if _db and getattr(_db, "session_factory", None):
+                from sqlalchemy import text as _text
+                async with _db.get_session() as _sess:
+                    _row = await _sess.execute(
+                        _text(
+                            "SELECT yes_price, no_price, "
+                            "EXTRACT(EPOCH FROM (NOW() - updated_at)) AS age_s "
+                            "FROM markets WHERE condition_id = :cid LIMIT 1"
+                        ),
+                        {"cid": str(market_id)},
+                    )
+                    _r = _row.fetchone()
+                    if _r is not None and _r.age_s is not None and float(_r.age_s) <= _max_age:
+                        _p = float((_r.yes_price if _side_l == "yes" else _r.no_price) or 0.0)
+                        if 0.01 <= _p <= 0.99:
+                            return _p, "db_fresh"
+        except Exception as _e:
+            logger.debug("mirror_db_fresh_price_failed",
+                         market=str(market_id)[:16], side=side, err=str(_e)[:80])
+
+        # 3. No fresh price → caller skips (never enter on a stale price).
+        return None, "stale"
+
     # ── Trade Execution ─────────────────────────────────────────────
 
     async def _execute_mirror_trade(
@@ -3263,12 +3336,32 @@ class MirrorBot(BaseBot):
 
             _side_upper = str(side).upper()
             if _side_upper in ("YES", "NO"):
-                _current = float(_market_data.get(f"{_side_upper.lower()}_price", 0) or 0)
-                if 0.01 <= _current <= 0.99:
-                    price = _current
-                    if abs(_old_price - price) > 0.05:
-                        logger.info("mirror_price_corrected", market=str(market_id)[:16],
-                                    trader_price=round(_old_price, 4), market_price=round(price, 4))
+                # S244: use a FRESH side-specific price (live midpoint → fresh DB → skip),
+                # NOT the ~92%-stale DB index price. This `price` is the slippage anchor
+                # below AND the recorded entry/cost-basis — a stale value corrupts both.
+                # Skip the signal rather than enter on a stale price (operator-approved).
+                _fresh_price, _price_src = await self._fresh_side_price(
+                    str(market_id), _side_upper, token_id, _market_data)
+                if _fresh_price is None:
+                    logger.info("mirror_skip_stale_price",
+                                market=str(market_id)[:16], side=side,
+                                whale_fill=round(_old_price, 4),
+                                note="no fresh price (live midpoint + fresh-DB both "
+                                     "unavailable) — skipping rather than entering stale")
+                    await self._log_rejection(
+                        trader_address=trader_address, market_id=str(market_id),
+                        rejection_reason="mirror_skip_stale_price",
+                        rejection_stage="price_freshness",
+                        token_id=token_id, side=side, price=_old_price,
+                        whale_trade_usd=whale_trade_usd,
+                        signal_metadata={"whale_fill": _old_price, "price_source": _price_src},
+                    )
+                    return False
+                price = _fresh_price
+                if abs(_old_price - price) > 0.05:
+                    logger.info("mirror_price_corrected", market=str(market_id)[:16],
+                                trader_price=round(_old_price, 4),
+                                market_price=round(price, 4), source=_price_src)
 
         # R4→S153: Price direction — weighted factor (was binary BLOCK > 5%).
         # Ramp: 0%→1.0, 5%→0.67, 15%→0.0.

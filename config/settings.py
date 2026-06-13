@@ -445,6 +445,11 @@ class Settings(BaseSettings):
     MIRROR_MARKET_COOLDOWN_SECONDS: int = int(os.getenv("MIRROR_MARKET_COOLDOWN_SECONDS", "1800"))
     MIRROR_MIN_TRADE_USD: float = float(os.getenv("MIRROR_MIN_TRADE_USD", "25.0"))  # S157: 50→25 (unify with cold-start; $25 still filters dust)
     MIRROR_MAX_SLIPPAGE_PCT: float = float(os.getenv("MIRROR_MAX_SLIPPAGE_PCT", "0.05"))  # S142: 0.08→0.05 (8% slippage consumed edge on 3-5¢ signal)
+    # S244: price-freshness for slippage + entry/cost-basis. The DB index price was
+    # ~92% >7d stale (median ~57d). Live midpoint is the primary fresh source; the DB
+    # is a fallback ONLY if updated within the staleness window, else the signal skips.
+    MIRROR_USE_LIVE_MIDPOINT: bool = os.getenv("MIRROR_USE_LIVE_MIDPOINT", "true").lower() in ("true", "1", "yes")  # rollback: set false to disable live fetch
+    MIRROR_PRICE_STALENESS_MAX_SEC: float = float(os.getenv("MIRROR_PRICE_STALENESS_MAX_SEC", "300"))  # DB price usable only if updated within this window
     # S173 Day 2: Trader wallet blacklist — CSV of address prefixes (case-insensitive).
     # RC diagnostic MB-3: these 5 wallets are concentrated loss sources, all active in last 30 days.
     MIRROR_TRADER_BLACKLIST: str = os.getenv(
