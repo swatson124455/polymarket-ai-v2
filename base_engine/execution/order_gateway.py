@@ -1275,8 +1275,12 @@ class OrderGateway:
                 # (the P&L authority); using effective_price here made positions.entry_price
                 # diverge, so mark-to-market uPnL (off positions.entry_price) and realized PnL
                 # (off the trade_events VWAP) anchored to different entry prices for the same lot.
+                # `or effective_price` (not a .get default): the idempotent-DB-replay
+                # path returns {"price": existing["price"]} where the key is PRESENT but
+                # can be NULL — .get("price", default) would return None, and float(None)
+                # raises TypeError, aborting confirm_position after the trade succeeded.
                 _entry_fill_price = (
-                    float(result.get("price", effective_price))
+                    float(result.get("price") or effective_price)
                     if result.get("success") else effective_price
                 )
                 if self.trade_coordinator is not None:

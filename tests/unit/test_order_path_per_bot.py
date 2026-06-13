@@ -149,6 +149,35 @@ class TestHappyPath:
         )
 
 
+class TestEntryFillPriceNullPrice:
+    """Regression for the S237 HIGH-2 port: the idempotent-DB-replay path returns
+    {"success": True, "price": existing["price"]} where the key is PRESENT but can be
+    NULL (a paper_trades row with NULL price). `_entry_fill_price` used
+    float(result.get("price", effective_price)) — .get returns None for a present-but-
+    null key, so float(None) raised TypeError and aborted post-fill confirmation.
+    Fixed with `result.get("price") or effective_price`."""
+
+    def test_null_price_result_does_not_crash(self):
+        gw = _make_gateway(risk_allowed=True)
+        gw.paper_trading_engine.place_order = AsyncMock(
+            return_value={"success": True, "order_id": "paper-001", "price": None, "filled": 10.0}
+        )
+        with patch.object(type(gw), "_can_exit", return_value=True):
+            result = _run(
+                gw.place_order(
+                    bot_name="WeatherBot",
+                    market_id="0xdeadbeef",
+                    token_id="0xdeadbeef",
+                    side="NO",
+                    size=10.0,
+                    price=0.5,
+                )
+            )
+        assert result["success"] is True, (
+            f"null price must fall back to effective_price, not crash: got {result!r}"
+        )
+
+
 class TestMirrorBotRtdsFastPath:
     """MirrorBot RTDS correlation_id bypasses risk_manager — risk_manager NOT called."""
 
