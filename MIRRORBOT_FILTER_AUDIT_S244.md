@@ -176,6 +176,8 @@ Every item touches a live money path. Recommend: backtest each change, stage beh
 
 **The EV / win-rate figures below are COUNTERFACTUAL, NOT realized P&L, and NOT `bot_pnl.py`-sourced.** They describe trades the bot **never made** (rejected signals × market resolution). Per RULE ZERO / Protocol 11, no live trading decision may rest on them. They are included **only** because (a) the operator explicitly requested rejection-correctness analysis and (b) this is the documented purpose of the `mirror_rejected_signals` table (S172 7B "for counterfactual PnL analysis"). **Provenance verified:** resolution = canonical `markets.resolution` (temporal-guarded); formula = the system's own `counterfactual_pnl = notional × (payout − price)` ([database.py:3928](base_engine/data/database.py:3928)); `price` verified side-specific (YES+NO ≈ 1.0). **Canonical realized P&L** lives only in `bot_pnl.py` (executed trades) / on-chain reconciliation (live positions) — see §0/§ADDENDUM-END. **Do not act on any figure here without a real fills-and-fees backtest.** The decision-relevant output is the qualitative verdict column (PROTECTS / NEUTRAL / DESTROYS-EDGE), reproducible from the SQL in this repo; the raw numbers are evidence for those verdicts, not performance claims.
 
+**HOLD-TO-RESOLUTION caveat (applies to EVERY counterfactual number in this doc, not just the opposing-side family):** the EV formula is entry-price → resolution. The bot does NOT hold to resolution — it has stop-losses, take-profits, force-exits. So every counterfactual EV here is an **upper-bound-ish** estimate; a real backtest using the bot's actual early-exit behavior would most likely make the numbers **worse**, not better. This **strengthens** the central "feed is ~−EV after fees" conclusion (it's robust to exit timing) but means no per-filter or per-trader EV should be trusted as-is for a sizing/selection decision.
+
 ---
 
 # ADDENDUM (v2) — Rejection-CORRECTNESS analysis (answers the reviewer's #1 gap)
@@ -223,3 +225,39 @@ A third-party review correctly flagged that §1–§9 above measured **how much 
 4. **Do NOT loosen** `no_edge`, `no_fav`, `whale_too_small`, `market_maker`, `category`, `market_blocklist` — all reject -EV-after-fee signals. (Reverses §3/§4/§9.)
 
 **Bottom line for the reviewer:** the original audit correctly found *where* signals die and proved the gate's calibration bugs, but its fix direction (loosen filters to trade) was largely backwards. The correctness analysis shows most filters are correctly rejecting a feed that is ~-EV after fees; the real levers are (a) the signal source/watchlist and (b) the opposing-side one-bet-per-market constraint — not the gate threshold or the NO-side filters.
+
+---
+
+# ADDENDUM (v3) — Investigation B: the watchlist is the lever (per-trader edge)
+
+**Same QUARANTINE applies:** counterfactual, hold-to-resolution, NOT realized P&L, NOT `bot_pnl.py`, research-grade not decision-grade. Provenance identical to v2 (canonical `markets.resolution`, system's own `payout − price` formula, side-specific price verified). Source: `mirror_rejected_signals` grouped by `trader_address` (the bot rejects ~all signals, so this table ≈ each tracked trader's full signal flow).
+
+## B2 (centerpiece) — is the −EV feed UNIFORM or BIMODAL? → **BIMODAL, and stable.**
+
+Per-trader counterfactual EV, restricted to traders with enough resolved signals to be meaningful (the small-sample-luck guard the reviewer flagged):
+
+| min resolved signals/trader | qualifying traders | +EV after ~2% fees | % of traders | their share of signal volume |
+|---|---|---|---|---|
+| ≥ 200 | 330 | 143 | 43% | ~14% |
+| ≥ 500 | 202 | 90 | 45% | ~13% |
+| ≥ 1000 | 133 | 57 | 43% | ~13% |
+
+EV spread across the ≥200 group: min −0.52, p25 −0.065, median +0.011, p75 +0.070, max +0.47 — a **wide bimodal spread**, not a uniform −EV blob. The ~43% positive-expectation share is **stable across sample thresholds**, so it is not a small-sample artifact.
+
+**Interpretation:** the watchlist is a MIX. A meaningful minority of tracked traders show positive expectation after fees; they are diluted by a roughly-equal set of clearly-negative traders, which drags the aggregate feed to ~breakeven (→ −EV after fees). The good traders produce only ~13% of the signal volume — i.e. the bot is mostly processing noise.
+
+## B1 — watchlist selection is not edge-filtered
+All ~330 traders above are *already on the watchlist* (the bot only logs rejections for watched traders). So the watchlist currently tracks the +EV and the −EV traders together; selection is **not** conditioned on demonstrated post-fee edge. That is the root the rejection-correctness data pointed to.
+
+## B3 — entry-rate decline (18/day → 4/day → 0/day, S222)
+Partially addressed: the bimodal-but-unfiltered watchlist + the §2 gate that rejects ~99% indiscriminately together explain a long decline to zero (as the gate's sample-ramp tightened against short-track-record whales and the feed stayed mostly −EV). A full decline root-cause needs the historical watchlist-composition + threshold timeline (not run here).
+
+## What Investigation B establishes (carry forward)
+1. **The lever is the WATCHLIST, not the filters.** ~43% of well-sampled tracked traders are +EV-after-fees in the counterfactual (stable across sample sizes); pruning/weighting the watchlist to them would shrink volume to ~13% but flip the feed positive. This is the single highest-value change indicated by the data.
+2. **The filters are mostly correct** (v2): they reject a feed that is ~−EV in aggregate. Loosening them trades garbage.
+3. **The gate (§2) is an indiscriminate wall** with no edge-separating power — its calibration bugs are real *correctness* defects but fixing them adds volume, not profit, on the current feed.
+4. **The bot trading zero may be approximately CORRECT** given a ~−EV aggregate feed — it is not simply "broken."
+
+## Two work items this surfaces (for the operator)
+- **WI — watchlist edge-pruning.** Condition watchlist membership (or mirror sizing) on demonstrated post-fee edge with a minimum resolved-sample bar. Highest-leverage. Must be confirmed by the backtest below before shipping.
+- **WI — counterfactual backtest engine (prerequisite for ANY strategy change).** Replay `mirror_rejected_signals` through actual fills, fees, AND the bot's early-exit behavior. The canonical realized source (`bot_pnl.py`) structurally cannot validate the counterfactual (the trades don't exist), so this backtester is the missing validation layer. No watchlist/filter change should ship until it confirms the counterfactual's direction with real exit modeling.
