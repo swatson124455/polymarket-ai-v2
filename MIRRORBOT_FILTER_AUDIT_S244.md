@@ -169,3 +169,51 @@ Handler `_execute_mirror_trade()` ([mirror_bot.py:2739](bots/mirror_bot.py:2739)
 5. **Whale/watchlist (§6) — MEDIUM.** Separate signal-source review: are we tracking the right whales?
 
 Every item touches a live money path. Recommend: backtest each change, stage behind config where possible, and change **one lever at a time** with observation between, per the project's surgical-change protocol.
+
+---
+
+# ADDENDUM (v2) — Rejection-CORRECTNESS analysis (answers the reviewer's #1 gap)
+
+A third-party review correctly flagged that §1–§9 above measured **how much each filter blocks, not whether what it blocks would have won.** That is the gap between "trade more" and "trade profitably." This addendum closes it using `mirror_rejected_signals` (which carries `side`, `price`, and a backfilled `resolution`/`resolved_at`): **11.88M rejected signals since 2026-04-22, 2.75M with a YES/NO resolution.**
+
+**Metric:** counterfactual EV per $1 if each rejected signal had been entered at its **signal price** and held to resolution: `win → (1−price)`, `lose → (−price)`. *Caveats: directional + entry-price only; EXCLUDES the ~2% round-trip cost (`TAKER_FEE_BPS=150`+`FIXED_SLIPPAGE_BPS=50`), slippage beyond that, and the bot's early stop-loss exits (it does not hold to resolution). This is a research counterfactual, NOT realized P&L and NOT `bot_pnl.py`.* (An initial pass produced impossible EVs — averaging `−price` over *unresolved* rows — and was discarded per the project's "don't present impossible numbers" rule; the corrected query restricts EV to resolved rows and is internally consistent with the win%/price marginals.)
+
+**Decision rule:** feed baseline EV = **+0.0086/$1** (resolved rejects). Round-trip cost ≈ **0.02/$1**. So a filter whose rejected signals average **EV < +0.02 is correctly rejecting after-fee losers**; only **EV > +0.02 on a large sample** is destroying real edge.
+
+| rejection_reason | resolved | avg price | EV/$1 | dir. win% | verdict (after ~2% fees) |
+|---|---|---|---|---|---|
+| `mirror_trader_blacklisted` | 2,799 | 0.683 | **+0.305** | 98.8% | +EV **but suspicious** — favorites/near-certain; needs trader-level review |
+| `mirror_no_dynamic_blocked` | 335 | 0.154 | +0.294 | 44.8% | +EV but tiny sample |
+| **`mirror_opposing_side_blocked_historical`** | **50,509** | 0.606 | **+0.163** | 76.9% | **DESTROYS EDGE — large sample, clearly +EV. The strongest real finding.** |
+| `mirror_trader_wr_hard_block` | 370 | 0.514 | +0.088 | 60.3% | +EV but small sample |
+| **`mirror_opposing_side_blocked`** | **32,796** | 0.526 | **+0.044** | 56.9% | **modestly destroys edge — large sample, after-fee positive** |
+| `mirror_buy_capital_guard_reject` | 4,010 | 0.576 | +0.020 | 59.6% | borderline; it's the "bot was broke" guard, not strategy |
+| `mirror_whale_too_small` | 1,413,825 | 0.405 | +0.013 | 41.8% | **~neutral → -EV after fees. KEEP. (Reviewer's hypothesis confirmed.)** |
+| `mirror_gate_blocked` | 149,456 | 0.511 | **+0.010** | 52.1% | **~neutral. The gate has NO edge-discriminating power — it rejects ~breakeven signals indiscriminately.** |
+| `mirror_market_cooldown` | 31,635 | 0.527 | +0.005 | 53.2% | neutral → -EV after fees. Keep. |
+| `mirror_market_maker_blocked` | 101,376 | 0.534 | +0.005 | 53.9% | **neutral → -EV after fees. KEEP — my §3 "loosen it" was WRONG.** |
+| `mirror_category_blocked` | 12,183 | 0.542 | +0.001 | 54.3% | neutral → -EV after fees. Keep. |
+| `mirror_market_blocklist` | 899,166 | 0.584 | −0.004 | 58.1% | -EV. Protects. Keep. |
+| `mirror_same_side_blocked` | 35,209 | 0.529 | −0.042 | 48.7% | protects (re-piling is -EV). Keep. |
+| `mirror_no_edge_rejected` | 8,131 | 0.747 | **−0.093** | 65.4% | **PROTECTS. My §4 "too strict" was WRONG — it correctly rejects -EV favorite bets.** |
+| `mirror_no_fav_hard_block` | 2,378 | 0.939 | **−0.254** | 68.5% | **strongly PROTECTS (NO on 94¢ favorites). My flag was WRONG — keep it.** |
+| `mirror_exposure_lock_reject` | 2,487 | 0.496 | −0.235 | 26.1% | protects. Keep. |
+
+## What this reverses in §1–§9
+- **The gate (§2) is NOT rejecting winners.** It rejects ~breakeven signals (EV +0.010, ≈ baseline) with **no discriminating power** — it's a high, indiscriminate wall, not an edge filter. **Lowering its threshold to "trade more" would let through ~breakeven signals that lose after fees.** The §2 calibration bugs (geo-mean zero-collapse, scale mismatch) are still real *correctness* bugs, but fixing them to increase trade volume would NOT add profit on the current feed.
+- **`no_edge_rejected` (§4) and `no_fav_hard_block` are CORRECT** — they protect against -EV favorite bets (-0.093 and -0.254 EV). My recommendation to loosen them was exactly the trap the reviewer warned about: loosening a filter that correctly rejects -EV signals makes the bot trade garbage.
+- **`market_maker_blocked` (§3) is ~neutral (-EV after fees)** — loosening it gains nothing. (Its directional-flip false-positive logic is still ugly, but it isn't costing money.)
+- **`whale_too_small` (§6) is defensible** — ~neutral before fees, -EV after. Keep the size floor.
+
+## What is actually true
+1. **The only robust, large-sample edge being destroyed is the opposing-side / one-bet-per-market family** — `opposing_side_blocked_historical` (**+0.163/$1 on 50k**) and `opposing_side_blocked` (**+0.044 on 32k**). These reject the *opposite* side of markets the bot is/was in, and that opposite side is genuinely +EV. This is a real, money-losing constraint — but it is **RULE TWO ("one bet per market", marked sacred)**, and acting on it requires position-flip cost analysis + operator sign-off. *Caveat: the +EV assumes hold-to-resolution; the bot exits early, so realizable edge is lower.*
+2. **`trader_blacklisted` (+0.305) needs a trader-level look** — likely favorites/near-certain markets (98.8% win @ 0.68 price), possibly the blacklist flagging sharp or wash traders; do not act before seeing who they are.
+3. **The feed baseline is +0.0086/$1 before fees ≈ −0.01 after fees.** **The average mirror signal is unprofitable after costs.** This is the deepest finding: **the bot trading zero may be approximately correct given its current signal source has no edge after fees.** The fix is then **upstream (the watchlist / signal source — the reviewer's "strategy fork"), not downstream (loosening filters).**
+
+## Revised recommendation (supersedes §9)
+1. **Resolve the strategy fork FIRST (was deferred to §6).** The feed is ~-EV after fees → the highest-leverage question is the **watchlist**: are we tracking whales with demonstrable post-fee edge? If the feed has no edge, no filter change makes the bot profitable. (Investigation B.)
+2. **Fix the §2 gate *correctness* bugs** (geo-mean missing-data-as-zero; scale mismatch) — but as **correctness**, not as a volume lever. They crush even good signals; fixing them is right, but expect ~0 profit impact on the current feed until the feed has edge.
+3. **Opposing-side family** (`historical` +0.163, `open` +0.044) is the only filter family worth loosening on EV grounds — but it's RULE TWO; requires flip-cost analysis + sign-off, and the early-exit caveat caps the realizable gain.
+4. **Do NOT loosen** `no_edge`, `no_fav`, `whale_too_small`, `market_maker`, `category`, `market_blocklist` — all reject -EV-after-fee signals. (Reverses §3/§4/§9.)
+
+**Bottom line for the reviewer:** the original audit correctly found *where* signals die and proved the gate's calibration bugs, but its fix direction (loosen filters to trade) was largely backwards. The correctness analysis shows most filters are correctly rejecting a feed that is ~-EV after fees; the real levers are (a) the signal source/watchlist and (b) the opposing-side one-bet-per-market constraint — not the gate threshold or the NO-side filters.
