@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from base_engine.execution.paper_trading import (
     _vwap_from_book,
+    _vwap_from_bids,
     PaperTradingEngine,
 )
 
@@ -68,6 +69,59 @@ class TestVwapFromBook:
         # 20 shares at 0.50 + 30 shares at 0.52
         expected_vwap = (20 * 0.50 + 30 * 0.52) / 50
         assert abs(vwap - expected_vwap) < 0.001
+
+    # ── S232: walker phantom-level filter contract (LIVE top-level walker) ──
+    # These lock in the invariant the order_gateway S232 fix depends on: the
+    # walker — and the gateway's _shadow_best_ask/_shadow_best_bid computation
+    # that mirrors it — must skip size-0 phantom top-of-book levels. Originally
+    # only verified against the silo copy (b9b25ce); WeatherBot runs the
+    # top-level engine, so the invariant is asserted here on the live walker.
+
+    def test_s232_vwap_from_book_skips_size_zero_phantom_top(self):
+        """A size=0 level at the best ask is treated as non-existent; the first
+        NON-PHANTOM level is the effective best_ask. Production book shape for
+        0xe7b4ced4 (2026-05-28)."""
+        asks = [
+            {"price": 0.38, "size": 0},     # phantom — top of raw, but size=0
+            {"price": 0.65, "size": 50.0},  # real first level
+            {"price": 0.70, "size": 100.0},
+        ]
+        result = _vwap_from_book(asks, order_size_shares=10.0)
+        assert result is not None
+        vwap, fill_frac, slippage = result
+        assert abs(vwap - 0.65) < 1e-6
+        assert abs(fill_frac - 1.0) < 1e-6
+        assert abs(slippage) < 1e-6
+
+    def test_s232_vwap_from_bids_skips_size_zero_phantom_top(self):
+        """Walker contract mirror for the bid side."""
+        bids = [
+            {"price": 0.62, "size": 0},     # phantom
+            {"price": 0.35, "size": 50.0},  # real first level
+            {"price": 0.30, "size": 100.0},
+        ]
+        result = _vwap_from_bids(bids, order_size_shares=10.0)
+        assert result is not None
+        vwap, fill_frac, slippage = result
+        assert abs(vwap - 0.35) < 1e-6
+        assert abs(fill_frac - 1.0) < 1e-6
+        assert abs(slippage) < 1e-6
+
+    def test_s232_vwap_from_book_skips_invalid_price_and_dust_size(self):
+        """Walker filters anything that isn't p>0 and s>0 — same filter the
+        order_gateway S232 fix uses, so the anchor and the walk stay symmetric."""
+        asks = [
+            {"price": 0, "size": 100.0},      # price=0 — filtered
+            {"price": 0.38, "size": 0.0},     # size=0 — filtered
+            {"price": -0.1, "size": 100.0},   # negative price — filtered
+            {"price": 0.50, "size": -5.0},    # negative size — filtered
+            {"price": "invalid", "size": 100.0},  # string price — filtered (ValueError)
+            {"price": 0.65, "size": 50.0},    # first valid
+        ]
+        result = _vwap_from_book(asks, order_size_shares=10.0)
+        assert result is not None
+        vwap, _, _ = result
+        assert abs(vwap - 0.65) < 1e-6
 
 
 # ── Paper Trading Integration (S115 flow) ────────────────────────────────

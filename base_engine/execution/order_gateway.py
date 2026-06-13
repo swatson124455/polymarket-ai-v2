@@ -976,16 +976,43 @@ class OrderGateway:
                 if _book and not _book.get("error"):
                     _raw_asks = _book.get("asks", [])
                     _raw_bids = _book.get("bids", [])
-                    if _raw_asks:
+                    # S232 (WB-splinter): Mirror _vwap_from_book / _vwap_from_bids
+                    # filtering so _shadow_best_ask / _shadow_best_bid skip size-0
+                    # phantom levels the walker correctly excludes. Without this,
+                    # raw_asks[0] can be a phantom top-of-book that diverges from
+                    # the walker's effective best — false-rejecting trades when
+                    # the S231 anchor (paper_trading.py:454-475) compares the
+                    # phantom anchor to the walker's real-fill VWAP. Production
+                    # evidence (2026-05-28): market 0xe7b4ced4 had
+                    # _shadow_best_ask=0.38 (phantom) vs _shadow_vwap=0.65
+                    # (walker first-filled) with paper_book_walk reporting
+                    # slippage_cents=0.0 — confirming the walker's effective
+                    # best_ask was 0.65 after filtering, while raw_asks[0] was
+                    # a size-0 level at 0.38. Parse rules match the walker
+                    # exactly (paper_trading.py:49-63): float coerce p/s keys,
+                    # p>0 and s>0, AttributeError-safe.
+                    _valid_ask: Optional[float] = None
+                    for _lvl in _raw_asks:
                         try:
-                            _shadow_best_ask = float(_raw_asks[0].get("price", 0))
-                        except (ValueError, TypeError):
-                            pass
-                    if _raw_bids:
+                            _p = float(_lvl.get("price", _lvl.get("p", 0)))
+                            _s = float(_lvl.get("size", _lvl.get("s", 0)))
+                            if _p > 0 and _s > 0 and (_valid_ask is None or _p < _valid_ask):
+                                _valid_ask = _p
+                        except (ValueError, TypeError, AttributeError):
+                            continue
+                    if _valid_ask is not None:
+                        _shadow_best_ask = _valid_ask
+                    _valid_bid: Optional[float] = None
+                    for _lvl in _raw_bids:
                         try:
-                            _shadow_best_bid = float(_raw_bids[0].get("price", 0))
-                        except (ValueError, TypeError):
-                            pass
+                            _p = float(_lvl.get("price", _lvl.get("p", 0)))
+                            _s = float(_lvl.get("size", _lvl.get("s", 0)))
+                            if _p > 0 and _s > 0 and (_valid_bid is None or _p > _valid_bid):
+                                _valid_bid = _p
+                        except (ValueError, TypeError, AttributeError):
+                            continue
+                    if _valid_bid is not None:
+                        _shadow_best_bid = _valid_bid
                     if _shadow_best_ask and _shadow_best_bid:
                         _shadow_spread = _shadow_best_ask - _shadow_best_bid
 
