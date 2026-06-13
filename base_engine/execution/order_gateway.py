@@ -1269,10 +1269,20 @@ class OrderGateway:
                 # partial fills in paper trading).  Falls back to requested
                 # size when result has no "filled" key.
                 _filled_size = result.get("filled", size) if result.get("success") else size
+                # S237 HIGH-2: record the ACTUAL fill price (book-walk VWAP) as the position
+                # entry_price, not the pre-trade signal price (effective_price). The paper
+                # engine fills at VWAP and writes that to paper_trades + the trade_events ENTRY
+                # (the P&L authority); using effective_price here made positions.entry_price
+                # diverge, so mark-to-market uPnL (off positions.entry_price) and realized PnL
+                # (off the trade_events VWAP) anchored to different entry prices for the same lot.
+                _entry_fill_price = (
+                    float(result.get("price", effective_price))
+                    if result.get("success") else effective_price
+                )
                 if self.trade_coordinator is not None:
                     if result.get("success") and _filled_size > 0:
                         try:
-                            await self.trade_coordinator.confirm_position(market_id, side, _filled_size, effective_price, source_bot=bot_name, bot_id=bot_name, token_id=token_id)
+                            await self.trade_coordinator.confirm_position(market_id, side, _filled_size, _entry_fill_price, source_bot=bot_name, bot_id=bot_name, token_id=token_id)
                         except Exception as _conf_err:
                             # Theoretical hardening: paper trade succeeded (cash deducted) but DB
                             # confirmation failed. In-memory position exists; 5-min reconcile will
