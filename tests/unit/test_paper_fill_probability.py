@@ -252,3 +252,98 @@ class TestShadowFillFlow:
         assert result["success"] is True
         # Falls back to ask price (B4 anchor)
         assert abs(result["price"] - 0.56) < 0.001
+
+
+class TestS231AnchorTopLevel:
+    """S231 anchor regression on the LIVE top-level PaperTradingEngine.
+
+    The S231 fix originally landed only in the silo copy (c8f5f86); WeatherBot
+    runs the TOP-LEVEL base_engine (S239: ExecStart=main.py injects it), so the
+    fix was dead code until ported here. These tests exercise the top-level engine
+    directly so the anchor fix cannot silently regress to the synthetic-anchor bug.
+
+    Live evidence the fix targets (2026-06-11, market 0xd63e43.., Lucknow NO@0.74):
+    `Paper trade FAILED — Slippage 183.0% exceeds 10% limit (original=0.2700,
+    fill=0.7640)`. The 0.27 anchor was the YES-token synthetic mid (1 - 0.74),
+    compared against the real NO-book VWAP 0.764. Top failure pairs all summed to
+    ~1.0 (0.40/0.61, 0.42/0.60, 0.21/0.82) — the YES-anchor-vs-NO-fill fingerprint.
+    """
+
+    def _make_engine(self):
+        engine = PaperTradingEngine(initial_capital=10000.0, db=None)
+        engine.enable()
+        return engine
+
+    @pytest.mark.asyncio
+    async def test_buy_anchor_uses_real_shadow_over_synthetic_bid_ask(self):
+        """BUY (Lucknow NO pattern): synthetic ask=0.27 (1-0.74 YES mid) vs real
+        _shadow_best_ask=0.74 and VWAP=0.764. Pre-fix anchored to 0.27 → 183%
+        adverse → REJECT. Post-fix anchors to real 0.74 → ~3% → SUCCESS."""
+        engine = self._make_engine()
+        with patch("base_engine.execution.paper_trading.settings") as ms:
+            ms.TAKER_FEE_BPS = 0
+            ms.MAKER_FEE_BPS = 0
+            ms.PAPER_TAKER_FEE_BPS = 0
+            ms.PAPER_LATENCY_DRIFT_BPS_PER_SEC = 0
+            result = await engine.place_order(
+                market_id="m_lucknow", token_id="t_lucknow", side="BUY",
+                size=10.0, price=0.74, bot_name="test", original_side="NO",
+                bid=0.26, ask=0.27, confidence=0.93,  # synthetic YES-denominated
+                event_data={
+                    "_shadow_book_walk_used": True,
+                    "_shadow_vwap": 0.764,
+                    "_shadow_fill_frac": 1.0,
+                    "_shadow_slippage": 0.0,
+                    "_shadow_best_ask": 0.74,  # REAL NO top-of-book
+                    "_shadow_best_bid": 0.72,
+                },
+            )
+        assert result["success"] is True, f"expected success after S231 fix, got {result}"
+        assert abs(result["price"] - 0.764) < 0.001  # fill at real NO VWAP
+
+    @pytest.mark.asyncio
+    async def test_sell_anchor_uses_real_shadow_over_synthetic_bid_ask(self):
+        """SELL mirror: synthetic bid=0.60 vs real _shadow_best_bid=0.35, VWAP=0.35.
+        Pre-fix adverse = 0.60-0.35 = 42% → REJECT. Post-fix anchors to 0.35 → PASS."""
+        engine = self._make_engine()
+        engine.positions[("test", "m_thin_sell")] = {
+            "size": 50.0, "avg_price": 0.50, "token_id": "t_thin_sell",
+            "side": "YES", "entry_fee": 0.0,
+        }
+        with patch("base_engine.execution.paper_trading.settings") as ms:
+            ms.TAKER_FEE_BPS = 0
+            ms.MAKER_FEE_BPS = 0
+            ms.PAPER_TAKER_FEE_BPS = 0
+            ms.PAPER_LATENCY_DRIFT_BPS_PER_SEC = 0
+            result = await engine.place_order(
+                market_id="m_thin_sell", token_id="t_thin_sell", side="SELL",
+                size=10.0, price=0.50, bot_name="test",
+                bid=0.60, ask=0.61, confidence=0.80,  # synthetic, far from real
+                event_data={
+                    "_shadow_book_walk_used": True,
+                    "_shadow_vwap": 0.35,
+                    "_shadow_fill_frac": 1.0,
+                    "_shadow_slippage": 0.0,
+                    "_shadow_best_bid": 0.35,  # REAL top-of-book
+                    "_shadow_best_ask": 0.40,
+                },
+            )
+        assert result["success"] is True, f"expected success after S231 fix, got {result}"
+        assert abs(result["price"] - 0.35) < 0.001
+
+    @pytest.mark.asyncio
+    async def test_anchor_falls_back_to_bid_ask_when_shadow_absent(self):
+        """Backward-compat: no _shadow_best_* keys → unchanged B4 synthetic anchor."""
+        engine = self._make_engine()
+        with patch("base_engine.execution.paper_trading.settings") as ms:
+            ms.TAKER_FEE_BPS = 0
+            ms.MAKER_FEE_BPS = 0
+            ms.PAPER_TAKER_FEE_BPS = 0
+            ms.PAPER_LATENCY_DRIFT_BPS_PER_SEC = 0
+            result = await engine.place_order(
+                market_id="m1", token_id="t1", side="BUY",
+                size=10.0, price=0.55, bot_name="test",
+                bid=0.54, ask=0.56,
+            )
+        assert result["success"] is True
+        assert abs(result["price"] - 0.56) < 0.001  # B4 ask anchor unchanged
