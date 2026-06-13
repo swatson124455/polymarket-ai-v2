@@ -559,23 +559,35 @@ class MirrorBot(BaseBot):
             except Exception as _ps_err:
                 logger.warning("mirror_startup_price_sync failed: %s", _ps_err)
 
-        # S117: Build _entered_market_sides from ALL trade_events ENTRY records.
+        # S117: Build _entered_market_sides from trade_events ENTRY records.
         # Prevents opposing-side entries on markets where the first side already resolved.
         # The in-memory _open_positions guard only catches currently-open positions.
+        #
+        # S244 FIX: restrict to the CURRENT execution mode. Pre-fix this query had NO
+        # execution_mode filter, so it loaded ALL ENTRY history — including months of
+        # PAPER trades. Verified on the live bot: 284 of 286 restored entries were PAPER
+        # and 0 of 286 backed an open live position, so the bot permanently refused the
+        # opposing side of 286 active markets it held no position in → live trading
+        # starved to ZERO (888 mirror_opposing_side_blocked_historical/hr, 0 orders/24h).
+        # The opposing-side guard must use SAME-MODE history only: live entries guard
+        # live trading, paper entries guard paper trading.
         try:
+            _restore_mode = "paper" if is_paper_trading_active() else "live"
             async with db.get_session() as session:
                 _ms_rows = await session.execute(
                     _text(
                         "SELECT DISTINCT te.market_id, te.side FROM trade_events te "
                         "JOIN markets m ON m.condition_id = te.market_id "
                         "WHERE te.bot_name = :bot AND te.event_type = 'ENTRY' "
-                        "AND te.side IN ('YES', 'NO') AND m.resolved = false"
+                        "AND te.side IN ('YES', 'NO') AND m.resolved = false "
+                        "AND te.execution_mode = :mode"
                     ),
-                    {"bot": self.bot_name},
+                    {"bot": self.bot_name, "mode": _restore_mode},
                 )
                 for _mr in _ms_rows.fetchall():
                     self._entered_market_sides.add((_mr.market_id, _mr.side))
-                logger.info("mirror_entered_sides_restored n=%d", len(self._entered_market_sides))
+                logger.info("mirror_entered_sides_restored n=%d mode=%s",
+                            len(self._entered_market_sides), _restore_mode)
         except Exception as _exc:
             logger.warning("mirror_entered_sides_restore failed: %s", _exc)
 
