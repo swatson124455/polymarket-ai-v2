@@ -856,11 +856,11 @@ class BaseBot(ABC):
                 # event-loop-hang concern is bounded per-query without a corrupting client-side
                 # cancel. Any exception (incl. a clean 30s QueryCanceledError) propagates to the
                 # consecutive-failures handler below, exactly as other scan errors always have.
-                self._idle_event.clear()
-                try:
-                    await self.scan_and_trade()
-                finally:
-                    self._idle_event.set()
+                # 2026-06-13: optional hard scan deadline (SCAN_DEADLINE_S,
+                # esports-only; default off) bounds unbounded external I/O
+                # (e.g. PandaScore HTTP) so a hung scan aborts+retries instead
+                # of wedging into a watchdog restart. See _scan_once_bounded.
+                await self._scan_once_bounded()
                 self._latency_tracker.mark("scan_done")
                 _scan_ms = (time.monotonic() - _scan_t0) * 1000
                 # Log per-stage breakdown (INFO when slow, DEBUG otherwise)
@@ -890,14 +890,9 @@ class BaseBot(ABC):
                         if self._strategic_timer.should_burst():
                             logger.debug("%s: burst scan triggered", self.bot_name)
                             await asyncio.sleep(self._get_scan_interval() * 0.5)
-                            # C2 FIX REMOVED (2026-06-02, EB) — same rationale as the main
-                            # scan above: no corrupting client-side cancel; the per-query 30s
-                            # server-side statement_timeout is the bound.
-                            self._idle_event.clear()
-                            try:
-                                await self.scan_and_trade()
-                            finally:
-                                self._idle_event.set()
+                            # Same optional hard deadline as the main scan (Protocol 16:
+                            # same-shape site). See _scan_once_bounded.
+                            await self._scan_once_bounded()
                     except Exception as e:
                         logger.debug("burst scan failed: %s", e)
 
@@ -953,10 +948,54 @@ class BaseBot(ABC):
                     self.running = False
                     break
     
+    async def _scan_once_bounded(self) -> None:
+        """Run ONE scan_and_trade(), optionally under a hard wall-clock deadline.
+
+        2026-06-13 (EB, systemic anti-wedge): SCAN_DEADLINE_S>0 (esports only;
+        default 0 = OFF everywhere, so MB/WB/master scan behavior is unchanged)
+        wraps the whole scan in asyncio.timeout. ANY single hung await — chiefly
+        an UNBOUNDED external HTTP call (e.g. PandaScore get_past_matches, which
+        server-side DB timeouts can't reach and which sits UPSTREAM of the trade
+        step, so a hang there stops trading entirely) — aborts the scan and lets
+        the loop retry next cycle, instead of wedging >900s into a stall-watchdog
+        restart. This is the single time-limit that replaces chasing each
+        external call one-by-one.
+
+        Safety vs the 2026-06-02 removal of the wait_for wrapper (965666b): the
+        deadline is set ABOVE the DB self-bounds (command_timeout 90s /
+        statement_timeout 30s) so it fires almost entirely on non-DB (HTTP)
+        awaits, where cancellation is harmless (WI-21 audit SAFE list). The
+        residual case (deadline landing mid-asyncpg across accumulated DB ops) is
+        now CLEANED UP by the WI-21a handle_error eviction + S235 _CORRUPT_SIGS
+        guard — which did NOT exist when the wrapper was removed. On expiry
+        asyncio.timeout raises TimeoutError; we log + SWALLOW it (abort-and-
+        continue) rather than count it toward max-consecutive-failures, so a
+        slow upstream API never stops the bot or accumulates into a restart.
+        """
+        _deadline = float(getattr(settings, "SCAN_DEADLINE_S", 0) or 0)
+        self._idle_event.clear()
+        try:
+            if _deadline > 0:
+                try:
+                    async with asyncio.timeout(_deadline):
+                        await self.scan_and_trade()
+                except TimeoutError:
+                    logger.warning(
+                        "scan_deadline_exceeded",
+                        bot_name=self.bot_name,
+                        deadline_s=_deadline,
+                        detail=("scan aborted at hard deadline (likely unbounded "
+                                "external I/O) — retrying next cycle"),
+                    )
+            else:
+                await self.scan_and_trade()
+        finally:
+            self._idle_event.set()
+
     @abstractmethod
     async def scan_and_trade(self):
         pass
-    
+
     @abstractmethod
     async def analyze_opportunity(self, market_data: Dict) -> Optional[Dict]:
         pass
