@@ -814,6 +814,15 @@ class BaseBot(ABC):
 
                 if _ks_engaged:
                     logger.debug("Scan paused: kill switch engaged", bot_name=self.bot_name)
+                    # S244: keep the watchdog heartbeat fresh while intentionally paused.
+                    # The kill-switch pause must NOT starve bot_heartbeats.last_scan_at —
+                    # otherwise the stale-bot watchdog (main.py) sees no scan for >30m and
+                    # force-restarts a deliberately-held bot, crash-looping it (observed:
+                    # 474 restarts over 18h). A paused bot is alive, not dead.
+                    try:
+                        await self._record_heartbeat(scan_duration_ms=0.0)
+                    except Exception as _hb_err:
+                        logger.debug("paused heartbeat write failed (non-fatal): %s", _hb_err)
                     await asyncio.sleep(10)
                     continue
                 # Phase 5.2: Drain whale priority queue before scan — log whale markets so
