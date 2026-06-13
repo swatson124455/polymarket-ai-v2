@@ -172,6 +172,12 @@ Every item touches a live money path. Recommend: backtest each change, stage beh
 
 ---
 
+# ⚠️ QUARANTINE BANNER — read before the addendum
+
+**The EV / win-rate figures below are COUNTERFACTUAL, NOT realized P&L, and NOT `bot_pnl.py`-sourced.** They describe trades the bot **never made** (rejected signals × market resolution). Per RULE ZERO / Protocol 11, no live trading decision may rest on them. They are included **only** because (a) the operator explicitly requested rejection-correctness analysis and (b) this is the documented purpose of the `mirror_rejected_signals` table (S172 7B "for counterfactual PnL analysis"). **Provenance verified:** resolution = canonical `markets.resolution` (temporal-guarded); formula = the system's own `counterfactual_pnl = notional × (payout − price)` ([database.py:3928](base_engine/data/database.py:3928)); `price` verified side-specific (YES+NO ≈ 1.0). **Canonical realized P&L** lives only in `bot_pnl.py` (executed trades) / on-chain reconciliation (live positions) — see §0/§ADDENDUM-END. **Do not act on any figure here without a real fills-and-fees backtest.** The decision-relevant output is the qualitative verdict column (PROTECTS / NEUTRAL / DESTROYS-EDGE), reproducible from the SQL in this repo; the raw numbers are evidence for those verdicts, not performance claims.
+
+---
+
 # ADDENDUM (v2) — Rejection-CORRECTNESS analysis (answers the reviewer's #1 gap)
 
 A third-party review correctly flagged that §1–§9 above measured **how much each filter blocks, not whether what it blocks would have won.** That is the gap between "trade more" and "trade profitably." This addendum closes it using `mirror_rejected_signals` (which carries `side`, `price`, and a backfilled `resolution`/`resolved_at`): **11.88M rejected signals since 2026-04-22, 2.75M with a YES/NO resolution.**
