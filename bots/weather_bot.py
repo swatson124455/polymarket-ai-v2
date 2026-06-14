@@ -2576,7 +2576,14 @@ class WeatherBot(BaseBot):
                         "side": "NO",
                         "edge": round(no_edge, 4),
                         "price": round(1.0 - market_prob, 4),
-                        "model_prob": round(1.0 - model_prob, 4),
+                        # S245 CANONICAL: model_prob is ALWAYS P(YES-token resolves YES),
+                        # for BOTH sides, ALL engines (temperature/wind/precip/snow). The
+                        # Kelly allocator (3282) + exec-edge gate (4769) derive P(side) via
+                        # (1.0 - model_prob) for NO. Pre-S245 this stored P(side) and the
+                        # allocator double-inverted -> dropped every wind NO opp. confidence
+                        # below is a DIFFERENT field that intentionally stays P(side) — do NOT
+                        # "fix" it to match.
+                        "model_prob": round(model_prob, 4),
                         "market_prob": round(1.0 - market_prob, 4),
                         "abs_edge": round(abs(no_edge), 4),
                         "confidence": round(1.0 - model_prob, 4),
@@ -3279,6 +3286,31 @@ class WeatherBot(BaseBot):
         # where p_i = confidence in this bucket, b_i = payout odds
         edges: Dict[str, float] = {}
         for opp in opps:
+            # S245 ENGINE-BOUNDARY INVARIANT (model_prob canonicalization).
+            # model_prob is ALWAYS P(YES-token resolves YES) — both sides, all 4 engines
+            # (temperature/wind/precip/snow). The line below derives P(side) for NO via
+            # (1.0 - model_prob). A producer that regresses to storing P(side) in model_prob
+            # (the pre-S245 wind:2579 / precip:227 bug) double-inverts here and SILENTLY
+            # drops every NO opp at `p <= price` — invisible (looks like a quiet market).
+            # This boundary check is the single fan-in every opp passes through; it fails
+            # loudly instead of silently mis-handling live capital. Uses raise (not bare
+            # assert) so it survives `python -O`.
+            _mp = opp.get("model_prob")
+            if _mp is None or not (0.0 <= _mp <= 1.0):
+                raise AssertionError(
+                    f"model_prob out of [0,1]: {_mp} (market={opp.get('market_id')}, "
+                    f"type={opp.get('market_type')}) — denomination/data regression"
+                )
+            # Directional canary: a NO opp is generated only when no_edge>0, i.e.
+            # P(YES) <= implied YES price = (1 - opp['price']). Canonical model_prob=P(YES)
+            # must therefore sit at/below (1 - opp['price']); a P(side)=1-P(YES) value
+            # (the regression) sits above it and trips this. (+1e-6 absorbs round(.,4).)
+            if opp["side"] == "NO" and _mp > (1.0 - opp["price"]) + 1e-6:
+                raise AssertionError(
+                    f"NO opp model_prob={_mp} > implied P(YES) price={1.0 - opp['price']:.4f} "
+                    f"(market={opp.get('market_id')}, type={opp.get('market_type')}): "
+                    f"model_prob looks like P(side), not P(YES) — producer denomination regression"
+                )
             p = opp["model_prob"] if opp["side"] == "YES" else (1.0 - opp["model_prob"])
             price = opp["price"]
             if price <= 0.02 or price >= 0.98 or p <= price:

@@ -224,7 +224,12 @@ class PrecipitationProbabilityEngine:
                     "market_id": bucket.market_id,
                     "token_id": bucket.no_token_id,
                     "side": "NO",
-                    "model_prob": 1.0 - model_prob,
+                    # S245 CANONICAL: model_prob is ALWAYS P(YES), both sides, all engines.
+                    # The Kelly allocator + exec-edge gate derive P(side) via (1.0 - model_prob)
+                    # for NO. Pre-S245 this stored P(side) and the allocator double-inverted ->
+                    # dropped every precip/snow NO opp. confidence below intentionally stays
+                    # P(side) — do NOT "fix" it to match. (snow reuses this engine.)
+                    "model_prob": model_prob,
                     "price": 1.0 - market_price,
                     "edge": no_edge,
                     "abs_edge": abs(no_edge),
