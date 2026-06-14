@@ -332,17 +332,41 @@ class ExecutionEngine:
             }
         
         try:
-            # S120: Pre-trade USDC balance check (live path only, non-blocking on failure)
+            # S245 §0: Pre-trade pUSD balance check (live path only, non-blocking on
+            # unexpected error). Replaces the S120 USDC.e@EOA check, which read the WRONG
+            # token at the WRONG wallet — V2 collateral is pUSD at the deposit wallet, not
+            # USDC.e at the EOA (WI-24: getCollateral() on both V2 exchanges == pUSD 0xC011;
+            # the sibling approval step was already V2-fixed in S228 Bug 8, this balance
+            # check was the one site that missed it). Reuses the WI-24 accessor
+            # check_pusd_balance(); the deposit wallet it reads IS the CLOB order funder
+            # (clob_adapter funder=DEPOSIT_WALLET_ADDRESS, signature_type=3). Function-local
+            # import matches base_engine.py:1488 / bankroll_manager.py:184 and lets tests
+            # patch clob_adapter.check_pusd_balance.
             if self.contract_manager and not getattr(settings, "SIMULATION_MODE", True):
                 try:
-                    _bal = await self.contract_manager.get_usdce_balance()
-                    if _bal.get("success"):
-                        _cost = size * price
-                        if _bal["balance_usd"] < _cost:
-                            return {
-                                "success": False,
-                                "error": f"Insufficient USDC: need ${_cost:.2f}, have ${_bal['balance_usd']:.2f}",
-                            }
+                    from base_engine.execution.clob_adapter import check_pusd_balance
+                    _pusd_bal = await check_pusd_balance()  # pUSD @ deposit wallet (order funder)
+                    _cost = size * price
+                    if _pusd_bal is None:
+                        # Read failure (RPC/config) — NOT a zero balance, which returns 0.0.
+                        # Fail closed: skip this attempt rather than submit unverified funding
+                        # (the skip-on-stale principle of the S244 price-freshness fix). The
+                        # error has no _PERMANENT_PATTERNS substring, so the gateway retry loop
+                        # re-checks (recovers a transient RPC blip) and otherwise the signal
+                        # re-evaluates next scan. Distinct log makes the None-rate observable.
+                        logger.warning("pretrade_pusd_check_unavailable",
+                                       bot_name=bot_name, market_id=str(market_id))
+                        return {"success": False,
+                                "error": "pUSD balance unavailable (read failed); skipping order"}
+                    if _pusd_bal < _cost:
+                        # Genuine shortfall. "insufficient" is in _PERMANENT_PATTERNS → no
+                        # in-scan retry (balance can't change within the 1s/2s/4s retry window);
+                        # the signal still re-evaluates next scan when capital changes (redeem /
+                        # position close). Retryable here would only hammer an unchanged balance.
+                        return {
+                            "success": False,
+                            "error": f"Insufficient pUSD: need ${_cost:.2f}, have ${_pusd_bal:.2f}",
+                        }
                 except Exception as _bal_err:
                     logger.debug("Pre-trade balance check failed (non-blocking): %s", _bal_err)
 
