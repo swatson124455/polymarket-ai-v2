@@ -431,3 +431,104 @@ class TestS231AnchorTopLevel:
             )
         assert result["success"] is True
         assert abs(result["price"] - 0.56) < 0.001  # B4 ask anchor unchanged
+
+
+class TestDirectionalSlippageTopLevel:
+    """S245 #3: directional slippage guard on the LIVE top-level PaperTradingEngine.
+
+    Ported from the silo (TestSiloDirectionalSlippage). The guard must reject only
+    ADVERSE fills (BUY above anchor / SELL below anchor) and ACCEPT favorable ones.
+    The favorable-passes test is the negative control: under the old symmetric abs()
+    guard it FAILED (a favorable large move was rejected); it passes only with the
+    directional fix. The two adverse-reject tests guard against the guard going silent.
+    """
+
+    def _make_engine(self):
+        engine = PaperTradingEngine(initial_capital=10000.0, db=None)
+        engine.enable()
+        return engine
+
+    @pytest.mark.asyncio
+    async def test_sell_favorable_book_walk_passes(self):
+        """SELL with VWAP > original (stale-mid scenario) must succeed — favorable, not adverse.
+        Negative control: the old symmetric abs() rejected this 67% move; directional accepts."""
+        engine = self._make_engine()
+        engine.positions[("paper_trader", "mkt_stale")] = {
+            "size": 50.0, "avg_price": 0.20, "token_id": "tok_stale",
+            "side": "NO", "entry_fee": 0.0,
+        }
+        with patch("base_engine.execution.paper_trading.settings") as ms:
+            ms.TAKER_FEE_BPS = 0
+            ms.MAKER_FEE_BPS = 0
+            ms.PAPER_TAKER_FEE_BPS = 0
+            ms.PAPER_LATENCY_DRIFT_BPS_PER_SEC = 0
+            result = await engine.place_order(
+                market_id="mkt_stale", token_id="tok_stale", side="SELL",
+                size=50.0, price=0.12, bot_name="paper_trader",
+                bid=0.12, ask=0.13, confidence=0.80,
+                event_data={
+                    "_shadow_book_walk_used": True,
+                    "_shadow_vwap": 0.20,
+                    "_shadow_fill_frac": 1.0,
+                    "_shadow_slippage": 0.0,
+                    "_shadow_best_bid": 0.20,
+                },
+            )
+        assert result["success"] is True
+        assert abs(result["price"] - 0.20) < 0.001
+
+    @pytest.mark.asyncio
+    async def test_sell_adverse_book_walk_rejected(self):
+        """SELL with VWAP << original (collapsed book) must reject as adverse slippage."""
+        engine = self._make_engine()
+        engine.positions[("paper_trader", "mkt_collapse")] = {
+            "size": 50.0, "avg_price": 0.50, "token_id": "tok_collapse",
+            "side": "YES", "entry_fee": 0.0,
+        }
+        with patch("base_engine.execution.paper_trading.settings") as ms:
+            ms.TAKER_FEE_BPS = 0
+            ms.MAKER_FEE_BPS = 0
+            ms.PAPER_TAKER_FEE_BPS = 0
+            ms.PAPER_LATENCY_DRIFT_BPS_PER_SEC = 0
+            result = await engine.place_order(
+                market_id="mkt_collapse", token_id="tok_collapse", side="SELL",
+                size=50.0, price=0.50, bot_name="paper_trader",
+                bid=0.50, ask=0.51, confidence=0.80,
+                event_data={
+                    "_shadow_book_walk_used": True,
+                    "_shadow_vwap": 0.40,
+                    "_shadow_fill_frac": 1.0,
+                    "_shadow_slippage": 0.10,
+                    "_shadow_best_bid": 0.50,
+                },
+            )
+        assert result["success"] is False
+        assert result["fail_code"] == "slippage"
+        assert "Adverse slippage" in result["error"]
+        assert "side=SELL" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_buy_adverse_book_walk_rejected(self):
+        """BUY with VWAP >> original (book ran away) must still reject as adverse slippage."""
+        engine = self._make_engine()
+        with patch("base_engine.execution.paper_trading.settings") as ms:
+            ms.TAKER_FEE_BPS = 0
+            ms.MAKER_FEE_BPS = 0
+            ms.PAPER_TAKER_FEE_BPS = 0
+            ms.PAPER_LATENCY_DRIFT_BPS_PER_SEC = 0
+            result = await engine.place_order(
+                market_id="m_runaway", token_id="t_runaway", side="BUY",
+                size=10.0, price=0.50, bot_name="test",
+                bid=0.49, ask=0.50, confidence=0.60,
+                event_data={
+                    "_shadow_book_walk_used": True,
+                    "_shadow_vwap": 0.60,
+                    "_shadow_fill_frac": 1.0,
+                    "_shadow_slippage": 0.10,
+                    "_shadow_best_ask": 0.50,
+                },
+            )
+        assert result["success"] is False
+        assert result["fail_code"] == "slippage"
+        assert "Adverse slippage" in result["error"]
+        assert "side=BUY" in result["error"]
