@@ -1672,6 +1672,22 @@ class MirrorBot(BaseBot):
                     market_id=market_id, token_id=token_id,
                     size=exit_size, side=exit_side,
                 ):
+                    # S245 #2: a guard rejection on a CONFIRMED-zero on-chain
+                    # balance is a phantom position (entry recorded, order never
+                    # filled, or already sold/redeemed off-chain). A bare
+                    # `continue` re-evaluates it every scan forever (the
+                    # strand-loop) and — under marketable FOK — surfaces as
+                    # `invalid token id` 400s on the phantom exit. Terminally
+                    # close it so exposure frees and the row stops re-entering
+                    # the exit loop. Partial holdings and unreadable balances
+                    # fail closed (no terminal close — never abandon real tokens).
+                    if await self._confirm_zero_ctf_balance(token_id):
+                        await self._close_position_terminal(
+                            pos_key=pos_key, pos=pos,
+                            market_id=market_id, token_id=token_id,
+                            exit_size=exit_size,
+                            reason="phantom_zero_balance", redeemable=False,
+                        )
                     continue
 
                 order = await self.place_order(
@@ -2131,6 +2147,39 @@ class MirrorBot(BaseBot):
             )
             return False
         return True
+
+    async def _confirm_zero_ctf_balance(self, token_id: str) -> bool:
+        """S245 #2: confirm the deposit wallet holds ~zero of token_id on-chain.
+
+        Narrower companion to _live_sell_balance_guard. The guard returns False
+        on ANY confirmed shortfall (bal < size - 0.01), which includes PARTIAL
+        holdings that still have real tokens to sell. This check returns True
+        ONLY when the on-chain CTF balance is confirmed dust (< 0.01 token) —
+        a genuine phantom position (entry recorded but the order never filled,
+        or the position was already sold/redeemed off-chain).
+
+        Used by the exit paths to decide whether a guard-rejected SELL should be
+        terminally closed (phantom → free exposure, stop the strand-loop) versus
+        left for the next scan (partial holding — never abandon real tokens).
+
+        Fails CLOSED (returns False) in paper mode, on RPC/exception, on a None
+        balance (config missing / RPC down), and on any non-dust balance — so a
+        transient read failure or a partial holding can NEVER trigger a wrongful
+        terminal close. This is the inverse default of the guard (which fails
+        OPEN) precisely because the consequence here is destructive.
+        """
+        if is_paper_trading_active():
+            return False
+        try:
+            from base_engine.execution.clob_adapter import check_ctf_balance
+            bal = await check_ctf_balance(token_id=str(token_id))
+        except Exception as _e:
+            logger.debug("confirm_zero_ctf_balance check failed: %s", _e)
+            return False
+        if bal is None:
+            return False
+        _PHANTOM_DUST_TOKENS = 0.01
+        return bal < _PHANTOM_DUST_TOKENS
 
     async def _reap_resolved_positions(self) -> None:
         """S85: Delete positions on markets that have already resolved.
@@ -3134,6 +3183,18 @@ class MirrorBot(BaseBot):
                 market_id=market_id, token_id=token_id,
                 size=_exit_size, side=side,
             ):
+                # S245 #2: confirmed-zero on-chain balance ⇒ phantom position.
+                # Terminally close (frees exposure, stops the strand-loop and the
+                # marketable-FOK `invalid token id` phantom exit) instead of just
+                # dropping the SELL signal. Partial / unreadable balances fail
+                # closed — never abandon real tokens.
+                if await self._confirm_zero_ctf_balance(token_id):
+                    await self._close_position_terminal(
+                        pos_key=pos_key, pos=_pos,
+                        market_id=market_id, token_id=token_id,
+                        exit_size=_exit_size,
+                        reason="phantom_zero_balance", redeemable=False,
+                    )
                 return False
             order = await self.place_order(
                 market_id=market_id,
