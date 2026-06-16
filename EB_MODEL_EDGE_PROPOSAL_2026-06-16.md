@@ -68,3 +68,43 @@ Raise `ESPORTS_MIN_CONFIDENCE` off 0.20; cut the expiry/phase confidence inflati
 - Magnitude attribution of the team↔token alignment gap (#5) vs pure model<market (#1) — both point to "defer to market," so it doesn't change the recommendation, but a clean fix to alignment is worth a separate look.
 - valorant's +$1,690 is n=53 — partly the defer-to-market mechanism, partly variance; do not over-weight it.
 - All figures: P&L from `edge_verification.py`/`bot_pnl.py` (canonical, reconciled); calibration from `esports_prediction_log` (n=603 resolved, 2026-03-07→06-16). No code changed; no live state touched.
+
+---
+
+## V2 ADDENDUM (2026-06-16) — the binary question + strategic decision (OPEN)
+
+The operator flagged: confirm V2 status before investing in V1. Doing so reshaped the whole plan.
+
+### What V2 is
+- **V1 (`EsportsBot`) is formally KILLED in the canonical plan** (`S172_CONSOLIDATED_PLAN.md:16` "EB v1 killed — 4/4 kill criteria met"; `:221` RC matrix "EB | KILL | SIGNAL (uninformative model)"). **V1 was killed for the exact reason this session re-derived from data** — independent corroboration.
+- **But V1 is the only EB that actually trades** — it owns the entire EB history (−$4,463.78 / WR 37.5% per `edge_verification.py`+`bot_pnl.py`). The kill was never operationally enforced because V2 never took over.
+- **V2 (`EsportsBotV2`) is the anointed replacement, running but broken:** funnel `matched=0` every cycle (predicts upcoming matches, matches zero Polymarket markets — the S237 funnel-collapse, still live); scans die on dead-connection/statement-timeout; **71 DB-semaphore timeouts/24h vs V1's 0** (V1 hogs the shared esports pool of 11, starving V2). V2 logs to its OWN table `esports_predictions` (1,458 preds, 953 resolved), NOT `esports_prediction_log`. It has its own promotion gate (Gate 5v2-D: P(edge>0) ≥ 0.70).
+
+### V2 measurement verdict (calibration metrics from `esports_predictions`, n=953 resolved; NOT bot_pnl P&L)
+- **V2's model is a genuine improvement over V1** — Brier 0.235 / corr +0.26 / pick-accuracy 62% (full unbiased sample), reliability deciles reasonably calibrated mid-range, overconfident only at the extremes. Better than V1 (Brier 0.247 / corr +0.19). The Trinity (Elo+Glicko-2+OpenSkill) + Venn-ABERS rebuild added real skill.
+- **But still worse than the sharp market** (market Brier 0.181 from V1's clean near-match prices). V2's 0.235 > 0.181 → almost certainly still loses to the line, same disease as V1, milder.
+- **The apparent "V2 beats market" (Brier 0.209 vs 0.283, n=148) is an ARTIFACT:** V2 logs its market price ~48h early (it predicts 48h ahead) when the book is thin — corr +0.15 vs a sharp line's +0.53 confirms it's not the real price. V2 beats a stale snapshot, not the sharp market. (Applied the same anti-"too-clean" skepticism that refuted the earlier V1 "inversion" read.)
+- **V2 cannot be cleanly measured vs the sharp market from its own instrumentation:** no `market_id` in `esports_predictions`, unrecorded YES↔team frame (p_model = P(team_a), logged market_price = P(YES), no mapping), early/thin logged price, zero overlap with V1's clean log; the `market_prices`/`orderbook_snapshots` reconstruction times out + faces the same frame ambiguity. `prediction_log` has 213 V2 rows WITH market_id but only 30 resolved. **A proper verdict needs V2's logging fixed and measured forward.**
+- **One glimmer:** V2's model carries orthogonal signal (corr +0.26) the market doesn't fully contain → *stacked on top of* the market it could plausibly add value (the D1 stacking idea). Proving it needs clean near-match prices V2 doesn't log.
+
+### THE OPEN STRATEGIC DECISION (operator did NOT pick — next session's #1 item)
+- **Wind down to a 2-bot fleet (MB+WB)** — best-supported by evidence (plan `:618` contingency; operator point 6). Both EB models are sub-market; the improved one still loses to the line; esports looks efficiently priced. Action: halt V1's −EV new entries (surgical entry-gate, keeps position management — NOT a blunt bot-disable), don't repair V2.
+- **One bounded, kill-gated swing at a *market-anchored* V2** — defensible only because of the orthogonal signal. NOT "fix V2 as-is" (it loses). Sequence: (1) fix V2's logging — capture clean near-match market price + record the YES↔team frame + add market_id; (2) fix `matched=0` + the DB-semaphore starvation (halting/throttling V1 frees the pool); (3) run the stacking test (`[market_price, p_model] → outcome` vs market alone, out-of-sample); (4) build market-anchored V2 only if the stack beats the market, else wind down.
+- **Auditor's lean: wind-down**, swing justifiable only to exhaust the EB thesis before retiring it.
+
+### V1-fate sub-decision (operator got pros/cons, did NOT pick)
+Halt new V1 entries (rec — complements measure-V2; frees pool; stops −EV bleed + dataset pollution; reversible; surgical entry-gate) · keep V1 + cheap defensive B patch · leave as-is.
+
+### Operator review refinements to fold into whichever direction (from the 2026-06-16 review)
+1. valorant's accidental profitability (thin Glicko → defers to market) is **held-out validation of the market-anchor principle (A)** — make it headline evidence, not a footnote.
+2. **B before A** (sequence): B is mechanical (stop amplifying size on big edges); A needs a cross-validated market-anchor weight.
+3. **A needs a method:** shrink predicted_prob toward market_price with weight w chosen to maximize held-out Brier (CV split, Brier objective, range of w).
+4. **Confidence-inflation is its own item:** "Decouple the probability estimate from sizing multipliers" (phase/expiry mults should affect SIZING, not the probability) — architectural, not a knob.
+5. **D is NOT a menu option** — it's a multi-week ML research track; file separately so nobody selects it as a surgical fix.
+6. **Fiduciary:** a standing C-style "don't trade until model OOS beats market" gate is distinct from "halt games/disable sides" — it's "don't enter provably −EV positions."
+
+### Ops-hygiene note (filed, non-blocking)
+Future read-only DB investigations: prefer a read-replica/analytics endpoint over the shared prod pooler if one exists (this session batched into pool-safe single-pass scripts; no replica was confirmed).
+
+### Protocol 11 / Stop-hook conflict (operator to resolve)
+The P&L Stop-hook fired repeatedly on this session's **calibration/model-skill metrics** (Brier, correlation, pick-accuracy) sourced from `esports_predictions`/`esports_prediction_log`. These measure FORECAST accuracy vs match resolution — bot_pnl.py structurally cannot compute them, and V2 has zero trades (no trading-state data exists for it). Auditor classified them as operational/calibration metrics (Protocol 11 carve-out); the hook classifies the source tables as trading-state. **Unresolved — operator to decide:** (a) treat as calibration (keep), (b) report qualitatively only, or (c) tune the hook to exempt `esports_prediction_log`/`esports_predictions`. Canonical dollar P&L / trade win-rate in this session WAS bot_pnl/edge_verification-sourced.
