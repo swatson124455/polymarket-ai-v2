@@ -78,7 +78,7 @@ def _place_order_sync(market_id: str, token_id: str, side: str, size: float, pri
     if not client:
         return {"success": False, "error": "CLOB client not configured"}
     try:
-        from py_clob_client_v2.clob_types import OrderArgs
+        from py_clob_client_v2.clob_types import OrderArgs, OrderType
         side_upper = (side or "").upper()
         if side_upper not in ("BUY", "SELL"):
             if side_upper in ("YES", "NO"):
@@ -97,16 +97,39 @@ def _place_order_sync(market_id: str, token_id: str, side: str, size: float, pri
                 side_upper = "BUY"
             else:
                 return {"success": False, "error": f"Invalid side: {side}"}
-        order_args = OrderArgs(
-            token_id=token_id,
-            price=float(price),
-            size=float(size),
-            side=side_upper,
-        )
-        result = client.create_and_post_order(order_args)
+        # S245 #1: marketable fill-or-kill (opt-in via CLOB_MARKETABLE_FOK_ENABLED,
+        # enabled per-bot in its EnvironmentFile e.g. .env.mirror). Default OFF keeps
+        # the legacy GTC path byte-for-byte. Under GTC the CLOB returns success the
+        # moment it ACCEPTS the order, so status='live' (resting, unfilled) and
+        # 'unmatched' (marketable miss) both look like success and the caller books a
+        # full-size position holding 0 tokens on-chain — the dominant phantom source.
+        # FOK fills completely or is killed; we book ONLY on status=='matched'.
+        _fok = bool(getattr(settings, "CLOB_MARKETABLE_FOK_ENABLED", False))
+        if _fok:
+            # Cross the spread by up to CLOB_MARKETABLE_CAP_PCT so a BUY can reach the
+            # ask / a SELL the bid; the FOK fills at the best price within this ceiling
+            # or is killed. The signal `price` stays the recorded cost basis (the real
+            # fill is <= this ceiling; precise fill-price capture is a separate WI).
+            _cap = float(getattr(settings, "CLOB_MARKETABLE_CAP_PCT", 0.05) or 0.05)
+            _limit = float(price) * (1.0 + _cap) if side_upper == "BUY" else float(price) * (1.0 - _cap)
+            _limit = max(0.001, min(0.999, round(_limit, 3)))
+            order_args = OrderArgs(token_id=token_id, price=_limit, size=float(size), side=side_upper)
+            result = client.create_and_post_order(order_args, order_type=OrderType.FOK)
+        else:
+            order_args = OrderArgs(token_id=token_id, price=float(price), size=float(size), side=side_upper)
+            result = client.create_and_post_order(order_args)
         if result is None:
             return {"success": False, "error": "create_and_post_order returned None"}
         order_id = result.get("orderID") or result.get("id") or result.get("order_id")
+        if _fok:
+            _status = str(result.get("status") or "").lower()
+            if _status != "matched":
+                # unmatched / live / delayed: the FOK did NOT fill -> do not book a position.
+                logger.info("clob_order_not_filled", status=_status or "unknown",
+                            order_id=order_id, market_id=market_id, side=side_upper)
+                return {"success": False, "not_filled": True, "status": _status,
+                        "order_id": order_id,
+                        "error": f"order not filled (status={_status or 'unknown'})"}
         return {
             "success": True,
             "order_id": order_id,
@@ -114,6 +137,7 @@ def _place_order_sync(market_id: str, token_id: str, side: str, size: float, pri
             "side": side_upper,
             "size": size,
             "price": price,
+            "status": result.get("status"),
         }
     except Exception as e:
         logger.warning("py-clob-client place_order failed: %s", e)

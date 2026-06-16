@@ -663,6 +663,15 @@ class Settings(BaseSettings):
     CLOB_SECRET: Optional[str] = os.getenv("CLOB_SECRET")
     CLOB_PASSPHRASE: Optional[str] = os.getenv("CLOB_PASSPHRASE")
     POLYGON_CHAIN_ID: int = int(os.getenv("POLYGON_CHAIN_ID", "137"))
+    # S245 #1 (marketable fill-or-kill). Default OFF = unchanged GTC behavior for
+    # EVERY bot — zero blast radius on deploy. Enable per-bot via that bot's
+    # systemd EnvironmentFile (e.g. /opt/pa2-shared/.env.mirror) so only that bot's
+    # entries become marketable FOK and book a position ONLY on status=='matched'
+    # (a resting 'live' / 'unmatched' order no longer creates a 0-token phantom).
+    CLOB_MARKETABLE_FOK_ENABLED: bool = os.getenv("CLOB_MARKETABLE_FOK_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+    # Max fraction the FOK limit may cross beyond the signal price so a BUY can reach
+    # the ask / a SELL the bid; the fill never pays worse than this ceiling. Tier-2 knob.
+    CLOB_MARKETABLE_CAP_PCT: float = float(os.getenv("CLOB_MARKETABLE_CAP_PCT", "0.05"))
     
     # Direct connection — VPS IP handles geo-access (no VPN/proxy needed)
     # Phase 7: User/order WebSocket channel (order_filled, order_update -> EventBus). Requires CLOB API keys.
