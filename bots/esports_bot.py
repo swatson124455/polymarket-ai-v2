@@ -4425,6 +4425,25 @@ class EsportsBot(BaseBot):
         Session 83: conformal conservative sizing.
         Series: S-T size override for correlated series bets.
         """
+        # 2026-06-16 WIND-DOWN (operator decision; EB_MODEL_EDGE_PROPOSAL_2026-06-16.md):
+        # halt ALL new EsportsBot entries. The model is a strictly worse forecaster than
+        # the CLOB price and the edge rule selects its own largest errors (adverse
+        # selection), so every entry is -EV by construction. This is a fiduciary
+        # new-capital halt, NOT a side-disable or game-halt: exits, stop-loss, and
+        # position management (_check_and_execute_exits) plus prediction logging are
+        # untouched, so open positions wind down naturally and calibration data keeps
+        # accruing. `is True` (not truthiness) so the gate is inert under MagicMock
+        # settings in tests and fires only on the real bool. Reversible:
+        # ESPORTS_ENTRY_HALT=false in .env.esports + restart polymarket-esports.
+        if getattr(settings, "ESPORTS_ENTRY_HALT", False) is True:
+            logger.info(
+                "esports_entry_halted_winddown",
+                market_id=str(opp.get("market_id", ""))[:16],
+                side=opp.get("side"),
+                edge=round(float(opp.get("edge", 0.0) or 0.0), 4),
+            )
+            return False
+
         # S143: Hard-coded safety floors — cannot be overridden by env vars.
         # Backstop against misconfiguration that allowed 10K-share / penny-price entries.
         _entry_price = float(opp.get("price", 0))

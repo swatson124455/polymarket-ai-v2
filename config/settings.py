@@ -1431,6 +1431,14 @@ class Settings(BaseSettings):
     ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW: int = int(os.getenv("ESPORTS_MAX_ENTRIES_PER_MARKET_WINDOW", "2"))
     ESPORTS_ENTRY_WINDOW_HOURS: float = float(os.getenv("ESPORTS_ENTRY_WINDOW_HOURS", "12.0"))
 
+    # 2026-06-16 WIND-DOWN: master kill of new EsportsBot entries (operator decision,
+    # EB_MODEL_EDGE_PROPOSAL_2026-06-16.md). When true, _execute_esports_trade returns
+    # before placing any order — exits / stop-loss / position management and prediction
+    # logging are untouched, so open positions wind down naturally. OFF by default so the
+    # code lands inert; activated via ESPORTS_ENTRY_HALT=true in .env.esports (Tier-2
+    # rollback: set =false + restart polymarket-esports). NOT a side-disable/game-halt.
+    ESPORTS_ENTRY_HALT: bool = os.getenv("ESPORTS_ENTRY_HALT", "false").lower() in ("true", "1", "yes")
+
     # --- Hard game disable (comma-separated lowercase game names, e.g. "cod,r6") ---
     ESPORTS_DISABLED_GAMES: str = os.getenv("ESPORTS_DISABLED_GAMES", "")
 

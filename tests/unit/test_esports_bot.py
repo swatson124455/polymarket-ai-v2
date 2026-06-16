@@ -1125,6 +1125,56 @@ class TestStaleCostAfterMaxBetCap:
             bot.place_order.assert_not_called()
 
 
+class TestEntryHaltWindDown:
+    """2026-06-16 WIND-DOWN: ESPORTS_ENTRY_HALT gate in _execute_esports_trade.
+
+    Operator decision (EB_MODEL_EDGE_PROPOSAL_2026-06-16.md): halt all new
+    EsportsBot entries because the model loses to the CLOB line and the edge rule
+    selects its own worst predictions. The gate uses `is True` so it fires only on
+    a real bool, staying inert under MagicMock settings in every other test.
+    """
+
+    @pytest.mark.asyncio
+    async def test_entry_halt_blocks_all_new_entries(self):
+        """Flag True → returns False before placing any order (no new capital)."""
+        bot = make_bot()
+        bot.place_order = AsyncMock(return_value={"success": True})
+        opp = {
+            "market_id": "0xwind", "token_id": "tok", "side": "YES",
+            "price": 0.50, "confidence": 0.80, "edge": 0.30,
+            "game": "cs2", "market_type": "moneyline",
+        }
+        with patch("bots.esports_bot.settings") as mock_settings:
+            mock_settings.ESPORTS_ENTRY_HALT = True
+            result = await bot._execute_esports_trade(opp)
+        assert result is False
+        bot.place_order.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_gate_inert_when_flag_not_true(self):
+        """Flag False → gate does NOT short-circuit; method advances past it to the
+        hard price-floor guard (price 0.01 < 0.03). Proves the wind-down gate is
+        inert when disabled, so exits/normal entries are unaffected by its presence.
+        """
+        bot = make_bot()
+        bot.place_order = AsyncMock(return_value={"success": True})
+        opp = {
+            "market_id": "0xlive", "token_id": "tok", "side": "YES",
+            "price": 0.01, "confidence": 0.80, "edge": 0.30,
+            "game": "cs2", "market_type": "moneyline",
+        }
+        with patch("bots.esports_bot.settings") as mock_settings:
+            mock_settings.ESPORTS_ENTRY_HALT = False
+            with patch("bots.esports_bot.logger") as mock_logger:
+                result = await bot._execute_esports_trade(opp)
+        assert result is False
+        bot.place_order.assert_not_called()
+        _info_events = [c.args[0] for c in mock_logger.info.call_args_list if c.args]
+        _warn_events = [c.args[0] for c in mock_logger.warning.call_args_list if c.args]
+        assert "esports_entry_halted_winddown" not in _info_events  # gate inert
+        assert "esportsbot_hard_price_floor" in _warn_events         # advanced past gate
+
+
 # =========================================================================
 # S233: scan-stall self-watchdog (recovery backstop for the 2026-05-28
 # ~18.75h hang — scan loop wedged on a dead DB pool, main.py watchdog only
