@@ -19,6 +19,9 @@
 | 2026-06-14 14:10 | +16.3h | **1** | 30 | **470** | 8 (current up **11h**) | 06-13 **6** / 06-14 **0** so far | ⚠ STALE PARTIAL-DAY snapshot — 14:10 is pre-evening-slate; "0" was a measurement artifact, NOT a bug (see 21:00 row) |
 | 2026-06-14 21:00 | +23.2h | **3** | 33 | **637** | — | 06-13 **6** / 06-14 **9** (full day) | VERDICT: working + trading at volume. 0614>0613. 21-agent read-only teardown (wf_36d94467) refuted the "0-entry" premise via symmetric-window + canonical bot_pnl. esports slates are evening-loaded; early-afternoon snapshots legitimately show ~0. Stability: 3 stalls/23h (vs ~22/24h baseline), 637 scans (vs ~5/40h). |
 
+## NEXT SESSION — FUTURE TO-DO (model edge, NOT infra; opened 2026-06-14)
+Infra is fixed + verified; the open problem is now MODEL QUALITY. Per `bot_pnl.py` exact confidence-bin SQL (EB family, ~200d, n=577, raw): overall **WR 35.5%, −$6,300 (paper)**, losing at EVERY confidence level (conf<0.60 −$3,087 / ≥0.60 −$3,203). **NOT inverted** — ≥0.60 WR (40.1%) > <0.60 (32.2%); confidence ranks correctly. Diagnosis: **overconfident, no real edge** (stated confidence ≫ realized WR everywhere, e.g. 0.65–0.69 bin won 26.5% on 49 trades, −$3,262). To do (read-only first): per-game Brier/calibration, root of the 35% hit rate, whether sizing amplifies the worst bins, whether the 63 contaminated markets skew it. Scope as its own effort.
+
 ## VERDICT (2026-06-14 21:00 UTC) — VERIFIED WORKING + TRADING AT VOLUME
 - **No bug.** The "06-14 0 entries" flagged at 14:10 was a stale partial-day snapshot taken before the evening esports slate. Full-day canonical `bot_pnl.py`: 06-14 = **9 entries** (> 06-13's 6); 48h net **+$483.19**.
 - **Stability (the 5-fix stack, since T0 06-13 21:50, ~23h):** 3 `scan_stall_self_restart` (baseline ~22/24h, ~7× better), 33 `scan_deadline_exceeded` (the new clean-abort path doing its job on PandaScore hangs), **637 completed scan cycles** (baseline ~5/40h).
