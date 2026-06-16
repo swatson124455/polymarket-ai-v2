@@ -200,6 +200,14 @@ class TradeCoordinator:
         which_bot = bot_id if bot_id is not None else self.bot_id
         from sqlalchemy import select
         _is_sell = side == "SELL"
+        # S245: bind _is_paper ONCE here so it is defined on every path before its
+        # use at the WI-11 audit gate below (`if not _is_paper and not _is_sell:` —
+        # Python evaluates `not _is_paper` first, so it must be bound even for SELLs).
+        # Pre-fix the only assignment lived in the reserve-skipped BUY branch, so a
+        # SELL/exit OR a BUY that took the reserving-row path raised UnboundLocalError,
+        # failing the persist with the order already filled on-chain (DB-vs-chain drift).
+        # Constant per call (SIMULATION_MODE does not change mid-call).
+        _is_paper = bool(getattr(settings, "SIMULATION_MODE", False))
         _MAX_PERSIST_ATTEMPTS = 2  # S232 Bug 19: 1 initial + 1 retry
         _RETRY_BACKOFF_S = 1.0
         _last_err: Optional[Exception] = None
@@ -273,7 +281,7 @@ class TradeCoordinator:
                         # S103 FIX: No reserving row found — reserve was skipped
                         # (e.g. WEATHER_SKIP_COORDINATOR_BUY). Insert directly as open.
                         now = datetime.now(timezone.utc).replace(tzinfo=None)
-                        _is_paper = bool(getattr(settings, "SIMULATION_MODE", False))
+                        # _is_paper bound at function top (S245)
                         await session.execute(
                             text("""
                                 INSERT INTO positions (bot_id, source_bot, market_id, token_id, side, size,

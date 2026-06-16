@@ -34,8 +34,12 @@ tests require a DB; that's covered indirectly by the broader test surface.
 """
 
 import inspect
+from unittest.mock import AsyncMock
+
+import pytest
 
 from base_engine.coordination import trade_coordinator as tc_mod
+from base_engine.coordination.trade_coordinator import TradeCoordinator
 
 
 class TestBug19RetryShape:
@@ -162,3 +166,112 @@ class TestBug19RetryShape:
                 )
                 return
         raise AssertionError("Could not find _MAX_PERSIST_ATTEMPTS assignment with integer value")
+
+
+# --- S245: _is_paper must be bound on every path (SELL/exit included) ---------
+#
+# confirm_position reads `_is_paper` at `if not _is_paper and not _is_sell:`
+# (the WI-11 audit gate). Python evaluates `not _is_paper` FIRST, so _is_paper
+# must be bound even when the branch is ultimately a SELL. Pre-fix the only
+# assignment lived inside the reserve-skipped BUY branch, so a SELL/exit (or a
+# BUY that took the reserving-row path) raised UnboundLocalError — failing the
+# DB persist with the order already filled on-chain (the DB-vs-chain drift that
+# surfaced live the moment trading resumed after the S245 pUSD funding fix).
+
+
+class _Result:
+    def __init__(self, obj):
+        self._obj = obj
+
+    def scalar_one_or_none(self):
+        return self._obj
+
+    def fetchone(self):
+        return None
+
+
+class _Session:
+    """Minimal async-context-manager session: hands back queued results."""
+
+    def __init__(self, results):
+        self._results = list(results)
+        self.commits = 0
+
+    async def execute(self, *a, **k):
+        return self._results.pop(0) if self._results else _Result(None)
+
+    async def commit(self):
+        self.commits += 1
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _Pos:
+    def __init__(self, side, status):
+        self.side = side
+        self.status = status
+        self.size = 0.0
+        self.entry_price = 0.0
+        self.current_price = 0.0
+        self.entry_cost = 0.0
+        self.breakeven_price = 0.0
+        self.source_bot = None
+
+
+class _DB:
+    def __init__(self, session):
+        self.session_factory = object()  # truthy → confirm_position proceeds
+        self._session = session
+        self.insert_trade_event = AsyncMock()
+
+    def get_session(self):
+        return self._session
+
+
+class TestS245IsPaperAlwaysBound:
+    """Behavioral + source regression for the SELL-path UnboundLocalError."""
+
+    @pytest.mark.asyncio
+    async def test_confirm_position_sell_does_not_raise_unbound(self):
+        reserving_sell = _Pos("SELL", "reserving")
+        orig_yes = _Pos("YES", "open")
+        session = _Session([_Result(reserving_sell), _Result(orig_yes)])
+        coord = TradeCoordinator(db=_DB(session), bot_id="MirrorBot")
+        # Pre-fix this raised UnboundLocalError on _is_paper. Must complete.
+        await coord.confirm_position(
+            market_id="0x" + "8" * 64, side="SELL", size=2.6,
+            entry_price=0.44, bot_id="MirrorBot", token_id="123",
+        )
+        assert reserving_sell.status == "closed"   # SELL audit row closed
+        assert orig_yes.status == "closed"          # original YES position closed
+        assert session.commits >= 1
+
+    def _src(self):
+        return inspect.getsource(tc_mod.TradeCoordinator.confirm_position)
+
+    def test_is_paper_bound_before_retry_loop(self):
+        lines = self._src().splitlines()
+        assign_idx = next((i for i, ln in enumerate(lines)
+                           if ln.strip().startswith("_is_paper =")), -1)
+        loop_idx = next((i for i, ln in enumerate(lines)
+                         if "for _attempt in range(_MAX_PERSIST_ATTEMPTS)" in ln), -1)
+        assert assign_idx >= 0, "_is_paper must be assigned in confirm_position"
+        assert loop_idx >= 0, "retry-loop marker not found"
+        assert assign_idx < loop_idx, (
+            "_is_paper must be bound BEFORE the retry loop so it is defined on "
+            "every path (incl. SELL/exit) at the WI-11 audit gate (S245 regression)."
+        )
+
+    def test_single_top_level_is_paper_assignment(self):
+        """The hoisted binding must be the ONLY _is_paper assignment — guards
+        against re-introducing a branch-local one as a shadow."""
+        assigns = [ln.strip() for ln in self._src().splitlines()
+                   if ln.strip().startswith("_is_paper =")]
+        assert len(assigns) == 1, (
+            f"expected exactly one top-level _is_paper assignment, found "
+            f"{len(assigns)}: {assigns}"
+        )
