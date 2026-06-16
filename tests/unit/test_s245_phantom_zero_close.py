@@ -29,10 +29,64 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from collections import OrderedDict
 from unittest import mock
 
 from bots import mirror_bot as mb_mod
 from bots.mirror_bot import MirrorBot
+
+
+class _CaptureDB:
+    """Fake DB for the RESOLUTION-emit hardening tests (mirrors the harness in
+    test_bug21_terminal_exit_close.py). The SELECT for (markets.resolution,
+    positions.is_paper) returns `meta` via fetchone(); insert_trade_event
+    records each call's kwargs into `.emitted`."""
+
+    def __init__(self, meta):
+        self._meta = meta  # (resolution, is_paper) tuple, or None for no-row
+        self.emitted = []
+
+    def get_session(self):
+        meta = self._meta
+
+        class _S:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def execute(self, stmt, params=None):
+                class _R:
+                    def fetchone(_self):
+                        return meta
+
+                return _R()
+
+            async def commit(self):
+                pass
+
+        return _S()
+
+    async def insert_trade_event(self, **kwargs):
+        self.emitted.append(kwargs)
+        return 123
+
+
+def _terminal_bot(pos, meta):
+    """MirrorBot wired with just what _close_position_terminal touches, plus a
+    capture DB so the RESOLUTION emit is observable."""
+    bot = MirrorBot.__new__(MirrorBot)
+    bot._open_positions = OrderedDict({"MKT:TOK": pos})
+    bot._slippage_fail_count = {}
+    bot._slippage_backoff = {}
+    bot._terminal_reject_count = {}
+    bot._exposure_lock = asyncio.Lock()
+    bot._daily_exposure = 100.0
+    bot._category_exposure = {}
+    cap = _CaptureDB(meta)
+    bot.base_engine = type("E", (), {"db": cap})()
+    return bot, cap
 
 
 def _run(coro):
@@ -163,3 +217,72 @@ class TestStrandLoopWiring:
         assert "is None" in src
         # Dust threshold is the same 0.01 token epsilon the guard uses.
         assert "_PHANTOM_DUST_TOKENS = 0.01" in src
+
+    def test_both_call_sites_pass_known_zero_balance(self):
+        """Both phantom-close call sites must pass known_zero_balance=True so the
+        RESOLUTION emit can never book a fictional payout-derived P&L."""
+        for fn in (MirrorBot._check_and_execute_exits, MirrorBot._execute_mirror_trade):
+            src = inspect.getsource(fn)
+            assert "known_zero_balance=True" in src, (
+                f"{fn.__name__} no longer passes known_zero_balance=True to the "
+                "phantom terminal close — a 0-token phantom on a resolved market "
+                "could book a fictional realized_pnl."
+            )
+
+
+class TestKnownZeroBalanceForcesNullPnl:
+    """S245 #2 hardening: a confirmed-zero (phantom) close holds 0 tokens, so any
+    payout-derived P&L is fictional. known_zero_balance=True must force NULL +
+    a 'phantom_zero_balance' reconciliation flag regardless of the market's
+    resolution/price state — while the default path keeps computing real P&L."""
+
+    def test_resolved_winner_books_null_when_known_zero(self):
+        # Held YES, market resolved YES at price 1.0 → the default path would
+        # compute a positive winner P&L. known_zero_balance=True must NOT.
+        pos = {"size": 10.0, "entry_price": 0.40, "side": "YES",
+               "category": "sports", "current_price": 1.0}
+        bot, cap = _terminal_bot(pos, ("YES", False))
+        _run(bot._close_position_terminal(
+            "MKT:TOK", pos, "MKT", "TOK", 10.0, reason="phantom_zero_balance",
+            redeemable=False, known_zero_balance=True))
+        assert len(cap.emitted) == 1
+        ev = cap.emitted[0]
+        assert ev["event_type"] == "RESOLUTION"
+        assert ev["realized_pnl"] is None, (
+            "0-token phantom on a resolved market must book NULL P&L, not a "
+            "fictional payout-derived number."
+        )
+        assert ev["event_data"].get("reconciliation") == "phantom_zero_balance"
+        assert "MKT:TOK" not in bot._open_positions  # still closed
+
+    def test_price_pinned_books_null_when_known_zero(self):
+        # WI-15 race: DB resolution NULL but current_price pinned at 1.0. Default
+        # path would resolve a payout; known_zero_balance=True forces NULL.
+        pos = {"size": 4.0, "entry_price": 0.30, "side": "YES",
+               "category": "sports", "current_price": 1.0}
+        bot, cap = _terminal_bot(pos, (None, False))
+        _run(bot._close_position_terminal(
+            "MKT:TOK", pos, "MKT", "TOK", 4.0, reason="phantom_zero_balance",
+            redeemable=False, known_zero_balance=True))
+        ev = cap.emitted[0]
+        assert ev["realized_pnl"] is None
+        assert ev["event_data"].get("reconciliation") == "phantom_zero_balance"
+
+    def test_default_path_still_computes_real_pnl(self):
+        # Regression: with known_zero_balance defaulted (False), a real resolved
+        # winner must STILL compute its P&L — the hardening must not touch the
+        # WI-6 / Bug-21 token-backed close path.
+        pos = {"size": 10.0, "entry_price": 0.40, "side": "YES",
+               "category": "sports", "current_price": 1.0}
+        bot, cap = _terminal_bot(pos, ("YES", False))
+        _run(bot._close_position_terminal(
+            "MKT:TOK", pos, "MKT", "TOK", 10.0, reason="resolved", redeemable=True))
+        ev = cap.emitted[0]
+        assert ev["realized_pnl"] is not None, (
+            "Default path regressed — real resolved winners must still compute "
+            "P&L; the hardening must be opt-in via known_zero_balance."
+        )
+        from config.settings import settings as _s
+        _fee = float(getattr(_s, "TAKER_FEE_BPS", 150)) / 10000.0
+        expected = round((1.0 - 0.40) * 10.0 - 1.0 * 10.0 * _fee, 4)
+        assert abs(ev["realized_pnl"] - expected) < 1e-9

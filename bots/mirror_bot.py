@@ -1687,6 +1687,7 @@ class MirrorBot(BaseBot):
                             market_id=market_id, token_id=token_id,
                             exit_size=exit_size,
                             reason="phantom_zero_balance", redeemable=False,
+                            known_zero_balance=True,
                         )
                     continue
 
@@ -1874,8 +1875,18 @@ class MirrorBot(BaseBot):
         exit_size: float,
         reason: str,
         redeemable: bool,
+        known_zero_balance: bool = False,
     ) -> None:
         """Bug 21 (S233): close a position whose market is resolved or delisted.
+
+        known_zero_balance (S245 #2): set True only by the phantom-close paths,
+        which fire after _confirm_zero_ctf_balance verified the deposit wallet
+        holds ~0 of the outcome token. With 0 tokens any payout-derived P&L is
+        fictional, so this forces realized_pnl=NULL + a 'phantom_zero_balance'
+        reconciliation flag regardless of the market's resolution/price state —
+        even on the call-site-2 (RTDS SELL) path that has no WI-6 terminal
+        pre-check. Default False preserves the WI-6 / Bug-21 computed-P&L path
+        for real (token-backed) resolved/delisted closes.
 
         A SELL can never fill on such a market (resolved → token pinned to the
         0.001/0.999 price boundary; delisted → orderbook removed), so the bot
@@ -1955,15 +1966,19 @@ class MirrorBot(BaseBot):
 
                 # Payout: authoritative from markets.resolution; else the price-pinned
                 # signal (WI-15: on-chain resolved but DB resolution not yet written).
+                # S245 #2: a known-zero on-chain balance holds 0 tokens, so any
+                # payout-derived P&L would be fictional — leave _payout None so the
+                # realized_pnl is booked NULL regardless of resolution/price state.
                 _payout = None
-                if _resolution and str(_resolution).upper() in ("YES", "NO"):
-                    _payout = 1.0 if str(_resolution).upper() == _side_u else 0.0
-                else:
-                    _cur = pos.get("current_price")
-                    if _cur is not None and float(_cur) > 0.99:
-                        _payout = 1.0
-                    elif _cur is not None and float(_cur) < 0.01:
-                        _payout = 0.0
+                if not known_zero_balance:
+                    if _resolution and str(_resolution).upper() in ("YES", "NO"):
+                        _payout = 1.0 if str(_resolution).upper() == _side_u else 0.0
+                    else:
+                        _cur = pos.get("current_price")
+                        if _cur is not None and float(_cur) > 0.99:
+                            _payout = 1.0
+                        elif _cur is not None and float(_cur) < 0.01:
+                            _payout = 0.0
 
                 # execution_mode from the position's HISTORICAL is_paper (set at
                 # entry), NOT the bot's current mode; `is False` so a NULL/missing
@@ -1988,7 +2003,9 @@ class MirrorBot(BaseBot):
                                       - _payout * _size * _fee_rate, 4)
                 else:
                     _realized = None
-                    _res_event_data["reconciliation"] = "pending"
+                    _res_event_data["reconciliation"] = (
+                        "phantom_zero_balance" if known_zero_balance else "pending"
+                    )
 
                 await self.base_engine.db.insert_trade_event(
                     event_type="RESOLUTION",
@@ -3194,6 +3211,7 @@ class MirrorBot(BaseBot):
                         market_id=market_id, token_id=token_id,
                         exit_size=_exit_size,
                         reason="phantom_zero_balance", redeemable=False,
+                        known_zero_balance=True,
                     )
                 return False
             order = await self.place_order(
