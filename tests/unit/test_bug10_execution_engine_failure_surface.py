@@ -204,6 +204,28 @@ class TestS245NotFilledCircuitBreakerNeutral:
         )
         assert engine.circuit_breaker.failure_count > cb_before
 
+    @pytest.mark.asyncio
+    async def test_order_rejection_is_cb_neutral(self):
+        """S245 CB-hardening: a deterministic order rejection (the FOK regression's
+        `invalid amounts` / `invalid token id`, plus market-closed/insufficient) is an
+        ORDER problem, not a CLOB-health failure — it must NOT record a CB failure,
+        else a run of bad orders escalates to the in-process kill switch."""
+        for err in (
+            "invalid amounts, the market buy orders maker amount supports a max accuracy of 2 decimals",
+            "invalid token id",
+            "market closed",
+            "insufficient pUSD: need $1.00, have $0.50",
+        ):
+            engine, _ = _build_engine({"success": False, "error": err})
+            cb_before = engine.circuit_breaker.failure_count
+            await engine.place_order(
+                bot_name="MirrorBot", market_id=_VALID_MARKET_ID, token_id=_VALID_TOKEN_ID,
+                side="YES", size=1.0, price=0.5, confidence=0.7, skip_position_update=True,
+            )
+            assert engine.circuit_breaker.failure_count == cb_before, (
+                f"order rejection {err!r} must be circuit-breaker-neutral"
+            )
+
 
 class TestS228Bug10SourceRegression:
     """Source-grep regression tests mirroring S227 Bug 7 pattern."""

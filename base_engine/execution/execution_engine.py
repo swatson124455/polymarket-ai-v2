@@ -14,6 +14,18 @@ from config.settings import settings
 
 logger = get_logger()
 
+# S245 CB-hardening: error signatures that are deterministic ORDER rejections
+# ("this specific order is bad") rather than CLOB-health failures. The circuit
+# breaker must stay NEUTRAL on these — retrying or escalating to the kill switch
+# can't fix a malformed/closed-market order, and a run of them must not halt all
+# trading (the S245 FOK regression: `invalid amounts` / `invalid token id` 400s
+# escalated the CB -> in-process kill switch). Mirrors order_gateway._PERMANENT_PATTERNS
+# (the no-retry set). Transient/unknown failures still count toward the breaker.
+_CB_NEUTRAL_ORDER_REJECTIONS = (
+    "invalid", "market closed", "delisted", "expired", "cancelled",
+    "not found", "insufficient",
+)
+
 
 class CircuitBreaker:
     """
@@ -532,7 +544,15 @@ class ExecutionEngine:
                         # storm class — S230 Bug 17 / S244 Bug A). Leave the breaker untouched.
                         pass
                     else:
-                        self.circuit_breaker.record_failure()
+                        # S245 CB-hardening: the breaker tracks CLOB HEALTH, not order
+                        # VALIDITY. A deterministic order rejection (invalid amounts/token/
+                        # price, market closed, delisted, expired, cancelled, insufficient)
+                        # is THIS order being bad — escalating to the kill switch can't help
+                        # and a run of bad orders must not halt all trading. CB-neutral on
+                        # those; transient/unknown failures still count toward escalation.
+                        _err = str(order_result.get("error", "")).lower() if isinstance(order_result, dict) else ""
+                        if not any(_p in _err for _p in _CB_NEUTRAL_ORDER_REJECTIONS):
+                            self.circuit_breaker.record_failure()
                     break
                 except asyncio.TimeoutError as e:
                     self.circuit_breaker.record_failure()
