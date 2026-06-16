@@ -25,6 +25,26 @@ FAIL_DUPLICATE = "duplicate"
 FAIL_PARTIAL = "partial_fill"
 
 
+def _parse_book_level(level) -> Optional[Tuple[float, float]]:
+    """S245 R2: single source of truth for parsing one raw L2 book level.
+
+    Coerces (price, size) from the price/p + size/s key variants and rejects phantom /
+    invalid levels (price <= 0 or size <= 0). Returns (price, size) or None. Centralized
+    so the walkers (_vwap_from_book / _vwap_from_bids) and order_gateway's shadow
+    best-ask/bid scan share ONE filter and cannot drift — the S232 bug was precisely
+    order_gateway's hand-copied filter diverging from the walker's. AttributeError-safe:
+    a non-dict level returns None rather than raising.
+    """
+    try:
+        p = float(level.get("price", level.get("p", 0)))
+        s = float(level.get("size", level.get("s", 0)))
+    except (ValueError, TypeError, AttributeError):
+        return None
+    if p > 0 and s > 0:
+        return (p, s)
+    return None
+
+
 def _vwap_from_book(
     asks: List[Dict],
     order_size_shares: float,
@@ -49,13 +69,9 @@ def _vwap_from_book(
     # Parse and sort ascending by price
     levels: List[Tuple[float, float]] = []
     for level in asks:
-        try:
-            p = float(level.get("price", level.get("p", 0)))
-            s = float(level.get("size", level.get("s", 0)))
-            if p > 0 and s > 0:
-                levels.append((p, s))
-        except (ValueError, TypeError, AttributeError):
-            continue
+        parsed = _parse_book_level(level)  # S245 R2: shared phantom/parse filter
+        if parsed is not None:
+            levels.append(parsed)
     if not levels:
         return None
     levels.sort(key=lambda x: x[0])
@@ -123,13 +139,9 @@ def _vwap_from_bids(
     # Parse and sort descending by price (best bid first)
     levels: List[Tuple[float, float]] = []
     for level in bids:
-        try:
-            p = float(level.get("price", level.get("p", 0)))
-            s = float(level.get("size", level.get("s", 0)))
-            if p > 0 and s > 0:
-                levels.append((p, s))
-        except (ValueError, TypeError, AttributeError):
-            continue
+        parsed = _parse_book_level(level)  # S245 R2: shared phantom/parse filter
+        if parsed is not None:
+            levels.append(parsed)
     if not levels:
         return None
     levels.sort(key=lambda x: x[0], reverse=True)

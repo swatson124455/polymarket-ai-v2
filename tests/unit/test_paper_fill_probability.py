@@ -5,8 +5,38 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from base_engine.execution.paper_trading import (
     _vwap_from_book,
     _vwap_from_bids,
+    _parse_book_level,
     PaperTradingEngine,
 )
+
+
+class TestParseBookLevel:
+    """S245 R2: the shared level-parse/phantom filter used by the walkers AND
+    order_gateway's shadow best-ask/bid scan. Centralizing it is what stops the S232
+    drift class — so its contract is pinned here."""
+
+    def test_valid_level_price_size_keys(self):
+        assert _parse_book_level({"price": "0.55", "size": "100"}) == (0.55, 100.0)
+
+    def test_valid_level_p_s_fallback_keys(self):
+        assert _parse_book_level({"p": 0.42, "s": 50.0}) == (0.42, 50.0)
+
+    def test_size_zero_phantom_rejected(self):
+        assert _parse_book_level({"price": 0.38, "size": 0}) is None
+
+    def test_price_zero_rejected(self):
+        assert _parse_book_level({"price": 0, "size": 100.0}) is None
+
+    def test_negative_rejected(self):
+        assert _parse_book_level({"price": -0.1, "size": 100.0}) is None
+        assert _parse_book_level({"price": 0.5, "size": -5.0}) is None
+
+    def test_string_garbage_rejected(self):
+        assert _parse_book_level({"price": "bad", "size": 100.0}) is None
+
+    def test_non_dict_rejected(self):
+        assert _parse_book_level(None) is None
+        assert _parse_book_level([0.5, 100]) is None
 
 
 # ── _vwap_from_book() unit tests ────────────────────────────────────────
