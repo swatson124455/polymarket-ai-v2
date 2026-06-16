@@ -171,6 +171,40 @@ class TestFailureSurface:
         assert "error" in result and result["error"]  # some default message
 
 
+class TestS245NotFilledCircuitBreakerNeutral:
+    """S245 #1: a marketable FOK that didn't fill (not_filled) is a benign market
+    outcome, NOT a CLOB-health failure. It must NOT record a circuit-breaker
+    failure — else a run of wide-spread misses OPENs the breaker and halts all
+    execution (the kill-switch storm class)."""
+
+    @pytest.mark.asyncio
+    async def test_not_filled_does_not_record_cb_failure(self):
+        engine, _ = _build_engine({
+            "success": False, "not_filled": True, "status": "unmatched",
+            "error": "order not filled (status=unmatched)",
+        })
+        cb_before = engine.circuit_breaker.failure_count
+        await engine.place_order(
+            bot_name="MirrorBot", market_id=_VALID_MARKET_ID, token_id=_VALID_TOKEN_ID,
+            side="YES", size=1.0, price=0.5, confidence=0.7, skip_position_update=True,
+        )
+        assert engine.circuit_breaker.failure_count == cb_before, (
+            "not_filled FOK must be circuit-breaker-neutral (no record_failure); "
+            "otherwise wide-spread misses would trip the breaker and halt execution."
+        )
+
+    @pytest.mark.asyncio
+    async def test_genuine_failure_still_records_cb_failure(self):
+        """Guard: a real failure (no not_filled flag) must STILL record a CB failure."""
+        engine, _ = _build_engine({"success": False, "error": "CLOB client failed"})
+        cb_before = engine.circuit_breaker.failure_count
+        await engine.place_order(
+            bot_name="MirrorBot", market_id=_VALID_MARKET_ID, token_id=_VALID_TOKEN_ID,
+            side="YES", size=1.0, price=0.5, confidence=0.7, skip_position_update=True,
+        )
+        assert engine.circuit_breaker.failure_count > cb_before
+
+
 class TestS228Bug10SourceRegression:
     """Source-grep regression tests mirroring S227 Bug 7 pattern."""
 

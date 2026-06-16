@@ -524,6 +524,13 @@ class ExecutionEngine:
                     # CLOB failures — which incorrectly cleared prior failures.
                     if isinstance(order_result, dict) and order_result.get("success"):
                         self.circuit_breaker.record_success()
+                    elif isinstance(order_result, dict) and order_result.get("not_filled"):
+                        # S245 #1: a marketable FOK that didn't fill (no liquidity at the
+                        # limit) is a benign MARKET outcome, NOT a CLOB-health failure.
+                        # Recording it as a failure would let a run of wide-spread misses
+                        # OPEN the circuit breaker and halt ALL execution (the kill-switch
+                        # storm class — S230 Bug 17 / S244 Bug A). Leave the breaker untouched.
+                        pass
                     else:
                         self.circuit_breaker.record_failure()
                     break

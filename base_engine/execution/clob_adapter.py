@@ -112,7 +112,12 @@ def _place_order_sync(market_id: str, token_id: str, side: str, size: float, pri
             # fill is <= this ceiling; precise fill-price capture is a separate WI).
             _cap = float(getattr(settings, "CLOB_MARKETABLE_CAP_PCT", 0.05) or 0.05)
             _limit = float(price) * (1.0 + _cap) if side_upper == "BUY" else float(price) * (1.0 - _cap)
-            _limit = max(0.001, min(0.999, round(_limit, 3)))
+            # Polymarket markets are 0.01-tick (the GTC path rounds to 2 too); a
+            # 3-decimal price is rejected by the CLOB. CLOB_MARKETABLE_CAP_PCT is the
+            # tuning lever for fill rate — too tight and a wide-spread BUY can't reach
+            # the ask (-> unmatched, which is now CB-neutral in execution_engine, so a
+            # miss is benign: no fill, no breaker pressure, re-evaluated next scan).
+            _limit = max(0.01, min(0.99, round(_limit, 2)))
             order_args = OrderArgs(token_id=token_id, price=_limit, size=float(size), side=side_upper)
             result = client.create_and_post_order(order_args, order_type=OrderType.FOK)
         else:
@@ -125,8 +130,10 @@ def _place_order_sync(market_id: str, token_id: str, side: str, size: float, pri
             _status = str(result.get("status") or "").lower()
             if _status != "matched":
                 # unmatched / live / delayed: the FOK did NOT fill -> do not book a position.
-                logger.info("clob_order_not_filled", status=_status or "unknown",
-                            order_id=order_id, market_id=market_id, side=side_upper)
+                # warning (not info) so the not-fill rate is visible — a sustained high
+                # rate means CLOB_MARKETABLE_CAP_PCT is too tight for current spreads.
+                logger.warning("clob_order_not_filled", status=_status or "unknown",
+                               order_id=order_id, market_id=market_id, side=side_upper)
                 return {"success": False, "not_filled": True, "status": _status,
                         "order_id": order_id,
                         "error": f"order not filled (status={_status or 'unknown'})"}

@@ -89,6 +89,14 @@ class TestFokEnabled:
         _, cap = _run("SELL", fok=True, status="matched", cap=0.05, price=0.40)
         assert cap["price"] == pytest.approx(0.38, abs=1e-6)  # 0.40 * 0.95
 
+    def test_limit_rounded_to_001_tick(self):
+        """Polymarket is 0.01-tick — a 3-decimal limit is rejected by the CLOB.
+        0.40 * 1.07 = 0.428 must round to 0.43, not 0.428."""
+        _, cap = _run("YES", fok=True, status="matched", cap=0.07, price=0.40)
+        assert cap["price"] == 0.43
+        # and the value must have at most 2 decimal places
+        assert round(cap["price"], 2) == cap["price"]
+
 
 class TestFokDisabledIsLegacyGtc:
 
