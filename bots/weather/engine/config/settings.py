@@ -972,7 +972,17 @@ class Settings(BaseSettings):
     # S123: Platt + Isotonic confidence calibration for Kelly sizing
     WEATHER_CONFIDENCE_CAL_ENABLED: bool = os.getenv("WEATHER_CONFIDENCE_CAL_ENABLED", "true").lower() == "true"
     WEATHER_CONFIDENCE_CAL_WINDOW_DAYS: int = int(os.getenv("WEATHER_CONFIDENCE_CAL_WINDOW_DAYS", "30"))
-    WEATHER_CONFIDENCE_CAL_MIN_SAMPLES: int = int(os.getenv("WEATHER_CONFIDENCE_CAL_MIN_SAMPLES", "200"))
+    # S246: 200→120. weather_bot.py reads THIS (silo) settings module — the top-level
+    # config/settings.py edit didn't take effect (dead-tree trap). Calibrator was frozen
+    # because no window reached 200 qualifying samples once the bot went short-lead (30d
+    # yields ~162). 120 keeps the 7d-holdout train ≥120 (OOS gate active) + per-side
+    # n≥30/≥80 + train-Brier/OOS rejection gates protecting quality.
+    WEATHER_CONFIDENCE_CAL_MIN_SAMPLES: int = int(os.getenv("WEATHER_CONFIDENCE_CAL_MIN_SAMPLES", "120"))
+    # S246: training lead-time floor (was hardcoded 48.0 in fit_from_trade_events). The
+    # bot trades almost entirely <48h, so the 48h floor starved the calibrator to n~2.
+    # 0.0 aligns training lead-time with the served distribution. Defined here (not just
+    # via getattr default) so it's overridable and visible in the module weather_bot reads.
+    WEATHER_CONFIDENCE_CAL_MIN_LEAD_H: float = float(os.getenv("WEATHER_CONFIDENCE_CAL_MIN_LEAD_H", "0.0"))
     # S143: YES-side fallback window — wider window when 30d has <30 YES samples
     WEATHER_CONFIDENCE_CAL_YES_FALLBACK_WINDOW_DAYS: int = int(os.getenv("WEATHER_CONFIDENCE_CAL_YES_FALLBACK_WINDOW_DAYS", "90"))
     # S135: Disable combined_boost for YES side — NO keeps all boosts

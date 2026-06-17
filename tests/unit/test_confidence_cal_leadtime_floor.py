@@ -17,7 +17,11 @@ filter can't be exercised by a mocked session.
 """
 import inspect
 
-from config.settings import settings
+# IMPORTANT: import settings the SAME way weather_bot.py does (the silo module), NOT
+# the top-level config.settings. weather_bot.py:56 reads the silo settings, so a fix to
+# only the top-level module is dead code (S246 production catch: top-level said 120 but
+# the bot logged need=200 from the silo's 200). Assert the module the bot actually reads.
+from bots.weather.engine.config.settings import settings
 from bots.weather_bot import WeatherConfidenceCalibrator, _CONF_CAL_MIN_SAMPLES
 
 
