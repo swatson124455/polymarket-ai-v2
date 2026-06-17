@@ -955,7 +955,18 @@ class Settings(BaseSettings):
     # S123: Platt + Isotonic confidence calibration for Kelly sizing
     WEATHER_CONFIDENCE_CAL_ENABLED: bool = os.getenv("WEATHER_CONFIDENCE_CAL_ENABLED", "true").lower() == "true"
     WEATHER_CONFIDENCE_CAL_WINDOW_DAYS: int = int(os.getenv("WEATHER_CONFIDENCE_CAL_WINDOW_DAYS", "30"))
-    WEATHER_CONFIDENCE_CAL_MIN_SAMPLES: int = int(os.getenv("WEATHER_CONFIDENCE_CAL_MIN_SAMPLES", "200"))
+    # S246: 200→120. The confidence calibrator was frozen because no window ever
+    # reached 200 qualifying samples once the bot's trade mix shifted to short-lead
+    # (see MIN_LEAD_H below) — 30d yields ~162. 120 lets it refit while keeping the
+    # 7d-holdout train set ≥120 (OOS gate stays active) and the per-side n≥30/≥80
+    # + train-Brier/OOS rejection gates protecting fit quality.
+    WEATHER_CONFIDENCE_CAL_MIN_SAMPLES: int = int(os.getenv("WEATHER_CONFIDENCE_CAL_MIN_SAMPLES", "120"))
+    # S246: minimum lead_time_hours for confidence-calibrator TRAINING rows. Was a
+    # hardcoded 48.0 in fit_from_trade_events — but the bot now trades almost entirely
+    # <48h, so the 48h floor starved the calibrator (n=2 vs need=200 every 6h refit →
+    # frozen at a 6-week-stale fit → bot bet RAW over-confident probs, YES 0.8→37.5% WR).
+    # 0.0 aligns the training lead-time distribution with what the bot actually serves.
+    WEATHER_CONFIDENCE_CAL_MIN_LEAD_H: float = float(os.getenv("WEATHER_CONFIDENCE_CAL_MIN_LEAD_H", "0.0"))
     # S143: YES-side fallback window — wider window when 30d has <30 YES samples
     WEATHER_CONFIDENCE_CAL_YES_FALLBACK_WINDOW_DAYS: int = int(os.getenv("WEATHER_CONFIDENCE_CAL_YES_FALLBACK_WINDOW_DAYS", "90"))
     # S135: Disable combined_boost for YES side — NO keeps all boosts

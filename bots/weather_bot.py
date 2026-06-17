@@ -61,7 +61,7 @@ logger = get_logger()
 # ---------------------------------------------------------------------------
 # Confidence calibrator — Logistic Regression (S135: replaces Platt+Isotonic)
 # ---------------------------------------------------------------------------
-_CONF_CAL_MIN_SAMPLES = 200  # minimum resolved trades to fit
+_CONF_CAL_MIN_SAMPLES = 120  # S246: 200→120 (see WEATHER_CONFIDENCE_CAL_MIN_SAMPLES) — was unreachable under short-lead trade mix
 
 
 class WeatherConfidenceCalibrator:
@@ -184,6 +184,10 @@ class WeatherConfidenceCalibrator:
             _yes_min_conf = float(getattr(settings, "WEATHER_CAL_YES_MIN_CONFIDENCE", 0.40))
             _no_min_conf = 0.60  # NO side stays at 0.60 (working fine at n=653)
             _sql_min_conf = min(_yes_min_conf, _no_min_conf)  # SQL uses lower bound
+            # S246: training lead-time floor, config-driven (was hardcoded 48.0). The bot
+            # now trades almost entirely <48h, so a 48h floor starved this query to n~2 and
+            # froze the calibrator. Default 0.0 trains on the lead-times actually served.
+            _min_lead_h = float(getattr(settings, "WEATHER_CONFIDENCE_CAL_MIN_LEAD_H", 0.0))
 
             async with db.get_session() as session:
                 result = await session.execute(text("""
@@ -195,7 +199,7 @@ class WeatherConfidenceCalibrator:
                           AND event_time <= NOW()
                           AND confidence IS NOT NULL
                           AND price >= 0.08
-                          AND (event_data->>'lead_time_hours')::float >= 48.0
+                          AND (event_data->>'lead_time_hours')::float >= :min_lead_h
                           AND confidence >= :min_conf
                         ORDER BY market_id, event_time
                     )
@@ -206,7 +210,8 @@ class WeatherConfidenceCalibrator:
                     JOIN entries e ON e.market_id = r.market_id
                     WHERE r.bot_name = 'WeatherBot' AND r.event_type = 'RESOLUTION'
                       AND r.realized_pnl IS NOT NULL
-                """), {"window_days": window_days, "min_conf": _sql_min_conf})
+                """), {"window_days": window_days, "min_conf": _sql_min_conf,
+                       "min_lead_h": _min_lead_h})
                 rows = result.fetchall()
 
             # S143: True train/test split — fit on days [window, 7], evaluate on [7, 0]
@@ -388,7 +393,7 @@ class WeatherConfidenceCalibrator:
                                       AND event_time >= NOW() - INTERVAL '1 day' * :window_days
                                       AND event_time <= NOW()
                                       AND confidence IS NOT NULL AND price >= 0.08
-                                      AND (event_data->>'lead_time_hours')::float >= 48.0
+                                      AND (event_data->>'lead_time_hours')::float >= :min_lead_h
                                       AND confidence >= :min_conf_yes AND side = 'YES'
                                     ORDER BY market_id, event_time
                                 )
@@ -399,7 +404,8 @@ class WeatherConfidenceCalibrator:
                                 JOIN entries e ON e.market_id = r.market_id
                                 WHERE r.bot_name = 'WeatherBot' AND r.event_type = 'RESOLUTION'
                                   AND r.realized_pnl IS NOT NULL
-                            """), {"window_days": _yes_fb_window, "min_conf_yes": _yes_min_conf})
+                            """), {"window_days": _yes_fb_window, "min_conf_yes": _yes_min_conf,
+                                   "min_lead_h": _min_lead_h})
                             _yes_rows = _yr.fetchall()
                         # Apply holdout split to wider window too
                         _yes_train = [r for r in _yes_rows
@@ -6678,7 +6684,9 @@ class WeatherBot(BaseBot):
                     db, window_days=_conf_cal_window, min_samples=_conf_cal_min,
                 )
             except Exception as cal_exc:
-                logger.debug("weatherbot_confidence_cal_refit_failed", error=str(cal_exc))
+                # S246: was logger.debug — a refit exception silently disabled the
+                # calibrator (effective_confidence falls back to raw). Surface it.
+                logger.warning("weatherbot_confidence_cal_refit_failed", error=str(cal_exc))
 
     async def _check_monitoring_thresholds(self) -> None:
         """W4: Check Brier score and drawdown against structured thresholds.
