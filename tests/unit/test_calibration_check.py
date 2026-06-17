@@ -14,6 +14,10 @@ from datetime import datetime
 import pytest
 
 from scripts.calibration_check import (
+    WB_CANON_CUTOVER,
+    WB_MIXED_DENOM_MODELS,
+    _WB_CANON_FILTER,
+    _WB_CANON_FILTER_WB_ONLY,
     _bucket_for_lead_time,
     _build_per_side_lead_time_sql,
     _parse_args,
@@ -122,6 +126,65 @@ class TestBuildPerSideLeadTimeSql:
         order for downstream Python grouping."""
         sql = _build_per_side_lead_time_sql(clean=False)
         assert "ORDER BY e_entry.side, lead_time_hours" in sql
+
+
+class TestCanonicalCutoverFilter:
+    """S247: prediction_log mixed-denomination cutover for WeatherBot.
+
+    Pre-cutover wind/precip/snow rows stored model_prob = P(side), not P(YES),
+    and prediction_log has no `side` column to re-derive per row — so every
+    fetch that treats predicted_prob as P(YES) must exclude them. Temperature
+    is always kept; non-WeatherBot rows are untouched.
+    """
+
+    def test_cutover_is_canonicalization_restart(self):
+        """The cutover must be the UTC moment WB restarted onto release
+        20260614_182157 (commit 0f6c0da). Naive UTC to match tz-naive
+        prediction_time in the DB."""
+        assert WB_CANON_CUTOVER == datetime(2026, 6, 14, 22, 23, 57)
+        assert WB_CANON_CUTOVER.tzinfo is None
+
+    def test_mixed_models_are_the_inverted_engines_not_temperature(self):
+        """Temperature was never mixed (always P(YES)); only wind/precip/snow
+        double-inverted NO. Filtering temperature would silently drop the bulk
+        of WB's calibration data."""
+        assert set(WB_MIXED_DENOM_MODELS) == {
+            "weather_wind",
+            "weather_precipitation",
+            "weather_snowfall",
+        }
+        assert "weather_temperature" not in WB_MIXED_DENOM_MODELS
+
+    def test_all_bots_filter_has_botname_guard(self):
+        """The cross-bot fragment must no-op for non-WeatherBot rows via the
+        bot_name guard, then exclude pre-cutover mixed WB engines."""
+        assert "pl.bot_name != 'WeatherBot'" in _WB_CANON_FILTER
+        assert "pl.model_name NOT IN (" in _WB_CANON_FILTER
+        assert "'weather_precipitation'" in _WB_CANON_FILTER
+        assert "'weather_temperature'" not in _WB_CANON_FILTER
+        assert "pl.prediction_time >= :wb_canon_cutover" in _WB_CANON_FILTER
+
+    def test_wb_only_filter_omits_botname_guard(self):
+        """The per-side helper already pins bot_name = 'WeatherBot', so its
+        fragment must NOT re-add the guard (which would no-op the whole filter)."""
+        assert "pl.bot_name" not in _WB_CANON_FILTER_WB_ONLY
+        assert "pl.model_name NOT IN (" in _WB_CANON_FILTER_WB_ONLY
+        assert "pl.prediction_time >= :wb_canon_cutover" in _WB_CANON_FILTER_WB_ONLY
+
+    def test_per_side_sql_applies_cutover_filter(self):
+        """The per-side x lead-time fetch also reads pl.predicted_prob, so it
+        must carry the cutover filter and bind :wb_canon_cutover."""
+        for clean in (False, True):
+            sql = _build_per_side_lead_time_sql(clean=clean)
+            assert "pl.model_name NOT IN (" in sql
+            assert "pl.prediction_time >= :wb_canon_cutover" in sql
+
+    def test_per_side_sql_does_not_filter_temperature(self):
+        """Negative control: the mixed-model list inside the built SQL must not
+        contain temperature, or temperature predictions would be dropped."""
+        sql = _build_per_side_lead_time_sql(clean=False)
+        assert "'weather_precipitation'" in sql
+        assert "'weather_temperature'" not in sql
 
 
 class TestParseArgs:

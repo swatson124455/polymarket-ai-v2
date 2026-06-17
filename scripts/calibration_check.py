@@ -24,6 +24,13 @@ canonical contamination CTE from bot_pnl.py into the new analysis only
 (not the main view, since the main view spans all bots and contamination
 is a WB-cohort property). The per-side x lead-time analysis is gated on
 bot_name == "WeatherBot" — that's where the H0' framing lives.
+
+S247: prediction_log.predicted_prob is mixed-denomination for WeatherBot
+wind/precip/snow NO rows written before the model_prob canonicalization
+(commit 0f6c0da, cutover 2026-06-14T22:23:57Z). Those rows stored P(side)
+not P(YES); every fetch here treats predicted_prob as P(YES), so they are
+filtered out (temperature kept; see WB_CANON_CUTOVER). This is unconditional
+— it is a data-correctness filter, not a flag.
 """
 import asyncio
 import sys
@@ -37,6 +44,42 @@ from base_engine.data.database import Database
 # Single source of truth for `--since` parsing and the contamination CTE body.
 # Cross-script import; requires PYTHONPATH=. (project root) when invoking.
 from scripts.bot_pnl import parse_deploy_timestamp, _CONTAMINATION_CTE_BODY
+
+
+# ---------------------------------------------------------------------------
+# S247: prediction_log.predicted_prob denomination cutover (WeatherBot).
+#
+# WeatherBot's wind/precip/snow producers stored model_prob = P(side) = 1-P(YES)
+# for NO bets prior to the canonicalization in commit 0f6c0da, which shipped in
+# release 20260614_182157 (WB service restarted onto it at 2026-06-14T22:23:57Z —
+# the systemd "Started" line). From that restart forward every engine stores
+# model_prob = P(YES), matching temperature (which was never mixed). prediction_log
+# has NO `side` column, so a per-row historical re-inversion is impossible — the
+# only sound fix is to EXCLUDE pre-cutover wind/precip/snow rows from any reader
+# that treats predicted_prob as P(YES) (calibration curves, Brier). Temperature
+# rows are always kept; non-WeatherBot rows are untouched.
+#
+# Ground truth (prediction_log, 2026-06-17): the only mixed rows present are
+# weather_precipitation (all pre-cutover, last 2026-05-31); weather_wind and
+# weather_snowfall have never logged. wind/snow remain in the list for
+# forward-correctness if those producers resume logging post-cutover.
+WB_CANON_CUTOVER = datetime(2026, 6, 14, 22, 23, 57)  # naive UTC (DB prediction_time is tz-naive UTC)
+WB_MIXED_DENOM_MODELS = ("weather_wind", "weather_precipitation", "weather_snowfall")
+_WB_MIXED_MODELS_SQL = ", ".join(f"'{m}'" for m in WB_MIXED_DENOM_MODELS)
+
+# Filter fragment for queries that span ALL bots: the bot_name guard makes it a
+# no-op for every non-WeatherBot row. Binds :wb_canon_cutover.
+_WB_CANON_FILTER = (
+    f"(pl.bot_name != 'WeatherBot' "
+    f"OR pl.model_name NOT IN ({_WB_MIXED_MODELS_SQL}) "
+    f"OR pl.prediction_time >= :wb_canon_cutover)"
+)
+# Filter fragment for the per-side helper, whose WHERE already pins
+# pl.bot_name = 'WeatherBot' (so the bot_name guard is unnecessary there).
+_WB_CANON_FILTER_WB_ONLY = (
+    f"(pl.model_name NOT IN ({_WB_MIXED_MODELS_SQL}) "
+    f"OR pl.prediction_time >= :wb_canon_cutover)"
+)
 
 
 async def calibration_check(
@@ -76,7 +119,7 @@ async def calibration_check(
 
         # Build query — exclude EnsembleBot (dead) and NULL bot_name (pre-migration)
         bot_clause = "AND pl.bot_name NOT IN ('EnsembleBot') AND pl.bot_name IS NOT NULL"
-        params = {"cutoff": cutoff_dt}
+        params = {"cutoff": cutoff_dt, "wb_canon_cutover": WB_CANON_CUTOVER}
         if bot_name:
             bot_clause = "AND pl.bot_name = :bot_name"
             params["bot_name"] = bot_name
@@ -88,6 +131,7 @@ async def calibration_check(
             FROM prediction_log pl
             WHERE pl.prediction_time > :cutoff
             {bot_clause}
+              AND {_WB_CANON_FILTER}
         """), params)
         counts = count_result.fetchone()
         total, resolved = counts[0], counts[1]
@@ -113,6 +157,7 @@ async def calibration_check(
             WHERE pl.resolution IS NOT NULL
               AND pl.prediction_time > :cutoff
               {bot_clause}
+              AND {_WB_CANON_FILTER}
             ORDER BY pl.prediction_time
         """), params)
         rows = result.fetchall()
@@ -311,6 +356,7 @@ def _build_per_side_lead_time_sql(clean: bool) -> str:
           AND pl.resolution IS NOT NULL
           AND pl.prediction_time >= :since_dt
           AND e_entry.event_data->>'lead_time_hours' IS NOT NULL
+          AND {_WB_CANON_FILTER_WB_ONLY}
           {contamination_clause}
         ORDER BY e_entry.side, lead_time_hours
     """
@@ -346,7 +392,7 @@ async def _print_per_side_lead_time_brier(s, since_dt: datetime, clean: bool):
     from sqlalchemy import text
 
     sql = _build_per_side_lead_time_sql(clean)
-    params = {"since_dt": since_dt}
+    params = {"since_dt": since_dt, "wb_canon_cutover": WB_CANON_CUTOVER}
     if clean:
         params["bot_family"] = ["WeatherBot"]
 
