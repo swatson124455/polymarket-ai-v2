@@ -48,6 +48,10 @@ FROM positions p
 JOIN markets m ON (CAST(m.id AS TEXT) = p.market_id OR m.condition_id = p.market_id)
 WHERE COALESCE(p.bot_id, p.source_bot) = ANY(:fam)
   AND p.status = 'closed'
+  AND UPPER(p.side) IN ('YES', 'NO')   -- exclude 363 spurious 'SELL' exit-as-position
+                                       -- rows (S214-class corruption): resolution
+                                       -- payout is only defined for a YES/NO holding,
+                                       -- and SELL rows duplicate their YES/NO sibling.
   AND (p.unrealized_pnl IS NULL OR p.unrealized_pnl = 0)
   AND m.resolution IN ('YES', 'NO')
   AND p.size > 0

@@ -2403,11 +2403,20 @@ class EsportsBot(BaseBot):
         if _db is None:
             return False
         mid = pos.get("market_id", "")
-        side = (pos.get("side") or "YES").upper()
+        side = str(pos.get("side") or "").upper()
         size = float(pos.get("size", 0) or 0)
         entry = float(pos.get("entry_price", 0.5) or 0.5)
         token_id = pos.get("token_id", "")
         if size <= 0 or not mid:
+            return False
+        if side not in ("YES", "NO"):
+            # Resolution payout is only defined for a YES/NO holding. Anomalous sides
+            # (empty, or 'SELL'/'BUY' rows from the action-vs-side corruption class —
+            # confirmed present in the positions table) must NOT be booked as
+            # resolution P&L: the payout formula would treat them as a guaranteed loss
+            # and duplicate-market SELL rows would double-count. Skip; caller falls back.
+            logger.warning("esports_resolution_close_bad_side",
+                           market_id=str(mid)[:16], side=side or "<empty>")
             return False
         try:
             from sqlalchemy import text as _sa_text

@@ -1239,6 +1239,22 @@ class TestResolutionClose:
         assert ok is False
         db.insert_trade_event.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_bad_side_skipped_no_booking(self):
+        """Anomalous side ('SELL' exit-as-position rows — 363 found in prod) must NOT be
+        booked as resolution P&L: the payout formula would treat them as a guaranteed
+        loss and double-count their YES/NO sibling. Returns False, no event written."""
+        bot = make_bot()
+        bot._market_game = {}
+        bot._prediction_cache = {}
+        db = self._mock_db("YES")  # market resolved, but the position side is bad
+        bot.base_engine.db = db
+        pos = self._pos()
+        pos["side"] = "SELL"
+        ok = await bot._resolution_close_position(pos, reason="x")
+        assert ok is False
+        db.insert_trade_event.assert_not_called()
+
 
 # =========================================================================
 # S233: scan-stall self-watchdog (recovery backstop for the 2026-05-28
