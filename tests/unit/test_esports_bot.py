@@ -1175,6 +1175,71 @@ class TestEntryHaltWindDown:
         assert "esportsbot_hard_price_floor" in _warn_events         # advanced past gate
 
 
+class TestResolutionClose:
+    """2026-06-17: _resolution_close_position books RESOLUTION P&L for positions on
+    RESOLVED markets. EsportsBot is in PM_EXCLUDE_BOTS and the splinter does not run
+    the shared resolution backfill, so it realizes resolution P&L itself (same payout
+    formula as Database.backfill_positions_resolution)."""
+
+    def _pos(self):
+        return {"market_id": "0xres", "token_id": "tok", "side": "NO",
+                "size": 100.0, "entry_price": 0.44, "current_price": 0.0}
+
+    def _mock_db(self, resolution):
+        mock_result = MagicMock()
+        mock_result.first.return_value = (resolution,) if resolution is not None else None
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        db = MagicMock()
+        db.get_session.return_value = mock_ctx
+        db.insert_trade_event = AsyncMock(return_value=1)
+        return db
+
+    @pytest.mark.asyncio
+    async def test_resolved_winning_side_books_positive_pnl(self):
+        bot = make_bot()
+        bot._market_game = {}
+        bot._prediction_cache = {}
+        db = self._mock_db("NO")  # NO position, market resolved NO → win, payout 1.0
+        bot.base_engine.db = db
+        ok = await bot._resolution_close_position(self._pos(), reason="resolution")
+        assert ok is True
+        db.insert_trade_event.assert_awaited_once()
+        kwargs = db.insert_trade_event.call_args.kwargs
+        assert kwargs["event_type"] == "RESOLUTION"
+        assert kwargs["side"] == "NO"
+        assert kwargs["price"] == 1.0
+        # winning NO @ entry 0.44, size 100 → realized ~+56 minus fee, strictly >0
+        assert 0.0 < kwargs["realized_pnl"] <= (1.0 - 0.44) * 100.0
+
+    @pytest.mark.asyncio
+    async def test_resolved_losing_side_books_negative_pnl(self):
+        bot = make_bot()
+        bot._market_game = {}
+        bot._prediction_cache = {}
+        db = self._mock_db("YES")  # NO position, market resolved YES → loss, payout 0.0
+        bot.base_engine.db = db
+        ok = await bot._resolution_close_position(self._pos(), reason="resolution")
+        assert ok is True
+        kwargs = db.insert_trade_event.call_args.kwargs
+        assert kwargs["price"] == 0.0
+        assert kwargs["realized_pnl"] < 0  # lost full entry cost + fee
+
+    @pytest.mark.asyncio
+    async def test_unresolved_market_returns_false_no_event(self):
+        bot = make_bot()
+        bot._market_game = {}
+        bot._prediction_cache = {}
+        db = self._mock_db(None)  # market not resolved
+        bot.base_engine.db = db
+        ok = await bot._resolution_close_position(self._pos(), reason="x")
+        assert ok is False
+        db.insert_trade_event.assert_not_called()
+
+
 # =========================================================================
 # S233: scan-stall self-watchdog (recovery backstop for the 2026-05-28
 # ~18.75h hang — scan loop wedged on a dead DB pool, main.py watchdog only

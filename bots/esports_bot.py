@@ -2381,6 +2381,88 @@ class EsportsBot(BaseBot):
             "total_portfolio": float(getattr(settings, "ESPORTS_MAX_TOTAL_EXPOSURE_USD", 15000.0)),
         }
 
+    async def _resolution_close_position(self, pos: Dict, reason: str) -> bool:
+        """Book RESOLUTION P&L for an open position whose market has resolved.
+
+        EsportsBot is in PM_EXCLUDE_BOTS (it owns its own resolution close), AND the
+        shared resolution backfill (resolution_backfill.py / Database.backfill_positions_
+        resolution) does NOT run on the esports splinter (deploy.sh skips shared timers;
+        0 'Backfilled unrealized_pnl' in 7d journalctl). So when a market has resolved we
+        realize P&L HERE using the SAME payout formula as backfill_positions_resolution:
+        a side matching the resolution pays 1.0, otherwise 0.0, minus the taker fee.
+        Writes a RESOLUTION trade_event (the P&L authority) AND positions.unrealized_pnl,
+        then marks the row closed. Idempotent: insert_trade_event dedups the RESOLUTION
+        event (idempotency_key) and the UPDATE only touches status='open' rows.
+
+        Returns True iff the market is resolved and the position was closed here; False
+        if the market is not resolved (caller falls back to its own handling). Exposure
+        decrement is intentionally left to the caller / wind-down (entries halted, so
+        per-game exposure is moot) — this helper is scoped to P&L realization.
+        """
+        _db = getattr(self.base_engine, "db", None)
+        if _db is None:
+            return False
+        mid = pos.get("market_id", "")
+        side = (pos.get("side") or "YES").upper()
+        size = float(pos.get("size", 0) or 0)
+        entry = float(pos.get("entry_price", 0.5) or 0.5)
+        token_id = pos.get("token_id", "")
+        if size <= 0 or not mid:
+            return False
+        try:
+            from sqlalchemy import text as _sa_text
+            _fee_rate = getattr(settings, "TAKER_FEE_BPS", 150) / 10000.0
+            async with _db.get_session(timeout=15) as _sess:
+                _row = (await _sess.execute(
+                    _sa_text(
+                        "SELECT resolution FROM markets "
+                        "WHERE (CAST(id AS TEXT) = :mid OR condition_id = :mid) LIMIT 1"
+                    ),
+                    {"mid": mid},
+                )).first()
+                _resolution = (_row[0] if _row else None)
+                if _resolution not in ("YES", "NO"):
+                    return False  # not resolved — caller handles
+                _payout = 1.0 if side == _resolution else 0.0
+                _fee = entry * size * _fee_rate
+                _realized = (_payout - entry) * size - _fee
+                await _sess.execute(
+                    _sa_text(
+                        "UPDATE positions SET status = 'closed', unrealized_pnl = :pnl "
+                        "WHERE market_id = :mid "
+                        "  AND (bot_id = :bot OR source_bot = :bot) "
+                        "  AND status = 'open'"
+                    ),
+                    {"mid": mid, "bot": self.bot_name, "pnl": _realized},
+                )
+                await _sess.commit()
+            _exit_game = self._market_game.get(mid, "") or self._prediction_cache.get(mid, {}).get("game", "")
+            try:
+                await _db.insert_trade_event(
+                    event_type="RESOLUTION",
+                    bot_name=self.bot_name,
+                    market_id=mid,
+                    side=side,
+                    size=size,
+                    price=_payout,
+                    token_id=token_id,
+                    fees=round(_fee, 6),
+                    realized_pnl=round(_realized, 6),
+                    event_data={"game": _exit_game, "exit_reason": reason, "resolution": _resolution},
+                )
+            except Exception as _te_err:
+                logger.warning("esports_resolution_trade_event_failed",
+                               market_id=str(mid)[:16], error=str(_te_err))
+            _og = getattr(self.base_engine, "order_gateway", None)
+            if _og is not None:
+                _og._track_position_close(self.bot_name, mid)
+            logger.info("esports_resolution_closed", market_id=str(mid)[:16], side=side,
+                        resolution=_resolution, realized_pnl=round(_realized, 4))
+            return True
+        except Exception as _e:
+            logger.warning("esports_resolution_close_failed", market_id=str(mid)[:16], error=str(_e))
+            return False
+
     async def _check_and_execute_exits(self, db, positions=None) -> None:
         """B1: Stop-loss + max hold time exits for open EsportsBot positions.
 
@@ -2443,6 +2525,17 @@ class EsportsBot(BaseBot):
             # of 0.20+ means the orderbook is empty, not a real price move.
             # Let resolution handle it (will pay 0.0 or 1.0).
             if current < 0.10 and entry >= 0.20:
+                # If the market has ALREADY resolved, book the resolution payout here —
+                # the splinter does not run the shared resolution backfill, so otherwise
+                # this pinned-to-zero position would sit open forever with no realized
+                # P&L. If not yet resolved (illiquid but live), keep the original
+                # skip-and-wait behavior.
+                if await self._resolution_close_position(pos, reason="resolution"):
+                    self._market_game.pop(mid, None)
+                    self._entry_edge_cache.pop(mid, None)
+                    self._edge_peaks.pop(f"_peak_edge_{mid}", None)
+                    self._prediction_cache.pop(mid, None)
+                    continue
                 logger.debug("esportsbot_exit_skip_dead_market", market_id=mid,
                              entry=round(entry, 4), current=round(current, 4))
                 continue
@@ -2590,6 +2683,21 @@ class EsportsBot(BaseBot):
                     logger.warning("esportsbot_exit_sell_failed", market_id=mid,
                                    error=_exit_result.get("error", "unknown"),
                                    reason=reason, size=round(size, 2))
+                    # A failed SELL on a RESOLVED market means the market is over (no
+                    # liquidity to sell into); book the resolution payout P&L directly
+                    # rather than bare-closing with no P&L. Falls through to the orphan
+                    # close below only for genuinely-orphaned positions on still-live
+                    # markets (e.g. paper engine lost the position on restart, or a
+                    # transient slippage abort — those keep the existing loop-breaker).
+                    if await self._resolution_close_position(pos, reason=reason):
+                        self._market_game.pop(mid, None)
+                        self._entry_edge_cache.pop(mid, None)
+                        self._edge_peaks.pop(f"_peak_edge_{mid}", None)
+                        self._recently_exited[mid] = time.monotonic()
+                        self._exit_reasons[mid] = reason
+                        self._prediction_cache.pop(mid, None)
+                        await self._save_exit_cooldown_to_redis(mid, reason=reason)
+                        continue
                     _db = getattr(self.base_engine, "db", None)
                     if _db is not None:
                         try:
