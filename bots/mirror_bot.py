@@ -2025,12 +2025,25 @@ class MirrorBot(BaseBot):
                            market_id[:20], _res_err)
 
         # 3. Mark the DB row closed (3-retry, mirrors the normal exit close).
+        #    S245 #3: also zero `size`. The resolution backfill's Phase 4b-alt
+        #    (database.py backfill_trade_events_resolution) re-processes positions
+        #    with status IN ('open','closed') and excludes a row only when its
+        #    effective_size (≈ min(size, ENTRY_total) − EXIT_total) is 0 — but its
+        #    own size-zeroing UPDATE fires only on status='open' rows. A terminal
+        #    close that left size>0 on a no-ENTRY phantom (ENTRY_total=0 → the
+        #    RESOLUTION emit above is over-size-rejected, so the NOT-EXISTS-
+        #    RESOLUTION filter never excludes it either) was re-attempted every
+        #    backfill cycle forever (the 5.8k/2.7h `RESOLUTION over-size rejected`
+        #    storm). Zeroing size here mirrors Phase 4b-alt's own close
+        #    (database.py:3895) so the row drops out of the backfill set. Safe:
+        #    every positions.size reader filters status='open', and closed-row
+        #    P&L lives in trade_events, not positions.size.
         from sqlalchemy import text as _sql
         for _attempt in range(3):
             try:
                 async with self.base_engine.db.get_session() as _cs:
                     await _cs.execute(_sql(
-                        "UPDATE positions SET status = 'closed' "
+                        "UPDATE positions SET status = 'closed', size = 0 "
                         "WHERE market_id = :mid AND token_id = :tid "
                         "  AND COALESCE(source_bot, bot_id) = 'MirrorBot' "
                         "  AND status = 'open'"

@@ -45,9 +45,11 @@ class _CaptureDB:
     def __init__(self, meta):
         self._meta = meta  # (resolution, is_paper) tuple, or None for no-row
         self.emitted = []
+        self.statements = []  # recorded (sql, params) for close-SQL assertions
 
     def get_session(self):
         meta = self._meta
+        rec = self.statements
 
         class _S:
             async def __aenter__(self):
@@ -57,6 +59,8 @@ class _CaptureDB:
                 return False
 
             async def execute(self, stmt, params=None):
+                rec.append((str(stmt), params))
+
                 class _R:
                     def fetchone(_self):
                         return meta
@@ -286,3 +290,35 @@ class TestKnownZeroBalanceForcesNullPnl:
         _fee = float(getattr(_s, "TAKER_FEE_BPS", 150)) / 10000.0
         expected = round((1.0 - 0.40) * 10.0 - 1.0 * 10.0 * _fee, 4)
         assert abs(ev["realized_pnl"] - expected) < 1e-9
+
+
+class TestTerminalCloseZeroesSize:
+    """S245 #3: the terminal close must zero `size` so the resolution backfill's
+    Phase 4b-alt (status IN ('open','closed'), excluded only when effective_size=0)
+    drops the closed no-ENTRY phantom instead of re-attempting it every cycle (the
+    `RESOLUTION over-size rejected` storm). Mirrors Phase 4b-alt's own close
+    (database.py:3895). Without it, a phantom closed here strands the backfill."""
+
+    def test_terminal_close_update_zeroes_size(self):
+        pos = {"size": 5.05, "entry_price": 0.20, "side": "YES",
+               "category": "sports", "current_price": 0.5}
+        bot, cap = _terminal_bot(pos, (None, False))
+        _run(bot._close_position_terminal(
+            "MKT:TOK", pos, "MKT", "TOK", 5.05, reason="phantom_zero_balance",
+            redeemable=False, known_zero_balance=True))
+        close_stmts = [s for s, _ in cap.statements
+                       if "UPDATE positions SET status = 'closed'" in s]
+        assert close_stmts, "no terminal close UPDATE was recorded"
+        assert all("size = 0" in s for s in close_stmts), (
+            "terminal close UPDATE must zero size — otherwise Phase 4b-alt "
+            "re-hammers the closed no-ENTRY phantom every backfill cycle."
+        )
+        # The close must still be open-row-scoped (don't touch already-closed rows).
+        assert all("status = 'open'" in s for s in close_stmts)
+
+    def test_close_sql_source_sets_size_zero(self):
+        src = inspect.getsource(MirrorBot._close_position_terminal)
+        assert "status = 'closed', size = 0" in src, (
+            "S245 #3 size-zeroing in _close_position_terminal close UPDATE was "
+            "removed — the Phase 4b-alt re-hammer loop will regress."
+        )
