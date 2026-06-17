@@ -3832,6 +3832,13 @@ class Database:
                     ") te_exit_agg ON te_exit_agg.market_id = p.market_id "
                     "             AND te_exit_agg.bot_name = p.source_bot "
                     "WHERE p.status IN ('open', 'closed') "
+                    # S245 #3 (option B): only YES/NO position rows can emit a
+                    # valid RESOLUTION. side='SELL' rows (root #5 — reserve_position
+                    # corruption) would otherwise be emitted as a nonsensical
+                    # side='SELL' RESOLUTION, or — when they have no paired ENTRY —
+                    # be over-size-rejected every cycle forever. The real position
+                    # is carried by the paired YES/NO row.
+                    "  AND p.side IN ('YES', 'NO') "
                     "  AND m.resolution IN ('YES', 'NO') "
                     "  AND m.resolved_at IS NOT NULL "
                     "  AND NOT EXISTS ("
@@ -3889,11 +3896,25 @@ class Database:
                         )
                         _phase4b_alt_emitted += 1
                         # S158: Close open positions on resolved markets.
+                        # S245 #3 (option B): also zero already-'closed' rows. A
+                        # no-ENTRY phantom (ENTRY_total=0 → its RESOLUTION emit is
+                        # over-size-rejected by insert_trade_event, so the
+                        # NOT-EXISTS-RESOLUTION filter never excludes it) that was
+                        # closed by a path other than this one (e.g.
+                        # _close_position_terminal pre-S245) kept size>0 and was
+                        # re-selected + re-rejected every backfill cycle forever
+                        # (the cross-bot `RESOLUTION over-size rejected` storm:
+                        # WB ~19k + EB ~13k + MB ~4k over ~21h). Zeroing closed
+                        # rows it processes drops them from the candidate set next
+                        # cycle (effective_size → 0). Converges in ~1 cycle. Safe:
+                        # all positions.size readers filter status='open', and
+                        # closed-row P&L lives in trade_events.
                         try:
                             async with _pr_sess.begin_nested():
                                 await _pr_sess.execute(text(
                                     "UPDATE positions SET status = 'closed', size = 0 "
-                                    "WHERE market_id = :mid AND source_bot = :bot AND status = 'open'"
+                                    "WHERE market_id = :mid AND source_bot = :bot "
+                                    "  AND status IN ('open', 'closed')"
                                 ), {"mid": _mid, "bot": _bot})
                             await _pr_sess.commit()
                         except Exception as _close_err:

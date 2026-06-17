@@ -770,3 +770,38 @@ async def test_phase4b_alt_paper_entry_resolving_in_live_mode_stays_paper(monkey
     assert db.insert_trade_event.call_args.kwargs["execution_mode"] == "paper", (
         "paper-entered position must stay 'paper' even when current mode is live"
     )
+
+
+# ── S245 #3 (option B): stop the cross-bot RESOLUTION over-size storm ─────────
+# Phase 4b-alt re-processed no-ENTRY phantoms (ENTRY_total=0 → insert_trade_event
+# over-size-rejects them, so the NOT-EXISTS-RESOLUTION filter never excludes them)
+# every backfill cycle forever — WB ~19k + EB ~13k + MB ~4k `RESOLUTION over-size
+# rejected` over ~21h. Two source-level fixes: (1) exclude non-YES/NO rows (root-#5
+# SELL corruption can't emit a valid RESOLUTION), (2) zero size on the 'closed'
+# rows it processes (not just 'open') so phantoms drop from the candidate set.
+
+def _backfill_src():
+    import inspect
+    from base_engine.data.database import Database
+    return inspect.getsource(Database.backfill_trade_events_resolution)
+
+
+def test_phase4b_alt_excludes_non_yes_no_rows():
+    assert "p.side IN ('YES', 'NO')" in _backfill_src(), (
+        "Phase 4b-alt must filter p.side IN ('YES','NO') — without it, root-#5 "
+        "SELL rows are emitted as a corrupt side='SELL' RESOLUTION, or "
+        "over-size-rejected every backfill cycle forever."
+    )
+
+
+def test_phase4b_alt_zeroing_covers_closed_rows():
+    src = _backfill_src()
+    assert "AND status IN ('open', 'closed')" in src, (
+        "Phase 4b-alt's post-emit size-zeroing UPDATE must cover "
+        "status IN ('open','closed')."
+    )
+    # The old open-only zeroing form is what left closed phantoms re-hammered.
+    assert "AND source_bot = :bot AND status = 'open'" not in src, (
+        "Old open-only zeroing UPDATE is back — closed no-ENTRY phantoms will "
+        "re-hammer the backfill over-size guard again."
+    )
