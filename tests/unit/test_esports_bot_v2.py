@@ -600,6 +600,34 @@ class TestScanCycleSmoke:
         assert kwargs["prediction"] == pytest.approx(0.7)
 
     @pytest.mark.asyncio
+    async def test_entry_halt_blocks_v2_trades(self):
+        """2026-06-16 WIND-DOWN: ESPORTS_ENTRY_HALT=true → _execute_trades places no
+        order. Mirrors the V1 halt; prediction logging (scan path) is unaffected."""
+        from config.settings import settings as _settings
+        bot, _ = self._make_bot()
+        bot._initialized = True
+        bot._dry_run = False
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        bot._pending_predictions = [{
+            "match": _upcoming_match(match_id=99003, team_a="A", team_b="B"),
+            "pipeline_result": {
+                "p_model": 0.7, "is_singleton": True, "edge": 0.15, "stake": 50.0,
+            },
+            "market_price": 0.55,
+            "pred_record": {},
+            "created_at": now,
+            "traded_at": None,
+            "market_info": {
+                "id": "mkt-halt", "yes_token_id": "yt", "no_token_id": "nt",
+                "condition_id": "cond",
+            },
+        }]
+        with patch.object(_settings, "ESPORTS_ENTRY_HALT", True):
+            with patch.object(bot, "place_order", new_callable=AsyncMock) as mock_order:
+                await bot._execute_trades()
+        mock_order.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_execute_trades_emits_trade_attempt_log_with_side_field(self):
         """Branch B prep: every place_order call is preceded by an
         esports_v2_trade_attempt info log carrying side/p_model/edge fields.

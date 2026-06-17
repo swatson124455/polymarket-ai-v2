@@ -960,6 +960,17 @@ class EsportsBotV2(BaseBot):
             matched=self._scan_counters.get("matched", 0),
             queued=self._scan_counters.get("queued", 0),
         )
+        # 2026-06-16 WIND-DOWN (operator decision; EB_MODEL_EDGE_PROPOSAL_2026-06-16.md):
+        # same halt as V1. EsportsBotV2's model is also sub-market, so halt new entries.
+        # Placed AFTER pruning + the funnel log so bookkeeping/observability are intact,
+        # and BEFORE the trade loop. Prediction logging runs in the scan/predict path
+        # (not here), so it keeps accruing. `is True` keeps the gate inert under
+        # MagicMock settings in tests. Reversible: ESPORTS_ENTRY_HALT=false + restart.
+        from config.settings import settings as _eh_settings
+        if getattr(_eh_settings, "ESPORTS_ENTRY_HALT", False) is True:
+            logger.info("esports_v2_entry_halted_winddown",
+                        pending=len(self._pending_predictions))
+            return
         for item in self._pending_predictions:
             match = item["match"]
             result = item["pipeline_result"]
