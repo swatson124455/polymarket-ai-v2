@@ -3729,7 +3729,16 @@ class Database:
                     "  SELECT 1 FROM trade_events te "
                     "  WHERE te.market_id = e.market_id "
                     "    AND te.bot_name = e.bot_name "
-                    "    AND te.side = e.side "
+                    # S247 fix (a): side-agnostic RESOLUTION dedup — dropped the old
+                    # per-side side-match clause. insert_trade_event's RESOLUTION dedup is
+                    # ALREADY side-agnostic (one per (bot, market), S167) and so is the
+                    # S196 over-size guard (database.py ~5777), so the per-side clause
+                    # re-selected the other/losing side of a both-sides-or-resolved
+                    # market every cycle and the insert always refused it (no write) —
+                    # the Phase-4b re-hammer (~128 futile candidates + ~28
+                    # over-size-reject log lines/cycle, fleet-wide). Aligning the SELECT
+                    # to the insert writes nothing new; it only stops re-selecting rows
+                    # the insert already rejects. Converges in ~1 backfill cycle.
                     "    AND te.event_type = 'RESOLUTION'"
                     ") "
                     "AND e.total_entry_size - COALESCE(x.total_exit_size, 0) > 0 "

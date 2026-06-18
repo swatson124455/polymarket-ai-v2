@@ -805,3 +805,33 @@ def test_phase4b_alt_zeroing_covers_closed_rows():
         "Old open-only zeroing UPDATE is back — closed no-ENTRY phantoms will "
         "re-hammer the backfill over-size guard again."
     )
+
+
+def test_phase4b_resolution_dedup_is_side_agnostic():
+    """S247 fix (a): the Phase-4b candidate SELECT's RESOLUTION dedup NOT-EXISTS
+    must be side-agnostic — keyed on (bot, market) only, NOT on side. This matches
+    insert_trade_event's side-agnostic RESOLUTION dedup (one per (bot, market),
+    S167) and the side-agnostic S196 over-size guard.
+
+    The old per-side `AND te.side = e.side` clause re-selected the other/losing
+    side of a both-sides-or-resolved market every backfill cycle; the insert
+    always refused it (no write), so it was a perpetual no-op re-hammer (~128
+    futile candidates + ~28 `RESOLUTION over-size rejected` log lines/cycle,
+    fleet-wide, WeatherBot-dominated). Aligning the SELECT to the insert writes
+    nothing new — it only stops re-selecting rows the insert already rejects.
+    """
+    src = _backfill_src()
+    assert "te.side = e.side" not in src, (
+        "Phase-4b RESOLUTION dedup must NOT key on side (`te.side = e.side`). "
+        "Per-side dedup against a side-agnostic insert re-hammers the other side "
+        "of resolved markets every cycle (the Phase-4b over-size-reject storm)."
+    )
+    # The side-agnostic RESOLUTION dedup keys must still be present (market + bot
+    # + event_type='RESOLUTION'), so a row is excluded once ANY RESOLUTION exists
+    # for its (bot, market) — exactly what the insert enforces.
+    for needle in ("te.market_id = e.market_id", "te.bot_name = e.bot_name",
+                   "te.event_type = 'RESOLUTION'"):
+        assert needle in src, (
+            f"Phase-4b RESOLUTION dedup NOT-EXISTS must still contain `{needle}` "
+            "(side-agnostic exclude-if-any-RESOLUTION-exists)."
+        )
