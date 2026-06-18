@@ -9,6 +9,12 @@ Pipeline per run:
                   each winner, wrapped in a DepositWallet EIP-712 Batch, submitted
                   gaslessly via the Polymarket relayer. Payout lands in the deposit
                   wallet AS THE COLLATERAL THE TOKEN WAS MINTED AGAINST.
+                  NEG-RISK winners (minted against the NegRisk wrapped collateral —
+                  vanilla CTF.redeemPositions can't redeem them, so they were silently
+                  skipped and the loop recovered $0) instead go via
+                  NegRiskAdapter.redeemPositions(conditionId, amounts), which redeems
+                  AND unwraps the payout to USDC.e in one call (deposit wallet is
+                  pre-approved as the adapter's ERC1155 operator).
   3. CONVERT    — if the redeemed collateral is USDC.e (older markets), approve +
                   pUSD.wrap(USDC.e, depositWallet, amount) so it becomes pUSD, the
                   V2 trading collateral. (pUSD-collateralized markets skip this.)
@@ -59,6 +65,8 @@ PUSD = to_checksum_address("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB")        
 USDCE = to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")        # USDC.e — CTF/redemption collateral
 FACTORY = to_checksum_address("0x00000000000Fb5C9ADea0298D729A0CB3823Cc07")      # DepositWalletFactory (relayer entrypoint)
 ONRAMP = to_checksum_address("0x93070a847efEf7F70739046A929D47a521F5B8ee")       # Permissionless Collateral Onramp (USDC.e -> pUSD)
+NEGRISK_ADAPTER = to_checksum_address("0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296")  # NegRiskAdapter (redeems neg-risk CTF -> USDC.e)
+NEGRISK_WCOL = to_checksum_address("0x3A3BD7bb9528E159577F7C2e685CC81A765002E2")   # NegRisk wrapped collateral (adapter.wcol(); col()=USDC.e)
 ZERO_ADDR = "0x" + "0" * 40
 ZERO_B32 = "0x" + "0" * 64
 
@@ -80,6 +88,8 @@ SEL_ONRAMP_WRAP = "0x" + keccak(text="wrap(address,address,uint256)")[:4].hex() 
 SEL_GETCOLLID = "0x" + keccak(text="getCollectionId(bytes32,bytes32,uint256)")[:4].hex()
 SEL_GETPOSID = "0x" + keccak(text="getPositionId(address,bytes32)")[:4].hex()
 SEL_BALANCEOF20 = "0x70a08231"  # ERC20 balanceOf(address)
+SEL_NR_REDEEM = "0x" + keccak(text="redeemPositions(bytes32,uint256[])")[:4].hex()  # NegRiskAdapter.redeemPositions
+SEL_BALANCEOF1155 = "0x" + keccak(text="balanceOf(address,uint256)")[:4].hex()      # CTF ERC1155 balanceOf
 
 # DepositWallet EIP-712 typed-data (domain name "DepositWallet", version "1").
 EIP712_TYPES = {
@@ -146,6 +156,31 @@ def redeem_calldata(collateral, condition_id, index_set):
     args = abi_encode(["address", "bytes32", "bytes32", "uint256[]"],
                       [collateral, bytes.fromhex(ZERO_B32[2:]), bytes.fromhex(condition_id[2:]), [index_set]])
     return SEL_REDEEM + args.hex()
+
+
+def negrisk_redeem_calldata(condition_id, winning_index, raw_amount):
+    """NegRiskAdapter.redeemPositions(conditionId, amounts) — amounts is per-OUTCOME,
+    0-based (YES=0, NO=1). The adapter burns the held winning CTF tokens (minted
+    against the NegRisk wrapped collateral) AND unwraps the payout to the underlying
+    collateral (USDC.e) in one call. Vanilla CTF.redeemPositions cannot redeem these:
+    their positionId derives from the wrapped collateral, not pUSD/USDC.e, so
+    derive_collateral never matches and they were silently skipped (loop recovered $0)."""
+    amounts = [0, 0]
+    amounts[winning_index] = int(raw_amount)
+    args = abi_encode(["bytes32", "uint256[]"],
+                      [bytes.fromhex(condition_id[2:]), amounts])
+    return SEL_NR_REDEEM + args.hex()
+
+
+def ctf_balance_raw(token_id, wallet):
+    """Raw ERC1155 CTF balance (integer, collateral-decimals) the wallet holds of
+    token_id. NegRiskAdapter.redeemPositions needs the exact integer amount — there
+    is no 'redeem all' variant as with CTF.redeemPositions(indexSets)."""
+    r = eth_call(CTF, SEL_BALANCEOF1155 + wallet.lower().replace("0x", "").rjust(64, "0")
+                 + hex(int(token_id))[2:].rjust(64, "0"))
+    if "error" in r or r.get("result") in ("0x", "0x0", None):
+        return 0
+    return int(r["result"], 16)
 
 
 def approve_calldata(spender, amount):
@@ -292,6 +327,7 @@ async def get_winners(min_tokens):
         winners.append({
             "condition_id": market_id, "side": side, "token_id": str(token_id),
             "balance": bal, "index_set": index_set,
+            "neg_risk": bool(clob.get("neg_risk")),
             "question": (clob.get("question") or "")[:48],
         })
     await db.close()
@@ -332,6 +368,26 @@ def main():
     redeem_calls = []
     total_tokens = 0.0
     for w in winners:
+        # NegRisk winners (elections/tournaments/multi-outcome groups — in scope per
+        # CLAUDE.md RULE TWO) mint CTF positions against the NegRisk wrapped collateral,
+        # so vanilla derive_collateral (pUSD/USDC.e only) never matches and they were
+        # silently SKIPPED — the loop recovered $0 from them. Redeem via the
+        # NegRiskAdapter, which unwraps the payout to USDC.e for the convert phase.
+        # (neg_risk read from the CLOB, which is authoritative; the local markets.neg_risk
+        # flag is stale-false for these.)
+        if w.get("neg_risk"):
+            raw = ctf_balance_raw(w["token_id"], deposit_wallet)
+            if raw <= 0:
+                print(f"  SKIP {w['condition_id'][:14]}… {w['side']} — neg-risk but 0 on-chain balance")
+                continue
+            widx = 0 if w["side"] == "YES" else 1
+            total_tokens += w["balance"]
+            data_hex = negrisk_redeem_calldata(w["condition_id"], widx, raw)  # 0x-prefixed
+            redeem_calls.append({"target": NEGRISK_ADAPTER, "value": 0, "data": bytes.fromhex(data_hex[2:]),
+                                 "data_hex": data_hex, "collateral": None, "collateral_name": "NegRisk", "w": w})
+            print(f"  REDEEM {w['side']:3} idx={widx} raw={raw} bal={w['balance']:.3f} coll=NegRisk "
+                  f"{w['condition_id'][:16]}… {w['question']}")
+            continue
         coll = derive_collateral(w["condition_id"], w["index_set"], w["token_id"])
         coll_name = {USDCE: "USDC.e", PUSD: "pUSD"}.get(coll, "UNKNOWN")
         if coll is None:
