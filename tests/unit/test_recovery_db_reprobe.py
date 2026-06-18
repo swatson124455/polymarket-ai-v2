@@ -51,7 +51,7 @@ async def test_recover_database_skips_reinit_when_live_engine_probes_ok():
 
     db.init.assert_not_awaited()            # the leak: no rebuild on a blip
     assert result["success"] is True
-    assert "skipped engine re-init" in result["message"]
+    assert "no re-init needed" in result["message"]   # A2 message (was "skipped engine re-init")
 
 
 @pytest.mark.asyncio
@@ -68,7 +68,7 @@ async def test_recover_database_reinits_when_reprobe_fails():
 
     db.init.assert_awaited_once()
     assert result["success"] is True
-    assert result["message"] == "Database reconnected successfully"
+    assert result["message"] == "Database reconnected (re-initialized)"   # A2 message
 
 
 @pytest.mark.asyncio
