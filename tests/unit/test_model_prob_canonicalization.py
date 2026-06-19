@@ -176,3 +176,49 @@ class TestAllocatorBoundaryInvariant:
         }
         alloc = WeatherBot._smoczynski_tomkins_allocate([opp], self.BUDGET)
         assert alloc.get("m1", 0.0) > 0.0
+
+
+class TestCalibratedEdgeAllocator:
+    """S247: WEATHER_CALIBRATED_EDGE_ENABLED makes the S-T allocator size Kelly on the
+    CALIBRATED P(side) (opp["confidence"]) instead of the raw over-dispersed model_prob.
+    Backtest (S247): the raw temp model is over-dispersed (OOS AUC 0.54) → sizing on raw
+    model_prob manufactures fake edges. Default OFF; these are negative-controlled."""
+
+    BUDGET = 1000.0
+
+    def _no_opp(self, model_prob, confidence, price_no=0.55):
+        # NO opp: model_prob=P(YES) (passes the denomination canary since P(YES) < 1-price);
+        # raw p=P(NO)=1-model_prob, calibrated p=confidence.
+        return {
+            "market_id": "m1", "token_id": "t_no", "side": "NO",
+            "edge": 0.1, "price": price_no, "model_prob": model_prob,
+            "market_prob": 1.0 - price_no, "abs_edge": 0.1,
+            "confidence": confidence, "market_type": "temperature",
+        }
+
+    def test_flag_off_sizes_on_raw_model_prob(self, monkeypatch):
+        """Flag OFF: raw p = 1-0.40 = 0.60 > price 0.55 → SIZED, even though the calibrated
+        confidence (0.52 ≤ 0.55) would drop it. Negative control for the flag."""
+        import bots.weather_bot as _wb
+        monkeypatch.setattr(_wb.settings, "WEATHER_CALIBRATED_EDGE_ENABLED", False)
+        opp = self._no_opp(model_prob=0.40, confidence=0.52)
+        alloc = WeatherBot._smoczynski_tomkins_allocate([opp], self.BUDGET)
+        assert alloc.get("m1", 0.0) > 0.0
+
+    def test_flag_on_drops_when_calibrated_below_price(self, monkeypatch):
+        """Flag ON: calibrated p = confidence 0.52 ≤ price 0.55 → DROPPED (raw 0.60 would
+        have sized). Proves Kelly now keys off the calibrated prob."""
+        import bots.weather_bot as _wb
+        monkeypatch.setattr(_wb.settings, "WEATHER_CALIBRATED_EDGE_ENABLED", True)
+        opp = self._no_opp(model_prob=0.40, confidence=0.52)
+        alloc = WeatherBot._smoczynski_tomkins_allocate([opp], self.BUDGET)
+        assert alloc.get("m1", 0.0) == 0.0
+
+    def test_flag_on_boundary_assertion_still_fires(self, monkeypatch):
+        """The model_prob denomination canary must stay active with the flag ON (it guards
+        the producer, independent of which prob Kelly sizes on)."""
+        import bots.weather_bot as _wb
+        monkeypatch.setattr(_wb.settings, "WEATHER_CALIBRATED_EDGE_ENABLED", True)
+        opp = self._no_opp(model_prob=0.70, confidence=0.30)  # P(side) regression value
+        with pytest.raises(AssertionError, match="denomination"):
+            WeatherBot._smoczynski_tomkins_allocate([opp], self.BUDGET)

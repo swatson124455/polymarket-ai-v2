@@ -983,6 +983,16 @@ class Settings(BaseSettings):
     # 0.0 aligns training lead-time with the served distribution. Defined here (not just
     # via getattr default) so it's overridable and visible in the module weather_bot reads.
     WEATHER_CONFIDENCE_CAL_MIN_LEAD_H: float = float(os.getenv("WEATHER_CONFIDENCE_CAL_MIN_LEAD_H", "0.0"))
+    # S247: compute Kelly sizing + the executable-edge gate on the CALIBRATED P(side)
+    # (opp["confidence"], already through the calibrator + YES floor + dampener at
+    # weather_bot.py:3034-3070) instead of the raw over-dispersed model_prob. Backtest
+    # (S247): the raw temperature model is over-dispersed (OOS AUC 0.54, BSS −0.37;
+    # recalibrated ≈climatology) so sizing/gating on raw model_prob manufactures fake
+    # edges; the only real edge is 72-120h NO. Applies at the S-T allocator Kelly p
+    # (weather_bot.py:~3320) and _check_executable_edge (~4808). Default OFF — gated
+    # until the calibrated edge is validated (target: 72-120h NO BSS > 0). The model_prob
+    # boundary assertion (denomination guard) stays active regardless.
+    WEATHER_CALIBRATED_EDGE_ENABLED: bool = os.getenv("WEATHER_CALIBRATED_EDGE_ENABLED", "false").lower() == "true"
     # S143: YES-side fallback window — wider window when 30d has <30 YES samples
     WEATHER_CONFIDENCE_CAL_YES_FALLBACK_WINDOW_DAYS: int = int(os.getenv("WEATHER_CONFIDENCE_CAL_YES_FALLBACK_WINDOW_DAYS", "90"))
     # S135: Disable combined_boost for YES side — NO keeps all boosts

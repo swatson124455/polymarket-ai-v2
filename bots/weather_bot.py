@@ -3317,7 +3317,16 @@ class WeatherBot(BaseBot):
                     f"(market={opp.get('market_id')}, type={opp.get('market_type')}): "
                     f"model_prob looks like P(side), not P(YES) — producer denomination regression"
                 )
-            p = opp["model_prob"] if opp["side"] == "YES" else (1.0 - opp["model_prob"])
+            # S247: size Kelly on the CALIBRATED P(side) when enabled. opp["confidence"]
+            # is the calibrated bet-side prob (calibrator + YES floor + dampener applied
+            # at build, weather_bot.py:3034-3070); the raw model_prob is over-dispersed
+            # (S247 backtest: OOS AUC 0.54, BSS −0.37) and manufactures fake edges here.
+            # Default OFF (WEATHER_CALIBRATED_EDGE_ENABLED). The boundary assertion above
+            # still guards producer denomination. Falls back to raw if confidence absent.
+            if getattr(settings, "WEATHER_CALIBRATED_EDGE_ENABLED", False) and opp.get("confidence") is not None:
+                p = float(opp["confidence"])
+            else:
+                p = opp["model_prob"] if opp["side"] == "YES" else (1.0 - opp["model_prob"])
             price = opp["price"]
             if price <= 0.02 or price >= 0.98 or p <= price:
                 continue
@@ -4805,7 +4814,14 @@ class WeatherBot(BaseBot):
         # matches the existing convention at [weather_bot.py:3252] and the tests'
         # documented semantics ("model_prob_NO = 0.722").
         _model_prob_yes = float(opp.get("model_prob", 0.0))
-        _side_prob = _model_prob_yes if _side == "YES" else (1.0 - _model_prob_yes)
+        # S247: validate the executable edge against the CALIBRATED P(side)
+        # (opp["confidence"]) when enabled — the honest-math backstop should use the same
+        # calibrated prob the bot sizes on, not the raw over-dispersed model_prob. Default
+        # OFF; falls back to raw model_prob if confidence absent (e.g. PSW path).
+        if getattr(settings, "WEATHER_CALIBRATED_EDGE_ENABLED", False) and opp.get("confidence") is not None:
+            _side_prob = float(opp["confidence"])
+        else:
+            _side_prob = _model_prob_yes if _side == "YES" else (1.0 - _model_prob_yes)
         _exec_edge = _side_prob - _exec_price
         if _exec_edge < _min_exec_edge:
             logger.info(

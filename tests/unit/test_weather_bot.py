@@ -4171,6 +4171,44 @@ class TestS221ExecutableEdgeCheck:
             "NO bet with P(NO wins)=0.88 at NO_ask=0.60 has +0.28 honest edge — must accept"
         )
 
+    def test_calibrated_edge_flag_off_uses_raw_model_prob(self, bot_with_index, monkeypatch):
+        """S247 negative control: flag OFF → exec-edge uses raw model_prob. YES model_prob
+        0.72 vs bestAsk 0.50 → +0.22 → ACCEPT, even though calibrated confidence (0.45)
+        would reject."""
+        import bots.weather_bot as _wb
+        monkeypatch.setattr(_wb.settings, "WEATHER_CALIBRATED_EDGE_ENABLED", False)
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.48, "bestAsk": 0.50}
+        }
+        opp = {"market_id": "m1", "side": "YES", "model_prob": 0.72,
+               "confidence": 0.45, "price": 0.49, "edge": 0.23}
+        assert bot_with_index._check_executable_edge(opp) is True
+
+    def test_calibrated_edge_flag_on_uses_confidence(self, bot_with_index, monkeypatch):
+        """S247: flag ON → exec-edge validates against calibrated confidence. Same opp:
+        confidence 0.45 vs bestAsk 0.50 → -0.05 honest edge → REJECT (raw model_prob 0.72
+        would have accepted). Proves the gate switched to the calibrated prob."""
+        import bots.weather_bot as _wb
+        monkeypatch.setattr(_wb.settings, "WEATHER_CALIBRATED_EDGE_ENABLED", True)
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.48, "bestAsk": 0.50}
+        }
+        opp = {"market_id": "m1", "side": "YES", "model_prob": 0.72,
+               "confidence": 0.45, "price": 0.49, "edge": 0.23}
+        assert bot_with_index._check_executable_edge(opp) is False
+
+    def test_calibrated_edge_flag_on_falls_back_without_confidence(self, bot_with_index, monkeypatch):
+        """S247: flag ON but opp lacks confidence → falls back to raw model_prob (no crash).
+        YES model_prob 0.72 vs bestAsk 0.50 → +0.22 → ACCEPT."""
+        import bots.weather_bot as _wb
+        monkeypatch.setattr(_wb.settings, "WEATHER_CALIBRATED_EDGE_ENABLED", True)
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.48, "bestAsk": 0.50}
+        }
+        opp = {"market_id": "m1", "side": "YES", "model_prob": 0.72,
+               "price": 0.49, "edge": 0.23}
+        assert bot_with_index._check_executable_edge(opp) is True
+
     def test_rejects_when_market_not_in_index(self, bot_with_index):
         """Fail-closed: no book data → cannot validate → reject."""
         bot_with_index.base_engine.order_gateway._market_index = {}
