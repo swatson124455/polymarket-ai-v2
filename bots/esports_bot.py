@@ -2824,10 +2824,13 @@ class EsportsBot(BaseBot):
                              current_price=round(current_price, 4))
 
     async def _backfill_esports_outcomes(self, db) -> None:
-        """Backfill actual_outcome in esports_prediction_log from trade_events RESOLUTION.
+        """Backfill actual_outcome in esports_prediction_log from markets.resolution.
 
-        Runs every 10 scans. Idempotent — resolve_predictions() only updates
-        rows where actual_outcome IS NULL. YES win → outcome=1, NO win → outcome=0.
+        ROOT-1 (label integrity): the AUTHORITATIVE source is the immutable
+        markets.resolution settlement record; the trade_events RESOLUTION path
+        (realized_pnl sign) is a FALLBACK only. Runs every 10 scans. Idempotent —
+        resolve_predictions() only updates rows where actual_outcome IS NULL.
+        YES win → outcome=1, NO win → outcome=0.
 
         S132: Removed _resolve_esports_from_clob() — S104 workaround that caused
         SE-1 (paper_trades P&L NULL), EB-2 (per-row emission), EB-4 (triple path race).
@@ -2842,28 +2845,13 @@ class EsportsBot(BaseBot):
         # Glicko-2 fix date (2026-03-16) — no stale pre-fix data.
         _GLICKO2_FIX = datetime(2026, 3, 16, tzinfo=timezone.utc)
         _backfill_days = min(max(1, (datetime.now(timezone.utc) - _GLICKO2_FIX).days), 90)
-        async with db.get_session(timeout=15) as _sess:
-            result = await _sess.execute(
-                _sa_text("""
-                    SELECT DISTINCT te.market_id, te.side,
-                        CASE WHEN te.realized_pnl > 0 THEN 1 ELSE 0 END AS won
-                    FROM trade_events te
-                    WHERE te.bot_name IN ('EsportsBot', 'EsportsLiveBot', 'EsportsSeriesBot')
-                      AND te.event_type = 'RESOLUTION'
-                      AND te.realized_pnl IS NOT NULL
-                      AND te.side IN ('YES', 'NO')
-                      AND te.event_time > NOW() - INTERVAL '1 day' * :backfill_days
-                      AND te.event_time <= NOW()
-                """),
-                {"backfill_days": _backfill_days},
-            )
-            resolved = result.fetchall()
-        for r in resolved:
-            outcome = int(r.won) if r.side == "YES" else (1 - int(r.won))
-            await _resolve(db, r.market_id, outcome)
-
-        # S125: Fallback — resolve from markets table for predictions that have no
-        # RESOLUTION trade_event (bot predicted but didn't trade, or event >7d old).
+        # ROOT-1 PRIMARY (label integrity): source actual_outcome from the
+        # IMMUTABLE markets.resolution settlement record — canonical ground truth.
+        # The prior primary path derived the label from a RESOLUTION trade_event's
+        # realized_pnl SIGN, which depends on entry_price and can flip the label on
+        # a rare near-1.0 winning price where fees exceed the thin margin (verified:
+        # 4/628 historical rows disagreed with markets.resolution). Sourcing from
+        # markets.resolution removes that entry_price dependency.
         try:
             async with db.get_session(timeout=15) as _sess_mkt:
                 _mkt_result = await _sess_mkt.execute(
@@ -2885,6 +2873,32 @@ class EsportsBot(BaseBot):
                 logger.info("esportsbot_markets_table_backfill", resolved=_mkt_count)
         except Exception as _mkt_err:
             logger.debug("esportsbot_markets_table_backfill_failed", error=str(_mkt_err))
+
+        # S125 FALLBACK — for predictions whose market is not yet in the markets
+        # table with a resolution but which DO have a RESOLUTION trade_event. won
+        # is derived from realized_pnl sign (payout-driven; entry_price magnitude
+        # only flips it on the rare near-1.0 winning price) and side-corrected to
+        # YES-canonical. resolve_predictions only fills rows still NULL after the
+        # authoritative markets.resolution pass above.
+        async with db.get_session(timeout=15) as _sess:
+            result = await _sess.execute(
+                _sa_text("""
+                    SELECT DISTINCT te.market_id, te.side,
+                        CASE WHEN te.realized_pnl > 0 THEN 1 ELSE 0 END AS won
+                    FROM trade_events te
+                    WHERE te.bot_name IN ('EsportsBot', 'EsportsLiveBot', 'EsportsSeriesBot')
+                      AND te.event_type = 'RESOLUTION'
+                      AND te.realized_pnl IS NOT NULL
+                      AND te.side IN ('YES', 'NO')
+                      AND te.event_time > NOW() - INTERVAL '1 day' * :backfill_days
+                      AND te.event_time <= NOW()
+                """),
+                {"backfill_days": _backfill_days},
+            )
+            resolved = result.fetchall()
+        for r in resolved:
+            outcome = int(r.won) if r.side == "YES" else (1 - int(r.won))
+            await _resolve(db, r.market_id, outcome)
 
         # S100b: Feed newly resolved predictions into streaming calibrators (ADWIN + OnlinePlatt)
         try:
