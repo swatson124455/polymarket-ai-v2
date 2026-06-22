@@ -123,7 +123,16 @@ def configure_logging() -> None:
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
             _DedupProcessor(),  # S177: suppress repeated identical log lines (60s window)
-            structlog.dev.ConsoleRenderer(),
+            # EB scan-wedge root fix `3a00032`, ported to wb/main S247: force PLAIN
+            # tracebacks. Without an explicit exception_formatter, ConsoleRenderer
+            # auto-upgrades to rich's traceback renderer (Panel+Syntax+pygments) when rich
+            # is importable; that render runs SYNCHRONOUSLY on the event-loop thread at
+            # every exc_info log site and, on a fat SQLAlchemy/asyncpg exception, pygments
+            # tokenization freezes the loop for minutes (py-spy-proven). This is the WB
+            # dark-out class: the elite-detector DB storm raises DatabaseError → rich
+            # traceback render → WB scan loop wedged (~44h observed, S247). plain_traceback
+            # is O(n) stdlib formatting; every non-exception log line is byte-identical.
+            structlog.dev.ConsoleRenderer(exception_formatter=structlog.dev.plain_traceback),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(getattr(logging, _log_level, logging.INFO)),
         logger_factory=_TeeLoggerFactory(),
