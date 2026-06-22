@@ -71,6 +71,7 @@ class IngestionScheduler:
         self._last_weekly_full_run: Optional[datetime] = None
         self._last_health_check: Optional[datetime] = None
         self._last_mini_backfill: Optional[datetime] = None
+        self._last_elite_update: Optional[datetime] = None
         self.running = False
         self._task: Optional[asyncio.Task] = None
         self._last_cycle_end: float = time.time()  # S152: watchdog stale-cycle detection
@@ -295,15 +296,30 @@ class IngestionScheduler:
             logger.error("ingest_elite_trader_activity() timed out after %ss", _AUX_TIMEOUT_SECONDS)
         except Exception as ea:
             logger.warning("Elite trader activity ingest failed (non-fatal): %s", ea)
-        if self.elite_detector is not None:
+        # S248: Gate the elite-status recompute to a slow cadence (default 60 min),
+        # independent of the 5-min price-ingestion interval. update_elite_status() runs
+        # three full-table UPDATE...GROUP BY aggregates over `trades` and rewrites the
+        # whole `users` table (see elite_detector.py:36/81/140). Running it every
+        # ingestion cycle (~13 min) held the users table long enough to drain the
+        # per-process DB semaphore (database.py:207) fleet-wide — the "DB semaphore
+        # timeout" storm. Elite/market-maker labels do not change minute-to-minute, so a
+        # slower cadence is safe for product correctness while cutting storm frequency.
+        _elite_interval = int(getattr(settings, "ELITE_UPDATE_INTERVAL_MINUTES", 60)) * 60
+        _elite_due = (
+            self._last_elite_update is None
+            or (_now - self._last_elite_update).total_seconds() >= _elite_interval
+        )
+        if self.elite_detector is not None and _elite_due:
             try:
                 async with acquire_lock(db, "elite_update", timeout_seconds=30):
                     await asyncio.wait_for(
                         self.elite_detector.update_elite_status(),
                         timeout=_AUX_TIMEOUT_SECONDS,
                     )
+                self._last_elite_update = _now
             except asyncio.TimeoutError:
                 logger.error("Elite status update timed out after %ss", _AUX_TIMEOUT_SECONDS)
+                self._last_elite_update = _now  # prevent tight retry loop
             except LockAcquisitionError:
                 logger.debug("Elite update lock busy, skipping")
             except Exception as e:

@@ -693,6 +693,9 @@ class Settings(BaseSettings):
     INGESTION_SCHEDULER_INTERVAL_MINUTES: int = int(os.getenv("INGESTION_SCHEDULER_INTERVAL_MINUTES", "5"))
     INGESTION_TOP_MARKETS_COUNT: int = int(os.getenv("INGESTION_TOP_MARKETS_COUNT", "500"))
     INGESTION_SCHEDULER_INITIAL_DELAY_SECONDS: int = int(os.getenv("INGESTION_SCHEDULER_INITIAL_DELAY_SECONDS", "30"))
+    # S248: cadence (minutes) for the expensive elite-status full-table recompute, gated
+    # independently of the price-ingestion interval to bound the DB-semaphore storm.
+    ELITE_UPDATE_INTERVAL_MINUTES: int = int(os.getenv("ELITE_UPDATE_INTERVAL_MINUTES", "60"))
 
     # One-time backfill (last year of data in small batches)
     BACKFILL_DAYS: int = int(os.getenv("BACKFILL_DAYS", "365"))
