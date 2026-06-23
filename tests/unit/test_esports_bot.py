@@ -227,6 +227,11 @@ class TestClassifyMarketType:
 
 
 class TestAnalyzeOpportunity:
+    @pytest.fixture(autouse=True)
+    def _enable_v1_model(self, monkeypatch):
+        from config.settings import settings as real_settings
+        monkeypatch.setattr(real_settings, "ESPORTS_V1_MODEL_ENABLED", True, raising=False)
+
     @pytest.mark.asyncio
     async def test_returns_none_when_no_tokens(self):
         """No tokens list -> returns None."""

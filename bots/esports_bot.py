@@ -591,59 +591,66 @@ class EsportsBot(BaseBot):
         self._pandascore = PandaScoreClient(api_key=self._api_key)
         await self._pandascore.init()
 
-        riot_key = getattr(settings, "RIOT_API_KEY", None)
-        if riot_key:
-            from esports.data.riot_api_client import RiotApiClient
-            self._riot_client = RiotApiClient(api_key=riot_key)
-            await self._riot_client.init()
-
-        _obs_hours = int(getattr(settings, "ESPORTS_OBSERVATION_HOURS", 48))
-        self._patch_drift = PatchDriftDetector(
-            riot_client=self._riot_client, observation_hours=_obs_hours,
-        )
-
-        # OpenDota client — free Dota2 hero + team form data (no auth needed)
-        try:
-            from esports.data.opendota_client import OpenDotaClient
-            self._opendota = OpenDotaClient()
-            logger.info("EsportsBot: OpenDota client initialized")
-        except Exception as exc:
+        if not getattr(settings, "ESPORTS_V1_DATA_CLIENTS_ENABLED", False):
+            self._riot_client = None
             self._opendota = None
-            logger.warning("EsportsBot: OpenDota client not available", error=str(exc))
-
-        # Aligulac client — SC2 Elo ratings + match predictions (free key)
-        aligulac_key = getattr(settings, "ALIGULAC_API_KEY", None)
-        if aligulac_key:
-            try:
-                from esports.data.aligulac_client import AligulacClient
-                self._aligulac = AligulacClient(api_key=aligulac_key)
-                logger.info("EsportsBot: Aligulac client initialized")
-            except Exception as exc:
-                self._aligulac = None
-                logger.warning("EsportsBot: Aligulac client not available", error=str(exc))
-        else:
             self._aligulac = None
-
-        # Ballchasing client — RL replay stats (free key)
-        ballchasing_key = getattr(settings, "BALLCHASING_API_KEY", None)
-        if ballchasing_key:
-            try:
-                from esports.data.ballchasing_client import BallchasingClient
-                self._ballchasing = BallchasingClient(api_key=ballchasing_key)
-                logger.info("EsportsBot: Ballchasing client initialized")
-            except Exception as exc:
-                self._ballchasing = None
-                logger.warning("EsportsBot: Ballchasing client not available", error=str(exc))
-        else:
             self._ballchasing = None
+            self._hltv = None
+        else:
+            riot_key = getattr(settings, "RIOT_API_KEY", None)
+            if riot_key:
+                from esports.data.riot_api_client import RiotApiClient
+                self._riot_client = RiotApiClient(api_key=riot_key)
+                await self._riot_client.init()
 
-        # HLTV scraper — CS2 per-team map win rates for series analysis
-        try:
-            from esports.data.hltv_scraper import HLTVScraper
-            self._hltv = HLTVScraper()
-            logger.info("EsportsBot: HLTV scraper initialized")
-        except Exception:
-            logger.debug("EsportsBot: HLTV scraper not available")
+            _obs_hours = int(getattr(settings, "ESPORTS_OBSERVATION_HOURS", 48))
+            self._patch_drift = PatchDriftDetector(
+                riot_client=self._riot_client, observation_hours=_obs_hours,
+            )
+
+            # OpenDota client — free Dota2 hero + team form data (no auth needed)
+            try:
+                from esports.data.opendota_client import OpenDotaClient
+                self._opendota = OpenDotaClient()
+                logger.info("EsportsBot: OpenDota client initialized")
+            except Exception as exc:
+                self._opendota = None
+                logger.warning("EsportsBot: OpenDota client not available", error=str(exc))
+
+            # Aligulac client — SC2 Elo ratings + match predictions (free key)
+            aligulac_key = getattr(settings, "ALIGULAC_API_KEY", None)
+            if aligulac_key:
+                try:
+                    from esports.data.aligulac_client import AligulacClient
+                    self._aligulac = AligulacClient(api_key=aligulac_key)
+                    logger.info("EsportsBot: Aligulac client initialized")
+                except Exception as exc:
+                    self._aligulac = None
+                    logger.warning("EsportsBot: Aligulac client not available", error=str(exc))
+            else:
+                self._aligulac = None
+
+            # Ballchasing client — RL replay stats (free key)
+            ballchasing_key = getattr(settings, "BALLCHASING_API_KEY", None)
+            if ballchasing_key:
+                try:
+                    from esports.data.ballchasing_client import BallchasingClient
+                    self._ballchasing = BallchasingClient(api_key=ballchasing_key)
+                    logger.info("EsportsBot: Ballchasing client initialized")
+                except Exception as exc:
+                    self._ballchasing = None
+                    logger.warning("EsportsBot: Ballchasing client not available", error=str(exc))
+            else:
+                self._ballchasing = None
+
+            # HLTV scraper — CS2 per-team map win rates for series analysis
+            try:
+                from esports.data.hltv_scraper import HLTVScraper
+                self._hltv = HLTVScraper()
+                logger.info("EsportsBot: HLTV scraper initialized")
+            except Exception:
+                logger.debug("EsportsBot: HLTV scraper not available")
 
         db = getattr(self.base_engine, "db", None)
         # market_service passed below after initialization (if successful)
@@ -1071,6 +1078,8 @@ class EsportsBot(BaseBot):
         converts to YES-equivalent before computing edge.
         """
         if not self.running:
+            return
+        if not settings.ESPORTS_V1_MODEL_ENABLED:
             return
 
         market_id = event.get("market_id", "")
@@ -2931,6 +2940,8 @@ class EsportsBot(BaseBot):
         3. Validate edge: model_prob - poly_price > ESPORTS_MIN_EDGE
         4. Build trade opportunity if edge exists
         """
+        if not settings.ESPORTS_V1_MODEL_ENABLED:
+            return None
         # B4: waterfall counter helper (safe if _wf not initialized)
         _wf = getattr(self, "_wf", None)
 
@@ -5803,6 +5814,9 @@ class EsportsBot(BaseBot):
             return
         self._monitoring_last_check = now
 
+        if not settings.ESPORTS_V1_MODEL_ENABLED:
+            return
+
         if not db:
             return
 
@@ -7263,6 +7277,8 @@ class EsportsBot(BaseBot):
 
         Returns (opportunities_count, trades_count).
         """
+        if not settings.ESPORTS_V1_MODEL_ENABLED:
+            return (0, 0)
         db = getattr(self.base_engine, "db", None)
 
         # Prune stale series prediction cache (>30 min)

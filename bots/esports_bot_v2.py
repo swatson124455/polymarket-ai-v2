@@ -19,6 +19,9 @@ Two-phase write:
 """
 from __future__ import annotations
 
+# _DEPRECATED_2026_06_22: V1 paper-trading wrapper; superseded by esports_v2/ sharp-line architecture. Already gated by BOT_ENABLED_ESPORTS_V2=false.
+_DEPRECATED_2026_06_22 = True
+
 import asyncio
 import json
 import os

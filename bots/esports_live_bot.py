@@ -13,6 +13,9 @@ Enable: BOT_ENABLED_ESPORTS_LIVE=true (disabled by default).
 """
 from __future__ import annotations
 
+# _DEPRECATED_2026_06_22: V1 live in-game event detection bot; superseded by esports_v2/ sharp-line architecture. Already gated by BOT_ENABLED_ESPORTS_LIVE=false.
+_DEPRECATED_2026_06_22 = True
+
 import asyncio
 from typing import Any, Dict, Optional
 

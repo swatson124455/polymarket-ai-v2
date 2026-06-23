@@ -11,6 +11,9 @@ Usage::
 """
 from __future__ import annotations
 
+# _DEPRECATED_2026_06_22: V1 ratings-model persistence helpers (esports_prediction_log, esports_calibration, esports_training_data, Pinnacle CLV backfill). Callers (V1 EsportsBot) are gated by ESPORTS_V1_MODEL_ENABLED; this module becomes unreachable when that flag is OFF. No imports occur from esports_v2/.
+_DEPRECATED_2026_06_22 = True
+
 import datetime as _dt
 import time as _time
 from typing import Any, Dict, List, Optional, Tuple
