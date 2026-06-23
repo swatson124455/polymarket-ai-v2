@@ -100,6 +100,35 @@ WATCHDOG_INTERVAL_SECONDS = 30
 MAX_GLOBAL_RESTART_ATTEMPTS = 10  # I15: raised from 3 — transient DB timeout was causing permanent death
 
 
+def _systemd_notify(msg: str) -> None:
+    """Send a sd_notify(3) datagram to systemd if running under Type=notify.
+
+    S249: defends against scan-loop wedges that the in-process watchdog
+    cannot catch (S247-WB ⑥ pattern: bot wedged ~44h, NRestarts=0 because
+    the asyncio loop froze but the process stayed alive). Pair with
+    WatchdogSec= in the unit file: if no WATCHDOG=1 ping arrives for that
+    interval, systemd kills the process and Restart=always brings it back
+    with a clean pool.
+
+    No-op when NOTIFY_SOCKET is unset (dev machines, Windows, services
+    without Type=notify) — safe to call unconditionally from shared code.
+    Best-effort: never raises.
+    """
+    sock_path = _os.environ.get("NOTIFY_SOCKET")
+    if not sock_path:
+        return
+    # Abstract namespace sockets start with '@' in env, '\0' on the wire.
+    if sock_path.startswith("@"):
+        sock_path = "\0" + sock_path[1:]
+    try:
+        import socket as _socket
+        with _socket.socket(_socket.AF_UNIX, _socket.SOCK_DGRAM) as s:
+            s.connect(sock_path)
+            s.sendall(msg.encode("utf-8"))
+    except Exception:
+        pass
+
+
 async def _preflight_check(base_engine: BaseEngine) -> bool:
     """Pre-flight health gate: verify DB, Redis, and API are reachable before starting bots.
 
@@ -257,6 +286,11 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
     while True:
         await asyncio.sleep(WATCHDOG_INTERVAL_SECONDS)
 
+        # S249: ping systemd that the watchdog loop is alive. Paired with
+        # WatchdogSec= in the unit file; missing pings → systemd SIGTERM →
+        # restart with a clean pool. No-op when NOTIFY_SOCKET is unset.
+        _systemd_notify("WATCHDOG=1\n")
+
         alive_count = 0
         for bot_name, bot in list(bots.items()):
             if bot.running:
@@ -316,7 +350,13 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
                     "EsportsLiveBot": "BOT_ENABLED_ESPORTS_LIVE",
                     "EsportsSeriesBot": "BOT_ENABLED_ESPORTS_SERIES",  # merged into EsportsBot; suppress stale heartbeat
                 }
-                async with _db.get_session() as _hb_sess:
+                # S249: use raw_session (bypasses semaphored pool) — same
+                # pattern as kill_switch.py:44. The watchdog is the LAST line of
+                # defense against scan-loop wedges; if its own SELECT contends
+                # for the same exhausted pool that wedged the bots, the staleness
+                # check can't fire and os._exit(1) below never runs (the S247-WB
+                # ⑥ pattern: WB wedged ~44h, NRestarts=0).
+                async with _db.get_raw_session() as _hb_sess:
                     _hb_result = await _hb_sess.execute(
                         sa_text("""
                             SELECT bot_name,
@@ -590,6 +630,11 @@ async def main():
         health_task = asyncio.create_task(_health_server(bots, _shutdown_event, port=settings.HEALTH_PORT))
 
         logger.info("System running -- press Ctrl+C to stop", active_bots=len(bots))
+
+        # S249: signal systemd that startup is complete (Type=notify).
+        # Without this, systemd's TimeoutStartSec would eventually fire on the
+        # service that opted into Type=notify. No-op for services that don't.
+        _systemd_notify("READY=1\n")
 
         # Wait for either watchdog exit or SIGTERM/shutdown event
         shutdown_task = asyncio.create_task(_shutdown_event.wait())

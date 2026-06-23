@@ -4,7 +4,15 @@ After=network.target postgresql.service redis.service
 Wants=postgresql.service redis.service
 
 [Service]
-Type=simple
+# S249: Type=notify + WatchdogSec defends against scan-loop wedges that
+# the in-process watchdog cannot catch (S247-WB ⑥ pattern: bot wedged
+# ~44h, NRestarts=0 because the asyncio loop froze but the process
+# stayed alive). main.py sends READY=1 after startup and WATCHDOG=1
+# every ~30s from the watchdog loop. 120s = 4× the watchdog interval —
+# survives a couple of slow iterations, kills on a true wedge.
+Type=notify
+NotifyAccess=main
+WatchdogSec=120s
 User=polymarket
 Group=polymarket
 WorkingDirectory=/opt/polymarket-ai-v2

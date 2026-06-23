@@ -2217,22 +2217,29 @@ class MirrorBot(BaseBot):
         Without this, positions accumulate forever — resolved markets keep
         phantom positions in the DB and in-memory, inflating exposure and
         blocking new trades via the 200-position cap.
+
+        Mode-filter mirrors the restore at line 411: reap only positions
+        in the current execution mode (paper or live). Pre-fix, this hardcoded
+        is_paper=true so live resolved positions were never reaped — the
+        root cause of the S246 5-stuck-phantom one-time reconciliation
+        (paper-only filter let live phantoms accumulate indefinitely).
         """
         try:
             db = getattr(self.base_engine, "db", None)
             if not db or not db.session_factory:
                 return
+            _is_paper_mode = is_paper_trading_active()
             from sqlalchemy import text as _text
             async with db.get_session() as session:
                 result = await session.execute(_text(
                     "DELETE FROM positions "
                     "WHERE (bot_id = :bot OR source_bot = :bot) "
-                    "  AND is_paper = true "
+                    "  AND is_paper = :is_paper "
                     "  AND market_id IN ("
                     "    SELECT condition_id FROM markets WHERE resolved = TRUE AND condition_id IS NOT NULL"
                     "  ) "
                     "RETURNING market_id, token_id"
-                ), {"bot": self.bot_name})
+                ), {"bot": self.bot_name, "is_paper": _is_paper_mode})
                 reaped = result.fetchall()
                 await session.commit()
                 if reaped:
