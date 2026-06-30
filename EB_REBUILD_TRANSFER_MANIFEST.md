@@ -28,11 +28,11 @@
 - **positions** (EsportsBot) — 984 rows (open/closed position ledger)
 - **trade_events** (EsportsBot) — bot_pnl.py canonical: 103 entries / 46 exits / 144 resolutions, 0 open, all-time clean realized −$1,562.63 (trade ledger; bot_pnl.py is the canonical reader)
 
-## FILES
-- **data/lol/*.csv** — 175M (Oracle's Elixir per-player-per-game LoL stats, 2024–2026)
+## FILES — ⚠ NOT IN GIT. These live on the source machine (`C:\lockes-picks\polymarket-ai-v2\data\`) + VPS, were never committed, and a fresh clone will NOT have them. Sizes/record-counts below were verified on the source machine, not in the repo. Transfer is a separate step (see end of doc).
+- **data/lol/*.csv** — 175M (Oracle's Elixir per-player-per-game LoL stats, 2024–2026; re-downloadable from oracleselixir.com)
 - **data/esports_matches_bulk.jsonl** — 13M (28,213 historical match results)
-- **data/cs2/pandascore_cs2.json** — 2.3M (5,000 PandaScore CS2 matches)
-- **data/paper_trading.log** — 3.3G (full paper-trade execution log)
+- **data/cs2/pandascore_cs2.json** — 2.3M (5,000 PandaScore CS2 matches; re-fetchable via PandaScore API)
+- **data/paper_trading.log** — 3.3G (full paper-trade execution log; `.log` is gitignored + exceeds GitHub's 100M file limit — cannot go to git)
 
 ## CODE — esports_v2/
 - **backtest/metrics.py** (computes Brier/log-loss/ECE/CLV/z-score/ROI/drawdown + pass-gate)
