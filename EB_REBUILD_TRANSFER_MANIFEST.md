@@ -93,7 +93,20 @@
 - **eb_resolution_backlog.py** (⚠ DO-NOT-RUN — injects phantom-position P&L)
 
 ## MIGRATIONS / SCHEMA / CONFIG
-- **Migrations (11, +downs):** 024, 029, 030, 031, 053, 057, 060, 061, 072, 074, 075 (create/alter all esports + glicko2 tables)
+- **Migrations — 12 up + 5 down (all git-tracked):**
+  - `024_esports_tables.sql` (creates esports_teams/players/matches/match_maps/market_map/calibration/live_events/patch_history)
+  - `029_esports_training_data.sql` (creates esports_training_data)
+  - `030_esports_prediction_log.sql` (creates esports_prediction_log)
+  - `031_glicko2_ratings.sql` (creates glicko2_ratings)
+  - `047_brin_indexes.sql` (BRIN index on esports_prediction_log.created_at) ← was missing from earlier "11" count
+  - `053_esports_schema_fixes.sql` (adds closing_price + tournament_phase to esports_prediction_log)
+  - `057_esports_prediction_log_dedup.sql` (dedup + unique index on esports_prediction_log)
+  - `060_glicko2_player_ratings.sql` (creates glicko2_player_ratings) [+ down]
+  - `061_add_raw_model_prob.sql` (adds raw_model_prob to esports_prediction_log) [+ down] ← name not "esports*", caught by content
+  - `072_esports_v2.sql` (LIVE V2 schema: esports_matches/players/ratings/features/predictions/odds) [+ down]
+  - `074_esports_team_aliases.sql` (creates esports_team_aliases + esports_unmatched_predictions) [+ down]
+  - `075_esports_default_now.sql` (DEFAULT NOW() on alias tables) [+ down]
+  - Incidental (NOT EB schema, listed for completeness): `048_trade_model_linkage.sql` (mentions esports_prediction_log in a string; the table it created was dropped in 052), `071_strategy_lifecycle.sql` (uses 'EsportsBot_glicko2_xgb_v3' only as an example comment).
 - **Empty-table schemas (9, no data, arrive via migrations):** esports_features, esports_market_map, esports_match_maps, esports_live_events, esports_patch_history, esports_players, esports_teams, esports_ratings, glicko2_player_ratings
 - **Config (config/settings.py):** ESPORTS_PINNACLE_ENABLED (Pinnacle toggle), ESPORTS_ENTRY_HALT (trading halt), ESPORTS_V1_MODEL_ENABLED (V1-model gate) + model-agnostic sizing/risk/Kelly/edge-threshold flags
 
