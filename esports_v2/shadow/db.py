@@ -237,14 +237,11 @@ async def get_shadow_stats(
                 COUNT(*) FILTER (WHERE actual_winner IS NOT NULL) AS n_resolved,
                 COUNT(*) FILTER (WHERE correct = true AND is_singleton = true) AS n_correct_sing,
                 COUNT(*) FILTER (WHERE actual_winner IS NOT NULL AND is_singleton = true) AS n_resolved_sing,
-                AVG(CASE
-                    WHEN actual_winner IS NOT NULL THEN
-                        POWER(p_model - CASE WHEN correct THEN 1.0 ELSE 0.0 END, 2)
-                END) AS brier,
-                AVG(CASE
-                    WHEN actual_winner IS NOT NULL AND market_price IS NOT NULL THEN
-                        ABS(p_model) - market_price
-                END) AS clv_mean
+                -- brier/clv_mean removed 2026-06-23: mis-oriented (scored predicted_winner
+                -- label against a team_a probability; clv used Polymarket price, not Pinnacle).
+                -- Returns NULL so callers report N/A instead of a wrong number.
+                NULL::float AS brier,
+                NULL::float AS clv_mean
             FROM esports_predictions
             WHERE mode = :mode AND model_version = :mv
         """),
