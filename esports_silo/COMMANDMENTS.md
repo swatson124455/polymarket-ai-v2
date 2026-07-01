@@ -27,3 +27,13 @@ When reusing anything from the prior bot:
   to team **'a'** — a silent guess that contaminates training labels. The silo returns
   **NULL** for those and reports the count, and substring-checks **both** teams (source
   checks only team_b). Same exact-match intent; deliberately safer on the unhandled case.
+
+## 4. QUARANTINE BY DEFAULT (unsure = out)
+Any data, table, column, feature, or signal whose quality **and** truth have not been
+verified on real data (via `scripts/verify_data_quality.py`) is **QUARANTINED** —
+excluded from training, features, and every decision — until proven clean. The burden is
+on the data to prove itself; we never assume it innocent. "Not sure" = excluded.
+
+**Consequence (stated, not hidden):** until the verification battery runs and passes on
+the box, **all carried data is quarantined.** The silo may be built and wired, but it
+trains on nothing and trades nothing until each asset clears the battery.
