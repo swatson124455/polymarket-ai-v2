@@ -5781,85 +5781,57 @@ class WeatherBot(BaseBot):
     async def _fetch_wu_daily_high(
         self, station: WeatherStation, target_date,
     ) -> Optional[float]:
-        """B1: Scrape Weather Underground history page for daily high temperature.
+        """B1: Fetch Weather Underground daily high — the Polymarket resolution source.
 
-        WU is the resolution source for Polymarket temperature markets.
-        URL: https://www.wunderground.com/history/daily/{ICAO}/date/{YYYY-M-D}
-        Parses the daily high from the "Max" row in the history table.
-        Returns temperature in station's native unit (F or C), or None on failure.
+        Uses api.weather.com (WU's own backend, the XHR the history page calls) instead of
+        scraping the client-rendered HTML. The old HTML scrape returned None ~96% of the
+        time (the page is JS-rendered — the daily high is not in the initial HTML), so the
+        caller silently fell back to gridded Open-Meteo/ERA5 — the WRONG source, ~1.4C off
+        the market's actual WU-based resolution. api.weather.com matches the market's
+        settled degree 87% (offset +0.13, std 0.56C) — verified 2026-06-29 by
+        scripts/wb_wu_verify.py. Returns temperature in station's native unit (F or C),
+        or None on failure (caller still falls back to Open-Meteo as a safety net).
         """
-        import re
+        import os as _os
 
         icao = station.station_id
         d = target_date
-        url = f"https://www.wunderground.com/history/daily/{icao}/date/{d.isoformat()}"
+        # api.weather.com is WU's frontend backend; the web apiKey is the one their site
+        # sends. Env-overridable (WU_WEB_API_KEY) in case it rotates.
+        ymd = d.isoformat().replace("-", "")
+        units = "e" if station.temp_unit.upper() == "F" else "m"  # e=Fahrenheit, m=Celsius
+        api_key = _os.environ.get("WU_WEB_API_KEY", "e1f10a1e78da46f5b10a1e78da96f525")
+        url = (
+            f"https://api.weather.com/v1/geocode/{station.latitude}/{station.longitude}"
+            f"/observations/historical.json"
+            f"?apiKey={api_key}&units={units}&startDate={ymd}&endDate={ymd}"
+        )
 
         try:
             session = await self._forecast_client.get_session()
             async with session.get(
                 url,
                 timeout=aiohttp.ClientTimeout(total=10),
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/122.0.0.0 Safari/537.36"
-                    ),
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Referer": "https://www.wunderground.com/",
-                },
+                headers={"Accept": "application/json"},
             ) as resp:
                 if resp.status != 200:
                     logger.debug("weatherbot_wu_http_error", station=icao, status=resp.status)
                     return None
-                html = await resp.text()
+                data = await resp.json(content_type=None)
 
-            # WU history pages show "Max Temperature" in a summary table.
-            # The page uses Angular but embeds observation data in initial HTML.
-            # Try 4 patterns in order of reliability.
-
-            # Pattern 1: "Max</span>" or "Max Temperature</span>" … °value
-            match = re.search(
-                r'Max\s*(?:Temperature)?</span>.*?(-?\d+(?:\.\d+)?)\s*°',
-                html, re.DOTALL | re.IGNORECASE,
-            )
-            if match:
-                temp_val = float(match.group(1))
-                logger.debug("weatherbot_wu_actual", station=icao, date=str(target_date), temp=temp_val)
-                return temp_val
-
-            # Pattern 2: JSON property "maxTemp" or "maxTemperature"
-            match2 = re.search(
-                r'"maxTemp(?:erature)?"\s*:\s*\{\s*"[^"]*"\s*:\s*(-?\d+(?:\.\d+)?)',
-                html, re.DOTALL | re.IGNORECASE,
-            )
-            if match2:
-                temp_val = float(match2.group(1))
-                logger.debug("weatherbot_wu_actual_p2", station=icao, date=str(target_date), temp=temp_val)
-                return temp_val
-
-            # Pattern 3: Angular state dump — "High": value near temperature context
-            match3 = re.search(
-                r'"(?:High|Maximum)\s*Temperature[^"]*"\s*[,:].*?(-?\d{2,3}(?:\.\d+)?)',
-                html, re.DOTALL | re.IGNORECASE,
-            )
-            if match3:
-                temp_val = float(match3.group(1))
-                logger.debug("weatherbot_wu_actual_p3", station=icao, date=str(target_date), temp=temp_val)
-                return temp_val
-
-            # Pattern 4: observation summary JSON block (WU server-side state)
-            match4 = re.search(
-                r'"observationSummary".*?["\s]Max["\s].*?(-?\d{2,3}(?:\.\d+)?)',
-                html, re.DOTALL | re.IGNORECASE,
-            )
-            if match4:
-                temp_val = float(match4.group(1))
-                logger.debug("weatherbot_wu_actual_p4", station=icao, date=str(target_date), temp=temp_val)
-                return temp_val
-
-            logger.debug("weatherbot_wu_no_match", station=icao, date=str(target_date), html_len=len(html))
+            # Daily high = max of the day's hourly observations (WU's own convention,
+            # keyed to the station's local calendar day via startDate/endDate).
+            obs = data.get("observations") or []
+            temps = [o.get("temp") for o in obs
+                     if isinstance(o.get("temp"), (int, float))]
+            if not temps:
+                logger.debug("weatherbot_wu_no_match", station=icao,
+                             date=str(target_date), obs=len(obs))
+                return None
+            temp_val = float(max(temps))
+            logger.debug("weatherbot_wu_actual", station=icao,
+                         date=str(target_date), temp=temp_val, n_obs=len(temps))
+            return temp_val
 
         except Exception as exc:
             logger.debug("weatherbot_wu_fetch_failed", station=icao, error=str(exc))
