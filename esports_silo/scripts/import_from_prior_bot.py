@@ -39,8 +39,11 @@ except ImportError:
 def map_winner(winner, team_a, team_b):
     """Team-name winner -> 'team_a' | 'team_b' | None.
 
-    Ported from esports_v2/data/normalizer.raw_to_match_result so the silo
-    reproduces the prior bot's resolution exactly (strip + substring fallback).
+    ADAPTED (not a verbatim port) from esports_v2/data/normalizer.raw_to_match_result.
+    Same intent (strip + exact match + substring fallback), but per COMMANDMENT 3 we do
+    NOT reproduce the source's silent guess: the source defaults unresolved/missing
+    winners to 'a' (contaminates labels) — here they return None. Also substring-checks
+    BOTH teams, not just team_b. Flagged DEVIATION; see COMMANDMENTS.md.
     """
     if not winner:
         return None
