@@ -1,0 +1,8 @@
+# esports_silo — minimal, siloed deps.
+# Deliberately EXCLUDES the dead stack: no xgboost, no catboost, no shin (de-vig is banned),
+# no mapie/onnx. Add a modeling lib only when the (not-yet-built) signal needs one.
+
+aiohttp>=3.9,<4          # async HTTP (matches the prior clients' aiohttp usage)
+asyncpg>=0.29,<0.31      # async Postgres driver for the siloed DB
+python-dotenv>=1.0       # load .env
+structlog>=24.1          # structured logging (matches prior clients)
