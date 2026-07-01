@@ -34,6 +34,9 @@ class WeatherStation:
     resolution_source: str = ""
     has_asos_1min: bool = False  # True for US ASOS stations (K-prefix ICAO)
     local_model: Optional[str] = None  # Open-Meteo local hi-res model slug (e.g. "meteofrance_seamless")
+    wu_location_code: Optional[str] = None  # api.weather.com location code "{ICAO}:9:{CC}" —
+    # set ONLY when geocode-by-lat/lon grabs a wrong nearby WU station (e.g. Shenzhen); the WU
+    # fetch prefers this exact-station code when present, else falls back to geocode(lat,lon).
 
 
 # ── Registry ─────────────────────────────────────────────────────────────
@@ -749,16 +752,18 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         local_model="gem_seamless",
     ),
     "seoul": WeatherStation(
+        # 2026-07-01: market resolves on Incheon (RKSI), NOT Gimpo (RKSS) — verified
+        # RKSI 6/6 vs RKSS 2/6 vs settled markets (wb_station_verify.py).
         city_name="Seoul",
-        station_id="RKSS",
-        ghcnd_id="GHCND:KSM00047108",
-        latitude=37.5583,
-        longitude=126.7906,
-        elevation_m=18.0,
+        station_id="RKSI",
+        ghcnd_id="",
+        latitude=37.4691,
+        longitude=126.4505,
+        elevation_m=7.0,
         timezone="Asia/Seoul",
         temp_unit="C",
         aliases=("seoul",),
-        resolution_source="Weather Underground / RKSS",
+        resolution_source="Weather Underground / RKSI (Incheon)",
         local_model="jma_seamless",
     ),
     "buenos_aires": WeatherStation(
@@ -1164,16 +1169,18 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         resolution_source="Weather Underground / HECA",
     ),
     "istanbul": WeatherStation(
+        # 2026-07-01: market resolves on Istanbul Airport (LTFM), NOT Sabiha Gökçen (LTBA)
+        # — verified LTFM 5/5 vs LTBA 0/5 vs settled markets (wb_station_verify.py).
         city_name="Istanbul",
-        station_id="LTBA",
-        ghcnd_id="GHCND:TUM00017060",
-        latitude=40.9769,
-        longitude=28.8146,
-        elevation_m=39.0,
+        station_id="LTFM",
+        ghcnd_id="",
+        latitude=41.2753,
+        longitude=28.7519,
+        elevation_m=99.0,
         timezone="Europe/Istanbul",
         temp_unit="C",
         aliases=("istanbul",),
-        resolution_source="Weather Underground / LTBA",
+        resolution_source="Weather Underground / LTFM (Istanbul Airport)",
     ),
     "athens": WeatherStation(
         city_name="Athens",
@@ -1274,6 +1281,8 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         resolution_source="Weather Underground / ZUCK",
     ),
     "shenzhen": WeatherStation(
+        # 2026-07-01: airport IS Bao'an (ZGSZ) per rule, but geocode-by-lat/lon grabs a wrong
+        # nearby PWS (1/6); exact WU code ZGSZ:9:CN aligns 6/6 (wb_station_verify.py).
         city_name="Shenzhen",
         station_id="ZGSZ",
         ghcnd_id="GHCND:CH000059493",
@@ -1284,6 +1293,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("shenzhen",),
         resolution_source="Weather Underground / ZGSZ",
+        wu_location_code="ZGSZ:9:CN",
     ),
     "wuhan": WeatherStation(
         city_name="Wuhan",
@@ -1372,16 +1382,18 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
     ),
     # S101b: Added — discovered via city discovery logging (Polymarket active)
     "milan": WeatherStation(
+        # 2026-07-01: market resolves on Malpensa (LIMC), NOT Linate (LIML) — verified
+        # LIMC 6/6 vs LIML 2/6 vs settled markets (wb_station_verify.py).
         city_name="Milan",
-        station_id="LIML",
-        ghcnd_id="GHCND:IT000160590",
-        latitude=45.4454,
-        longitude=9.2743,
-        elevation_m=103.0,
+        station_id="LIMC",
+        ghcnd_id="",
+        latitude=45.6306,
+        longitude=8.7281,
+        elevation_m=234.0,
         timezone="Europe/Rome",
         temp_unit="C",
         aliases=("milan", "milano"),
-        resolution_source="Weather Underground / LIML (Linate)",
+        resolution_source="Weather Underground / LIMC (Malpensa)",
         local_model="meteofrance_seamless",
     ),
 
@@ -1400,16 +1412,118 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
 
     # S142: Moscow — previously unmatched, logged every scan
     "moscow": WeatherStation(
+        # 2026-07-01: rule = "NOAA at Vnukovo (UUWW)", but coords were Sheremetyevo's —
+        # corrected to Vnukovo (wb_station_verify.py: UUWW best of the 3 Moscow airports).
         city_name="Moscow",
         station_id="UUWW",
-        ghcnd_id="GHCND:RSM00027612",
-        latitude=55.9726,
-        longitude=37.4146,
-        elevation_m=190.0,
+        ghcnd_id="",
+        latitude=55.5915,
+        longitude=37.2615,
+        elevation_m=204.0,
         timezone="Europe/Moscow",
         temp_unit="C",
         aliases=("moscow",),
-        resolution_source="Weather Underground / UUWW (Sheremetyevo)",
+        resolution_source="Weather Underground / UUWW (Vnukovo)",
+    ),
+
+    # ── 2026-07-01: 8 cities added — had ACTIVE PM markets but NO station mapping.
+    # Each verified 6/6 vs settled markets via WU (wb_station_verify.py / wb_sv2.py).
+    "busan": WeatherStation(
+        city_name="Busan",
+        station_id="RKPK",
+        ghcnd_id="",
+        latitude=35.1795,
+        longitude=128.9382,
+        elevation_m=4.0,
+        timezone="Asia/Seoul",
+        temp_unit="C",
+        aliases=("busan",),
+        resolution_source="Weather Underground / RKPK (Gimhae)",
+    ),
+    "cape_town": WeatherStation(
+        city_name="Cape Town",
+        station_id="FACT",
+        ghcnd_id="",
+        latitude=-33.9648,
+        longitude=18.6017,
+        elevation_m=46.0,
+        timezone="Africa/Johannesburg",
+        temp_unit="C",
+        aliases=("cape town",),
+        resolution_source="Weather Underground / FACT",
+    ),
+    "guangzhou": WeatherStation(
+        city_name="Guangzhou",
+        station_id="ZGGG",
+        ghcnd_id="",
+        latitude=23.3924,
+        longitude=113.2988,
+        elevation_m=15.0,
+        timezone="Asia/Shanghai",
+        temp_unit="C",
+        aliases=("guangzhou",),
+        resolution_source="Weather Underground / ZGGG (Baiyun)",
+    ),
+    "jeddah": WeatherStation(
+        city_name="Jeddah",
+        station_id="OEJN",
+        ghcnd_id="",
+        latitude=21.6796,
+        longitude=39.1565,
+        elevation_m=15.0,
+        timezone="Asia/Riyadh",
+        temp_unit="C",
+        aliases=("jeddah",),
+        resolution_source="Weather Underground / OEJN",
+    ),
+    "karachi": WeatherStation(
+        city_name="Karachi",
+        station_id="OPKC",
+        ghcnd_id="",
+        latitude=24.9065,
+        longitude=67.1608,
+        elevation_m=30.0,
+        timezone="Asia/Karachi",
+        temp_unit="C",
+        aliases=("karachi",),
+        resolution_source="Weather Underground / OPKC (Jinnah)",
+    ),
+    "manila": WeatherStation(
+        city_name="Manila",
+        station_id="RPLL",
+        ghcnd_id="",
+        latitude=14.5086,
+        longitude=121.0198,
+        elevation_m=23.0,
+        timezone="Asia/Manila",
+        temp_unit="C",
+        aliases=("manila",),
+        resolution_source="Weather Underground / RPLL (Ninoy Aquino)",
+    ),
+    "panama_city": WeatherStation(
+        # Resolves on Marcos A. Gelabert / Albrook (MPMG), NOT Tocumen (MPTO) — verified 6/6.
+        city_name="Panama City",
+        station_id="MPMG",
+        ghcnd_id="",
+        latitude=8.9733,
+        longitude=-79.5556,
+        elevation_m=10.0,
+        timezone="America/Panama",
+        temp_unit="C",
+        aliases=("panama city",),
+        resolution_source="Weather Underground / MPMG (Marcos A. Gelabert)",
+    ),
+    "qingdao": WeatherStation(
+        city_name="Qingdao",
+        station_id="ZSQD",
+        ghcnd_id="",
+        latitude=36.2661,
+        longitude=120.3744,
+        elevation_m=11.0,
+        timezone="Asia/Shanghai",
+        temp_unit="C",
+        aliases=("qingdao",),
+        resolution_source="Weather Underground / ZSQD",
     ),
 }
 

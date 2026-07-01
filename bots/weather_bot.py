@@ -5801,9 +5801,12 @@ class WeatherBot(BaseBot):
         ymd = d.isoformat().replace("-", "")
         units = "e" if station.temp_unit.upper() == "F" else "m"  # e=Fahrenheit, m=Celsius
         api_key = _os.environ.get("WU_WEB_API_KEY", "e1f10a1e78da46f5b10a1e78da96f525")
+        # Prefer an exact WU station code when the registry sets one (geocode-by-lat/lon can
+        # grab a wrong nearby PWS — e.g. Shenzhen ZGSZ); else geocode the station coords.
+        _wu_loc = getattr(station, "wu_location_code", None)
+        _path = f"location/{_wu_loc}" if _wu_loc else f"geocode/{station.latitude}/{station.longitude}"
         url = (
-            f"https://api.weather.com/v1/geocode/{station.latitude}/{station.longitude}"
-            f"/observations/historical.json"
+            f"https://api.weather.com/v1/{_path}/observations/historical.json"
             f"?apiKey={api_key}&units={units}&startDate={ymd}&endDate={ymd}"
         )
 
