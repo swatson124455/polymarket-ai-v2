@@ -28,7 +28,7 @@ Failure evidence — 📄 DOC-SOURCED (`EB_MODEL_EDGE_PROPOSAL_2026-06-16.md`, s
 ## Build list (verified)
 | # | Component | Type | When |
 |---|---|---|---|
-| 1 | `verify_data_quality.py` — read-only battery | from-scratch | **first (Cmd-4 master gate)** |
+| 1 | `verify_data_quality.py` — read-only battery | from-scratch | ✅ **BUILT** (Cmd-4 master gate) — awaits operator run on the box |
 | 2 | Polymarket snapshot collector → `polymarket_snapshots` | build now | now (silo) |
 | 3 | Market↔match matcher (aliases + two-team gate) | surgical-pull `esports_market_scanner` | now (silo) |
 | 4 | Skill-eval harness (Brier/calibration/closing-line, **P&L-free**) | surgical-pull `esports_v2/backtest/metrics.py`, **strip** de-vig CLV + mis-oriented Brier | now (silo) |

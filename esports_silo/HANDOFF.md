@@ -51,5 +51,18 @@ See `PLAN.md` (§Open decisions, §Blockers). Devig=dead, optional-cols=skipped 
 Asian-book pick and branch reconciliation are open; all data/network work is operator-run.
 
 ## Next action
-Build `esports_silo/scripts/verify_data_quality.py` — the Cmd-4 master gate. No carried
-data may be used until it passes on the operator's box.
+✅ `esports_silo/scripts/verify_data_quality.py` is BUILT (Cmd-4 master gate) — read-only,
+smoke-tested in `--jsonl` mode only; **not** yet run against real data. It still gates:
+no carried data leaves quarantine until it passes on the operator's box.
+
+**Operator, run on the box** (both read-only):
+- `DATABASE_URL=postgresql://…/silo python -m esports_silo.scripts.verify_data_quality`
+  → the master gate over `matches` + `team_aliases` (+ any populated forward tables).
+- `python -m esports_silo.scripts.verify_data_quality --jsonl data/esports_matches_bulk.jsonl`
+  → pre-import vetting of the carried NDJSON before it reaches the DB.
+Exit 0 = gate PASS (data may leave quarantine); 1 = QUARANTINE; 2 = could-not-run. Add
+`--json` for machine output. Thresholds are `VDQ_*` env vars (see the script header).
+
+Then per `PLAN.md`: #2 (Polymarket snapshot collector), #3 (market↔match matcher), #4
+(P&L-free skill-eval harness) proceed in parallel (no data-battery dependency); design #5
+(the signal) on whatever clears the battery.
