@@ -64,3 +64,12 @@ python -m collectors.odds_collector --once --dry-run   # confirm aggregator cove
 `team_aliases` ← the 1,777-row resolver (the hardest piece to rebuild — carry it).
 Do **not** carry: the ratings model, its weights, or any quarantined substrate
 (`shadow_fills`, `esports_predictions` orientation, contaminated `model_version` rows).
+
+Use `scripts/import_from_prior_bot.py` — it maps the prior `esports_matches` +
+`esports_team_aliases` into the silo schema (winner-name → team_a/team_b transform
+ported from the prior normalizer). Runs on your box against your DBs:
+```bash
+SOURCE_DATABASE_URL=postgresql://…prior  DATABASE_URL=postgresql://…silo \
+    python -m esports_silo.scripts.import_from_prior_bot \
+        --matches-from-db --aliases-from-db --dry-run   # drop --dry-run to write
+```
