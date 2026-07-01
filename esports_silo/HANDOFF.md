@@ -30,6 +30,9 @@ The prior EB effort logged **186+ errors** from "confident before verified." Car
 1. **P&L is not evidence.** 2. **De-vig does not exist.** 3. **Surgical cut.** 4. **Quarantine by default.**
 
 ## Known landmines — 📄 DOC-SOURCED (quarantine per Cmd 4 until re-verified)
+Master reference: **`EB_CLEAN_DATA_QUARANTINE.md`** (authoritative clean-vs-dirty table list —
+e.g. "do NOT compute model-vs-market on `esports_predictions`; use `prediction_log` esports_*,
+orientation valid, tiny n").
 - `esports_predictions` model-vs-market orientation broken (corr 0.07)
 - `shadow_fills` microstructure garbage (86¢ spreads)
 - `category='esports'` ~60% politics-polluted → filter by content, never the tag

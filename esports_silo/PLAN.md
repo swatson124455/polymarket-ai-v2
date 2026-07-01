@@ -47,7 +47,12 @@ Failure evidence — 📄 DOC-SOURCED (`EB_MODEL_EDGE_PROPOSAL_2026-06-16.md`, s
 ## Open decisions
 - De-vig → **DECIDED: does not exist** (Cmd 2).
 - Optional columns (`event_name`/`map`/`is_lan`/alias `source`/`match_quality`) → **DECIDED: skipped** (reviewed; `map` unusable at match grain).
-- Asian book → **OPEN** (pick one; verify aggregator carries it for esports).
+- Asian / third sharp book → **RESEARCHED (operator to ratify).** Sharpest gaming books (web,
+  2026): **1. Pinnacle** (benchmark sharp, ~2–3% esports margin, deepest coverage), **2. Singbet**
+  (Asian sharp — the Asian-book pick), **3. Thunderpick** (esports-native, 2.5–4% majors, often
+  sharper than Pinnacle on CS2/LoL/Dota). All three are carried by **OddsPapi** (already the wired
+  aggregator) — free tier 250 req/mo, paid ~$49/mo. ⛔ Operator must confirm OddsPapi actually
+  returns these three **for esports** via the collector's coverage guard before forward-collecting.
 - Branch reconciliation (`eb/main` current code + `master` rebuild docs) → **OPEN**.
 
 ## Blockers (operator-only — the silo has no network/DB)
