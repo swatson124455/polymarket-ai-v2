@@ -14,13 +14,17 @@
 CREATE TABLE IF NOT EXISTS matches (
     match_id     TEXT PRIMARY KEY,
     game         TEXT        NOT NULL,          -- cs2 | lol | dota2 | valorant
+    event_tier   TEXT,                          -- s_tier|a_tier|b_tier|c_tier (competition weighting)
     team_a       TEXT        NOT NULL,
     team_b       TEXT        NOT NULL,
     winner       TEXT,                          -- 'team_a' | 'team_b' | NULL until settled
+    score_a      INTEGER,                       -- series score (e.g. 2 in a 2-1 BO3)
+    score_b      INTEGER,
     best_of      INTEGER,
     start_time   TIMESTAMPTZ NOT NULL,          -- EVENT time (match scheduled start)
     patch        TEXT,
     source       TEXT        NOT NULL,          -- pandascore | oracle | jsonl | ...
+    raw_data     JSONB       NOT NULL DEFAULT '{}',  -- source payload catch-all (nothing lost)
     ingest_time  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_matches_game_start ON matches (game, start_time);

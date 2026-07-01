@@ -76,15 +76,22 @@ async def _insert_matches(dst, rows, dry_run):
         if dry_run:
             imported += 1
             continue
+        raw = r.get("raw_data")
+        if raw is None:
+            raw = "{}"
+        elif not isinstance(raw, str):        # asyncpg may hand back a dict; JSONB wants text
+            raw = json.dumps(raw, default=str)
         status = await dst.execute(
             """INSERT INTO matches
-                 (match_id, game, team_a, team_b, winner, best_of, start_time, patch, source)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                 (match_id, game, event_tier, team_a, team_b, winner,
+                  score_a, score_b, best_of, start_time, patch, source, raw_data)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
                ON CONFLICT (match_id) DO NOTHING""",
-            str(match_id), r.get("game") or "unknown",
+            str(match_id), r.get("game") or "unknown", r.get("event_tier"),
             r.get("team_a") or "?", r.get("team_b") or "?", winner,
-            r.get("best_of"), r.get("match_date") or r.get("start_time"),
-            r.get("patch"), r.get("source") or "prior_bot",
+            r.get("score_a"), r.get("score_b"), r.get("best_of"),
+            r.get("match_date") or r.get("start_time"),
+            r.get("patch"), r.get("source") or "prior_bot", raw,
         )
         imported += 1 if status.endswith("1") else 0
         skipped += 0 if status.endswith("1") else 1
@@ -111,8 +118,9 @@ async def run(args):
 
         if args.matches_from_db:
             rows = [dict(r) for r in await src.fetch(
-                "SELECT match_id, game, team_a, team_b, winner, best_of, "
-                "match_date, patch, source FROM esports_matches")]
+                "SELECT match_id, game, event_tier, team_a, team_b, winner, "
+                "score_a, score_b, best_of, match_date, patch, source, raw_data "
+                "FROM esports_matches")]
             imp, skp, unres = await _insert_matches(dst, rows, args.dry_run)
             print(f"[db] matches: +{imp} skipped {skp} unresolved-winner {unres}")
 
