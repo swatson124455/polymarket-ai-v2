@@ -6,15 +6,23 @@ This is a live 15-bot Polymarket automated trading system. Real capital is at ri
 
 **The bot bets on neg-risk markets.** Elections (multiple candidates), tournament brackets (multiple teams), "which of N options wins" — these are all valid signal sources for MirrorBot. They route through `NegRiskExchange V2` (`0xe2222d279d…`) instead of `Exchange V2` (`0xE111180000…`); that contract routing is fine.
 
-**The actual constraint is ONE BET PER MARKET.** Enforced by existing guards:
-- `_entered_market_sides` set (cross-session, restored at startup)
-- `mirror_opposing_side_blocked` (cross-scan)
-- `mirror_opposing_side_blocked_historical` (cross-session)
-- `mirrored_trades` OrderedDict (same-side dedup)
+**The actual constraint is ONE BET PER MARKET** — where "market" means **condition_id** (per binary market, NOT per event; verified 2026-07-02). Enforced by existing guards:
+- `_entered_market_sides` set of `(condition_id, side)` (cross-session, restored at startup; mirror_bot.py:155, :4448, :577-588)
+- `mirror_opposing_side_blocked` (cross-scan, `_open_positions` scan by condition_id prefix; mirror_bot.py:3073-3089)
+- `mirror_opposing_side_blocked_historical` (cross-session; mirror_bot.py:3091-3105)
+- `_open_positions` scan (same-side dedup while a position is OPEN; mirror_bot.py:3110-3140). NOTE: `mirrored_trades` is write-only tx-hash bookkeeping — it is never consulted as a dedup guard anywhere (verified 2026-07-02: only add at elite_watchlist.py:888, prune, Redis flush; zero membership checks).
+
+**No event-level guard exists.** Neg-risk sibling markets (different condition_ids, same election/tournament) are fully independent to every guard — MB can legally hold YES on candidate A AND YES on candidate B of the same event (correlated exposure, unguarded). This is a known measurement/risk gap, not a bug to "fix" with a neg-risk block (see Bug 14 below); per-event exposure caps belong in sizing logic, not market gating.
 
 **DO NOT add a `neg_risk=True` filter** to `order_gateway._can_exit`, `_execute_mirror_trade`, the base_engine signal SQL, or anywhere else. Bug 14 (`59aa0e1`) tried that block. It was reverted (`f66ed43`) because it cut all elections and tournament markets. If a future session sees a NegRiskExchange V2 codepath bug (exit / redemption / resolution backfill), fix that specific path — do NOT blanket-block neg-risk markets.
 
 If you think you need to block neg-risk, you don't. Read `feedback_negrisk_routing_distinction.md` and the revert commit `f66ed43` before doing anything.
+
+### DORMANT LANDMINE — order_gateway neg-risk block currently NO-OPS for MB (codified 2026-07-02)
+
+`order_gateway._can_exit` contains a neg-risk BUY block (`order_gateway.py:102-112`, consulted at `:652-657`) that silently does nothing for MirrorBot: it looks up `self._market_index` — keyed by gamma NUMERIC id (`base_engine.py:323`) — with a 0x **condition_id**, and the gateway's condition_id index is never assigned. The miss returns `{}` → `neg_risk=False` → BUY allowed. That accidental no-op is the ONLY reason MB still trades elections and tournaments.
+
+**DO NOT "repair" this index lookup.** Fixing the key mismatch ACTIVATES the blanket neg-risk block and re-creates Bug 14 (`59aa0e1`, reverted `f66ed43`) — every election and tournament market cut, silently, at the gateway. If this code path is ever touched, the only acceptable outcomes are: (a) remove the dead block entirely, with operator signoff and full shared-module protocol, or (b) leave it exactly as-is. Any session fixing the gateway's market-index keying for an UNRELATED reason must first neutralize the neg-risk block in the same commit, or it will ship Bug 14 as a side effect.
 
 ## SESSION PRIORITY — MIRRORBOT HAS ALL PRIORITIES
 
