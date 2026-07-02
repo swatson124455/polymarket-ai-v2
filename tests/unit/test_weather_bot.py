@@ -2056,6 +2056,51 @@ class TestWeatherConfidenceCalibrator:
         for p in [0.10, 0.50, 0.95]:
             assert cal.calibrate(p, side="YES", lead_time_hours=48.0) == p
 
+    def test_rejection_clears_stale_side_models(self):
+        """S222 B2a: fit rejection must clear side models so the S159 YES
+        dampener re-engages.
+
+        Old bug: rejection branches set _fitted=False but retained stale
+        _model_yes from a prior fit. calibrate() gates on _fitted (inert),
+        while the S159 dampener gated on `_model_yes is None` (suppressed)
+        — YES entries got NEITHER calibration NOR the 0.85x fallback.
+        """
+        cal = WeatherConfidenceCalibrator()
+        # Simulate a prior successful fit (beta models on both sides)
+        cal._model_yes = ("beta", 0.1, 1.2)
+        cal._model_no = ("beta", -0.1, 0.9)
+        cal._model_type_yes = "beta"
+        cal._model_type_no = "beta"
+        cal._beta_params_yes = (0.1, 1.2)
+        cal._beta_params_no = (-0.1, 0.9)
+        cal._fitted = True
+        assert cal.calibrate(0.8, side="YES") != 0.8  # calibration active
+
+        # Simulate what the Brier/OOS rejection branches now do
+        cal._fitted = False
+        cal._clear_models()
+
+        # State coherent: identity passthrough AND dampener condition met
+        assert cal._model_yes is None and cal._model_no is None
+        assert cal._model_type_yes == "none" and cal._model_type_no == "none"
+        assert cal._beta_params_yes is None and cal._beta_params_no is None
+        assert cal.calibrate(0.8, side="YES") == 0.8
+        assert cal.calibrate(0.8, side="NO") == 0.8
+
+    def test_stale_model_with_fitted_false_is_identity(self):
+        """S222 B2a guard: even in the legacy incoherent state (stale model +
+        _fitted=False), calibrate() must be identity — and the hardened S159
+        dampener condition (_fitted AND _model_yes) treats it as inactive."""
+        cal = WeatherConfidenceCalibrator()
+        cal._model_yes = ("beta", 0.1, 1.2)
+        cal._model_type_yes = "beta"
+        cal._fitted = False
+
+        assert cal.calibrate(0.8, side="YES") == 0.8
+        # The dampener condition used in _analyze_group:
+        yes_cal_active = cal._fitted and cal._model_yes is not None
+        assert not yes_cal_active  # dampener engages
+
     def test_no_db_returns_false(self):
         """fit_from_trade_events returns False when no DB provided."""
         import asyncio

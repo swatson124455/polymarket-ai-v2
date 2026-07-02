@@ -104,6 +104,25 @@ class WeatherConfidenceCalibrator:
 
     # -- S168: Beta calibration helper ----------------------------------------
 
+    def _clear_models(self) -> None:
+        """S222 (B2a): Reset side models alongside _fitted=False on fit rejection.
+
+        The Brier/OOS rejection branches used to set _fitted=False while
+        RETAINING stale _model_yes/_model_no from a prior successful fit.
+        calibrate() gates on _fitted (so the stale models were never used),
+        but the S159 YES identity dampener gates on `_model_yes is None` —
+        the stale reference suppressed it, leaving YES entries with NEITHER
+        calibration NOR the 0.85x fallback dampener. Clearing the models
+        keeps the two conditions coherent: rejection → identity passthrough
+        + dampener re-engages.
+        """
+        self._model_no = None
+        self._model_yes = None
+        self._model_type_no = "none"
+        self._model_type_yes = "none"
+        self._beta_params_no = None
+        self._beta_params_yes = None
+
     @staticmethod
     def _beta_calibrate(s: float, c: float, d: float) -> float:
         """Apply restricted 2-param Beta calibration: cal(s) = 1/(1 + 1/(e^c * (s/(1-s))^d)).
@@ -501,6 +520,7 @@ class WeatherConfidenceCalibrator:
                     n=len(_fit_rows),
                 )
                 self._fitted = False
+                self._clear_models()  # S222 B2a: re-engage S159 dampener
                 return False
 
             # S143: Compute TRUE OOS Brier on held-out 7-day test set
@@ -526,8 +546,10 @@ class WeatherConfidenceCalibrator:
                 oos_brier = float(np.mean((_tp - _to) ** 2))
                 # S159: OOS rejection gate — reject if calibration worsens OOS Brier.
                 # Isotonic should improve OOS if calibration is real; +0.005 gives
-                # minimal noise tolerance. On rejection, prior model retained (identity
-                # passthrough if no prior model exists).
+                # minimal noise tolerance. S222 B2a: on rejection the calibrator
+                # goes to identity passthrough AND side models are cleared so the
+                # S159 YES dampener re-engages (previously stale _model_yes from a
+                # prior fit suppressed the dampener while calibrate() was inert).
                 if oos_brier > raw_oos_brier + 0.005:
                     logger.warning(
                         "weatherbot_confidence_cal_oos_rejected",
@@ -537,6 +559,7 @@ class WeatherConfidenceCalibrator:
                         oos_n=len(_test_rows),
                     )
                     self._fitted = False
+                    self._clear_models()  # S222 B2a
                     return False
             self._oos_brier = oos_brier
             self._raw_oos_brier = raw_oos_brier
@@ -2797,14 +2820,22 @@ class WeatherBot(BaseBot):
                 effective_confidence = base_confidence
 
             # S159: YES identity passthrough confidence dampener.
-            # When YES calibrator has no model (n_yes < min_samples), raw confidence
-            # passes through uncorrected. Apply 0.85x to reduce overconfidence.
-            # This is upstream of the negative-EV gate (conf < price), so it also
-            # blocks marginal YES entries at high prices (~$0.81+ at max conf).
-            # Self-removes when YES calibrator graduates (model_yes is not None).
+            # When YES calibration is not ACTIVE (unfitted, rejected, or no YES
+            # model), raw confidence passes through uncorrected. Apply 0.85x to
+            # reduce overconfidence. This is upstream of the negative-EV gate
+            # (conf < price), so it also blocks marginal YES entries at high
+            # prices (~$0.81+ at max conf). Self-removes when the YES calibrator
+            # graduates. S222 B2a: condition checks _fitted AND _model_yes —
+            # calibrate() gates on _fitted, so a non-None model with _fitted=False
+            # (post-rejection state) means calibration is inert and the dampener
+            # must engage.
             _yes_identity_damp = 1.0
-            if (side == "YES"
-                    and getattr(self._confidence_calibrator, "_model_yes", None) is None):
+            _cal = self._confidence_calibrator
+            _yes_cal_active = (
+                getattr(_cal, "_fitted", False)
+                and getattr(_cal, "_model_yes", None) is not None
+            )
+            if side == "YES" and not _yes_cal_active:
                 _yes_identity_damp = 0.85
                 effective_confidence *= _yes_identity_damp
                 logger.info(
