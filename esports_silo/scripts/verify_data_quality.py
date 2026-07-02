@@ -426,7 +426,21 @@ async def check_winner_resolvability(conn) -> CheckResult:
 
 
 async def check_cross_source_winner(conn) -> CheckResult:
-    """Same logical match from >1 row/source must not disagree on WHO won."""
+    """Cross-source winner agreement.
+
+    A genuine cross-source conflict is the SAME match, reported by >1 source, disagreeing
+    on who won. This data carries globally-unique per-source match_ids and no shared
+    cross-source match key, so 'same match' can only be approximated by (game, team-pair,
+    day). Two DISTINCT matches between the same teams on the same day — rematches, or a
+    best-of series recorded per game — are LEGITIMATE and must NOT be flagged; keying on
+    teams+day alone false-positives on them (verified on the carried set: every such
+    collision was single-source with distinct match_ids). So:
+      (a) hard-FAIL only on an unambiguous same-match_id winner contradiction; and
+      (b) WARN (review, NOT auto-quarantine) on a >1-source teams+day overlap that
+          disagrees — could be a real source conflict OR just a same-day rematch.
+    Fully sound cross-source verification needs a match-identity resolver across sources
+    (future work); until then teams+day+multi-source is a review heuristic, not a gate-fail.
+    """
     r = CheckResult("cross_source_winner_agreement")
     resolved = int(await conn.fetchval(
         "SELECT count(*) FROM matches WHERE winner IN ('team_a','team_b')"
@@ -435,50 +449,75 @@ async def check_cross_source_winner(conn) -> CheckResult:
         r.verdict = "SKIP"
         r.summary = "no resolved matches to cross-check"
         return r
-    # Map winner enum back to the winning TEAM NAME, group by logical match, and flag
-    # groups where the resolved winning team differs across rows/sources.
+    # (a) UNAMBIGUOUS: a single match_id carrying >1 distinct winning team is corruption.
+    id_conflict = int(await conn.fetchval(
+        """SELECT count(*) FROM (
+             SELECT match_id FROM matches WHERE winner IN ('team_a','team_b')
+              GROUP BY match_id
+             HAVING count(DISTINCT lower(CASE winner WHEN 'team_a' THEN team_a
+                                                     ELSE team_b END)) > 1
+           ) q"""
+    ))
+    r.metrics["same_match_id_winner_conflict"] = id_conflict
+    if id_conflict:
+        r.verdict = "FAIL"
+        sample = await conn.fetch(
+            f"""SELECT match_id,
+                       array_agg(DISTINCT lower(CASE winner WHEN 'team_a' THEN team_a
+                                                            ELSE team_b END)) AS winners
+                  FROM matches WHERE winner IN ('team_a','team_b')
+                 GROUP BY match_id
+                HAVING count(DISTINCT lower(CASE winner WHEN 'team_a' THEN team_a
+                                                        ELSE team_b END)) > 1
+                 LIMIT {SAMPLE}"""
+        )
+        for s in sample:
+            r.details.append(f"SAME-ID CONFLICT match_id={s['match_id']}: winners={list(s['winners'])}")
+    # (b) CROSS-SOURCE overlap: require >1 DISTINCT source so single-source same-day
+    # rematches are excluded. This is a WARN (surface for review), never an auto-quarantine.
     rows = await conn.fetch(
         f"""WITH labeled AS (
                 SELECT game, start_time::date AS d,
                        LEAST(lower(team_a), lower(team_b))    AS t1,
                        GREATEST(lower(team_a), lower(team_b)) AS t2,
                        lower(CASE winner WHEN 'team_a' THEN team_a ELSE team_b END) AS win_team,
-                       source, match_id
+                       source
                   FROM matches
                  WHERE winner IN ('team_a','team_b')
             )
             SELECT game, d, t1, t2,
-                   count(DISTINCT win_team) AS distinct_winners,
-                   count(*)                 AS rows,
-                   array_agg(DISTINCT source)  AS sources,
+                   array_agg(DISTINCT source)   AS sources,
                    array_agg(DISTINCT win_team) AS winners
               FROM labeled
              GROUP BY game, d, t1, t2
-            HAVING count(DISTINCT win_team) > 1
-             ORDER BY rows DESC
+            HAVING count(DISTINCT win_team) > 1 AND count(DISTINCT source) > 1
+             ORDER BY count(*) DESC
              LIMIT {SAMPLE}"""
     )
-    total = int(await conn.fetchval(
+    overlap = int(await conn.fetchval(
         """SELECT count(*) FROM (
-             SELECT 1 FROM (
-               SELECT game, start_time::date AS d,
-                      LEAST(lower(team_a), lower(team_b))    AS t1,
-                      GREATEST(lower(team_a), lower(team_b)) AS t2,
-                      lower(CASE winner WHEN 'team_a' THEN team_a ELSE team_b END) AS win_team
-                 FROM matches WHERE winner IN ('team_a','team_b')
-             ) l
-             GROUP BY game, d, t1, t2
-             HAVING count(DISTINCT win_team) > 1) q"""
+             SELECT 1 FROM matches WHERE winner IN ('team_a','team_b')
+              GROUP BY game, start_time::date,
+                       LEAST(lower(team_a), lower(team_b)),
+                       GREATEST(lower(team_a), lower(team_b))
+             HAVING count(DISTINCT lower(CASE winner WHEN 'team_a' THEN team_a
+                                                     ELSE team_b END)) > 1
+                AND count(DISTINCT source) > 1) q"""
     ))
-    r.metrics["conflicting_groups"] = total
-    if total:
-        r.verdict = "FAIL"
+    r.metrics["multi_source_disagreeing_overlap"] = overlap
+    if overlap:
+        if r.verdict == "PASS":
+            r.verdict = "WARN"
         for g in rows:
-            r.details.append(f"CONFLICT {g['game']}/{g['t1']}-{g['t2']} {g['d']}: "
-                             f"winners={list(g['winners'])} sources={list(g['sources'])}")
-        r.summary = f"{total} logical match(es) with disagreeing winners across rows/sources"
+            r.details.append(f"REVIEW {g['game']}/{g['t1']}-{g['t2']} {g['d']}: "
+                             f"winners={list(g['winners'])} sources={list(g['sources'])} "
+                             f"(>1 source disagrees — genuine conflict OR same-day rematch)")
+    if r.verdict == "PASS":
+        r.summary = "no same-id contradiction; no multi-source winner disagreement"
+    elif r.verdict == "WARN":
+        r.summary = f"{overlap} multi-source teams+day overlap(s) disagree — review (not auto-quarantine)"
     else:
-        r.summary = "all resolved logical matches agree on the winner"
+        r.summary = f"{id_conflict} same-match_id winner contradiction(s)"
     return r
 
 
@@ -661,24 +700,42 @@ def run_jsonl(path: str) -> List[CheckResult]:
     wr.summary = f"unmappable winners {urate:.1%}, score-contradiction={contra}"
     results.append(wr)
 
-    # cross-source winner agreement within the file (same logical match, differing winner).
-    groups: Dict[tuple, set] = {}
+    # cross-source winner agreement (mirror of the DB check; see check_cross_source_winner
+    # for the rationale). Same-match_id winner contradiction = hard FAIL (unambiguous);
+    # a >1-SOURCE teams+day overlap that disagrees = WARN (review, not auto-quarantine).
+    # A single-source same-day rematch/series is legitimate and is NOT flagged.
+    groups: Dict[tuple, dict] = {}
+    id_wins: Dict[str, set] = {}
     for r in rows:
         w = map_winner(r.get("winner"), r.get("team_a"), r.get("team_b"))
         if not w:
             continue
         ta, tb = str(r.get("team_a") or "").lower(), str(r.get("team_b") or "").lower()
         day = str(r.get("match_date") or r.get("start_time") or "")[:10]
-        key = (str(r.get("game") or ""), day, tuple(sorted((ta, tb))))
         win_team = ta if w == "team_a" else tb
-        groups.setdefault(key, set()).add(win_team)
-    conflicts = {k: v for k, v in groups.items() if len(v) > 1}
-    cs = CheckResult("cross_source_winner_agreement", metrics={"conflicting_groups": len(conflicts)})
-    if conflicts:
+        key = (str(r.get("game") or ""), day, tuple(sorted((ta, tb))))
+        g = groups.setdefault(key, {"wins": set(), "srcs": set()})
+        g["wins"].add(win_team)
+        g["srcs"].add(str(r.get("source") or ""))
+        mid = r.get("match_id")
+        if mid is not None:
+            id_wins.setdefault(str(mid), set()).add(win_team)
+    id_conflict = {m: v for m, v in id_wins.items() if len(v) > 1}
+    overlap = {k: g for k, g in groups.items() if len(g["wins"]) > 1 and len(g["srcs"]) > 1}
+    cs = CheckResult("cross_source_winner_agreement", metrics={
+        "same_match_id_winner_conflict": len(id_conflict),
+        "multi_source_disagreeing_overlap": len(overlap)})
+    if id_conflict:
         cs.verdict = "FAIL"
-        for k, v in list(conflicts.items())[:SAMPLE]:
-            cs.details.append(f"CONFLICT {k[0]}/{k[2][0]}-{k[2][1]} {k[1]}: winners={sorted(v)}")
-    cs.summary = f"{len(conflicts)} logical match(es) with disagreeing winners"
+        for m, v in list(id_conflict.items())[:SAMPLE]:
+            cs.details.append(f"SAME-ID CONFLICT match_id={m}: winners={sorted(v)}")
+    if overlap:
+        if cs.verdict == "PASS":
+            cs.verdict = "WARN"
+        for k, g in list(overlap.items())[:SAMPLE]:
+            cs.details.append(f"REVIEW {k[0]}/{k[2][0]}-{k[2][1]} {k[1]}: winners={sorted(g['wins'])} "
+                              f"sources={sorted(g['srcs'])} (>1 source disagrees — genuine conflict OR same-day rematch)")
+    cs.summary = f"same-id conflicts={len(id_conflict)}, multi-source disagreeing overlaps={len(overlap)}"
     results.append(cs)
 
     return results
