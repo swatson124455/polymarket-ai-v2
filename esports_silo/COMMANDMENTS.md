@@ -35,5 +35,6 @@ excluded from training, features, and every decision — until proven clean. The
 on the data to prove itself; we never assume it innocent. "Not sure" = excluded.
 
 **Consequence (stated, not hidden):** until the verification battery runs and passes on
-the box, **all carried data is quarantined.** The silo may be built and wired, but it
-trains on nothing and trades nothing until each asset clears the battery.
+the box, **all carried data is quarantined** — and per **GATE-THEN-BUILD**, nothing new is
+built until it does. The silo trains on nothing, trades nothing, and builds nothing new
+until each asset clears the battery.

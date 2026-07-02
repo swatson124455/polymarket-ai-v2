@@ -2,7 +2,8 @@
 """Append-only sharp-line collector for esports_silo.
 
 Pulls esports odds from ONE aggregator (default: OddsPapi) for the configured
-books (Pinnacle + Circa + one Asian book) and writes RAW decimal odds to
+books (D3: Pinnacle + Singbet + Thunderpick — operator ratifies live esports coverage;
+exact aggregator identifier strings to be confirmed against a live response) and writes RAW decimal odds to
 `odds_raw`. INSERT-only — a re-observation of the same match/book is a NEW row,
 so line movement is preserved and nothing is ever mutated.
 

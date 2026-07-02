@@ -2,6 +2,8 @@
 
 **What this is:** the complete, completeness-verified list of EsportsBot items to carry into a rebuild, each with a one-line TL;DR of what it does. Compiled + verified 2026-06-23 against ground truth (`git ls-files` / `psql` / `ls`). Every esports/glicko file, table, data file, and migration is accounted for (here = transfer; the dead ratings-model set is in `EB_ASSET_LEDGER.md`).
 
+**⚠ Supersession note (esports_silo, 2026-07):** this manifest is a provenance INVENTORY, not a carry-as-code list. Items embedding de-vig/Shin (`model/clv.py`, the `oddspapi_client` devig path) or P&L-as-evidence (`data/esports_db.py` CLV/P&L, `shin` 0.2.2) are **superseded by `esports_silo/COMMANDMENTS.md` (1 P&L-not-evidence, 2 de-vig-does-not-exist) and D1** — inventoried for reference, NEVER carried as code. Skill-eval (#4) and Kelly sizing (#6) are from-scratch in the silo; standard formulas may be referenced, source code is not pulled.
+
 **Companion docs (same folder):**
 - `EB_REBUILD_DATA_ONLY.md` — raw verified facts with reproduce-commands; functional-check results (§8); bug actions (§9).
 - `EB_ASSET_LEDGER.md` — full asset inventory incl. the EXCLUDED dead-ratings set, with ownership.

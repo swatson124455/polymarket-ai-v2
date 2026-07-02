@@ -16,6 +16,7 @@ left as a marked seam:
 | `db/schema.sql` | Complete. Clean schema from zero, append-only raw. |
 | `scripts/validate_keys.py` | Complete + runnable. Verifies the 3 API keys. |
 | `collectors/odds_collector.py` | Pipeline + append-only writes + coverage guard complete. The exact **odds-payload field mapping** is a marked seam — it logs the first raw response so you confirm field names against the live aggregator (could not be verified from a network-isolated session). |
+| `scripts/verify_data_quality.py` | Complete + runnable (read-only). Cmd-4 master gate: null-rate, dup match_id, look-ahead, winner-resolvability, cross-source, quarantine-leak. Run it on the box before any carried data is used (D2 GATE-THEN-BUILD). |
 | `config.py` | Complete. Env-driven. |
 | The forecasting model | **Not built.** This is the one thing that must be built from the ground up (the prior model lost to the market on every game). |
 
@@ -42,11 +43,13 @@ left as a marked seam:
 
 ## The one open risk that gates everything
 
-The signal is sharp-book lines (Pinnacle + Circa + one Asian book) via a single
-aggregator. **It is unverified whether any one aggregator actually carries all three
-books for esports.** Verify book+esports coverage against the live aggregator BEFORE
-trusting the collector — esports coverage on odds aggregators is thin. `odds_collector`
-logs per-`(game, book)` coverage every run so a gap can never pass silently.
+The signal is sharp-book lines — **DECIDED (D3): Pinnacle + Singbet + Thunderpick, via
+OddsPapi** (per `PLAN.md` sharp-book research). What remains open is **operator ratification
+of live esports coverage**, not book selection: it is unverified whether OddsPapi actually
+returns all three **for esports** (coverage on odds aggregators is thin), and the exact
+bookmaker identifier strings must be confirmed against a live response. Verify book+esports
+coverage BEFORE trusting the collector — `odds_collector` logs per-`(game, book)` coverage
+every run so a gap can never pass silently.
 
 ## Setup
 
@@ -58,16 +61,21 @@ python scripts/validate_keys.py          # confirm keys work + Riot key not expi
 python -m collectors.odds_collector --once --dry-run   # confirm aggregator coverage
 ```
 
-## Data to migrate in (from the prior bot, where it lives — not in git)
+## Data to migrate in (from the prior bot)
 
-`matches` ← historical results (esports_matches / esports_matches_bulk.jsonl / Oracle CSVs),
-`team_aliases` ← the 1,777-row resolver (the hardest piece to rebuild — carry it).
+`matches` ← historical results. The bulk JSONL and pandascore CS2 dump are **already in git**
+(`data/esports_matches_bulk.jsonl`, `data/cs2/pandascore_cs2.json`, commit `369606b`); only the
+Oracle/LoL CSVs and live DB tables remain source-machine/VPS-only. `team_aliases` ← the
+1,777-row resolver (the hardest piece to rebuild — carry it). All carried data is QUARANTINED
+until it passes `verify_data_quality.py` on the box (Cmd 4).
 Do **not** carry: the ratings model, its weights, or any quarantined substrate
 (`shadow_fills`, `esports_predictions` orientation, contaminated `model_version` rows).
 
 Use `scripts/import_from_prior_bot.py` — it maps the prior `esports_matches` +
-`esports_team_aliases` into the silo schema (winner-name → team_a/team_b transform
-ported from the prior normalizer). Runs on your box against your DBs:
+`esports_team_aliases` into the silo schema (winner-name → team_a/team_b transform **adapted
+from the prior normalizer as a labelled DEVIATION**: unresolved winners become NULL where the
+source silently defaulted to team_a, and the substring fallback checks both teams — Cmd 3, never
+a "port"). Runs on your box against your DBs:
 ```bash
 SOURCE_DATABASE_URL=postgresql://…prior  DATABASE_URL=postgresql://…silo \
     python -m esports_silo.scripts.import_from_prior_bot \
