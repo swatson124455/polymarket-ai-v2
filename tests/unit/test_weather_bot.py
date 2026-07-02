@@ -1785,6 +1785,34 @@ class TestMetarResolutionDayOverride:
         assert result["m1"] > 0.5
         assert result["m1"] == pytest.approx(0.98 / (0.98 + 0.80), rel=1e-3)
 
+    @pytest.mark.asyncio
+    async def test_metar_at_or_higher_not_ruled_out_outside_aggressive_window(self, weather_bot):
+        """S222: at lead >= 2h, running_max below the floor must NOT rule out
+        at_or_higher — the daily max can still rise past it. The removed
+        ungated 0.001 branch used to fire here (70 < 79 - 2.0)."""
+        group = self._make_group()
+        weather_bot._metar_client.get_running_daily_max = AsyncMock(return_value=70.0)
+        model_probs = {"m1": 0.20, "m2": 0.30, "m3": 0.30, "m4": 0.20}
+
+        result = await weather_bot._apply_metar_resolution_day_override(group, model_probs, 5.0)
+
+        # m4 (at_or_higher 79): 70 < 78.5, not aggressive → no override.
+        # m1 (at_or_below 72): 70 < 72.5, not aggressive → no override (S222).
+        # No branch fires anywhere → probs unchanged.
+        assert result == model_probs
+
+    @pytest.mark.asyncio
+    async def test_metar_at_or_higher_aggressive_rule_out_retained(self, weather_bot):
+        """S222: the <2h aggressive 0.001 rule-out for at_or_higher is retained."""
+        group = self._make_group()
+        weather_bot._metar_client.get_running_daily_max = AsyncMock(return_value=73.5)
+        model_probs = {"m1": 0.20, "m2": 0.30, "m3": 0.30, "m4": 0.20}
+
+        result = await weather_bot._apply_metar_resolution_day_override(group, model_probs, 1.0)
+
+        # m4 (at_or_higher 79): aggressive and 73.5 < 78.0 → 0.001 retained
+        assert result["m4"] < 0.01
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Local Model Forecast (Commit 2)

@@ -2889,7 +2889,6 @@ class WeatherBot(BaseBot):
         daily maximum from METAR T-groups can definitively rule buckets in or out:
           - running_max > bucket.high_bound + 0.5: range/at_or_below can't resolve YES
           - running_max >= at_or_higher.low_bound - 0.5: threshold already crossed → YES
-          - running_max < at_or_higher.low_bound - 2.0: far below floor → NO
 
         Monotonicity rule (S222): running_max only ever RISES during the day, so
         ungated overrides may only assert outcomes that a rising max cannot undo
@@ -2955,9 +2954,12 @@ class WeatherBot(BaseBot):
                 elif aggressive and running_max < bucket.low_bound - 1.0:
                     # <2h: still well below floor — very unlikely to reach
                     updated[market_id] = 0.001
-                elif running_max < bucket.low_bound - 2.0:
-                    # Well below floor — unlikely to reach threshold in remaining time
-                    updated[market_id] = 0.001
+                # S222: ungated 0.001 rule-out removed — asserting "max will not
+                # rise past the floor" is non-monotone (same class as the removed
+                # at_or_below 0.97 push) and fired as early as pre-dawn, when the
+                # running max is the overnight temperature and daily highs are
+                # routinely 10-20° above it. Only the <2h aggressive branch above
+                # may make that assertion.
 
             elif btype == "range":
                 if running_max > bucket.high_bound + unit_margin:
