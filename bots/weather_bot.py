@@ -2889,8 +2889,18 @@ class WeatherBot(BaseBot):
         daily maximum from METAR T-groups can definitively rule buckets in or out:
           - running_max > bucket.high_bound + 0.5: range/at_or_below can't resolve YES
           - running_max >= at_or_higher.low_bound - 0.5: threshold already crossed → YES
-          - running_max < at_or_below.high_bound - 1.5: well below ceiling → YES
           - running_max < at_or_higher.low_bound - 2.0: far below floor → NO
+
+        Monotonicity rule (S222): running_max only ever RISES during the day, so
+        ungated overrides may only assert outcomes that a rising max cannot undo
+        (exceeded-ceiling rule-outs, reached-floor YES pushes). Assertions that
+        the max will NOT rise further ("well below ceiling → at_or_below YES")
+        are only valid in the <2h aggressive window. The ungated at_or_below
+        0.97 push was removed (S222): lead_time anchors to 18:00 UTC, so the
+        <12h caller window opens pre-dawn local time when running_max is merely
+        the overnight temperature — the push fired before any daytime heating
+        and manufactured near-certain YES probabilities (plus artificial NO
+        edges on sibling buckets via renormalization).
 
         Returns updated model_probs dict (original unchanged if METAR unavailable).
         Probabilities are renormalized after overrides to maintain sum ≈ 1.0.
@@ -2930,9 +2940,10 @@ class WeatherBot(BaseBot):
                 elif aggressive and running_max < bucket.high_bound - unit_margin:
                     # <2h: well below ceiling, max essentially established
                     updated[market_id] = 0.98
-                elif running_max < bucket.high_bound - 1.5:
-                    # Well below ceiling with little time left — almost certainly YES
-                    updated[market_id] = 0.97
+                # S222: ungated 0.97 push removed — asserting "max stays below
+                # ceiling" is non-monotone (max can still rise) and fired as
+                # early as pre-dawn (<12h to the 18Z anchor). Only the <2h
+                # aggressive branch above may make that assertion.
 
             elif btype == "at_or_higher":
                 if aggressive and running_max >= bucket.low_bound - unit_margin:

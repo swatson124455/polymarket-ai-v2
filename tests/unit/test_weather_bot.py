@@ -1732,6 +1732,59 @@ class TestMetarResolutionDayOverride:
         # m1 is at_or_below 72°F; running_max=75 > 72.5 → ruled out
         assert result["m1"] < 0.01
 
+    def _make_below_only_group(self, city: str = "NYC", target_date: date = date(2026, 3, 6)):
+        """Group with only at_or_below + range buckets (no at_or_higher) so the
+        S222 at_or_below tests are isolated from other override branches."""
+        from bots.weather.engine.base_engine.weather.station_registry import STATION_REGISTRY
+        station = STATION_REGISTRY.get("new_york_city")
+        buckets = [
+            TemperatureBucket(
+                market_id="m1", bucket_type="at_or_below",
+                low_bound=float("-inf"), high_bound=72.0,
+                yes_price=0.10, token_id="t1", no_token_id="n1", temp_unit="F",
+            ),
+            TemperatureBucket(
+                market_id="m2", bucket_type="range",
+                low_bound=73.0, high_bound=75.0,
+                yes_price=0.25, token_id="t2", no_token_id="n2", temp_unit="F",
+            ),
+            TemperatureBucket(
+                market_id="m3", bucket_type="range",
+                low_bound=76.0, high_bound=78.0,
+                yes_price=0.35, token_id="t3", no_token_id="n3", temp_unit="F",
+            ),
+        ]
+        return WeatherMarketGroup(
+            city=city, station=station, target_date=target_date, buckets=buckets,
+        )
+
+    @pytest.mark.asyncio
+    async def test_metar_at_or_below_not_pushed_outside_aggressive_window(self, weather_bot):
+        """S222: at lead >= 2h, running_max below the ceiling must NOT push
+        at_or_below to near-certainty — the daily max can still rise. The
+        removed ungated 0.97 branch used to fire here (70 < 72 - 1.5)."""
+        group = self._make_below_only_group()
+        weather_bot._metar_client.get_running_daily_max = AsyncMock(return_value=70.0)
+        model_probs = {"m1": 0.20, "m2": 0.40, "m3": 0.40}
+
+        result = await weather_bot._apply_metar_resolution_day_override(group, model_probs, 5.0)
+
+        # No branch fires: m1 not exceeded (70 <= 72.5), not aggressive → unchanged
+        assert result == model_probs
+
+    @pytest.mark.asyncio
+    async def test_metar_at_or_below_aggressive_push_retained(self, weather_bot):
+        """S222: the <2h aggressive 0.98 push for at_or_below is retained."""
+        group = self._make_below_only_group()
+        weather_bot._metar_client.get_running_daily_max = AsyncMock(return_value=70.0)
+        model_probs = {"m1": 0.20, "m2": 0.40, "m3": 0.40}
+
+        result = await weather_bot._apply_metar_resolution_day_override(group, model_probs, 1.0)
+
+        # aggressive: 70 < 72 - 0.5 → 0.98, renormalized against 0.40 + 0.40
+        assert result["m1"] > 0.5
+        assert result["m1"] == pytest.approx(0.98 / (0.98 + 0.80), rel=1e-3)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Local Model Forecast (Commit 2)
