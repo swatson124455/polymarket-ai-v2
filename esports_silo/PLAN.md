@@ -25,15 +25,19 @@ Failure evidence — 📄 DOC-SOURCED (`EB_MODEL_EDGE_PROPOSAL_2026-06-16.md`, s
 - `scripts/import_from_prior_bot.py` (matches + aliases; winner-map DEVIATION documented)
 - `scripts/verify_data_quality.py` — Cmd-4 read-only master gate (item #1; awaits operator DB run)
 - `collectors/odds_collector.py` (append-only + per-(game,book) coverage guard; odds-payload field mapping = SEAM)
+- `collectors/polymarket_collector.py` — item #2, append-only snapshot collector (content-classified, Cmd 5; 23 tests)
+- `markets/match_matcher.py` — item #3, two-team gate + specificity (surgical cut; difflib fuzzy DEVIATION; 17 tests)
+- `eval/skill_metrics.py` — item #4, P&L-free skill harness (from-scratch; 26 tests)
 - `config.py`, `.env.example`, `requirements.txt` (no shin/xgboost/catboost)
+- All silo unit tests are stdlib-only (`python -m esports_silo.<pkg>.test_*`) — no pytest dep.
 
 ## Build list (verified)
 | # | Component | Type | When |
 |---|---|---|---|
 | 1 | `verify_data_quality.py` — read-only battery | from-scratch | ✅ **BUILT** (Cmd-4 master gate) — awaits operator run on the box |
-| 2 | Polymarket snapshot collector → `polymarket_snapshots` | build now | after gate (D2) |
-| 3 | Market↔match matcher (aliases + two-team gate) | surgical-pull `esports_market_scanner` (verified clean `:180,313`) | after gate (D2) |
-| 4 | Skill-eval harness (Brier/calibration/closing-line, **P&L-free**) | **from-scratch** — standard formulas *referenced* only; `metrics.py` NOT pulled (embeds `compute_pnl` Cmd 1 + shin CLV Cmd 2) | after gate (D2) |
+| 2 | Polymarket snapshot collector → `polymarket_snapshots` | build now | ✅ **BUILT + tested** (`collectors/polymarket_collector.py`) — runs live after gate + coverage confirmed |
+| 3 | Market↔match matcher (aliases + two-team gate) | surgical-pull `esports_market_scanner` (verified clean `:180,313`) | ✅ **BUILT + tested** (`markets/match_matcher.py`) |
+| 4 | Skill-eval harness (Brier/calibration/closing-line, **P&L-free**) | **from-scratch** — standard formulas *referenced* only; `metrics.py` NOT pulled (embeds `compute_pnl` Cmd 1 + shin CLV Cmd 2) | ✅ **BUILT + tested** (`eval/skill_metrics.py`) |
 | 5 | **The signal/model** (raw 3-book → `P(team_a)`, no de-vig, price-deferring rule) | from-scratch | design after gate, validate after odds |
 | 6 | Bet-decision + Kelly sizing | **from-scratch** — textbook Kelly *referenced*; `esports_bankroll_manager` NOT pulled (embeds banned `edge>0` rule `:82-83`) | after #5 |
 | 7 | Complete odds-collector field mapping | needs 1 live aggregator response | after coverage gate |
@@ -41,11 +45,13 @@ Failure evidence — 📄 DOC-SOURCED (`EB_MODEL_EDGE_PROPOSAL_2026-06-16.md`, s
 | 9 | Scheduler/runner (systemd/cron) | small | later |
 
 ## Critical path
-1. **#1 BUILT.** → 2. Operator runs the battery on the box → whatever passes leaves quarantine (**GATE**).
-3. **Only after the gate clears** (D2 GATE-THEN-BUILD — nothing new built ahead of it): build
-   **#2/#3/#4** (all from-scratch per D1 where noted) and design **#5** on the cleared inputs.
+1. **#1/#2/#3/#4 BUILT + unit-tested** (infra, under operator authorization). → 2. Operator runs
+   the battery on the box → whatever passes leaves quarantine (**GATE**). D2 still binds: the built
+   infra **trains/decides on nothing** until the gate clears.
+3. **After the gate clears:** design **#5** (the signal) on the cleared inputs; wire #2/#3/#4
+   together (matcher → snapshots + odds → skill eval).
 4. Operator: aggregator coverage gate + valid keys + **start forward-collecting odds**.
-5. After ~2–4 wks of odds: validate the signal on forward data (skill, not P&L).
+5. After ~2–4 wks of odds: validate the signal on forward data (skill, not P&L) via #4; then #6.
 
 ## Open decisions
 - De-vig → **DECIDED: does not exist** (Cmd 2).
