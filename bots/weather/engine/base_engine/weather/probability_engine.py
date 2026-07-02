@@ -228,6 +228,15 @@ class WeatherProbabilityEngine:
 
         Uses Laplace smoothing: P = (count + 0.5) / (n + 1) to prevent 0/1 probabilities.
 
+        S222 A1: member deviations are inflated around the corrected mean by
+        WEATHER_VARIANCE_INFLATION_FACTOR (same S154 underdispersion correction
+        the parametric path applies to its scale). Raw NWP ensembles are
+        underdispersed 1.3-2.0x; before S222 this path applied NO correction,
+        making the dominant (n>=50) production route directly overconfident —
+        especially in the tail buckets where YES entries live. The linear
+        transform m_i -> mean + VIF*(m_i - mean) scales the empirical std by
+        exactly VIF while preserving distribution shape (bimodality, skew).
+
         Requires n >= 50 members for reliable CDF. Caller should fall back to
         parametric (fit_distribution + bucket_probabilities) for smaller ensembles.
 
@@ -242,6 +251,14 @@ class WeatherProbabilityEngine:
         emos_a, emos_b, _emos_sigma = self._get_emos_params(station_id, lead_time_hours)
         corrected = [emos_a + emos_b * m for m in clean]
         n = len(corrected)
+
+        # S222 A1: variance inflation for NWP underdispersion (parity with the
+        # parametric path's S154 scale inflation). Inflate deviations around
+        # the corrected mean; shape-preserving, std scales by exactly VIF.
+        _vif = self._variance_inflation_factor
+        if _vif != 1.0:
+            _mean_c = sum(corrected) / n
+            corrected = [_mean_c + _vif * (x - _mean_c) for x in corrected]
 
         probs: Dict[str, float] = {}
         for b in buckets:

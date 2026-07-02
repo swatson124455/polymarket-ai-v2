@@ -617,10 +617,12 @@ class TestEmpiricalCDF:
         members = [40.0, 50.0, 60.0] * 20  # 60 members, mean=50, spread=20
         # corrected: [5+0.8*40, 5+0.8*50, 5+0.8*60] = [37, 45, 53]
         # Mean shifts from 50 to 45, spread narrows from 20 to 16 (b<1)
+        # S222 A1: VIF 1.4 then inflates deviations around mean 45:
+        # 37 -> 45 + 1.4*(-8) = 33.8; 45 -> 45; 53 -> 45 + 1.4*8 = 56.2
         buckets = self._make_buckets([
-            (35, 39, "range"),   # captures members at 37
+            (31, 37, "range"),   # captures members at 33.8
             (43, 47, "range"),   # captures members at 45
-            (51, 55, "range"),   # captures members at 53
+            (53, 59, "range"),   # captures members at 56.2
         ])
         probs = engine.empirical_bucket_probabilities(
             members, buckets, station_id="test_station", lead_time_hours=48.0,
@@ -632,18 +634,19 @@ class TestEmpiricalCDF:
     def test_empirical_captures_bimodal(self):
         """Empirical CDF should capture bimodal distributions that skew-normal cannot."""
         engine = WeatherProbabilityEngine()
-        # Bimodal: half at 40, half at 60
+        # Bimodal: half at 40, half at 60 (mean 50)
+        # S222 A1: VIF 1.4 inflates modes to 36 and 64
         members = [40.0] * 50 + [60.0] * 50
         buckets = self._make_buckets([
-            (38, 42, "range"),   # should capture ~50%
+            (34, 38, "range"),   # should capture ~50% (inflated mode 36)
             (48, 52, "range"),   # should be ~0%
-            (58, 62, "range"),   # should capture ~50%
+            (62, 66, "range"),   # should capture ~50% (inflated mode 64)
         ])
         probs = engine.empirical_bucket_probabilities(members, buckets)
-        # Bimodal: peaks at 40 and 60, nothing at 50
-        assert probs["market_0"] > 0.30  # ~50% around 40
+        # Bimodal: peaks preserved (shape not gaussianized), nothing at center
+        assert probs["market_0"] > 0.30  # ~50% around inflated low mode
         assert probs["market_1"] < 0.10  # near-zero around 50
-        assert probs["market_2"] > 0.30  # ~50% around 60
+        assert probs["market_2"] > 0.30  # ~50% around inflated high mode
 
     def test_empirical_laplace_smoothing_no_zeros(self):
         """Laplace smoothing prevents zero probabilities in multi-bucket scenario."""
@@ -665,6 +668,26 @@ class TestEmpiricalCDF:
         buckets = self._make_buckets([(48, 52, "range")])
         probs = engine.empirical_bucket_probabilities(members, buckets)
         assert len(probs) > 0  # Should work with 80 clean members
+
+    def test_empirical_variance_inflation_widens_tails(self):
+        """S222 A1: the empirical path must apply variance inflation — before
+        the fix it used raw member counts (zero underdispersion correction),
+        making tail-bucket probabilities directly overconfident."""
+        engine = WeatherProbabilityEngine()
+        # mean = 51.6; the 54.0 cluster inflates to 51.6 + 1.4*2.4 = 54.96
+        members = [50.0] * 60 + [54.0] * 40
+        buckets = self._make_buckets([
+            (0, 54, "at_or_below"),
+            (55, 999, "at_or_higher"),   # [54.5, inf): raw 54 misses, inflated 54.96 lands
+        ])
+
+        probs = engine.empirical_bucket_probabilities(members, buckets)
+        assert probs["market_1"] > 0.30  # tail bucket gets the inflated mass
+
+        # Control: with inflation disabled the tail stays near zero (old defect)
+        engine._variance_inflation_factor = 1.0
+        probs_raw = engine.empirical_bucket_probabilities(members, buckets)
+        assert probs_raw["market_1"] < 0.05
 
 
 # ═══════════════════════════════════════════════════════════════════════════
