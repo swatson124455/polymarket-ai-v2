@@ -129,11 +129,49 @@ class Checker:
 
     async def run(self):
         async with self.db.get_session() as s:
-            # 1. orderbook_snapshots — the best rebuild asset (fill-replay feasibility)
+            # 1. orderbook_snapshots — breadth asset for the COARSE fill model
             rows = await self._count(s, "orderbook_snapshots")
             self._check_range("orderbook_snapshots_rows", rows, "orderbook_snapshots.rows")
             rng = await self._date_range_by_id(s, "orderbook_snapshots", "snapshot_time")
             self._record("INFO", "orderbook_snapshots.window", rng)
+
+            # 1b. Shape assertion (correction 2026-07-02): this table is AGGREGATED
+            # buckets, NOT per-level L2. If a ladder-ish column ever appears (schema
+            # evolved), flag REVIEW so the coarse fill model gets re-evaluated; if the
+            # expected bucket columns are missing, FAIL (coarse model would misread).
+            try:
+                await s.execute(text(f"SET LOCAL statement_timeout = {self.timeout_ms}"))
+                r = await s.execute(text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'orderbook_snapshots'"
+                ))
+                cols = {row[0] for row in r.fetchall()}
+                expected = {"best_bid", "best_ask", "mid_price", "spread",
+                            "bid_depth_1pct", "ask_depth_1pct",
+                            "bid_depth_5pct", "ask_depth_5pct",
+                            "imbalance", "snapshot_time", "token_id"}
+                ladderish = {c for c in cols if any(k in c.lower() for k in
+                             ("bids", "asks", "levels", "ladder", "book_json", "raw_book"))}
+                missing = expected - cols
+                if missing:
+                    self._record("FAIL", "orderbook_snapshots.shape",
+                                 f"missing expected bucket columns: {sorted(missing)}")
+                elif ladderish:
+                    self._record("REVIEW", "orderbook_snapshots.shape",
+                                 f"unexpected ladder-like columns appeared: {sorted(ladderish)}")
+                else:
+                    self._record("PASS", "orderbook_snapshots.shape",
+                                 "aggregated buckets confirmed (no per-level ladder — coarse model only)")
+            except Exception as e:
+                self._record("REVIEW", "orderbook_snapshots.shape", f"ERR:{str(e)[:60]}")
+
+            # 1c. Precise-model asset: shadow_fills.book_snapshot ladder coverage (MB).
+            lad = await self._scalar(
+                s, "SELECT COUNT(*) FROM shadow_fills WHERE bot_name = :b "
+                   "AND book_snapshot IS NOT NULL", b=MB
+            )
+            self._record("REVIEW", "shadow_fills(MB).book_snapshot_rows",
+                         f"{_fmt(lad)} rows with a stored ladder (precise-model sample size)")
 
             # 2. mirror_rejected_signals — whale signal → outcome labels
             rows = await self._count(s, "mirror_rejected_signals")
