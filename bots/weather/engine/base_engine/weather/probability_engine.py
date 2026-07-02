@@ -58,6 +58,7 @@ class WeatherProbabilityEngine:
         ensemble_members: List[float],
         lead_time_hours: float,
         station_id: str = "",
+        deterministic_high: Optional[float] = None,
     ) -> Tuple[float, float, float]:
         """Fit a skew-normal distribution to ensemble spread.
 
@@ -65,10 +66,19 @@ class WeatherProbabilityEngine:
 
         Strategy:
           - Compute ensemble mean and std from raw members
-          - Apply EMOS calibration: μ = a + b·X̄, σ = sigma (when ≥20 pairs exist)
+          - Apply EMOS calibration: μ = a + b·X, σ = sigma (when ≥20 pairs exist)
           - Fall back to simple bias offset (a=bias, b=1, sigma=None) if not yet
           - Use raw ensemble spread as scale when EMOS sigma unavailable
           - Attempt skew-normal MLE fit; fall back to normal if it fails
+
+        S222 A3 (train/serve consistency): EMOS (a, b) is trained by _fit_emos
+        on weather_calibration.forecast_temp, which stores the DETERMINISTIC
+        high (NBM/local hi-res/GFS point forecast) — NOT the ensemble mean.
+        Applying the fitted slope to the ensemble mean was a train/serve
+        mismatch: NBM is bias-corrected while the GEFS/IFS mean is not, so
+        b≠1 amplified a systematic location shift. Pass `deterministic_high`
+        so the correction is applied to the same quantity it was trained on;
+        when None/non-finite, falls back to the ensemble mean (legacy).
         """
         if not ensemble_members:
             raise ValueError("Need at least 2 ensemble members")
@@ -89,10 +99,16 @@ class WeatherProbabilityEngine:
         std = max(variance ** 0.5, 0.5)  # Floor at 0.5° to avoid overconfidence
 
         # Apply EMOS calibration (or fall back to simple bias offset)
-        # μ_emos = a + b·X̄  — corrects both mean bias and systematic slope
+        # μ_emos = a + b·X   — corrects both mean bias and systematic slope
         # σ_emos = sigma     — corrects spread (underdispersion common in raw ensembles)
+        # S222 A3: X = deterministic_high (the quantity EMOS was trained on),
+        # ensemble mean only as legacy fallback when det high is unavailable.
         emos_a, emos_b, emos_sigma = self._get_emos_params(station_id, lead_time_hours)
-        corrected_mean = emos_a + emos_b * mean
+        if deterministic_high is not None and math.isfinite(deterministic_high):
+            _emos_x = deterministic_high
+        else:
+            _emos_x = mean
+        corrected_mean = emos_a + emos_b * _emos_x
 
         # Use EMOS sigma when available; otherwise use raw ensemble spread with
         # S154 variance inflation for known NWP underdispersion.
@@ -107,8 +123,9 @@ class WeatherProbabilityEngine:
             _vif = self._variance_inflation_factor
             effective_std = max(std * _vif, 0.5)
 
-        # EMOS loc shift applied to skewnorm-fitted location
-        loc_shift = corrected_mean - mean  # = emos_a + (emos_b - 1) * mean
+        # EMOS loc shift applied to skewnorm-fitted location: recenters the
+        # ensemble distribution onto the EMOS-predicted actual (a + b·X).
+        loc_shift = corrected_mean - mean
 
         # Try skew-normal fit via MLE
         shape = 0.0  # Default: symmetric normal
@@ -217,14 +234,22 @@ class WeatherProbabilityEngine:
         buckets: list,
         station_id: str = "",
         lead_time_hours: float = 48.0,
+        deterministic_high: Optional[float] = None,
     ) -> Dict[str, float]:
         """S168 Phase 2A: Compute bucket probabilities from empirical CDF.
 
         Uses the raw ensemble members directly instead of fitting a parametric
-        distribution. Each member is EMOS-corrected per-member (corrected_i = a + b * member_i)
-        to preserve the spread information EMOS-b encodes:
-          b < 1 (underdispersive ensemble): narrows ensemble
-          b > 1 (overdispersive ensemble): widens ensemble
+        distribution.
+
+        S222 A3 (location correction): members are shifted UNIFORMLY so the
+        ensemble mean lands on the EMOS-predicted actual, a + b·X, where X is
+        the deterministic high — the quantity _fit_emos trained on (ensemble
+        mean as legacy fallback when X unavailable). The previous per-member
+        application (corrected_i = a + b·member_i) was a train/serve mismatch
+        AND rescaled the member cloud by b — but b was fit on deterministic
+        point forecasts, so its magnitude says nothing about ensemble
+        dispersion (b<1 silently narrowed the spread with no floor). Spread
+        correction is the variance inflation's job (S222 A1), not b's.
 
         Uses Laplace smoothing: P = (count + 0.5) / (n + 1) to prevent 0/1 probabilities.
 
@@ -247,10 +272,17 @@ class WeatherProbabilityEngine:
         if len(clean) < 50:
             return {}
 
-        # Apply EMOS per-member: corrected_i = a + b * member_i
+        # S222 A3: uniform EMOS location shift anchored on the deterministic
+        # high (train/serve consistency); raw ensemble spread preserved.
         emos_a, emos_b, _emos_sigma = self._get_emos_params(station_id, lead_time_hours)
-        corrected = [emos_a + emos_b * m for m in clean]
-        n = len(corrected)
+        n = len(clean)
+        _mean_raw = sum(clean) / n
+        if deterministic_high is not None and math.isfinite(deterministic_high):
+            _emos_x = deterministic_high
+        else:
+            _emos_x = _mean_raw
+        _shift = (emos_a + emos_b * _emos_x) - _mean_raw
+        corrected = [m + _shift for m in clean]
 
         # S222 A1: variance inflation for NWP underdispersion (parity with the
         # parametric path's S154 scale inflation). Inflate deviations around

@@ -512,6 +512,27 @@ class TestProbabilityEngine:
         # loc should be 50.0 + 1.0 bias = 51.0 (identity EMOS: a=1.0, b=1.0)
         assert abs(loc - 51.0) < 0.5
 
+    def test_emos_applied_to_deterministic_high_not_ensemble_mean(self):
+        """S222 A3: EMOS (a, b) is trained on the deterministic high, so the
+        serve-time correction must use the same quantity. Legacy fallback
+        (no det high passed) still applies it to the ensemble mean."""
+        eng = WeatherProbabilityEngine()
+        eng.load_emos_calibration({"KLGA": {0: (2.0, 0.9, None)}})
+        members = [48.0, 50.0, 52.0] * 8  # 24 members (< 30 → no MLE), mean = 50
+
+        # Train/serve consistent: corrected mean = 2 + 0.9*54 = 50.6
+        loc, _, _ = eng.fit_distribution(
+            members, lead_time_hours=3.0, station_id="KLGA",
+            deterministic_high=54.0,
+        )
+        assert loc == pytest.approx(50.6, abs=1e-6)
+
+        # Legacy fallback (det high unavailable): 2 + 0.9*50 = 47.0
+        loc_legacy, _, _ = eng.fit_distribution(
+            members, lead_time_hours=3.0, station_id="KLGA",
+        )
+        assert loc_legacy == pytest.approx(47.0, abs=1e-6)
+
     def test_emos_sigma_forces_normal_shape(self):
         """S159: When EMOS sigma is active, shape must be 0.0 (normal distribution).
 
@@ -607,29 +628,36 @@ class TestEmpiricalCDF:
         probs = engine.empirical_bucket_probabilities(members, buckets)
         assert probs["market_0"] > 0.95
 
-    def test_empirical_applies_emos_per_member(self):
-        """EMOS correction is applied per-member (a + b*member_i), not as mean shift."""
+    def test_empirical_emos_uniform_shift_anchored_on_deterministic_high(self):
+        """S222 A3: EMOS location correction is a UNIFORM shift anchored on the
+        deterministic high (the quantity EMOS was trained on); the ensemble
+        spread is preserved — b no longer rescales the member cloud.
+
+        (Replaces test_empirical_applies_emos_per_member, which pinned the
+        per-member a + b*m application — the train/serve mismatch itself.)
+        """
         engine = WeatherProbabilityEngine()
-        # Load EMOS with a=5, b=0.8 — should shift and compress ensemble
         engine.load_emos_calibration({
             "test_station": {48: (5.0, 0.8, None)},
         })
-        members = [40.0, 50.0, 60.0] * 20  # 60 members, mean=50, spread=20
-        # corrected: [5+0.8*40, 5+0.8*50, 5+0.8*60] = [37, 45, 53]
-        # Mean shifts from 50 to 45, spread narrows from 20 to 16 (b<1)
-        # S222 A1: VIF 1.4 then inflates deviations around mean 45:
-        # 37 -> 45 + 1.4*(-8) = 33.8; 45 -> 45; 53 -> 45 + 1.4*8 = 56.2
+        members = [40.0, 50.0, 60.0] * 20  # 60 members, raw mean=50, modes ±10
+        # X = det_high = 55 → EMOS-predicted actual = 5 + 0.8*55 = 49
+        # shift = 49 - 50 = -1 → corrected modes [39, 49, 59] (spread preserved)
+        # S222 A1: VIF 1.4 around mean 49 → [35, 49, 63]
         buckets = self._make_buckets([
-            (31, 37, "range"),   # captures members at 33.8
-            (43, 47, "range"),   # captures members at 45
-            (53, 59, "range"),   # captures members at 56.2
+            (33, 37, "range"),   # captures members at 35
+            (47, 51, "range"),   # captures members at 49
+            (61, 65, "range"),   # captures members at 63
         ])
         probs = engine.empirical_bucket_probabilities(
             members, buckets, station_id="test_station", lead_time_hours=48.0,
+            deterministic_high=55.0,
         )
-        # Each third of members maps to a different bucket → ~33% each
+        # Each third of members maps to a different bucket → ~33% each.
+        # Under the old per-member code the center landed at 45 (not 49) and
+        # the (47, 51) bucket would be empty — this geometry discriminates.
         for mid in probs:
-            assert 0.20 < probs[mid] < 0.50, f"{mid} = {probs[mid]}"
+            assert 0.25 < probs[mid] < 0.42, f"{mid} = {probs[mid]}"
 
     def test_empirical_captures_bimodal(self):
         """Empirical CDF should capture bimodal distributions that skew-normal cannot."""

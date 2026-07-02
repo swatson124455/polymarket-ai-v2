@@ -2027,6 +2027,7 @@ class WeatherBot(BaseBot):
 
         loc, scale, shape = self._prob_engine.fit_distribution(
             forecast.ensemble_members, forecast.lead_time_hours, station.station_id,
+            deterministic_high=forecast.deterministic_high,  # S222 A3
         )
         model_probs = self._prob_engine.bucket_probabilities(loc, scale, shape, [bucket])
         model_prob = model_probs.get(bucket.market_id, 0.0)
@@ -2612,6 +2613,7 @@ class WeatherBot(BaseBot):
                 group.buckets,
                 group.station.station_id,
                 forecast.lead_time_hours,
+                deterministic_high=forecast.deterministic_high,  # S222 A3
             )
             if not model_probs:
                 logger.debug("weatherbot_empirical_degenerate_skip", city=group.city)
@@ -2620,6 +2622,7 @@ class WeatherBot(BaseBot):
             try:
                 loc, scale, shape = self._prob_engine.fit_distribution(
                     forecast.ensemble_members, forecast.lead_time_hours, group.station.station_id,
+                    deterministic_high=forecast.deterministic_high,  # S222 A3
                 )
             except ValueError:
                 loc, scale, shape = 0.0, 1.0, 0.0  # fallback for logging
@@ -2630,6 +2633,7 @@ class WeatherBot(BaseBot):
                     forecast.ensemble_members,
                     forecast.lead_time_hours,
                     group.station.station_id,
+                    deterministic_high=forecast.deterministic_high,  # S222 A3
                 )
             except ValueError as exc:
                 logger.debug("weatherbot_fit_failed", station=group.station.station_id, city=group.city, error=str(exc))
