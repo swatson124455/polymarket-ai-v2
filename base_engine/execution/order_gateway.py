@@ -1348,7 +1348,13 @@ class OrderGateway:
 
             if self.trade_coordinator is not None:
                 if result.get("success"):
-                    await self.trade_coordinator.confirm_position(market_id, side, size, effective_price, source_bot=bot_name, bot_id=bot_name, token_id=token_id, event_data=event_data, confidence=confidence)
+                    # S250: cost basis = realized fill when the adapter captured it
+                    # (FOK-matched live path), else the submitted price (GTC / unresolved
+                    # shape / paper — unchanged). Drives Position.entry_price/entry_cost/
+                    # breakeven in confirm_position. Exposure tracking below intentionally
+                    # stays on effective_price (intended-size accounting for the entry guards).
+                    _cost_basis = float(result.get("fill_price") or effective_price)
+                    await self.trade_coordinator.confirm_position(market_id, side, size, _cost_basis, source_bot=bot_name, bot_id=bot_name, token_id=token_id, event_data=event_data, confidence=confidence)
                     if _is_sell:
                         self._track_position_close(bot_name, market_id)  # C3 FIX
                     else:
@@ -1392,7 +1398,8 @@ class OrderGateway:
                 if _db and hasattr(_db, "insert_shadow_fill"):
                     _scan_start = (event_data or {}).get("scan_start_mono")
                     _latency = (time.monotonic() - _scan_start) * 1000 if _scan_start else None
-                    _live_fill_price = float(result.get("price", effective_price))
+                    # S250: shadow-fill execution price prefers the realized fill when captured.
+                    _live_fill_price = float(result.get("fill_price") or result.get("price") or effective_price)
                     try:
                         await _db.insert_shadow_fill(
                             bot_name=bot_name, market_id=market_id, token_id=token_id,

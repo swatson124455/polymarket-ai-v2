@@ -611,6 +611,13 @@ class ExecutionEngine:
             if not order_id:
                 logger.warning("Order placed but no order_id returned", result_keys=list(order_result.keys()))
             
+            # S250: prefer the realized fill price for cost basis when the adapter captured
+            # it (FOK-matched path); fall back to the submitted price (GTC / unresolved shape
+            # / paper). None or 0 => fallback, so behavior is unchanged wherever no fill is
+            # available. OrderGateway consumes the same fill_price from the returned dict.
+            _fill_price = order_result.get("fill_price") if isinstance(order_result, dict) else None
+            _cost_basis = float(_fill_price) if _fill_price else price
+
             # Skip when OrderGateway handles position via TradeCoordinator.confirm_position
             if not skip_position_update:
                 await self.risk_manager.update_position(
@@ -619,9 +626,9 @@ class ExecutionEngine:
                     token_id=token_id,
                     side=side,
                     size=size,
-                    price=price
+                    price=_cost_basis
                 )
-            
+
             logger.info(
                 "Order placed",
                 bot_name=bot_name,
@@ -629,9 +636,10 @@ class ExecutionEngine:
                 side=side,
                 size=size,
                 price=price,
+                fill_price=_fill_price,
                 order_id=order_id,
             )
-            
+
             return {
                 "success": True,
                 "order_id": order_id,
@@ -639,6 +647,7 @@ class ExecutionEngine:
                 "side": side,
                 "size": size,
                 "price": price,
+                "fill_price": _fill_price,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
         
