@@ -19,6 +19,8 @@
 | calibration files have an EB consumer | **FALSE** — only a docstring comment in `conformal_wrapper.py:82`, no import | import-graph grep |
 | "3 tools work, 2 crash" | **5 sound, 3 broken** (shadow_analysis, slippage_check, mirror_whale_analysis) | live runs + code |
 | clob_adapter "cost basis = signal price" | **True only for LIVE GTC**; paper mode records the real VWAP fill → paper P&L is accurate; the defect is **latent** | code + paper_trading.py:817-864 |
+| `orderbook_snapshots` "full L2" (2026-07-02) | **FALSE — aggregated buckets only** (best bid/ask, mid, spread, 1%/5% depth, imbalance; no per-level ladder). Sole writer `scripts/orderbook_collector.py:155` writes exactly the DDL-070 columns. The real ladder exists only in `shadow_fills.book_snapshot` (~13.8k MB signal moments) → precise fill-replay is narrow; this table supports a coarse model only | DDL 070 + writer + migration sweep |
+| `mirrored_trades` = same-side dedup guard (2026-07-02) | **FALSE — write-only bookkeeping.** Zero membership reads repo-wide (adds/prune/Redis flush only); effective same-side dedup is the `_open_positions` scan (`mirror_bot.py:3110-3140`) | repo-wide grep + CLAUDE.md correction `5251d30` |
 
 ---
 
@@ -45,7 +47,7 @@
 | Asset | Verdict | Facts (PG metadata) |
 |---|---|---|
 | `mirror_rejected_signals` | **USABLE-WITH-HEAVY-CLEANING** | ~16.4M rows, 2026-04-22→07-01. **Labels are temporally-guarded** (backfill enforces `m.resolved_at >= mrs.event_time` — no look-ahead; 2 passing tests). Pseudo-replication ~27–42×. **Feature vector (`gate_score`/`kelly_prob`) lives only on `rejection_stage='gate'` rows, which are ~0.7% labeled** → the trainable-AND-feature-rich intersection is **low hundreds/day**, not millions |
-| `orderbook_snapshots` | **USABLE-AS-IS (best asset)** | ~37.7M rows, full L2, live, **covers the entire signal window** → point-in-time fill-replay backtest feasible |
+| `orderbook_snapshots` | **USABLE for a COARSE fill model** (corrected 2026-07-02 — see §0) | ~37.7M rows, **aggregated buckets NOT full L2**, live, covers the entire signal window → breadth asset; precise VWAP ladder replay needs `shadow_fills.book_snapshot` instead |
 | `shadow_fills(MB)` | **USABLE for execution-mechanics; NOT for P&L** | 13,855 rows (5,823 executed), Apr 2→Jun 26. signal_price/vwap/slippage/fill_fraction ~100% populated; intended-vs-actual only 16%. **`shadow_pnl` is 100% NULL for MB** |
 | `whale_movements` | **USABLE but THIN** | ~9,121 rows, Feb 17→Jul 1, all cols populated incl. `smart_money_rank`; only ~68/day → forward-collect for depth |
 | `whale_trades` | **DO-NOT-REUSE** | Dead snapshot, frozen Mar 18→19; no `smart_money_rank` |
@@ -79,7 +81,7 @@
 | Leaderboard fetch/rank/select/refresh (`elite_watchlist.py:120-687`) | **EXTRACT-CLEAN** | aiohttp + 4 injected db/client methods; 23 tests run with `db=None`. Bugs: `profit_factor=inf` on zero-loss traders ([:347](bots/elite_watchlist.py:347)); ROI is OVERALL not per-category |
 | `_fresh_side_price` ([:2823](bots/mirror_bot.py:2823)) | **EXTRACT-CLEAN** | Only deps `client.get_token_midpoint` + markets read; test confirms zero MB-state. Returns midpoint, not tradeable ask |
 | `_confirm_zero_ctf_balance` + `_live_sell_balance_guard` ([:2126-2212](bots/mirror_bot.py:2126)) | **EXTRACT-CLEAN** | Single self-contained RPC helper (`check_ctf_balance`); **preserve the asymmetric fail-open (guard) / fail-closed (phantom-confirm) design** |
-| Dedup guard *mechanisms* (capped-OrderedDict, monotonic-TTL cooldown, 2-layer guard, MM-detector) | **EXTRACT-CLEAN** | Extract the mechanisms; **discard the "one-bet-per-market" policy** (MB-specific product rule) |
+| Dedup guard *mechanisms* (`_open_positions` same-side scan, monotonic-TTL cooldown, 2-layer opposing-side guard, MM-detector) | **EXTRACT-CLEAN** (corrected 2026-07-02 — see §0: `mirrored_trades` is write-only bookkeeping, not a guard) | Extract the mechanisms; **discard the "one-bet-per-market" policy** (MB-specific product rule — an MB *rebuild* keeps it, per `MB_REBUILD_PLAN.md`) |
 | Copy hot-path handlers (`elite_watchlist.py:720-1005`) | **EXTRACT-WITH-REWORK** | Secretly calls 6 MB internals. Clean sub-patterns inside: side-resolution, wash/round-trip detector (3-bug-fixed, sound), RTDS price cache |
 | `_close_position_terminal` ([:1869](bots/mirror_bot.py:1869)) | **EXTRACT-WITH-REWORK** | Pattern only; the gem = `known_zero_balance → realized_pnl=NULL` (0 tokens on-chain ⇒ any payout P&L is fictional) |
 | `_restore_state_on_startup` ([:311](bots/mirror_bot.py:311)) | **EXTRACT-WITH-REWORK** | Reference impl of CLAUDE.md net-counter tier. **Carries a latent bug:** `_state_restored=True` set before the `_entered_market_sides` rebuild ([:496 vs :562-592](bots/mirror_bot.py:496)) → silent partial-restore; keep the `is_paper` mode-filter |
