@@ -30,8 +30,11 @@ Failure evidence — 📄 DOC-SOURCED (`EB_MODEL_EDGE_PROPOSAL_2026-06-16.md`, s
 - `eval/skill_metrics.py` — item #4, P&L-free skill harness (from-scratch; 26 tests)
 - `signal/sharp_consensus.py` — item #5, raw consensus → calibrated P(team_a), no de-vig (from-scratch; 20 tests)
 - `betting/decision.py` — item #6, price-deferring bet rule + fractional Kelly (from-scratch; 22 tests)
+- `pipeline.py` — end-to-end wiring (matcher→signal→decision→prediction row; 14 tests)
+- `execution/resolution.py` + `paper.py` — item #8, skill-tracked resolution + $0 paper execution (19 tests)
+- `run/runner.py` + `deploy/` — item #9, collect-only scheduled pass + systemd/cron units
 - `config.py`, `.env.example`, `requirements.txt` (no shin/xgboost/catboost)
-- All silo unit tests are stdlib-only (`python -m esports_silo.<pkg>.test_*`) — no pytest dep. 108 tests, all green.
+- All silo unit tests are stdlib-only — run them all: `python -m esports_silo.run.selftest` (7 modules, 141 tests, all green).
 
 ## Build list (verified)
 | # | Component | Type | When |
@@ -42,19 +45,20 @@ Failure evidence — 📄 DOC-SOURCED (`EB_MODEL_EDGE_PROPOSAL_2026-06-16.md`, s
 | 4 | Skill-eval harness (Brier/calibration/closing-line, **P&L-free**) | **from-scratch** — standard formulas *referenced* only; `metrics.py` NOT pulled (embeds `compute_pnl` Cmd 1 + shin CLV Cmd 2) | ✅ **BUILT + tested** (`eval/skill_metrics.py`) |
 | 5 | **The signal/model** (raw 3-book → `P(team_a)`, no de-vig, price-deferring rule) | from-scratch | ✅ **BUILT + tested** (`signal/sharp_consensus.py`) — calibrator awaits forward outcomes to fit |
 | 6 | Bet-decision + Kelly sizing | **from-scratch** — textbook Kelly *referenced*; `esports_bankroll_manager` NOT pulled (embeds banned `edge>0` rule `:82-83`) | ✅ **BUILT + tested** (`betting/decision.py`) — HALTED until skill proven |
-| 7 | Complete odds-collector field mapping | needs 1 live aggregator response | after coverage gate |
-| 8 | Paper-execution + resolution lifecycle (track **skill**, not P&L) | lean rebuild | later |
-| 9 | Scheduler/runner (systemd/cron) | small | later |
+| 7 | Complete odds-collector field mapping | needs 1 live aggregator response | ⏳ **SEAM — operator** (silo can't see a live payload; `_fetch_odds`/`_fetch_markets` log the first response to confirm) |
+| 8 | Paper-execution + resolution lifecycle (track **skill**, not P&L) | lean rebuild | ✅ **BUILT + tested** (`execution/resolution.py` + `paper.py`) |
+| 9 | Scheduler/runner (systemd/cron) | small | ✅ **BUILT + tested** (`run/runner.py`, `deploy/*.service/.timer`, `crontab.example`) |
+| + | End-to-end prediction pipeline (wires #2/#3/#5/#6) | from-scratch | ✅ **BUILT + tested** (`pipeline.py`) |
 
 ## Critical path
-1. **#1–#6 BUILT + unit-tested** (108 tests; infra + signal + decision, under operator
-   authorization). D2 still binds: the signal's calibrator is UNFITTED, the decision is HALTED
-   (`SILO_ENTRY_HALT`), so nothing trains or trades until proven on real data.
+1. **#1–#9 + pipeline BUILT + unit-tested** (141 tests; everything the silo can build without a
+   box). D2 still binds: the calibrator is UNFITTED, the decision is HALTED (`SILO_ENTRY_HALT`),
+   the runner is COLLECT-ONLY — nothing trains or trades until proven on real data.
 2. Operator runs the battery on the box → data leaves quarantine (**GATE**); validate keys +
    OddsPapi esports coverage (confirm exact Singbet/Thunderpick strings).
-3. **Wire it together** (#7 remaining): matcher (#3) links Polymarket snapshots (#2) to matches +
-   odds; `import_from_prior_bot` loads cleared history; complete the odds-collector field mapping
-   on the first live payload.
+3. **Operator-only seam (#7):** complete the odds-collector + Gamma field mapping on the first
+   live payload (both collectors log it), then start the collect-only runner (`deploy/` timer).
+   `import_from_prior_bot` loads the cleared history.
 4. **Forward-collect odds** (~2–4 wks). Then FIT the calibrator (#5) on forward (score, outcome)
    pairs and measure skill vs market (#4). Only if the skill gate PASSES does the decision (#6)
    become eligible — then flip `SILO_ENTRY_HALT` to paper-trade. No trading before that.
