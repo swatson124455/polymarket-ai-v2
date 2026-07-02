@@ -28,8 +28,10 @@ Failure evidence — 📄 DOC-SOURCED (`EB_MODEL_EDGE_PROPOSAL_2026-06-16.md`, s
 - `collectors/polymarket_collector.py` — item #2, append-only snapshot collector (content-classified, Cmd 5; 23 tests)
 - `markets/match_matcher.py` — item #3, two-team gate + specificity (surgical cut; difflib fuzzy DEVIATION; 17 tests)
 - `eval/skill_metrics.py` — item #4, P&L-free skill harness (from-scratch; 26 tests)
+- `signal/sharp_consensus.py` — item #5, raw consensus → calibrated P(team_a), no de-vig (from-scratch; 20 tests)
+- `betting/decision.py` — item #6, price-deferring bet rule + fractional Kelly (from-scratch; 22 tests)
 - `config.py`, `.env.example`, `requirements.txt` (no shin/xgboost/catboost)
-- All silo unit tests are stdlib-only (`python -m esports_silo.<pkg>.test_*`) — no pytest dep.
+- All silo unit tests are stdlib-only (`python -m esports_silo.<pkg>.test_*`) — no pytest dep. 108 tests, all green.
 
 ## Build list (verified)
 | # | Component | Type | When |
@@ -38,20 +40,25 @@ Failure evidence — 📄 DOC-SOURCED (`EB_MODEL_EDGE_PROPOSAL_2026-06-16.md`, s
 | 2 | Polymarket snapshot collector → `polymarket_snapshots` | build now | ✅ **BUILT + tested** (`collectors/polymarket_collector.py`) — runs live after gate + coverage confirmed |
 | 3 | Market↔match matcher (aliases + two-team gate) | surgical-pull `esports_market_scanner` (verified clean `:180,313`) | ✅ **BUILT + tested** (`markets/match_matcher.py`) |
 | 4 | Skill-eval harness (Brier/calibration/closing-line, **P&L-free**) | **from-scratch** — standard formulas *referenced* only; `metrics.py` NOT pulled (embeds `compute_pnl` Cmd 1 + shin CLV Cmd 2) | ✅ **BUILT + tested** (`eval/skill_metrics.py`) |
-| 5 | **The signal/model** (raw 3-book → `P(team_a)`, no de-vig, price-deferring rule) | from-scratch | design after gate, validate after odds |
-| 6 | Bet-decision + Kelly sizing | **from-scratch** — textbook Kelly *referenced*; `esports_bankroll_manager` NOT pulled (embeds banned `edge>0` rule `:82-83`) | after #5 |
+| 5 | **The signal/model** (raw 3-book → `P(team_a)`, no de-vig, price-deferring rule) | from-scratch | ✅ **BUILT + tested** (`signal/sharp_consensus.py`) — calibrator awaits forward outcomes to fit |
+| 6 | Bet-decision + Kelly sizing | **from-scratch** — textbook Kelly *referenced*; `esports_bankroll_manager` NOT pulled (embeds banned `edge>0` rule `:82-83`) | ✅ **BUILT + tested** (`betting/decision.py`) — HALTED until skill proven |
 | 7 | Complete odds-collector field mapping | needs 1 live aggregator response | after coverage gate |
 | 8 | Paper-execution + resolution lifecycle (track **skill**, not P&L) | lean rebuild | later |
 | 9 | Scheduler/runner (systemd/cron) | small | later |
 
 ## Critical path
-1. **#1/#2/#3/#4 BUILT + unit-tested** (infra, under operator authorization). → 2. Operator runs
-   the battery on the box → whatever passes leaves quarantine (**GATE**). D2 still binds: the built
-   infra **trains/decides on nothing** until the gate clears.
-3. **After the gate clears:** design **#5** (the signal) on the cleared inputs; wire #2/#3/#4
-   together (matcher → snapshots + odds → skill eval).
-4. Operator: aggregator coverage gate + valid keys + **start forward-collecting odds**.
-5. After ~2–4 wks of odds: validate the signal on forward data (skill, not P&L) via #4; then #6.
+1. **#1–#6 BUILT + unit-tested** (108 tests; infra + signal + decision, under operator
+   authorization). D2 still binds: the signal's calibrator is UNFITTED, the decision is HALTED
+   (`SILO_ENTRY_HALT`), so nothing trains or trades until proven on real data.
+2. Operator runs the battery on the box → data leaves quarantine (**GATE**); validate keys +
+   OddsPapi esports coverage (confirm exact Singbet/Thunderpick strings).
+3. **Wire it together** (#7 remaining): matcher (#3) links Polymarket snapshots (#2) to matches +
+   odds; `import_from_prior_bot` loads cleared history; complete the odds-collector field mapping
+   on the first live payload.
+4. **Forward-collect odds** (~2–4 wks). Then FIT the calibrator (#5) on forward (score, outcome)
+   pairs and measure skill vs market (#4). Only if the skill gate PASSES does the decision (#6)
+   become eligible — then flip `SILO_ENTRY_HALT` to paper-trade. No trading before that.
+5. #8 paper-execution + resolution lifecycle, #9 scheduler — after the signal proves out.
 
 ## Open decisions
 - De-vig → **DECIDED: does not exist** (Cmd 2).
