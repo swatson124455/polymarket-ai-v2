@@ -8,6 +8,22 @@ Usage:
 
 Computes per-group: Brier score, win rate, count, avg P&L.
 Helps diagnose YES win rate (~16%) and identify calibration errors by price range.
+
+S222 measurement repairs (this script previously measured nothing real):
+  - Confidence read from the trade_events.confidence COLUMN — the ENTRY write
+    path (paper_trading.py) populates the column, NOT event_data->>'confidence'
+    (that JSONB key is never written; every row was skipped as NULL).
+  - Entries deduped to the latest per (market_id, side); the old bare join
+    cross-multiplied multiple entries against resolutions.
+  - RESOLUTION rows are side-agnostic (one per bot+market since S167) with
+    legacy duplicates → DISTINCT ON latest; markets entered on BOTH sides are
+    EXCLUDED (pooled realized_pnl cannot be attributed to a side).
+  - NULL realized_pnl pairs dropped instead of silently scored as losses.
+
+Caveats: with no hours argument the window is ALL TIME, mixing config regimes
+(S118/S154/S155B...) into one estimate — prefer an explicit window. Dollar
+P&L columns are operator-diagnostic only (CLAUDE.md Forbidden Pattern #11);
+gate decisions on Brier/win-rate-vs-price, not P&L.
 """
 import asyncio
 import sys
@@ -26,23 +42,36 @@ async def brier_by_side(hours: int = 0):
         if hours > 0:
             time_filter = f"AND e.event_time > NOW() - INTERVAL '{hours} hours' AND e.event_time <= NOW()"
 
-        # Get ENTRY events with their RESOLUTION outcomes
+        # Get ENTRY events with their RESOLUTION outcomes.
+        # S222: confidence from the COLUMN; entries deduped per (market_id,
+        # side); side-agnostic RESOLUTION deduped to latest; dual-side markets
+        # excluded (pooled realized_pnl not attributable to a side).
         rows = await s.execute(text(f"""
             WITH entries AS (
-                SELECT e.market_id, e.side, e.price AS entry_price,
-                       CAST(e.event_data->>'confidence' AS FLOAT) AS confidence,
+                SELECT DISTINCT ON (e.market_id, e.side)
+                       e.market_id, e.side, e.price AS entry_price,
+                       e.confidence,
                        e.event_time AS entry_time
                 FROM trade_events e
                 WHERE e.bot_name = 'WeatherBot'
                   AND e.event_type = 'ENTRY'
                   {time_filter}
+                ORDER BY e.market_id, e.side, e.event_time DESC
+            ),
+            dual_side AS (
+                SELECT market_id
+                FROM entries
+                GROUP BY market_id
+                HAVING COUNT(DISTINCT side) > 1
             ),
             resolutions AS (
-                SELECT r.market_id, r.realized_pnl,
+                SELECT DISTINCT ON (r.market_id)
+                       r.market_id, r.realized_pnl,
                        CASE WHEN r.realized_pnl > 0 THEN 1 ELSE 0 END AS won
                 FROM trade_events r
                 WHERE r.bot_name = 'WeatherBot'
                   AND r.event_type = 'RESOLUTION'
+                ORDER BY r.market_id, r.event_time DESC
             )
             SELECT e.side,
                    e.entry_price,
@@ -51,6 +80,8 @@ async def brier_by_side(hours: int = 0):
                    r.won
             FROM entries e
             JOIN resolutions r ON r.market_id = e.market_id
+            WHERE e.market_id NOT IN (SELECT market_id FROM dual_side)
+              AND r.realized_pnl IS NOT NULL
         """))
         data = rows.fetchall()
 
