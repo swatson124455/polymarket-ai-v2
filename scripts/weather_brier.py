@@ -10,8 +10,25 @@ Usage:
     Default: 30 days
 
 Data sources:
-  - trade_events (ENTRY → predicted_probability, RESOLUTION → realized_pnl)
+  - trade_events (ENTRY → confidence column, RESOLUTION → realized_pnl)
   - event_data JSONB for city, lead_time_hours, market_type metadata
+
+S222 measurement repairs (this script previously reported zero rows):
+  - Forecast = trade_events.confidence (calibrated P(traded side wins) — the
+    ENTRY write path in paper_trading.py populates the confidence COLUMN).
+    The old filter `predicted_probability IS NOT NULL` matched nothing: no
+    writer ever populates trade_events.predicted_probability.
+  - Entries deduped to the latest per (market_id, side).
+  - RESOLUTION rows are side-agnostic, one per (bot, market) since S167, and
+    legacy duplicates exist → DISTINCT ON latest; markets entered on BOTH
+    sides are EXCLUDED (their pooled realized_pnl cannot be attributed to a
+    side) and the exclusion count is reported.
+  - Resolutions are no longer windowed to the entry window (a resolution
+    landing after the window censored otherwise-valid pairs).
+
+NOTE: dollar P&L columns are operator-diagnostic only — P&L data is
+designated unreliable (CLAUDE.md Forbidden Pattern #11); gate decisions on
+Brier/reliability, not the P&L columns.
 
 Brier decomposition (Murphy 1973):
   BS = reliability - resolution + uncertainty
@@ -43,12 +60,15 @@ async def main():
         from sqlalchemy import text
 
         # ── 1. Fetch ENTRY + RESOLUTION pairs joined on market_id ──
+        # S222: forecast = confidence column (calibrated P(traded side wins));
+        # entries deduped per (market_id, side); dual-side markets excluded
+        # (side-agnostic RESOLUTION realized_pnl cannot be attributed).
         async with db.get_session() as session:
             result = await session.execute(text("""
                 WITH entries AS (
-                    SELECT
+                    SELECT DISTINCT ON (market_id, side)
                         market_id,
-                        predicted_probability,
+                        confidence,
                         side,
                         event_data->>'city' AS city,
                         (event_data->>'lead_time_hours')::numeric AS lead_time_hours,
@@ -59,7 +79,14 @@ async def main():
                       AND event_type = 'ENTRY'
                       AND event_time > NOW() - make_interval(days => :days)
                       AND event_time <= NOW()
-                      AND predicted_probability IS NOT NULL
+                      AND confidence IS NOT NULL
+                    ORDER BY market_id, side, event_time DESC
+                ),
+                dual_side AS (
+                    SELECT market_id
+                    FROM entries
+                    GROUP BY market_id
+                    HAVING COUNT(DISTINCT side) > 1
                 ),
                 resolutions AS (
                     SELECT DISTINCT ON (market_id)
@@ -68,20 +95,21 @@ async def main():
                     FROM trade_events
                     WHERE bot_name = 'WeatherBot'
                       AND event_type = 'RESOLUTION'
-                      AND event_time > NOW() - make_interval(days => :days)
-                      AND event_time <= NOW()
                     ORDER BY market_id, event_time DESC
                 )
                 SELECT
                     e.market_id,
-                    e.predicted_probability,
+                    e.confidence,
                     e.side,
                     e.city,
                     e.lead_time_hours,
                     e.market_type,
-                    r.realized_pnl
+                    r.realized_pnl,
+                    (SELECT COUNT(*) FROM dual_side) AS n_dual_side_excluded
                 FROM entries e
                 JOIN resolutions r USING (market_id)
+                WHERE e.market_id NOT IN (SELECT market_id FROM dual_side)
+                  AND r.realized_pnl IS NOT NULL
                 ORDER BY e.entry_time
             """), {"days": days})
             rows = result.fetchall()
@@ -90,10 +118,15 @@ async def main():
             print(f"No resolved ENTRY+RESOLUTION pairs found in last {days} days.")
             return
 
+        n_dual_excluded = int(rows[0][7]) if rows else 0
+        if n_dual_excluded:
+            print(f"NOTE: {n_dual_excluded} dual-side market(s) excluded "
+                  f"(pooled realized_pnl cannot be attributed to a side).")
+
         # ── 2. Build records ──
         records = []
         for row in rows:
-            market_id, pred_prob, side, city, lead_h, mkt_type, rpnl = row
+            market_id, pred_prob, side, city, lead_h, mkt_type, rpnl = row[:7]
             pred_prob = float(pred_prob) if pred_prob is not None else None
             rpnl = float(rpnl) if rpnl is not None else None
             lead_h = float(lead_h) if lead_h is not None else None
