@@ -1,0 +1,24 @@
+# esports_silo — one-shot collection pass (paired with the .timer).
+# Install: copy both units to /etc/systemd/system/, set WorkingDirectory + the .env path,
+# then:  systemctl daemon-reload && systemctl enable --now esports-silo-collect.timer
+#
+# Runs ONLY the append-only collectors (odds + Polymarket snapshots). It trades nothing and
+# fits nothing — SILO_ENTRY_HALT stays on until the skill gates pass (D2).
+[Unit]
+Description=esports_silo append-only collection pass (odds + Polymarket snapshots)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# --- EDIT these three for your box ---
+WorkingDirectory=/opt/esports_silo
+EnvironmentFile=/opt/esports_silo/.env
+ExecStart=/usr/bin/python3 -m esports_silo.run.runner --once
+# ------------------------------------
+Nice=10
+# read-only except its own DB writes; no escalation needed
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true

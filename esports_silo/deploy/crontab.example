@@ -1,0 +1,7 @@
+# esports_silo — cron alternative to the systemd timer (pick ONE, not both).
+# Every 15 minutes: load env, run one append-only collection pass. Collect-only — trades
+# nothing (SILO_ENTRY_HALT on until skill gates pass). Adjust paths for your box.
+#
+#   crontab -e   # then paste the line below
+#
+*/15 * * * * cd /opt/esports_silo && set -a && . ./.env && set +a && /usr/bin/python3 -m esports_silo.run.runner --once >> /var/log/esports_silo/collect.log 2>&1

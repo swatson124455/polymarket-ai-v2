@@ -1,0 +1,15 @@
+# esports_silo — fire the collection pass every 15 min (tune OnUnitActiveSec to taste).
+# The odds collector self-rate-limits (OddsPapi ~5s cooldown); 15 min keeps well within the
+# free tier while capturing line movement. Enable with:
+#   systemctl enable --now esports-silo-collect.timer
+[Unit]
+Description=Schedule esports_silo collection pass
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Persistent=true
+Unit=esports-silo-collect.service
+
+[Install]
+WantedBy=timers.target
