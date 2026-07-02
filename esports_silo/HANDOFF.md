@@ -35,6 +35,23 @@ The prior EB effort logged **186+ errors** from "confident before verified." Car
 ## Commandments (full text: `COMMANDMENTS.md`)
 1. **P&L is not evidence.** 2. **De-vig does not exist.** 3. **Surgical cut.** 4. **Quarantine by default.**
 
+## Binding session directives (D1–D4)
+Newer than the original scaffold docs; where older text conflicts, these win. Cited across the
+silo as D1–D4 — defined here so a fresh session has them without reading commit history.
+- **D1 — No broken pulls.** Extract only clean, self-contained logic. Never carry source that
+  embeds banned behaviour — P&L (Cmd 1), Shin/de-vig (Cmd 2), the `edge>0` bet rule, or
+  mis-oriented data axes. Standard formulas may be *referenced*; such code is rebuilt
+  from-scratch. Adaptations are labelled DEVIATION, never "port" (Cmd 3). (Consequence:
+  build items #4 metrics + #6 Kelly are from-scratch, not surgical-pulls.)
+- **D2 — Gate-then-build.** Nothing new is built until the operator runs
+  `scripts/verify_data_quality.py` on the box and data clears quarantine. No parallel build
+  ahead of the gate.
+- **D3 — Sharp books decided.** Pinnacle, Singbet, Thunderpick via OddsPapi. Operator ratifies
+  live esports coverage; exact aggregator identifier strings still to be confirmed.
+- **D4 — Data in git.** `data/esports_matches_bulk.jsonl` + `data/cs2/pandascore_cs2.json` ARE
+  committed (`369606b`) and locally readable; other data (LoL CSVs, the 3.3G paper log) stays
+  source-machine/VPS only. All carried data remains quarantined until the gate passes.
+
 ## Known landmines — 📄 DOC-SOURCED (quarantine per Cmd 4 until re-verified)
 Master reference: **`EB_CLEAN_DATA_QUARANTINE.md`** (authoritative clean-vs-dirty table list —
 e.g. "do NOT compute model-vs-market on `esports_predictions`; use `prediction_log` esports_*,
