@@ -1,6 +1,6 @@
 # DEVELOPMENT DIRECTIVE — SURGICAL FIXES, ZERO COLLATERAL DAMAGE
 
-This is a live 15-bot Polymarket automated trading system. Real capital is at risk. Every change can break something that currently works and costs money.
+This is a live 14-bot Polymarket automated trading system (BOT_REGISTRY at main.py:79-97). Real capital is at risk. Every change can break something that currently works and costs money.
 
 ## NEG-RISK MARKETS ARE IN SCOPE (HARDCODED 2026-05-26)
 
@@ -39,7 +39,7 @@ Working code is sacred. Fix only what is broken. Fix it at the root. Prove it be
 
 ## Project Boundaries — No Cross-Project Bleed
 
-The working tree is bounded to `C:/lockes-picks/polymarket-ai-v2/` (the git repo root, see `git rev-parse --show-toplevel`). A separate, unrelated project (Locke's Picks best-ball draft assistant) lives at the parent directory `C:/lockes-picks/` — its files include `ADP_*.md`, `AGENT_BACKTEST.md`, `AGENT_ORCHESTRATOR.md`, and ~200 other docs/scripts at the parent level. That project is OUT OF SCOPE for this Claude session.
+The working tree is bounded to the git repo root — `git rev-parse --show-toplevel` (`C:/lockes-picks/polymarket-ai-v2/` on the operator's machine; remote sessions run clones at other paths, e.g. `/home/user/polymarket-ai-v2`, and the same rule binds). A separate, unrelated project (Locke's Picks best-ball draft assistant) lives at the parent directory `C:/lockes-picks/` — its files include `ADP_*.md`, `AGENT_BACKTEST.md`, `AGENT_ORCHESTRATOR.md`, and ~200 other docs/scripts at the parent level. That project is OUT OF SCOPE for this Claude session.
 
 ### Rules (non-negotiable):
 1. **Do not read, write, modify, list, or reference files outside `C:/lockes-picks/polymarket-ai-v2/`.** This includes the drafter project at `C:/lockes-picks/`, any other directory under `C:/`, and any path that resolves outside the repo via `..`, absolute paths, symlinks, or shell expansion.
@@ -114,8 +114,8 @@ Full blast-radius protocol from the checklist above.
 
 After modifying ANY shared module — `base_bot.py`, `bankroll_manager.py`, `risk_manager.py`, `position_manager.py`, `prediction_engine.py`, `database.py`, `main.py`:
 
-1. Run `pytest` — all 1090+ tests must pass
-2. **List every bot affected by name** (all 15 if you touched base_bot.py)
+1. Run `pytest` — the full suite must pass (~3,000 test functions as of 2026-07)
+2. **List every bot affected by name** (all 14 if you touched base_bot.py)
 3. For each affected bot, state what you verified
 4. If you can't run the bot live, provide a post-deploy checklist:
    ```
