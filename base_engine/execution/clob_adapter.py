@@ -72,6 +72,53 @@ def _get_clob_client():
         return None
 
 
+# S250: candidate top-level response keys that may carry the realized match price.
+# The V2 matched-order response shape is UNVERIFIED (no live order placed at authoring
+# time — see SALVAGE_PACKAGE.json provenance.unverified). We deliberately do NOT read the
+# plain "price" key here: that is the limit we submitted, not the fill. Capture fires only
+# when one of these clearly-named fields exists AND passes the strict validity/bound check
+# below; otherwise the caller falls back to the submitted price and logs the response keys
+# so the first live fill reveals the true shape for a verified follow-up.
+_FOK_FILL_PRICE_KEYS = (
+    "avgPrice", "average_price", "avg_price",
+    "matchedPrice", "matched_price", "price_matched",
+    "fillPrice", "fill_price", "executedPrice", "executed_price",
+)
+
+
+def _derive_fok_fill_price(result: Dict[str, Any], side_upper: str, submitted_limit: float):
+    """S250: best-effort realized-fill-price extraction from a matched FOK response.
+
+    Returns a float in (0,1) ONLY when a clearly-named price field is present, parses
+    as a positive number, and satisfies the side-aware one-sided bound against the
+    actually-submitted FOK limit (a FOK fills at or better than its limit):
+      BUY  -> fill <= submitted_limit + half-tick tolerance
+      SELL -> fill >= submitted_limit - half-tick tolerance
+    Returns None on any miss so the caller preserves the current submitted-price behavior.
+    Never raises. Deliberately conservative: does NOT infer price from making/taking
+    amounts in this version — amount semantics are unverified and a wrong inference could
+    write a plausible-but-wrong cost basis. Instrument-then-refine.
+    """
+    if not isinstance(result, dict):
+        return None
+    _TOL = 0.005  # half of the 0.01 CLOB tick
+    for _k in _FOK_FILL_PRICE_KEYS:
+        if _k not in result:
+            continue
+        try:
+            p = float(result[_k])
+        except (TypeError, ValueError):
+            continue
+        if not (0.0 < p < 1.0):
+            continue
+        if side_upper == "BUY" and p > submitted_limit + _TOL:
+            continue
+        if side_upper == "SELL" and p < submitted_limit - _TOL:
+            continue
+        return p
+    return None
+
+
 def _place_order_sync(market_id: str, token_id: str, side: str, size: float, price: float) -> Dict[str, Any]:
     """Sync place order via py-clob-client (run in executor)."""
     client = _get_clob_client()
@@ -108,8 +155,9 @@ def _place_order_sync(market_id: str, token_id: str, side: str, size: float, pri
         if _fok:
             # Cross the spread by up to CLOB_MARKETABLE_CAP_PCT so a BUY can reach the
             # ask / a SELL the bid; the FOK fills at the best price within this ceiling
-            # or is killed. The signal `price` stays the recorded cost basis (the real
-            # fill is <= this ceiling; precise fill-price capture is a separate WI).
+            # or is killed. S250: the realized fill (<= this ceiling for a BUY) is now
+            # captured from the matched response into the `fill_price` return key and
+            # threaded to cost basis; the submitted `price` remains as a fallback.
             _cap = float(getattr(settings, "CLOB_MARKETABLE_CAP_PCT", 0.05) or 0.05)
             _limit = float(price) * (1.0 + _cap) if side_upper == "BUY" else float(price) * (1.0 - _cap)
             # Polymarket markets are 0.01-tick (the GTC path rounds to 2 too); a
@@ -126,6 +174,12 @@ def _place_order_sync(market_id: str, token_id: str, side: str, size: float, pri
         if result is None:
             return {"success": False, "error": "create_and_post_order returned None"}
         order_id = result.get("orderID") or result.get("id") or result.get("order_id")
+        # S250: realized fill price for cost-basis capture. None => the consumer keeps the
+        # submitted price (current behavior). Only the FOK-matched path can produce a fill
+        # here: a GTC order returns on ACCEPTANCE and may rest unfilled, so its true fill
+        # needs a post-submit order-status query (separate WI) — we intentionally leave GTC
+        # on the submitted price with the None below.
+        _fill_price = None
         if _fok:
             _status = str(result.get("status") or "").lower()
             if _status != "matched":
@@ -137,6 +191,17 @@ def _place_order_sync(market_id: str, token_id: str, side: str, size: float, pri
                 return {"success": False, "not_filled": True, "status": _status,
                         "order_id": order_id,
                         "error": f"order not filled (status={_status or 'unknown'})"}
+            _fill_price = _derive_fok_fill_price(result, side_upper, _limit)
+            if _fill_price is None:
+                # Shape not recognized: preserve current behavior (submitted price) and dump
+                # the response keys so the first real fill reveals the true field names for a
+                # verified capture. keys-only (not values) to avoid logging sensitive fields.
+                logger.warning("clob_fill_price_unresolved", order_id=order_id,
+                                market_id=market_id, side=side_upper, submitted_limit=_limit,
+                                response_keys=sorted(result.keys()))
+            else:
+                logger.info("clob_fill_price_captured", order_id=order_id, market_id=market_id,
+                            side=side_upper, submitted_limit=_limit, fill_price=_fill_price)
         return {
             "success": True,
             "order_id": order_id,
@@ -144,6 +209,7 @@ def _place_order_sync(market_id: str, token_id: str, side: str, size: float, pri
             "side": side_upper,
             "size": size,
             "price": price,
+            "fill_price": _fill_price,
             "status": result.get("status"),
         }
     except Exception as e:
