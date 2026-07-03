@@ -1,0 +1,66 @@
+# WB splinter deploy — manual trigger ONLY (workflow_dispatch).
+#
+# Inert until the repo secret WB_DEPLOY_SSH_KEY exists (guard step aborts).
+# Setup (operator, once):
+#   1. Generate a DEDICATED keypair (do NOT reuse the master Lightsail key):
+#        ssh-keygen -t ed25519 -f wb_deploy_key -N "" -C "wb-actions-deploy"
+#   2. On the VPS: append wb_deploy_key.pub to /home/ubuntu/.ssh/authorized_keys
+#   3. GitHub repo → Settings → Secrets → Actions → new secret
+#        name: WB_DEPLOY_SSH_KEY   value: contents of wb_deploy_key (private)
+#   4. Delete the local private key file.
+#   Revoke any time by removing the pubkey line on the VPS.
+#
+# Trigger: Actions tab → "Deploy WB splinter" → Run workflow (pick ref),
+# or from any Claude session via the GitHub MCP actions_run_trigger.
+#
+# Scope: weather splinter ONLY (polymarket-weather service, pa2-weather-releases
+# path). Does not touch master, MB, or shared services — WB-owned per
+# deploy/README.md ("restart is WB session's call").
+
+name: Deploy WB splinter
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch / tag / SHA to deploy"
+        required: true
+        default: "claude/new-whiteboard-session-9b23tq"
+
+concurrency: deploy-weather   # never two weather deploys at once
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Guard — deploy key configured
+        env:
+          KEY: ${{ secrets.WB_DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::WB_DEPLOY_SSH_KEY secret not configured — see header of this workflow file"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Build release tarball
+        run: |
+          STAMP=$(date -u +%Y%m%d_%H%M%S)
+          echo "STAMP=$STAMP" >> "$GITHUB_ENV"
+          tar czf "/tmp/wb-$STAMP.tar.gz" \
+            --exclude=.git --exclude=__pycache__ --exclude='*.pyc' \
+            --exclude=venv --exclude=.venv --exclude=node_modules --exclude=.env .
+          ls -lh "/tmp/wb-$STAMP.tar.gz"
+
+      - name: Upload + cut release on VPS
+        env:
+          KEY: ${{ secrets.WB_DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/wb_deploy && chmod 600 ~/.ssh/wb_deploy
+          SSH_OPTS="-i $HOME/.ssh/wb_deploy -o StrictHostKeyChecking=accept-new"
+          scp $SSH_OPTS "/tmp/wb-$STAMP.tar.gz" "ubuntu@18.201.216.0:/tmp/"
+          ssh $SSH_OPTS ubuntu@18.201.216.0 bash -s "$STAMP" < deploy/wb-release-cut.sh
