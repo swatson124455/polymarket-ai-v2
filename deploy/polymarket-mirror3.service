@@ -1,0 +1,22 @@
+# MirrorBot v3 — clean-silo unit (MB_REBUILD_PLAN.md §5).
+# Process isolation: own entrypoint, NOT a slot in the shared main.py fleet.
+# Env isolation: loads ONLY the v3 allowlist file — deliberately no
+# /opt/pa2-shared/.env line (that inheritance is the v2 poison this silo
+# exists to leave behind; see deploy/env.mirror3.example).
+[Unit]
+Description=Polymarket MirrorBot v3 (clean silo, paper until gate pass)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=polymarket
+WorkingDirectory=/opt/polymarket-ai-v2
+Environment="PYTHONWARNINGS=ignore::UserWarning:sklearn,ignore::FutureWarning:sklearn"
+EnvironmentFile=/opt/pa2-shared/.env.mirror3
+ExecStart=/opt/polymarket-ai-v2/venv/bin/python -m mirror_v3.run
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -30,7 +30,7 @@ The salvage package (`SALVAGE_PACKAGE.json` `_description`) is written for "a fo
 | "Keep `redeem_and_retrade.py` + timer until the wallet is drained" | **Keep indefinitely** — the wallet keeps operating in a rebuild. |
 | `strategy.gate_scoring`: DO NOT REUSE | **Upheld — strongest form.** The whale-copy scoring core (`mirror_bot.py:3602-3810`) is dead: audit found signal indistinguishable from zero, no +EV wallet subset, non-monotonic confidence. Nothing from it is ported. |
 
-**Identity decisions:** keep bot name `MirrorBot` (DB history, restore queries, dashboards key on it), keep file paths, rebuild in place. Phase 1 does **not** instantiate the learning stack (see §3 CANARY rule).
+**Identity decisions (SUPERSEDED by §5 clean-silo, 2026-07-02):** ~~keep bot name `MirrorBot`, rebuild in place~~ — the silo rebuild uses `BOT_NAME='MirrorBotV3'` in `mirror_v3/`; old rows stay queryable under the old name. Phase 1 still does **not** instantiate the learning stack (see §3 CANARY rule).
 
 ---
 
@@ -75,7 +75,44 @@ The old strategy died of unmeasured edge. The gate exists so that cannot recur.
 
 ---
 
-## 5. Evidence discipline (standing)
+## 5. Clean-silo rebuild (operator "go", 2026-07-02) — supersedes rebuild-in-place
+
+**Trigger:** operator verdict that the v2 home is poisoned. Verified poison inventory:
+env-drift live state (`docs/m0_db_results_2026-07-02.md` — live at 100% canary via
+absent-key defaults), shared-.env inheritance bleed, 4,700-line v2 code with latent
+bugs, and a trading history under `bot_name='MirrorBot'` that mixes no-edge results
+into any metric. NOT poisoned (keep): `base_engine` (423/423 green), the PG data
+(measured), external avenues.
+
+**Five isolation layers** (implemented in `mirror_v3/`, house precedent `esports_v2/`):
+1. **Code** — `mirror_v3/` never imports `bots/mirror_bot.py` / `elite_watchlist.py`;
+   base_engine imports + salvaged patterns copied with named bugs fixed.
+2. **Env** — unit loads ONLY `/opt/pa2-shared/.env.mirror3` (allowlist template
+   `deploy/env.mirror3.example`); `env_guard` makes unset a BOOT ERROR (the v2
+   footgun class), bans auto-advance outright, and gates live behind an explicit
+   ack phrase (`MIRROR3_LIVE_ACK`).
+3. **Process** — own unit `deploy/polymarket-mirror3.service`, own entrypoint
+   (`python -m mirror_v3.run`); not a slot in the shared `main.py` fleet
+   (`BOT_ENABLED_MIRROR=false` in the v3 env keeps the fleet from double-running MB).
+4. **Identity** — `BOT_NAME='MirrorBotV3'` (REVISES the earlier keep-the-name call,
+   which was right for in-place, wrong for a silo). Old rows stay queryable under
+   the old name; v3 metrics start clean.
+5. **Capital** — paper-only; strategy slot EMPTY behind the §2 acceptance gate.
+
+**Guard semantics carried over (fail-closed by construction):** the four
+one-bet-per-market scopes in `mirror_v3/guards.py`; `state_restore.py` opens the
+guards ONLY after every loader succeeds — the v2 partial-restore window
+(`_state_restored=True` before the entered-sides rebuild) is structurally impossible.
+Restore loaders keep the v2 verified SQL contracts (S244 same-mode filter,
+S228 is_paper filter, net-counter daily exposure).
+
+**Leaving the old behind:** (1) old MB paused via flip-to-paper (decision 5) and kept
+writing the signal stream; (2) v3 scaffold boots + restores under the new identity;
+(3) v3 gains its own rejection-signal logging; (4) old MB then fully stopped;
+(5) old files deleted per the manifest scrap checklist — applicable at last, because
+at that point it IS a scrap.
+
+## 6. Evidence discipline (standing)
 
 - No doc-quoted quantity (row counts, rows/day, label %) is carried into commit messages or operator reports as fact until re-measured (M2).
 - Trading-state numbers only from `scripts/bot_pnl.py`; live truth from `scripts/reconcile_live_onchain.py`.
