@@ -211,10 +211,22 @@ async def list_fixtures(game: str, date_from: Optional[str] = None,
         return
     fixtures = data.get("data") or data.get("fixtures") or data if isinstance(data, dict) else data
     log.info("first raw fixtures payload: %.500s", str(data))
-    for f in (fixtures or [])[:20]:
-        print(f"  fixtureId={f.get('id') or f.get('fixture_id')}  "
-              f"{f.get('home') or f.get('team_a')} vs {f.get('away') or f.get('team_b')}  "
-              f"{f.get('start_time') or f.get('begin_at')}")
+    # LIVE-VERIFIED 2026-07-03 fixture fields (full browser payload): fixtureId,
+    # participant1Name/participant2Name (+ShortName/Abbr — names ARE present; an earlier
+    # truncated log suggested otherwise), participant1Id/participant2Id, sportId,
+    # tournamentId/tournamentName, statusId/statusName (0=Pre-Game, 2=Finished), hasOdds,
+    # startTime/trueStartTime/trueEndTime, externalProviders{betradarId, pinnacleId,
+    # opticoddsId, oddinId, mollybetId, ...}. hasOdds appeared True mostly on UPCOMING
+    # fixtures in the sample — may mean "odds currently available", not "history exists";
+    # the historical-odds probe on a FINISHED fixture settles that.
+    fixtures = sorted(fixtures or [], key=lambda f: not f.get("hasOdds"))
+    n_odds = sum(1 for f in fixtures if f.get("hasOdds"))
+    print(f"  ({len(fixtures)} fixtures in window; {n_odds} with hasOdds=True)")
+    for f in fixtures[:20]:
+        pin = (f.get("externalProviders") or {}).get("pinnacleId")
+        print(f"  fixtureId={f.get('fixtureId')}  hasOdds={f.get('hasOdds')}  "
+              f"{f.get('participant1Name')} vs {f.get('participant2Name')}  "
+              f"start={f.get('startTime')}  status={f.get('statusName')}  pinnacleId={pin}")
 
 
 async def probe_fixture(fixture_id: str, books: List[str], out_path: str,

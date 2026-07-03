@@ -97,10 +97,11 @@ async def _fetch_odds(session, fixture: dict, books: list[str]) -> list[dict]:
     values as provisional.
     """
     global _logged_shape
-    fixture_id = fixture.get("id") or fixture.get("fixture_id")
+    fixture_id = fixture.get("fixtureId") or fixture.get("id") or fixture.get("fixture_id")
     if fixture_id is None:
         return []
-    data = await _get(session, "/odds", {"fixture_id": fixture_id})  # VERIFY path
+    # LIVE-VERIFIED 2026-07-03: the API is camelCase (fixtureId); /odds path still a SEAM.
+    data = await _get(session, "/odds", {"fixtureId": fixture_id})  # VERIFY path
     if not data:
         return []
     if not _logged_shape:
@@ -163,10 +164,12 @@ async def run_once(dry_run: bool, poll_all: bool = False) -> None:
             fixtures = await _fetch_fixtures(session, game)
             log.info("fixtures", game=game, n=len(fixtures))
             for fx in fixtures:
-                match_id = str(fx.get("id") or fx.get("fixture_id") or "")
+                # LIVE-VERIFIED 2026-07-03 fixture fields: fixtureId, startTime,
+                # participant1Name/participant2Name (legacy fallbacks kept behind them).
+                match_id = str(fx.get("fixtureId") or fx.get("id") or fx.get("fixture_id") or "")
                 if not match_id:
                     continue
-                start_time = fx.get("start_time") or fx.get("begin_at")
+                start_time = fx.get("startTime") or fx.get("start_time") or fx.get("begin_at")
                 # CLOSING-LINE SAMPLING (default): poll a fixture only when a time-to-start
                 # threshold is newly due (24h/6h/1h/15m — see sampling.py). odds_raw itself is
                 # the ledger of taken samples, so this is stateless across timer runs.
@@ -208,8 +211,8 @@ async def run_once(dry_run: bool, poll_all: bool = False) -> None:
                                VALUES ($1,$2,$3,$4,$5,'aggregator')
                                ON CONFLICT (match_id) DO NOTHING""",
                             match_id, game,
-                            str(fx.get("home") or fx.get("team_a") or "?"),
-                            str(fx.get("away") or fx.get("team_b") or "?"),
+                            str(fx.get("participant1Name") or fx.get("home") or fx.get("team_a") or "?"),
+                            str(fx.get("participant2Name") or fx.get("away") or fx.get("team_b") or "?"),
                             st,
                         )
                         # APPEND-ONLY: plain INSERT, never UPSERT.
