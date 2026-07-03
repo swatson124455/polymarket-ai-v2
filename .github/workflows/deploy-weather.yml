@@ -73,11 +73,23 @@ jobs:
           # Secret may be base64-encoded (clipboard-safe single line — avoids the
           # Windows CRLF 'error in libcrypto' failure seen in runs 2-3) or raw PEM.
           if printf '%s' "$KEY" | base64 -d 2>/dev/null | grep -q "OPENSSH PRIVATE KEY"; then
+            echo "key source: base64 secret"
             printf '%s' "$KEY" | base64 -d > ~/.ssh/wb_deploy
           else
+            echo "key source: raw PEM secret"
             printf '%s\n' "$KEY" > ~/.ssh/wb_deploy
           fi
+          # Windows ssh-keygen writes CRLF line endings INSIDE the key file;
+          # Windows ssh tolerates them, Linux fails with 'error in libcrypto'
+          # (runs 2-5). Strip CR and guarantee a trailing newline.
+          tr -d '\r' < ~/.ssh/wb_deploy > ~/.ssh/wb_deploy.lf && mv ~/.ssh/wb_deploy.lf ~/.ssh/wb_deploy
+          [ -n "$(tail -c1 ~/.ssh/wb_deploy)" ] && echo >> ~/.ssh/wb_deploy
           chmod 600 ~/.ssh/wb_deploy
+          # Fail HERE with a clear message if the key still can't load —
+          # never dial the VPS with a broken key.
+          ssh-keygen -y -f ~/.ssh/wb_deploy > /dev/null || {
+            echo "::error::deploy key failed validation after CRLF scrub — re-create the WB_DEPLOY_SSH_KEY secret"; exit 1; }
+          echo "key validated OK"
           SSH_OPTS="-i $HOME/.ssh/wb_deploy -o StrictHostKeyChecking=accept-new"
           scp $SSH_OPTS "/tmp/wb-$STAMP.tar.gz" "ubuntu@18.201.216.0:/tmp/"
           ssh $SSH_OPTS ubuntu@18.201.216.0 bash -s "$STAMP" < deploy/wb-release-cut.sh
