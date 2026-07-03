@@ -27,6 +27,7 @@ import argparse
 import asyncio
 import json
 import os
+from datetime import datetime
 
 import asyncpg
 
@@ -34,6 +35,22 @@ try:
     from ..config import CONFIG
 except ImportError:
     from config import CONFIG  # type: ignore
+
+
+def _parse_ts(v):
+    """str → datetime for asyncpg (TIMESTAMPTZ binds need datetime, not str).
+
+    from esports_v2/scripts/load_matches_to_db.py:50-55: same fromisoformat with
+    Z→+00:00 replacement. DB-sourced rows already arrive as datetime (passed through).
+    Unparseable → None (caller skips the row — start_time is NOT NULL; a row whose
+    time can't be read is surfaced as skipped, never guessed).
+    """
+    if v is None or isinstance(v, datetime):
+        return v
+    try:
+        return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
 
 
 def map_winner(winner, team_a, team_b):
@@ -70,6 +87,10 @@ async def _insert_matches(dst, rows, dry_run):
         if not match_id:
             skipped += 1
             continue
+        start_time = _parse_ts(r.get("match_date") or r.get("start_time"))
+        if start_time is None:
+            skipped += 1  # start_time is NOT NULL — unreadable time = skip, don't guess
+            continue
         winner = map_winner(r.get("winner"), r.get("team_a"), r.get("team_b"))
         if r.get("winner") and winner is None:
             unresolved += 1
@@ -90,7 +111,7 @@ async def _insert_matches(dst, rows, dry_run):
             str(match_id), r.get("game") or "unknown", r.get("event_tier"),
             r.get("team_a") or "?", r.get("team_b") or "?", winner,
             r.get("score_a"), r.get("score_b"), r.get("best_of"),
-            r.get("match_date") or r.get("start_time"),
+            start_time,
             r.get("patch"), r.get("source") or "prior_bot", raw,
         )
         imported += 1 if status.endswith("1") else 0
