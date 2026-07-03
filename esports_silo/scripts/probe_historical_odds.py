@@ -167,7 +167,7 @@ async def _get(session, path: str, params: dict):
                                timeout=aiohttp.ClientTimeout(total=20)) as r:
             body = await r.json()
             if r.status != 200:
-                log.warning("historical-odds HTTP %s: %.300s", r.status, str(body))
+                log.warning("%s HTTP %s: %.300s", path.lstrip("/"), r.status, str(body))
                 return None, r.status
             return body, 200
     except Exception as e:  # noqa: BLE001
