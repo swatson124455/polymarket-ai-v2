@@ -35,13 +35,6 @@ on:
   push:
     tags:
       - "wb-deploy-*"
-    # TEMP (guard-chain test): fire on pushes touching this file so the guard
-    # failure can be observed live without a tag (sandbox sessions cannot push
-    # tags). REMOVE this branches/paths block after the test run.
-    branches:
-      - "claude/new-whiteboard-session-9b23tq"
-    paths:
-      - ".github/workflows/deploy-weather.yml"
 
 concurrency: deploy-weather   # never two weather deploys at once
 
