@@ -1,6 +1,12 @@
 # esports_silo — fire the collection pass every 15 min (tune OnUnitActiveSec to taste).
-# The odds collector self-rate-limits (OddsPapi ~5s cooldown); 15 min keeps well within the
-# free tier while capturing line movement. Enable with:
+# The odds collector self-rate-limits (OddsPapi ~5s cooldown between calls).
+#
+# ⚠ QUOTA MATH — the OddsPapi FREE tier (250 req/MONTH) canNOT sustain scheduled collection:
+# 15-min cadence = 96 runs/day × (4 fixture calls + ~1 call per active fixture) ≈ 3k+ calls/day
+# ≈ 100k/month — ~400× the free tier. Free tier is for step-7 validation (a few dry-runs) ONLY.
+# Enable this timer only AFTER a paid OddsPapi plan is active, and set OnUnitActiveSec so that
+#   runs/day × (4 + avg_active_fixtures) × 30  <  your monthly quota.
+# Polymarket Gamma has no key/quota — its snapshot half is unaffected.
 #   systemctl enable --now esports-silo-collect.timer
 [Unit]
 Description=Schedule esports_silo collection pass
