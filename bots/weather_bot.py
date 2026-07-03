@@ -3250,14 +3250,10 @@ class WeatherBot(BaseBot):
         if current_city_exp >= self._max_correlated:
             return False
 
-        # Near-expiry Kelly boost — 2h: WEATHER_HOLD_HOURS_BEFORE_RESOLUTION window.
-        # NOAA model spread narrows as resolution approaches (more ensemble members converge),
-        # yielding 600-700% ROI by holding. Apply progressive boost within the hold window.
-        # Boost schedule (from settings-controlled window, default 48h):
-        #   <12h to resolution → 2.0× (NOAA final-call, highest certainty)
-        #   <24h to resolution → 1.5× (NOAA day-of-event, strong convergence)
-        #   <hold_hours to resolution → 1.2× (within hold window, early convergence)
-        #   otherwise → 1.0× (standard)
+        # S222 NOTE: the expiry boost schedule that used to live here
+        # (2.0x/1.5x/1.2x by hours-to-resolution) was removed in S141 —
+        # expiry_boost is hardcoded 1.0 below. Stale schedule text deleted;
+        # see the S141 comment for the removal rationale.
         lead_time = opp.get("lead_time_hours", 48.0)
         # S141: Expiry boost removed — S126 data shows inverse relationship with P&L.
         # <24h=-$204, 24-48h=-$601, 48-72h=+$558, 72-120h=+$1,453.
@@ -5982,7 +5978,10 @@ class WeatherBot(BaseBot):
                 )
             # Load isotonic tail calibration data from weather_tail_calibration table.
             # Groups (model_prob, actual_freq) pairs by (bucket_type, lead_bucket).
-            # Falls back to fixed 0.85 tail discount when < 5 data points per cell.
+            # S222 NOTE: the loaded data is currently DEAD downstream — the
+            # engine stores it in _tail_isotonic but no code reads it, the
+            # table has no writer (0 rows), and there is NO 0.85 fallback
+            # (stale claim removed). Kept for the planned B1 feature build.
             try:
                 async with db.get_session() as session:
                     tail_rows = await session.execute(text("""

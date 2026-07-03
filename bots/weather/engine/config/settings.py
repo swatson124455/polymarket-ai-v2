@@ -863,6 +863,10 @@ class Settings(BaseSettings):
     WEATHER_YES_PRICE_SOFT_CAP: float = float(os.getenv("WEATHER_YES_PRICE_SOFT_CAP", "0.50"))
     WEATHER_YES_PRICE_DAMPENER_SLOPE: float = float(os.getenv("WEATHER_YES_PRICE_DAMPENER_SLOPE", "3.0"))
     # S153: Combined sizing multiplier floor (dampeners now, not boosts). Signals reduce size.
+    # S222 NOTE: DEAD CONFIG — read by no code; the 0.25 floor is hardcoded in
+    # weather_bot.py (combined_boost = max(..., 0.25)). Setting this env var
+    # (VPS currently has 2.5) changes nothing at runtime. Kept for interface
+    # stability; wire it up or remove with operator sign-off.
     WEATHER_COMBINED_BOOST_CAP: float = float(os.getenv("WEATHER_COMBINED_BOOST_CAP", "0.25"))  # S153: floor 0.25x (was cap 1.5x)
     # S118: NO entry price cap — NO trades with entry price above this are skipped.
     # Data: 70-80¢ bucket is -$484 (76.4% WR, 0.24x win/loss). <60¢ is +$1,836.

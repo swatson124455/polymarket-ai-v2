@@ -49,8 +49,12 @@ class WeatherProbabilityEngine:
         # S154: Variance inflation factor for non-EMOS paths.
         self._variance_inflation_factor = float(getattr(settings, "WEATHER_VARIANCE_INFLATION_FACTOR", 1.4))
         # Isotonic tail calibration: (bucket_type, lead_bucket) → List[(model_prob, actual_freq)]
-        # Replaces fixed 15% tail discount with data-driven calibration.
-        # Requires ≥50 resolved tail events per cell; falls back to 0.85 multiplier until then.
+        # S222 NOTE: currently DEAD — loaded by load_tail_calibration() but read
+        # by no code path (the S132/S134 tail-discount removal deleted the only
+        # consumer, and weather_tail_calibration has no writer). There is NO
+        # 0.85 fallback (stale claim removed). Re-scoped as a feature build:
+        # requires a writer + a read path in bucket_probabilities() + shadow
+        # validation before enabling. See S222 plan step B1.
         self._tail_isotonic: Dict[Tuple[str, int], List[Tuple[float, float]]] = {}
 
     def fit_distribution(
