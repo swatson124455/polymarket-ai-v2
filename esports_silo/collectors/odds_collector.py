@@ -123,6 +123,18 @@ async def _fetch_odds(session, fixture: dict, books: list[str]) -> list[dict]:
     return rows
 
 
+def _ts(v):
+    """str → datetime for asyncpg binds (TIMESTAMPTZ rejects strings — verified: the
+    importer crashed on exactly this; same fix as scripts/import_from_prior_bot._parse_ts).
+    None/unparseable → None (caller must skip: line_time is NOT NULL)."""
+    if v is None or isinstance(v, datetime):
+        return v
+    try:
+        return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
 def _is_closing(line_time, start_time) -> bool:
     try:
         lt = line_time if isinstance(line_time, datetime) else datetime.fromisoformat(str(line_time).replace("Z", "+00:00"))
@@ -155,6 +167,13 @@ async def run_once(dry_run: bool) -> None:
                     coverage[(game, o["book"])] = coverage.get((game, o["book"]), 0) + 1
                     if dry_run:
                         continue
+                    st = _ts(start_time)
+                    lt = _ts(o["line_time"])
+                    if st is None or lt is None:  # NOT NULL columns — skip loudly, never guess
+                        log.warning("unparseable time — odds row skipped",
+                                    match_id=match_id, start_time=start_time,
+                                    line_time=o["line_time"])
+                        continue
                     async with pool.acquire() as con:
                         await con.execute(
                             """INSERT INTO matches (match_id, game, team_a, team_b, start_time, source)
@@ -163,7 +182,7 @@ async def run_once(dry_run: bool) -> None:
                             match_id, game,
                             str(fx.get("home") or fx.get("team_a") or "?"),
                             str(fx.get("away") or fx.get("team_b") or "?"),
-                            start_time,
+                            st,
                         )
                         # APPEND-ONLY: plain INSERT, never UPSERT.
                         await con.execute(
@@ -171,7 +190,7 @@ async def run_once(dry_run: bool) -> None:
                                (match_id, book, aggregator, team_a_odds, team_b_odds, is_closing, line_time)
                                VALUES ($1,$2,'oddspapi',$3,$4,$5,$6)""",
                             match_id, o["book"], o["team_a_odds"], o["team_b_odds"],
-                            _is_closing(o["line_time"], start_time), o["line_time"],
+                            _is_closing(lt, st), lt,
                         )
     if pool:
         await pool.close()

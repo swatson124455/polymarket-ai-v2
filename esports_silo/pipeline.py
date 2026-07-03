@@ -109,11 +109,26 @@ def process_market(market: Dict[str, Any], candidate_matches: List[Dict[str, Any
 # ======================================================================================
 async def write_prediction(conn, rec: PredictionRecord) -> None:
     """INSERT a prediction row. (predictions is a log — one row per decision.)"""
+    from datetime import datetime
+
+    # asyncpg TIMESTAMPTZ binds reject strings (verified in a rolled-back txn against the
+    # real schema — same class as the importer bug). event_time is the look-ahead anchor
+    # and NOT NULL: unparseable → refuse loudly rather than write an unanchored prediction.
+    et = rec.event_time
+    if et is not None and not isinstance(et, datetime):
+        try:
+            et = datetime.fromisoformat(str(et).replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            et = None
+    if et is None:
+        raise ValueError(
+            f"prediction for match {rec.match_id!r} has no parseable event_time "
+            f"({rec.event_time!r}) — refusing to write without a look-ahead anchor")
     await conn.execute(
         """INSERT INTO predictions
              (match_id, market_id, model_version, signal_source, p_model, market_price,
               edge, decision, event_time)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)""",
         rec.match_id, rec.market_id, rec.model_version, rec.signal_source,
-        rec.p_model, rec.market_price, rec.edge, rec.decision, rec.event_time,
+        rec.p_model, rec.market_price, rec.edge, rec.decision, et,
     )

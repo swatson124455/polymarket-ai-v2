@@ -146,6 +146,17 @@ def parse_market(market: Dict[str, Any], snapshot_time: str) -> Optional[Dict[st
     }
 
 
+def _ts(v):
+    """str → datetime for asyncpg binds (TIMESTAMPTZ rejects strings — same fix as the
+    importer's _parse_ts; verified against the real schema in a rolled-back txn)."""
+    if v is None or isinstance(v, datetime):
+        return v
+    try:
+        return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
 _logged_shape = False
 
 
@@ -200,13 +211,14 @@ async def run_once(dry_run: bool) -> None:
             if dry_run:
                 continue
             async with pool.acquire() as con:
-                # APPEND-ONLY: plain INSERT, never UPSERT.
+                # APPEND-ONLY: plain INSERT, never UPSERT. snapshot_time parsed to datetime
+                # for the bind (the record keeps the ISO string; parser stays pure).
                 await con.execute(
                     """INSERT INTO polymarket_snapshots
                        (market_id, question, game, team_a, team_b, yes_price, volume_24h, snapshot_time)
                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
                     rec["market_id"], rec["question"], rec["game"], rec["team_a"],
-                    rec["team_b"], rec["yes_price"], rec["volume_24h"], rec["snapshot_time"],
+                    rec["team_b"], rec["yes_price"], rec["volume_24h"], _ts(rec["snapshot_time"]),
                 )
     if pool:
         await pool.close()
