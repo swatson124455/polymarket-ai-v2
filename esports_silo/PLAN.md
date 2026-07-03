@@ -64,6 +64,17 @@ Failure evidence — 📄 DOC-SOURCED (`EB_MODEL_EDGE_PROPOSAL_2026-06-16.md`, s
    become eligible — then flip `SILO_ENTRY_HALT` to paper-trade. No trading before that.
 5. #8 paper-execution + resolution lifecycle, #9 scheduler — after the signal proves out.
 
+## Historical backfill (calibrator day-one path — WEB-SOURCED, operator to confirm)
+OddsPapi `/v4/historical-odds?fixtureId=<id>&bookmakers=<...>` returns the full pre-match
+line-move history per book, and historical odds are **free for esports** (vendor-claimed).
+If real, backfilling CLOSING lines for the 28k already-labelled matches fits the calibrator
+immediately instead of after 2–4 wks of forward collection — the skill gate still proves on
+forward data (a backtest fits; it does not prove). Probe + parser built:
+`scripts/probe_historical_odds.py` (`--list-fixtures GAME`, `--fixture-id ID`; 12 tests, incl.
+the look-ahead guard = closing line is the last price BEFORE start). **Operator: run a few
+free-tier calls, paste the raw payload** → confirm esports depth + field names → then the full
+backfill (fixture-mapping via the matcher + odds_raw writers) is a one-pass build.
+
 ## Open decisions
 - De-vig → **DECIDED: does not exist** (Cmd 2).
 - Optional columns (`event_name`/`map`/`is_lan`/alias `source`/`match_quality`) → **DECIDED: skipped** (reviewed; `map` unusable at match grain).

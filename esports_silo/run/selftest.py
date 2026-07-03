@@ -15,6 +15,7 @@ MODULES = [
     "esports_silo.collectors.test_sampling",
     "esports_silo.collectors.test_results_collector",
     "esports_silo.scripts.test_probe_microstructure",
+    "esports_silo.scripts.test_probe_historical_odds",
     "esports_silo.signal.test_sharp_consensus",
     "esports_silo.betting.test_decision",
     "esports_silo.test_pipeline",
