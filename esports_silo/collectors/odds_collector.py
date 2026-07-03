@@ -70,11 +70,13 @@ async def _get(session: aiohttp.ClientSession, path: str, params: dict):
 
 
 async def _fetch_fixtures(session, game: str) -> list[dict]:
-    """Verified shape: /fixtures?sport_id=<id>. Returns list of fixture dicts."""
+    """LIVE-VERIFIED 2026-07-03: /fixtures?sportId=<id> (camelCase — the API rejects
+    `sport_id` with MISSING_PARAMETERS; valid filters are tournamentId, sportId,
+    participantId, from, to — there is no days_back). Returns list of fixture dicts."""
     sid = ODDSPAPI_SPORT_IDS.get(game)
     if sid is None:
         return []
-    data = await _get(session, "/fixtures", {"sport_id": sid, "days_back": 3})
+    data = await _get(session, "/fixtures", {"sportId": sid})
     if not data:
         return []
     # Response is either a list or {"data"/"fixtures": [...]}; handle defensively.

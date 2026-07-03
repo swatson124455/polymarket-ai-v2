@@ -197,7 +197,10 @@ async def list_fixtures(game: str) -> None:
     import aiohttp
     sid = ODDSPAPI_SPORT_IDS.get(game)
     async with aiohttp.ClientSession() as s:
-        data, status = await _get(s, "/fixtures", {"sport_id": sid, "days_back": 3})
+        # LIVE-VERIFIED 2026-07-03: param is camelCase `sportId` (the API rejected `sport_id`
+        # with MISSING_PARAMETERS listing valid filters: tournamentId, sportId, participantId,
+        # from, to — no days_back).
+        data, status = await _get(s, "/fixtures", {"sportId": sid})
     if not data:
         log.error("no fixtures (HTTP %s) — confirm key + esports coverage", status)
         return
