@@ -193,14 +193,19 @@ async def _get(session, path: str, params: dict):
         await asyncio.sleep(5.5)  # documented 5000ms cooldown + margin
 
 
-async def list_fixtures(game: str) -> None:
+async def list_fixtures(game: str, date_from: Optional[str] = None,
+                        date_to: Optional[str] = None) -> None:
     import aiohttp
+    from datetime import timedelta
     sid = ODDSPAPI_SPORT_IDS.get(game)
+    # LIVE-VERIFIED 2026-07-03: params are camelCase `sportId` + REQUIRED `from`/`to`
+    # (the API: "'to' and 'from' parameters are required when solely 'sportId' is provided.
+    # They must be under 10 days apart."). Default window: 5 days back .. 4 days ahead.
+    today = datetime.now(timezone.utc).date()
+    f = date_from or str(today - timedelta(days=5))
+    t = date_to or str(today + timedelta(days=4))
     async with aiohttp.ClientSession() as s:
-        # LIVE-VERIFIED 2026-07-03: param is camelCase `sportId` (the API rejected `sport_id`
-        # with MISSING_PARAMETERS listing valid filters: tournamentId, sportId, participantId,
-        # from, to — no days_back).
-        data, status = await _get(s, "/fixtures", {"sportId": sid})
+        data, status = await _get(s, "/fixtures", {"sportId": sid, "from": f, "to": t})
     if not data:
         log.error("no fixtures (HTTP %s) — confirm key + esports coverage", status)
         return
@@ -236,6 +241,10 @@ async def probe_fixture(fixture_id: str, books: List[str], out_path: str,
 def main() -> None:
     ap = argparse.ArgumentParser(description="OddsPapi historical-odds probe/test")
     ap.add_argument("--list-fixtures", metavar="GAME", help="list recent fixture IDs for a game")
+    ap.add_argument("--from", dest="date_from", default=None,
+                    help="fixtures window start YYYY-MM-DD (default: 5 days ago; max 10-day span)")
+    ap.add_argument("--to", dest="date_to", default=None,
+                    help="fixtures window end YYYY-MM-DD (default: 4 days ahead)")
     ap.add_argument("--fixture-id", help="pull + parse historical odds for one fixture")
     ap.add_argument("--books", default="pinnacle,singbet,thunderpick")
     ap.add_argument("--team-a", default="", help="team_a name (to align outcomes)")
@@ -244,7 +253,7 @@ def main() -> None:
     ap.add_argument("--out", default="historical_odds_probe.jsonl")
     args = ap.parse_args()
     if args.list_fixtures:
-        asyncio.run(list_fixtures(args.list_fixtures))
+        asyncio.run(list_fixtures(args.list_fixtures, args.date_from, args.date_to))
     elif args.fixture_id:
         asyncio.run(probe_fixture(args.fixture_id, [b.strip() for b in args.books.split(",")],
                                   args.out, args.team_a, args.team_b, args.start_time))
