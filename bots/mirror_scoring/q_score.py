@@ -180,6 +180,11 @@ def select_and_size(
 async def run_universe(db, cfg: ScoringConfig) -> list[TraderScore]:
     """Pull resolved user-attributed trades, score every trader, select, size."""
     async with db.get_session() as s:
+        # The universe/rejected scans are unbounded and can exceed the 30s
+        # bot-tier statement_timeout every session gets at __aenter__ (the
+        # 2026-07-02 audit's confirmed run-blocker). Extend for THIS
+        # transaction only — same pattern as database.py:3670.
+        await s.execute(text("SET LOCAL statement_timeout = '300s'"))
         rows = (await s.execute(
             text(_UNIVERSE_SQL), {"pmin": cfg.PRICE_MIN, "pmax": cfg.PRICE_MAX}
         )).fetchall()
