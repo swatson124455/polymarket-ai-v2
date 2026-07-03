@@ -73,6 +73,14 @@ Failure evidence — 📄 DOC-SOURCED (`EB_MODEL_EDGE_PROPOSAL_2026-06-16.md`, s
   sharper than Pinnacle on CS2/LoL/Dota). All three are carried by **OddsPapi** (already the wired
   aggregator) — free tier 250 req/mo, paid ~$49/mo. ⛔ Operator must confirm OddsPapi actually
   returns these three **for esports** via the collector's coverage guard before forward-collecting.
+  ⚠ OddsPapi's esports-coverage claims come from OddsPapi's own marketing — treat as
+  vendor-claimed until the step-7 dry-run proves them.
+- **Circa → CLOSED (2026-07, web-verified): not viable for esports.** Circa appears in zero
+  esports-betting listings — it is a US-sports Vegas book with no evidence of CS2/LoL/Dota lines,
+  so a Circa feed buys nothing for this bot regardless of price. (Its API carriers — OpticOdds,
+  Betstamp, SportsDataIO are pro-desk/custom-priced; SportsGameOdds at $99/mo is the cheapest
+  published — relevant only if a future non-esports bot wants Circa.) The original
+  "Pinnacle + Circa + one Asian book" objective predated this check; D3's set stands.
 - Branch reconciliation (`eb/main` current code + `master` rebuild docs) → **RESOLVED on this
   branch**: `claude/blissful-davinci-twt397-n94qo6` carries the master rebuild docs
   (patch-equivalent) + the silo scaffold + data + gate. `eb/main`'s later legacy-bot commits are
