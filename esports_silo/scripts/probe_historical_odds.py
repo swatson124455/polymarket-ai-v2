@@ -23,12 +23,15 @@ SEAM: the response shape is reconstructed from the public docs, NOT a live paylo
 parser is unit-tested against that documented shape; once you paste a real payload I lock it in
 one pass and build the full backfill (reuses the matcher for fixture-mapping + odds_raw writers).
 
-Assumed shape (documented; VERIFY):
-  {"fixtureId": "...",
-   "bookmakers": {"pinnacle": {"markets": [
-        {"key": "moneyline",
-         "outcomes": [{"name": "NAVI", "odds": [{"price": 1.85, "createdAt": "..T10:00Z"}, ...]},
-                      {"name": "FaZe", "odds": [{"price": 2.10, "createdAt": "..T10:00Z"}, ...]}]}]}}}
+REAL shape — LIVE-VERIFIED from a full /v4/odds payload (2026-07-03):
+  {"fixtureId": "...", "bookmakerOdds": {"<slug>": {"suspended": false, "markets": {
+      "171": {"marketActive": true, "outcomes": {          # market-type 171 = MATCH WINNER
+          "171": {"players": {"0": {"price": 1.38, "changedAt": "...", ...}}},   # participant1
+          "172": {"players": {"0": {"price": 2.80, ...}}}}}}}}                    # participant2
+  Exchanges (polymarket/kalshi/betfair-ex) add exchangeMeta{back/lay+sizes}; price = best back.
+  Historical payloads are expected to carry a series per player (odds/history list) — the
+  extractor handles both a single price+changedAt and a series. Legacy list-shaped markets
+  (the old documented shape) are still parsed as a fallback.
 """
 from __future__ import annotations
 
@@ -72,7 +75,8 @@ def _price(o: Dict[str, Any]) -> Optional[float]:
 
 
 def _time(o: Dict[str, Any]):
-    for k in ("createdAt", "created_at", "timestamp", "line_time", "updatedAt"):
+    # changedAt is the LIVE-VERIFIED key in the real /v4/odds payload
+    for k in ("createdAt", "created_at", "changedAt", "timestamp", "line_time", "updatedAt"):
         if o.get(k) is not None:
             return _ts(o[k])
     return None
@@ -111,41 +115,110 @@ def _closing(outcome: Dict[str, Any], before: Optional[datetime]):
     return pts[-1][1], None, len(pts)  # no timestamps — take the last listed
 
 
+# LIVE-VERIFIED market/outcome type IDs (full /v4/odds payload, 2026-07-03):
+# market "171" = match winner; its outcome "171" = participant1 (team_a), "172" = participant2.
+MATCH_WINNER_MARKET = "171"
+OUTCOME_TEAM_A, OUTCOME_TEAM_B = "171", "172"
+
+
+def _player_points(outcome: Dict[str, Any]):
+    """All (time, price) points for an outcome in the REAL schema.
+
+    outcome = {"players": {"0": {...}}}. A player entry may carry a single price+changedAt
+    (current /odds shape, live-verified) or a series under odds/history/prices (expected
+    historical shape). Returns points from the first player entry.
+    """
+    players = outcome.get("players") or {}
+    entry = None
+    if isinstance(players, dict) and players:
+        entry = players.get("0") or next(iter(players.values()))
+    if not isinstance(entry, dict):
+        return []
+    series = entry.get("odds") or entry.get("history") or entry.get("prices")
+    if isinstance(series, list) and series:
+        return [(_time(p), _price(p)) for p in series if isinstance(p, dict)]
+    pr = _price(entry)
+    if pr is None:
+        return []
+    return [(_time(entry) or _ts(entry.get("bookmakerChangedAt")), pr)]
+
+
+def _closing_from_points(points, before: Optional[datetime]):
+    pts = [(t, pr) for t, pr in points if pr is not None]
+    if not pts:
+        return None, None, 0
+    dated = [(t, pr) for t, pr in pts if t is not None]
+    if before is not None:
+        pre = [(t, pr) for t, pr in dated if t <= before]
+        if pre:
+            t, pr = max(pre, key=lambda x: x[0])
+            return pr, t, len(pts)
+    if dated:
+        t, pr = max(dated, key=lambda x: x[0])
+        return pr, t, len(pts)
+    return pts[-1][1], None, len(pts)
+
+
 def parse_historical_odds(payload: Dict[str, Any], team_a: str, team_b: str,
                           start_time: Optional[Any] = None) -> List[Dict[str, Any]]:
-    """Extract the CLOSING line per book → odds_raw-shaped rows. Pure; SEAM field names.
+    """Extract the CLOSING match-winner line per book → odds_raw-shaped rows. Pure.
 
-    Aligns the two outcomes to team_a/team_b by name (substring, either direction). A book
-    whose outcomes can't be aligned to both teams is returned with an `error` flag, never guessed.
+    REAL schema (dict markets keyed by type ID — live-verified): alignment is deterministic —
+    market 171, outcome 171→team_a / 172→team_b (participant order); no name matching needed.
+    Legacy list-shaped markets fall back to the old name/positional alignment. A book that
+    can't be parsed is returned with an `error` flag, never guessed.
     """
     before = _ts(start_time)
-    a_lc, b_lc = str(team_a or "").lower(), str(team_b or "").lower()
-    books = payload.get("bookmakers") or payload.get("bookmakerOdds") or {}
+    books = payload.get("bookmakerOdds") or payload.get("bookmakers") or {}
     out: List[Dict[str, Any]] = []
-    # bookmakers may be a dict {slug: {...}} or a list [{slug/name, markets}]
     items = books.items() if isinstance(books, dict) else [
         (b.get("slug") or b.get("name") or b.get("bookmaker"), b) for b in books]
     for slug, bdata in items:
-        market = _pick_market((bdata or {}).get("markets") or [])
-        if market is None:
-            out.append({"book": slug, "error": "no 2-outcome market found (SEAM)"})
+        bdata = bdata or {}
+        markets = bdata.get("markets")
+        if isinstance(markets, dict):  # REAL schema
+            if bdata.get("suspended"):
+                out.append({"book": slug, "error": "suspended"})
+                continue
+            m = markets.get(MATCH_WINNER_MARKET)
+            if not isinstance(m, dict):
+                m = next((mm for mm in markets.values() if isinstance(mm, dict)
+                          and {OUTCOME_TEAM_A, OUTCOME_TEAM_B} <= set((mm.get("outcomes") or {}).keys())),
+                         None)
+            if not isinstance(m, dict):
+                out.append({"book": slug, "error": "no match-winner (171) market"})
+                continue
+            oc = m.get("outcomes") or {}
+            a_oc, b_oc = oc.get(OUTCOME_TEAM_A), oc.get(OUTCOME_TEAM_B)
+            if not (isinstance(a_oc, dict) and isinstance(b_oc, dict)):
+                out.append({"book": slug, "error": "missing 171/172 outcomes"})
+                continue
+            a_price, a_time, a_moves = _closing_from_points(_player_points(a_oc), before)
+            b_price, b_time, b_moves = _closing_from_points(_player_points(b_oc), before)
+        else:  # legacy list-shaped markets (old documented shape; kept for compatibility)
+            market = _pick_market(markets or [])
+            if market is None:
+                out.append({"book": slug, "error": "no 2-outcome market found (SEAM)"})
+                continue
+            loc = market.get("outcomes") or []
+            a_lc, b_lc = str(team_a or "").lower(), str(team_b or "").lower()
+            a_oc = b_oc = None
+            for o in loc:
+                name = str(o.get("name") or o.get("outcome") or o.get("label") or "").lower()
+                if name and (name in a_lc or a_lc in name):
+                    a_oc = o
+                elif name and (name in b_lc or b_lc in name):
+                    b_oc = o
+            if (a_oc is None or b_oc is None) and len(loc) == 2:
+                a_oc, b_oc = a_oc or loc[0], b_oc or loc[1]
+            if a_oc is None or b_oc is None:
+                out.append({"book": slug, "error": "could not align outcomes to both teams (SEAM)"})
+                continue
+            a_price, a_time, a_moves = _closing(a_oc, before)
+            b_price, b_time, b_moves = _closing(b_oc, before)
+        if a_price is None and b_price is None:
+            out.append({"book": slug, "error": "no prices found"})
             continue
-        oc = market.get("outcomes") or []
-        a_oc = b_oc = None
-        for o in oc:
-            name = str(o.get("name") or o.get("outcome") or o.get("label") or "").lower()
-            if name and (name in a_lc or a_lc in name):
-                a_oc = o
-            elif name and (name in b_lc or b_lc in name):
-                b_oc = o
-        if a_oc is None or b_oc is None and len(oc) == 2:
-            # fall back to positional alignment (outcome order = team order) if names didn't map
-            a_oc, b_oc = a_oc or oc[0], b_oc or oc[1]
-        if a_oc is None or b_oc is None:
-            out.append({"book": slug, "error": "could not align outcomes to both teams (SEAM)"})
-            continue
-        a_price, a_time, a_moves = _closing(a_oc, before)
-        b_price, b_time, b_moves = _closing(b_oc, before)
         line_time = max([t for t in (a_time, b_time) if t is not None], default=None)
         out.append({
             "book": str(slug or "").lower(),
@@ -258,7 +331,7 @@ def main() -> None:
     ap.add_argument("--to", dest="date_to", default=None,
                     help="fixtures window end YYYY-MM-DD (default: 4 days ahead)")
     ap.add_argument("--fixture-id", help="pull + parse historical odds for one fixture")
-    ap.add_argument("--books", default="pinnacle,singbet,thunderpick")
+    ap.add_argument("--books", default="pinnacle,singbet,sbobet")  # live-verified slugs
     ap.add_argument("--team-a", default="", help="team_a name (to align outcomes)")
     ap.add_argument("--team-b", default="", help="team_b name")
     ap.add_argument("--start-time", default=None, help="match start ISO (picks the closing line)")

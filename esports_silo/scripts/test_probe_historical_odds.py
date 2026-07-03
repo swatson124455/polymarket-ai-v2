@@ -87,10 +87,60 @@ def test():
         h.parse_historical_odds(flat, "NAVI", "FaZe", START)[0]["team_a_odds"], 1.5))
 
 
+
+
+def test_real_schema():
+    """REAL schema tests — built from the actual /v4/odds payload (live, 2026-07-03)."""
+    # paf's market 171 from the real payload: 171->1.32 (Mibr Academy), 172->2.95 (Vexa)
+    real = {"fixtureId": "id1705104272533136", "bookmakerOdds": {
+        "paf": {"suspended": False, "markets": {
+            "171": {"marketActive": True, "outcomes": {
+                "171": {"players": {"0": {"price": 1.32, "changedAt": "2026-07-03T15:25:23.623Z"}}},
+                "172": {"players": {"0": {"price": 2.95, "changedAt": "2026-07-03T15:25:23.623Z"}}}}},
+            "1747": {"marketActive": True, "outcomes": {  # map-1 market must be IGNORED
+                "1747": {"players": {"0": {"price": 1.49, "changedAt": "2026-07-03T15:25:23.623Z"}}},
+                "1748": {"players": {"0": {"price": 2.55, "changedAt": "2026-07-03T15:25:23.623Z"}}}}}}},
+        "polymarket": {"suspended": False, "markets": {
+            "171": {"marketActive": True, "outcomes": {
+                "171": {"players": {"0": {"price": 1.515, "changedAt": "2026-07-03T23:31:09.826Z",
+                                          "exchangeMeta": {"back": [], "lay": []}}}},
+                "172": {"players": {"0": {"price": 2.857, "changedAt": "2026-07-03T23:31:09.826Z"}}}}}}},
+        "deadbook": {"suspended": True, "markets": {"171": {"outcomes": {}}}},
+        "nomarket": {"suspended": False, "markets": {"999": {"outcomes": {
+            "998": {"players": {"0": {"price": 1.5}}}}}}},
+    }}
+    rows = h.parse_historical_odds(real, "Mibr Academy", "Vexa", "2026-07-04T16:00:00Z")
+    by = {r["book"]: r for r in rows}
+    check("REAL: paf 171/172 -> team_a/team_b by ID", approx(by["paf"]["team_a_odds"], 1.32)
+          and approx(by["paf"]["team_b_odds"], 2.95))
+    check("REAL: map market (1747) ignored, match market (171) used",
+          not approx(by["paf"]["team_a_odds"], 1.49))
+    check("REAL: polymarket (exchange) parsed like a book", approx(by["polymarket"]["team_a_odds"], 1.515))
+    check("REAL: suspended book flagged", by["deadbook"].get("error") == "suspended")
+    check("REAL: book without 171 market flagged", "171" in str(by["nomarket"].get("error")))
+    check("REAL: line_time from changedAt", by["paf"]["line_time"].startswith("2026-07-03T15:25"))
+
+    # expected HISTORICAL shape: a series per player -> closing = last pre-start point
+    hist = {"bookmakerOdds": {"pinnacle": {"suspended": False, "markets": {
+        "171": {"outcomes": {
+            "171": {"players": {"0": {"odds": [
+                {"price": 1.90, "createdAt": "2026-07-04T08:00:00Z"},
+                {"price": 1.85, "createdAt": "2026-07-04T15:30:00Z"},
+                {"price": 1.40, "createdAt": "2026-07-04T16:30:00Z"}]}}},   # post-start: excluded
+            "172": {"players": {"0": {"odds": [
+                {"price": 2.10, "createdAt": "2026-07-04T15:30:00Z"}]}}}}}}}}}
+    r = h.parse_historical_odds(hist, "A", "B", "2026-07-04T16:00:00Z")[0]
+    check("REAL-hist: series closing = last pre-start", approx(r["team_a_odds"], 1.85))
+    check("REAL-hist: post-start move excluded", not approx(r["team_a_odds"], 1.40))
+    check("REAL-hist: n_moves counted from series", r["n_moves"] == 3)
+
+
 if __name__ == "__main__":
     import sys
     test()
+    test_real_schema()
     print(f"\n{'ALL PASS' if not FAILS else 'FAILURES: ' + ', '.join(FAILS)}")
     sys.exit(1 if FAILS else 0)
 else:
     test()
+    test_real_schema()

@@ -36,11 +36,12 @@ class Config:
         "POLYMARKET_CLOB_API", "https://clob.polymarket.com"
     )
 
-    # D3 decided set (was "pinnacle,circa,asian"; "asian" could never match a real book).
-    # Operator ratifies live esports coverage; confirm the EXACT aggregator identifier strings
-    # against a live response — the collector's per-(game,book) guard flags any that return 0.
+    # LIVE-VERIFIED against /v4/bookmakers (2026-07-03): slugs `pinnacle` + `singbet` exist;
+    # `thunderpick` is NOT carried by OddsPapi (D3's third book replaced by `sbobet`, which IS
+    # carried — the researched Asian fallback). NOTE: `polymarket` is itself a bookmaker slug
+    # in their feed. Beware clones (ps3838/pin88 are cloneOf=pinnacle) — never double-count.
     sharp_books: List[str] = field(
-        default_factory=lambda: _split("SHARP_BOOKS", "pinnacle,singbet,thunderpick")
+        default_factory=lambda: _split("SHARP_BOOKS", "pinnacle,singbet,sbobet")
     )
     games: List[str] = field(
         default_factory=lambda: _split("ESPORTS_GAMES", "cs2,lol,dota2,valorant")
