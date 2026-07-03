@@ -61,7 +61,7 @@ MANIFEST = {
     "whale_movements_rows": (5_000, 20_000, "~9,121 rows, ~68/day"),
     "shadow_fills_mb_total": (10_000, 20_000, "13,855 rows"),
     "shadow_fills_mb_executed": (4_000, 8_000, "5,823 executed"),
-    "positions_mb_sell_paper": (800, 3_000, "~1,421 paper rows side='SELL'"),
+    "positions_mb_sell_paper": (100, 3_000, "191 paper rows side='SELL' (2026-07-02 re-verified; audit's ~1,421 did not reproduce)"),
     "positions_mb_sell_live": (10, 200, "~55 live rows side='SELL'"),
 }
 
@@ -84,10 +84,26 @@ class Checker:
             r = await session.execute(text(sql), params)
             return r.scalar()
         except Exception as e:
+            # S250: a statement_timeout cancellation (or any error) ABORTS the
+            # transaction — every subsequent query on this session then fails with
+            # "current transaction is aborted" (the cascade the 2026-07-02 VPS run
+            # hit). Roll back so the session is reusable for the remaining checks.
+            try:
+                await session.rollback()
+            except Exception:
+                pass
             msg = str(e).lower()
             if "timeout" in msg or "canceling statement" in msg:
                 return "TIMEOUT"
             return f"ERR:{str(e)[:80]}"
+
+    async def _reset(self, session):
+        """Roll back after an inline (non-_scalar) query error to clear an
+        aborted transaction before the next check."""
+        try:
+            await session.rollback()
+        except Exception:
+            pass
 
     def _record(self, verdict: str, asset: str, detail: str):
         self.rows.append((verdict, asset, detail))
@@ -163,6 +179,7 @@ class Checker:
                     self._record("PASS", "orderbook_snapshots.shape",
                                  "aggregated buckets confirmed (no per-level ladder — coarse model only)")
             except Exception as e:
+                await self._reset(s)
                 self._record("REVIEW", "orderbook_snapshots.shape", f"ERR:{str(e)[:60]}")
 
             # 1c. Precise-model asset: shadow_fills.book_snapshot ladder coverage (MB).
@@ -210,6 +227,7 @@ class Checker:
                 recent = "; ".join(f"{row[0]}={row[1]}" for row in r.fetchall())
                 self._record("INFO", "gate_labeled.per_day (last 7d)", recent or "(none)")
             except Exception as e:
+                await self._reset(s)
                 self._record("REVIEW", "gate_labeled.per_day", f"ERR:{str(e)[:60]}")
 
             # 3. whale_movements — thin smart-money stream; smart_money_rank coverage

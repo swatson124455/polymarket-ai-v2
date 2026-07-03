@@ -14,7 +14,7 @@
 |---|---|---|
 | `mirror_rejected_signals` 17.5M rows | **~16.4M live rows** (reltuples); 17.5M is the id sequence | PG `pg_class.reltuples` + `MAX(id)` |
 | `trade_events(MB)` "87% paper" | **row-composition inventory:** dataset is predominantly paper-mode; the `execution_mode='live'` partition is a small minority | PG `execution_mode` cardinality |
-| positions `side` "191 paper SELL" | **column-integrity inventory:** ~1,421 paper + 55 live rows carry a corrupt `side='SELL'` string (recoverable via `token_id`) | PG `positions.side` cardinality |
+| positions `side` "191 paper SELL" | **RE-VERIFIED 2026-07-02 on live DB: 191 paper + 55 live** — the audit's upward "correction" to ~1,421 did NOT reproduce (pruned since, or the 1,421 figure was wrong). The original 191 was right. `side='SELL'` corruption recoverable via `token_id` | PG `positions.side` cardinality, 2026-07-02 M0-DB run |
 | `whale_trades` "~30d rolling" | **DEAD snapshot, frozen 2026-03-18→19** (3.5mo stale) | PG MIN/MAX event_time |
 | calibration files have an EB consumer | **FALSE** — only a docstring comment in `conformal_wrapper.py:82`, no import | import-graph grep |
 | "3 tools work, 2 crash" | **5 sound, 3 broken** (shadow_analysis, slippage_check, mirror_whale_analysis) | live runs + code |
