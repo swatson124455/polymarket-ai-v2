@@ -132,6 +132,10 @@ def _player_points(outcome: Dict[str, Any]):
     entry = None
     if isinstance(players, dict) and players:
         entry = players.get("0") or next(iter(players.values()))
+    # LIVE-VERIFIED (real /v4/historical-odds payload, 2026-07-03): players["0"] is DIRECTLY
+    # a LIST of point objects [{createdAt, price, limit, active}, ...] — the full line history.
+    if isinstance(entry, list):
+        return [(_time(p), _price(p)) for p in entry if isinstance(p, dict)]
     if not isinstance(entry, dict):
         return []
     series = entry.get("odds") or entry.get("history") or entry.get("prices")

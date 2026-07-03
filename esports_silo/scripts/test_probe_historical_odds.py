@@ -135,12 +135,40 @@ def test_real_schema():
     check("REAL-hist: n_moves counted from series", r["n_moves"] == 3)
 
 
+
+
+def test_real_historical_payload():
+    """Built from the ACTUAL /v4/historical-odds payload (FaZe/Tyloo, live 2026-07-03):
+    players["0"] is DIRECTLY a list of {createdAt, price, limit, active} points."""
+    real_hist = {"fixtureId": "id1705129672015448", "bookmakers": {"pinnacle": {"markets": {
+        "171": {"outcomes": {
+            "171": {"players": {"0": [
+                {"createdAt": "2026-06-30T04:20:44.417Z", "price": 1.625, "limit": 360, "active": True},
+                {"createdAt": "2026-07-01T06:59:50.248Z", "price": 1.769, "limit": 5851, "active": True},
+                {"createdAt": "2026-07-01T09:40:35.437Z", "price": 5.71, "limit": 1050, "active": True}]}},  # in-play
+            "172": {"players": {"0": [
+                {"createdAt": "2026-07-01T06:59:50.010Z", "price": 2.07, "limit": 4500, "active": True},
+                {"createdAt": "2026-07-01T09:40:35.437Z", "price": 1.083, "limit": 12650, "active": True}]}}}},
+        "1747": {"outcomes": {  # map-1 market must be ignored
+            "1747": {"players": {"0": [{"createdAt": "2026-07-01T06:59:50.010Z", "price": 9.9}]}},
+            "1748": {"players": {"0": [{"createdAt": "2026-07-01T06:59:50.010Z", "price": 9.9}]}}}}}}}}
+    r = h.parse_historical_odds(real_hist, "Faze Clan", "Tyloo", "2026-07-01T07:00:00Z")[0]
+    check("REAL-HIST: list-shaped players parsed", r.get("error") is None)
+    check("REAL-HIST: closing = last pre-start (1.769/2.07)",
+          approx(r["team_a_odds"], 1.769) and approx(r["team_b_odds"], 2.07))
+    check("REAL-HIST: in-play 5.71 excluded by look-ahead guard", not approx(r["team_a_odds"], 5.71))
+    check("REAL-HIST: n_moves from series", r["n_moves"] == 3)
+    check("REAL-HIST: map market ignored", not approx(r["team_a_odds"], 9.9))
+
+
 if __name__ == "__main__":
     import sys
     test()
     test_real_schema()
+    test_real_historical_payload()
     print(f"\n{'ALL PASS' if not FAILS else 'FAILURES: ' + ', '.join(FAILS)}")
     sys.exit(1 if FAILS else 0)
 else:
     test()
     test_real_schema()
+    test_real_historical_payload()
