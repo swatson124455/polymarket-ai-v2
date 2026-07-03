@@ -103,5 +103,13 @@ trading. If it fails, we stop — cheaply. No real money at any point in this ch
 - `python -m esports_silo.scripts.probe_market_microstructure --once --label pre-match --out probe.jsonl`
   (and `--label in-play` during a live match) → measures today's real order-book spreads to test
   the old "in-play is untradeable" claim on fresh data.
-- If OddsPapi has deep esports history, a one-time historical backfill could fit the calibrator
-  on day one instead of waiting weeks — tell Claude once you've confirmed the history depth.
+- ✅ History depth CONFIRMED (2026-07-03, live probe): pinnacle's archive reaches ≥6 months back
+  (January BLAST fixture returned full line history); soft books age out in ~2 weeks. The
+  backfill is BUILT: after the DB gate passes (Step 4+) run
+  `python -m esports_silo.scripts.backfill_historical_odds --from 2026-01-01 --to 2026-07-01 --games cs2 --max-requests 40`
+  It attaches archived pinnacle closing lines to your already-labelled matches so the calibrator
+  can fit on day one (skill still proves on FORWARD data). Every fixture costs 1 API request —
+  on the free 250/mo key keep `--max-requests` small; a full sweep needs the paid plan. Re-running
+  the same command resumes where quota stopped (already-backfilled matches are skipped).
+  ⚠️ Old fixtures may carry only ONE pre-start tick hours before start — rows store the honest
+  `line_time` and `is_closing` stays false outside the 30-min window; nothing is dressed up.

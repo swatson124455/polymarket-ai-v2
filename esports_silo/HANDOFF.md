@@ -46,8 +46,16 @@ silo as D1–D4 — defined here so a fresh session has them without reading com
 - **D2 — Gate-then-build.** Nothing new is built until the operator runs
   `scripts/verify_data_quality.py` on the box and data clears quarantine. No parallel build
   ahead of the gate.
-- **D3 — Sharp books decided.** Pinnacle, Singbet, Thunderpick via OddsPapi. Operator ratifies
-  live esports coverage; exact aggregator identifier strings still to be confirmed.
+- **D3 — Sharp books decided.** Pinnacle, Singbet, Sbobet via OddsPapi — LIVE-VERIFIED
+  2026-07-03 against `/v4/bookmakers`: slugs `pinnacle`/`singbet`/`sbobet` exist; `thunderpick`
+  (the original third pick) is NOT carried, so sbobet (the researched Asian fallback) replaced it.
+  `polymarket` is itself a slug in their feed; `ps3838`/`pin88` are `cloneOf` pinnacle — never
+  double-count clones. Same-day live probes also verified: the full v4 API contract
+  (camelCase params, `from`/`to` ≤10 days on /fixtures, ≤3 books on /historical-odds, market
+  "171"=match winner with outcome 171=participant1/172=participant2), AND archive depth —
+  pinnacle history reaches ≥6 months back (January BLAST fixture returned full line history;
+  softs age out ~2 weeks; old fixtures may be down-sampled to one pre-start tick). The
+  calibrator backfill is BUILT: `scripts/backfill_historical_odds.py` (see GO_LIVE_CHECKLIST).
 - **D4 — Data in git.** `data/esports_matches_bulk.jsonl` + `data/cs2/pandascore_cs2.json` ARE
   committed (`369606b`) and locally readable; other data (LoL CSVs, the 3.3G paper log) stays
   source-machine/VPS only. All carried data remains quarantined until the gate passes.
