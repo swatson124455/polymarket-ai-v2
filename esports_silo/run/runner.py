@@ -19,13 +19,15 @@ import asyncio
 async def run_pass(dry_run: bool) -> None:
     # lazy imports: collectors pull aiohttp/asyncpg; keep this module importable without them
     try:
-        from ..collectors import odds_collector, polymarket_collector
+        from ..collectors import odds_collector, polymarket_collector, results_collector
     except ImportError:
-        from collectors import odds_collector, polymarket_collector  # type: ignore
+        from collectors import odds_collector, polymarket_collector, results_collector  # type: ignore
 
-    # odds first (the signal's input), then Polymarket snapshots (the comparison price).
+    # odds (the signal's input) → Polymarket snapshots (the comparison price) →
+    # results (fills matches.winner so settled matches become scorable — unblocks the skill gate).
     await odds_collector.run_once(dry_run)
     await polymarket_collector.run_once(dry_run)
+    await results_collector.run_once(dry_run)
 
 
 def main() -> None:
