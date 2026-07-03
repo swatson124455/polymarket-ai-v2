@@ -12,6 +12,7 @@
 2. **Fill-price capture fix authorized now** (3-site, defensive; deploy timing operator-controlled).
 3. **M0-DB verification:** session writes the script; operator runs it on the VPS.
 4. **Relaunch in PAPER, treated as real** (paper-is-production). Sizing at **code defaults** (real Kelly sizing, not the old bot's de-risked flat-$1/$5 end-state). The $200 paper-phase cap binds below the $300 per-bot cap (`config/settings.py:1085-1088`, `bankroll_manager.py:426,429`). Operator note: *"sizing appears to mess us up"* — the paper phase explicitly validates BotBankrollManager sizing behavior as a first-class deliverable, not a side effect.
+5. **Pause live MB until the rebuild** (2026-07-02, after the M0-DB env findings). Recommended mechanism: flip the mirror unit to paper rather than stopping it — set `SIMULATION_MODE=true`, `CANARY_STAGE=0`, `CANARY_AUTO_ADVANCE=false` in `/opt/pa2-shared/.env.mirror` (per-unit override; MB-owned file) and restart `polymarket-mirror.service`. This ends real-money exposure AND keeps the `mirror_rejected_signals` label stream flowing (MB itself writes it — a full stop would starve Path-B/validation data). Live open positions become bot-unmanaged either way (~$1 each); `polymarket-redeem.service` (separate unit) keeps sweeping resolved capital. Operator executes; sessions do not deploy.
 
 ---
 
