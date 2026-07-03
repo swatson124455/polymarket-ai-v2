@@ -160,10 +160,26 @@ def parse_historical_odds(payload: Dict[str, Any], team_a: str, team_b: str,
 # I/O (operator's box)
 # ======================================================================================
 async def _get(session, path: str, params: dict):
+    """GET with DUAL auth support (both are official OddsPapi routes):
+      * direct:   key from oddspapi.io dashboard  -> ?apiKey=  on api.oddspapi.io/v4
+      * RapidAPI: key from rapidapi.com odds-api1 -> X-RapidAPI-Key header on
+                  odds-api1.p.rapidapi.com  (set RAPIDAPI_KEY to use this route)
+    ODDSPAPI_BASE overrides the base URL in either mode (RapidAPI path prefix = SEAM)."""
+    import os
     import aiohttp
-    params = {**params, "apiKey": CONFIG.oddspapi_api_key}  # VERIFY auth param name
+    rapid_key = os.getenv("RAPIDAPI_KEY", "") or os.getenv("ODDSPAPI_RAPIDAPI_KEY", "")
+    headers = {"Accept": "application/json"}
+    if rapid_key:
+        base = os.getenv("ODDSPAPI_BASE", "https://odds-api1.p.rapidapi.com")
+        headers["X-RapidAPI-Key"] = rapid_key
+        headers["X-RapidAPI-Host"] = base.split("//", 1)[-1]
+    else:
+        base = os.getenv("ODDSPAPI_BASE", BASE)
+        direct_key = (getattr(CONFIG, "oddspapi_api_key", "") if CONFIG else "") \
+            or os.getenv("ODDSPAPI_API_KEY", "")
+        params = {**params, "apiKey": direct_key}
     try:
-        async with session.get(f"{BASE}{path}", params=params,
+        async with session.get(f"{base}{path}", params=params, headers=headers,
                                timeout=aiohttp.ClientTimeout(total=20)) as r:
             body = await r.json()
             if r.status != 200:
