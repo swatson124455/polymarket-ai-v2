@@ -12,6 +12,7 @@ MODULES = [
     "esports_silo.eval.test_skill_metrics",
     "esports_silo.markets.test_match_matcher",
     "esports_silo.collectors.test_polymarket_collector",
+    "esports_silo.collectors.test_sampling",
     "esports_silo.signal.test_sharp_consensus",
     "esports_silo.betting.test_decision",
     "esports_silo.test_pipeline",

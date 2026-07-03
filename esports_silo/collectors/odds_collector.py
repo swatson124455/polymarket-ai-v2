@@ -34,8 +34,10 @@ import structlog
 
 try:
     from ..config import CONFIG, ODDSPAPI_SPORT_IDS
+    from .sampling import should_poll, thresholds_crossed
 except ImportError:  # allow running as a loose script
     from config import CONFIG, ODDSPAPI_SPORT_IDS  # type: ignore
+    from sampling import should_poll, thresholds_crossed  # type: ignore
 
 log = structlog.get_logger()
 
@@ -144,9 +146,10 @@ def _is_closing(line_time, start_time) -> bool:
         return False
 
 
-async def run_once(dry_run: bool) -> None:
+async def run_once(dry_run: bool, poll_all: bool = False) -> None:
     books = [b.lower() for b in CONFIG.sharp_books]
     coverage: dict[tuple[str, str], int] = {}
+    sampled_out = 0
     pool = None
     if not dry_run:
         if not CONFIG.database_url:
@@ -162,6 +165,29 @@ async def run_once(dry_run: bool) -> None:
                 if not match_id:
                     continue
                 start_time = fx.get("start_time") or fx.get("begin_at")
+                # CLOSING-LINE SAMPLING (default): poll a fixture only when a time-to-start
+                # threshold is newly due (24h/6h/1h/15m — see sampling.py). odds_raw itself is
+                # the ledger of taken samples, so this is stateless across timer runs.
+                # --poll-all bypasses (e.g. step-7 coverage validation on the free tier).
+                if not poll_all:
+                    st = _ts(start_time)
+                    if st is None:
+                        log.warning("fixture missing/unparseable start_time — not sampled",
+                                    match_id=match_id, start_time=start_time)
+                        continue
+                    if st.tzinfo is None:
+                        st = st.replace(tzinfo=timezone.utc)
+                    now = datetime.now(timezone.utc)
+                    if dry_run:
+                        due = bool(thresholds_crossed(st, now))  # no ledger without a DB
+                    else:
+                        async with pool.acquire() as con:
+                            lts = [r["line_time"] for r in await con.fetch(
+                                "SELECT line_time FROM odds_raw WHERE match_id=$1", match_id)]
+                        due, _bucket = should_poll(st, now, lts)
+                    if not due:
+                        sampled_out += 1
+                        continue
                 odds_rows = await _fetch_odds(session, fx, books)
                 for o in odds_rows:
                     coverage[(game, o["book"])] = coverage.get((game, o["book"]), 0) + 1
@@ -195,6 +221,8 @@ async def run_once(dry_run: bool) -> None:
     if pool:
         await pool.close()
 
+    if sampled_out:
+        log.info("sampling: fixtures skipped as not-due this run", skipped=sampled_out)
     # Coverage report — the #1 risk made observable every run.
     log.info("=== coverage (game, book) -> observations ===")
     for game in CONFIG.games:
@@ -210,10 +238,12 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="esports_silo append-only odds collector")
     ap.add_argument("--once", action="store_true", help="single pass then exit")
     ap.add_argument("--dry-run", action="store_true", help="probe coverage, no DB writes")
+    ap.add_argument("--poll-all", action="store_true",
+                    help="bypass closing-line sampling and poll every fixture (validation only)")
     args = ap.parse_args()
     if not args.once:
         raise SystemExit("only --once is implemented in the scaffold; schedule via cron/timer")
-    asyncio.run(run_once(dry_run=args.dry_run))
+    asyncio.run(run_once(dry_run=args.dry_run, poll_all=args.poll_all))
 
 
 if __name__ == "__main__":
