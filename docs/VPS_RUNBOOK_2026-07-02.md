@@ -29,6 +29,21 @@ cd /opt/polymarket-ai-v2 && sudo -u polymarket env PYTHONPATH=/tmp/mbfr \
 
 → Paste the `VALIDATION: PASS/FAIL` output back to the session.
 
+## 2b. One bonus query while you're here (sports share — 10 seconds, read-only)
+
+Decides whether the sharp-line (Pinnacle) idea covers enough of our signals:
+
+```bash
+sudo -u polymarket psql polymarket -c "
+SELECT COALESCE(m.category,'(unknown)') AS category, COUNT(*) AS labeled_signals
+FROM mirror_rejected_signals r
+LEFT JOIN markets m ON (m.condition_id = r.market_id OR CAST(m.id AS TEXT) = r.market_id)
+WHERE r.resolution IN ('YES','NO')
+GROUP BY 1 ORDER BY 2 DESC LIMIT 15;"
+```
+
+→ Paste this table back too.
+
 ## 3. First boot of the v3 silo (paper, strategy empty — proves the safety spine)
 
 ```bash
