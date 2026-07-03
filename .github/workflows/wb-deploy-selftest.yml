@@ -1,0 +1,58 @@
+# WB deploy self-test — resolves the deploy-pathway unknowns WITHOUT any secret
+# or SSH. Runs only when this file itself is pushed (path-scoped), so it does
+# not fire on normal branch pushes.
+#
+# What it answers:
+#   1. Do Actions run from this (non-default) branch on push?
+#   2. Can GitHub runners reach the VPS on tcp/22? (Lightsail firewall may be
+#      IP-restricted — if BLOCKED, the Actions deploy path is dead even with a
+#      key, and the fallback is the manual PowerShell runbook.)
+#   3. Is the WB_DEPLOY_SSH_KEY secret configured? (presence only, never printed)
+#   4. Does the release-tarball step work on a real runner?
+# Results land in the job summary + step logs; read back via the GitHub API.
+
+name: WB deploy self-test
+
+on:
+  push:
+    branches:
+      - "claude/new-whiteboard-session-9b23tq"
+    paths:
+      - ".github/workflows/wb-deploy-selftest.yml"
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "T1 - Actions runs from this branch"
+        run: echo "RESULT_T1=branch-actions=OK" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: "T2 - TCP probe VPS:22 (no auth attempted)"
+        run: |
+          if timeout 10 bash -c 'echo > /dev/tcp/18.201.216.0/22' 2>/dev/null; then
+            echo "RESULT_T2=vps-port22=REACHABLE" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "RESULT_T2=vps-port22=BLOCKED" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: "T3 - deploy secret presence (never printed)"
+        env:
+          KEY: ${{ secrets.WB_DEPLOY_SSH_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then
+            echo "RESULT_T3=secret=PRESENT" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "RESULT_T3=secret=ABSENT" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: "T4 - release tarball builds on runner"
+        run: |
+          STAMP=selftest
+          tar czf "/tmp/wb-$STAMP.tar.gz" \
+            --exclude=.git --exclude=__pycache__ --exclude='*.pyc' \
+            --exclude=venv --exclude=.venv --exclude=node_modules --exclude=.env .
+          SIZE=$(stat -c%s "/tmp/wb-$STAMP.tar.gz")
+          FILES=$(tar tzf "/tmp/wb-$STAMP.tar.gz" | wc -l)
+          echo "RESULT_T4=tarball=OK size=${SIZE}B files=${FILES}" | tee -a "$GITHUB_STEP_SUMMARY"
