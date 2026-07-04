@@ -155,6 +155,26 @@ class PlattCalibrator:
             return None
         return _sigmoid(self.w * ((score - self._mu) / self._sd) + self.b)
 
+    # --- persistence (fit on the box → save; runner loads at startup) -----------------
+    def to_dict(self) -> Dict[str, Any]:
+        return {"w": self.w, "b": self.b, "mu": self._mu, "sd": self._sd,
+                "fitted": self.fitted, "n": self.n}
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "PlattCalibrator":
+        c = cls()
+        try:
+            c.w = float(d["w"])
+            c.b = float(d["b"])
+            c._mu = float(d["mu"])
+            c._sd = float(d["sd"]) or 1.0
+            c.n = int(d.get("n", 0))
+            c.fitted = bool(d.get("fitted", False))
+        except (KeyError, TypeError, ValueError):
+            # a corrupt artifact must NOT become a silently-unfitted-but-used calibrator
+            raise ValueError(f"invalid calibrator dict: {d!r}")
+        return c
+
 
 # ======================================================================================
 # the signal

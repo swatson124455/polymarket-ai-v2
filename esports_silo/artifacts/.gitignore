@@ -1,0 +1,5 @@
+# Fitted-calibrator artifacts are BOX-LOCAL state (fit on the box's data, loaded by the
+# box's runner). Never committed: a stale artifact in git could silently override a fresh
+# fit, and fit provenance belongs to the box's DB, not the repo.
+*
+!.gitignore

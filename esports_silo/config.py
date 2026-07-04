@@ -47,6 +47,12 @@ class Config:
         default_factory=lambda: _split("ESPORTS_GAMES", "cs2,lol,dota2,valorant")
     )
 
+    # Fitted-calibrator artifact (written by scripts/fit_calibrator.py; read by the
+    # runner's --predict pass). Missing/unfitted artifact => p_model stays None (Cmd 4).
+    calibrator_path: str = os.getenv(
+        "CALIBRATOR_PATH", "esports_silo/artifacts/calibrator_sharp_consensus_v1.json"
+    )
+
     # Safety: default HALTED. Flip only after the skill gates pass.
     entry_halt: bool = os.getenv("SILO_ENTRY_HALT", "true").lower() in (
         "true",

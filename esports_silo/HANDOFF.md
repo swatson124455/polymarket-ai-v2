@@ -108,7 +108,15 @@ until the gate passes there.
 Exit 0 = gate PASS (data may leave quarantine); 1 = QUARANTINE; 2 = could-not-run. Add
 `--json` for machine output. Thresholds are `VDQ_*` env vars (see the script header).
 
-Then, per `PLAN.md` and **D2 GATE-THEN-BUILD** — ONLY after the operator has run the battery on
-the box and data clears quarantine: build #2 (Polymarket snapshot collector), #3 (market↔match
-matcher), #4 (P&L-free skill-eval harness, from-scratch per D1); design #5 (the signal) on
-whatever clears the battery. Nothing new is built ahead of the gate.
+BUILD STATE (2026-07-04, operator authorized the full build ahead of the box gate; the DATA
+still doesn't leave quarantine until the box gate passes — D2 applies to data, and the halt
+applies to trading): #2 snapshot collector ✅, #3 matcher ✅, #4 skill harness ✅, #5 signal ✅,
+#6 decision ✅, #7 pipeline ✅, #9 runner ✅ — plus the paid-plan chain:
+`scripts/backfill_historical_odds.py` (archived closing lines → odds_raw, resumable) →
+`scripts/fit_calibrator.py` (time-ordered backfit → JSON artifact; refuses bad fits; BACKFIT
+only, baseline = raw score not Polymarket) → `run/runner.py --predict` (forward predictions:
+calibrated p_model + live Polymarket price, pre-match only, all `no_bet`) →
+`scripts/skill_report.py` (THE forward gate: last pre-event prediction per market vs outcome
+vs market Brier; exit 0 = PASS). Artifacts live in `esports_silo/artifacts/` (gitignored —
+box-local state). Operator sequence: GO_LIVE_CHECKLIST steps 9–12. Even a PASS does not flip
+`SILO_ENTRY_HALT` — that stays a deliberate human action.
