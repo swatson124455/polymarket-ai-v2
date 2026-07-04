@@ -22,13 +22,26 @@ Operating discipline (non-negotiable):
   locally readable — everything else lives on the operator's box. Anything that needs the box,
   you *write and hand to the operator to run* — never claim you ran it.
 
-**First task:** `esports_silo/scripts/verify_data_quality.py` — the Commandment-4 read-only
-master gate — is **BUILT** (null-rate, dup `match_id`, look-ahead, winner-resolvability,
-cross-source winner agreement, quarantine-leak; `--jsonl` + DB modes). Do **not** rebuild it.
-Per **D2 GATE-THEN-BUILD**: the next step is the operator running it on the box and clearing data
-from quarantine. **Build nothing new until that gate passes.**
+**STATE (2026-07-04): the build is COMPLETE.** All pipeline items are built and tested
+(`python -m esports_silo.run.selftest` → 14/14 green — run it first to confirm your tree).
+The OddsPapi v4 contract is LIVE-VERIFIED end-to-end (see HANDOFF §D3: real slugs, camelCase
+params, market 171 = match winner with outcome 171=participant1/172=participant2, archive
+depth ≥6 months for pinnacle, softs age out ~2 weeks). The full paid-plan chain exists:
+`scripts/backfill_historical_odds.py` → `scripts/fit_calibrator.py` (backfit only — it
+fits, it does not prove) → `run/runner.py --predict` (forward ledger, all `no_bet`) →
+`scripts/skill_report.py` (THE forward gate). **Do not rebuild any of it.**
 
-**Then** — only after the gate clears — follow `PLAN.md`'s build list and critical path.
+**The ball is in the OPERATOR's court** — `esports_silo/GO_LIVE_CHECKLIST.md` is the runbook:
+steps 1–8 (DB, import, data-quality gate, keys, dry-runs, timer), then steps 9–12 (paid-plan
+backfill → fit → `--predict` timer → weekly skill gate). The operator has committed to a paid
+OddsPapi subscription. Your job in this session is to **support that runbook**: interpret
+outputs the operator pastes, fix what breaks at the root (surgical, one fix per commit), and
+never claim you ran anything that needs the box.
+
+Hard lines: `SILO_ENTRY_HALT=true` until the forward skill gate passes AND the operator
+deliberately flips it — a gate PASS alone does not lift the halt. Real keys never go into
+git/PR/chat (two old ones leaked and must be rotated — checklist Lane 1). Artifacts in
+`esports_silo/artifacts/` are box-local and gitignored.
 
 Do not open a PR unless asked. Commit to the branch with clear messages.
 ---
