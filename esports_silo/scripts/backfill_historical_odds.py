@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
 """esports_silo — one-pass historical closing-line backfill from OddsPapi.
 
-WHY: archive depth is LIVE-VERIFIED (2026-07-03): /v4/historical-odds returned pinnacle's
-full line history for a 2026-01-13 BLAST fixture (id1703162167643464, Fnatic vs Astralis)
-— ≥6 months deep. That lets us attach closing sharp lines to the already-labelled silo
-matches and fit the calibrator on historical (score, outcome) pairs, while the skill gate
-still proves on FORWARD data (a backfit fits; it does not prove).
+WHY: the archive lets us attach closing sharp lines to the already-labelled silo matches
+and fit the calibrator on historical (score, outcome) pairs, while the skill gate still
+proves on FORWARD data (a backfit fits; it does not prove).
+
+⚠ DEPTH CAVEAT (operator-ruled 2026-07-05): the ≥6-month depth verification (2026-07-03,
+BLAST fixture id1703162167643464, Fnatic vs Astralis) was measured on PINNACLE — which
+OddsPapi carries on B2B plans ONLY and is therefore OUT of our book set (D3). Depth for
+singbet/sbobet is UNVERIFIED. Probe with a small --max-requests first; if old matches
+return ~nothing, skip the full sweep and fit the calibrator on forward-collected lines.
 
 LIVE-VERIFIED caveats baked in (do not "fix" these away):
   * Old fixtures can be down-sampled to a single pre-start tick hours before start
     (Fnatic/Astralis: one tick at T-3h26m, then in-play only). We store the honest
     line_time; `is_closing` uses the same 30-min rule as the forward collector — a stale
     tick is NOT flagged as closing.
-  * Soft books age out fast (~2 weeks — 1xbet/22bet returned nothing for January);
-    pinnacle is the only book that survives months. Expect one-book coverage on old rows.
+  * Soft books age out fast (~2 weeks — 1xbet/22bet returned nothing for January); in the
+    probe only pinnacle survived months, and pinnacle is NOT on our plan. Expect thin or
+    zero coverage on old rows until singbet/sbobet depth is measured.
   * Most archived points are IN-PLAY — the parser's look-ahead guard (last price at/before
     startTime) is what makes the data usable at all.
 

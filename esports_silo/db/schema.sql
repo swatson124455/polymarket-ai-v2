@@ -37,7 +37,7 @@ CREATE INDEX IF NOT EXISTS idx_matches_game_start ON matches (game, start_time);
 CREATE TABLE IF NOT EXISTS odds_raw (
     id           BIGSERIAL PRIMARY KEY,
     match_id     TEXT        NOT NULL REFERENCES matches (match_id),
-    book         TEXT        NOT NULL,          -- D3: pinnacle | singbet | thunderpick (exact aggregator strings TBD)
+    book         TEXT        NOT NULL,          -- D3 ratified: singbet | sbobet (pinnacle=B2B-only, OUT; exact strings per step-7 dry-run)
     aggregator   TEXT        NOT NULL,          -- which aggregator returned it
     team_a_odds  DOUBLE PRECISION,              -- decimal odds, RAW (vig NOT removed)
     team_b_odds  DOUBLE PRECISION,              -- decimal odds, RAW (vig NOT removed)

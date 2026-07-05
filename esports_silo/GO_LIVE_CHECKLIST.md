@@ -81,9 +81,10 @@ python -m esports_silo.collectors.odds_collector --once --dry-run --poll-all
 python -m esports_silo.collectors.polymarket_collector --once --dry-run
 ```
 ✅ You should see: a per-`(game, book)` coverage table + the first raw payloads logged. From the
-odds payload, confirm the EXACT bookmaker strings for Pinnacle / Singbet / Thunderpick; if they
-differ from `pinnacle,singbet,thunderpick`, fix `SHARP_BOOKS` in the `.env`. Any book at **0**
-coverage → say so; don't proceed as if covered.
+odds payload, confirm the EXACT bookmaker strings for Singbet / Sbobet (pinnacle is B2B-only on
+OddsPapi — ruled out 2026-07-05); if they differ from `singbet,sbobet`, fix `SHARP_BOOKS` in the
+`.env`. Any book at **0** coverage → say so; don't proceed as if covered. If your plan's payload
+shows OTHER sharp books available, paste the coverage table — we can widen the set deliberately.
 
 ### Step 8 — turn on collection (still trades nothing)
 Install ONE of the schedulers in `esports_silo/deploy/` (systemd timer or cron). It collects
@@ -97,11 +98,22 @@ filling in as matches finish.
 ## AFTER THAT — the paid-plan sequence (each step is one command; all stay halted)
 
 ### Step 9 — historical backfill (one-time, needs the PAID OddsPapi plan)
+⚠️ **Probe before committing quota.** The ≥6-month archive-depth finding was measured on
+pinnacle, which is B2B-only and NOT in our set; singbet/sbobet archive depth is UNVERIFIED.
+First run a small sweep and check the yield:
+```
+python -m esports_silo.scripts.backfill_historical_odds \
+    --from 2026-01-01 --to $(date +%F) --games cs2 --max-requests 40
+```
+If `rows_written` is near zero on matches older than ~2 weeks, the singbet/sbobet archive is
+shallow → SKIP the full backfill and let the calibrator fit on forward-collected lines instead
+(2–4 weeks of Step 8; paste the summary and we adjust). If the probe shows real depth, run the
+full sweep:
 ```
 python -m esports_silo.scripts.backfill_historical_odds \
     --from 2026-01-01 --to $(date +%F) --games cs2,lol,dota2,valorant --max-requests 5000
 ```
-Attaches archived pinnacle closing lines to your labelled matches. ~1 request per fixture at a
+Attaches archived closing lines to your labelled matches. ~1 request per fixture at a
 5.5s spacing, so a few thousand fixtures ≈ several hours — run it in `tmux`/`screen`. It is
 resumable: if it stops (quota, reboot), re-run the SAME command and it skips what it already has.
 ✅ You should see: the end-of-run summary with `rows_written` in the thousands and a staleness
@@ -143,13 +155,15 @@ in this checklist.
 - `python -m esports_silo.scripts.probe_market_microstructure --once --label pre-match --out probe.jsonl`
   (and `--label in-play` during a live match) → measures today's real order-book spreads to test
   the old "in-play is untradeable" claim on fresh data.
-- ✅ History depth CONFIRMED (2026-07-03, live probe): pinnacle's archive reaches ≥6 months back
-  (January BLAST fixture returned full line history); soft books age out in ~2 weeks. The
-  backfill is BUILT: after the DB gate passes (Step 4+) run
+- ⚠️ History depth for OUR books is UNVERIFIED. The 2026-07-03 probe confirmed ≥6-month depth
+  for pinnacle only — and pinnacle is B2B-only on OddsPapi (ruled out 2026-07-05); soft books
+  age out in ~2 weeks. Whether singbet/sbobet archives go deep is unknown until the Step-9
+  probe. The backfill is BUILT: after the DB gate passes (Step 4+) run
   `python -m esports_silo.scripts.backfill_historical_odds --from 2026-01-01 --to 2026-07-01 --games cs2 --max-requests 40`
-  It attaches archived pinnacle closing lines to your already-labelled matches so the calibrator
-  can fit on day one (skill still proves on FORWARD data). Every fixture costs 1 API request —
-  on the free 250/mo key keep `--max-requests` small; a full sweep needs the paid plan. Re-running
-  the same command resumes where quota stopped (already-backfilled matches are skipped).
+  It attaches archived closing lines to your already-labelled matches so the calibrator
+  can fit on day one IF the archive has depth (skill still proves on FORWARD data). Every
+  fixture costs 1 API request — on the free 250/mo key keep `--max-requests` small; a full
+  sweep needs the paid plan. Re-running the same command resumes where quota stopped
+  (already-backfilled matches are skipped).
   ⚠️ Old fixtures may carry only ONE pre-start tick hours before start — rows store the honest
   `line_time` and `is_closing` stays false outside the 30-min window; nothing is dressed up.

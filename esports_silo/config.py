@@ -36,12 +36,15 @@ class Config:
         "POLYMARKET_CLOB_API", "https://clob.polymarket.com"
     )
 
-    # LIVE-VERIFIED against /v4/bookmakers (2026-07-03): slugs `pinnacle` + `singbet` exist;
-    # `thunderpick` is NOT carried by OddsPapi (D3's third book replaced by `sbobet`, which IS
-    # carried — the researched Asian fallback). NOTE: `polymarket` is itself a bookmaker slug
-    # in their feed. Beware clones (ps3838/pin88 are cloneOf=pinnacle) — never double-count.
+    # OPERATOR-RULED (2026-07-05): pinnacle via OddsPapi is B2B-plan-ONLY — not available on
+    # the operator's plan, so it is OUT of the default set (D3 ratification). Slugs `singbet` +
+    # `sbobet` exist per /v4/bookmakers (live probe 2026-07-03); `thunderpick` is NOT carried.
+    # NOTE: `polymarket` is itself a bookmaker slug in their feed. Beware clones
+    # (ps3838/pin88 are cloneOf=pinnacle — B2B-gated the same way) — never double-count.
+    # CONSEQUENCE: the ≥6-month archive-depth verification was measured ON pinnacle; depth for
+    # singbet/sbobet is UNVERIFIED — probe small before trusting the historical backfill.
     sharp_books: List[str] = field(
-        default_factory=lambda: _split("SHARP_BOOKS", "pinnacle,singbet,sbobet")
+        default_factory=lambda: _split("SHARP_BOOKS", "singbet,sbobet")
     )
     games: List[str] = field(
         default_factory=lambda: _split("ESPORTS_GAMES", "cs2,lol,dota2,valorant")

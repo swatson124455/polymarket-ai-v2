@@ -4,7 +4,7 @@
 
 ## Objective
 A siloed, **pre-match** esports forecasting bot. Signal = sharp-book lines
-(Pinnacle + Singbet + Thunderpick via OddsPapi; operator to ratify esports coverage — D3),
+(Singbet + Sbobet via OddsPapi — D3 RATIFIED 2026-07-05; pinnacle is B2B-plan-only and OUT),
 compared to the Polymarket price. Paper-first. Isolated: its own repo + its own DB, no ties
 to the 15-bot system.
 
@@ -78,14 +78,12 @@ backfill (fixture-mapping via the matcher + odds_raw writers) is a one-pass buil
 ## Open decisions
 - De-vig → **DECIDED: does not exist** (Cmd 2).
 - Optional columns (`event_name`/`map`/`is_lan`/alias `source`/`match_quality`) → **DECIDED: skipped** (reviewed; `map` unusable at match grain).
-- Asian / third sharp book → **RESEARCHED (operator to ratify).** Sharpest gaming books (web,
-  2026): **1. Pinnacle** (benchmark sharp, ~2–3% esports margin, deepest coverage), **2. Singbet**
-  (Asian sharp — the Asian-book pick), **3. Thunderpick** (esports-native, 2.5–4% majors, often
-  sharper than Pinnacle on CS2/LoL/Dota). All three are carried by **OddsPapi** (already the wired
-  aggregator) — free tier 250 req/mo, paid ~$49/mo. ⛔ Operator must confirm OddsPapi actually
-  returns these three **for esports** via the collector's coverage guard before forward-collecting.
-  ⚠ OddsPapi's esports-coverage claims come from OddsPapi's own marketing — treat as
-  vendor-claimed until the step-7 dry-run proves them.
+- Sharp-book set → **RATIFIED (D3, 2026-07-05): Singbet + Sbobet.** Pinnacle — the original
+  benchmark pick — is carried by OddsPapi on **B2B plans only** (operator-ruled; repeatedly
+  stated), so it is OUT regardless of its sharpness. Thunderpick is not carried at all; sbobet
+  is the researched Asian fallback. ⛔ Operator still confirms OddsPapi actually returns
+  singbet+sbobet **for esports** via the collector's coverage guard (step-7 dry-run) before
+  forward-collecting; other sharp books visible on the plan can widen the set deliberately.
 - **Circa → CLOSED (2026-07, web-verified): not viable for esports.** Circa appears in zero
   esports-betting listings — it is a US-sports Vegas book with no evidence of CS2/LoL/Dota lines,
   so a Circa feed buys nothing for this bot regardless of price. (Its API carriers — OpticOdds,
@@ -98,8 +96,9 @@ backfill (fixture-mapping via the matcher + odds_raw writers) is a one-pass buil
   out of silo scope (Cmd 3 — source material only, quarantined).
 
 ## Blockers (operator-only — the silo has no network/DB)
-Aggregator coverage (Pinnacle+Singbet+Thunderpick **for esports** via the OddsPapi coverage
-guard) · valid keys · run the verification battery · forward-collect odds · ratify the book set.
+Aggregator coverage (Singbet+Sbobet **for esports** via the OddsPapi coverage
+guard) · valid keys · run the verification battery · forward-collect odds · probe
+singbet/sbobet archive depth (pinnacle's verified depth doesn't transfer — it's B2B-only).
 
 ## Phase-1 definition of done
 Data verified out of quarantine · aggregator coverage confirmed · signal designed · forward

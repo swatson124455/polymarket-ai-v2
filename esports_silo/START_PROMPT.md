@@ -25,8 +25,11 @@ Operating discipline (non-negotiable):
 **STATE (2026-07-04): the build is COMPLETE.** All pipeline items are built and tested
 (`python -m esports_silo.run.selftest` → 14/14 green — run it first to confirm your tree).
 The OddsPapi v4 contract is LIVE-VERIFIED end-to-end (see HANDOFF §D3: real slugs, camelCase
-params, market 171 = match winner with outcome 171=participant1/172=participant2, archive
-depth ≥6 months for pinnacle, softs age out ~2 weeks). The full paid-plan chain exists:
+params, market 171 = match winner with outcome 171=participant1/172=participant2). ⚠ D3 was
+RATIFIED 2026-07-05: **pinnacle is B2B-plan-only on OddsPapi and OUT** — the book set is
+singbet+sbobet, and the ≥6-month archive-depth finding (measured on pinnacle) does NOT
+transfer; singbet/sbobet depth is UNVERIFIED (softs age out ~2 weeks — probe before the full
+backfill, see GO_LIVE_CHECKLIST step 9). The full paid-plan chain exists:
 `scripts/backfill_historical_odds.py` → `scripts/fit_calibrator.py` (backfit only — it
 fits, it does not prove) → `run/runner.py --predict` (forward ledger, all `no_bet`) →
 `scripts/skill_report.py` (THE forward gate). **Do not rebuild any of it.**

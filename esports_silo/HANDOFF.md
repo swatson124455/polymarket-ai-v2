@@ -46,16 +46,20 @@ silo as D1–D4 — defined here so a fresh session has them without reading com
 - **D2 — Gate-then-build.** Nothing new is built until the operator runs
   `scripts/verify_data_quality.py` on the box and data clears quarantine. No parallel build
   ahead of the gate.
-- **D3 — Sharp books decided.** Pinnacle, Singbet, Sbobet via OddsPapi — LIVE-VERIFIED
-  2026-07-03 against `/v4/bookmakers`: slugs `pinnacle`/`singbet`/`sbobet` exist; `thunderpick`
-  (the original third pick) is NOT carried, so sbobet (the researched Asian fallback) replaced it.
-  `polymarket` is itself a slug in their feed; `ps3838`/`pin88` are `cloneOf` pinnacle — never
-  double-count clones. Same-day live probes also verified: the full v4 API contract
-  (camelCase params, `from`/`to` ≤10 days on /fixtures, ≤3 books on /historical-odds, market
-  "171"=match winner with outcome 171=participant1/172=participant2), AND archive depth —
-  pinnacle history reaches ≥6 months back (January BLAST fixture returned full line history;
-  softs age out ~2 weeks; old fixtures may be down-sampled to one pre-start tick). The
-  calibrator backfill is BUILT: `scripts/backfill_historical_odds.py` (see GO_LIVE_CHECKLIST).
+- **D3 — Sharp books decided (RATIFIED 2026-07-05): Singbet + Sbobet via OddsPapi.**
+  **Pinnacle is OUT — OPERATOR-RULED: OddsPapi carries pinnacle on B2B plans only**, not on the
+  operator's plan. That ruling is the D3 ratification the docs were waiting on; it overrides the
+  2026-07-03 probe's pinnacle findings for planning purposes. Slugs `singbet`/`sbobet` exist per
+  `/v4/bookmakers`; `thunderpick` (the original third pick) is NOT carried, so sbobet (the
+  researched Asian fallback) replaced it. `polymarket` is itself a slug in their feed;
+  `ps3838`/`pin88` are `cloneOf` pinnacle (B2B-gated the same way) — never double-count clones.
+  Live probes (2026-07-03) verified the v4 API contract itself (camelCase params, `from`/`to`
+  ≤10 days on /fixtures, ≤3 books on /historical-odds, market "171"=match winner with outcome
+  171=participant1/172=participant2). ⚠ CONSEQUENCE: the ≥6-month archive-depth finding was
+  measured ON pinnacle (January BLAST fixture); softs age out ~2 weeks; **archive depth for
+  singbet/sbobet is UNVERIFIED** — the historical backfill's yield is unknown until a small
+  probe run, and the calibrator's fallback path is forward-collected lines (2–4 wks). The
+  backfill is BUILT: `scripts/backfill_historical_odds.py` (see GO_LIVE_CHECKLIST).
 - **D4 — Data in git.** `data/esports_matches_bulk.jsonl` + `data/cs2/pandascore_cs2.json` ARE
   committed (`369606b`) and locally readable; other data (LoL CSVs, the 3.3G paper log) stays
   source-machine/VPS only. All carried data remains quarantined until the gate passes.
@@ -88,8 +92,8 @@ orientation valid, tiny n").
 
 ## Open decisions & blockers
 See `PLAN.md` (§Open decisions, §Blockers). Devig=dead, optional-cols=skipped are settled.
-Sharp books are DECIDED (Pinnacle, Singbet, Thunderpick via OddsPapi) pending operator
-ratification of live esports coverage; branch reconciliation is done on this branch. All
+Sharp books are RATIFIED (D3, 2026-07-05): Singbet + Sbobet via OddsPapi — pinnacle is
+B2B-plan-only and OUT; branch reconciliation is done on this branch. All
 data/network work is operator-run.
 
 ## Next action

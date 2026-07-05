@@ -43,13 +43,14 @@ left as a marked seam:
 
 ## The one open risk that gates everything
 
-The signal is sharp-book lines — **DECIDED (D3): Pinnacle + Singbet + Thunderpick, via
-OddsPapi** (per `PLAN.md` sharp-book research). What remains open is **operator ratification
-of live esports coverage**, not book selection: it is unverified whether OddsPapi actually
-returns all three **for esports** (coverage on odds aggregators is thin), and the exact
-bookmaker identifier strings must be confirmed against a live response. Verify book+esports
-coverage BEFORE trusting the collector — `odds_collector` logs per-`(game, book)` coverage
-every run so a gap can never pass silently.
+The signal is sharp-book lines — **RATIFIED (D3, 2026-07-05): Singbet + Sbobet, via
+OddsPapi**. Pinnacle is OUT: OddsPapi carries it on **B2B plans only** (operator-ruled), and
+Thunderpick is not carried at all (per `PLAN.md`). What remains open is **live esports
+coverage**, not book selection: it is unverified whether OddsPapi actually returns both books
+**for esports** (coverage on odds aggregators is thin), and the exact bookmaker identifier
+strings must be confirmed against a live response. Verify book+esports coverage BEFORE
+trusting the collector — `odds_collector` logs per-`(game, book)` coverage every run so a
+gap can never pass silently.
 
 ## Setup
 
