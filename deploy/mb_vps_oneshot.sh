@@ -26,17 +26,22 @@ GROUP BY 1 ORDER BY 2 DESC LIMIT 20;" 2>&1
 
 echo
 echo "### 3. Algo brain go/no-go (validate stage) ###"
-cd /tmp && rm -rf mbfr && \
-  git clone -q --depth 1 -b claude/mb-formula-review-vdxmtr \
-  https://github.com/swatson124455/polymarket-ai-v2 mbfr 2>&1 | tail -1
-if [ -f /tmp/mbfr/scripts/mirror_scoring_run.py ]; then
+# Fresh unique dir owned by the current user — never reuse /tmp/mbfr, which a
+# prior run under a different user can leave undeletable (stale-code trap that
+# burned the 2026-07-05 run: rm failed -> old db.initialize() code ran).
+WORK="$(mktemp -d "/tmp/mbfr.XXXXXX")"
+if git clone -q --depth 1 -b claude/mb-formula-review-vdxmtr \
+     https://github.com/swatson124455/polymarket-ai-v2 "$WORK" 2>&1 | tail -1; then :; fi
+if [ -f "$WORK/scripts/mirror_scoring_run.py" ]; then
+  echo "  (running $(cd "$WORK" && git rev-parse --short HEAD) — should contain db.init fix)"
   cd /opt/polymarket-ai-v2 && \
-    DB_STATEMENT_TIMEOUT_MS=300000 PYTHONPATH=/tmp/mbfr \
-    venv/bin/python /tmp/mbfr/scripts/mirror_scoring_run.py \
+    DB_STATEMENT_TIMEOUT_MS=300000 PYTHONPATH="$WORK" \
+    venv/bin/python "$WORK/scripts/mirror_scoring_run.py" \
       --stage validate --cutoff 2026-05-25T00:00:00 2>&1 | tail -30
 else
   echo "(clone failed — check network / branch name)"
 fi
+rm -rf "$WORK" 2>/dev/null
 
 echo
 echo "================= END — copy everything above back to the session ================="
