@@ -27,10 +27,28 @@ die()  { printf '\n\033[1;31mSTOP: %s\033[0m\n' "$*" >&2; exit 2; }
 
 [ -f esports_silo/db/schema.sql ] || die "run me from the repo root (esports_silo/db/schema.sql not found)."
 
-# Old-bot DB URL: take it from the env if set, otherwise ASK for it (so nothing
-# long has to be pasted onto the command line — you paste/type it once at the prompt).
+# Old-bot DB URL (the import SOURCE). Resolution order, so the operator types nothing:
+#   1. SOURCE_DATABASE_URL already in the env  → use it.
+#   2. else auto-discover DATABASE_URL from the box's existing shared env files.
+#   3. else prompt for it.
+# The value stays on the box and is NEVER echoed — only its length is printed.
 if [ -z "${SOURCE_DATABASE_URL:-}" ]; then
-  echo "Paste the OLD polymarket bot DB read URL (starts with postgresql://) and press Enter:"
+  for envf in /opt/pa2-shared/.env /opt/pa2-esports-shared/.env "$HOME/.env" \
+              /opt/polymarket-ai-v2/.env /opt/polymarket-ai-v2-esports/.env; do
+    [ -f "$envf" ] || continue
+    val=$(grep -hE '^(export[[:space:]]+)?DATABASE_URL=' "$envf" 2>/dev/null | head -1 \
+          | sed -E 's/^(export[[:space:]]+)?DATABASE_URL=//')
+    # strip one layer of surrounding single or double quotes
+    val=${val%\"}; val=${val#\"}; val=${val%\'}; val=${val#\'}
+    if [ -n "$val" ]; then
+      SOURCE_DATABASE_URL="$val"
+      echo "import source: DATABASE_URL from $envf (url length ${#SOURCE_DATABASE_URL})"
+      break
+    fi
+  done
+fi
+if [ -z "${SOURCE_DATABASE_URL:-}" ]; then
+  echo "Could not auto-find the old-bot DB URL. Paste it (starts with postgresql://) and press Enter:"
   read -r SOURCE_DATABASE_URL
 fi
 [ -n "$SOURCE_DATABASE_URL" ] || die "no SOURCE_DATABASE_URL given — nothing to import from."
