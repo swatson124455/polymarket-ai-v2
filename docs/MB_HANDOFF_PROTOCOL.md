@@ -6,14 +6,14 @@ cannot trip a known landmine.
 
 ## On every session START
 
-1. Read in order: `CLAUDE.md` → `MB_REBUILD_PLAN.md` → `docs/MB_HANDOFF.md`.
+1. Read in order: `CLAUDE.md` → `MB_REBUILD_PLAN.md` → `docs/MB_STATE.md`.
 2. `git fetch` and check branch `claude/mirror-bot-salvage-rebuild-d08v6x` vs `master`.
 3. Confirm live state before touching anything: is the bot paper or live?
    `deploy/mb_vps_oneshot.sh` §1 (or the runbook) answers it. **Never assume.**
 4. Re-derive any number you're about to rely on. Prior figures are stale until
    re-measured (`scripts/verify_salvage_data.py`, `scripts/bot_pnl.py`).
 
-## On every session END — update `docs/MB_HANDOFF.md`
+## On every session END — update `docs/MB_STATE.md`
 
 Edit these sections so they reflect reality (not intentions):
 - **§1 One-paragraph state** — rewrite if the headline changed.
