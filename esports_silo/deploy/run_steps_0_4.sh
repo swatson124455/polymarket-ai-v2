@@ -26,7 +26,15 @@ say()  { printf '\n\033[1;36m== %s\033[0m\n' "$*"; }
 die()  { printf '\n\033[1;31mSTOP: %s\033[0m\n' "$*" >&2; exit 2; }
 
 [ -f esports_silo/db/schema.sql ] || die "run me from the repo root (esports_silo/db/schema.sql not found)."
-: "${SOURCE_DATABASE_URL:?set SOURCE_DATABASE_URL to the OLD bot DB read URL, e.g. SOURCE_DATABASE_URL=... bash $0}"
+
+# Old-bot DB URL: take it from the env if set, otherwise ASK for it (so nothing
+# long has to be pasted onto the command line — you paste/type it once at the prompt).
+if [ -z "${SOURCE_DATABASE_URL:-}" ]; then
+  echo "Paste the OLD polymarket bot DB read URL (starts with postgresql://) and press Enter:"
+  read -r SOURCE_DATABASE_URL
+fi
+[ -n "$SOURCE_DATABASE_URL" ] || die "no SOURCE_DATABASE_URL given — nothing to import from."
+case "$SOURCE_DATABASE_URL" in postgres://*|postgresql://*) : ;; *) die "that doesn't look like a postgres URL (should start with postgresql://)." ;; esac
 
 # ── Step 0 — latest code ───────────────────────────────────────────────────
 say "Step 0 — fetch + checkout $BRANCH"
