@@ -63,14 +63,16 @@ git pull origin "$BRANCH"            || die "git pull failed"
 # ── Step 1 — silo's own DB (idempotent) ────────────────────────────────────
 say "Step 1 — silo role + database + schema"
 ROLE_EXISTS=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DBROLE';")
+# Always (re)set a fresh password so $SILO_DB is known even on a re-run — the old
+# random password isn't recoverable, and resetting a brand-new locked-down role is safe.
+PW=$(openssl rand -hex 24)
 if [ "$ROLE_EXISTS" = "1" ]; then
-  echo "role '$DBROLE' already exists — reusing it (password unchanged)."
-  [ -n "${SILO_DB:-}" ] || die "role exists but \$SILO_DB is not set in this shell — export the existing DATABASE_URL and re-run, or drop the role to recreate."
+  echo "role '$DBROLE' already exists — resetting its password for this run."
+  sudo -u postgres psql -c "ALTER ROLE $DBROLE LOGIN PASSWORD '$PW';" || die "ALTER ROLE failed"
 else
-  PW=$(openssl rand -hex 24)
   sudo -u postgres psql -c "CREATE ROLE $DBROLE LOGIN PASSWORD '$PW' NOSUPERUSER NOCREATEDB NOCREATEROLE;" || die "CREATE ROLE failed"
-  export SILO_DB="postgresql://$DBROLE:$PW@localhost:5432/$DBNAME"
 fi
+export SILO_DB="postgresql://$DBROLE:$PW@localhost:5432/$DBNAME"
 
 DB_EXISTS=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='$DBNAME';")
 if [ "$DB_EXISTS" = "1" ]; then
@@ -86,10 +88,29 @@ echo
 
 psql "$SILO_DB" -f esports_silo/db/schema.sql || die "schema load failed"
 
+# ── Pick a Python that has asyncpg (box system python usually does not) ─────
+PY=""
+for cand in "${SILO_PYTHON:-}" python3 python \
+            /opt/pa2-esports-shared/venv/bin/python /opt/pa2-shared/venv/bin/python \
+            /opt/polymarket-ai-v2-esports/venv/bin/python "$HOME/venv/bin/python"; do
+  [ -n "$cand" ] || continue
+  if command -v "$cand" >/dev/null 2>&1 && "$cand" -c 'import asyncpg' >/dev/null 2>&1; then
+    PY="$cand"; break
+  fi
+done
+if [ -z "$PY" ]; then
+  for cand in /opt/*/venv/bin/python /opt/*/.venv/bin/python "$HOME"/*/bin/python; do
+    [ -x "$cand" ] || continue
+    if "$cand" -c 'import asyncpg' >/dev/null 2>&1; then PY="$cand"; break; fi
+  done
+fi
+[ -n "$PY" ] || die "no python with asyncpg found — set SILO_PYTHON=/path/to/botvenv/python and re-run."
+echo "using python: $PY"
+
 # ── Step 2 — import history (dry-run, then confirm, then real) ──────────────
 say "Step 2 — import DRY-RUN (no writes) — want ~32k matches / ~1,777 aliases"
 DATABASE_URL="$SILO_DB" SOURCE_DATABASE_URL="$SOURCE_DATABASE_URL" \
-  python -m esports_silo.scripts.import_from_prior_bot --matches-from-db --aliases-from-db --dry-run \
+  "$PY" -m esports_silo.scripts.import_from_prior_bot --matches-from-db --aliases-from-db --dry-run \
   || die "dry-run import failed"
 
 echo
@@ -98,7 +119,7 @@ read -r -p "Counts look right (~32k matches / ~1,777 aliases)? Type YES to write
 
 say "Step 2 — import FOR REAL"
 DATABASE_URL="$SILO_DB" SOURCE_DATABASE_URL="$SOURCE_DATABASE_URL" \
-  python -m esports_silo.scripts.import_from_prior_bot --matches-from-db --aliases-from-db \
+  "$PY" -m esports_silo.scripts.import_from_prior_bot --matches-from-db --aliases-from-db \
   || die "real import failed"
 
 # ── Step 3 — drop the one known bad row ────────────────────────────────────
@@ -107,7 +128,7 @@ psql "$SILO_DB" -c "DELETE FROM matches WHERE match_id='grid_1015039';" || die "
 
 # ── Step 4 — THE GATE ──────────────────────────────────────────────────────
 say "Step 4 — data-quality gate (the milestone)"
-DATABASE_URL="$SILO_DB" python -m esports_silo.scripts.verify_data_quality
+DATABASE_URL="$SILO_DB" "$PY" -m esports_silo.scripts.verify_data_quality
 GATE=$?
 echo
 if [ "$GATE" -eq 0 ]; then
