@@ -655,3 +655,118 @@ class TestSignalIngestionTimeoutWrapping:
         assert "_spike_detection_loop" in src
         assert "wait_for" in src
         assert "10.0" in src
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S223  E1 stale-bot force-exit — startup grace (crash-loop race fix)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _S223FakeHeartbeatResult:
+    def fetchall(self):
+        # WeatherBot heartbeat 3239.8 minutes stale (the 2026-07-03→05 incident)
+        return [("WeatherBot", 3239.8)]
+
+
+class _S223FakeRawSession:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        return False
+
+    async def execute(self, stmt, params=None):
+        return _S223FakeHeartbeatResult()
+
+
+class _S223FakeDB:
+    """Plain object — no MagicMock auto-attrs, so hasattr() guards in the
+    watchdog tail sections (take_equity_snapshot, ensure_future_partitions)
+    stay False and those branches are skipped."""
+    session_factory = object()  # truthy
+
+    def get_raw_session(self):
+        return _S223FakeRawSession()
+
+
+class _S223FakeEngine:
+    def __init__(self):
+        self.alerting_system = MagicMock()
+        self.alerting_system.send_alert = AsyncMock()
+        self.db = _S223FakeDB()
+        self.event_bus = None
+        self.ingestion_scheduler = None
+        self.scheduler = None
+
+
+class _S223RunningBot:
+    running = True
+
+
+class TestS223WatchdogStartupGrace:
+    """S223: E1 force-exit must not fire within the startup grace window.
+
+    Incident (2026-07-05 14:24-14:34): after a 54h wedge, every fresh boot read
+    the same ancient bot_heartbeats row and os._exit(1)'d ~90s in — before the
+    first scan could write a fresh heartbeat. 6 crash-loops; StartLimitBurst=5
+    per 300s was one slightly-faster loop away from wedging the service
+    permanently. Fix: defer the force-exit (alert still fires) until the
+    process has been up BOT_STALE_EXIT_STARTUP_GRACE_MINUTES (default 10)."""
+
+    def _run_one_iteration(self, monkeypatch, monotonic_values=None):
+        import main
+
+        monkeypatch.setattr(main.settings, "BOT_ENABLED_WEATHER", True, raising=False)
+        monkeypatch.setattr(main.settings, "BOT_STALE_EXIT_STARTUP_GRACE_MINUTES", 10.0, raising=False)
+
+        engine = _S223FakeEngine()
+        bots = {"WeatherBot": _S223RunningBot()}
+
+        interval_calls = {"n": 0}
+
+        async def fake_sleep(t):
+            if t == main.WATCHDOG_INTERVAL_SECONDS:
+                interval_calls["n"] += 1
+                if interval_calls["n"] >= 2:
+                    raise asyncio.CancelledError()
+
+        if monotonic_values is not None:
+            # Replace only main.py's `time` binding — patching the real
+            # time.monotonic would corrupt the asyncio event-loop clock.
+            import time as _real_time
+
+            seq = iter(monotonic_values)
+            last = monotonic_values[-1]
+
+            class _FakeTime:
+                monotonic = staticmethod(lambda: next(seq, last))
+                time = staticmethod(_real_time.time)
+                sleep = staticmethod(_real_time.sleep)
+
+            monkeypatch.setattr(main, "time", _FakeTime)
+
+        with patch("os._exit") as mock_exit, \
+                patch("asyncio.sleep", side_effect=fake_sleep):
+            try:
+                asyncio.get_event_loop()
+            except RuntimeError:
+                pass
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(main._watchdog(bots, engine))
+        return mock_exit, engine
+
+    def test_force_exit_deferred_within_grace(self, monkeypatch):
+        """Uptime ~0 (fresh boot) + ancient heartbeat → NO os._exit; the
+        staleness alert still fires. Pre-S223: os._exit(1) fired here."""
+        mock_exit, engine = self._run_one_iteration(monkeypatch)
+        mock_exit.assert_not_called()
+        assert engine.alerting_system.send_alert.await_count >= 1, \
+            "Staleness alert must still fire during the grace window"
+
+    def test_force_exit_fires_after_grace(self, monkeypatch):
+        """Uptime 11 min (past 10-min grace) + ancient heartbeat → os._exit(1).
+        The grace must not neuter the E1 backstop for real steady-state wedges."""
+        # 1st monotonic() call anchors the watchdog start; later calls are +11 min
+        mock_exit, _ = self._run_one_iteration(
+            monkeypatch, monotonic_values=[1000.0, 1000.0 + 11 * 60],
+        )
+        mock_exit.assert_called_once_with(1)

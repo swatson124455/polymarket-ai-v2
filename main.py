@@ -282,6 +282,7 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
     _last_retention_cleanup: float = 0.0  # Session 51: P2-3
     _last_snapshot: float = 0.0  # Session 83: daily equity snapshots
     _last_partition_check: float = 0.0  # Session 83: monthly partition auto-creation
+    _watchdog_started_mono: float = time.monotonic()  # S223: E1 startup-grace anchor
 
     while True:
         await asyncio.sleep(WATCHDOG_INTERVAL_SECONDS)
@@ -394,6 +395,28 @@ async def _watchdog(bots: dict, base_engine: BaseEngine) -> None:
                         # same pattern as the per-bot watchdog). systemd Restart=always
                         # gives a clean pool on restart.
                         if float(row[1]) >= _exit_thresh:
+                            # S223: startup grace — after any extended outage the DB
+                            # heartbeat is legitimately ancient at boot; force-exiting
+                            # before the first scan can refresh it races the scan loop
+                            # and crash-loops the service (2026-07-05 14:24-14:34:
+                            # 6 exits in 10 min, each ~90s in, reading the same
+                            # 54h-old heartbeat; StartLimitBurst=5/300s was one
+                            # slightly-faster loop away from wedging the service
+                            # permanently). The staleness ALERT above still fires
+                            # during grace — only the force-exit is deferred.
+                            _uptime_m = (time.monotonic() - _watchdog_started_mono) / 60.0
+                            _grace_m = float(getattr(
+                                settings, "BOT_STALE_EXIT_STARTUP_GRACE_MINUTES", 10.0,
+                            ))
+                            if _uptime_m < _grace_m:
+                                logger.warning(
+                                    "watchdog_stale_exit_deferred_startup_grace",
+                                    bot_name=_bot_n,
+                                    minutes_stale=float(row[1]),
+                                    uptime_m=round(_uptime_m, 1),
+                                    grace_m=_grace_m,
+                                )
+                                continue
                             if _bot_n in bots and getattr(bots[_bot_n], "running", False):
                                 import sys as _sys
                                 logger.critical(
