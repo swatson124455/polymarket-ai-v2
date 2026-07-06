@@ -33,8 +33,12 @@ from bots.mirror_scoring.config import ScoringConfig
 from bots.mirror_scoring import stats as S
 from bots.mirror_scoring.q_score import TraderScore
 
+# F4 (review 2026-07-06): address matching is case-INSENSITIVE end to end.
+# trades.user_address (scoring ids) and mirror_rejected_signals.trader_address
+# (RTDS proxyWallet) are each stored as-received; a casing mismatch previously
+# matched zero rows SILENTLY (spurious "insufficient signals" FAIL).
 _REJECTED_SQL = """
-SELECT DISTINCT ON (r.trader_address, r.market_id)
+SELECT DISTINCT ON (LOWER(r.trader_address), r.market_id)
        r.trader_address, r.market_id, r.token_id, r.side, r.price,
        r.event_time, r.resolution,
        m.yes_token_id, m.no_token_id
@@ -43,8 +47,8 @@ LEFT JOIN markets m ON m.condition_id = r.market_id
 WHERE r.resolution IN ('YES', 'NO')
   AND r.price IS NOT NULL AND r.price > :pmin AND r.price < :pmax
   AND r.event_time > :cutoff
-  AND r.trader_address = ANY(:traders)
-ORDER BY r.trader_address, r.market_id, r.event_time ASC
+  AND LOWER(r.trader_address) = ANY(:traders)
+ORDER BY LOWER(r.trader_address), r.market_id, r.event_time ASC
 """
 
 
@@ -84,8 +88,9 @@ def _signal_edge(row: dict) -> float | None:
 async def validate_ranking(
     db, scores: list[TraderScore], cutoff: datetime, cfg: ScoringConfig
 ) -> ValidationReport:
-    admitted = {t.trader for t in scores if t.admitted}
-    others = {t.trader for t in scores if not t.admitted}
+    # F4: normalize once; every trader comparison below is on lowercase.
+    admitted = {t.trader.lower() for t in scores if t.admitted}
+    others = {t.trader.lower() for t in scores if not t.admitted}
     all_traders = list(admitted | others)
     if not admitted or not others:
         return ValidationReport(
@@ -110,7 +115,8 @@ async def validate_ranking(
     # also "validate" it — the same whale print/outcome on both sides makes
     # the kill criterion circular (biased toward false PASS). Exclude and count.
     scored_pairs = {
-        (t.trader, cid) for t in scores for cid in getattr(t, "condition_ids", [])
+        (t.trader.lower(), cid)
+        for t in scores for cid in getattr(t, "condition_ids", [])
     }
 
     diffs, edges_a, edges_o, clusters = [], [], [], []
@@ -120,10 +126,11 @@ async def validate_ranking(
         edge = _signal_edge(d)
         if edge is None:
             continue
-        if (d["trader_address"], d["market_id"]) in scored_pairs:
+        trader_l = str(d["trader_address"]).lower()
+        if (trader_l, d["market_id"]) in scored_pairs:
             n_excluded += 1
             continue
-        is_admitted = d["trader_address"] in admitted
+        is_admitted = trader_l in admitted
         (edges_a if is_admitted else edges_o).append(edge)
         # For the test statistic: signed edge, + for admitted, - for others,
         # clustered by market so shared events don't inflate confidence.

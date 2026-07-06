@@ -144,6 +144,59 @@ async def test_f1_edges_computed_from_surviving_rows_only():
     assert report.n_excluded_overlap == 1
 
 
+# ── F4: address matching is case-insensitive end to end ──────────────────────
+
+@pytest.mark.asyncio
+async def test_f4_mixed_case_scores_still_classify_rows():
+    """Scores carry checksummed (mixed-case) addresses; DB rows are lowercase.
+    Pre-fix this classified every row as 'other' (or matched zero rows)."""
+    admitted_checksummed = "0xAaA0000000000000000000000000000000000001"
+    rows = [
+        _sig(ADMITTED, "0xfresh1"),               # lowercase in DB
+        _sig(OTHER, "0xfresh2", res="NO"),
+    ]
+    scores = [
+        _score(admitted_checksummed, admitted=True),
+        _score(OTHER, admitted=False),
+    ]
+    report = await validate_ranking(_DB(rows), scores, CUTOFF, ScoringConfig())
+    assert report.n_admitted_signals == 1          # matched despite case diff
+    assert report.n_other_signals == 1
+
+
+@pytest.mark.asyncio
+async def test_f4_sql_params_and_query_are_lowercased():
+    admitted_checksummed = "0xAaA0000000000000000000000000000000000001"
+    db = _DB([_sig(ADMITTED, "0xm1"), _sig(OTHER, "0xm2", res="NO")])
+    scores = [
+        _score(admitted_checksummed, admitted=True),
+        _score(OTHER, admitted=False),
+    ]
+    await validate_ranking(db, scores, CUTOFF, ScoringConfig())
+    select_sql = next(s for s in db.session.seen_sql if "SET LOCAL" not in s)
+    assert "LOWER(r.trader_address) = ANY(:traders)" in select_sql
+    sent = next(p for p in db.session.seen_params if "traders" in p)
+    assert all(t == t.lower() for t in sent["traders"])
+
+
+@pytest.mark.asyncio
+async def test_f4_overlap_exclusion_matches_across_case():
+    """F1's exclusion must also hold when score/row casings differ."""
+    admitted_checksummed = "0xAaA0000000000000000000000000000000000001"
+    rows = [
+        _sig(ADMITTED, "0xoverlap"),               # lowercase row
+        _sig(ADMITTED, "0xfresh"),
+        _sig(OTHER, "0xother", res="NO"),
+    ]
+    scores = [
+        _score(admitted_checksummed, admitted=True, condition_ids=["0xoverlap"]),
+        _score(OTHER, admitted=False),
+    ]
+    report = await validate_ranking(_DB(rows), scores, CUTOFF, ScoringConfig())
+    assert report.n_excluded_overlap == 1
+    assert report.n_admitted_signals == 1
+
+
 @pytest.mark.asyncio
 async def test_f1_empty_condition_ids_backward_compatible():
     """Scores without recorded condition_ids exclude nothing (legacy shape)."""
