@@ -22,6 +22,18 @@
 > operator-machine LOCAL time; the VPS journal is UTC (the "10:21 vs 14:23" gap on 07-05
 > was timezone, not a missed restart). Cherry-pick proposals for MB (shared modules,
 > splinter-deployed only): `c61a712` (database.py) + `4170a8c` (main.py watchdog grace).
+>
+> **Second deploy same day — release `20260706_184619` (funnel fixes, adversarial-audit findings):**
+> ④ **`_check_executable_edge` YES-bias** (`12f68cc`) — the entry gate compared raw P(YES)
+> to the NO executable price for temperature NO opps (gate active by default), rejecting
+> ~every NO temperature trade → silent YES-only bias on the dominant funnel (a likely
+> contributor to the −edge; NO is the historically +EV side). Market-type-aware fix.
+> ⑤ **`WEATHER_MID_LIFE_EXIT_ENABLED` undeclared** (`37598b7`) — pydantic never read the
+> systemd-injected value, so the operator's `=true` was silently discarded and mid-life
+> model-reversal exits never fired. Now declared + honored (verified live `= True`).
+> ⚠ #5 activates a code path that had NEVER run — watch for latent bugs in the mid-life
+> exit now that it fires. STORM trigger root-caused (`_elite_batch_loop` dead-weight in the
+> WB-only splinter) — proposal, not shipped.
 
 ---
 
