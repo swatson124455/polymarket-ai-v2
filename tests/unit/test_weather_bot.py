@@ -2830,7 +2830,10 @@ class TestMidLifeExitEvaluator:
         bot.base_engine.risk_manager.check_hard_stop_loss = MagicMock(return_value={
             "should_exit": False, "reason": "", "details": {},
         })
-        # S160 WB-1: mid-life exit now calls self.place_order() wrapper
+        # S223: exits are SELL of the held token via base_engine.place_order
+        # (canonical position_manager idiom; the S160/S214 wrapper+flipped-side
+        # route hit entry gates and could never fill — proven live 2026-07-06).
+        bot.base_engine.place_order = AsyncMock(return_value={"success": True})
         bot.place_order = AsyncMock(return_value={"success": True})
         bot.running = True
         return bot
@@ -2880,11 +2883,11 @@ class TestMidLifeExitEvaluator:
         with patch.object(settings, "WEATHER_MID_LIFE_EXIT_ENABLED", True, create=True):
             with patch.object(settings, "WEATHER_EXIT_MIN_EDGE", 0.05, create=True):
                 await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
-        # S160 WB-1: now calls self.place_order() wrapper, not base_engine.place_order()
-        # S214: exit side flipped YES → NO per CLAUDE.md YES/NO mandate (was "SELL")
-        bot.place_order.assert_called_once()
-        call_kwargs = bot.place_order.call_args
-        assert call_kwargs.kwargs["side"] == "NO"
+        # S223: exit = SELL the HELD token via base_engine.place_order (the S214
+        # flipped-side route was a NEW BUY that entry gates rejected — never filled)
+        bot.base_engine.place_order.assert_awaited_once()
+        call_kwargs = bot.base_engine.place_order.await_args
+        assert call_kwargs.kwargs["side"] == "SELL"
         assert call_kwargs.kwargs["token_id"] == "yes_tok"
         assert call_kwargs.kwargs["size"] == 15.0
         assert "mkt1" in bot._recently_exited
@@ -2905,11 +2908,10 @@ class TestMidLifeExitEvaluator:
         with patch.object(settings, "WEATHER_MID_LIFE_EXIT_ENABLED", True, create=True):
             with patch.object(settings, "WEATHER_EXIT_MIN_EDGE", 0.05, create=True):
                 await WeatherBot._evaluate_mid_life_exits(bot, analyzed)
-        # S160 WB-1: now calls self.place_order() wrapper, not base_engine.place_order()
-        # S214: exit side flipped NO → YES per CLAUDE.md YES/NO mandate (was "SELL")
-        bot.place_order.assert_called_once()
-        call_kwargs = bot.place_order.call_args
-        assert call_kwargs.kwargs["side"] == "YES"
+        # S223: exit = SELL the HELD (NO) token via base_engine.place_order
+        bot.base_engine.place_order.assert_awaited_once()
+        call_kwargs = bot.base_engine.place_order.await_args
+        assert call_kwargs.kwargs["side"] == "SELL"
         assert call_kwargs.kwargs["token_id"] == "no_tok"
         assert bot._exit_reasons["mkt2"] == "REVERSAL"
 
@@ -3150,7 +3152,9 @@ class TestS214HardStopKwargRegression:
             f"event_type kwarg leaked into base_engine.place_order at site 1; "
             f"got kwargs: {sorted(call_kwargs.keys())}"
         )
-        assert call_kwargs["side"] == "NO", "exit side must flip YES → NO"
+        # S223: exit = SELL the held token (flipped-side was a NEW BUY that
+        # entry gates rejected; hard stops silently never filled)
+        assert call_kwargs["side"] == "SELL", "exit must SELL the held token"
         assert call_kwargs["bot_name"] == "WeatherBot"
         assert "mkt_hs1" in weather_bot._recently_exited
         assert weather_bot._exit_reasons["mkt_hs1"] == "HARD_STOP_LOSS"
@@ -3212,7 +3216,8 @@ class TestS214HardStopKwargRegression:
             f"event_type kwarg leaked into base_engine.place_order at site 2; "
             f"got kwargs: {sorted(call_kwargs.keys())}"
         )
-        assert call_kwargs["side"] == "NO", "exit side must flip YES → NO"
+        # S223: exit = SELL the held token (see site-1 comment)
+        assert call_kwargs["side"] == "SELL", "exit must SELL the held token"
         assert call_kwargs["bot_name"] == "WeatherBot"
 
 
