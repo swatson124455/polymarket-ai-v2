@@ -42,7 +42,7 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
 
 ## 5. Open threads / what's next
 
-- **[operator] Re-run algo validate** — `deploy/mb_vps_oneshot.sh` (fixed); paste output. It's the scoring engine's go/no-go.
+- **[HOLD — review first] Algo validate run** — full pre-run review of `bots/mirror_scoring/` done 2026-07-06: **6 findings, 2 HIGH** (`docs/ALGO_REVIEW_FINDINGS_2026-07-06.md`). F1: validation set not disjoint from the admission test half (circularity → false-PASS risk). F2: stopping old MB may kill the resolution backfill that labels v3 rows (v3 runs no base_engine). F3: v3 stream mixes into validation SQL unfiltered. F4: case-sensitive address joins (silent zero-row FAIL). F5: EB shrink pool admitted-only (inflated Kelly). F6: kill-criterion statistic conservative-by-construction. **Do not run validate, and do not stop old MB, until F1–F4 are dispositioned** (operator decision; fixes NOT implemented — review-only per operator instruction). Fix order: F1+F4 → F3 decision → run validate → F2 before any stop → F5/F6 lane pass.
 - **[operator] OddsPapi paid tier** — confirm sports coverage + that `ODDSPAPI_API_KEY` is set in the VPS env (presence only). Then the sharp-line engine wires to live data.
 - **[build, blocked on above] Sports sharp-line pipeline:** live OddsPapi fetch, sports team-name → Polymarket condition_id matcher (esports matcher exists in EB, sports is net-new), offline backfill of `sharp_prob` onto signals, then run through the gate.
 - **[build, unblocked] Crypto kill-test:** run crypto signals through the harness at realistic latency to confirm the latency-trap hypothesis and formally drop crypto.
