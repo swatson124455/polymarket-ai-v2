@@ -154,6 +154,12 @@ data/*_stdout.txt
 poly_data/*.csv
 poly_data/goldsky/*.csv
 
+# Regenerable runtime artifacts (backtest output, review bundles, snapshots, reference CSVs)
+output/
+review_package/
+data/wb_snapshots/
+data/lol/
+
 # Session handoff docs (contain credentials and internal architecture)
 AGENT_HANDOFF_*.md
 MASTER_HANDOFF_*.md
