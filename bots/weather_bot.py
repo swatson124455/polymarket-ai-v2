@@ -3971,12 +3971,19 @@ class WeatherBot(BaseBot):
             except Exception:
                 pass
             try:
-                _exit_side = "NO" if side == "YES" else "YES"
-                await self.base_engine.place_order(
+                # S223: exit = SELL the HELD token (canonical: position_manager.py
+                # :1087-1099). Pre-S223 this flipped the side → gateway treated it
+                # as a NEW BUY → entry confidence gate rejected it (success=False,
+                # which was also never checked) → hard stops silently never filled.
+                _hs_result = await self.base_engine.place_order(
                     market_id=mid, token_id=token_id,
-                    side=_exit_side, size=size, price=current_price,
+                    side="SELL", size=size, price=current_price,
                     bot_name=self.bot_name, confidence=0.0,
                 )
+                if not _hs_result.get("success"):
+                    logger.warning("weatherbot_hard_stop_order_failed",
+                                   market_id=mid,
+                                   error=_hs_result.get("error", "unknown"))
             except Exception as _err:
                 logger.warning("weatherbot_hard_stop_order_failed",
                                market_id=mid, error=str(_err))
@@ -4074,15 +4081,23 @@ class WeatherBot(BaseBot):
                     except Exception:
                         pass
                     try:
-                        await self.base_engine.place_order(
+                        # S223: exit = SELL the HELD token (see canonical idiom at
+                        # position_manager.py:1087-1099); flipped-side was a NEW
+                        # BUY rejected by the entry confidence gate, and the
+                        # result dict was never checked → silent failures.
+                        _hs_result = await self.base_engine.place_order(
                             market_id=mid,
                             token_id=token_id,
-                            side="NO" if side == "YES" else "YES",
+                            side="SELL",
                             size=size_shares,
                             price=current_price,
                             bot_name=self.bot_name,
                             confidence=0.0,
                         )
+                        if not _hs_result.get("success"):
+                            logger.warning("weatherbot_hard_stop_order_failed",
+                                           market_id=mid,
+                                           error=_hs_result.get("error", "unknown"))
                     except Exception as _exit_err:
                         logger.warning("weatherbot_hard_stop_order_failed",
                                        market_id=mid, error=str(_exit_err))
@@ -4106,11 +4121,58 @@ class WeatherBot(BaseBot):
                     size_shares=round(size_shares, 2),
                 )
 
-                # 1. Set in-memory cooldown (T1-K: REVERSAL → 30-min re-entry window)
+                # S223: exits are a SELL of the HELD token via the engine/gateway
+                # (canonical idiom — position_manager.py:1087-1099: "ALL exits are
+                # SELL — you sell the token you hold. YES/NO are BUY operations").
+                # SELL orders skip the entry gates (risk_manager min-confidence,
+                # order_gateway risk limits) BY DESIGN. Pre-S223 this flipped the
+                # side to the opposite outcome, which the gateway treated as a NEW
+                # BUY → full entry validation → 'Confidence 0.00% below threshold
+                # 10.00%' → the exit could NEVER fill (proven live 2026-07-06
+                # 23:21, first-ever firing of this path). Also pre-S223 the state
+                # mutation (cooldown/Redis/exposure decrement incl. daily_counters
+                # write-through) ran BEFORE the order, so the failed order leaked
+                # exposure accounting (Paris group/city counters decremented while
+                # the position stayed open). Order now goes FIRST; state mutates
+                # ONLY on a confirmed fill.
+                try:
+                    _exit_result = await self.base_engine.place_order(
+                        market_id=mid,
+                        token_id=token_id,
+                        side="SELL",
+                        size=size_shares,
+                        price=max(0.01, current_price),
+                        bot_name=self.bot_name,
+                        confidence=0.0,
+                        event_data={
+                            "exit_reason": "model_reversal",
+                            "current_ev": round(current_ev, 4),
+                        },
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "weatherbot_mid_life_exit_exception",
+                        market_id=mid, exc=str(exc),
+                    )
+                    continue
+
+                if not _exit_result.get("success"):
+                    logger.warning(
+                        "weatherbot_mid_life_exit_order_failed",
+                        market_id=mid,
+                        error=_exit_result.get("error", "unknown"),
+                    )
+                    continue  # no state mutation — retried next scan while EV stays negative
+
+                # Confirmed fill — now update state:
+                # 1. In-memory cooldown (T1-K: REVERSAL → 30-min re-entry window)
                 self._recently_exited[mid] = time.monotonic()
                 self._exit_reasons[mid] = "REVERSAL"
-                # 2. Persist to Redis
-                await self._save_exit_to_redis(mid)
+                # 2. Persist to Redis (best-effort; cooldown already set in-memory)
+                try:
+                    await self._save_exit_to_redis(mid)
+                except Exception:
+                    pass
                 # 3. Decrement group/city exposure
                 cached = self._market_group_cache.pop(mid, None)
                 if cached:
@@ -4137,39 +4199,13 @@ class WeatherBot(BaseBot):
                         market_id=mid, group_key=group_key, city=city,
                         cost_usd=round(exit_cost, 2),
                     )
-                # 4. Place exit order (side flipped from entry per CLAUDE.md YES/NO mandate)
-                try:
-                    _exit_result = await self.place_order(
-                        market_id=mid,
-                        token_id=token_id,
-                        side="NO" if side == "YES" else "YES",
-                        size=size_shares,
-                        price=max(0.01, current_price),
-                        confidence=0.0,
-                        event_data={
-                            "exit_reason": "model_reversal",
-                            "current_ev": round(current_ev, 4),
-                        },
-                    )
-                    if _exit_result.get("success"):
-                        logger.info(
-                            "weatherbot_mid_life_exit_filled",
-                            market_id=mid, side=side,
-                            size_shares=round(size_shares, 2),
-                            current_price=round(current_price, 4),
-                            current_ev=round(current_ev, 4),
-                        )
-                    else:
-                        logger.warning(
-                            "weatherbot_mid_life_exit_order_failed",
-                            market_id=mid,
-                            error=_exit_result.get("error", "unknown"),
-                        )
-                except Exception as exc:
-                    logger.warning(
-                        "weatherbot_mid_life_exit_exception",
-                        market_id=mid, exc=str(exc),
-                    )
+                logger.info(
+                    "weatherbot_mid_life_exit_filled",
+                    market_id=mid, side=side,
+                    size_shares=round(size_shares, 2),
+                    current_price=round(current_price, 4),
+                    current_ev=round(current_ev, 4),
+                )
 
     # ── Regime detection ─────────────────────────────────────────────────
 

@@ -4165,3 +4165,133 @@ class TestS223MidLifeExitSettingsDeclared:
         assert "WEATHER_EXIT_MIN_EDGE" in declared
         assert hasattr(settings, "WEATHER_MID_LIFE_EXIT_ENABLED")
         assert hasattr(settings, "WEATHER_EXIT_MIN_EDGE")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# S223: exit orders must be SELL of the HELD token, and mid-life exit state
+# must mutate ONLY on confirmed fill.
+# Defect (live, 2026-07-06 23:21 Paris): mid-life exit placed a flipped-side
+# YES/NO order -> gateway treated it as a NEW BUY -> entry confidence gate
+# rejected it ('Confidence 0.00% below threshold 10.00%') -> exit could never
+# fill; AND exposure was decremented BEFORE the order, so the failure leaked
+# group/city exposure accounting. Both hard-stop paths shared the flipped-side
+# shape (and never checked the result dict -> silent failures).
+# Canonical idiom: position_manager.py:1087-1099 — "ALL exits are SELL".
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestS223ExitOrdersAreSell:
+    def _build(self, place_order_result):
+        from bots.weather_bot import WeatherBot
+        engine = MagicMock()
+        engine.trade_coordinator = None
+        engine.cache = None
+        engine.db = None  # skip daily_counters write-through in tests
+        engine.risk_manager = MagicMock()
+        engine.risk_manager.check_hard_stop_loss = MagicMock(
+            return_value={"should_exit": False, "reason": ""}
+        )
+        engine.order_gateway = MagicMock()
+        engine.order_gateway._open_position_markets = {"WeatherBot": set()}
+        engine.order_gateway._position_details = {
+            "WeatherBot:m1": {"side": "YES", "price": 0.39, "size": 108.97}
+        }
+        engine.get_all_tradeable_markets = AsyncMock(return_value=[])
+        engine.place_order = AsyncMock(return_value=place_order_result)
+        bot = WeatherBot(engine)
+        bot._save_exit_to_redis = AsyncMock()
+        bot._recently_exited = {}
+        bot._exit_reasons = {}
+        bot._exposure_lock = asyncio.Lock()
+        bot._market_group_cache = {"m1": ("Paris:2026-07-07", "Paris", 42.5)}
+        bot._group_exposure = {"Paris:2026-07-07": 42.5}
+        bot._city_exposure = {"Paris": 42.5}
+
+        bucket = MagicMock()
+        bucket.market_id = "m1"
+        bucket.token_id = "yes_tok"
+        bucket.no_token_id = "no_tok"
+        bucket.yes_price = 0.30
+        group = MagicMock()
+        group.buckets = [bucket]
+        # fresh_prob 0.2952, entry 0.39 -> current_ev = -0.0948 < -0.05 (the
+        # exact live Paris trigger)
+        analyzed = [([], group, {"m1": 0.2952})]
+        return bot, engine, analyzed
+
+    @pytest.mark.asyncio
+    async def test_mid_life_exit_sells_held_token(self, monkeypatch):
+        """DEFECT REPRO 1: the exit order must be side=SELL of the HELD token
+        via engine.place_order. Pre-S223: flipped side ('NO') via
+        bot.place_order -> entry gates -> never fills."""
+        from bots.weather_bot import settings as wb_settings
+        monkeypatch.setattr(wb_settings, "WEATHER_MID_LIFE_EXIT_ENABLED", True, raising=False)
+        monkeypatch.setattr(wb_settings, "WEATHER_EXIT_MIN_EDGE", 0.05, raising=False)
+        bot, engine, analyzed = self._build({"success": True})
+
+        await bot._evaluate_mid_life_exits(analyzed)
+
+        engine.place_order.assert_awaited_once()
+        kwargs = engine.place_order.await_args.kwargs
+        assert kwargs["side"] == "SELL", (
+            f"Exit must SELL the held token (canonical position_manager idiom), "
+            f"got side={kwargs['side']!r}"
+        )
+        assert kwargs["token_id"] == "yes_tok", "Must sell the token HELD (YES)"
+
+    @pytest.mark.asyncio
+    async def test_mid_life_exit_failure_mutates_no_state(self, monkeypatch):
+        """DEFECT REPRO 2 (the live Paris leak): when the exit order FAILS,
+        exposure/cooldown/cache must be untouched. Pre-S223 decremented
+        exposure before the order -> failed order leaked accounting."""
+        from bots.weather_bot import settings as wb_settings
+        monkeypatch.setattr(wb_settings, "WEATHER_MID_LIFE_EXIT_ENABLED", True, raising=False)
+        monkeypatch.setattr(wb_settings, "WEATHER_EXIT_MIN_EDGE", 0.05, raising=False)
+        bot, engine, analyzed = self._build(
+            {"success": False, "error": "Confidence 0.00% below threshold 10.00%"}
+        )
+
+        await bot._evaluate_mid_life_exits(analyzed)
+
+        assert bot._group_exposure["Paris:2026-07-07"] == 42.5, \
+            "Exposure must NOT be decremented on a failed exit order"
+        assert bot._city_exposure["Paris"] == 42.5
+        assert "m1" in bot._market_group_cache, "Group cache must survive failure"
+        assert "m1" not in bot._recently_exited, "No cooldown on failed exit"
+        bot._save_exit_to_redis.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_mid_life_exit_success_applies_state(self, monkeypatch):
+        """On a CONFIRMED fill: cooldown set, Redis persisted, exposure
+        decremented, cache popped."""
+        from bots.weather_bot import settings as wb_settings
+        monkeypatch.setattr(wb_settings, "WEATHER_MID_LIFE_EXIT_ENABLED", True, raising=False)
+        monkeypatch.setattr(wb_settings, "WEATHER_EXIT_MIN_EDGE", 0.05, raising=False)
+        bot, engine, analyzed = self._build({"success": True})
+
+        await bot._evaluate_mid_life_exits(analyzed)
+
+        assert bot._group_exposure["Paris:2026-07-07"] == 0.0
+        assert bot._city_exposure["Paris"] == 0.0
+        assert "m1" not in bot._market_group_cache
+        assert bot._exit_reasons.get("m1") == "REVERSAL"
+        assert "m1" in bot._recently_exited
+        bot._save_exit_to_redis.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_hard_stop_exit_sells_held_token(self, monkeypatch):
+        """The in-loop shared hard stop must also SELL the held token (same
+        defect class; its result dict was previously never checked)."""
+        from bots.weather_bot import settings as wb_settings
+        monkeypatch.setattr(wb_settings, "WEATHER_MID_LIFE_EXIT_ENABLED", False, raising=False)
+        bot, engine, analyzed = self._build({"success": True})
+        engine.risk_manager.check_hard_stop_loss = MagicMock(
+            return_value={"should_exit": True, "reason": "hard_stop_loss"}
+        )
+
+        await bot._evaluate_mid_life_exits(analyzed)
+
+        engine.place_order.assert_awaited_once()
+        kwargs = engine.place_order.await_args.kwargs
+        assert kwargs["side"] == "SELL"
+        assert kwargs["token_id"] == "yes_tok"
