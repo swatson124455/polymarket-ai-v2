@@ -51,3 +51,39 @@ class ScoringConfig:
     UNVERIFIED_LABEL: str = "UNVERIFIED"  # Forbidden Pattern 8 compliance
 
     extra: dict = field(default_factory=dict)
+
+
+# ── Assumption provenance ledger (audit A4, operator directive 2026-07-06) ──
+# Every knob is labeled: MEASURED (source + date), CONVENTION (standard
+# statistical practice), or ASSUMED (inherited/judgment — unproven). Reports
+# surface the ASSUMED list on every run so no verdict silently rests on
+# old-bot folklore. Rule: retiring an ASSUMED label requires a measurement
+# with a source, committed as a Tier-1 change that updates this ledger.
+PROVENANCE = {
+    "ALPHA": "CONVENTION: standard one-sided 5% level",
+    "MIN_EVENTS": "ASSUMED: rule-of-thumb inference floor; sensitivity untested",
+    "MIN_ADVERSE_EVENTS": "MEASURED: audit 2026-07-02 — favorite-seller failure mode (spotless records auto-passing)",
+    "BH_Q": "CONVENTION: standard FDR target",
+    "N_BOOT": "CONVENTION: standard replicate count",
+    "BOOT_SEED": "CONVENTION: determinism only, no behavioral content",
+    "HOLDOUT_CUTOFF_ISO": "ASSUMED: operator-picked per run; single-cutoff verdicts are one draw (use multi-cutoff protocol)",
+    "DELTA_SECONDS": "ASSUMED: old-bot folklore latency, never measured — retire via mirror_v3 collector feed_lag_p95_s telemetry",
+    "PRICE_STALENESS_MAX_S": "ASSUMED: old-bot convention; sensitivity untested",
+    "RHO_MIN": "ASSUMED: judgment call; sensitivity untested",
+    "F_MIN": "ASSUMED: judgment call; sensitivity untested",
+    "FEE_ROUNDTRIP": "ASSUMED: flat 2% guess — calibrate from shadow_fills (its own comment demands it)",
+    "KELLY_LAMBDA": "ASSUMED: conservative fraction; untested",
+    "KELLY_CAP": "ASSUMED: conservative cap; untested",
+    "VAR_FLOOR_FROM_PRICE": "MEASURED: audit 2026-07-02 — low-variance clean records riding the cap",
+    "MIN_TRADES_PER_TRADER": "ASSUMED: old-bot convention",
+    "PRICE_MIN": "ASSUMED: dust-filter convention",
+    "PRICE_MAX": "ASSUMED: dust-filter convention",
+    "REPORT_DIR": "CONVENTION: pathing only",
+    "UNVERIFIED_LABEL": "CONVENTION: labeling only",
+}
+
+
+def unmeasured_assumptions() -> list:
+    """Knobs still resting on inherited/unproven values. Printed on every
+    runner report — visible debt shrinks; hidden debt compounds."""
+    return sorted(k for k, v in PROVENANCE.items() if v.startswith("ASSUMED"))

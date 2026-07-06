@@ -36,7 +36,9 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from base_engine.data.database import Database  # noqa: E402
-from bots.mirror_scoring.config import ScoringConfig  # noqa: E402
+from bots.mirror_scoring.config import (  # noqa: E402
+    ScoringConfig, unmeasured_assumptions,
+)
 from bots.mirror_scoring.q_score import run_universe  # noqa: E402
 from bots.mirror_scoring.validation import (  # noqa: E402
     placebo_validate_ranking, validate_ranking,
@@ -150,6 +152,12 @@ async def main() -> int:
                 report["placebo"] = _json_safe(pr)
                 print(f"PLACEBO: {pr.n_passed}/{pr.n_runs} shuffled rankings "
                       f"passed — {pr.detail}")
+
+        # A4 provenance ledger: every report carries its assumption debt.
+        assumed = unmeasured_assumptions()
+        report["assumed_knobs"] = assumed
+        print(f"ASSUMED KNOBS (unmeasured — this verdict rests on them): "
+              f"{', '.join(assumed)}")
 
         os.makedirs(cfg.REPORT_DIR, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
