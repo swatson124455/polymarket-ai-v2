@@ -74,6 +74,30 @@ def test():
     check("no results -> scores None but winner still set", r7["score_a"] is None
           and r7["winner"] == "team_b")
 
+    # --- orient_winner: attach a PandaScore result to another source's match row ------
+    am = {}
+    # same orientation, exact names -> winner unchanged
+    check("orient same orientation",
+          rc.orient_winner("team_a", "FaZe", "NAVI", "FaZe", "NAVI", am) == "team_a")
+    # row stores teams swapped -> winner flips
+    check("orient swapped flips winner",
+          rc.orient_winner("team_a", "FaZe", "NAVI", "NAVI", "FaZe", am) == "team_b")
+    # name variants (substring) still correspond
+    check("orient name variants",
+          rc.orient_winner("team_b", "E WIE EINFACH", "Orange",
+                           "E WIE EINFACH E-SPORTS", "Team Orange Gaming", am) == "team_b")
+    # different fixture sharing ONE team -> None (never guess)
+    check("orient different fixture -> None",
+          rc.orient_winner("team_a", "Bilibili Gaming", "LYON",
+                           "Lyon", "Secret Whales", am) is None)
+    # alias map bridges a rebrand
+    am2 = {"kiwoom drx": ["drx"]}
+    check("orient via alias",
+          rc.orient_winner("team_a", "Kiwoom DRX", "T1", "DRX", "T1", am2) == "team_a")
+    # winner None / unmappable in -> None out
+    check("orient None winner -> None",
+          rc.orient_winner(None, "A", "B", "A", "B", am) is None)
+
 
 if __name__ == "__main__":
     import sys

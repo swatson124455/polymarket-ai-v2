@@ -59,6 +59,45 @@ except ImportError:  # loose-file / pure-import fallback
 log = logging.getLogger("results_collector")
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
+try:  # alias-aware team scorer (for attaching results to pinnodds match rows)
+    from ..markets.match_matcher import team_present
+except ImportError:  # loose-file fallback
+    try:
+        from markets.match_matcher import team_present  # type: ignore
+    except ImportError:
+        team_present = None  # type: ignore  # pure parse tests don't need it
+
+
+def orient_winner(winner: Optional[str], ps_a: str, ps_b: str, row_a: str, row_b: str,
+                  alias_map: Dict[str, List[str]], threshold: float = 80.0) -> Optional[str]:
+    """Map a winner ('team_a'/'team_b' in PandaScore's team order) onto an EXISTING matches
+    row's orientation (e.g. a pinnodds row for the same real-world match).
+
+    Compares the PandaScore team names to the row's teams in BOTH orientations with the
+    alias-aware scorer; the better orientation must clear `threshold` on its WEAKER side
+    (both teams must correspond — one shared team with a different opponent scores low and
+    returns None: different fixture, never guess). Returns 'team_a'/'team_b' in the ROW's
+    orientation, flipped when the row stores the teams swapped, or None.
+    """
+    if winner not in ("team_a", "team_b") or team_present is None:
+        return None
+    ra, rb = (row_a or "").lower(), (row_b or "").lower()
+    same = min(team_present(ps_a, ra, alias_map)[1], team_present(ps_b, rb, alias_map)[1])
+    swapped = min(team_present(ps_a, rb, alias_map)[1], team_present(ps_b, ra, alias_map)[1])
+    if max(same, swapped) < threshold:
+        return None
+    if same >= swapped:
+        return winner
+    return "team_b" if winner == "team_a" else "team_a"
+
+
+async def _load_alias_map_safe(con, game: str) -> Dict[str, List[str]]:
+    try:
+        from ..markets.match_matcher import load_alias_map
+    except ImportError:
+        from markets.match_matcher import load_alias_map  # type: ignore
+    return await load_alias_map(con, game)
+
 # PandaScore videogame slug per silo game (SEAM: confirm slugs against a live payload).
 _PS_SLUG = {"cs2": "cs-go", "lol": "league-of-legends", "dota2": "dota-2", "valorant": "valorant"}
 
@@ -163,7 +202,8 @@ async def run_once(dry_run: bool) -> None:
             raise SystemExit("DATABASE_URL not set (or use --dry-run)")
         pool = await asyncpg.create_pool(CONFIG.database_url, min_size=1, max_size=2)
 
-    filled = skipped = unresolved = 0
+    filled = attached = skipped = unresolved = 0
+    alias_maps: Dict[str, Dict[str, List[str]]] = {}
     async with aiohttp.ClientSession() as session:
         for game in CONFIG.games:
             finished = await _fetch_finished(session, game)
@@ -195,10 +235,42 @@ async def run_once(dry_run: bool) -> None:
                         rec["match_id"], game, rec["team_a"], rec["team_b"], rec["winner"],
                         rec["score_a"], rec["score_b"], st)
                     filled += 1
+                    # ── ATTACH the winner to same-fixture rows from OTHER sources ──
+                    # The odds collector writes pinnodds_* rows; predictions point at
+                    # those. Without this, winners land only on the pandascore row and
+                    # nothing ever resolves. Orientation-aware, settle-once, no guessing.
+                    if rec["winner"] in ("team_a", "team_b"):
+                        if game not in alias_maps:
+                            alias_maps[game] = await _load_alias_map_safe(con, game)
+                        cands = await con.fetch(
+                            """SELECT match_id, team_a, team_b FROM matches
+                                WHERE game = $1 AND winner IS NULL AND match_id <> $2
+                                  AND start_time BETWEEN $3 - interval '36 hours'
+                                                     AND $3 + interval '36 hours'""",
+                            game, rec["match_id"], st)
+                        for c in cands:
+                            w = orient_winner(rec["winner"], rec["team_a"], rec["team_b"],
+                                              str(c["team_a"]), str(c["team_b"]),
+                                              alias_maps[game])
+                            if w is None:
+                                continue
+                            sa, sb = rec["score_a"], rec["score_b"]
+                            if w != rec["winner"]:  # row stores teams swapped — flip scores too
+                                sa, sb = sb, sa
+                            await con.execute(
+                                """UPDATE matches SET
+                                     winner  = COALESCE(winner, $2),
+                                     score_a = COALESCE(score_a, $3),
+                                     score_b = COALESCE(score_b, $4)
+                                   WHERE match_id = $1 AND winner IS NULL""",
+                                str(c["match_id"]), w, sa, sb)
+                            attached += 1
+                            log.info("winner attached to %s (%s vs %s) as %s",
+                                     c["match_id"], c["team_a"], c["team_b"], w)
     if pool:
         await pool.close()
-    log.info("results: filled/updated %d · skipped(no time) %d · unmapped-winner %d",
-             filled, skipped, unresolved)
+    log.info("results: filled/updated %d · attached-to-other-source %d · skipped(no time) %d "
+             "· unmapped-winner %d", filled, attached, skipped, unresolved)
 
 
 def main() -> None:
