@@ -315,6 +315,49 @@ async def test_a1_control_rows_still_deduped():
     assert db.insert_mirror_rejected_signal.await_count == 1
 
 
+# ── A4: feed-lag telemetry (retires the DELTA_SECONDS=60 folklore) ──────────
+
+@pytest.mark.asyncio
+async def test_a4_feed_lag_measured_from_event_timestamp():
+    import time as _t
+    c, db = _make_collector()
+    now = _t.time()
+    await c.on_rtds_trade(_trade(timestamp=now - 7.0))          # 7s lag, seconds epoch
+    await c.on_rtds_trade(_trade(timestamp=(now - 3.0) * 1000,  # 3s lag, ms epoch
+                                 transactionHash="0xlag2"))
+    s = c.get_stats()
+    assert s["feed_lag_n"] == 2
+    assert 2.0 < s["feed_lag_p50_s"] < 8.5   # both samples in the 3-7s band
+    assert s["feed_lag_max_s"] >= s["feed_lag_p50_s"]
+
+
+@pytest.mark.asyncio
+async def test_a4_feed_lag_measured_even_for_unwatched_events():
+    """The measurand is the PLATFORM feed lag — unwatched events count too."""
+    import time as _t
+    c, db = _make_collector()
+    await c.on_rtds_trade(_trade(proxyWallet=UNWATCHED, timestamp=_t.time() - 4.0))
+    assert c.get_stats()["feed_lag_n"] == 1
+    db.insert_mirror_rejected_signal.assert_not_awaited()  # still not logged
+
+
+@pytest.mark.asyncio
+async def test_a4_garbage_or_absent_timestamp_never_breaks_ingest():
+    import time as _t
+    c, db = _make_collector()
+    ev = _trade()
+    ev.pop("transactionHash")
+    for i, ts in enumerate(["not-a-number", None, -1e18, _t.time() + 900]):
+        e = dict(ev, timestamp=ts)
+        e["asset"] = f"tok-{i}"  # distinct composite dedup keys
+        await c.on_rtds_trade(e)  # must not raise
+    s = c.get_stats()
+    # none of the garbage produced a sample (absent key -> _trade has no
+    # timestamp by default in earlier tests, but here all four are bad values)
+    assert s.get("feed_lag_n", 0) == 0
+    assert db.insert_mirror_rejected_signal.await_count == 4  # ingest unaffected
+
+
 # ── plumbing helper ──────────────────────────────────────────────────────────
 
 def test_build_rtds_feed_wires_handler():

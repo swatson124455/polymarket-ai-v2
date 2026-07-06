@@ -53,8 +53,9 @@ the DB is absent.
 
 from __future__ import annotations
 
+import time
 import zlib
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from structlog import get_logger
@@ -145,6 +146,13 @@ class V3SignalCollector:
         self._skipped_exit = 0
         self._skipped_unknown_side = 0
         self._skipped_malformed = 0
+        # A4 (docs/ASSUMPTION_AUDIT_2026-07-06.md): DELTA_SECONDS=60 is
+        # old-bot folklore, never measured. Feed lag = wall clock at receipt
+        # minus the event's own timestamp, sampled over ALL events (platform
+        # feed lag, not wallet-specific). Bounded window; percentiles surface
+        # in get_stats() -> the v3 heartbeat. Caveat: includes VPS clock skew
+        # (NTP-synced boxes: negligible; guarded against gross skew below).
+        self._lag_samples: "deque[float]" = deque(maxlen=5000)
 
     # ── RTDS handler (the RTDSWebSocket handler contract) ────────────────────
 
@@ -162,6 +170,21 @@ class V3SignalCollector:
 
     async def _collect(self, data: Dict[str, Any]) -> None:
         self._events_seen += 1
+
+        # A4: measure the real feed lag (see __init__). Runs on every event —
+        # the sample must be the platform feed, not the watched subset.
+        ts_raw = data.get("timestamp")
+        if ts_raw is not None:
+            try:
+                ts_f = float(ts_raw)
+                if ts_f > 1e12:  # ms epoch
+                    ts_f /= 1000.0
+                lag = time.time() - ts_f
+                # Sanity band: tolerate small negative skew, drop absurdities.
+                if -5.0 < lag < 3600.0:
+                    self._lag_samples.append(lag)
+            except (TypeError, ValueError):
+                pass
 
         # S117 analog: block until the silo's state restore has completed.
         if not self._is_restored():
@@ -304,8 +327,8 @@ class V3SignalCollector:
 
     # ── diagnostics ──────────────────────────────────────────────────────────
 
-    def get_stats(self) -> Dict[str, int]:
-        return {
+    def get_stats(self) -> Dict[str, Any]:
+        stats: Dict[str, Any] = {
             "events_seen": self._events_seen,
             "watched_matched": self._watched_matched,
             "control_matched": self._control_matched,
@@ -319,6 +342,16 @@ class V3SignalCollector:
             "skipped_malformed": self._skipped_malformed,
             "seen_tx_size": len(self._seen_tx),
         }
+        # A4: measured feed-lag percentiles — the number that retires the
+        # DELTA_SECONDS=60 assumption once enough samples accumulate.
+        if self._lag_samples:
+            lags = sorted(self._lag_samples)
+            n = len(lags)
+            stats["feed_lag_n"] = n
+            stats["feed_lag_p50_s"] = round(lags[n // 2], 2)
+            stats["feed_lag_p95_s"] = round(lags[min(n - 1, int(n * 0.95))], 2)
+            stats["feed_lag_max_s"] = round(lags[-1], 2)
+        return stats
 
 
 def build_rtds_feed(
