@@ -28,9 +28,14 @@ ESPORT_RE = re.compile(r"e-?sport|counter|cs2|cs:?go|dota|league of|valorant|roc
 SCAN = range(1, 41)  # sport_id space to sweep
 
 
+# pinnodds blocks the default Python-urllib User-Agent (bot protection); curl worked,
+# so send a browser-like UA. Same auth header the curl probe used.
+UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
+
+
 def get(path):
     req = urllib.request.Request(BASE + path, headers={
-        "x-portal-apikey": KEY, "accept": "application/json"})
+        "x-portal-apikey": KEY, "accept": "application/json", "user-agent": UA})
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             return r.status, r.read().decode("utf-8", "replace")
@@ -42,10 +47,12 @@ def get(path):
 
 print(f"scanning sport_id {SCAN.start}..{SCAN.stop - 1} on {BASE}/markets ...\n")
 found = []  # (sid, name, prematch_n, live_n)
+last_code = None
 for sid in SCAN:
     row = {"sid": sid, "name": "?", "pre": 0, "live": 0, "ok": False}
     for et in ("prematch", "live"):
         code, body = get(f"/markets?sport_id={sid}&event_type={et}")
+        last_code = code
         if code == 200:
             try:
                 d = json.loads(body)
@@ -61,7 +68,7 @@ for sid in SCAN:
         print(f"  id {sid:>3}  {row['name']:<22} prematch={row['pre']:<4} live={row['live']:<4}{flag}")
         found.append(row)
     else:
-        print(f"  id {sid:>3}  (no 200)")
+        print(f"  id {sid:>3}  (HTTP {last_code})")
 
 esports = [r for r in found if ESPORT_RE.search(r["name"])]
 print("\n===== esports candidates =====")
