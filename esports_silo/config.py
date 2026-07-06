@@ -29,6 +29,13 @@ class Config:
     pandascore_api_key: str = os.getenv("PANDASCORE_API_KEY", "")
     riot_api_key: str = os.getenv("RIOT_API_KEY", "")
 
+    # pinnodds — self-serve Pinnacle wrapper; the odds source (replaces OddsPapi,
+    # which gates pinnacle to B2B). LIVE-VERIFIED 2026-07-06 on the box: base
+    # /kit/v1, header `x-portal-apikey`, esports = sport_id 11 (one /markets call
+    # returns every esports event with raw money_line odds; ~20 req/window limit).
+    pinnodds_api_key: str = os.getenv("PINNODDS_API_KEY", "")
+    pinnodds_base: str = os.getenv("PINNODDS_BASE", "https://pinnodds.com/kit/v1")
+
     polymarket_gamma_api: str = os.getenv(
         "POLYMARKET_GAMMA_API", "https://gamma-api.polymarket.com"
     )
@@ -36,15 +43,13 @@ class Config:
         "POLYMARKET_CLOB_API", "https://clob.polymarket.com"
     )
 
-    # OPERATOR-RULED (2026-07-05): pinnacle via OddsPapi is B2B-plan-ONLY — not available on
-    # the operator's plan, so it is OUT of the default set (D3 ratification). Slugs `singbet` +
-    # `sbobet` exist per /v4/bookmakers (live probe 2026-07-03); `thunderpick` is NOT carried.
-    # NOTE: `polymarket` is itself a bookmaker slug in their feed. Beware clones
-    # (ps3838/pin88 are cloneOf=pinnacle — B2B-gated the same way) — never double-count.
-    # CONSEQUENCE: the ≥6-month archive-depth verification was measured ON pinnacle; depth for
-    # singbet/sbobet is UNVERIFIED — probe small before trusting the historical backfill.
+    # Sharp book(s) written to odds_raw. D3 FINAL (2026-07-06): source = pinnodds,
+    # book = `pinnacle` (raw). OddsPapi is abandoned — it gated pinnacle to B2B, and
+    # singbet/sbobet on it were unverified. pinnodds delivers pinnacle self-serve, so
+    # the set returns to the single sharpest benchmark. Consensus over 1 book = raw
+    # pinnacle, which is exactly the intended signal (no de-vig, Cmd 2).
     sharp_books: List[str] = field(
-        default_factory=lambda: _split("SHARP_BOOKS", "singbet,sbobet")
+        default_factory=lambda: _split("SHARP_BOOKS", "pinnacle")
     )
     games: List[str] = field(
         default_factory=lambda: _split("ESPORTS_GAMES", "cs2,lol,dota2,valorant")
@@ -66,7 +71,12 @@ class Config:
 
 CONFIG = Config()
 
-# OddsPapi game -> sport_id  (verified from the prior client, esports/data/oddspapi_client.py)
+# pinnodds: esports is a SINGLE sport_id (11); the game lives in league_name, not a
+# per-game sport_id. LIVE-VERIFIED 2026-07-06 (id 11 = "Esports", 28 prematch events).
+PINNODDS_ESPORTS_SPORT_ID = 11
+
+# OddsPapi game -> sport_id — RETAINED for the (now-abandoned) OddsPapi collector /
+# historical-backfill scripts only. Not used by the pinnodds path.
 ODDSPAPI_SPORT_IDS = {
     "dota2": 16,
     "cs2": 17,
