@@ -91,6 +91,21 @@ WHERE event_time > NOW() - interval '15 min'
 GROUP BY 1;"
 ```
 
+**Pre-stop check (F2, docs/ALGO_REVIEW_FINDINGS_2026-07-06.md):** v3 rows only
+become usable once a background job stamps market resolutions onto them. The v3
+heartbeat now runs that backfill itself every ~10 min (`resolution backfill
+labeled N` in its logs), BUT it depends on the `markets` table still being
+updated with resolutions by the rest of the fleet. Confirm both before stopping:
+
+```bash
+# a) v3's own labeler is alive (any hit within ~20 min of running is fine):
+journalctl -u polymarket-mirror3 --since "-30 min" --no-pager | grep -i "resolution backfill" || echo "no backfill log yet (ok if <10 min uptime)"
+# b) markets are still being resolved by another unit (must NOT be silent):
+sudo -u polymarket psql polymarket -c "SELECT max(resolved_at) FROM markets;"
+```
+If (b) stops advancing after the stop, another engine unit must stay up (e.g.
+the main fleet service) — v3 labels rows but does not resolve markets.
+
 Once you see v3 rows (or `collector.logged` incrementing in the logs), old MB is
 redundant. **Stop it:**
 

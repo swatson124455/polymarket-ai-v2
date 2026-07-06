@@ -30,6 +30,25 @@ from mirror_v3 import BOT_NAME
 from mirror_v3.env_guard import assert_safe_env
 
 HEARTBEAT_S = 60
+# F2 (docs/ALGO_REVIEW_FINDINGS_2026-07-06.md): mirror_rejected_signals rows
+# only get resolution labels from a running base_engine (resolution listener /
+# ingestion scheduler) — and this silo deliberately runs no base_engine. If
+# old MB was the only engine doing it, stopping old MB would leave v3's rows
+# unlabeled forever, starving the acceptance gate. Belt-and-braces: run the
+# shared idempotent backfill (temporal-guarded UPDATE) from the heartbeat.
+BACKFILL_EVERY_BEATS = 10  # ~10 min at 60s heartbeat
+
+
+async def run_resolution_backfill(db) -> int:
+    """Fail-safe wrapper around the shared resolution backfill. Returns rows
+    labeled, 0 on any failure — the collection loop must never die from
+    instrumentation upkeep."""
+    try:
+        return int(await db.backfill_mirror_rejected_signals_resolution() or 0)
+    except Exception as e:
+        print(f"[{BOT_NAME}] resolution backfill failed (non-fatal): {e}",
+              file=sys.stderr, flush=True)
+        return 0
 
 
 def _mode() -> str:
@@ -122,10 +141,18 @@ async def main() -> int:
             print(f"[{BOT_NAME}] RTDS signal collection started "
                   f"watchlist={watchlist.size()}", flush=True)
 
-            # 5. Heartbeat: refresh the watchlist on its TTL, log collection stats.
+            # 5. Heartbeat: refresh the watchlist on its TTL, label collected
+            #    rows with resolutions (F2), log collection stats.
+            beats = 0
             while True:
                 if watchlist.needs_refresh():
                     await watchlist.refresh()
+                beats += 1
+                if beats % BACKFILL_EVERY_BEATS == 0:
+                    labeled = await run_resolution_backfill(db)
+                    if labeled:
+                        print(f"[{BOT_NAME}] resolution backfill labeled "
+                              f"{labeled} rejected-signal rows", flush=True)
                 print(f"[{BOT_NAME}] heartbeat {guards.snapshot()} mode={mode} "
                       f"strategy=EMPTY(gated) watchlist={watchlist.size()} "
                       f"collector={collector.get_stats()}", flush=True)
