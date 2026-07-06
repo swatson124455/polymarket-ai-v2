@@ -46,6 +46,14 @@ class TailScore:
     watch_only: bool
     caveats: list = field(default_factory=list)
     label: str = "UNVERIFIED"
+    # A3 (docs/ASSUMPTION_AUDIT_2026-07-06.md): the ladder replayed above is
+    # the DEAD bot's never-validated exit policy. These fields score the same
+    # entries under plain hold-to-resolution so the two policies can be
+    # compared before anything gates on either. Which policy v3 ships is an
+    # OPEN strategy decision — do not gate Stage-2 on l_net alone.
+    mu_net_hold: float = float("nan")
+    se_net_hold: float = float("nan")
+    l_net_hold: float = float("-inf")
 
 
 async def score_tailability(
@@ -60,7 +68,7 @@ async def score_tailability(
     ep = exit_params or ExitParams()
     usable = [e for e in entries if e.edge_res is not None
               and e.condition_id in resolved_time and e.token_id]
-    e_net, e_dx, clusters = [], [], []
+    e_net, e_hold, e_dx, clusters = [], [], [], []
     covered = 0
     for ent in usable:
         t_fill = ent.timestamp + timedelta(seconds=cfg.DELTA_SECONDS)
@@ -78,6 +86,9 @@ async def score_tailability(
             params=ep,
         )
         e_net.append(rr.o_x - p_delta - cfg.FEE_ROUNDTRIP)
+        # A3: same entry under plain hold-to-resolution — the comparison
+        # policy the dead bot's ladder must beat before it gates anything.
+        e_hold.append(float(ent.o_res) - p_delta - cfg.FEE_ROUNDTRIP)
         e_dx.append(rr.o_x - float(ent.o_res))
         clusters.append(ent.condition_id)
 
@@ -96,6 +107,9 @@ async def score_tailability(
     cl = np.array(clusters)
     mu, se, C = S.cluster_stats(arr, cl)
     l_net = S.t_lower_bound(mu, se, C, cfg.ALPHA)
+    # A3: identical machinery for the hold-to-resolution policy.
+    mu_h, se_h, C_h = S.cluster_stats(np.array(e_hold), cl)
+    l_net_hold = S.t_lower_bound(mu_h, se_h, C_h, cfg.ALPHA)
     watch_only = rho < cfg.RHO_MIN or l_net <= 0 or C < cfg.MIN_EVENTS
     if rho < cfg.RHO_MIN:
         caveats.append("low_price_coverage")
@@ -106,4 +120,5 @@ async def score_tailability(
         mu_net=mu, se_net=se, l_net=l_net,
         delta_exit=float(np.mean(e_dx)), watch_only=watch_only,
         caveats=caveats,
+        mu_net_hold=mu_h, se_net_hold=se_h, l_net_hold=l_net_hold,
     )
