@@ -4440,13 +4440,29 @@ class WeatherBot(BaseBot):
         else:  # NO
             _exec_price = 1.0 - _bb  # NO ask = 1 - YES bid
 
-        _exec_edge = float(opp.get("model_prob", 0.0)) - _exec_price
+        # S223: model_prob convention differs by market type. The temperature
+        # engine stores RAW P(YES) (consumers side-adjust, e.g. Kelly at
+        # probability_engine.py:455-459); precip/snow/wind store model_prob
+        # already flipped to P(side) at construction (precipitation_engine.py:227,
+        # weather_bot.py:2462). This gate must compare the model's P(SIDE) to the
+        # side's executable price. Pre-S223 it used raw model_prob unadjusted, so
+        # for a temperature NO opp it computed P(YES) - NO_ask (near-always
+        # negative, since NO is chosen when P(YES) is low) and rejected valid NO
+        # trades — an invisible YES-only bias on the dominant funnel. Flip for
+        # temperature NO only; precip/snow/wind are already P(side) (no regression).
+        _model_prob = float(opp.get("model_prob", 0.0))
+        if opp.get("market_type", "temperature") == "temperature" and _side == "NO":
+            _p_side = 1.0 - _model_prob
+        else:
+            _p_side = _model_prob
+        _exec_edge = _p_side - _exec_price
         if _exec_edge < _min_exec_edge:
             logger.info(
                 "weatherbot_executable_edge_reject",
                 market_id=opp.get("market_id"),
                 side=_side,
                 model_prob=round(float(opp.get("model_prob", 0)), 4),
+                p_side=round(_p_side, 4),  # S223: side-adjusted P(side) used in the edge
                 midpoint_edge=round(float(opp.get("edge", 0)), 4),
                 exec_price=round(_exec_price, 4),
                 exec_edge=round(_exec_edge, 4),

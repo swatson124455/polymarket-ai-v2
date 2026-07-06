@@ -4049,3 +4049,119 @@ class TestS221ExecutableEdgeCheck:
                "price": 0.30, "edge": 0.35}
         # honest_edge = 0.65 - 0.32 = 0.33 > 0
         assert bot_with_index._check_executable_edge(opp) is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# S223 (2026-07-06): _check_executable_edge must side-adjust model_prob by
+# market type. Temperature stores RAW P(YES); precip/snow/wind store P(side).
+# Pre-fix the gate compared raw P(YES) to the NO executable price for
+# temperature NO opps -> near-always negative -> silent YES-only bias on the
+# dominant (temperature) funnel. Gate is ACTIVE by default (min edge 0.0).
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestS223ExecutableEdgeSideAdjust:
+    @pytest.fixture
+    def bot_with_index(self):
+        from bots.weather_bot import WeatherBot
+        engine = MagicMock()
+        engine.trade_coordinator = None
+        engine.cache = None
+        engine.db = None
+        engine.risk_manager = MagicMock()
+        engine.order_gateway = MagicMock()
+        engine.order_gateway._market_index = {}
+        engine.order_gateway._open_position_markets = {"WeatherBot": set()}
+        engine.get_all_tradeable_markets = AsyncMock(return_value=[])
+        return WeatherBot(engine)
+
+    def test_temperature_no_good_edge_now_accepts(self, bot_with_index):
+        """DEFECT REPRO. Temperature NO opp: model_prob=raw P(YES)=0.20 so
+        P(NO)=0.80; bestBid_YES=0.30 -> NO_ask=0.70 -> true edge P(NO)-NO_ask
+        = +0.10. Pre-S223 computed 0.20-0.70=-0.50 and REJECTED a good NO
+        trade (the YES-bias). Must now ACCEPT."""
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.30, "bestAsk": 0.33}
+        }
+        opp = {"market_id": "m1", "side": "NO", "model_prob": 0.20,
+               "price": 0.70, "edge": -0.10, "market_type": "temperature"}
+        assert bot_with_index._check_executable_edge(opp) is True
+
+    def test_temperature_no_missing_market_type_defaults_temperature(self, bot_with_index):
+        """market_type absent -> treated as temperature (the live convention;
+        matches opp.get('market_type','temperature') used elsewhere). Same good
+        NO opp as above without the key must also accept."""
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.30, "bestAsk": 0.33}
+        }
+        opp = {"market_id": "m1", "side": "NO", "model_prob": 0.20,
+               "price": 0.70, "edge": -0.10}
+        assert bot_with_index._check_executable_edge(opp) is True
+
+    def test_temperature_no_genuinely_bad_edge_still_rejects(self, bot_with_index):
+        """Sanity: temperature NO with truly negative edge still rejects.
+        model_prob=P(YES)=0.55 -> P(NO)=0.45; NO_ask=0.70 -> edge -0.25."""
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.30, "bestAsk": 0.33}
+        }
+        opp = {"market_id": "m1", "side": "NO", "model_prob": 0.55,
+               "price": 0.70, "edge": -0.05, "market_type": "temperature"}
+        assert bot_with_index._check_executable_edge(opp) is False
+
+    def test_wind_no_not_double_flipped(self, bot_with_index):
+        """NO-REGRESSION. Wind NO opp stores model_prob ALREADY side-adjusted
+        (P(NO)=0.80, weather_bot.py:2462). The gate must NOT flip it again;
+        edge = 0.80 - 0.70 = +0.10 -> accept. A blanket flip would give
+        0.20-0.70 and wrongly reject."""
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.30, "bestAsk": 0.33}
+        }
+        opp = {"market_id": "m1", "side": "NO", "model_prob": 0.80,
+               "price": 0.70, "edge": 0.10, "market_type": "wind"}
+        assert bot_with_index._check_executable_edge(opp) is True
+
+    def test_precipitation_no_not_double_flipped(self, bot_with_index):
+        """NO-REGRESSION. Precip NO stores P(NO) already
+        (precipitation_engine.py:227). model_prob=0.78, NO_ask=0.75 -> +0.03."""
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.25, "bestAsk": 0.28}
+        }
+        opp = {"market_id": "m1", "side": "NO", "model_prob": 0.78,
+               "price": 0.75, "edge": 0.03, "market_type": "precipitation"}
+        assert bot_with_index._check_executable_edge(opp) is True
+
+    def test_temperature_yes_unchanged(self, bot_with_index):
+        """YES side never flips (both conventions store P(YES) for YES).
+        model_prob=0.72, bestAsk=0.50 -> +0.22 -> accept, unchanged by S223."""
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.48, "bestAsk": 0.50}
+        }
+        opp = {"market_id": "m1", "side": "YES", "model_prob": 0.72,
+               "price": 0.49, "edge": 0.23, "market_type": "temperature"}
+        assert bot_with_index._check_executable_edge(opp) is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# S223: WEATHER_MID_LIFE_EXIT_ENABLED / WEATHER_EXIT_MIN_EDGE must be DECLARED
+# settings fields. weather_bot.py:4010 reads them via getattr; if undeclared,
+# pydantic (extra="allow") does not pull them from os.environ (only from its
+# own env_file), so the systemd EnvironmentFile value is silently discarded and
+# the getattr default always wins. Guard against regressing to an undeclared
+# field.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestS223MidLifeExitSettingsDeclared:
+    def test_mid_life_exit_fields_are_declared(self):
+        from bots.weather.engine.config.settings import settings, Settings
+        # Declared as real fields (not merely present as pydantic 'extra')
+        declared = set(getattr(Settings, "model_fields", {}) or {}) | set(
+            getattr(Settings, "__annotations__", {}) or {}
+        )
+        assert "WEATHER_MID_LIFE_EXIT_ENABLED" in declared, (
+            "WEATHER_MID_LIFE_EXIT_ENABLED must be a DECLARED field or systemd "
+            "env is silently discarded (S223)"
+        )
+        assert "WEATHER_EXIT_MIN_EDGE" in declared
+        assert hasattr(settings, "WEATHER_MID_LIFE_EXIT_ENABLED")
+        assert hasattr(settings, "WEATHER_EXIT_MIN_EDGE")
