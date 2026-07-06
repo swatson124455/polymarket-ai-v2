@@ -144,6 +144,36 @@ async def test_f1_edges_computed_from_surviving_rows_only():
     assert report.n_excluded_overlap == 1
 
 
+# ── F6: kill criterion passes on genuine separation (two-sample bootstrap) ───
+
+@pytest.mark.asyncio
+async def test_f6_genuine_separation_passes():
+    """Across 30 markets, admitted signals win at cheap prices while others
+    lose — the two-sample cluster bootstrap must clear ALPHA and PASS."""
+    rows = []
+    for i in range(30):
+        rows.append(_sig(ADMITTED, f"0xm{i}", res="YES", price=0.40))   # +0.60
+        rows.append(_sig(OTHER, f"0xm{i}", res="YES", price=0.40, side="NO"))  # -0.40
+    scores = [_score(ADMITTED, admitted=True), _score(OTHER, admitted=False)]
+    report = await validate_ranking(_DB(rows), scores, CUTOFF, ScoringConfig())
+    assert report.spread == pytest.approx(1.0)
+    assert report.p_value < 0.05
+    assert report.passed is True
+
+
+@pytest.mark.asyncio
+async def test_f6_no_separation_fails():
+    """Identical outcomes for both groups -> spread 0 -> FAIL, p=1."""
+    rows = []
+    for i in range(10):
+        rows.append(_sig(ADMITTED, f"0xm{i}", res="YES", price=0.50))
+        rows.append(_sig(OTHER, f"0xn{i}", res="YES", price=0.50))
+    scores = [_score(ADMITTED, admitted=True), _score(OTHER, admitted=False)]
+    report = await validate_ranking(_DB(rows), scores, CUTOFF, ScoringConfig())
+    assert report.passed is False
+    assert report.p_value == 1.0
+
+
 # ── F4: address matching is case-insensitive end to end ──────────────────────
 
 @pytest.mark.asyncio

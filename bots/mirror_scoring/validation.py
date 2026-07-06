@@ -144,7 +144,8 @@ async def validate_ranking(
         for t in scores for cid in getattr(t, "condition_ids", [])
     }
 
-    diffs, edges_a, edges_o, clusters = [], [], [], []
+    edges, flags, clusters = [], [], []
+    edges_a, edges_o = [], []
     n_excluded = 0
     for r in rows:
         d = dict(r._mapping)
@@ -157,9 +158,9 @@ async def validate_ranking(
             continue
         is_admitted = trader_l in admitted
         (edges_a if is_admitted else edges_o).append(edge)
-        # For the test statistic: signed edge, + for admitted, - for others,
-        # clustered by market so shared events don't inflate confidence.
-        diffs.append(edge if is_admitted else -edge)
+        edges.append(edge)
+        flags.append(is_admitted)
+        # Clustered by market so shared events don't inflate confidence.
         clusters.append(d["market_id"])
 
     if not edges_a or not edges_o:
@@ -174,9 +175,13 @@ async def validate_ranking(
 
     a_mean, o_mean = float(np.mean(edges_a)), float(np.mean(edges_o))
     spread = a_mean - o_mean
-    p = S.wild_cluster_bootstrap_p(
-        np.array(diffs) - float(np.mean(diffs)) + spread / 2.0,
-        np.array(clusters), n_boot=cfg.N_BOOT, seed=cfg.BOOT_SEED,
+    # F6: proper two-sample cluster bootstrap on the spread itself (clusters
+    # resampled as whole units, preserving within-market cross-group
+    # correlation) — replaces the signed-mixture construction whose residual
+    # variance carried the between-group offsets.
+    p = S.two_sample_cluster_bootstrap_p(
+        np.array(edges), np.array(flags), np.array(clusters),
+        n_boot=cfg.N_BOOT, seed=cfg.BOOT_SEED,
     ) if spread > 0 else 1.0
     passed = spread > 0 and p < cfg.ALPHA
     return ValidationReport(

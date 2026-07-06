@@ -162,6 +162,53 @@ def wild_cluster_bootstrap_p(
     return float((1 + exceed) / (1 + n_boot))
 
 
+def two_sample_cluster_bootstrap_p(
+    e: np.ndarray,
+    in_group_a: np.ndarray,
+    clusters: np.ndarray,
+    n_boot: int = 999,
+    seed: int = 0,
+) -> float:
+    """One-sided p for H0: mean(A) - mean(B) <= 0, cluster pairs bootstrap.
+
+    F6 (review 2026-07-06): replaces the signed-mixture construction whose
+    residual variance carried the between-group mean offsets (conservative in
+    an uncontrolled way). Clusters are resampled with replacement as whole
+    units — rows of BOTH groups inside a resampled cluster come along, so
+    within-cluster cross-group correlation (admitted and non-admitted signals
+    on the same market) is preserved. p = (1 + #{spread_b <= 0})/(1 + n_boot);
+    resamples missing a group count toward p (conservative, not dropped).
+    """
+    e = np.asarray(e, dtype=float)
+    a = np.asarray(in_group_a, dtype=bool)
+    clusters = np.asarray(clusters)
+    if e.size == 0 or not a.any() or a.all():
+        return 1.0
+    uniq, inv = np.unique(clusters, return_inverse=True)
+    C = int(uniq.size)
+    if C < 2:
+        return 1.0
+    # Per-cluster sums/counts per group -> vectorized resampling.
+    sa, na = np.zeros(C), np.zeros(C)
+    sb, nb = np.zeros(C), np.zeros(C)
+    np.add.at(sa, inv[a], e[a])
+    np.add.at(na, inv[a], 1.0)
+    np.add.at(sb, inv[~a], e[~a])
+    np.add.at(nb, inv[~a], 1.0)
+    rng = np.random.default_rng(seed)
+    at_or_below = 0
+    for _ in range(n_boot):
+        idx = rng.integers(0, C, size=C)
+        na_b, nb_b = float(na[idx].sum()), float(nb[idx].sum())
+        if na_b == 0 or nb_b == 0:
+            at_or_below += 1  # degenerate resample: conservative
+            continue
+        spread_b = sa[idx].sum() / na_b - sb[idx].sum() / nb_b
+        if spread_b <= 0:
+            at_or_below += 1
+    return float((1 + at_or_below) / (1 + n_boot))
+
+
 # ── Selection across the universe ────────────────────────────────────────
 
 

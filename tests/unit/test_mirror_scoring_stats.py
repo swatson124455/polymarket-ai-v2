@@ -93,6 +93,54 @@ class TestBootstrapAndBH:
         assert not S.bh_fdr(np.array([0.5, 0.7, 0.9]), q=0.10).any()
 
 
+class TestTwoSampleClusterBootstrap:
+    def test_f6_null_no_separation_high_p(self):
+        rng = np.random.default_rng(1)
+        e = rng.normal(0.0, 0.1, size=200)
+        flags = np.tile([True, False], 100)
+        clusters = np.repeat(np.arange(50), 4)
+        p = S.two_sample_cluster_bootstrap_p(e, flags, clusters, n_boot=499, seed=2)
+        assert p > 0.10
+
+    def test_f6_clear_separation_low_p(self):
+        # 40 clusters; group A +0.30 edge, group B -0.30, small noise
+        rng = np.random.default_rng(3)
+        e, flags, clusters = [], [], []
+        for c in range(40):
+            e += [0.30 + rng.normal(0, 0.02), -0.30 + rng.normal(0, 0.02)]
+            flags += [True, False]
+            clusters += [c, c]
+        p = S.two_sample_cluster_bootstrap_p(
+            np.array(e), np.array(flags), np.array(clusters), n_boot=499, seed=4
+        )
+        assert p < 0.05
+
+    def test_f6_degenerate_single_group_is_one(self):
+        e = np.array([0.1, 0.2, 0.3])
+        clusters = np.array([1, 2, 3])
+        assert S.two_sample_cluster_bootstrap_p(e, np.array([True] * 3), clusters) == 1.0
+        assert S.two_sample_cluster_bootstrap_p(e, np.array([False] * 3), clusters) == 1.0
+        assert S.two_sample_cluster_bootstrap_p(
+            np.array([]), np.array([], dtype=bool), np.array([])
+        ) == 1.0
+
+    def test_f6_single_cluster_is_one(self):
+        e = np.array([0.5, -0.5])
+        p = S.two_sample_cluster_bootstrap_p(
+            e, np.array([True, False]), np.array(["m1", "m1"])
+        )
+        assert p == 1.0
+
+    def test_f6_deterministic_under_seed(self):
+        rng = np.random.default_rng(5)
+        e = rng.normal(0.05, 0.1, size=80)
+        flags = np.tile([True, False], 40)
+        clusters = np.repeat(np.arange(20), 4)
+        p1 = S.two_sample_cluster_bootstrap_p(e, flags, clusters, n_boot=299, seed=7)
+        p2 = S.two_sample_cluster_bootstrap_p(e, flags, clusters, n_boot=299, seed=7)
+        assert p1 == p2
+
+
 class TestShrinkageAndKelly:
     def test_shrinkage_pulls_toward_grand_mean(self):
         edges = np.array([0.20, 0.02, 0.05, 0.03])
