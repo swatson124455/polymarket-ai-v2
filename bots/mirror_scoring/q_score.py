@@ -62,6 +62,12 @@ class TraderScore:
     kelly_weight: float = 0.0   # shadow sizing weight (0 if not sizeable)
     watch_only_reasons: list = field(default_factory=list)
     label: str = "UNVERIFIED"   # cleared only by validation.py pass
+    # F1 (review 2026-07-06): the condition_ids this score was computed FROM.
+    # validation.py excludes these (trader, market) pairs from its
+    # counterfactual set — the same whale print/market must not both admit a
+    # trader and then "validate" them (circularity -> false PASS). Stripped
+    # from the JSON report by the runner (can be thousands of ids per trader).
+    condition_ids: list = field(default_factory=list)
 
 
 def score_trader(
@@ -118,6 +124,7 @@ def score_trader(
         n_adverse=n_adverse, avg_price=avg_price, edge_mean=mean,
         edge_se=se, edge_lb_t=lb_t, edge_lb_jeffreys=lb_j,
         p_holdout=p_holdout, train_edge=train_edge, test_edge=test_edge,
+        condition_ids=[str(c) for c in np.unique(clusters)],
     )
     if lb_j <= 0:
         ts.watch_only_reasons.append("jeffreys_lb_nonpositive")

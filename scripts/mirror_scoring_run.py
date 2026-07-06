@@ -113,9 +113,12 @@ async def main() -> int:
             "label": cfg.UNVERIFIED_LABEL,
             "n_scored": len(scores),
             "n_admitted": sum(1 for t in scores if t.admitted),
-            "scores": [_json_safe(t) for t in sorted(
-                scores, key=lambda t: (-int(t.admitted), t.p_holdout)
-            )],
+            # condition_ids is F1 plumbing for validation's overlap exclusion
+            # (can be thousands of ids per trader) — keep it out of the report.
+            "scores": [
+                {k: v for k, v in _json_safe(t).items() if k != "condition_ids"}
+                for t in sorted(scores, key=lambda t: (-int(t.admitted), t.p_holdout))
+            ],
         }
         if args.stage == "validate":
             # --cutoff presence already enforced pre-DB (top of main()).

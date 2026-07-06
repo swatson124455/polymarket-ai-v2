@@ -58,6 +58,10 @@ class ValidationReport:
     spread: float
     p_value: float
     detail: str
+    # F1 (review 2026-07-06): rejected signals dropped because the same
+    # (trader, market) also fed that trader's admission score. Nonzero is
+    # normal; this makes the contamination that WOULD have occurred visible.
+    n_excluded_overlap: int = 0
 
 
 def _signal_edge(row: dict) -> float | None:
@@ -102,11 +106,22 @@ async def validate_ranking(
             "traders": all_traders,
         })).fetchall()
 
+    # F1: a (trader, market) that fed the trader's admission score must not
+    # also "validate" it — the same whale print/outcome on both sides makes
+    # the kill criterion circular (biased toward false PASS). Exclude and count.
+    scored_pairs = {
+        (t.trader, cid) for t in scores for cid in getattr(t, "condition_ids", [])
+    }
+
     diffs, edges_a, edges_o, clusters = [], [], [], []
+    n_excluded = 0
     for r in rows:
         d = dict(r._mapping)
         edge = _signal_edge(d)
         if edge is None:
+            continue
+        if (d["trader_address"], d["market_id"]) in scored_pairs:
+            n_excluded += 1
             continue
         is_admitted = d["trader_address"] in admitted
         (edges_a if is_admitted else edges_o).append(edge)
@@ -122,6 +137,7 @@ async def validate_ranking(
             admitted_edge=float("nan"), other_edge=float("nan"),
             spread=float("nan"), p_value=1.0,
             detail="insufficient post-cutoff resolved signals on one side",
+            n_excluded_overlap=n_excluded,
         )
 
     a_mean, o_mean = float(np.mean(edges_a)), float(np.mean(edges_o))
@@ -138,4 +154,5 @@ async def validate_ranking(
         detail=("PASS: admitted ranking carries out-of-sample signal"
                 if passed else
                 "FAIL: no out-of-sample separation — do not wire to orders"),
+        n_excluded_overlap=n_excluded,
     )
