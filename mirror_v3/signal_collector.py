@@ -53,6 +53,7 @@ the DB is absent.
 
 from __future__ import annotations
 
+import zlib
 from collections import OrderedDict
 from typing import Any, Awaitable, Callable, Dict, Optional
 
@@ -68,6 +69,15 @@ logger = get_logger()
 V3_REJECTION_REASON = "mirror_v3_strategy_gated"
 V3_REJECTION_STAGE = "pre_gate"  # schema: pre_gate | gate | post_gate
 V3_SOURCE_TAG = "mirror_v3"
+
+# A1 (docs/ASSUMPTION_AUDIT_2026-07-06.md): the watched-wallet filter IS the
+# old bot's core hypothesis (leaderboard leaders are worth watching). Recording
+# only watched wallets makes that hypothesis unfalsifiable — skilled wallets
+# outside the leaderboard would be invisible forever. The control stream logs a
+# deterministic 1-in-N sample of NON-watchlist trades so a comparison
+# population exists. Streams are separable via metadata.stream.
+STREAM_WATCHED = "raw_watched_whale"
+STREAM_CONTROL = "control"
 
 # Match old MB's ingress constants so the raw population is identical.
 # The whale-size floor defaults to 0 (log everything) — see module docstring:
@@ -96,6 +106,12 @@ class V3SignalCollector:
             (scripts/verify_signal_population.py) — never inherit the old $100.
         dedup_maxlen: bounded seen-tx set cap (default 50k, matches old MB).
         bot_name: identity tag stored in metadata (default MirrorBotV3).
+        control_sample_rate: 0 = off (unwatched wallets skipped entirely);
+            N > 0 = additionally log a deterministic 1-in-N sample of
+            NON-watchlist trades as metadata.stream="control" (A1 — the
+            comparison population the watched-wallet hypothesis needs to be
+            falsifiable). Deterministic via crc32 of the dedup key, so the
+            sample is stable across restarts and processes.
     """
 
     def __init__(
@@ -107,6 +123,7 @@ class V3SignalCollector:
         min_whale_usd: float = _DEFAULT_MIN_WHALE_USD,
         dedup_maxlen: int = _DEFAULT_DEDUP_MAXLEN,
         bot_name: str = BOT_NAME,
+        control_sample_rate: int = 0,
     ) -> None:
         self._db = db
         self._is_watched = is_watched
@@ -114,12 +131,15 @@ class V3SignalCollector:
         self._min_whale_usd = float(min_whale_usd)
         self._dedup_maxlen = int(dedup_maxlen)
         self._bot_name = bot_name
+        self._control_sample_rate = int(control_sample_rate)
         self._seen_tx: "OrderedDict[str, None]" = OrderedDict()
         # Diagnostics — mirrors old MB's get_stats() spirit.
         self._events_seen = 0
         self._watched_matched = 0
+        self._control_matched = 0
         self._deduped = 0
         self._logged = 0
+        self._control_logged = 0
         self._skipped_not_whale = 0
         self._skipped_price = 0
         self._skipped_exit = 0
@@ -147,22 +167,31 @@ class V3SignalCollector:
         if not self._is_restored():
             return
 
-        # Watched-wallet fast-reject (elite_watchlist.on_rtds_trade).
         addr = data.get("proxyWallet")
         if not addr:
             self._skipped_malformed += 1
             return
         addr_lower = addr.lower()
-        if not self._is_watched(addr_lower):
-            return
-        self._watched_matched += 1
 
-        # Dedup (transactionHash preferred, composite fallback) — transport
-        # artifact removal; do NOT let repeats inflate the stream.
+        # Dedup key (transactionHash preferred, composite fallback) — also the
+        # deterministic control-sampling key, so compute it before the branch.
         dedup_key = data.get("transactionHash") or (
             f"rtds_{addr}_{data.get('asset')}_{data.get('price')}"
             f"_{data.get('size')}_{data.get('side')}"
         )
+
+        # Watched-wallet check (elite_watchlist.on_rtds_trade fast-reject) —
+        # plus the A1 control sample for unwatched wallets.
+        if self._is_watched(addr_lower):
+            self._watched_matched += 1
+            stream = STREAM_WATCHED
+        else:
+            if self._control_sample_rate <= 0:
+                return
+            if zlib.crc32(dedup_key.encode()) % self._control_sample_rate != 0:
+                return
+            self._control_matched += 1
+            stream = STREAM_CONTROL
         if dedup_key in self._seen_tx:
             self._deduped += 1
             return
@@ -227,6 +256,7 @@ class V3SignalCollector:
             whale_trade_usd=whale_trade_usd,
             outcome_raw=outcome,
             raw_side=raw_side,
+            stream=stream,
         )
 
     async def _write(
@@ -240,13 +270,14 @@ class V3SignalCollector:
         whale_trade_usd: float,
         outcome_raw: str,
         raw_side: str,
+        stream: str = STREAM_WATCHED,
     ) -> None:
         if self._db is None:
             return
         metadata = {
             "source": V3_SOURCE_TAG,
             "bot_name": self._bot_name,
-            "stream": "raw_watched_whale",
+            "stream": stream,
             "outcome": outcome_raw,
             "raw_side": raw_side,
         }
@@ -262,7 +293,10 @@ class V3SignalCollector:
                 whale_trade_usd=whale_trade_usd,
                 metadata=metadata,
             )
-            self._logged += 1
+            if stream == STREAM_CONTROL:
+                self._control_logged += 1
+            else:
+                self._logged += 1
         except Exception as e:
             # insert_mirror_rejected_signal already swallows+warns internally;
             # this is belt-and-suspenders so a write can never break ingest.
@@ -274,8 +308,10 @@ class V3SignalCollector:
         return {
             "events_seen": self._events_seen,
             "watched_matched": self._watched_matched,
+            "control_matched": self._control_matched,
             "deduped": self._deduped,
             "logged": self._logged,
+            "control_logged": self._control_logged,
             "skipped_not_whale": self._skipped_not_whale,
             "skipped_price": self._skipped_price,
             "skipped_exit": self._skipped_exit,

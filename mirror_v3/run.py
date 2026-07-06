@@ -134,6 +134,10 @@ async def main() -> int:
             db,
             is_watched=watchlist.is_watched,
             is_restored=lambda: guards.restored,
+            # A1 (docs/ASSUMPTION_AUDIT_2026-07-06.md): 1-in-50 deterministic
+            # sample of NON-watchlist trades as a control population — the
+            # watched-wallet hypothesis is unfalsifiable without one.
+            control_sample_rate=50,
         )
         feed = build_rtds_feed(collector)
         try:

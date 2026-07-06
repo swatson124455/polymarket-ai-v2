@@ -60,7 +60,13 @@ ORDER BY LOWER(r.trader_address), r.market_id, r.event_time ASC
 # Fixed clause map — the stream name is never interpolated into SQL directly.
 _STREAM_CLAUSES = {
     "legacy": "AND COALESCE(r.metadata->>'source', '') <> 'mirror_v3'",
-    "v3": "AND r.metadata->>'source' = 'mirror_v3'",
+    # A1: the v3 collector also logs a control sample of NON-watchlist trades
+    # (metadata.stream='control'); those are a different population and must
+    # not enter the watched-stream verdict.
+    "v3": ("AND r.metadata->>'source' = 'mirror_v3' "
+           "AND COALESCE(r.metadata->>'stream', '') <> 'control'"),
+    "control": ("AND r.metadata->>'source' = 'mirror_v3' "
+                "AND r.metadata->>'stream' = 'control'"),
     "all": "",
 }
 

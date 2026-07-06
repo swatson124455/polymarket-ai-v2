@@ -59,7 +59,7 @@ async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--stage", choices=["q", "validate"], default="q")
     ap.add_argument("--cutoff", default=None, help="ISO holdout cutoff")
-    ap.add_argument("--stream", choices=["legacy", "v3", "all"], default="legacy",
+    ap.add_argument("--stream", choices=["legacy", "v3", "control", "all"], default="legacy",
                     help="which mirror_rejected_signals population to validate "
                          "against (F3: old-MB gate rejections vs the v3 raw "
                          "collector stream; runs are labeled and not comparable "

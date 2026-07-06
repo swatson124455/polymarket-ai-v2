@@ -247,6 +247,74 @@ async def test_handler_swallows_unexpected_errors():
     await c.on_rtds_trade(_trade())  # must not raise
 
 
+# ── A1: control sample of non-watchlist wallets ─────────────────────────────
+
+def _make_control_collector(rate):
+    db = AsyncMock()
+    db.insert_mirror_rejected_signal = AsyncMock(return_value=None)
+    c = V3SignalCollector(
+        db, is_watched=lambda a: a == WATCHED.lower(),
+        is_restored=lambda: True, control_sample_rate=rate,
+    )
+    return c, db
+
+
+@pytest.mark.asyncio
+async def test_a1_control_disabled_by_default_unwatched_skipped():
+    c, db = _make_collector()  # default control_sample_rate=0
+    await c.on_rtds_trade(_trade(proxyWallet=UNWATCHED))
+    db.insert_mirror_rejected_signal.assert_not_awaited()
+    assert c.get_stats()["control_matched"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a1_rate_1_logs_every_unwatched_trade_as_control():
+    c, db = _make_control_collector(rate=1)  # 1-in-1: sample everything
+    await c.on_rtds_trade(_trade(proxyWallet=UNWATCHED))
+    db.insert_mirror_rejected_signal.assert_awaited_once()
+    kw = db.insert_mirror_rejected_signal.await_args.kwargs
+    assert kw["metadata"]["stream"] == "control"
+    assert kw["metadata"]["source"] == "mirror_v3"
+    s = c.get_stats()
+    assert s["control_matched"] == 1 and s["control_logged"] == 1
+    assert s["logged"] == 0  # watched counter untouched
+
+
+@pytest.mark.asyncio
+async def test_a1_watched_stream_unaffected_by_control_mode():
+    c, db = _make_control_collector(rate=1)
+    await c.on_rtds_trade(_trade())  # watched wallet
+    kw = db.insert_mirror_rejected_signal.await_args.kwargs
+    assert kw["metadata"]["stream"] == "raw_watched_whale"
+    assert c.get_stats()["logged"] == 1
+    assert c.get_stats()["control_logged"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a1_sampling_is_deterministic_and_subsampling():
+    """crc32-based: same events -> same decisions across instances; a rate of
+    N keeps roughly 1/N (exactly: crc32(key)%N==0), never all."""
+    decisions = []
+    for run in range(2):
+        c, db = _make_control_collector(rate=7)
+        for i in range(200):
+            await c.on_rtds_trade(
+                _trade(proxyWallet=UNWATCHED, transactionHash=f"0xctl{i}")
+            )
+        decisions.append(db.insert_mirror_rejected_signal.await_count)
+    assert decisions[0] == decisions[1]        # deterministic across instances
+    assert 0 < decisions[0] < 200              # a strict subsample
+
+
+@pytest.mark.asyncio
+async def test_a1_control_rows_still_deduped():
+    c, db = _make_control_collector(rate=1)
+    ev = _trade(proxyWallet=UNWATCHED, transactionHash="0xsamectl")
+    await c.on_rtds_trade(dict(ev))
+    await c.on_rtds_trade(dict(ev))
+    assert db.insert_mirror_rejected_signal.await_count == 1
+
+
 # ── plumbing helper ──────────────────────────────────────────────────────────
 
 def test_build_rtds_feed_wires_handler():
