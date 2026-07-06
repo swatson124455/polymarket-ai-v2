@@ -2152,13 +2152,11 @@ class TestWeatherConfidenceCalibrator:
         yes_cal_active = cal._fitted and cal._model_yes is not None
         assert not yes_cal_active  # dampener engages
 
-    def test_no_db_returns_false(self):
+    @pytest.mark.asyncio
+    async def test_no_db_returns_false(self):
         """fit_from_trade_events returns False when no DB provided."""
-        import asyncio
         cal = WeatherConfidenceCalibrator()
-        result = asyncio.get_event_loop().run_until_complete(
-            cal.fit_from_trade_events(db=None, window_days=30)
-        )
+        result = await cal.fit_from_trade_events(db=None, window_days=30)
         assert result is False
         assert not cal.is_fitted
 
@@ -2208,9 +2206,9 @@ class TestWeatherConfidenceCalibrator:
 
     # -- Brier guard test --------
 
-    def test_brier_guard_rejects_worse_calibration(self):
+    @pytest.mark.asyncio
+    async def test_brier_guard_rejects_worse_calibration(self):
         """Calibration that worsens Brier score is rejected."""
-        import asyncio
         cal = WeatherConfidenceCalibrator()
         mock_session = AsyncMock()
         # Generate well-calibrated data — LR can't improve it
@@ -2233,8 +2231,8 @@ class TestWeatherConfidenceCalibrator:
         mock_session.execute = AsyncMock(return_value=mock_result)
         mock_db = MagicMock()
         mock_db.get_session = MagicMock(return_value=mock_session)
-        result = asyncio.get_event_loop().run_until_complete(
-            cal.fit_from_trade_events(db=mock_db, window_days=30, min_samples=200)
+        result = await cal.fit_from_trade_events(
+            db=mock_db, window_days=30, min_samples=200
         )
         # Either fitted (no harm) or rejected — both are correct behavior
         # If fitted, the model should not have worsened Brier by > 0.005
@@ -2532,7 +2530,8 @@ class TestZeroKellyGuard:
         bot.base_engine.liquidity_guardian = None
         return bot
 
-    def test_zero_kelly_returns_false(self, _mock_weather_bot):
+    @pytest.mark.asyncio
+    async def test_zero_kelly_returns_false(self, _mock_weather_bot):
         """When Kelly returns 0 shares, trade should NOT fire (no $5 forced bet)."""
         import asyncio
         from bots.weather_bot import WeatherBot
@@ -2564,12 +2563,11 @@ class TestZeroKellyGuard:
         group.station = MagicMock()
         group.station.station_id = "KJFK"
 
-        result = asyncio.get_event_loop().run_until_complete(
-            WeatherBot._execute_weather_trade(bot, opp, group)
-        )
+        result = await WeatherBot._execute_weather_trade(bot, opp, group)
         assert result is False, "Zero-Kelly trade should return False, not fire at $5"
 
-    def test_zero_kelly_logs_shadow_entry(self, _mock_weather_bot):
+    @pytest.mark.asyncio
+    async def test_zero_kelly_logs_shadow_entry(self, _mock_weather_bot):
         """When Kelly returns 0, a SHADOW_ENTRY should be written to DB."""
         import asyncio
         from bots.weather_bot import WeatherBot
@@ -2600,9 +2598,7 @@ class TestZeroKellyGuard:
         group.station = MagicMock()
         group.station.station_id = "KJFK"
 
-        asyncio.get_event_loop().run_until_complete(
-            WeatherBot._execute_weather_trade(bot, opp, group)
-        )
+        await WeatherBot._execute_weather_trade(bot, opp, group)
         bot.base_engine.db.insert_trade_event.assert_called_once()
         call_kwargs = bot.base_engine.db.insert_trade_event.call_args
         assert call_kwargs.kwargs["event_type"] == "SHADOW_ENTRY"
