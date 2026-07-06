@@ -67,7 +67,7 @@ async def main():
                 SELECT id, question, resolved_at
                 FROM markets
                 WHERE question ILIKE '%%highest temperature%%'
-                  AND resolution='YES' AND resolved_at > NOW() - INTERVAL '{days} days'
+                  AND resolution='YES' AND resolved_at > NOW() - INTERVAL '{days} days' AND resolved_at <= NOW()
                 ORDER BY resolved_at ASC
                 LIMIT {limit}
             """))

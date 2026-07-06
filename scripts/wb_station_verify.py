@@ -79,7 +79,7 @@ async def main():
                 rows = (await s.execute(text("""
                     SELECT question FROM markets
                     WHERE question ILIKE :pat AND resolution='YES'
-                      AND resolved_at > NOW() - INTERVAL '60 days'
+                      AND resolved_at > NOW() - INTERVAL '60 days' AND resolved_at <= NOW()
                     ORDER BY resolved_at DESC LIMIT 40
                 """), {"pat": f"%in {city} %highest temperature%".replace("in ", "")
                        if False else f"%highest temperature in {city} %"})).fetchall()

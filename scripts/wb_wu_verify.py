@@ -76,7 +76,7 @@ async def main():
             mkts = (await s.execute(text("""
                 SELECT id, question FROM markets
                 WHERE question ILIKE '%highest temperature%'
-                  AND resolution='YES' AND resolved_at > NOW() - INTERVAL '75 days'
+                  AND resolution='YES' AND resolved_at > NOW() - INTERVAL '75 days' AND resolved_at <= NOW()
                 ORDER BY resolved_at DESC LIMIT 400
             """))).fetchall()
     finally:
