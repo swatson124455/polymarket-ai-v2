@@ -11,7 +11,9 @@ import pytest
 
 from bots.mirror_scoring.config import ScoringConfig
 from bots.mirror_scoring.q_score import TraderScore
-from bots.mirror_scoring.validation import validate_ranking
+from bots.mirror_scoring.validation import (
+    placebo_validate_ranking, validate_ranking,
+)
 
 CUTOFF = datetime(2026, 6, 1)
 
@@ -172,6 +174,61 @@ async def test_f6_no_separation_fails():
     report = await validate_ranking(_DB(rows), scores, CUTOFF, ScoringConfig())
     assert report.passed is False
     assert report.p_value == 1.0
+
+
+# ── A6: placebo calibration (test-of-the-test) ───────────────────────────────
+
+@pytest.mark.asyncio
+async def test_a6_placebo_zero_passes_on_symmetric_data():
+    """All traders identical outcomes -> every shuffled ranking has spread 0
+    -> zero placebo passes, calibration OK."""
+    rows = []
+    traders = [ADMITTED, OTHER,
+               "0xccc0000000000000000000000000000000000003",
+               "0xddd0000000000000000000000000000000000004"]
+    for i, t in enumerate(traders):
+        for m in range(5):
+            rows.append(_sig(t, f"0x{i}m{m}", res="YES", price=0.50))
+    scores = [_score(t, admitted=(t == ADMITTED)) for t in traders]
+    pr = await placebo_validate_ranking(
+        _DB(rows), scores, CUTOFF, ScoringConfig(), n_placebo=10
+    )
+    assert pr.n_runs == 10
+    assert pr.n_passed == 0
+    assert "calibration OK" in pr.detail
+
+
+@pytest.mark.asyncio
+async def test_a6_placebo_deterministic_and_does_not_mutate_scores():
+    rows = [_sig(ADMITTED, "0xm1"), _sig(OTHER, "0xm2", res="NO")]
+    scores = [_score(ADMITTED, admitted=True), _score(OTHER, admitted=False)]
+    pr1 = await placebo_validate_ranking(
+        _DB(rows), scores, CUTOFF, ScoringConfig(), n_placebo=8
+    )
+    pr2 = await placebo_validate_ranking(
+        _DB(rows), scores, CUTOFF, ScoringConfig(), n_placebo=8
+    )
+    assert pr1.p_values == pr2.p_values          # seeded, reproducible
+    assert scores[0].admitted is True            # never mutated
+    assert scores[1].admitted is False
+
+
+@pytest.mark.asyncio
+async def test_a6_placebo_flags_suspect_calibration():
+    """If shuffled rankings 'pass' too often, the report must scream. Force it
+    with 2 traders where every shuffle that picks the winner passes (~50%)."""
+    rows = []
+    for i in range(30):
+        rows.append(_sig(ADMITTED, f"0xm{i}", res="YES", price=0.40))
+        rows.append(_sig(OTHER, f"0xm{i}", res="YES", price=0.40, side="NO"))
+    scores = [_score(ADMITTED, admitted=True), _score(OTHER, admitted=False)]
+    pr = await placebo_validate_ranking(
+        _DB(rows), scores, CUTOFF, ScoringConfig(), n_placebo=12
+    )
+    # With only 2 traders, ~half the shuffles reproduce the true (separating)
+    # labels — a structurally tiny universe SHOULD trip the suspect flag.
+    assert pr.n_passed > 0
+    assert "CALIBRATION SUSPECT" in pr.detail
 
 
 # ── F4: address matching is case-insensitive end to end ──────────────────────

@@ -38,7 +38,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from base_engine.data.database import Database  # noqa: E402
 from bots.mirror_scoring.config import ScoringConfig  # noqa: E402
 from bots.mirror_scoring.q_score import run_universe  # noqa: E402
-from bots.mirror_scoring.validation import validate_ranking  # noqa: E402
+from bots.mirror_scoring.validation import (  # noqa: E402
+    placebo_validate_ranking, validate_ranking,
+)
 
 
 def _json_safe(obj):
@@ -64,6 +66,11 @@ async def main() -> int:
                          "against (F3: old-MB gate rejections vs the v3 raw "
                          "collector stream; runs are labeled and not comparable "
                          "across streams)")
+    ap.add_argument("--placebo", type=int, default=0, metavar="N",
+                    help="A6 calibration: additionally run the verdict on N "
+                         "randomly relabeled admitted sets — shuffled rankings "
+                         "must FAIL ~95%% of the time or the test itself is "
+                         "suspect (validate stage only)")
     args = ap.parse_args()
 
     cfg = ScoringConfig()
@@ -135,6 +142,14 @@ async def main() -> int:
             print(f"VALIDATION: {'PASS' if vr.passed else 'FAIL'} "
                   f"[stream={vr.signal_stream}, overlap_excluded="
                   f"{vr.n_excluded_overlap}] — {vr.detail}")
+            if args.placebo > 0:
+                pr = await placebo_validate_ranking(
+                    db, scores, datetime.fromisoformat(cfg.HOLDOUT_CUTOFF_ISO),
+                    cfg, n_placebo=args.placebo, signal_stream=args.stream,
+                )
+                report["placebo"] = _json_safe(pr)
+                print(f"PLACEBO: {pr.n_passed}/{pr.n_runs} shuffled rankings "
+                      f"passed — {pr.detail}")
 
         os.makedirs(cfg.REPORT_DIR, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

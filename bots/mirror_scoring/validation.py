@@ -108,27 +108,10 @@ def _signal_edge(row: dict) -> float | None:
     return (1.0 if won else 0.0) - float(row["price"])
 
 
-async def validate_ranking(
-    db, scores: list[TraderScore], cutoff: datetime, cfg: ScoringConfig,
-    signal_stream: str = "legacy",
-) -> ValidationReport:
-    if signal_stream not in _STREAM_CLAUSES:
-        raise ValueError(
-            f"signal_stream must be one of {sorted(_STREAM_CLAUSES)}, "
-            f"got {signal_stream!r}"
-        )
-    # F4: normalize once; every trader comparison below is on lowercase.
-    admitted = {t.trader.lower() for t in scores if t.admitted}
-    others = {t.trader.lower() for t in scores if not t.admitted}
-    all_traders = list(admitted | others)
-    if not admitted or not others:
-        return ValidationReport(
-            passed=False, n_admitted_signals=0, n_other_signals=0,
-            admitted_edge=float("nan"), other_edge=float("nan"),
-            spread=float("nan"), p_value=1.0,
-            detail="need both admitted and non-admitted traders to compare",
-            signal_stream=signal_stream,
-        )
+async def _fetch_rejected_rows(
+    db, all_traders: list[str], cutoff: datetime, cfg: ScoringConfig,
+    signal_stream: str,
+) -> list[dict]:
     async with db.get_session() as s:
         # The universe/rejected scans are unbounded and can exceed the 30s
         # bot-tier statement_timeout every session gets at __aenter__ (the
@@ -141,20 +124,21 @@ async def validate_ranking(
             "cutoff": cutoff.replace(tzinfo=None) if cutoff.tzinfo else cutoff,
             "traders": all_traders,
         })).fetchall()
+    return [dict(r._mapping) for r in rows]
 
-    # F1: a (trader, market) that fed the trader's admission score must not
-    # also "validate" it — the same whale print/outcome on both sides makes
-    # the kill criterion circular (biased toward false PASS). Exclude and count.
-    scored_pairs = {
-        (t.trader.lower(), cid)
-        for t in scores for cid in getattr(t, "condition_ids", [])
-    }
 
+def _verdict(
+    row_dicts: list[dict], admitted: set[str],
+    scored_pairs: set[tuple[str, str]], cfg: ScoringConfig,
+    signal_stream: str,
+) -> ValidationReport:
+    """Pure verdict computation over pre-fetched rows — shared by the real
+    validation and the placebo calibration (A6), so both judge with the exact
+    same machinery."""
     edges, flags, clusters = [], [], []
     edges_a, edges_o = [], []
     n_excluded = 0
-    for r in rows:
-        d = dict(r._mapping)
+    for d in row_dicts:
         edge = _signal_edge(d)
         if edge is None:
             continue
@@ -198,4 +182,98 @@ async def validate_ranking(
                 if passed else
                 "FAIL: no out-of-sample separation — do not wire to orders"),
         n_excluded_overlap=n_excluded, signal_stream=signal_stream,
+    )
+
+
+def _split_and_pairs(
+    scores: list[TraderScore],
+) -> tuple[set[str], set[str], set[tuple[str, str]]]:
+    # F4: normalize once; every trader comparison is on lowercase.
+    admitted = {t.trader.lower() for t in scores if t.admitted}
+    others = {t.trader.lower() for t in scores if not t.admitted}
+    # F1: a (trader, market) that fed the trader's admission score must not
+    # also "validate" it — the same whale print/outcome on both sides makes
+    # the kill criterion circular (biased toward false PASS). Exclude and count.
+    scored_pairs = {
+        (t.trader.lower(), cid)
+        for t in scores for cid in getattr(t, "condition_ids", [])
+    }
+    return admitted, others, scored_pairs
+
+
+async def validate_ranking(
+    db, scores: list[TraderScore], cutoff: datetime, cfg: ScoringConfig,
+    signal_stream: str = "legacy",
+) -> ValidationReport:
+    if signal_stream not in _STREAM_CLAUSES:
+        raise ValueError(
+            f"signal_stream must be one of {sorted(_STREAM_CLAUSES)}, "
+            f"got {signal_stream!r}"
+        )
+    admitted, others, scored_pairs = _split_and_pairs(scores)
+    if not admitted or not others:
+        return ValidationReport(
+            passed=False, n_admitted_signals=0, n_other_signals=0,
+            admitted_edge=float("nan"), other_edge=float("nan"),
+            spread=float("nan"), p_value=1.0,
+            detail="need both admitted and non-admitted traders to compare",
+            signal_stream=signal_stream,
+        )
+    rows = await _fetch_rejected_rows(
+        db, list(admitted | others), cutoff, cfg, signal_stream
+    )
+    return _verdict(rows, admitted, scored_pairs, cfg, signal_stream)
+
+
+@dataclass
+class PlaceboReport:
+    """A6: the test-of-the-test. Admitted labels are shuffled N times; a
+    shuffled ranking carries no information BY CONSTRUCTION, so it should
+    FAIL ~(1-ALPHA) of the time. A high placebo pass-rate means the verdict
+    machinery hallucinates edge on this real data — do not trust a real PASS."""
+    n_runs: int
+    n_passed: int
+    pass_rate: float
+    p_values: list
+    detail: str
+
+
+async def placebo_validate_ranking(
+    db, scores: list[TraderScore], cutoff: datetime, cfg: ScoringConfig,
+    n_placebo: int = 20, signal_stream: str = "legacy",
+) -> PlaceboReport:
+    """Run the EXACT verdict machinery on randomly relabeled admitted sets
+    (same admitted count, rows fetched once). Does not mutate `scores`."""
+    if signal_stream not in _STREAM_CLAUSES:
+        raise ValueError(
+            f"signal_stream must be one of {sorted(_STREAM_CLAUSES)}, "
+            f"got {signal_stream!r}"
+        )
+    admitted, others, scored_pairs = _split_and_pairs(scores)
+    if not admitted or not others:
+        return PlaceboReport(
+            n_runs=0, n_passed=0, pass_rate=float("nan"), p_values=[],
+            detail="need both admitted and non-admitted traders to shuffle",
+        )
+    all_traders = sorted(admitted | others)
+    k = len(admitted)
+    rows = await _fetch_rejected_rows(db, all_traders, cutoff, cfg, signal_stream)
+
+    rng = np.random.default_rng(cfg.BOOT_SEED + 1)
+    n_passed, p_values = 0, []
+    for _ in range(n_placebo):
+        fake_admitted = set(rng.choice(all_traders, size=k, replace=False).tolist())
+        vr = _verdict(rows, fake_admitted, scored_pairs, cfg, signal_stream)
+        p_values.append(vr.p_value)
+        if vr.passed:
+            n_passed += 1
+    rate = n_passed / n_placebo if n_placebo else float("nan")
+    ok = n_placebo > 0 and rate <= cfg.ALPHA * 2  # generous calibration band
+    return PlaceboReport(
+        n_runs=n_placebo, n_passed=n_passed, pass_rate=rate, p_values=p_values,
+        detail=(f"calibration OK: {n_passed}/{n_placebo} shuffled rankings passed "
+                f"(expected ~{cfg.ALPHA:.0%})" if ok else
+                f"CALIBRATION SUSPECT: {n_passed}/{n_placebo} shuffled rankings "
+                f"passed — the verdict machinery may hallucinate edge on this "
+                f"data; do NOT trust a real PASS until explained"),
     )
