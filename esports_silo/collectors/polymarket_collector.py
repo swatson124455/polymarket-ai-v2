@@ -259,18 +259,27 @@ def _is_yes_no(outcomes: List[Any]) -> bool:
 
 
 def pick_series_market(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """The match-winner market of an event: the one whose question == the event title with
-    exactly two TEAM outcomes (not Yes/No). Sub-game ('Game N'/'Map N') and outright Yes/No
-    markets are excluded. Returns None for non-match events (season outrights, props)."""
+    """The match-winner market of an event: two TEAM outcomes (not Yes/No) whose question is
+    the event's base series line. Exact title match wins; otherwise the longest question that
+    is a PREFIX of the title (some events append ' - <league>' to the title but not to the
+    series-market question, e.g. '... (BO3)' vs '... (BO3) - LPL Group Ascend'). Sub-game
+    ('Game N'/'Map N'/'Match Result'/'1x2') and outright Yes/No markets are excluded — those
+    never == or prefix the title. Returns None for non-match events (season outrights, props)."""
     title = str(event.get("title") or "").strip()
     if not title:
         return None
+    best = None
+    best_len = -1
     for m in (event.get("markets") or []):
         q = str(m.get("question") or "").strip()
         outs = _as_list(m.get("outcomes"))
-        if q == title and len(outs) == 2 and not _is_yes_no(outs):
-            return m
-    return None
+        if len(outs) != 2 or _is_yes_no(outs) or not q:
+            continue
+        if q == title:
+            return m  # exact base line — done
+        if title.startswith(q) and len(q) > best_len:
+            best, best_len = m, len(q)
+    return best
 
 
 def event_record(event: Dict[str, Any], game: str, market: Dict[str, Any],
@@ -300,6 +309,7 @@ async def run_once(dry_run: bool) -> None:
     snapshot_time = datetime.now(timezone.utc).isoformat()
     coverage: Dict[str, int] = {}
     misses: List[str] = []      # events that look like matches but yielded no series market
+    settled_skipped = 0         # resolved matches (price pinned to 0/1) — not a live line
     seen: set = set()
     printed: List[Any] = []
     pool = None
@@ -318,13 +328,21 @@ async def run_once(dry_run: bool) -> None:
                     m = pick_series_market(ev)
                     if m is None:
                         title = str(ev.get("title") or "")
-                        if " vs " in title.lower():
+                        # only a real miss if it's a head-to-head with no derivative marker
+                        low = title.lower()
+                        if " vs " in low and not any(
+                                k in low for k in ("match result", "1x2", " - game ", " - map ")):
                             misses.append(title)
                         continue
                     rec = event_record(ev, game, m, snapshot_time)
                     if rec is None or rec["market_id"] in seen:
                         continue
                     seen.add(rec["market_id"])
+                    # settled matches sit pinned at exactly 0 or 1 — that's a result, not a
+                    # tradeable pre-match line; keep them out of the snapshot ledger.
+                    if rec["yes_price"] in (0.0, 1.0):
+                        settled_skipped += 1
+                        continue
                     coverage[game] = coverage.get(game, 0) + 1
                     if dry_run:
                         printed.append((game, rec["team_a"], rec["team_b"], rec["yes_price"]))
@@ -352,6 +370,8 @@ async def run_once(dry_run: bool) -> None:
     for game in POLYMARKET_TAG_SLUGS:
         n = coverage.get(game, 0)
         (log.info if n else log.warning)("coverage", game=game, matches=n)
+    if settled_skipped:
+        log.info("settled matches skipped (price pinned to 0/1, not a live line)", n=settled_skipped)
     if misses:
         log.info("match-looking events with no series market (review, not written)",
                  n=len(misses), sample=misses[:8])
