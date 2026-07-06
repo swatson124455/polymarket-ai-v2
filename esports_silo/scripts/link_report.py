@@ -51,10 +51,10 @@ async def main() -> int:
     import asyncpg
     try:
         from ..config import CONFIG
-        from ..markets.match_matcher import link_market, load_alias_map
+        from ..markets.match_matcher import link_market, load_alias_map, team_present
     except ImportError:
         from config import CONFIG  # type: ignore
-        from markets.match_matcher import link_market, load_alias_map  # type: ignore
+        from markets.match_matcher import link_market, load_alias_map, team_present  # type: ignore
 
     if not CONFIG.database_url:
         raise SystemExit("DATABASE_URL not set")
@@ -108,29 +108,43 @@ async def main() -> int:
             print(f"  [{m['game']}] {m['team_a']} vs {m['team_b']}  (starts {m['start_time']:%m-%d %H:%M} UTC)")
 
         print(f"\n=== PM-ONLY ({len(pm_only)}) — PM market exists, no upcoming pinnodds line ===")
-        print("(usually: match is IN-PLAY now — we are pre-match only — or the line isn't posted yet;")
-        print(" a HIGH near-miss score against a real upcoming match = alias gap worth fixing)")
-        triage = sorted(pm_only, key=lambda x: -(x[1] or {}).get("score", 0))
-        for s, nm in triage[:15]:
-            if nm and nm.get("score", 0) >= 50:
-                print(f"  ⚠ [{s['game']}] {str(s['question'])[:64]}")
-                print(f"       near-miss {nm['score']:.0f}: {nm['team_a']} vs {nm['team_b']}  <-- possible alias gap")
-            else:
-                print(f"  [{s['game']}] {str(s['question'])[:64]}")
-        if len(pm_only) > 15:
-            print(f"  ... and {len(pm_only) - 15} more (all near-miss < 50)")
+        print("(usually: match is IN-PLAY now — we are pre-match only — or the line isn't posted yet)")
 
-        # honest rate: of pinnodds matches that COULD pair (same-game PM market exists at all),
-        # how many did? Approximate the could-pair universe per game.
-        print("\n=== paired rate over the overlap universe ===")
+        def _same_fixture_score(s, nm) -> float:
+            """Alias-gap triage: is the near-miss candidate the SAME fixture under different
+            names? Compare PM outcome team names to the candidate's teams in BOTH orientations
+            (name-vs-name, alias-aware); return the better orientation's WEAKER side. A single
+            shared team (different opponent) scores low — that's a different match, not a gap."""
+            g = str(s["game"])
+            am = alias_maps.get(g, {})
+            pa, pb = str(s["team_a"] or "").lower(), str(s["team_b"] or "").lower()
+            ca, cb = str(nm["team_a"] or ""), str(nm["team_b"] or "")
+            o1 = min(team_present(ca, pa, am)[1], team_present(cb, pb, am)[1])
+            o2 = min(team_present(ca, pb, am)[1], team_present(cb, pa, am)[1])
+            return max(o1, o2)
+
+        flagged = 0
+        rest = 0
+        for s, nm in pm_only:
+            fx = _same_fixture_score(s, nm) if nm else 0.0
+            if fx >= 55.0:  # same fixture, one name variant below the 80 link threshold
+                flagged += 1
+                print(f"  ⚠ ALIAS GAP? [{s['game']}] {str(s['question'])[:62]}")
+                print(f"       same-fixture score {fx:.0f}: pinnodds has {nm['team_a']} vs {nm['team_b']}")
+            else:
+                rest += 1
+        print(f"  (+ {rest} PM-only rows with no same-fixture candidate — in-play or not yet quoted; "
+              f"{flagged} flagged)")
+
+        # honest per-game summary: paired vs sharp-line-only, from the pinnodds side.
+        print("\n=== per-game summary (pinnodds side) ===")
         pm_games = {str(s["game"]) for s in snaps}
         for g in sorted(by_game_cands):
             ups = by_game_cands[g]
             n_p = sum(1 for _, l in paired if any(str(m["match_id"]) == l.match_id for m in ups))
-            if g not in pm_games:
-                print(f"  {g:<9} {len(ups)} upcoming pinnodds matches, PM lists NO {g} markets at all")
-            else:
-                print(f"  {g:<9} {n_p}/{len(ups)} upcoming pinnodds matches paired to a PM market")
+            n_only = sum(1 for m in pinnodds_only if str(m["game"]) == g)
+            note = "" if g in pm_games else "  (PM lists NO markets for this game at all)"
+            print(f"  {g:<9} upcoming={len(ups)}  paired={n_p}  no-PM-market={n_only}{note}")
         return 0
     finally:
         await conn.close()
