@@ -1718,11 +1718,11 @@ class WeatherBot(BaseBot):
                 and (_now_mono - self._discovery_cache[0]) < self._effective_discovery_ttl()):
             weather_markets, groups = copy.deepcopy(self._discovery_cache[1]), copy.deepcopy(self._discovery_cache[2])
         else:
-            # 1. Fetch weather markets via Gamma API tag_slug=temperature (PRIMARY).
+            # 1. Fetch weather markets via Gamma API tag_slug=daily-temperature (PRIMARY).
             #    The standard ingestion pipeline misses weather events — they have
             #    event IDs > 249000, far beyond the ingestion's pagination reach.
-            #    tag_slug=temperature returns all live temperature events with prices
-            #    pre-populated from outcomePrices (no CLOB enrichment needed).
+            #    tag_slug=daily-temperature returns all live temperature events with
+            #    prices pre-populated from outcomePrices (no CLOB enrichment needed).
             weather_markets = await self._fetch_weather_events_by_tag()
             # S221: Reject thin markets (liq < $1000 OR vol < $100 OR spread > 20%)
             # before scan. Eliminates 100%-fail signal-gen on illiquid books
@@ -4274,7 +4274,7 @@ class WeatherBot(BaseBot):
     async def _ensure_markets_in_db(self, markets: List[Dict]) -> None:
         """S177: Persist Gamma-discovered markets to the markets table.
 
-        Weather markets are discovered via Gamma API tag_slug=temperature and only
+        Weather markets are discovered via Gamma API tag_slug=daily-temperature and only
         exist in memory.  The trade_event FK check (database.py:4886) rejects ENTRY
         events when the market isn't in the DB.  This upsert ensures the FK check
         passes without changing any existing market rows (ON CONFLICT DO NOTHING).
@@ -4544,7 +4544,7 @@ class WeatherBot(BaseBot):
         return kept
 
     async def _fetch_weather_events_by_tag(self) -> List[Dict]:
-        """Fetch live temperature-bucket markets via Gamma API tag_slug=temperature.
+        """Fetch live temperature-bucket markets via Gamma API tag_slug=daily-temperature.
 
         The standard ingestion pipeline fetches events by ID order and stops after
         ~1000 markets. Temperature events (ID ~249000+) are on page 45+ and never
@@ -4586,7 +4586,11 @@ class WeatherBot(BaseBot):
             params = {
                 "active": "true",
                 "closed": "false",
-                "tag_slug": "temperature",
+                # S223: Polymarket retired the `temperature` tag (1 stale event as of
+                # 2026-07-06); live temperature events carry `daily-temperature`
+                # (~100 open events). The dead slug starved discovery to 1 market/scan
+                # since at least 07-01 → thin-filter dropped it → zero predictions.
+                "tag_slug": "daily-temperature",
                 "limit": "100",
                 "offset": str(page_num * 100),
             }
@@ -4629,7 +4633,7 @@ class WeatherBot(BaseBot):
                         if _alerting:
                             await _alerting.send_alert(
                                 title="WeatherBot Tag Fetch Failed",
-                                message=f"Gamma API tag_slug=temperature returned {status} after retries.",
+                                message=f"Gamma API tag_slug=daily-temperature returned {status} after retries.",
                                 severity=AlertSeverity.WARNING,
                                 source="WeatherBot",
                                 metadata={"status_code": status},

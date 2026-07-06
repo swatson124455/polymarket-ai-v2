@@ -3590,6 +3590,7 @@ class _FakeAioSession:
         # page_responses: dict[int, list] — list of _FakeAioResp or Exception per attempt
         self.page_responses = page_responses
         self.call_log = []  # list of (page, attempt, timeout_seconds)
+        self.param_log = []  # S223: full params dict per call (tag_slug assertion)
         self._attempt_counters = {}
         self.closed = False
         self._concurrent = 0
@@ -3601,6 +3602,7 @@ class _FakeAioSession:
         self._attempt_counters[page] = attempt + 1
         timeout_s = getattr(timeout, 'total', None)
         self.call_log.append((page, attempt, timeout_s))
+        self.param_log.append(dict(params))
         responses = self.page_responses.get(page, [])
         if attempt >= len(responses):
             return _FakeAioRespCM(_FakeAioResp(404, []))
@@ -3776,6 +3778,29 @@ class TestFetchWeatherEventsByTagParallel:
         assert page_2_attempts == 2, (
             f"Expected page 2 to retry once after 503, got attempts={page_2_attempts}"
         )
+
+    @pytest.mark.asyncio
+    async def test_tag_slug_is_daily_temperature(self, bot_with_fake_session):
+        """S223 defect repro: discovery queried the retired `temperature` tag
+        (1 stale Gamma event) instead of the live `daily-temperature` tag
+        (~100 open events). Result: markets=1/scan since 2026-07-01, thin-filter
+        dropped it, zero predictions logged after 07-03. Every page request must
+        carry tag_slug=daily-temperature."""
+        page_data = [{"markets": []} for _ in range(50)]  # partial page → stops
+        fake = _FakeAioSession({0: [_FakeAioResp(200, page_data)],
+                                1: [_FakeAioResp(200, [])],
+                                2: [_FakeAioResp(200, [])],
+                                3: [_FakeAioResp(200, [])]})
+        self._attach_session(bot_with_fake_session, fake)
+
+        await bot_with_fake_session._fetch_weather_events_by_tag()
+
+        assert fake.param_log, "Expected at least one Gamma /events request"
+        for params in fake.param_log:
+            assert params.get("tag_slug") == "daily-temperature", (
+                f"Discovery must query the live daily-temperature tag, "
+                f"got tag_slug={params.get('tag_slug')!r}"
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
