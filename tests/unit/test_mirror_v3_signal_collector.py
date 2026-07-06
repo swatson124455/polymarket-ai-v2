@@ -24,7 +24,7 @@ WATCHED = "0x1234567890abcdef1234567890abcdef12345678"  # 42 chars, watched
 UNWATCHED = "0xdead000000000000000000000000000000beef00"
 
 
-def _make_collector(*, watched=(WATCHED.lower(),), restored=True, min_whale_usd=100.0):
+def _make_collector(*, watched=(WATCHED.lower(),), restored=True, min_whale_usd=0.0):
     db = AsyncMock()
     db.insert_mirror_rejected_signal = AsyncMock(return_value=None)
     watched_set = set(watched)
@@ -116,8 +116,20 @@ async def test_pre_restore_blocked():
 
 
 @pytest.mark.asyncio
-async def test_whale_too_small_skipped():
-    c, db = _make_collector()
+async def test_no_floor_by_default_small_trade_logged():
+    """DEFAULT: no whale floor — the gate sets the size threshold, so a $50 trade
+    is LOGGED, not dropped. Dropping it would be irrecoverable once v3 is the sole
+    writer, and the old bot's $100 floor is deliberately not inherited."""
+    c, db = _make_collector()  # default min_whale_usd=0 (no floor)
+    await c.on_rtds_trade(_trade(size=100, price=0.50))  # $50
+    db.insert_mirror_rejected_signal.assert_awaited_once()
+    assert c.get_stats()["skipped_not_whale"] == 0
+
+
+@pytest.mark.asyncio
+async def test_optional_floor_still_skips_when_set():
+    """An operator CAN re-enable a floor (data-justified); then small trades skip."""
+    c, db = _make_collector(min_whale_usd=100.0)
     await c.on_rtds_trade(_trade(size=100, price=0.50))  # $50 < $100
     db.insert_mirror_rejected_signal.assert_not_awaited()
     assert c.get_stats()["skipped_not_whale"] == 1
@@ -125,7 +137,7 @@ async def test_whale_too_small_skipped():
 
 @pytest.mark.asyncio
 async def test_whale_exactly_at_floor_is_logged():
-    """>= floor passes (mirror_bot uses `< min` to reject)."""
+    """>= floor passes when a floor is set (mirror_bot uses `< min` to reject)."""
     c, db = _make_collector(min_whale_usd=100.0)
     await c.on_rtds_trade(_trade(size=200, price=0.50))  # exactly $100
     db.insert_mirror_rejected_signal.assert_awaited_once()

@@ -26,13 +26,20 @@ the rows):
   not be blended without accounting for it. This is pre-gate research data:
   treat it as UNVERIFIED until the gate's data_access validates it.
 
-Ingress filters are copied EXACTLY from old MB so the raw stream is the same
-population old MB *saw* before its strategy touched it:
+Ingress filters mirror old MB's transport/ingress layer so the stream is the
+same population old MB *saw* before its strategy touched it:
   - watched-wallet fast-reject         (elite_watchlist.on_rtds_trade)
   - transactionHash / composite dedup  (elite_watchlist.on_rtds_trade)
   - price in (0.01, 0.99), size > 0    (elite_watchlist.on_trade_event)
   - side: SELL is an EXIT, skipped; Yes/Up->YES, No/Down->NO; unknown skipped
-  - whale size >= MIRROR_MIN_WHALE_TRADE_USD ($100 default; mirror_bot.py:2972)
+
+Deliberately NOT inherited: old MB's $100 whale-size floor. The acceptance gate
+(bots/mirror_backtest/data_access.py) applies no size floor and is meant to pick
+the threshold itself; filtering by size HERE would destroy small-trade signal the
+gate could never recover once v3 is the sole writer. whale_trade_usd is still
+computed and stored so the gate can bucket/threshold on it downstream. A floor is
+applied only if an operator sets min_whale_usd > 0 with a data justification
+(scripts/verify_signal_population.py), never copied from the dead bot.
 
 Isolation (mirror_v3/__init__.py): this module NEVER imports bots/mirror_bot.py
 or bots/elite_watchlist.py. The watched-wallet set and the restore flag are
@@ -63,7 +70,10 @@ V3_REJECTION_STAGE = "pre_gate"  # schema: pre_gate | gate | post_gate
 V3_SOURCE_TAG = "mirror_v3"
 
 # Match old MB's ingress constants so the raw population is identical.
-_DEFAULT_MIN_WHALE_USD = 100.0   # config.settings MIRROR_MIN_WHALE_TRADE_USD default
+# The whale-size floor defaults to 0 (log everything) — see module docstring:
+# the gate sets the size threshold, not the collector. The old bot's $100 floor
+# is NOT the default; it can only be re-enabled explicitly with a data check.
+_DEFAULT_MIN_WHALE_USD = 0.0     # 0 = no floor; gate decides (was old-bot $100)
 _DEFAULT_DEDUP_MAXLEN = 50_000   # elite_watchlist._MAX_SEEN_TX
 _PRICE_FLOOR = 0.01              # elite_watchlist.on_trade_event: p <= 0.01 rejected
 _PRICE_CEIL = 0.99               # elite_watchlist.on_trade_event: p >= 0.99 rejected
@@ -81,7 +91,9 @@ class V3SignalCollector:
         is_restored: callable() -> bool. Mirrors old MB's S117 guard — no
             signal is logged until the silo's state restore has completed, so
             the stream never contains pre-restore noise.
-        min_whale_usd: hard floor on size*price (default $100, matches old MB).
+        min_whale_usd: optional floor on size*price. Default 0 = log everything
+            (the gate sets the threshold). Set > 0 only with a data justification
+            (scripts/verify_signal_population.py) — never inherit the old $100.
         dedup_maxlen: bounded seen-tx set cap (default 50k, matches old MB).
         bot_name: identity tag stored in metadata (default MirrorBotV3).
     """
@@ -197,9 +209,12 @@ class V3SignalCollector:
             self._skipped_unknown_side += 1
             return
 
-        # Whale-size hard floor (mirror_bot.py:2972 mirror_whale_too_small).
+        # Whale size is RECORDED but not gated by default: the acceptance gate
+        # applies no size floor and sets the threshold itself. A floor is applied
+        # only if an operator sets min_whale_usd > 0 (data-justified), never
+        # inherited from the dead bot's $100 (mirror_bot.py:2972).
         whale_trade_usd = size * price
-        if whale_trade_usd < self._min_whale_usd:
+        if self._min_whale_usd > 0 and whale_trade_usd < self._min_whale_usd:
             self._skipped_not_whale += 1
             return
 
