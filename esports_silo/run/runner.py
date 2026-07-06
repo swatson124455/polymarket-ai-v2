@@ -36,15 +36,21 @@ PREDICT_HORIZON_H = int(os.getenv("PREDICT_HORIZON_H", "48"))
 async def run_pass(dry_run: bool) -> None:
     # lazy imports: collectors pull aiohttp/asyncpg; keep this module importable without them
     try:
-        from ..collectors import odds_collector, polymarket_collector, results_collector
+        from ..collectors import pinnodds_collector, polymarket_collector, results_collector
     except ImportError:
-        from collectors import odds_collector, polymarket_collector, results_collector  # type: ignore
+        from collectors import pinnodds_collector, polymarket_collector, results_collector  # type: ignore
 
-    # odds (the signal's input) → Polymarket snapshots (the comparison price) →
-    # results (fills matches.winner so settled matches become scorable — unblocks the skill gate).
-    await odds_collector.run_once(dry_run)
-    await polymarket_collector.run_once(dry_run)
-    await results_collector.run_once(dry_run)
+    # odds (the signal's input, pinnodds=Pinnacle) → Polymarket snapshots (the comparison
+    # price) → results (fills matches.winner so settled matches become scorable — unblocks
+    # the skill gate). Each is isolated: an unattended pass must not lose the odds snapshot
+    # because a later collector (e.g. results on an expired key) failed. Failures are loud.
+    for name, coro in (("odds", pinnodds_collector.run_once(dry_run)),
+                       ("polymarket", polymarket_collector.run_once(dry_run)),
+                       ("results", results_collector.run_once(dry_run))):
+        try:
+            await coro
+        except Exception:  # noqa: BLE001
+            log.exception("collector %s failed this pass (others continue)", name)
 
 
 # ======================================================================================
@@ -104,7 +110,7 @@ SELECT match_id, team_a, team_b, start_time, game FROM matches
 _ODDS_SQL = """
 SELECT DISTINCT ON (match_id, book) match_id, book, team_a_odds, team_b_odds, line_time
   FROM odds_raw
- WHERE match_id = ANY($1::text[]) AND aggregator = 'oddspapi' AND book = ANY($2::text[])
+ WHERE match_id = ANY($1::text[]) AND aggregator = 'pinnodds' AND book = ANY($2::text[])
  ORDER BY match_id, book, line_time DESC
 """
 

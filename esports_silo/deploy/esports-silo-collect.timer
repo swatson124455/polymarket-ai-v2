@@ -1,17 +1,10 @@
 # esports_silo — fire the collection pass every 15 min (tune OnUnitActiveSec to taste).
-# The odds collector self-rate-limits (OddsPapi ~5s cooldown between calls).
 #
-# ⚠ QUOTA MATH — the OddsPapi FREE tier (250 req/MONTH) canNOT sustain scheduled collection:
-# 15-min cadence = 96 runs/day × (4 fixture calls + ~1 call per active fixture) ≈ 3k+ calls/day
-# ≈ 100k/month — ~400× the free tier. Free tier is for step-7 validation (a few dry-runs) ONLY.
-# Enable this timer only AFTER a paid OddsPapi plan is active, and set OnUnitActiveSec so that
-#   runs/day × (4 + avg_active_fixtures) × 30  <  your monthly quota.
-# MEASURED fixture volume (from the 28k imported matches): lol ≈ 17 series/day (recent 90d),
-# cs2 ≈ 45/day (grid window, all tiers) → ~62/day verified for 2 games; ~120/day estimated
-# across all 4 (dota2/valorant unmeasured). At 120 fixtures/day: 15-min cadence ≈ 357k req/mo
-# (also infeasible — the 5.5s rate limit makes each pass take ~11 min); hourly ≈ 89k/mo;
-# closing-line sampling (~4 samples/fixture + hourly discovery) ≈ 17k/mo — the sane target.
-# Polymarket Gamma has no key/quota — its snapshot half is unaffected.
+# QUOTA — pinnodds (the odds source since 2026-07-06): the collector makes ONE
+# /markets?sport_id=11 call per pass (all esports events in one response), so a 15-min
+# cadence = 96 odds calls/day — trivially under pinnodds' ~20-req/window rate limit.
+# (The old OddsPapi per-fixture fan-out that made quota a problem is gone.) Polymarket
+# Gamma is keyless/quota-free; the results collector uses PandaScore (its own key).
 #   systemctl enable --now esports-silo-collect.timer
 [Unit]
 Description=Schedule esports_silo collection pass

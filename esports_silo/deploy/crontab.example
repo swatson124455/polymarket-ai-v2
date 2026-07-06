@@ -4,4 +4,4 @@
 #
 #   crontab -e   # then paste the line below
 #
-*/15 * * * * cd /opt/esports_silo && set -a && . ./.env && set +a && /usr/bin/python3 -m esports_silo.run.runner --once >> /var/log/esports_silo/collect.log 2>&1
+*/15 * * * * cd /home/ubuntu/esports_silo_src && set -a && . /opt/esports_silo/.env && set +a && /opt/pa2-esports-shared/venv/bin/python -m esports_silo.run.runner --once >> /var/log/esports_silo/collect.log 2>&1

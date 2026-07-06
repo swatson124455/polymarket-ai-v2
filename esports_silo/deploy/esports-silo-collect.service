@@ -11,14 +11,16 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-# --- EDIT these three for your box ---
-WorkingDirectory=/opt/esports_silo
+# --- EDIT these for your box ---
+# WorkingDirectory must be the repo root (so `-m esports_silo...` resolves the package).
+WorkingDirectory=/home/ubuntu/esports_silo_src
 EnvironmentFile=/opt/esports_silo/.env
-ExecStart=/usr/bin/python3 -m esports_silo.run.runner --once
-# ------------------------------------
+# Use the venv python that has aiohttp+asyncpg — the system python3 does NOT.
+ExecStart=/opt/pa2-esports-shared/venv/bin/python -m esports_silo.run.runner --once
+# ------------------------------
 Nice=10
 # read-only except its own DB writes; no escalation needed
 NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
+# NOTE: WorkingDirectory is under /home, so do NOT set ProtectHome=true (it would hide
+# the code). Kept off deliberately.
 PrivateTmp=true
