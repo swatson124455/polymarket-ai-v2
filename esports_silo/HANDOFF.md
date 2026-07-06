@@ -1,5 +1,32 @@
 # esports_silo — Session Handoff
 
+## ⚡ SOURCE PIVOT + LIVE ON THE BOX (2026-07-06) — read this first
+The build is no longer box-blocked; it is RUNNING on the box (`/home/ubuntu/esports_silo_src`,
+silo DB `esports_silo`, gate PASSED, 32,369 matches imported). Two source decisions changed and
+are LIVE-VERIFIED:
+
+- **Odds source = pinnodds (Pinnacle), NOT OddsPapi.** OddsPapi gated Pinnacle to B2B. pinnodds
+  is a self-serve Pinnacle wrapper: base `https://pinnodds.com/kit/v1`, header `x-portal-apikey`,
+  **esports = sport_id 11**, one `/markets?sport_id=11&event_type=prematch` call returns every
+  esports event with raw money_line odds (num_0 period = match winner; ~20 req/window limit).
+  `collectors/pinnodds_collector.py`. Auto-pull is ON: `deploy/enable_autopull.sh` wrote
+  `/opt/esports_silo/.env`, one real write landed 18 odds_raw rows, systemd timer installed
+  (15 min, collect-only, HALT stays true). OddsPapi collector/scripts are legacy (unused).
+- **Polymarket pairing = tag-based, LIVE-VERIFIED.** Esports lives under numeric TAG IDs queried
+  via `/events?tag_id=`; each match is an event titled `Game: A vs B (BOx) - League` whose
+  match-winner market's question == the title (or is a prefix of it) with two team outcomes.
+  `collectors/polymarket_collector.py` resolves tag IDs at RUNTIME from `/tags` by exact slug
+  (never baked in; drift-warned against recorded values). VERIFIED slug→id 2026-07-06:
+  counter-strike=100602 csgo=100635 · league-of-legends=65 lol-worlds=401 lec=102164 ·
+  dota-2=102366 · valorant=101672 vct=101682. Dry-run found ~89 live match markets
+  (lol/dota2/valorant; CS2 currently has no live *matches* on PM, only Valve meta markets).
+
+**Keys:** old OddsPapi/PandaScore/Riot keys in `/opt/pa2-shared/.env` are all INVALID (need
+rotation). pinnodds key is live (rotate — it was shared in chat). Both `.env` files are box-local.
+
+**Next piece:** LINKING — match each pinnodds match to its Polymarket market by team names
+(`markets/match_matcher.py`), then the forward `--predict` ledger + skill gate. Halt stays on.
+
 ## Where things stand
 The siloed esports scaffold **and** the Cmd-4 data-quality gate (`verify_data_quality.py`) are
 committed and pushed. **Nothing trades; no data has cleared quarantine.** The gate is BUILT and
