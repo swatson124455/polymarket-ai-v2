@@ -4,6 +4,25 @@
 **HEAD at handoff:** `012649f` · **Status:** ✅ deployed to production paper trading, healthy
 **Date:** 2026-07-05 · **Mode:** PAPER (`SIMULATION_MODE=true`) — treated as live per CLAUDE.md
 
+> **⚠ S223 ADDENDUM (2026-07-06): the verification clock restarts at release `20260706_110300`.**
+> The S222 post-fix window gathered **zero data**: WeatherBot had logged no predictions
+> since 2026-07-03 08:24 UTC. Three root causes, all fixed + deployed in release
+> `20260706_110300` (started 15:08:00 UTC, NRestarts=0):
+> ① **Dead Gamma tag** — discovery queried retired `temperature` (1 stale event) instead
+> of `daily-temperature`; markets=1/scan, thin-filter dropped it → nothing to predict
+> (`e0d476e`). Post-fix: events=156 / markets=1716 / kept=296.
+> ② **DB semaphore slot leak** — `_SemaphoreSession.__aenter__` leaked its slot when
+> session creation failed; a 07-03 03:00 storm drained all 15 slots → 54h wedge, scans
+> never completed, heartbeat frozen (`c61a712`, BOTH engine trees).
+> ③ **Watchdog crash-loop race** — E1 force-exit read the ancient heartbeat at boot and
+> os._exit(1)'d before the first scan; 6 crash-loops on 07-05 (`4170a8c`, 10-min startup
+> grace, alert still fires).
+> **Run `WB_S222_POSTFIX_VERIFICATION_PROMPT.md` with cutoff `2026-07-06 15:08:00` once
+> ≥50 post-deploy resolutions exist (~1 week from 07-06).** Also note: release stamps are
+> operator-machine LOCAL time; the VPS journal is UTC (the "10:21 vs 14:23" gap on 07-05
+> was timezone, not a missed restart). Cherry-pick proposals for MB (shared modules,
+> splinter-deployed only): `c61a712` (database.py) + `4170a8c` (main.py watchdog grace).
+
 ---
 
 ## 0. TL;DR for the next session
