@@ -64,7 +64,8 @@ SILO_BANKROLL_USD=1000
 SILO_ENTRY_HALT=true
 EOF
 chmod 600 "$ENV_FILE"
-echo "wrote $ENV_FILE (pinnacle source=pinnodds, HALT=true; panda/riot carried: ${PANDA:+yes}${PANDA:-no}/${RIOT:+yes}${RIOT:-no})"
+pk=$([ -n "$PANDA" ] && echo yes || echo no); rk=$([ -n "$RIOT" ] && echo yes || echo no)
+echo "wrote $ENV_FILE (pinnacle source=pinnodds, HALT=true; panda carried: $pk, riot carried: $rk)"
 
 # ── 2) one REAL write pass (force all current lines) + verify ───────────────
 say "2. one real odds write (--poll-all) then count odds_raw"
