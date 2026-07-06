@@ -59,6 +59,11 @@ async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--stage", choices=["q", "validate"], default="q")
     ap.add_argument("--cutoff", default=None, help="ISO holdout cutoff")
+    ap.add_argument("--stream", choices=["legacy", "v3", "all"], default="legacy",
+                    help="which mirror_rejected_signals population to validate "
+                         "against (F3: old-MB gate rejections vs the v3 raw "
+                         "collector stream; runs are labeled and not comparable "
+                         "across streams)")
     args = ap.parse_args()
 
     cfg = ScoringConfig()
@@ -123,10 +128,13 @@ async def main() -> int:
         if args.stage == "validate":
             # --cutoff presence already enforced pre-DB (top of main()).
             vr = await validate_ranking(
-                db, scores, datetime.fromisoformat(cfg.HOLDOUT_CUTOFF_ISO), cfg
+                db, scores, datetime.fromisoformat(cfg.HOLDOUT_CUTOFF_ISO), cfg,
+                signal_stream=args.stream,
             )
             report["validation"] = _json_safe(vr)
-            print(f"VALIDATION: {'PASS' if vr.passed else 'FAIL'} — {vr.detail}")
+            print(f"VALIDATION: {'PASS' if vr.passed else 'FAIL'} "
+                  f"[stream={vr.signal_stream}, overlap_excluded="
+                  f"{vr.n_excluded_overlap}] — {vr.detail}")
 
         os.makedirs(cfg.REPORT_DIR, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

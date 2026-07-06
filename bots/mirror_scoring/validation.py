@@ -48,8 +48,21 @@ WHERE r.resolution IN ('YES', 'NO')
   AND r.price IS NOT NULL AND r.price > :pmin AND r.price < :pmax
   AND r.event_time > :cutoff
   AND LOWER(r.trader_address) = ANY(:traders)
+  {stream_clause}
 ORDER BY LOWER(r.trader_address), r.market_id, r.event_time ASC
 """
+
+# F3 (review 2026-07-06): mirror_rejected_signals carries TWO differently-shaped
+# populations once the v3 collector deploys — old-MB gate rejections
+# (whale-floored, strategy-filtered) and the v3 raw watched-whale stream
+# (metadata.source='mirror_v3', no floor). A validation run must pick ONE
+# stream explicitly; mixing is an uncontrolled population change mid-window.
+# Fixed clause map — the stream name is never interpolated into SQL directly.
+_STREAM_CLAUSES = {
+    "legacy": "AND COALESCE(r.metadata->>'source', '') <> 'mirror_v3'",
+    "v3": "AND r.metadata->>'source' = 'mirror_v3'",
+    "all": "",
+}
 
 
 @dataclass
@@ -66,6 +79,10 @@ class ValidationReport:
     # (trader, market) also fed that trader's admission score. Nonzero is
     # normal; this makes the contamination that WOULD have occurred visible.
     n_excluded_overlap: int = 0
+    # F3: which mirror_rejected_signals population this verdict was computed
+    # on ("legacy" | "v3" | "all") — runs on different streams are not
+    # comparable and must be labeled.
+    signal_stream: str = "legacy"
 
 
 def _signal_edge(row: dict) -> float | None:
@@ -86,8 +103,14 @@ def _signal_edge(row: dict) -> float | None:
 
 
 async def validate_ranking(
-    db, scores: list[TraderScore], cutoff: datetime, cfg: ScoringConfig
+    db, scores: list[TraderScore], cutoff: datetime, cfg: ScoringConfig,
+    signal_stream: str = "legacy",
 ) -> ValidationReport:
+    if signal_stream not in _STREAM_CLAUSES:
+        raise ValueError(
+            f"signal_stream must be one of {sorted(_STREAM_CLAUSES)}, "
+            f"got {signal_stream!r}"
+        )
     # F4: normalize once; every trader comparison below is on lowercase.
     admitted = {t.trader.lower() for t in scores if t.admitted}
     others = {t.trader.lower() for t in scores if not t.admitted}
@@ -98,6 +121,7 @@ async def validate_ranking(
             admitted_edge=float("nan"), other_edge=float("nan"),
             spread=float("nan"), p_value=1.0,
             detail="need both admitted and non-admitted traders to compare",
+            signal_stream=signal_stream,
         )
     async with db.get_session() as s:
         # The universe/rejected scans are unbounded and can exceed the 30s
@@ -105,7 +129,8 @@ async def validate_ranking(
         # 2026-07-02 audit's confirmed run-blocker). Extend for THIS
         # transaction only — same pattern as database.py:3670.
         await s.execute(text("SET LOCAL statement_timeout = '300s'"))
-        rows = (await s.execute(text(_REJECTED_SQL), {
+        sql = _REJECTED_SQL.format(stream_clause=_STREAM_CLAUSES[signal_stream])
+        rows = (await s.execute(text(sql), {
             "pmin": cfg.PRICE_MIN, "pmax": cfg.PRICE_MAX,
             "cutoff": cutoff.replace(tzinfo=None) if cutoff.tzinfo else cutoff,
             "traders": all_traders,
@@ -144,7 +169,7 @@ async def validate_ranking(
             admitted_edge=float("nan"), other_edge=float("nan"),
             spread=float("nan"), p_value=1.0,
             detail="insufficient post-cutoff resolved signals on one side",
-            n_excluded_overlap=n_excluded,
+            n_excluded_overlap=n_excluded, signal_stream=signal_stream,
         )
 
     a_mean, o_mean = float(np.mean(edges_a)), float(np.mean(edges_o))
@@ -161,5 +186,5 @@ async def validate_ranking(
         detail=("PASS: admitted ranking carries out-of-sample signal"
                 if passed else
                 "FAIL: no out-of-sample separation — do not wire to orders"),
-        n_excluded_overlap=n_excluded,
+        n_excluded_overlap=n_excluded, signal_stream=signal_stream,
     )

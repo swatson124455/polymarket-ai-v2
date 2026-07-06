@@ -197,6 +197,51 @@ async def test_f4_overlap_exclusion_matches_across_case():
     assert report.n_admitted_signals == 1
 
 
+# ── F3: explicit stream selection (legacy vs v3 collector rows) ──────────────
+
+@pytest.mark.asyncio
+async def test_f3_default_stream_is_legacy_and_filters_v3_rows():
+    db = _DB([_sig(ADMITTED, "0xm1"), _sig(OTHER, "0xm2", res="NO")])
+    scores = [_score(ADMITTED, admitted=True), _score(OTHER, admitted=False)]
+    report = await validate_ranking(db, scores, CUTOFF, ScoringConfig())
+    assert report.signal_stream == "legacy"
+    select_sql = next(s for s in db.session.seen_sql if "SET LOCAL" not in s)
+    assert "COALESCE(r.metadata->>'source', '') <> 'mirror_v3'" in select_sql
+
+
+@pytest.mark.asyncio
+async def test_f3_v3_stream_selects_only_v3_rows():
+    db = _DB([_sig(ADMITTED, "0xm1"), _sig(OTHER, "0xm2", res="NO")])
+    scores = [_score(ADMITTED, admitted=True), _score(OTHER, admitted=False)]
+    report = await validate_ranking(
+        db, scores, CUTOFF, ScoringConfig(), signal_stream="v3"
+    )
+    assert report.signal_stream == "v3"
+    select_sql = next(s for s in db.session.seen_sql if "SET LOCAL" not in s)
+    assert "r.metadata->>'source' = 'mirror_v3'" in select_sql
+
+
+@pytest.mark.asyncio
+async def test_f3_all_stream_has_no_source_clause():
+    db = _DB([_sig(ADMITTED, "0xm1"), _sig(OTHER, "0xm2", res="NO")])
+    scores = [_score(ADMITTED, admitted=True), _score(OTHER, admitted=False)]
+    report = await validate_ranking(
+        db, scores, CUTOFF, ScoringConfig(), signal_stream="all"
+    )
+    assert report.signal_stream == "all"
+    select_sql = next(s for s in db.session.seen_sql if "SET LOCAL" not in s)
+    assert "mirror_v3" not in select_sql
+
+
+@pytest.mark.asyncio
+async def test_f3_unknown_stream_raises_before_db():
+    with pytest.raises(ValueError, match="signal_stream"):
+        await validate_ranking(
+            _DB([]), [_score(ADMITTED, admitted=True), _score(OTHER, admitted=False)],
+            CUTOFF, ScoringConfig(), signal_stream="bogus",
+        )
+
+
 @pytest.mark.asyncio
 async def test_f1_empty_condition_ids_backward_compatible():
     """Scores without recorded condition_ids exclude nothing (legacy shape)."""
