@@ -841,6 +841,14 @@ class Settings(BaseSettings):
     WEATHER_TOTAL_CAPITAL: float = float(os.getenv("WEATHER_TOTAL_CAPITAL", "20000"))  # S105: aligned to $20K
     # S107: Re-entry cooldown per market_id after exit (was 15min, now 4hr)
     WEATHER_EXIT_COOLDOWN_SECS: float = float(os.getenv("WEATHER_EXIT_COOLDOWN_SECS", "14400"))
+    # S223: mid-life model-reversal exit. Read via getattr in weather_bot.py:4010;
+    # previously UNDECLARED, so pydantic (extra="allow") never materialized the
+    # systemd-injected EnvironmentFile value from os.environ and the getattr
+    # default silently won — the operator's WEATHER_MID_LIFE_EXIT_ENABLED=true on
+    # the VPS was discarded and the exit path never fired. Declared here so the
+    # OS-env value is read at class-definition time (same pattern as every field).
+    WEATHER_MID_LIFE_EXIT_ENABLED: bool = os.getenv("WEATHER_MID_LIFE_EXIT_ENABLED", "false").lower() in ("true", "1", "yes")
+    WEATHER_EXIT_MIN_EDGE: float = float(os.getenv("WEATHER_EXIT_MIN_EDGE", "0.05"))
     # S107: Baker-McHale uncertainty floor (prevents 0.26x crush on high-spread forecasts)
     WEATHER_BM_FLOOR: float = float(os.getenv("WEATHER_BM_FLOOR", "0.50"))
     # S107: Minimum trade size in USD (was $1, now $5 — eliminates dust positions)
