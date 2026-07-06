@@ -187,35 +187,65 @@ class _SemaphoreSession:
                     operation="get_session",
                     table=None,
                 )
-        if self.timeout is not None:
-            self._timeout_ctx = asyncio.timeout(self.timeout)
-            await self._timeout_ctx.__aenter__()
-        self.session = self.session_factory()
-        result = await self.session.__aenter__()
-        # S159 C20: Per-session statement timeout. PgBouncer transaction mode compatible
-        # (proven by S157 prune fix). Default 60s; server-side ALTER SYSTEM is 300s fallback.
-        _timeout_ms = 60000  # default outside try — prevents UnboundLocalError in except
+        # S223: everything below runs while HOLDING a semaphore slot. Python never
+        # calls __aexit__ when __aenter__ raises, so any exception past this point
+        # (pool-checkout timeout, connect failure, CancelledError from an outer
+        # scan timeout) must release the slot on its way out or the slot leaks
+        # PERMANENTLY. 15 leaked slots = total DB wedge: the 2026-07-03 08:24
+        # incident showed semaphore_available=0 with checked_out=1 for ~54h —
+        # the pool was healthy; the semaphore was drained by leaked acquires.
         try:
-            from bots.weather.engine.config.settings import settings as _settings
-            _timeout_ms = getattr(_settings, "DB_STATEMENT_TIMEOUT_MS", 60000)
-            _idle_txn_ms = getattr(_settings, "DB_IDLE_IN_TXN_TIMEOUT_MS", 60000)
-            from sqlalchemy import text as _sa_text
-            await result.execute(_sa_text(f"SET statement_timeout = '{_timeout_ms}'"))
-            # S168: idle_in_transaction_session_timeout — kills sessions idle in open txn.
-            await result.execute(_sa_text(f"SET idle_in_transaction_session_timeout = '{_idle_txn_ms}'"))
-            # S161: Clear autobegin triggered by SET so callers can use session.begin().
-            # SET statement_timeout (without LOCAL) is session-scoped and survives COMMIT.
-            await result.commit()
-        except Exception as _set_err:
-            import structlog as _sl
-            _sl.get_logger().warning("set_statement_timeout_failed", timeout_ms=_timeout_ms, error=str(_set_err))
-            # S168: Rollback poisoned session to prevent "Can't reconnect until invalid
-            # transaction is rolled back" cascading to all downstream operations.
+            if self.timeout is not None:
+                self._timeout_ctx = asyncio.timeout(self.timeout)
+                await self._timeout_ctx.__aenter__()
+            self.session = self.session_factory()
+            result = await self.session.__aenter__()
+            # S159 C20: Per-session statement timeout. PgBouncer transaction mode compatible
+            # (proven by S157 prune fix). Default 60s; server-side ALTER SYSTEM is 300s fallback.
+            _timeout_ms = 60000  # default outside try — prevents UnboundLocalError in except
             try:
-                await result.rollback()
-            except Exception:
-                pass
-        return result
+                from bots.weather.engine.config.settings import settings as _settings
+                _timeout_ms = getattr(_settings, "DB_STATEMENT_TIMEOUT_MS", 60000)
+                _idle_txn_ms = getattr(_settings, "DB_IDLE_IN_TXN_TIMEOUT_MS", 60000)
+                from sqlalchemy import text as _sa_text
+                await result.execute(_sa_text(f"SET statement_timeout = '{_timeout_ms}'"))
+                # S168: idle_in_transaction_session_timeout — kills sessions idle in open txn.
+                await result.execute(_sa_text(f"SET idle_in_transaction_session_timeout = '{_idle_txn_ms}'"))
+                # S161: Clear autobegin triggered by SET so callers can use session.begin().
+                # SET statement_timeout (without LOCAL) is session-scoped and survives COMMIT.
+                await result.commit()
+            except Exception as _set_err:
+                import structlog as _sl
+                _sl.get_logger().warning("set_statement_timeout_failed", timeout_ms=_timeout_ms, error=str(_set_err))
+                # S168: Rollback poisoned session to prevent "Can't reconnect until invalid
+                # transaction is rolled back" cascading to all downstream operations.
+                try:
+                    await result.rollback()
+                except Exception:
+                    pass
+            return result
+        except BaseException as _enter_err:
+            # S223: unwind whatever was opened (reverse order), release the slot
+            # exactly once, re-raise.
+            try:
+                if self.session is not None:
+                    try:
+                        await self.session.__aexit__(type(_enter_err), _enter_err, None)
+                    except Exception:
+                        pass
+                    self.session = None
+                if self._timeout_ctx is not None:
+                    try:
+                        await self._timeout_ctx.__aexit__(type(_enter_err), _enter_err, None)
+                    except Exception:
+                        pass
+                    self._timeout_ctx = None
+            finally:
+                # finally-guaranteed: even a fresh CancelledError during the unwind
+                # awaits above cannot skip the release (that would re-leak the slot).
+                if self.semaphore:
+                    self.semaphore.release()
+            raise
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         try:
