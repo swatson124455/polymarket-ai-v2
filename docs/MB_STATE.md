@@ -1,6 +1,6 @@
 # MirrorBot Rebuild — Living State / Handoff (docs/MB_STATE.md)
 
-**Last updated:** 2026-07-05 · **Branch:** `claude/mirror-bot-salvage-rebuild-d08v6x` (= `master`, both at `b5a0c89`)
+**Last updated:** 2026-07-06 · **Branch:** `claude/session-handoff-6uuafb` (= `master` `b5a0c89` + handoff docs + v3 signal collector; not yet merged)
 **Read first:** `CLAUDE.md` (binding directives), `MB_REBUILD_PLAN.md` (the plan + operator decisions), then this file.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
@@ -33,6 +33,7 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
 | Silo deploy | `deploy/polymarket-mirror3.service`, `deploy/env.mirror3.example` | ready; needs real `DATABASE_URL` on first install |
 | Acceptance gate | `bots/mirror_backtest/{fill_models,replay,gate,data_access}.py` | dual-model harness + 19 tests; DB-execution gated on M0-DB |
 | Sharp-line core | `bots/mirror_backtest/sharp_reference.py` | no-vig, point-in-time, gate rule + 19 tests; OddsPapi seam env-key-only |
+| v3 signal collector | `mirror_v3/signal_collector.py` | RTDS→`mirror_rejected_signals` raw watched-whale stream + 26 tests; reuses existing `insert_mirror_rejected_signal` (no schema change); wallet-source + run.py wiring is the remaining seam |
 | Scoring engine | `bots/mirror_scoring/` (from `mb-formula-review`) | 45 tests; runner unblocked (`8ea683d`); validate run pending |
 | M0-DB verify | `scripts/verify_salvage_data.py` | read-only; cascade bug fixed |
 | Operator runbooks | `docs/VPS_RUNBOOK_2026-07-02.md`, `deploy/mb_vps_oneshot.sh` | one-paste checks; mktemp-safe |
@@ -43,7 +44,7 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
 - **[operator] OddsPapi paid tier** — confirm sports coverage + that `ODDSPAPI_API_KEY` is set in the VPS env (presence only). Then the sharp-line engine wires to live data.
 - **[build, blocked on above] Sports sharp-line pipeline:** live OddsPapi fetch, sports team-name → Polymarket condition_id matcher (esports matcher exists in EB, sports is net-new), offline backfill of `sharp_prob` onto signals, then run through the gate.
 - **[build, unblocked] Crypto kill-test:** run crypto signals through the harness at realistic latency to confirm the latency-trap hypothesis and formally drop crypto.
-- **[build, unblocked] v3 rejection logging + RTDS plumbing** so the silo collects its own signal stream (then old MB can be fully stopped, not just paused).
+- **[build, in progress] v3 rejection logging + RTDS plumbing.** Collector built (`mirror_v3/signal_collector.py`, 26 tests): consumes the RTDS global feed, applies old-MB's exact ingress filters (watched-wallet, tx-dedup, 0.01<p<0.99, size>0, whale ≥ `MIRROR_MIN_WHALE_TRADE_USD` $100, SELL=exit skipped, Yes/Up→YES No/Down→NO), and writes the **raw watched-wallet entry-signal stream** to `mirror_rejected_signals` tagged `rejection_reason="mirror_v3_strategy_gated"` + `metadata.source="mirror_v3"`. **Semantic note (validate at gate time):** this is a DIFFERENT population from old MB's gate-specific rejections — it's the unbiased raw signal universe, not the copied-vs-rejected split (v3 has no strategy to produce that split). No `bot_name` column exists, so the reason+metadata marker is the only separator; do not blend the two populations without accounting for it. Remaining seam before old MB can be **stopped**: (a) decide/wire the watched-wallet source (`is_watched` predicate — old MB builds it from the monthly leaderboard in `elite_watchlist.refresh_watchlist`; v3 needs its own source without importing the dead scoring stack), (b) call `build_rtds_feed(collector).connect()` from `mirror_v3/run.py` after restore. `is_restored` is already injectable (wire to `guards.restored`).
 - **[decision] Merge/PR hygiene:** master is current; direct master pushes are operator-gated by the sandbox.
 
 ## 6. Cross-session coordination

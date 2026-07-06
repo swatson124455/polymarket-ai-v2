@@ -1,0 +1,250 @@
+"""v3 signal collector tests — RTDS ingress -> mirror_rejected_signals stream.
+
+Contract mirrored from old MB ingress (elite_watchlist.on_rtds_trade /
+on_trade_event + mirror_bot whale gate). The collector is the silo's OWN
+producer of the whale-signal population the acceptance-gate backtest consumes,
+so old MB can be fully stopped. Every filter here matches an old-MB filter by
+design; the DB is mocked so no migration/live socket is needed.
+"""
+from __future__ import annotations
+
+from unittest.mock import AsyncMock
+
+import pytest
+
+from mirror_v3 import BOT_NAME
+from mirror_v3.signal_collector import (
+    V3_REJECTION_REASON,
+    V3_REJECTION_STAGE,
+    V3_SOURCE_TAG,
+    V3SignalCollector,
+)
+
+WATCHED = "0x1234567890abcdef1234567890abcdef12345678"  # 42 chars, watched
+UNWATCHED = "0xdead000000000000000000000000000000beef00"
+
+
+def _make_collector(*, watched=(WATCHED.lower(),), restored=True, min_whale_usd=100.0):
+    db = AsyncMock()
+    db.insert_mirror_rejected_signal = AsyncMock(return_value=None)
+    watched_set = set(watched)
+    c = V3SignalCollector(
+        db,
+        is_watched=lambda a: a in watched_set,
+        is_restored=lambda: restored,
+        min_whale_usd=min_whale_usd,
+    )
+    return c, db
+
+
+def _trade(**over):
+    """A valid watched-wallet whale entry (YES, $200) unless overridden."""
+    base = {
+        "proxyWallet": WATCHED,
+        "asset": "tok-123",
+        "conditionId": "0xmarketcondition",
+        "outcome": "Yes",
+        "price": 0.50,
+        "size": 400,  # 400 * 0.50 = $200 > $100
+        "side": "BUY",
+        "transactionHash": "0xtxhash1",
+    }
+    base.update(over)
+    return base
+
+
+# ── happy path: a clean signal is written with the v3 marker ─────────────────
+
+@pytest.mark.asyncio
+async def test_valid_signal_is_logged_with_v3_marker():
+    c, db = _make_collector()
+    await c.on_rtds_trade(_trade())
+
+    db.insert_mirror_rejected_signal.assert_awaited_once()
+    kw = db.insert_mirror_rejected_signal.await_args.kwargs
+    assert kw["rejection_reason"] == V3_REJECTION_REASON
+    assert kw["rejection_stage"] == V3_REJECTION_STAGE
+    assert kw["metadata"]["source"] == V3_SOURCE_TAG
+    assert kw["metadata"]["bot_name"] == BOT_NAME
+    assert c.get_stats()["logged"] == 1
+
+
+@pytest.mark.asyncio
+async def test_full_trader_address_never_truncated():
+    """Phase B counterfactual ranking collides on 10-hex prefixes — the full
+    42-char address must be persisted (same guardrail as old MB _log_rejection)."""
+    c, db = _make_collector()
+    await c.on_rtds_trade(_trade())
+    kw = db.insert_mirror_rejected_signal.await_args.kwargs
+    assert kw["trader_address"] == WATCHED
+    assert len(kw["trader_address"]) == 42
+
+
+@pytest.mark.asyncio
+async def test_whale_usd_and_side_mapped():
+    c, db = _make_collector()
+    await c.on_rtds_trade(_trade(outcome="No", price=0.40, size=500))  # $200, NO
+    kw = db.insert_mirror_rejected_signal.await_args.kwargs
+    assert kw["side"] == "NO"
+    assert kw["whale_trade_usd"] == pytest.approx(200.0)
+
+
+@pytest.mark.asyncio
+async def test_up_down_outcomes_map_to_yes_no():
+    c, db = _make_collector()
+    await c.on_rtds_trade(_trade(outcome="Up", transactionHash="0xa"))
+    await c.on_rtds_trade(_trade(outcome="Down", transactionHash="0xb"))
+    sides = [ci.kwargs["side"] for ci in db.insert_mirror_rejected_signal.await_args_list]
+    assert sides == ["YES", "NO"]
+
+
+# ── ingress filters (each matches an old-MB reject) ──────────────────────────
+
+@pytest.mark.asyncio
+async def test_unwatched_wallet_skipped():
+    c, db = _make_collector()
+    await c.on_rtds_trade(_trade(proxyWallet=UNWATCHED))
+    db.insert_mirror_rejected_signal.assert_not_awaited()
+    assert c.get_stats()["watched_matched"] == 0
+
+
+@pytest.mark.asyncio
+async def test_pre_restore_blocked():
+    c, db = _make_collector(restored=False)
+    await c.on_rtds_trade(_trade())
+    db.insert_mirror_rejected_signal.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_whale_too_small_skipped():
+    c, db = _make_collector()
+    await c.on_rtds_trade(_trade(size=100, price=0.50))  # $50 < $100
+    db.insert_mirror_rejected_signal.assert_not_awaited()
+    assert c.get_stats()["skipped_not_whale"] == 1
+
+
+@pytest.mark.asyncio
+async def test_whale_exactly_at_floor_is_logged():
+    """>= floor passes (mirror_bot uses `< min` to reject)."""
+    c, db = _make_collector(min_whale_usd=100.0)
+    await c.on_rtds_trade(_trade(size=200, price=0.50))  # exactly $100
+    db.insert_mirror_rejected_signal.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("price", [0.005, 0.01, 0.99, 0.995])
+async def test_price_out_of_ingress_bounds_skipped(price):
+    c, db = _make_collector()
+    # size chosen so size*price would clear the whale floor if price passed
+    await c.on_rtds_trade(_trade(price=price, size=100_000))
+    db.insert_mirror_rejected_signal.assert_not_awaited()
+    assert c.get_stats()["skipped_price"] == 1
+
+
+@pytest.mark.asyncio
+async def test_sell_is_exit_skipped():
+    c, db = _make_collector()
+    await c.on_rtds_trade(_trade(side="SELL"))
+    db.insert_mirror_rejected_signal.assert_not_awaited()
+    assert c.get_stats()["skipped_exit"] == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_outcome_skipped():
+    c, db = _make_collector()
+    await c.on_rtds_trade(_trade(outcome="Maybe"))
+    db.insert_mirror_rejected_signal.assert_not_awaited()
+    assert c.get_stats()["skipped_unknown_side"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("over", [
+    {"proxyWallet": None},
+    {"conditionId": None},
+    {"asset": None},
+    {"price": "not-a-number"},
+    {"size": 0},
+])
+async def test_malformed_events_skipped(over):
+    c, db = _make_collector()
+    await c.on_rtds_trade(_trade(**over))
+    db.insert_mirror_rejected_signal.assert_not_awaited()
+
+
+# ── dedup (transport artifact removal) ───────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_duplicate_txhash_logged_once():
+    c, db = _make_collector()
+    await c.on_rtds_trade(_trade(transactionHash="0xsame"))
+    await c.on_rtds_trade(_trade(transactionHash="0xsame"))
+    assert db.insert_mirror_rejected_signal.await_count == 1
+    assert c.get_stats()["deduped"] == 1
+
+
+@pytest.mark.asyncio
+async def test_composite_dedup_when_no_txhash():
+    c, db = _make_collector()
+    ev = _trade()
+    ev.pop("transactionHash")
+    await c.on_rtds_trade(dict(ev))
+    await c.on_rtds_trade(dict(ev))
+    assert db.insert_mirror_rejected_signal.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_dedup_set_is_bounded():
+    db = AsyncMock()
+    db.insert_mirror_rejected_signal = AsyncMock(return_value=None)
+    c = V3SignalCollector(
+        db, is_watched=lambda a: True, is_restored=lambda: True,
+        min_whale_usd=100.0, dedup_maxlen=10,
+    )
+    for i in range(25):
+        await c.on_rtds_trade(_trade(transactionHash=f"0x{i}"))
+    assert c.get_stats()["seen_tx_size"] <= 10
+
+
+# ── fail-safe: instrumentation must never break ingest ───────────────────────
+
+@pytest.mark.asyncio
+async def test_db_write_failure_does_not_raise():
+    c, db = _make_collector()
+    db.insert_mirror_rejected_signal = AsyncMock(side_effect=RuntimeError("db down"))
+    # Must not raise.
+    await c.on_rtds_trade(_trade())
+
+
+@pytest.mark.asyncio
+async def test_none_db_is_noop():
+    c = V3SignalCollector(
+        None, is_watched=lambda a: True, is_restored=lambda: True,
+    )
+    await c.on_rtds_trade(_trade())  # must not raise
+    assert c.get_stats()["events_seen"] == 1
+
+
+@pytest.mark.asyncio
+async def test_handler_swallows_unexpected_errors():
+    """A watched predicate that throws must not propagate out of the handler."""
+    def _boom(_a):
+        raise ValueError("predicate blew up")
+
+    db = AsyncMock()
+    c = V3SignalCollector(db, is_watched=_boom, is_restored=lambda: True)
+    await c.on_rtds_trade(_trade())  # must not raise
+
+
+# ── plumbing helper ──────────────────────────────────────────────────────────
+
+def test_build_rtds_feed_wires_handler():
+    c, _ = _make_collector()
+    feed = None
+    try:
+        from mirror_v3.signal_collector import build_rtds_feed
+        feed = build_rtds_feed(c, ping_interval=7, recv_timeout=30)
+    except Exception as e:  # pragma: no cover - only if websockets missing
+        pytest.skip(f"RTDSWebSocket unavailable: {e}")
+    assert feed._handler == c.on_rtds_trade
+    assert feed._ping_interval == 7
+    assert feed._recv_timeout == 30
