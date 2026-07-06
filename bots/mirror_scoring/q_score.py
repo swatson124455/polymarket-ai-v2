@@ -158,9 +158,15 @@ def select_and_size(
             t.admitted = bool(a)
     adm = [t for t in scores if t.admitted]
     if adm:
+        # F5: shrink admitted edges toward the FULL scored pool's grand mean,
+        # not the admitted-only mean (which is selection-inflated — shrinking
+        # winners toward the winners' mean under-corrects the winner's curse
+        # and inflates every downstream Kelly weight).
         shrunk = S.empirical_bayes_shrink(
             np.array([t.edge_mean for t in adm]),
             np.array([t.edge_se for t in adm]),
+            pool_edges=np.array([t.edge_mean for t in scores]),
+            pool_ses=np.array([t.edge_se for t in scores]),
         )
         for t, s_edge in zip(adm, shrunk):
             t.edge_shrunk = float(s_edge)

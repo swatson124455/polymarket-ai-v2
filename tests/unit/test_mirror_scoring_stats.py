@@ -102,6 +102,33 @@ class TestShrinkageAndKelly:
         assert shrunk[0] < edges[0]
         assert abs(shrunk[1] - edges[1]) < abs(shrunk[0] - edges[0])
 
+    def test_f5_pool_shrink_targets_full_pool_grand_not_winners_mean(self):
+        """Shrinking selected winners toward the winners' own mean is
+        under-correction (the target itself is selection-inflated). With the
+        full pool supplied, shrunk winner edges land closer to the POOL mean."""
+        winners = np.array([0.10, 0.12])
+        winner_ses = np.array([0.05, 0.05])
+        pool_edges = np.array([0.10, 0.12, -0.02, 0.00, -0.05, 0.01])
+        pool_ses = np.array([0.05, 0.05, 0.05, 0.05, 0.05, 0.05])
+        self_shrunk = S.empirical_bayes_shrink(winners, winner_ses)
+        pool_shrunk = S.empirical_bayes_shrink(
+            winners, winner_ses, pool_edges=pool_edges, pool_ses=pool_ses
+        )
+        pool_grand = pool_edges.mean()
+        # pool-based shrinkage pulls harder toward the (lower) pool grand mean
+        assert pool_shrunk[0] < self_shrunk[0]
+        assert pool_shrunk[1] < self_shrunk[1]
+        assert all(pool_shrunk >= pool_grand - 1e-12)  # between grand and raw
+
+    def test_f5_omitting_pool_preserves_legacy_behavior(self):
+        edges = np.array([0.20, 0.02, 0.05, 0.03])
+        ses = np.array([0.10, 0.01, 0.02, 0.01])
+        legacy = S.empirical_bayes_shrink(edges, ses)
+        explicit_self = S.empirical_bayes_shrink(
+            edges, ses, pool_edges=edges, pool_ses=ses
+        )
+        assert np.allclose(legacy, explicit_self)
+
     def test_kelly_zero_without_adverse_events(self):
         ev = np.array([0.05, 0.04, 0.06, 0.05])
         assert S.kelly_event_weight(0.05, ev, 0.95, n_adverse=0) == 0.0

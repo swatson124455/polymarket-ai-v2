@@ -184,24 +184,36 @@ def bh_fdr(pvals: np.ndarray, q: float = 0.10) -> np.ndarray:
 
 
 def empirical_bayes_shrink(
-    edges: np.ndarray, ses: np.ndarray
+    edges: np.ndarray,
+    ses: np.ndarray,
+    pool_edges: np.ndarray | None = None,
+    pool_ses: np.ndarray | None = None,
 ) -> np.ndarray:
     """Shrink per-trader edges toward the cross-trader mean.
 
     tau^2 estimated by method of moments: max(0, var(edges) - mean(se^2)).
     Counters the ~2.16x winner's-curse inflation of post-selection edges.
+
+    F5 (review 2026-07-06): grand mean and tau^2 must be estimated on the FULL
+    scored pool (pool_edges/pool_ses), not on the shrink targets themselves —
+    shrinking selected winners toward the winners' own mean shrinks toward a
+    selection-inflated target and under-corrects the very bias this exists to
+    counter. Omitting the pool falls back to the legacy self-pool behavior.
     """
     edges = np.asarray(edges, dtype=float)
     ses = np.asarray(ses, dtype=float)
     if edges.size == 0:
         return edges
-    finite = np.isfinite(edges) & np.isfinite(ses)
-    if finite.sum() < 2:
+    pe = edges if pool_edges is None else np.asarray(pool_edges, dtype=float)
+    ps = ses if pool_ses is None else np.asarray(pool_ses, dtype=float)
+    pf = np.isfinite(pe) & np.isfinite(ps)
+    if pf.sum() < 2:
         return edges
-    grand = float(edges[finite].mean())
-    tau2 = max(0.0, float(edges[finite].var(ddof=1)) - float((ses[finite] ** 2).mean()))
+    grand = float(pe[pf].mean())
+    tau2 = max(0.0, float(pe[pf].var(ddof=1)) - float((ps[pf] ** 2).mean()))
+    finite = np.isfinite(edges) & np.isfinite(ses)
     out = edges.copy()
-    shrink = tau2 / (tau2 + ses[finite] ** 2) if tau2 > 0 else np.zeros(finite.sum())
+    shrink = tau2 / (tau2 + ses[finite] ** 2) if tau2 > 0 else np.zeros(int(finite.sum()))
     out[finite] = grand + shrink * (edges[finite] - grand)
     return out
 
