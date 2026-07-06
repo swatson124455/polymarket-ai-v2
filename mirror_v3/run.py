@@ -9,10 +9,15 @@ Boot order is the contract:
                                      (MB_REBUILD_PLAN.md §2: nothing trades
                                      until a rule passes the acceptance gate).
 
+Signal collection IS wired (mirror_v3/signal_collector.py): after restore, the
+silo connects the RTDS global feed and records the raw watched-wallet entry
+stream to mirror_rejected_signals under its own identity — so old MB can be
+fully stopped rather than paused. The watched-wallet set comes from the monthly
+leaderboard (mirror_v3/watchlist_source.py), not the dead scoring stack.
+
 What this scaffold does NOT yet do (deliberate, gated milestones):
-entry execution, exits, RTDS consumption, rejection logging, sizing.
-It boots, restores guard state under the new identity, and proves the
-silo's safety spine end-to-end in paper.
+entry execution, exits, sizing. The strategy slot stays EMPTY behind the
+acceptance gate; collection is pre-gate research plumbing, not trading.
 """
 
 from __future__ import annotations
@@ -98,11 +103,35 @@ async def main() -> int:
               f"open={result.open_loaded} daily_exposure=${result.daily_exposure_usd:.2f} "
               f"mode={mode}", flush=True)
 
-        # 4. Idle heartbeat — strategy slot intentionally empty behind the gate.
-        while True:
-            print(f"[{BOT_NAME}] heartbeat {guards.snapshot()} mode={mode} "
-                  f"strategy=EMPTY(gated)", flush=True)
-            await asyncio.sleep(HEARTBEAT_S)
+        # 4. Signal collection — connect the RTDS feed and record the raw
+        #    watched-wallet entry stream. Strategy slot stays EMPTY (gated);
+        #    this is pre-gate research plumbing, no trading.
+        from mirror_v3.signal_collector import V3SignalCollector, build_rtds_feed
+        from mirror_v3.watchlist_source import LeaderboardWatchlist
+
+        watchlist = LeaderboardWatchlist()
+        await watchlist.refresh()
+        collector = V3SignalCollector(
+            db,
+            is_watched=watchlist.is_watched,
+            is_restored=lambda: guards.restored,
+        )
+        feed = build_rtds_feed(collector)
+        try:
+            await feed.connect()
+            print(f"[{BOT_NAME}] RTDS signal collection started "
+                  f"watchlist={watchlist.size()}", flush=True)
+
+            # 5. Heartbeat: refresh the watchlist on its TTL, log collection stats.
+            while True:
+                if watchlist.needs_refresh():
+                    await watchlist.refresh()
+                print(f"[{BOT_NAME}] heartbeat {guards.snapshot()} mode={mode} "
+                      f"strategy=EMPTY(gated) watchlist={watchlist.size()} "
+                      f"collector={collector.get_stats()}", flush=True)
+                await asyncio.sleep(HEARTBEAT_S)
+        finally:
+            await feed.disconnect()
     finally:
         await db.close()
 
