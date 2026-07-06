@@ -189,7 +189,7 @@ SELECT DISTINCT ON (o.match_id, o.book)
   FROM odds_raw o
   JOIN matches m USING (match_id)
  WHERE m.winner IN ('team_a','team_b')
-   AND o.aggregator = 'oddspapi'
+   AND o.aggregator = 'pinnodds'
    AND o.book = ANY($1::text[])
    AND o.line_time <= m.start_time
    AND m.game = ANY($2::text[])

@@ -62,7 +62,7 @@ SELECT DISTINCT ON (o.match_id)
        o.match_id, o.team_a_odds, o.team_b_odds
   FROM odds_raw o
   JOIN matches m USING (match_id)
- WHERE o.aggregator = 'oddspapi'
+ WHERE o.aggregator = 'pinnodds'
    AND o.book = ANY($1::text[])
    AND o.line_time <= m.start_time
  ORDER BY o.match_id, o.line_time DESC
