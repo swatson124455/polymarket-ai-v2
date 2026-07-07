@@ -164,24 +164,30 @@ def _ts(v):
 # unresolved slug is logged loudly and skipped — never approximated. run_once also LOGS the
 # resolved id map every pass, so a silent ID change is always visible in the journal.
 #
-# VERIFIED slug -> id, 2026-07-06 (RECORDED for reference/regression — NOT the lookup, the
-# slug is; if a live id differs from this, the tag was renumbered — investigate, don't panic):
-#   counter-strike=100602  csgo=100635
-#   league-of-legends=65   lol-worlds=401   lec=102164
-#   dota-2=102366
-#   valorant=101672        vct=101682
-# (Also seen but out of our 4-game scope: starcraft-2=103064, starcraft-1=103065.)
+# VERIFIED slug -> id (RECORDED for reference/regression — NOT the lookup, the slug is; if a
+# live id differs from this, the tag was renumbered — investigate, don't panic):
+#   CS2: counter-strike-2 (the tag the MATCH events actually carry) · cs2=100677 (21 events) ·
+#        counter-strike=100602 + csgo=100635 = legacy TOPIC tags (Valve/meta props only, no
+#        matches) — kept as harmless extra coverage. VERIFIED 2026-07-07: CS2 head-to-heads
+#        (TYLOO vs 9z, FaZe vs BetBoom, NAVI Junior, …) live under `counter-strike-2`, which the
+#        earlier counter-strike/csgo-only query MISSED. counter-strike-2's numeric id is resolved
+#        at runtime + logged (record it here after the next collector run).
+#   league-of-legends=65   lol-worlds=401   lec=102164   (2026-07-06)
+#   dota-2=102366   ·   valorant=101672   vct=101682     (2026-07-06)
+# (Out of our 4-game scope: starcraft-2=103064, starcraft-1=103065.)
 POLYMARKET_TAG_SLUGS: Dict[str, Tuple[str, ...]] = {
-    "cs2": ("counter-strike", "csgo"),
+    "cs2": ("counter-strike-2", "cs2", "counter-strike", "csgo"),
     "lol": ("league-of-legends", "lol-worlds", "lec"),
     "dota2": ("dota-2",),
     "valorant": ("valorant", "vct"),
 }
 
-# Recorded verified ids (2026-07-06). run_once cross-checks the live resolution against these
-# and warns on any drift, so a renumbered tag surfaces instead of silently changing coverage.
+# Recorded verified ids. run_once cross-checks the live resolution against these and warns on any
+# drift, so a renumbered tag surfaces instead of silently changing coverage. (counter-strike-2's
+# id was not captured in the probe output — left out deliberately; it resolves + logs at runtime,
+# record it here on the next run rather than guessing.)
 POLYMARKET_TAG_IDS_VERIFIED: Dict[str, int] = {
-    "counter-strike": 100602, "csgo": 100635,
+    "cs2": 100677, "counter-strike": 100602, "csgo": 100635,
     "league-of-legends": 65, "lol-worlds": 401, "lec": 102164,
     "dota-2": 102366, "valorant": 101672, "vct": 101682,
 }
