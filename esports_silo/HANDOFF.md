@@ -24,8 +24,20 @@ are LIVE-VERIFIED:
 **Keys:** old OddsPapi/PandaScore/Riot keys in `/opt/pa2-shared/.env` are all INVALID (need
 rotation). pinnodds key is live (rotate — it was shared in chat). Both `.env` files are box-local.
 
-**Next piece:** LINKING — match each pinnodds match to its Polymarket market by team names
-(`markets/match_matcher.py`), then the forward `--predict` ledger + skill gate. Halt stays on.
+**Pairing: DONE + verified.** `collectors/polymarket_collector.py` (tag-based) + `scripts/link_report.py`
+(two-sided reconciliation) prove pinnodds↔Polymarket linking works (LoL 6/6, Dota2 1/1 of real
+overlaps; unpaired = low-tier not on PM, or in-play). `results_collector` now ATTACHES PandaScore
+winners to the pinnodds rows (orientation-aware) so matches actually resolve. fit_calibrator +
+skill_report SQL repointed `oddspapi`→`pinnodds`.
+
+**No backfill exists — FORWARD-ONLY.** LIVE-VERIFIED 2026-07-07 (`scripts/probe_pinnodds_history.py`):
+pinnodds has NO archive (all history endpoints 404; only live/prematch snapshots + a rolling
+`/api/drops` buffer). OddsPapi is abandoned. So `backfill_historical_odds.py` is DEAD; the
+calibrator fits on forward-collected lines only (~2–4 wks of the running timer). Optional paid
+`bettingiscool` sells Pinnacle history (de-vigged — raw only) if a backfill is ever wanted.
+
+**Blocking input:** a VALID PandaScore key (current one is INVALID) — without it matches never
+settle and the whole proving chain starves. Then: fit → `--predict` → weekly skill gate. Halt stays on.
 
 ## Where things stand
 The siloed esports scaffold **and** the Cmd-4 data-quality gate (`verify_data_quality.py`) are
