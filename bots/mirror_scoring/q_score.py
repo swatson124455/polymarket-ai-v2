@@ -57,6 +57,13 @@ class TraderScore:
     p_holdout: float            # one-sided wild-bootstrap p on the TEST half
     train_edge: float
     test_edge: float
+    # A genuine out-of-sample test was performed iff a train-screened
+    # hypothesis (train_edge > 0) had a non-empty test half to evaluate. Only
+    # these enter the BH family — an untested trader (p_holdout forced to 1.0)
+    # must NOT consume multiple-testing budget (diagnosis 2026-07-06: 2,512 of
+    # 2,993 pool members were p=1.0 placeholders, raising the bar ~6x for the
+    # 481 that were actually tested and admitting zero real candidates).
+    holdout_tested: bool = False
     admitted: bool = False      # set by BH across the universe
     edge_shrunk: float = 0.0    # set post-selection (EB shrinkage)
     kelly_weight: float = 0.0   # shadow sizing weight (0 if not sizeable)
@@ -110,9 +117,13 @@ def score_trader(
     train_edge = float(tr_e.mean()) if tr_e.size else float("nan")
     test_edge = float(te_e.mean()) if te_e.size else float("nan")
 
-    # Persistence: train sign check + test p-value (feeds BH). Missing halves
-    # fail closed (p=1).
-    if tr_e.size == 0 or te_e.size == 0 or train_edge <= 0:
+    # Persistence: train sign check + test p-value (feeds BH). A genuine
+    # out-of-sample test exists only when a train-screened hypothesis
+    # (train_edge > 0) has a non-empty test half to evaluate; otherwise the
+    # trader is UNTESTED (p forced to 1) and excluded from the BH family — it
+    # never generated a hypothesis, so it must not consume FDR budget.
+    holdout_tested = tr_e.size > 0 and te_e.size > 0 and train_edge > 0
+    if not holdout_tested:
         p_holdout = 1.0
     else:
         p_holdout = S.wild_cluster_bootstrap_p(
@@ -124,6 +135,7 @@ def score_trader(
         n_adverse=n_adverse, avg_price=avg_price, edge_mean=mean,
         edge_se=se, edge_lb_t=lb_t, edge_lb_jeffreys=lb_j,
         p_holdout=p_holdout, train_edge=train_edge, test_edge=test_edge,
+        holdout_tested=holdout_tested,
         condition_ids=[str(c) for c in np.unique(clusters)],
     )
     if lb_j <= 0:
@@ -147,9 +159,13 @@ def select_and_size(
     spotless/zero-variance record has a meaningless p-value). Jeffreys is
     NOT an admission gate — it guards SIZEABILITY only (audit flaw f1).
     """
+    # BH family = genuinely tested hypotheses only. Untested traders
+    # (holdout_tested=False, p forced to 1) never generated a hypothesis and
+    # must not inflate the multiple-testing denominator (see TraderScore doc).
     pool = [
         t for t in scores
-        if t.n_adverse >= cfg.MIN_ADVERSE_EVENTS
+        if t.holdout_tested
+        and t.n_adverse >= cfg.MIN_ADVERSE_EVENTS
         and np.isfinite(t.edge_se) and t.edge_se > 1e-12
     ]
     if pool:

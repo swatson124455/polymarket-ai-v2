@@ -89,3 +89,43 @@ def test_jeffreys_guards_sizing_not_admission():
         assert t.edge_lb_jeffreys <= 0
         assert t.kelly_weight == 0.0
         assert any("jeffreys" in reason for reason in t.watch_only_reasons)
+
+
+def test_untested_placeholders_do_not_inflate_bh_denominator():
+    """Regression for the 2026-07-06 admitted=0 bug: a swarm of UNTESTED
+    traders (no test half -> p forced to 1.0) must NOT raise the BH bar for
+    the genuinely tested ones. With the family = tested-only, one skilled
+    trader is admitted regardless of how many placeholders sit alongside."""
+    cfg = ScoringConfig(MIN_EVENTS=12, MIN_ADVERSE_EVENTS=2, BH_Q=0.10)
+
+    # One genuinely skilled trader, fully spanning the cutoff (train + test).
+    sk_e, sk_r = build("skilled", 60, [1, 1, 1, 0, 0], 0.40)
+
+    # 500 "untested" traders: all their events resolve AFTER the cutoff, so
+    # the train half is empty -> holdout_tested False -> p=1.0. They have
+    # plenty of adverse events + non-degenerate SE (so the OLD pool filter
+    # would have swept them in and 6x-inflated m).
+    untested_entries, resolved_at = dict(sk_r), {}
+    entries_by = {"skilled": sk_e}
+    resolved_at = dict(sk_r)
+    for i in range(500):
+        e, r = build(f"late{i}", 30, [1, 0], 0.50,
+                     start=CUTOFF + timedelta(days=5), day_step=1)
+        entries_by[f"late{i}"] = e
+        resolved_at.update(r)
+
+    scores = []
+    for name, ents in entries_by.items():
+        ts = score_trader(ents, cfg, CUTOFF, resolved_at)
+        if ts is not None:
+            scores.append(ts)
+    scores = select_and_size(scores, entries_by, cfg)
+    by = {t.trader: t for t in scores}
+
+    # The placeholders are present but excluded from the family...
+    assert by["skilled"].holdout_tested is True
+    assert all(not by[f"late{i}"].holdout_tested for i in range(500)
+               if f"late{i}" in by)
+    # ...so the skilled trader is still admitted despite 500 untested peers.
+    assert by["skilled"].admitted is True
+    assert by["skilled"].kelly_weight > 0.0
