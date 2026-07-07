@@ -39,6 +39,19 @@ calibrator fits on forward-collected lines only (~2–4 wks of the running timer
 **Blocking input:** a VALID PandaScore key (current one is INVALID) — without it matches never
 settle and the whole proving chain starves. Then: fit → `--predict` → weekly skill gate. Halt stays on.
 
+**OPEN — CS2 tag question (unresolved as of 2026-07-07).** Operator believes CS2 IS on Polymarket
+and the collector is missing it. `polymarket_collector` only queries tags counter-strike(100602)/
+csgo(100635), which showed only Valve meta markets, not matches. `scripts/probe_polymarket_cs2.py`
+(BUILT, awaiting operator run) tests whether CS2 head-to-heads live under a DIFFERENT tag
+(tournament tag like BLAST/IEM/ESL, or a `counter-strike-2` slug) via site-search + a broad
+/tags scan. If it surfaces a CS2 match tag, ADD that id's slug to `POLYMARKET_TAG_SLUGS['cs2']`
+(+ its recorded id + drift entry). If nothing, CS2 matches are genuinely absent right now — not a bug.
+
+**Next action for a fresh session:** run `probe_polymarket_cs2.py` on the box, act on the result
+(add the CS2 tag or confirm absence). Everything else is keys + time: rotate PandaScore → the
+timer accrues (odds, price, result) → after ~2–4 wks fit the calibrator → `--predict` → weekly
+`skill_report`. No engineering remains in that path; do NOT rebuild the collectors/runner/gate.
+
 ## Where things stand
 The siloed esports scaffold **and** the Cmd-4 data-quality gate (`verify_data_quality.py`) are
 committed and pushed. **Nothing trades; no data has cleared quarantine.** The gate is BUILT and
