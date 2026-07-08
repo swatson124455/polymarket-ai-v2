@@ -27,14 +27,16 @@
    Only after the verdict: retire containment gates per `WEATHER_S222_STATUS.md` §4-B.
 
 3. **Triage the REMAINING pass-2 live-corrupting queue.** Verify phase COMPLETE (43
-   re-verified 2026-07-08). Fixed on branch this session: **#1 renorm** (`caffc68`), **N1
-   bias sign-flip** (`04185e8`), **V42 circuit breakers** (`5baff62`), **V37 NDFD PoP**
+   re-verified 2026-07-08). Fixed/built on branch this session: **#1 renorm** (`caffc68`),
+   **N1 bias sign-flip** (`04185e8`), **V42 circuit breakers** (`5baff62`), **V37 NDFD PoP**
    (`419df24`), **V34 synthetic sigma** (`410a89b`), **V26 exec-edge floor 0→0.04**
-   (`f910cf6`). IN PROGRESS this session (operator-approved): **V28** NO-side calibrated
-   admission gate (design + build), **V1 cluster** written plan (calibrator self-training +
-   V4/V6/V10/V11 ground-truth contamination + DB source-column migration — plan only, no
-   code). STILL OPEN after those: V34 follow-ups (synthetic marker / RNG determinism), the
-   deeper V26 (orders submitted at midpoint not executable price). Then: deploy + S222 verdict.
+   (`f910cf6`), **V28 calibrated-edge gate built default-OFF** (`57d54bc`). **V1/ground-truth
+   cluster PLANNED** (no code) → `docs/WB_GROUNDTRUTH_CLUSTER_PLAN_S224.md` — 4 workstreams
+   (WU-primacy fix, source-column migration, contamination cutoff, break the calibrator
+   feedback loop) with 4 operator decision points; needs MB signoff (shared-module + migration).
+   STILL OPEN: that cluster's implementation, V34 follow-ups (synthetic marker / RNG
+   determinism), the deeper V26 (orders at midpoint not executable price), enabling the V28
+   gate. Then: deploy + S222 verdict.
 
 ---
 
