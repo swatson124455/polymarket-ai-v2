@@ -30,7 +30,7 @@
    re-verified 2026-07-08). Fixed on branch this session (5 code fixes): **#1 renorm**
    (`caffc68`), **N1 cold-station bias sign-flip** (`04185e8`), **V42 intra-day-blind circuit
    breakers** (`5baff62`), **V37 NDFD wrong-day PoP** (`419df24`), **V34 synthetic-ensemble
-   lead-time sigma** (`<v34sha>`). STILL OPEN (need YOUR input or bigger scope): V1 calibrator
+   lead-time sigma** (`410a89b`). STILL OPEN (need YOUR input or bigger scope): V1 calibrator
    self-training feedback loop, the ground-truth contamination cluster (V4/V6/V10/V11 — source
    column + 07-01 cutoff + WU-primacy), **V26** executable-edge floor 0.0 (Tier-1/2 env — needs
    a value decision), **V28** NO-side funnel has zero calibrated admission input (design
@@ -70,7 +70,7 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
-- **2026-07-08 (S224 V34):** synthetic-ensemble spread now lead-time-scaled (`<v34sha>`) —
+- **2026-07-08 (S224 V34):** synthetic-ensemble spread now lead-time-scaled (`410a89b`) —
   the point-forecast-only fallback used a fixed 2°F/1.1°C day-1 error at every lead (a 120h
   point high got a 2°F cloud → overconfident tail edges); now uses the NBM σ schedule
   (1.5/2.5/3.5/5.0°F by lead). Follow-ups open: synthetic marker, RNG determinism. NOT deployed.
