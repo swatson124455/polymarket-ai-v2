@@ -14,14 +14,13 @@
 --   psql "$SILO_DB" -f esports_silo/db/alias_seed.sql
 -- Add new rows here as link_report flags more high-confidence same-fixture pairs.
 --
--- ⚠ 2026-07-08: first load returned INSERT 0 0 — the alias keys (Keyd/PARIVISION/BetBoom Team,
--- game=cs2) ALREADY EXIST in the 1,777 imported rows (PK is (alias, game)), so DO NOTHING
--- skipped them and they map to a DIFFERENT canonical than the pinnodds spelling → the gap
--- persists. Do NOT blind-overwrite imported data. First INSPECT what they map to:
---   psql "$SILO_DB" -f esports_silo/db/alias_inspect.sql
--- then decide per-row whether an explicit UPDATE is warranted (evidence = the same-fixture,
--- exact-opponent match link_report showed). This is a marginal (few-match) gain; the diacritic
--- fold in match_matcher.py — which is NOT gated on this table — is the general win.
+-- 2026-07-08: these 3 (alias, game=cs2) keys already existed in the imported data as INERT
+-- IDENTITY rows (canonical == alias — inspect confirmed: Keyd→Keyd, PARIVISION→PARIVISION,
+-- BetBoom Team→BetBoom Team). build_alias_map DROPS alias==canonical, so they carry zero
+-- mapping and were merely blocking the insert. The ON CONFLICT below therefore UPDATEs the
+-- canonical to the pinnodds spelling — but ONLY when the existing row is a self-reference
+-- (`WHERE canonical = alias`), so it can NEVER clobber a genuine imported alias.
+-- alias = the Polymarket spelling; canonical = the pinnodds/matches spelling.
 
 INSERT INTO team_aliases (alias, canonical, game) VALUES
   -- pinnodds 'Keyd Stars' ↔ PM 'Keyd'  (same fixture vs MIBR Academy, triage score 100)
@@ -30,4 +29,6 @@ INSERT INTO team_aliases (alias, canonical, game) VALUES
   ('PARIVISION',    'PVISION',      'cs2'),
   -- pinnodds 'BB Team' ↔ PM 'BetBoom Team'  (same fixture vs FaZe, triage score 74)
   ('BetBoom Team',  'BB Team',      'cs2')
-ON CONFLICT (alias, game) DO NOTHING;   -- team_aliases PK is (alias, game)
+ON CONFLICT (alias, game) DO UPDATE          -- PK is (alias, game)
+  SET canonical = EXCLUDED.canonical
+  WHERE team_aliases.canonical = team_aliases.alias;  -- only convert inert identity rows
