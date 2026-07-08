@@ -68,6 +68,11 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-08 (S224 V42):** intra-day-blind circuit breakers FIXED (`<v42sha>`) —
+  `_handle_daily_boundary` now refreshes `_daily_pnl` from the DB every scan (was once/day
+  behind a same-day early-return), so the daily loss limit + 20% drawdown halt can fire
+  intra-day. Reset stays once/day. Behavior change: breakers now actually bind on real
+  intra-day losses (intended; default limit is high so practical change is bounded). NOT deployed.
 - **2026-07-08 (S224 N1):** cold-station bias SIGN-FLIP fixed (`04185e8`) — bootstrap
   now writes `bias = actual − forecast` matching the actuals updater + consumer convention;
   was doubling forecast error for cold stations on the simple-bias fallback. NOT deployed.

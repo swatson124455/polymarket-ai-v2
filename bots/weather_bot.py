@@ -1592,8 +1592,9 @@ class WeatherBot(BaseBot):
         await self._handle_daily_boundary()
 
         # Calibration + category params are independent — run in parallel
-        # S120: _restore_daily_pnl_from_db removed — already called inside
-        # _handle_daily_boundary() at L784 which runs first every scan.
+        # S224 (V42): _handle_daily_boundary() above now refreshes _daily_pnl
+        # from the DB on every scan (the S120 assumption that it "runs every
+        # scan" was defeated by its own same-day early-return, now fixed).
         await asyncio.gather(
             self._maybe_reload_calibration(),
             self._load_category_params(),
@@ -5102,48 +5103,54 @@ class WeatherBot(BaseBot):
     # ── DB helpers (P1, P2, P3) ──────────────────────────────────────────
 
     async def _handle_daily_boundary(self) -> None:
-        """Reset daily state at UTC day boundary; restore P&L from DB (P2)."""
+        """Reset daily state at the UTC day boundary; refresh realized P&L from
+        DB on EVERY scan (P2 — see the S224/V42 note at the restore call)."""
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        if self._daily_pnl_date == today:
-            return
 
-        # New day — reset in-memory state
-        self._daily_pnl = 0.0
-        self._daily_pnl_date = today
-        self._group_exposure.clear()
-        self._city_exposure.clear()
-        self._market_group_cache.clear()  # S104: stale date mappings from yesterday
+        if self._daily_pnl_date != today:
+            # New day — reset in-memory state (once per boundary)
+            self._daily_pnl = 0.0
+            self._daily_pnl_date = today
+            self._group_exposure.clear()
+            self._city_exposure.clear()
+            self._market_group_cache.clear()  # S104: stale date mappings from yesterday
 
-        # S155: Prune unbounded session-lifetime caches (memory leak mitigation).
-        # These dicts grow without bounds; clear at day boundary to prevent OOM.
-        self._prediction_log_cache.clear()
-        self._written_forecasts.clear()
-        self._alerted_unmatched_cities.clear()
-        self._liquidity_cache.clear()  # S159: was never pruned (TTL at read prevents stale data)
-        # TTL-based eviction for timed caches
-        _now_mono = time.monotonic()
-        self._afd_cache = {k: v for k, v in self._afd_cache.items() if v[0] > _now_mono}
-        self._station_mse_cache = {k: v for k, v in self._station_mse_cache.items()
-                                   if _now_mono - v[1] < 3600}
-        self._psw_discovery_cache = {k: v for k, v in self._psw_discovery_cache.items()
-                                      if _now_mono - v[0] < 1200}
-        # S160 WB-3: Prune expired exit cooldown entries (unbounded memory leak).
-        # Only remove entries past the max cooldown TTL (4h for RESOLUTION, 30m
-        # for REVERSAL). Active cooldowns are preserved.
-        _max_cd = max(self._exit_cooldown_secs, 1800.0)
-        _expired = [mid for mid, t in self._recently_exited.items()
-                    if _now_mono - t > _max_cd]
-        for mid in _expired:
-            self._recently_exited.pop(mid, None)
-            self._exit_reasons.pop(mid, None)
+            # S155: Prune unbounded session-lifetime caches (memory leak mitigation).
+            # These dicts grow without bounds; clear at day boundary to prevent OOM.
+            self._prediction_log_cache.clear()
+            self._written_forecasts.clear()
+            self._alerted_unmatched_cities.clear()
+            self._liquidity_cache.clear()  # S159: was never pruned (TTL at read prevents stale data)
+            # TTL-based eviction for timed caches
+            _now_mono = time.monotonic()
+            self._afd_cache = {k: v for k, v in self._afd_cache.items() if v[0] > _now_mono}
+            self._station_mse_cache = {k: v for k, v in self._station_mse_cache.items()
+                                       if _now_mono - v[1] < 3600}
+            self._psw_discovery_cache = {k: v for k, v in self._psw_discovery_cache.items()
+                                          if _now_mono - v[0] < 1200}
+            # S160 WB-3: Prune expired exit cooldown entries (unbounded memory leak).
+            # Only remove entries past the max cooldown TTL (4h for RESOLUTION, 30m
+            # for REVERSAL). Active cooldowns are preserved.
+            _max_cd = max(self._exit_cooldown_secs, 1800.0)
+            _expired = [mid for mid, t in self._recently_exited.items()
+                        if _now_mono - t > _max_cd]
+            for mid in _expired:
+                self._recently_exited.pop(mid, None)
+                self._exit_reasons.pop(mid, None)
 
-        # P2: Restore today's realized P&L from paper_trades so restarts
-        # don't reset the daily loss limit check to $0.
+            # Calibration feedback: fill actual_temp for past forecast rows so
+            # bias correction accumulates over time. (Once per day — an
+            # expensive backfill; must NOT run every scan.)
+            await self._maybe_update_calibration_actuals()
+
+        # S224 (fallacy-audit V42): refresh realized P&L from the DB on EVERY
+        # scan, not just at the day boundary. _daily_pnl is a net counter and
+        # trade_events (queried here) is its ground truth per the CLAUDE.md
+        # state-persistence tree; this restore is its ONLY writer. The old
+        # same-day early-return skipped it, so the daily loss limit (:3151/:3259)
+        # and the 20% drawdown halt (:6354) read a ~$0 counter all day and could
+        # never fire intra-day. Must run before those gates are consulted.
         await self._restore_daily_pnl_from_db()
-
-        # Calibration feedback: fill actual_temp for past forecast rows so
-        # bias correction accumulates over time.
-        await self._maybe_update_calibration_actuals()
 
     async def _restore_daily_pnl_from_db(self) -> None:
         """Query today's WeatherBot realized P&L from trade_events DB."""

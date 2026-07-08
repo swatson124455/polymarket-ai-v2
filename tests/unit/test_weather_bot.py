@@ -1098,10 +1098,46 @@ class TestWeatherBot:
         weather_bot._restore_daily_pnl_from_db.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_handle_daily_boundary_same_day_no_op(self, weather_bot):
-        """Same-day call to _handle_daily_boundary → no reset."""
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d") if True else ""
-        # Need to import timezone for the strftime
+    async def test_daily_pnl_refreshed_every_scan_same_day(self, weather_bot):
+        """S224 V42: the daily loss limit / drawdown halt read _daily_pnl, whose
+        ONLY writer is _restore_daily_pnl_from_db (DB ground truth). Before the
+        fix, _handle_daily_boundary early-returned on same-day so the restore
+        ran once per UTC day — leaving both circuit breakers blind to intra-day
+        losses. The boundary handler must refresh P&L on EVERY call."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        weather_bot._daily_pnl_date = today  # already initialised this day
+        weather_bot._restore_daily_pnl_from_db = AsyncMock()
+
+        # Three scans within the same day
+        await weather_bot._handle_daily_boundary()
+        await weather_bot._handle_daily_boundary()
+        await weather_bot._handle_daily_boundary()
+
+        # Pre-fix: 0 calls (early-return). Post-fix: one per scan.
+        assert weather_bot._restore_daily_pnl_from_db.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_daily_boundary_reset_still_once_per_day(self, weather_bot):
+        """S224 V42 regression guard: the expensive reset (exposure/cache clears,
+        calibration-actuals backfill) must stay gated to the actual boundary and
+        NOT run on every same-day scan."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        weather_bot._daily_pnl_date = today
+        weather_bot._group_exposure = {"NYC:x": 50.0}
+        weather_bot._restore_daily_pnl_from_db = AsyncMock()
+        weather_bot._maybe_update_calibration_actuals = AsyncMock()
+
+        await weather_bot._handle_daily_boundary()  # same day → no reset
+
+        assert weather_bot._group_exposure == {"NYC:x": 50.0}  # not cleared
+        weather_bot._maybe_update_calibration_actuals.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_daily_boundary_same_day_skips_reset_but_refreshes_pnl(self, weather_bot):
+        """Same-day call → the day-boundary RESET is skipped, but realized P&L
+        is still refreshed from the DB (S224 V42: this restore is the only
+        writer of _daily_pnl and must run every scan or the circuit breakers
+        go blind intra-day)."""
         from datetime import timezone as _tz
         today = datetime.now(_tz.utc).strftime("%Y-%m-%d")
         weather_bot._daily_pnl = -50.0
@@ -1110,8 +1146,11 @@ class TestWeatherBot:
 
         await weather_bot._handle_daily_boundary()
 
-        assert weather_bot._daily_pnl == -50.0  # Unchanged
-        weather_bot._restore_daily_pnl_from_db.assert_not_called()
+        # reset skipped (mocked restore is a no-op, so the value is untouched
+        # by the reset block — proving _daily_pnl was NOT zeroed)
+        assert weather_bot._daily_pnl == -50.0
+        # but the DB refresh DID run (the V42 fix)
+        weather_bot._restore_daily_pnl_from_db.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_stop_closes_forecast_client(self, weather_bot):
