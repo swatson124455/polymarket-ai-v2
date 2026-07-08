@@ -65,6 +65,7 @@
 - **2026-07-08 (handoff hardening):** committed the resume-integrity harness
   (`scripts/wb_resume_check.sh` + `docs/WB_HANDOFF_MANIFEST.json`), the SessionStart
   branch-pin hook (`.claude/`), this canonical status file, and the deploy-record mechanism
-  (`deploy/wb-record-deploy.sh` + `deploy/LAST_DEPLOY.json`). No bot behavior changed.
+  (`deploy/wb-record-deploy.sh` + `deploy/LAST_DEPLOY.json`); documented all four in
+  `docs/SESSION_HANDOFF_PROTOCOL.md`. No bot behavior changed.
 - **2026-07-06 (S223):** six root-cause fixes deployed; fallacy audit started (18/62
   verified, credit-limited mid-verify). See `WEATHER_S222_STATUS.md` S223 addendum.
