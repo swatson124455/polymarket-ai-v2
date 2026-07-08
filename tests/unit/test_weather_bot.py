@@ -585,7 +585,10 @@ class TestEmpiricalCDF:
         return buckets
 
     def test_empirical_returns_normalized_probs(self):
-        """Empirical CDF should return normalized probabilities summing to ~1.0."""
+        """Empirical CDF probabilities: never inflated above the members' own
+        mass (S224 deflate-only — these buckets miss both tails, so the total
+        must stay < 1; the pre-S224 renorm inflated it to exactly 1.0, which
+        was the fallacy: awarding uncovered tail mass to the listed buckets)."""
         engine = WeatherProbabilityEngine()
         # 100 members centered around 50°F
         np.random.seed(42)
@@ -600,7 +603,9 @@ class TestEmpiricalCDF:
         probs = engine.empirical_bucket_probabilities(members, buckets, lead_time_hours=48.0)
         assert len(probs) == 5
         total = sum(probs.values())
-        assert abs(total - 1.0) < 0.05, f"Should normalize to ~1.0, got {total}"
+        # covers 44.5-56.5 of a VIF-inflated N(50, 4.2): ~0.85 of the mass
+        assert total <= 1.0 + 0.02, f"deflate-only bound violated: {total}"
+        assert 0.6 < total < 0.98, f"tail mass was awarded to covered buckets: {total}"
 
     def test_empirical_returns_empty_for_small_ensemble(self):
         """Empirical CDF requires n>=50 members."""
@@ -716,6 +721,102 @@ class TestEmpiricalCDF:
         engine._variance_inflation_factor = 1.0
         probs_raw = engine.empirical_bucket_probabilities(members, buckets)
         assert probs_raw["market_1"] < 0.05
+
+
+class TestS224DeflateOnlyNormalization:
+    """S224 fallacy-audit fix #1: sum-to-1 renormalization over NON-EXHAUSTIVE
+    bucket sets manufactured probability mass — a singleton bucket renormalized
+    to a literal 1.0 (reproduced live: model_prob=1.0, price 0.43, fabricated
+    edge 0.57), and partial sibling sets were inflated by 1/total. The fix is
+    deflate-only: divide only when total > 1 (incoherent for disjoint buckets);
+    never inflate a total < 1 (the signature of missing siblings)."""
+
+    engine = WeatherProbabilityEngine()
+
+    @staticmethod
+    def _bucket(market_id, btype, lo, hi):
+        return TemperatureBucket(market_id, "t", "n", 0.43, btype, lo, hi, "F")
+
+    # ── parametric path ────────────────────────────────────────────────
+
+    def test_parametric_singleton_never_renorms_to_one(self):
+        """Defect: a single bucket with p in (0.01, 0.99) divided by itself
+        emitted exactly 1.0, breaking the 0.999 clamp."""
+        b = self._bucket("m1", "at_or_below", None, 50.0)
+        probs = self.engine.bucket_probabilities(50.0, 2.0, 0.0, [b])
+        # cdf(50.5; loc=50, scale=2) ≈ 0.60 — must stay the raw belief
+        assert probs["m1"] < 0.99, f"singleton renormed to {probs['m1']}"
+        assert 0.4 < probs["m1"] < 0.8
+
+    def test_parametric_partial_group_not_inflated(self):
+        """Defect: two mid-range buckets covering ~76% of the mass were
+        inflated by 1/total, fabricating edge on both."""
+        buckets = [
+            self._bucket("m1", "range", 49.0, 51.0),
+            self._bucket("m2", "range", 52.0, 54.0),
+        ]
+        probs = self.engine.bucket_probabilities(50.0, 2.0, 0.0, buckets)
+        total = sum(probs.values())
+        assert total < 0.9, f"partial group inflated to {total}"
+        # raw CDF beliefs preserved (≈0.55 and ≈0.21)
+        assert 0.4 < probs["m1"] < 0.7
+        assert 0.1 < probs["m2"] < 0.35
+
+    def test_parametric_deflation_preserved_for_overlapping_mass(self):
+        """Regression guard: total > 1 (overlapping buckets) still deflates."""
+        buckets = [
+            self._bucket("m1", "at_or_below", None, 55.0),   # ≈1.0 at loc=48
+            self._bucket("m2", "at_or_higher", 42.0, None),  # ≈1.0 at loc=48
+        ]
+        probs = self.engine.bucket_probabilities(48.0, 2.0, 0.0, buckets)
+        assert abs(sum(probs.values()) - 1.0) < 0.01
+        assert abs(probs["m1"] - 0.5) < 0.05
+
+    def test_parametric_degenerate_still_returns_empty(self):
+        """M1 guard unchanged: no meaningful mass in any bucket → {}."""
+        b = self._bucket("m1", "range", 90.0, 92.0)  # 20σ away
+        probs = self.engine.bucket_probabilities(50.0, 0.5, 0.0, [b])
+        assert probs == {}
+
+    # ── empirical path ─────────────────────────────────────────────────
+
+    def test_empirical_singleton_never_renorms_to_one(self):
+        members = [40.0 + 0.2 * i for i in range(100)]  # spread 40-59.8
+        b = self._bucket("m1", "range", 45.0, 49.0)
+        probs = self.engine.empirical_bucket_probabilities(members, [b])
+        assert probs["m1"] < 0.9, f"singleton renormed to {probs['m1']}"
+        assert probs["m1"] > 0.05
+
+    def test_empirical_partial_group_not_inflated(self):
+        members = [40.0 + 0.2 * i for i in range(100)]
+        buckets = [
+            self._bucket("m1", "range", 45.0, 49.0),
+            self._bucket("m2", "range", 50.0, 54.0),
+        ]
+        probs = self.engine.empirical_bucket_probabilities(members, buckets)
+        total = sum(probs.values())
+        assert total < 0.9, f"partial group inflated to {total}"
+
+    # ── scipy-less fallback path ───────────────────────────────────────
+
+    def test_fallback_singleton_never_renorms_to_one(self):
+        b = self._bucket("m1", "at_or_below", None, 50.0)
+        probs = self.engine._bucket_probabilities_fallback(50.0, 2.0, [b])
+        assert probs["m1"] < 0.99, f"singleton renormed to {probs['m1']}"
+
+    # ── NBM benchmark path (same fallacy, 4th site) ────────────────────
+
+    def test_nbm_singleton_edge_not_fabricated(self):
+        """Defect: a singleton bucket renormed nbm_prob to 1.0, fabricating
+        nbm_edge = 1 - price and a spurious high_conviction flag."""
+        b = self._bucket("m1", "at_or_below", None, 50.0)
+        signals = self.engine.compute_nbm_benchmark(
+            50.0, [b], {"m1": 0.43}, lead_time_hours=12.0,
+        )
+        if "m1" in signals:  # only present if |edge| >= threshold
+            assert signals["m1"]["nbm_prob"] < 0.9, (
+                f"NBM singleton renormed to {signals['m1']['nbm_prob']}"
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1863,6 +1964,79 @@ class TestMetarResolutionDayOverride:
 
         # m4 (at_or_higher 79): aggressive and 73.5 < 78.0 → 0.001 retained
         assert result["m4"] < 0.01
+
+    # ── S224: renorm guard (fallacy-audit fix #1, METAR site) ──────────
+
+    def _make_singleton_group(self, low_bound: float = 72.0):
+        """Group stripped to ONE bucket — market_mapper has no minimum group
+        size, so thin-filter/parse drops produce these in production."""
+        from bots.weather.engine.base_engine.weather.station_registry import STATION_REGISTRY
+        station = STATION_REGISTRY.get("new_york_city")
+        return WeatherMarketGroup(
+            city="NYC", station=station, target_date=date(2026, 3, 6),
+            buckets=[TemperatureBucket(
+                market_id="m1", bucket_type="at_or_higher",
+                low_bound=low_bound, high_bound=float("inf"),
+                yes_price=0.43, token_id="t1", no_token_id="n1", temp_unit="F",
+            )],
+        )
+
+    @pytest.mark.asyncio
+    async def test_metar_singleton_override_keeps_humility_cap(self, weather_bot):
+        """S224 defect: singleton group + 0.97 push renormed 0.97/0.97 = 1.0,
+        erasing the deliberate 3% settlement-risk margin (live signal:
+        model_prob=1.0 @ price 0.43)."""
+        group = self._make_singleton_group(low_bound=72.0)
+        weather_bot._metar_client.get_running_daily_max = AsyncMock(return_value=73.0)
+        model_probs = {"m1": 0.40}
+
+        result = await weather_bot._apply_metar_resolution_day_override(group, model_probs, 5.0)
+
+        # 73 >= 71.5 → 0.97 push fires; must STAY 0.97, not renorm to 1.0
+        assert result["m1"] == pytest.approx(0.97)
+
+    @pytest.mark.asyncio
+    async def test_metar_singleton_no_override_returns_unchanged(self, weather_bot):
+        """S224 defect: even with NO branch fired, the unconditional renorm
+        divided a singleton's raw p by itself → literal 1.0 with zero METAR
+        evidence."""
+        group = self._make_singleton_group(low_bound=79.0)
+        weather_bot._metar_client.get_running_daily_max = AsyncMock(return_value=70.0)
+        model_probs = {"m1": 0.40}
+
+        result = await weather_bot._apply_metar_resolution_day_override(group, model_probs, 5.0)
+
+        # 70 < 78.5, not aggressive → no branch fires → must be untouched
+        assert result == model_probs
+
+    @pytest.mark.asyncio
+    async def test_metar_no_override_skips_renorm_on_partial_probs(self, weather_bot):
+        """S224 defect: model_probs from an incomplete group (sum < 1) were
+        renormed 2x with no METAR evidence at all."""
+        group = self._make_group()
+        weather_bot._metar_client.get_running_daily_max = AsyncMock(return_value=70.0)
+        model_probs = {"m1": 0.10, "m2": 0.15, "m3": 0.15, "m4": 0.10}  # sums 0.50
+
+        result = await weather_bot._apply_metar_resolution_day_override(group, model_probs, 5.0)
+
+        # No branch fires anywhere (70 below every trigger) → unchanged
+        assert result == model_probs
+
+    @pytest.mark.asyncio
+    async def test_metar_conditioning_capped_at_098(self, weather_bot):
+        """S224: multi-bucket conditioning (mass flows to survivors after
+        monotone-safe rule-outs) is legitimate but must not exceed the 0.98
+        deliberate humility cap (was 0.9969 pre-fix)."""
+        group = self._make_group()
+        weather_bot._metar_client.get_running_daily_max = AsyncMock(return_value=80.0)
+        model_probs = {"m1": 0.05, "m2": 0.20, "m3": 0.30, "m4": 0.45}
+
+        result = await weather_bot._apply_metar_resolution_day_override(group, model_probs, 2.0)
+
+        # m1/m2/m3 ruled out (0.001 each), m4 → 0.97; renorm by 0.973
+        # would give 0.9969 — the cap must hold it at 0.98.
+        assert result["m4"] == pytest.approx(0.98)
+        assert result["m2"] < 0.01
 
 
 # ═══════════════════════════════════════════════════════════════════════════

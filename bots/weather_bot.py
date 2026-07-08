@@ -2001,8 +2001,11 @@ class WeatherBot(BaseBot):
         """Required by BaseBot. Analyzes a single market in isolation.
 
         For weather markets, group-level analysis (in scan_and_trade) is
-        preferred because bucket probabilities must sum to 1.0 across the group.
+        preferred because sibling buckets constrain each other's probabilities.
         This method provides a basic single-market analysis as fallback.
+        (S224: the singleton bucket_probabilities call below now returns the
+        raw clamped CDF belief — before the deflate-only fix it renormalized
+        p/p to a literal 1.0, fabricating |edge| = price or 1-price.)
         """
         if not self._market_mapper.is_weather_market(market_data):
             return None
@@ -2936,8 +2939,11 @@ class WeatherBot(BaseBot):
         and manufactured near-certain YES probabilities (plus artificial NO
         edges on sibling buckets via renormalization).
 
-        Returns updated model_probs dict (original unchanged if METAR unavailable).
-        Probabilities are renormalized after overrides to maintain sum ≈ 1.0.
+        Returns updated model_probs dict (original unchanged if METAR unavailable
+        or no override fired). After overrides, multi-bucket groups are
+        renormalized (conditioning on the rule-outs) capped at 0.98; singleton
+        groups are never renormalized (S224 — renorming one bucket can only
+        emit a manufactured 1.0).
         """
         running_max = await self._metar_client.get_running_daily_max(
             group.station.station_id,
@@ -3018,11 +3024,28 @@ class WeatherBot(BaseBot):
                         n_buckets=len(updated), reason="all_buckets_outside_range")
             return model_probs
 
-        # Renormalize so probabilities sum to 1.0
+        # S224 (fallacy-audit #1, METAR site): the old unconditional divide
+        # renormalized even when NO override fired (inflating incomplete-group
+        # probs with zero METAR evidence) and, for a singleton group, emitted
+        # a literal 1.0 (p/p — reproduced live: model_prob=1.0 @ price 0.43,
+        # fabricated edge 0.57). Rules now:
+        #   1. No override fired → return untouched (renorm needs evidence).
+        #   2. Singleton group → no siblings to condition on; renorm can only
+        #      manufacture certainty. Keep the asserted/raw values as-is.
+        #   3. Multi-bucket with overrides → renormalize (rule-outs genuinely
+        #      concentrate mass on survivors — Bayesian conditioning) but cap
+        #      at 0.98, the branch's own deliberate humility ceiling: METAR
+        #      T-group ≠ WU resolution source, so the 2-3% settlement-risk
+        #      margin must survive renormalization.
+        if updated == model_probs:
+            return model_probs
+        if len(updated) < 2:
+            return updated
+
         total = sum(updated.values())
         if total > 0:
             for mid in updated:
-                updated[mid] /= total
+                updated[mid] = min(updated[mid] / total, 0.98)
 
         return updated
 

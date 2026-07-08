@@ -22,6 +22,8 @@
     { "file": "bots/weather_bot.py", "pattern": "S223", "expect": 10 },
     { "file": "bots/weather_bot.py", "pattern": "model_prob convention differs by market type", "expect": 1 },
     { "file": "base_engine/data/database.py", "pattern": "finally-guaranteed", "expect": 1 },
-    { "file": "bots/weather/engine/config/settings.py", "pattern": "WEATHER_MID_LIFE_EXIT_ENABLED: bool", "expect": 1 }
+    { "file": "bots/weather/engine/config/settings.py", "pattern": "WEATHER_MID_LIFE_EXIT_ENABLED: bool", "expect": 1 },
+    { "file": "bots/weather_bot.py", "pattern": "S224", "expect": 3 },
+    { "file": "bots/weather/engine/base_engine/weather/probability_engine.py", "pattern": "S224", "expect": 4 }
   ]
 }

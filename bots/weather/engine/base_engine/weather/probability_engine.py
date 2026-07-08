@@ -213,9 +213,18 @@ class WeatherProbabilityEngine:
             # S132: Tail discount REMOVED — YES side is net profitable (+$815).
             probs[b.market_id] = max(0.001, min(0.999, p))  # Clamp to avoid 0/1
 
-        # Normalize so probabilities sum to 1.0
+        # S224 (fallacy-audit #1): DEFLATE-ONLY normalization. Dividing by the
+        # total is only valid when `buckets` exhausts the outcome space — but
+        # the thin-market filter and parse failures routinely hand this method
+        # a PARTIAL sibling set, and dividing by a total < 1 awarded the
+        # missing buckets' probability mass to the survivors. Degenerate case:
+        # a singleton bucket renormalized p/p = literal 1.0, breaking the
+        # 0.999 clamp and fabricating edge = 1 - price (reproduced live).
+        # A complete group's CDF already sums to ~1, so deflating (total > 1,
+        # from clamp floors / overlapping bounds) is preserved; inflating
+        # (total < 1, the signature of missing siblings) is not.
         total = sum(probs.values())
-        if total > 0.01 and abs(total - 1.0) > 0.01:
+        if total > 1.0 + 0.01:
             for mid in probs:
                 probs[mid] /= total
         elif total <= 0.01 and probs:
@@ -312,9 +321,11 @@ class WeatherProbabilityEngine:
             # Laplace smoothing: avoid 0/1
             probs[b.market_id] = max(0.001, min(0.999, (count + 0.5) / (n + 1)))
 
-        # Normalize
+        # S224: deflate-only normalization (see bucket_probabilities — same
+        # fallacy: inflating a partial bucket set's total < 1 manufactured
+        # certainty; a singleton renormalized to a literal 1.0).
         total = sum(probs.values())
-        if total > 0.01 and abs(total - 1.0) > 0.01:
+        if total > 1.0 + 0.01:
             for mid in probs:
                 probs[mid] /= total
         elif total <= 0.01 and probs:
@@ -371,8 +382,9 @@ class WeatherProbabilityEngine:
             p = self._normal_cdf_bucket(loc, scale, b)
             # S132: Tail discount REMOVED
             probs[b.market_id] = max(0.001, min(0.999, p))
+        # S224: deflate-only (same fallacy as bucket_probabilities)
         total = sum(probs.values())
-        if total > 0.01 and abs(total - 1.0) > 0.01:
+        if total > 1.0 + 0.01:
             for mid in probs:
                 probs[mid] /= total
         elif total <= 0.01 and probs:
@@ -596,9 +608,11 @@ class WeatherProbabilityEngine:
             p = self._normal_cdf_bucket(nbm_high, sigma, b)
             nbm_probs[b.market_id] = max(0.001, min(0.999, p))
 
-        # Normalize
+        # S224: deflate-only (same fallacy as bucket_probabilities — inflating
+        # a partial bucket set fabricated nbm_edge and spurious
+        # high_conviction flags on incomplete groups)
         total = sum(nbm_probs.values())
-        if total > 0.01 and abs(total - 1.0) > 0.01:
+        if total > 1.0 + 0.01:
             for mid in nbm_probs:
                 nbm_probs[mid] /= total
 
