@@ -39,19 +39,18 @@ calibrator fits on forward-collected lines only (~2–4 wks of the running timer
 **Blocking input:** a VALID PandaScore key (current one is INVALID) — without it matches never
 settle and the whole proving chain starves. Then: fit → `--predict` → weekly skill gate. Halt stays on.
 
-**CS2 tag — RESOLVED (operator was right; my bug).** VERIFIED 2026-07-07 (`probe_polymarket_cs2.py`):
-CS2 head-to-heads (TYLOO vs 9z, FaZe vs BetBoom, NAVI Junior, …) DO exist on Polymarket — tagged
-`counter-strike-2` (and a `cs2` tag id 100677, 21 events). The collector had queried only the
-legacy TOPIC tags counter-strike(100602)/csgo(100635) (Valve/meta props, no matches) → CS2=0.
-FIXED: `POLYMARKET_TAG_SLUGS['cs2'] = (counter-strike-2, cs2, counter-strike, csgo)`. cs2=100677
-recorded; **`counter-strike-2`'s numeric id is still un-recorded** — it resolves+logs at runtime;
-grab it from the next collector run's "resolved esports tag ids" line and add it to
-`POLYMARKET_TAG_IDS_VERIFIED` (do NOT guess it).
+**CS2 tag — CLOSED (operator was right; my bug, now fixed + confirmed).** VERIFIED 2026-07-08 on a
+live dry-run: adding `counter-strike-2` (id **100780**) + `cs2` (100677) to
+`POLYMARKET_TAG_SLUGS['cs2']` took CS2 coverage **0 → 26 match markets** (TYLOO vs 9z, FaZe vs
+BetBoom, PARIVISION vs BIG — the exact pinnodds fixtures). All four games now have live PM match
+coverage (cs2=26, lol=21, dota2=16, valorant=29). counter-strike-2=100780 is now recorded in
+`POLYMARKET_TAG_IDS_VERIFIED`. Legacy counter-strike(100602)/csgo(100635) kept as harmless extras.
+No CS2 work remains.
 
-**Next action for a fresh session:** run the polymarket collector `--once --dry-run`; confirm CS2
-matches now appear + record `counter-strike-2`'s id. Then it's keys + time: rotate PandaScore →
-timer accrues (odds, price, result) → after ~2–4 wks fit the calibrator → `--predict` → weekly
-`skill_report`. No engineering remains in that path; do NOT rebuild the collectors/runner/gate.
+**Next action for a fresh session:** none on pairing — it's DONE for all 4 games. It's now just
+keys + time: rotate PandaScore (INVALID) → timer accrues (odds, price, result) → after ~2–4 wks
+fit the calibrator → `--predict` → weekly `skill_report`. No engineering remains in that path; do
+NOT rebuild the collectors/runner/gate.
 
 ## Where things stand
 The siloed esports scaffold **and** the Cmd-4 data-quality gate (`verify_data_quality.py`) are

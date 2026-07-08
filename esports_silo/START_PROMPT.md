@@ -40,13 +40,11 @@ python with deps: `/opt/pa2-esports-shared/venv/bin/python`. Operator runs box c
    chain starves. This is THE blocker. Operator rotates at pandascore.co, puts it in the .env.
 2. **Time.** Forward data must accrue before the calibrator can fit (forward-only; no backfill).
 
-## Immediate open item — confirm CS2 fix + record one id
-CS2 tag question is RESOLVED (VERIFIED 2026-07-07): CS2 matches ARE on Polymarket under
-`counter-strike-2` (+ `cs2`=100677) — the collector had queried only the legacy counter-strike/
-csgo topic tags (props, no matches). FIX is committed: `POLYMARKET_TAG_SLUGS['cs2']` now includes
-`counter-strike-2, cs2`. **Remaining:** run `polymarket_collector --once --dry-run`, confirm CS2
-matches now appear, and record `counter-strike-2`'s numeric id (from the run's "resolved esports
-tag ids" log) into `POLYMARKET_TAG_IDS_VERIFIED` — do NOT guess it.
+## Pairing — DONE for all 4 games (no open items)
+CS2 was the last gap and it's CLOSED (VERIFIED 2026-07-08): CS2 matches live under
+`counter-strike-2` (id 100780) + `cs2` (100677); adding those slugs took CS2 from 0 → 26 match
+markets. Live PM match coverage now cs2=26/lol=21/dota2=16/valorant=29, all pairing to pinnodds.
+Nothing left to build or verify on pairing.
 
 ## After CS2 — the sequence (all still HALTED; GO_LIVE_CHECKLIST steps 9–12 rewritten forward-only)
 Rotate PandaScore → timer accrues (odds, price, result) → `scripts/fit_calibrator.py` once enough
