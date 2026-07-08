@@ -1,6 +1,6 @@
 # MirrorBot Rebuild — Living State / Handoff (docs/MB_STATE.md)
 
-**Last updated:** 2026-07-05 · **Branch:** `claude/mirror-bot-salvage-rebuild-d08v6x` (= `master`, both at `b5a0c89`)
+**Last updated:** 2026-07-08 · **Branch:** `claude/mirrorbot-persistence-check-oc02tk`
 **Read first:** `CLAUDE.md` (binding directives), `MB_REBUILD_PLAN.md` (the plan + operator decisions), then this file.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
@@ -8,7 +8,7 @@
 
 ## 1. One-paragraph state
 
-MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The old bot is **paused to paper** (real money off, 2026-07-05) but still collecting signal data. A **clean-silo rebuild** (`mirror_v3/`) is scaffolded, tested, and ready to deploy — safety spine only, strategy slot deliberately empty behind an acceptance gate. The strategy direction is a **sharp-line reference** (compare whale entries to an efficient outside price); its vendor-independent core is built and tested, waiting on an OddsPapi paid tier for sports data. Everything is on GitHub; nothing is deployed except the pause.
+MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The old bot is **paused to paper** (real money off, 2026-07-05) but still collecting signal data. A **clean-silo rebuild** (`mirror_v3/`) is scaffolded, tested, and ready to deploy — safety spine only, strategy slot deliberately empty behind an acceptance gate. **The v3 whale trader-ranking engine (`bots/mirror_scoring/`) FAILED its Stage-1 acceptance gate** under a now-calibrated permutation test (prior-session report `172d72a`: 2 cutoffs FAIL, placebos 0/20 and 1/20 — a *trustworthy* negative; the earlier "PASS" was a miscalibrated test). **Before any algo rework, the one honest go/no-go is a trader-skill PERSISTENCE check** — `scripts/check_trader_persistence.py`, built this session, awaiting an operator VPS run. It strips all modeling and just measures raw cross-period edge autocorrelation (do traders +edge in period 1 stay +edge in period 2?), with a calibrated placebo and multi-cutoff agreement. ≈0 ⇒ no persistent signal exists, no rework helps, FAIL stands. Clearly >0 ⇒ signal real, method lost it (likely pooling un-tailable crypto whales with sports/esports) ⇒ per-category rework justified. The other strategy direction is a **sharp-line reference** (compare whale entries to an efficient outside price); its vendor-independent core is built and tested, waiting on an OddsPapi paid tier for sports data. Everything is on GitHub; nothing is deployed except the pause.
 
 ## 2. Current system state (verified)
 
@@ -35,11 +35,25 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
 | Sharp-line core | `bots/mirror_backtest/sharp_reference.py` | no-vig, point-in-time, gate rule + 19 tests; OddsPapi seam env-key-only |
 | Scoring engine | `bots/mirror_scoring/` (from `mb-formula-review`) | 45 tests; runner unblocked (`8ea683d`); validate run pending |
 | M0-DB verify | `scripts/verify_salvage_data.py` | read-only; cascade bug fixed |
+| Persistence go/no-go | `scripts/check_trader_persistence.py` | read-only; pure-stdlib; offline self-test PASS (placebo calibrated at α); **awaiting operator VPS run** |
 | Operator runbooks | `docs/VPS_RUNBOOK_2026-07-02.md`, `deploy/mb_vps_oneshot.sh` | one-paste checks; mktemp-safe |
 
 ## 5. Open threads / what's next
 
-- **[operator] Re-run algo validate** — `deploy/mb_vps_oneshot.sh` (fixed); paste output. It's the scoring engine's go/no-go.
+- **[operator, GATING] Run the persistence check** — the one honest go/no-go before any ranking rework:
+  ```
+  cd /opt/polymarket-ai-v2 && sudo -u polymarket env PYTHONPATH=/opt/polymarket-ai-v2 \
+    venv/bin/python scripts/check_trader_persistence.py --by-category | tee /tmp/persistence.log
+  # optional cross-check on the rejected-signal corpus:
+  ... scripts/check_trader_persistence.py --source rejected --by-category
+  ```
+  Read the VERDICT block. ≈0 pooled AND no category slice persists ⇒ FAIL stands, stop.
+  Clearly >0 (pooled or a category) ⇒ rework justified, per-category not pooled.
+  **Hard rule:** do NOT rework-then-retest until this passes (p-hacking); a real
+  verdict needs the built-in calibrated placebo + multi-cutoff agreement (both are).
+- **[operator, PENDING] 3rd cutoff (05-10) validate result** — grab it from `/tmp/val_all.log`
+  on the VPS and record it here (2 cutoffs already reported FAIL; this session had no VPS access).
+- **[operator] Re-run algo validate** — `deploy/mb_vps_oneshot.sh` (fixed); paste output. It's the scoring engine's go/no-go — but it FAILED Stage-1 (see §1); the persistence check above is the prerequisite that decides whether re-running is even worth it.
 - **[operator] OddsPapi paid tier** — confirm sports coverage + that `ODDSPAPI_API_KEY` is set in the VPS env (presence only). Then the sharp-line engine wires to live data.
 - **[build, blocked on above] Sports sharp-line pipeline:** live OddsPapi fetch, sports team-name → Polymarket condition_id matcher (esports matcher exists in EB, sports is net-new), offline backfill of `sharp_prob` onto signals, then run through the gate.
 - **[build, unblocked] Crypto kill-test:** run crypto signals through the harness at realistic latency to confirm the latency-trap hypothesis and formally drop crypto.
