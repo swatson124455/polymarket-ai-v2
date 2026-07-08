@@ -31,6 +31,14 @@ matches the handoff. Section 4 (PandaScore) is the known open blocker.
 
 ## PART B — PROCEED (the go-forward; stays halted throughout)
 
+### Step 0 — (fresh DB only) load the CS2 alias seed
+On a brand-new silo DB, load the curated aliases once so CS2 pairs fully (Keyd/PVISION/BB Team):
+```
+ssh ... 'cd ~/esports_silo_src && set -a && . /opt/esports_silo/.env && set +a && psql "$DATABASE_URL" -f esports_silo/db/alias_seed.sql'
+```
+✅ `UPDATE 3` (or `INSERT 0 3`). Skip if already applied — it's idempotent. (Diacritic folding
+in `match_matcher.fold()` is code, needs no DB step.)
+
 ### Step 1 — rotate the keys (the actual blocker)
 The old PandaScore/Riot/OddsPapi keys are INVALID and the pinnodds key was shared in chat.
 - PandaScore → pandascore.co → regenerate. **This is the one that unblocks resolution.**

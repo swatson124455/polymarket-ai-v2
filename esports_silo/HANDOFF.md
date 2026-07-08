@@ -47,10 +47,17 @@ coverage (cs2=26, lol=21, dota2=16, valorant=29). counter-strike-2=100780 is now
 `POLYMARKET_TAG_IDS_VERIFIED`. Legacy counter-strike(100602)/csgo(100635) kept as harmless extras.
 No CS2 work remains.
 
-**Next action for a fresh session:** none on pairing — it's DONE for all 4 games. It's now just
-keys + time: rotate PandaScore (INVALID) → timer accrues (odds, price, result) → after ~2–4 wks
-fit the calibrator → `--predict` → weekly `skill_report`. No engineering remains in that path; do
-NOT rebuild the collectors/runner/gate.
+**Pairing FULLY verified 2026-07-08:** cs2 **9/9**, lol **6/6**, valorant 2/2-on-PM (all real
+overlaps paired; "no-PM-market" = genuinely not listed). Two last fixes got CS2 to 9/9:
+`match_matcher.fold()` (NFKD diacritic folding — Västerås↔Vasteras etc., general), and
+`db/alias_seed.sql` (converts inert `canonical==alias` identity rows to the 3 CS2 aliases —
+Keyd↔Keyd Stars, PVISION↔PARIVISION, BB Team↔BetBoom Team; guarded to touch ONLY self-refs).
+⚠ On a FRESH silo DB, load `db/alias_seed.sql` once to reproduce full CS2 pairing.
+
+**Next action for a fresh session:** none on pairing — it's DONE. It's now just keys + time:
+rotate PandaScore (INVALID) → timer accrues (odds, price, result) → after ~2–4 wks fit the
+calibrator → `--predict` → weekly `skill_report`. No engineering remains; do NOT rebuild the
+collectors/runner/gate.
 
 ## Where things stand
 The siloed esports scaffold **and** the Cmd-4 data-quality gate (`verify_data_quality.py`) are
