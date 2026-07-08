@@ -135,8 +135,8 @@ def _verdict(
     """Pure verdict computation over pre-fetched rows — shared by the real
     validation and the placebo calibration (A6), so both judge with the exact
     same machinery."""
-    edges, flags, clusters = [], [], []
-    edges_a, edges_o = [], []
+    edges, flags, traders = [], [], []
+    a_traders, o_traders = set(), set()
     n_excluded = 0
     for d in row_dicts:
         edge = _signal_edge(d)
@@ -147,37 +147,42 @@ def _verdict(
             n_excluded += 1
             continue
         is_admitted = trader_l in admitted
-        (edges_a if is_admitted else edges_o).append(edge)
+        (a_traders if is_admitted else o_traders).add(trader_l)
         edges.append(edge)
         flags.append(is_admitted)
-        # Clustered by market so shared events don't inflate confidence.
-        clusters.append(d["market_id"])
+        traders.append(trader_l)
 
-    if not edges_a or not edges_o:
+    # Need >= 2 traders on EACH side — a permutation test cannot resolve
+    # significance with one trader per group (min p ~ 0.5 at |A|=1).
+    if len(a_traders) < 2 or len(o_traders) < 2:
         return ValidationReport(
-            passed=False, n_admitted_signals=len(edges_a),
-            n_other_signals=len(edges_o),
+            passed=False, n_admitted_signals=sum(flags),
+            n_other_signals=len(flags) - sum(flags),
             admitted_edge=float("nan"), other_edge=float("nan"),
             spread=float("nan"), p_value=1.0,
-            detail="insufficient post-cutoff resolved signals on one side",
+            detail=(f"too few traders to test (admitted={len(a_traders)}, "
+                    f"other={len(o_traders)}; need >=2 each)"),
             n_excluded_overlap=n_excluded, signal_stream=signal_stream,
         )
 
-    a_mean, o_mean = float(np.mean(edges_a)), float(np.mean(edges_o))
-    spread = a_mean - o_mean
-    # F6: proper two-sample cluster bootstrap on the spread itself (clusters
-    # resampled as whole units, preserving within-market cross-group
-    # correlation) — replaces the signed-mixture construction whose residual
-    # variance carried the between-group offsets.
-    p = S.two_sample_cluster_bootstrap_p(
-        np.array(edges), np.array(flags), np.array(clusters),
-        n_boot=cfg.N_BOOT, seed=cfg.BOOT_SEED,
-    ) if spread > 0 else 1.0
+    edges_arr = np.array(edges)
+    flags_arr = np.array(flags, dtype=bool)
+    traders_arr = np.array(traders)
+    # Trader-block permutation on a trader-equal-weight spread (review
+    # 2026-07-08): imposes the null so a random relabel passes ~ALPHA (the
+    # prior percentile bootstrap fired ~30% on noise; the placebo caught it),
+    # and one high-volume whale cannot carry the verdict.
+    p, spread = S.two_sample_group_permutation_p(
+        edges_arr, traders_arr, flags_arr, n_perm=cfg.N_BOOT, seed=cfg.BOOT_SEED,
+    )
+    # Report trader-weighted group means (the estimand the p-value tests).
+    a_mean = float(np.mean([edges_arr[traders_arr == t].mean() for t in a_traders]))
+    o_mean = float(np.mean([edges_arr[traders_arr == t].mean() for t in o_traders]))
     passed = spread > 0 and p < cfg.ALPHA
     return ValidationReport(
-        passed=passed, n_admitted_signals=len(edges_a),
-        n_other_signals=len(edges_o), admitted_edge=a_mean,
-        other_edge=o_mean, spread=spread, p_value=p,
+        passed=passed, n_admitted_signals=int(flags_arr.sum()),
+        n_other_signals=int((~flags_arr).sum()), admitted_edge=a_mean,
+        other_edge=o_mean, spread=float(spread), p_value=p,
         detail=("PASS: admitted ranking carries out-of-sample signal"
                 if passed else
                 "FAIL: no out-of-sample separation — do not wire to orders"),

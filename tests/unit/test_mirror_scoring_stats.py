@@ -93,51 +93,73 @@ class TestBootstrapAndBH:
         assert not S.bh_fdr(np.array([0.5, 0.7, 0.9]), q=0.10).any()
 
 
-class TestTwoSampleClusterBootstrap:
-    def test_f6_null_no_separation_high_p(self):
-        rng = np.random.default_rng(1)
-        e = rng.normal(0.0, 0.1, size=200)
-        flags = np.tile([True, False], 100)
-        clusters = np.repeat(np.arange(50), 4)
-        p = S.two_sample_cluster_bootstrap_p(e, flags, clusters, n_boot=499, seed=2)
-        assert p > 0.10
+class TestTwoSampleGroupPermutation:
+    """Review 2026-07-08: the trader-block permutation test that replaced the
+    anti-conservative percentile bootstrap (which fired ~30% on null data)."""
 
-    def test_f6_clear_separation_low_p(self):
-        # 40 clusters; group A +0.30 edge, group B -0.30, small noise
-        rng = np.random.default_rng(3)
-        e, flags, clusters = [], [], []
-        for c in range(40):
-            e += [0.30 + rng.normal(0, 0.02), -0.30 + rng.normal(0, 0.02)]
-            flags += [True, False]
-            clusters += [c, c]
-        p = S.two_sample_cluster_bootstrap_p(
-            np.array(e), np.array(flags), np.array(clusters), n_boot=499, seed=4
-        )
+    @staticmethod
+    def _blocks(n_traders, k_admitted, bump_admitted, seed):
+        r = np.random.default_rng(seed)
+        vals, tids, grp = [], [], []
+        adm = set(r.choice(n_traders, size=k_admitted, replace=False).tolist())
+        for t in range(n_traders):
+            m = int(r.integers(5, 40))
+            b = bump_admitted if t in adm else 0.0
+            vals.append(r.normal(b, 0.25, size=m))
+            tids.append(np.full(m, t))
+            grp.append(np.full(m, t in adm))
+        return (np.concatenate(vals), np.concatenate(tids),
+                np.concatenate(grp).astype(bool))
+
+    def test_null_calibrated_not_anticonservative(self):
+        """The bug this fixes: on NULL data (no group difference) the FP rate
+        must be ~ALPHA, not the ~30% the old bootstrap produced."""
+        v, t, g = None, None, None
+        rejects = 0
+        for i in range(60):
+            v, t, g = self._blocks(120, 12, 0.0, seed=200 + i)
+            p, _ = S.two_sample_group_permutation_p(v, t, g, n_perm=199, seed=7)
+            if p < 0.05:
+                rejects += 1
+        assert rejects <= 9   # ~5% of 60 = 3; generous ceiling, old test hit ~18
+
+    def test_real_edge_has_power(self):
+        v, t, g = self._blocks(120, 12, 0.20, seed=42)
+        p, spread = S.two_sample_group_permutation_p(v, t, g, n_perm=299, seed=7)
+        assert spread > 0
         assert p < 0.05
 
-    def test_f6_degenerate_single_group_is_one(self):
-        e = np.array([0.1, 0.2, 0.3])
-        clusters = np.array([1, 2, 3])
-        assert S.two_sample_cluster_bootstrap_p(e, np.array([True] * 3), clusters) == 1.0
-        assert S.two_sample_cluster_bootstrap_p(e, np.array([False] * 3), clusters) == 1.0
-        assert S.two_sample_cluster_bootstrap_p(
-            np.array([]), np.array([], dtype=bool), np.array([])
-        ) == 1.0
+    def test_one_whale_cannot_carry_it(self):
+        """Trader-equal-weight: a single high-volume lucky trader among noise
+        peers must NOT pass (volume weighting failed this ~66% of the time)."""
+        r = np.random.default_rng(11)
+        vals, tids, grp = [], [], []
+        adm = set(r.choice(120, size=12, replace=False).tolist())
+        whale = min(adm)
+        for tt in range(120):
+            if tt == whale:
+                vals.append(r.normal(0.40, 0.25, size=1500))  # lucky + huge
+            else:
+                vals.append(r.normal(0.0, 0.25, size=int(r.integers(5, 40))))
+            n = vals[-1].size
+            tids.append(np.full(n, tt))
+            grp.append(np.full(n, tt in adm))
+        v = np.concatenate(vals); t = np.concatenate(tids)
+        g = np.concatenate(grp).astype(bool)
+        p, _ = S.two_sample_group_permutation_p(v, t, g, n_perm=299, seed=7)
+        assert p > 0.05   # the 11 noise admitted peers sink it
 
-    def test_f6_single_cluster_is_one(self):
-        e = np.array([0.5, -0.5])
-        p = S.two_sample_cluster_bootstrap_p(
-            e, np.array([True, False]), np.array(["m1", "m1"])
-        )
-        assert p == 1.0
+    def test_degenerate_single_group_is_one(self):
+        v = np.array([0.1, 0.2, 0.3]); t = np.array([1, 2, 3])
+        assert S.two_sample_group_permutation_p(v, t, np.array([True] * 3))[0] == 1.0
+        assert S.two_sample_group_permutation_p(v, t, np.array([False] * 3))[0] == 1.0
+        assert S.two_sample_group_permutation_p(
+            np.array([]), np.array([]), np.array([], dtype=bool))[0] == 1.0
 
-    def test_f6_deterministic_under_seed(self):
-        rng = np.random.default_rng(5)
-        e = rng.normal(0.05, 0.1, size=80)
-        flags = np.tile([True, False], 40)
-        clusters = np.repeat(np.arange(20), 4)
-        p1 = S.two_sample_cluster_bootstrap_p(e, flags, clusters, n_boot=299, seed=7)
-        p2 = S.two_sample_cluster_bootstrap_p(e, flags, clusters, n_boot=299, seed=7)
+    def test_deterministic_under_seed(self):
+        v, t, g = self._blocks(40, 6, 0.1, seed=5)
+        p1, s1 = S.two_sample_group_permutation_p(v, t, g, n_perm=299, seed=7)
+        p2, s2 = S.two_sample_group_permutation_p(v, t, g, n_perm=299, seed=7)
         assert p1 == p2
 
 

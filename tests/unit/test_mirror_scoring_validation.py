@@ -131,103 +131,133 @@ async def test_f1_no_overlap_nothing_excluded():
 
 @pytest.mark.asyncio
 async def test_f1_edges_computed_from_surviving_rows_only():
-    """The excluded overlap row (a win) must not inflate the admitted edge."""
-    rows = [
-        _sig(ADMITTED, "0xoverlap", res="YES", price=0.10),  # +0.90, excluded
-        _sig(ADMITTED, "0xfresh", res="NO", price=0.40),     # -0.40, kept
-        _sig(OTHER, "0xfresh2", res="NO", price=0.40),       # -0.40
-    ]
-    scores = [
-        _score(ADMITTED, admitted=True, condition_ids=["0xoverlap"]),
-        _score(OTHER, admitted=False),
-    ]
+    """Each admitted trader's overlap WIN is excluded; the trader-weighted
+    admitted edge must reflect only the kept (losing) rows, not the winners."""
+    rows, scores = [], []
+    for i in range(3):                       # 3 admitted traders
+        a = _addr(i)
+        rows.append(_sig(a, "0xoverlap", res="YES", price=0.10))       # +0.90 excluded
+        rows.append(_sig(a, f"{a}f", res="NO", side="YES", price=0.40))  # -0.40 kept
+        scores.append(_score(a, admitted=True, condition_ids=["0xoverlap"]))
+    for i in range(3, 6):                     # 3 other traders
+        a = _addr(i)
+        rows.append(_sig(a, f"{a}f", res="NO", side="YES", price=0.40))  # -0.40
+        scores.append(_score(a, admitted=False))
     report = await validate_ranking(_DB(rows), scores, CUTOFF, ScoringConfig())
-    assert report.admitted_edge == pytest.approx(-0.40)
-    assert report.n_excluded_overlap == 1
+    assert report.n_excluded_overlap == 3                     # one per admitted trader
+    assert report.admitted_edge == pytest.approx(-0.40)       # winners excluded, not +
+    assert report.other_edge == pytest.approx(-0.40)
 
 
-# ── F6: kill criterion passes on genuine separation (two-sample bootstrap) ───
+# ── F6/2026-07-08: trader-block permutation kill criterion ───────────────────
+
+def _addr(i):
+    return f"0x{i:040x}"
+
+
+def _trader_rows(addr, n_win, n_loss, price=0.50):
+    """Signals for one trader; per-trader mean edge = 0.5*(win-loss)/(win+loss)
+    at price 0.50 (YES/res=YES = +0.5, YES/res=NO = -0.5). Distinct markets."""
+    rows = []
+    for i in range(n_win):
+        rows.append(_sig(addr, f"{addr}w{i}", res="YES", side="YES", price=price))
+    for i in range(n_loss):
+        rows.append(_sig(addr, f"{addr}l{i}", res="NO", side="YES", price=price))
+    return rows
+
+
+def _universe(n_adm, adm_wl, n_oth, oth_wl):
+    """(rows, scores) for n_adm admitted traders (win,loss)=adm_wl and n_oth
+    others=oth_wl. Enough traders for the permutation test to resolve."""
+    rows, scores, k = [], [], 0
+    for _ in range(n_adm):
+        a = _addr(k); k += 1
+        rows += _trader_rows(a, *adm_wl)
+        scores.append(_score(a, admitted=True))
+    for _ in range(n_oth):
+        a = _addr(k); k += 1
+        rows += _trader_rows(a, *oth_wl)
+        scores.append(_score(a, admitted=False))
+    return rows, scores
+
 
 @pytest.mark.asyncio
-async def test_f6_genuine_separation_passes():
-    """Across 30 markets, admitted signals win at cheap prices while others
-    lose — the two-sample cluster bootstrap must clear ALPHA and PASS."""
-    rows = []
-    for i in range(30):
-        rows.append(_sig(ADMITTED, f"0xm{i}", res="YES", price=0.40))   # +0.60
-        rows.append(_sig(OTHER, f"0xm{i}", res="YES", price=0.40, side="NO"))  # -0.40
-    scores = [_score(ADMITTED, admitted=True), _score(OTHER, admitted=False)]
+async def test_perm_genuine_separation_passes():
+    """15 admitted traders (mean +0.20) vs 15 others (mean 0): the trader-block
+    permutation test clears ALPHA and PASSes."""
+    rows, scores = _universe(15, (7, 3), 15, (5, 5))
     report = await validate_ranking(_DB(rows), scores, CUTOFF, ScoringConfig())
-    assert report.spread == pytest.approx(1.0)
+    assert report.spread > 0
     assert report.p_value < 0.05
     assert report.passed is True
 
 
 @pytest.mark.asyncio
-async def test_f6_no_separation_fails():
-    """Identical outcomes for both groups -> spread 0 -> FAIL, p=1."""
-    rows = []
-    for i in range(10):
-        rows.append(_sig(ADMITTED, f"0xm{i}", res="YES", price=0.50))
-        rows.append(_sig(OTHER, f"0xn{i}", res="YES", price=0.50))
-    scores = [_score(ADMITTED, admitted=True), _score(OTHER, admitted=False)]
+async def test_perm_no_separation_fails():
+    """Both groups mean 0 -> high p -> FAIL (was the anti-conservative case)."""
+    rows, scores = _universe(15, (5, 5), 15, (5, 5))
     report = await validate_ranking(_DB(rows), scores, CUTOFF, ScoringConfig())
     assert report.passed is False
-    assert report.p_value == 1.0
+    assert report.p_value > 0.05
+
+
+@pytest.mark.asyncio
+async def test_perm_too_few_traders_is_not_a_pass():
+    """Two traders can't be significant — must NOT pass (the old bootstrap did)."""
+    rows = _trader_rows(_addr(1), 20, 0) + _trader_rows(_addr(2), 0, 20)
+    scores = [_score(_addr(1), admitted=True), _score(_addr(2), admitted=False)]
+    report = await validate_ranking(_DB(rows), scores, CUTOFF, ScoringConfig())
+    assert report.passed is False
+    assert "too few traders" in report.detail
 
 
 # ── A6: placebo calibration (test-of-the-test) ───────────────────────────────
 
 @pytest.mark.asyncio
-async def test_a6_placebo_zero_passes_on_symmetric_data():
-    """All traders identical outcomes -> every shuffled ranking has spread 0
-    -> zero placebo passes, calibration OK."""
-    rows = []
-    traders = [ADMITTED, OTHER,
-               "0xccc0000000000000000000000000000000000003",
-               "0xddd0000000000000000000000000000000000004"]
-    for i, t in enumerate(traders):
-        for m in range(5):
-            rows.append(_sig(t, f"0x{i}m{m}", res="YES", price=0.50))
-    scores = [_score(t, admitted=(t == ADMITTED)) for t in traders]
+async def test_a6_placebo_calibrated_on_null_data():
+    """No group truly differs -> shuffled rankings pass ~ALPHA, calibration OK."""
+    rows, scores = _universe(15, (5, 5), 15, (5, 5))
     pr = await placebo_validate_ranking(
-        _DB(rows), scores, CUTOFF, ScoringConfig(), n_placebo=10
+        _DB(rows), scores, CUTOFF, ScoringConfig(), n_placebo=20
     )
-    assert pr.n_runs == 10
-    assert pr.n_passed == 0
+    assert pr.n_runs == 20
+    assert pr.pass_rate <= 0.10          # calibrated band
     assert "calibration OK" in pr.detail
 
 
 @pytest.mark.asyncio
 async def test_a6_placebo_deterministic_and_does_not_mutate_scores():
-    rows = [_sig(ADMITTED, "0xm1"), _sig(OTHER, "0xm2", res="NO")]
-    scores = [_score(ADMITTED, admitted=True), _score(OTHER, admitted=False)]
+    rows, scores = _universe(8, (6, 2), 8, (4, 4))
+    admitted_before = [t.admitted for t in scores]
     pr1 = await placebo_validate_ranking(
         _DB(rows), scores, CUTOFF, ScoringConfig(), n_placebo=8
     )
     pr2 = await placebo_validate_ranking(
         _DB(rows), scores, CUTOFF, ScoringConfig(), n_placebo=8
     )
-    assert pr1.p_values == pr2.p_values          # seeded, reproducible
-    assert scores[0].admitted is True            # never mutated
-    assert scores[1].admitted is False
+    assert pr1.p_values == pr2.p_values                      # seeded
+    assert [t.admitted for t in scores] == admitted_before   # never mutated
 
 
 @pytest.mark.asyncio
-async def test_a6_placebo_flags_suspect_calibration():
-    """If shuffled rankings 'pass' too often, the report must scream. Force it
-    with 2 traders where every shuffle that picks the winner passes (~50%)."""
-    rows = []
-    for i in range(30):
-        rows.append(_sig(ADMITTED, f"0xm{i}", res="YES", price=0.40))
-        rows.append(_sig(OTHER, f"0xm{i}", res="YES", price=0.40, side="NO"))
-    scores = [_score(ADMITTED, admitted=True), _score(OTHER, admitted=False)]
+async def test_a6_placebo_flags_suspect_when_verdict_always_passes(monkeypatch):
+    """The suspect flag must fire if the verdict machinery hallucinates. Force
+    every shuffle to 'pass' by stubbing _verdict -> pass_rate 1.0 -> SUSPECT."""
+    import bots.mirror_scoring.validation as V
+
+    def _always_pass(row_dicts, admitted, scored_pairs, cfg, signal_stream):
+        return V.ValidationReport(
+            passed=True, n_admitted_signals=1, n_other_signals=1,
+            admitted_edge=1.0, other_edge=0.0, spread=1.0, p_value=0.0,
+            detail="stub", signal_stream=signal_stream,
+        )
+
+    monkeypatch.setattr(V, "_verdict", _always_pass)
+    rows, scores = _universe(4, (6, 2), 4, (4, 4))
     pr = await placebo_validate_ranking(
-        _DB(rows), scores, CUTOFF, ScoringConfig(), n_placebo=12
+        _DB(rows), scores, CUTOFF, ScoringConfig(), n_placebo=10
     )
-    # With only 2 traders, ~half the shuffles reproduce the true (separating)
-    # labels — a structurally tiny universe SHOULD trip the suspect flag.
-    assert pr.n_passed > 0
+    assert pr.n_passed == 10
     assert "CALIBRATION SUSPECT" in pr.detail
 
 

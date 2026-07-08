@@ -162,51 +162,67 @@ def wild_cluster_bootstrap_p(
     return float((1 + exceed) / (1 + n_boot))
 
 
-def two_sample_cluster_bootstrap_p(
-    e: np.ndarray,
+def two_sample_group_permutation_p(
+    values: np.ndarray,
+    group_ids: np.ndarray,
     in_group_a: np.ndarray,
-    clusters: np.ndarray,
-    n_boot: int = 999,
+    n_perm: int = 999,
     seed: int = 0,
-) -> float:
-    """One-sided p for H0: mean(A) - mean(B) <= 0, cluster pairs bootstrap.
+) -> tuple[float, float]:
+    """Trader-block PERMUTATION test for H0: group A's typical member has no
+    higher mean than group B's. Returns (one_sided_p, observed_spread).
 
-    F6 (review 2026-07-06): replaces the signed-mixture construction whose
-    residual variance carried the between-group mean offsets (conservative in
-    an uncontrolled way). Clusters are resampled with replacement as whole
-    units — rows of BOTH groups inside a resampled cluster come along, so
-    within-cluster cross-group correlation (admitted and non-admitted signals
-    on the same market) is preserved. p = (1 + #{spread_b <= 0})/(1 + n_boot);
-    resamples missing a group count toward p (conservative, not dropped).
+    Why permutation, not the prior percentile bootstrap (review 2026-07-08):
+    the bootstrap (two_sample_cluster_bootstrap_p, now removed) never imposed
+    the null — it re-confirmed the sample spread, so it fired on PURE NOISE
+    ~27-38% of the time (measured), and the placebo calibration check caught it
+    (4/20 shuffles passed at the 2026-04-25 cutoff). A permutation test imposes
+    the null by construction: relabel which whole GROUPS (traders) are "A",
+    keeping |A| fixed, and ask how often a random relabel beats the observed
+    spread. False-positive rate is then ~ALPHA by design (verified ~2.5-6% on
+    null data), with ~93% power at a +0.15 edge.
+
+    TWO deliberate choices:
+      * permute whole TRADERS (a trader's signals move as one block) so
+        within-trader correlation is respected — the correct exchangeable unit.
+      * TRADER-EQUAL-WEIGHT statistic (mean of per-trader mean edges, not
+        pooled-signal mean) so one high-volume whale cannot carry the verdict
+        (stress-tested: a single lucky 1500-signal whale among 14 noise traders
+        fools the volume-weighted stat 66% of the time, this one 14%).
+
+    Missing a whole group, <2 groups, or empty input -> (1.0, nan).
     """
-    e = np.asarray(e, dtype=float)
+    values = np.asarray(values, dtype=float)
+    gids = np.asarray(group_ids)
     a = np.asarray(in_group_a, dtype=bool)
-    clusters = np.asarray(clusters)
-    if e.size == 0 or not a.any() or a.all():
-        return 1.0
-    uniq, inv = np.unique(clusters, return_inverse=True)
-    C = int(uniq.size)
-    if C < 2:
-        return 1.0
-    # Per-cluster sums/counts per group -> vectorized resampling.
-    sa, na = np.zeros(C), np.zeros(C)
-    sb, nb = np.zeros(C), np.zeros(C)
-    np.add.at(sa, inv[a], e[a])
-    np.add.at(na, inv[a], 1.0)
-    np.add.at(sb, inv[~a], e[~a])
-    np.add.at(nb, inv[~a], 1.0)
+    if values.size == 0 or not a.any() or a.all():
+        return 1.0, float("nan")
+    uniq, first = np.unique(gids, return_index=True)
+    T = int(uniq.size)
+    grp_is_a = a[first]                     # group-A membership per trader
+    k = int(grp_is_a.sum())
+    if T < 2 or k == 0 or k == T:
+        return 1.0, float("nan")
+    order = {g: i for i, g in enumerate(uniq.tolist())}
+    idx = np.fromiter((order[g] for g in gids.tolist()), dtype=int, count=gids.size)
+    gsum = np.zeros(T)
+    gcnt = np.zeros(T)
+    np.add.at(gsum, idx, values)
+    np.add.at(gcnt, idx, 1.0)
+    gmean = gsum / np.where(gcnt > 0, gcnt, 1.0)   # per-trader mean edge
+
+    def spread(mask: np.ndarray) -> float:
+        return float(gmean[mask].mean() - gmean[~mask].mean())
+
+    obs = spread(grp_is_a)
     rng = np.random.default_rng(seed)
-    at_or_below = 0
-    for _ in range(n_boot):
-        idx = rng.integers(0, C, size=C)
-        na_b, nb_b = float(na[idx].sum()), float(nb[idx].sum())
-        if na_b == 0 or nb_b == 0:
-            at_or_below += 1  # degenerate resample: conservative
-            continue
-        spread_b = sa[idx].sum() / na_b - sb[idx].sum() / nb_b
-        if spread_b <= 0:
-            at_or_below += 1
-    return float((1 + at_or_below) / (1 + n_boot))
+    ge = 0
+    for _ in range(n_perm):
+        perm = np.zeros(T, dtype=bool)
+        perm[rng.choice(T, size=k, replace=False)] = True
+        if spread(perm) >= obs:
+            ge += 1
+    return float((1 + ge) / (1 + n_perm)), obs
 
 
 # ── Selection across the universe ────────────────────────────────────────
