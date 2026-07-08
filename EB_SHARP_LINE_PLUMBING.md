@@ -102,12 +102,23 @@ Reuse, do NOT duplicate: the alias resolver (`_match_team_name`, :6802) and
 
 1. [live] Read 5–10 live esports market objects → confirm outcome shape(s).
    Probe: `scripts/esports_market_shape_probe.py` (read-only; paste output back).
-2. ✅ [done, offline] `resolve_yes_is_team_a` implemented + 21 tests
+2. ✅ [done, offline] `resolve_yes_is_team_a` implemented + 27 tests
    (`esports_v2/model/orientation.py`). Handles BOTH shapes on a correct-or-
    absent contract (bool only when unambiguous, else None → uncovered). Shape-2
-   (team-name outcomes) is exact; the shape-1 subject parse is a conservative
-   heuristic (earliest-mentioned team = subject, inversion verbs bail) that
-   still needs HARDENING against the real phrasings action #1 returns.
+   (team-name outcomes) is exact; the shape-1 subject parse is conservative and
+   still needs coverage-HARDENING against the real phrasings action #1 returns.
+
+   **Self-review (2026-07-08, adversarial):** found + fixed a CONFIRMED
+   sign-flip in the first version — "Will X be defeated?" oriented YES to X
+   (blacklist keyed "defeated by", missed passive "be defeated"). Root cause:
+   the parser validated the TEAM but never the PREDICATE. Root fix: an
+   affirmative win-verb (win/beat/defeat) is now REQUIRED, inversion verbs
+   broadened, and map/round/prop qualifiers bail (match-winner odds only).
+   Unknown phrasings now fail to None instead of failing wrong.
+   ⚠️ Residual for the plumbing layer (action #3): the resolver bails on
+   sub-match qualifiers as defense-in-depth, but market_type gating (only pair
+   MATCH-winner sharp odds with match-winner markets) is the plumbing layer's
+   responsibility — do not rely on the resolver's regex for it.
 3. [code, needs live verify] Plumb `yes_is_team_a` onto the matcher's
    `market_dict` (working-code edit) + wire the offline backfill enrichment.
 4. [blocked on odds] Backtest the full sharp-line signal once odds exist (B13).

@@ -65,6 +65,47 @@ def test_inversion_verb_bails_to_none():
     assert r is None
 
 
+def test_passive_inversion_be_defeated_bails():
+    # Self-review A1 (CONFIRMED sign-flip pre-fix): "be defeated" lacks the "by"
+    # the old blacklist keyed on; YES pays on the subject LOSING. Must be None.
+    r = resolve_yes_is_team_a("Yes", "Will Team Liquid be defeated?", "Team Liquid", "Cloud9")
+    assert r is None
+
+
+def test_no_affirmative_predicate_bails():
+    # Self-review A2: team present but the question isn't a match-win question.
+    # Without a whitelisted win-verb the subject!=winner, so no orientation.
+    r = resolve_yes_is_team_a("Yes", "Will Team Liquid score first blood?", "Team Liquid", "Cloud9")
+    assert r is None
+
+
+def test_swept_bails():
+    r = resolve_yes_is_team_a("Yes", "Will Cloud9 be swept?", "Team Liquid", "Cloud9")
+    assert r is None
+
+
+def test_compound_win_or_eliminated_bails():
+    # Inversion check must win even when an affirmative verb is also present.
+    r = resolve_yes_is_team_a("Yes", "Will Cloud9 win or be eliminated?", "Team Liquid", "Cloud9")
+    assert r is None
+
+
+def test_sub_match_qualifier_bails():
+    # Self-review A3: team orientation would be correct, but pairing a map-winner
+    # market with MATCH-winner sharp odds is a wrong-probability bet downstream.
+    r = resolve_yes_is_team_a("Yes", "Will Team Liquid win map 2?", "Team Liquid", "Cloud9")
+    assert r is None
+
+
+def test_cross_team_prefix_positional_survives():
+    # Self-review A4 (survived): distinct teams sharing a prefix. Whole-word +
+    # earliest-position resolves both directions correctly.
+    r = resolve_yes_is_team_a("Yes", "Will Liquid win?", "Liquid", "Team Liquid")
+    assert r is True
+    r2 = resolve_yes_is_team_a("Yes", "Will Team Liquid win?", "Liquid", "Team Liquid")
+    assert r2 is False
+
+
 def test_neither_team_in_question_returns_none():
     r = resolve_yes_is_team_a("Yes", "Will the underdog win?", "Team Liquid", "Cloud9")
     assert r is None

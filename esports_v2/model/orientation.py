@@ -34,9 +34,27 @@ from typing import Callable, Iterable, Optional
 _YES_LABELS = {"YES", "1", "TRUE"}
 _NO_LABELS = {"NO", "0", "FALSE"}
 
-# Verbs that invert "subject == winner" — if present, a blind subject parse is
-# unsafe ("Will X lose to Y?" => YES pays on Y). Bail to None until hardened.
-_INVERSION_RX = re.compile(r"\b(lose|loses|lost|losing|defeated by|eliminated)\b", re.I)
+# Shape-1 contract is "YES pays on the SUBJECT team" — that is only true when
+# the predicate is an affirmative match-win. Three gates, all fail-to-None:
+#
+# 1. AFFIRMATIVE predicate REQUIRED (whitelist — the root guard). Without it,
+#    "Will X be defeated?" / "Will X score first blood?" would orient YES to X,
+#    a sign-flip. A blacklist alone cannot enumerate every inverting phrasing;
+#    requiring the win-verb makes unknown phrasings fail safe instead of wrong.
+_AFFIRMATIVE_RX = re.compile(r"\b(win|wins|beat|beats|defeat|defeats)\b", re.I)
+# 2. Inversion verbs bail even if an affirmative is also present
+#    ("win or be eliminated"). Bare past/passive forms included — "defeated by"
+#    alone missed "be defeated" (caught in the S-startup self-review).
+_INVERSION_RX = re.compile(
+    r"\b(lose|loses|lost|losing|defeated|eliminated|swept|relegated)\b", re.I
+)
+# 3. Sub-match qualifiers bail: the sharp line this feeds is MATCH-winner odds
+#    (market 101). "Will X win map 2?" orients the team correctly but would pair
+#    map-winner risk with match-winner odds downstream — consumer-specific
+#    conservatism, removable once the plumbing layer gates market_type itself.
+_NON_MATCH_RX = re.compile(
+    r"\b(map|maps|round|rounds|pistol|first blood|kills|handicap|game \d)\b", re.I
+)
 
 
 def normalize_team(name: str) -> str:
@@ -123,9 +141,14 @@ def resolve_yes_is_team_a(
     # ── shape 1: "Will <team> win?" — YES pays on the question's subject ──────
     if not question:
         return None
+    q = str(question)
+    if _INVERSION_RX.search(q):
+        return None  # inverting phrasing ("lose"/"defeated"/"eliminated") — bail
+    if not _AFFIRMATIVE_RX.search(q):
+        return None  # no affirmative win-predicate — subject≠winner not established
+    if _NON_MATCH_RX.search(q):
+        return None  # map/round/prop qualifier — not a match-winner question
     qn = normalize_team(question)
-    if _INVERSION_RX.search(str(question)):
-        return None  # "lose"/"defeat" phrasing — unsafe to parse blind
 
     pos_a = _first_position(qn, aliases_a)
     pos_b = _first_position(qn, aliases_b)
