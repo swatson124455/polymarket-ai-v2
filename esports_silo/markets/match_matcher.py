@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import difflib
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -41,8 +42,18 @@ except ImportError:  # silo default: stdlib approximation (DEVIATION)
 _TOKEN = re.compile(r"[a-z0-9]+")
 
 
+def fold(s: str) -> str:
+    """Lowercase + strip diacritics so accented team names match their ASCII spellings
+    (Västerås↔Vasteras, Leviatán↔Leviatan, KRÜ↔KRU, Beşiktaş↔Besiktas). NFKD-decompose,
+    drop combining marks. Verified 2026-07-08: the collectors quote CS2/Valorant teams with
+    accents that Polymarket (and vice-versa) spell in ASCII — a pure-normalization gap, not a
+    per-team alias."""
+    return "".join(c for c in unicodedata.normalize("NFKD", (s or "").lower())
+                   if not unicodedata.combining(c))
+
+
 def _tokens(s: str) -> List[str]:
-    return _TOKEN.findall(s.lower())
+    return _TOKEN.findall(fold(s))
 
 
 def fuzzy_ratio(a: str, b: str) -> float:
@@ -78,8 +89,8 @@ def build_alias_map(rows: List[Dict[str, str]], game: Optional[str] = None
             rg = (r.get("game") or "")
             if rg and rg != game:
                 continue
-        canon = (r.get("canonical") or "").strip().lower()
-        alias = (r.get("alias") or "").strip().lower()
+        canon = fold((r.get("canonical") or "").strip())
+        alias = fold((r.get("alias") or "").strip())
         if not canon or not alias:
             continue
         bucket = out.setdefault(canon, [])
@@ -96,17 +107,19 @@ def team_present(team_name: str, question_lc: str, alias_map: Dict[str, List[str
     """Is ONE team mentioned in the question? 3-stage: substring → alias substring → fuzzy.
 
     Returns (matched, score): 100.0 for a substring/alias hit, the fuzzy value otherwise.
+    Diacritics are folded on both sides (fold()) so accented names match ASCII spellings.
     """
-    team_lc = (team_name or "").strip().lower()
+    team_lc = fold((team_name or "").strip())
+    q = fold(question_lc)                                       # caller may pass raw or lowered
     if not team_lc:
         return False, 0.0
-    if team_lc in question_lc:                                  # stage 1: direct substring
+    if team_lc in q:                                            # stage 1: direct substring
         return True, 100.0
     for variant in alias_map.get(team_lc, []):                 # stage 2: alias substring
-        v = (variant or "").strip().lower()
-        if v and v != team_lc and v in question_lc:
+        v = fold((variant or "").strip())
+        if v and v != team_lc and v in q:
             return True, 100.0
-    score = fuzzy_ratio(team_lc, question_lc)                  # stage 3: fuzzy fallback
+    score = fuzzy_ratio(team_lc, q)                            # stage 3: fuzzy fallback
     return (score >= threshold), score
 
 

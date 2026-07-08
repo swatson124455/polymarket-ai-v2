@@ -80,6 +80,15 @@ okf, scf = mm.team_present("Cloud9", "match: cloud 9 vs liquid", {}, threshold=7
 check("fuzzy fallback returns a score", scf > 0)
 check("empty team -> False", mm.team_present("", "anything", {}) == (False, 0.0))
 
+# --- diacritic folding: accented ↔ ASCII team names (verified gap 2026-07-08) ---------
+check("fold strips diacritics", mm.fold("Västerås KRÜ") == "vasteras kru")
+check("ascii team matches accented question",
+      mm.team_present("Vasteras", "cs: faze up next vs Västerås (bo3)", {})[0] is True)
+check("accented team matches ascii question",
+      mm.team_present("Leviatán", "valorant: leviatan esports vs furia", {})[0] is True)
+check("fold does NOT merge different teams",
+      mm.team_present("Spandau", "vfb esports vs eintracht frankfurt", {})[0] is False)
+
 if __name__ == "__main__":
     import sys
     print(f"\nrapidfuzz={'yes' if mm._RAPIDFUZZ else 'no (difflib fallback)'}")
