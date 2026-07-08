@@ -2201,6 +2201,26 @@ class WeatherBot(BaseBot):
             analyzer_func=self._analyze_precipitation_group,
         )
 
+    @staticmethod
+    def _ndfd_pop_for_target(
+        pop_data: List[Tuple[str, float, str]], target_iso: str,
+    ) -> Optional[float]:
+        """Mean NDFD PoP for the TARGET day, or None when NDFD has no period
+        for that day.
+
+        S224 (fallacy-audit V37): returns None (→ pure ensemble) instead of the
+        old fallback that substituted TODAY's PoP (pop_data[:2], today day+night)
+        whenever no period matched the target day. Because get_ndfd_pop drops
+        NWS null-PoP periods (null = ~0% precip), a DRY target day matched
+        nothing and grabbed a possibly-rainy today, inflating p_rain toward rain
+        and manufacturing NO-edge on the 0-inch bucket. The ensemble already
+        models a dry day, so None (pure ensemble) is the correct default.
+        """
+        day_pops = [p for _name, p, dt in pop_data if dt == target_iso]
+        if not day_pops:
+            return None
+        return sum(day_pops) / len(day_pops)
+
     async def _analyze_precipitation_group(
         self,
         group: PrecipitationMarketGroup,
@@ -2226,13 +2246,9 @@ class WeatherBot(BaseBot):
         if getattr(group, "period", "daily") == "daily" and group.station.temp_unit.upper() == "F":
             pop_data = await self._forecast_client.get_ndfd_pop(group.station)
             if pop_data:
-                target_iso = group.target_date.isoformat()
-                day_pops = [p for _name, p, dt in pop_data if dt == target_iso]
-                if day_pops:
-                    ndfd_pop = sum(day_pops) / len(day_pops)
-                else:
-                    # Fallback: use first 2 periods (today day + night)
-                    ndfd_pop = sum(p for _, p, _ in pop_data[:2]) / max(len(pop_data[:2]), 1)
+                ndfd_pop = self._ndfd_pop_for_target(
+                    pop_data, group.target_date.isoformat(),
+                )
 
         # Convert PrecipitationBucket → PrecipBucket for the engine
         from bots.weather.engine.base_engine.weather.precipitation_engine import PrecipBucket

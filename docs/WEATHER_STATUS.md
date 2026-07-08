@@ -29,12 +29,12 @@
 3. **Triage the REMAINING pass-2 live-corrupting queue.** Verify phase COMPLETE (43
    re-verified 2026-07-08). Fixed on branch this session: **#1 renorm** (`caffc68`), **N1
    cold-station bias sign-flip** (`04185e8`), **V42 intra-day-blind circuit breakers**
-   (`5baff62`). STILL OPEN (distilled at the bottom of `docs/WB_FALLACY_AUDIT_S223.md`):
-   V1 calibrator self-training feedback loop, the rest of the ground-truth contamination
-   cluster (V4/V6/V10/V11 — source column + 07-01 cutoff + WU-primacy), V26 executable-edge
-   floor 0.0 (Tier-1/2 env candidate), V28 NO-side funnel has zero calibrated admission
-   input (design decision), V34 synthetic 31-member pseudo-ensemble, V37 NDFD wrong-day PoP.
-   Decision: fix order + which land before vs after the S222 verdict.
+   (`5baff62`), **V37 NDFD wrong-day PoP** (`<v37sha>`). STILL OPEN (distilled at the bottom
+   of `docs/WB_FALLACY_AUDIT_S223.md`): V1 calibrator self-training feedback loop, the rest
+   of the ground-truth contamination cluster (V4/V6/V10/V11 — source column + 07-01 cutoff +
+   WU-primacy), V26 executable-edge floor 0.0 (Tier-1/2 env candidate — needs a value
+   decision), V28 NO-side funnel has zero calibrated admission input (design decision), V34
+   synthetic 31-member pseudo-ensemble. Decision: fix order + which land before/after S222.
 
 ---
 
@@ -69,6 +69,11 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-08 (S224 V37):** NDFD wrong-day PoP fallback FIXED (`<v37sha>`) — when no NDFD
+  period matches the target day, use None (pure ensemble) instead of substituting TODAY's
+  PoP; the old fallback inflated p_rain on dry target days (NWS nulls ~0% periods, which
+  get_ndfd_pop drops). Follow-up left open: treat null-PoP as 0% to recover the dry-day
+  signal (changes shared get_ndfd_pop semantics). NOT deployed.
 - **2026-07-08 (S224 V42):** intra-day-blind circuit breakers FIXED (`5baff62`) —
   `_handle_daily_boundary` now refreshes `_daily_pnl` from the DB every scan (was once/day
   behind a same-day early-return), so the daily loss limit + 20% drawdown halt can fire

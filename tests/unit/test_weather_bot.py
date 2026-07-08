@@ -723,6 +723,31 @@ class TestEmpiricalCDF:
         assert probs_raw["market_1"] < 0.05
 
 
+class TestS224NdfdWrongDayPoP:
+    """S224 fallacy-audit V37: when NDFD has no PoP period for the TARGET day,
+    the old code substituted TODAY's PoP (pop_data[:2]) — and because
+    get_ndfd_pop drops NWS null-PoP periods, a DRY target day matched nothing
+    and grabbed a possibly-rainy today, inflating p_rain and manufacturing
+    NO-edge on the 0-inch bucket. Correct behavior: None → pure ensemble."""
+
+    def test_target_day_match_returns_mean(self):
+        from bots.weather_bot import WeatherBot
+        pop = [("Today", 80.0, "2026-03-06"), ("Tonight", 60.0, "2026-03-06"),
+               ("Sat", 10.0, "2026-03-07"), ("Sat Night", 20.0, "2026-03-07")]
+        assert WeatherBot._ndfd_pop_for_target(pop, "2026-03-07") == pytest.approx(15.0)
+
+    def test_no_matching_day_returns_none_not_today(self):
+        from bots.weather_bot import WeatherBot
+        # target 03-08 absent (e.g. dry day nulled out, or beyond horizon).
+        # Old bug: returned mean(today) = 70.0. Fixed: None.
+        pop = [("Today", 80.0, "2026-03-06"), ("Tonight", 60.0, "2026-03-06")]
+        assert WeatherBot._ndfd_pop_for_target(pop, "2026-03-08") is None
+
+    def test_empty_pop_data_returns_none(self):
+        from bots.weather_bot import WeatherBot
+        assert WeatherBot._ndfd_pop_for_target([], "2026-03-07") is None
+
+
 class TestS224DeflateOnlyNormalization:
     """S224 fallacy-audit fix #1: sum-to-1 renormalization over NON-EXHAUSTIVE
     bucket sets manufactured probability mass — a singleton bucket renormalized
