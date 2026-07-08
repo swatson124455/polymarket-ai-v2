@@ -2886,6 +2886,27 @@ class WeatherBot(BaseBot):
                 )
                 continue
 
+            # S224 (fallacy-audit V28): symmetric calibrated-edge admission gate.
+            # The min_edge gate at line ~2764 ran on the RAW model_prob; this
+            # requires the CALIBRATED edge (effective_confidence - price) to
+            # clear the same floor, giving the NO funnel a calibrated admission
+            # input it previously lacked. Default OFF (see settings) — enable
+            # once the calibrator's ground-truth contamination is fixed.
+            _cal_gate_on = bool(getattr(settings, "WEATHER_CALIBRATED_EDGE_GATE_ENABLED", False))
+            if not self._calibrated_edge_admits(
+                effective_confidence, price, _effective_min, _cal_gate_on,
+            ):
+                logger.debug(
+                    "weatherbot_calibrated_edge_gate",
+                    market_id=e["market_id"],
+                    side=side,
+                    calibrated_edge=round(effective_confidence - price, 4),
+                    floor=round(_effective_min, 4),
+                    effective_confidence=round(effective_confidence, 3),
+                    price=round(price, 4),
+                )
+                continue
+
             if boundary_risk:
                 logger.debug(
                     "weatherbot_boundary_risk",
@@ -4460,6 +4481,24 @@ class WeatherBot(BaseBot):
                 await session.commit()
         except Exception as exc:
             logger.debug("weatherbot_ensure_markets_failed", error=str(exc))
+
+    @staticmethod
+    def _calibrated_edge_admits(
+        effective_confidence: float, price: float, min_edge: float, enabled: bool,
+    ) -> bool:
+        """S224 (fallacy-audit V28): calibrated-edge admission gate. When
+        enabled, require the edge computed on the CALIBRATED P(side)
+        (effective_confidence - price) to meet the same min_edge floor the RAW
+        edge already had to clear. The raw min_edge gate and the negative-EV
+        gate together left an unguarded window — a (usually NO) favorite-funnel
+        sibling could pass raw min_edge but have ~0 calibrated edge, giving the
+        NO side no calibrated admission input. This closes it symmetrically.
+        Returns True to admit, False to block. Disabled → always admits.
+        The 1e-9 epsilon keeps a trade exactly at the floor from being rejected
+        by IEEE-754 subtraction noise (e.g. 0.88-0.80 = 0.0799999…)."""
+        if not enabled:
+            return True
+        return (effective_confidence - price) >= min_edge - 1e-9
 
     def _check_executable_edge(self, opp: Dict) -> bool:
         """S221 Phase 2 (2026-05-18): Validate edge against EXECUTABLE price.

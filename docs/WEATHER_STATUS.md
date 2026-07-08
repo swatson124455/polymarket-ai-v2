@@ -69,6 +69,12 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-08 (S224 V28):** calibrated-edge admission gate BUILT (`<v28sha>`) — symmetric
+  `_calibrated_edge_admits` requires the calibrated edge (P(side)_cal − price) to clear the
+  same min_edge (0.08/0.12) the raw edge did, giving the NO funnel the calibrated admission
+  input it lacked. **Default OFF** (`WEATHER_CALIBRATED_EDGE_GATE_ENABLED`) — the gate is only
+  as good as the calibrator, which has known contamination (V1/V4/V6); enable after those +
+  S222 verdict. NOT deployed.
 - **2026-07-08 (S224 V26):** executable-edge floor raised 0.0→0.04 (`f910cf6`, operator-
   approved) — admitted trades must now keep ≥4pts of edge at the price actually paid, not just
   at the midpoint. Tier-2 gating change; blocks thin-positive fills. Rollback:

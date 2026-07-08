@@ -860,6 +860,16 @@ class Settings(BaseSettings):
     WEATHER_BUHLMANN_KAPPA: float = float(os.getenv("WEATHER_BUHLMANN_KAPPA", "30.0"))
     # S116: YES-side confidence gate threshold. S135: 0.35. S149: 0.50 (uncalibrated YES at 26% WR)
     WEATHER_YES_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_YES_MIN_CONFIDENCE", "0.0"))  # S153: disabled (was 0.50). Re-enable: export WEATHER_YES_MIN_CONFIDENCE=0.50
+    # S224 (fallacy-audit V28): calibrated-edge admission gate. When ON, a trade
+    # must keep >= min_edge (WEATHER_MIN_EDGE, 0.08/0.12) of edge computed on the
+    # CALIBRATED P(side), not just the raw model_prob. Closes the funnel window
+    # where a (usually NO) sibling passed the raw min_edge gate but had ~0
+    # calibrated edge — the NO side had no calibrated admission input. Applies
+    # symmetrically to YES and NO. DEFAULT OFF: the gate is only as trustworthy
+    # as the calibrator, which has known pre-WU-fix contamination (audit V1/V4/V6);
+    # enable after the ground-truth cluster is fixed and S222 verdict is in:
+    #   export WEATHER_CALIBRATED_EDGE_GATE_ENABLED=true
+    WEATHER_CALIBRATED_EDGE_GATE_ENABLED: bool = os.getenv("WEATHER_CALIBRATED_EDGE_GATE_ENABLED", "false").lower() in ("true", "1", "yes")
     # S149: YES-side price floor — blocks suicidal <10c YES bets (-$11K at 9% WR in 7d data)
     WEATHER_YES_MIN_PRICE: float = float(os.getenv("WEATHER_YES_MIN_PRICE", "0.0"))  # S153: disabled (was 0.10). Re-enable: export WEATHER_YES_MIN_PRICE=0.10
     # S162: 0.75 → 0.50. YES all-time: 37.8% WR, -$24.4K (77% of total losses).

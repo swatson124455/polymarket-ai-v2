@@ -723,6 +723,41 @@ class TestEmpiricalCDF:
         assert probs_raw["market_1"] < 0.05
 
 
+class TestS224CalibratedEdgeGate:
+    """S224 fallacy-audit V28: a symmetric calibrated-edge admission gate. The
+    raw min_edge gate + negative-EV gate left a window where a (usually NO)
+    favorite-funnel sibling passed on raw edge but had ~0 calibrated edge — the
+    NO side had no calibrated admission input. The gate requires the calibrated
+    edge (effective_confidence - price) to clear min_edge. Default OFF."""
+
+    def test_disabled_always_admits(self):
+        from bots.weather_bot import WeatherBot
+        # calibrated edge is deeply negative, but gate off → admit
+        assert WeatherBot._calibrated_edge_admits(0.50, 0.90, 0.08, enabled=False) is True
+
+    def test_enabled_blocks_thin_calibrated_edge(self):
+        from bots.weather_bot import WeatherBot
+        # NO favorite: calibrated P(NO)=0.83, price=0.80 → cal edge 0.03 < 0.08 → block
+        assert WeatherBot._calibrated_edge_admits(0.83, 0.80, 0.08, enabled=True) is False
+
+    def test_enabled_admits_sufficient_calibrated_edge(self):
+        from bots.weather_bot import WeatherBot
+        # calibrated P(side)=0.90, price=0.80 → cal edge 0.10 >= 0.08 → admit
+        assert WeatherBot._calibrated_edge_admits(0.90, 0.80, 0.08, enabled=True) is True
+
+    def test_symmetric_across_sides(self):
+        from bots.weather_bot import WeatherBot
+        # the helper is side-agnostic — caller passes the side's price/conf.
+        # YES at price 0.30, calibrated conf 0.34 → cal edge 0.04 < 0.08 → block
+        assert WeatherBot._calibrated_edge_admits(0.34, 0.30, 0.08, enabled=True) is False
+        assert WeatherBot._calibrated_edge_admits(0.40, 0.30, 0.08, enabled=True) is True
+
+    def test_boundary_at_floor_admits(self):
+        from bots.weather_bot import WeatherBot
+        # exactly at the floor is admitted (block is strict <)
+        assert WeatherBot._calibrated_edge_admits(0.88, 0.80, 0.08, enabled=True) is True
+
+
 class TestS224SyntheticEnsembleSigma:
     """S224 fallacy-audit V34: the point-forecast-only synthetic ensemble used a
     FIXED 2°F/1.1°C spread (a day-1 error) at every lead time, so long-lead
