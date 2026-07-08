@@ -68,7 +68,7 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
-- **2026-07-08 (S224 N1):** cold-station bias SIGN-FLIP fixed (`417552d`) — bootstrap
+- **2026-07-08 (S224 N1):** cold-station bias SIGN-FLIP fixed (`04185e8`) — bootstrap
   now writes `bias = actual − forecast` matching the actuals updater + consumer convention;
   was doubling forecast error for cold stations on the simple-bias fallback. NOT deployed.
   ⚠ Existing `bootstrap_gfs` rows in the VPS DB retain the flipped sign until they age out
