@@ -68,7 +68,7 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
-- **2026-07-08 (S224 V42):** intra-day-blind circuit breakers FIXED (`<v42sha>`) —
+- **2026-07-08 (S224 V42):** intra-day-blind circuit breakers FIXED (`5baff62`) —
   `_handle_daily_boundary` now refreshes `_daily_pnl` from the DB every scan (was once/day
   behind a same-day early-return), so the daily loss limit + 20% drawdown halt can fire
   intra-day. Reset stays once/day. Behavior change: breakers now actually bind on real
