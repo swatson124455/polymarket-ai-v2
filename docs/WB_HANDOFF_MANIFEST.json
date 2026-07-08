@@ -1,0 +1,26 @@
+{
+  "_comment": "WeatherBot session-handoff manifest — consumed by scripts/wb_resume_check.sh. RULE: any commit that changes a fingerprinted file's markers, adds a headline fix, or moves the session branch MUST update this manifest in the SAME commit. That is what keeps the resume check self-deriving instead of stale.",
+  "session": "S223",
+  "repo": "swatson124455/polymarket-ai-v2",
+  "branch": "claude/new-whiteboard-session-9b23tq",
+  "headline_commits": {
+    "e0d476e": "fix(weather): dead 'temperature' tag -> daily-temperature (funnel starvation)",
+    "c61a712": "fix(database): DB semaphore slot leak (54h wedge root cause)",
+    "4170a8c": "fix(watchdog): startup grace for E1 stale-bot force-exit (crash-loop race)",
+    "12f68cc": "fix(weather): _check_executable_edge YES-bias on temperature NO opps",
+    "37598b7": "fix(weather): WEATHER_MID_LIFE_EXIT_ENABLED / WEATHER_EXIT_MIN_EDGE declared + honored",
+    "6fb4ded": "fix(weather): exit orders must SELL the held token; mid-life state only on confirmed fill"
+  },
+  "required_docs": [
+    "docs/WB_FALLACY_AUDIT_S223.md",
+    "docs/WB_FALLACY_AUDIT_S223_raw.json",
+    "docs/WEATHER_S222_STATUS.md",
+    "WB_S222_POSTFIX_VERIFICATION_PROMPT.md"
+  ],
+  "fingerprints": [
+    { "file": "bots/weather_bot.py", "pattern": "S223", "expect": 10 },
+    { "file": "bots/weather_bot.py", "pattern": "model_prob convention differs by market type", "expect": 1 },
+    { "file": "base_engine/data/database.py", "pattern": "finally-guaranteed", "expect": 1 },
+    { "file": "bots/weather/engine/config/settings.py", "pattern": "WEATHER_MID_LIFE_EXIT_ENABLED: bool", "expect": 1 }
+  ]
+}
