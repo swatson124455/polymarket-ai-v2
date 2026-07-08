@@ -36,8 +36,24 @@ rm -f "$TARBALL"
 
 sleep 5
 STATUS=$(sudo systemctl is-active polymarket-weather || true)
-S222=$(grep -c "S222" "$LINK/bots/weather_bot.py" || true)
-echo "service: $STATUS | S222 markers in weather_bot.py: $S222"
+MARKERS=$(grep -c "S224" "$LINK/bots/weather_bot.py" || true)
+echo "service: $STATUS | S224 markers in weather_bot.py: $MARKERS"
 echo "ROLLBACK: sudo ln -sfn $OLD $LINK && sudo systemctl restart polymarket-weather"
 sudo journalctl -u polymarket-weather -n 8 --no-pager
 [ "$STATUS" = "active" ] || { echo "ERROR: service not active after restart"; exit 1; }
+
+# Apply idempotent additive migrations for this release (non-fatal — the bot
+# tolerates a missing column and falls back with a warning; runs AFTER the
+# service is verified up, so it can never worsen the deploy). postgres
+# peer-auth needs no password. Add new idempotent (IF NOT EXISTS) migrations
+# to this list; non-idempotent schema changes still go through
+# scripts/run_migrations.py with DATABASE_URL.
+for _mig in 079_weather_calibration_actual_source.sql; do
+    _path="$LINK/schema/migrations/$_mig"
+    [ -f "$_path" ] || { echo "migration $_mig: not in release (skip)"; continue; }
+    if sudo -u postgres psql -d polymarket -v ON_ERROR_STOP=1 -q -f "$_path"; then
+        echo "migration $_mig: applied"
+    else
+        echo "WARN migration $_mig: apply failed — run manually; bot falls back until then"
+    fi
+done
