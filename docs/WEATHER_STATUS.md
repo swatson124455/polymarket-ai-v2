@@ -68,6 +68,11 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-08 (S224 N1):** cold-station bias SIGN-FLIP fixed (`417552d`) — bootstrap
+  now writes `bias = actual − forecast` matching the actuals updater + consumer convention;
+  was doubling forecast error for cold stations on the simple-bias fallback. NOT deployed.
+  ⚠ Existing `bootstrap_gfs` rows in the VPS DB retain the flipped sign until they age out
+  of the 90-day window — operator may purge them to apply the fix retroactively (see commit).
 - **2026-07-08 (S224):** fallacy-audit #1 FIXED on branch (`caffc68` — deflate-only renorm
   ×4 engine sites + METAR renorm guard; 12 defect tests; 303/303 WB tests; NOT deployed).
   Verify phase COMPLETED for the 43 credit-limit-orphaned findings (raw texts were lost —

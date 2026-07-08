@@ -1276,7 +1276,13 @@ class WeatherBot(BaseBot):
             async with db.get_session() as session:
                 from sqlalchemy import text
                 for forecast_temp, actual_temp, target_date_str, lead_hours in pairs:
-                    bias = forecast_temp - actual_temp
+                    # S224 (fallacy-audit N1): bias convention is actual - forecast
+                    # (see _get_bias_offset docstring + the actuals updater at the
+                    # _maybe_update_calibration_actuals path). The consumer applies
+                    # corrected_mean = forecast + bias, so a sign flip here DOUBLED
+                    # forecast error for cold stations that depend on the simple-bias
+                    # fallback. Was `forecast_temp - actual_temp`.
+                    bias = actual_temp - forecast_temp
                     try:
                         await session.execute(text("""
                             INSERT INTO weather_calibration
