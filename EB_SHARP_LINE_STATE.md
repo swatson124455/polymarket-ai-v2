@@ -45,21 +45,35 @@ uncertain team↔YES → None, malformed price → None. `enrich_with_sharp_prob
 exactly that shape. So the paid-tier wiring is: populate that dict → `enrich_with_
 sharp_prob` does the rest. Nothing in the new modules changes.
 
-## 5. What's next (ordered) + why each is blocked
+## 5. What's next (ordered) + status
 
-1. **[live] Run the market-shape probe → confirm shape.** `scripts/esports_market_
-   shape_probe.py` on a machine with the PROD DB + internet (the VPS — the local dev
-   DB is stale: 0 esports rows). Commit its output (e.g. `EB_MARKET_SHAPE_RESULTS.md`)
-   so any session can read it. *Blocked from cloud sessions (no VPS/DB/API).*
-2. **[code, needs #1] Harden the shape-1 question parser** in `orientation.py`
-   against the real phrasings the probe returns. Currently conservative (fails safe).
-3. **[code, needs #1 + live verify] Root-fix orientation at the matcher.** The real
-   fix is NOT the text parser — it's persisting the authoritative token→team mapping
-   onto the matcher's `market_dict` at match time (`find_markets_for_match`,
-   `esports_market_scanner.py:352`), which today records no team↔outcome field. See
-   `EB_SHARP_LINE_PLUMBING.md`. Shape-2 (team-name outcome) is already authoritative;
-   shape-1 needs the probe to say whether the subject team is a structured field or
-   text-only. Working-code edit → verify live.
+1. **✅ [DONE 2026-07-08] Market-shape probe ran on live data.** From a cloud session,
+   via the NEW DB-free variant `scripts/esports_market_shape_probe_public.py` (Gamma
+   `tag_id=64` discovery + live CLOB peek; needs Polymarket egress, no VPS/DB). Results
+   in `EB_MARKET_SHAPE_RESULTS.md`. **Key finding:** of 2100 live esports-tag markets —
+   852 shape-1 `Yes/No` (mostly **season/tournament FUTURES**, neg-risk), ~191 shape-2
+   **team-name-outcome head-to-head match/game winners** (the match-odds pairing
+   target), and ~1057 prop markets (Odd/Even 908, Over/Under 149) + 440 polluted
+   non-winner questions (Madden covers, haircuts, "Most Picked Hero", etc.).
+2. **✅ [DONE 2026-07-08 — no behavior change needed] Shape-1 parser verified vs the
+   real corpus.** Swept the resolver over the full live set: **315/315** "Will X win"
+   correct with **ZERO sign-flips**, **438/438** pollution questions bailed to None,
+   **68/68** shape-2 pairs authoritative. The correct-or-absent contract already holds
+   on real phrasings — per "fix only what's broken," `orientation.py` was NOT edited.
+   Locked in with real-corpus regression tests (`tests/unit/test_esports_orientation_
+   real_corpus.py`, +4). Residual note: the resolver returns a (correct-orientation)
+   True on conditional-winner phrasings like "win MSI without dropping a series" —
+   that's a market-TYPE mismatch, gated by the plumbing layer, not an orientation bug.
+3. **[code, needs live verify — STILL PENDING] Root-fix orientation at the matcher.**
+   Persist the authoritative token→team mapping onto the matcher's `market_dict`
+   (`find_markets_for_match`, `esports_market_scanner.py:352`), which today records no
+   team↔outcome field. The probe now answers the open question: the **match-winner path
+   is shape-2** (team-name outcomes), which the resolver maps AUTHORITATIVELY from the
+   outcome label — so the matcher edit mainly needs to carry the YES-token outcome
+   string + team names onto `market_dict`. Shape-1 Yes/No are mostly futures (a
+   different odds type). This is a working-code edit to a LIVE matcher on a HALTED bot;
+   the plumbing spec + CLAUDE.md require live before/after verification, which a cloud
+   session cannot do — deferred to a VPS-capable session. NOT attempted blind.
 4. **[blocked on odds] Backtest the full signal end-to-end.** `pinnacle_odds` is
    EMPTY (B13) — zero sharp odds, live or historical. Until forward-collected (needs
    the OddsPapi paid tier), the signal cannot be validated or traded. **This is the
