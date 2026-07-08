@@ -26,17 +26,16 @@
    decide whether to restart the clock at that deploy or read the verdict on the 07-06 code.
    Only after the verdict: retire containment gates per `WEATHER_S222_STATUS.md` §4-B.
 
-3. **Triage the REMAINING pass-2 live-corrupting queue.** Verify phase COMPLETE (43
-   re-verified 2026-07-08). Fixed/built on branch this session: **#1 renorm** (`caffc68`),
-   **N1 bias sign-flip** (`04185e8`), **V42 circuit breakers** (`5baff62`), **V37 NDFD PoP**
-   (`419df24`), **V34 synthetic sigma** (`410a89b`), **V26 exec-edge floor 0→0.04**
-   (`f910cf6`), **V28 calibrated-edge gate built default-OFF** (`57d54bc`). **V1/ground-truth
-   cluster PLANNED** (no code) → `docs/WB_GROUNDTRUTH_CLUSTER_PLAN_S224.md` — 4 workstreams
-   (WU-primacy fix, source-column migration, contamination cutoff, break the calibrator
-   feedback loop) with 4 operator decision points; needs MB signoff (shared-module + migration).
-   STILL OPEN: that cluster's implementation, V34 follow-ups (synthetic marker / RNG
-   determinism), the deeper V26 (orders at midpoint not executable price), enabling the V28
-   gate. Then: deploy + S222 verdict.
+3. **Deploy the S224 batch + apply migration 079.** Everything actionable from the pass-2
+   queue is now on the branch: **#1 renorm** (`caffc68`), **N1** (`04185e8`), **V42**
+   (`5baff62`), **V37** (`419df24`), **V34** (`410a89b`), **V26 floor 0→0.04** (`f910cf6`),
+   **V28 gate built default-OFF** (`57d54bc`), **V1/ground-truth cluster IMPLEMENTED**
+   (`8c778d3` — WU-primacy, provenance column, 2026-07-01 training cutoff, self-training loop
+   broken; calibrator will reset toward identity and re-learn clean). **Post-deploy: run
+   `schema/migrations/079_weather_calibration_actual_source.sql` on the VPS** (code warns and
+   falls back until applied). LATER: enable the V28 gate once the re-learned calibrator shows
+   sane OOS Brier; V34 follow-ups (synthetic marker / RNG determinism); deeper V26 (orders at
+   midpoint); optional retro-purge of flipped `bootstrap_gfs` rows (see N1 changelog).
 
 ---
 
