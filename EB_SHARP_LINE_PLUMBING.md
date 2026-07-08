@@ -101,8 +101,13 @@ Reuse, do NOT duplicate: the alias resolver (`_match_team_name`, :6802) and
 ## Next actions (ordered)
 
 1. [live] Read 5–10 live esports market objects → confirm outcome shape(s).
-2. [code, post-#1] Implement `resolve_yes_is_team_a` + unit tests against the
-   confirmed shapes (offline).
-3. [code, post-#2] Plumb `yes_is_team_a` onto `market_dict`; wire the offline
-   backfill enrichment.
-4. [blocked on odds] Backtest the full sharp-line signal once odds exist.
+   Probe: `scripts/esports_market_shape_probe.py` (read-only; paste output back).
+2. ✅ [done, offline] `resolve_yes_is_team_a` implemented + 21 tests
+   (`esports_v2/model/orientation.py`). Handles BOTH shapes on a correct-or-
+   absent contract (bool only when unambiguous, else None → uncovered). Shape-2
+   (team-name outcomes) is exact; the shape-1 subject parse is a conservative
+   heuristic (earliest-mentioned team = subject, inversion verbs bail) that
+   still needs HARDENING against the real phrasings action #1 returns.
+3. [code, needs live verify] Plumb `yes_is_team_a` onto the matcher's
+   `market_dict` (working-code edit) + wire the offline backfill enrichment.
+4. [blocked on odds] Backtest the full sharp-line signal once odds exist (B13).
