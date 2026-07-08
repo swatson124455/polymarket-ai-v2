@@ -36,6 +36,8 @@ _GAME_RX = re.compile(
 )
 _GAMMA_URL = "https://gamma-api.polymarket.com/markets"
 _CLOB_URL = "https://clob.polymarket.com/markets/{cid}"
+_ESPORTS_TAG_ID = 64  # gamma tag slug "esports" (verified 2026-07-08)
+_GAMMA_PAGE = 100     # gamma caps `limit` at 100 regardless of what you ask
 
 _CA_BUNDLE = "/root/.ccr/ca-bundle.crt"
 
@@ -101,12 +103,14 @@ def probe(scan_cap, clob_limit):
 
     found = []
     offset = 0
-    page = 500
     scanned = 0
     while scanned < scan_cap:
+        # Primary discovery = the esports TAG (id 64). Question-regex misses
+        # head-to-head titles that name only the teams ("T1 vs Gen.G"), so the
+        # tag is the authoritative universe; regex is a secondary label only.
         url = (
-            f"{_GAMMA_URL}?closed=false&active=true&archived=false"
-            f"&order=volumeNum&ascending=false&limit={page}&offset={offset}"
+            f"{_GAMMA_URL}?tag_id={_ESPORTS_TAG_ID}&closed=false&active=true"
+            f"&archived=false&limit={_GAMMA_PAGE}&offset={offset}"
         )
         data = _get_json(url)
         if isinstance(data, dict) and data.get("__error__"):
@@ -117,16 +121,13 @@ def probe(scan_cap, clob_limit):
             break
         if not isinstance(data, list) or not data:
             break
-        for m in data:
-            q = str(m.get("question", ""))
-            if _GAME_RX.search(q):
-                found.append(m)
+        found.extend(data)
         scanned += len(data)
-        offset += page
-        if len(data) < page:
+        offset += _GAMMA_PAGE
+        if len(data) < _GAMMA_PAGE:
             break
 
-    print(f"\n=== Gamma: scanned {scanned} active markets, {len(found)} esports-ish by question ===")
+    print(f"\n=== Gamma: {len(found)} esports-tag markets (tag_id={_ESPORTS_TAG_ID}, active, not closed) ===")
     for m in found:
         vol = m.get("volumeNum") or m.get("volume")
         vol_s = f"{float(vol):>10.0f}" if vol not in (None, "") else "        NA"
@@ -159,9 +160,48 @@ def probe(scan_cap, clob_limit):
     print(f"\n=== SHAPE TALLY (CLOB peeks): YES/NO={yesno}  team-name/other={other} ===")
     print("    shape 1 dominant -> resolver parses the question's SUBJECT team")
     print("    shape 2 present  -> resolver must also map YES-token outcome name -> team")
+
+    # Gamma-wide shape tally (all found, not just the CLOB-peeked top-N).
+    g_yesno = g_other = g_unknown = 0
+    for m in found:
+        s = _classify(_outcomes_from_gamma(m))
+        if s.startswith("YES/NO"):
+            g_yesno += 1
+        elif s.startswith("TEAM-NAME"):
+            g_other += 1
+        else:
+            g_unknown += 1
+    print(f"\n=== GAMMA-WIDE SHAPE TALLY (all {len(found)}): "
+          f"YES/NO={g_yesno}  team-name/other={g_other}  unknown={g_unknown} ===")
+
+    # Phrasing patterns — the input step-2 (parser hardening) actually needs.
+    pats = [
+        ("will_X_win",     re.compile(r"^will .+\bwin\b", re.I)),
+        ("will_X_beat_Y",  re.compile(r"^will .+\b(beat|defeat)\b", re.I)),
+        ("X_vs_Y",         re.compile(r"\bvs\.?\b", re.I)),
+        ("map_round_prop", re.compile(r"\b(map|round|game|kills?|first blood|handicap|score)\b", re.I)),
+    ]
+    print("\n=== QUESTION PHRASING PATTERNS (esports-tag questions) ===")
+    counts = {name: 0 for name, _ in pats}
+    unmatched = []
+    for m in found:
+        q = str(m.get("question", ""))
+        hit = False
+        for name, rx in pats:
+            if rx.search(q):
+                counts[name] += 1
+                hit = True
+        if not hit:
+            unmatched.append(q)
+    for name, _ in pats:
+        print(f"    {name:16} {counts[name]}")
+    print(f"    unmatched-by-any {len(unmatched)}")
+    for q in unmatched[:25]:
+        print(f"      · {q[:88]}")
+
     if not found and scanned:
-        print("\n    NOTE: 0 esports markets found among the scanned active markets. Either none are")
-        print("    live right now, or raise scan_cap (arg 1) to page deeper past high-volume politics.")
+        print("\n    NOTE: 0 esports-tag markets returned. Either none are live right now, or the")
+        print("    tag id drifted — re-verify via /tags/slug/esports.")
 
 
 if __name__ == "__main__":

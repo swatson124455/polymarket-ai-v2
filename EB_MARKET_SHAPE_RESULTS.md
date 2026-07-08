@@ -1,80 +1,90 @@
 # EB Market-Shape Probe — Results
 
-## STATUS: ⛔ BLOCKED — NO DATA YET (cloud session could not reach any market source)
+## STATUS: ✅ RAN — real live data (2026-07-08)
 
-> **Next VPS-capable session: OVERWRITE this file** with the real probe output.
-> This is a placeholder recording *why* step 1 has not produced data, not results.
-
-**Attempted:** 2026-07-08 (cloud/sandboxed session, branch
-`claude/esports-sharp-line-rebuild-36c8u9`)
-**Script:** `scripts/esports_market_shape_probe.py` (read-only; unchanged)
+**Source:** public Gamma API (`tag_id=64` "esports") + live CLOB ground-truth peek.
+**How:** `python scripts/esports_market_shape_probe_public.py 6000 12` (DB-free variant;
+egress to gamma-api + clob was enabled for this session). Read-only.
+**Universe:** 2100 esports-tag markets, active & not closed.
 
 ---
 
-## 1. What step 1 needs vs. what this environment has
+## 1. Outcome-label distribution (all 2100, from Gamma `outcomes`)
 
-`esports_market_shape_probe.py` needs **two** live sources:
-1. the **prod `markets` table** (to discover esports condition_ids), and
-2. the **live CLOB** `https://clob.polymarket.com/markets/{cid}` (the ground-truth
-   outcome labels that decide shape-1 vs shape-2).
+| Outcome labels | Count | Meaning | Resolver action |
+|---|---:|---|---|
+| `['Odd','Even']` | 908 | total-kills parity **prop** | **ignore** (not a winner market) |
+| `['Yes','No']` | 852 | shape-1 "Will \<team\> win …?" | parse SUBJECT team |
+| `['Over','Under']` | 149 | totals **prop** | **ignore** |
+| team-name pairs (e.g. `['G2 Esports','100 Thieves']`, `['DRX','DetonatioN FocusMe']`) | ~191 | **shape-2** head-to-head match/game winner | map YES-token outcome → team (authoritative) |
 
-Neither is reachable from this cloud session:
+CLOB peek on the top-12 by volume confirmed the Gamma labels exactly (all shape-1
+`Yes/No` season-winner markets, `neg_risk=True`). Gamma `outcomes` == CLOB ground truth
+for the sample — Gamma is trustworthy for shape.
 
-| Source | Result | Evidence |
-|---|---|---|
-| VPS `18.201.216.0:22` | **Unreachable** | `TCP:22 connection refused`; no SSH key present in `~/.ssh/` |
-| `clob.polymarket.com:443` | **Egress-denied** | proxy `403 CONNECT` (`connect_rejected` in `$HTTPS_PROXY/__agentproxy/status`) |
-| `gamma-api.polymarket.com:443` | **Egress-denied** | proxy `403 CONNECT` (same status log) |
-| Prod / local DB | **None running** | `DATABASE_URL` → `localhost:5432` but the Postgres port is **closed** |
+## 2. The two shapes, concretely
 
-The agent-proxy README is explicit: policy denials (403/407) must be **reported, not
-routed around**. So the probe cannot be run here by any legitimate path. This matches
-the prior session's finding (`EB_SHARP_LINE_STATE.md` §5: *"Blocked from cloud
-sessions — no VPS/DB/API"*).
+**Shape-1 (Yes/No), 852 markets — almost all FUTURES/OUTRIGHT, neg-risk:**
+```
+Will BRION win the LCK 2026 season playoffs?     outcomes ['Yes','No']  neg_risk=True
+Will T1 win the LCK 2026 season playoffs?         outcomes ['Yes','No']  neg_risk=True
+Will <team> win the EWC Dota 2 Tournament          (x23 teams)
+Will <team> win the LPL 2026 season?               (x14 teams)
+Will <team> win LCK CL 2026?  / MSI 2026?          (tournament outright)
+```
+These pair with **outright/futures** sharp odds, NOT match-winner odds.
 
-## 2. What was NOT done, and why (guardrail compliance)
+**Shape-2 (team-name outcomes), ~191 markets — HEAD-TO-HEAD match/game winners:**
+```
+LoL: ZennIT vs The Bandits - Game 1 Winner   outcomes ['ZennIT','The Bandits']
+G2 Esports vs 100 Thieves                      outcomes ['G2 Esports','100 Thieves']
+DRX vs DetonatioN FocusMe                       outcomes ['DRX','DetonatioN FocusMe']
+```
+**These are what sharp MATCH-winner odds pair with.** The YES/token outcome string IS a
+team name → `resolve_yes_is_team_a` maps it authoritatively (no fragile text parse).
 
-- **Parser hardening (step 2)** and **matcher root-fix (step 3)** were **not**
-  attempted. Both depend on the real question phrasings this probe would return, and
-  the matcher edit is a working-code change the plumbing spec + CLAUDE.md require to be
-  **verified live before/after**. Doing them blind would mean guessing phrasings and
-  editing live-path code unverified — a direct violation of the **correct-or-absent**
-  contract (a flipped orientation *inverts* the edge — the S152/B2 loss) and the
-  explicit *"don't over-invest in parser coverage before odds data exists"* guardrail.
-- No deploy (EB halted; code not wired in).
-- The offline core was re-verified: **59/59** tests green
-  (`tests/unit/test_esports_orientation.py`, `tests/unit/test_esports_sharp_reference.py`),
-  run with `-o addopts="" --noconftest` (repo conftest needs the full trading-system
-  dep tree, absent here; the two EB modules are pure stdlib).
+## 3. Pollution in the esports tag (correct-or-absent MUST bail on these)
 
-## 3. How to actually run it — two paths
+The tag is not clean — 440 questions matched none of the winner patterns, incl.:
+```
+Will MoistCr1TiKaL get a haircut in 2026?
+Will <player> be on the cover of Madden NFL 27? / NBA 2K27?   (dozens)
+Will any FaZe member come out as a furry by July 31?
+Will Valve add first CS2 operation by August 31, 2026?
+Will <hero> the Most Picked / Most Banned Hero at the Dota EWC 2026?
+Will <team> win MSI Without Dropping a Series?                (conditional prop)
+Games Total: O/U 2.5   /   Map 1: Odd/Even Total Kills?       (props)
+```
+Plus 908 Odd/Even + 149 Over/Under prop markets. **Market-type gating (winner-market
+only) is the plumbing layer's job** (per `EB_SHARP_LINE_PLUMBING.md`), not the resolver
+regex — but the resolver must still fail-to-None on all of the above, never a wrong bool.
 
-**Path A — DB-free, runs from THIS cloud session (simplest).** Needs only Polymarket
-egress; no VPS, no DATABASE_URL. Discovers esports markets from the public Gamma API,
-cross-checks shape against the live CLOB.
+## 4. Phrasing-pattern tally (esports-tag questions)
+
+```
+will_X_win        315   (Will <team> win the <league/event> …?)  -> shape-1 subject parse
+will_X_beat_Y       4   (rare)
+X_vs_Y            191   (mostly shape-2 team-name-outcome match markets)
+map_round_prop   1325   (map/round/kills/handicap/score) -> PROP, ignore
+unmatched-by-any  440   (pollution above + odd templates)
+```
+
+## 5. Implications for steps 2 & 3
+
+- **The sharp MATCH-winner signal rides on shape-2** (team-name outcomes), which the
+  resolver already handles authoritatively. That is the primary path and it is robust.
+- **Shape-1 is mostly futures/outright** (season/tournament winners), a *different* odds
+  type — lower priority for a match-odds signal, and the biggest source of ambiguous
+  phrasings. Hardening it is worthwhile for correctness but is NOT on the critical path
+  to a match-winner sharp signal.
+- **Upstream market-type gating is essential**: only ~1043 of 2100 tag markets are
+  winner markets at all (852 Yes/No + ~191 team-name); the other ~1057 are props.
+- **Binding blocker unchanged:** `pinnacle_odds` is empty (B13). No sharp odds → the
+  end-to-end backtest stays blocked regardless of parser coverage.
+
+## 6. Reproduce
 
 ```bash
-# 1. Enable egress to gamma-api.polymarket.com + clob.polymarket.com in the
-#    environment's network policy (see EB session notes / code.claude.com docs).
-# 2. Then, anywhere:
-python scripts/esports_market_shape_probe_public.py          # scan ~2000 mkts, 8 CLOB peeks
-python scripts/esports_market_shape_probe_public.py 4000 12  # wider scan
+python scripts/esports_market_shape_probe_public.py 6000 12   # needs Polymarket egress; no VPS/DB
+python scripts/esports_market_shape_probe.py 40 12            # DB-backed variant, on the VPS
 ```
-Verified this session: compiles, parsing logic unit-checked green, and it fails
-*gracefully* with a clear egress-blocked message until the toggle is flipped.
-
-**Path B — DB-backed, on the VPS.** The original probe (prod `markets` table + CLOB):
-```bash
-python scripts/esports_market_shape_probe.py            # 20 DB rows, 8 CLOB peeks
-python scripts/esports_market_shape_probe.py 40 12      # wider sample
-```
-
-Either way: **replace this whole file** with the probe's stdout (it is not secret),
-commit, and push. That real output unblocks step 2 (harden the shape-1 parser against
-the actual phrasings) and step 3 (persist `yes_is_team_a` onto the matcher `market_dict`).
-
-## 4. Reminder: the deeper binding blocker
-
-Even with shapes confirmed, the **end-to-end backtest stays blocked**: `pinnacle_odds`
-is empty (B13). No sharp odds exist until the OddsPapi paid tier is live. Per
-`EB_SHARP_LINE_STATE.md` §5.4, that — not parser coverage — is the real constraint.
