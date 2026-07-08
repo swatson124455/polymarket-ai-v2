@@ -16,10 +16,10 @@ are LIVE-VERIFIED:
   via `/events?tag_id=`; each match is an event titled `Game: A vs B (BOx) - League` whose
   match-winner market's question == the title (or is a prefix of it) with two team outcomes.
   `collectors/polymarket_collector.py` resolves tag IDs at RUNTIME from `/tags` by exact slug
-  (never baked in; drift-warned against recorded values). VERIFIED slug→id 2026-07-06:
-  counter-strike=100602 csgo=100635 · league-of-legends=65 lol-worlds=401 lec=102164 ·
-  dota-2=102366 · valorant=101672 vct=101682. Dry-run found ~89 live match markets
-  (lol/dota2/valorant; CS2 currently has no live *matches* on PM, only Valve meta markets).
+  (never baked in; drift-warned against recorded values). VERIFIED slug→id 2026-07-06/08:
+  **cs2: counter-strike-2=100780 (carries the match events) + cs2=100677** · league-of-legends=65
+  lol-worlds=401 lec=102164 · dota-2=102366 · valorant=101672 vct=101682 (legacy
+  counter-strike=100602/csgo=100635 kept as harmless extras — topic tags, props only).
 
 **Keys:** old OddsPapi/PandaScore/Riot keys in `/opt/pa2-shared/.env` are all INVALID (need
 rotation). pinnodds key is live (rotate — it was shared in chat). Both `.env` files are box-local.
@@ -59,11 +59,11 @@ rotate PandaScore (INVALID) → timer accrues (odds, price, result) → after ~2
 calibrator → `--predict` → weekly `skill_report`. No engineering remains; do NOT rebuild the
 collectors/runner/gate.
 
-## Where things stand
-The siloed esports scaffold **and** the Cmd-4 data-quality gate (`verify_data_quality.py`) are
-committed and pushed. **Nothing trades; no data has cleared quarantine.** The gate is BUILT and
-its `--jsonl` mode has been run read-only over the carried data; next is the operator running the
-DB gate on the box (D2 GATE-THEN-BUILD), then signal design. See `PLAN.md`.
+## Where things stand (one line)
+The full odds→price→pair→resolve→fit→predict→gate chain is BUILT, wired, and RUNNING on the box;
+the DB gate PASSED; nothing trades (`SILO_ENTRY_HALT=true`). The only thing not done is FORWARD
+DATA accrual, blocked on a valid PandaScore key. Detail below + in "Current state (2026-07-08)".
+(Older "signal design / run the gate next" text in this file or PLAN.md is historical — done.)
 
 ## Repo state
 - Branch: `claude/blissful-davinci-twt397-n94qo6` (current working branch)
@@ -72,10 +72,8 @@ DB gate on the box (D2 GATE-THEN-BUILD), then signal design. See `PLAN.md`.
 - All silo work is in `esports_silo/` — self-contained, designed to extract to its own repo + DB.
 
 ## Committed files
-`COMMANDMENTS.md` · `PLAN.md` · `HANDOFF.md` · `START_PROMPT.md` · `README.md` · `config.py` ·
-`.env.example` · `requirements.txt` · `db/schema.sql` · `collectors/odds_collector.py` ·
-`scripts/validate_keys.py` · `scripts/import_from_prior_bot.py` · `scripts/verify_data_quality.py`
-Plus carried data now IN GIT (commit `369606b`): `data/esports_matches_bulk.jsonl`,
+Full inventory is in "Full script/tool inventory" near the end of this doc (kept current).
+Carried data IN GIT (commit `369606b`): `data/esports_matches_bulk.jsonl`,
 `data/cs2/pandascore_cs2.json` (other data — LoL CSVs, the 3.3G paper log — stays box/VPS only).
 
 ## VERIFIABILITY FRAME — do not skip
@@ -105,20 +103,14 @@ silo as D1–D4 — defined here so a fresh session has them without reading com
 - **D2 — Gate-then-build.** Nothing new is built until the operator runs
   `scripts/verify_data_quality.py` on the box and data clears quarantine. No parallel build
   ahead of the gate.
-- **D3 — Sharp books decided (RATIFIED 2026-07-05): Singbet + Sbobet via OddsPapi.**
-  **Pinnacle is OUT — OPERATOR-RULED: OddsPapi carries pinnacle on B2B plans only**, not on the
-  operator's plan. That ruling is the D3 ratification the docs were waiting on; it overrides the
-  2026-07-03 probe's pinnacle findings for planning purposes. Slugs `singbet`/`sbobet` exist per
-  `/v4/bookmakers`; `thunderpick` (the original third pick) is NOT carried, so sbobet (the
-  researched Asian fallback) replaced it. `polymarket` is itself a slug in their feed;
-  `ps3838`/`pin88` are `cloneOf` pinnacle (B2B-gated the same way) — never double-count clones.
-  Live probes (2026-07-03) verified the v4 API contract itself (camelCase params, `from`/`to`
-  ≤10 days on /fixtures, ≤3 books on /historical-odds, market "171"=match winner with outcome
-  171=participant1/172=participant2). ⚠ CONSEQUENCE: the ≥6-month archive-depth finding was
-  measured ON pinnacle (January BLAST fixture); softs age out ~2 weeks; **archive depth for
-  singbet/sbobet is UNVERIFIED** — the historical backfill's yield is unknown until a small
-  probe run, and the calibrator's fallback path is forward-collected lines (2–4 wks). The
-  backfill is BUILT: `scripts/backfill_historical_odds.py` (see GO_LIVE_CHECKLIST).
+- **D3 — Odds source FINAL (2026-07-06): Pinnacle via pinnodds.** ⚠ SUPERSEDES the earlier
+  OddsPapi decisions — do not act on any "Singbet/Sbobet via OddsPapi" text elsewhere; that whole
+  path is ABANDONED. History: OddsPapi carried pinnacle on B2B-only (operator-ruled 2026-07-05),
+  so pinnacle was dropped and singbet/sbobet were the interim pick — then `pinnodds` (self-serve
+  Pinnacle wrapper) was found and adopted, restoring pinnacle as the single sharp benchmark. Now:
+  base `https://pinnodds.com/kit/v1`, header `x-portal-apikey`, esports=sport_id 11, raw
+  money_line (num_0=match winner), ~20 req/window. `SHARP_BOOKS=pinnacle`. The OddsPapi collector
+  + `backfill_historical_odds.py` are DEAD legacy (pinnodds has no archive → forward-only).
 - **D4 — Data in git.** `data/esports_matches_bulk.jsonl` + `data/cs2/pandascore_cs2.json` ARE
   committed (`369606b`) and locally readable; other data (LoL CSVs, the 3.3G paper log) stays
   source-machine/VPS only. All carried data remains quarantined until the gate passes.
@@ -150,36 +142,66 @@ orientation valid, tiny n").
 - prior-bot postmortems → `EB_REBUILD_CARRYFORWARD.md` (master), `EB_MODEL_EDGE_PROPOSAL_2026-06-16.md` (eb/main)
 
 ## Open decisions & blockers
-See `PLAN.md` (§Open decisions, §Blockers). Devig=dead, optional-cols=skipped are settled.
-Sharp books are RATIFIED (D3, 2026-07-05): Singbet + Sbobet via OddsPapi — pinnacle is
-B2B-plan-only and OUT; branch reconciliation is done on this branch. All
-data/network work is operator-run.
+Devig=dead, optional-cols=skipped are settled. Odds source SETTLED: **Pinnacle via pinnodds**
+(D3 above — ignore PLAN.md's older "Singbet/Sbobet via OddsPapi" text, superseded). The ONLY
+open blocker is a **valid PandaScore key** (+ ~2–4 wks forward accrual). All data/network work
+is operator-run.
 
-## Next action
-✅ `esports_silo/scripts/verify_data_quality.py` is BUILT (Cmd-4 master gate) — read-only. Its
-`--jsonl` mode has been run over the carried `data/esports_matches_bulk.jsonl` (which surfaced
-and fixed a cross-source false-FAIL, commit `140fbb7`); on that data the gate currently reports
-QUARANTINE on **1/28205** rows whose winner contradicts its score (operator excludes/fixes that
-row, re-runs). The **DB gate** still needs the operator's box. No carried data leaves quarantine
-until the gate passes there.
+## Box specifics (where everything lives — the /opt/* dirs are release copies, NOT git)
+- **Repo clone (git):** `/home/ubuntu/esports_silo_src` — the ONLY git checkout on the box.
+- **Silo DB:** `esports_silo` (own role/db; gate PASSED; 32,409 matches, 30,881 with winners).
+- **Env:** `/opt/esports_silo/.env` (DATABASE_URL + keys; `SILO_ENTRY_HALT=true`). chmod 600.
+- **Venv python (has aiohttp/asyncpg):** `/opt/pa2-esports-shared/venv/bin/python`. System `python3`
+  LACKS the deps — always use the venv path.
+- **Timer:** `esports-silo-collect.timer` (systemd), every 15 min, collect-only.
+- **Operator runs box commands as:**
+  `ssh -t -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 "cd ~/esports_silo_src && git pull && <cmd>"`.
 
-**Operator, run on the box** (both read-only):
-- `DATABASE_URL=postgresql://…/silo python -m esports_silo.scripts.verify_data_quality`
-  → the master gate over `matches` + `team_aliases` (+ any populated forward tables).
-- `python -m esports_silo.scripts.verify_data_quality --jsonl data/esports_matches_bulk.jsonl`
-  → pre-import vetting of the carried NDJSON before it reaches the DB.
-Exit 0 = gate PASS (data may leave quarantine); 1 = QUARANTINE; 2 = could-not-run. Add
-`--json` for machine output. Thresholds are `VDQ_*` env vars (see the script header).
+## Keys (all box-local; NEVER commit)
+- **PandaScore = INVALID (HTTP 401) — THE blocker.** Rotate at pandascore.co → `/opt/esports_silo/.env`.
+  Without it results never settle (41 forward matches collected, 0 with winners).
+- **Riot = INVALID** (personal keys expire 24h) — only for LoL patch context; low priority.
+- **pinnodds = live but was SHARED IN CHAT → rotate.** `PINNODDS_API_KEY` in the .env.
+- **OddsPapi = ABANDONED** — its MISSING/INVALID lines in `validate_keys` are expected/irrelevant.
 
-BUILD STATE (2026-07-04, operator authorized the full build ahead of the box gate; the DATA
-still doesn't leave quarantine until the box gate passes — D2 applies to data, and the halt
-applies to trading): #2 snapshot collector ✅, #3 matcher ✅, #4 skill harness ✅, #5 signal ✅,
-#6 decision ✅, #7 pipeline ✅, #9 runner ✅ — plus the paid-plan chain:
-`scripts/backfill_historical_odds.py` (archived closing lines → odds_raw, resumable) →
-`scripts/fit_calibrator.py` (time-ordered backfit → JSON artifact; refuses bad fits; BACKFIT
-only, baseline = raw score not Polymarket) → `run/runner.py --predict` (forward predictions:
-calibrated p_model + live Polymarket price, pre-match only, all `no_bet`) →
-`scripts/skill_report.py` (THE forward gate: last pre-event prediction per market vs outcome
-vs market Brier; exit 0 = PASS). Artifacts live in `esports_silo/artifacts/` (gitignored —
-box-local state). Operator sequence: GO_LIVE_CHECKLIST steps 9–12. Even a PASS does not flip
-`SILO_ENTRY_HALT` — that stays a deliberate human action.
+## Current state (2026-07-08) — BUILT, RUNNING, VERIFIED; nothing trades
+Everything below is done and confirmed on live box data. Do NOT rebuild it.
+- Odds in (pinnodds Pinnacle) → `odds_raw`; PM prices (all 4 games, tag-based) → `polymarket_snapshots`;
+  both on the 15-min timer, accumulating (verified fresh timestamps).
+- Pairing DONE + verified: **cs2 9/9, lol 6/6, valorant 2/2-on-PM**. Diacritic fold + CS2 alias seed applied.
+- `results_collector` attaches PandaScore winners to pinnodds rows (orientation-aware) — waits on a valid key.
+- `fit_calibrator` + `skill_report` read `aggregator='pinnodds'`. Calibrator UNFITTED (forward-only, needs accrual).
+- `predictions` ledger empty (fills once calibrator fits + `--predict` is on). Decisions hardcoded `no_bet`.
+
+## The remaining path (all HALTED; see `VERIFY_AND_PROCEED.md` for exact commands)
+1. **Rotate PandaScore** → validate → results start settling (watch `forward winner_set` climb).
+2. **Accrue ~2–4 wks** of (odds, price, result) — no backfill exists.
+3. `fit_calibrator` (refusal-until-enough is EXPECTED) → writes the calibrator artifact.
+4. Add `--predict` to the timer → forward ledger fills (all `no_bet`).
+5. `skill_report` weekly (≥200 resolved) — exit 0 = PASS. **The only verdict.**
+6. A PASS does NOT flip `SILO_ENTRY_HALT` — that's a separate deliberate human step.
+
+## Verify before trusting these claims
+`verify_state.sh` (read-only) proves every line above against the live box; `VERIFY_AND_PROCEED.md`
+Part A explains what each section must show. Run it first in any fresh session.
+
+## Full script/tool inventory (all committed, `esports_silo/`)
+- **Collectors:** `pinnodds_collector.py` (odds), `polymarket_collector.py` (PM prices, tag-based),
+  `results_collector.py` (winners), `odds_collector.py`+`polymarket`… legacy note: `odds_collector.py`
+  is the DEAD OddsPapi one.
+- **Pipeline:** `markets/match_matcher.py` (two-team gate + diacritic fold), `signal/sharp_consensus.py`,
+  `betting/decision.py`, `pipeline.py`, `eval/skill_metrics.py`, `execution/resolution.py`+`paper.py`,
+  `run/runner.py` (+`--predict`), `run/selftest.py` (14 modules).
+- **Scripts:** `verify_data_quality.py` (gate, PASSED), `import_from_prior_bot.py`, `validate_keys.py`,
+  `fit_calibrator.py`, `skill_report.py`, `link_report.py` (two-sided pairing), `verify_state.sh`,
+  and probes: `probe_pinnodds.py`, `probe_pinnodds_history.py`, `probe_polymarket_tags.py`,
+  `probe_polymarket_esports.py`, `probe_polymarket_cs2.py`, `probe_market_microstructure.py`,
+  `backfill_historical_odds.py` (DEAD/legacy).
+- **Deploy:** `enable_autopull.sh` (the on-switch), `run_steps_0_4.sh`/`run_steps_5_7.sh` (setup),
+  `esports-silo-collect.service/.timer`, `crontab.example`.
+- **DB:** `db/schema.sql`, `db/alias_seed.sql` (CS2 aliases — load on a fresh DB), `db/alias_inspect.sql`.
+- **Docs:** `COMMANDMENTS.md`, `PLAN.md`, `HANDOFF.md`, `START_PROMPT.md`, `VERIFY_AND_PROCEED.md`,
+  `GO_LIVE_CHECKLIST.md`, `README.md`. ⚠ PLAN.md + GO_LIVE still carry some OddsPapi-era text in
+  spots — this HANDOFF's D3 + current-state sections are authoritative where they conflict.
+
+Artifacts in `esports_silo/artifacts/` are box-local + gitignored. `SILO_ENTRY_HALT=true` throughout.
