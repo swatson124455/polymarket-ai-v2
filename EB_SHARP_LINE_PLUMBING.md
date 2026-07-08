@@ -122,3 +122,36 @@ Reuse, do NOT duplicate: the alias resolver (`_match_team_name`, :6802) and
 3. [code, needs live verify] Plumb `yes_is_team_a` onto the matcher's
    `market_dict` (working-code edit) + wire the offline backfill enrichment.
 4. [blocked on odds] Backtest the full sharp-line signal once odds exist (B13).
+
+---
+
+## Step-3 PREFLIGHT (mandatory before editing the matcher) — added 2026-07-08
+
+The market-shape probe (action #1) ran; `EB_MARKET_SHAPE_RESULTS.md` has the data.
+It confirms the **match-winner path is shape-2** (team-name outcomes; ~191 live
+markets) — resolved authoritatively from the YES-token outcome LABEL, not text. So
+the matcher edit is mostly "carry the outcome label + team order onto `market_dict`."
+The edit site is `find_markets_for_match` → the `market_dict` literal at
+`esports/markets/esports_market_scanner.py:352-369` (verified this session; it carries
+`token_id`/`yes_token_id`/`no_token_id`/`condition_id`/`question` but **no team↔outcome
+field**). Before writing the edit, a VPS/live session MUST verify TWO things — each is
+a latent sign-flip (the S152/B2 loss class):
+
+- **[LIVE CHECK 1] Is the YES-token `outcome` label present on the market_service
+  token?** Shape-2 authoritative resolution needs the YES token's outcome STRING (the
+  team name). `market = self._market_service.get_tradeable_esports_markets(...)` →
+  `tokens[0]` currently captures only id/price, no `outcome`. Inspect a live shape-2
+  market's token dict: if `outcome` is absent, the matcher must fetch/carry it (CLOB
+  peek or a market_service field) — do NOT fabricate it from the question text.
+- **[LIVE CHECK 2] Does the matcher's `team_names[0]` == the sharp odds' `team_a`?**
+  `resolve_yes_is_team_a` returns a bool *relative to the team_a you pass it*. The
+  matcher has `team_names` (PandaScore order); the sharp line has `team_a/team_b`
+  (`odds_loader.make_match_key` order). If those orders can differ, computing
+  `yes_is_team_a` against `team_names[0]` and consuming it against odds `team_a`
+  **inverts the edge**. Either (a) compute + store orientation against the SAME order
+  the odds use, or (b) store the YES team NAME (not a bool) and let `enrich_with_sharp_
+  prob` derive the bool against its own team_a. Option (b) is flip-proof — prefer it.
+
+Verify live before/after per CLAUDE.md ("Can't Fully Verify" rule): scan output before
+the edit, the same after, plus a spot-check that a known shape-2 market gets the correct
+`yes_is_team_a`. EB is halted — no deploy.
