@@ -115,12 +115,35 @@ while [ "$i" -lt "$N_FP" ]; do
   i=$((i + 1))
 done
 
+# --- 6. Deploy parity (informational — never a hard FAIL) -------------------
+# Keyless sessions can't SSH the VPS; this compares HEAD to the committed deploy
+# record (deploy/LAST_DEPLOY.json), which the next deploy populates via
+# deploy/wb-record-deploy.sh. UNKNOWN/ahead are expected mid-session, so WARN only.
+DEPLOY_REC="deploy/LAST_DEPLOY.json"
+if [ -f "$DEPLOY_REC" ]; then
+  DEP_SHA="$(python3 -c "import json; v=json.load(open('$DEPLOY_REC')).get('git_sha'); print(v if v else '')" 2>/dev/null)"
+  if [ -z "$DEP_SHA" ]; then
+    warn "deploy parity UNKNOWN — $DEPLOY_REC is a placeholder (no deploy recorded via deploy/wb-record-deploy.sh yet)"
+  else
+    DEP_STAMP="$(python3 -c "import json; print(json.load(open('$DEPLOY_REC')).get('release_stamp') or '?')" 2>/dev/null)"
+    if [ "$DEP_SHA" = "$(git rev-parse HEAD)" ]; then
+      pass "deploy parity: HEAD == last deployed SHA (release $DEP_STAMP)"
+    elif git merge-base --is-ancestor "$DEP_SHA" HEAD 2>/dev/null; then
+      warn "deploy parity: HEAD is $(git rev-list --count "$DEP_SHA..HEAD") commit(s) AHEAD of last deploy $DEP_STAMP ($DEP_SHA) — undeployed work on the branch"
+    else
+      warn "deploy parity: recorded deploy SHA $DEP_SHA (release $DEP_STAMP) is NOT in this branch history — investigate before trusting the live box"
+    fi
+  fi
+else
+  warn "deploy parity UNKNOWN — no $DEPLOY_REC (deploy-record mechanism not yet in this branch)"
+fi
+
 # --- Summary -----------------------------------------------------------------
 echo "----------------------------------------------------------------"
 if [ "$FAILS" -eq 0 ]; then
   echo "RESULT: ALL PASS (${WARNS} warning(s)) — session state is intact."
-  echo "Next: read docs/WEATHER_S222_STATUS.md (S223 addendum + '## 4. PENDING WORK')."
-  echo "Live-VPS parity is NOT covered here — see header for the ssh one-liner."
+  echo "Next: read docs/WEATHER_STATUS.md (canonical: OPEN DECISIONS + WHAT IS LIVE)."
+  echo "Live-VPS health is NOT covered here — see header for the ssh one-liner."
   exit 0
 else
   echo "RESULT: $FAILS FAILURE(S), $WARNS warning(s) — STOP, do no other work, report to operator."

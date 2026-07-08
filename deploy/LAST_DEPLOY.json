@@ -1,0 +1,10 @@
+{
+  "release_stamp": null,
+  "git_sha": null,
+  "git_branch": null,
+  "s223_markers_weather_bot": null,
+  "tree_state_at_record": null,
+  "recorded_at": null,
+  "recorded_by": "deploy/wb-record-deploy.sh",
+  "note": "PLACEHOLDER — no deploy has been recorded through wb-record-deploy.sh yet. The current live release was cut before this mechanism existed; its git_sha is not committed anywhere and cannot be verified from a keyless session. The NEXT WB deploy should run `bash deploy/wb-record-deploy.sh <STAMP>` and commit this file. Until then scripts/wb_resume_check.sh reports deploy parity as UNKNOWN (informational, never a FAIL)."
+}
