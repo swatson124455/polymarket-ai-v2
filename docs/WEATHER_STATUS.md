@@ -71,7 +71,7 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
-- **2026-07-08 (S224 cluster):** ground-truth/calibrator cluster IMPLEMENTED (`<clsha>`) —
+- **2026-07-08 (S224 cluster):** ground-truth/calibrator cluster IMPLEMENTED (`8c778d3`) —
   WS-2 WU-primacy (extreme WU-vs-OM disagreement now abstains, never writes OM as truth);
   WS-1 provenance column `weather_calibration.actual_source` (**migration 079 — RUN ON VPS**,
   code falls back + warns until applied); WS-3 hard training cutoff 2026-07-01 (conf-cal ×2 +
