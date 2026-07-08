@@ -1064,6 +1064,25 @@ class WeatherForecastClient:
             logger.debug("nws_points_failed", station=station_id, error=str(exc))
             return None
 
+    @staticmethod
+    def _synthetic_lead_sigma(lead_time_hours: float, temp_unit: str) -> float:
+        """Lead-time-dependent sigma (°F or °C) for the point-forecast-only
+        synthetic ensemble fallback. S224 (fallacy-audit V34): a point high
+        forecast's uncertainty grows with lead time, so the synthetic spread
+        must too — the old fixed 2°F/1.1°C (a day-1 error) applied at 120h made
+        the fabricated ensemble ~2.5x too narrow. Mirrors the NBM benchmark's
+        sigma schedule (compute_nbm_benchmark) — a proper standard deviation,
+        not an MAE. °C via the 5/9 conversion."""
+        if lead_time_hours <= 24.0:
+            sigma_f = 1.5
+        elif lead_time_hours <= 48.0:
+            sigma_f = 2.5
+        elif lead_time_hours <= 72.0:
+            sigma_f = 3.5
+        else:
+            sigma_f = 5.0
+        return sigma_f if temp_unit.upper() == "F" else sigma_f * 5.0 / 9.0
+
     async def get_combined_forecast(
         self,
         station: WeatherStation,
@@ -1210,17 +1229,9 @@ class WeatherForecastClient:
             )
             return None
 
-        # If no ensemble, create a synthetic spread around deterministic
-        if not ensemble_members and deterministic_high is not None:
-            # Use typical HRRR MAE of ~2°F / ~1.1°C as synthetic spread
-            spread = 2.0 if station.temp_unit == "F" else 1.1
-            rng = random.Random(hash((station.station_id, target_iso)))
-            ensemble_members = [deterministic_high + rng.gauss(0, spread) for _ in range(31)]
-
-        if deterministic_high is None and ensemble_members:
-            deterministic_high = sum(ensemble_members) / len(ensemble_members)
-
-        # Calculate lead time using station's actual timezone
+        # Calculate lead time using station's actual timezone. (Computed BEFORE
+        # the synthetic-ensemble fallback below so its spread can scale with it —
+        # S224/V34.)
         now_utc = datetime.now(timezone.utc)
         # S102 fix: use station timezone for local noon instead of hardcoded 18:00 UTC
         try:
@@ -1232,6 +1243,20 @@ class WeatherForecastClient:
             # Fallback to 18:00 UTC if timezone lookup fails
             target_noon_utc = datetime(target_date.year, target_date.month, target_date.day, 18, 0, tzinfo=timezone.utc)
         lead_time_hours = max(0.0, (target_noon_utc - now_utc).total_seconds() / 3600.0)
+
+        # If no ensemble, synthesize one around the deterministic high. S224
+        # (fallacy-audit V34): the spread grows with lead time (a proper sigma,
+        # NBM schedule) instead of the old fixed 2°F/1.1°C day-1 error applied
+        # at every lead — which made long-lead point-forecast fallbacks ~2.5x
+        # too narrow and manufactured overconfident tail-bucket edges. This is
+        # the ensemble-fetch-failed degraded path, so erring wide is correct.
+        if not ensemble_members and deterministic_high is not None:
+            spread = self._synthetic_lead_sigma(lead_time_hours, station.temp_unit)
+            rng = random.Random(hash((station.station_id, target_iso)))
+            ensemble_members = [deterministic_high + rng.gauss(0, spread) for _ in range(31)]
+
+        if deterministic_high is None and ensemble_members:
+            deterministic_high = sum(ensemble_members) / len(ensemble_members)
 
         # S102: Lead-time ensemble weighting — subsample GEFS at long lead times.
         # ECMWF (IFS + AIFS) has lower CRPS than GFS beyond 72h. At 72h+ GFS error

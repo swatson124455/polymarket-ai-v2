@@ -27,14 +27,15 @@
    Only after the verdict: retire containment gates per `WEATHER_S222_STATUS.md` §4-B.
 
 3. **Triage the REMAINING pass-2 live-corrupting queue.** Verify phase COMPLETE (43
-   re-verified 2026-07-08). Fixed on branch this session: **#1 renorm** (`caffc68`), **N1
-   cold-station bias sign-flip** (`04185e8`), **V42 intra-day-blind circuit breakers**
-   (`5baff62`), **V37 NDFD wrong-day PoP** (`419df24`). STILL OPEN (distilled at the bottom
-   of `docs/WB_FALLACY_AUDIT_S223.md`): V1 calibrator self-training feedback loop, the rest
-   of the ground-truth contamination cluster (V4/V6/V10/V11 — source column + 07-01 cutoff +
-   WU-primacy), V26 executable-edge floor 0.0 (Tier-1/2 env candidate — needs a value
-   decision), V28 NO-side funnel has zero calibrated admission input (design decision), V34
-   synthetic 31-member pseudo-ensemble. Decision: fix order + which land before/after S222.
+   re-verified 2026-07-08). Fixed on branch this session (5 code fixes): **#1 renorm**
+   (`caffc68`), **N1 cold-station bias sign-flip** (`04185e8`), **V42 intra-day-blind circuit
+   breakers** (`5baff62`), **V37 NDFD wrong-day PoP** (`419df24`), **V34 synthetic-ensemble
+   lead-time sigma** (`<v34sha>`). STILL OPEN (need YOUR input or bigger scope): V1 calibrator
+   self-training feedback loop, the ground-truth contamination cluster (V4/V6/V10/V11 — source
+   column + 07-01 cutoff + WU-primacy), **V26** executable-edge floor 0.0 (Tier-1/2 env — needs
+   a value decision), **V28** NO-side funnel has zero calibrated admission input (design
+   decision). Plus V34 follow-ups (synthetic marker / RNG determinism — see register).
+   Decision: fix order + which land before/after S222.
 
 ---
 
@@ -68,6 +69,11 @@
 ---
 
 ## CHANGELOG (newest first — one line per session-end update)
+
+- **2026-07-08 (S224 V34):** synthetic-ensemble spread now lead-time-scaled (`<v34sha>`) —
+  the point-forecast-only fallback used a fixed 2°F/1.1°C day-1 error at every lead (a 120h
+  point high got a 2°F cloud → overconfident tail edges); now uses the NBM σ schedule
+  (1.5/2.5/3.5/5.0°F by lead). Follow-ups open: synthetic marker, RNG determinism. NOT deployed.
 
 - **2026-07-08 (S224 V37):** NDFD wrong-day PoP fallback FIXED (`419df24`) — when no NDFD
   period matches the target day, use None (pure ensemble) instead of substituting TODAY's

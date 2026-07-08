@@ -723,6 +723,30 @@ class TestEmpiricalCDF:
         assert probs_raw["market_1"] < 0.05
 
 
+class TestS224SyntheticEnsembleSigma:
+    """S224 fallacy-audit V34: the point-forecast-only synthetic ensemble used a
+    FIXED 2°F/1.1°C spread (a day-1 error) at every lead time, so long-lead
+    fallbacks were massively overconfident (a 120h point high has ~5°F real
+    uncertainty). Sigma must grow with lead time (NBM's schedule; proper σ)."""
+
+    def test_sigma_grows_with_lead_time(self):
+        from bots.weather.engine.base_engine.weather.forecast_client import WeatherForecastClient
+        s = WeatherForecastClient._synthetic_lead_sigma
+        # old defect: all of these were 2.0 regardless of lead
+        assert s(12.0, "F") == pytest.approx(1.5)
+        assert s(36.0, "F") == pytest.approx(2.5)
+        assert s(60.0, "F") == pytest.approx(3.5)
+        assert s(100.0, "F") == pytest.approx(5.0)
+        # strictly increasing across the buckets
+        assert s(100.0, "F") > s(60.0, "F") > s(36.0, "F") > s(12.0, "F")
+
+    def test_sigma_celsius_scaled(self):
+        from bots.weather.engine.base_engine.weather.forecast_client import WeatherForecastClient
+        s = WeatherForecastClient._synthetic_lead_sigma
+        assert s(100.0, "C") == pytest.approx(5.0 * 5.0 / 9.0, rel=1e-3)
+        assert s(12.0, "c") == pytest.approx(1.5 * 5.0 / 9.0, rel=1e-3)
+
+
 class TestS224NdfdWrongDayPoP:
     """S224 fallacy-audit V37: when NDFD has no PoP period for the TARGET day,
     the old code substituted TODAY's PoP (pop_data[:2]) — and because
