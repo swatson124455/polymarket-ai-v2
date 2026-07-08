@@ -69,7 +69,7 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
-- **2026-07-08 (S224 V28):** calibrated-edge admission gate BUILT (`<v28sha>`) — symmetric
+- **2026-07-08 (S224 V28):** calibrated-edge admission gate BUILT (`57d54bc`) — symmetric
   `_calibrated_edge_admits` requires the calibrated edge (P(side)_cal − price) to clear the
   same min_edge (0.08/0.12) the raw edge did, giving the NO funnel the calibrated admission
   input it lacked. **Default OFF** (`WEATHER_CALIBRATED_EDGE_GATE_ENABLED`) — the gate is only
