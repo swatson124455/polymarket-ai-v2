@@ -13,6 +13,15 @@
 -- OPERATOR: eyeball these before loading (team-identity data). Idempotent — safe to re-run.
 --   psql "$SILO_DB" -f esports_silo/db/alias_seed.sql
 -- Add new rows here as link_report flags more high-confidence same-fixture pairs.
+--
+-- ⚠ 2026-07-08: first load returned INSERT 0 0 — the alias keys (Keyd/PARIVISION/BetBoom Team,
+-- game=cs2) ALREADY EXIST in the 1,777 imported rows (PK is (alias, game)), so DO NOTHING
+-- skipped them and they map to a DIFFERENT canonical than the pinnodds spelling → the gap
+-- persists. Do NOT blind-overwrite imported data. First INSPECT what they map to:
+--   psql "$SILO_DB" -f esports_silo/db/alias_inspect.sql
+-- then decide per-row whether an explicit UPDATE is warranted (evidence = the same-fixture,
+-- exact-opponent match link_report showed). This is a marginal (few-match) gain; the diacritic
+-- fold in match_matcher.py — which is NOT gated on this table — is the general win.
 
 INSERT INTO team_aliases (alias, canonical, game) VALUES
   -- pinnodds 'Keyd Stars' ↔ PM 'Keyd'  (same fixture vs MIBR Academy, triage score 100)
