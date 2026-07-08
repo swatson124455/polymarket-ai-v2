@@ -29,7 +29,7 @@
 3. **Triage the REMAINING pass-2 live-corrupting queue.** Verify phase COMPLETE (43
    re-verified 2026-07-08). Fixed on branch this session: **#1 renorm** (`caffc68`), **N1
    cold-station bias sign-flip** (`04185e8`), **V42 intra-day-blind circuit breakers**
-   (`5baff62`), **V37 NDFD wrong-day PoP** (`<v37sha>`). STILL OPEN (distilled at the bottom
+   (`5baff62`), **V37 NDFD wrong-day PoP** (`419df24`). STILL OPEN (distilled at the bottom
    of `docs/WB_FALLACY_AUDIT_S223.md`): V1 calibrator self-training feedback loop, the rest
    of the ground-truth contamination cluster (V4/V6/V10/V11 — source column + 07-01 cutoff +
    WU-primacy), V26 executable-edge floor 0.0 (Tier-1/2 env candidate — needs a value
@@ -69,7 +69,7 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
-- **2026-07-08 (S224 V37):** NDFD wrong-day PoP fallback FIXED (`<v37sha>`) — when no NDFD
+- **2026-07-08 (S224 V37):** NDFD wrong-day PoP fallback FIXED (`419df24`) — when no NDFD
   period matches the target day, use None (pure ensemble) instead of substituting TODAY's
   PoP; the old fallback inflated p_rain on dry target days (NWS nulls ~0% periods, which
   get_ndfd_pop drops). Follow-up left open: treat null-PoP as 0% to recover the dry-day
