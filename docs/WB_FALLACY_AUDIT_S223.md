@@ -1,6 +1,8 @@
-# WeatherBot Fallacy Audit — S223 (2026-07-06)
+# WeatherBot Fallacy Audit — S223 (2026-07-06) · verify pass 2 completed S224 (2026-07-08)
 
-**Status:** INCOMPLETE — 18 of 62 raw findings adversarially verified before the audit hit a model credit limit mid-verify (the other ~44 are UNVERIFIED, not refuted; synthesis agent also died). Resume by re-running the verify phase over the raw findings.
+**Status:** VERIFY PHASE COMPLETE. First pass (S223, operator machine): 18 of 62 verified before a model credit limit killed the remaining 43 verifiers + synthesis. Second pass (S224, cloud session): the raw finding TEXTS were lost (only truncated titles survived in the workflow dump — the journal lived on the operator's machine), so each of the 43 was **reconstructed from its title against the code and adversarially re-verified from scratch**. Results in the "SECOND VERIFY PASS" section below: ~28 newly confirmed, 7 duplicates of pass-1 findings, 2 unclear, 2 refuted-as-live (dead paths), plus 2 NEW adjacent findings discovered during verification.
+
+**Finding #1 (sum-to-1 renorm) is FIXED — commit `caffc68` (S224):** deflate-only normalization in all 4 engine sites + METAR override renorm guard (no-evidence skip / singleton skip / 0.98 conditioning cap). Not yet deployed.
 
 **Pivotal reframe (verified this session):** `WEATHER_FLAT_SIZE_USD=100` is default-on (unset on VPS). weather_bot.py:3421 sets `_raw_size=_flat_size` and SKIPS `combined_boost`. So the entire boost/dampener/Kelly/Smoczynski-Tomkins sizing chain is INERT for trade size (flat $100, then liquidity-clamped). Findings in the edge/boost/Kelly family are therefore DEAD-CODE + LYING-TELEMETRY, not live money loss. The live-corrupting findings are the CERTAINTY (model_prob->1.0) and CALIBRATION ones — they drive trade ADMISSION and DIRECTION and corrupt the S222 verification readout.
 
@@ -131,3 +133,82 @@
 - **What:** The temperature opp path caps confidence at 0.95 (2814) and routes it through the calibrator and dampeners before the risk-manager Kelly (3439-3443). But _smoczynski_tomkins_allocate computes per-bucket Kelly edges from opp['model_prob'] raw (3061-3069): at model_prob=1.0, q=0 and f_i=(p*b-q)/b=1.0, the maximum possible, so the renormalization-fabricated certainty dominates the group-budget split regardless of the confidence machinery. probability_engine.kelly_fraction (431-471) has the same property for any caller. Under current defaults WEATHER_FLAT_SIZE_USD=100 (settings.py:858) flattens size and hides this, but the allocation logic is live the moment flat sizing is turned off â€” and the flat default itself means the certainty's harm today is trade ADMISSION at $100, not scaled sizing.
 - **Harm:** When flat sizing is disabled (the intended end state of the rebuild), fabricated 1.0/0.999 probabilities take the largest share of every group budget by construction â€” the buckets with the most artifact-driven certainty get the most capital, inverting the intent of every calibration and dampening layer built on the confidence field.
 - **Verifier correction:** Two overstatements: (1) The 0.95 cap is NOT "cosmetic" â€” it fully governs the current live sizing path: flat sizing (settings.py:858 default 100.0) discards the S-T override at weather_bot.py:3420-3424, and the independent-Kelly fallback (3439-3443) sizes from the capped+calibrated opp["confidence"] via calculate_bot_position_size. The raw-model_prob consumption is a LATENT bypass, live only when WEATHER_FLAT_SIZE_USD=0. (2) "Harm today is trade ADMISSION at $100" is misattributed â€” the S-T allocator gates nothing: _execute_group_trades (weather_bot.py:3153-3159) calls _execute_weather_trade for every opp whether or not it received an allocation; today's model_prob=1.0 admission comes from upstream edge gates/renormalization, not this allocator. (3) The probability_engine.kelly_fraction half (bots/weather/engine/base_engine/weather/probability_engine.py:432-471) does consume raw model_prob but has zero production callers (only tests/unit/test_weather_bot.py:455-468) â€” dead code, not a live fallacy surface. Corrected framing: low severity today, but a must-fix precondition before flat sizing is ever turned off â€” change line 3061 to consume opp["confidence"] (or apply the same cap/calibration) so the S-T branch sees the same probability the rest of the confidence machinery produces.
+
+---
+---
+
+# SECOND VERIFY PASS — S224 (2026-07-08)
+
+Method: 7 thematic adversarial verifiers, each given the truncated titles of the lost
+findings + instruction to reconstruct the claim from code and try to REFUTE it. All
+verified against the VENDORED tree (`bots/weather/engine/base_engine/weather/**`) +
+`bots/weather_bot.py`. Severity applies the pivotal reframe (flat sizing default-on →
+pure-sizing findings are DEAD-CODE/LYING-TELEMETRY; admission/direction/calibration
+findings are LIVE-CORRUPTING).
+
+## Verdict table (43 reconstructed + 2 new adjacent)
+
+| # | Finding (reconstructed) | Verdict | Severity / liveness |
+|---|---|---|---|
+| V1 | Calibrator trains on its own outputs (ENTRY confidence column = post-calibration effective_confidence; serve applies calibrate() to raw) — recursive train/serve loop | CONFIRMED | **HIGH · LIVE** (gates admission via YES floor :2853 + neg-EV :3574) |
+| V2 | Calibrator trains only on lead≥48h rows, serves all leads; calibrate() ignores its lead_time_hours arg | CONFIRMED | MEDIUM · LIVE |
+| V3 | Doubly-censored training sample: only entered AND held-to-resolution trades get labels (no RESOLUTION row for fully-exited positions; database.py:3775) | CONFIRMED | MEDIUM · LIVE |
+| V4 | EMOS trains on weather_calibration.actual_temp = ~96% ERA5 pre-07-01; contaminated rows permanent (backfill only touches NULL, no source column) | CONFIRMED | **HIGH · LIVE** (shifts model_prob/direction) |
+| V5 | Holdout fallback fits on FULL window incl. would-be holdout and skips the OOS rejection gate when train rows < min_samples (weather_bot.py:257-266, :533) | CONFIRMED | MEDIUM |
+| V6 | No contamination cutoff at 2026-07-01 anywhere (conf-cal 30/90d windows, EMOS 90d) — ~77-92% of training data predates the WU fix as of 07-08 | CONFIRMED (partial dup of pass-1 #contaminated-calibrator) | **HIGH · LIVE** (EMOS facet distinct; self-heals ~07-31 / ~09-29 EXCEPT never-re-backfilled EMOS rows) |
+| V7 | Survivorship: stop-lossed/exited positions never produce calibrator labels — P(win\|conf) estimated on "survived to resolution" sample | CONFIRMED | HIGH · LIVE |
+| V8 | Training join is side-agnostic: single RESOLUTION row paired with FIRST entry's confidence; side-flip re-entries mislabeled; cross-side exit sizes can suppress the RESOLUTION row entirely (database.py:3643-3651) | CONFIRMED | MEDIUM · LIVE |
+| V9 | Outcome label is sign(realized_pnl) not market resolution | CONFIRMED literally, LOW (pnl sign is a faithful proxy given 0.85 entry caps; real defects are V7/V8) |
+| V10 | ERA5/Open-Meteo still silently substitutes as ground truth on ANY WU scrape failure (debug-level logs, no source column); sole truth for bootstrap + dynamic stations | CONFIRMED | **HIGH · LIVE** (ongoing mechanism, not just historical) |
+| V11 | WU-vs-OM sanity check epistemically inverted: on >10°F disagreement it DISCARDS WU (the resolution source) and writes OM as truth; passes plausible garbage inside the band | CONFIRMED (as weak/wrong; "missing" reading refuted) | MEDIUM · LIVE |
+| V12 | Resolution-station mapping asserted not validated: market `description` never read anywhere; dynamic stations trade on city-centroid grid forecasts with no resolution station | CONFIRMED | MEDIUM (static ICAOs likely right; validation absent) |
+| V13 | Kelly graduation promotes _kelly_mult on forecast-MSE (proxy orthogonal to market edge); promoted value feeds only the flat-discarded S-T path | CONFIRMED | MEDIUM · DEAD+lying-telemetry |
+| V14 | Graduation doubles stakes (S-T linear in kelly_mult) as a step function, no hysteresis | CONFIRMED (facet of V13) | LOW · DEAD |
+| V15 | Kelly odds computed at Gamma midpoint (b=(1-price)/price on opp["price"]) — ~5x odds overstatement documented in-code (mid 0.525 vs exec 0.85) | CONFIRMED | MEDIUM · Kelly legs dead; midpoint ALSO feeds LIVE neg-EV gate + price dampeners |
+| V16 | "Smoczynski-Tomkins" allocator is NOT S-T: hedge factor derived in comment then never applied; plain edge-normalized pro-rata deploying a FIXED fraction regardless of edge magnitude; weatherbot_st_allocation logs fabricated total_usd | CONFIRMED | MEDIUM · DEAD+lying-telemetry+lying-docstring |
+| V17 | Sizing surface is a lattice: hard cliffs at 24/48/72/120h, <24h (0.85) sizes ABOVE 24-48h (0.70) inverting the S162 evidence, $5 min-trade floor partially cancels dampeners | CONFIRMED | MEDIUM · **LIVE** (post-flat multipliers execute) |
+| V18 | S162 lead-time 0.60 never landed (settings 0.85 shadows getattr fallback) | DUPLICATE of pass-1 #10 | — |
+| V19 | S153 boost→dampener inversion is an unsupported functional form: reciprocal of discredited boost magnitudes (evidence supported neutralize-to-1.0 at most; WR-not-EV comparison) | CONFIRMED | DEAD (latent) |
+| V20 | Dampeners implemented as reciprocals contradict the tuned constants documented in the SAME comment block (severe actual 0.50 vs stated 0.7-0.85; jump 0.67 vs 0.75; nbm 0.77 vs 0.8) | CONFIRMED | DEAD + lying-documentation |
+| V21 | jump_boost measures fetch-over-fetch (15-min cache cycle) not run-over-run; lead-bucket subsampling crossings fire it with no new run; °C stations need 3°C=5.4°F (intended 1.7°C); <60s refetch erases baseline | CONFIRMED | DEAD+lying-telemetry (forecast_delta semantics false) |
+| V22 | Station reliability factor is a residual 1.2x BOOST violating the S153 "≤1.0 dampener-only" invariant (uncapped since S132 cap removal) | CONFIRMED | DEAD (activates the moment flat sizing is disabled) |
+| V23 | City-Brier dampener pairs chosen-side confidence with a YES-frame was_correct label (database.py:3934-3937) — INVERTED for all PSW NO rows with P(NO)≥0.5 (winning NO calls scored as misses) | CONFIRMED | **LYING-TELEMETRY · LIVE** (feeds prediction_log accuracy + consecutive-loss alerts :952-954; dampener leg dead) |
+| V24 | OOS-Brier Kelly cap + city-Brier double-count the same evidence stream; the fallback Kelly path escapes the OOS cap entirely (feeds TRAIN-set _cal_brier to BotBankrollManager) | CONFIRMED | DEAD · both legs flat-bypassed; shared Brier-0.25 "random" baseline too lenient for a NO-dominant book |
+| V25 | Asymmetric min-edge 0.08/0.12 (US/intl) — unvalidated handicap; gate runs on uncalibrated model_prob anyway | UNCLEAR | LOW (fold into pass-1 #8) |
+| V26 | ALL admission edges priced at Gamma/CLOB midpoint, never the executable book; WEATHER_MIN_EXECUTABLE_EDGE defaults 0.0 so effective min edge at the price actually paid is ZERO; order submitted at midpoint | CONFIRMED | **HIGH · LIVE** (admission) |
+| V27 | Entry fill-probability gate is an invented price parabola 0.3+2.8·p·(1-p) consulting no book data, and mathematically CANNOT fire (min 0.3 > threshold 0.15/0.25) | CONFIRMED | LOW · phantom control (do NOT "fix" by lowering threshold — curve is unvalidated) |
+| V28 | Favorite-buying funnel persists structurally post-S222/S223: side/ranking geometry emits sibling-NO signals at 0.70-0.85, every NO-side countermeasure is sizing-only, no calibrated input to NO admission; S223 exec-edge fix RE-OPENED the funnel the bug had strangled | CONFIRMED | **HIGH · LIVE** (direction/mix; corrupts WR evaluation) |
+| V29 | Trade gating by invented fill-prob | DUPLICATE of V27 | — |
+| V30 | "Renormalization assumes traded buckets partition the space" (title recovered verbatim) | DUPLICATE of pass-1 #1 — two lenses found it independently | FIXED `caffc68` |
+| V31 | "Sum-to-1 renormalization over…" (3rd lens copy) + residual NBM renorm site probability_engine.py:599-603 | DUPLICATE of pass-1 #1; NBM site FIXED in `caffc68` too | — |
+| V32 | Cross-city regime detector reads model-vs-market disagreement direction as a meteorological "front"; no US filter (US_CITY_NAMES has ZERO consumers); no date alignment; ≥3-same-direction is near-always true | CONFIRMED | DEAD (regime dampener flat-bypassed) |
+| V33 | Front detection premise YES=warm / NO=cold is false for bucketed markets (YES on at_or_below = COLD call) | CONFIRMED | DEAD (same function as V32; fix together) |
+| V34 | Synthetic 31-member Gaussian pseudo-ensemble fabricated around deterministic high with fixed 2°F spread (day-1 MAE misused as all-lead sigma; MAE≠σ; skew-MLE fitted to sampling noise; NO downstream marker — ensemble_count=31 looks real; hash-salted RNG varies across restarts) | CONFIRMED | **HIGH · LIVE** when ensemble fetch fails/429s while deterministic succeeds (forecast_client.py:1213-1218) |
+| V35 | Dominant n≥50 empirical path silently skips climate prior + AFD widening on the false premise they are "parametric adjustments" (weather_bot.py:2609) — 120h trades bet pure ensemble while the small-ensemble fallback is climatology-protected; IFS+AIFS double-count (AIFS emulates IFS) overstates effective n | CONFIRMED (VIF facet = duplicate of pass-1, FIXED S222) | **MEDIUM-HIGH · LIVE** >72h |
+| V36 | Precip wet-member threshold 0.01 is unit-blind (0.01 in vs 0.01 mm = 25x more sensitive intl); engine never reads bucket.precip_unit; "defaults to 0.5" reading REFUTED (unreachable) | CONFIRMED (code fact; title reconstruction low-confidence) | LOW exposure (US path internally consistent) |
+| V37 | NDFD PoP wrong-day fallback: no period matches target → blends TODAY's PoP at 40%; NWS nulls ~0% periods and get_ndfd_pop skips nulls, so DRY target days preferentially trigger the wrong-day substitution (p_rain inflated up to +0.32) | CONFIRMED | **MEDIUM-HIGH · LIVE** (US daily precip admission/direction) |
+| V38 | METAR <2h window keyed to 18Z anchor | DUPLICATE of pass-1 #2/#5 (footnote: docstring says <6h, caller gate is <12h) | — |
+| V39 | 18Z anchor exists in FOUR copies; the 3 PSW copies retain the max(0,·) clamp S142 removed from temperature — expired PSW markets analyzed at lead=0; calibrator/sizing (18Z) vs engine (local-noon) see different lead times for the same market | CONFIRMED (distinct consumers) | MEDIUM · LIVE (PSW admission) |
+| V40 | City auto-discovery would register centroid pseudo-stations w/o resolution source — but the path is DEAD: confidence gate reads a `score` field Open-Meteo geocoding does not return (verified live), so try_auto_register always returns False | CONFIRMED-latent / REFUTED-as-active | fail-safe today; latent HIGH if "fixed" without wiring resolution source |
+| V41 | StationHealthMonitor equates "grid forecast exists for coordinates" with "resolution station reporting" for ALL °C stations (vacuous gate); fails open on every error path; never consulted by PSW paths | CONFIRMED | MEDIUM · LIVE (gate can silently never block) |
+| V42 | Neutered protections believed active — headline: `_daily_pnl` is never incremented intra-day (assigned only at init/boundary-reset/restart-restore), so the daily loss limit (:3122,:3230) and 20% drawdown halt (:6325) are BLIND to all losses accrued during a continuous session | CONFIRMED | **HIGH · LIVE** (the bot's only intra-day P&L circuit breakers structurally cannot fire mid-session) |
+| V43 | Diverged top-level tree preserves the S222-fixed A1/A3 bugs (per-member EMOS, no VIF); only scripts import it; METAR-pushes hypothesis REFUTED (single weather_bot.py) | CONFIRMED (process risk) | DEAD for trading; audit-contamination + resurrection-on-import risk |
+| **N1** | **NEW (found verifying V10):** bias sign-flip — bootstrap writes bias = forecast−actual (weather_bot.py:1279) while the actuals updater writes actual−forecast (:5229); simple-bias fallback applies corrected = X + bias, so bootstrap rows DOUBLE forecast error for exactly the cold stations that depend on the fallback | CONFIRMED | **HIGH · LIVE** (cold-station model_prob) |
+| **N2** | **NEW (edges batch):** NBM benchmark renormalizes over priced buckets only (probability_engine.py:599-603) — same fallacy class as #1 | CONFIRMED | was DEAD-path; **FIXED in `caffc68`** alongside #1 |
+
+## Live-corrupting queue distilled from pass 2 (for OPEN DECISIONS triage)
+
+1. **Calibrator feedback cluster** — V1 (self-training loop) + V7 (survivorship) + V8 (side-agnostic join) + V2 (lead mismatch) + V5 (holdout bypass). One remediation unit: fix the training-data assembly.
+2. **Ground-truth cluster** — V4/V6/V10/V11 + N1 (sign-flip). One remediation unit: source column + contamination cutoff + WU-primacy + sign fix.
+3. **Executable-price admission** — V26 (raise WEATHER_MIN_EXECUTABLE_EDGE from 0.0; Tier-1/2 env change candidate).
+4. **Favorite-funnel NO-side admission** — V28 (needs a calibrated NO-side gate; design decision).
+5. **Synthetic ensemble** — V34 (mark + gate or lead-scaled sigma).
+6. **NDFD wrong-day PoP** — V37 (None when no period matches; treat null PoP as 0).
+7. **Circuit-breaker blindness** — V42 (increment _daily_pnl on realized exits, or re-restore each scan).
+8. **Telemetry truth** — V23 (was_correct frame), V16/V20/V21 (logs asserting things the code doesn't do).
+
+Full verifier reports (evidence + refutation attempts + corrections per item) are preserved
+in the session transcript; this table is the durable digest. Reconstruction caveat: the
+original S223 finding TEXTS remain lost — verdicts above attach to the S224
+reconstructions, which one batch confirmed can be recovered verbatim only where the
+workflow dump preserved resultPreviews (V30 was; most were not).

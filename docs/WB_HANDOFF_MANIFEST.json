@@ -9,7 +9,8 @@
     "4170a8c": "fix(watchdog): startup grace for E1 stale-bot force-exit (crash-loop race)",
     "12f68cc": "fix(weather): _check_executable_edge YES-bias on temperature NO opps",
     "37598b7": "fix(weather): WEATHER_MID_LIFE_EXIT_ENABLED / WEATHER_EXIT_MIN_EDGE declared + honored",
-    "6fb4ded": "fix(weather): exit orders must SELL the held token; mid-life state only on confirmed fill"
+    "6fb4ded": "fix(weather): exit orders must SELL the held token; mid-life state only on confirmed fill",
+    "caffc68": "fix(weather): S224 renorm over non-exhaustive bucket sets manufactured certainty (audit #1)"
   },
   "required_docs": [
     "docs/WEATHER_STATUS.md",

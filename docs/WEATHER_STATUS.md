@@ -5,7 +5,7 @@
 > read them for detail, but THIS file is the source of truth for "what is live and what's open."
 > Update the three sections below at the end of every WB session (same commit as the work).
 
-**Last updated:** 2026-07-08 (S223 handoff-hardening session)
+**Last updated:** 2026-07-08 (S224 — renorm fix shipped to branch + fallacy-audit verify phase completed)
 **Pinned branch:** `claude/new-whiteboard-session-9b23tq` (see `.claude/session-branch`)
 **Resume check:** `bash scripts/wb_resume_check.sh` (self-deriving; replaces the hand-typed checklist)
 
@@ -13,22 +13,28 @@
 
 ## OPEN DECISIONS  ← always at the top, always the first thing a resume reads
 
-1. **Renorm-fix decision (live-corrupting, top priority).** Fallacy-audit finding #1
-   (CRITICAL): sum-to-1 renormalization over a *non-exhaustive* bucket set manufactures a
-   literal `model_prob=1.0` (matches the observed live signal: prob 1.0, price 0.43,
-   fabricated edge 0.57 at ~0.8h lead). Same fallacy at the METAR override renorm site.
-   **Decision:** whether/how to fix — candidate is a `len(group.buckets) >= 2` (or
-   skip-normalization-for-singleton) guard across **both** engine paths
-   (`probability_engine.py` parametric + empirical), the METAR override renorm, and
-   `analyze_opportunity`. Corrupts admission, direction, AND the S222 verification readout.
-   Detail: `docs/WB_FALLACY_AUDIT_S223.md` finding #1.
+1. **Deploy the S224 renorm fix (`caffc68`).** Fallacy-audit #1 is FIXED on the branch
+   (deflate-only normalization × 4 engine sites; METAR renorm: evidence-gated, singleton-skip,
+   0.98 conditioning cap; 12 defect-reproducing tests; WB suites 303/303) but **NOT deployed**.
+   Operator call: cut a WB splinter release (and note it moves the S222 verification substrate —
+   see #2). Run the full 1090+ suite on a full env first (cloud sandbox can't — missing
+   other-bot deps). After deploy: `bash deploy/wb-record-deploy.sh <STAMP>` + commit.
 
-2. **S222 post-fix verification (time-gated).** Wait for ≥50 resolved predictions on the
-   post-fix code (~1 week from 2026-07-06), then run `WB_S222_POSTFIX_VERIFICATION_PROMPT.md`
-   from a VPS-access session (needs the box DB; self-aborts on <50 resolutions or a
-   code-fingerprint mismatch). Returns PASS/PARTIAL/FAIL per gate vs. the 2026-07-02 baseline;
-   only then retire containment gates in the order in `WEATHER_S222_STATUS.md` §4-B.
-   **Do not start new calibration changes until this verdict is in — you'd be tuning blind.**
+2. **S222 post-fix verification (time-gated, ~now).** ≥50 resolved predictions on post-fix
+   code (~1 week from 2026-07-06), then run `WB_S222_POSTFIX_VERIFICATION_PROMPT.md` from a
+   VPS-access session. NOTE: if `caffc68` deploys mid-window, the substrate changes again —
+   decide whether to restart the clock at that deploy or read the verdict on the 07-06 code.
+   Only after the verdict: retire containment gates per `WEATHER_S222_STATUS.md` §4-B.
+
+3. **Triage the pass-2 live-corrupting queue.** The fallacy-audit verify phase is now
+   COMPLETE (43 remaining findings re-verified 2026-07-08; ~28 confirmed, 2 new adjacent
+   findings). Eight live items distilled at the bottom of `docs/WB_FALLACY_AUDIT_S223.md`
+   ("Live-corrupting queue") — headline: calibrator self-training feedback loop (V1),
+   ground-truth contamination cluster incl. a bias SIGN-FLIP for cold stations (N1),
+   executable-edge floor 0.0 (V26), NO-side favorite funnel has zero calibrated admission
+   input (V28), synthetic 31-member pseudo-ensemble (V34), intra-day-blind loss
+   limit/drawdown halt (V42). Decision: fix order + which land before vs after the S222
+   verdict (V26 is a Tier-1/2 env change candidate; most others are code).
 
 ---
 
@@ -62,6 +68,12 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-08 (S224):** fallacy-audit #1 FIXED on branch (`caffc68` — deflate-only renorm
+  ×4 engine sites + METAR renorm guard; 12 defect tests; 303/303 WB tests; NOT deployed).
+  Verify phase COMPLETED for the 43 credit-limit-orphaned findings (raw texts were lost —
+  reconstructed from titles and adversarially re-verified; ~28 confirmed + 2 new adjacent
+  findings incl. cold-station bias sign-flip N1 and intra-day-blind circuit breakers V42).
+  Register: `docs/WB_FALLACY_AUDIT_S223.md` "SECOND VERIFY PASS".
 - **2026-07-08 (handoff hardening):** committed the resume-integrity harness
   (`scripts/wb_resume_check.sh` + `docs/WB_HANDOFF_MANIFEST.json`), the SessionStart
   branch-pin hook (`.claude/`), this canonical status file, and the deploy-record mechanism
