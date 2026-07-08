@@ -26,15 +26,15 @@
    decide whether to restart the clock at that deploy or read the verdict on the 07-06 code.
    Only after the verdict: retire containment gates per `WEATHER_S222_STATUS.md` §4-B.
 
-3. **Triage the pass-2 live-corrupting queue.** The fallacy-audit verify phase is now
-   COMPLETE (43 remaining findings re-verified 2026-07-08; ~28 confirmed, 2 new adjacent
-   findings). Eight live items distilled at the bottom of `docs/WB_FALLACY_AUDIT_S223.md`
-   ("Live-corrupting queue") — headline: calibrator self-training feedback loop (V1),
-   ground-truth contamination cluster incl. a bias SIGN-FLIP for cold stations (N1),
-   executable-edge floor 0.0 (V26), NO-side favorite funnel has zero calibrated admission
-   input (V28), synthetic 31-member pseudo-ensemble (V34), intra-day-blind loss
-   limit/drawdown halt (V42). Decision: fix order + which land before vs after the S222
-   verdict (V26 is a Tier-1/2 env change candidate; most others are code).
+3. **Triage the REMAINING pass-2 live-corrupting queue.** Verify phase COMPLETE (43
+   re-verified 2026-07-08). Fixed on branch this session: **#1 renorm** (`caffc68`), **N1
+   cold-station bias sign-flip** (`04185e8`), **V42 intra-day-blind circuit breakers**
+   (`5baff62`). STILL OPEN (distilled at the bottom of `docs/WB_FALLACY_AUDIT_S223.md`):
+   V1 calibrator self-training feedback loop, the rest of the ground-truth contamination
+   cluster (V4/V6/V10/V11 — source column + 07-01 cutoff + WU-primacy), V26 executable-edge
+   floor 0.0 (Tier-1/2 env candidate), V28 NO-side funnel has zero calibrated admission
+   input (design decision), V34 synthetic 31-member pseudo-ensemble, V37 NDFD wrong-day PoP.
+   Decision: fix order + which land before vs after the S222 verdict.
 
 ---
 
@@ -58,8 +58,9 @@
 
 - `WEATHER_S222_STATUS.md` — the S222/S223 session's full handoff (fixes, diagnosis,
   pending-work order, deploy mechanics, config gotchas, file map).
-- `docs/WB_FALLACY_AUDIT_S223.md` — the 18-of-62 verified fallacy findings (INCOMPLETE;
-  resume the verify phase). `docs/WB_FALLACY_AUDIT_S223_raw.json` — raw findings.
+- `docs/WB_FALLACY_AUDIT_S223.md` — the fallacy audit; verify phase COMPLETE (18 pass-1 +
+  43 pass-2 re-verified). See its "SECOND VERIFY PASS" table + "Live-corrupting queue" for
+  what's still open. `docs/WB_FALLACY_AUDIT_S223_raw.json` — raw workflow dump (titles only).
 - `WB_S222_POSTFIX_VERIFICATION_PROMPT.md` — the time-gated verification to run in ~1 week.
 - `docs/SESSION_HANDOFF_PROTOCOL.md` — how to write the next handoff.
 - `docs/WB_HANDOFF_MANIFEST.json` — machine-readable state consumed by the resume check.
