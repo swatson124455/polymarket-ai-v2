@@ -1,6 +1,6 @@
 # Plan — Calibrator / Ground-Truth Contamination Cluster (S224)
 
-**Status:** PLAN ONLY — no code written. Scopes fallacy-audit findings **V1, V4, V6, V10,
+**Status:** IMPLEMENTED `<clsha>` (2026-07-08, same session) — all four workstreams shipped; migration 079 must be applied on the VPS (code detects the column and falls back with a warning until then). Scopes fallacy-audit findings **V1, V4, V6, V10,
 V11** (N1 already fixed in `04185e8`). Prepared 2026-07-08 for operator review before any
 implementation. Line numbers are from the S224 verify pass and WILL have shifted — re-confirm
 with grep before editing.

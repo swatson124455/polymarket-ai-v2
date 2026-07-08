@@ -860,6 +860,13 @@ class Settings(BaseSettings):
     WEATHER_BUHLMANN_KAPPA: float = float(os.getenv("WEATHER_BUHLMANN_KAPPA", "30.0"))
     # S116: YES-side confidence gate threshold. S135: 0.35. S149: 0.50 (uncalibrated YES at 26% WR)
     WEATHER_YES_MIN_CONFIDENCE: float = float(os.getenv("WEATHER_YES_MIN_CONFIDENCE", "0.0"))  # S153: disabled (was 0.50). Re-enable: export WEATHER_YES_MIN_CONFIDENCE=0.50
+    # S224 WS-3 (fallacy-audit V4/V6): ground-truth contamination cutoff.
+    # The WU scraper was fixed 2026-07-01; before that ~96% of calibration
+    # ground truth was silent ERA5/Open-Meteo fallback. All calibration
+    # training (confidence calibrator + EMOS/SAMOS/global) excludes rows
+    # from before this date. ISO date string. Operator decision 2026-07-08:
+    # hard cutoff at the fix date.
+    WEATHER_GROUND_TRUTH_CUTOFF: str = os.getenv("WEATHER_GROUND_TRUTH_CUTOFF", "2026-07-01")
     # S224 (fallacy-audit V28): calibrated-edge admission gate. When ON, a trade
     # must keep >= min_edge (WEATHER_MIN_EDGE, 0.08/0.12) of edge computed on the
     # CALIBRATED P(side), not just the raw model_prob. Closes the funnel window

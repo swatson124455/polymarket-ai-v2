@@ -71,6 +71,15 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-08 (S224 cluster):** ground-truth/calibrator cluster IMPLEMENTED (`<clsha>`) —
+  WS-2 WU-primacy (extreme WU-vs-OM disagreement now abstains, never writes OM as truth);
+  WS-1 provenance column `weather_calibration.actual_source` (**migration 079 — RUN ON VPS**,
+  code falls back + warns until applied); WS-3 hard training cutoff 2026-07-01 (conf-cal ×2 +
+  EMOS SQLs); WS-4 calibrator now trains on RAW pre-calibration confidence (self-training loop
+  broken; **calibrator resets toward identity and re-learns from clean data** — expected, safe
+  direction). V28 gate can be enabled once the re-learned calibrator shows sane OOS Brier.
+  NOT deployed.
+
 - **2026-07-08 (S224 V28):** calibrated-edge admission gate BUILT (`57d54bc`) — symmetric
   `_calibrated_edge_admits` requires the calibrated edge (P(side)_cal − price) to clear the
   same min_edge (0.08/0.12) the raw edge did, giving the NO funnel the calibrated admission

@@ -204,18 +204,39 @@ class WeatherConfidenceCalibrator:
             _no_min_conf = 0.60  # NO side stays at 0.60 (working fine at n=653)
             _sql_min_conf = min(_yes_min_conf, _no_min_conf)  # SQL uses lower bound
 
+            # S224 WS-4 (fallacy-audit V1): train on the RAW pre-calibration
+            # confidence, never the stored post-calibration value. The ENTRY
+            # `confidence` column is effective_confidence (post-calibrate +
+            # dampeners), so fitting on it made the calibrator learn from its
+            # own output — a recursive train/serve loop compounding each 6h
+            # refit. Raw X is recovered as: event_data raw_confidence (written
+            # since S224) or confidence - cal_divergence (S154+, exact
+            # arithmetic since cal_divergence = confidence - raw). Rows with
+            # NEITHER key are EXCLUDED — no silent fallback to the looped
+            # value. Combined with the WS-3 cutoff below, the calibrator
+            # deliberately resets toward identity and re-learns from clean,
+            # raw-X data only (identity is the safe direction).
+            # S224 WS-3 (V6): event_time >= WEATHER_GROUND_TRUTH_CUTOFF —
+            # entries from the pre-WU-fix model describe a dead model.
+            _raw_x = ("COALESCE((event_data->>'raw_confidence')::float, "
+                      "confidence - (event_data->>'cal_divergence')::float)")
+            _gt_cutoff = str(getattr(settings, "WEATHER_GROUND_TRUTH_CUTOFF", "2026-07-01"))
+
             async with db.get_session() as session:
-                result = await session.execute(text("""
+                result = await session.execute(text(f"""
                     WITH entries AS (
-                        SELECT DISTINCT ON (market_id) market_id, confidence, side
+                        SELECT DISTINCT ON (market_id) market_id,
+                               {_raw_x} AS confidence, side
                         FROM trade_events
                         WHERE bot_name = 'WeatherBot' AND event_type = 'ENTRY'
                           AND event_time >= NOW() - INTERVAL '1 day' * :window_days
                           AND event_time <= NOW()
+                          AND event_time >= CAST(:gt_cutoff AS timestamptz)
                           AND confidence IS NOT NULL
+                          AND {_raw_x} IS NOT NULL
                           AND price >= 0.08
                           AND (event_data->>'lead_time_hours')::float >= 48.0
-                          AND confidence >= :min_conf
+                          AND {_raw_x} >= :min_conf
                         ORDER BY market_id, event_time
                     )
                     SELECT e.confidence, e.side,
@@ -225,7 +246,8 @@ class WeatherConfidenceCalibrator:
                     JOIN entries e ON e.market_id = r.market_id
                     WHERE r.bot_name = 'WeatherBot' AND r.event_type = 'RESOLUTION'
                       AND r.realized_pnl IS NOT NULL
-                """), {"window_days": window_days, "min_conf": _sql_min_conf})
+                """), {"window_days": window_days, "min_conf": _sql_min_conf,
+                       "gt_cutoff": _gt_cutoff})
                 rows = result.fetchall()
 
             # S143: True train/test split — fit on days [window, 7], evaluate on [7, 0]
@@ -398,17 +420,24 @@ class WeatherConfidenceCalibrator:
                 ))
                 if _yes_fb_window > window_days:
                     try:
+                        # S224 WS-4 + WS-3: same raw-X + cutoff as the main fit
+                        # (see comment above) — the YES fallback must not
+                        # reintroduce the self-training loop it exists to help.
                         async with db.get_session() as _ys:
-                            _yr = await _ys.execute(text("""
+                            _yr = await _ys.execute(text(f"""
                                 WITH entries AS (
-                                    SELECT DISTINCT ON (market_id) market_id, confidence, side
+                                    SELECT DISTINCT ON (market_id) market_id,
+                                           {_raw_x} AS confidence, side
                                     FROM trade_events
                                     WHERE bot_name = 'WeatherBot' AND event_type = 'ENTRY'
                                       AND event_time >= NOW() - INTERVAL '1 day' * :window_days
                                       AND event_time <= NOW()
-                                      AND confidence IS NOT NULL AND price >= 0.08
+                                      AND event_time >= CAST(:gt_cutoff AS timestamptz)
+                                      AND confidence IS NOT NULL
+                                      AND {_raw_x} IS NOT NULL
+                                      AND price >= 0.08
                                       AND (event_data->>'lead_time_hours')::float >= 48.0
-                                      AND confidence >= :min_conf_yes AND side = 'YES'
+                                      AND {_raw_x} >= :min_conf_yes AND side = 'YES'
                                     ORDER BY market_id, event_time
                                 )
                                 SELECT e.confidence, e.side,
@@ -418,7 +447,8 @@ class WeatherConfidenceCalibrator:
                                 JOIN entries e ON e.market_id = r.market_id
                                 WHERE r.bot_name = 'WeatherBot' AND r.event_type = 'RESOLUTION'
                                   AND r.realized_pnl IS NOT NULL
-                            """), {"window_days": _yes_fb_window, "min_conf_yes": _yes_min_conf})
+                            """), {"window_days": _yes_fb_window, "min_conf_yes": _yes_min_conf,
+                                   "gt_cutoff": _gt_cutoff})
                             _yes_rows = _yr.fetchall()
                         # Apply holdout split to wider window too
                         _yes_train = [r for r in _yes_rows
@@ -735,6 +765,9 @@ class WeatherBot(BaseBot):
         # Risk state (P2: restored from DB on day boundary)
         self._daily_pnl = 0.0
         self._daily_pnl_date: Optional[str] = None
+        # S224 WS-1: cached "does weather_calibration.actual_source exist yet?"
+        # (None = not checked; migration 079 may lag the code deploy)
+        self._actual_source_col_known: Optional[bool] = None
         self._group_exposure: Dict[str, float] = {}   # "city:date" → USD deployed
         self._city_exposure: Dict[str, float] = {}     # city → total USD deployed
         self._recently_exited: Dict[str, float] = {}   # market_id → mono time
@@ -1273,6 +1306,25 @@ class WeatherBot(BaseBot):
             # S115: Climatology comes from weather_climatology table (backfill_climatology.py),
             # NOT from bootstrap data. Bootstrap only inserts (forecast, actual) pairs.
             inserted = 0
+            # S224 WS-1: tag bootstrap rows as ERA5-sourced when the provenance
+            # column exists (migration 079) — these are the definitionally
+            # contaminated rows (pure ERA5, never WU).
+            _has_src = await self._weather_cal_has_source_col(db)
+            _ins_sql = ("""
+                INSERT INTO weather_calibration
+                    (station_id, target_date, forecast_temp, actual_temp, lead_time_hours,
+                     bias, model_name, created_at, actual_source)
+                VALUES
+                    (:sid, :td, :ft, :at, :lt, :bias, 'bootstrap_gfs', NOW(), 'era5_bootstrap')
+                ON CONFLICT (station_id, target_date, lead_time_hours) DO NOTHING
+            """ if _has_src else """
+                INSERT INTO weather_calibration
+                    (station_id, target_date, forecast_temp, actual_temp, lead_time_hours,
+                     bias, model_name, created_at)
+                VALUES
+                    (:sid, :td, :ft, :at, :lt, :bias, 'bootstrap_gfs', NOW())
+                ON CONFLICT (station_id, target_date, lead_time_hours) DO NOTHING
+            """)
             async with db.get_session() as session:
                 from sqlalchemy import text
                 for forecast_temp, actual_temp, target_date_str, lead_hours in pairs:
@@ -1284,14 +1336,7 @@ class WeatherBot(BaseBot):
                     # fallback. Was `forecast_temp - actual_temp`.
                     bias = actual_temp - forecast_temp
                     try:
-                        await session.execute(text("""
-                            INSERT INTO weather_calibration
-                                (station_id, target_date, forecast_temp, actual_temp, lead_time_hours,
-                                 bias, model_name, created_at)
-                            VALUES
-                                (:sid, :td, :ft, :at, :lt, :bias, 'bootstrap_gfs', NOW())
-                            ON CONFLICT (station_id, target_date, lead_time_hours) DO NOTHING
-                        """), {
+                        await session.execute(text(_ins_sql), {
                             "sid": station.station_id,
                             "td": target_date_str,
                             "ft": forecast_temp,
@@ -3793,6 +3838,10 @@ class WeatherBot(BaseBot):
                 "ensemble_spread": opp.get("model_spread", 3.0),
                 # S154: Calibrator divergence tracking + new dampener values
                 "cal_divergence": round(opp["confidence"] - opp.get("raw_confidence", opp["confidence"]), 4),
+                # S224 WS-4 (V1): persist the RAW pre-calibration confidence
+                # explicitly — the calibrator fit trains on THIS, never on the
+                # post-calibration `confidence` column (self-training loop).
+                "raw_confidence": round(opp.get("raw_confidence", opp["confidence"]), 4),
                 "no_price_dampener": round(_no_price_damp, 3),
                 "yes_price_dampener": round(_yes_price_damp, 3),
                 "yes_identity_conf_damp": round(opp.get("_yes_identity_damp", 1.0), 3),
@@ -5239,6 +5288,83 @@ class WeatherBot(BaseBot):
         except Exception as exc:
             logger.debug("weatherbot_daily_pnl_restore_failed", error=str(exc))
 
+    @staticmethod
+    def _resolve_actual_temp(
+        wu_temp: Optional[float],
+        om_temp: Optional[float],
+        temp_unit: str,
+        station_id: str = "",
+        target_date: str = "",
+    ) -> Tuple[Optional[float], Optional[str]]:
+        """Pick the ground-truth daily high and record WHERE it came from.
+
+        Returns (actual_temp, source) — source in {'wu', 'open_meteo'} — or
+        (None, None) to ABSTAIN (leave the row NULL; it retries next cycle).
+
+        S224 WS-2 (fallacy-audit V11): WU is the Polymarket resolution source.
+        The old code, on >10°F/5°C WU-vs-OM disagreement, DISCARDED WU and
+        wrote the Open-Meteo value as ground truth — epistemically inverted
+        (exactly when sources disagree most, it kept the one markets do NOT
+        resolve on). Now: extreme disagreement → abstain, never substitute OM.
+        Note: a persistently disagreeing row will retry each cycle and never
+        resolve — visible via the warning below; acceptable vs. training on a
+        wrong value.
+        S224 WS-1 (V4/V10): the returned source is persisted to
+        weather_calibration.actual_source (migration 079) so contaminated
+        rows are identifiable forever after.
+        """
+        max_diff = 10.0 if temp_unit.upper() == "F" else 5.0
+        if wu_temp is not None and om_temp is not None:
+            diff = abs(wu_temp - om_temp)
+            if diff > max_diff:
+                logger.warning(
+                    "weatherbot_wu_om_disagreement_abstain",
+                    station=station_id,
+                    date=target_date,
+                    wu=wu_temp, om=om_temp, diff=round(diff, 1),
+                    threshold=max_diff,
+                    action="abstain — row stays NULL, retries next cycle",
+                )
+                return (None, None)
+            elif diff > 1.0:
+                logger.warning(
+                    "weatherbot_wu_om_discrepancy",
+                    station=station_id,
+                    date=target_date,
+                    wu=wu_temp, om=om_temp, diff=round(diff, 1),
+                )
+        if wu_temp is not None:
+            return (wu_temp, "wu")
+        if om_temp is not None:
+            return (om_temp, "open_meteo")
+        return (None, None)
+
+    async def _weather_cal_has_source_col(self, db) -> bool:
+        """S224 WS-1: does weather_calibration have the actual_source column
+        (migration 079)? Checked once and cached. Writers fall back to the
+        legacy statement (and warn) until the operator applies the migration —
+        deploys are tarball-based, so code can land before the migration runs.
+        """
+        if self._actual_source_col_known is None:
+            try:
+                from sqlalchemy import text as _t
+                async with db.get_session(timeout=5) as _s:
+                    _r = await _s.execute(_t(
+                        "SELECT 1 FROM information_schema.columns "
+                        "WHERE table_name = 'weather_calibration' "
+                        "AND column_name = 'actual_source'"
+                    ))
+                    self._actual_source_col_known = _r.fetchone() is not None
+                if not self._actual_source_col_known:
+                    logger.warning(
+                        "weather_calibration_actual_source_missing",
+                        fix="run schema/migrations/079_weather_calibration_actual_source.sql",
+                    )
+            except Exception as exc:
+                logger.debug("weather_cal_source_col_check_failed", error=str(exc))
+                return False  # don't cache on transient error
+        return bool(self._actual_source_col_known)
+
     async def _maybe_update_calibration_actuals(self) -> None:
         """Fetch actual historical temperatures for past forecast rows and update bias.
 
@@ -5292,29 +5418,14 @@ class WeatherBot(BaseBot):
                     target_date=target_date,
                     temp_unit=station.temp_unit,
                 )
-                # Use WU when available (resolution source); fall back to Open-Meteo
-                # Sanity check: reject WU values that differ from Open-Meteo by
-                # more than 10°F/5°C — likely a scraping error, not a real value.
-                max_diff = 10.0 if station.temp_unit.upper() == "F" else 5.0
-                if wu_temp is not None and om_temp is not None:
-                    diff = abs(wu_temp - om_temp)
-                    if diff > max_diff:
-                        logger.warning(
-                            "weatherbot_wu_sanity_rejected",
-                            station=station_id,
-                            date=str(target_date),
-                            wu=wu_temp, om=om_temp, diff=round(diff, 1),
-                            threshold=max_diff,
-                        )
-                        wu_temp = None  # Fall back to Open-Meteo
-                    elif diff > 1.0:
-                        logger.warning(
-                            "weatherbot_wu_om_discrepancy",
-                            station=station_id,
-                            date=str(target_date),
-                            wu=wu_temp, om=om_temp, diff=round(diff, 1),
-                        )
-                actual_temp = wu_temp if wu_temp is not None else om_temp
+                # S224 WS-2 (fallacy-audit V11): WU is the resolution source.
+                # On extreme WU-vs-OM disagreement we now ABSTAIN (row stays
+                # NULL and retries next cycle) instead of the old inverted
+                # behavior of discarding WU and writing OM as ground truth.
+                actual_temp, actual_source = self._resolve_actual_temp(
+                    wu_temp, om_temp, station.temp_unit,
+                    station_id=station_id, target_date=str(target_date),
+                )
                 if actual_temp is None:
                     continue
 
@@ -5325,19 +5436,38 @@ class WeatherBot(BaseBot):
                     db, station_id, target_date, actual_temp,
                 )
 
+                # S224 WS-1: persist provenance when the column exists
+                # (migration 079); legacy statement otherwise.
+                _has_src = await self._weather_cal_has_source_col(db)
                 async with db.get_session() as session:
-                    await session.execute(text("""
-                        UPDATE weather_calibration
-                        SET actual_temp = :actual_temp,
-                            bias = :bias,
-                            crps = :crps
-                        WHERE id = :row_id
-                    """), {
-                        "actual_temp": actual_temp,
-                        "bias": bias,
-                        "crps": round(crps_val, 4) if crps_val is not None else None,
-                        "row_id": row_id,
-                    })
+                    if _has_src:
+                        await session.execute(text("""
+                            UPDATE weather_calibration
+                            SET actual_temp = :actual_temp,
+                                bias = :bias,
+                                crps = :crps,
+                                actual_source = :src
+                            WHERE id = :row_id
+                        """), {
+                            "actual_temp": actual_temp,
+                            "bias": bias,
+                            "crps": round(crps_val, 4) if crps_val is not None else None,
+                            "src": actual_source,
+                            "row_id": row_id,
+                        })
+                    else:
+                        await session.execute(text("""
+                            UPDATE weather_calibration
+                            SET actual_temp = :actual_temp,
+                                bias = :bias,
+                                crps = :crps
+                            WHERE id = :row_id
+                        """), {
+                            "actual_temp": actual_temp,
+                            "bias": bias,
+                            "crps": round(crps_val, 4) if crps_val is not None else None,
+                            "row_id": row_id,
+                        })
                     await session.commit()
 
                 if crps_val is not None:
@@ -6000,13 +6130,19 @@ class WeatherBot(BaseBot):
                 # S120: Rolling window — only use recent calibration data so
                 # winter EMOS coefficients don't contaminate spring forecasts.
                 _emos_window_days = int(getattr(settings, "WEATHER_EMOS_WINDOW_DAYS", 90))
+                # S224 WS-3 (fallacy-audit V4/V6): hard ground-truth cutoff —
+                # pre-2026-07-01 rows are ~96% silent ERA5 (dead WU scraper)
+                # and cannot be re-sourced (no provenance recorded); never
+                # train EMOS/SAMOS/global on them.
                 rows = await session.execute(text("""
                     SELECT station_id, lead_time_hours, bias, forecast_temp, actual_temp, regime,
                            target_date
                     FROM weather_calibration
                     WHERE bias IS NOT NULL AND actual_temp IS NOT NULL
                       AND created_at >= NOW() - make_interval(days => :emos_window)
-                """), {"emos_window": _emos_window_days})
+                      AND created_at >= CAST(:gt_cutoff AS timestamptz)
+                """), {"emos_window": _emos_window_days,
+                       "gt_cutoff": str(getattr(settings, "WEATHER_GROUND_TRUTH_CUTOFF", "2026-07-01"))})
                 all_rows = rows.fetchall()
 
             if not all_rows:

@@ -723,6 +723,84 @@ class TestEmpiricalCDF:
         assert probs_raw["market_1"] < 0.05
 
 
+class TestS224CalibratorTrainingHygiene:
+    """S224 WS-3/WS-4 (fallacy-audit V1/V6): the calibrator fit must (a) train
+    on the RAW pre-calibration confidence — recovered via raw_confidence /
+    cal_divergence, never the bare post-calibration `confidence` column — and
+    (b) carry the ground-truth cutoff. Source-level guards: both fit SQLs are
+    built inside fit_from_trade_events, so we assert on its source."""
+
+    @staticmethod
+    def _fit_source():
+        import inspect
+        from bots.weather_bot import WeatherConfidenceCalibrator
+        return inspect.getsource(WeatherConfidenceCalibrator.fit_from_trade_events)
+
+    def test_fit_trains_on_raw_confidence_expression(self):
+        src = self._fit_source()
+        assert "raw_confidence" in src and "cal_divergence" in src, (
+            "fit_from_trade_events no longer recovers RAW confidence — "
+            "V1 self-training loop reintroduced"
+        )
+        # the raw-X expression must be used as the selected confidence
+        assert "AS confidence" in src and "{_raw_x}" in src
+
+    def test_fit_never_selects_bare_confidence_column(self):
+        src = self._fit_source()
+        # The old looped pattern: selecting the stored (post-calibration)
+        # column directly as the training X.
+        assert "DISTINCT ON (market_id) market_id, confidence, side" not in src, (
+            "fit SQL selects the bare post-calibration confidence column — "
+            "V1 self-training loop reintroduced"
+        )
+
+    def test_fit_carries_ground_truth_cutoff(self):
+        src = self._fit_source()
+        assert src.count("gt_cutoff") >= 4, (
+            "ground-truth cutoff missing from one of the fit SQLs (WS-3)"
+        )
+
+    def test_cutoff_setting_declared(self):
+        from bots.weather.engine.config.settings import settings as _s
+        assert getattr(_s, "WEATHER_GROUND_TRUTH_CUTOFF", None) == "2026-07-01"
+
+
+class TestS224ResolveActualTemp:
+    """S224 WS-1/WS-2 (fallacy-audit V11/V4/V10): ground-truth selection.
+    WU is the resolution source. The old code, on >10°F/5°C WU-vs-OM
+    disagreement, DISCARDED WU and wrote Open-Meteo as truth (inverted);
+    and nothing recorded provenance. _resolve_actual_temp returns
+    (value, source) or (None, None) to abstain."""
+
+    @staticmethod
+    def _resolve(*a, **k):
+        from bots.weather_bot import WeatherBot
+        return WeatherBot._resolve_actual_temp(*a, **k)
+
+    def test_wu_primacy_when_sources_agree(self):
+        assert self._resolve(75.0, 74.2, "F") == (75.0, "wu")
+
+    def test_extreme_disagreement_abstains_never_om(self):
+        """The V11 defect: old code returned (om, ...) here. Must abstain."""
+        actual, source = self._resolve(75.0, 60.0, "F")  # 15°F gap > 10
+        assert actual is None and source is None
+
+    def test_om_fallback_when_wu_missing(self):
+        assert self._resolve(None, 71.5, "F") == (71.5, "open_meteo")
+
+    def test_both_missing_abstains(self):
+        assert self._resolve(None, None, "F") == (None, None)
+
+    def test_celsius_threshold(self):
+        # 6°C gap > 5°C threshold → abstain; 4°C gap → WU kept
+        assert self._resolve(30.0, 24.0, "C") == (None, None)
+        assert self._resolve(30.0, 26.0, "C") == (30.0, "wu")
+
+    def test_wu_unchecked_when_om_missing(self):
+        # ERA5 lag: no OM to check against → WU used as-is (documented behavior)
+        assert self._resolve(75.0, None, "F") == (75.0, "wu")
+
+
 class TestS224CalibratedEdgeGate:
     """S224 fallacy-audit V28: a symmetric calibrated-edge admission gate. The
     raw min_edge gate + negative-EV gate left a window where a (usually NO)
