@@ -5,7 +5,7 @@
 > read them for detail, but THIS file is the source of truth for "what is live and what's open."
 > Update the three sections below at the end of every WB session (same commit as the work).
 
-**Last updated:** 2026-07-08 (S224 — renorm fix shipped to branch + fallacy-audit verify phase completed)
+**Last updated:** 2026-07-08 (S224 batch DEPLOYED — release `20260708_151330`, migration 079 applied)
 **Pinned branch:** `claude/new-whiteboard-session-9b23tq` (see `.claude/session-branch`)
 **Resume check:** `bash scripts/wb_resume_check.sh` (self-deriving; replaces the hand-typed checklist)
 
@@ -13,42 +13,38 @@
 
 ## OPEN DECISIONS  ← always at the top, always the first thing a resume reads
 
-1. **Deploy the S224 renorm fix (`caffc68`).** Fallacy-audit #1 is FIXED on the branch
-   (deflate-only normalization × 4 engine sites; METAR renorm: evidence-gated, singleton-skip,
-   0.98 conditioning cap; 12 defect-reproducing tests; WB suites 303/303) but **NOT deployed**.
-   Operator call: cut a WB splinter release (and note it moves the S222 verification substrate —
-   see #2). Run the full 1090+ suite on a full env first (cloud sandbox can't — missing
-   other-bot deps). After deploy: `bash deploy/wb-record-deploy.sh <STAMP>` + commit.
+1. **WATCH the calibrator reset (S224 just deployed, release `20260708_151330`).** The
+   ground-truth cluster is LIVE, so the calibrator now excludes pre-2026-07-01 + self-looped
+   data → it will fall to **identity** and re-learn from clean, raw-X data over the next days.
+   Expected, safe. Verify it's happening: `journalctl -u polymarket-weather | grep -E
+   "calibrator|actual_source|abstain|holdout_valid"`. Watch for the OOS Brier trending sane as
+   clean resolutions accumulate — that verdict gates enabling the V28 gate (#3).
 
-2. **S222 post-fix verification (time-gated, ~now).** ≥50 resolved predictions on post-fix
-   code (~1 week from 2026-07-06), then run `WB_S222_POSTFIX_VERIFICATION_PROMPT.md` from a
-   VPS-access session. NOTE: if `caffc68` deploys mid-window, the substrate changes again —
-   decide whether to restart the clock at that deploy or read the verdict on the 07-06 code.
-   Only after the verdict: retire containment gates per `WEATHER_S222_STATUS.md` §4-B.
+2. **S222 post-fix verification (time-gated).** The substrate changed AGAIN at this deploy
+   (07-08), so the ≥50-resolution clock effectively restarts here for the fully-fixed code.
+   Run `WB_S222_POSTFIX_VERIFICATION_PROMPT.md` from a VPS-access session once ≥50 post-07-08
+   resolutions exist. Only after a PASS: retire containment gates per `WEATHER_S222_STATUS.md` §4-B.
 
-3. **Deploy the S224 batch + apply migration 079.** Everything actionable from the pass-2
-   queue is now on the branch: **#1 renorm** (`caffc68`), **N1** (`04185e8`), **V42**
-   (`5baff62`), **V37** (`419df24`), **V34** (`410a89b`), **V26 floor 0→0.04** (`f910cf6`),
-   **V28 gate built default-OFF** (`57d54bc`), **V1/ground-truth cluster IMPLEMENTED**
-   (`8c778d3` — WU-primacy, provenance column, 2026-07-01 training cutoff, self-training loop
-   broken; calibrator will reset toward identity and re-learn clean). **Post-deploy: run
-   `schema/migrations/079_weather_calibration_actual_source.sql` on the VPS** (code warns and
-   falls back until applied). LATER: enable the V28 gate once the re-learned calibrator shows
-   sane OOS Brier; V34 follow-ups (synthetic marker / RNG determinism); deeper V26 (orders at
-   midpoint); optional retro-purge of flipped `bootstrap_gfs` rows (see N1 changelog).
+3. **Deferred switches (do after the calibrator re-learns + S222 passes):** enable the V28
+   calibrated-edge gate (`WEATHER_CALIBRATED_EDGE_GATE_ENABLED=true`); V34 follow-ups
+   (synthetic marker / RNG determinism); deeper V26 (orders submitted at midpoint, not
+   executable price); optional retro-purge of flipped `bootstrap_gfs` rows (N1 changelog);
+   optional WU-only training filter on `actual_source` once the column has populated.
 
 ---
 
 ## WHAT IS LIVE NOW
 
-- **Deployed:** WeatherBot on its splinter (`/opt/polymarket-ai-v2-weather` →
-  `/opt/pa2-weather-releases/<stamp>`, `polymarket-weather.service`). Paper mode, treated
-  as production. Carries the six S223 root-cause fixes (dead tag, DB-semaphore leak,
-  watchdog startup-grace, YES-bias exec-edge, mid-life-exit config, exits-must-SELL).
-- **Health (per last verification):** service `active`, `NRestarts=0`, funnel restored by
-  the tag fix; all S222 safety gates left **ON as containment**. Quality is
-  "accurate-but-leaking-edge" — communicate via **calibration** (Brier/PIT/reliability),
-  **never P&L** (CLAUDE.md Forbidden Pattern #11).
+- **Deployed:** WeatherBot on its splinter, release **`20260708_151330`** (rollback target
+  `20260708_140013`). Paper mode, treated as production. Carries the six S223 fixes PLUS the
+  full **S224 batch**: renorm deflate-only, N1 bias sign-flip, V42 circuit breakers, V37 NDFD
+  PoP, V34 synthetic sigma, V26 exec-edge floor 0.04, V28 gate (built, OFF), and the
+  ground-truth/calibrator cluster (WU-primacy, provenance, 2026-07-01 cutoff, raw-X training).
+  **Migration 079 applied** (`actual_source` column live).
+- **Health (at deploy 07-08):** `service: active`, clean restart, S224 markers=24 on the box.
+  All S222 safety gates still **ON as containment**. The calibrator is mid-reset toward
+  identity (see OPEN DECISIONS #1) — expected. Quality via **calibration** (Brier/PIT/
+  reliability), **never P&L** (CLAUDE.md Forbidden Pattern #11).
 - **Deploy parity from a keyless (cloud) session:** compare the branch you're on to
   `deploy/LAST_DEPLOY.json` (`bash scripts/wb_resume_check.sh` does this). Live-VPS health
   still needs the deploy key — see the ssh one-liner in `scripts/wb_resume_check.sh`.
@@ -70,6 +66,12 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-08 (S224 DEPLOYED):** full S224 batch cut to release `20260708_151330` (rollback
+  `20260708_140013`); `service: active`, S224 markers=24; **migration 079 applied by the
+  release-cut script itself** (auto-migration folded in). Calibrator now mid-reset toward
+  identity (ground-truth cutoff + raw-X training live) — re-learning from clean data over the
+  coming days. Deploy recorded `a9cfcfa`. (That record commit also inadvertently swept in a
+  staged esports probe `scripts/esports_market_shape_probe.py` — harmless, weather never runs it.)
 - **2026-07-08 (S224 cluster):** ground-truth/calibrator cluster IMPLEMENTED (`8c778d3`) —
   WS-2 WU-primacy (extreme WU-vs-OM disagreement now abstains, never writes OM as truth);
   WS-1 provenance column `weather_calibration.actual_source` (**migration 079 — RUN ON VPS**,
