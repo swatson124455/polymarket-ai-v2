@@ -77,12 +77,13 @@ source is recorded.
   a trustworthy calibrator is the prerequisite for both.
 
 ## Cross-cutting risks
-- **Shared modules:** the migration + `database.py`/paper_trading touch points are MB-priority
-  shared infra (CLAUDE.md). WS-1/WS-4 need operator + MB signoff, not a WB-solo change.
+- **DB migration + `database.py`/paper_trading touch points:** normal review discipline —
+  full pytest, blast-radius check on every consumer of the changed column/SQL. (No cross-bot
+  priority gate; the DB is shared and fine to change here.)
 - **Shrinking training data** can silently drop stations to identity — instrument coverage before/after.
 - **P&L:** evaluate calibration improvement via Brier/PIT/reliability only (Forbidden Pattern #11).
 - **Diverged tree:** apply to the vendored `bots/weather/engine/**`; top-level `base_engine/weather/**`
-  is dead (V43) — sync only with MB authorization.
+  is dead (V43) — keep them in sync or leave the dead copy alone.
 
 ## Verification per workstream
 - WS-2: unit test — >10° WU/OM gap leaves `actual_temp` NULL (not OM); ≤10° keeps WU.
@@ -93,8 +94,10 @@ source is recorded.
 - End-to-end: after a clean-data refit, re-run `WB_S222_POSTFIX_VERIFICATION_PROMPT.md` — PIT/Brier
   should improve vs the contaminated baseline.
 
-## Operator decision points (blockers)
-1. Backfill strategy for existing rows — **A (NULL=dirty)** recommended vs B (date-stamp).
-2. V1 fix shape — **4a (raw column/event_data)** recommended vs 4b (defer calibration to read path).
-3. Cutoff value + whether to start loose — default `2026-07-01`.
-4. MB signoff for the shared-module / migration touch points.
+## Operator decisions (RESOLVED 2026-07-08)
+1. Backfill strategy for existing rows — **A (NULL = dirty)**. ✅ chosen.
+2. V1 fix shape — **4a (train on raw confidence)**. ✅ chosen (elaboration in commit / status).
+3. Contamination cutoff — **2026-07-01 hard**. ✅ chosen.
+4. ~~MB signoff for shared modules~~ — REMOVED. No cross-bot priority rule (operator directive
+   2026-07-08; the CLAUDE.md "SESSION PRIORITY / shared resource" section was deleted). The DB
+   is shared and changed under normal review, not a priority gate.
