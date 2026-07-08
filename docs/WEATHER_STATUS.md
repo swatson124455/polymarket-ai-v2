@@ -27,15 +27,14 @@
    Only after the verdict: retire containment gates per `WEATHER_S222_STATUS.md` §4-B.
 
 3. **Triage the REMAINING pass-2 live-corrupting queue.** Verify phase COMPLETE (43
-   re-verified 2026-07-08). Fixed on branch this session (5 code fixes): **#1 renorm**
-   (`caffc68`), **N1 cold-station bias sign-flip** (`04185e8`), **V42 intra-day-blind circuit
-   breakers** (`5baff62`), **V37 NDFD wrong-day PoP** (`419df24`), **V34 synthetic-ensemble
-   lead-time sigma** (`410a89b`). STILL OPEN (need YOUR input or bigger scope): V1 calibrator
-   self-training feedback loop, the ground-truth contamination cluster (V4/V6/V10/V11 — source
-   column + 07-01 cutoff + WU-primacy), **V26** executable-edge floor 0.0 (Tier-1/2 env — needs
-   a value decision), **V28** NO-side funnel has zero calibrated admission input (design
-   decision). Plus V34 follow-ups (synthetic marker / RNG determinism — see register).
-   Decision: fix order + which land before/after S222.
+   re-verified 2026-07-08). Fixed on branch this session: **#1 renorm** (`caffc68`), **N1
+   bias sign-flip** (`04185e8`), **V42 circuit breakers** (`5baff62`), **V37 NDFD PoP**
+   (`419df24`), **V34 synthetic sigma** (`410a89b`), **V26 exec-edge floor 0→0.04**
+   (`<v26sha>`). IN PROGRESS this session (operator-approved): **V28** NO-side calibrated
+   admission gate (design + build), **V1 cluster** written plan (calibrator self-training +
+   V4/V6/V10/V11 ground-truth contamination + DB source-column migration — plan only, no
+   code). STILL OPEN after those: V34 follow-ups (synthetic marker / RNG determinism), the
+   deeper V26 (orders submitted at midpoint not executable price). Then: deploy + S222 verdict.
 
 ---
 
@@ -69,6 +68,12 @@
 ---
 
 ## CHANGELOG (newest first — one line per session-end update)
+
+- **2026-07-08 (S224 V26):** executable-edge floor raised 0.0→0.04 (`<v26sha>`, operator-
+  approved) — admitted trades must now keep ≥4pts of edge at the price actually paid, not just
+  at the midpoint. Tier-2 gating change; blocks thin-positive fills. Rollback:
+  `WEATHER_MIN_EXECUTABLE_EDGE=0.0`. Deeper V26 (orders still submitted at midpoint, not the
+  executable price) remains open. NOT deployed.
 
 - **2026-07-08 (S224 V34):** synthetic-ensemble spread now lead-time-scaled (`410a89b`) —
   the point-forecast-only fallback used a fixed 2°F/1.1°C day-1 error at every lead (a 120h

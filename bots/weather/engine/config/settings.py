@@ -935,11 +935,15 @@ class Settings(BaseSettings):
     # (weather_bot.py:_check_executable_edge). Recomputes edge using bestAsk
     # (for BUY YES) or 1-bestBid (for BUY NO) instead of the midpoint that
     # signal generation used. Rejects if honest edge < this threshold.
-    # Default 0.0 = only kill clear negative-edge cases (the 2106427 failure
-    # mode where midpoint edge +0.197 was reality -0.13 on executable price).
-    # Tune up to match WEATHER_MIN_EDGE (0.08) for stricter; set <= -1.0 in
-    # .env to disable the check entirely.
-    WEATHER_MIN_EXECUTABLE_EDGE: float = float(os.getenv("WEATHER_MIN_EXECUTABLE_EDGE", "0.0"))
+    # S224 (fallacy-audit V26): default raised 0.0 -> 0.04. At 0.0 the check only
+    # killed clearly-NEGATIVE executable edge, so the EFFECTIVE minimum edge at
+    # the price actually paid was zero — a trade could clear the 0.08/0.12
+    # midpoint gate yet fill with ~0 real edge on a thin/wide book. 0.04 requires
+    # admitted trades to keep >=4pts of edge at the executable price (still
+    # looser than WEATHER_MIN_EDGE 0.08, deliberately — the midpoint gate already
+    # asked for 0.08 at the midpoint). Set <= -1.0 in .env to disable entirely;
+    # rollback to old behavior: WEATHER_MIN_EXECUTABLE_EDGE=0.0.
+    WEATHER_MIN_EXECUTABLE_EDGE: float = float(os.getenv("WEATHER_MIN_EXECUTABLE_EDGE", "0.04"))
     # S99: Fill probability floor (price-depth factor)
     WEATHER_MIN_FILL_PROB_ESTIMATE: float = float(os.getenv("WEATHER_MIN_FILL_PROB_ESTIMATE", "0.15"))  # S101: 0.25→0.15 — pre-flight only, full model still gates
     # S99: PSW every-other-scan

@@ -4195,11 +4195,33 @@ class TestS221ExecutableEdgeCheck:
     """S221 Phase 2: Backstop check at entry validation. Recomputes edge using
     bestAsk (for YES buys) / 1-bestBid (for NO buys) instead of midpoint, and
     rejects when honest edge is below the WEATHER_MIN_EXECUTABLE_EDGE floor
-    (default 0.0 — kills clearly-negative-edge signals only).
+    (default 0.04 since S224/V26 — requires >=4pts of edge at the executable
+    price; was 0.0 = kills clearly-negative-edge signals only).
 
     Complement to _filter_thin_markets (which catches at discovery) — this
     fires on any liquid-but-still-mispriced market that slipped through.
     """
+
+    def test_rejects_thin_positive_executable_edge_v26(self, bot_with_index):
+        """S224 V26: an opp with honest executable edge in (0, 0.04) — which
+        PASSED at the old 0.0 default — must now REJECT. YES, model 0.53,
+        bestAsk 0.50 → honest_edge = +0.03 < 0.04."""
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.48, "bestAsk": 0.50}
+        }
+        opp = {"market_id": "m1", "side": "YES", "model_prob": 0.53,
+               "price": 0.49, "edge": 0.04}
+        assert bot_with_index._check_executable_edge(opp) is False
+
+    def test_accepts_executable_edge_at_floor_v26(self, bot_with_index):
+        """S224 V26: honest edge exactly at the 0.04 floor is accepted
+        (reject is strict <). YES, model 0.54, bestAsk 0.50 → +0.04."""
+        bot_with_index.base_engine.order_gateway._market_index = {
+            "m1": {"bestBid": 0.48, "bestAsk": 0.50}
+        }
+        opp = {"market_id": "m1", "side": "YES", "model_prob": 0.54,
+               "price": 0.49, "edge": 0.05}
+        assert bot_with_index._check_executable_edge(opp) is True
 
     @pytest.fixture
     def bot_with_index(self):
@@ -4389,12 +4411,14 @@ class TestS223ExecutableEdgeSideAdjust:
 
     def test_precipitation_no_not_double_flipped(self, bot_with_index):
         """NO-REGRESSION. Precip NO stores P(NO) already
-        (precipitation_engine.py:227). model_prob=0.78, NO_ask=0.75 -> +0.03."""
+        (precipitation_engine.py:227). model_prob=0.85, NO_ask=0.75 -> +0.10
+        (clear of the S224/V26 0.04 floor). If it were double-flipped, P(NO)
+        would become 0.15 -> edge -0.60 -> reject; correct handling accepts."""
         bot_with_index.base_engine.order_gateway._market_index = {
             "m1": {"bestBid": 0.25, "bestAsk": 0.28}
         }
-        opp = {"market_id": "m1", "side": "NO", "model_prob": 0.78,
-               "price": 0.75, "edge": 0.03, "market_type": "precipitation"}
+        opp = {"market_id": "m1", "side": "NO", "model_prob": 0.85,
+               "price": 0.75, "edge": 0.10, "market_type": "precipitation"}
         assert bot_with_index._check_executable_edge(opp) is True
 
     def test_temperature_yes_unchanged(self, bot_with_index):

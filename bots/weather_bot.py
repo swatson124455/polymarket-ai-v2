@@ -4468,7 +4468,8 @@ class WeatherBot(BaseBot):
         For thin / wide-spread books, midpoint diverges from what the order
         will actually fill at — bestAsk for BUY YES, 1-bestBid (=bestAsk_NO)
         for BUY NO. Recompute edge with the executable price and reject if
-        the honest answer is below WEATHER_MIN_EXECUTABLE_EDGE (default 0.0).
+        the honest answer is below WEATHER_MIN_EXECUTABLE_EDGE (default 0.04
+        since S224/V26; was 0.0 = only kill clearly-negative executable edge).
 
         Concrete bug this catches when midpoint-based gates pass: market 2106427
         had midpoint 0.525 vs bestAsk_NO = 1 - 0.15 = 0.85 (we wanted to buy NO).
