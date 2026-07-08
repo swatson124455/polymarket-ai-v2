@@ -59,34 +59,43 @@ async def probe(db_limit: int, clob_limit: int):
     async with db.get_session() as s:
         from sqlalchemy import text
 
-        # Tradeable-ish esports markets (both token ids present), highest volume
-        # first. No active/closed filter — resolved markets still reveal shape.
-        r = await s.execute(
-            text(
-                """
-                SELECT condition_id, question, category, volume,
-                       yes_token_id, no_token_id
-                FROM markets
-                WHERE (category ILIKE 'esports' OR question ~* :rx)
-                  AND condition_id IS NOT NULL AND condition_id <> ''
-                ORDER BY volume DESC NULLS LAST
-                LIMIT :lim
-                """
-            ),
-            {"rx": _GAME_RX, "lim": db_limit},
-        )
-        rows = r.fetchall()
+        # Schema-adaptive: the `markets` table shape drifts across deploys (some
+        # DBs predate yes_token_id/no_token_id). Query ONLY columns that exist —
+        # orientation ground truth is the CLOB peek below, not these columns.
+        colr = await s.execute(text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'markets'"
+        ))
+        cols = {row[0] for row in colr.fetchall()}
+        print(f"=== `markets` columns present: {sorted(cols)} ===")
+        if "condition_id" not in cols or "question" not in cols:
+            print("!! markets lacks condition_id/question — wrong DB or empty schema. Stop.")
+            await db.close()
+            return
 
-    print(f"\n=== DB `markets`: {len(rows)} esports-ish rows (by volume) ===")
-    print("    (category shows B1 politics-pollution; question shows phrasing)")
-    for row in rows:
-        cid, q, cat, vol, ytok, ntok = row
+        want = [c for c in ("condition_id", "question", "category", "volume") if c in cols]
+        has_cat = "category" in cols
+        has_vol = "volume" in cols
+        where = "question ~* :rx" + (" OR category ILIKE 'esports'" if has_cat else "")
+        order = "ORDER BY volume DESC NULLS LAST" if has_vol else ""
+        sql = (
+            f"SELECT {', '.join(want)} FROM markets "
+            f"WHERE ({where}) AND condition_id IS NOT NULL AND condition_id <> '' "
+            f"{order} LIMIT :lim"
+        )
+        r = await s.execute(text(sql), {"rx": _GAME_RX, "lim": db_limit})
+        rows = [dict(zip(want, row)) for row in r.fetchall()]
+
+    print(f"\n=== DB `markets`: {len(rows)} esports-ish rows ===")
+    for m in rows:
+        vol = m.get("volume")
         vol_s = f"{float(vol):>10.0f}" if vol is not None else "        NA"
-        print(f"  vol={vol_s} cat={str(cat)[:9]:>9} yn={bool(ytok)}/{bool(ntok)} "
-              f"cid={str(cid)[:12]} | {str(q)[:78]}")
+        cat = str(m.get("category", ""))[:9]
+        print(f"  vol={vol_s} cat={cat:>9} cid={str(m.get('condition_id'))[:14]} "
+              f"| {str(m.get('question'))[:74]}")
 
     # CLOB ground-truth peek on the top-N by volume.
-    peek_cids = [str(row[0]) for row in rows[:clob_limit]]
+    peek_cids = [str(m["condition_id"]) for m in rows[:clob_limit]]
     print(f"\n=== LIVE CLOB outcome labels (top {len(peek_cids)}) — the ground truth ===")
     yesno = 0
     other = 0
