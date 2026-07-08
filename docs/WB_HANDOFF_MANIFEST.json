@@ -14,6 +14,7 @@
   },
   "required_docs": [
     "docs/WEATHER_STATUS.md",
+    "docs/WEATHER_S224_STATUS.md",
     "docs/WB_FALLACY_AUDIT_S223.md",
     "docs/WB_FALLACY_AUDIT_S223_raw.json",
     "docs/WEATHER_S222_STATUS.md",

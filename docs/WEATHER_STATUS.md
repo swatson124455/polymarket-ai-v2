@@ -53,6 +53,8 @@
 
 ## POINTERS (archival detail — do not treat as "current" over this file)
 
+- `docs/WEATHER_S224_STATUS.md` — **the S224 session handoff** (this session): the 7 fixes +
+  calibrator/ground-truth cluster, the deploy, the calibrator-reset caveat, pending steps.
 - `WEATHER_S222_STATUS.md` — the S222/S223 session's full handoff (fixes, diagnosis,
   pending-work order, deploy mechanics, config gotchas, file map).
 - `docs/WB_FALLACY_AUDIT_S223.md` — the fallacy audit; verify phase COMPLETE (18 pass-1 +
