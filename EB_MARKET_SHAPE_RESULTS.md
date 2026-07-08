@@ -47,18 +47,31 @@ sessions — no VPS/DB/API"*).
   run with `-o addopts="" --noconftest` (repo conftest needs the full trading-system
   dep tree, absent here; the two EB modules are pure stdlib).
 
-## 3. How to actually run it (VPS-capable session)
+## 3. How to actually run it — two paths
+
+**Path A — DB-free, runs from THIS cloud session (simplest).** Needs only Polymarket
+egress; no VPS, no DATABASE_URL. Discovers esports markets from the public Gamma API,
+cross-checks shape against the live CLOB.
 
 ```bash
-git checkout claude/esports-sharp-line-rebuild-36c8u9   # or the startup branch
-# on the VPS, with the prod env loaded (DATABASE_URL set):
+# 1. Enable egress to gamma-api.polymarket.com + clob.polymarket.com in the
+#    environment's network policy (see EB session notes / code.claude.com docs).
+# 2. Then, anywhere:
+python scripts/esports_market_shape_probe_public.py          # scan ~2000 mkts, 8 CLOB peeks
+python scripts/esports_market_shape_probe_public.py 4000 12  # wider scan
+```
+Verified this session: compiles, parsing logic unit-checked green, and it fails
+*gracefully* with a clear egress-blocked message until the toggle is flipped.
+
+**Path B — DB-backed, on the VPS.** The original probe (prod `markets` table + CLOB):
+```bash
 python scripts/esports_market_shape_probe.py            # 20 DB rows, 8 CLOB peeks
 python scripts/esports_market_shape_probe.py 40 12      # wider sample
 ```
 
-Then **replace this whole file** with the probe's stdout (it is not secret), commit,
-and push. That real output unblocks step 2 (harden the shape-1 parser against the
-actual phrasings) and step 3 (persist `yes_is_team_a` onto the matcher `market_dict`).
+Either way: **replace this whole file** with the probe's stdout (it is not secret),
+commit, and push. That real output unblocks step 2 (harden the shape-1 parser against
+the actual phrasings) and step 3 (persist `yes_is_team_a` onto the matcher `market_dict`).
 
 ## 4. Reminder: the deeper binding blocker
 
