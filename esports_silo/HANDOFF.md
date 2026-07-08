@@ -39,16 +39,17 @@ calibrator fits on forward-collected lines only (~2–4 wks of the running timer
 **Blocking input:** a VALID PandaScore key (current one is INVALID) — without it matches never
 settle and the whole proving chain starves. Then: fit → `--predict` → weekly skill gate. Halt stays on.
 
-**OPEN — CS2 tag question (unresolved as of 2026-07-07).** Operator believes CS2 IS on Polymarket
-and the collector is missing it. `polymarket_collector` only queries tags counter-strike(100602)/
-csgo(100635), which showed only Valve meta markets, not matches. `scripts/probe_polymarket_cs2.py`
-(BUILT, awaiting operator run) tests whether CS2 head-to-heads live under a DIFFERENT tag
-(tournament tag like BLAST/IEM/ESL, or a `counter-strike-2` slug) via site-search + a broad
-/tags scan. If it surfaces a CS2 match tag, ADD that id's slug to `POLYMARKET_TAG_SLUGS['cs2']`
-(+ its recorded id + drift entry). If nothing, CS2 matches are genuinely absent right now — not a bug.
+**CS2 tag — RESOLVED (operator was right; my bug).** VERIFIED 2026-07-07 (`probe_polymarket_cs2.py`):
+CS2 head-to-heads (TYLOO vs 9z, FaZe vs BetBoom, NAVI Junior, …) DO exist on Polymarket — tagged
+`counter-strike-2` (and a `cs2` tag id 100677, 21 events). The collector had queried only the
+legacy TOPIC tags counter-strike(100602)/csgo(100635) (Valve/meta props, no matches) → CS2=0.
+FIXED: `POLYMARKET_TAG_SLUGS['cs2'] = (counter-strike-2, cs2, counter-strike, csgo)`. cs2=100677
+recorded; **`counter-strike-2`'s numeric id is still un-recorded** — it resolves+logs at runtime;
+grab it from the next collector run's "resolved esports tag ids" line and add it to
+`POLYMARKET_TAG_IDS_VERIFIED` (do NOT guess it).
 
-**Next action for a fresh session:** run `probe_polymarket_cs2.py` on the box, act on the result
-(add the CS2 tag or confirm absence). Everything else is keys + time: rotate PandaScore → the
+**Next action for a fresh session:** run the polymarket collector `--once --dry-run`; confirm CS2
+matches now appear + record `counter-strike-2`'s id. Then it's keys + time: rotate PandaScore →
 timer accrues (odds, price, result) → after ~2–4 wks fit the calibrator → `--predict` → weekly
 `skill_report`. No engineering remains in that path; do NOT rebuild the collectors/runner/gate.
 

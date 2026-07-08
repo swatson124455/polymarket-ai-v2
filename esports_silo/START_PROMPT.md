@@ -40,13 +40,13 @@ python with deps: `/opt/pa2-esports-shared/venv/bin/python`. Operator runs box c
    chain starves. This is THE blocker. Operator rotates at pandascore.co, puts it in the .env.
 2. **Time.** Forward data must accrue before the calibrator can fit (forward-only; no backfill).
 
-## Immediate open item — CS2 tag question (UNRESOLVED)
-Operator asserts CS2 IS on Polymarket and the collector misses it. The collector queries only
-tags counter-strike(100602)/csgo(100635), which showed Valve meta markets, not matches.
-`scripts/probe_polymarket_cs2.py` (BUILT) tests whether CS2 head-to-heads live under another tag
-(BLAST/IEM/ESL tournament tag or a `counter-strike-2` slug). **Run it, then:** if a CS2 match tag
-appears, add its slug to `POLYMARKET_TAG_SLUGS['cs2']` in `collectors/polymarket_collector.py`
-(+ recorded id + drift entry) and re-verify; if not, CS2 matches are genuinely absent now (not a bug).
+## Immediate open item — confirm CS2 fix + record one id
+CS2 tag question is RESOLVED (VERIFIED 2026-07-07): CS2 matches ARE on Polymarket under
+`counter-strike-2` (+ `cs2`=100677) — the collector had queried only the legacy counter-strike/
+csgo topic tags (props, no matches). FIX is committed: `POLYMARKET_TAG_SLUGS['cs2']` now includes
+`counter-strike-2, cs2`. **Remaining:** run `polymarket_collector --once --dry-run`, confirm CS2
+matches now appear, and record `counter-strike-2`'s numeric id (from the run's "resolved esports
+tag ids" log) into `POLYMARKET_TAG_IDS_VERIFIED` — do NOT guess it.
 
 ## After CS2 — the sequence (all still HALTED; GO_LIVE_CHECKLIST steps 9–12 rewritten forward-only)
 Rotate PandaScore → timer accrues (odds, price, result) → `scripts/fit_calibrator.py` once enough
