@@ -50,7 +50,13 @@ __pycache__/
 .vscode/
 .idea/
 .cursor/
-.claude/
+# .claude/ stays ignored EXCEPT the three repo-shared session files (S224 handoff hardening):
+# committed settings.json (SessionStart branch-pin hook), the session-branch pin, and hooks/.
+# Local state (settings.local.json, caches) still matches .claude/* and stays ignored.
+.claude/*
+!.claude/settings.json
+!.claude/session-branch
+!.claude/hooks/
 *.swp
 *.swo
 .spyderproject
