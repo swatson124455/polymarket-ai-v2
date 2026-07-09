@@ -648,7 +648,7 @@ async def bot_pnl(bot_name: str, hours: int = 24, since: datetime | None = None,
             # latest-ENTRY join pattern as MB block 5b. Disposal events are
             # filtered by event_time so the breakdown reflects the same
             # window as block 2 (e.g. `WeatherBot 168` = last 7 days).
-            r_wb_conf = await s.execute(text("""
+            r_wb_conf = await s.execute(text(f"""
                 SELECT CASE
                          WHEN e_entry.confidence IS NULL THEN 'NULL'
                          WHEN e_entry.confidence < 0.50 THEN '<0.50'
