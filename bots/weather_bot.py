@@ -64,6 +64,28 @@ logger = get_logger()
 _CONF_CAL_MIN_SAMPLES = 200  # minimum resolved trades to fit
 
 
+# ---------------------------------------------------------------------------
+# S225 diagnostic tripwire — manufactured-certainty leak
+# ---------------------------------------------------------------------------
+# Every probability-engine path clamps model_prob to <= 0.999 (deflate-only
+# renorm + the 0.999 clamps in probability_engine.py; the METAR override ceiling
+# is 0.98). So a model_prob >= this threshold reaching prediction_log is a
+# manufactured-certainty leak: it fabricates edge = 1 - price and drives
+# confident wrong entries (observed live: 5 weather_temperature rows at
+# predicted_prob=1.0). The leaking path is not statically reproducible, so
+# _log_weather_prediction trips a warning capturing the caller site when this
+# returns True, to catch the culprit on the next scan that hits it.
+_IMPOSSIBLE_CERTAINTY_THRESHOLD = 0.9995
+
+
+def _is_impossible_certainty(model_prob: float) -> bool:
+    """True when model_prob exceeds the probability engine's hard 0.999 cap."""
+    try:
+        return float(model_prob) >= _IMPOSSIBLE_CERTAINTY_THRESHOLD
+    except (TypeError, ValueError):
+        return False
+
+
 class WeatherConfidenceCalibrator:
     """Per-side calibrator: Beta calibration (Kull et al. 2017) with isotonic fallback.
 
@@ -935,6 +957,26 @@ class WeatherBot(BaseBot):
         db = getattr(self.base_engine, "db", None)
         if not db:
             return
+        # S225 tripwire: the probability engine caps every path at 0.999, so a
+        # model_prob at/above the impossible-certainty threshold reaching this
+        # write is the manufactured-certainty leak. Capture the caller site
+        # (which of the log call-sites / analysis path produced it) so the next
+        # scan that hits it reveals the culprit. Log-only, non-fatal.
+        if _is_impossible_certainty(model_prob):
+            import traceback
+            _stack = traceback.extract_stack()
+            _caller = _stack[-2] if len(_stack) >= 2 else None
+            logger.warning(
+                "weatherbot_impossible_certainty",
+                market_id=market_id,
+                model_prob=round(float(model_prob), 6),
+                confidence=(round(float(confidence), 6) if confidence is not None else None),
+                market_price=round(float(market_price), 6),
+                market_type=market_type,
+                caller=(f"{_caller.filename.rsplit('/', 1)[-1]}:{_caller.lineno}"
+                        if _caller else "?"),
+                note="model_prob >= 0.9995 exceeds engine 0.999 cap; capturing leak path",
+            )
         try:
             await db.insert_prediction_log(
                 market_id=market_id,

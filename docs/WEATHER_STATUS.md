@@ -31,6 +31,19 @@
    executable price); optional retro-purge of flipped `bootstrap_gfs` rows (N1 changelog);
    optional WU-only training filter on `actual_source` once the column has populated.
 
+4. **S225 — manufactured-certainty leak (CONFIRMED, source not yet localized).** 5 post-deploy
+   `weather_temperature` rows logged `predicted_prob = exactly 1.0` (conf 0.8075, `edge = 1 −
+   price` ≈ 0.7–0.83 → confident YES entries; 2/2 checked resolved NO). **This is a raw-model
+   leak, NOT the calibrator reset** (`predicted_prob` is uncalibrated). Every probability-engine
+   path is capped ≤0.999 (verified in the *deployed* engine: deflate-only guard + 4× `min(0.999)`;
+   METAR ceiling 0.98, singleton-skip deployed) — so the code as written CANNOT produce 1.0, yet
+   it did. Source is not statically reproducible. **A tripwire is committed** (`_is_impossible_
+   certainty` + `weatherbot_impossible_certainty` warning in `_log_weather_prediction`) that logs
+   the leaking **caller site** when `model_prob ≥ 0.9995`. **NOT deployed** — needs a WB release
+   cut. Next VPS session after deploy: `journalctl -u polymarket-weather | grep impossible_certainty`
+   → the `caller=` field names the exact leaking path; then fix at that site (test-first). Rare +
+   containment gates ON, so not urgent. Investigation trail: this session (S225).
+
 ---
 
 ## WHAT IS LIVE NOW
@@ -68,6 +81,14 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-09 (S225 diagnostics):** two measurement fixes + one tripwire, all on-branch (NOT
+  deployed). (1) `bot_pnl.py` WB conf-bin query f-prefixed — literal `{mode_exec_clause_r}` was
+  crashing the report (`fcca023`-adjacent). (2) `calibration_check.py` gained `--dedup-markets`:
+  the "82 resolved predictions" were really **9 distinct markets** (one logged 42×) — per-log
+  counting inflated Brier/PIT and manufactured an apparent "confidence inversion" that is NOT
+  real. (3) Manufactured-certainty tripwire (`_is_impossible_certainty` +
+  `weatherbot_impossible_certainty` warning) added to catch the `predicted_prob=1.0` leak
+  (OPEN DECISION #4) — deploy then grep the `caller=` field. No live-trading behavior changed.
 - **2026-07-08 (S224 DEPLOYED):** full S224 batch cut to release `20260708_151330` (rollback
   `20260708_140013`); `service: active`, S224 markers=24; **migration 079 applied by the
   release-cut script itself** (auto-migration folded in). Calibrator now mid-reset toward

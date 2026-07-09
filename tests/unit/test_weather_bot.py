@@ -4699,3 +4699,30 @@ class TestS223ExitOrdersAreSell:
         kwargs = engine.place_order.await_args.kwargs
         assert kwargs["side"] == "SELL"
         assert kwargs["token_id"] == "yes_tok"
+
+
+class TestImpossibleCertaintyTripwire:
+    """S225: the probability engine caps every model_prob at <= 0.999, so a value
+    >= 0.9995 reaching prediction_log is the manufactured-certainty leak
+    (predicted_prob=1.0, fabricated edge = 1 - price, confident wrong entries).
+    The tripwire helper gates the diagnostic warning that captures the leaking
+    call site. Boundary must sit ABOVE the engine's 0.999 clamp so legitimate
+    near-certain buckets don't spam the warning."""
+
+    def test_trips_at_and_above_threshold(self):
+        from bots.weather_bot import _is_impossible_certainty
+        assert _is_impossible_certainty(1.0) is True
+        assert _is_impossible_certainty(0.9995) is True
+        assert _is_impossible_certainty(0.99999) is True
+
+    def test_does_not_trip_at_engine_clamp_or_below(self):
+        from bots.weather_bot import _is_impossible_certainty
+        assert _is_impossible_certainty(0.999) is False   # the engine's hard clamp
+        assert _is_impossible_certainty(0.9994) is False
+        assert _is_impossible_certainty(0.5) is False
+        assert _is_impossible_certainty(0.0) is False
+
+    def test_non_numeric_is_safe(self):
+        from bots.weather_bot import _is_impossible_certainty
+        assert _is_impossible_certainty(None) is False
+        assert _is_impossible_certainty("nan") is False
