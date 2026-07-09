@@ -122,6 +122,36 @@ class PinnOddsLoader:
         )
         return odds_lookup
 
+    def fetch_rows(
+        self,
+        event_types: Tuple[str, ...] = ("live", "prematch"),
+    ) -> List[dict]:
+        """Like fetch_odds, but returns RICH per-match rows (for snapshot
+        collection): match_key, home, away, starts, league_name, odds_a, odds_b,
+        event_type. Same correct-or-absent filtering as fetch_odds (reuses
+        _parse_event). Used by the forward-collector to persist line movement so
+        closing lines can be derived later (last snapshot before `starts`)."""
+        rows: List[dict] = []
+        for et in event_types:
+            for ev in self._fetch_events(et):
+                parsed = self._parse_event(ev)
+                if parsed is None:
+                    continue
+                key, (oa, ob) = parsed
+                rows.append({
+                    "match_key": key,
+                    "home": str(ev.get("home") or "").strip(),
+                    "away": str(ev.get("away") or "").strip(),
+                    "starts": ev.get("starts"),
+                    "league_name": ev.get("league_name"),
+                    "odds_a": oa,
+                    "odds_b": ob,
+                    "event_type": et,
+                })
+            time.sleep(_REQ_DELAY)
+        logger.info(f"pinnodds_rows event_types={event_types} rows={len(rows)}")
+        return rows
+
     def _fetch_events(self, event_type: str) -> List[dict]:
         """GET the esports markets feed for one event_type. [] on any failure."""
         data = self._get(
