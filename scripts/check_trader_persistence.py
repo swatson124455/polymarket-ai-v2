@@ -319,7 +319,7 @@ SELECT * FROM (
   LEFT JOIN markets m ON m.condition_id = r.market_id
   WHERE r.resolution IN ('YES', 'NO')
     AND r.price IS NOT NULL AND r.price > :pmin AND r.price < :pmax
-    {since_r} {until_r}
+    {stage_r} {since_r} {until_r}
   ORDER BY r.trader_address, r.market_id, r.event_time ASC
 ) q
 LIMIT :cap1
@@ -328,9 +328,16 @@ LIMIT :cap1
 
 async def fetch_entries(db, source: str, pmin: float, pmax: float,
                         timeout_s: int, max_rows: int,
-                        since: str = "", until: str = "",
+                        since: str = "", until: str = "", stage: str = "all",
                         ) -> tuple[list[dict], int]:
-    """Returns (entries, n_unmappable_dropped)."""
+    """Returns (entries, n_unmappable_dropped).
+
+    stage (rejected source only): 'gate'/'pre_gate' engages the
+    (rejection_stage, event_time) index — the full-table resolution scan is
+    NOT index-backed and times out on the live 17.5M-row table (verified on
+    the VPS 2026-07-09). 'gate' is also the cleaner corpus: signals MB
+    actually scored, not mechanical pre_gate rejections.
+    """
     from sqlalchemy import text
     if source == "trades":
         sql = _TRADES_SQL.format(
@@ -339,10 +346,13 @@ async def fetch_entries(db, source: str, pmin: float, pmax: float,
         )
     else:
         sql = _REJECTED_SQL.format(
+            stage_r="AND r.rejection_stage = :stage" if stage != "all" else "",
             since_r="AND r.event_time >= :since" if since else "",
             until_r="AND r.event_time < :until" if until else "",
         )
     params: dict = {"pmin": pmin, "pmax": pmax, "cap1": max_rows + 1}
+    if source != "trades" and stage != "all":
+        params["stage"] = stage
     if since:
         params["since"] = datetime.fromisoformat(since)
     if until:
@@ -414,7 +424,7 @@ async def run(args) -> int:
     try:
         entries, n_unmappable = await fetch_entries(
             db, args.source, args.pmin, args.pmax,
-            args.timeout, args.max_rows, args.since, args.until)
+            args.timeout, args.max_rows, args.since, args.until, args.stage)
     finally:
         await db.close()
 
@@ -436,7 +446,9 @@ async def run(args) -> int:
     print("  Trader-skill PERSISTENCE check — raw cross-period edge autocorrelation")
     print("  SUPPORTING instrument: traders share markets, so the shuffle null is")
     print("  anti-conservative — corroborate with backtest_tail_leaderboard.py (primary).")
-    print(f"  source={args.source}  entries(first-per trader,market)={len(entries):,}"
+    print(f"  source={args.source}"
+          + (f" stage={args.stage}" if args.source == "rejected" else "")
+          + f"  entries(first-per trader,market)={len(entries):,}"
           f"  unmappable-token firsts dropped={n_unmappable:,}")
     print(f"  min_events/period={args.min_events}  n_perm={args.n_perm}"
           + (f"  window-args=[{args.since or '-inf'},{args.until or '+inf'})" if (args.since or args.until) else ""))
@@ -606,6 +618,10 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Read-only trader-skill persistence check")
     ap.add_argument("--source", choices=["trades", "rejected"], default="trades",
                     help="edge corpus: trades (ranking corpus) or mirror_rejected_signals")
+    ap.add_argument("--stage", choices=["all", "pre_gate", "gate"], default="all",
+                    help="rejected source only: restrict rejection_stage (gate is "
+                         "index-backed + the cleaner scored corpus; default all "
+                         "may time out on the full table)")
     ap.add_argument("--cutoffs", default="",
                     help="comma-separated ISO period cutoffs (default: interior "
                          "quartiles, 25/50/75 pct of entry time)")

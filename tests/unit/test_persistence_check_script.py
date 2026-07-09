@@ -119,9 +119,10 @@ def test_trades_sql_shape():
 
 
 def test_rejected_sql_shape():
-    bare = cp._REJECTED_SQL.format(since_r="", until_r="")
+    bare = cp._REJECTED_SQL.format(stage_r="", since_r="", until_r="")
     assert "LIMIT :cap1" in bare
     assert "DISTINCT ON (r.trader_address, r.market_id)" in bare
-    bound = cp._REJECTED_SQL.format(since_r="AND r.event_time >= :since",
+    bound = cp._REJECTED_SQL.format(stage_r="AND r.rejection_stage = :stage",
+                                    since_r="AND r.event_time >= :since",
                                     until_r="AND r.event_time < :until")
-    assert ":since" in bound and ":until" in bound
+    assert ":stage" in bound and ":since" in bound and ":until" in bound
