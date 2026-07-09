@@ -16,6 +16,7 @@ import pytest
 from scripts.calibration_check import (
     _bucket_for_lead_time,
     _build_per_side_lead_time_sql,
+    _dedup_latest_per_market,
     _parse_args,
 )
 
@@ -134,6 +135,11 @@ class TestParseArgs:
         assert ns.days == 90
         assert ns.since is None
         assert ns.clean is False
+        assert ns.dedup_markets is False
+
+    def test_dedup_markets_flag(self):
+        ns = _parse_args(["WeatherBot", "--dedup-markets"])
+        assert ns.dedup_markets is True
 
     def test_positional_bot_name(self):
         ns = _parse_args(["WeatherBot"])
@@ -170,3 +176,52 @@ class TestParseArgs:
         with pytest.raises(SystemExit):
             # argparse converts ValueError from a type= callable into SystemExit.
             _parse_args(["--since", "2026-04-14T13:22:11"])
+
+
+class TestDedupLatestPerMarket:
+    """One long-open market re-logged 40+ times must not dominate a reliability
+    bin. Dedup keeps exactly one row per market_id — its latest prediction_time.
+
+    Row shape: (predicted_prob, outcome, bot_name, category, market_id, ptime).
+    """
+
+    @staticmethod
+    def _row(prob, outcome, market_id, ptime):
+        return (prob, outcome, "WeatherBot", "weather", market_id, ptime)
+
+    def test_collapses_duplicates_to_latest(self):
+        rows = [
+            self._row(0.13, 1, "0x7cee", datetime(2026, 7, 8, 16, 0, 0)),
+            self._row(0.16, 1, "0x7cee", datetime(2026, 7, 8, 20, 0, 0)),
+            self._row(0.17, 1, "0x7cee", datetime(2026, 7, 9, 2, 0, 0)),  # latest
+        ]
+        out = _dedup_latest_per_market(rows)
+        assert len(out) == 1
+        assert out[0][0] == 0.17  # latest prediction's prob survives
+        assert out[0][5] == datetime(2026, 7, 9, 2, 0, 0)
+
+    def test_latest_wins_regardless_of_input_order(self):
+        """Input is ORDER BY prediction_time in prod, but the collapse must be
+        order-independent so a re-ordering upstream can't change the result."""
+        latest = self._row(0.17, 1, "0x7cee", datetime(2026, 7, 9, 2, 0, 0))
+        older = self._row(0.13, 0, "0x7cee", datetime(2026, 7, 8, 16, 0, 0))
+        assert _dedup_latest_per_market([latest, older])[0][0] == 0.17
+        assert _dedup_latest_per_market([older, latest])[0][0] == 0.17
+
+    def test_distinct_markets_preserved(self):
+        rows = [
+            self._row(0.13, 1, "0x7cee", datetime(2026, 7, 8, 16, 0, 0)),
+            self._row(0.13, 1, "0x7cee", datetime(2026, 7, 8, 20, 0, 0)),
+            self._row(0.07, 0, "0x2aaa", datetime(2026, 7, 8, 17, 0, 0)),
+            self._row(0.05, 1, "0x2d62", datetime(2026, 7, 8, 18, 0, 0)),
+        ]
+        out = _dedup_latest_per_market(rows)
+        assert {r[4] for r in out} == {"0x7cee", "0x2aaa", "0x2d62"}
+        assert len(out) == 3
+
+    def test_single_row_unchanged(self):
+        rows = [self._row(0.42, 0, "0xabc", datetime(2026, 7, 8, 16, 0, 0))]
+        assert _dedup_latest_per_market(rows) == rows
+
+    def test_empty(self):
+        assert _dedup_latest_per_market([]) == []

@@ -39,12 +39,40 @@ from base_engine.data.database import Database
 from scripts.bot_pnl import parse_deploy_timestamp, _CONTAMINATION_CTE_BODY
 
 
+def _dedup_latest_per_market(rows):
+    """Collapse multiple prediction_log rows for the same market to a single
+    row — its latest prediction_time.
+
+    For MODEL calibration the unit of observation is the resolved market, not
+    each intra-day re-log. `_log_weather_prediction` re-logs a market whenever
+    its probability moves >0.01 or 600s elapse (weather_bot.py:929-947), so a
+    long-open market can appear 40+ times and single-handedly dominate a
+    reliability / PIT bin. Keeping one row per market removes that weighting bias.
+
+    Rows are (predicted_prob, outcome, bot_name, category, market_id,
+    prediction_time). Returns the same tuple shape, one row per market_id.
+    """
+    latest: dict = {}
+    for row in rows:
+        market_id = row[4]
+        prediction_time = row[5]
+        current = latest.get(market_id)
+        if (
+            current is None
+            or current[5] is None
+            or (prediction_time is not None and prediction_time > current[5])
+        ):
+            latest[market_id] = row
+    return list(latest.values())
+
+
 async def calibration_check(
     bot_name: str = "",
     cutoff: str = "",
     days: int = 90,
     since: datetime | None = None,
     clean: bool = False,
+    dedup_markets: bool = False,
 ):
     """Run calibration analysis on resolved predictions.
 
@@ -58,6 +86,12 @@ async def calibration_check(
         clean: When True (and bot_name == "WeatherBot"), wires the canonical
             contamination CTE from bot_pnl.py into the per-side x lead-time
             analysis to mirror bot_pnl.py block 5 CLEAN scope.
+        dedup_markets: When True, collapse repeated intra-day logs of the same
+            market to its latest prediction before computing the main
+            calibration / CRPS / PIT numbers, and count distinct markets for the
+            50-minimum gate. Default False preserves the per-log behavior for all
+            existing callers. Applies to the main calibration section only; the
+            per-(side x lead-time) breakdown still counts per-log (follow-up).
     """
     if since is not None:
         cutoff_dt = since
@@ -84,18 +118,29 @@ async def calibration_check(
         # Check data availability
         count_result = await s.execute(text(f"""
             SELECT count(*) AS total,
-                   count(resolution) AS resolved
+                   count(resolution) AS resolved,
+                   count(DISTINCT pl.market_id)
+                       FILTER (WHERE pl.resolution IS NOT NULL) AS distinct_resolved
             FROM prediction_log pl
             WHERE pl.prediction_time > :cutoff
             {bot_clause}
         """), params)
         counts = count_result.fetchone()
-        total, resolved = counts[0], counts[1]
-        print(f"prediction_log rows post-cutoff: {total} total, {resolved} resolved")
+        total, resolved, distinct_resolved = counts[0], counts[1], counts[2]
+        print(
+            f"prediction_log rows post-cutoff: {total} total, {resolved} resolved "
+            f"({distinct_resolved} distinct markets)"
+        )
 
-        # S172 1B: Min 50 resolved gate
-        if resolved < 50:
-            print(f"ERROR: Only {resolved} resolved predictions (need 50+).")
+        # S172 1B: Min 50 gate. For model calibration the unit of observation is
+        # the resolved MARKET, not each intra-day re-log — one long-open market
+        # can be logged 40+ times and dominate a reliability bin. With
+        # --dedup-markets the gate counts distinct markets so the 50-minimum is
+        # honest; the default (per-log) count is preserved for existing callers.
+        effective_n = distinct_resolved if dedup_markets else resolved
+        if effective_n < 50:
+            unit = "distinct resolved markets" if dedup_markets else "resolved predictions"
+            print(f"ERROR: Only {effective_n} {unit} (need 50+).")
             print("Resolution backfill may not be running, or window too narrow.")
             print(f"  SELECT count(*), count(resolution) FROM prediction_log")
             print(f"  WHERE prediction_time > '{cutoff_dt.isoformat()}';")
@@ -106,7 +151,9 @@ async def calibration_check(
             SELECT pl.predicted_prob,
                    CASE WHEN pl.resolution = 'YES' THEN 1 ELSE 0 END AS outcome,
                    pl.bot_name,
-                   m.category
+                   m.category,
+                   pl.market_id,
+                   pl.prediction_time
             FROM prediction_log pl
             LEFT JOIN markets m ON (pl.market_id = CAST(m.id AS TEXT)
                                     OR pl.market_id = m.condition_id)
@@ -121,10 +168,16 @@ async def calibration_check(
             print("No resolved predictions found.")
             return
 
+        # Collapse repeated intra-day logs of the same market to its latest
+        # prediction so one long-open market can't dominate a reliability / PIT
+        # bin (see the --dedup-markets gate note above). Default off.
+        if dedup_markets:
+            rows = _dedup_latest_per_market(rows)
+
         # Group by bot
         by_bot = defaultdict(list)
         by_category = defaultdict(list)
-        for prob, outcome, bot, category in rows:
+        for prob, outcome, bot, category, _market_id, _prediction_time in rows:
             by_bot[bot or "unknown"].append((float(prob), int(outcome)))
             cat = category or "unknown"
             by_category[cat].append((float(prob), int(outcome)))
@@ -425,6 +478,13 @@ def _parse_args(argv: list[str] | None = None):
     p.add_argument("--clean", action="store_true", default=False,
                    help="S204: apply contamination CTE from bot_pnl.py to the "
                         "per-(side x lead-time) Brier analysis. WB-only.")
+    p.add_argument("--dedup-markets", action="store_true", default=False,
+                   help="Collapse repeated intra-day logs of the same market to "
+                        "its latest prediction before computing calibration. The "
+                        "correct unit for model calibration is the resolved "
+                        "market, not each re-log; without this a long-open market "
+                        "logged 40+ times dominates a reliability bin. Also makes "
+                        "the 50-minimum gate count distinct markets.")
     return p.parse_args(argv)
 
 
@@ -436,4 +496,5 @@ if __name__ == "__main__":
         days=ns.days,
         since=ns.since,
         clean=ns.clean,
+        dedup_markets=ns.dedup_markets,
     ))
