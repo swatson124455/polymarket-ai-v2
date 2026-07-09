@@ -74,10 +74,21 @@ sharp_prob` does the rest. Nothing in the new modules changes.
    different odds type). This is a working-code edit to a LIVE matcher on a HALTED bot;
    the plumbing spec + CLAUDE.md require live before/after verification, which a cloud
    session cannot do — deferred to a VPS-capable session. NOT attempted blind.
-4. **[blocked on odds] Backtest the full signal end-to-end.** `pinnacle_odds` is
-   EMPTY (B13) — zero sharp odds, live or historical. Until forward-collected (needs
-   the OddsPapi paid tier), the signal cannot be validated or traded. **This is the
-   real binding constraint** — parser coverage (#2) is moot until odds exist.
+4. **[ODDS SOURCE NOW LIVE — 2026-07-09] Provider switched OddsPapi → PinnOdds.**
+   `esports_v2/data/pinnodds_loader.py` (`PinnOddsLoader`) fetches CURRENT Pinnacle
+   esports match-winner odds and returns the same `match_key → (odds_a, odds_b)`
+   contract. **Verified live on the VPS: 36 match-winner keys** across CS2 / Dota 2 /
+   Valorant / Rainbow Six with clean decimal odds (e.g. `big||pvision||2026-07-10 →
+   (2.3, 1.632)`). Key in `/opt/pa2-shared/.env` as `PINNACLE_ODDS_API_KEY`; endpoint
+   `https://pinnodds.com/kit/v1/markets?sport_id=11&event_type=live|prematch`, header
+   `x-portal-apikey`, browser UA required (WAF 403s python-requests — fixed). OddsPapi
+   loader kept as a sibling. 7 unit tests from real captured shapes.
+   **Still TODO for the backtest:** (a) forward-COLLECT — persist these into the
+   `pinnacle_odds` table on a cron/scan loop (PinnOdds is live/current, not historical,
+   so data accumulates going forward; there is still no *history* to backtest yet);
+   (b) finish Step 3 orientation plumbing; (c) run `enrich_with_sharp_prob →
+   evaluate_edge`; (d) operator picks de-vig method (simple no-vig vs Shin). Parser
+   coverage (#2) is DONE and no longer the constraint.
 
 ## 6. Landmines / gotchas
 
