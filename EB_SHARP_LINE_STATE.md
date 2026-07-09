@@ -83,12 +83,22 @@ sharp_prob` does the rest. Nothing in the new modules changes.
    `https://pinnodds.com/kit/v1/markets?sport_id=11&event_type=live|prematch`, header
    `x-portal-apikey`, browser UA required (WAF 403s python-requests — fixed). OddsPapi
    loader kept as a sibling. 7 unit tests from real captured shapes.
-   **Still TODO for the backtest:** (a) forward-COLLECT — persist these into the
-   `pinnacle_odds` table on a cron/scan loop (PinnOdds is live/current, not historical,
-   so data accumulates going forward; there is still no *history* to backtest yet);
-   (b) finish Step 3 orientation plumbing; (c) run `enrich_with_sharp_prob →
-   evaluate_edge`; (d) operator picks de-vig method (simple no-vig vs Shin). Parser
-   coverage (#2) is DONE and no longer the constraint.
+   **Forward-collection is LIVE (2026-07-09).** No cheap historical Pinnacle esports
+   source exists (checked OddsPapi=no esports, Betting Is Cool=paid/unconfirmed depth,
+   OddsPortal=ToS/scrape, The Odds API=$99+thin) — operator decision: collect forward.
+   A cron on the VPS runs `collect_pinnodds_standalone.py` **every 15 min**, appending
+   PinnOdds match-winner snapshots to `/home/ubuntu/eb-odds/pinnodds_snapshots.jsonl`
+   (first run: 33 lines). Canonical code in repo: `esports_v2/scripts/collect_pinnodds.py`
+   + `pinnodds_loader.fetch_rows()`. The standalone VPS copy is a bootstrap (non-git
+   deploy dir) — reduce/replace when EB is properly deployed.
+   **Still TODO to backtest (circle back once history has built up):** (a) reduce
+   snapshots → CLOSING line per match (last snapshot with captured_at <= starts);
+   (b) join to the free match RESULTS we already have (bulk jsonl / PandaScore) by
+   match_key/alias; (c) finish Step 3 orientation plumbing; (d) run `enrich_with_sharp_
+   prob → evaluate_edge`; (e) operator picks de-vig method (simple no-vig vs Shin).
+   Parser coverage (#2) is DONE and no longer the constraint.
+   **Revisit later:** a paid historical source (Betting Is Cool free trial) would give
+   an instant backtest instead of waiting for forward data to accumulate.
 
 ## 6. Landmines / gotchas
 
