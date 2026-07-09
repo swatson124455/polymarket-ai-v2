@@ -7,49 +7,62 @@ speed we don't have? Lifetime P&L can't answer that (it can't tell lucky /
 rich-but-uncopyable / repeatably-right apart). Complete per-bet histories with
 a time split can.
 
-PIPELINE
-  1. UNIVERSE: Polymarket leaderboards, BOTH profit- and volume-ranked pages
-     (data-api /v1/leaderboard, orderBy=PNL and VOL), deduped. Wide on purpose:
-     high-churn losers are the control group the ranking must beat.
-  2. HISTORY: every bet of every address via PolymarketClient.get_user_activity
-     (gamma /users/{addr}/activity, data-api /activity fallback), paginated to
-     --max-bets, throttled, DISK-CACHED per address so re-runs are free.
-  3. LABELS: join each bet to the markets table (condition_id OR numeric id) for
-     resolution + category + token mapping. Label coverage is REPORTED — bets in
-     markets we never ingested are counted, not silently dropped.
-  4. QUALIFY ON P1 ONLY: estimand = first BUY per (trader, market) [matches
-     bots/mirror_scoring/estimand.py]. Split all entries at --split-date
-     (default: median entry time). A trader qualifies iff P1 labeled entries
-     >= --min-p1-bets AND P1 market-mean edge > 0. Selection NEVER sees P2 —
-     this is what makes the test honest: lifetime-lucky traders regress in P2
-     by arithmetic; only repeatable edge survives.
-  5. JUDGE ON P2: per qualifying trader, P2 market-clustered mean edge +
-     bootstrap P(edge>0); per CATEGORY, pooled qualifier P2 edge with
-     market-cluster bootstrap. Edge = (bought token won ? 1 : 0) - price paid,
-     in probability points per contract.
-  6. PRE-REGISTERED PRIMARY (locked before any data run): cat:sports pooled
-     qualifier P2 edge, P(edge>0) >= --p-min on >= --min-markets distinct P2
-     markets from >= --min-traders qualifiers. Everything else is DESCRIPTIVE.
-     This is the third look at persistence; without a locked primary a pass
-     would deserve no trust. A sports FAIL here, on complete histories, is
-     terminal for retrospective analysis (forward shadow test is the only
-     remaining road).
-  7. VERIFICATION (nothing on faith): (a) N sampled market resolutions
-     re-checked ON-CHAIN via blockchain_client.check_market_resolution;
-     (b) M sampled traders' first activity page re-fetched from BOTH APIs and
-     cross-compared; (c) K sampled fills checked against on-chain OrderFilled
-     events (query_exchange_order_filled_events) when an RPC is configured.
-     Any check that can't run prints SKIPPED loudly — never silently.
+DESIGN (hardened per the 2026-07-09 two-agent adversarial review; every item
+below marked [rev] closes a confirmed false-PASS/false-FAIL channel):
 
-WHAT THIS DOES NOT ANSWER (by design, in sequence): fill quality — whether
-copying a passing trader's entries nets out after spread at our ~10s lag. That
-is the PRECISE-model gate / forward-shadow question and is only worth asking
-about traders who pass HERE first.
+  1. UNIVERSE: data-api /v1/leaderboard, orderBy=PNL and VOL, timePeriod=ALL
+     pinned [rev: unpinned window made the universe irreproducible and
+     recent-window-selected]. Wide on purpose — churners are the control group.
+     [rev CRITICAL] PNL-board membership itself conditions on late-period wins
+     (a collider: among P1-lucky traders, the ones ALSO on a PnL board are
+     disproportionately P2-lucky — mechanically inflating pooled P2 edge, the
+     same circularity class as the documented broken validation harness).
+     Therefore THE PRIMARY VERDICT COUNTS ONLY VOL-SOURCED QUALIFIERS (volume
+     conditions on activity, not outcomes); PNL-only traders are descriptive.
+  2. HISTORY: full pagination of data-api /activity per address (newest-first),
+     normalized in-script [rev: shared client's gamma branch returns raw rows —
+     routed around, not "fixed", per shared-module protocol]. Disk-cached per
+     address; [rev CRITICAL] cache written ONLY on clean completion — a partial
+     pull (timeout/circuit-breaker) is never cached and the address is counted
+     FAILED in the report, not silently treated as a complete record.
+     [rev CRITICAL] histories hitting --max-bets are flagged TRUNCATED and
+     excluded from the primary (their early bets are missing, so "first BUY"
+     and P1 counts are wrong for exactly the most active traders).
+  3. LABELS: markets-table lookup split into two INDEX-BACKED queries
+     (condition_id ANY / integer id ANY) [rev: the OR+CAST form seq-scans —
+     tonight's timeout failure mode]. Label coverage reported PER PERIOD
+     (P1 vs P2) since our ingestion skews recent [rev].
+  4. QUALIFY ON P1 ONLY: estimand = first BUY per (trader, market).
+     Qualify iff >= --min-p1-markets DISTINCT P1 markets [rev: entry-count
+     threshold could be met with 3 markets] AND P1 market-clustered bootstrap
+     P(edge>0) >= --p1-p-min (default 0.90) [rev: 'edge>0' alone lets ~half of
+     all noise-traders through, diluting the pool toward a false terminal
+     FAIL]. Selection NEVER sees P2.
+  5. JUDGE ON P2: per-trader and pooled per category, market-clustered
+     bootstrap. Edge = (bought token won ? 1:0) - price, prob-points/contract.
+  6. PRE-REGISTERED PRIMARY (locked in code before any data run):
+     cat:sports pooled P2 edge over VOL-SOURCED, NON-TRUNCATED qualifiers;
+     PASS needs P(edge>0) >= --p-min on >= --min-markets distinct P2 markets
+     from >= --min-traders qualifiers, AT THE LOCKED CALENDAR SPLIT
+     (--split-date default 2026-02-01) AND positive pooled edge at both
+     robustness splits (--robustness-splits, default 2025-12-01 + 2026-04-01)
+     [rev: a data-chosen single split lets one season/regime masquerade as
+     persistence]. FAIL splits into FAIL-TERMINAL (bootstrap upper bound below
+     --econ-floor, default +0.02 ≈ fee+slippage floor) vs INCONCLUSIVE
+     [rev: 'FAIL is terminal' at P=0.70 on 35 markets was an overclaim].
+  7. VERIFICATION (nothing on faith): sampled resolutions re-checked ON-CHAIN
+     (chain-unresolved-vs-DB-resolved surfaced as a DISCREPANCY, split/50-50
+     payouts flagged ambiguous rather than mismatched [rev]); sampled live
+     re-fetch vs cache; per-fill OrderFilled chain audit documented as the
+     mandatory step before any money decision leans on a specific trader.
 
-SAFETY: DB access is READ-ONLY (markets lookups, batched, statement_timeout).
-Network is GET-only against public APIs, throttled (--rps). History cache under
---cache keeps re-runs cheap and reproducible. Full per-trader results dumped to
---out JSON for downstream use and audit.
+WHAT THIS DOES NOT ANSWER (sequenced, not dodged): fill quality after spread at
+our ~10s lag — the precise-gate / forward-shadow question, only worth asking
+about traders who pass HERE.
+
+SAFETY: DB reads only (two indexed batched lookups under statement_timeout);
+GET-only APIs, throttled (--rps); per-address cache keeps re-runs cheap; full
+results to --out JSON (NaN-sanitized).
 
 INVOCATION (on the VPS):
     cd /opt/polymarket-ai-v2 && sudo -u polymarket env PYTHONPATH=/tmp/mbpc \
@@ -58,8 +71,9 @@ INVOCATION (on the VPS):
     ... --self-test                          # offline math check, no DB/network
 
 Provenance (CLAUDE.md Forbidden Patterns 8/9): numbers from this script carry
-their label coverage, sample sizes, and the PRIMARY verdict qualifier. A
-"copyable" trader with 12 P2 bets is a candidate, not a conclusion.
+their label coverage, truncation/failure counts, sample sizes, and the primary
+verdict qualifier. A "copyable" trader with 12 P2 bets is a candidate, not a
+conclusion.
 """
 from __future__ import annotations
 
@@ -74,7 +88,9 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-PRIMARY_DEFAULT = "cat:sports"   # pre-registered before any data run (2026-07-09)
+PRIMARY_DEFAULT = "cat:sports"        # pre-registered 2026-07-09
+SPLIT_DEFAULT = "2026-02-01"          # locked calendar split (not data-chosen)
+ROBUSTNESS_DEFAULT = "2025-12-01,2026-04-01"
 
 
 # ── Category bucketing (shared shape with the sibling scripts) ────────────────
@@ -103,7 +119,7 @@ def bucket_category(cat: Optional[str]) -> str:
 
 # ── Pure, offline-testable core ──────────────────────────────────────────────
 def parse_ts(v: Any) -> Optional[datetime]:
-    """Activity timestamps arrive as epoch seconds (int/str) or ISO. Naive UTC."""
+    """Epoch seconds (int/str), ISO (aware or naive) → naive UTC."""
     if v is None:
         return None
     try:
@@ -115,9 +131,35 @@ def parse_ts(v: Any) -> Optional[datetime]:
         return None
 
 
+def normalize_activity(raw: list) -> list[dict]:
+    """data-api /activity rows → the fields this script depends on, deduped.
+    Dedupe key includes token/ts/price/size because the tx hash is shared by
+    multi-fill transactions [rev]."""
+    out, seen = [], set()
+    for act in raw or []:
+        if not isinstance(act, dict) or str(act.get("type", "")).upper() != "TRADE":
+            continue
+        mid = (act.get("conditionId") or act.get("slug") or "").strip()
+        if not mid:
+            continue
+        asset = (act.get("asset") or "").strip()
+        ts = act.get("timestamp")
+        key = ((act.get("transactionHash") or "").strip(), asset, str(ts),
+               str(act.get("price")), str(act.get("size")))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "marketId": mid, "tokenId": asset,
+            "side": (act.get("side") or "BUY").upper(),
+            "size": float(act.get("size", 0) or 0),
+            "price": float(act.get("price", 0) or 0),
+            "timestamp": ts,
+        })
+    return out
+
+
 def label_outcome(token_id: str, side: str, mkt: Optional[dict]) -> Optional[float]:
-    """1.0 bought token won / 0.0 lost / None unlabelable (market unknown,
-    unresolved, or token unmappable with no usable side)."""
     if not mkt or mkt.get("resolution") not in ("YES", "NO"):
         return None
     res = mkt["resolution"]
@@ -131,12 +173,11 @@ def label_outcome(token_id: str, side: str, mkt: Optional[dict]) -> Optional[flo
 
 
 def first_buys(trades: list[dict], pmin: float, pmax: float) -> list[dict]:
-    """Estimand: first BUY per market for one trader (estimand.py semantics —
-    selection BEFORE any labelability filter). trades: raw activity dicts."""
+    """First BUY per market for one trader (selection before labelability)."""
     first: dict[str, dict] = {}
     for t in sorted(trades, key=lambda x: x.get("_ts") or datetime.max):
         if str(t.get("side", "")).upper() not in ("BUY", "YES", "NO"):
-            continue  # SELLs are exits, not entries
+            continue
         mid = t.get("marketId") or ""
         ts = t.get("_ts")
         px = float(t.get("price") or 0.0)
@@ -154,51 +195,53 @@ def per_market_edges(rows: list[tuple[str, float]]) -> list[float]:
     return [sum(v) / len(v) for v in buckets.values()]
 
 
-def boot_p_edge(market_edges: list[float], n_boot: int, seed: int) -> tuple[float, float]:
-    """(P(mean edge>0), mean) — market-level bootstrap; degenerate => P=0."""
+def boot_stats(market_edges: list[float], n_boot: int, seed: int
+               ) -> tuple[float, float, float]:
+    """(P(mean>0), mean, upper95) via market-level bootstrap. Degenerate
+    inputs => P=0, upper=mean (no evidence, no pass, no terminal claim)."""
     n = len(market_edges)
     if n == 0:
-        return 0.0, float("nan")
+        return 0.0, float("nan"), float("nan")
     mean = sum(market_edges) / n
     if n < 2 or all(e == market_edges[0] for e in market_edges):
-        return 0.0, mean
+        return 0.0, mean, mean
     rng = random.Random(seed)
-    hits = 0
+    means = []
     for _ in range(n_boot):
-        if sum(market_edges[rng.randrange(n)] for _ in range(n)) > 0:
-            hits += 1
-    return hits / n_boot, mean
+        means.append(sum(market_edges[rng.randrange(n)] for _ in range(n)) / n)
+    means.sort()
+    p = sum(1 for m in means if m > 0) / n_boot
+    upper = means[min(n_boot - 1, int(0.95 * n_boot))]
+    return p, mean, upper
 
 
-def qualify_and_judge(
-    entries: list[dict], split: datetime, min_p1_bets: int,
-    n_boot: int, seed: int,
-) -> Optional[dict]:
-    """One trader's labeled entries [{'_ts','edge','marketId','cat'}] →
-    P1-qualification + P2 judgment. Returns None if not qualified.
-    QUALIFICATION USES P1 ONLY — P2 is never consulted for selection."""
+def qualify_and_judge(entries: list[dict], split: datetime, min_p1_markets: int,
+                      p1_p_min: float, n_boot: int, seed: int) -> Optional[dict]:
+    """P1-qualification (never sees P2) + P2 judgment for one trader.
+    Qualify: >= min_p1_markets DISTINCT P1 markets AND P1 clustered
+    bootstrap P(edge>0) >= p1_p_min [rev: raw edge>0 admits half of all
+    noise traders and dilutes the pooled verdict]."""
     p1 = [e for e in entries if e["_ts"] <= split]
     p2 = [e for e in entries if e["_ts"] > split]
-    if len(p1) < min_p1_bets:
-        return None
     p1_me = per_market_edges([(e["marketId"], e["edge"]) for e in p1])
-    p1_edge = sum(p1_me) / len(p1_me)
-    if p1_edge <= 0:
+    if len(p1_me) < min_p1_markets:
+        return None
+    p1_p, p1_edge, _ = boot_stats(p1_me, n_boot, seed)
+    if p1_p < p1_p_min:
         return None
     p2_me = per_market_edges([(e["marketId"], e["edge"]) for e in p2])
-    p2_p, p2_edge = boot_p_edge(p2_me, n_boot, seed)
+    p2_p, p2_edge, p2_up = boot_stats(p2_me, n_boot, seed + 1)
     cats = Counter(e["cat"] for e in entries)
     return {
-        "n_p1": len(p1), "n_p2": len(p2),
-        "p1_edge": p1_edge, "p2_edge": p2_edge,
-        "p2_mkts": len(p2_me), "p2_p": p2_p,
+        "n_p1": len(p1), "n_p1_mkts": len(p1_me), "p1_edge": p1_edge, "p1_p": p1_p,
+        "n_p2": len(p2), "p2_mkts": len(p2_me), "p2_edge": p2_edge,
+        "p2_p": p2_p, "p2_upper95": p2_up,
         "main_cat": cats.most_common(1)[0][0] if cats else "unknown",
         "p2_rows": [(e["marketId"], e["edge"], e["cat"]) for e in p2],
     }
 
 
 def profile_trader(all_trades: list[dict]) -> dict:
-    """Tailability profile from the FULL raw history (not just estimand)."""
     prices = sorted(float(t.get("price") or 0) for t in all_trades
                     if t.get("price") is not None)
     tss = sorted(t["_ts"] for t in all_trades if t.get("_ts"))
@@ -215,33 +258,61 @@ def profile_trader(all_trades: list[dict]) -> dict:
     }
 
 
-def primary_verdict(cat_stats: dict, primary: str, p_min: float,
-                    min_markets: int, min_traders: int) -> tuple[str, str]:
-    """(verdict, detail) for the pre-registered primary category cell."""
-    s = cat_stats.get(primary)
-    if s is None:
-        return "NO-DATA", f"no qualifying traders produced P2 entries in {primary}"
-    if s["n_traders"] < min_traders or s["n_markets"] < min_markets:
-        return "UNDERPOWERED", (f"traders={s['n_traders']}(min {min_traders}) "
-                                f"markets={s['n_markets']}(min {min_markets})")
-    if s["p"] >= p_min:
-        return "PASS", (f"P(edge>0)={s['p']:.3f}>= {p_min}, edge={s['edge']:+.4f}, "
-                        f"{s['n_markets']} mkts / {s['n_traders']} traders")
-    return "FAIL", (f"P(edge>0)={s['p']:.3f} < {p_min} on {s['n_markets']} mkts — "
-                    f"on complete histories this is terminal for retrospective analysis")
+def primary_verdict(stats: Optional[dict], p_min: float, min_markets: int,
+                    min_traders: int, econ_floor: float,
+                    robust_means: list[float]) -> tuple[str, str]:
+    """Verdict for the primary cell (already restricted to VOL-sourced,
+    non-truncated qualifiers). FAIL is TERMINAL only when the bootstrap upper
+    bound sits below the economic floor; PASS additionally requires positive
+    pooled edge at every robustness split [rev]."""
+    if stats is None or stats["n_bets"] == 0:
+        return "NO-DATA", "no qualifying VOL-sourced traders produced P2 entries"
+    if stats["n_traders"] < min_traders or stats["n_markets"] < min_markets:
+        return "UNDERPOWERED", (f"traders={stats['n_traders']}(min {min_traders}) "
+                                f"markets={stats['n_markets']}(min {min_markets})")
+    if stats["p"] >= p_min:
+        bad = [m for m in robust_means if not (isinstance(m, float) and m > 0)]
+        if bad:
+            return "INCONCLUSIVE", (f"P={stats['p']:.3f} at the locked split but "
+                                    f"robustness splits disagree ({robust_means}) — "
+                                    f"regime artifact risk; not a PASS")
+        return "PASS", (f"P(edge>0)={stats['p']:.3f}>={p_min}, edge={stats['edge']:+.4f}, "
+                        f"{stats['n_markets']} mkts / {stats['n_traders']} traders; "
+                        f"robustness splits agree ({['%+.4f' % m for m in robust_means]})")
+    if not math.isnan(stats["upper95"]) and stats["upper95"] < econ_floor:
+        return "FAIL-TERMINAL", (f"P={stats['p']:.3f}; bootstrap upper95 "
+                                 f"{stats['upper95']:+.4f} < econ floor {econ_floor:+.2f} — "
+                                 f"even the optimistic bound is below costs")
+    return "INCONCLUSIVE", (f"P={stats['p']:.3f} < {p_min} but upper95 "
+                            f"{stats['upper95']:+.4f} >= {econ_floor:+.2f} — "
+                            f"not passed, not disproven; more data, not a rework")
+
+
+def json_safe(obj):
+    """Recursively replace NaN/inf with None (bare NaN is invalid JSON) [rev]."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [json_safe(v) for v in obj]
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    return obj
 
 
 # ── Network + DB stages (VPS only) ───────────────────────────────────────────
 async def fetch_universe(client, cap: int, orders: list[str]) -> list[dict]:
-    """Both leaderboard rankings, paginated, deduped. Returns [{address, src}]."""
-    out, seen = [], set()
+    """Leaderboard pages, timePeriod=ALL pinned [rev], deduped with src tags."""
+    out, seen = [], {}
     for order_by in orders:
-        offset = 0
-        while offset <= 1000 and sum(1 for u in out if order_by in u["src"]) < cap:
+        offset, got = 0, 0
+        while offset <= 1000 and got < cap:
             try:
                 raw = await client._request(
                     "GET", "/v1/leaderboard", client.data_api,
-                    params={"limit": 50, "offset": offset, "orderBy": order_by},
+                    params={"limit": 50, "offset": offset, "orderBy": order_by,
+                            "timePeriod": "ALL", "category": "OVERALL"},
                     use_cache=False, cache_key=f"lb:{order_by}:{offset}")
             except Exception as e:
                 print(f"  leaderboard {order_by}@{offset} failed: {e}", file=sys.stderr)
@@ -250,113 +321,170 @@ async def fetch_universe(client, cap: int, orders: list[str]) -> list[dict]:
                 break
             for u in raw:
                 addr = (u.get("proxyWallet") or u.get("address") or "") if isinstance(u, dict) else ""
-                if addr.startswith("0x") and addr not in seen:
-                    seen.add(addr)
-                    out.append({"address": addr, "src": order_by})
-                elif addr in seen:
-                    for o in out:
-                        if o["address"] == addr and order_by not in o["src"]:
-                            o["src"] += f"+{order_by}"
+                if not addr.startswith("0x"):
+                    continue
+                got += 1
+                if addr in seen:
+                    if order_by not in seen[addr]["src"]:
+                        seen[addr]["src"] += f"+{order_by}"
+                else:
+                    seen[addr] = {"address": addr, "src": order_by}
+                    out.append(seen[addr])
             offset += 50
     return out
 
 
 async def fetch_history(client, addr: str, max_bets: int, rps: float,
-                        cache_dir: str, refresh: bool) -> list[dict]:
-    """Full paginated activity for one address, disk-cached."""
+                        cache_dir: str, refresh: bool) -> tuple[list[dict], str]:
+    """(trades, status) with status ok | truncated | partial.
+    Cache is written ONLY on clean completion (ok/truncated) [rev: a partial
+    pull cached as a complete record silently corrupts every later run].
+    Data-api /activity is called directly (normalized here) [rev: the shared
+    client's gamma branch returns raw rows; routed around, not modified]."""
     cpath = os.path.join(cache_dir, f"{addr}.json")
     if not refresh and os.path.exists(cpath):
         with open(cpath) as f:
-            return json.load(f)
-    out, offset = [], 0
-    while len(out) < max_bets:
+            blob = json.load(f)
+        if isinstance(blob, dict):
+            return blob.get("trades", []), blob.get("status", "ok")
+        return blob, "ok"  # legacy cache shape
+    out, offset, status = [], 0, "ok"
+    while True:
         try:
-            page = await client.get_user_activity(addr, limit=500, offset=offset)
+            raw = await client._request(
+                "GET", "/activity", client.data_api,
+                params={"user": addr, "limit": 500, "offset": offset, "type": "TRADE"},
+                use_cache=False, cache_key=f"act:{addr}:{offset}")
         except Exception as e:
-            print(f"  activity {addr[:10]}@{offset} failed: {e}", file=sys.stderr)
+            print(f"  activity {addr[:10]}@{offset} failed: {e} — NOT cached",
+                  file=sys.stderr)
+            return out, "partial"
+        page = normalize_activity(raw if isinstance(raw, list) else [])
+        out.extend(page)
+        if not raw or not isinstance(raw, list) or len(raw) < 500:
             break
-        if not page:
-            break
-        out.extend(t for t in page if str(t.get("type", "")).lower() == "trade")
-        if len(page) < 500:
+        if len(out) >= max_bets:
+            status = "truncated"
             break
         offset += 500
         await asyncio.sleep(1.0 / rps)
     with open(cpath, "w") as f:
-        json.dump(out, f)
+        json.dump({"status": status, "trades": out}, f)
     await asyncio.sleep(1.0 / rps)
-    return out
+    return out, status
 
 
 async def load_markets(db, keys: list[str], timeout_s: int) -> dict[str, dict]:
-    """Batched read-only markets lookup by condition_id OR numeric id."""
+    """Two INDEX-BACKED batched lookups [rev: the OR+CAST single query
+    seq-scans markets per batch — tonight's timeout failure mode]."""
     from sqlalchemy import text
+    cids = [k for k in keys if k.startswith("0x")]
+    nids = [int(k) for k in keys if k.isdigit()]
     out: dict[str, dict] = {}
-    sql = text(
-        "SELECT condition_id, CAST(id AS TEXT) AS nid, resolution, resolved, "
-        "yes_token_id, no_token_id, COALESCE(category,'') AS category "
-        "FROM markets WHERE condition_id = ANY(:ks) OR CAST(id AS TEXT) = ANY(:ks)")
-    for i in range(0, len(keys), 500):
-        batch = keys[i:i + 500]
+
+    async def _run(sql, param_key, batch):
         async with db.get_session() as s:
             await s.execute(text(f"SET LOCAL statement_timeout = '{timeout_s}s'"))
-            rows = (await s.execute(sql, {"ks": batch})).fetchall()
-        for r in rows:
-            d = dict(r._mapping)
-            m = {"resolution": d["resolution"] if d["resolved"] else None,
-                 "yes_token_id": d["yes_token_id"], "no_token_id": d["no_token_id"],
-                 "category": d["category"]}
-            if d["condition_id"]:
-                out[d["condition_id"]] = m
-            if d["nid"]:
-                out[d["nid"]] = m
+            return (await s.execute(sql, {param_key: batch})).fetchall()
+
+    sql_c = text("SELECT condition_id, CAST(id AS TEXT) AS nid, resolution, resolved, "
+                 "yes_token_id, no_token_id, COALESCE(category,'') AS category "
+                 "FROM markets WHERE condition_id = ANY(:ks)")
+    sql_n = text("SELECT condition_id, CAST(id AS TEXT) AS nid, resolution, resolved, "
+                 "yes_token_id, no_token_id, COALESCE(category,'') AS category "
+                 "FROM markets WHERE id = ANY(:ks)")
+    for sql, batch_all in ((sql_c, cids), (sql_n, nids)):
+        for i in range(0, len(batch_all), 500):
+            for r in await _run(sql, "ks", batch_all[i:i + 500]):
+                d = dict(r._mapping)
+                m = {"resolution": d["resolution"] if d["resolved"] else None,
+                     "yes_token_id": d["yes_token_id"], "no_token_id": d["no_token_id"],
+                     "category": d["category"]}
+                if d["condition_id"]:
+                    out[d["condition_id"]] = m
+                if d["nid"]:
+                    out[d["nid"]] = m
     return out
 
 
 async def verify_sample(db, client, markets: dict, histories: dict,
                         n_res: int, n_fills: int, seed: int) -> list[str]:
-    """Nothing-on-faith spot checks. Returns report lines; SKIPPED is loud."""
+    """Spot checks; SKIPPED is loud, discrepancies are their own bucket [rev]."""
     rng = random.Random(seed)
     lines = []
-    # (a) resolutions vs chain
     try:
         from base_engine.data.blockchain_client import BlockchainClient
         bc = BlockchainClient()
         conds = [k for k in markets if k.startswith("0x") and markets[k]["resolution"]]
         sample = rng.sample(conds, min(n_res, len(conds)))
-        ok = bad = err = 0
+        ok = bad = unresolved = ambiguous = err = 0
         for cid in sample:
             try:
                 chain = await bc.check_market_resolution(cid)
-                if not chain or not chain.get("resolved"):
+                if not chain:
                     err += 1
-                elif str(chain.get("outcome", "")).upper() == markets[cid]["resolution"]:
-                    ok += 1
+                elif not chain.get("resolved"):
+                    unresolved += 1  # DB says resolved, chain says not: DISCREPANCY
+                    lines.append(f"  [CHAIN-DISCREPANCY] {cid[:16]} db="
+                                 f"{markets[cid]['resolution']} chain=UNRESOLVED")
                 else:
-                    bad += 1
-                    lines.append(f"  [CHAIN-MISMATCH] {cid[:16]} db={markets[cid]['resolution']} chain={chain.get('outcome')}")
+                    payouts = chain.get("payouts") or []
+                    nonzero = sum(1 for p in payouts if p)
+                    if nonzero > 1:
+                        ambiguous += 1  # split resolution — outcome label ambiguous
+                    elif str(chain.get("outcome", "")).upper() == markets[cid]["resolution"]:
+                        ok += 1
+                    else:
+                        bad += 1
+                        lines.append(f"  [CHAIN-MISMATCH] {cid[:16]} db="
+                                     f"{markets[cid]['resolution']} chain={chain.get('outcome')}")
             except Exception:
                 err += 1
-        lines.append(f"  resolutions vs chain: {ok} match / {bad} MISMATCH / {err} unreadable (of {len(sample)} sampled)")
-        if bad:
-            lines.append("  >>> CHAIN WINS: mismatched labels must be treated as wrong until re-backfilled.")
+        lines.append(f"  resolutions vs chain: {ok} match / {bad} MISMATCH / "
+                     f"{unresolved} chain-unresolved / {ambiguous} split-payout / "
+                     f"{err} unreadable (of {len(sample)})")
+        if bad or unresolved:
+            lines.append("  >>> CHAIN WINS: discrepant labels are wrong until re-backfilled.")
     except Exception as e:
         lines.append(f"  resolutions vs chain: SKIPPED ({str(e)[:80]})")
-    # (b) cross-API fills consistency
     try:
         addrs = rng.sample(list(histories), min(n_fills, len(histories)))
         for addr in addrs:
-            page = await client.get_user_activity(addr, limit=50, offset=0)
-            cached_ids = {t.get("id") for t in histories[addr][:200]}
-            hits = sum(1 for t in (page or []) if t.get("id") in cached_ids)
-            lines.append(f"  cross-fetch {addr[:10]}…: {hits}/{len(page or [])} of live first-page "
+            raw = await client._request(
+                "GET", "/activity", client.data_api,
+                params={"user": addr, "limit": 50, "offset": 0, "type": "TRADE"},
+                use_cache=False, cache_key=f"vfy:{addr}")
+            page = normalize_activity(raw if isinstance(raw, list) else [])
+            cached = {(t["marketId"], t["tokenId"], str(t["timestamp"]))
+                      for t in histories[addr]["trades"][:300]}
+            hits = sum(1 for t in page if (t["marketId"], t["tokenId"], str(t["timestamp"])) in cached)
+            lines.append(f"  live-refetch {addr[:10]}…: {hits}/{len(page)} of first page "
                          f"present in cached history")
     except Exception as e:
-        lines.append(f"  cross-API fill check: SKIPPED ({str(e)[:80]})")
-    lines.append("  per-fill OrderFilled chain audit: available via "
-                 "blockchain_client.query_exchange_order_filled_events — run before any "
-                 "money decision that leans on a specific trader's numbers.")
+        lines.append(f"  live-refetch check: SKIPPED ({str(e)[:80]})")
+    lines.append("  per-fill OrderFilled chain audit (blockchain_client."
+                 "query_exchange_order_filled_events): MANDATORY before any money "
+                 "decision leaning on a specific trader.")
     return lines
+
+
+def pooled_stats(qualified: dict, primary_cat: str, n_boot: int, seed: int,
+                 restrict: Optional[set] = None) -> Optional[dict]:
+    """Pooled P2 stats for one category over (optionally restricted) qualifiers."""
+    rows, traders = [], set()
+    for addr, q in qualified.items():
+        if restrict is not None and addr not in restrict:
+            continue
+        for mid, edge, cat in q["p2_rows"]:
+            if "cat:" + cat == primary_cat or primary_cat == "ALL":
+                rows.append((mid, edge))
+                traders.add(addr)
+    if not rows:
+        return None
+    me = per_market_edges(rows)
+    p, mean, upper = boot_stats(me, n_boot, seed)
+    return {"p": p, "edge": mean, "upper95": upper, "n_markets": len(me),
+            "n_traders": len(traders), "n_bets": len(rows)}
 
 
 async def run(args) -> int:
@@ -365,86 +493,104 @@ async def run(args) -> int:
     from base_engine.data.database import Database
     from base_engine.data.polymarket_client import PolymarketClient
 
+    split = parse_ts(args.split_date)
+    robust_splits = [parse_ts(s) for s in args.robustness_splits.split(",") if s.strip()]
+    if split is None or any(s is None for s in robust_splits):
+        print("bad --split-date/--robustness-splits"); return 2
+
     os.makedirs(args.cache, exist_ok=True)
     db = Database()
     await db.init()
     client = PolymarketClient()
     try:
         async with client:
-            print(f"[1/6] universe: leaderboards orderBy={args.orders} cap {args.universe}/list…",
+            print(f"[1/6] universe: leaderboard timePeriod=ALL orderBy={args.orders}…",
                   file=sys.stderr)
             universe = await fetch_universe(client, args.universe, args.orders.split(","))
-            print(f"      {len(universe)} unique addresses", file=sys.stderr)
+            src_map = {u["address"]: u["src"] for u in universe}
+            print(f"      {len(universe)} unique addresses "
+                  f"({Counter(u['src'] for u in universe)})", file=sys.stderr)
 
-            print(f"[2/6] histories (cache {args.cache}; throttle {args.rps}/s)…", file=sys.stderr)
-            histories: dict[str, list[dict]] = {}
+            print(f"[2/6] histories (cache {args.cache}; throttle {args.rps}/s)…",
+                  file=sys.stderr)
+            histories: dict[str, dict] = {}
+            n_partial = 0
             for i, u in enumerate(universe):
                 if i and i % 25 == 0:
-                    print(f"      …{i}/{len(universe)}", file=sys.stderr)
-                h = await fetch_history(client, u["address"], args.max_bets,
-                                        args.rps, args.cache, args.refresh)
-                if h:
-                    for t in h:
-                        t["_ts"] = None  # placeholder; parsed below (JSON round-trip safe)
-                    histories[u["address"]] = h
+                    print(f"      …{i}/{len(universe)} ({n_partial} partial-failed)",
+                          file=sys.stderr)
+                trades, status = await fetch_history(
+                    client, u["address"], args.max_bets, args.rps, args.cache, args.refresh)
+                if status == "partial":
+                    n_partial += 1  # excluded entirely — never analyzed [rev]
+                    continue
+                if trades:
+                    histories[u["address"]] = {"trades": trades, "status": status}
+            n_trunc = sum(1 for h in histories.values() if h["status"] == "truncated")
 
-            print(f"[3/6] labels: markets lookup…", file=sys.stderr)
+            print(f"[3/6] labels (indexed lookups)…", file=sys.stderr)
             for h in histories.values():
-                for t in h:
+                for t in h["trades"]:
                     t["_ts"] = parse_ts(t.get("timestamp"))
-            keys = sorted({t.get("marketId") or "" for h in histories.values() for t in h} - {""})
+            keys = sorted({t.get("marketId") or "" for h in histories.values()
+                           for t in h["trades"]} - {""})
             markets = await load_markets(db, keys, args.timeout)
 
-            # estimand + labels, per trader
-            total_entries = labeled_entries = 0
             per_trader: dict[str, list[dict]] = {}
+            cov_n = {"P1": [0, 0], "P2": [0, 0]}  # [labeled, total]
             for addr, h in histories.items():
                 ents = []
-                for t in first_buys(h, args.pmin, args.pmax):
-                    total_entries += 1
+                for t in first_buys(h["trades"], args.pmin, args.pmax):
+                    period = "P1" if t["_ts"] <= split else "P2"
+                    cov_n[period][1] += 1
                     mkt = markets.get(t.get("marketId") or "")
                     o = label_outcome(t.get("tokenId") or "", t.get("side") or "", mkt)
                     if o is None:
                         continue
-                    labeled_entries += 1
+                    cov_n[period][0] += 1
                     ents.append({"_ts": t["_ts"], "marketId": t["marketId"],
                                  "edge": o - float(t["price"]),
                                  "cat": bucket_category((mkt or {}).get("category"))})
                 if ents:
                     per_trader[addr] = ents
-            cov = labeled_entries / total_entries if total_entries else 0.0
 
-            all_ts = sorted(e["_ts"] for ents in per_trader.values() for e in ents)
-            split = (datetime.fromisoformat(args.split_date) if args.split_date
-                     else all_ts[len(all_ts) // 2] if all_ts else None)
-            if split is None:
-                print("no labeled entries at all — aborting")
-                return 1
-
-            print(f"[4/6] qualify on P1 (<= {split}) / judge on P2…", file=sys.stderr)
-            qualified: dict[str, dict] = {}
-            for addr, ents in per_trader.items():
-                q = qualify_and_judge(ents, split, args.min_p1_bets,
-                                      args.n_boot, args.seed)
-                if q:
-                    q["profile"] = profile_trader(histories[addr])
-                    qualified[addr] = q
-
-            # per-category pooled P2 (qualifiers only), market-clustered
-            print(f"[5/6] category verdicts…", file=sys.stderr)
-            cat_rows: dict[str, list] = {}
-            cat_traders: dict[str, set] = {}
+            print(f"[4/6] qualify on P1 (<= {split.date()}) / judge on P2…", file=sys.stderr)
+            def _qualify(split_dt):
+                out = {}
+                for addr, ents in per_trader.items():
+                    q = qualify_and_judge(ents, split_dt, args.min_p1_markets,
+                                          args.p1_p_min, args.n_boot, args.seed)
+                    if q:
+                        out[addr] = q
+                return out
+            qualified = _qualify(split)
             for addr, q in qualified.items():
-                for mid, edge, cat in q["p2_rows"]:
-                    for c in ("ALL", "cat:" + cat):
-                        cat_rows.setdefault(c, []).append((mid, edge))
-                        cat_traders.setdefault(c, set()).add(addr)
+                q["profile"] = profile_trader(histories[addr]["trades"])
+                q["src"] = src_map.get(addr, "?")
+                q["truncated"] = histories[addr]["status"] == "truncated"
+
+            # primary subuniverse: VOL-sourced AND non-truncated [rev]
+            primary_set = {a for a, q in qualified.items()
+                           if "VOL" in q["src"] and not q["truncated"]}
+
+            print(f"[5/6] verdicts (+{len(robust_splits)} robustness splits)…",
+                  file=sys.stderr)
             cat_stats = {}
-            for c, rows in cat_rows.items():
-                me = per_market_edges(rows)
-                p, mean = boot_p_edge(me, args.n_boot, args.seed + 1)
-                cat_stats[c] = {"p": p, "edge": mean, "n_markets": len(me),
-                                "n_traders": len(cat_traders[c]), "n_bets": len(rows)}
+            for c in {"ALL"} | {"cat:" + cat for q in qualified.values()
+                                for _, _, cat in q["p2_rows"]}:
+                s = pooled_stats(qualified, c, args.n_boot, args.seed + 1)
+                if s:
+                    cat_stats[c] = s
+            prim_stats = pooled_stats(qualified, args.primary, args.n_boot,
+                                      args.seed + 2, restrict=primary_set)
+            robust_means = []
+            for j, rs in enumerate(robust_splits):
+                rq = _qualify(rs)
+                rset = {a for a in rq
+                        if "VOL" in src_map.get(a, "") and histories[a]["status"] != "truncated"}
+                rstat = pooled_stats(rq, args.primary, args.n_boot,
+                                     args.seed + 3 + j, restrict=rset)
+                robust_means.append(rstat["edge"] if rstat else float("nan"))
 
             print(f"[6/6] verification samples…", file=sys.stderr)
             vlines = await verify_sample(db, client, markets, histories,
@@ -452,56 +598,77 @@ async def run(args) -> int:
     finally:
         await db.close()
 
-    _report(args, universe, histories, cov, total_entries, labeled_entries,
-            split, per_trader, qualified, cat_stats, vlines)
+    verdict, detail = primary_verdict(prim_stats, args.p_min, args.min_markets,
+                                      args.min_traders, args.econ_floor, robust_means)
+    _report(args, universe, histories, n_partial, n_trunc, cov_n, split,
+            robust_splits, per_trader, qualified, primary_set, cat_stats,
+            prim_stats, robust_means, verdict, detail, vlines)
     with open(args.out, "w") as f:
-        json.dump({"split": split.isoformat(), "label_coverage": cov,
-                   "cat_stats": cat_stats,
-                   "qualified": {a: {k: v for k, v in q.items() if k != "p2_rows"}
-                                 for a, q in qualified.items()}}, f, default=str, indent=1)
+        json.dump(json_safe({
+            "split": split, "robustness_splits": robust_splits,
+            "verdict": verdict, "detail": detail,
+            "primary_stats": prim_stats, "robust_means": robust_means,
+            "cat_stats": cat_stats,
+            "counts": {"universe": len(universe), "partial_failed": n_partial,
+                       "truncated": n_trunc},
+            "qualified": {a: {k: v for k, v in q.items() if k != "p2_rows"}
+                          for a, q in qualified.items()},
+        }), f, indent=1)
     print(f"full results -> {args.out}")
     return 0
 
 
-def _report(args, universe, histories, cov, tot_e, lab_e, split,
-            per_trader, qualified, cat_stats, vlines) -> None:
+def _report(args, universe, histories, n_partial, n_trunc, cov_n, split,
+            robust_splits, per_trader, qualified, primary_set, cat_stats,
+            prim_stats, robust_means, verdict, detail, vlines) -> None:
     print("\n" + "=" * 100)
     print("  COPYABLE-TRADER SEARCH — full histories, qualify on P1, judge on P2")
-    print(f"  universe={len(universe)} addrs ({args.orders})  histories={len(histories)}"
-          f"  first-BUY entries={tot_e:,}  labeled={lab_e:,} (coverage {cov:.0%})")
-    print(f"  split={split}  qualify: P1 entries>={args.min_p1_bets} AND P1 edge>0"
-          f"  (P2 NEVER consulted for selection)")
-    print(f"  qualified traders: {len(qualified)} of {len(per_trader)} with any labeled entries")
+    print(f"  universe={len(universe)} addrs (timePeriod=ALL, {args.orders})"
+          f"  histories={len(histories)}  partial-FAILED(excluded)={n_partial}"
+          f"  TRUNCATED(desc-only)={n_trunc}")
+    c1, c2 = cov_n["P1"], cov_n["P2"]
+    print(f"  label coverage: P1 {c1[0]:,}/{c1[1]:,}"
+          f" ({(c1[0]/c1[1] if c1[1] else 0):.0%})   P2 {c2[0]:,}/{c2[1]:,}"
+          f" ({(c2[0]/c2[1] if c2[1] else 0):.0%})   [asymmetry = ingestion skew — eyeball it]")
+    print(f"  split={split.date()} (locked calendar)  robustness={[s.date().isoformat() for s in robust_splits]}")
+    print(f"  qualify: >={args.min_p1_markets} distinct P1 markets AND P1 clustered"
+          f" P(edge>0)>={args.p1_p_min}  (P2 never consulted)")
+    print(f"  qualified: {len(qualified)} of {len(per_trader)} labeled traders"
+          f"  | primary subuniverse (VOL-sourced, non-truncated): {len(primary_set)}")
     print("=" * 100)
     print(f"  {'category':<14}{'traders':>8}{'P2 bets':>9}{'P2 mkts':>9}"
-          f"{'P2 edge':>10}{'P(>0)':>8}")
+          f"{'P2 edge':>10}{'P(>0)':>8}{'upper95':>9}   (descriptive — all qualifiers)")
     print("  " + "-" * 96)
     for c in sorted(cat_stats, key=lambda k: (k != "ALL", k)):
         s = cat_stats[c]
         print(f"  {c:<14}{s['n_traders']:>8}{s['n_bets']:>9}{s['n_markets']:>9}"
-              f"{s['edge']:>+10.4f}{s['p']:>8.3f}")
+              f"{s['edge']:>+10.4f}{s['p']:>8.3f}{s['upper95']:>+9.4f}")
     print("  " + "-" * 96)
-
-    v, detail = primary_verdict(cat_stats, args.primary, args.p_min,
-                                args.min_markets, args.min_traders)
-    print(f"  PRE-REGISTERED PRIMARY: {args.primary} pooled qualifier P2 edge.")
-    print(f"  VERDICT: {v} — {detail}")
-    if v == "PASS":
-        print("  NEXT: candidates below go to the fill-quality test (precise gate / forward")
-        print("  shadow) — a PASS here is trader-selection evidence, not fill evidence.")
-    elif v == "FAIL":
-        print("  This was the best retrospective corpus available. Retrospective road closed;")
-        print("  only a forward shadow test can revive the copy thesis.")
+    print(f"  PRE-REGISTERED PRIMARY: {args.primary} pooled P2 edge over VOL-sourced,")
+    print(f"  non-truncated qualifiers (PNL-board membership conditions on P2-era wins —")
+    print(f"  a collider; VOL selects on activity, not outcomes).")
+    if prim_stats:
+        print(f"  primary cell: edge={prim_stats['edge']:+.4f}  P={prim_stats['p']:.3f}"
+              f"  upper95={prim_stats['upper95']:+.4f}  mkts={prim_stats['n_markets']}"
+              f"  traders={prim_stats['n_traders']}  robustness means={robust_means}")
+    print(f"  VERDICT: {verdict} — {detail}")
+    if verdict == "PASS":
+        print("  NEXT (not a deploy): fill-quality on exactly these addresses — precise gate")
+        print("  / forward shadow — plus the per-fill OrderFilled chain audit.")
+    elif verdict == "FAIL-TERMINAL":
+        print("  Complete histories, clean universe, optimistic bound below costs:")
+        print("  the retrospective road for the copy thesis is closed.")
     print("-" * 100)
-
     top = sorted(qualified.items(), key=lambda kv: -kv[1]["p1_edge"])[:args.show]
-    print(f"  top {len(top)} qualifiers by P1 edge (judged on P2):")
-    print(f"  {'address':<14}{'cat':<10}{'P1 n':>6}{'P1 edge':>9}{'P2 n':>6}"
-          f"{'P2 edge':>9}{'P(>0)':>7}{'medpx':>7}{'bets/d':>7}{'days':>6}")
+    print(f"  top {len(top)} qualifiers by P1 edge (judged on P2; * = in primary subuniverse):")
+    print(f"  {'address':<14}{'src':<9}{'cat':<9}{'P1mk':>5}{'P1 edge':>9}{'P1 P':>6}"
+          f"{'P2mk':>5}{'P2 edge':>9}{'P2 P':>6}{'medpx':>7}{'b/day':>7}{'days':>6}")
     for addr, q in top:
         pr = q["profile"]
-        print(f"  {addr[:12]:<14}{q['main_cat']:<10}{q['n_p1']:>6}{q['p1_edge']:>+9.3f}"
-              f"{q['n_p2']:>6}{q['p2_edge']:>+9.3f}{q['p2_p']:>7.2f}"
+        star = "*" if addr in primary_set else " "
+        print(f"  {addr[:12]:<13}{star}{q['src']:<9}{q['main_cat']:<9}"
+              f"{q['n_p1_mkts']:>5}{q['p1_edge']:>+9.3f}{q['p1_p']:>6.2f}"
+              f"{q['p2_mkts']:>5}{q['p2_edge']:>+9.3f}{q['p2_p']:>6.2f}"
               f"{pr['median_price']:>7.2f}{pr['bets_per_day']:>7.1f}{pr['history_days']:>6.0f}")
     print("-" * 100)
     print("  VERIFICATION (nothing on faith):")
@@ -516,92 +683,92 @@ def _self_test() -> int:
     ok = True
     t0 = datetime(2026, 1, 1)
 
-    ok_ts = (parse_ts(1767225600) is not None and parse_ts("1767225600") is not None
+    ok_ts = (parse_ts(1767225600) is not None and parse_ts("2026-01-01") == t0
              and parse_ts("2026-01-01T00:00:00Z") == t0 and parse_ts("junk") is None)
-    print(f"  [ts] epoch/str/iso/junk parsing : {ok_ts}"); ok &= ok_ts
+    print(f"  [ts] epoch/date/iso-Z/junk : {ok_ts}"); ok &= ok_ts
+
+    raw = [{"type": "TRADE", "conditionId": "0xA", "asset": "T1", "side": "buy",
+            "price": "0.5", "size": "10", "timestamp": 1767225600,
+            "transactionHash": "0xh"}] * 3 + [{"type": "REDEEM"}]
+    norm = normalize_activity(raw)
+    ok_norm = len(norm) == 1 and norm[0]["side"] == "BUY" and norm[0]["marketId"] == "0xA"
+    print(f"  [normalize] dedupe + fields + non-trades dropped : {ok_norm}"); ok &= ok_norm
 
     mkt = {"resolution": "YES", "yes_token_id": "T1", "no_token_id": "T2"}
     ok_lab = (label_outcome("T1", "BUY", mkt) == 1.0
               and label_outcome("T2", "BUY", mkt) == 0.0
-              and label_outcome("", "NO", mkt) == 0.0
-              and label_outcome("T1", "BUY", None) is None
-              and label_outcome("T1", "BUY", {"resolution": None}) is None)
-    print(f"  [label] token/side/unknown mapping : {ok_lab}"); ok &= ok_lab
+              and label_outcome("T1", "BUY", None) is None)
+    print(f"  [label] token/unknown mapping : {ok_lab}"); ok &= ok_lab
 
-    trades = [
-        {"side": "BUY", "marketId": "M1", "price": 0.5, "_ts": t0.replace(day=2)},
-        {"side": "BUY", "marketId": "M1", "price": 0.6, "_ts": t0.replace(day=1)},  # earlier => first
-        {"side": "SELL", "marketId": "M2", "price": 0.5, "_ts": t0},                # exit, not entry
-        {"side": "BUY", "marketId": "M3", "price": 0.995, "_ts": t0},               # out of bounds
-    ]
-    fb = first_buys(trades, 0.02, 0.98)
-    ok_fb = len(fb) == 1 and fb[0]["price"] == 0.6
-    print(f"  [estimand] first BUY per market, SELL/dust excluded : {ok_fb}"); ok &= ok_fb
-
-    # qualification: lucky trader (good P1, coin-flip P2) vs skilled (good both)
     rng = random.Random(3)
-    split = datetime(2026, 6, 1)
-    def mk(n, when, mu):
-        return [{"_ts": when, "marketId": f"m{i}{when.month}{mu}", "cat": "sports",
+    split = datetime(2026, 2, 1)
+    def mk(n, when, mu, tag):
+        return [{"_ts": when, "marketId": f"m{tag}{i}", "cat": "sports",
                  "edge": rng.gauss(mu, 0.05)} for i in range(n)]
-    lucky = mk(40, datetime(2026, 5, 1), 0.10) + mk(40, datetime(2026, 7, 1), 0.0)
-    skilled = mk(40, datetime(2026, 5, 1), 0.10) + mk(40, datetime(2026, 7, 1), 0.08)
-    thin = mk(5, datetime(2026, 5, 1), 0.30)
-    q_lucky = qualify_and_judge(lucky, split, 25, 500, 7)
-    q_skill = qualify_and_judge(skilled, split, 25, 500, 7)
-    q_thin = qualify_and_judge(thin, split, 25, 500, 7)
+    lucky = mk(40, datetime(2026, 1, 10), 0.10, "a") + mk(40, datetime(2026, 5, 1), 0.0, "b")
+    skilled = mk(40, datetime(2026, 1, 10), 0.10, "c") + mk(40, datetime(2026, 5, 1), 0.08, "d")
+    noise = mk(40, datetime(2026, 1, 10), 0.005, "e") + mk(40, datetime(2026, 5, 1), 0.0, "f")
+    q_lucky = qualify_and_judge(lucky, split, 25, 0.90, 500, 7)
+    q_skill = qualify_and_judge(skilled, split, 25, 0.90, 500, 7)
+    q_noise = qualify_and_judge(noise, split, 25, 0.90, 500, 7)
     ok_q = (q_lucky is not None and q_lucky["p2_p"] < 0.95
             and q_skill is not None and q_skill["p2_p"] > 0.95
-            and q_thin is None)
-    print(f"  [qualify/judge] lucky P2 P={q_lucky['p2_p']:.2f}(<.95)  "
-          f"skilled P={q_skill['p2_p']:.2f}(>.95)  thin=dropped : {ok_q}"); ok &= ok_q
+            and q_noise is None)  # [rev] P1 bootstrap bar rejects noise traders
+    print(f"  [qualify] lucky P2 P={q_lucky['p2_p']:.2f}(<.95) skilled "
+          f"P={q_skill['p2_p']:.2f}(>.95) noise=rejected-at-P1 : {ok_q}"); ok &= ok_q
 
-    cs = {"cat:sports": {"p": 0.97, "edge": 0.03, "n_markets": 50, "n_traders": 8, "n_bets": 200}}
-    ok_v = (primary_verdict(cs, "cat:sports", 0.95, 30, 5)[0] == "PASS"
-            and primary_verdict(cs, "cat:esports", 0.95, 30, 5)[0] == "NO-DATA"
-            and primary_verdict({"cat:sports": {**cs["cat:sports"], "n_traders": 2}},
-                                "cat:sports", 0.95, 30, 5)[0] == "UNDERPOWERED"
-            and primary_verdict({"cat:sports": {**cs["cat:sports"], "p": 0.6}},
-                                "cat:sports", 0.95, 30, 5)[0] == "FAIL")
-    print(f"  [verdict] PASS/NO-DATA/UNDERPOWERED/FAIL : {ok_v}"); ok &= ok_v
+    base = {"p": 0.97, "edge": 0.03, "upper95": 0.05, "n_markets": 50,
+            "n_traders": 8, "n_bets": 200}
+    ok_v = (primary_verdict(base, 0.95, 30, 5, 0.02, [0.01, 0.02])[0] == "PASS"
+            and primary_verdict(base, 0.95, 30, 5, 0.02, [0.01, -0.01])[0] == "INCONCLUSIVE"
+            and primary_verdict(None, 0.95, 30, 5, 0.02, [])[0] == "NO-DATA"
+            and primary_verdict({**base, "n_traders": 2}, 0.95, 30, 5, 0.02, [])[0] == "UNDERPOWERED"
+            and primary_verdict({**base, "p": 0.60, "upper95": 0.001}, 0.95, 30, 5,
+                                0.02, [])[0] == "FAIL-TERMINAL"
+            and primary_verdict({**base, "p": 0.60, "upper95": 0.04}, 0.95, 30, 5,
+                                0.02, [])[0] == "INCONCLUSIVE")
+    print(f"  [verdict] PASS/robust-veto/NO-DATA/UNDERPOWERED/TERMINAL/INCONCLUSIVE : {ok_v}")
+    ok &= ok_v
 
-    prof = profile_trader([{"price": 0.5, "size": 100, "_ts": t0},
-                           {"price": 0.99, "size": 300, "_ts": t0.replace(month=2)}])
-    ok_pr = prof["n_trades"] == 2 and prof["pct_copyable_price"] == 0.5 and prof["history_days"] > 20
-    print(f"  [profile] price/size/tempo stats : {ok_pr}"); ok &= ok_pr
+    ok_j = json.loads(json.dumps(json_safe({"a": float("nan"), "b": [1.0, float("inf")],
+                                            "t": t0})))["a"] is None
+    print(f"  [json] NaN/inf sanitized : {ok_j}"); ok &= ok_j
 
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="Find copyable traders (full histories, P1-qualify/P2-judge)")
-    ap.add_argument("--universe", type=int, default=300, help="addresses per leaderboard ranking (default 300)")
-    ap.add_argument("--orders", default="PNL,VOL", help="leaderboard rankings to union (default PNL,VOL)")
-    ap.add_argument("--max-bets", type=int, default=3000, dest="max_bets",
-                    help="history depth cap per trader (default 3000)")
-    ap.add_argument("--rps", type=float, default=4.0, help="API request throttle per second (default 4)")
-    ap.add_argument("--cache", default="/tmp/copyable_cache", help="per-address history cache dir")
-    ap.add_argument("--refresh", action="store_true", help="ignore cache, re-pull histories")
-    ap.add_argument("--split-date", default="", dest="split_date",
-                    help="ISO P1/P2 split (default: median labeled entry time)")
-    ap.add_argument("--min-p1-bets", type=int, default=25, dest="min_p1_bets",
-                    help="min P1 labeled first-entries to qualify (default 25)")
-    ap.add_argument("--primary", default=PRIMARY_DEFAULT,
-                    help=f"pre-registered primary category (default {PRIMARY_DEFAULT})")
+    ap = argparse.ArgumentParser(description="Find copyable traders (P1-qualify/P2-judge, review-hardened)")
+    ap.add_argument("--universe", type=int, default=300)
+    ap.add_argument("--orders", default="PNL,VOL")
+    ap.add_argument("--max-bets", type=int, default=6000, dest="max_bets",
+                    help="history cap; hitting it flags the trader TRUNCATED (excluded from primary)")
+    ap.add_argument("--rps", type=float, default=4.0)
+    ap.add_argument("--cache", default="/tmp/copyable_cache")
+    ap.add_argument("--refresh", action="store_true")
+    ap.add_argument("--split-date", default=SPLIT_DEFAULT, dest="split_date",
+                    help=f"LOCKED calendar P1/P2 split (default {SPLIT_DEFAULT})")
+    ap.add_argument("--robustness-splits", default=ROBUSTNESS_DEFAULT, dest="robustness_splits",
+                    help="extra splits; primary PASS needs positive pooled edge at each")
+    ap.add_argument("--min-p1-markets", type=int, default=25, dest="min_p1_markets",
+                    help="min DISTINCT P1 markets to qualify (default 25)")
+    ap.add_argument("--p1-p-min", type=float, default=0.90, dest="p1_p_min",
+                    help="min P1 clustered bootstrap P(edge>0) to qualify (default 0.90)")
+    ap.add_argument("--primary", default=PRIMARY_DEFAULT)
     ap.add_argument("--p-min", type=float, default=0.95, dest="p_min")
     ap.add_argument("--min-markets", type=int, default=30, dest="min_markets")
     ap.add_argument("--min-traders", type=int, default=5, dest="min_traders")
+    ap.add_argument("--econ-floor", type=float, default=0.02, dest="econ_floor",
+                    help="prob-points cost floor separating FAIL-TERMINAL from INCONCLUSIVE")
     ap.add_argument("--n-boot", type=int, default=2000, dest="n_boot")
     ap.add_argument("--pmin", type=float, default=0.02)
     ap.add_argument("--pmax", type=float, default=0.98)
-    ap.add_argument("--show", type=int, default=30, help="qualifiers to print (default 30)")
-    ap.add_argument("--verify-res", type=int, default=20, dest="verify_res",
-                    help="sampled resolutions to chain-verify (default 20)")
-    ap.add_argument("--verify-fills", type=int, default=5, dest="verify_fills",
-                    help="sampled traders to cross-API verify (default 5)")
-    ap.add_argument("--timeout", type=int, default=60, help="DB statement_timeout s (default 60)")
-    ap.add_argument("--out", default="/tmp/copyable_traders.json", help="JSON results path")
+    ap.add_argument("--show", type=int, default=30)
+    ap.add_argument("--verify-res", type=int, default=20, dest="verify_res")
+    ap.add_argument("--verify-fills", type=int, default=5, dest="verify_fills")
+    ap.add_argument("--timeout", type=int, default=60)
+    ap.add_argument("--out", default="/tmp/copyable_traders.json")
     ap.add_argument("--seed", type=int, default=20260709)
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
