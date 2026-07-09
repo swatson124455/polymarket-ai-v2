@@ -1,9 +1,55 @@
 # EsportsBot Sharp-Line — Next-Session Handoff
 
-**Branch:** `claude/esports-sharp-line-rebuild-36c8u9` (all work pushed to GitHub)
-**Updated:** 2026-07-09 (session 2 — backtest pipeline built)
+**Branch:** `claude/esports-sharp-line-rebuild-36c8u9-7m96gg` (all work pushed to GitHub)
+**Updated:** 2026-07-09 (session 2 — backtest pipeline built + collector fixed)
 **Read order:** this file → `EB_SHARP_LINE_STATE.md` → `EB_SHARP_LINE_PLUMBING.md`
 (esp. "Step-3 PREFLIGHT" + "LIVE MEASUREMENT") → `EB_MARKET_SHAPE_RESULTS.md` → `CLAUDE.md`.
+
+---
+
+## PICK UP HERE (copy-paste prompt for the next session)
+
+> **EsportsBot sharp-line rebuild — continue. Branch:
+> `git checkout claude/esports-sharp-line-rebuild-36c8u9-7m96gg && git pull`.**
+>
+> Read first, in order: this file (start at §0 + §3 "COLLECTOR STATUS"), then
+> `EB_SHARP_LINE_STATE.md`, `EB_SHARP_LINE_PLUMBING.md`, `EB_MARKET_SHAPE_RESULTS.md`,
+> then `CLAUDE.md`.
+>
+> **Context:** cloud session — you cannot reach the VPS/DB/PinnOdds directly
+> (egress-scoped, no SSH key). CLOB + gamma-api ARE reachable. The operator runs VPS
+> commands (`ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0`,
+> often md5-gated base64 one-shots) and pastes output back. Operator is on Windows
+> PowerShell (no `\` line-continuation; one command per paste).
+>
+> **DONE last session (do not redo):** full offline backtest pipeline BUILT + tested
+> (138 green) + pushed — Step 1 `esports_v2/model/closing_line.py`, Step 2
+> `esports_v2/model/results_join.py`, Step 3 `esports_v2/data/clob_labels.py`
+> (flip-proof orientation, LIVE-verified 5/5), Step 4 `esports_v2/model/sharp_eval.py`
+> + `esports_v2/scripts/eval_sharp_line.py`. De-vig decided: simple no-vig. VPS
+> collector was DEAD (no cron + 429); FIXED — cron installed, hardened prematch-only
+> script deployed (`deploy/vps/collect_pinnodds_standalone.py`, md5
+> `3f6e794f21e3bd40ef97b01c7fad3116`), 18:45 UTC tick verified firing.
+>
+> **FIRST ACTION — have the operator run + paste back:**
+> ```
+> ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 "date -u; wc -l /home/ubuntu/eb-odds/pinnodds_snapshots.jsonl; grep -aE 'appended|429' /home/ubuntu/eb-odds/collect.log | tail -5"
+> ```
+> As of last session the collector was 429 rate-limited (PinnOdds demo-tier quota
+> drained by test runs), frozen at 33 lines. Interpret: **>33 + `appended=<nonzero>`**
+> → 429 cleared, collector alive, let odds accumulate. **still 33 + continuous `429`**
+> → free tier can't sustain 1 req/15min → operator decision (paid tier / widen cadence
+> `*/30`|hourly one-line crontab edit / different source) → ASK.
+>
+> **THEN the two DATA gaps (code is done; see §0):** (A) fresh results covering the
+> forward window (free results end 2026-04-14, odds start now → join yields 0 until a
+> forward Oracle/PandaScore pull); (B) capture the matched Polymarket price alongside
+> each odds pull to enable the real `edge = sharp − PM_price` backtest.
+>
+> **GUARDRAILS:** EB scope only; MB priority on shared resources; EB stays HALTED — do
+> NOT deploy the trading bot (the odds cron is not a bot deploy); correct-or-absent
+> everywhere (doubt → None, never a wrong bool); preserve other crontab entries on any
+> cron edit. Commit + push each step.
 
 ---
 
