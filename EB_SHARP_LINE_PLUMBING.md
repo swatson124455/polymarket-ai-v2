@@ -165,3 +165,31 @@ a latent sign-flip (the S152/B2 loss class):
 Verify live before/after per CLAUDE.md ("Can't Fully Verify" rule): scan output before
 the edit, the same after, plus a spot-check that a known shape-2 market gets the correct
 `yes_is_team_a`. EB is halted — no deploy.
+
+### LIVE MEASUREMENT (2026-07-09, prod DB + live CLOB) — de-risks step 3
+
+Ran `scripts/esports_orientation_live_check.py` on the VPS against 36 live shape-2
+team-vs-team markets. Result:
+
+```
+shape-2 markets checked:              36
+agree (positional fallback == authoritative CLOB team): 36
+FLIP  (positional fallback wrong team):                  0   <- zero live sign-flip
+stored yes_token_id NOT among CLOB tokens:               0   <- yes_token_id reliable
+clob fetch errors:                                       0
+```
+
+**Findings that change the step-3 plan:**
+- **No active sign-flip.** The bot's current positional `tokens[0]` fallback matches
+  the authoritative CLOB team on 36/36. So step 3 is a ROBUSTNESS upgrade (stop
+  depending on token *position*), NOT an active-bug fix. Not urgent.
+- **`yes_token_id` is a reliable authoritative key** (0/36 missing from the live CLOB
+  market). So [CHECK 1]'s answer for the FIX is: don't add DB columns — at
+  orientation time, map the stored `yes_token_id` → its CLOB `outcome` string = the
+  authoritative YES team NAME. Store that name on `market_dict`; `enrich_with_sharp_
+  prob` aligns it against the odds' team_a itself (flip-proof, sidesteps [CHECK 2]).
+- **Recommendation:** since there is no active flip AND the signal can't be validated
+  end-to-end until odds exist (B13), bundle the actual live-path wiring with the odds
+  session rather than making a standalone live-scan change now. The offline backfill
+  (option a) that the backtest needs will do the same `yes_token_id → CLOB label`
+  lookup — build it there, once there is odds data to test the whole chain against.
