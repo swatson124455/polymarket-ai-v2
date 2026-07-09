@@ -48,11 +48,11 @@ python -m esports_v2.scripts.eval_sharp_line \
   Polymarket YES price (+ `condition_id`/`yes_token_id` for the CLOB orientation
   backfill) alongside each PinnOdds line. That is the highest-value next data change.
 
-### DECISION PENDING (operator) — de-vig method
-`--de-vig simple` (proportional no-vig; fleet standard, `sharp_reference.no_vig_two_way`)
-vs `--de-vig shin` (`clv.odds_to_implied`). One flag; both wired. Recommend **simple**
-unless you specifically want Shin's favorite-longshot correction. Numbers are labeled
-with the method used.
+### DECISION RESOLVED (operator, 2026-07-09) — de-vig = SIMPLE no-vig
+Operator chose **`--de-vig simple`** (proportional no-vig; fleet standard,
+`sharp_reference.no_vig_two_way`) — which is already the code default, so no change.
+Shin (`--de-vig shin` / `clv.odds_to_implied`) stays wired as a one-flag alternative
+if revisited. Report all sharp-line numbers with simple no-vig.
 
 ---
 
@@ -121,8 +121,7 @@ Tests: PinnOdds loader/collector 10 green; full esports+odds suite 92 green.
 - **(b) Close GAP B** (§0): extend `collect_pinnodds.py` to also snapshot the matched
   Polymarket YES price + `condition_id`/`yes_token_id`. That unlocks the real
   `edge = sharp − PM_price` backtest via `edge_backtest`.
-- **(c) Operator picks de-vig** (§DECISION): `--de-vig simple|shin`. ASK before
-  reporting numbers; both are wired, `simple` is the default.
+- **(c) ✅ De-vig decided** (§DECISION): operator chose `--de-vig simple`. No action.
 - **(d)** Only after (a)+(c) give a real sharp-line hit-rate, and (b) gives a real
   edge, consider the live-scan orientation wiring (PREFLIGHT option b) + un-halting.
 
