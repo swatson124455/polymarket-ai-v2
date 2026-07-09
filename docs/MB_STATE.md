@@ -1,6 +1,6 @@
 # MirrorBot Rebuild — Living State / Handoff (docs/MB_STATE.md)
 
-**Last updated:** 2026-07-08 · **Branch:** `claude/mirrorbot-persistence-check-oc02tk`
+**Last updated:** 2026-07-09 · **Branch:** `claude/mirrorbot-persistence-check-oc02tk`
 **Read first:** `CLAUDE.md` (binding directives), `MB_REBUILD_PLAN.md` (the plan + operator decisions), then this file.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
@@ -8,7 +8,7 @@
 
 ## 1. One-paragraph state
 
-MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The old bot is **paused to paper** (real money off, 2026-07-05) but still collecting signal data. A **clean-silo rebuild** (`mirror_v3/`) is scaffolded, tested, and ready to deploy — safety spine only, strategy slot deliberately empty behind an acceptance gate. **The v3 whale trader-ranking engine (`bots/mirror_scoring/`) FAILED its Stage-1 acceptance gate** under a now-calibrated permutation test (prior-session report `172d72a`: 2 cutoffs FAIL, placebos 0/20 and 1/20 — a *trustworthy* negative; the earlier "PASS" was a miscalibrated test). **Before any algo rework, the one honest go/no-go is a trader-skill PERSISTENCE check** — `scripts/check_trader_persistence.py`, built this session, awaiting an operator VPS run. It strips all modeling and just measures raw cross-period edge autocorrelation (do traders +edge in period 1 stay +edge in period 2?), with a calibrated placebo and multi-cutoff agreement. ≈0 ⇒ no persistent signal exists, no rework helps, FAIL stands. Clearly >0 ⇒ signal real, method lost it (likely pooling un-tailable crypto whales with sports/esports) ⇒ per-category rework justified. The other strategy direction is a **sharp-line reference** (compare whale entries to an efficient outside price); its vendor-independent core is built and tested, waiting on an OddsPapi paid tier for sports data. Everything is on GitHub; nothing is deployed except the pause.
+MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The old bot is **paused to paper** (real money off, 2026-07-05) but still collecting signal data. A **clean-silo rebuild** (`mirror_v3/`) is scaffolded, tested, and ready to deploy — safety spine only, strategy slot deliberately empty behind an acceptance gate. **The v3 whale trader-ranking engine (`bots/mirror_scoring/`) reportedly FAILED its Stage-1 gate** (prior-session handoff citing `172d72a`: 2 cutoffs FAIL, placebos 0/20 and 1/20). A 61-agent adversarial review (2026-07-09, this session) established two things about that evidence: (a) **commit `172d72a` is NOT in this clone — the FAIL is currently hearsay** until the commit/branch is recovered and reviewed; (b) **the in-repo validation harness is confirmed CIRCULAR** (admission is selected on post-cutoff outcomes, then "validated" on the same post-cutoff signals — a false-PASS machine), which mechanically explains the earlier miscalibrated "PASS" and means **a PASS from `bots/mirror_scoring/validation.py` must never clear anything**. The circularity biases toward PASS, so the reported FAIL — if the recovered code checks out — is if anything *stronger*. **The lead instrument now is the TAIL BACKTEST** — `scripts/backtest_tail_leaderboard.py` (copy-everyone at the operator-measured ~10s lag, per category, market-clustered bootstrap, pre-registered primary cell, pre-spread screen semantics), hardened against all 26 confirmed review findings; `scripts/check_trader_persistence.py` is the SECONDARY corroboration (its shuffle null is anti-conservative under shared-market overlap — labeled as such). Both await an operator VPS run. The other strategy direction is a **sharp-line reference** (compare whale entries to an efficient outside price); its vendor-independent core is built and tested, waiting on an OddsPapi paid tier for sports data. Everything is on GitHub; nothing is deployed except the pause.
 
 ## 2. Current system state (verified)
 
@@ -35,38 +35,50 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
 | Sharp-line core | `bots/mirror_backtest/sharp_reference.py` | no-vig, point-in-time, gate rule + 19 tests; OddsPapi seam env-key-only |
 | Scoring engine | `bots/mirror_scoring/` (from `mb-formula-review`) | 45 tests; runner unblocked (`8ea683d`); validate run pending |
 | M0-DB verify | `scripts/verify_salvage_data.py` | read-only; cascade bug fixed |
-| Persistence go/no-go | `scripts/check_trader_persistence.py` | read-only; pure-stdlib; offline self-test PASS (placebo calibrated at α); **awaiting operator VPS run** |
-| Tail backtest (direct) | `scripts/backtest_tail_leaderboard.py` | read-only; copy-everyone at realistic lag → hold-to-resolution edge, market-clustered bootstrap, lag sweep {10,30,60}s + per-category; offline self-test PASS; **awaiting operator VPS run** |
+| Tail backtest (PRIMARY) | `scripts/backtest_tail_leaderboard.py` | read-only; hardened vs 2026-07-09 review (strictly-after-print fills, per-slice coverage gate, fee-scaled pts + ret/$ units, paired tax, pre-registered primary cell `cat:sports@10s` + 30s lag-agreement, LIMIT sentinel, `--sample`/progress, stage/side mix printed, PASS* = pre-spread screen only); self-test + 14 unit tests green; **awaiting operator VPS run** |
+| Persistence check (secondary) | `scripts/check_trader_persistence.py` | read-only; reworked verdicts (SIGNIFICANT-BUT-SMALL; NULL can't discard underpowered-significant cutoffs), UNION-ALL planner-safe SQL, estimand-faithful first-entry selection, `--since/--until`, LIMIT sentinel; anti-conservative-null caveat printed; self-test + 11 unit tests green; **awaiting operator VPS run** |
 | Operator runbooks | `docs/VPS_RUNBOOK_2026-07-02.md`, `deploy/mb_vps_oneshot.sh` | one-paste checks; mktemp-safe |
 
 ## 5. Open threads / what's next
 
-- **[operator, GATING] Run the persistence check** — the one honest go/no-go before any ranking rework:
+- **[operator, GATING — PRIMARY] Run the tail backtest** — the direct "can we tail them
+  reasonably?" test (operator's framing, 2026-07-09), hardened per the 61-agent review:
   ```
+  # bounded first run (quiet window; the resolution filter is not index-backed):
   cd /opt/polymarket-ai-v2 && sudo -u polymarket env PYTHONPATH=/opt/polymarket-ai-v2 \
-    venv/bin/python scripts/check_trader_persistence.py --by-category | tee /tmp/persistence.log
-  # optional cross-check on the rejected-signal corpus:
-  ... scripts/check_trader_persistence.py --source rejected --by-category
+    venv/bin/python scripts/backtest_tail_leaderboard.py --by-category \
+    --since 2026-06-01 --sample 20000 | tee /tmp/tail_backtest.log
+  # full run after the bounded one behaves:
+  ... scripts/backtest_tail_leaderboard.py --by-category | tee /tmp/tail_backtest.log
   ```
-  Read the VERDICT block. ≈0 pooled AND no category slice persists ⇒ FAIL stands, stop.
-  Clearly >0 (pooled or a category) ⇒ rework justified, per-category not pooled.
-  **Hard rule:** do NOT rework-then-retest until this passes (p-hacking); a real
-  verdict needs the built-in calibrated placebo + multi-cutoff agreement (both are).
-- **[operator, GATING] Run the tail backtest** — the DIRECT "can we tail them reasonably?" test
-  (operator's framing, 2026-07-09): copy every detected whale signal at a realistic lag, hold to
-  resolution, market-clustered bootstrap, lag sweep + per category:
+  Discipline is built in: PRIMARY CELL is pre-registered (`cat:sports` @ 10s, 30s
+  lag-agreement required); every other cell is descriptive (multiplicity). PASS* is a
+  **pre-spread screen** — a FAIL is final for a slice; a PASS* only licenses the
+  PRECISE fill-model gate (`bots/mirror_backtest/gate.py`, shadow_fills ladders) per
+  MB_REBUILD_PLAN §2. Read per-slice `cov` and `nr%` before believing any row.
+- **[operator, secondary] Run the persistence check** — corroboration only (its shuffle
+  null is anti-conservative under shared-market overlap; the output says so):
   ```
-  cd /opt/polymarket-ai-v2 && sudo -u polymarket env PYTHONPATH=/opt/polymarket-ai-v2 \
-    venv/bin/python scripts/backtest_tail_leaderboard.py --by-category | tee /tmp/tail_backtest.log
+  ... scripts/check_trader_persistence.py --by-category --since 2026-03-01 | tee /tmp/persistence.log
   ```
-  Read the lag=0 ceiling vs lagged rows per category = the tailability tax. Copy latency is 10s
-  (operator, 2026-07-09) — the default sweep includes it; the true value should come from the v3
-  collector's `feed_lag_p95_s` once deployed. A slice only "passes" with adequate n_markets AND
-  coverage — a green on 5 covered markets is not a pass. This supersedes the persistence check as
-  the lead instrument (it answers the money question directly rather than via autocorrelation).
-- **[operator, PENDING] 3rd cutoff (05-10) validate result** — grab it from `/tmp/val_all.log`
-  on the VPS and record it here (2 cutoffs already reported FAIL; this session had no VPS access).
-- **[operator] Re-run algo validate** — `deploy/mb_vps_oneshot.sh` (fixed); paste output. It's the scoring engine's go/no-go — but it FAILED Stage-1 (see §1); the persistence check above is the prerequisite that decides whether re-running is even worth it.
+  **Hard rule stands:** do NOT rework-then-retest the ranking until an instrument passes
+  (p-hacking); any real verdict needs multi-cutoff agreement, and NULL/MIXED semantics
+  are now strict (an underpowered-but-significant cutoff blocks NULL).
+- **[operator, evidence] Recover `172d72a`** (the calibrated-permutation FAIL run — likely on
+  the `mb-formula-review` lane): push the branch/commit to origin so the Stage-1 FAIL becomes
+  auditable instead of hearsay, and grab the 3rd cutoff (05-10) result from `/tmp/val_all.log`
+  and record it here. Until then the FAIL is provisional (direction likely correct — see §7
+  circularity note: the in-repo harness biases toward PASS, and it still failed).
+- **[standing, DO NOT] Re-run `--stage validate` (`deploy/mb_vps_oneshot.sh` / 
+  `scripts/mirror_scoring_run.py`) for any decision** — the in-repo kill criterion is
+  confirmed circular (§7). A PASS from it means nothing; running it wastes a 300s scan.
+- **[gated rework backlog — only if an instrument passes]** catalogued by the 2026-07-09
+  review, NOT applied (hard rule above): (1) three-way split fit/select/validate in
+  `mirror_scoring` (kills the circularity); (2) per-category stratified scoring + BH
+  (MIN_EVENTS=12 pooled starves sparse sports/esports traders); (3) cluster by event, not
+  condition_id (neg-risk siblings inflate confidence; schema has no event id — needs one);
+  (4) two-group contrast via cluster regression, not the spread/2 recentering
+  (anti-conservative); (5) `DELTA_SECONDS` from measured `feed_lag_p95_s` (~10s), not 60.
 - **[operator] OddsPapi paid tier** — confirm sports coverage + that `ODDSPAPI_API_KEY` is set in the VPS env (presence only). Then the sharp-line engine wires to live data.
 - **[build, blocked on above] Sports sharp-line pipeline:** live OddsPapi fetch, sports team-name → Polymarket condition_id matcher (esports matcher exists in EB, sports is net-new), offline backfill of `sharp_prob` onto signals, then run through the gate.
 - **[build, unblocked] Crypto kill-test:** run crypto signals through the harness at realistic latency to confirm the latency-trap hypothesis and formally drop crypto.
@@ -81,6 +93,7 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
 
 ## 7. Landmines (do not trip)
 
+- **`bots/mirror_scoring/validation.py` is a false-PASS machine** (confirmed 2026-07-09, adversarially verified): `_UNIVERSE_SQL` has no time bound, BH admission keys on the post-cutoff test half, and the "out-of-sample" rejected-signals set shares the same post-cutoff (trader, market, outcome) randomness. Any PASS it emits is selection noise — never clear the UNVERIFIED label with it, never cite it in a go decision. (FAILs are directionally credible: the bias runs the other way.)
 - **order_gateway neg-risk block** no-ops for MB by accident (CLAUDE.md "DORMANT LANDMINE"). "Repairing" the index re-creates Bug 14 (election blackout). Leave it.
 - **Do NOT add a `neg_risk=True` filter** anywhere (CLAUDE.md).
 - **`mirrored_trades` is bookkeeping, not a guard** — the real same-side dedup is the `_open_positions` scan.
