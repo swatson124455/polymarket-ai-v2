@@ -66,7 +66,14 @@ class PinnOddsLoader:
             raise ValueError("PinnOdds API key required")
         self._api_key = api_key
         self._session = requests.Session()
-        self._session.headers.update({"x-portal-apikey": api_key})
+        # PinnOdds' WAF 403s the default python-requests User-Agent (verified live
+        # 2026-07-09: curl 200, urllib/requests 403). Send a browser-ish UA + Accept.
+        self._session.headers.update({
+            "x-portal-apikey": api_key,
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json",
+        })
         self._request_count = 0
 
     @classmethod
