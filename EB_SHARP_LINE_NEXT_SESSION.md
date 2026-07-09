@@ -1,9 +1,58 @@
 # EsportsBot Sharp-Line — Next-Session Handoff
 
 **Branch:** `claude/esports-sharp-line-rebuild-36c8u9` (all work pushed to GitHub)
-**Updated:** 2026-07-09
+**Updated:** 2026-07-09 (session 2 — backtest pipeline built)
 **Read order:** this file → `EB_SHARP_LINE_STATE.md` → `EB_SHARP_LINE_PLUMBING.md`
 (esp. "Step-3 PREFLIGHT" + "LIVE MEASUREMENT") → `EB_MARKET_SHAPE_RESULTS.md` → `CLAUDE.md`.
+
+---
+
+## 0. SESSION-2 UPDATE (2026-07-09) — the whole backtest pipeline is now built
+
+All four circle-back steps (§5) are IMPLEMENTED, unit-tested, and (Step 3) live-
+verified. What is NOT done is producing real numbers — that is blocked on data,
+not code. **Two data gaps** and **one operator decision** below.
+
+**Built this session (4 commits, all pushed; +65 unit tests, full suite 138 green):**
+
+| Step | Module | What | Runs now? |
+|---|---|---|---|
+| 1 | `esports_v2/model/closing_line.py` | snapshots → closing line per match (last snap with `captured_at <= starts`; no look-ahead). Projects to the `(odds_a,odds_b)` lookup. | ✅ pure |
+| 2 | `esports_v2/model/results_join.py` | join closing lines to free RESULTS by team (alias matcher, injectable) + day → `home_won`. Bijective, drops ambiguous multi-winner. | ✅ pure |
+| 3 | `esports_v2/data/clob_labels.py` | flip-proof orientation: stored `yes_token_id` → authoritative CLOB outcome (YES team NAME) → `resolve_yes_is_team_a`. | ✅ **live-verified 5/5** vs real CLOB |
+| 4 | `esports_v2/model/sharp_eval.py` + `esports_v2/scripts/eval_sharp_line.py` | metrics (favorite hit-rate, Brier, reliability, closing-vs-open CLV) + `edge_backtest` wiring + CLI driver reduce→join→eval. | ✅ verified 40/40 on synthetic-over-real-CS2 |
+
+**Run the whole chain** (once data aligns — see gaps):
+```
+python -m esports_v2.scripts.eval_sharp_line \
+  --snapshots data/odds/pinnodds_snapshots.jsonl \
+  --bulk data/esports_matches_bulk.jsonl --cs2 data/cs2/pandascore_cs2.json \
+  --de-vig simple            # or shin — OPEN operator decision (§DECISION)
+```
+
+### TWO DATA GAPS blocking real numbers (both are data, not code)
+
+- **GAP A — date non-overlap (measured).** Free results on disk end **2026-04-14**;
+  forward odds-collection began **2026-07-09**. **Zero overlap** → the join yields 0
+  today no matter how many odds snapshots accumulate. FIX: pull fresh free results
+  covering the collection window AFTER those matches resolve (re-run the Oracle/
+  PandaScore results fetch for 2026-07+; PandaScore CS2 is match-level and the
+  cleanest join target — Oracle LoL rows are per-GAME and get dropped as ambiguous
+  by design). The join code is done and correct; it just needs same-window results.
+- **GAP B — no historical Polymarket prices (design gap).** The actual EB signal is
+  `edge = sharp_prob − PM_price − fee`. The forward-collector captures **PinnOdds
+  only** — no PM price at bet time — so `edge_backtest` reports the gap instead of
+  fabricating a price. The sharp-line **hit-rate/Brier/CLV** metrics (which validate
+  the signal SOURCE) need only odds+results and WILL run once Gap A closes. To
+  backtest the real edge, extend the forward-collector to also snapshot the matched
+  Polymarket YES price (+ `condition_id`/`yes_token_id` for the CLOB orientation
+  backfill) alongside each PinnOdds line. That is the highest-value next data change.
+
+### DECISION PENDING (operator) — de-vig method
+`--de-vig simple` (proportional no-vig; fleet standard, `sharp_reference.no_vig_two_way`)
+vs `--de-vig shin` (`clv.odds_to_implied`). One flag; both wired. Recommend **simple**
+unless you specifically want Shin's favorite-longshot correction. Numbers are labeled
+with the method used.
 
 ---
 
@@ -53,18 +102,29 @@ Tests: PinnOdds loader/collector 10 green; full esports+odds suite 92 green.
 - **This is a cloud session:** cannot reach the VPS/DB/PinnOdds directly (egress-scoped +
   no SSH key); the operator runs VPS commands and pastes output.
 
-## 5. NEXT ACTIONS (circle back once history has built up)
+## 5. NEXT ACTIONS — steps 1-4 are BUILT (§0); remaining work is DATA, not code
 
-1. **Reduce snapshots → closing line** per match: last snapshot with
-   `captured_at <= starts`, per `match_key`.
-2. **Join to free RESULTS** we already have (`data/esports_matches_bulk.jsonl`,
-   `data/cs2/pandascore_cs2.json`) by team/date via the alias matcher → who won.
-3. **Finish Step 3 orientation plumbing** (working-code edit; follow the PREFLIGHT):
-   store the YES **team NAME** from the CLOB outcome label (flip-proof), not a bool.
-   Verify live before/after. EB stays halted.
-4. **Backtest**: `esports_v2/model/sharp_reference.py:enrich_with_sharp_prob →
-   evaluate_edge`; report edge / CLV / hit-rate.
-5. **De-vig method** (simple no-vig vs Shin) is an **OPEN operator decision** — ASK.
+1. ✅ **[DONE, session 2]** Reduce snapshots → closing line (`closing_line.py`).
+2. ✅ **[DONE, session 2]** Join to free RESULTS (`results_join.py`).
+3. ✅ **[DONE, session 2 — live-verified 5/5]** Flip-proof orientation via the
+   authoritative CLOB label (`clob_labels.py`). This is the OFFLINE backfill path
+   (option a from the PREFLIGHT) — read-only, no live-bot change, EB stays halted.
+   The live-scan wiring (option b) is deferred until there is odds data to test the
+   whole chain against, exactly as the PREFLIGHT recommended.
+4. ✅ **[DONE, session 2 — wiring]** `sharp_eval.py` + `eval_sharp_line.py` tie
+   reduce→join→metrics and wire `enrich_with_sharp_prob`. **Numbers pending data.**
+
+**What's actually left (do in this order):**
+- **(a) Close GAP A** (§0): get free results covering the 2026-07+ collection window
+  (re-pull Oracle/PandaScore after those matches resolve). Then run the driver — the
+  sharp-line hit-rate / Brier / CLV numbers come out immediately.
+- **(b) Close GAP B** (§0): extend `collect_pinnodds.py` to also snapshot the matched
+  Polymarket YES price + `condition_id`/`yes_token_id`. That unlocks the real
+  `edge = sharp − PM_price` backtest via `edge_backtest`.
+- **(c) Operator picks de-vig** (§DECISION): `--de-vig simple|shin`. ASK before
+  reporting numbers; both are wired, `simple` is the default.
+- **(d)** Only after (a)+(c) give a real sharp-line hit-rate, and (b) gives a real
+  edge, consider the live-scan orientation wiring (PREFLIGHT option b) + un-halting.
 
 ## 6. Guardrails / landmines
 
