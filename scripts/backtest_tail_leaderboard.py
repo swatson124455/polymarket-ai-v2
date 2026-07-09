@@ -1,59 +1,74 @@
 #!/usr/bin/env python3
 """Tail backtest — 'if we had copied these whales at a realistic lag, would we make money?'
 
-This is the DIRECT question, not a proxy: take the whale signals MB actually
-detected, simulate copying each one at OUR entry (the market price `lag` seconds
-after the whale's print, not the whale's own price), hold to resolution, net
-fees, and bootstrap whether the per-market edge clears zero. Run it across a
-sweep of lags and sliced per category.
+Simulates copying whale signals at OUR entry (the market price `lag` seconds
+after the whale's print, never the whale's own price), holding to resolution,
+netting fees, and bootstrapping whether the per-market edge clears zero — per
+category, across a sweep of lags.
 
-WHY THIS CORPUS (survivorship-safe): signals come from mirror_rejected_signals,
-i.e. traders MB's live watchlist (elite_watchlist per-category leaderboards)
-flagged AT DETECTION TIME. Membership is therefore point-in-time — we are not
-selecting traders we now know turned out well. (Caveat: 'point-in-time' = 'on
-the watchlist when the signal was logged'; if the watchlist logic changed over
-the window, the universe shifts with it. Stated, not hidden.)
+WHAT THE CORPUS IS (stated plainly — 2026-07-09 review finding): rows come from
+mirror_rejected_signals, i.e. whale signals MB detected live but did NOT copy.
+Membership is point-in-time (the live watchlist at detection time — no
+survivorship in trader selection), BUT it is REJECTED-only: signals MB executed
+are absent, and rejection reasons are heterogeneous (caps, dedup guards,
+category blocks, gate scoring). The report prints the rejection_stage/side mix
+so the operator sees the corpus composition; --stage narrows it. Rows whose
+market_id is keyed by numeric gamma id (not condition_id) fail the markets join
+and land in cat:unknown — counted there, not dropped.
 
-WHY THE LAG SWEEP: the copy latency is the load-bearing assumption behind
-'crypto is un-tailable'. It should be MEASURED (the v3 collector's
-feed_lag_p95_s), not guessed. Until then this sweeps {10,30,60}s (override with
---lags) and also reports the whale-price ceiling (lag=0, their fill) so the
-TAILABILITY TAX — how much edge the lag eats — is explicit per category.
+THIS IS A PRE-SPREAD SCREEN, NOT AN ADMISSION GATE (2026-07-09 review finding):
+p_lag comes from last prints/ticks (price_lookup.price_at), not the ask you
+would actually cross, so a green result here is OPTIMISTIC by roughly the
+half-spread plus impact. Per the standing operator decision (MB_REBUILD_PLAN §2)
+only the PRECISE fill model (shadow_fills ladders, bots/mirror_backtest/gate.py)
+can admit a rule. Therefore: a FAIL here is final for the slice; a PASS is
+printed as `PASS*` (screen) and only licenses the next test, never a deploy.
 
-WHAT IT IS NOT: no ranker, no learned admission, no rule selection. The rule is
-'copy every detected signal at a fixed notional'. If copy-everyone is not +EV
-after a realistic fill, no ranker built on the same corpus can be trusted to
-find a +EV subset without out-of-sample proof. If copy-everyone IS +EV in a
-category, that category is where a ranker is worth building.
+REALISTIC-LAG DISCIPLINE (2026-07-09 review finding — the original version
+could return a sample at or BEFORE the whale's print, silently measuring the
+ceiling): a lagged fill is only counted when the price sample's own timestamp
+is STRICTLY AFTER the whale's print. No post-print sample inside the staleness
+window => the signal is UNCOVERED for that lag ('no post-print price estimate
+available' — a data-availability statement, not proof we couldn't have filled).
+Coverage is reported PER SLICE and gates each slice's own verdict.
 
-EDGE per signal:  e = outcome - p_lag - FEE_ROUNDTRIP
-  outcome = 1.0 if the bought token won at resolution else 0.0
-  p_lag   = market price of that token at (whale_print_time + lag), staleness-
-            bounded via price_lookup.price_at (the same read-only, side-safe,
-            staleness-checked accessor the scoring engine uses). No sample in
-            the staleness window => the signal is UNCOVERED (counted, never
-            silently dropped), because in reality we could not have filled.
+UNITS (2026-07-09 review finding): the rule is equal CONTRACTS, and edge is in
+probability points per contract: e_pts = o - p - fee*p (fee is per dollar, so
+per contract it scales by price). A descriptive per-dollar return column
+ret/$ = (o-p)/p - fee is printed alongside (fixed-notional view; longshot-
+dominated, so the gate statistic stays e_pts). The paired 'tax' column is the
+whale-price ceiling MINUS the lagged edge computed on the SAME covered signals.
 
-STATISTIC: per-market mean edge (cluster = market_id, so correlated legs of one
-event do not fake significance), then a market-level percentile bootstrap for
-P(mean edge > 0). A category 'passes' at P >= --p-min AND >= --min-markets
-distinct markets AND coverage rho >= --min-rho (low coverage = untrustworthy).
+MULTIPLICITY (2026-07-09 review finding): ~7 slices x 3 lags tested at
+P>=0.95 gives >25% family-wise false-pass odds under a global null. So the
+run pre-registers ONE primary cell (--primary-slice, default cat:sports — the
+plan's knowledge-edge hypothesis — at --primary-lag, default 10s = operator-
+measured copy latency) and requires lag-agreement (PASS* at the primary lag
+AND at 30s) before recommending anything. Every other cell is DESCRIPTIVE.
 
-SAFETY: READ-ONLY (SELECTs only), SET LOCAL statement_timeout on the corpus
-scan, --max-signals aborts loudly rather than truncating. Per-signal price
-lookups are indexed point queries; narrow with --since/--until if slow. Pure
-stdlib except price_lookup (which the mirror_scoring package already ships).
+CLUSTERING CAVEAT: bootstrap clusters are condition_ids; the markets table has
+no event id, so neg-risk siblings (same election/tournament) count as
+independent clusters and P(edge>0) is anti-conservative in proportion. The
+nr% column (share of clustered markets flagged neg_risk) sizes that risk.
+
+SAFETY: READ-ONLY. Corpus scan runs under SET LOCAL statement_timeout and a
+server-side LIMIT sentinel (--max-signals+1) so an oversized corpus aborts
+BEFORE transferring/materializing millions of rows. The per-signal lookup loop
+prints progress to stderr and honors --sample (seeded) to bound wall time.
+The resolution IN ('YES','NO') predicate is NOT index-backed on the ~17.5M-row
+table (migration 073 indexes exclude it) — run in a quiet window, and use
+--since for a bounded first run.
 
 INVOCATION (on the VPS):
     cd /opt/polymarket-ai-v2 && sudo -u polymarket env PYTHONPATH=/opt/polymarket-ai-v2 \
       venv/bin/python scripts/backtest_tail_leaderboard.py --by-category \
-      | tee /tmp/tail_backtest.log
-    ... --lags 10 --since 2026-04-01           # single lag, windowed
-    ... --self-test                            # offline math check, no DB
+      --since 2026-06-01 --sample 20000 | tee /tmp/tail_backtest.log   # bounded first run
+    ...   --by-category | tee /tmp/tail_backtest.log                  # full run, quiet window
+    ...   --self-test                                                 # offline math check, no DB
 
 Provenance (CLAUDE.md Forbidden Patterns 8/9): cite THIS script's numbers with
-their coverage + lag + sample size. A category that 'passes' on 5 covered
-markets has not passed anything — read the n_markets and rho columns.
+their coverage + lag + sample size + PASS* qualifier. A slice that 'passes' on
+5 covered markets or 10% slice coverage has not passed anything.
 """
 from __future__ import annotations
 
@@ -61,6 +76,8 @@ import argparse
 import asyncio
 import math
 import random
+import sys
+from collections import Counter
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -89,25 +106,61 @@ def bucket_category(cat: Optional[str]) -> str:
     return "other"
 
 
+# ── Pure per-signal math (unit-tested in tests/unit/test_tail_backtest_script.py) ──
+def edge_points(o: float, p: float, fee: float) -> float:
+    """Equal-contracts edge in probability points; per-$ fee scaled by price."""
+    return o - p - fee * p
+
+
+def ret_per_dollar(o: float, p: float, fee: float) -> float:
+    """Fixed-notional per-dollar return (descriptive; longshot-dominated)."""
+    return (o - p) / p - fee
+
+
+def fill_is_lagged(sample_ts: datetime, event_time: datetime) -> bool:
+    """A lagged fill must be priced from a sample STRICTLY AFTER the whale's
+    print — a sample at/before it is the ceiling, not a lagged fill."""
+    return sample_ts > event_time
+
+
+def verdict_for(lag: int, p: float, n_mkts: int, cov: float,
+                p_min: float, min_markets: int, min_rho: float) -> str:
+    """Per-slice verdict. PASS* is a pre-spread SCREEN pass, never an admission."""
+    if lag == 0:
+        return "ceiling"
+    if cov < min_rho:
+        return "low-cov"
+    if n_mkts < min_markets:
+        return "thin"
+    return "PASS*" if p >= p_min else "fail"
+
+
 # ── First mirrorable signal per (trader, market): the one MB would take ───────
+# LIMIT sentinel (:cap1 = --max-signals + 1): oversize aborts server-side
+# instead of after a full transfer + RAM materialization (2026-07-09 finding).
 _SIGNALS_SQL = """
-SELECT DISTINCT ON (r.trader_address, r.market_id)
-       r.trader_address AS trader,
-       r.market_id      AS market_id,
-       r.token_id       AS token_id,
-       UPPER(r.side)    AS side,
-       r.price          AS whale_price,
-       r.event_time     AS event_time,
-       r.resolution     AS resolution,
-       m.yes_token_id, m.no_token_id,
-       COALESCE(m.category, '') AS cat
-FROM mirror_rejected_signals r
-LEFT JOIN markets m ON m.condition_id = r.market_id
-WHERE r.resolution IN ('YES', 'NO')
-  AND r.price IS NOT NULL AND r.price > :pmin AND r.price < :pmax
-  AND r.token_id IS NOT NULL AND r.token_id <> ''
-  {since} {until}
-ORDER BY r.trader_address, r.market_id, r.event_time ASC
+SELECT * FROM (
+  SELECT DISTINCT ON (r.trader_address, r.market_id)
+         r.trader_address AS trader,
+         r.market_id      AS market_id,
+         r.token_id       AS token_id,
+         UPPER(r.side)    AS side,
+         r.rejection_stage AS stage,
+         r.price          AS whale_price,
+         r.event_time     AS event_time,
+         r.resolution     AS resolution,
+         m.yes_token_id, m.no_token_id,
+         COALESCE(m.neg_risk, FALSE) AS neg_risk,
+         COALESCE(m.category, '') AS cat
+  FROM mirror_rejected_signals r
+  LEFT JOIN markets m ON m.condition_id = r.market_id
+  WHERE r.resolution IN ('YES', 'NO')
+    AND r.price IS NOT NULL AND r.price > :pmin AND r.price < :pmax
+    AND r.token_id IS NOT NULL AND r.token_id <> ''
+    {stage} {since} {until}
+  ORDER BY r.trader_address, r.market_id, r.event_time ASC
+) q
+LIMIT :cap1
 """
 
 
@@ -154,6 +207,15 @@ def boot_p_edge(market_edges: list[float], n_boot: int, seed: int
     return hits / n_boot, mean
 
 
+def paired_tax(rows: list[tuple[str, float, float]]) -> float:
+    """rows = [(market_id, edge_pts, ceil_pts)] for ONE (lag, slice), covered
+    signals only. Tax = mean ceiling MINUS mean lagged edge on the SAME
+    signals (2026-07-09 finding: an unpaired ceiling mixes signal sets)."""
+    if not rows:
+        return float("nan")
+    return (sum(r[2] for r in rows) - sum(r[1] for r in rows)) / len(rows)
+
+
 # ── DB run ───────────────────────────────────────────────────────────────────
 async def run(args) -> int:
     from dotenv import load_dotenv
@@ -169,10 +231,14 @@ async def run(args) -> int:
     await db.init()
     try:
         sql = _SIGNALS_SQL.format(
+            stage="AND r.rejection_stage = :stage" if args.stage != "all" else "",
             since="AND r.event_time >= :since" if args.since else "",
             until="AND r.event_time < :until" if args.until else "",
         )
-        params = {"pmin": args.pmin, "pmax": args.pmax}
+        params = {"pmin": args.pmin, "pmax": args.pmax,
+                  "cap1": args.max_signals + 1}
+        if args.stage != "all":
+            params["stage"] = args.stage
         if args.since:
             params["since"] = datetime.fromisoformat(args.since)
         if args.until:
@@ -180,6 +246,12 @@ async def run(args) -> int:
         async with db.get_session() as s:
             await s.execute(text(f"SET LOCAL statement_timeout = '{args.timeout}s'"))
             rows = (await s.execute(text(sql), params)).fetchall()
+        if len(rows) > args.max_signals:
+            raise SystemExit(
+                f"ABORT: corpus exceeds --max-signals {args.max_signals:,} "
+                f"(LIMIT sentinel hit). Narrow with --since/--until/--stage or "
+                f"raise the cap deliberately (no silent truncation)."
+            )
         signals = []
         for r in rows:
             d = dict(r._mapping)
@@ -188,88 +260,146 @@ async def run(args) -> int:
                 continue
             d["outcome"] = o
             signals.append(d)
-        if len(signals) > args.max_signals:
-            raise SystemExit(
-                f"ABORT: {len(signals):,} signals exceed --max-signals "
-                f"{args.max_signals:,}. Narrow with --since/--until or raise the "
-                f"cap deliberately (no silent truncation)."
-            )
 
-        # Per (lag, category): collect (market_id, edge) for covered signals.
-        # edge = outcome - p_lag - fee ; p_lag from price_at at event_time+lag.
-        # lag=0 uses the whale's own print price (the un-tailable ceiling).
-        data: dict[tuple[int, str], list[tuple[str, float]]] = {}
-        covered: dict[int, int] = {lag: 0 for lag in lags_with_ceiling}
+        sampled_from = len(signals)
+        if args.sample and len(signals) > args.sample:
+            signals = random.Random(args.seed).sample(signals, args.sample)
+
+        stage_mix = Counter(s.get("stage") for s in signals)
+        side_mix = Counter(s.get("side") for s in signals)
+
+        # Per-slice accounting (2026-07-09 finding: coverage MUST be per slice,
+        # not corpus-wide — the PASS gate uses the slice's own rho).
+        totals: dict[str, int] = Counter()
+        covered: dict[tuple[int, str], int] = Counter()
+        # rows_by[(lag, slice)] = [(market_id, edge_pts, ceil_pts, ret_$)]
+        rows_by: dict[tuple[int, str], list] = {}
+        negrisk_mkts: dict[str, set] = {}
+        all_mkts: dict[str, set] = {}
+
         total = len(signals)
-        for sig in signals:
-            cats = ["ALL"]
+        for i, sig in enumerate(signals):
+            if i and i % 2000 == 0:
+                print(f"  ...progress {i:,}/{total:,} signals", file=sys.stderr, flush=True)
+            slices = ["ALL"]
             if args.by_category:
-                cats.append("cat:" + bucket_category(sig["cat"]))
+                slices.append("cat:" + bucket_category(sig["cat"]))
             o = sig["outcome"]
+            wp = float(sig["whale_price"])
+            for c in slices:
+                totals[c] += 1
+                all_mkts.setdefault(c, set()).add(sig["market_id"])
+                if sig.get("neg_risk"):
+                    negrisk_mkts.setdefault(c, set()).add(sig["market_id"])
+            ceil_pts = edge_points(o, wp, args.fee)
             for lag in lags_with_ceiling:
                 if lag == 0:
-                    p = float(sig["whale_price"])
+                    p = wp
                 else:
                     got = await price_at(db, sig["token_id"],
                                          sig["event_time"] + timedelta(seconds=lag),
                                          args.staleness)
-                    if got is None:
-                        continue  # uncovered: could not have filled
+                    # Strictly-after-the-print rule: a sample at/before the
+                    # whale's print is the ceiling, not a lagged fill.
+                    if got is None or not fill_is_lagged(got[1], sig["event_time"]):
+                        continue
                     p = got[0]
-                covered[lag] += 1
-                edge = o - p - args.fee
-                for c in cats:
-                    data.setdefault((lag, c), []).append((sig["market_id"], edge))
+                covered[(lag, "ALL")] += 1
+                if args.by_category:
+                    covered[(lag, slices[1])] += 1
+                e_pts = edge_points(o, p, args.fee)
+                r_dol = ret_per_dollar(o, p, args.fee)
+                for c in slices:
+                    rows_by.setdefault((lag, c), []).append(
+                        (sig["market_id"], e_pts, ceil_pts, r_dol))
     finally:
         await db.close()
 
-    _report(args, lags_with_ceiling, data, covered, total)
+    _report(args, lags_with_ceiling, rows_by, covered, totals,
+            negrisk_mkts, all_mkts, stage_mix, side_mix, sampled_from)
     return 0
 
 
-def _report(args, lags, data, covered, total) -> None:
-    cats = sorted({c for (_, c) in data}, key=lambda k: (k != "ALL", k))
-    print("\n" + "=" * 92)
-    print("  TAIL BACKTEST — copy every detected whale signal at a realistic lag, hold to resolution")
-    print(f"  corpus=mirror_rejected_signals (point-in-time watchlist)  first-per(trader,market)")
-    print(f"  signals={total:,}  fee_roundtrip={args.fee}  staleness={args.staleness}s  "
-          f"n_boot={args.n_boot}")
+def _report(args, lags, rows_by, covered, totals, negrisk_mkts, all_mkts,
+            stage_mix, side_mix, sampled_from) -> None:
+    slices = sorted({c for (_, c) in rows_by}, key=lambda k: (k != "ALL", k))
+    n_all = totals.get("ALL", 0)
+    print("\n" + "=" * 100)
+    print("  TAIL BACKTEST — copy rejected-corpus whale signals at a realistic lag, hold to resolution")
+    print("  *** PRE-SPREAD SCREEN: fills are last prints, not the ask. FAIL is final; PASS* only")
+    print("      licenses the PRECISE-model gate (bots/mirror_backtest/gate.py). Never a deploy. ***")
+    print(f"  corpus=mirror_rejected_signals (REJECTED-only; executed copies absent)  "
+          f"stage={args.stage}")
+    print(f"  signals={n_all:,}" + (f" (sampled from {sampled_from:,}, seed {args.seed})"
+                                    if sampled_from != n_all else "")
+          + f"  fee/$={args.fee}  staleness={args.staleness}s  n_boot={args.n_boot}")
+    print(f"  stage mix: {dict(stage_mix)}   side mix: {dict(side_mix)}")
     print(f"  lags(s) = {lags}   (lag 0 = whale's own price = un-tailable ceiling)")
-    print("=" * 92)
-    print(f"  {'slice':<16}{'lag':>5}{'n_mkts':>8}{'coverage':>10}"
-          f"{'mean_edge':>11}{'P(edge>0)':>11}  verdict")
-    print("  " + "-" * 88)
-    for c in cats:
+    print(f"  units: edge_pts = o - p - fee*p per CONTRACT; ret/$ = (o-p)/p - fee (descriptive)")
+    print("=" * 100)
+    print(f"  {'slice':<14}{'lag':>4}{'n_mkts':>7}{'cov':>7}{'nr%':>6}"
+          f"{'edge_pts':>10}{'P(>0)':>8}{'ret/$':>9}{'tax':>8}  verdict")
+    print("  " + "-" * 96)
+    results: dict[tuple[str, int], dict] = {}
+    for c in slices:
+        tot_c = totals.get(c, 0)
+        nr_pct = (100.0 * len(negrisk_mkts.get(c, set())) / len(all_mkts[c])
+                  if all_mkts.get(c) else 0.0)
         for lag in lags:
-            rows = data.get((lag, c), [])
-            me = per_market_edges(rows)
+            rws = rows_by.get((lag, c), [])
+            me = per_market_edges([(r[0], r[1]) for r in rws])
             n_mkts = len(me)
             p, mean = boot_p_edge(me, args.n_boot, args.seed + lag)
-            cov = covered[lag] / total if total else 0.0  # coverage is corpus-wide
-            passed = (lag != 0 and p >= args.p_min and n_mkts >= args.min_markets
-                      and cov >= args.min_rho)
-            verdict = ("PASS" if passed else
-                       "ceiling" if lag == 0 else
-                       "low-cov" if cov < args.min_rho else
-                       "thin" if n_mkts < args.min_markets else "fail")
-            mean_s = "  nan" if math.isnan(mean) else f"{mean:+.4f}"
-            print(f"  {c:<16}{lag:>5}{n_mkts:>8}{cov:>9.1%}"
-                  f"{mean_s:>11}{p:>11.3f}  {verdict}")
-        print("  " + "-" * 88)
-    print(f"  PASS = P(edge>0) >= {args.p_min} AND n_mkts >= {args.min_markets} "
-          f"AND coverage >= {args.min_rho:.0%}, at a non-zero lag.")
-    print("  Read the lag=0 ceiling row per slice: (ceiling edge - lagged edge) = the")
-    print("  tailability tax. If the ceiling itself is <=0, the whales have no")
-    print("  hold-to-resolution edge to tail in that slice regardless of latency.")
-    print("=" * 92 + "\n")
+            cov = covered.get((lag, c), 0) / tot_c if tot_c else 0.0
+            tax = paired_tax([(r[0], r[1], r[2]) for r in rws]) if lag else float("nan")
+            rd = (sum(r[3] for r in rws) / len(rws)) if rws else float("nan")
+            v = verdict_for(lag, p, n_mkts, cov, args.p_min, args.min_markets,
+                            args.min_rho)
+            results[(c, lag)] = {"p": p, "n": n_mkts, "cov": cov, "verdict": v}
+            print(f"  {c:<14}{lag:>4}{n_mkts:>7}{cov:>6.0%}{nr_pct:>6.1f}"
+                  f"{_f(mean, 10, 4)}{p:>8.3f}{_f(rd, 9, 3)}{_f(tax, 8, 3)}  {v}")
+        print("  " + "-" * 96)
+    print(f"  PASS* = screen-level only: P>={args.p_min} AND n_mkts>={args.min_markets} "
+          f"AND slice coverage>={args.min_rho:.0%} at a non-zero lag.")
+    print("  nr% = share of the slice's markets flagged neg_risk: clusters are condition_ids")
+    print("  (no event id in schema), so sibling markets inflate P(>0) roughly with nr%.")
+    print("  'cov' counts signals with a post-print price sample — a data-availability rate.")
+
+    # ── Pre-registered primary cell (multiplicity control) ──────────────────
+    print("-" * 100)
+    prim, plag, clag = args.primary_slice, args.primary_lag, args.confirm_lag
+    print(f"  PRIMARY CELL (pre-registered): {prim} @ lag {plag}s, confirm @ {clag}s."
+          f"  All other cells are DESCRIPTIVE.")
+    a = results.get((prim, plag))
+    b = results.get((prim, clag))
+    if a is None:
+        print(f"  primary slice absent from this run"
+              f"{' (run with --by-category)' if prim.startswith('cat:') else ''} — no recommendation.")
+    elif a["verdict"] == "PASS*" and b and b["verdict"] == "PASS*":
+        print(f"  RESULT: PASS* at both lags — the screen supports the {prim} hypothesis.")
+        print(f"  NEXT (not a deploy): run this slice through the PRECISE fill-model gate")
+        print(f"  (shadow_fills ladders) per MB_REBUILD_PLAN §2 before any 'go'.")
+    elif a["verdict"] in ("low-cov", "thin"):
+        print(f"  RESULT: UNDERPOWERED at the primary cell ({a['verdict']}, n={a['n']},"
+              f" cov={a['cov']:.0%}) — widen the window; not a negative.")
+    else:
+        print(f"  RESULT: primary cell does not pass the screen "
+              f"(@{plag}s: {a['verdict']}, P={a['p']:.3f}"
+              + (f"; @{clag}s: {b['verdict']}, P={b['p']:.3f}" if b else "") + ").")
+        print(f"  A screen FAIL is final for this slice — pre-spread fills flatter the whales,")
+        print(f"  so the true tailed edge is worse than what failed here.")
+    print("=" * 100 + "\n")
 
 
-# ── Offline self-test (no DB): edge, clustering, bootstrap calibration ────────
+def _f(v: float, w: int, prec: int) -> str:
+    return f"{'nan':>{w}}" if (isinstance(v, float) and math.isnan(v)) else f"{v:>+{w}.{prec}f}"
+
+
+# ── Offline self-test (no DB): edge math, clustering, bootstrap, lag rule ─────
 def _self_test() -> int:
     print("SELF-TEST — tail-backtest math (no DB)\n")
     ok = True
 
-    # outcome mapping
     s_yes = {"resolution": "YES", "token_id": "T1", "yes_token_id": "T1",
              "no_token_id": "T2", "side": "YES"}
     s_lose = {"resolution": "NO", "token_id": "T1", "yes_token_id": "T1",
@@ -278,13 +408,26 @@ def _self_test() -> int:
     print(f"  [outcome] won->1.0, lost->0.0 : {ok_out}")
     ok &= ok_out
 
-    # clustering: 3 legs of market M average to one point
+    # units: fee scales with price in pts; per-$ is (o-p)/p - fee
+    e = edge_points(1.0, 0.60, 0.02)          # 1 - .60 - .012 = .388
+    r = ret_per_dollar(1.0, 0.60, 0.02)       # .4/.6 - .02 = .6467
+    ok_units = abs(e - 0.388) < 1e-9 and abs(r - (0.4 / 0.6 - 0.02)) < 1e-9
+    print(f"  [units] edge_pts {e:+.3f} (fee*p) ; ret/$ {r:+.4f} : {ok_units}")
+    ok &= ok_units
+
+    # strictly-after-print rule
+    t0 = datetime(2026, 1, 1, 12, 0, 0)
+    ok_lag = (not fill_is_lagged(t0, t0)
+              and not fill_is_lagged(t0 - timedelta(seconds=5), t0)
+              and fill_is_lagged(t0 + timedelta(seconds=1), t0))
+    print(f"  [lag rule] sample at/before print rejected, after accepted : {ok_lag}")
+    ok &= ok_lag
+
     me = per_market_edges([("M", 0.1), ("M", 0.3), ("N", -0.2)])
     ok_clus = len(me) == 2 and abs(sorted(me)[1] - 0.2) < 1e-9
     print(f"  [cluster] 2 markets, M leg-mean 0.2 : {ok_clus}")
     ok &= ok_clus
 
-    # bootstrap: strong +edge -> P high; centered-at-0 -> P near 0.5; n<2 -> 0
     rng = random.Random(0)
     pos = [rng.gauss(0.05, 0.02) for _ in range(40)]
     p_pos, _ = boot_p_edge(pos, 2000, 1)
@@ -296,12 +439,20 @@ def _self_test() -> int:
           f"n<2 P={p_deg:.1f}(0) : {ok_boot}")
     ok &= ok_boot
 
-    # tailability tax logic: same outcome, worse fill price -> lower edge
-    ceiling = 1.0 - 0.60 - 0.02          # o=1, whale price 0.60
-    lagged = 1.0 - 0.66 - 0.02           # price ran to 0.66 in the lag
-    ok_tax = ceiling > lagged and abs((ceiling - lagged) - 0.06) < 1e-9
-    print(f"  [tax] ceiling {ceiling:+.3f} > lagged {lagged:+.3f}, tax 0.060 : {ok_tax}")
+    # paired tax on the SAME covered rows
+    tax = paired_tax([("M", 0.32, 0.38), ("N", 0.10, 0.20)])
+    ok_tax = abs(tax - 0.08) < 1e-9
+    print(f"  [tax] paired mean(ceil)-mean(lag) = {tax:+.3f} (expect +0.080) : {ok_tax}")
     ok &= ok_tax
+
+    # per-slice verdict gating
+    ok_v = (verdict_for(10, 0.99, 50, 0.60, 0.95, 30, 0.40) == "PASS*"
+            and verdict_for(10, 0.99, 50, 0.10, 0.95, 30, 0.40) == "low-cov"
+            and verdict_for(10, 0.99, 5, 0.60, 0.95, 30, 0.40) == "thin"
+            and verdict_for(0, 0.99, 50, 1.0, 0.95, 30, 0.40) == "ceiling"
+            and verdict_for(10, 0.50, 50, 0.60, 0.95, 30, 0.40) == "fail")
+    print(f"  [verdict] PASS*/low-cov/thin/ceiling/fail gating : {ok_v}")
+    ok &= ok_v
 
     ok_cat = (bucket_category("Crypto") == "crypto"
               and bucket_category("NBA") == "sports"
@@ -314,30 +465,40 @@ def _self_test() -> int:
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="Read-only tail backtest (copy-everyone, realistic lag)")
+    ap = argparse.ArgumentParser(description="Read-only tail backtest (copy-everyone, realistic lag; pre-spread screen)")
     ap.add_argument("--lags", default="10,30,60",
                     help="comma-separated copy latencies in seconds (default 10,30,60)")
     ap.add_argument("--by-category", action="store_true",
                     help="also slice per category (crypto/sports/esports/...)")
+    ap.add_argument("--stage", choices=["all", "pre_gate", "gate"], default="all",
+                    help="restrict corpus to a rejection_stage (default all; mix is printed)")
+    ap.add_argument("--primary-slice", default="cat:sports", dest="primary_slice",
+                    help="pre-registered primary cell slice (default cat:sports)")
+    ap.add_argument("--primary-lag", type=int, default=10, dest="primary_lag",
+                    help="pre-registered primary lag seconds (default 10 = measured latency)")
+    ap.add_argument("--confirm-lag", type=int, default=30, dest="confirm_lag",
+                    help="lag-agreement confirmation lag (default 30)")
     ap.add_argument("--fee", type=float, default=0.02, help="round-trip fee per $ (default 0.02)")
     ap.add_argument("--staleness", type=int, default=30,
                     help="max age (s) of the price sample at fill time (default 30)")
     ap.add_argument("--p-min", type=float, default=0.95, dest="p_min",
-                    help="min bootstrap P(edge>0) to PASS (default 0.95)")
+                    help="min bootstrap P(edge>0) for PASS* (default 0.95)")
     ap.add_argument("--min-markets", type=int, default=30, dest="min_markets",
-                    help="min distinct markets to PASS (default 30)")
+                    help="min distinct markets for PASS* (default 30)")
     ap.add_argument("--min-rho", type=float, default=0.40, dest="min_rho",
-                    help="min corpus coverage to trust a slice (default 0.40)")
+                    help="min PER-SLICE coverage to trust a slice (default 0.40)")
     ap.add_argument("--n-boot", type=int, default=2000, dest="n_boot",
                     help="bootstrap replicates (default 2000)")
+    ap.add_argument("--sample", type=int, default=0,
+                    help="seeded random subsample of signals to bound the lookup loop (0=off)")
     ap.add_argument("--pmin", type=float, default=0.02, help="drop dust prices below (default 0.02)")
     ap.add_argument("--pmax", type=float, default=0.98, help="drop prices above (default 0.98)")
-    ap.add_argument("--since", default="", help="ISO lower bound on event_time")
+    ap.add_argument("--since", default="", help="ISO lower bound on event_time (use on first run)")
     ap.add_argument("--until", default="", help="ISO upper bound on event_time")
     ap.add_argument("--max-signals", type=int, default=100_000, dest="max_signals",
-                    help="abort above this many signals (no silent truncation)")
+                    help="server-side LIMIT sentinel; abort above this (no silent truncation)")
     ap.add_argument("--timeout", type=int, default=300, help="corpus-scan statement_timeout s (default 300)")
-    ap.add_argument("--seed", type=int, default=20260709, help="deterministic bootstrap seed")
+    ap.add_argument("--seed", type=int, default=20260709, help="deterministic bootstrap/sample seed")
     ap.add_argument("--self-test", action="store_true", help="offline math check, no DB")
     args = ap.parse_args()
 
