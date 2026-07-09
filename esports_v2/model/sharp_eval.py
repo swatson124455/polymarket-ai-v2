@@ -27,7 +27,7 @@ standard ``no_vig_two_way``; ``method='shin'`` routes through
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from esports_v2.model.clv import odds_to_implied
 from esports_v2.model.results_join import JoinedRecord
@@ -256,3 +256,75 @@ def edge_backtest(
         total_pnl=pnl,
         roi=(pnl / n_bets) if n_bets else None,
     )
+
+
+# Orientation resolver seam: (condition_id, yes_token_id, team_a, team_b) -> bool
+# or None. Injectable so the edge backtest is unit-testable without live CLOB.
+OrientationResolver = Callable[[str, str, str, str], Optional[bool]]
+
+
+def _default_orientation_resolver(
+    condition_id: str, yes_token_id: str, team_a: str, team_b: str
+) -> Optional[bool]:
+    """Flip-proof ``yes_is_team_a`` via the authoritative live CLOB label.
+
+    Imported lazily so this module has no hard network dependency at import time
+    (and stays testable with an injected resolver). Correct-or-absent throughout.
+    """
+    from esports_v2.data.clob_labels import resolve_yes_is_team_a_via_clob
+
+    return resolve_yes_is_team_a_via_clob(
+        condition_id, yes_token_id, team_a, team_b
+    )
+
+
+def edge_backtest_from_joined(
+    joined: List,  # List[results_join.JoinedRecord]
+    *,
+    resolve_orientation: Optional[OrientationResolver] = None,
+    fee: float = DEFAULT_FEE,
+    min_edge: float = DEFAULT_MIN_EDGE,
+) -> EdgeBacktestReport:
+    """Run the sharp-vs-Polymarket edge backtest directly from JoinedRecords.
+
+    Bridges Step 2's ``JoinedRecord`` (which now carries the GAP-B PM fields) to
+    ``edge_backtest``: builds the ``match_key -> (odds_a, odds_b)`` lookup and the
+    per-record dicts (``match_key``/``market_price``/``yes_is_team_a``/
+    ``home_won``), resolving orientation flip-proof from the captured
+    ``condition_id``/``yes_token_id`` via ``resolve_orientation`` (default = live
+    CLOB label). team_a passed to the resolver is the odds_a/``home`` side, so
+    ``yes_is_team_a`` aligns to the same side the odds do.
+
+    Correct-or-absent: a JoinedRecord is skipped when it has no ``market_price``,
+    no ``condition_id``/``yes_token_id``, or orientation cannot be resolved to a
+    bool — never a guessed side. Only records that survive reach ``edge_backtest``
+    (which itself reports the no-PM-price gap when nothing has a price).
+    """
+    resolve = resolve_orientation or _default_orientation_resolver
+
+    odds_lookup: Dict[str, tuple] = {}
+    records: List[dict] = []
+    for jr in joined:
+        odds_lookup[jr.match_key] = (jr.odds_a, jr.odds_b)
+        if jr.market_price is None or not jr.condition_id or not jr.yes_token_id:
+            continue
+        yes_is_team_a = resolve(
+            jr.condition_id, jr.yes_token_id, jr.home, jr.away
+        )
+        if not isinstance(yes_is_team_a, bool):
+            continue  # orientation unresolved -> never guess (would invert edge)
+        records.append({
+            "match_key": jr.match_key,
+            "market_price": jr.market_price,
+            "yes_is_team_a": yes_is_team_a,
+            "home_won": jr.home_won,
+        })
+
+    if not records:
+        return EdgeBacktestReport(
+            n_records=len(joined), n_with_market_price=0,
+            note="No JoinedRecord carried a PM price + resolvable orientation. "
+                 "Once the forward-collector's PM capture (GAP B) overlaps the "
+                 "results window, records will price out here.",
+        )
+    return edge_backtest(records, odds_lookup, fee=fee, min_edge=min_edge)

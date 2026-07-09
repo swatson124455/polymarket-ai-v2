@@ -73,6 +73,13 @@ class JoinedRecord:
     game: str
     source: str
     result_match_id: str
+    # GAP B: matched Polymarket ref carried from the closing line (None if the
+    # collector captured no PM price at close). Enables the sharp-vs-PM edge
+    # backtest via ``sharp_eval.edge_backtest_from_joined``.
+    condition_id: Optional[str] = None
+    yes_token_id: Optional[str] = None
+    yes_outcome: Optional[str] = None
+    market_price: Optional[float] = None
 
 
 # ── team-equality primitives (correct-or-absent) ─────────────────────────────
@@ -316,6 +323,8 @@ def join_closing_lines_to_results(
             open_odds_a=cl.open_odds_a, open_odds_b=cl.open_odds_b,
             winner=r0.winner, home_won=home_won,
             game=r0.game, source=r0.source, result_match_id=r0.match_id,
+            condition_id=cl.condition_id, yes_token_id=cl.yes_token_id,
+            yes_outcome=cl.yes_outcome, market_price=cl.market_price,
         ))
         stats.joined += 1
 

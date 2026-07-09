@@ -73,6 +73,18 @@ def _coerce_odds(v) -> Optional[float]:
     return f if f > 1.0 else None
 
 
+def _coerce_price(v) -> Optional[float]:
+    """A Polymarket price is a probability in the OPEN interval (0, 1). Anything
+    at/beyond the bounds or unparseable -> None (correct-or-absent). Mirrors
+    ``pm_market_index._coerce_price`` without importing the data layer (keeps this
+    module pure/stdlib)."""
+    try:
+        f = float(v)
+    except (ValueError, TypeError):
+        return None
+    return f if 0.0 < f < 1.0 else None
+
+
 @dataclass
 class ClosingLine:
     """The closing sharp line for one match, plus line-movement diagnostics."""
@@ -89,6 +101,13 @@ class ClosingLine:
     n_before_start: int         # how many were at-or-before starts (>=1 here)
     open_odds_a: float          # earliest pre-start valid odds (line-move / CLV)
     open_odds_b: float
+    # GAP B: the matched Polymarket ref from the CLOSING snapshot (bet-time price).
+    # None when the collector captured no PM match at close (or on old snapshots
+    # that predate GAP B) — correct-or-absent.
+    condition_id: Optional[str] = None
+    yes_token_id: Optional[str] = None
+    yes_outcome: Optional[str] = None
+    market_price: Optional[float] = None
 
 
 def reduce_to_closing_lines(
@@ -158,6 +177,10 @@ def reduce_to_closing_lines(
             n_before_start=len(pre),
             open_odds_a=opening["odds_a"],
             open_odds_b=opening["odds_b"],
+            condition_id=(str(craw.get("condition_id")) if craw.get("condition_id") else None),
+            yes_token_id=(str(craw.get("yes_token_id")) if craw.get("yes_token_id") else None),
+            yes_outcome=(str(craw.get("yes_outcome")) if craw.get("yes_outcome") else None),
+            market_price=_coerce_price(craw.get("market_price")),
         )
     return out
 

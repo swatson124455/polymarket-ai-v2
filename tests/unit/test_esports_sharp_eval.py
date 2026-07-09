@@ -2,6 +2,7 @@
 from esports_v2.model.results_join import JoinedRecord
 from esports_v2.model.sharp_eval import (
     edge_backtest,
+    edge_backtest_from_joined,
     evaluate_sharp_line,
     no_vig_prob_a,
 )
@@ -136,3 +137,53 @@ def test_edge_backtest_no_bets_when_no_edge():
     recs = [{"match_key": "k", "market_price": 0.62, "yes_is_team_a": True, "home_won": True}]
     rep = edge_backtest(recs, {"k": (1.5, 2.6)}, min_edge=0.05)
     assert rep.n_bets == 0
+
+
+# ── edge_backtest_from_joined (GAP B) ────────────────────────────────────────
+
+
+def _jr_pm(match_key, odds_a, odds_b, home_won, market_price, cid="0xc", tok="t0"):
+    return JoinedRecord(
+        match_key=match_key, home="A", away="B", starts="2026-07-10T18:00:00Z",
+        day="2026-07-10", odds_a=odds_a, odds_b=odds_b,
+        open_odds_a=odds_a, open_odds_b=odds_b,
+        winner="A" if home_won else "B", home_won=home_won,
+        game="cs2", source="test", result_match_id="m",
+        condition_id=cid, yes_token_id=tok, yes_outcome="A", market_price=market_price,
+    )
+
+
+def test_edge_from_joined_no_pm_price_reports_gap():
+    rep = edge_backtest_from_joined([_jr("k", 2.0, 2.0, True)],
+                                    resolve_orientation=lambda *a: True)
+    assert rep.n_with_market_price == 0
+    assert "PM price" in rep.note
+
+
+def test_edge_from_joined_skips_unresolved_orientation():
+    # market price present but resolver returns None -> record dropped, gap note.
+    rep = edge_backtest_from_joined([_jr_pm("k", 1.5, 3.0, True, 0.40)],
+                                    resolve_orientation=lambda *a: None)
+    assert rep.n_with_market_price == 0
+
+
+def test_edge_from_joined_prices_a_winning_yes_bet():
+    # Sharp fair prob of A (odds 1.5 vs 3.0) ~0.667; YES=team A (yes_is_team_a=True);
+    # PM YES price 0.40 -> edge ~0.667-0.40-0.02 > min_edge -> bet YES; A won -> win.
+    rep = edge_backtest_from_joined([_jr_pm("k", 1.5, 3.0, True, 0.40)],
+                                    resolve_orientation=lambda *a: True)
+    assert rep.n_with_market_price == 1
+    assert rep.n_bets == 1
+    assert rep.hit_rate == 1.0
+    assert rep.total_pnl is not None and rep.total_pnl > 0
+
+
+def test_edge_from_joined_orientation_passed_home_side():
+    # Resolver must receive (condition_id, yes_token_id, home, away).
+    seen = {}
+    def resolver(cid, tok, ta, tb):
+        seen["args"] = (cid, tok, ta, tb)
+        return True
+    edge_backtest_from_joined([_jr_pm("k", 1.5, 3.0, True, 0.40, cid="0xZ", tok="TID")],
+                              resolve_orientation=resolver)
+    assert seen["args"] == ("0xZ", "TID", "A", "B")

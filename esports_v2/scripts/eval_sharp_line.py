@@ -31,7 +31,7 @@ from esports_v2.model.results_join import (
     load_bulk_results,
     load_pandascore_cs2,
 )
-from esports_v2.model.sharp_eval import evaluate_sharp_line
+from esports_v2.model.sharp_eval import edge_backtest_from_joined, evaluate_sharp_line
 
 
 def main() -> int:
@@ -86,6 +86,19 @@ def main() -> int:
     if report.favorite_hit_rate == 1.0 and report.n >= 30:
         print("\n  !! favorite hit-rate is exactly 1.0 on N>=30 — statistically")
         print("     implausible; check the join for label leakage before trusting.")
+
+    # ── Step 4b: sharp-vs-Polymarket edge backtest (GAP B) ───────────────────
+    # Runs only once joined records carry a captured PM price; otherwise reports
+    # the gap WITHOUT any live-CLOB orientation calls (guard below).
+    n_with_pm = sum(1 for r in joined if r.market_price is not None)
+    print(f"\n[4b] joined records with captured PM price: {n_with_pm}")
+    if n_with_pm == 0:
+        print("     (no PM price in the joined window yet — the forward-collector's")
+        print("     GAP-B capture must overlap the results window. Skipping the edge")
+        print("     backtest; no CLOB orientation calls made.)")
+        return 0
+    edge = edge_backtest_from_joined(joined)  # resolves orientation via live CLOB
+    print("\n" + edge.summary())
     return 0
 
 

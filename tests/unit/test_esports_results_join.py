@@ -194,3 +194,20 @@ def test_load_pandascore_cs2(tmp_path):
 def test_load_missing_files_return_empty(tmp_path):
     assert load_bulk_results(tmp_path / "nope.jsonl") == []
     assert load_pandascore_cs2(tmp_path / "nope.json") == []
+
+
+def test_join_carries_pm_fields_from_closing_line():
+    cl = ClosingLine(
+        match_key="a||b||2026-07-10", home="A", away="B",
+        starts="2026-07-10T18:00:00Z", league_name="L", odds_a=2.0, odds_b=1.9,
+        captured_at="t", n_snapshots=1, n_before_start=1,
+        open_odds_a=2.0, open_odds_b=1.9,
+        condition_id="0xabc", yes_token_id="tok0", yes_outcome="A", market_price=0.55,
+    )
+    recs, stats = join_closing_lines_to_results(
+        {"a||b||2026-07-10": cl}, [_res("m1", "A", "B", "A")])
+    assert stats.joined == 1
+    jr = recs[0]
+    assert jr.condition_id == "0xabc"
+    assert jr.yes_token_id == "tok0"
+    assert jr.market_price == 0.55

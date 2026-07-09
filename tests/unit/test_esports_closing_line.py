@@ -188,3 +188,31 @@ def test_iter_snapshots_jsonl_skips_malformed(tmp_path):
 
 def test_iter_snapshots_jsonl_missing_file(tmp_path):
     assert list(iter_snapshots_jsonl(tmp_path / "nope.jsonl")) == []
+
+
+def test_closing_line_carries_pm_fields_from_closing_snapshot():
+    from esports_v2.model.closing_line import reduce_to_closing_lines
+    snaps = [
+        {"match_key": "a||b||2026-07-10", "home": "A", "away": "B",
+         "starts": "2026-07-10T18:00:00Z", "captured_at": "2026-07-09T00:00:00Z",
+         "odds_a": 2.0, "odds_b": 1.8, "market_price": None},  # opening: no PM
+        {"match_key": "a||b||2026-07-10", "home": "A", "away": "B",
+         "starts": "2026-07-10T18:00:00Z", "captured_at": "2026-07-10T17:00:00Z",
+         "odds_a": 2.1, "odds_b": 1.75, "condition_id": "0xabc",
+         "yes_token_id": "tok0", "yes_outcome": "A", "market_price": 0.55},  # closing
+    ]
+    out = reduce_to_closing_lines(snaps)
+    cl = out["a||b||2026-07-10"]
+    assert cl.condition_id == "0xabc"
+    assert cl.yes_token_id == "tok0"
+    assert cl.market_price == 0.55       # bet-time price from the CLOSING snapshot
+
+
+def test_closing_line_degenerate_pm_price_becomes_none():
+    from esports_v2.model.closing_line import reduce_to_closing_lines
+    snaps = [{"match_key": "a||b||2026-07-10", "home": "A", "away": "B",
+              "starts": "2026-07-10T18:00:00Z", "captured_at": "2026-07-10T17:00:00Z",
+              "odds_a": 2.0, "odds_b": 1.8, "condition_id": "0xabc",
+              "yes_token_id": "tok0", "market_price": 1.0}]  # resolved/degenerate
+    cl = reduce_to_closing_lines(snaps)["a||b||2026-07-10"]
+    assert cl.condition_id == "0xabc" and cl.market_price is None
