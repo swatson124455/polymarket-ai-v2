@@ -5,7 +5,7 @@
 > read them for detail, but THIS file is the source of truth for "what is live and what's open."
 > Update the three sections below at the end of every WB session (same commit as the work).
 
-**Last updated:** 2026-07-08 (S224 batch DEPLOYED — release `20260708_151330`, migration 079 applied)
+**Last updated:** 2026-07-09 (S225 diagnostics on-branch, NOT deployed — bot_pnl f-string fix, calibration_check `--dedup-markets`, manufactured-certainty tripwire; live release still `20260708_151330`, migration 079)
 **Pinned branch:** `claude/new-whiteboard-session-9b23tq` (see `.claude/session-branch`)
 **Resume check:** `bash scripts/wb_resume_check.sh` (self-deriving; replaces the hand-typed checklist)
 
