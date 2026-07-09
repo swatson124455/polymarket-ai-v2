@@ -79,15 +79,33 @@ accumulating forward.
 
 Tests: PinnOdds loader/collector 10 green; full esports+odds suite 92 green.
 
-## 3. RUNNING NOW (don't re-do)
+## 3. COLLECTOR STATUS (session 2, 2026-07-09 — fixed but rate-limited)
 
-- **VPS cron** (`ubuntu` crontab): `*/15 * * * * /usr/bin/python3
-  /home/ubuntu/eb-odds/collect_pinnodds_standalone.py >> /home/ubuntu/eb-odds/collect.log 2>&1`
-- **Snapshots:** `/home/ubuntu/eb-odds/pinnodds_snapshots.jsonl` (append-only JSONL;
-  one line per match per run: `captured_at, match_key, home, away, starts, league_name,
-  odds_a, odds_b, event_type`).
-- **Check progress:** `ssh … 'wc -l /home/ubuntu/eb-odds/pinnodds_snapshots.jsonl;
-  tail -1 /home/ubuntu/eb-odds/collect.log'`
+**Was DEAD, now FIXED — but blocked on PinnOdds rate-limit.** On check-in the file
+was frozen at 33 lines since first run. Root causes: **(1) no cron was ever
+installed**, and **(2) the bootstrap script 429'd** (bare urllib, no Retry-After
+handling, fired live+prematch back-to-back). Both fixed:
+- Cron NOW installed (`ubuntu` crontab, verified `grep -c` = 1):
+  `*/15 * * * * /usr/bin/python3 /home/ubuntu/eb-odds/collect_pinnodds_standalone.py
+  >> /home/ubuntu/eb-odds/collect.log 2>&1`
+- Bootstrap replaced with the hardened **prematch-only** version (429 Retry-After
+  backoff; live feed dropped — it's post-start look-ahead the reducer discards
+  anyway). Deployed bytes tracked in repo: `deploy/vps/collect_pinnodds_standalone.py`
+  (md5 `3f6e794f21e3bd40ef97b01c7fad3116`).
+
+**Verified the cron fires** (18:45:01 UTC tick logged cleanly). **BUT PinnOdds now
+returns HTTP 429 (`Retry-After: 60`) persistently** — the demo-tier quota was drained
+by this session's manual test runs. Each tick logs `appended=0 total_lines=33`.
+- **Action: let it sit.** Stop manual runs (they consume quota). The cron keeps
+  trying every 15 min and will resume appending once the quota window resets
+  (likely a daily reset). **Check next day.**
+- If STILL 429-locked after a full day: the free tier can't sustain 1 req/15min →
+  operator decision — paid PinnOdds tier, slower cadence (`*/30` or hourly), or a
+  different sharp source. (Widening cadence is a one-line crontab edit.)
+- **Snapshot schema** (`/home/ubuntu/eb-odds/pinnodds_snapshots.jsonl`, append-only):
+  `captured_at, match_key, home, away, starts, league_name, odds_a, odds_b, event_type`.
+- **Check progress:** `ssh … "date -u; wc -l /home/ubuntu/eb-odds/pinnodds_snapshots.jsonl;
+  grep -aE 'appended|429' /home/ubuntu/eb-odds/collect.log | tail -5"`
 
 ## 4. Key facts / env
 
