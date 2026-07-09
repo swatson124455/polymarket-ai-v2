@@ -20,12 +20,19 @@ WHAT THIS DELIBERATELY IS NOT (anti-p-hack discipline, per the handoff hard rule
     Just the raw estimand edge e_i = o_i - p_i (matches estimand.py:47) averaged
     per trader per calendar period.
   * NO rule reverse-engineered from outcomes then tested on those same outcomes.
-  * A real verdict requires (a) a CALIBRATED PLACEBO and (b) MULTI-CUTOFF
-    AGREEMENT. Both are built in: the placebo is a label permutation that breaks
-    a trader's own period-1↔period-2 link while preserving every marginal (its
-    null distribution is printed so you can SEE it is centred at zero); the test
-    is run across several period cutoffs and only a verdict that agrees across
-    cutoffs is reported as such.
+  * MULTI-CUTOFF AGREEMENT is required: the test runs across several period
+    cutoffs and only a verdict consistent across cutoffs is reported as such.
+
+STATISTICAL CAVEAT (2026-07-09 review, confirmed): the placebo permutation
+shuffles e2 across traders, which preserves both marginals and breaks the
+within-trader pairing — but traders SHARE MARKETS, so their e2 values are
+positively correlated and full-trader exchangeability does NOT hold. The
+permutation null is therefore somewhat too tight (anti-conservative p-values):
+a PERSISTENT verdict here is SUPPORTING evidence, not proof. The primary
+instrument is scripts/backtest_tail_leaderboard.py (market-clustered); use
+this script to corroborate, and weight rho magnitude + cross-cutoff agreement
+over raw p-values. A NULL verdict is not affected in that direction (an
+anti-conservative test that still finds nothing is a stronger nothing).
 
 METHOD (per slice = pooled ALL, then per category bucket):
   1. Estimand entry: first BUY per (trader, condition_id) — the single mirrorable
@@ -46,8 +53,15 @@ SAFETY (the live bots share this DB; keep it read-only and gentle):
   * READ-ONLY — a single SELECT per source. No INSERT/UPDATE/DDL.
   * The scan runs under SET LOCAL statement_timeout (default 300s, --timeout);
     it aggregates to at most one row per (trader, market) entry, not raw ticks.
-  * --max-rows aborts loudly if the entry set is larger than expected rather
-    than silently truncating (Forbidden Pattern: no silent caps).
+  * --max-rows is a server-side LIMIT sentinel: an oversized corpus aborts
+    BEFORE transfer/materialization, loudly (no silent truncation). Narrow with
+    --since/--until (2026-07-09 review: the abort message used to suggest
+    narrowing with a knob that did not exist).
+  * The trades corpus joins markets in two UNION ALL equi-join branches
+    (condition_id keying and numeric-id keying) instead of an OR-join, so the
+    planner can hash-join (2026-07-09 review: the OR-join forced nested loops).
+  * The resolution/resolved filters are NOT index-backed on the big tables —
+    run in a quiet window; use --since for a bounded first run.
   * Pure Python stdlib only (no numpy/scipy) so it runs anywhere the venv boots.
 
 INVOCATION (on the VPS):
@@ -56,6 +70,7 @@ INVOCATION (on the VPS):
       venv/bin/python scripts/check_trader_persistence.py            # trades corpus
     ... check_trader_persistence.py --source rejected               # mirror_rejected_signals
     ... check_trader_persistence.py --by-category                   # add per-category slices
+    ... check_trader_persistence.py --since 2026-03-01              # bounded first run
     ... check_trader_persistence.py --cutoffs 2026-04-10,2026-05-10  # explicit cutoffs
 
 Self-test (no DB needed, verifies the statistics + placebo calibration):
@@ -226,8 +241,9 @@ def pair_periods(
 
 
 def auto_cutoffs(times: list[datetime], n: int = 3) -> list[datetime]:
-    """n balanced calendar cutoffs at interior quantiles of entry time
-    (default 3: 33rd/50th/67th percentile)."""
+    """n interior quantile cutoffs of entry time at (i+1)/(n+1) — i.e. the
+    25th/50th/75th percentiles for the default n=3 (doc corrected 2026-07-09;
+    an earlier docstring wrongly said 33/50/67)."""
     if not times:
         return []
     st = sorted(times)
@@ -235,85 +251,157 @@ def auto_cutoffs(times: list[datetime], n: int = 3) -> list[datetime]:
     return [st[min(len(st) - 1, int(q * len(st)))] for q in qs]
 
 
-# ── SQL (read-only; edge computed in-DB, one row per first (trader,market) entry) ──
+# ── SQL (read-only; one row per FIRST (trader,market) BUY, estimand-faithful) ──
+# 2026-07-09 review fixes baked in:
+#  * First entry is selected BEFORE any token-mappability filter (the old
+#    token filter could promote a later re-entry to "first", deviating from
+#    estimand.select_first_entries). Unmappable-token firsts come back with
+#    edge NULL and are dropped in Python WITH A PRINTED COUNT.
+#  * The markets join is two UNION ALL equi-join branches (planner can hash
+#    join) instead of an OR-join (forced nested loop).
+#  * LIMIT :cap1 sentinel bounds transfer/materialization server-side.
 _TRADES_SQL = """
-SELECT DISTINCT ON (t.user_address, COALESCE(m.condition_id, t.market_id))
-       t.user_address AS trader,
-       t.timestamp    AS entry_time,
-       (CASE WHEN t.token_id = m.yes_token_id
-                  THEN (CASE WHEN m.resolution = 'YES' THEN 1.0 ELSE 0.0 END)
-             WHEN t.token_id = m.no_token_id
-                  THEN (CASE WHEN m.resolution = 'NO'  THEN 1.0 ELSE 0.0 END)
-        END) - t.price AS edge,
-       COALESCE(m.category, '') AS cat
-FROM trades t
-JOIN markets m
-  ON (m.condition_id = t.market_id OR CAST(m.id AS TEXT) = t.market_id)
-WHERE t.user_address IS NOT NULL AND t.user_address <> ''
-  AND m.resolved = TRUE AND m.resolution IN ('YES', 'NO')
-  AND UPPER(t.side) = 'BUY'
-  AND t.price > :pmin AND t.price < :pmax
-  AND t.token_id IN (m.yes_token_id, m.no_token_id)
-ORDER BY t.user_address, COALESCE(m.condition_id, t.market_id), t.timestamp ASC
+WITH joined AS (
+  SELECT t.user_address, t.timestamp, t.token_id, t.price,
+         m.condition_id AS mkey, m.resolution, m.yes_token_id, m.no_token_id,
+         COALESCE(m.category, '') AS cat
+  FROM trades t
+  JOIN markets m ON m.condition_id = t.market_id
+  WHERE t.user_address IS NOT NULL AND t.user_address <> ''
+    AND m.resolved = TRUE AND m.resolution IN ('YES', 'NO')
+    AND UPPER(t.side) = 'BUY'
+    AND t.price > :pmin AND t.price < :pmax
+    {since_t} {until_t}
+  UNION ALL
+  SELECT t.user_address, t.timestamp, t.token_id, t.price,
+         COALESCE(m.condition_id, t.market_id) AS mkey,
+         m.resolution, m.yes_token_id, m.no_token_id,
+         COALESCE(m.category, '') AS cat
+  FROM trades t
+  JOIN markets m ON CAST(m.id AS TEXT) = t.market_id
+  WHERE t.market_id NOT LIKE '0x%'
+    AND t.user_address IS NOT NULL AND t.user_address <> ''
+    AND m.resolved = TRUE AND m.resolution IN ('YES', 'NO')
+    AND UPPER(t.side) = 'BUY'
+    AND t.price > :pmin AND t.price < :pmax
+    {since_t} {until_t}
+),
+firsts AS (
+  SELECT DISTINCT ON (user_address, mkey) *
+  FROM joined
+  ORDER BY user_address, mkey, timestamp ASC
+)
+SELECT user_address AS trader, timestamp AS entry_time,
+       (CASE WHEN token_id = yes_token_id
+                  THEN (CASE WHEN resolution = 'YES' THEN 1.0 ELSE 0.0 END)
+             WHEN token_id = no_token_id
+                  THEN (CASE WHEN resolution = 'NO'  THEN 1.0 ELSE 0.0 END)
+        END) - price AS edge,
+       cat
+FROM firsts
+LIMIT :cap1
 """
 
 _REJECTED_SQL = """
-SELECT DISTINCT ON (r.trader_address, r.market_id)
-       r.trader_address AS trader,
-       r.event_time     AS entry_time,
-       (CASE WHEN r.token_id = m.yes_token_id
-                  THEN (CASE WHEN r.resolution = 'YES' THEN 1.0 ELSE 0.0 END)
-             WHEN r.token_id = m.no_token_id
-                  THEN (CASE WHEN r.resolution = 'NO'  THEN 1.0 ELSE 0.0 END)
-             WHEN UPPER(r.side) IN ('YES', 'NO')
-                  THEN (CASE WHEN r.resolution = UPPER(r.side) THEN 1.0 ELSE 0.0 END)
-        END) - r.price AS edge,
-       COALESCE(m.category, '') AS cat
-FROM mirror_rejected_signals r
-LEFT JOIN markets m ON m.condition_id = r.market_id
-WHERE r.resolution IN ('YES', 'NO')
-  AND r.price IS NOT NULL AND r.price > :pmin AND r.price < :pmax
-ORDER BY r.trader_address, r.market_id, r.event_time ASC
+SELECT * FROM (
+  SELECT DISTINCT ON (r.trader_address, r.market_id)
+         r.trader_address AS trader,
+         r.event_time     AS entry_time,
+         (CASE WHEN r.token_id = m.yes_token_id
+                    THEN (CASE WHEN r.resolution = 'YES' THEN 1.0 ELSE 0.0 END)
+               WHEN r.token_id = m.no_token_id
+                    THEN (CASE WHEN r.resolution = 'NO'  THEN 1.0 ELSE 0.0 END)
+               WHEN UPPER(r.side) IN ('YES', 'NO')
+                    THEN (CASE WHEN r.resolution = UPPER(r.side) THEN 1.0 ELSE 0.0 END)
+          END) - r.price AS edge,
+         COALESCE(m.category, '') AS cat
+  FROM mirror_rejected_signals r
+  LEFT JOIN markets m ON m.condition_id = r.market_id
+  WHERE r.resolution IN ('YES', 'NO')
+    AND r.price IS NOT NULL AND r.price > :pmin AND r.price < :pmax
+    {since_r} {until_r}
+  ORDER BY r.trader_address, r.market_id, r.event_time ASC
+) q
+LIMIT :cap1
 """
 
 
 async def fetch_entries(db, source: str, pmin: float, pmax: float,
-                        timeout_s: int, max_rows: int) -> list[dict]:
+                        timeout_s: int, max_rows: int,
+                        since: str = "", until: str = "",
+                        ) -> tuple[list[dict], int]:
+    """Returns (entries, n_unmappable_dropped)."""
     from sqlalchemy import text
-    sql = _TRADES_SQL if source == "trades" else _REJECTED_SQL
+    if source == "trades":
+        sql = _TRADES_SQL.format(
+            since_t="AND t.timestamp >= :since" if since else "",
+            until_t="AND t.timestamp < :until" if until else "",
+        )
+    else:
+        sql = _REJECTED_SQL.format(
+            since_r="AND r.event_time >= :since" if since else "",
+            until_r="AND r.event_time < :until" if until else "",
+        )
+    params: dict = {"pmin": pmin, "pmax": pmax, "cap1": max_rows + 1}
+    if since:
+        params["since"] = datetime.fromisoformat(since)
+    if until:
+        params["until"] = datetime.fromisoformat(until)
     async with db.get_session() as s:
         await s.execute(text(f"SET LOCAL statement_timeout = '{timeout_s}s'"))
-        rows = (await s.execute(text(sql), {"pmin": pmin, "pmax": pmax})).fetchall()
-    out = []
+        rows = (await s.execute(text(sql), params)).fetchall()
+    if len(rows) > max_rows:
+        raise SystemExit(
+            f"ABORT: corpus exceeds --max-rows {max_rows:,} (LIMIT sentinel hit). "
+            f"Narrow with --since/--until or raise --max-rows deliberately "
+            f"(do not silently truncate)."
+        )
+    out, dropped = [], 0
     for r in rows:
         d = dict(r._mapping)
-        if d.get("edge") is None or d.get("entry_time") is None:
-            continue  # unmappable token / null → not scoreable
+        if d.get("entry_time") is None:
+            continue
+        if d.get("edge") is None:
+            dropped += 1  # true first entry, unmappable token → count, not hide
+            continue
         out.append(d)
-    if len(out) > max_rows:
-        raise SystemExit(
-            f"ABORT: {len(out):,} entries exceed --max-rows {max_rows:,}. This is "
-            f"more (trader,market) first-entries than expected — narrow the corpus "
-            f"or raise --max-rows deliberately (do not silently truncate)."
-        )
-    return out
+    return out, dropped
 
 
-# ── Verdict synthesis ────────────────────────────────────────────────────────
+# ── Verdict synthesis (reworked 2026-07-09: NULL no longer silently discards
+#    underpowered-but-significant cutoffs, and significant-but-small rho is its
+#    own outcome instead of being folded into 'autocorrelation is ~0') ────────
 def slice_verdict(per_cutoff: list[dict], alpha: float, sp_thresh: float,
-                  min_traders: int) -> str:
+                  min_traders: int) -> tuple[str, str]:
+    """Returns (verdict, note). Verdicts:
+      PERSISTENT             ALL powered cutoffs: p<alpha AND rho>sp_thresh
+      SIGNIFICANT-BUT-SMALL  ALL powered cutoffs p<alpha, but rho<=sp_thresh on some
+      NULL                   ALL cutoffs (powered AND testable-underpowered) non-sig
+      MIXED                  disagreement, or nulls alongside excluded-significant
+      UNDERPOWERED           fewer than 2 powered cutoffs
+    """
+    def _sig(c: dict) -> bool:
+        return (not math.isnan(c["sp_p"])) and c["sp_p"] < alpha
+
     valid = [c for c in per_cutoff if c["n"] >= min_traders]
+    excluded = [c for c in per_cutoff if c["n"] < min_traders]
+    excl_sig = [c for c in excluded if c["n"] >= 2 and _sig(c)]
+    note = (f"{len(excl_sig)} underpowered cutoff(s) individually significant"
+            if excl_sig else "")
     if len(valid) < 2:
-        return "UNDERPOWERED"
-    persistent = all(c["sp"] > sp_thresh and not math.isnan(c["sp_p"])
-                     and c["sp_p"] < alpha for c in valid)
-    if persistent:
-        return "PERSISTENT"
-    null = all(math.isnan(c["sp_p"]) or c["sp_p"] >= alpha
-               or abs(c["sp"]) < sp_thresh for c in valid)
-    if null:
-        return "NULL"
-    return "MIXED"
+        return "UNDERPOWERED", note
+    if all(_sig(c) and c["sp"] > sp_thresh for c in valid):
+        return "PERSISTENT", note
+    if all(_sig(c) for c in valid):
+        return "SIGNIFICANT-BUT-SMALL", (note + ("; " if note else "")
+                + f"all powered cutoffs p<{alpha} but rho<={sp_thresh} on some")
+    if all(not _sig(c) for c in valid):
+        if excl_sig:
+            return "MIXED", (note + ("; " if note else "")
+                    + "powered cutoffs null but an excluded cutoff is significant"
+                      " — widen power before calling this NULL")
+        return "NULL", note
+    return "MIXED", note
 
 
 async def run(args) -> int:
@@ -324,8 +412,9 @@ async def run(args) -> int:
     db = Database()
     await db.init()
     try:
-        entries = await fetch_entries(db, args.source, args.pmin, args.pmax,
-                                      args.timeout, args.max_rows)
+        entries, n_unmappable = await fetch_entries(
+            db, args.source, args.pmin, args.pmax,
+            args.timeout, args.max_rows, args.since, args.until)
     finally:
         await db.close()
 
@@ -345,8 +434,12 @@ async def run(args) -> int:
 
     print("\n" + "=" * 82)
     print("  Trader-skill PERSISTENCE check — raw cross-period edge autocorrelation")
+    print("  SUPPORTING instrument: traders share markets, so the shuffle null is")
+    print("  anti-conservative — corroborate with backtest_tail_leaderboard.py (primary).")
     print(f"  source={args.source}  entries(first-per trader,market)={len(entries):,}"
-          f"  min_events/period={args.min_events}  n_perm={args.n_perm}")
+          f"  unmappable-token firsts dropped={n_unmappable:,}")
+    print(f"  min_events/period={args.min_events}  n_perm={args.n_perm}"
+          + (f"  window-args=[{args.since or '-inf'},{args.until or '+inf'})" if (args.since or args.until) else ""))
     print(f"  edge = (won?1:0) - price   window = {min(times)} → {max(times)}")
     print(f"  cutoffs = {', '.join(c.isoformat() for c in cutoffs)}")
     print("=" * 82)
@@ -377,11 +470,15 @@ async def run(args) -> int:
             print(f"      tercile gap e2   = {terc:+.4f}  perm_p = {_pf(terc_p)}"
                   f"      (top-third e1 minus bottom-third e1)")
             per_cutoff.append({"n": n, "sp": sp, "sp_p": sp_p})
-        verdicts[name] = slice_verdict(per_cutoff, args.alpha, args.sp_threshold,
-                                       args.min_traders)
-        print(f"  → slice verdict: {verdicts[name]}"
-              f"  (PERSISTENT needs rho>{args.sp_threshold} & p<{args.alpha} on"
-              f" >=2 cutoffs with >={args.min_traders} traders)")
+        v, note = slice_verdict(per_cutoff, args.alpha, args.sp_threshold,
+                                args.min_traders)
+        verdicts[name] = v
+        # 2026-07-09 fix: criterion text matches the code — ALL powered cutoffs
+        # must pass, not "any 2" (a 2-of-3 run is MIXED, not PERSISTENT).
+        print(f"  → slice verdict: {v}"
+              f"  (PERSISTENT needs rho>{args.sp_threshold} & p<{args.alpha} on ALL"
+              f" cutoffs with >={args.min_traders} traders, min 2 such cutoffs)"
+              + (f"\n    note: {note}" if note else ""))
 
     _print_interpretation(verdicts, args)
     return 0
@@ -403,10 +500,15 @@ def _print_interpretation(verdicts: dict[str, str], args) -> None:
         print(f"  {k}: {verdicts[k]}")
     print("-" * 82)
     if pooled == "PERSISTENT":
-        print("  READ: cross-period edge autocorrelation is CLEARLY > 0 and holds across")
-        print("        cutoffs against a calibrated placebo. Trader skill persists — the")
-        print("        signal is real and the pooled ranking method lost it. Reworking is")
-        print("        justified; prime move = score/validate PER CATEGORY, not pooled.")
+        print("  READ: cross-period edge autocorrelation is > 0 across all powered cutoffs.")
+        print("        CAVEAT (2026-07-09): shared-market overlap makes the shuffle null")
+        print("        anti-conservative — treat this as SUPPORTING evidence that skill")
+        print("        persists; confirm on the tail backtest (primary) before reworking")
+        print("        anything. If confirmed: per-category rework, not pooled.")
+    elif pooled == "SIGNIFICANT-BUT-SMALL":
+        print("  READ: statistically significant but SMALL autocorrelation on all powered")
+        print("        cutoffs. Not 'no signal', but likely too weak to rank on alone —")
+        print("        weigh against the tail backtest before deciding anything.")
     elif pooled == "NULL":
         if cat_persistent:
             print("  READ: pooled autocorrelation is ~0, BUT these category slices persist:")
@@ -415,16 +517,17 @@ def _print_interpretation(verdicts: dict[str, str], args) -> None:
             print("        with-sports hypothesis). Per-category rework is justified.")
         else:
             print("  READ: cross-period edge autocorrelation is ~0 across cutoffs and no")
-            print("        category slice persists. No stable trader-level signal exists;")
-            print("        NO ranking rework can recover one. The Stage-1 FAIL STANDS.")
+            print("        category slice persists — and NULL survives even though the test")
+            print("        is anti-conservative, which strengthens it. No stable trader-")
+            print("        level signal here; the Stage-1 FAIL STANDS on this corpus.")
     elif pooled == "UNDERPOWERED":
         print("  READ: too few traders qualify with >= MIN_EVENTS in both periods to")
         print("        conclude. Lower --min-events or widen the corpus (--source) and")
         print("        re-run; do NOT read an underpowered run as a negative.")
     else:  # MIXED
-        print("  READ: cutoffs DISAGREE — no multi-cutoff consensus. Inconclusive; this is")
-        print("        NOT a pass. Do not rework on a mixed result (that is p-hacking the")
-        print("        cutoff). Report the disagreement.")
+        print("  READ: cutoffs DISAGREE (or powered cutoffs are null while an excluded one")
+        print("        is significant) — no consensus. Inconclusive; this is NOT a pass.")
+        print("        Do not rework on a mixed result (that is p-hacking the cutoff).")
     print("=" * 82 + "\n")
 
 
@@ -478,7 +581,23 @@ def _self_test() -> int:
               and bucket_category("CS2 Majors") == "esports")
     print(f"  [category] bucketing sanity = {ok_cat}")
 
-    allok = ok_cal and ok_sig and ok_pair and ok_cat
+    # 5. slice_verdict contract (reworked 2026-07-09).
+    def _c(n, sp, p):
+        return {"n": n, "sp": sp, "sp_p": p}
+    v1, _ = slice_verdict([_c(50, 0.3, 0.01), _c(50, 0.3, 0.01)], 0.05, 0.10, 20)
+    v2, _ = slice_verdict([_c(50, 0.05, 0.01), _c(50, 0.3, 0.01)], 0.05, 0.10, 20)
+    v3, _ = slice_verdict([_c(50, 0.0, 0.8), _c(50, 0.0, 0.7)], 0.05, 0.10, 20)
+    v4, n4 = slice_verdict([_c(50, 0.0, 0.8), _c(50, 0.0, 0.7), _c(5, 0.5, 0.01)],
+                           0.05, 0.10, 20)
+    v5, _ = slice_verdict([_c(50, 0.3, 0.01), _c(50, 0.0, 0.8)], 0.05, 0.10, 20)
+    v6, _ = slice_verdict([_c(5, 0.3, 0.01)], 0.05, 0.10, 20)
+    ok_sv = (v1 == "PERSISTENT" and v2 == "SIGNIFICANT-BUT-SMALL" and v3 == "NULL"
+             and v4 == "MIXED" and "excluded" in n4.replace("underpowered", "excluded")
+             and v5 == "MIXED" and v6 == "UNDERPOWERED")
+    print(f"  [verdict] PERSISTENT/SBS/NULL/MIXED(excl-sig)/MIXED/UNDERPOWERED = "
+          f"{v1[:4]}/{v2[:3]}/{v3}/{v4}/{v5}/{v6[:5]} : {ok_sv}")
+
+    allok = ok_cal and ok_sig and ok_pair and ok_cat and ok_sv
     print("\n  RESULT:", "PASS" if allok else "FAIL")
     return 0 if allok else 1
 
@@ -488,7 +607,8 @@ if __name__ == "__main__":
     ap.add_argument("--source", choices=["trades", "rejected"], default="trades",
                     help="edge corpus: trades (ranking corpus) or mirror_rejected_signals")
     ap.add_argument("--cutoffs", default="",
-                    help="comma-separated ISO period cutoffs (default: 33/50/67pct of time)")
+                    help="comma-separated ISO period cutoffs (default: interior "
+                         "quartiles, 25/50/75 pct of entry time)")
     ap.add_argument("--n-cutoffs", type=int, default=3, dest="n_cutoffs",
                     help="number of auto cutoffs when --cutoffs unset (default 3)")
     ap.add_argument("--min-events", type=int, default=8, dest="min_events",
@@ -504,9 +624,11 @@ if __name__ == "__main__":
                     help="min spearman rho to call 'clearly > 0' (default 0.10)")
     ap.add_argument("--pmin", type=float, default=0.02, help="drop dust prices below (default 0.02)")
     ap.add_argument("--pmax", type=float, default=0.98, help="drop prices above (default 0.98)")
+    ap.add_argument("--since", default="", help="ISO lower bound on entry time (use on first run)")
+    ap.add_argument("--until", default="", help="ISO upper bound on entry time")
     ap.add_argument("--timeout", type=int, default=300, help="statement_timeout seconds (default 300)")
     ap.add_argument("--max-rows", type=int, default=3_000_000, dest="max_rows",
-                    help="abort if entry set exceeds this (no silent truncation)")
+                    help="server-side LIMIT sentinel; abort above this (no silent truncation)")
     ap.add_argument("--seed", type=int, default=20260708, help="deterministic permutation seed")
     ap.add_argument("--self-test", action="store_true", help="run offline stat/calibration self-test and exit")
     args = ap.parse_args()
