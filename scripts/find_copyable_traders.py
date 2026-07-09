@@ -21,13 +21,17 @@ below marked [rev] closes a confirmed false-PASS/false-FAIL channel):
      conditions on activity, not outcomes); PNL-only traders are descriptive.
   2. HISTORY: full pagination of data-api /activity per address (newest-first),
      normalized in-script [rev: shared client's gamma branch returns raw rows —
-     routed around, not "fixed", per shared-module protocol]. Disk-cached per
-     address; [rev CRITICAL] cache written ONLY on clean completion — a partial
-     pull (timeout/circuit-breaker) is never cached and the address is counted
-     FAILED in the report, not silently treated as a complete record.
-     [rev CRITICAL] histories hitting --max-bets are flagged TRUNCATED and
-     excluded from the primary (their early bets are missing, so "first BUY"
-     and P1 counts are wrong for exactly the most active traders).
+     routed around, not "fixed", per shared-module protocol]. The API rejects
+     offset >= 3500 (400, measured live 2026-07-09), so deep histories are
+     walked by TIME-WINDOWED pagination: offset-page to 3000, re-anchor `end`
+     at the oldest timestamp seen, repeat; cross-window dedupe removes
+     boundary re-fetches. Disk-cached per address; [rev CRITICAL] cache
+     written ONLY on clean completion — a partial pull (timeout/circuit-
+     breaker) is never cached and the address is counted FAILED in the report,
+     not silently treated as a complete record. [rev CRITICAL] histories
+     hitting --max-bets are flagged TRUNCATED and excluded from the primary
+     (their early bets are missing, so "first BUY" and P1 counts are wrong for
+     exactly the most active traders).
   3. LABELS: markets-table lookup split into two INDEX-BACKED queries
      (condition_id ANY / integer id ANY) [rev: the OR+CAST form seq-scans —
      tonight's timeout failure mode]. Label coverage reported PER PERIOD
@@ -131,11 +135,14 @@ def parse_ts(v: Any) -> Optional[datetime]:
         return None
 
 
-def normalize_activity(raw: list) -> list[dict]:
+def normalize_activity(raw: list, seen: Optional[set] = None) -> list[dict]:
     """data-api /activity rows → the fields this script depends on, deduped.
     Dedupe key includes token/ts/price/size because the tx hash is shared by
-    multi-fill transactions [rev]."""
-    out, seen = [], set()
+    multi-fill transactions [rev]. Pass a persistent `seen` set to dedupe
+    ACROSS pages/windows (time-windowed pagination re-fetches boundary rows)."""
+    out = []
+    if seen is None:
+        seen = set()
     for act in raw or []:
         if not isinstance(act, dict) or str(act.get("type", "")).upper() != "TRADE":
             continue
@@ -348,25 +355,51 @@ async def fetch_history(client, addr: str, max_bets: int, rps: float,
         if isinstance(blob, dict):
             return blob.get("trades", []), blob.get("status", "ok")
         return blob, "ok"  # legacy cache shape
+
+    # The data-api rejects offset >= 3500 with 400 Bad Request (measured live
+    # 2026-07-09 — every whale-depth history died there on the first run). So:
+    # page by offset only up to MAX_OFFSET, then RE-ANCHOR BY TIME — pass the
+    # oldest timestamp seen as `end` and restart offset=0. Boundary rows are
+    # re-fetched and removed by the cross-window `seen` dedupe; a window that
+    # makes no backward progress breaks (defensive, e.g. `end` unsupported).
+    MAX_OFFSET = 3000
     out, offset, status = [], 0, "ok"
+    seen: set = set()
+    end_ts: Optional[int] = None
+    oldest: Optional[int] = None
     while True:
+        params = {"user": addr, "limit": 500, "offset": offset, "type": "TRADE"}
+        if end_ts is not None:
+            params["end"] = end_ts
         try:
             raw = await client._request(
-                "GET", "/activity", client.data_api,
-                params={"user": addr, "limit": 500, "offset": offset, "type": "TRADE"},
-                use_cache=False, cache_key=f"act:{addr}:{offset}")
+                "GET", "/activity", client.data_api, params=params,
+                use_cache=False, cache_key=f"act:{addr}:{offset}:{end_ts}")
         except Exception as e:
-            print(f"  activity {addr[:10]}@{offset} failed: {e} — NOT cached",
+            print(f"  activity {addr[:10]}@{offset}/end={end_ts} failed: {e} — NOT cached",
                   file=sys.stderr)
             return out, "partial"
-        page = normalize_activity(raw if isinstance(raw, list) else [])
+        page = normalize_activity(raw if isinstance(raw, list) else [], seen)
         out.extend(page)
+        for t in page:
+            ts = parse_ts(t.get("timestamp"))
+            if ts is not None:
+                ep = int(ts.replace(tzinfo=timezone.utc).timestamp())
+                oldest = ep if oldest is None else min(oldest, ep)
         if not raw or not isinstance(raw, list) or len(raw) < 500:
-            break
+            break  # history exhausted — clean completion
         if len(out) >= max_bets:
             status = "truncated"
             break
         offset += 500
+        if offset > MAX_OFFSET:
+            if oldest is None or (end_ts is not None and oldest >= end_ts):
+                # cannot progress backward (no timestamps / end unsupported):
+                # treat as truncated-at-cap, never as a complete record
+                status = "truncated"
+                break
+            end_ts = oldest
+            offset = 0
         await asyncio.sleep(1.0 / rps)
     with open(cpath, "w") as f:
         json.dump({"status": status, "trades": out}, f)
@@ -742,7 +775,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Find copyable traders (P1-qualify/P2-judge, review-hardened)")
     ap.add_argument("--universe", type=int, default=300)
     ap.add_argument("--orders", default="PNL,VOL")
-    ap.add_argument("--max-bets", type=int, default=6000, dest="max_bets",
+    ap.add_argument("--max-bets", type=int, default=20000, dest="max_bets",
                     help="history cap; hitting it flags the trader TRUNCATED (excluded from primary)")
     ap.add_argument("--rps", type=float, default=4.0)
     ap.add_argument("--cache", default="/tmp/copyable_cache")

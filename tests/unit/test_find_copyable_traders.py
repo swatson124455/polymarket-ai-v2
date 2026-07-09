@@ -52,6 +52,17 @@ def test_min_p1_counts_distinct_markets_not_entries():
     assert fc.qualify_and_judge(ents, SPLIT, 25, 0.90, 300, 7) is None
 
 
+def test_normalize_activity_cross_window_dedupe():
+    # Time-windowed pagination re-fetches boundary rows; a persistent `seen`
+    # set must drop them across calls (the 3500-offset-cap workaround).
+    row = {"type": "TRADE", "conditionId": "0xA", "asset": "T1", "side": "BUY",
+           "price": "0.5", "size": "10", "timestamp": 100, "transactionHash": "0xh"}
+    seen: set = set()
+    first = fc.normalize_activity([row], seen)
+    second = fc.normalize_activity([row], seen)   # boundary re-fetch
+    assert len(first) == 1 and len(second) == 0
+
+
 def test_normalize_activity_dedupes_and_filters():
     raw = [{"type": "TRADE", "conditionId": "0xA", "asset": "T1", "side": "buy",
             "price": "0.5", "size": "10", "timestamp": 1767225600,
