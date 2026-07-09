@@ -36,6 +36,7 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
 | Scoring engine | `bots/mirror_scoring/` (from `mb-formula-review`) | 45 tests; runner unblocked (`8ea683d`); validate run pending |
 | M0-DB verify | `scripts/verify_salvage_data.py` | read-only; cascade bug fixed |
 | Persistence go/no-go | `scripts/check_trader_persistence.py` | read-only; pure-stdlib; offline self-test PASS (placebo calibrated at α); **awaiting operator VPS run** |
+| Tail backtest (direct) | `scripts/backtest_tail_leaderboard.py` | read-only; copy-everyone at realistic lag → hold-to-resolution edge, market-clustered bootstrap, lag sweep {10,30,60}s + per-category; offline self-test PASS; **awaiting operator VPS run** |
 | Operator runbooks | `docs/VPS_RUNBOOK_2026-07-02.md`, `deploy/mb_vps_oneshot.sh` | one-paste checks; mktemp-safe |
 
 ## 5. Open threads / what's next
@@ -51,6 +52,18 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
   Clearly >0 (pooled or a category) ⇒ rework justified, per-category not pooled.
   **Hard rule:** do NOT rework-then-retest until this passes (p-hacking); a real
   verdict needs the built-in calibrated placebo + multi-cutoff agreement (both are).
+- **[operator, GATING] Run the tail backtest** — the DIRECT "can we tail them reasonably?" test
+  (operator's framing, 2026-07-09): copy every detected whale signal at a realistic lag, hold to
+  resolution, market-clustered bootstrap, lag sweep + per category:
+  ```
+  cd /opt/polymarket-ai-v2 && sudo -u polymarket env PYTHONPATH=/opt/polymarket-ai-v2 \
+    venv/bin/python scripts/backtest_tail_leaderboard.py --by-category | tee /tmp/tail_backtest.log
+  ```
+  Read the lag=0 ceiling vs lagged rows per category = the tailability tax. Copy latency is 10s
+  (operator, 2026-07-09) — the default sweep includes it; the true value should come from the v3
+  collector's `feed_lag_p95_s` once deployed. A slice only "passes" with adequate n_markets AND
+  coverage — a green on 5 covered markets is not a pass. This supersedes the persistence check as
+  the lead instrument (it answers the money question directly rather than via autocorrelation).
 - **[operator, PENDING] 3rd cutoff (05-10) validate result** — grab it from `/tmp/val_all.log`
   on the VPS and record it here (2 cutoffs already reported FAIL; this session had no VPS access).
 - **[operator] Re-run algo validate** — `deploy/mb_vps_oneshot.sh` (fixed); paste output. It's the scoring engine's go/no-go — but it FAILED Stage-1 (see §1); the persistence check above is the prerequisite that decides whether re-running is even worth it.
