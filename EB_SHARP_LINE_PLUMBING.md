@@ -137,12 +137,22 @@ The edit site is `find_markets_for_match` → the `market_dict` literal at
 field**). Before writing the edit, a VPS/live session MUST verify TWO things — each is
 a latent sign-flip (the S152/B2 loss class):
 
-- **[LIVE CHECK 1] Is the YES-token `outcome` label present on the market_service
-  token?** Shape-2 authoritative resolution needs the YES token's outcome STRING (the
-  team name). `market = self._market_service.get_tradeable_esports_markets(...)` →
-  `tokens[0]` currently captures only id/price, no `outcome`. Inspect a live shape-2
-  market's token dict: if `outcome` is absent, the matcher must fetch/carry it (CLOB
-  peek or a market_service field) — do NOT fabricate it from the question text.
+- **[CHECK 1 — ANSWERED from code 2026-07-08: the label is ABSENT, this is the real
+  root of step 3.]** Shape-2 authoritative resolution needs the YES token's outcome
+  STRING (the team name). Verified it is **nowhere in the DB path**:
+  `esports_market_service.py:239-249` builds tokens with only `tokenId` +
+  `outcomePrice` — **no `outcome` field** — and the DB `markets` SELECT (:176-179) has
+  no outcome-label column at all. Consequence: the bot's own S152 YES-detector
+  (`esports_bot.py:2580-2591`, which reads `_t.get("outcome")`) **silently no-ops to
+  positional fallback** (`tokens[0]`) on the live path, because the label it looks for
+  is never populated. So step 3 is NOT a `market_dict` passthrough — the label must be
+  brought INTO the pipeline. The authoritative source is the **CLOB**
+  (`/markets/{condition_id}` → `tokens[].outcome` == team name; proven by the probe).
+  Options, in preference order: (a) an OFFLINE backfill that joins `condition_id` →
+  CLOB outcomes (safe, no live-path change — do this first for the backtest); (b) add
+  a CLOB label lookup in the live scan (working-code change: latency + rate-limit on
+  the live bot — verify live before/after). Do NOT fabricate the label from question
+  text.
 - **[LIVE CHECK 2] Does the matcher's `team_names[0]` == the sharp odds' `team_a`?**
   `resolve_yes_is_team_a` returns a bool *relative to the team_a you pass it*. The
   matcher has `team_names` (PandaScore order); the sharp line has `team_a/team_b`
