@@ -1,7 +1,7 @@
 # EsportsBot Sharp-Line — Next-Session Handoff
 
 **Branch:** `claude/esports-sharp-line-rebuild-36c8u9-7m96gg` (all work pushed to GitHub)
-**Updated:** 2026-07-09 (session 2 — backtest pipeline built + collector fixed)
+**Updated:** 2026-07-09 (session 3 — GAP B code built: PM price capture + edge wiring)
 **Read order:** this file → `EB_SHARP_LINE_STATE.md` → `EB_SHARP_LINE_PLUMBING.md`
 (esp. "Step-3 PREFLIGHT" + "LIVE MEASUREMENT") → `EB_MARKET_SHAPE_RESULTS.md` → `CLAUDE.md`.
 
@@ -50,6 +50,42 @@
 > NOT deploy the trading bot (the odds cron is not a bot deploy); correct-or-absent
 > everywhere (doubt → None, never a wrong bool); preserve other crontab entries on any
 > cron edit. Commit + push each step.
+
+---
+
+## 0b. SESSION-3 UPDATE (2026-07-09) — GAP B is CODE-DONE (capture + edge wiring)
+
+**What changed:** GAP B ("no historical Polymarket prices") is now closed on the
+CODE side — the forward-collector captures the matched PM price, and the whole
+reduce→join→edge path consumes it. Two commits, pushed, +25 unit tests (full
+sharp-line suite **163 green**):
+
+| Commit | Module(s) | What |
+|---|---|---|
+| `4f56d2c` | `esports_v2/data/pm_market_index.py` (new) + `collect_pinnodds.py` + `deploy/vps/collect_pinnodds_standalone.py` | Build a `match_key → PMMarketRef` index of live Gamma (`tag_id=64`) shape-2 **match-winner** markets (props/Yes-No rejected; ambiguous key collisions dropped). Collector writes `condition_id`/`yes_token_id`/`yes_outcome`/`market_price` on each snapshot (None when unmatched; Gamma failure → null fields, odds never blocked). **Live-verified:** `build_pm_index` → 45 match winners; standalone == canonical byte-for-byte. |
+| `7a0086b` | `closing_line.py` + `results_join.py` + `sharp_eval.py` + `eval_sharp_line.py` | Thread the PM fields ClosingLine→JoinedRecord; add `edge_backtest_from_joined()` (pure, injectable orientation resolver = live CLOB by default, flip-proof via `clob_labels`); driver runs the edge backtest after the sharp-line report, **guarded** so zero CLOB calls until a joined record actually carries a PM price. |
+
+**⚠️ OPERATOR ACTION REQUIRED to start capturing PM prices** — the VPS bootstrap
+changed (adds the Gamma PM index). Redeploy `deploy/vps/collect_pinnodds_standalone.py`
+to `/home/ubuntu/eb-odds/collect_pinnodds_standalone.py`. **New md5:
+`87bebc3cb539d9c3699b2b0fbfd03e55`** (was `3f6e794f21e3bd40ef97b01c7fad3116`).
+Until redeployed the cron keeps writing odds-only rows (no PM fields). The VPS
+must have egress to `gamma-api.polymarket.com` (the live bot already does).
+After redeploy, each tick logs `pm_matched=<n>`; new snapshot rows gain the four
+PM fields. **This does NOT change the trading bot — EB stays halted; only the
+odds/price cron.**
+
+**What's STILL open after GAP B code:**
+- **GAP A (unchanged) — date overlap.** Free results end 2026-04-14; forward
+  odds+PM start now. The join yields 0 until fresh results cover the collection
+  window. Pull Oracle/PandaScore results for 2026-07+ AFTER matches resolve, then
+  run the driver — sharp-line hit-rate/Brier/CLV **and now** the PM-edge backtest
+  come out together.
+- **PM-key alignment caveat.** PM↔PinnOdds match is exact-normalized team name +
+  same UTC day (`make_match_key`). Team-name drift (e.g. PM "Anyone's Legend" vs a
+  PinnOdds abbrev) or a day-boundary offset yields no match → null PM fields
+  (correct-or-absent, never wrong). Alias expansion is a future refinement if
+  `pm_matched` runs low once both feeds are live.
 
 ---
 
@@ -149,7 +185,10 @@ by this session's manual test runs. Each tick logs `appended=0 total_lines=33`.
   operator decision — paid PinnOdds tier, slower cadence (`*/30` or hourly), or a
   different sharp source. (Widening cadence is a one-line crontab edit.)
 - **Snapshot schema** (`/home/ubuntu/eb-odds/pinnodds_snapshots.jsonl`, append-only):
-  `captured_at, match_key, home, away, starts, league_name, odds_a, odds_b, event_type`.
+  `captured_at, match_key, home, away, starts, league_name, odds_a, odds_b, event_type`
+  — **plus (session 3, after the md5-`87bebc3c` redeploy)** `condition_id,
+  yes_token_id, yes_outcome, market_price` (the matched PM match-winner; null when
+  no PM market matches the odds row).
 - **Check progress:** `ssh … "date -u; wc -l /home/ubuntu/eb-odds/pinnodds_snapshots.jsonl;
   grep -aE 'appended|429' /home/ubuntu/eb-odds/collect.log | tail -5"`
 
