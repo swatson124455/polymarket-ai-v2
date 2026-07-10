@@ -32,7 +32,8 @@ def test_build_snapshot_records_no_pm_index_gives_null_pm_fields():
 
 def test_build_snapshot_records_attaches_matched_pm_ref():
     pm = PMMarketRef(condition_id="0xabc", yes_token_id="tok0", yes_outcome="BIG",
-                     market_price=0.57, question="BIG vs PVISION", game_start="2026-07-10")
+                     market_price=0.57, question="BIG vs PVISION", game_start="2026-07-10",
+                     team_a="BIG", team_b="PVISION", day="2026-07-10")
     recs = build_snapshot_records(_ROWS, "t", {"big||pvision||2026-07-10": pm})
     r = recs[0]
     assert r["condition_id"] == "0xabc"
@@ -43,7 +44,8 @@ def test_build_snapshot_records_attaches_matched_pm_ref():
 
 def test_build_snapshot_records_unmatched_row_stays_null():
     pm = PMMarketRef(condition_id="0xabc", yes_token_id="tok0", yes_outcome="X",
-                     market_price=0.5, question="X vs Y", game_start="2026-07-10")
+                     market_price=0.5, question="X vs Y", game_start="2026-07-10",
+                     team_a="X", team_b="Y", day="2026-07-10")
     # index keyed for a DIFFERENT match -> our row must not pick it up.
     recs = build_snapshot_records(_ROWS, "t", {"other||match||2026-07-10": pm})
     assert recs[0]["condition_id"] is None and recs[0]["market_price"] is None

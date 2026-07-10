@@ -1,40 +1,31 @@
 """Polymarket match-winner market index for GAP B (bet-time PM price capture).
 
-Builds a ``match_key -> PMMarketRef`` lookup from live Gamma esports
-(``tag_id=64``) shape-2 markets so the forward-collector
-(``esports_v2/scripts/collect_pinnodds.py``) can snapshot the matched Polymarket
-YES price + ``condition_id``/``yes_token_id`` alongside each PinnOdds sharp line.
-That is the data the real ``edge = sharp_prob - PM_price - fee`` backtest
-(``sharp_eval.edge_backtest``) needs — the forward-collector otherwise captures
-PinnOdds only, so there is no PM price at bet time (handoff GAP B).
+Builds a list of live Gamma esports (``tag_id=64``) shape-2 MATCH-WINNER markets
+so the forward-collector (``esports_v2/scripts/collect_pinnodds.py``) can snapshot
+the matched Polymarket YES price + ``condition_id``/``yes_token_id`` alongside
+each PinnOdds sharp line. That is the data the real
+``edge = sharp_prob - PM_price - fee`` backtest (``sharp_eval.edge_backtest``)
+needs — the forward-collector otherwise captures PinnOdds only (handoff GAP B).
 
-The lookup key is ``odds_loader.make_match_key(outcome_a, outcome_b, game_start)``
-— the SAME order-invariant key the PinnOdds rows already carry — so a snapshot
-row is enriched by a plain dict lookup.
+MATCHING (``match_pm_ref``) reuses the SAME conservative, bijective,
+correct-or-absent matcher the results join trusts (``model.team_match``): a
+PinnOdds row matches a PM market only when BOTH teams line up (exact-normalized,
+injected-alias overlap, or a shared-non-generic token-subset — "G2 Esports" <->
+"G2") on the same day (± a small window). This lifts coverage past exact-name
+equality (which missed "Team Vitality" vs "Vitality") without a looser rule — a
+wrong PM attachment would corrupt both price and orientation (the S152/B2 loss
+class). If a row matches TWO distinct PM markets, it is dropped as ambiguous.
 
-CORRECT-OR-ABSENT (matches the rest of the sharp-line core): only clean,
-unambiguous MATCH-WINNER markets are indexed. Any doubt -> the market is skipped
-and the snapshot row keeps ``None`` PM fields (never a guessed price / condition):
-
-  - **Yes/No (shape-1) markets are skipped** — they are futures/outright winners,
-    a different odds type, not paired with match-winner sharp odds.
-  - **Prop markets that carry team-name outcomes are rejected** (Game N / Map N /
-    Handicap / Kills / Total / Odd-Even / Over-Under / Rounds / ...). Matching one
-    of these to a PinnOdds match-winner line would corrupt the edge (the S152/B2
-    loss class).
-  - **A title must be a head-to-head** (contains " vs ") to be indexable.
-  - **Collisions are dropped as ambiguous.** If two DIFFERENT markets
-    (distinct ``condition_id``) resolve to the same ``match_key`` — e.g. a match
-    winner and a series prop that both slip the reject filter — the key is
-    REMOVED, never guessed. Same bijective principle as ``results_join``.
-
-The reference "YES" token is index 0 of the parallel
-``outcomes``/``clobTokenIds``/``outcomePrices`` arrays: ``yes_token_id =
-clobTokenIds[0]``, ``market_price = outcomePrices[0]``, ``yes_outcome =
-outcomes[0]``. At eval time ``clob_labels`` maps ``yes_token_id`` -> the
-authoritative CLOB team NAME and ``resolve_yes_is_team_a`` aligns it to the sharp
-odds' ``team_a`` (flip-proof), so the arbitrary index-0 choice cannot invert the
-edge.
+CORRECT-OR-ABSENT throughout: only clean, unambiguous match winners are indexed
+and matched; any doubt -> the snapshot row keeps ``None`` PM fields:
+  - Yes/No (shape-1) futures skipped; team-name PROP markets rejected (Game N /
+    Map N / Handicap / Kills / Total / Odd-Even / Over-Under / ...); a title must
+    be a head-to-head (contains " vs ").
+  - The reference "YES" token is index 0 of the parallel
+    ``outcomes``/``clobTokenIds``/``outcomePrices`` arrays. At eval time
+    ``clob_labels`` maps ``yes_token_id`` -> the authoritative CLOB team NAME and
+    ``resolve_yes_is_team_a`` aligns it to the sharp odds' ``team_a``
+    (flip-proof), so the arbitrary index-0 choice cannot invert the edge.
 
 The HTTP fetch is injectable (``fetch_page`` param) so the index logic is fully
 unit-testable offline; the default fetch pages the public Gamma API exactly like
@@ -46,9 +37,9 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Iterable, List, Optional
 
-from esports_v2.data.odds_loader import make_match_key
+from esports_v2.model.team_match import match_teams
 
 logger = logging.getLogger(__name__)
 
@@ -66,8 +57,8 @@ _VS_RX = re.compile(r"\bvs\.?\b", re.I)
 # Prop markets that ALSO carry team-name outcomes (so they pass the shape-2 gate)
 # but are NOT the match winner. Rejecting these is what keeps a PinnOdds
 # match-winner line from being priced against a game/map/handicap/total prop.
-# Verified against 948 live shape-2 markets (2026-07-09): this isolates the 12
-# real match-winner markets and rejects every prop, with zero false drops.
+# Verified against 948 live shape-2 markets (2026-07-09): this isolates the real
+# match-winner markets and rejects every prop, with zero false drops.
 _PROP_RX = re.compile(
     r"\bgame\s*\d"            # "Game 1 Winner", "- Game 2"
     r"|\bmap\s*\d"           # "Map 1: ..."
@@ -83,14 +74,17 @@ _PROP_RX = re.compile(
 
 # fetch_page(offset, limit) -> list[market dict] | None (None/[] ends paging).
 FetchPage = Callable[[int, int], Optional[List[dict]]]
+# alias_expand(team) -> [aliases]; injected on the VPS from esports_team_aliases.
+AliasExpand = Callable[[str], Iterable[str]]
 
 
 @dataclass
 class PMMarketRef:
-    """The Polymarket match-winner reference for one match, captured at snapshot
-    time. ``market_price`` is the Gamma-reported price of the index-0 (reference
-    "YES") token; ``None`` if the price was missing/degenerate but the market is
-    otherwise a valid, unambiguous match winner."""
+    """The Polymarket match-winner reference for one market, captured at snapshot
+    time. ``team_a``/``team_b`` are the two outcome team names (``team_a`` ==
+    ``yes_outcome`` == index-0 outcome); ``day`` is the ``gameStartTime`` day
+    (YYYY-MM-DD). ``market_price`` is the Gamma-reported price of the index-0
+    (reference "YES") token, or ``None`` if missing/degenerate."""
 
     condition_id: str
     yes_token_id: str
@@ -98,6 +92,9 @@ class PMMarketRef:
     market_price: Optional[float]
     question: str
     game_start: str
+    team_a: str
+    team_b: str
+    day: str
 
 
 def _json_list(raw) -> List:
@@ -126,8 +123,18 @@ def _coerce_price(v) -> Optional[float]:
     return f if 0.0 < f < 1.0 else None
 
 
-def parse_gamma_market(m: dict) -> Optional[Tuple[str, PMMarketRef]]:
-    """Parse one Gamma market into ``(match_key, PMMarketRef)``, or None.
+def _day(value) -> str:
+    """The calendar day (YYYY-MM-DD, UTC-ish) of an ISO-ish timestamp, or "".
+
+    Both PinnOdds ``starts`` (``2026-07-10T13:45:00Z``) and Gamma
+    ``gameStartTime`` (``2026-07-10 13:45:00+00``) lead with the date, so a
+    10-char slice is the same day key on both sides."""
+    s = str(value or "").strip()
+    return s[:10] if len(s) >= 10 else ""
+
+
+def parse_gamma_market(m: dict) -> Optional[PMMarketRef]:
+    """Parse one Gamma market into a ``PMMarketRef``, or None.
 
     Correct-or-absent: returns None for anything that is not a clean, two-outcome,
     head-to-head, non-prop match winner with a usable ``condition_id``,
@@ -163,74 +170,106 @@ def parse_gamma_market(m: dict) -> Optional[Tuple[str, PMMarketRef]]:
         return None
 
     game_start = str(m.get("gameStartTime") or "").strip()
-    if not game_start:
-        return None  # no start -> cannot form the same date key the odds use
+    day = _day(game_start)
+    if not day:
+        return None  # no start day -> cannot match to a dated odds row
 
     prices = _json_list(m.get("outcomePrices"))
     market_price = _coerce_price(prices[0]) if len(prices) == 2 else None
 
-    key = make_match_key(team_a, team_b, game_start)
-    ref = PMMarketRef(
+    return PMMarketRef(
         condition_id=condition_id,
         yes_token_id=yes_token_id,
         yes_outcome=team_a,
         market_price=market_price,
         question=question,
         game_start=game_start,
+        team_a=team_a,
+        team_b=team_b,
+        day=day,
     )
-    return key, ref
 
 
 def build_pm_index(
     *,
     fetch_page: Optional[FetchPage] = None,
     max_pages: int = 30,
-) -> Dict[str, PMMarketRef]:
-    """Build a ``match_key -> PMMarketRef`` index of live PM match winners.
+) -> List[PMMarketRef]:
+    """Page the Gamma esports tag into a list of PM match-winner refs.
 
-    Pages the Gamma esports tag, parses each market correct-or-absent, and DROPS
-    any ``match_key`` that two distinct ``condition_id`` markets resolve to
-    (ambiguous -> never guessed). Returns {} on any fetch failure at page 0
-    (the collector then simply writes odds with null PM fields — no regression).
+    Parses each market correct-or-absent and de-dupes by ``condition_id`` (paging
+    overlap). Returns [] on any fetch failure at page 0 (the collector then simply
+    writes odds with null PM fields — no regression). Ambiguity between distinct
+    markets is resolved at MATCH time (``match_pm_ref``), not here.
     """
     fetch_page = fetch_page or _default_fetch_page
 
-    index: Dict[str, PMMarketRef] = {}
-    ambiguous: set = set()
-    seen_cid: Dict[str, str] = {}  # match_key -> condition_id first indexed
-    parsed = 0
-
+    refs: List[PMMarketRef] = []
+    seen_cid: set = set()
     for page in range(max_pages):
         offset = page * _GAMMA_PAGE
         markets = fetch_page(offset, _GAMMA_PAGE)
         if not markets:
             break
         for m in markets:
-            got = parse_gamma_market(m)
-            if got is None:
+            ref = parse_gamma_market(m)
+            if ref is None or ref.condition_id in seen_cid:
                 continue
-            key, ref = got
-            if key in ambiguous:
-                continue
-            prev_cid = seen_cid.get(key)
-            if prev_cid is None:
-                index[key] = ref
-                seen_cid[key] = ref.condition_id
-                parsed += 1
-            elif prev_cid != ref.condition_id:
-                # Two different markets -> the same teams+date. Cannot tell which
-                # is the true match winner from the key alone -> drop, never guess.
-                ambiguous.add(key)
-                index.pop(key, None)
-            # same condition_id seen again (paging overlap) -> keep the first.
+            seen_cid.add(ref.condition_id)
+            refs.append(ref)
         if len(markets) < _GAMMA_PAGE:
             break
 
-    logger.info(
-        f"pm_index_built keys={len(index)} parsed={parsed} "
-        f"ambiguous_dropped={len(ambiguous)}"
-    )
-    return index
+    logger.info(f"pm_index_built refs={len(refs)}")
+    return refs
+
+
+def _days_in_window(day: str, window: int) -> set:
+    """{day} widened by +/- ``window`` calendar days (correct-or-absent: the raw
+    day back if it can't be parsed)."""
+    from datetime import datetime, timedelta
+
+    try:
+        base = datetime.strptime(day, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return {day}
+    return {(base + timedelta(days=off)).strftime("%Y-%m-%d")
+            for off in range(-window, window + 1)}
+
+
+def match_pm_ref(
+    home: str,
+    away: str,
+    starts,
+    refs: List[PMMarketRef],
+    *,
+    alias_expand: Optional[AliasExpand] = None,
+    day_window: int = 1,
+) -> Optional[PMMarketRef]:
+    """Find THE Polymarket match-winner ref for one PinnOdds row, or None.
+
+    A ref is a candidate when its day is within ``day_window`` of the odds row's
+    day AND both teams bijectively match (``team_match.match_teams`` — same
+    conservative rule the results join uses). Correct-or-absent: 0 candidates ->
+    None; candidates spanning >1 distinct ``condition_id`` -> None (ambiguous,
+    never guessed); exactly one market -> that ref.
+    """
+    day = _day(starts)
+    if not day:
+        return None
+    target_days = _days_in_window(day, day_window)
+
+    candidates = [
+        r for r in refs
+        if r.day in target_days
+        and match_teams(home, away, r.team_a, r.team_b, alias_expand) is not None
+    ]
+    if not candidates:
+        return None
+    cids = {r.condition_id for r in candidates}
+    if len(cids) != 1:
+        return None  # matched two different PM markets -> ambiguous, drop
+    return candidates[0]
 
 
 def _default_fetch_page(offset: int, limit: int) -> Optional[List[dict]]:

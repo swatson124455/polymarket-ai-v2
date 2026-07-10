@@ -21,6 +21,43 @@ def mkey(a,b,d):
     a,b=norm(a),norm(b); d=(d or "")[:10]
     if a>b: a,b=b,a
     return f"{a}||{b}||{d}"
+# Team matching mirrors esports_v2.model.team_match (kept in sync; parity-checked
+# against the canonical module). normalize splits on punctuation like
+# orientation.normalize_team; same_team = conservative token-subset sharing a
+# non-generic token; match2 = bijective both-teams match. Correct-or-absent.
+GENERIC={"esports","esport","e-sports","gaming","team","club","academy","youth","challengers","challenger","junior"}
+def tnorm(s):
+    s=str(s or "").lower().replace("_"," ")
+    s=re.sub(r"[^\w\s]"," ",s)
+    return re.sub(r"\s+"," ",s).strip()
+def same_team(x,y):
+    nx,ny=tnorm(x),tnorm(y)
+    if nx and nx==ny: return True
+    if not nx or not ny: return False
+    tx,ty=set(nx.split()),set(ny.split())
+    if not tx or not ty: return False
+    if not ((tx&ty)-GENERIC): return False
+    return tx.issubset(ty) or ty.issubset(tx)
+def match2(h,a,ra,rb):
+    ha,hb=same_team(h,ra),same_team(h,rb); aa,ab=same_team(a,ra),same_team(a,rb)
+    o1=ha and ab and not hb and not aa; o2=hb and aa and not ha and not ab
+    if o1 and not o2: return True
+    if o2 and not o1: return False
+    return None
+def dwin(d,w):
+    from datetime import datetime as _dt,timedelta as _td
+    try: base=_dt.strptime(d,"%Y-%m-%d")
+    except (ValueError,TypeError): return {d}
+    return {(base+_td(days=o)).strftime("%Y-%m-%d") for o in range(-w,w+1)}
+def match_ref(h,a,starts,refs,window=1):
+    # refs: list of (condition_id, yes_token_id, yes_outcome, market_price, team_a, team_b, day)
+    day=str(starts or "")[:10]
+    if len(day)<10: return None
+    days=dwin(day,window)
+    cands=[r for r in refs if r[6] in days and match2(h,a,r[4],r[5]) is not None]
+    if not cands: return None
+    if len({r[0] for r in cands})!=1: return None
+    return cands[0]
 def coerce(v):
     try: f=float(v)
     except (TypeError,ValueError): return None
@@ -60,8 +97,9 @@ def gamma_page(off):
         return d if isinstance(d,list) else None
     except Exception: return None
 def pm_index():
-    # match_key -> (condition_id, yes_token_id, yes_outcome, market_price); drop ambiguous keys.
-    idx={}; amb=set(); cid_of={}
+    # list of (condition_id, yes_token_id, yes_outcome, market_price, team_a, team_b, day);
+    # de-dup by condition_id. Ambiguity resolved at match time (match_ref).
+    refs=[]; seen=set()
     for pg in range(30):
         ms=gamma_page(pg*100)
         if not ms: break
@@ -78,18 +116,13 @@ def pm_index():
             toks=jlist(m.get("clobTokenIds"))
             if len(toks)!=2 or not str(toks[0]).strip(): continue
             cid=str(m.get("conditionId") or "").strip()
-            gs=str(m.get("gameStartTime") or "").strip()
-            if not cid or not gs: continue
+            gs=str(m.get("gameStartTime") or "").strip(); day=gs[:10]
+            if not cid or len(day)<10 or cid in seen: continue
             prs=jlist(m.get("outcomePrices"))
             mp=price(prs[0]) if len(prs)==2 else None
-            k=mkey(ta,tb,gs)
-            if k in amb: continue
-            if k not in cid_of:
-                cid_of[k]=cid; idx[k]=(cid,str(toks[0]).strip(),ta,mp)
-            elif cid_of[k]!=cid:
-                amb.add(k); idx.pop(k,None)
+            seen.add(cid); refs.append((cid,str(toks[0]).strip(),ta,mp,ta,tb,day))
         if len(ms)<100: break
-    return idx
+    return refs
 def main():
     cap=datetime.now(timezone.utc).isoformat(); recs=[]
     try: pmi=pm_index()
@@ -102,7 +135,7 @@ def main():
         if not isinstance(ml,dict): continue
         oa,ob=coerce(ml.get("home")),coerce(ml.get("away"))
         if oa is None or ob is None: continue
-        mk=mkey(h,a,ev.get("starts")); pm=pmi.get(mk)
+        mk=mkey(h,a,ev.get("starts")); pm=match_ref(h,a,ev.get("starts"),pmi)
         recs.append({"captured_at":cap,"match_key":mk,"home":h,"away":a,
                      "starts":ev.get("starts"),"league_name":ev.get("league_name"),
                      "odds_a":oa,"odds_b":ob,"event_type":"prematch",

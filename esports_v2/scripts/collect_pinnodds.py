@@ -42,7 +42,11 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from esports_v2.data.pinnodds_loader import PinnOddsLoader
-from esports_v2.data.pm_market_index import PMMarketRef, build_pm_index
+from esports_v2.data.pm_market_index import (
+    PMMarketRef,
+    build_pm_index,
+    match_pm_ref,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 logger = logging.getLogger("collect_pinnodds")
@@ -90,23 +94,35 @@ def append_jsonl(records: List[dict], path: Path) -> int:
     return len(records)
 
 
-def _safe_build_pm_index() -> Dict[str, PMMarketRef]:
-    """Build the PM match-winner index, best-effort. Any failure -> {} so PM
+def _safe_build_pm_refs() -> List[PMMarketRef]:
+    """Build the PM match-winner ref list, best-effort. Any failure -> [] so PM
     enrichment is simply skipped this tick and odds collection never regresses
     (correct-or-absent: null PM fields beat a wrong/crashing capture)."""
     try:
-        idx = build_pm_index()
-        logger.info(f"pm_index keys={len(idx)}")
-        return idx
+        refs = build_pm_index()
+        logger.info(f"pm_index refs={len(refs)}")
+        return refs
     except Exception as e:  # noqa: BLE001 — never let PM capture break odds collection
         logger.warning(f"pm_index_failed err={type(e).__name__} — writing null PM fields")
-        return {}
+        return []
+
+
+def _resolve_pm_index(rows: List[dict], refs: List[PMMarketRef]) -> Dict[str, PMMarketRef]:
+    """Match each odds row to its PM market via the conservative bijective matcher
+    (``match_pm_ref``), keyed by the row's match_key. Unmatched/ambiguous rows are
+    simply absent -> null PM fields (correct-or-absent)."""
+    out: Dict[str, PMMarketRef] = {}
+    for r in rows:
+        ref = match_pm_ref(r.get("home"), r.get("away"), r.get("starts"), refs)
+        if ref is not None and r.get("match_key"):
+            out[r["match_key"]] = ref
+    return out
 
 
 def collect(path: Path) -> Dict[str, int]:
     loader = PinnOddsLoader.from_env()
     rows = loader.fetch_rows(event_types=("live", "prematch"))
-    pm_index = _safe_build_pm_index()
+    pm_index = _resolve_pm_index(rows, _safe_build_pm_refs())
     captured_at = datetime.now(timezone.utc).isoformat()
     records = build_snapshot_records(rows, captured_at, pm_index)
     matched = sum(1 for r in records if r.get("condition_id"))

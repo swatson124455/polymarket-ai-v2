@@ -5,10 +5,10 @@ arrays for outcomes/clobTokenIds/outcomePrices).
 """
 import json
 
-from esports_v2.data.odds_loader import make_match_key
 from esports_v2.data.pm_market_index import (
     PMMarketRef,
     build_pm_index,
+    match_pm_ref,
     parse_gamma_market,
 )
 
@@ -28,29 +28,22 @@ def _mw_market(**over):
     return m
 
 
+# ── parse_gamma_market ───────────────────────────────────────────────────────
+
+
 def test_parse_match_winner_ok():
-    got = parse_gamma_market(_mw_market())
-    assert got is not None
-    key, ref = got
-    assert key == make_match_key("ZennIT", "The Bandits", "2026-01-27")
+    ref = parse_gamma_market(_mw_market())
     assert isinstance(ref, PMMarketRef)
     assert ref.condition_id.startswith("0x872ccf45")
     assert ref.yes_token_id.startswith("36408350")   # index-0 token
     assert ref.yes_outcome == "ZennIT"                # index-0 outcome
     assert ref.market_price == 0.62                   # index-0 price
-
-
-def test_key_is_order_invariant():
-    """PinnOdds home/away order need not match PM outcome order."""
-    key1 = parse_gamma_market(_mw_market())[0]
-    swapped = _mw_market(outcomes=json.dumps(["The Bandits", "ZennIT"]))
-    key2 = parse_gamma_market(swapped)[0]
-    assert key1 == key2
+    assert (ref.team_a, ref.team_b) == ("ZennIT", "The Bandits")
+    assert ref.day == "2026-01-27"                    # from gameStartTime
 
 
 def test_reject_game_winner_prop():
-    m = _mw_market(question="LoL: ZennIT vs The Bandits - Game 1 Winner")
-    assert parse_gamma_market(m) is None
+    assert parse_gamma_market(_mw_market(question="LoL: ZennIT vs The Bandits - Game 1 Winner")) is None
 
 
 def test_reject_kill_handicap_prop():
@@ -62,8 +55,7 @@ def test_reject_kill_handicap_prop():
 
 
 def test_reject_map_odd_even_prop():
-    m = _mw_market(question="Map 1: Odd/Even Total Kills?",
-                   outcomes=json.dumps(["Odd", "Even"]))
+    m = _mw_market(question="Map 1: Odd/Even Total Kills?", outcomes=json.dumps(["Odd", "Even"]))
     assert parse_gamma_market(m) is None
 
 
@@ -74,8 +66,7 @@ def test_reject_yes_no_shape1():
 
 
 def test_reject_no_vs_in_title():
-    m = _mw_market(question="ZennIT crushes The Bandits tonight")
-    assert parse_gamma_market(m) is None
+    assert parse_gamma_market(_mw_market(question="ZennIT crushes The Bandits tonight")) is None
 
 
 def test_reject_missing_condition_id():
@@ -91,42 +82,84 @@ def test_reject_wrong_token_count():
 
 
 def test_degenerate_price_becomes_none_but_market_kept():
-    """A resolved (0/1) or unparseable price -> market_price None, market still
-    indexed for orientation (correct-or-absent on the price field only)."""
     for bad in (json.dumps(["1", "0"]), json.dumps(["0", "1"]),
                 json.dumps(["oops", "0.5"]), "not-json"):
-        got = parse_gamma_market(_mw_market(outcomePrices=bad))
-        assert got is not None
-        assert got[1].market_price is None
+        ref = parse_gamma_market(_mw_market(outcomePrices=bad))
+        assert ref is not None and ref.market_price is None
 
 
-def test_build_index_from_pages():
+# ── build_pm_index ───────────────────────────────────────────────────────────
+
+
+def test_build_index_from_pages_filters_props_and_dedupes_cid():
     page0 = [_mw_market(),
-             _mw_market(question="LoL: ZennIT vs The Bandits - Game 2 Winner")]  # prop
+             _mw_market(question="LoL: ZennIT vs The Bandits - Game 2 Winner"),  # prop
+             _mw_market()]  # duplicate cid (paging overlap)
     fetches = {0: page0, 100: []}
-    idx = build_pm_index(fetch_page=lambda off, lim: fetches.get(off), max_pages=5)
-    assert len(idx) == 1
-    key = make_match_key("ZennIT", "The Bandits", "2026-01-27")
-    assert key in idx and idx[key].yes_outcome == "ZennIT"
-
-
-def test_build_index_drops_ambiguous_collision():
-    """Two DIFFERENT markets on the same teams+date -> the key is dropped."""
-    a = _mw_market(conditionId="0xaaa")
-    b = _mw_market(conditionId="0xbbb")  # same teams/date, different market
-    idx = build_pm_index(fetch_page=lambda off, lim: (a, b) if off == 0 else [],
-                         max_pages=2)
-    assert idx == {}
-
-
-def test_build_index_same_condition_id_not_ambiguous():
-    """Paging overlap (same market twice) must NOT be treated as ambiguous."""
-    a = _mw_market(conditionId="0xsame")
-    idx = build_pm_index(fetch_page=lambda off, lim: (a, a) if off == 0 else [],
-                         max_pages=2)
-    assert len(idx) == 1
+    refs = build_pm_index(fetch_page=lambda off, lim: fetches.get(off), max_pages=5)
+    assert len(refs) == 1
+    assert refs[0].yes_outcome == "ZennIT"
 
 
 def test_build_index_fetch_failure_returns_empty():
-    idx = build_pm_index(fetch_page=lambda off, lim: None, max_pages=3)
-    assert idx == {}
+    assert build_pm_index(fetch_page=lambda off, lim: None, max_pages=3) == []
+
+
+# ── match_pm_ref (the coverage expansion) ────────────────────────────────────
+
+
+def _refs(*markets):
+    return [parse_gamma_market(m) for m in markets]
+
+
+def test_match_exact_names_same_day():
+    refs = _refs(_mw_market())
+    r = match_pm_ref("ZennIT", "The Bandits", "2026-01-27T19:00:00Z", refs)
+    assert r is not None and r.condition_id.startswith("0x872ccf45")
+
+
+def test_match_is_order_invariant():
+    """PinnOdds home/away order need not match PM outcome order."""
+    refs = _refs(_mw_market())
+    assert match_pm_ref("The Bandits", "ZennIT", "2026-01-27T20:00:00Z", refs) is not None
+
+
+def test_match_token_subset_beyond_exact():
+    """Coverage win: 'Team Vitality' (PinnOdds) <-> 'Vitality' (PM), 'G2 Esports' <-> 'G2'."""
+    m = _mw_market(outcomes=json.dumps(["Vitality", "G2"]),
+                   question="CS: Vitality vs G2 (BO3) - Major")
+    r = match_pm_ref("Team Vitality", "G2 Esports", "2026-01-27T19:00:00Z", _refs(m))
+    assert r is not None
+
+
+def test_match_requires_both_teams_bijective():
+    """A one-team match is rejected (no wrong attachment on a partial match)."""
+    refs = _refs(_mw_market())  # ZennIT vs The Bandits
+    assert match_pm_ref("ZennIT", "Some Other Team", "2026-01-27T19:00:00Z", refs) is None
+
+
+def test_match_within_day_window():
+    refs = _refs(_mw_market())  # PM day 2026-01-27
+    assert match_pm_ref("ZennIT", "The Bandits", "2026-01-28T02:00:00Z", refs) is not None  # +1 day
+    assert match_pm_ref("ZennIT", "The Bandits", "2026-01-30T02:00:00Z", refs) is None      # +3 days
+
+
+def test_match_ambiguous_two_markets_dropped():
+    """Same teams+day across two DISTINCT PM markets -> drop, never guess."""
+    refs = _refs(_mw_market(conditionId="0xaaa"), _mw_market(conditionId="0xbbb"))
+    assert match_pm_ref("ZennIT", "The Bandits", "2026-01-27T19:00:00Z", refs) is None
+
+
+def test_match_no_candidates_returns_none():
+    refs = _refs(_mw_market())
+    assert match_pm_ref("FaZe", "NAVI", "2026-01-27T19:00:00Z", refs) is None
+
+
+def test_match_alias_expand_injection():
+    """Injected alias map links otherwise-unmatchable names (e.g. NAVI<->Natus Vincere)."""
+    m = _mw_market(outcomes=json.dumps(["Natus Vincere", "FaZe Clan"]),
+                   question="CS: Natus Vincere vs FaZe Clan (BO3)")
+    aliases = {"NAVI": ["Natus Vincere"], "FaZe": ["FaZe Clan"]}
+    r = match_pm_ref("NAVI", "FaZe", "2026-01-27T19:00:00Z", _refs(m),
+                     alias_expand=lambda t: aliases.get(t, []))
+    assert r is not None
