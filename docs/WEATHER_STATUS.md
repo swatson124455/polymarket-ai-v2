@@ -31,7 +31,7 @@
    executable price); optional retro-purge of flipped `bootstrap_gfs` rows (N1 changelog);
    optional WU-only training filter on `actual_source` once the column has populated.
 
-4. **S226 — manufactured-certainty leak: ROOT CAUSE IDENTIFIED (timestamp misattribution;
+4. **S226 — manufactured-certainty leak: CLOSED (root cause CONFIRMED via journal — timestamp misattribution;
    the S224 renorm fix already killed it).** Full DB pull (S226, 2026-07-10): **58** rows at
    `predicted_prob = exactly 1.0` since 07-08 (30 resolved, 3 correct — 10% hit-rate at claimed
    certainty), ALL `weather_temperature`, last one at **07-08 17:59:38**. S225 called 5 of these
@@ -44,10 +44,10 @@
    deflate-only renorm + METAR ≤0.98) was re-traced end-to-end in S226 and statically cannot
    emit ≥0.9995 on any temperature path. **Zero occurrences in ~9,656 prediction rows over the
    2 days since the real restart**; tripwire (live since release `20260710_165646`) also silent.
-   REMAINING VERIFICATION (operator, one command): confirm the 07-08 service restart in the
-   journal is AFTER 17:59:38 — `journalctl -u polymarket-weather --since '2026-07-08 15:00'
-   --until '2026-07-08 20:00' | grep -iE 'Started|Stopped'`. Tripwire STAYS as a regression
-   guard. ADDENDUM (bears on #1): 53 leak-era ENTRY events sit in the calibrator's rolling
+   VERIFIED CLOSED (operator journal pull, 2026-07-10): the box restarted at **18:08:41**
+   and **19:18:38** (the S224 cut; deploy record 19:18:44Z) — the last leak row (17:59:38)
+   predates BOTH restarts, and zero leak rows exist from any process after 18:08. Root cause
+   confirmed: pre-S224 inflate-renorm; already fixed. Tripwire STAYS as a regression guard. ADDENDUM (bears on #1): 53 leak-era ENTRY events sit in the calibrator's rolling
    30-day fit window (avg raw conf 0.95, mostly resolved NO) → the re-learn is MILDLY
    contaminated until they age out (~2026-08-07). Self-clears; do NOT filter them out by hand.
    Investigation trail: S225 (tripwire) → S226 (root cause).
