@@ -53,6 +53,42 @@
 
 ---
 
+## 0-FINAL. SESSION-3 CLOSE (2026-07-10) — GAP A CLOSED; PIPELINE FULLY LIVE E2E
+
+**Both gaps are now closed. The entire chain ran end-to-end on real data.**
+All numbers below are from the operator-pasted VPS eval output (2026-07-10
+20:36 UTC run, HEAD `ebfc63d`).
+
+- **GAP A closed:** `esports_v2/scripts/fetch_results_window.py` (stdlib-only,
+  PandaScore, window-scoped, correct-or-absent, id-mapped winner fallback)
+  pulls finished Valorant/CS2/LoL/Dota2/R6 matches; 226 rows for the 4-day
+  window. The old PandaScore key was DEAD (`Invalid credentials`) — operator
+  installed a fresh one in `/opt/pa2-shared/.env` (backup `.env.bak_eb`;
+  **key appeared in chat → rotate after PoC**, same as the PinnOdds note).
+- **First real labeled run: 19 of 36 closing lines joined** (0 ambiguous, 0
+  winner-not-a-team; 17 unjoined = mostly not-yet-played 07-11..07-13 + a few
+  lower-league PandaScore gaps). Sharp-line: favorite hit-rate 0.421 (n=19,
+  book mean fav prob 0.635), Brier 0.270. **n=19 — UNSTABLE, do not act on.**
+- **Label audit (operator-requested "bug review"): NO label flip.** Per-match
+  dump (`dump_joined.py` / `deploy/vps/eb_label_audit.sh`) + independent web
+  verification: LYON really 3-0'd G2 at MSI 2026 (07-10), and B8 as 1.4 fav
+  over Virtus.pro matches world ranks (15 vs 52). The low fav hit-rate is an
+  upset-heavy day on a tiny sample, not corruption. During review a REAL
+  latent bug was fixed anyway: the fetcher's score-fallback winner was mapped
+  positionally; now by `team_id` (never guess).
+- **Coverage fixes from the audit's unjoined list:** +R6 (`/r6siege`, verified
+  live) and diacritic folding in `normalize_team` ('Çilekler'=='Cilekler';
+  guard test keeps 'KRU Spark' ≠ 'KRÜ Esports'). Joins 15→19 after fix.
+- **Ops (steady state):** collector HOURLY with PM capture (`5fcb2c4f…`);
+  PM-first-hit watcher installed + fired; daily 15:06 UTC trigger self-retires
+  on confirm; VPS scripts ship via `curl <repo raw> | md5sum -c | bash`.
+- **What next:** let the 07-15..07-19 slate play (T1/Gen.G/DRX/G2 markets have
+  PM prices attached) → rerun `deploy/vps/eb_label_audit.sh` (same command,
+  re-clones HEAD) for the first multi-record PM-edge backtest. Only 1 PM-priced
+  record so far (JD Gaming vs TYLOO; edge below min_edge, no bet — correct).
+
+---
+
 ## 0a. SESSION-3 CONFIRMATION (2026-07-10) — GAP B CAPTURE VERIFIED ON REAL DATA
 
 **PM price capture is CONFIRMED live.** First captured match (from the VPS
