@@ -48,7 +48,7 @@ sudo journalctl -u polymarket-weather -n 8 --no-pager
 # peer-auth needs no password. Add new idempotent (IF NOT EXISTS) migrations
 # to this list; non-idempotent schema changes still go through
 # scripts/run_migrations.py with DATABASE_URL.
-for _mig in 079_weather_calibration_actual_source.sql; do
+for _mig in 079_weather_calibration_actual_source.sql 080_prediction_log_prob_frame.sql; do
     _path="$LINK/schema/migrations/$_mig"
     [ -f "$_path" ] || { echo "migration $_mig: not in release (skip)"; continue; }
     if sudo -u postgres psql -d polymarket -v ON_ERROR_STOP=1 -q -f "$_path"; then

@@ -83,7 +83,7 @@ ORM_TABLES: dict[str, list[str]] = {
     "prediction_log": [
         "id", "market_id", "token_id", "model_name", "predicted_prob", "market_price",
         "edge", "prediction_time", "fallback_level", "confidence", "resolution",
-        "resolved_at", "was_correct", "realized_edge", "trade_executed", "trade_side",
+        "resolved_at", "was_correct", "realized_edge", "prob_frame", "trade_executed", "trade_side",
         "trade_size", "trade_price", "trade_pnl", "ensemble_pred", "learning_conf",
         "feature_snapshot", "created_at",
     ],

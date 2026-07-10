@@ -479,6 +479,10 @@ class PredictionLog(Base):
     resolved_at = Column(NaiveUTCDateTime)
     was_correct = Column(Boolean)
     realized_edge = Column(Float)
+    # S226 (V23): probability frame of predicted_prob — 'yes' = P(YES) (all
+    # post-S226 WeatherBot rows) | NULL = pre-instrumentation (PSW rows are
+    # frame-ambiguous and must not be graded). Migration 080.
+    prob_frame = Column(String, nullable=True)
     trade_executed = Column(Boolean, default=False)
     trade_side = Column(String)
     trade_size = Column(Float)
@@ -3281,8 +3285,14 @@ class Database:
         feature_snapshot: Optional[Dict] = None,
         correlation_id: Optional[str] = None,
         bot_name: Optional[str] = None,
+        prob_frame: Optional[str] = None,
     ) -> None:
         """Log a prediction for drift detection and live performance tracking. No-op if no db or table missing.
+
+        prob_frame (S226 V23): 'yes' marks predicted_prob as P(YES) — the frame
+        the grader assumes. Callers that log chosen-side probabilities must
+        convert first and stamp 'yes'; unstamped PSW rows are never graded.
+        Requires migration 080; until applied, writes fail-warn (existing catch).
 
         Trade-marking columns (`trade_executed`, `trade_side`, `trade_size`, `trade_price`,
         `trade_pnl`) are intentionally NOT parameters here. They are populated only by
@@ -3312,6 +3322,7 @@ class Database:
                     feature_snapshot=feature_snapshot,
                     correlation_id=correlation_id,
                     bot_name=bot_name,
+                    prob_frame=prob_frame,
                 )
                 session.add(log)
                 await session.commit()
@@ -3926,16 +3937,45 @@ class Database:
                             temporal_violations,
                         )
 
-                r = await session.execute(text("""
+                # S226 (V23): frame guard. PSW (precip/snow/wind) rows written
+                # before the S226 writers/migration 080 carry a CHOSEN-side
+                # predicted_prob (prob_frame IS NULL) — grading them with the
+                # YES-frame formula below marked winning NO calls as misses.
+                # Only grade PSW rows stamped prob_frame='yes'; same guard on
+                # realized_edge (their market_price is chosen-side too).
+                # Runtime column check (079 pattern): legacy SQL with a warning
+                # until migration 080 is applied. Temperature rows are YES-frame
+                # by construction and grade either way.
+                _pf = await session.execute(text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = 'prediction_log' "
+                    "AND column_name = 'prob_frame' LIMIT 1"
+                ))
+                if _pf.fetchone():
+                    _frame_guard = (
+                        "WHEN pl.model_name IN ('weather_precipitation', "
+                        "'weather_snowfall', 'weather_wind') "
+                        "AND pl.prob_frame IS DISTINCT FROM 'yes' THEN NULL"
+                    )
+                else:
+                    _frame_guard = ""
+                    logger.warning(
+                        "prediction_log.prob_frame missing — run migration 080; "
+                        "grading PSW rows with legacy YES-frame read until then",
+                    )
+
+                r = await session.execute(text(f"""
                     UPDATE prediction_log pl
                     SET
                         resolution = m.resolution,
                         resolved_at = m.resolved_at,
                         was_correct = CASE
+                            {_frame_guard}
                             WHEN ABS(pl.predicted_prob - 0.5) < 0.01 THEN NULL
                             ELSE ((pl.predicted_prob >= 0.5) = (m.resolution = 'YES'))
                         END,
                         realized_edge = CASE
+                            {_frame_guard}
                             WHEN m.resolution = 'YES' THEN 1.0 - pl.market_price
                             WHEN m.resolution = 'NO' THEN pl.market_price
                             ELSE NULL

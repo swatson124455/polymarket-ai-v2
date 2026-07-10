@@ -4956,3 +4956,47 @@ class TestS226YesFramePredictionLogging:
         assert ((p_yes >= 0.5) == (resolution == "YES")) is True   # graded CORRECT
         # Pre-fix the same row stored predicted_prob=0.8 (chosen frame) → graded a miss:
         assert ((0.8 >= 0.5) == (resolution == "YES")) is False
+
+
+class TestS226ProbFrameLabel:
+    """S226 (V23): the durable frame label. prob_frame='yes' is stamped on every
+    new WB prediction_log row; both graders (vendored + top-level database.py)
+    refuse to grade PSW rows lacking the label; migration 080 creates the column
+    and retro-NULLs the frame-poisoned historical PSW grades."""
+
+    def test_insert_prediction_log_accepts_prob_frame(self):
+        import inspect
+        from bots.weather.engine.base_engine.data.database import Database, PredictionLog
+        assert "prob_frame" in inspect.signature(Database.insert_prediction_log).parameters
+        assert hasattr(PredictionLog, "prob_frame")
+
+    def test_log_weather_prediction_stamps_yes_frame(self):
+        # The single WB write path must stamp the label (source-level check,
+        # same style as test_bot_pnl_fstring_placeholders).
+        import inspect
+        from bots import weather_bot
+        src = inspect.getsource(weather_bot.WeatherBot._log_weather_prediction)
+        assert 'prob_frame="yes"' in src
+
+    def test_both_graders_guard_unlabelled_psw_rows(self):
+        for path in (
+            "bots/weather/engine/base_engine/data/database.py",
+            "base_engine/data/database.py",
+        ):
+            with open(path, encoding="utf-8") as f:
+                src = f.read()
+            assert "pl.prob_frame IS DISTINCT FROM 'yes' THEN NULL" in src, path
+            # runtime column check so the legacy DB (pre-080) never errors
+            assert "column_name = 'prob_frame'" in src, path
+
+    def test_migration_080_exists_and_is_idempotent_and_scoped(self):
+        with open("schema/migrations/080_prediction_log_prob_frame.sql", encoding="utf-8") as f:
+            sql = f.read()
+        assert "ADD COLUMN IF NOT EXISTS prob_frame" in sql
+        # retro-NULL is scoped to WB PSW rows only — never other bots, never temperature
+        assert "bot_name = 'WeatherBot'" in sql
+        assert "'weather_precipitation', 'weather_snowfall', 'weather_wind'" in sql
+        assert "weather_temperature" not in sql
+        with open("deploy/wb-release-cut.sh", encoding="utf-8") as f:
+            cut = f.read()
+        assert "080_prediction_log_prob_frame.sql" in cut

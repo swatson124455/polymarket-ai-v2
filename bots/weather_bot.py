@@ -985,6 +985,10 @@ class WeatherBot(BaseBot):
                 model_name=f"weather_{market_type}",
                 bot_name="WeatherBot",
                 confidence=confidence,
+                # S226 (V23): every caller passes P(YES) (via _yes_frame_prob
+                # for opp dicts) — stamp the frame so the graders may grade
+                # this row; unstamped PSW rows are never graded.
+                prob_frame="yes",
             )
             self._prediction_log_cache[market_id] = (model_prob, now_mono)
             # S155: Size cap — evict oldest 50% when cache exceeds 5000 entries

@@ -4080,16 +4080,45 @@ class Database:
                             temporal_violations,
                         )
 
-                r = await session.execute(text("""
+                # S226 (V23): frame guard — WeatherBot PSW rows only. Rows
+                # written before the S226 WB writers/migration 080 carry a
+                # CHOSEN-side predicted_prob (prob_frame IS NULL); grading them
+                # with the YES-frame formula below marked winning NO calls as
+                # misses. Only grade PSW rows stamped prob_frame='yes'; same
+                # guard on realized_edge (their market_price is chosen-side
+                # too). Scoped to weather_* model_names — every other bot's
+                # rows take the original branches unchanged. Runtime column
+                # check (079 pattern): legacy SQL with a warning until 080.
+                _pf = await session.execute(text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = 'prediction_log' "
+                    "AND column_name = 'prob_frame' LIMIT 1"
+                ))
+                if _pf.fetchone():
+                    _frame_guard = (
+                        "WHEN pl.model_name IN ('weather_precipitation', "
+                        "'weather_snowfall', 'weather_wind') "
+                        "AND pl.prob_frame IS DISTINCT FROM 'yes' THEN NULL"
+                    )
+                else:
+                    _frame_guard = ""
+                    logger.warning(
+                        "prediction_log.prob_frame missing — run migration 080; "
+                        "grading PSW rows with legacy YES-frame read until then",
+                    )
+
+                r = await session.execute(text(f"""
                     UPDATE prediction_log pl
                     SET
                         resolution = m.resolution,
                         resolved_at = m.resolved_at,
                         was_correct = CASE
+                            {_frame_guard}
                             WHEN ABS(pl.predicted_prob - 0.5) < 0.01 THEN NULL
                             ELSE ((pl.predicted_prob >= 0.5) = (m.resolution = 'YES'))
                         END,
                         realized_edge = CASE
+                            {_frame_guard}
                             WHEN m.resolution = 'YES' THEN 1.0 - pl.market_price
                             WHEN m.resolution = 'NO' THEN pl.market_price
                             ELSE NULL
