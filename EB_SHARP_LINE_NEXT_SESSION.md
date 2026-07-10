@@ -1,7 +1,7 @@
 # EsportsBot Sharp-Line — Next-Session Handoff
 
 **Branch:** `claude/esports-sharp-line-rebuild-36c8u9-7m96gg` (all work pushed to GitHub)
-**Updated:** 2026-07-09 (session 3 — GAP B code built: PM price capture + edge wiring)
+**Updated:** 2026-07-10 (session 3 CLOSED — both gaps shut, pipeline live E2E)
 **Read order:** this file → `EB_SHARP_LINE_STATE.md` → `EB_SHARP_LINE_PLUMBING.md`
 (esp. "Step-3 PREFLIGHT" + "LIVE MEASUREMENT") → `EB_MARKET_SHAPE_RESULTS.md` → `CLAUDE.md`.
 
@@ -9,47 +9,60 @@
 
 ## PICK UP HERE (copy-paste prompt for the next session)
 
-> **EsportsBot sharp-line rebuild — continue. Branch:
+> **EsportsBot sharp-line rebuild — continue; you are a new session picking up
+> seamlessly. Branch:
 > `git checkout claude/esports-sharp-line-rebuild-36c8u9-7m96gg && git pull`.**
 >
-> Read first, in order: this file (start at §0 + §3 "COLLECTOR STATUS"), then
-> `EB_SHARP_LINE_STATE.md`, `EB_SHARP_LINE_PLUMBING.md`, `EB_MARKET_SHAPE_RESULTS.md`,
-> then `CLAUDE.md`.
+> Read first, in order: `EB_SHARP_LINE_NEXT_SESSION.md` (start at §0-FINAL, then
+> §0a/§0b), `EB_SHARP_LINE_STATE.md`, `EB_SHARP_LINE_PLUMBING.md`,
+> `EB_MARKET_SHAPE_RESULTS.md`, then `CLAUDE.md`.
 >
-> **Context:** cloud session — you cannot reach the VPS/DB/PinnOdds directly
-> (egress-scoped, no SSH key). CLOB + gamma-api ARE reachable. The operator runs VPS
-> commands (`ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0`,
-> often md5-gated base64 one-shots) and pastes output back. Operator is on Windows
-> PowerShell (no `\` line-continuation; one command per paste).
+> **Context:** cloud session — no direct VPS/DB/PinnOdds/PandaScore access.
+> CLOB + gamma-api + raw.githubusercontent ARE reachable. The operator runs VPS
+> commands (`ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0`)
+> on Windows PowerShell and pastes output back (one command per paste; no `\`
+> line-continuation). **Ops-script delivery mechanism (established — do NOT
+> regress to base64 chat pastes, they corrupt):** commit the script to
+> `deploy/vps/eb_*.sh`, push, then hand the operator ONE line:
+> `ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 "curl -fsSL
+> https://raw.githubusercontent.com/swatson124455/polymarket-ai-v2/<branch>/deploy/vps/<script>
+> -o /tmp/x.sh && echo '<md5>  /tmp/x.sh' | md5sum -c - && bash /tmp/x.sh"`.
+> Known-bad: grep patterns with escaped quotes inside PowerShell one-liners
+> (backslashes get mangled → silent 0). Count things server-side from a script.
 >
-> **DONE last session (do not redo):** full offline backtest pipeline BUILT + tested
-> (138 green) + pushed — Step 1 `esports_v2/model/closing_line.py`, Step 2
-> `esports_v2/model/results_join.py`, Step 3 `esports_v2/data/clob_labels.py`
-> (flip-proof orientation, LIVE-verified 5/5), Step 4 `esports_v2/model/sharp_eval.py`
-> + `esports_v2/scripts/eval_sharp_line.py`. De-vig decided: simple no-vig. VPS
-> collector was DEAD (no cron + 429); FIXED — cron installed, hardened prematch-only
-> script deployed (`deploy/vps/collect_pinnodds_standalone.py`, md5
-> `3f6e794f21e3bd40ef97b01c7fad3116`), 18:45 UTC tick verified firing.
+> **STATE — everything below is DONE and verified; do not redo (details §0-FINAL):**
+> pipeline is FULLY LIVE end-to-end (odds+PM capture → results → join → metrics →
+> PM-edge backtest). VPS steady state: collector HOURLY cron with PM capture
+> (`collect_pinnodds_standalone.py` md5 `5fcb2c4f0143c35351c12704f3a2edcf`),
+> PM-first-hit watcher hourly at :07 (marker exists — first capture was
+> JD Gaming vs TYLOO, 39 snaps, orientation sanity-checked). First labeled run:
+> 19/36 closing lines joined; labels AUDITED correct (LYON 3-0 G2 at MSI verified
+> real); fav hit-rate 0.421 on n=19 — **UNSTABLE, do not act on**. 1 PM-priced
+> record so far (edge < min_edge → correctly no bet). The old daily check-in
+> trigger was deleted (purpose fulfilled).
 >
-> **FIRST ACTION — have the operator run + paste back:**
-> ```
-> ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 "date -u; wc -l /home/ubuntu/eb-odds/pinnodds_snapshots.jsonl; grep -aE 'appended|429' /home/ubuntu/eb-odds/collect.log | tail -5"
-> ```
-> As of last session the collector was 429 rate-limited (PinnOdds demo-tier quota
-> drained by test runs), frozen at 33 lines. Interpret: **>33 + `appended=<nonzero>`**
-> → 429 cleared, collector alive, let odds accumulate. **still 33 + continuous `429`**
-> → free tier can't sustain 1 req/15min → operator decision (paid tier / widen cadence
-> `*/30`|hourly one-line crontab edit / different source) → ASK.
+> **PRIMARY NEXT ACTION:** the 2026-07-15..19 slate (T1, Gen.G, DRX, G2,
+> Sentinels, Paper Rex … — these markets HAVE PM prices attached) resolves →
+> have the operator run the rerunnable audit+eval one-shot (§0-FINAL; it
+> re-clones HEAD so it auto-picks-up any new commits):
+> `ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 "curl -fsSL
+> https://raw.githubusercontent.com/swatson124455/polymarket-ai-v2/claude/esports-sharp-line-rebuild-36c8u9-7m96gg/deploy/vps/eb_label_audit.sh
+> -o /tmp/ebl.sh && echo 'e5d75472ae8ee34a6df9e249d391179e  /tmp/ebl.sh' |
+> md5sum -c - && bash /tmp/ebl.sh"` (single line) → interpret the first
+> multi-record sharp-vs-PM edge backtest. Meanwhile you can check capture health:
+> `tail -1 /home/ubuntu/eb-odds/collect.log` (expect `pm_matched>0` as the slate
+> nears). **Secondary:** rotate `PANDASCORE_API_KEY` + `PINNACLE_ODDS_API_KEY`
+> after the PoC (both were exposed in chat; env backup `/opt/pa2-shared/.env.bak_eb`).
+> **Only after** a real multi-record edge readout: consider live-scan orientation
+> wiring (PLUMBING §PREFLIGHT option b) + the un-halt discussion — operator
+> decisions, not yours.
 >
-> **THEN the two DATA gaps (code is done; see §0):** (A) fresh results covering the
-> forward window (free results end 2026-04-14, odds start now → join yields 0 until a
-> forward Oracle/PandaScore pull); (B) capture the matched Polymarket price alongside
-> each odds pull to enable the real `edge = sharp − PM_price` backtest.
->
-> **GUARDRAILS:** EB scope only; MB priority on shared resources; EB stays HALTED — do
-> NOT deploy the trading bot (the odds cron is not a bot deploy); correct-or-absent
-> everywhere (doubt → None, never a wrong bool); preserve other crontab entries on any
-> cron edit. Commit + push each step.
+> **GUARDRAILS:** EB scope only; MB has priority on ALL shared resources; EB
+> stays HALTED — do NOT deploy the trading bot (odds/results crons are not bot
+> deploys); correct-or-absent everywhere (doubt → None, never a wrong bool — a
+> flipped orientation inverts the edge); preserve other crontab lines on any cron
+> edit; numbers only from cited sources and label n=19-era metrics UNSTABLE;
+> commit + push each step.
 
 ---
 
@@ -80,8 +93,9 @@ All numbers below are from the operator-pasted VPS eval output (2026-07-10
   live) and diacritic folding in `normalize_team` ('Çilekler'=='Cilekler';
   guard test keeps 'KRU Spark' ≠ 'KRÜ Esports'). Joins 15→19 after fix.
 - **Ops (steady state):** collector HOURLY with PM capture (`5fcb2c4f…`);
-  PM-first-hit watcher installed + fired; daily 15:06 UTC trigger self-retires
-  on confirm; VPS scripts ship via `curl <repo raw> | md5sum -c | bash`.
+  PM-first-hit watcher installed + fired; the daily 15:06 UTC check-in trigger
+  was DELETED at session close (purpose fulfilled — first hit confirmed); VPS
+  scripts ship via `curl <repo raw> | md5sum -c | bash`.
 - **What next:** let the 07-15..07-19 slate play (T1/Gen.G/DRX/G2 markets have
   PM prices attached) → rerun `deploy/vps/eb_label_audit.sh` (same command,
   re-clones HEAD) for the first multi-record PM-edge backtest. Only 1 PM-priced
