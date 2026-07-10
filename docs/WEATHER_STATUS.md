@@ -5,7 +5,7 @@
 > read them for detail, but THIS file is the source of truth for "what is live and what's open."
 > Update the three sections below at the end of every WB session (same commit as the work).
 
-**Last updated:** 2026-07-09 (S225 diagnostics on-branch, NOT deployed — bot_pnl f-string fix, calibration_check `--dedup-markets`, manufactured-certainty tripwire; live release still `20260708_151330`, migration 079)
+**Last updated:** 2026-07-10 (S226 — S225 diagnostics DEPLOYED in release `20260710_165646`; manufactured-certainty leak ROOT-CAUSED to the pre-S224 renorm bug via deploy-timestamp misattribution — see OPEN DECISION #4)
 **Pinned branch:** `claude/new-whiteboard-session-9b23tq` (see `.claude/session-branch`)
 **Resume check:** `bash scripts/wb_resume_check.sh` (self-deriving; replaces the hand-typed checklist)
 
@@ -31,28 +31,37 @@
    executable price); optional retro-purge of flipped `bootstrap_gfs` rows (N1 changelog);
    optional WU-only training filter on `actual_source` once the column has populated.
 
-4. **S225 — manufactured-certainty leak (CONFIRMED, source not yet localized).** 5 post-deploy
-   `weather_temperature` rows logged `predicted_prob = exactly 1.0` (conf 0.8075, `edge = 1 −
-   price` ≈ 0.7–0.83 → confident YES entries; 2/2 checked resolved NO). **This is a raw-model
-   leak, NOT the calibrator reset** (`predicted_prob` is uncalibrated). Every probability-engine
-   path is capped ≤0.999 (verified in the *deployed* engine: deflate-only guard + 4× `min(0.999)`;
-   METAR ceiling 0.98, singleton-skip deployed) — so the code as written CANNOT produce 1.0, yet
-   it did. Source is not statically reproducible. **A tripwire is committed** (`_is_impossible_
-   certainty` + `weatherbot_impossible_certainty` warning in `_log_weather_prediction`) that logs
-   the leaking **caller site** when `model_prob ≥ 0.9995`. **NOT deployed** — needs a WB release
-   cut. Next VPS session after deploy: `journalctl -u polymarket-weather | grep impossible_certainty`
-   → the `caller=` field names the exact leaking path; then fix at that site (test-first). Rare +
-   containment gates ON, so not urgent. Investigation trail: this session (S225).
+4. **S226 — manufactured-certainty leak: ROOT CAUSE IDENTIFIED (timestamp misattribution;
+   the S224 renorm fix already killed it).** Full DB pull (S226, 2026-07-10): **58** rows at
+   `predicted_prob = exactly 1.0` since 07-08 (30 resolved, 3 correct — 10% hit-rate at claimed
+   certainty), ALL `weather_temperature`, last one at **07-08 17:59:38**. S225 called 5 of these
+   "post-deploy" by comparing against the tarball STAMP (`20260708_151330` = 15:13:30Z) — but
+   `deploy/LAST_DEPLOY.json` records the S224 deploy completing at **19:18:44Z**; the service
+   restart is at the END of the cut, so all 58 rows (incl. the "5 post-deploy") came from the
+   **pre-S224 code**, whose unconditional inflate-renorm (singleton `p/p = 1.0`) produces the
+   exact observed signature: prob 1.0, raw conf `min(0.95, 1.0)=0.95`, ×0.85 YES dampener =
+   **0.8075**, `edge = 1 − price`. The fixed code (caffc68: per-bucket [0.001,0.999] clamps +
+   deflate-only renorm + METAR ≤0.98) was re-traced end-to-end in S226 and statically cannot
+   emit ≥0.9995 on any temperature path. **Zero occurrences in ~9,656 prediction rows over the
+   2 days since the real restart**; tripwire (live since release `20260710_165646`) also silent.
+   REMAINING VERIFICATION (operator, one command): confirm the 07-08 service restart in the
+   journal is AFTER 17:59:38 — `journalctl -u polymarket-weather --since '2026-07-08 15:00'
+   --until '2026-07-08 20:00' | grep -iE 'Started|Stopped'`. Tripwire STAYS as a regression
+   guard. ADDENDUM (bears on #1): 53 leak-era ENTRY events sit in the calibrator's rolling
+   30-day fit window (avg raw conf 0.95, mostly resolved NO) → the re-learn is MILDLY
+   contaminated until they age out (~2026-08-07). Self-clears; do NOT filter them out by hand.
+   Investigation trail: S225 (tripwire) → S226 (root cause).
 
 ---
 
 ## WHAT IS LIVE NOW
 
-- **Deployed:** WeatherBot on its splinter, release **`20260708_151330`** (rollback target
-  `20260708_140013`). Paper mode, treated as production. Carries the six S223 fixes PLUS the
-  full **S224 batch**: renorm deflate-only, N1 bias sign-flip, V42 circuit breakers, V37 NDFD
-  PoP, V34 synthetic sigma, V26 exec-edge floor 0.04, V28 gate (built, OFF), and the
-  ground-truth/calibrator cluster (WU-primacy, provenance, 2026-07-01 cutoff, raw-X training).
+- **Deployed:** WeatherBot on its splinter, release **`20260710_165646`** (cut from `5343d56`;
+  rollback target `20260708_151330`). Paper mode, treated as production. Carries the six S223
+  fixes, the full **S224 batch** (renorm deflate-only, N1 bias sign-flip, V42 circuit breakers,
+  V37 NDFD PoP, V34 synthetic sigma, V26 exec-edge floor 0.04, V28 gate built/OFF, ground-truth/
+  calibrator cluster), PLUS the **S225 diagnostics** (manufactured-certainty tripwire live;
+  bot_pnl f-string fix; calibration_check `--dedup-markets`).
   **Migration 079 applied** (`actual_source` column live).
 - **Health (at deploy 07-08):** `service: active`, clean restart, S224 markers=24 on the box.
   All S222 safety gates still **ON as containment**. The calibrator is mid-reset toward
@@ -81,6 +90,14 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-10 (S226):** (a) S225 diagnostics DEPLOYED — release `20260710_165646` cut from
+  `5343d56` (tripwire + 2 measurement fixes live; `service: active`; recorded `16646f5`).
+  (b) Leak ROOT-CAUSED: the "5 post-deploy" 1.0-rows predate the ACTUAL 07-08 service restart
+  (~19:15Z per deploy record 19:18:44Z) — tarball stamp 15:13:30 was misread as restart time.
+  All 58 rows are pre-S224-code output (inflate-renorm singleton p/p=1.0); fixed code re-traced
+  statically airtight; 0 occurrences in ~9,656 rows / 2 days since; tripwire silent. Kept as
+  regression guard. (c) Calibrator fit-window note: 53 leak-era entries contaminate the re-learn
+  until ~08-07 (self-clears). (d) Post-07-08 distinct resolved markets: 42/50 toward the S222 gate.
 - **2026-07-09 (S225 diagnostics):** two measurement fixes + one tripwire, all on-branch (NOT
   deployed). (1) `bot_pnl.py` WB conf-bin query f-prefixed — literal `{mode_exec_clause_r}` was
   crashing the report (`fcca023`-adjacent). (2) `calibration_check.py` gained `--dedup-markets`:
