@@ -31,7 +31,22 @@
    executable price); optional retro-purge of flipped `bootstrap_gfs` rows (N1 changelog);
    optional WU-only training filter on `actual_source` once the column has populated.
 
-3b. **V23 — `was_correct` YES-frame bug (S226 analysis, needs its own reviewed commit).**
+3b. **V23 — `was_correct` YES-frame bug: FIXED FORWARD (`95c732c`, on-branch NOT deployed);
+   historical PSW rows remain frame-ambiguous.** Writers normalized: every opp now carries
+   `model_prob_yes` (P(YES)) and all four `_log_weather_prediction` opp call sites pass
+   `_yes_frame_prob(opp)`; trading fields untouched. The grader's YES-frame assumption is now
+   true for all rows written after the next deploy. UNFIXABLE HISTORY: pre-fix PSW NO rows
+   stored chosen-side predicted_prob and side was never persisted, so they cannot be re-framed
+   row-by-row. Optional operator remediation (removes the poison from `was_correct` consumers,
+   which filter on IS NOT NULL; sacrifices historical PSW YES rows too):
+   `UPDATE prediction_log SET was_correct = NULL WHERE bot_name = 'WeatherBot' AND model_name
+   IN ('weather_precipitation','weather_snowfall','weather_wind') AND prediction_time <
+   '<next-deploy-time>';` — predicted_prob-based analysis (calibration_check) still sees those
+   rows; treat pre-deploy PSW rows as contaminated for calibration purposes (temperature rows,
+   the large majority, are unaffected). ALSO NOTED (pre-existing, all market types, NOT changed):
+   `market_price` is chosen-side, so stored `edge`/`realized_edge` mix frames on NO rows —
+   measurement-only columns; fix would need side persisted; separate decision.
+   ORIGINAL FINDING (for context):
    The backfill (`backfill_prediction_log_resolution`, vendored database.py ~3934) computes
    `was_correct = (predicted_prob >= 0.5) == (resolution = 'YES')` — a YES-frame read. PSW
    (precip/snow/wind) NO-side call sites log CHOSEN-SIDE predicted_prob (e.g. weather_bot.py
@@ -102,6 +117,12 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-10 (S226 V23 root fix, on-branch NOT deployed):** `95c732c` — prediction_log
+  predicted_prob normalized to P(YES) on every WB row (PSW NO opps were logging chosen-side
+  prob → winning NO calls graded as misses). Writers fixed via explicit `model_prob_yes` +
+  `_yes_frame_prob` at all four log sites; trading fields untouched; grader unchanged (its
+  YES-frame assumption is now valid). 4 defect tests; WB suite 316 passed. Historical PSW
+  rows frame-ambiguous — optional operator SQL in OPEN DECISION 3b.
 - **2026-07-10 (S226 batch, on-branch NOT deployed):** five audit follow-ups landed as five
   commits, 319/319 WB tests (302 baseline + 17 new defect tests): V37 null-NDFD-PoP = 0% on
   matching day (dry-day signal restored); V34 synthetic-ensemble marker (`synthetic_ensemble`
