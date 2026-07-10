@@ -3007,8 +3007,14 @@ class WeatherBot(BaseBot):
             # S118 Fix 3: Max buckets per group — limit correlated blowup risk.
             # Data: Miami lost -$976 from 12 positions on same city+date resolution.
             # Keep only the top N by edge magnitude; skip the rest.
+            # S226 (V28 follow-up): this raw-order break only runs when the V28
+            # calibrated-edge gate is OFF (deployed default) — identical to
+            # pre-S226 behavior. When the gate is ON, collect ALL qualifying
+            # entries and rank the top-N cut by CALIBRATED edge after the loop
+            # (see _select_top_buckets below the loop), so raw-overconfident
+            # siblings don't crowd out better-calibrated entries.
             _max_buckets = int(getattr(settings, "WEATHER_MAX_BUCKETS_PER_GROUP", 3))
-            if len(tradeable) >= _max_buckets:
+            if not _cal_gate_on and len(tradeable) >= _max_buckets:
                 break
 
             # S121: NO confidence discount REMOVED — let Kelly self-regulate.
@@ -3043,6 +3049,17 @@ class WeatherBot(BaseBot):
                 e["market_id"], e["model_prob"], price,
                 effective_confidence, "temperature",
             )
+
+        # S226 (V28 follow-up): rank the top-N bucket cut by CALIBRATED edge.
+        # Engages ONLY when the V28 flag (WEATHER_CALIBRATED_EDGE_GATE_ENABLED)
+        # is ON; with the flag OFF (deployed default) the helper is an identity
+        # passthrough and the raw-order break above already capped the list —
+        # behavior is exactly pre-S226.
+        tradeable = WeatherBot._select_top_buckets(
+            tradeable,
+            int(getattr(settings, "WEATHER_MAX_BUCKETS_PER_GROUP", 3)),
+            bool(getattr(settings, "WEATHER_CALIBRATED_EDGE_GATE_ENABLED", False)),
+        )
 
         return tradeable, model_probs
 
@@ -4590,6 +4607,29 @@ class WeatherBot(BaseBot):
         if not enabled:
             return True
         return (effective_confidence - price) >= min_edge - 1e-9
+
+    @staticmethod
+    def _select_top_buckets(
+        tradeable: List[Dict], max_buckets: int, gate_on: bool,
+    ) -> List[Dict]:
+        """S226 (V28 follow-up — audit register V28 trailing note "Ranking
+        still runs on raw prob"): rank _analyze_group's per-group top-N bucket
+        cut by CALIBRATED edge (confidence - price; "confidence" on each
+        tradeable dict is effective_confidence, "price" the side's entry
+        price). This engages ONLY when the V28 flag
+        (WEATHER_CALIBRATED_EDGE_GATE_ENABLED) is ON — gate_on=False (the
+        deployed default) returns the input list unchanged (same object, no
+        sort, no truncation), so flag-OFF behavior is exactly pre-S226: the
+        loop's raw-order break has already capped the list at max_buckets in
+        raw |edge| order. sorted() is stable, so calibrated-edge ties keep
+        raw-edge order."""
+        if not gate_on:
+            return tradeable
+        return sorted(
+            tradeable,
+            key=lambda o: o["confidence"] - o["price"],
+            reverse=True,
+        )[:max_buckets]
 
     def _check_executable_edge(self, opp: Dict) -> bool:
         """S221 Phase 2 (2026-05-18): Validate edge against EXECUTABLE price.

@@ -836,6 +836,76 @@ class TestS224CalibratedEdgeGate:
         assert WeatherBot._calibrated_edge_admits(0.88, 0.80, 0.08, enabled=True) is True
 
 
+class TestS226CalibratedTopNSelection:
+    """S226 (V28 follow-up, audit register V28 trailing note): the per-group
+    top-N bucket cut in _analyze_group ranked by RAW |edge| (compute_edges
+    sorts abs_edge desc; the loop breaks at WEATHER_MAX_BUCKETS_PER_GROUP), so
+    with the V28 gate ON a raw-overconfident sibling could crowd out a
+    better-CALIBRATED entry. _select_top_buckets ranks by calibrated edge
+    (confidence - price, both already on each tradeable dict) when the gate is
+    ON, and is a strict identity passthrough when OFF (the deployed default) —
+    flag OFF must be byte-identical to today's raw-order behavior."""
+
+    @staticmethod
+    def _entries():
+        # Raw abs_edge order (as the loop appends): A > B > C > D > E.
+        # Calibrated edge (confidence - price): D(0.20) > C(0.15) > E(0.08)
+        # > A(0.05) > B(0.02) — deliberately different from raw order.
+        return [
+            {"market_id": "A", "abs_edge": 0.30, "confidence": 0.55, "price": 0.50},
+            {"market_id": "B", "abs_edge": 0.25, "confidence": 0.60, "price": 0.58},
+            {"market_id": "C", "abs_edge": 0.20, "confidence": 0.70, "price": 0.55},
+            {"market_id": "D", "abs_edge": 0.15, "confidence": 0.80, "price": 0.60},
+            {"market_id": "E", "abs_edge": 0.10, "confidence": 0.66, "price": 0.58},
+        ]
+
+    def test_gate_off_is_identity_passthrough(self):
+        from bots.weather_bot import WeatherBot
+        entries = self._entries()
+        out = WeatherBot._select_top_buckets(entries, 3, gate_on=False)
+        # OFF → the exact same list object, untouched: no sort, no truncation.
+        # (In the live loop, OFF also keeps the existing raw-order break, so
+        # the helper never even sees more than max_buckets entries.)
+        assert out is entries
+        assert [o["market_id"] for o in out] == ["A", "B", "C", "D", "E"]
+
+    def test_gate_off_raw_order_top_n_preserved(self):
+        from bots.weather_bot import WeatherBot
+        # Today's flag-OFF outcome: the loop breaks after max_buckets appends,
+        # keeping the first N in raw abs_edge order. The helper must not
+        # reorder that raw-ordered top-N.
+        raw_top3 = self._entries()[:3]  # what the OFF-path loop produces
+        out = WeatherBot._select_top_buckets(raw_top3, 3, gate_on=False)
+        assert [o["market_id"] for o in out] == ["A", "B", "C"]
+
+    def test_gate_on_selects_calibrated_top_n(self):
+        from bots.weather_bot import WeatherBot
+        out = WeatherBot._select_top_buckets(self._entries(), 3, gate_on=True)
+        # ON → top-3 by calibrated edge desc: D(0.20), C(0.15), E(0.08).
+        # Raw-ranked A/B (cal edge 0.05/0.02) no longer crowd out D/C/E.
+        assert [o["market_id"] for o in out] == ["D", "C", "E"]
+
+    def test_gate_on_fewer_than_max_returns_all_calibrated_sorted(self):
+        from bots.weather_bot import WeatherBot
+        out = WeatherBot._select_top_buckets(self._entries()[:2], 3, gate_on=True)
+        # A cal edge 0.05 > B cal edge 0.02
+        assert [o["market_id"] for o in out] == ["A", "B"]
+
+    def test_gate_on_ties_keep_raw_order(self):
+        from bots.weather_bot import WeatherBot
+        # Equal calibrated edge → stable sort keeps raw abs_edge order.
+        entries = [
+            {"market_id": "X", "abs_edge": 0.30, "confidence": 0.60, "price": 0.50},
+            {"market_id": "Y", "abs_edge": 0.20, "confidence": 0.70, "price": 0.60},
+        ]
+        out = WeatherBot._select_top_buckets(entries, 2, gate_on=True)
+        assert [o["market_id"] for o in out] == ["X", "Y"]
+
+    def test_gate_on_empty_list(self):
+        from bots.weather_bot import WeatherBot
+        assert WeatherBot._select_top_buckets([], 3, gate_on=True) == []
+
+
 class TestS224SyntheticEnsembleSigma:
     """S224 fallacy-audit V34: the point-forecast-only synthetic ensemble used a
     FIXED 2°F/1.1°C spread (a day-1 error) at every lead time, so long-lead
