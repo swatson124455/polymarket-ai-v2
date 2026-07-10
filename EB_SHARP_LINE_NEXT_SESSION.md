@@ -53,6 +53,37 @@
 
 ---
 
+## 0a. SESSION-3 CONFIRMATION (2026-07-10) — GAP B CAPTURE VERIFIED ON REAL DATA
+
+**PM price capture is CONFIRMED live.** First captured match (from the VPS
+snapshot file, operator-pasted diagnostic output 2026-07-10):
+`JD Gaming vs TYLOO` (Valorant VCT China, starts 2026-07-10T11:00Z) — **39
+snapshots** 00:30→10:00 UTC, each with the PinnOdds line AND the Polymarket
+price (0.405→0.415), `condition_id 0x8c395b57…`, `yes_outcome "JD Gaming"`.
+**Orientation sanity check passed:** PinnOdds (2.27, 1.581) de-vigs to ~0.410
+fair for JD Gaming vs PM price 0.405 — agreement within ~0.005 (a flip would
+read ~0.41 vs ~0.595). Matching + orientation are correct on real data.
+
+**Mismatch "bug" review (operator-requested, full-file audit via the DEPLOYED
+matcher, `deploy/vps/eb_hourly_and_diag.sh`): NO BUG.** A) 0 missed matches
+vs the live index; B) 0 date/window misalignments; C) all near-misses were
+genuinely different matches (e.g. `M80 vs 100 Thieves` ≠ `M80 vs SaD Esports`).
+Verdict: remaining `pm_matched=0` ticks are genuine calendar/genre non-overlap
+(PinnOdds prematch horizon vs PM's 07-15+ slate), which section D enumerates.
+
+**Known-bad check to never reuse:** `grep -c 'condition_id\": \"0x'` pasted
+through PowerShell mangles the backslashes and returns 0 even when rows exist.
+Count PM rows with the python diagnostic (or grep WITHOUT escaped quotes:
+`grep -c '"condition_id": "0x'` run server-side from a script file).
+
+**Ops state (2026-07-10):** collector cron HOURLY (`0 * * * *`, decided for the
+PoC after 429 stalls at `*/15`); PM-first-hit watcher installed (`7 * * * *`,
+`pm_hit_watch.sh`, marker `/home/ubuntu/eb-odds/PM_FIRST_HIT.txt` — already
+written). VPS ops scripts now ship via `curl` from the repo raw URL +
+`md5sum -c` guard (`deploy/vps/eb_*.sh`) — no more base64 chat pastes.
+
+---
+
 ## 0b. SESSION-3 UPDATE (2026-07-09) — GAP B is CODE-DONE (capture + edge wiring)
 
 **What changed:** GAP B ("no historical Polymarket prices") is now closed on the
