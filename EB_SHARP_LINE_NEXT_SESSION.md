@@ -1,9 +1,41 @@
 # EsportsBot Sharp-Line — Next-Session Handoff
 
-**Branch:** `claude/esports-sharp-line-rebuild-36c8u9-7m96gg` (all work pushed to GitHub)
-**Updated:** 2026-07-10 (session 3 CLOSED — both gaps shut, pipeline live E2E)
+**Branch:** `claude/esports-sharp-line-rebuild-gqy1na` (session 4; supersedes
+`…-36c8u9-7m96gg` — same history + the PM-index coverage fix below)
+**Updated:** 2026-07-10 (session 4 — CRITICAL collector coverage fix, redeploy pending)
 **Read order:** this file → `EB_SHARP_LINE_STATE.md` → `EB_SHARP_LINE_PLUMBING.md`
 (esp. "Step-3 PREFLIGHT" + "LIVE MEASUREMENT") → `EB_MARKET_SHAPE_RESULTS.md` → `CLAUDE.md`.
+
+---
+
+## 0-S4. SESSION-4 (2026-07-10) — PM-INDEX COVERAGE BUG FOUND+FIXED; COLLECTOR REDEPLOY REQUIRED
+
+**Bug (live-measured, then fixed):** gamma-api hard-caps offset pagination
+(HTTP 422 `offset too large` past ~2100) while the esports tag holds ~3600
+active markets. The PM index paged in DEFAULT order (id ascending = oldest
+first), so the newest ~1500 markets were unreachable — **93 of 130 live
+match-winner markets were invisible** to the collector (PARIVISION vs FaZe,
+T1 vs ZETA, Team Liquid vs Eternal Fire, NAVI, 3DMAX vs Heroic, the whole
+PinnOdds-overlapping slate). This — not calendar non-overlap — is the main
+reason `pm_matched` stayed ~0; the JD Gaming vs TYLOO hit was luck (old-enough
+market id). Fix (`f4bd962`): page `order=id&ascending=false` (newest first) in
+BOTH the canonical `pm_market_index._default_fetch_page` and the standalone's
+`gamma_page`; the offset-cap truncation now falls on stale Jan–Jun markets the
+±1-day matcher can never use. **Live-verified from this session:** index 37 →
+**118** refs, all days 07-10..07-19 covered, standalone==canonical parity
+118==118 zero diffs, suite 191 green (+1 URL-shape regression test).
+
+**⚠️ OPERATOR ACTION 1 — redeploy the collector** (until then the cron keeps
+running the truncated index). New md5 `4d46e275dc4085f5ec50b2846adf8e6c`
+(replaces `5fcb2c4f…`). One line:
+`ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 "curl -fsSL https://raw.githubusercontent.com/swatson124455/polymarket-ai-v2/claude/esports-sharp-line-rebuild-gqy1na/deploy/vps/collect_pinnodds_standalone.py -o /home/ubuntu/eb-odds/collect_pinnodds_standalone.py && echo '4d46e275dc4085f5ec50b2846adf8e6c  /home/ubuntu/eb-odds/collect_pinnodds_standalone.py' | md5sum -c - && /usr/bin/python3 /home/ubuntu/eb-odds/collect_pinnodds_standalone.py"`
+(the trailing manual run doubles as verification — expect `pm_matched` in the
+double digits vs the current ~0-2; it consumes one PinnOdds call, acceptable).
+
+**Audit one-liner rebased to this branch** (the old one clones the superseded
+branch and would MISS this fix): `eb_label_audit.sh` md5 is now
+`1c866f6d38c32101e38405cf003b20f9` — the §0-FINAL command below is updated
+in place. Everything else from §0-FINAL stands (do not redo).
 
 ---
 
@@ -11,10 +43,10 @@
 
 > **EsportsBot sharp-line rebuild — continue; you are a new session picking up
 > seamlessly. Branch:
-> `git checkout claude/esports-sharp-line-rebuild-36c8u9-7m96gg && git pull`.**
+> `git checkout claude/esports-sharp-line-rebuild-gqy1na && git pull`.**
 >
-> Read first, in order: `EB_SHARP_LINE_NEXT_SESSION.md` (start at §0-FINAL, then
-> §0a/§0b), `EB_SHARP_LINE_STATE.md`, `EB_SHARP_LINE_PLUMBING.md`,
+> Read first, in order: `EB_SHARP_LINE_NEXT_SESSION.md` (start at §0-S4, then
+> §0-FINAL, §0a/§0b), `EB_SHARP_LINE_STATE.md`, `EB_SHARP_LINE_PLUMBING.md`,
 > `EB_MARKET_SHAPE_RESULTS.md`, then `CLAUDE.md`.
 >
 > **Context:** cloud session — no direct VPS/DB/PinnOdds/PandaScore access.
@@ -33,7 +65,8 @@
 > **STATE — everything below is DONE and verified; do not redo (details §0-FINAL):**
 > pipeline is FULLY LIVE end-to-end (odds+PM capture → results → join → metrics →
 > PM-edge backtest). VPS steady state: collector HOURLY cron with PM capture
-> (`collect_pinnodds_standalone.py` md5 `5fcb2c4f0143c35351c12704f3a2edcf`),
+> (md5 `4d46e275dc4085f5ec50b2846adf8e6c` after the §0-S4 coverage-fix redeploy;
+> if the VPS still shows `5fcb2c4f…` the redeploy is PENDING — do it first),
 > PM-first-hit watcher hourly at :07 (marker exists — first capture was
 > JD Gaming vs TYLOO, 39 snaps, orientation sanity-checked). First labeled run:
 > 19/36 closing lines joined; labels AUDITED correct (LYON 3-0 G2 at MSI verified
@@ -46,8 +79,8 @@
 > have the operator run the rerunnable audit+eval one-shot (§0-FINAL; it
 > re-clones HEAD so it auto-picks-up any new commits):
 > `ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 "curl -fsSL
-> https://raw.githubusercontent.com/swatson124455/polymarket-ai-v2/claude/esports-sharp-line-rebuild-36c8u9-7m96gg/deploy/vps/eb_label_audit.sh
-> -o /tmp/ebl.sh && echo 'e5d75472ae8ee34a6df9e249d391179e  /tmp/ebl.sh' |
+> https://raw.githubusercontent.com/swatson124455/polymarket-ai-v2/claude/esports-sharp-line-rebuild-gqy1na/deploy/vps/eb_label_audit.sh
+> -o /tmp/ebl.sh && echo '1c866f6d38c32101e38405cf003b20f9  /tmp/ebl.sh' |
 > md5sum -c - && bash /tmp/ebl.sh"` (single line) → interpret the first
 > multi-record sharp-vs-PM edge backtest. Meanwhile you can check capture health:
 > `tail -1 /home/ubuntu/eb-odds/collect.log` (expect `pm_matched>0` as the slate

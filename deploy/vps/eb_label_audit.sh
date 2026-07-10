@@ -1,4 +1,4 @@
-BR=claude/esports-sharp-line-rebuild-36c8u9-7m96gg
+BR=claude/esports-sharp-line-rebuild-gqy1na
 echo "=== 1) refresh repo clone (picks up the id-mapped winner fix) ==="
 rm -rf /home/ubuntu/eb-backtest
 git clone --quiet --depth 1 -b "$BR" https://github.com/swatson124455/polymarket-ai-v2 /home/ubuntu/eb-backtest
