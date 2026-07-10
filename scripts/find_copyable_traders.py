@@ -295,6 +295,15 @@ def primary_verdict(stats: Optional[dict], p_min: float, min_markets: int,
                             f"not passed, not disproven; more data, not a rework")
 
 
+def should_refetch(cached_status: str, cached_len: int, max_bets: int,
+                   allow_deepen: bool) -> bool:
+    """A TRUNCATED cache entry is re-pulled when the current --max-bets could
+    deepen it (2026-07-09 first-run lesson: 329/496 truncated at the old cap
+    starved the primary to 1 trader; without this, a higher cap silently
+    reuses the shallow cache). Clean ('ok') entries are never re-pulled."""
+    return allow_deepen and cached_status == "truncated" and cached_len < max_bets
+
+
 def json_safe(obj):
     """Recursively replace NaN/inf with None (bare NaN is invalid JSON) [rev]."""
     if isinstance(obj, float):
@@ -342,19 +351,26 @@ async def fetch_universe(client, cap: int, orders: list[str]) -> list[dict]:
 
 
 async def fetch_history(client, addr: str, max_bets: int, rps: float,
-                        cache_dir: str, refresh: bool) -> tuple[list[dict], str]:
+                        cache_dir: str, refresh: bool,
+                        allow_deepen: bool = True) -> tuple[list[dict], str]:
     """(trades, status) with status ok | truncated | partial.
     Cache is written ONLY on clean completion (ok/truncated) [rev: a partial
     pull cached as a complete record silently corrupts every later run].
-    Data-api /activity is called directly (normalized here) [rev: the shared
-    client's gamma branch returns raw rows; routed around, not modified]."""
+    A truncated cache entry is re-pulled when --max-bets can deepen it and
+    allow_deepen is set (see should_refetch). Data-api /activity is called
+    directly (normalized here) [rev: the shared client's gamma branch returns
+    raw rows; routed around, not modified]."""
     cpath = os.path.join(cache_dir, f"{addr}.json")
     if not refresh and os.path.exists(cpath):
         with open(cpath) as f:
             blob = json.load(f)
         if isinstance(blob, dict):
-            return blob.get("trades", []), blob.get("status", "ok")
-        return blob, "ok"  # legacy cache shape
+            trades, status = blob.get("trades", []), blob.get("status", "ok")
+        else:
+            trades, status = blob, "ok"  # legacy cache shape
+        if not should_refetch(status, len(trades), max_bets, allow_deepen):
+            return trades, status
+        # fall through to a fresh, deeper pull (old entry replaced on success)
 
     # The data-api rejects offset >= 3500 with 400 Bad Request (measured live
     # 2026-07-09 — every whale-depth history died there on the first run). So:
@@ -488,11 +504,14 @@ async def verify_sample(db, client, markets: dict, histories: dict,
                 params={"user": addr, "limit": 50, "offset": 0, "type": "TRADE"},
                 use_cache=False, cache_key=f"vfy:{addr}")
             page = normalize_activity(raw if isinstance(raw, list) else [])
+            # Compare against the FULL cached history (first-run lesson: a
+            # 1000-bets/day whale pushes 50 new fills in minutes, so matching
+            # only the newest cached rows reads as 0/50 pure staleness).
             cached = {(t["marketId"], t["tokenId"], str(t["timestamp"]))
-                      for t in histories[addr]["trades"][:300]}
+                      for t in histories[addr]["trades"]}
             hits = sum(1 for t in page if (t["marketId"], t["tokenId"], str(t["timestamp"])) in cached)
-            lines.append(f"  live-refetch {addr[:10]}…: {hits}/{len(page)} of first page "
-                         f"present in cached history")
+            lines.append(f"  live-refetch {addr[:10]}…: {hits}/{len(page)} of live first page "
+                         f"in cached history (shortfall = trades since caching, not corruption)")
     except Exception as e:
         lines.append(f"  live-refetch check: SKIPPED ({str(e)[:80]})")
     lines.append("  per-fill OrderFilled chain audit (blockchain_client."
@@ -552,8 +571,11 @@ async def run(args) -> int:
                 if i and i % 25 == 0:
                     print(f"      …{i}/{len(universe)} ({n_partial} partial-failed)",
                           file=sys.stderr)
+                allow_deepen = (args.deepen == "all"
+                                or (args.deepen == "vol" and "VOL" in u["src"]))
                 trades, status = await fetch_history(
-                    client, u["address"], args.max_bets, args.rps, args.cache, args.refresh)
+                    client, u["address"], args.max_bets, args.rps, args.cache,
+                    args.refresh, allow_deepen)
                 if status == "partial":
                     n_partial += 1  # excluded entirely — never analyzed [rev]
                     continue
@@ -777,6 +799,10 @@ if __name__ == "__main__":
     ap.add_argument("--orders", default="PNL,VOL")
     ap.add_argument("--max-bets", type=int, default=20000, dest="max_bets",
                     help="history cap; hitting it flags the trader TRUNCATED (excluded from primary)")
+    ap.add_argument("--deepen", choices=["all", "vol", "none"], default="all",
+                    help="re-pull TRUNCATED cache entries deeper when --max-bets allows: "
+                         "all (default, correct), vol (only VOL-sourced — the primary "
+                         "subuniverse, cheapest way to repower it), none (cache as-is)")
     ap.add_argument("--rps", type=float, default=4.0)
     ap.add_argument("--cache", default="/tmp/copyable_cache")
     ap.add_argument("--refresh", action="store_true")

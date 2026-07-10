@@ -138,3 +138,14 @@ def test_profile_flags_uncopyable_prices():
              [{"price": 0.50, "size": 100, "_ts": t0}]
     prof = fc.profile_trader(trades)
     assert prof["pct_copyable_price"] == 0.1 and prof["median_price"] == 0.99
+
+
+def test_should_refetch_deepens_only_truncated_below_cap():
+    # truncated + higher cap + allowed → re-pull
+    assert fc.should_refetch("truncated", 20000, 100000, True)
+    # clean completion is never re-pulled, whatever the cap
+    assert not fc.should_refetch("ok", 500, 100000, True)
+    # cap not raised → nothing to gain
+    assert not fc.should_refetch("truncated", 100000, 100000, True)
+    # deepen disabled (e.g. --deepen vol and a PNL-only trader) → cache as-is
+    assert not fc.should_refetch("truncated", 20000, 100000, False)
