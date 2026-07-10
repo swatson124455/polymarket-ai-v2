@@ -107,3 +107,14 @@ def test_interval_consistency():
             ("c", -0.3, "sports", "T", 1)]
     pos, act = wf.interval_consistency(bets, 5)
     assert (pos, act) == (1, 2)
+
+
+def test_gamma_mapping_via_backfill_script():
+    import scripts.backfill_resolutions_gamma as bg
+    m = {"closed": True, "conditionId": "0xa", "id": 5,
+         "outcomePrices": '["0","1"]', "clobTokenIds": '["T1","T2"]',
+         "closedTime": "2026-01-05T00:00:00Z", "category": "Esports"}
+    r = bg.map_gamma_market(m)
+    assert r["resolution"] == "NO" and r["no_token_id"] == "T2"
+    assert bg.map_gamma_market({**m, "outcomePrices": '["0.7","0.3"]'}) is None
+    assert bg.keys_of(m) == ["0xa", "5"]

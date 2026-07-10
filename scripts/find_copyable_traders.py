@@ -295,6 +295,34 @@ def primary_verdict(stats: Optional[dict], p_min: float, min_markets: int,
                             f"not passed, not disproven; more data, not a rework")
 
 
+def looks_like_market_maker(page: list[dict], max_bets_per_day: float) -> bool:
+    """First-page rate check (2026-07-10 tinker): an account trading hundreds
+    of times a day is a bot/market-maker — mechanically uncopyable (nobody
+    mirrors 2,000 daily orders; the 'edge' is spread capture, not knowledge)
+    and the dominant download cost. Newest-first page of up to 500 trades:
+    rate = trades / days-spanned. 0 disables."""
+    if not max_bets_per_day or len(page) < 100:
+        return False
+    ts = [parse_ts(t.get("timestamp")) for t in page]
+    ts = [t for t in ts if t is not None]
+    if len(ts) < 100:
+        return False
+    span_days = max(0.02, (max(ts) - min(ts)).total_seconds() / 86400.0)
+    return (len(ts) / span_days) > max_bets_per_day
+
+
+def is_hft_history(trades: list[dict], max_bets_per_day: float) -> bool:
+    """Analysis-time twin of looks_like_market_maker for histories already on
+    disk (rate over the full record). 0 disables."""
+    if not max_bets_per_day or len(trades) < 100:
+        return False
+    ts = sorted(t["_ts"] for t in trades if t.get("_ts"))
+    if len(ts) < 100:
+        return False
+    span_days = max(0.02, (ts[-1] - ts[0]).total_seconds() / 86400.0)
+    return (len(ts) / span_days) > max_bets_per_day
+
+
 def should_refetch(cached_status: str, cached_len: int, max_bets: int,
                    allow_deepen: bool) -> bool:
     """A TRUNCATED cache entry is re-pulled when the current --max-bets could
@@ -302,6 +330,31 @@ def should_refetch(cached_status: str, cached_len: int, max_bets: int,
     starved the primary to 1 trader; without this, a higher cap silently
     reuses the shallow cache). Clean ('ok') entries are never re-pulled."""
     return allow_deepen and cached_status == "truncated" and cached_len < max_bets
+
+
+def merge_gamma_cache(markets: dict, keys: list[str], path: str) -> int:
+    """Merge gamma-API resolutions (scripts/backfill_resolutions_gamma.py)
+    under the DB map — DB wins on conflict; the backfill only fills holes
+    (2026-07-10 tinker: DB label coverage was 24%; the other 76% of bets
+    live in markets we never ingested but gamma has). Returns keys added."""
+    if not path or not os.path.exists(path):
+        return 0
+    with open(path) as f:
+        gamma = json.load(f)
+    added = 0
+    for k in keys:
+        if k in markets or k not in gamma:
+            continue
+        g = gamma[k]
+        if g.get("resolution") not in ("YES", "NO"):
+            continue
+        markets[k] = {"resolution": g["resolution"],
+                      "resolved_at": g.get("resolved_at"),
+                      "yes_token_id": g.get("yes_token_id"),
+                      "no_token_id": g.get("no_token_id"),
+                      "category": g.get("category") or ""}
+        added += 1
+    return added
 
 
 def json_safe(obj):
@@ -352,7 +405,8 @@ async def fetch_universe(client, cap: int, orders: list[str]) -> list[dict]:
 
 async def fetch_history(client, addr: str, max_bets: int, rps: float,
                         cache_dir: str, refresh: bool,
-                        allow_deepen: bool = True) -> tuple[list[dict], str]:
+                        allow_deepen: bool = True,
+                        hft_max_bets_per_day: float = 0.0) -> tuple[list[dict], str]:
     """(trades, status) with status ok | truncated | partial.
     Cache is written ONLY on clean completion (ok/truncated) [rev: a partial
     pull cached as a complete record silently corrupts every later run].
@@ -396,6 +450,11 @@ async def fetch_history(client, addr: str, max_bets: int, rps: float,
                   file=sys.stderr)
             return out, "partial"
         page = normalize_activity(raw if isinstance(raw, list) else [], seen)
+        if offset == 0 and end_ts is None and looks_like_market_maker(
+                page, hft_max_bets_per_day):
+            status = "hft"          # bot/market-maker: keep the sample page,
+            out.extend(page)        # skip the deep download, exclude from grading
+            break
         out.extend(page)
         for t in page:
             ts = parse_ts(t.get("timestamp"))
@@ -576,21 +635,29 @@ async def run(args) -> int:
                                 or (args.deepen == "vol" and "VOL" in u["src"]))
                 trades, status = await fetch_history(
                     client, u["address"], args.max_bets, args.rps, args.cache,
-                    args.refresh, allow_deepen)
+                    args.refresh, allow_deepen, args.hft_max_rate)
                 if status == "partial":
                     n_partial += 1  # excluded entirely — never analyzed [rev]
                     continue
                 if trades:
                     histories[u["address"]] = {"trades": trades, "status": status}
-            n_trunc = sum(1 for h in histories.values() if h["status"] == "truncated")
 
             print(f"[3/6] labels (indexed lookups)…", file=sys.stderr)
-            for h in histories.values():
+            n_hft = 0
+            for a in list(histories):
+                h = histories[a]
                 for t in h["trades"]:
                     t["_ts"] = parse_ts(t.get("timestamp"))
+                # bot/market-maker exclusion, analysis side (also catches
+                # fully-cached bots from earlier runs)
+                if h["status"] == "hft" or is_hft_history(h["trades"], args.hft_max_rate):
+                    n_hft += 1
+                    del histories[a]
+            n_trunc = sum(1 for h in histories.values() if h["status"] == "truncated")
             keys = sorted({t.get("marketId") or "" for h in histories.values()
                            for t in h["trades"]} - {""})
             markets = await load_markets(db, keys, args.timeout)
+            n_gamma = merge_gamma_cache(markets, keys, args.gamma_cache)
 
             per_trader: dict[str, list[dict]] = {}
             cov_n = {"P1": [0, 0], "P2": [0, 0]}  # [labeled, total]
@@ -656,7 +723,7 @@ async def run(args) -> int:
 
     verdict, detail = primary_verdict(prim_stats, args.p_min, args.min_markets,
                                       args.min_traders, args.econ_floor, robust_means)
-    _report(args, universe, histories, n_partial, n_trunc, cov_n, split,
+    _report(args, universe, histories, n_partial, n_trunc, n_hft, n_gamma, cov_n, split,
             robust_splits, per_trader, qualified, primary_set, cat_stats,
             prim_stats, robust_means, verdict, detail, vlines)
     with open(args.out, "w") as f:
@@ -674,14 +741,15 @@ async def run(args) -> int:
     return 0
 
 
-def _report(args, universe, histories, n_partial, n_trunc, cov_n, split,
+def _report(args, universe, histories, n_partial, n_trunc, n_hft, n_gamma, cov_n, split,
             robust_splits, per_trader, qualified, primary_set, cat_stats,
             prim_stats, robust_means, verdict, detail, vlines) -> None:
     print("\n" + "=" * 100)
     print("  COPYABLE-TRADER SEARCH — full histories, qualify on P1, judge on P2")
     print(f"  universe={len(universe)} addrs (timePeriod=ALL, {args.orders})"
           f"  histories={len(histories)}  partial-FAILED(excluded)={n_partial}"
-          f"  TRUNCATED(desc-only)={n_trunc}")
+          f"  TRUNCATED(desc-only)={n_trunc}  BOT/HFT-excluded={n_hft}"
+          f"  gamma-backfilled-labels={n_gamma:,}")
     c1, c2 = cov_n["P1"], cov_n["P2"]
     print(f"  label coverage: P1 {c1[0]:,}/{c1[1]:,}"
           f" ({(c1[0]/c1[1] if c1[1] else 0):.0%})   P2 {c2[0]:,}/{c2[1]:,}"
@@ -800,6 +868,12 @@ if __name__ == "__main__":
     ap.add_argument("--orders", default="PNL,VOL")
     ap.add_argument("--max-bets", type=int, default=20000, dest="max_bets",
                     help="history cap; hitting it flags the trader TRUNCATED (excluded from primary)")
+    ap.add_argument("--hft-max-rate", type=float, default=200.0, dest="hft_max_rate",
+                    help="exclude accounts trading more than this many times/day "
+                         "(bots/market-makers, mechanically uncopyable; 0 disables)")
+    ap.add_argument("--gamma-cache", default="/tmp/copyable_cache/gamma_resolutions.json",
+                    dest="gamma_cache",
+                    help="resolutions backfill JSON (backfill_resolutions_gamma.py); fills DB label holes")
     ap.add_argument("--deepen", choices=["all", "vol", "none"], default="all",
                     help="re-pull TRUNCATED cache entries deeper when --max-bets allows: "
                          "all (default, correct), vol (only VOL-sourced — the primary "

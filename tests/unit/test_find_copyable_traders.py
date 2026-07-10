@@ -149,3 +149,41 @@ def test_should_refetch_deepens_only_truncated_below_cap():
     assert not fc.should_refetch("truncated", 100000, 100000, True)
     # deepen disabled (e.g. --deepen vol and a PNL-only trader) → cache as-is
     assert not fc.should_refetch("truncated", 20000, 100000, False)
+
+
+def test_market_maker_detection():
+    from datetime import datetime, timedelta
+    t0 = datetime(2026, 6, 1)
+    # 500 trades in half a day = ~1000/day → bot
+    fast = [{"timestamp": int((t0 + timedelta(minutes=i)).timestamp())}
+            for i in range(500)]
+    # 500 trades over 100 days = 5/day → human
+    slow = [{"timestamp": int((t0 + timedelta(hours=i * 5)).timestamp())}
+            for i in range(500)]
+    assert fc.looks_like_market_maker(fast, 200.0)
+    assert not fc.looks_like_market_maker(slow, 200.0)
+    assert not fc.looks_like_market_maker(fast, 0)      # 0 disables
+    assert not fc.looks_like_market_maker(fast[:50], 200.0)  # too little data
+
+    fast_h = [{"_ts": t0 + timedelta(minutes=i)} for i in range(500)]
+    slow_h = [{"_ts": t0 + timedelta(hours=i * 5)} for i in range(500)]
+    assert fc.is_hft_history(fast_h, 200.0)
+    assert not fc.is_hft_history(slow_h, 200.0)
+
+
+def test_merge_gamma_cache_fills_holes_db_wins(tmp_path):
+    import json as _json
+    markets = {"0xdb": {"resolution": "NO"}}
+    blob = {"0xdb": {"resolution": "YES"},
+            "0xnew": {"resolution": "YES", "yes_token_id": "T1",
+                      "no_token_id": "T2", "category": "Sports",
+                      "resolved_at": "2026-01-05T00:00:00"},
+            "0xopen": {"resolution": None}}
+    p = tmp_path / "g.json"
+    p.write_text(_json.dumps(blob))
+    n = fc.merge_gamma_cache(markets, ["0xdb", "0xnew", "0xopen", "0xabsent"], str(p))
+    assert n == 1
+    assert markets["0xdb"]["resolution"] == "NO"        # DB wins
+    assert markets["0xnew"]["yes_token_id"] == "T1"     # hole filled
+    assert "0xopen" not in markets                      # unresolved never merged
+    assert fc.merge_gamma_cache({}, ["k"], str(tmp_path / "missing.json")) == 0

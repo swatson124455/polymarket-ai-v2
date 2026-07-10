@@ -217,6 +217,7 @@ async def run(args) -> int:
     await db.init()
     try:
         histories: dict[str, dict] = {}
+        n_hft = 0
         for a in addrs:
             with open(os.path.join(args.cache, f"{a}.json")) as f:
                 blob = json.load(f)
@@ -224,12 +225,18 @@ async def run(args) -> int:
             status = blob.get("status", "ok") if isinstance(blob, dict) else "ok"
             for t in trades:
                 t["_ts"] = fc.parse_ts(t.get("timestamp"))
-            if trades:
-                histories[a] = {"trades": trades, "status": status}
+            if not trades:
+                continue
+            # bots/market-makers: mechanically uncopyable, excluded (2026-07-10)
+            if status == "hft" or fc.is_hft_history(trades, args.hft_max_rate):
+                n_hft += 1
+                continue
+            histories[a] = {"trades": trades, "status": status}
 
         keys = sorted({t.get("marketId") or "" for h in histories.values()
                        for t in h["trades"]} - {""})
         markets = await fc.load_markets(db, keys, args.timeout)
+        n_gamma = fc.merge_gamma_cache(markets, keys, args.gamma_cache)
     finally:
         await db.close()
 
@@ -285,7 +292,7 @@ async def run(args) -> int:
                                          robust_means)
     _report(args, per_trader, histories, prim_traders, unknown_src, dates,
             wf_all, wf_prim, stats_all, stats_prim, robust_means, verdict,
-            detail, n_labeled, n_no_resolved_at)
+            detail, n_labeled, n_no_resolved_at, n_hft, n_gamma)
     with open(args.out, "w") as f:
         json.dump(fc.json_safe({
             "verdict": verdict, "detail": detail,
@@ -302,12 +309,14 @@ async def run(args) -> int:
 
 def _report(args, per_trader, histories, prim_traders, unknown_src, dates,
             wf_all, wf_prim, stats_all, stats_prim, robust_means, verdict,
-            detail, n_labeled, n_no_resolved_at) -> None:
+            detail, n_labeled, n_no_resolved_at, n_hft, n_gamma) -> None:
     print("\n" + "=" * 100)
     print("  WALK-FORWARD COPY-TRADER GRADE — hire on lifetime record, fire on proven decay,")
     print("  score only post-hire bets. The deployable rule, tested as it would run.")
     print(f"  traders with evidence={len(per_trader)}  labeled first-buys={n_labeled:,}"
           f"  (resolved_at missing for {n_no_resolved_at:,} — knowledge-time fallback=entry time)")
+    print(f"  BOT/HFT excluded={n_hft} (> {args.hft_max_rate:.0f} bets/day)"
+          f"  gamma-backfilled labels merged={n_gamma:,}")
     print(f"  review grid: every {args.review_days}d from {dates[0].date()} to {dates[-1].date()}"
           f" ({len(dates)} reviews; anchor locked {GRID_ANCHOR.date()})")
     print(f"  hire: >={args.min_markets_hire} mkts, span>={args.min_span_days}d, P(edge>0)>={args.p_hire}"
@@ -475,6 +484,11 @@ if __name__ == "__main__":
     ap.add_argument("--n-boot", type=int, default=2000, dest="n_boot")
     ap.add_argument("--n-boot-roster", type=int, default=400, dest="n_boot_roster",
                     help="bootstrap size for hire/fire decisions (cheaper, deterministic)")
+    ap.add_argument("--hft-max-rate", type=float, default=200.0, dest="hft_max_rate",
+                    help="exclude accounts trading more than this many times/day (bots; 0 disables)")
+    ap.add_argument("--gamma-cache", default="/tmp/copyable_cache/gamma_resolutions.json",
+                    dest="gamma_cache",
+                    help="resolutions backfill JSON (backfill_resolutions_gamma.py)")
     ap.add_argument("--pmin", type=float, default=0.02)
     ap.add_argument("--pmax", type=float, default=0.98)
     ap.add_argument("--timeout", type=int, default=60)
