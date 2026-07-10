@@ -336,14 +336,17 @@ def merge_gamma_cache(markets: dict, keys: list[str], path: str) -> int:
     """Merge gamma-API resolutions (scripts/backfill_resolutions_gamma.py)
     under the DB map — DB wins on conflict; the backfill only fills holes
     (2026-07-10 tinker: DB label coverage was 24%; the other 76% of bets
-    live in markets we never ingested but gamma has). Returns keys added."""
+    live in markets we never ingested but gamma has). A hole is a key the
+    DB either doesn't know or knows WITHOUT a resolution — a metadata row
+    with resolution=None must not block its gamma label (2026-07-10 run:
+    that mismatch merged 0 of the backfill's labels). Returns keys added."""
     if not path or not os.path.exists(path):
         return 0
     with open(path) as f:
         gamma = json.load(f)
     added = 0
     for k in keys:
-        if k in markets or k not in gamma:
+        if (markets.get(k) or {}).get("resolution") or k not in gamma:
             continue
         g = gamma[k]
         if g.get("resolution") not in ("YES", "NO"):

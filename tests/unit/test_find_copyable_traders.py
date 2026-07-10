@@ -173,17 +173,27 @@ def test_market_maker_detection():
 
 def test_merge_gamma_cache_fills_holes_db_wins(tmp_path):
     import json as _json
-    markets = {"0xdb": {"resolution": "NO"}}
+    markets = {"0xdb": {"resolution": "NO"},
+               "0xunres": {"resolution": None, "resolved_at": None,
+                           "yes_token_id": "D1", "no_token_id": "D2",
+                           "category": "Politics"}}
     blob = {"0xdb": {"resolution": "YES"},
+            "0xunres": {"resolution": "YES", "yes_token_id": "G1",
+                        "no_token_id": "G2", "category": "Politics",
+                        "resolved_at": "2026-02-01T00:00:00"},
             "0xnew": {"resolution": "YES", "yes_token_id": "T1",
                       "no_token_id": "T2", "category": "Sports",
                       "resolved_at": "2026-01-05T00:00:00"},
             "0xopen": {"resolution": None}}
     p = tmp_path / "g.json"
     p.write_text(_json.dumps(blob))
-    n = fc.merge_gamma_cache(markets, ["0xdb", "0xnew", "0xopen", "0xabsent"], str(p))
-    assert n == 1
-    assert markets["0xdb"]["resolution"] == "NO"        # DB wins
-    assert markets["0xnew"]["yes_token_id"] == "T1"     # hole filled
+    n = fc.merge_gamma_cache(
+        markets, ["0xdb", "0xunres", "0xnew", "0xopen", "0xabsent"], str(p))
+    assert n == 2
+    assert markets["0xdb"]["resolution"] == "NO"        # DB label wins
+    assert markets["0xunres"]["resolution"] == "YES"    # DB metadata row w/o
+    assert markets["0xunres"]["yes_token_id"] == "G1"   #  label is a HOLE —
+    assert markets["0xunres"]["resolved_at"] == "2026-02-01T00:00:00"  # filled
+    assert markets["0xnew"]["yes_token_id"] == "T1"     # unknown key filled
     assert "0xopen" not in markets                      # unresolved never merged
     assert fc.merge_gamma_cache({}, ["k"], str(tmp_path / "missing.json")) == 0
