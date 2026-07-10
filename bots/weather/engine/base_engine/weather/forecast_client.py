@@ -15,6 +15,7 @@ Temperature unit handling:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import math
 import random
 import time
@@ -49,6 +50,13 @@ class CombinedForecast:
     # P1: Model-run jump detection — delta (°F/°C) vs previous model run's ensemble mean.
     # Positive = warmer shift, negative = cooler shift. None = no prior run to compare.
     forecast_delta: Optional[float] = None
+    # S226 (fallacy-audit V34 follow-up): True when ensemble_members were
+    # FABRICATED (Gaussian around the deterministic high) because the real
+    # ensemble fetch failed — ensemble_count=31 otherwise looks identical to
+    # a full GEFS fetch downstream. Default False so every other construction
+    # site (warm-cache restore, tests) is unaffected. Marker only — no trade
+    # gating consults it yet (future decision).
+    synthetic_ensemble: bool = False
 
 
 class WeatherForecastClient:
@@ -202,6 +210,9 @@ class WeatherForecastClient:
                         model_spread=float(model_spread) if model_spread else 2.0,
                         lead_time_hours=lead_time_hours,
                         models_used=used,
+                        # S226: marker has no DB column; recover it from the
+                        # "synthetic" provenance tag persisted in models_used.
+                        synthetic_ensemble=("synthetic" in used),
                     )
                     self._cache[cache_key] = (now_mono + remaining_s, fc)
                     loaded += 1
@@ -1250,10 +1261,25 @@ class WeatherForecastClient:
         # at every lead — which made long-lead point-forecast fallbacks ~2.5x
         # too narrow and manufactured overconfident tail-bucket edges. This is
         # the ensemble-fetch-failed degraded path, so erring wide is correct.
+        synthetic_ensemble = False
         if not ensemble_members and deterministic_high is not None:
             spread = self._synthetic_lead_sigma(lead_time_hours, station.temp_unit)
-            rng = random.Random(hash((station.station_id, target_iso)))
+            # S226 (V34 follow-up): deterministic RNG. The old seed was
+            # hash((station_id, target_iso)) — Python salts str hashes per
+            # process (PYTHONHASHSEED), so identical inputs fabricated a
+            # DIFFERENT ensemble after every restart. Seed from a stable
+            # digest of the actual inputs instead; deterministic_high is
+            # included so a new model run redraws rather than reusing noise.
+            _seed_material = f"{station.station_id}|{target_iso}|{deterministic_high:.2f}"
+            _seed = int.from_bytes(
+                hashlib.sha256(_seed_material.encode()).digest()[:8], "big"
+            )
+            rng = random.Random(_seed)
             ensemble_members = [deterministic_high + rng.gauss(0, spread) for _ in range(31)]
+            # S226 (V34 follow-up): mark the fabrication — flows on the
+            # returned object and persists via weather_forecasts.models_used.
+            synthetic_ensemble = True
+            models_used.append("synthetic")
 
         if deterministic_high is None and ensemble_members:
             deterministic_high = sum(ensemble_members) / len(ensemble_members)
@@ -1322,6 +1348,7 @@ class WeatherForecastClient:
             lead_time_hours=lead_time_hours,
             models_used=models_used,
             forecast_delta=forecast_delta,
+            synthetic_ensemble=synthetic_ensemble,  # S226 (V34 follow-up)
         )
 
         # Cache — Fix B: jitter expiry so all stations don't expire simultaneously
