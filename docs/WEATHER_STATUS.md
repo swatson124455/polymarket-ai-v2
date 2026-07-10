@@ -5,7 +5,7 @@
 > read them for detail, but THIS file is the source of truth for "what is live and what's open."
 > Update the three sections below at the end of every WB session (same commit as the work).
 
-**Last updated:** 2026-07-10 session end (S226 — ALL DEPLOYED in `20260710_204822` and verified: leak CLOSED, V23 fixed at root + labelled + hotfixed, five audit follow-ups live. Handoff: `docs/WEATHER_S226_STATUS.md`)
+**Last updated:** 2026-07-10 (S227 — S222 verification gate OPEN at 50/50 distinct resolved markets; verification prompt trued up to the real restart cutoff, awaiting VPS run. Prior: S226 ALL DEPLOYED in `20260710_204822` and verified — leak CLOSED, V23 fixed at root + labelled + hotfixed. Handoff: `docs/WEATHER_S226_STATUS.md`)
 **Pinned branch:** `claude/new-whiteboard-session-9b23tq` (see `.claude/session-branch`)
 **Resume check:** `bash scripts/wb_resume_check.sh` (self-deriving; replaces the hand-typed checklist)
 
@@ -20,10 +20,18 @@
    "calibrator|actual_source|abstain|holdout_valid"`. Watch for the OOS Brier trending sane as
    clean resolutions accumulate — that verdict gates enabling the V28 gate (#3).
 
-2. **S222 post-fix verification (time-gated).** The substrate changed AGAIN at this deploy
-   (07-08), so the ≥50-resolution clock effectively restarts here for the fully-fixed code.
-   Run `WB_S222_POSTFIX_VERIFICATION_PROMPT.md` from a VPS-access session once ≥50 post-07-08
-   resolutions exist. Only after a PASS: retire containment gates per `WEATHER_S222_STATUS.md` §4-B.
+2. **S222 post-fix verification — GATE OPEN, ready to run (S227).** Operator count 2026-07-10:
+   **50/50** distinct resolved markets post-07-08 (cutoff `2026-07-08 15:13:30`, the S224 tarball
+   stamp). `WB_S222_POSTFIX_VERIFICATION_PROMPT.md` was trued up in S227 before firing: the
+   VERDICT window now starts at the ACTUAL S224 restart (`2026-07-08 19:18:38`, journal-confirmed)
+   because the 15:13→19:18 slice is pre-fix code output containing known `predicted_prob=1.0`
+   leak rows (last 17:59:38) that would false-FAIL the [0.9,1.0) reliability verdicts; plus
+   `--dedup-markets` counting and window-integrity checks (leak-regression must be 0, PSW
+   frame-ambiguity count, the 07-10 20:12→20:48 log outage is a known gap). Run it from a
+   VPS-access session; it self-aborts if the CLEAN window holds <50 distinct resolved markets.
+   Only after a PASS: retire containment gates per `WEATHER_S222_STATUS.md` §4-B (order:
+   A1/A3 → dampeners → caps; C0 Kelly stays deferred until the calibrator re-learn verdict
+   regardless of this PASS).
 
 3. **Deferred switches (do after the calibrator re-learns + S222 passes):** enable the V28
    calibrated-edge gate (`WEATHER_CALIBRATED_EDGE_GATE_ENABLED=true`); V34 follow-ups
@@ -128,6 +136,11 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-10 (S227):** S222 verification gate OPEN — operator count 50/50 distinct resolved
+  markets post-07-08. `WB_S222_POSTFIX_VERIFICATION_PROMPT.md` trued up: verdict cutoff moved
+  from the tarball stamp (15:13:30) to the real restart (19:18:38, avoids pre-fix leak rows in
+  the [0.9,1.0) bin), `--dedup-markets`, window-integrity checks (leak regression / PSW frame
+  ambiguity / 07-10 log outage). Docs only; no bot behavior changed; awaiting VPS run.
 - **2026-07-10 (S226 HOTFIX, needs deploy):** `535ec86` — prediction logging went SILENT at
   the 20:12 deploy: WB's runtime db is the TOP-LEVEL Database (main.py -> BaseEngine), which
   lacked the new prob_frame kwarg -> TypeError on every log call, swallowed at debug level
