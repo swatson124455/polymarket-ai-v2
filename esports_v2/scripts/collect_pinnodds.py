@@ -28,6 +28,9 @@ never blocks odds collection (a Gamma failure just yields null PM fields).
 Env:
   PINNACLE_ODDS_API_KEY   — PinnOdds key (already in /opt/pa2-shared/.env)
   PINNODDS_SNAPSHOT_PATH  — output JSONL (default: data/odds/pinnodds_snapshots.jsonl)
+  EB_ALIASES_PATH         — optional aliases.json (esports_team_aliases dump, see
+                            deploy/vps/eb_dump_aliases.sh); absent/malformed ->
+                            matching runs exactly as before (correct-or-absent)
 
 Usage (one shot; schedule via cron/systemd-timer, e.g. every 15 min):
     python -m esports_v2.scripts.collect_pinnodds
@@ -41,6 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from esports_v2.data.alias_file import load_alias_expand
 from esports_v2.data.pinnodds_loader import PinnOddsLoader
 from esports_v2.data.pm_market_index import (
     PMMarketRef,
@@ -107,13 +111,16 @@ def _safe_build_pm_refs() -> List[PMMarketRef]:
         return []
 
 
-def _resolve_pm_index(rows: List[dict], refs: List[PMMarketRef]) -> Dict[str, PMMarketRef]:
+def _resolve_pm_index(
+    rows: List[dict], refs: List[PMMarketRef], alias_expand=None
+) -> Dict[str, PMMarketRef]:
     """Match each odds row to its PM market via the conservative bijective matcher
     (``match_pm_ref``), keyed by the row's match_key. Unmatched/ambiguous rows are
     simply absent -> null PM fields (correct-or-absent)."""
     out: Dict[str, PMMarketRef] = {}
     for r in rows:
-        ref = match_pm_ref(r.get("home"), r.get("away"), r.get("starts"), refs)
+        ref = match_pm_ref(r.get("home"), r.get("away"), r.get("starts"), refs,
+                           alias_expand=alias_expand)
         if ref is not None and r.get("match_key"):
             out[r["match_key"]] = ref
     return out
@@ -122,7 +129,8 @@ def _resolve_pm_index(rows: List[dict], refs: List[PMMarketRef]) -> Dict[str, PM
 def collect(path: Path) -> Dict[str, int]:
     loader = PinnOddsLoader.from_env()
     rows = loader.fetch_rows(event_types=("live", "prematch"))
-    pm_index = _resolve_pm_index(rows, _safe_build_pm_refs())
+    alias_expand = load_alias_expand(os.environ.get("EB_ALIASES_PATH"))
+    pm_index = _resolve_pm_index(rows, _safe_build_pm_refs(), alias_expand)
     captured_at = datetime.now(timezone.utc).isoformat()
     records = build_snapshot_records(rows, captured_at, pm_index)
     matched = sum(1 for r in records if r.get("condition_id"))

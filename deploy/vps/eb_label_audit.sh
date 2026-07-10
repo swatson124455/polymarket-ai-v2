@@ -8,6 +8,6 @@ echo "=== 2) re-fetch results window (fixed fetcher) ==="
 export PANDASCORE_API_KEY="$(grep -m1 '^PANDASCORE_API_KEY=' /opt/pa2-shared/.env | cut -d= -f2- | tr -d '"\r')"
 python3 -m esports_v2.scripts.fetch_results_window --days-back 4 --games valorant,cs2,lol,dota2,r6 --out /home/ubuntu/eb-odds/results_window.jsonl
 echo "=== 3) PER-MATCH LABEL DUMP (verify winners against real-world results) ==="
-python3 -m esports_v2.scripts.dump_joined --snapshots /home/ubuntu/eb-odds/pinnodds_snapshots.jsonl --bulk /home/ubuntu/eb-odds/results_window.jsonl
+python3 -m esports_v2.scripts.dump_joined --snapshots /home/ubuntu/eb-odds/pinnodds_snapshots.jsonl --bulk /home/ubuntu/eb-odds/results_window.jsonl --aliases /home/ubuntu/eb-odds/aliases.json
 echo "=== 4) metrics on the re-fetched labels ==="
-python3 -m esports_v2.scripts.eval_sharp_line --snapshots /home/ubuntu/eb-odds/pinnodds_snapshots.jsonl --bulk /home/ubuntu/eb-odds/results_window.jsonl --cs2 /nonexistent.json --de-vig simple
+python3 -m esports_v2.scripts.eval_sharp_line --snapshots /home/ubuntu/eb-odds/pinnodds_snapshots.jsonl --bulk /home/ubuntu/eb-odds/results_window.jsonl --cs2 /nonexistent.json --de-vig simple --aliases /home/ubuntu/eb-odds/aliases.json

@@ -3,6 +3,7 @@ import json,os,re,time,urllib.request,urllib.error,urllib.parse
 from datetime import datetime,timezone
 ENV=os.environ.get("PINNODDS_ENV_PATH","/opt/pa2-shared/.env")
 SNAP=os.environ.get("PINNODDS_SNAPSHOT_PATH","/home/ubuntu/eb-odds/pinnodds_snapshots.jsonl")
+ALIASES=os.environ.get("EB_ALIASES_PATH","/home/ubuntu/eb-odds/aliases.json")
 URL="https://pinnodds.com/kit/v1/markets?sport_id=11&event_type=prematch"
 UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 PROP=re.compile(r"\((kills?|games?|maps?|rounds?|towers?|handicap|total)\)\s*$",re.I)
@@ -30,16 +31,37 @@ def tnorm(s):
     s=str(s or "").lower().replace("_"," ")
     s=re.sub(r"[^\w\s]"," ",s)
     return re.sub(r"\s+"," ",s).strip()
-def same_team(x,y):
+# Optional alias map (mirrors esports_v2.data.alias_file, correct-or-absent):
+# aliases.json {"groups": [[name, ...], ...]} from deploy/vps/eb_dump_aliases.sh.
+# Missing/malformed/empty -> None -> matching runs exactly as before.
+def load_aliases():
+    try:
+        with open(ALIASES,encoding="utf-8") as f: d=json.load(f)
+        if not isinstance(d,dict): return None
+        m={}
+        for g in d.get("groups") or []:
+            if not isinstance(g,list): continue
+            names=[str(n).strip() for n in g if str(n or "").strip()]
+            if len(names)<2: continue
+            for n in names:
+                k=tnorm(n)
+                if k: m.setdefault(k,set()).update(names)
+        return m or None
+    except Exception: return None
+def same_team(x,y,am=None):
     nx,ny=tnorm(x),tnorm(y)
     if nx and nx==ny: return True
     if not nx or not ny: return False
+    if am:
+        ax={nx}|{tnorm(n) for n in am.get(nx,())}; ay={ny}|{tnorm(n) for n in am.get(ny,())}
+        ax.discard(""); ay.discard("")
+        if ax&ay: return True
     tx,ty=set(nx.split()),set(ny.split())
     if not tx or not ty: return False
     if not ((tx&ty)-GENERIC): return False
     return tx.issubset(ty) or ty.issubset(tx)
-def match2(h,a,ra,rb):
-    ha,hb=same_team(h,ra),same_team(h,rb); aa,ab=same_team(a,ra),same_team(a,rb)
+def match2(h,a,ra,rb,am=None):
+    ha,hb=same_team(h,ra,am),same_team(h,rb,am); aa,ab=same_team(a,ra,am),same_team(a,rb,am)
     o1=ha and ab and not hb and not aa; o2=hb and aa and not ha and not ab
     if o1 and not o2: return True
     if o2 and not o1: return False
@@ -49,12 +71,12 @@ def dwin(d,w):
     try: base=_dt.strptime(d,"%Y-%m-%d")
     except (ValueError,TypeError): return {d}
     return {(base+_td(days=o)).strftime("%Y-%m-%d") for o in range(-w,w+1)}
-def match_ref(h,a,starts,refs,window=1):
+def match_ref(h,a,starts,refs,window=1,am=None):
     # refs: list of (condition_id, yes_token_id, yes_outcome, market_price, team_a, team_b, day)
     day=str(starts or "")[:10]
     if len(day)<10: return None
     days=dwin(day,window)
-    cands=[r for r in refs if r[6] in days and match2(h,a,r[4],r[5]) is not None]
+    cands=[r for r in refs if r[6] in days and match2(h,a,r[4],r[5],am) is not None]
     if not cands: return None
     if len({r[0] for r in cands})!=1: return None
     return cands[0]
@@ -129,6 +151,7 @@ def main():
     cap=datetime.now(timezone.utc).isoformat(); recs=[]
     try: pmi=pm_index()
     except Exception as e: print(f"pm_index failed {type(e).__name__}, null PM fields"); pmi={}
+    am=load_aliases()
     for ev in fetch(key()).get("events",[]):
         h,a=str(ev.get("home") or "").strip(),str(ev.get("away") or "").strip()
         if not h or not a or PROP.search(h) or PROP.search(a): continue
@@ -137,7 +160,7 @@ def main():
         if not isinstance(ml,dict): continue
         oa,ob=coerce(ml.get("home")),coerce(ml.get("away"))
         if oa is None or ob is None: continue
-        mk=mkey(h,a,ev.get("starts")); pm=match_ref(h,a,ev.get("starts"),pmi)
+        mk=mkey(h,a,ev.get("starts")); pm=match_ref(h,a,ev.get("starts"),pmi,am=am)
         recs.append({"captured_at":cap,"match_key":mk,"home":h,"away":a,
                      "starts":ev.get("starts"),"league_name":ev.get("league_name"),
                      "odds_a":oa,"odds_b":ob,"event_type":"prematch",

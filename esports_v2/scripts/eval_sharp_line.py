@@ -25,6 +25,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from esports_v2.data.alias_file import load_alias_expand
 from esports_v2.model.closing_line import iter_snapshots_jsonl, reduce_to_closing_lines
 from esports_v2.model.results_join import (
     join_closing_lines_to_results,
@@ -45,7 +46,16 @@ def main() -> int:
                     help="De-vig method (OPEN operator decision; simple=fleet default)")
     ap.add_argument("--day-window", type=int, default=0,
                     help="+/- N days when matching a line to a result (default 0)")
+    ap.add_argument("--aliases", default=None,
+                    help="optional aliases.json (esports_team_aliases dump, see "
+                         "deploy/vps/eb_dump_aliases.sh); missing/malformed -> "
+                         "join runs without aliases, exactly as before")
     args = ap.parse_args()
+
+    alias_expand = load_alias_expand(args.aliases)
+    if args.aliases:
+        print(f"[0] aliases: {'loaded' if alias_expand else 'ABSENT/unusable'} "
+              f"({args.aliases})")
 
     # ── Step 1: reduce snapshots -> closing lines ────────────────────────────
     snaps = list(iter_snapshots_jsonl(args.snapshots))
@@ -64,7 +74,7 @@ def main() -> int:
     print(f"[2] free result rows loaded: {len(results)}")
 
     joined, stats = join_closing_lines_to_results(
-        closing, results, day_window=args.day_window,
+        closing, results, day_window=args.day_window, alias_expand=alias_expand,
     )
     print(f"    joined+labeled: {stats.joined}   "
           f"no_result_match: {stats.no_result_match}   "

@@ -19,6 +19,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from esports_v2.data.alias_file import load_alias_expand
 from esports_v2.model.closing_line import iter_snapshots_jsonl, reduce_to_closing_lines
 from esports_v2.model.results_join import join_closing_lines_to_results, load_bulk_results
 from esports_v2.model.sharp_eval import no_vig_prob_a
@@ -29,12 +30,19 @@ def main() -> int:
     ap.add_argument("--snapshots", required=True)
     ap.add_argument("--bulk", required=True)
     ap.add_argument("--day-window", type=int, default=0)
+    ap.add_argument("--aliases", default=None,
+                    help="optional aliases.json; missing/malformed -> join "
+                         "runs without aliases, exactly as before")
     args = ap.parse_args()
 
+    alias_expand = load_alias_expand(args.aliases)
+    if args.aliases:
+        print(f"aliases: {'loaded' if alias_expand else 'ABSENT/unusable'} ({args.aliases})")
     closing = reduce_to_closing_lines(iter_snapshots_jsonl(args.snapshots))
     results = load_bulk_results(Path(args.bulk))
     joined, stats = join_closing_lines_to_results(closing, results,
-                                                  day_window=args.day_window)
+                                                  day_window=args.day_window,
+                                                  alias_expand=alias_expand)
     print(f"closing_lines={stats.n_lines} joined={stats.joined} "
           f"no_result={stats.no_result_match} ambiguous={stats.ambiguous_multi_winner}")
     for r in sorted(joined, key=lambda x: (x.day, x.match_key)):
