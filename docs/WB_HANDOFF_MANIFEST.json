@@ -27,7 +27,7 @@
     { "file": "bots/weather/engine/config/settings.py", "pattern": "WEATHER_MID_LIFE_EXIT_ENABLED: bool", "expect": 1 },
     { "file": "bots/weather_bot.py", "pattern": "S224", "expect": 24 },
     { "file": "bots/weather/engine/base_engine/weather/probability_engine.py", "pattern": "S224", "expect": 4 },
-    { "file": "bots/weather/engine/base_engine/weather/forecast_client.py", "pattern": "S224", "expect": 3 },
+    { "file": "bots/weather/engine/base_engine/weather/forecast_client.py", "pattern": "S224", "expect": 4 },
     { "file": "bots/weather/engine/config/settings.py", "pattern": "S224", "expect": 3 }
   ]
 }
