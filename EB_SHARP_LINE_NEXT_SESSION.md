@@ -193,6 +193,11 @@ by this session's manual test runs. Each tick logs `appended=0 total_lines=33`.
 - If STILL 429-locked after a full day: the free tier can't sustain 1 req/15min →
   operator decision — paid PinnOdds tier, slower cadence (`*/30` or hourly), or a
   different sharp source. (Widening cadence is a one-line crontab edit.)
+- **DECIDED (operator, 2026-07-10): HOURLY for the proof of concept.** `*/15`
+  kept draining the demo quota (multi-hour 429 stalls; file frozen at 994 lines
+  16:45→18:15 UTC). Cron edited to `0 * * * *` (24 calls/day). Closing line (last
+  pre-start snapshot) is still captured; only intraday density is lost. Rollback:
+  restore the `*/15` crontab line. Revisit paid tier if PoC shows edge.
 - **Snapshot schema** (`/home/ubuntu/eb-odds/pinnodds_snapshots.jsonl`, append-only):
   `captured_at, match_key, home, away, starts, league_name, odds_a, odds_b, event_type`
   — **plus (session 3, after the md5-`87bebc3c` redeploy)** `condition_id,
