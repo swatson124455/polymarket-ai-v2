@@ -236,6 +236,10 @@ async def run(args) -> int:
                     except Exception as e:
                         errs += 1
                         _note_err(e)
+                    # pace EVERY query — each sample fires 2x2x3 chunked
+                    # getLogs back-to-back; unpaced bursts get public
+                    # gateways rate-limiting mid-run
+                    await asyncio.sleep(1.0 / max(args.rps, 0.1))
         return out, errs, n_q
 
     results: dict[str, dict] = {}
