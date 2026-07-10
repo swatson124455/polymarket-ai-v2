@@ -1,12 +1,54 @@
 # MirrorBot Rebuild — Living State / Handoff (docs/MB_STATE.md)
 
-**Last updated:** 2026-07-09 · **Branch:** `claude/mirrorbot-persistence-check-oc02tk`
+**Last updated:** 2026-07-10 · **Branch:** `claude/mirrorbot-persistence-check-oc02tk` (PR #1)
 **Read first:** `CLAUDE.md` (binding directives), `MB_REBUILD_PLAN.md` (the plan + operator decisions), then this file.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
 ---
 
-## 1. One-paragraph state
+## 1a. CURRENT STATE (2026-07-10 — read this first, §1b is background)
+
+**The investigation PIVOTED (operator-directed, 2026-07-09/10): stop testing on
+rejected-signals leftovers; pull COMPLETE per-bet trader histories from the
+public Polymarket APIs and find COPYABLE traders directly.** Chain of results:
+
+1. **Run 1 of `scripts/find_copyable_traders.py`** (496 leaderboard addrs, full
+   histories, qualify-on-P1/judge-on-P2, chain-verified 20/20): first broadly
+   positive signal of the whole investigation — P1-qualified traders held
+   **+2.3pts P2 edge, P=0.962, across 1,065 markets** (descriptive; PNL-collider
+   -tainted, politics cell post-hoc — NOT promotable). Primary was UNDERPOWERED:
+   329/496 histories TRUNCATED at the 20k cap and the VOL list is by definition
+   the deepest whales → primary cell starved to 1 trader. Named strong-both-half
+   candidates emerged (`0x6bab41a0dc` 109 P2 mkts +0.089 P=0.99; `0xd1acd3925d`;
+   `0xa6a856a8c8` 593 P2 mkts +0.025 P=0.89).
+2. **Grading redesigned with the operator into the WALK-FORWARD rule**
+   (`scripts/walkforward_copy_traders.py`) — the deployable strategy tested as
+   it would run: HIRE on lifetime record at monthly reviews (>=25 mkts, >=60d
+   span, P(edge>0)>=0.90), FIRE only on statistically convincing RECENT decay
+   (trailing 90d, >=10 mkts, P(edge<0)>=0.90 — past glory can't shield bleed,
+   a GOAT's cold month can't convict), GRADE only post-hire bets. Improvers
+   caught, goats not churned, has-beens cut. Locked review grid (anchor
+   2025-01-01) + ±15d robustness grids; knowledge gated by resolved_at.
+   Primary = VOL-sourced non-truncated universe. Self-test proves all four
+   personas (goat/bleeder/improver/streaker).
+3. **Pre-run tinker (operator: "tinker before spending 7 hours")**: (a) bot/
+   market-maker exclusion `--hft-max-rate 200` bets/day — bots were ~all the
+   truncation and most of the download cost, and are mechanically uncopyable;
+   (b) **gamma resolution backfill** (`scripts/backfill_resolutions_gamma.py`)
+   — DB label coverage was 24%; backfill lifts to ~80-95% via a local JSON the
+   graders merge under the DB map (DB wins); (c) truncated caches re-deepen
+   when --max-bets rises (`--deepen vol`).
+4. **A 3-stage detached pipeline is RUNNING on the VPS** (gamma backfill →
+   deepen humans-only → walk-forward). Logs: `/tmp/gamma_backfill.log`,
+   `/tmp/copyable3.log`, `/tmp/walkforward.log`. Cache: `/tmp/copyable_cache`.
+   THE NEXT ACTION IS READING `/tmp/walkforward.log` (§5 decision tree).
+
+Fill-quality gate (`scripts/backtest_copyable_fills.py`, audited coarse model,
+real ask crossed) is built and waiting for whatever roster passes. Per-fill
+OrderFilled chain audit is MANDATORY before any money decision on a named
+trader. Everything committed/pushed on this branch; 29+ script unit tests green.
+
+## 1b. Background (2026-07-09 and earlier)
 
 MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The old bot is **paused to paper** (real money off, 2026-07-05) but still collecting signal data. A **clean-silo rebuild** (`mirror_v3/`) is scaffolded, tested, and ready to deploy — safety spine only, strategy slot deliberately empty behind an acceptance gate. **The v3 whale trader-ranking engine (`bots/mirror_scoring/`) reportedly FAILED its Stage-1 gate** (prior-session handoff citing `172d72a`: 2 cutoffs FAIL, placebos 0/20 and 1/20). A 61-agent adversarial review (2026-07-09, this session) established two things about that evidence: (a) **commit `172d72a` is NOT in this clone — the FAIL is currently hearsay** until the commit/branch is recovered and reviewed; (b) **the in-repo validation harness is confirmed CIRCULAR** (admission is selected on post-cutoff outcomes, then "validated" on the same post-cutoff signals — a false-PASS machine), which mechanically explains the earlier miscalibrated "PASS" and means **a PASS from `bots/mirror_scoring/validation.py` must never clear anything**. The circularity biases toward PASS, so the reported FAIL — if the recovered code checks out — is if anything *stronger*. **The lead instrument now is the TAIL BACKTEST** — `scripts/backtest_tail_leaderboard.py` (copy-everyone at the operator-measured ~10s lag, per category, market-clustered bootstrap, pre-registered primary cell, pre-spread screen semantics), hardened against all 26 confirmed review findings; `scripts/check_trader_persistence.py` is the SECONDARY corroboration (its shuffle null is anti-conservative under shared-market overlap — labeled as such). Both await an operator VPS run. The other strategy direction is a **sharp-line reference** (compare whale entries to an efficient outside price); its vendor-independent core is built and tested, waiting on an OddsPapi paid tier for sports data. Everything is on GitHub; nothing is deployed except the pause.
 
@@ -36,11 +78,37 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
 | Scoring engine | `bots/mirror_scoring/` (from `mb-formula-review`) | 45 tests; runner unblocked (`8ea683d`); validate run pending |
 | M0-DB verify | `scripts/verify_salvage_data.py` | read-only; cascade bug fixed |
 | Tail backtest (PRIMARY) | `scripts/backtest_tail_leaderboard.py` | read-only; hardened vs 2026-07-09 review (strictly-after-print fills, per-slice coverage gate, fee-scaled pts + ret/$ units, paired tax, pre-registered primary cell `cat:sports@10s` + 30s lag-agreement, LIMIT sentinel, `--sample`/progress, stage/side mix printed, PASS* = pre-spread screen only); self-test + 14 unit tests green; **awaiting operator VPS run** |
+| Copyable-trader search | `scripts/find_copyable_traders.py` | full-history P1/P2 grader; leaderboard universe, time-windowed pagination, bot exclusion, gamma-label merge, deepen-aware cache; run-1 results in §1a |
+| Walk-forward grader (LEAD) | `scripts/walkforward_copy_traders.py` | hire-on-lifetime / fire-on-recent-decay / grade-post-hire; locked+shifted review grids; resolved_at knowledge gating; primary=VOL non-truncated |
+| Gamma label backfill | `scripts/backfill_resolutions_gamma.py` | resumable; lifts label coverage ~24%→80%+; wording-independent token labels; never guesses split/open markets |
+| Fill-quality gate | `scripts/backtest_copyable_fills.py` | audited coarse model at real ask for a NAMED roster; SURVIVES/FILL-KILLED/NO-BOOK; runs after a walk-forward PASS |
 | Persistence check (secondary) | `scripts/check_trader_persistence.py` | read-only; reworked verdicts (SIGNIFICANT-BUT-SMALL; NULL can't discard underpowered-significant cutoffs), UNION-ALL planner-safe SQL, estimand-faithful first-entry selection, `--since/--until`, LIMIT sentinel; anti-conservative-null caveat printed; self-test + 11 unit tests green; **awaiting operator VPS run** |
 | Operator runbooks | `docs/VPS_RUNBOOK_2026-07-02.md`, `deploy/mb_vps_oneshot.sh` | one-paste checks; mktemp-safe |
 
 ## 5. Open threads / what's next
 
+- **[NOW — decision tree for /tmp/walkforward.log]** When the running pipeline
+  finishes (check: `tail -3 /tmp/gamma_backfill.log /tmp/copyable3.log /tmp/walkforward.log`):
+  - **PASS** → the rostered addresses are the deliverable. Next: per-fill
+    OrderFilled chain audit on them, then `scripts/backtest_copyable_fills.py
+    --from-json` fill-quality gate, then operator decision on a v3 forward
+    paper deploy. NOT a live deploy.
+  - **FAIL-TERMINAL** → copy thesis closed retrospectively on the best data
+    that will ever exist; only a forward shadow test could revive it. Say so.
+  - **UNDERPOWERED / INCONCLUSIVE / NO-DATA** → check in order: label coverage
+    actually achieved (gamma report), slug-key residue (add slug lookup pass if
+    big), primary-universe size after bot exclusion (widen --universe if thin),
+    THEN rerun. Do not loosen thresholds — widen data.
+  - Interrupted pipeline? Every stage is resumable — rerun the same chained
+    command; caches make completed work free.
+- **[rules that BIND the next session]** No rework-then-retest until an
+  instrument passes; primary verdicts only from the pre-registered cells
+  (walk-forward primary = VOL-sourced non-truncated pooled edge); descriptive
+  cells (incl. politics' +5pts from run 1) are leads, not results; numbers get
+  cited with coverage/sample qualifiers.
+- **[superseded]** The tail backtest + persistence check below remain valid
+  instruments but are SECONDARY to the walk-forward since the 2026-07-10 pivot
+  to full-history data.
 - **[operator, GATING — PRIMARY] Run the tail backtest** — the direct "can we tail them
   reasonably?" test (operator's framing, 2026-07-09), hardened per the 61-agent review:
   ```
