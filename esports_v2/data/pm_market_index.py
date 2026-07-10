@@ -277,9 +277,15 @@ def _default_fetch_page(offset: int, limit: int) -> Optional[List[dict]]:
     (correct-or-absent — the collector then skips PM enrichment for this tick)."""
     import requests
 
+    # order=id&ascending=false (newest market first) is REQUIRED for coverage:
+    # Gamma hard-caps offset paging (422 "offset too large" past ~2100) and the
+    # esports tag holds ~3600 active markets. Default (oldest-first) order left
+    # the newest ~1500 markets unreachable — 93 of 130 live match-winner markets
+    # were invisible to the index (measured 2026-07-10). Newest-first puts the
+    # upcoming slate in page 0 and pushes the truncation onto stale history.
     url = (
         f"{_GAMMA_URL}?tag_id={_ESPORTS_TAG_ID}&closed=false&active=true"
-        f"&archived=false&limit={limit}&offset={offset}"
+        f"&archived=false&order=id&ascending=false&limit={limit}&offset={offset}"
     )
     try:
         r = requests.get(url, timeout=20, headers={"User-Agent": "eb-pm-index/1.0"})

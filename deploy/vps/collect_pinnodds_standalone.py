@@ -90,7 +90,9 @@ def fetch(k):
             return {}
     return {}
 def gamma_page(off):
-    q=urllib.parse.urlencode({"tag_id":64,"closed":"false","active":"true","archived":"false","limit":100,"offset":off})
+    # newest-first is REQUIRED: gamma 422-caps offset paging at ~2100 and the tag
+    # holds ~3600 active markets — oldest-first order hid 93/130 live match winners.
+    q=urllib.parse.urlencode({"tag_id":64,"closed":"false","active":"true","archived":"false","order":"id","ascending":"false","limit":100,"offset":off})
     req=urllib.request.Request(GAMMA+"?"+q,headers={"User-Agent":"eb-pm-index/1.0"})
     try:
         with urllib.request.urlopen(req,timeout=20) as r: d=json.load(r)

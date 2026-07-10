@@ -163,3 +163,34 @@ def test_match_alias_expand_injection():
     r = match_pm_ref("NAVI", "FaZe", "2026-01-27T19:00:00Z", _refs(m),
                      alias_expand=lambda t: aliases.get(t, []))
     assert r is not None
+
+
+# ── _default_fetch_page URL shape (gamma offset-cap regression) ──────────────
+
+
+def test_default_fetch_pages_newest_first(monkeypatch):
+    """Gamma 422-caps offset paging (~2100) while the esports tag holds ~3600
+    active markets. The fetch MUST page newest-first (order=id&ascending=false)
+    or the newest ~1500 markets — i.e. the upcoming match-winner slate — are
+    unreachable (93/130 live match winners missed, measured 2026-07-10)."""
+    import esports_v2.data.pm_market_index as mod
+
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return []
+
+    def fake_get(url, **kw):
+        captured["url"] = url
+        return _Resp()
+
+    import requests
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    assert mod._default_fetch_page(0, 100) == []
+    assert "order=id" in captured["url"]
+    assert "ascending=false" in captured["url"]
