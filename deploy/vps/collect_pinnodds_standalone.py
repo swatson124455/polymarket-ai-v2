@@ -27,6 +27,10 @@ def mkey(a,b,d):
 # orientation.normalize_team; same_team = conservative token-subset sharing a
 # non-generic token; match2 = bijective both-teams match. Correct-or-absent.
 GENERIC={"esports","esport","e-sports","gaming","team","club","academy","youth","challengers","challenger","junior"}
+# Sibling-roster qualifiers (mirrors team_match.SIBLING_QUALIFIERS): a DIFFERENCE
+# in these vetoes the match — "T1" != "T1 Academy" (different roster, same org),
+# even via aliases. Same-qualifier pairs still match ("T1 Academy"=="T1 Esports Academy").
+QUAL={"academy","youth","junior","juniors","rookies","challenger","challengers","female","fe","women","womens","ladies","gc","blue","white","black","gold","stars"}
 def tnorm(s):
     s=str(s or "").lower().replace("_"," ")
     s=re.sub(r"[^\w\s]"," ",s)
@@ -52,6 +56,7 @@ def same_team(x,y,am=None):
     nx,ny=tnorm(x),tnorm(y)
     if nx and nx==ny: return True
     if not nx or not ny: return False
+    if (set(nx.split())&QUAL)!=(set(ny.split())&QUAL): return False
     if am:
         ax={nx}|{tnorm(n) for n in am.get(nx,())}; ay={ny}|{tnorm(n) for n in am.get(ny,())}
         ax.discard(""); ay.discard("")

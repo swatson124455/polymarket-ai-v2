@@ -194,3 +194,11 @@ def test_default_fetch_pages_newest_first(monkeypatch):
     assert mod._default_fetch_page(0, 100) == []
     assert "order=id" in captured["url"]
     assert "ascending=false" in captured["url"]
+
+
+def test_match_pm_ref_does_not_attach_academy_market():
+    """Sibling-roster veto end-to-end: a PinnOdds row for the MAIN match must
+    not attach the org's academy fixture on the same day (different teams)."""
+    m = _mw_market(outcomes=json.dumps(["T1 Academy", "Gen.G Academy"]),
+                   question="LoL: T1 Academy vs Gen.G Academy (BO3) - LCK CL")
+    assert match_pm_ref("T1", "Gen.G", "2026-01-27T19:00:00Z", _refs(m)) is None

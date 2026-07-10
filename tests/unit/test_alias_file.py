@@ -153,3 +153,22 @@ def test_standalone_identity_only_and_malformed_are_none(tmp_path, monkeypatch):
     p.write_text("{broken", encoding="utf-8")
     sa2 = _load_standalone()
     assert sa2.load_aliases() is None
+
+
+def test_standalone_qualifier_veto_parity(tmp_path, monkeypatch):
+    """The stdlib mirror applies the same sibling-roster veto, alias or not."""
+    p = tmp_path / "aliases.json"
+    p.write_text(json.dumps({"groups": [["T1", "T1 Academy",
+                                         "T1 Esports Academy"]]}),
+                 encoding="utf-8")
+    monkeypatch.setenv("EB_ALIASES_PATH", str(p))
+    sa = _load_standalone()
+    am = sa.load_aliases()
+    assert am is not None
+    assert not sa.same_team("T1", "T1 Academy")
+    assert not sa.same_team("T1", "T1 Academy", am)   # veto outranks alias
+    assert sa.same_team("T1 Academy", "T1 Esports Academy")
+    assert sa.same_team("G2 Esports", "G2")           # decorations untouched
+    ref = ("0xacad", "1", "T1 Academy", 0.5, "T1 Academy", "Gen.G Academy",
+           "2026-07-15")
+    assert sa.match_ref("T1", "Gen.G", "2026-07-15T12:00:00Z", [ref], am=am) is None

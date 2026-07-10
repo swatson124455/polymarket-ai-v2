@@ -38,7 +38,10 @@ def test_same_team_exact_normalized():
 
 def test_same_team_token_subset_shares_non_generic():
     assert _same_team("G2 Esports", "G2", None)         # G2 shared, non-generic
-    assert _same_team("DRX Academy", "DRX", None)
+    # NOTE (2026-07-10 behavior change): "DRX Academy" <-> "DRX" was asserted
+    # True here — that WAS the sibling-roster bug (different teams, same org).
+    # The SIBLING_QUALIFIERS veto in team_match now rejects it.
+    assert not _same_team("DRX Academy", "DRX", None)
 
 
 def test_same_team_rejects_all_generic_overlap():

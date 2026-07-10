@@ -14,8 +14,10 @@ def test_same_team_exact_normalized():
 
 def test_same_team_token_subset_shares_non_generic():
     assert same_team("G2 Esports", "G2", None)
-    assert same_team("DRX Academy", "DRX", None)
     assert same_team("Team Vitality", "Vitality", None)
+    # NOTE (2026-07-10 behavior change): "DRX Academy" <-> "DRX" was asserted
+    # True here — that WAS the sibling-roster bug (different teams, same org).
+    # The qualifier veto now rejects it; see the veto tests below.
 
 
 def test_same_team_rejects_all_generic_overlap():
@@ -56,3 +58,61 @@ def test_same_team_diacritic_folded():
 def test_diacritic_fold_does_not_conflate_distinct_orgs():
     # Folding must not weaken the non-generic-token guard.
     assert not same_team("KRU Spark", "KRÜ Esports", None)   # academy != main org
+
+
+# ── sibling-roster qualifier veto (2026-07-10 fix) ───────────────────────────
+# "T1" vs "T1 Academy" are DIFFERENT teams of the same org; the subset rule
+# used to link them (and the seeded alias table equates them). A difference in
+# SIBLING_QUALIFIERS now vetoes, outranking both aliases and token-subset.
+
+
+def test_main_roster_does_not_match_academy():
+    assert not same_team("T1", "T1 Academy", None)
+    assert not same_team("T1", "T1 Esports Academy", None)
+    assert not same_team("DRX", "DRX Academy", None)
+    assert not same_team("Weibo Gaming", "Weibo Gaming Youth Team", None)
+    assert not same_team("W7M", "W7M Gaming Fe", None)
+    assert not same_team("Cloud9", "Cloud9 White", None)
+    assert not same_team("Karmine Corp", "Karmine Corp Blue", None)
+    assert not same_team("Karmine Corp Blue", "Karmine Corp Blue Stars", None)
+
+
+def test_same_qualifier_both_sides_still_matches():
+    assert same_team("T1 Academy", "T1 Esports Academy", None)
+    assert same_team("KT Rolster Academy", "KT Academy", None)
+
+
+def test_decorations_still_match():
+    # the intended subset links are untouched
+    assert same_team("G2 Esports", "G2", None)
+    assert same_team("Team Vitality", "Vitality", None)
+    assert same_team("LiT Esports", "LIT", None)
+
+
+def test_qualifier_veto_outranks_injected_alias():
+    # the seeded alias table really contains this contaminated group
+    aliases = {"T1": ["T1 Academy", "T1 Esports Academy"],
+               "T1 Academy": ["T1"]}
+    expand = lambda t: aliases.get(t, [])
+    assert not same_team("T1", "T1 Academy", expand)
+    assert not same_team("T1 Academy", "T1", expand)
+
+
+def test_exact_equality_still_wins():
+    # identical names trivially share identical qualifier sets
+    assert same_team("T1 Academy", "T1 Academy", None)
+    assert same_team("KRÜ Esports", "KRU Esports", None)  # diacritic fold
+
+
+def test_bijection_rejects_academy_fixture():
+    # odds row for the main match must not map onto the academy fixture
+    assert match_teams("T1", "Gen.G", "T1 Academy", "Gen.G Academy", None) is None
+
+
+def test_color_roster_qualifiers_veto():
+    # Shopify Rebellion Black coexists with main Shopify Rebellion in the
+    # 2026-07-10 live index — the subset rule linked them pre-fix.
+    assert not same_team("Shopify Rebellion", "Shopify Rebellion Black", None)
+    assert not same_team("Gen.G", "Gen.G Gold", None)
+    # core-color org names carry the token on BOTH sides -> no veto
+    assert same_team("Black Dragons e-Sports", "Black Dragons", None)

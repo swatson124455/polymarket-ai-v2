@@ -9,7 +9,14 @@ S152/B2 loss class), so the rule is deliberately strict:
   - injected-alias-set overlap, OR
   - a token-subset that shares a NON-GENERIC token ("G2 Esports" <-> "G2",
     "Team Vitality" <-> "Vitality"), never an all-generic overlap
-    ("R2 Esports Club" </> "Esports Club").
+    ("R2 Esports Club" </> "Esports Club"),
+
+subject to a HARD VETO that outranks all three: names whose sibling-roster
+qualifiers differ (SIBLING_QUALIFIERS: academy/youth/female/... ) are
+DIFFERENT teams of the same org and never match — "T1" </> "T1 Academy",
+"Cloud9" </> "Cloud9 White" (fixed 2026-07-10; the subset rule previously
+linked them, and the seeded alias table is contaminated with exactly these
+cross-roster pairs).
 
 ``match_teams`` additionally requires a clean BIJECTION of {home, away} onto the
 two candidate teams — a one-sided match is rejected — so callers pair a match to
@@ -30,6 +37,30 @@ GENERIC_TOKENS = {
     "academy", "youth", "challengers", "challenger", "junior",
 }
 
+# Sibling-roster qualifiers: tokens that mark a DIFFERENT team of the same org
+# (academy / youth / female / secondary rosters). NOT decorations: "G2
+# Esports" == "G2" (decoration), but "T1" != "T1 Esports Academy" — a
+# different roster that can play on the SAME day (LCK vs LCK CL), so linking
+# them is a live wrong-attach risk (the S152/B2 loss class). Evidence: the
+# 2026-07-10 esports_team_aliases dump — every cross-roster group in it
+# (T1 / T1 Academy, Weibo Gaming / Youth Team, W7M / W7M Gaming Fe,
+# Karmine Corp Blue / Blue Stars) is a distinct-team pair. A DIFFERENCE in
+# these tokens vetoes the match — even via injected aliases (the seed table
+# is demonstrably contaminated with such groups). Both names carrying the
+# SAME qualifier still match ("T1 Academy" == "T1 Esports Academy"). The veto
+# can only REMOVE a match, never add one (correct-or-absent-safe direction).
+SIBLING_QUALIFIERS = {
+    "academy", "youth", "junior", "juniors", "rookies",
+    "challenger", "challengers",
+    "female", "fe", "women", "womens", "ladies", "gc",
+    "blue", "white", "black", "gold", "stars",
+}
+
+
+def sibling_qualifiers(norm_name: str) -> set:
+    """The sibling-roster qualifier tokens present in a normalized name."""
+    return set(norm_name.split()) & SIBLING_QUALIFIERS
+
 
 def alias_set(team: str, alias_expand: Optional[Callable[[str], Iterable[str]]]) -> set:
     out = {normalize_team(team)}
@@ -48,16 +79,26 @@ def same_team(
     """True iff two team names refer to the same org (conservative).
 
     Match on: exact normalized equality, alias-set overlap, or a token-subset
-    that shares a NON-GENERIC token. The last rule links "G2 Esports" <-> "G2"
-    and "DRX Academy" <-> "DRX" without linking "R2 Esports Club" <-> "Esports
-    Club" (all-generic overlap) — the same guard the seed script trusts.
+    that shares a NON-GENERIC token. The subset rule links "G2 Esports" <->
+    "G2" and "Team Vitality" <-> "Vitality" without linking "R2 Esports Club"
+    <-> "Esports Club" (all-generic overlap) — the same guard the seed script
+    trusts.
+
+    HARD VETO before the alias/subset paths: names whose sibling-roster
+    qualifiers differ ("T1" vs "T1 Academy") are different rosters and never
+    match — not even via injected aliases, because the seeded alias table is
+    contaminated with exactly these cross-roster groups (2026-07-10 dump).
     """
+    nx, ny = normalize_team(x), normalize_team(y)
+    if nx and nx == ny:
+        return True
+    if not nx or not ny:
+        return False
+    if sibling_qualifiers(nx) != sibling_qualifiers(ny):
+        return False
     ax, ay = alias_set(x, alias_expand), alias_set(y, alias_expand)
     if ax & ay:
         return True
-    nx, ny = normalize_team(x), normalize_team(y)
-    if not nx or not ny:
-        return False
     tx, ty = set(nx.split()), set(ny.split())
     if not tx or not ty:
         return False
