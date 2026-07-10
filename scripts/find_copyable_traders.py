@@ -437,16 +437,17 @@ async def load_markets(db, keys: list[str], timeout_s: int) -> dict[str, dict]:
             return (await s.execute(sql, {param_key: batch})).fetchall()
 
     sql_c = text("SELECT condition_id, CAST(id AS TEXT) AS nid, resolution, resolved, "
-                 "yes_token_id, no_token_id, COALESCE(category,'') AS category "
+                 "resolved_at, yes_token_id, no_token_id, COALESCE(category,'') AS category "
                  "FROM markets WHERE condition_id = ANY(:ks)")
     sql_n = text("SELECT condition_id, CAST(id AS TEXT) AS nid, resolution, resolved, "
-                 "yes_token_id, no_token_id, COALESCE(category,'') AS category "
+                 "resolved_at, yes_token_id, no_token_id, COALESCE(category,'') AS category "
                  "FROM markets WHERE id = ANY(:ks)")
     for sql, batch_all in ((sql_c, cids), (sql_n, nids)):
         for i in range(0, len(batch_all), 500):
             for r in await _run(sql, "ks", batch_all[i:i + 500]):
                 d = dict(r._mapping)
                 m = {"resolution": d["resolution"] if d["resolved"] else None,
+                     "resolved_at": d.get("resolved_at"),
                      "yes_token_id": d["yes_token_id"], "no_token_id": d["no_token_id"],
                      "category": d["category"]}
                 if d["condition_id"]:
