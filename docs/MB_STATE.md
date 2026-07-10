@@ -1,8 +1,62 @@
 # MirrorBot Rebuild — Living State / Handoff (docs/MB_STATE.md)
 
-**Last updated:** 2026-07-10 (second session, ~18:50 UTC) · **Branch:** `claude/mirrorbot-persistence-check-irq7r5` (fast-forward superset of `oc02tk`/PR #1; head `0bdd4de`)
+**Last updated:** 2026-07-10 (second session, ~20:20 UTC) · **Branch:** `claude/mirrorbot-persistence-check-irq7r5` (fast-forward superset of `oc02tk`/PR #1; head = this commit)
 **Read first:** `CLAUDE.md` (binding directives), then this file, then **`docs/MB_COPYTRADER_CONTEXT.md` (FULL context brief for the live copy-trader investigation — the complete reasoning chain, API gotchas, and decision tree)**. `MB_REBUILD_PLAN.md` holds the older plan + operator decisions.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
+
+---
+
+## 0. IMMEDIATE RESUME (2026-07-10 ~20:20 UTC — do this first, nothing is lost)
+
+**A full-coverage pipeline is RUNNING detached on the VPS and needs no
+babysitting.** It survives the operator's machine being off — only a VPS
+reboot would kill it (data is snapshotted against that, see below).
+
+**The operator runs all VPS commands** via single-line SSH one-liners from
+Windows PowerShell (he cannot paste after connecting; never give multi-line).
+Template: `ssh -t -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 "..."`.
+
+**Live state right now:**
+- Pipeline (backfill `&&` walk-forward) launched ~16:59 UTC from `/tmp/mbpc2`
+  (= commit `b609c14`). Backfill at 20:15 UTC: chunk 5,760/8,189, **139,357
+  labels, errors=2** (negligible). ETA backfill done **~21:40 UTC**, then the
+  walk-forward auto-fires; table lands in **`/tmp/walkforward3.log`**
+  (JSON `/tmp/walkforward3.json`) a few minutes later.
+- Durable snapshot SECURED: `/opt/pa2-shared/mb_copyable_data` (3.4GB —
+  `copyable_cache` + `gamma2.log`). A VPS reboot no longer costs the 14h+ of
+  API work. NOTE: that snapshot's `gamma_resolutions.json` may be torn (taken
+  mid-checkpoint; running code predates atomic-write fix `0bdd4de`) — the
+  post-finish re-copy (step 2 below) is the authoritative one.
+
+**NEXT ACTION — hand the operator this, from ~21:45 UTC on:**
+```
+ssh -t -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 "date -u; tail -n 3 /tmp/gamma2.log; ls -l --time-style=full-iso /tmp/walkforward3.log 2>&1 && tail -n 45 /tmp/walkforward3.log"
+```
+Then read the PRIMARY (VOL-sourced, non-truncated) verdict per §5 decision
+tree. **ACCEPT the table only if** the header shows `gamma-backfilled labels
+merged=` in the six figures AND `labeled first-buys` far exceeds run-2's
+29,635 — otherwise it isn't the full-coverage run (chain wins on any mismatch;
+descriptive cells are leads, not results).
+
+**On PASS, in order:** (1) re-copy the authoritative snapshot:
+`ssh ... "sudo cp -a /tmp/copyable_cache /tmp/walkforward3.json /tmp/walkforward3.log /tmp/gamma2.log /opt/pa2-shared/mb_copyable_data/ && du -sh /opt/pa2-shared/mb_copyable_data"`
+(2) re-clone `/tmp/mbpc2` to head (the running clone predates the chain-audit
++ atomic-write commits): `rm -rf /tmp/mbpc2 && git clone -q --depth 1 -b claude/mirrorbot-persistence-check-irq7r5 <repo> /tmp/mbpc2`
+(3) **mandatory** per-fill chain audit (~15-20 min):
+`sudo -u polymarket env PYTHONPATH=/tmp/mbpc2 venv/bin/python /tmp/mbpc2/scripts/audit_roster_chain.py --from-json /tmp/walkforward3.json --cache /tmp/copyable_cache | tee /tmp/chain_audit.log`
+(4) fill-quality gate on the CLEAN roster:
+`scripts/backtest_copyable_fills.py --traders <clean addrs> --lags 5,10,30`
+(verdict at the measured 10s; 5s is a sensitivity lead only, NOT the money
+lag). (5) operator decision on a v3 forward PAPER deploy — never a live deploy
+from a backtest.
+**On FAIL-TERMINAL / INCONCLUSIVE / UNDERPOWERED / NO-DATA:** §5 tree — widen
+DATA, never loosen thresholds.
+
+**If the pipeline is interrupted:** everything is resumable + atomic-safe.
+Re-clone `/tmp/mbpc2` to head, then relaunch backfill `&&` walk-forward (the
+banked labels + 14h cache make completed work free). Kill stale runs with a
+BRACKET pattern (`pkill -f 'backfill_resol[u]tions'`) — a plain `-f` pattern
+matches the SSH one-liner's own shell and kills the session (§7 landmine).
 
 ---
 
@@ -58,11 +112,14 @@ public Polymarket APIs and find COPYABLE traders directly.** Chain of results:
    `resolution_backfill.py`'s per-key CLOB endpoint (`b609c14`).
 6. **THE FULL-COVERAGE PIPELINE IS RUNNING** (launched ~16:59 UTC from
    `/tmp/mbpc2` = `b609c14`): CLOB label backfill (`/tmp/gamma2.log`; at
-   19:22 UTC: chunk 4,120/8,189, 99,658 labeled, 0 errors; ETA ~22:00 UTC)
-   `&&` walk-forward → `/tmp/walkforward3.{log,json}`. THE NEXT ACTION IS
-   READING `/tmp/walkforward3.log` (§5 decision tree) — accept it only if
-   `gamma-backfilled labels merged=` is in the tens of thousands and
-   `labeled first-buys` far exceeds run 2's 29,635.
+   20:15 UTC: chunk 5,760/8,189, 139,357 labeled, errors=2; ETA backfill
+   ~21:40 UTC) `&&` walk-forward → `/tmp/walkforward3.{log,json}`. See §0
+   IMMEDIATE RESUME for the exact next command + accept criteria + PASS
+   sequence. Durable 3.4GB snapshot already taken (`/opt/pa2-shared/
+   mb_copyable_data`); re-copy after finish for the authoritative version.
+   Also NEW this session: mandatory per-fill chain audit
+   (`scripts/audit_roster_chain.py`, `28a447d`) + atomic JSON writes across
+   all 4 scripts (`0bdd4de`) + this handoff.
 
 Fill-quality gate (`scripts/backtest_copyable_fills.py`, audited coarse model,
 real ask crossed) is built and waiting for whatever roster passes. Per-fill
