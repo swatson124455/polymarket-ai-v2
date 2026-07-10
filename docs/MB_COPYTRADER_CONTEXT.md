@@ -148,6 +148,13 @@ partial failures, resolutions chain-verified 20/20. Regression-to-mean visible
   by multi-fill transactions — dedupe key includes token/ts/price/size).
 - **Leaderboard must pin `timePeriod=ALL`** (unpinned default is a recent
   window → irreproducible, outcome-selected universe). Offset caps at 1000.
+- **gamma `/markets?condition_ids=` is silently ignored** (200 + `[]` — two
+  full backfill runs labeled ZERO before this was caught, 2026-07-10). Label
+  lookups by condition id go to CLOB `/markets/{cid}` per key (production-
+  proven; `resolution_backfill.py:17`). Numeric ids: gamma `/markets/{id}`.
+- **`pkill -f` from an SSH one-liner must use a bracket pattern**
+  (`backfill_resol[u]tions`) or it matches the one-liner's own shell and
+  kills the session mid-command.
 - **Never cache a partial pull** (timeout/circuit-breaker mid-pagination) —
   it silently becomes a "complete" record and corrupts every later run.
 - **markets lookups must be two index-backed queries** (condition_id ANY /

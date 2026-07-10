@@ -1,6 +1,6 @@
 # MirrorBot Rebuild — Living State / Handoff (docs/MB_STATE.md)
 
-**Last updated:** 2026-07-10 · **Branch:** `claude/mirrorbot-persistence-check-oc02tk` (PR #1)
+**Last updated:** 2026-07-10 (second session, ~18:50 UTC) · **Branch:** `claude/mirrorbot-persistence-check-irq7r5` (fast-forward superset of `oc02tk`/PR #1; head `0bdd4de`)
 **Read first:** `CLAUDE.md` (binding directives), then this file, then **`docs/MB_COPYTRADER_CONTEXT.md` (FULL context brief for the live copy-trader investigation — the complete reasoning chain, API gotchas, and decision tree)**. `MB_REBUILD_PLAN.md` holds the older plan + operator decisions.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
@@ -38,10 +38,31 @@ public Polymarket APIs and find COPYABLE traders directly.** Chain of results:
    — DB label coverage was 24%; backfill lifts to ~80-95% via a local JSON the
    graders merge under the DB map (DB wins); (c) truncated caches re-deepen
    when --max-bets rises (`--deepen vol`).
-4. **A 3-stage detached pipeline is RUNNING on the VPS** (gamma backfill →
-   deepen humans-only → walk-forward). Logs: `/tmp/gamma_backfill.log`,
-   `/tmp/copyable3.log`, `/tmp/walkforward.log`. Cache: `/tmp/copyable_cache`.
-   THE NEXT ACTION IS READING `/tmp/walkforward.log` (§5 decision tree).
+4. **A 3-stage detached pipeline RAN on the VPS** (gamma backfill → deepen
+   humans-only → walk-forward). The deepen took ~13h (01:15→~14:30 UTC,
+   0 partial-failed); its walk-forward stage never fired (stale-log ownership
+   collision) and was re-run standalone at 15:02.
+5. **2026-07-10 second session (branch `irq7r5`) — run-2 verdict + two root
+   causes found and fixed.** The 15:02 walk-forward printed **PASS on the
+   pre-registered primary** (VOL-sourced non-truncated: edge +0.0145,
+   P(edge>0)=0.985, 5,338 bets / 3,947 mkts / 19 traders, robustness splits
+   +0.0137/+0.0130, `/tmp/walkforward2.log`) — **PROVISIONAL**: it graded on
+   DB-only labels (~24% coverage; header `gamma-backfilled labels merged=0`),
+   and the point estimate sits under the +0.02 econ floor (upper95 +0.0250
+   above it). DECLARED BEFORE THE RERUN: the full-coverage rerun REPLACES
+   this verdict whichever way it goes. Root causes of merged=0, both fixed:
+   (a) `merge_gamma_cache` refused labels for DB-known-but-unresolved rows
+   (`aa6bbc1`); (b) the gamma backfill NEVER labeled anything — gamma's
+   `/markets?condition_ids=` filter is silently ignored (probe-verified live:
+   CLOB echoes the exact market, gamma returns `[]`); ported production
+   `resolution_backfill.py`'s per-key CLOB endpoint (`b609c14`).
+6. **THE FULL-COVERAGE PIPELINE IS RUNNING** (launched ~16:59 UTC from
+   `/tmp/mbpc2` = `b609c14`): CLOB label backfill (`/tmp/gamma2.log`; at
+   19:22 UTC: chunk 4,120/8,189, 99,658 labeled, 0 errors; ETA ~22:00 UTC)
+   `&&` walk-forward → `/tmp/walkforward3.{log,json}`. THE NEXT ACTION IS
+   READING `/tmp/walkforward3.log` (§5 decision tree) — accept it only if
+   `gamma-backfilled labels merged=` is in the tens of thousands and
+   `labeled first-buys` far exceeds run 2's 29,635.
 
 Fill-quality gate (`scripts/backtest_copyable_fills.py`, audited coarse model,
 real ask crossed) is built and waiting for whatever roster passes. Per-fill
@@ -80,15 +101,27 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
 | Tail backtest (PRIMARY) | `scripts/backtest_tail_leaderboard.py` | read-only; hardened vs 2026-07-09 review (strictly-after-print fills, per-slice coverage gate, fee-scaled pts + ret/$ units, paired tax, pre-registered primary cell `cat:sports@10s` + 30s lag-agreement, LIMIT sentinel, `--sample`/progress, stage/side mix printed, PASS* = pre-spread screen only); self-test + 14 unit tests green; **awaiting operator VPS run** |
 | Copyable-trader search | `scripts/find_copyable_traders.py` | full-history P1/P2 grader; leaderboard universe, time-windowed pagination, bot exclusion, gamma-label merge, deepen-aware cache; run-1 results in §1a |
 | Walk-forward grader (LEAD) | `scripts/walkforward_copy_traders.py` | hire-on-lifetime / fire-on-recent-decay / grade-post-hire; locked+shifted review grids; resolved_at knowledge gating; primary=VOL non-truncated |
-| Gamma label backfill | `scripts/backfill_resolutions_gamma.py` | resumable; lifts label coverage ~24%→80%+; wording-independent token labels; never guesses split/open markets |
+| Label backfill (CLOB) | `scripts/backfill_resolutions_gamma.py` | REWORKED `b609c14`: per-key CLOB `/markets/{cid}` (gamma batch filter is a no-op — §7); prices-first resolution, winner-flag fallback; resumable, atomic checkpoints; live run ~96% label rate, 0 errors |
+| Chain audit (mandatory pre-money) | `scripts/audit_roster_chain.py` | NEW `28a447d`: per-fill OrderFilled audit of the walk-forward roster, BOTH exchanges (main + NegRisk), CLEAN/DISCREPANT/THIN/ERROR + AUDIT-INCONCLUSIVE tripwire; self-test + 11 unit tests |
 | Fill-quality gate | `scripts/backtest_copyable_fills.py` | audited coarse model at real ask for a NAMED roster; SURVIVES/FILL-KILLED/NO-BOOK; runs after a walk-forward PASS |
 | Persistence check (secondary) | `scripts/check_trader_persistence.py` | read-only; reworked verdicts (SIGNIFICANT-BUT-SMALL; NULL can't discard underpowered-significant cutoffs), UNION-ALL planner-safe SQL, estimand-faithful first-entry selection, `--since/--until`, LIMIT sentinel; anti-conservative-null caveat printed; self-test + 11 unit tests green; **awaiting operator VPS run** |
 | Operator runbooks | `docs/VPS_RUNBOOK_2026-07-02.md`, `deploy/mb_vps_oneshot.sh` | one-paste checks; mktemp-safe |
 
 ## 5. Open threads / what's next
 
-- **[NOW — decision tree for /tmp/walkforward.log]** When the running pipeline
-  finishes (check: `tail -3 /tmp/gamma_backfill.log /tmp/copyable3.log /tmp/walkforward.log`):
+- **[NOW — decision tree for /tmp/walkforward3.log]** (the OLD
+  `/tmp/walkforward.log` is a stale pre-pipeline artifact — ignore it; use
+  `tail -n 4 /tmp/gamma2.log` for backfill progress, table lands in
+  `/tmp/walkforward3.log`). First check the header: `gamma-backfilled labels
+  merged=` must be ≫0 and `labeled first-buys` ≫ 29,635, else it's not the
+  full-coverage run. On **PASS**: (1) re-copy the durable snapshot (below),
+  (2) re-clone `/tmp/mbpc2` (the running clone predates the audit script),
+  (3) `scripts/audit_roster_chain.py --from-json /tmp/walkforward3.json`
+  (mandatory chain audit; ~15-20 min), (4) fill-quality gate
+  `backtest_copyable_fills.py --traders <CLEAN roster> --lags 5,10,30`
+  (verdict at the measured 10s; 5s is a sensitivity lead only), (5) operator
+  decision on a v3 forward PAPER deploy. Everything else per the original
+  tree below:
   - **PASS** → the rostered addresses are the deliverable. Next: per-fill
     OrderFilled chain audit on them, then `scripts/backtest_copyable_fills.py
     --from-json` fill-quality gate, then operator decision on a v3 forward
@@ -159,7 +192,29 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
 - **mb-formula-review** branch owns the *statistical* scoring lane; MB owns execution/guards/gate. Three statistical findings (condition-vs-event clustering, validation statistic, EB-shrink pool) handed over as recommendations, not applied.
 - **MB has priority** on shared resources (CLAUDE.md). Old poisoned project lives at parent `C:/lockes-picks/` — OUT OF SCOPE.
 
+- **[operator, after pipeline finishes] Re-run the durable snapshot copy** —
+  ALL investigation data lives in `/tmp` (reboot-ephemeral). A parallel
+  snapshot was taken mid-run 2026-07-10 (`/opt/pa2-shared/mb_copyable_data`)
+  but may hold a torn gamma checkpoint (running code predates the atomic-
+  write fix `0bdd4de`); the post-finish re-copy is the authoritative one:
+  `sudo cp -a /tmp/copyable_cache /tmp/walkforward3.json /tmp/walkforward3.log /tmp/gamma2.log /opt/pa2-shared/mb_copyable_data/`
+
 ## 7. Landmines (do not trip)
+
+- **gamma `/markets?condition_ids=` is a silent no-op** — HTTP 200, `[]`,
+  zero errors; it burned two full backfill runs before being caught
+  (probe-verified 2026-07-10). Per-key CLOB `/markets/{condition_id}` is the
+  production-proven path (`resolution_backfill.py:17`). Never batch-filter
+  gamma by condition id.
+- **`pkill -f <pattern>` where the pattern appears in your own SSH command
+  string kills your own session** before the rest of the command runs (bit
+  us 2026-07-10: the kill+re-clone one-liner died at the clone). Use a
+  bracket pattern (`backfill_resol[u]tions`) in operator one-liners.
+- **All copy-trader investigation data is in `/tmp`** — one VPS reboot erases
+  ~14h of API downloads + labels. Durable copy: §5 last item.
+- **`/tmp/walkforward.log` + `/tmp/walkforward2.log` are superseded
+  artifacts** (stale pre-pipeline run; provisional DB-only-label PASS).
+  The citable run is `/tmp/walkforward3.*` only.
 
 - **`bots/mirror_scoring/validation.py` is a false-PASS machine** (confirmed 2026-07-09, adversarially verified): `_UNIVERSE_SQL` has no time bound, BH admission keys on the post-cutoff test half, and the "out-of-sample" rejected-signals set shares the same post-cutoff (trader, market, outcome) randomness. Any PASS it emits is selection noise — never clear the UNVERIFIED label with it, never cite it in a go decision. (FAILs are directionally credible: the bias runs the other way.)
 - **order_gateway neg-risk block** no-ops for MB by accident (CLAUDE.md "DORMANT LANDMINE"). "Repairing" the index re-creates Bug 14 (election blackout). Leave it.
