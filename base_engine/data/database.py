@@ -538,6 +538,10 @@ class PredictionLog(Base):
     resolved_at = Column(NaiveUTCDateTime)
     was_correct = Column(Boolean)
     realized_edge = Column(Float)
+    # S226 (V23): probability frame of predicted_prob — 'yes' = P(YES) (all
+    # post-S226 WeatherBot rows) | NULL = pre-instrumentation (PSW rows are
+    # frame-ambiguous and must not be graded). Migration 080.
+    prob_frame = Column(String, nullable=True)
     trade_executed = Column(Boolean, default=False)
     trade_side = Column(String)
     trade_size = Column(Float)
@@ -3385,8 +3389,15 @@ class Database:
         feature_snapshot: Optional[Dict] = None,
         correlation_id: Optional[str] = None,
         bot_name: Optional[str] = None,
+        prob_frame: Optional[str] = None,
     ) -> None:
         """Log a prediction for drift detection and live performance tracking. No-op if no db or table missing.
+
+        prob_frame (S226 V23): 'yes' marks predicted_prob as P(YES) — the frame
+        the grader assumes. THIS class is the one the WeatherBot service binds
+        at runtime (main.py -> BaseEngine -> db), so it MUST stay signature-
+        compatible with the vendored copy for every WB-passed kwarg. Requires
+        migration 080 (column exists in the shared DB).
 
         Trade-marking columns (`trade_executed`, `trade_side`, `trade_size`, `trade_price`,
         `trade_pnl`) are intentionally NOT parameters here. They are populated only by
@@ -3416,6 +3427,7 @@ class Database:
                     feature_snapshot=feature_snapshot,
                     correlation_id=correlation_id,
                     bot_name=bot_name,
+                    prob_frame=prob_frame,
                 )
                 session.add(log)
                 await session.commit()

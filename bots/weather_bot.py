@@ -998,7 +998,11 @@ class WeatherBot(BaseBot):
                 for _k in _sorted[:2500]:
                     del self._prediction_log_cache[_k]
         except Exception as exc:
-            logger.debug("weatherbot_prediction_log_failed", error=str(exc))
+            # S226: elevated debug → warning (S177 precedent — same class of
+            # silent failure). A debug-level swallow hid a TypeError that
+            # killed ALL prediction logging for hours after the 07-10 deploy;
+            # the journal runs at info, so debug is invisible in production.
+            logger.warning("weatherbot_prediction_log_failed", error=str(exc))
 
     async def _backfill_weather_outcomes(self) -> None:
         """Resolve WeatherBot predictions against settled markets.

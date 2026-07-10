@@ -5029,3 +5029,18 @@ class TestS226YesFramePriceLogging:
         assert yes_price == pytest.approx(0.60)          # res NO → realized_edge = market_price ✓
         # Pre-fix the row stored market_price=0.40 (chosen side) → res NO gave 0.40: wrong.
         assert 0.40 != pytest.approx(0.60)
+
+
+class TestS226ProbFrameTopLevelDatabase:
+    """S226 hotfix: the WB service runs main.py, whose BaseEngine hands the bot
+    the TOP-LEVEL base_engine.data.database.Database — not the vendored copy.
+    prob_frame was added only to the vendored insert_prediction_log, so every
+    live _log_weather_prediction call raised TypeError (unexpected keyword),
+    swallowed at debug level: prediction logging silently died at the
+    2026-07-10 20:12 deploy. Both Database classes must accept prob_frame."""
+
+    def test_top_level_insert_accepts_prob_frame(self):
+        import inspect
+        from base_engine.data.database import Database, PredictionLog
+        assert "prob_frame" in inspect.signature(Database.insert_prediction_log).parameters
+        assert hasattr(PredictionLog, "prob_frame")
