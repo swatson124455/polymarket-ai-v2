@@ -6,7 +6,7 @@ cd /home/ubuntu/eb-backtest || exit 1
 echo "HEAD: $(git rev-parse --short HEAD)"
 echo "=== 2) re-fetch results window (fixed fetcher) ==="
 export PANDASCORE_API_KEY="$(grep -m1 '^PANDASCORE_API_KEY=' /opt/pa2-shared/.env | cut -d= -f2- | tr -d '"\r')"
-python3 -m esports_v2.scripts.fetch_results_window --days-back 4 --games valorant,cs2,lol,dota2 --out /home/ubuntu/eb-odds/results_window.jsonl
+python3 -m esports_v2.scripts.fetch_results_window --days-back 4 --games valorant,cs2,lol,dota2,r6 --out /home/ubuntu/eb-odds/results_window.jsonl
 echo "=== 3) PER-MATCH LABEL DUMP (verify winners against real-world results) ==="
 python3 -m esports_v2.scripts.dump_joined --snapshots /home/ubuntu/eb-odds/pinnodds_snapshots.jsonl --bulk /home/ubuntu/eb-odds/results_window.jsonl
 echo "=== 4) metrics on the re-fetched labels ==="

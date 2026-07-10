@@ -28,6 +28,7 @@ a wrong side.
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Callable, Iterable, Optional
 
 # Affirmative / negative token labels for shape-1 detection.
@@ -58,11 +59,14 @@ _NON_MATCH_RX = re.compile(
 
 
 def normalize_team(name: str) -> str:
-    """Lowercase, treat underscores/punctuation as separators, collapse
-    whitespace. Keeps Unicode letters (\\w is unicode-aware) so international
-    team names survive; only underscore is stripped explicitly since \\w keeps
-    it."""
+    """Lowercase, fold diacritics, treat underscores/punctuation as separators,
+    collapse whitespace. Diacritic folding (NFKD + strip combining marks) makes
+    'Çilekler' == 'Cilekler' — odds and results sources romanize inconsistently
+    (a real 2026-07-10 join miss). Other Unicode letters survive (\\w is
+    unicode-aware) so non-Latin team names still work."""
     s = str(name or "").lower().replace("_", " ")
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
     s = re.sub(r"[^\w\s]", " ", s)
     return re.sub(r"\s+", " ", s).strip()
 

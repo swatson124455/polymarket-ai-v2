@@ -27,7 +27,7 @@ bijective matcher + multi-winner ambiguity guard do the rest downstream).
 Env:  PANDASCORE_API_KEY  (same key the live bot requires)
 Usage:
     python -m esports_v2.scripts.fetch_results_window \
-        --days-back 4 --games valorant,cs2,lol,dota2 --out results_window.jsonl
+        --days-back 4 --games valorant,cs2,lol,dota2,r6 --out results_window.jsonl
 """
 from __future__ import annotations
 
@@ -52,13 +52,15 @@ _PER_PAGE = 100
 _MAX_PAGES = 10          # window is days, not years — 1000 matches/game is plenty
 _REQ_DELAY = 1.2         # free tier: 1000 req/hr; stay far under it
 
-# PandaScore slugs (CS2 still lives under the legacy "csgo" slug, same as
-# pandascore_loader.GAME_SLUGS).
+# PandaScore API-path slugs (CS2 still lives under the legacy "csgo" slug, same
+# as pandascore_loader.GAME_SLUGS; R6 path is "r6siege" — verified live
+# 2026-07-10 against /r6siege/matches/past).
 GAME_SLUGS = {
     "valorant": "valorant",
     "cs2": "csgo",
     "lol": "lol",
     "dota2": "dota2",
+    "r6": "r6siege",
 }
 
 # Injectable HTTP GET: url -> parsed JSON list, or None on failure.
@@ -227,7 +229,7 @@ def _default_http_get(url: str) -> Optional[list]:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Fetch a recent results window (PandaScore)")
     ap.add_argument("--days-back", type=int, default=4)
-    ap.add_argument("--games", default="valorant,cs2,lol,dota2",
+    ap.add_argument("--games", default="valorant,cs2,lol,dota2,r6",
                     help=f"csv of {list(GAME_SLUGS)}")
     ap.add_argument("--out", required=True, help="output bulk-shaped JSONL path")
     args = ap.parse_args()

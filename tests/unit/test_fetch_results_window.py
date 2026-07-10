@@ -111,3 +111,9 @@ def test_winner_fallback_unknown_team_id_skipped():
     m = _ps_match(winner=None,
                   results=[{"team_id": 99, "score": 2}, {"team_id": 1, "score": 1}])
     assert parse_match_row(m, "valorant") is None            # can't map -> never guess
+
+
+def test_r6_slug_supported():
+    calls = []
+    fetch_window(["r6"], "a", "b", http_get=lambda u: calls.append(u) or [])
+    assert calls and "/r6siege/matches/past" in calls[0]

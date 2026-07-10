@@ -45,3 +45,14 @@ def test_match_teams_ambiguous_returns_none():
     # a team that matches neither side -> no clean bijection
     assert match_teams("A", "B", "A", "C", None) is None
     assert match_teams("X", "Y", "A", "B", None) is None
+
+
+def test_same_team_diacritic_folded():
+    # Real 2026-07-10 join miss: PinnOdds 'Cilekler' vs PandaScore 'Çilekler'.
+    assert same_team("Cilekler", "Çilekler", None)
+    assert same_team("KRÜ Esports", "KRU Esports", None)
+
+
+def test_diacritic_fold_does_not_conflate_distinct_orgs():
+    # Folding must not weaken the non-generic-token guard.
+    assert not same_team("KRU Spark", "KRÜ Esports", None)   # academy != main org
