@@ -66,9 +66,13 @@ sharp-line suite **163 green**):
 | `7a0086b` | `closing_line.py` + `results_join.py` + `sharp_eval.py` + `eval_sharp_line.py` | Thread the PM fields ClosingLine→JoinedRecord; add `edge_backtest_from_joined()` (pure, injectable orientation resolver = live CLOB by default, flip-proof via `clob_labels`); driver runs the edge backtest after the sharp-line report, **guarded** so zero CLOB calls until a joined record actually carries a PM price. |
 
 **⚠️ OPERATOR ACTION REQUIRED to start capturing PM prices** — the VPS bootstrap
-changed (adds the Gamma PM index). Redeploy `deploy/vps/collect_pinnodds_standalone.py`
-to `/home/ubuntu/eb-odds/collect_pinnodds_standalone.py`. **New md5:
-`87bebc3cb539d9c3699b2b0fbfd03e55`** (was `3f6e794f21e3bd40ef97b01c7fad3116`).
+changed (adds the Gamma PM index + the bijective team matcher). Redeploy
+`deploy/vps/collect_pinnodds_standalone.py` to
+`/home/ubuntu/eb-odds/collect_pinnodds_standalone.py`. **Current md5:
+`5fcb2c4f0143c35351c12704f3a2edcf`** (prior `87bebc3c…` = exact-name only;
+`3f6e794f…` = odds-only). The md5-`87bebc3c` PM-capture drop was live-deployed +
+verified 2026-07-10 00:2x UTC; this `5fcb2c4f` drop ADDS the alias/token-subset
+matching below and must replace it.
 Until redeployed the cron keeps writing odds-only rows (no PM fields). The VPS
 must have egress to `gamma-api.polymarket.com` (the live bot already does).
 After redeploy, each tick logs `pm_matched=<n>`; new snapshot rows gain the four
@@ -81,11 +85,16 @@ odds/price cron.**
   window. Pull Oracle/PandaScore results for 2026-07+ AFTER matches resolve, then
   run the driver — sharp-line hit-rate/Brier/CLV **and now** the PM-edge backtest
   come out together.
-- **PM-key alignment caveat.** PM↔PinnOdds match is exact-normalized team name +
-  same UTC day (`make_match_key`). Team-name drift (e.g. PM "Anyone's Legend" vs a
-  PinnOdds abbrev) or a day-boundary offset yields no match → null PM fields
-  (correct-or-absent, never wrong). Alias expansion is a future refinement if
-  `pm_matched` runs low once both feeds are live.
+- **PM↔PinnOdds matching (session 3, EXPANDED beyond exact name).** Now reuses the
+  results-join matcher (`esports_v2/model/team_match.py`): bijective both-teams
+  equality via exact-normalized / injected-alias / shared-non-generic token-subset
+  (`match_pm_ref`), within a ±1-day window, dropping rows that match two distinct
+  PM markets as ambiguous. Catches "Team Vitality"↔"Vitality", "G2 Esports"↔"G2"
+  (live: 21/21 suffix-perturbed rows matched; canonical==standalone on 40/40).
+  Still correct-or-absent — any doubt → null PM fields, never a wrong attach.
+  The `alias_expand` hook is wired but fed `None` in the standalone (no DB on the
+  cron); inject the real `esports_team_aliases` map (1,777 rows) to link
+  hard cases like "NAVI"↔"Natus Vincere" if `pm_matched` runs low once live.
 
 ---
 
