@@ -57,3 +57,8 @@ for _mig in 079_weather_calibration_actual_source.sql 080_prediction_log_prob_fr
         echo "WARN migration $_mig: apply failed — run manually; bot falls back until then"
     fi
 done
+
+# Explicit terminator: PowerShell's `Get-Content -Raw | ssh "bash -s"` appends
+# a trailing CRLF, which bash otherwise executes as a phantom $'\r' line and
+# turns a fully successful cut into exit 127. Nothing may follow this line.
+exit 0
