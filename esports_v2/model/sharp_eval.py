@@ -57,11 +57,35 @@ def no_vig_prob_a(
     return None if nv is None else nv[0]
 
 
+def wilson_ci(k: int, n: int, z: float = 1.96) -> Optional[tuple]:
+    """Wilson score 95% interval for a binomial proportion, or None (n<=0).
+
+    Chosen over the normal approximation because the sharp-line samples are
+    SMALL (n=19 era) and proportions sit near 0.5-0.9 — Wilson stays inside
+    [0,1] and doesn't collapse at small n. This is what makes 'hit-rate 0.42'
+    readable as 'CI [0.23, 0.64] — consistent with anything' instead of a
+    number that invites action (CLAUDE.md forbidden pattern 8/9).
+    """
+    if n <= 0:
+        return None
+    p = k / n
+    denom = 1.0 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    half = (z / denom) * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5)
+    return (max(0.0, center - half), min(1.0, center + half))
+
+
+# Below this many decided outcomes, every rate is labeled UNSTABLE in summaries
+# (n=19 gave fav hit-rate 0.421 vs book prob 0.635 — pure sampling noise range).
+MIN_STABLE_N = 50
+
+
 @dataclass
 class SharpLineReport:
     n: int = 0
     favorite_hit_rate: Optional[float] = None
     n_favorite_decidable: int = 0
+    n_favorite_correct: Optional[int] = None
     brier_closing: Optional[float] = None
     brier_opening: Optional[float] = None
     brier_improvement: Optional[float] = None      # opening - closing (>0 = good)
@@ -79,9 +103,16 @@ class SharpLineReport:
             return "\n".join(lines)
         fav = "n/a" if self.favorite_hit_rate is None else f"{self.favorite_hit_rate:.3f}"
         mfp = "n/a" if self.mean_favorite_prob is None else f"{self.mean_favorite_prob:.3f}"
+        ci_s = ""
+        if self.n_favorite_correct is not None and self.n_favorite_decidable > 0:
+            ci = wilson_ci(self.n_favorite_correct, self.n_favorite_decidable)
+            if ci is not None:
+                ci_s = f"  95% CI [{ci[0]:.3f}, {ci[1]:.3f}]"
+        unstable = (" — UNSTABLE (n<%d), do not act on" % MIN_STABLE_N
+                    if self.n_favorite_decidable < MIN_STABLE_N else "")
         lines += [
             f"  Favorite hit-rate:        {fav}  (n={self.n_favorite_decidable}; "
-            f"book mean fav prob {mfp})",
+            f"book mean fav prob {mfp}){ci_s}{unstable}",
             f"  Brier (closing line):     {self._f(self.brier_closing)}",
             f"  Brier (opening line):     {self._f(self.brier_opening)}",
             f"  Brier improvement (o-c):  {self._f(self.brier_improvement)}  "
@@ -162,6 +193,7 @@ def evaluate_sharp_line(
         n=n,
         favorite_hit_rate=(fav_correct / fav_total) if fav_total else None,
         n_favorite_decidable=fav_total,
+        n_favorite_correct=fav_correct if fav_total else None,
         brier_closing=brier_c,
         brier_opening=brier_o,
         brier_improvement=(brier_o - brier_c),
@@ -182,6 +214,10 @@ class EdgeBacktestReport:
     total_pnl: Optional[float] = None
     roi: Optional[float] = None
     note: str = ""
+    n_wins: Optional[int] = None
+    # Per-edge-size breakdown: does a bigger measured edge actually win/pay
+    # more? Flat-ROI-vs-edge is the go/no-go signal for the edge rule itself.
+    edge_buckets: List[dict] = field(default_factory=list)
 
     def summary(self) -> str:
         lines = [
@@ -191,12 +227,28 @@ class EdgeBacktestReport:
         if self.n_with_market_price == 0:
             lines.append(f"  {self.note}")
             return "\n".join(lines)
+        hit = "  hit-rate: n/a"
+        if self.hit_rate is not None:
+            hit = f"  hit-rate: {self.hit_rate:.3f}"
+            if self.n_wins is not None and self.n_bets > 0:
+                ci = wilson_ci(self.n_wins, self.n_bets)
+                if ci is not None:
+                    hit += f"  95% CI [{ci[0]:.3f}, {ci[1]:.3f}]"
+        unstable = ("" if self.n_bets >= MIN_STABLE_N
+                    else f" — UNSTABLE (n<{MIN_STABLE_N}), do not act on")
         lines += [
-            f"  bets fired (should_bet): {self.n_bets}",
-            f"  hit-rate: {self.hit_rate:.3f}" if self.hit_rate is not None else "  hit-rate: n/a",
+            f"  bets fired (should_bet): {self.n_bets}{unstable}",
+            hit,
             f"  P&L: {self.total_pnl:+.4f}  ROI: {self.roi:+.2%}"
             if self.total_pnl is not None else "  P&L: n/a",
         ]
+        if self.edge_buckets:
+            lines.append("  By edge size (flat $1 stakes):")
+            for b in self.edge_buckets:
+                lines.append(
+                    f"    edge [{b['lo']:.2f},{b['hi']:.2f})  n={b['n']:>4}  "
+                    f"wins={b['wins']:>4}  pnl={b['pnl']:+.4f}  roi={b['roi']:+.2%}"
+                )
         return "\n".join(lines)
 
 
@@ -235,6 +287,7 @@ def edge_backtest(
 
     pnl = 0.0
     wins = 0
+    settled = []  # (edge, won, bet_pnl) for the per-edge-size breakdown
     for r in bets:
         side = r.get("sharp_side")
         price = float(r["market_price"])
@@ -247,15 +300,43 @@ def edge_backtest(
         bet_yes = side == "YES"
         won = (bet_yes and yes_won) or ((not bet_yes) and not yes_won)
         entry = price if bet_yes else (1.0 - price)
-        pnl += (1.0 - entry) if won else (-entry)
+        bet_pnl = (1.0 - entry) if won else (-entry)
+        pnl += bet_pnl
         wins += 1 if won else 0
+        edge = r.get("sharp_edge")
+        if edge is not None:
+            settled.append((float(edge), won, bet_pnl))
 
     return EdgeBacktestReport(
         n_records=len(records), n_with_market_price=n_with_price, n_bets=n_bets,
         hit_rate=(wins / n_bets) if n_bets else None,
         total_pnl=pnl,
         roi=(pnl / n_bets) if n_bets else None,
+        n_wins=wins,
+        edge_buckets=_edge_buckets(settled, min_edge),
     )
+
+
+def _edge_buckets(settled: List[tuple], min_edge: float) -> List[dict]:
+    """Bucket settled bets by measured edge size; empty buckets are omitted.
+
+    Boundaries start at ``min_edge`` (nothing below it ever fires) and step
+    through the ranges that matter for a threshold decision: is the rule's
+    profit concentrated in big-edge bets, or flat across all of them?
+    """
+    bounds = sorted({round(b, 4) for b in
+                     (min_edge, min_edge + 0.02, min_edge + 0.05,
+                      min_edge + 0.10, 1.0) if b < 1.0}) + [1.0]
+    out = []
+    for lo, hi in zip(bounds, bounds[1:]):
+        rows = [s for s in settled if lo <= s[0] < hi]
+        if not rows:
+            continue
+        b_wins = sum(1 for s in rows if s[1])
+        b_pnl = sum(s[2] for s in rows)
+        out.append({"lo": lo, "hi": hi, "n": len(rows), "wins": b_wins,
+                    "pnl": b_pnl, "roi": b_pnl / len(rows)})
+    return out
 
 
 # Orientation resolver seam: (condition_id, yes_token_id, team_a, team_b) -> bool

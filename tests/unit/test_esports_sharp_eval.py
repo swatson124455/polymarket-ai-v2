@@ -187,3 +187,60 @@ def test_edge_from_joined_orientation_passed_home_side():
     edge_backtest_from_joined([_jr_pm("k", 1.5, 3.0, True, 0.40, cid="0xZ", tok="TID")],
                               resolve_orientation=resolver)
     assert seen["args"] == ("0xZ", "TID", "A", "B")
+
+
+# ── readout upgrade: wilson CI / UNSTABLE labels / edge buckets ──────────────
+
+
+def test_wilson_ci_known_values():
+    from esports_v2.model.sharp_eval import wilson_ci
+    assert wilson_ci(0, 0) is None
+    lo, hi = wilson_ci(8, 19)  # the n=19 fav hit-rate 0.421 era
+    assert 0.0 <= lo < 0.421 < hi <= 1.0
+    assert hi - lo > 0.3      # a wide interval — the point of showing it
+    lo2, hi2 = wilson_ci(80, 190)
+    assert (hi2 - lo2) < (hi - lo)  # tightens with n
+
+
+def test_sharp_report_small_n_labeled_unstable():
+    recs = [_jr("k1", 1.5, 2.6, True)]
+    rep = evaluate_sharp_line(recs)
+    s = rep.summary()
+    assert "UNSTABLE" in s and "95% CI" in s
+
+
+def test_edge_report_small_n_labeled_unstable_with_ci():
+    recs = [{"match_key": "k", "market_price": 0.40,
+             "yes_is_team_a": True, "home_won": True}]
+    rep = edge_backtest(recs, {"k": (1.5, 2.6)}, fee=0.02, min_edge=0.05)
+    assert rep.n_wins == 1
+    s = rep.summary()
+    assert "UNSTABLE" in s and "95% CI" in s
+
+
+def test_edge_buckets_partition_by_edge_size():
+    # two bets: one just over min_edge, one huge edge; both settle
+    recs = [
+        {"match_key": "small", "market_price": 0.56,
+         "yes_is_team_a": True, "home_won": True},   # edge ~0.054, just clears
+        {"match_key": "big", "market_price": 0.20,
+         "yes_is_team_a": True, "home_won": True},   # edge ~0.414
+    ]
+    odds = {"small": (1.5, 2.6), "big": (1.5, 2.6)}  # sharp ~0.634 home
+    rep = edge_backtest(recs, odds, fee=0.02, min_edge=0.05)
+    assert rep.n_bets == 2
+    assert rep.edge_buckets, "buckets must be populated when bets settle"
+    assert sum(b["n"] for b in rep.edge_buckets) == 2
+    assert len(rep.edge_buckets) == 2  # they land in different buckets
+    los = [b["lo"] for b in rep.edge_buckets]
+    assert los == sorted(los)
+    for b in rep.edge_buckets:
+        assert b["wins"] == b["n"]  # both won here
+        assert b["roi"] > 0
+
+
+def test_edge_buckets_empty_when_no_bets():
+    recs = [{"match_key": "k", "market_price": 0.62,
+             "yes_is_team_a": True, "home_won": True}]
+    rep = edge_backtest(recs, {"k": (1.5, 2.6)}, min_edge=0.05)
+    assert rep.edge_buckets == []
