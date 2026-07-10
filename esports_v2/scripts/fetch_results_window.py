@@ -95,14 +95,30 @@ def parse_match_row(raw: dict, game: str) -> Optional[dict]:
     if isinstance(winner_data, dict):
         winner = str(winner_data.get("name") or "").strip() or None
     if winner is None:
-        results = raw.get("results") or []
-        try:
-            score_a = int(results[0].get("score")) if len(results) > 0 else None
-            score_b = int(results[1].get("score")) if len(results) > 1 else None
-        except (ValueError, TypeError, AttributeError):
-            score_a = score_b = None
-        if score_a is not None and score_b is not None and score_a != score_b:
-            winner = team_a if score_a > score_b else team_b
+        # Score fallback: results[] entries carry their own team_id and are NOT
+        # guaranteed to be in opponents[] order — map by id, never by position
+        # (a positional guess can flip the winner, the exact label-corruption
+        # the join is built to avoid).
+        id_to_name = {}
+        for od, name in ((a_data, team_a), (b_data, team_b)):
+            tid = (od or {}).get("id")
+            if tid is not None:
+                id_to_name[tid] = name
+        scores = {}
+        for res in (raw.get("results") or []):
+            if not isinstance(res, dict):
+                continue
+            tid = res.get("team_id")
+            try:
+                score = int(res.get("score"))
+            except (ValueError, TypeError):
+                continue
+            if tid in id_to_name:
+                scores[tid] = score
+        if len(scores) == 2:
+            (t1, s1), (t2, s2) = scores.items()
+            if s1 != s2:
+                winner = id_to_name[t1] if s1 > s2 else id_to_name[t2]
     if not winner:
         return None  # no clear winner -> never guess
 

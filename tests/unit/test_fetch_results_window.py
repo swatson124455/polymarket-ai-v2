@@ -96,3 +96,18 @@ def test_output_loads_via_results_join(tmp_path):
     assert (r.team_a, r.team_b, r.winner) == ("JD Gaming", "TYLOO", "TYLOO")
     assert r.day == "2026-07-10"
     assert r.source == "pandascore_window"
+
+
+def test_winner_fallback_maps_by_team_id_not_position():
+    """results[] REVERSED vs opponents[] order — id mapping must still be right.
+    (Positional mapping would name the loser; this is the label-flip class.)"""
+    m = _ps_match(winner=None,
+                  results=[{"team_id": 2, "score": 2}, {"team_id": 1, "score": 1}])
+    row = parse_match_row(m, "valorant")
+    assert row is not None and row["winner"] == "TYLOO"      # team_id 2 == TYLOO
+
+
+def test_winner_fallback_unknown_team_id_skipped():
+    m = _ps_match(winner=None,
+                  results=[{"team_id": 99, "score": 2}, {"team_id": 1, "score": 1}])
+    assert parse_match_row(m, "valorant") is None            # can't map -> never guess
