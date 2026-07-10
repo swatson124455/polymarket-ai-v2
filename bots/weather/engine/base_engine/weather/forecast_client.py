@@ -47,8 +47,12 @@ class CombinedForecast:
     lead_time_hours: float           # Hours from now until target date noon
     fetch_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     models_used: List[str] = field(default_factory=list)
-    # P1: Model-run jump detection — delta (°F/°C) vs previous model run's ensemble mean.
-    # Positive = warmer shift, negative = cooler shift. None = no prior run to compare.
+    # P1 jump detection — S226 (V21): delta (°F/°C, station-native units) vs the
+    # ensemble mean of the PREVIOUS FETCH (~15-min cache cycle), NOT vs the
+    # previous model run. It also moves when lead-bucket subsampling changes
+    # member counts, so a nonzero value does not imply a new model run.
+    # Positive = warmer shift, negative = cooler shift. None = no prior fetch
+    # older than 60s to compare against.
     forecast_delta: Optional[float] = None
     # S226 (fallacy-audit V34 follow-up): True when ensemble_members were
     # FABRICATED (Gaussian around the deterministic high) because the real
@@ -84,7 +88,8 @@ class WeatherForecastClient:
         self._climate_cache: Dict[str, Tuple[float, Optional[Tuple[float, float]]]] = {}
         self._climate_computed_this_cycle: int = 0
         self._climate_max_per_cycle: int = 3
-        # P1: Model-run jump detection — store prior ensemble mean per (station, date).
+        # P1 jump detection (S226/V21: fetch-over-fetch, not model-run) — store
+        # prior FETCH's ensemble mean per (station, date).
         # Key: "station_id:date_iso", Value: (ensemble_mean, monotonic_ts).
         # Compared on each new fetch to compute forecast_delta (°F/°C shift).
         # TTL: entries older than 24h are pruned on access.
@@ -1312,19 +1317,27 @@ class WeatherForecastClient:
         else:
             model_spread = 2.0 if station.temp_unit == "F" else 1.1
 
-        # P1: Model-run jump detection — compare current ensemble mean against
-        # the prior model run's ensemble mean for the same (station, date).
-        # A ≥3°F (1.7°C) shift indicates markets are likely lagging the new run.
+        # P1 jump detection — S226 (V21): compares the current ensemble mean
+        # against the PRIOR FETCH's mean for the same (station, date). Fetches
+        # are cache-cycle events (~15 min), not model-run boundaries, and the
+        # mean also shifts when lead-bucket subsampling changes member counts —
+        # so a delta here does not prove a new model run. The delta is in
+        # station-native units; the downstream 3.0 threshold therefore means
+        # 3°F for °F stations but 3°C (= 5.4°F) for °C stations.
         forecast_delta = None
         current_mean = sum(ensemble_members) / len(ensemble_members) if ensemble_members else deterministic_high
         if current_mean is not None:
             prior = self._prior_forecasts.get(cache_key)
             if prior is not None:
                 prior_mean, prior_ts = prior
-                # Only compare if prior is from a different cache cycle (stale = new model run)
+                # S226 (V21): the >60s guard only separates cache cycles — it
+                # does NOT identify model-run boundaries.
                 if now_mono - prior_ts > 60.0:
                     forecast_delta = round(current_mean - prior_mean, 2)
                     if abs(forecast_delta) >= 1.0:
+                        # Event name "model_run_jump" is historical (kept for
+                        # journal-grep stability); delta_basis carries the
+                        # true measurement semantics.
                         logger.info(
                             "weatherbot_model_run_jump",
                             station=station.station_id,
@@ -1332,8 +1345,12 @@ class WeatherForecastClient:
                             delta=forecast_delta,
                             prior_mean=round(prior_mean, 1),
                             current_mean=round(current_mean, 1),
+                            delta_basis="fetch_over_fetch",
                         )
-            # Update prior with current (for next model run comparison)
+            # Update prior with current fetch's mean. S226 (V21) note: this is
+            # unconditional — a refetch <60s after the prior overwrites the
+            # baseline WITHOUT comparing, erasing any pending delta. Known
+            # measurement defect, documented only (behavior unchanged here).
             self._prior_forecasts[cache_key] = (current_mean, now_mono)
             # Prune entries older than 24h to prevent unbounded growth
             _cutoff = now_mono - 86400.0

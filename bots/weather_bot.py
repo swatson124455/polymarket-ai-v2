@@ -3203,15 +3203,15 @@ class WeatherBot(BaseBot):
     def _smoczynski_tomkins_allocate(
         opps: List[Dict], group_budget: float, kelly_mult: float = 0.25,
     ) -> Dict[str, float]:
-        """Optimal Kelly allocation for mutually exclusive temperature buckets.
+        """Edge-proportional pro-rata split of a fixed group-budget fraction.
 
-        Standard independent Kelly undersizes by 20-40% because it ignores
-        the synthetic hedge: betting 3 of 7 mutually exclusive buckets means
-        losing bets partially fund the winner. Smoczynski-Tomkins (2010) gives
-        the closed-form solution.
-
-        For mutually exclusive outcomes with positive edge, the allocation is
-        proportional to each outcome's Kelly edge, scaled by the total hedge.
+        S226 (V16) correction: despite the name, this is NOT the
+        Smoczynski-Tomkins (2010) closed-form for mutually exclusive buckets.
+        The S-T hedge factor is described in a comment below but never
+        computed or applied. What executes: each bucket with positive Kelly
+        edge f_i receives (f_i / sum(f)) * kelly_mult * group_budget — a FIXED
+        deployed fraction of the budget regardless of aggregate edge
+        magnitude. Function name retained for call-site stability.
 
         Args:
             opps: Tradeable opportunities from _analyze_group(), each with
@@ -3244,12 +3244,10 @@ class WeatherBot(BaseBot):
         if not edges:
             return {}
 
-        # S-T hedge factor: sum of all probabilities we're betting on.
-        # The hedge arises because exactly ONE bucket wins — losses on N-1
-        # bets are offset by the win on 1. The total fraction to deploy is
-        # boosted by 1 / (1 - sum_of_losing_probs) ≈ 1 / (1 - hedge).
-        #
-        # Simplified: allocate proportional to edge magnitude, scaled by
+        # S226 (V16): the S-T hedge factor once derived here (total deployed
+        # fraction boosted by 1 / (1 - sum_of_losing_probs)) is NOT computed
+        # or applied anywhere in this function — only the "simplified" branch
+        # below executes: allocate proportional to edge magnitude, scaled by
         # fractional Kelly, with the group budget as hard cap.
         total_edge = sum(edges.values())
         if total_edge <= 0:
@@ -3312,13 +3310,21 @@ class WeatherBot(BaseBot):
         )
 
         if st_sizes:
+            # S226 (V16): this is a PROPOSED allocation, not deployed capital.
+            # When WEATHER_FLAT_SIZE_USD > 0 (current default) the per-opp
+            # _st_size_override is popped and discarded in
+            # _execute_weather_trade, so nothing logged here reaches an order.
+            # Field renamed total_usd → proposed_usd; `applied` reports whether
+            # the override can take effect this session.
+            _flat_active = float(getattr(settings, "WEATHER_FLAT_SIZE_USD", 0.0)) > 0
             logger.info(
                 "weatherbot_st_allocation",
                 city=group.city,
                 date=group.target_date.isoformat(),
                 n_buckets=len(st_sizes),
-                total_usd=round(sum(st_sizes.values()), 2),
+                proposed_usd=round(sum(st_sizes.values()), 2),
                 group_budget=round(group_budget, 2),
+                applied=not _flat_active,
             )
 
         traded = 0
@@ -3429,7 +3435,8 @@ class WeatherBot(BaseBot):
         # S141: Expiry boost removed — S126 data shows inverse relationship with P&L.
         # <24h=-$204, 24-48h=-$601, 48-72h=+$558, 72-120h=+$1,453.
         # Market prices ensemble convergence simultaneously with the model.
-        # jump_boost handles legitimate "model run disagreement" signal.
+        # jump_boost handles the forecast-jump signal (S226/V21: fetch-over-fetch
+        # delta, not true model-run disagreement — see comment at jump boost below).
         expiry_boost = 1.0
 
         # Cross-city regime boost (P-Opportunity)
@@ -3449,8 +3456,12 @@ class WeatherBot(BaseBot):
         # Severe weather boost (hurricane/tornado/blizzard near station)
         severe_boost = await self._get_severe_weather_boost(group.station)
 
-        # P1: Model-run jump boost — when ensemble mean shifts ≥ threshold between
-        # model runs, markets lag. Scale boost linearly by delta magnitude.
+        # P1 jump boost — S226 (V21): forecast_delta is a FETCH-over-FETCH
+        # ensemble-mean shift (~15-min forecast cache cycle; it also moves when
+        # lead-bucket subsampling changes member counts), NOT a run-over-run
+        # model comparison. WEATHER_JUMP_THRESHOLD_F is compared against the
+        # delta in station-NATIVE units: 3.0 means 3°F for US stations but
+        # 3°C (= 5.4°F) for °C stations. Scale boost linearly by delta magnitude.
         _forecast_delta = opp.get("forecast_delta")
         _jump_threshold = float(getattr(settings, "WEATHER_JUMP_THRESHOLD_F", 3.0))
         _jump_max_boost = float(getattr(settings, "WEATHER_JUMP_MAX_BOOST", 1.5))
@@ -3477,7 +3488,11 @@ class WeatherBot(BaseBot):
         # boosted trades have 11pp LOWER WR than unboosted (64% vs 75%).
         # Regime/jump/NBM/severe signals correlate with market-already-priced-in
         # or noisy outlier patterns. Each signal now REDUCES size.
-        # Dampener values: regime 0.8x, severe 0.7-0.85x, jump 0.75x, nbm 0.8x.
+        # S226 (V20): the tuned constants previously documented here (regime
+        # 0.8x, severe 0.7-0.85x, jump 0.75x, nbm 0.8x) were never implemented.
+        # What executes is the RECIPROCAL of each boost: regime 1.2x → 0.83x,
+        # severe 1.5x/2.0x → 0.67x/0.50x, jump 1.25-1.5x → 0.80-0.67x,
+        # nbm 1.3x → 0.77x.
         # Formula: multiply dampeners (< 1.0 when signal fires, 1.0 otherwise).
         _regime_damp = 1.0 / max(regime_boost, 1.0) if regime_boost > 1.0 else 1.0  # 1.2x boost → 0.83x dampener
         _severe_damp = 1.0 / max(severe_boost, 1.0) if severe_boost > 1.0 else 1.0  # 2.0x boost → 0.50x dampener
