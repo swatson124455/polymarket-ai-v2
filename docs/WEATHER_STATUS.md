@@ -31,8 +31,15 @@
    executable price); optional retro-purge of flipped `bootstrap_gfs` rows (N1 changelog);
    optional WU-only training filter on `actual_source` once the column has populated.
 
-3b. **V23 — `was_correct` YES-frame bug: FIXED FORWARD (`95c732c`, on-branch NOT deployed);
-   historical PSW rows remain frame-ambiguous.** Writers normalized: every opp now carries
+3b. **V23 — FULLY FIXED AT ROOT (on-branch NOT deployed): `95c732c` (P(YES) predicted_prob) +
+   `14006b0` (durable `prob_frame` label, migration 080, BOTH graders guard unlabelled PSW rows)
+   + market_price→YES-frame (realized_edge now correct on labelled rows).** Historical PSW rows
+   are now MACHINE-LABELLED ambiguous (`prob_frame IS NULL`) — migration 080 retro-NULLs their
+   was_correct/realized_edge and both graders (vendored + top-level database.py; the main
+   14-bot service also grades the shared table) permanently refuse to grade unlabelled PSW
+   rows, deploy-order-safe via a runtime column check (079 pattern). Requires the next WB
+   release cut (auto-applies 080). Post-deploy: `grep 'prob_frame missing'` should go quiet.
+   ORIGINAL PLAN + optional manual SQL below are SUPERSEDED by migration 080 (kept for context): Writers normalized: every opp now carries
    `model_prob_yes` (P(YES)) and all four `_log_weather_prediction` opp call sites pass
    `_yes_frame_prob(opp)`; trading fields untouched. The grader's YES-frame assumption is now
    true for all rows written after the next deploy. UNFIXABLE HISTORY: pre-fix PSW NO rows
@@ -117,6 +124,12 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-10 (S226 V23 completion):** `14006b0` durable frame label — migration 080 adds
+  `prediction_log.prob_frame` ('yes' = P(YES)), retro-NULLs historical WB PSW grades, and BOTH
+  graders (vendored + top-level, weather-model_name-scoped) refuse unlabelled PSW rows; writers
+  stamp 'yes'. Sibling fix: market_price→YES price at all WB log sites (realized_edge correct on
+  labelled rows; edge column coherent). Full suite 3862 passed, zero-delta failure diff vs
+  stashed baseline. NOT deployed — next WB release cut auto-applies 080.
 - **2026-07-10 (S226 V23 root fix, on-branch NOT deployed):** `95c732c` — prediction_log
   predicted_prob normalized to P(YES) on every WB row (PSW NO opps were logging chosen-side
   prob → winning NO calls graded as misses). Writers fixed via explicit `model_prob_yes` +
