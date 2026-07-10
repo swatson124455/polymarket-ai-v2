@@ -5,7 +5,7 @@
 > read them for detail, but THIS file is the source of truth for "what is live and what's open."
 > Update the three sections below at the end of every WB session (same commit as the work).
 
-**Last updated:** 2026-07-10 (S226 — leak CLOSED; S225 diagnostics deployed in `20260710_165646`; five audit follow-ups landed on-branch NOT deployed — see changelog; V23 promoted to OPEN DECISION 3b)
+**Last updated:** 2026-07-10 session end (S226 — ALL DEPLOYED in `20260710_204822` and verified: leak CLOSED, V23 fixed at root + labelled + hotfixed, five audit follow-ups live. Handoff: `docs/WEATHER_S226_STATUS.md`)
 **Pinned branch:** `claude/new-whiteboard-session-9b23tq` (see `.claude/session-branch`)
 **Resume check:** `bash scripts/wb_resume_check.sh` (self-deriving; replaces the hand-typed checklist)
 
@@ -90,13 +90,15 @@
 
 ## WHAT IS LIVE NOW
 
-- **Deployed:** WeatherBot on its splinter, release **`20260710_165646`** (cut from `5343d56`;
-  rollback target `20260708_151330`). Paper mode, treated as production. Carries the six S223
+- **Deployed:** WeatherBot on its splinter, release **`20260710_204822`** (cut from `c1a170c`-era
+  tip incl. hotfix `535ec86`; rollback target `20260710_201020` — note `_201020` had the silent
+  prediction-log outage, prefer `_165646` for a deep rollback). Paper mode, treated as production. Carries the six S223
   fixes, the full **S224 batch** (renorm deflate-only, N1 bias sign-flip, V42 circuit breakers,
   V37 NDFD PoP, V34 synthetic sigma, V26 exec-edge floor 0.04, V28 gate built/OFF, ground-truth/
   calibrator cluster), PLUS the **S225 diagnostics** (manufactured-certainty tripwire live;
   bot_pnl f-string fix; calibration_check `--dedup-markets`).
-  **Migration 079 applied** (`actual_source` column live).
+  **Migrations 079 + 080 applied** (`actual_source`, `prob_frame` columns live; verified:
+  14 `prob_frame='yes'` rows within 2 scans, `ungraded_psw_ok=0`).
 - **Health (at deploy 07-08):** `service: active`, clean restart, S224 markers=24 on the box.
   All S222 safety gates still **ON as containment**. The calibrator is mid-reset toward
   identity (see OPEN DECISIONS #1) — expected. Quality via **calibration** (Brier/PIT/
@@ -109,7 +111,9 @@
 
 ## POINTERS (archival detail — do not treat as "current" over this file)
 
-- `docs/WEATHER_S224_STATUS.md` — **the S224 session handoff** (this session): the 7 fixes +
+- `docs/WEATHER_S226_STATUS.md` — **the S226 session handoff (latest)**: leak closure proof,
+  V23 root fix + prob_frame label, the runtime-binding trap, deploy verification.
+- `docs/WEATHER_S224_STATUS.md` — the S224 session handoff (this session): the 7 fixes +
   calibrator/ground-truth cluster, the deploy, the calibrator-reset caveat, pending steps.
 - `WEATHER_S222_STATUS.md` — the S222/S223 session's full handoff (fixes, diagnosis,
   pending-work order, deploy mechanics, config gotchas, file map).

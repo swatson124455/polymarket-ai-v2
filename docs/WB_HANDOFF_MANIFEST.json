@@ -1,6 +1,6 @@
 {
   "_comment": "WeatherBot session-handoff manifest — consumed by scripts/wb_resume_check.sh. RULE: any commit that changes a fingerprinted file's markers, adds a headline fix, or moves the session branch MUST update this manifest in the SAME commit. That is what keeps the resume check self-deriving instead of stale.",
-  "session": "S223",
+  "session": "S226",
   "repo": "swatson124455/polymarket-ai-v2",
   "branch": "claude/new-whiteboard-session-9b23tq",
   "headline_commits": {
@@ -10,7 +10,10 @@
     "12f68cc": "fix(weather): _check_executable_edge YES-bias on temperature NO opps",
     "37598b7": "fix(weather): WEATHER_MID_LIFE_EXIT_ENABLED / WEATHER_EXIT_MIN_EDGE declared + honored",
     "6fb4ded": "fix(weather): exit orders must SELL the held token; mid-life state only on confirmed fill",
-    "caffc68": "fix(weather): S224 renorm over non-exhaustive bucket sets manufactured certainty (audit #1)"
+    "caffc68": "fix(weather): S224 renorm over non-exhaustive bucket sets manufactured certainty (audit #1)",
+    "95c732c": "fix(weather): S226 V23 root fix — prediction_log.predicted_prob is P(YES) on every row",
+    "14006b0": "fix(weather): S226 V23 — durable prob_frame label; graders never grade frame-ambiguous PSW rows",
+    "535ec86": "fix(weather): S226 hotfix — top-level Database must accept prob_frame; WB binds it at runtime"
   },
   "required_docs": [
     "docs/WEATHER_STATUS.md",
@@ -18,16 +21,69 @@
     "docs/WB_FALLACY_AUDIT_S223.md",
     "docs/WB_FALLACY_AUDIT_S223_raw.json",
     "docs/WEATHER_S222_STATUS.md",
-    "WB_S222_POSTFIX_VERIFICATION_PROMPT.md"
+    "WB_S222_POSTFIX_VERIFICATION_PROMPT.md",
+    "docs/WEATHER_S226_STATUS.md"
   ],
   "fingerprints": [
-    { "file": "bots/weather_bot.py", "pattern": "S223", "expect": 10 },
-    { "file": "bots/weather_bot.py", "pattern": "model_prob convention differs by market type", "expect": 1 },
-    { "file": "base_engine/data/database.py", "pattern": "finally-guaranteed", "expect": 1 },
-    { "file": "bots/weather/engine/config/settings.py", "pattern": "WEATHER_MID_LIFE_EXIT_ENABLED: bool", "expect": 1 },
-    { "file": "bots/weather_bot.py", "pattern": "S224", "expect": 24 },
-    { "file": "bots/weather/engine/base_engine/weather/probability_engine.py", "pattern": "S224", "expect": 4 },
-    { "file": "bots/weather/engine/base_engine/weather/forecast_client.py", "pattern": "S224", "expect": 4 },
-    { "file": "bots/weather/engine/config/settings.py", "pattern": "S224", "expect": 3 }
+    {
+      "file": "bots/weather_bot.py",
+      "pattern": "S223",
+      "expect": 10
+    },
+    {
+      "file": "bots/weather_bot.py",
+      "pattern": "model_prob convention differs by market type",
+      "expect": 1
+    },
+    {
+      "file": "base_engine/data/database.py",
+      "pattern": "finally-guaranteed",
+      "expect": 1
+    },
+    {
+      "file": "bots/weather/engine/config/settings.py",
+      "pattern": "WEATHER_MID_LIFE_EXIT_ENABLED: bool",
+      "expect": 1
+    },
+    {
+      "file": "bots/weather_bot.py",
+      "pattern": "S224",
+      "expect": 24
+    },
+    {
+      "file": "bots/weather/engine/base_engine/weather/probability_engine.py",
+      "pattern": "S224",
+      "expect": 4
+    },
+    {
+      "file": "bots/weather/engine/base_engine/weather/forecast_client.py",
+      "pattern": "S224",
+      "expect": 4
+    },
+    {
+      "file": "bots/weather/engine/config/settings.py",
+      "pattern": "S224",
+      "expect": 3
+    },
+    {
+      "file": "bots/weather_bot.py",
+      "pattern": "S226",
+      "expect": 18
+    },
+    {
+      "file": "base_engine/data/database.py",
+      "pattern": "prob_frame",
+      "expect": 9
+    },
+    {
+      "file": "bots/weather/engine/base_engine/data/database.py",
+      "pattern": "prob_frame",
+      "expect": 9
+    },
+    {
+      "file": "bots/weather/engine/base_engine/weather/forecast_client.py",
+      "pattern": "S226",
+      "expect": 12
+    }
   ]
 }
