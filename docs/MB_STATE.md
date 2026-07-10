@@ -1,7 +1,7 @@
 # MirrorBot Rebuild — Living State / Handoff (docs/MB_STATE.md)
 
 **Last updated:** 2026-07-10 · **Branch:** `claude/mirrorbot-persistence-check-oc02tk` (PR #1)
-**Read first:** `CLAUDE.md` (binding directives), `MB_REBUILD_PLAN.md` (the plan + operator decisions), then this file.
+**Read first:** `CLAUDE.md` (binding directives), then this file, then **`docs/MB_COPYTRADER_CONTEXT.md` (FULL context brief for the live copy-trader investigation — the complete reasoning chain, API gotchas, and decision tree)**. `MB_REBUILD_PLAN.md` holds the older plan + operator decisions.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
 ---
