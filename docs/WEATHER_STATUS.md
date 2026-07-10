@@ -5,7 +5,7 @@
 > read them for detail, but THIS file is the source of truth for "what is live and what's open."
 > Update the three sections below at the end of every WB session (same commit as the work).
 
-**Last updated:** 2026-07-10 (S226 — S225 diagnostics DEPLOYED in release `20260710_165646`; manufactured-certainty leak ROOT-CAUSED to the pre-S224 renorm bug via deploy-timestamp misattribution — see OPEN DECISION #4)
+**Last updated:** 2026-07-10 (S226 — leak CLOSED; S225 diagnostics deployed in `20260710_165646`; five audit follow-ups landed on-branch NOT deployed — see changelog; V23 promoted to OPEN DECISION 3b)
 **Pinned branch:** `claude/new-whiteboard-session-9b23tq` (see `.claude/session-branch`)
 **Resume check:** `bash scripts/wb_resume_check.sh` (self-deriving; replaces the hand-typed checklist)
 
@@ -30,6 +30,18 @@
    (synthetic marker / RNG determinism); deeper V26 (orders submitted at midpoint, not
    executable price); optional retro-purge of flipped `bootstrap_gfs` rows (N1 changelog);
    optional WU-only training filter on `actual_source` once the column has populated.
+
+3b. **V23 — `was_correct` YES-frame bug (S226 analysis, needs its own reviewed commit).**
+   The backfill (`backfill_prediction_log_resolution`, vendored database.py ~3934) computes
+   `was_correct = (predicted_prob >= 0.5) == (resolution = 'YES')` — a YES-frame read. PSW
+   (precip/snow/wind) NO-side call sites log CHOSEN-SIDE predicted_prob (e.g. weather_bot.py
+   ~2575: `1 − model_prob`), so winning NO calls with P(NO) ≥ 0.5 are stored as MISSES.
+   `realized_edge` shares the assumption. Temperature rows are YES-frame → unaffected.
+   Consumers of the poisoned field: calibration_tracker, phase-tracker Brier, venn_abers,
+   prediction_accuracy_check, gate_score_expectancy, cooldown_analysis, and the WB
+   consecutive-loss compress feed. Fix options (pick one, defect-test-first): (a) side-aware
+   backfill (requires persisting prediction side; WB rows leave trade_side NULL), or (b)
+   normalize PSW call sites to YES-frame + cutoff for mixed-frame history. Do NOT fix casually.
 
 4. **S226 — manufactured-certainty leak: CLOSED (root cause CONFIRMED via journal — timestamp misattribution;
    the S224 renorm fix already killed it).** Full DB pull (S226, 2026-07-10): **58** rows at
@@ -90,6 +102,16 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-10 (S226 batch, on-branch NOT deployed):** five audit follow-ups landed as five
+  commits, 319/319 WB tests (302 baseline + 17 new defect tests): V37 null-NDFD-PoP = 0% on
+  matching day (dry-day signal restored); V34 synthetic-ensemble marker (`synthetic_ensemble`
+  field + `synthetic` in models_used) + deterministic member RNG (sha256 seed, was PYTHONHASHSEED-
+  unstable); V28 follow-up top-N bucket selection ranks by calibrated edge ONLY when the V28 gate
+  flag is ON (proven inert at default OFF); telemetry truth V16/V20/V21 (S-T docstring/log field
+  `proposed_usd`+`applied`, dampener reciprocals documented, `forecast_delta` re-labeled
+  fetch-over-fetch with `delta_basis` field); stray esports probe removed. V23 analyzed and
+  deliberately SKIPPED as behavioral → new OPEN DECISION 3b. Deeper V26 deferred (execution-path,
+  operator sign-off). Reaches the box at the next WB release cut.
 - **2026-07-10 (S226):** (a) S225 diagnostics DEPLOYED — release `20260710_165646` cut from
   `5343d56` (tripwire + 2 measurement fixes live; `service: active`; recorded `16646f5`).
   (b) Leak ROOT-CAUSED: the "5 post-deploy" 1.0-rows predate the ACTUAL 07-08 service restart
