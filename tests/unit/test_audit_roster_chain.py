@@ -92,3 +92,72 @@ def test_sample_fills_small_history_returned_whole():
     trades = [{"side": "BUY", "tokenId": "1", "timestamp": 5, "size": 1,
                "price": 0.5}]
     assert len(ac.sample_fills(trades, 20, 7)) == 1
+
+
+# ── get_logs REAL-LIBRARY binding (the 2026-07-10 failure class) ─────────────
+# The audit once called get_logs with pre-v7 camelCase kwargs; under the
+# VPS's web3 7.5 every call raised TypeError, silently counted as rpc_error
+# (580/580 samples, zero verdicts). Mocked tests couldn't catch it — these
+# bind against the INSTALLED web3 signature.
+
+def test_get_logs_kwargs_bind_against_installed_web3():
+    import inspect
+    import pytest
+    try:
+        from web3.contract.async_contract import AsyncContractEvent
+    except ImportError:
+        pytest.skip("web3 not installed in this env; VPS/prod envs have it")
+    sig = inspect.signature(AsyncContractEvent.get_logs)
+    # the shim's primary path must bind cleanly on the installed library
+    sig.bind(None, argument_filters={"maker": "0xA"}, from_block=1, to_block=2)
+    # and the pre-v7 spelling must NOT bind (documents why the shim exists)
+    try:
+        sig.bind(None, argument_filters={"maker": "0xA"}, fromBlock=1, toBlock=2)
+    except TypeError:
+        pass
+    else:  # pragma: no cover - only on ancient web3
+        import web3
+        assert int(web3.__version__.split(".")[0]) < 7
+
+
+def test_get_logs_compat_v7_and_v6_signatures():
+    import asyncio
+
+    class V7Event:
+        async def get_logs(self, argument_filters=None, from_block=None,
+                           to_block=None, block_hash=None):
+            return [("v7", from_block, to_block, argument_filters)]
+
+    class V6Event:
+        async def get_logs(self, argument_filters=None, fromBlock=None,
+                           toBlock=None, block_hash=None):
+            return [("v6", fromBlock, toBlock, argument_filters)]
+
+    assert asyncio.run(ac.get_logs_compat(V7Event(), 10, 20, {"maker": "0xA"})) \
+        == [("v7", 10, 20, {"maker": "0xA"})]
+    assert asyncio.run(ac.get_logs_compat(V6Event(), 10, 20, {"maker": "0xA"})) \
+        == [("v6", 10, 20, {"maker": "0xA"})]
+
+
+def test_get_logs_compat_propagates_real_errors():
+    """A genuine RPC failure must surface, not be eaten by the compat shim."""
+    import asyncio
+    import pytest
+
+    class Boom:
+        async def get_logs(self, argument_filters=None, from_block=None,
+                           to_block=None, block_hash=None):
+            raise ValueError("rpc says no")
+
+    with pytest.raises(ValueError):
+        asyncio.run(ac.get_logs_compat(Boom(), 1, 2, {}))
+
+
+def test_block_chunks_cap_and_cover():
+    assert ac.block_chunks(0, 1800) == [(0, 899), (900, 1799), (1800, 1800)]
+    assert ac.block_chunks(5, 5) == [(5, 5)]
+    spans = ac.block_chunks(100, 10_000)
+    assert all(hi - lo + 1 <= ac.GETLOGS_CHUNK for lo, hi in spans)
+    # contiguous, no gaps, no overlap, full coverage
+    assert spans[0][0] == 100 and spans[-1][1] == 10_000
+    assert all(spans[i + 1][0] == spans[i][1] + 1 for i in range(len(spans) - 1))

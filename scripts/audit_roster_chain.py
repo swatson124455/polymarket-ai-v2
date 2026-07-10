@@ -128,6 +128,33 @@ def sample_fills(trades: list[dict], k: int, seed: int) -> list[dict]:
             for i in range(k)]
 
 
+GETLOGS_CHUNK = 900  # public Polygon RPCs commonly cap eth_getLogs at ~1k blocks
+
+
+def block_chunks(b0: int, b1: int, chunk: int = GETLOGS_CHUNK) -> list[tuple[int, int]]:
+    """Split [b0, b1] into inclusive sub-ranges of at most `chunk` blocks."""
+    spans, lo = [], b0
+    while lo <= b1:
+        hi = min(lo + chunk - 1, b1)
+        spans.append((lo, hi))
+        lo = hi + 1
+    return spans
+
+
+async def get_logs_compat(event, b0: int, b1: int, filters: dict):
+    """web3 v7 renamed get_logs kwargs to from_block/to_block; v6- used
+    fromBlock/toBlock. The camelCase call TypeError'd on EVERY fill under
+    web3 7.5 (2026-07-10 run: 580/580 'rpc_error', zero verdicts) — the
+    snake_case path is primary, camelCase is the fallback for old libs.
+    Module-level so tests can bind it against the INSTALLED web3 signature."""
+    try:
+        return await event.get_logs(argument_filters=filters,
+                                    from_block=b0, to_block=b1)
+    except TypeError:
+        return await event.get_logs(argument_filters=filters,
+                                    fromBlock=b0, toBlock=b1)
+
+
 # ── Network run ──────────────────────────────────────────────────────────────
 async def run(args) -> int:
     from dotenv import load_dotenv
@@ -155,19 +182,31 @@ async def run(args) -> int:
         contracts.append(bc.w3.eth.contract(
             address=Web3.to_checksum_address(caddr), abi=[ORDER_FILLED_EVENT_ABI]))
 
-    async def events_around(addr_cs: str, b0: int, b1: int) -> tuple[list[dict], int]:
-        """OrderFilled events on both exchanges where addr is maker or taker."""
-        out, errs = [], 0
+    first_err: list[str] = []  # first real exception of the run, verbatim
+
+    def _note_err(e: Exception) -> None:
+        if not first_err:
+            first_err.append(repr(e))
+            print(f"  FIRST ERROR (all later ones counted silently): {e!r}",
+                  file=sys.stderr)
+
+    async def events_around(addr_cs: str, b0: int, b1: int) -> tuple[list[dict], int, int]:
+        """OrderFilled events on both exchanges where addr is maker or taker.
+        Ranges chunked to <=GETLOGS_CHUNK blocks (public-RPC getLogs caps).
+        Returns (events, n_errors, n_queries)."""
+        out, errs, n_q = [], 0, 0
         for c in contracts:
             for field in ("maker", "taker"):
-                try:
-                    evs = await c.events.OrderFilled.get_logs(
-                        fromBlock=b0, toBlock=b1,
-                        argument_filters={field: addr_cs})
-                    out.extend(dict(e["args"]) for e in evs)
-                except Exception:
-                    errs += 1
-        return out, errs
+                for lo, hi in block_chunks(b0, b1):
+                    n_q += 1
+                    try:
+                        evs = await get_logs_compat(
+                            c.events.OrderFilled, lo, hi, {field: addr_cs})
+                        out.extend(dict(e["args"]) for e in evs)
+                    except Exception as e:
+                        errs += 1
+                        _note_err(e)
+        return out, errs, n_q
 
     results: dict[str, dict] = {}
     prev_ts = prev_block = None
@@ -198,11 +237,12 @@ async def run(args) -> int:
                     center = await bc.get_block_number_from_timestamp(epoch)
                 prev_ts, prev_block = epoch, center
                 span = max(args.pad_blocks, int(args.window_s / 2.1)) + 300
-                events, errs = await events_around(addr_cs, center - span, center + span)
-                if errs == 2 * len(contracts):  # every query failed
+                events, errs, n_q = await events_around(addr_cs, center - span, center + span)
+                if errs == n_q:  # every query failed
                     counts["rpc_error"] = counts.get("rpc_error", 0) + 1
                     continue
-            except Exception:
+            except Exception as e:
+                _note_err(e)
                 counts["rpc_error"] = counts.get("rpc_error", 0) + 1
                 continue
             m = match_fill(events, addr, int(t["tokenId"]), t.get("side", "BUY"),
@@ -233,6 +273,8 @@ async def run(args) -> int:
     print(f"  roster={len(roster)}  sampled fills={n_all}  "
           f"verified={total.get('verified', 0)}  mismatch={total.get('price_mismatch', 0)}"
           f"  not-found={total.get('not_found', 0)}  rpc-err={total.get('rpc_error', 0)}")
+    if first_err:
+        print(f"  first error of the run: {first_err[0][:300]}")
     if inconclusive:
         print("  >>> AUDIT-INCONCLUSIVE: zero chain matches anywhere with low RPC")
         print("  >>> errors — the address model (proxy vs signer) is wrong for this")
@@ -250,7 +292,8 @@ async def run(args) -> int:
     print("=" * 78)
     fc.write_json_atomic(args.out, fc.json_safe(
         {"results": results, "totals": total,
-         "inconclusive": inconclusive, "clean": clean}))
+         "inconclusive": inconclusive, "clean": clean,
+         "first_error": first_err[0] if first_err else None}))
     print(f"full results -> {args.out}")
     return 0
 
@@ -302,6 +345,29 @@ def _self_test() -> int:
     ok7 = (len(s) == 10 and all(t["side"] == "BUY" for t in s)
            and s == sorted(s, key=lambda t: str(t["timestamp"])))
     print(f"  [sample] 10 BUYs, time-spread, SELLs excluded : {ok7}"); ok &= ok7
+
+    # get_logs_compat must work against BOTH web3 calling conventions
+    # (the 2026-07-10 audit run failed 580/580 on exactly this)
+    class _V7Event:  # web3 >= 7: snake_case kwargs
+        async def get_logs(self, argument_filters=None, from_block=None,
+                           to_block=None, block_hash=None):
+            return [("v7", from_block, to_block, argument_filters)]
+
+    class _V6Event:  # web3 < 7: camelCase kwargs
+        async def get_logs(self, argument_filters=None, fromBlock=None,
+                           toBlock=None, block_hash=None):
+            return [("v6", fromBlock, toBlock, argument_filters)]
+
+    r7 = asyncio.run(get_logs_compat(_V7Event(), 10, 20, {"maker": "0xA"}))
+    r6 = asyncio.run(get_logs_compat(_V6Event(), 10, 20, {"maker": "0xA"}))
+    ok8 = (r7 == [("v7", 10, 20, {"maker": "0xA"})]
+           and r6 == [("v6", 10, 20, {"maker": "0xA"})])
+    print(f"  [get_logs] compat binds on web3 v7 AND v6 signatures : {ok8}"); ok &= ok8
+
+    ok9 = (block_chunks(0, 1800) == [(0, 899), (900, 1799), (1800, 1800)]
+           and block_chunks(5, 5) == [(5, 5)]
+           and all(hi - lo + 1 <= GETLOGS_CHUNK for lo, hi in block_chunks(0, 10_000)))
+    print(f"  [chunks] getLogs ranges capped at {GETLOGS_CHUNK} blocks : {ok9}"); ok &= ok9
 
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
