@@ -124,6 +124,15 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-10 (S226 HOTFIX, needs deploy):** `535ec86` — prediction logging went SILENT at
+  the 20:12 deploy: WB's runtime db is the TOP-LEVEL Database (main.py -> BaseEngine), which
+  lacked the new prob_frame kwarg -> TypeError on every log call, swallowed at debug level
+  (invisible at journal info). Zero prediction_log rows post-restart; trading unaffected.
+  Fixed: top-level Database/PredictionLog mirror the vendored prob_frame addition; the
+  swallowing catch elevated debug->warning (S177 precedent). LESSON (blast-radius): the
+  vendored tree owns the weather ENGINE imports, but the DB object binds TOP-LEVEL — DB-layer
+  changes must land in BOTH database.py files. Deploy: next release cut; then expect
+  prob_frame='yes' rows within ~2 scans of an edge.
 - **2026-07-10 (S226 V23 completion):** `14006b0` durable frame label — migration 080 adds
   `prediction_log.prob_frame` ('yes' = P(YES)), retro-NULLs historical WB PSW grades, and BOTH
   graders (vendored + top-level, weather-model_name-scoped) refuse unlabelled PSW rows; writers
