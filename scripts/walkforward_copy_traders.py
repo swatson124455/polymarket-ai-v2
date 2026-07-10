@@ -293,8 +293,7 @@ async def run(args) -> int:
     _report(args, per_trader, histories, prim_traders, unknown_src, dates,
             wf_all, wf_prim, stats_all, stats_prim, robust_means, verdict,
             detail, n_labeled, n_no_resolved_at, n_hft, n_gamma)
-    with open(args.out, "w") as f:
-        json.dump(fc.json_safe({
+    fc.write_json_atomic(args.out, fc.json_safe({
             "verdict": verdict, "detail": detail,
             "primary_stats": stats_prim, "all_stats": stats_all,
             "robust_means": robust_means,

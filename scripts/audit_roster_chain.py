@@ -248,10 +248,9 @@ async def run(args) -> int:
     print("  THIN/ERROR = audit could not see enough chain evidence; re-run with")
     print("  a wider --window-s / different RPC before drawing any conclusion.")
     print("=" * 78)
-    with open(args.out, "w") as f:
-        json.dump(fc.json_safe({"results": results, "totals": total,
-                                "inconclusive": inconclusive,
-                                "clean": clean}), f, indent=1)
+    fc.write_json_atomic(args.out, fc.json_safe(
+        {"results": results, "totals": total,
+         "inconclusive": inconclusive, "clean": clean}))
     print(f"full results -> {args.out}")
     return 0
 

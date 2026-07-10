@@ -230,11 +230,9 @@ async def run(args) -> int:
             if ci % 40 == 0:
                 print(f"  …chunk {ci}/{len(chunks)}  labeled+{added:,}"
                       f"  skipped={skipped:,}  errors={errors}", file=sys.stderr)
-                with open(out_path, "w") as f:
-                    json.dump(existing, f)
+                fc.write_json_atomic(out_path, existing)
             await asyncio.sleep(chunk_n / max(args.rps, 0.1))
-    with open(out_path, "w") as f:
-        json.dump(existing, f)
+    fc.write_json_atomic(out_path, existing)
 
     # 4. report
     total_after = len(labeled_db) + len(existing)

@@ -360,6 +360,16 @@ def merge_gamma_cache(markets: dict, keys: list[str], path: str) -> int:
     return added
 
 
+def write_json_atomic(path: str, obj) -> None:
+    """Dump to <path>.tmp then os.replace — a kill mid-write can never leave
+    a truncated JSON that bricks the next run's json.load (2026-07-10 data-
+    hygiene audit; this session pkills long runs as a matter of course)."""
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(obj, f)
+    os.replace(tmp, path)
+
+
 def json_safe(obj):
     """Recursively replace NaN/inf with None (bare NaN is invalid JSON) [rev]."""
     if isinstance(obj, float):
@@ -479,8 +489,7 @@ async def fetch_history(client, addr: str, max_bets: int, rps: float,
             end_ts = oldest
             offset = 0
         await asyncio.sleep(1.0 / rps)
-    with open(cpath, "w") as f:
-        json.dump({"status": status, "trades": out}, f)
+    write_json_atomic(cpath, {"status": status, "trades": out})
     await asyncio.sleep(1.0 / rps)
     return out, status
 
@@ -729,8 +738,7 @@ async def run(args) -> int:
     _report(args, universe, histories, n_partial, n_trunc, n_hft, n_gamma, cov_n, split,
             robust_splits, per_trader, qualified, primary_set, cat_stats,
             prim_stats, robust_means, verdict, detail, vlines)
-    with open(args.out, "w") as f:
-        json.dump(json_safe({
+    write_json_atomic(args.out, json_safe({
             "split": split, "robustness_splits": robust_splits,
             "verdict": verdict, "detail": detail,
             "primary_stats": prim_stats, "robust_means": robust_means,
