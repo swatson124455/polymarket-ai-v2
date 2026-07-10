@@ -211,6 +211,10 @@ class PrecipitationProbabilityEngine:
                     "token_id": bucket.token_id,
                     "side": "YES",
                     "model_prob": model_prob,
+                    # S226 (V23): P(YES) regardless of side — prediction_log's
+                    # grader reads predicted_prob in the YES frame; the trading
+                    # fields (model_prob/price/confidence) stay chosen-side.
+                    "model_prob_yes": model_prob,
                     "price": market_price,
                     "edge": edge,
                     "abs_edge": abs(edge),
@@ -225,6 +229,9 @@ class PrecipitationProbabilityEngine:
                     "token_id": bucket.no_token_id,
                     "side": "NO",
                     "model_prob": 1.0 - model_prob,
+                    # S226 (V23): see YES branch — logging the chosen-side prob
+                    # here made winning NO calls grade as misses.
+                    "model_prob_yes": model_prob,
                     "price": 1.0 - market_price,
                     "edge": no_edge,
                     "abs_edge": abs(no_edge),

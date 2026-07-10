@@ -4899,3 +4899,60 @@ class TestImpossibleCertaintyTripwire:
         from bots.weather_bot import _is_impossible_certainty
         assert _is_impossible_certainty(None) is False
         assert _is_impossible_certainty("nan") is False
+
+
+class TestS226YesFramePredictionLogging:
+    """S226 (V23 root fix): prediction_log.predicted_prob must be P(YES) for EVERY
+    WeatherBot row. The shared grader (backfill_prediction_log_resolution) computes
+    was_correct = (predicted_prob >= 0.5) == (resolution == 'YES') — a YES-frame read.
+    PSW (precip/snow/wind) NO-side opps store CHOSEN-side model_prob for trading, so
+    logging that value marked winning NO calls (P(NO) >= 0.5, resolved NO) as misses,
+    poisoning calibration_tracker, Brier feeds, and the consecutive-loss compress.
+    Fix: opps carry an explicit YES-frame `model_prob_yes`; log sites pass
+    _yes_frame_prob(opp), never the trading-frame value. Trading fields unchanged."""
+
+    def test_precip_engine_no_opp_carries_yes_frame_prob(self):
+        # Defect: pre-fix, NO opps only carried the chosen-side model_prob.
+        from bots.weather.engine.base_engine.weather.precipitation_engine import (
+            PrecipitationProbabilityEngine, PrecipBucket,
+        )
+        eng = PrecipitationProbabilityEngine()
+        bucket = PrecipBucket(
+            market_id="m1", token_id="t-yes", no_token_id="t-no", yes_price=0.60,
+        )
+        # Model says P(rain=YES)=0.20 → NO edge (P(NO)=0.80 vs NO price 0.40)
+        opps = eng.compute_edges({"m1": 0.20}, [bucket], min_edge=0.08)
+        no_opps = [o for o in opps if o["side"] == "NO"]
+        assert len(no_opps) == 1
+        no = no_opps[0]
+        assert no["model_prob"] == pytest.approx(0.80)      # trading frame preserved
+        assert no["model_prob_yes"] == pytest.approx(0.20)  # YES frame for prediction_log
+
+    def test_precip_engine_yes_opp_frames_agree(self):
+        from bots.weather.engine.base_engine.weather.precipitation_engine import (
+            PrecipitationProbabilityEngine, PrecipBucket,
+        )
+        eng = PrecipitationProbabilityEngine()
+        bucket = PrecipBucket(
+            market_id="m1", token_id="t-yes", no_token_id="t-no", yes_price=0.30,
+        )
+        opps = eng.compute_edges({"m1": 0.70}, [bucket], min_edge=0.08)
+        yes = [o for o in opps if o["side"] == "YES"][0]
+        assert yes["model_prob"] == pytest.approx(0.70)
+        assert yes["model_prob_yes"] == pytest.approx(0.70)
+
+    def test_yes_frame_prob_helper(self):
+        from bots.weather_bot import WeatherBot
+        # PSW NO opp: explicit YES-frame field wins over the trading-frame value
+        assert WeatherBot._yes_frame_prob(
+            {"model_prob_yes": 0.20, "model_prob": 0.80}) == pytest.approx(0.20)
+        # Temperature / singleton opps: model_prob is already P(YES) — fallback
+        assert WeatherBot._yes_frame_prob({"model_prob": 0.70}) == pytest.approx(0.70)
+
+    def test_grader_semantics_yes_frame_makes_winning_no_calls_correct(self):
+        # The grader's CASE in SQL, restated: correct iff (p_yes>=0.5) == (res=='YES').
+        # A winning NO call (P(NO)=0.8 → p_yes=0.2, market resolves NO):
+        p_yes, resolution = 0.2, "NO"
+        assert ((p_yes >= 0.5) == (resolution == "YES")) is True   # graded CORRECT
+        # Pre-fix the same row stored predicted_prob=0.8 (chosen frame) → graded a miss:
+        assert ((0.8 >= 0.5) == (resolution == "YES")) is False

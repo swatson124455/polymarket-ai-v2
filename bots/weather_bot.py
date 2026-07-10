@@ -2381,7 +2381,7 @@ class WeatherBot(BaseBot):
             opp["ensemble_count"] = len(ensemble)
             opp["market_type"] = "precipitation"
             await self._log_weather_prediction(
-                opp["market_id"], opp["model_prob"], opp["price"],
+                opp["market_id"], self._yes_frame_prob(opp), opp["price"],
                 opp.get("confidence", opp["model_prob"]), "precipitation",
             )
 
@@ -2477,7 +2477,7 @@ class WeatherBot(BaseBot):
             opp["ensemble_count"] = len(ensemble)
             opp["market_type"] = "snowfall"
             await self._log_weather_prediction(
-                opp["market_id"], opp["model_prob"], opp["price"],
+                opp["market_id"], self._yes_frame_prob(opp), opp["price"],
                 opp.get("confidence", opp["model_prob"]), "snowfall",
             )
 
@@ -2561,6 +2561,9 @@ class WeatherBot(BaseBot):
                         "edge": round(yes_edge, 4),
                         "price": round(market_prob, 4),
                         "model_prob": round(model_prob, 4),
+                        # S226 (V23): P(YES) for prediction_log — the grader
+                        # reads predicted_prob in the YES frame.
+                        "model_prob_yes": round(model_prob, 4),
                         "market_prob": round(market_prob, 4),
                         "abs_edge": round(abs(yes_edge), 4),
                         "confidence": round(model_prob, 4),
@@ -2573,6 +2576,9 @@ class WeatherBot(BaseBot):
                         "edge": round(no_edge, 4),
                         "price": round(1.0 - market_prob, 4),
                         "model_prob": round(1.0 - model_prob, 4),
+                        # S226 (V23): chosen-side prob in predicted_prob made
+                        # winning NO calls grade as misses; log P(YES) instead.
+                        "model_prob_yes": round(model_prob, 4),
                         "market_prob": round(1.0 - market_prob, 4),
                         "abs_edge": round(abs(no_edge), 4),
                         "confidence": round(1.0 - model_prob, 4),
@@ -2593,7 +2599,7 @@ class WeatherBot(BaseBot):
             opp["ensemble_count"] = len(ensemble)
             opp["market_type"] = "wind"
             await self._log_weather_prediction(
-                opp["market_id"], opp["model_prob"], opp["price"],
+                opp["market_id"], self._yes_frame_prob(opp), opp["price"],
                 opp.get("confidence", opp["model_prob"]), "wind",
             )
 
@@ -3945,7 +3951,7 @@ class WeatherBot(BaseBot):
                     logger.warning("weatherbot_daily_counter_write_failed", error=str(exc))
             # Log prediction for accuracy tracking at trade execution time
             await self._log_weather_prediction(
-                opp["market_id"], opp["model_prob"], opp["price"],
+                opp["market_id"], self._yes_frame_prob(opp), opp["price"],
                 opp.get("confidence", opp["model_prob"]),
                 opp.get("market_type", "temperature"),
             )
@@ -4645,6 +4651,22 @@ class WeatherBot(BaseBot):
             key=lambda o: o["confidence"] - o["price"],
             reverse=True,
         )[:max_buckets]
+
+    @staticmethod
+    def _yes_frame_prob(opp: Dict) -> float:
+        """S226 (V23 root fix): the P(YES)-frame probability for prediction_log.
+
+        prediction_log's single grader (backfill_prediction_log_resolution)
+        computes was_correct = (predicted_prob >= 0.5) == (resolution = 'YES'),
+        so predicted_prob MUST be P(YES) on every row. PSW (precip/snow/wind)
+        NO-side opps carry the CHOSEN-side prob in "model_prob" for trading
+        (sizing/Kelly read it — do not change it) and the YES-frame value in
+        "model_prob_yes". Temperature and analyze_opportunity opps store
+        "model_prob" already YES-framed and have no "model_prob_yes" — the
+        fallback covers them. Every _log_weather_prediction call site that
+        logs an opp dict must go through this helper.
+        """
+        return float(opp.get("model_prob_yes", opp["model_prob"]))
 
     def _check_executable_edge(self, opp: Dict) -> bool:
         """S221 Phase 2 (2026-05-18): Validate edge against EXECUTABLE price.
