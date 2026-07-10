@@ -38,8 +38,14 @@ INVOCATION (VPS, after a walk-forward PASS):
     cd /opt/polymarket-ai-v2 && sudo -u polymarket env PYTHONPATH=/tmp/mbpc2 \
       venv/bin/python /tmp/mbpc2/scripts/audit_roster_chain.py \
       --from-json /tmp/walkforward3.json --cache /tmp/copyable_cache \
+      --rpc-url https://polygon-rpc.com \
       | tee /tmp/chain_audit.log
     ... --self-test   # offline matching-logic check, no network
+
+RPC NOTE (2026-07-10): the endpoint MUST serve eth_getLogs.
+polygon-bor-rpc.publicnode.com (the VPS POLYGON_RPC) 403s getLogs while
+answering block lookups — probe with a raw eth_getLogs curl before a long
+run, or rely on --fail-fast (aborts in ~1 min if every sample errors).
 """
 from __future__ import annotations
 
@@ -155,13 +161,37 @@ async def get_logs_compat(event, b0: int, b1: int, filters: dict):
                                     fromBlock=b0, toBlock=b1)
 
 
+def resolve_rpc_url(rpc_url_arg: str, rpc_env_arg: str,
+                    environ: dict) -> tuple[Optional[str], Optional[str]]:
+    """(url, error). Explicit --rpc-url wins; --rpc-env reads a named env var
+    (so paid-endpoint URLs with embedded API keys never appear on a command
+    line or in a pasted log); neither -> None = BlockchainClient defaults.
+    2026-07-10: the default endpoint (publicnode) 403s eth_getLogs — the
+    audit needs a logs-serving endpoint without touching shared modules."""
+    if rpc_url_arg:
+        return rpc_url_arg, None
+    if rpc_env_arg:
+        v = environ.get(rpc_env_arg, "")
+        if not v:
+            return None, f"--rpc-env {rpc_env_arg} is not set in the environment"
+        return v, None
+    return None, None
+
+
 # ── Network run ──────────────────────────────────────────────────────────────
 async def run(args) -> int:
     from dotenv import load_dotenv
     load_dotenv()
+    if os.path.exists("/opt/pa2-shared/.env"):      # shared VPS env (no override)
+        load_dotenv("/opt/pa2-shared/.env")
     from base_engine.data.blockchain_client import (
         BlockchainClient, EXCHANGE_CONTRACT, NEGRISK_EXCHANGE_CONTRACT,
         ORDER_FILLED_EVENT_ABI)
+
+    rpc_url, rpc_err = resolve_rpc_url(args.rpc_url, args.rpc_env, os.environ)
+    if rpc_err:
+        print(rpc_err, file=sys.stderr)
+        return 2
 
     # roster
     if args.traders:
@@ -174,7 +204,7 @@ async def run(args) -> int:
         print("no roster addresses (check --from-json / --traders)")
         return 2
 
-    bc = BlockchainClient()
+    bc = BlockchainClient(rpc_url=rpc_url)
     await bc.ensure_client()
     from web3 import Web3
     contracts = []
@@ -211,6 +241,7 @@ async def run(args) -> int:
     results: dict[str, dict] = {}
     prev_ts = prev_block = None
     total = {"verified": 0, "price_mismatch": 0, "not_found": 0, "rpc_error": 0}
+    samples_done = samples_rpc_err = 0  # fail-fast: don't grind a dead endpoint
     for ai, addr in enumerate(roster):
         path = os.path.join(args.cache, f"{addr}.json")
         if not os.path.exists(path):
@@ -238,12 +269,33 @@ async def run(args) -> int:
                 prev_ts, prev_block = epoch, center
                 span = max(args.pad_blocks, int(args.window_s / 2.1)) + 300
                 events, errs, n_q = await events_around(addr_cs, center - span, center + span)
+                samples_done += 1
                 if errs == n_q:  # every query failed
                     counts["rpc_error"] = counts.get("rpc_error", 0) + 1
+                    samples_rpc_err += 1
+                    if (args.fail_fast > 0 and samples_done >= args.fail_fast
+                            and samples_rpc_err == samples_done):
+                        print(f"\nFAIL-FAST: first {samples_done} samples ALL rpc_error"
+                              f" — the endpoint is not serving these queries; aborting"
+                              f" instead of wasting the run.", file=sys.stderr)
+                        print(f"first error: {first_err[0] if first_err else '?'}",
+                              file=sys.stderr)
+                        print("retry with --rpc-url <logs-serving endpoint> or"
+                              " --rpc-env ALCHEMY_HTTP (etc.); --fail-fast 0 disables.",
+                              file=sys.stderr)
+                        return 3
                     continue
             except Exception as e:
                 _note_err(e)
                 counts["rpc_error"] = counts.get("rpc_error", 0) + 1
+                samples_done += 1
+                samples_rpc_err += 1
+                if (args.fail_fast > 0 and samples_done >= args.fail_fast
+                        and samples_rpc_err == samples_done):
+                    print(f"\nFAIL-FAST: first {samples_done} samples ALL failed —"
+                          f" aborting; first error: "
+                          f"{first_err[0] if first_err else '?'}", file=sys.stderr)
+                    return 3
                 continue
             m = match_fill(events, addr, int(t["tokenId"]), t.get("side", "BUY"),
                            float(t.get("price", 0)), args.tol_price)
@@ -389,6 +441,14 @@ if __name__ == "__main__":
     ap.add_argument("--rps", type=float, default=6.0)
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--out", default="/tmp/chain_audit.json")
+    ap.add_argument("--rpc-url", default="", dest="rpc_url",
+                    help="explicit Polygon RPC endpoint (must serve eth_getLogs; "
+                         "the publicnode default 403s it, 2026-07-10)")
+    ap.add_argument("--rpc-env", default="", dest="rpc_env",
+                    help="name of an env var holding the RPC URL (keeps keyed "
+                         "URLs out of command lines/logs), e.g. ALCHEMY_HTTP")
+    ap.add_argument("--fail-fast", type=int, default=12, dest="fail_fast",
+                    help="abort if the first N samples ALL rpc_error (0=off)")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
 

@@ -161,3 +161,17 @@ def test_block_chunks_cap_and_cover():
     # contiguous, no gaps, no overlap, full coverage
     assert spans[0][0] == 100 and spans[-1][1] == 10_000
     assert all(spans[i + 1][0] == spans[i][1] + 1 for i in range(len(spans) - 1))
+
+
+def test_resolve_rpc_url():
+    # explicit URL wins over everything
+    assert ac.resolve_rpc_url("https://x", "SOME_VAR", {"SOME_VAR": "https://y"}) \
+        == ("https://x", None)
+    # env-var indirection (keeps keyed URLs off command lines)
+    assert ac.resolve_rpc_url("", "ALCHEMY_HTTP", {"ALCHEMY_HTTP": "https://y"}) \
+        == ("https://y", None)
+    # named var missing -> hard error, not a silent fallback to a dead default
+    url, err = ac.resolve_rpc_url("", "ALCHEMY_HTTP", {})
+    assert url is None and "ALCHEMY_HTTP" in err
+    # neither -> None (BlockchainClient defaults), no error
+    assert ac.resolve_rpc_url("", "", {}) == (None, None)
