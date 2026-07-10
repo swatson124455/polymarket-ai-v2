@@ -8,6 +8,41 @@
 
 ---
 
+## 0-S4c. SESSION-4 FINAL (2026-07-10) — SIBLING-ROSTER VETO (matcher root fix)
+
+**Bug (operator-directed "fix the naming issue for good", `672f5a7`):** the
+matcher's token-subset rule linked an org's MAIN roster to its sibling roster —
+"T1" ↔ "T1 Esports Academy", "Shopify Rebellion" ↔ "Shopify Rebellion Black" —
+because academy/youth/etc. were classed as ignorable GENERIC decoration. These
+are DIFFERENT teams that play the same day (LCK vs LCK CL) → wrong-attach risk
+(price + orientation, the S152/B2 class). The seeded `esports_team_aliases`
+table is contaminated with the same cross-roster groups (2026-07-10 dump: T1/T1
+Academy, Weibo/Youth, W7M/Fe, KC Blue/Blue Stars — the dump's ONLY 16 groups
+are all already-token-linked pairs, i.e. the alias file adds no new matching
+power; that's fine/expected).
+
+**Fix:** `SIBLING_QUALIFIERS` (academy, youth, junior(s), rookies,
+challenger(s), female, fe, women(s), ladies, gc, blue, white, black, gold,
+stars) — a DIFFERENCE in these tokens hard-vetoes `same_team` BEFORE the alias
+and subset paths (so contaminated alias groups are inert too). Same qualifier
+both sides still matches ("T1 Academy" == "T1 Esports Academy"); decorations
+untouched ("G2 Esports" == "G2"). Veto can only REMOVE a match (safe
+direction). Applied to `team_match.py` + standalone mirror; results_join
+inherits via re-export. Suite 219 green; live sweep: 5 sibling fixtures in
+TODAY's index (Spirit/NRG/MIBR/Vitality Academy, SR Black) now unreachable
+from main-roster odds rows, and all 4 spot-checked main-slate pairs still
+self-match. Two old tests asserting "DRX Academy"=="DRX" encoded the bug —
+inverted with dated notes.
+
+**⚠️ OPERATOR: redeploy the collector (supersedes §0-S4b one-liner B; run
+§0-S4b one-liner A first if not done). md5 `5c67c2ba3b03af1eeddee9739a26510b`:**
+`ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 "curl -fsSL https://raw.githubusercontent.com/swatson124455/polymarket-ai-v2/claude/esports-sharp-line-rebuild-gqy1na/deploy/vps/collect_pinnodds_standalone.py -o /home/ubuntu/eb-odds/collect_pinnodds_standalone.py && echo '5c67c2ba3b03af1eeddee9739a26510b  /home/ubuntu/eb-odds/collect_pinnodds_standalone.py' | md5sum -c -"`
+
+`eb_label_audit.sh` md5 UNCHANGED (`e56e8ed6…`) — it re-clones HEAD, so the
+veto applies to the join automatically at the next audit run.
+
+---
+
 ## 0-S4b. SESSION-4 LATE (2026-07-10) — ALIAS INJECTION + DECISION-GRADE READOUT; 429 TABLED
 
 **TABLED (operator, 2026-07-10):** the PinnOdds 429 stall. The `4d46e275`
@@ -37,8 +72,9 @@ run the collector manually (burns quota).
 `ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 "curl -fsSL https://raw.githubusercontent.com/swatson124455/polymarket-ai-v2/claude/esports-sharp-line-rebuild-gqy1na/deploy/vps/eb_dump_aliases.sh -o /tmp/eba.sh && echo '5307d3f96b0eb78e3d3b530c9179f62c  /tmp/eba.sh' | md5sum -c - && bash /tmp/eba.sh"`
 
 **Operator one-liner B (after A): redeploy collector with alias support** (do
-NOT append a manual run this time — quota):
-`ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 "curl -fsSL https://raw.githubusercontent.com/swatson124455/polymarket-ai-v2/claude/esports-sharp-line-rebuild-gqy1na/deploy/vps/collect_pinnodds_standalone.py -o /home/ubuntu/eb-odds/collect_pinnodds_standalone.py && echo '0673cb50ab842e7182afff2f9bd59b1a  /home/ubuntu/eb-odds/collect_pinnodds_standalone.py' | md5sum -c -"`
+NOT append a manual run this time — quota). **md5 SUPERSEDED by §0-S4c** —
+current drop is `5c67c2ba3b03af1eeddee9739a26510b` (adds the sibling-roster
+veto); use the §0-S4c one-liner.
 
 `eb_label_audit.sh` md5 is now `e56e8ed671f0c103e9ee68ac0a05a8a9` (adds
 `--aliases`; supersedes `1c866f6d…` — the §0-FINAL/PRIMARY command's md5 token
@@ -83,9 +119,9 @@ in place. Everything else from §0-FINAL stands (do not redo).
 > seamlessly. Branch:
 > `git checkout claude/esports-sharp-line-rebuild-gqy1na && git pull`.**
 >
-> Read first, in order: `EB_SHARP_LINE_NEXT_SESSION.md` (start at §0-S4b, then
-> §0-S4, §0-FINAL, §0a/§0b), `EB_SHARP_LINE_STATE.md`, `EB_SHARP_LINE_PLUMBING.md`,
-> `EB_MARKET_SHAPE_RESULTS.md`, then `CLAUDE.md`.
+> Read first, in order: `EB_SHARP_LINE_NEXT_SESSION.md` (start at §0-S4c, then
+> §0-S4b, §0-S4, §0-FINAL, §0a/§0b), `EB_SHARP_LINE_STATE.md`,
+> `EB_SHARP_LINE_PLUMBING.md`, `EB_MARKET_SHAPE_RESULTS.md`, then `CLAUDE.md`.
 >
 > **Context:** cloud session — no direct VPS/DB/PinnOdds/PandaScore access.
 > CLOB + gamma-api + raw.githubusercontent ARE reachable. The operator runs VPS
@@ -103,9 +139,10 @@ in place. Everything else from §0-FINAL stands (do not redo).
 > **STATE — everything below is DONE and verified; do not redo (details §0-FINAL):**
 > pipeline is FULLY LIVE end-to-end (odds+PM capture → results → join → metrics →
 > PM-edge backtest). VPS steady state: collector HOURLY cron with PM capture
-> (current drop = md5 `0673cb50ab842e7182afff2f9bd59b1a`, §0-S4b alias support;
-> `4d46e275…` = coverage-fix-only, deployed 2026-07-10; `5fcb2c4f…` = pre-fix.
-> Whatever the VPS shows older than `0673cb50…` → run §0-S4b one-liners A+B),
+> (current drop = md5 `5c67c2ba3b03af1eeddee9739a26510b`, §0-S4c sibling-roster
+> veto; older drops: `0673cb50…` alias-support, `4d46e275…` coverage-fix,
+> `5fcb2c4f…` pre-fix. VPS showing anything older than `5c67c2ba…` → run
+> §0-S4b one-liner A once, then the §0-S4c redeploy one-liner),
 > PM-first-hit watcher hourly at :07 (marker exists — first capture was
 > JD Gaming vs TYLOO, 39 snaps, orientation sanity-checked). First labeled run:
 > 19/36 closing lines joined; labels AUDITED correct (LYON 3-0 G2 at MSI verified
