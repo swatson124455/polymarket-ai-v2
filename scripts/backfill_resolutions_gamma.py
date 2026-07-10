@@ -18,14 +18,20 @@ token-matching labeler works for team-name binaries too. Ambiguous, split, or
 open markets are skipped and counted, never guessed.
 
 resolved_at (knowledge time for the walk-forward roster): closedTime, else
-umaEndDate, else endDate — first parseable. Missing => the graders fall back
-to entry time and report the count.
+umaEndDate, else endDate — first parseable (gamma rows); end_date_iso (CLOB
+rows). Missing => the graders fall back to entry time and report the count.
 
-SAFETY: READ-ONLY everywhere (DB SELECTs to skip already-labeled keys; gamma
+SOURCES (2026-07-10 rework): 0x condition_ids are fetched ONE PER REQUEST
+from CLOB /markets/{cid} — gamma's ?condition_ids= batch filter is silently
+ignored (two full runs: 200s, zero matches; production resolution_backfill.py
+uses the same CLOB endpoint for the same reason). Numeric ids use gamma
+/markets/{id}.
+
+SAFETY: READ-ONLY everywhere (DB SELECTs to skip already-labeled keys; API
 GETs, throttled). The JSON cache is append/merge, resume-safe — re-running
 skips keys already backfilled.
 
-INVOCATION (on the VPS, once; ~15-40 min depending on hole count):
+INVOCATION (on the VPS; per-key fetches — ~2.5h per 130k holes at --rps 15):
     cd /opt/polymarket-ai-v2 && sudo -u polymarket env PYTHONPATH=/tmp/mbpc \
       venv/bin/python /tmp/mbpc/scripts/backfill_resolutions_gamma.py \
       --cache /tmp/copyable_cache | tee /tmp/gamma_backfill.log
@@ -44,6 +50,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import find_copyable_traders as fc  # noqa: E402
 
 GAMMA = "https://gamma-api.polymarket.com"
+CLOB = "https://clob.polymarket.com"
 
 
 # ── Pure mapping (offline-testable) ──────────────────────────────────────────
@@ -84,6 +91,50 @@ def map_gamma_market(m: dict) -> Optional[dict]:
             "resolved_at": resolved_at.isoformat() if resolved_at else None,
             "yes_token_id": tokens[0], "no_token_id": tokens[1],
             "category": m.get("category") or ""}
+
+
+def map_clob_market(m: dict) -> Optional[dict]:
+    """CLOB /markets/{condition_id} row → the same blob shape as
+    map_gamma_market. Ported from base_engine/data/resolution_backfill.py
+    (production, 2026-05-26 chain-verification): resolution from token PRICES
+    first ([~1,~0] payout), winner flag only as fallback — the winner flag
+    alone has been observed missing/wrong. resolution='YES' means tokens[0]
+    won (positional convention, paired with the stored token ids — the
+    graders' labeler matches by token id, so wording-independent).
+    resolved_at ≈ end_date_iso (settlement lags it by hours — immaterial on a
+    30-day review grid; missing => graders' counted entry-time fallback).
+    Open / non-binary / ambiguous-closed → None, never guessed."""
+    if not isinstance(m, dict) or not m.get("closed"):
+        return None
+    tokens = m.get("tokens") or []
+    if len(tokens) != 2:
+        return None
+    t0 = str(tokens[0].get("token_id") or "").strip()
+    t1 = str(tokens[1].get("token_id") or "").strip()
+    if not t0 or not t1:
+        return None
+    res = None
+    try:
+        p0 = float(tokens[0].get("price") or 0)
+        p1 = float(tokens[1].get("price") or 0)
+        if p0 >= 0.99 and p1 <= 0.01:
+            res = "YES"
+        elif p0 <= 0.01 and p1 >= 0.99:
+            res = "NO"
+    except (ValueError, TypeError):
+        pass
+    if res is None:  # legacy fallback: prices not populated on the row yet
+        if tokens[0].get("winner"):
+            res = "YES"
+        elif tokens[1].get("winner"):
+            res = "NO"
+    if res is None:
+        return None
+    ra = fc.parse_ts(m.get("end_date_iso"))
+    return {"resolution": res,
+            "resolved_at": ra.isoformat() if ra else None,
+            "yes_token_id": t0, "no_token_id": t1,
+            "category": fc.bucket_category(m.get("question") or "")}
 
 
 def keys_of(m: dict) -> list[str]:
@@ -132,46 +183,56 @@ async def run(args) -> int:
     if os.path.exists(out_path):
         with open(out_path) as f:
             existing = json.load(f)
-    todo = sorted(keys - labeled_db - set(existing))
+    todo = sorted(k for k in keys - labeled_db - set(existing)
+                  if k.startswith("0x") or k.isdigit())  # slug keys: no per-id
+    #  endpoint takes them (same exclusion as the old batch code); they stay
+    #  in the report's unlabelable residue — add a slug-lookup pass if big.
     print(f"[2/4] DB-labeled={len(labeled_db):,}  already-backfilled={len(existing):,}"
           f"  to-fetch={len(todo):,}", file=sys.stderr)
 
-    # 3. batched gamma fetches (condition_ids for 0x keys, id for numeric)
-    cids = [k for k in todo if k.startswith("0x")]
-    nids = [k for k in todo if k.isdigit()]
+    # 3. per-key fetches — CLOB /markets/{condition_id} for 0x keys, gamma
+    # /markets/{id} for numeric ids. Gamma's /markets?condition_ids= filter
+    # is silently IGNORED (2026-07-10: two full runs returned HTTP 200 with
+    # the default listing — 0 labels, 0 errors, 170k keys; production
+    # base_engine/data/resolution_backfill.py learned the same lesson and
+    # uses the per-id CLOB endpoint). Never batch-query gamma by
+    # condition_ids again.
     added = skipped = errors = 0
+    chunk_n = max(1, args.batch)
     async with httpx.AsyncClient(timeout=25) as hc:
-        async def fetch(params: list[tuple]) -> list:
-            nonlocal errors
+        async def fetch_one(key: str) -> None:
+            nonlocal added, skipped, errors
             try:
-                r = await hc.get(f"{GAMMA}/markets", params=params + [("limit", "100")])
-                if r.status_code != 200:
+                url = (f"{CLOB}/markets/{key}" if key.startswith("0x")
+                       else f"{GAMMA}/markets/{key}")
+                r = await hc.get(url)
+                if r.status_code == 200:
+                    row = r.json()
+                    mapped = (map_clob_market(row) if key.startswith("0x")
+                              else map_gamma_market(row))
+                elif r.status_code == 404:
+                    mapped = None  # market unknown to the API — skip, no error
+                else:
                     errors += 1
-                    return []
-                out = r.json()
-                return out if isinstance(out, list) else []
+                    return
             except Exception:
                 errors += 1
-                return []
+                return
+            if mapped:
+                existing[key] = mapped
+                added += 1
+            else:
+                skipped += 1
 
-        batches = [("condition_ids", cids[i:i + args.batch]) for i in range(0, len(cids), args.batch)]
-        batches += [("id", nids[i:i + args.batch]) for i in range(0, len(nids), args.batch)]
-        for bi, (pname, batch) in enumerate(batches):
-            rows = await fetch([(pname, k) for k in batch])
-            got = set()
-            for m in rows:
-                mapped = map_gamma_market(m)
-                for k in keys_of(m):
-                    got.add(k)
-                    if mapped and k in keys and k not in existing:
-                        existing[k] = mapped
-                        added += 1
-            skipped += sum(1 for k in batch if k not in got or k not in existing)
-            if bi % 40 == 0:
-                print(f"  …batch {bi}/{len(batches)}  labeled+{added:,}", file=sys.stderr)
+        chunks = [todo[i:i + chunk_n] for i in range(0, len(todo), chunk_n)]
+        for ci, chunk in enumerate(chunks):
+            await asyncio.gather(*(fetch_one(k) for k in chunk))
+            if ci % 40 == 0:
+                print(f"  …chunk {ci}/{len(chunks)}  labeled+{added:,}"
+                      f"  skipped={skipped:,}  errors={errors}", file=sys.stderr)
                 with open(out_path, "w") as f:
                     json.dump(existing, f)
-            await asyncio.sleep(1.0 / args.rps)
+            await asyncio.sleep(chunk_n / max(args.rps, 0.1))
     with open(out_path, "w") as f:
         json.dump(existing, f)
 
@@ -219,6 +280,31 @@ def _self_test() -> int:
         and _jlist(["a"]) == ["a"] and _jlist("junk") == []
     print(f"  [keys/jlist] both lookup keys; string-encoded lists : {ok4}"); ok &= ok4
 
+    # CLOB mapper (per-condition-id endpoint — the 2026-07-10 rework)
+    cm = {"closed": True, "question": "Will the Lakers win the NBA finals?",
+          "end_date_iso": "2026-06-20T00:00:00Z",
+          "tokens": [{"token_id": "C1", "outcome": "Lakers", "price": "1"},
+                     {"token_id": "C2", "outcome": "Celtics", "price": "0"}]}
+    r5 = map_clob_market(cm)
+    ok5 = (r5 and r5["resolution"] == "YES" and r5["yes_token_id"] == "C1"
+           and r5["resolved_at"] == "2026-06-20T00:00:00"
+           and r5["category"] == "sports")
+    print(f"  [clob] prices [1,0] -> YES/token[0]/end_date/category : {bool(ok5)}"); ok &= bool(ok5)
+
+    cm2 = {**cm, "tokens": [{"token_id": "C1", "outcome": "A", "price": None},
+                            {"token_id": "C2", "outcome": "B", "price": None,
+                             "winner": True}]}
+    r6 = map_clob_market(cm2)
+    ok6 = r6 and r6["resolution"] == "NO"  # winner-flag fallback, token[1] won
+    print(f"  [clob] no prices, winner flag on token[1] -> NO : {bool(ok6)}"); ok &= bool(ok6)
+
+    ok7 = (map_clob_market({**cm, "closed": False}) is None
+           and map_clob_market({**cm, "tokens": [
+               {"token_id": "C1", "outcome": "A", "price": "0.6"},
+               {"token_id": "C2", "outcome": "B", "price": "0.4"}]}) is None
+           and map_clob_market({**cm, "tokens": cm["tokens"][:1]}) is None)
+    print(f"  [clob] open/ambiguous/non-binary -> skipped, never guessed : {ok7}"); ok &= ok7
+
     # merge hook: gamma fills holes, DB wins on conflict
     markets = {"0xdb": {"resolution": "NO"}}
     gamma_blob = {"0xdb": {"resolution": "YES"},
@@ -242,8 +328,9 @@ def _self_test() -> int:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Backfill resolutions from gamma into a local cache")
     ap.add_argument("--cache", default="/tmp/copyable_cache")
-    ap.add_argument("--batch", type=int, default=25, help="market keys per gamma request")
-    ap.add_argument("--rps", type=float, default=5.0)
+    ap.add_argument("--batch", type=int, default=25,
+                    help="concurrent per-key requests per wave")
+    ap.add_argument("--rps", type=float, default=15.0)
     ap.add_argument("--timeout", type=int, default=60, help="DB statement_timeout s")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
