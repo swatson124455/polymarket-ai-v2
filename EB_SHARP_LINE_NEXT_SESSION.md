@@ -8,7 +8,45 @@
 
 ---
 
-## 0-S4. SESSION-4 (2026-07-10) — PM-INDEX COVERAGE BUG FOUND+FIXED; COLLECTOR REDEPLOY REQUIRED
+## 0-S4b. SESSION-4 LATE (2026-07-10) — ALIAS INJECTION + DECISION-GRADE READOUT; 429 TABLED
+
+**TABLED (operator, 2026-07-10):** the PinnOdds 429 stall. The `4d46e275`
+coverage-fix collector WAS redeployed + md5-verified on the VPS, but its first
+successful tick is pending — PinnOdds quota was drained (20:00+21:00 UTC ticks
+429'd; file frozen at 994 lines / 39 PM-attached rows). Next session: check
+`tail -3 collect.log` + the 0x row count first. If still all-429 a full day past
+2026-07-10 21:00 UTC → operator decision: paid tier vs slower cadence. Do NOT
+run the collector manually (burns quota).
+
+**Built while waiting (both pushed, suite 210 green):**
+- **Alias injection (`ba220bd`).** The 1,777-row `esports_team_aliases` table
+  now feeds the matchers via a JSON file: NEW `esports_v2/data/alias_file.py`
+  (correct-or-absent loader: missing/malformed → None → matching EXACTLY as
+  strict as before), `--aliases` on `eval_sharp_line`/`dump_joined`,
+  `EB_ALIASES_PATH` on both collectors, stdlib mirror in the standalone,
+  audit script passes the path. Catches "NAVI"↔"Natus Vincere"-class misses
+  the token matcher can't. **OPERATOR: two one-liners below** (dump once, then
+  redeploy collector md5 `0673cb50ab842e7182afff2f9bd59b1a`; both zero
+  PinnOdds cost).
+- **Decision-grade readout (`0981c32`).** Wilson 95% CIs on fav hit-rate and
+  edge hit-rate, automatic `UNSTABLE (n<50)` labels, per-edge-size bucket
+  table (n/wins/pnl/roi per bucket) in the edge backtest — so the first
+  multi-record readout is interpretable, not just a point estimate.
+
+**Operator one-liner A (once): dump aliases → `/home/ubuntu/eb-odds/aliases.json`**
+`ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 "curl -fsSL https://raw.githubusercontent.com/swatson124455/polymarket-ai-v2/claude/esports-sharp-line-rebuild-gqy1na/deploy/vps/eb_dump_aliases.sh -o /tmp/eba.sh && echo '5307d3f96b0eb78e3d3b530c9179f62c  /tmp/eba.sh' | md5sum -c - && bash /tmp/eba.sh"`
+
+**Operator one-liner B (after A): redeploy collector with alias support** (do
+NOT append a manual run this time — quota):
+`ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 "curl -fsSL https://raw.githubusercontent.com/swatson124455/polymarket-ai-v2/claude/esports-sharp-line-rebuild-gqy1na/deploy/vps/collect_pinnodds_standalone.py -o /home/ubuntu/eb-odds/collect_pinnodds_standalone.py && echo '0673cb50ab842e7182afff2f9bd59b1a  /home/ubuntu/eb-odds/collect_pinnodds_standalone.py' | md5sum -c -"`
+
+`eb_label_audit.sh` md5 is now `e56e8ed671f0c103e9ee68ac0a05a8a9` (adds
+`--aliases`; supersedes `1c866f6d…` — the §0-FINAL/PRIMARY command's md5 token
+must be this value).
+
+---
+
+## 0-S4. SESSION-4 (2026-07-10) — PM-INDEX COVERAGE BUG FOUND+FIXED; COLLECTOR REDEPLOY DONE (md5 SUPERSEDED by §0-S4b)
 
 **Bug (live-measured, then fixed):** gamma-api hard-caps offset pagination
 (HTTP 422 `offset too large` past ~2100) while the esports tag holds ~3600
@@ -45,8 +83,8 @@ in place. Everything else from §0-FINAL stands (do not redo).
 > seamlessly. Branch:
 > `git checkout claude/esports-sharp-line-rebuild-gqy1na && git pull`.**
 >
-> Read first, in order: `EB_SHARP_LINE_NEXT_SESSION.md` (start at §0-S4, then
-> §0-FINAL, §0a/§0b), `EB_SHARP_LINE_STATE.md`, `EB_SHARP_LINE_PLUMBING.md`,
+> Read first, in order: `EB_SHARP_LINE_NEXT_SESSION.md` (start at §0-S4b, then
+> §0-S4, §0-FINAL, §0a/§0b), `EB_SHARP_LINE_STATE.md`, `EB_SHARP_LINE_PLUMBING.md`,
 > `EB_MARKET_SHAPE_RESULTS.md`, then `CLAUDE.md`.
 >
 > **Context:** cloud session — no direct VPS/DB/PinnOdds/PandaScore access.
@@ -65,8 +103,9 @@ in place. Everything else from §0-FINAL stands (do not redo).
 > **STATE — everything below is DONE and verified; do not redo (details §0-FINAL):**
 > pipeline is FULLY LIVE end-to-end (odds+PM capture → results → join → metrics →
 > PM-edge backtest). VPS steady state: collector HOURLY cron with PM capture
-> (md5 `4d46e275dc4085f5ec50b2846adf8e6c` after the §0-S4 coverage-fix redeploy;
-> if the VPS still shows `5fcb2c4f…` the redeploy is PENDING — do it first),
+> (current drop = md5 `0673cb50ab842e7182afff2f9bd59b1a`, §0-S4b alias support;
+> `4d46e275…` = coverage-fix-only, deployed 2026-07-10; `5fcb2c4f…` = pre-fix.
+> Whatever the VPS shows older than `0673cb50…` → run §0-S4b one-liners A+B),
 > PM-first-hit watcher hourly at :07 (marker exists — first capture was
 > JD Gaming vs TYLOO, 39 snaps, orientation sanity-checked). First labeled run:
 > 19/36 closing lines joined; labels AUDITED correct (LYON 3-0 G2 at MSI verified
@@ -80,7 +119,7 @@ in place. Everything else from §0-FINAL stands (do not redo).
 > re-clones HEAD so it auto-picks-up any new commits):
 > `ssh -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 "curl -fsSL
 > https://raw.githubusercontent.com/swatson124455/polymarket-ai-v2/claude/esports-sharp-line-rebuild-gqy1na/deploy/vps/eb_label_audit.sh
-> -o /tmp/ebl.sh && echo '1c866f6d38c32101e38405cf003b20f9  /tmp/ebl.sh' |
+> -o /tmp/ebl.sh && echo 'e56e8ed671f0c103e9ee68ac0a05a8a9  /tmp/ebl.sh' |
 > md5sum -c - && bash /tmp/ebl.sh"` (single line) → interpret the first
 > multi-record sharp-vs-PM edge backtest. Meanwhile you can check capture health:
 > `tail -1 /home/ubuntu/eb-odds/collect.log` (expect `pm_matched>0` as the slate
