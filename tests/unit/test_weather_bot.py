@@ -885,6 +885,109 @@ class TestS224NdfdWrongDayPoP:
         assert WeatherBot._ndfd_pop_for_target([], "2026-03-07") is None
 
 
+class TestS226NdfdNullPopIsZero:
+    """S226 (V37 follow-up, sanctioned by S224/419df24): NWS deliberately serves
+    null PoP for ~0% periods — a null on a real forecast period IS the dry
+    signal, not missing data. get_ndfd_pop used to DROP null-PoP periods, so a
+    dry target day had no matching entry and fell to pure ensemble instead of a
+    true 0% NDFD signal. Nulls must become 0.0. The no-matching-day → None
+    invariant (S224) lives in _ndfd_pop_for_target and must NOT regress."""
+
+    @staticmethod
+    def _client_with_mock_forecast(station_id, periods):
+        """WeatherForecastClient with the NWS forecast URL pre-cached and a
+        mocked session returning the given forecast periods."""
+        import time as _time
+
+        client = WeatherForecastClient()
+        client._nws_forecast_url_cache[station_id] = (
+            _time.monotonic() + 3600.0,
+            "https://api.weather.gov/gridpoints/OKX/33,37/forecast",
+        )
+        mock_resp = MagicMock()
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"properties": {"periods": periods}})
+        mock_sess = MagicMock()
+        mock_sess.get = MagicMock(return_value=mock_resp)
+        return client, mock_sess
+
+    @pytest.mark.asyncio
+    async def test_null_pop_on_matching_day_becomes_zero(self):
+        """Defect: dry target day (NWS nulls) used to vanish from pop_data;
+        _ndfd_pop_for_target then returned None → pure ensemble. Fixed: the
+        null periods survive as 0.0 and the dry day recovers a real 0% PoP."""
+        from bots.weather_bot import WeatherBot
+
+        station = STATION_REGISTRY["new_york_city"]
+        periods = [
+            {"name": "Saturday", "startTime": "2026-03-07T06:00:00-05:00",
+             "probabilityOfPrecipitation": {"unitCode": "wmoUnit:percent", "value": None}},
+            {"name": "Saturday Night", "startTime": "2026-03-07T18:00:00-05:00",
+             "probabilityOfPrecipitation": {"unitCode": "wmoUnit:percent", "value": None}},
+            {"name": "Sunday", "startTime": "2026-03-08T06:00:00-05:00",
+             "probabilityOfPrecipitation": {"unitCode": "wmoUnit:percent", "value": 30}},
+        ]
+        client, mock_sess = self._client_with_mock_forecast(station.station_id, periods)
+        with patch.object(client, "_ensure_session", new_callable=AsyncMock, return_value=mock_sess):
+            result = await client.get_ndfd_pop(station)
+
+        assert result is not None
+        assert ("Saturday", 0.0, "2026-03-07") in result
+        assert ("Saturday Night", 0.0, "2026-03-07") in result
+        # Valued periods are untouched
+        assert ("Sunday", 30.0, "2026-03-08") in result
+        # The dry day now yields a true 0% signal instead of None
+        assert WeatherBot._ndfd_pop_for_target(result, "2026-03-07") == pytest.approx(0.0)
+
+    @pytest.mark.asyncio
+    async def test_all_null_pop_returns_entries_not_none(self):
+        """A fully dry 72h window (every period null) used to collapse to None."""
+        station = STATION_REGISTRY["new_york_city"]
+        periods = [
+            {"name": "Today", "startTime": "2026-03-06T06:00:00-05:00",
+             "probabilityOfPrecipitation": {"unitCode": "wmoUnit:percent", "value": None}},
+            {"name": "Tonight", "startTime": "2026-03-06T18:00:00-05:00",
+             "probabilityOfPrecipitation": {"unitCode": "wmoUnit:percent", "value": None}},
+        ]
+        client, mock_sess = self._client_with_mock_forecast(station.station_id, periods)
+        with patch.object(client, "_ensure_session", new_callable=AsyncMock, return_value=mock_sess):
+            result = await client.get_ndfd_pop(station)
+
+        assert result == [("Today", 0.0, "2026-03-06"), ("Tonight", 0.0, "2026-03-06")]
+
+    @pytest.mark.asyncio
+    async def test_no_matching_day_still_returns_none(self):
+        """S224 invariant must not regress: a target day with no NDFD period
+        (beyond the ~72h horizon) still routes to None → pure ensemble.
+        No wrong-day substitution."""
+        from bots.weather_bot import WeatherBot
+
+        station = STATION_REGISTRY["new_york_city"]
+        periods = [
+            {"name": "Today", "startTime": "2026-03-06T06:00:00-05:00",
+             "probabilityOfPrecipitation": {"unitCode": "wmoUnit:percent", "value": None}},
+            {"name": "Sunday", "startTime": "2026-03-08T06:00:00-05:00",
+             "probabilityOfPrecipitation": {"unitCode": "wmoUnit:percent", "value": 30}},
+        ]
+        client, mock_sess = self._client_with_mock_forecast(station.station_id, periods)
+        with patch.object(client, "_ensure_session", new_callable=AsyncMock, return_value=mock_sess):
+            result = await client.get_ndfd_pop(station)
+
+        assert WeatherBot._ndfd_pop_for_target(result, "2026-03-10") is None
+
+    @pytest.mark.asyncio
+    async def test_empty_periods_still_returns_none(self):
+        """No periods at all (empty NWS payload) still returns None."""
+        station = STATION_REGISTRY["new_york_city"]
+        client, mock_sess = self._client_with_mock_forecast(station.station_id, [])
+        with patch.object(client, "_ensure_session", new_callable=AsyncMock, return_value=mock_sess):
+            result = await client.get_ndfd_pop(station)
+
+        assert result is None
+
+
 class TestS224DeflateOnlyNormalization:
     """S224 fallacy-audit fix #1: sum-to-1 renormalization over NON-EXHAUSTIVE
     bucket sets manufactured probability mass — a singleton bucket renormalized

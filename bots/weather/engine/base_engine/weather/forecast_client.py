@@ -1543,6 +1543,7 @@ class WeatherForecastClient:
 
         Returns list of (period_name, pop_pct, start_date_iso) tuples for next 72h.
         start_date_iso is YYYY-MM-DD extracted from the period's startTime.
+        Null PoP values (NWS convention for ~0% periods) are returned as 0.0 (S226).
         Uses same NWS /forecast endpoint as NBM (includes PoP in periods).
         US stations only.
         """
@@ -1581,14 +1582,21 @@ class WeatherForecastClient:
             for p in periods:
                 pop = p.get("probabilityOfPrecipitation", {})
                 val = pop.get("value")
-                if val is not None:
-                    # Extract date from startTime ISO 8601 (e.g. "2026-03-08T06:00:00-05:00")
-                    start_time = p.get("startTime", "")
-                    try:
-                        start_date_iso = datetime.fromisoformat(start_time).date().isoformat()
-                    except (ValueError, TypeError):
-                        start_date_iso = ""
-                    pop_data.append((p.get("name", ""), float(val), start_date_iso))
+                # S226 (V37 follow-up): NWS deliberately serves null PoP for
+                # ~0% periods — a null on a real period IS the dry signal, not
+                # missing data. Treat it as 0.0 so dry target days keep their
+                # NDFD entry; dropping nulls left dry days with no matching
+                # period → pure ensemble instead of a true 0% (S224/419df24
+                # removed the wrong-day substitution that used to fire here).
+                if val is None:
+                    val = 0.0
+                # Extract date from startTime ISO 8601 (e.g. "2026-03-08T06:00:00-05:00")
+                start_time = p.get("startTime", "")
+                try:
+                    start_date_iso = datetime.fromisoformat(start_time).date().isoformat()
+                except (ValueError, TypeError):
+                    start_date_iso = ""
+                pop_data.append((p.get("name", ""), float(val), start_date_iso))
             return pop_data if pop_data else None
         except Exception as exc:
             logger.debug("ndfd_pop_failed", station=station.station_id, error=str(exc))
