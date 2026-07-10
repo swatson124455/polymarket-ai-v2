@@ -2385,7 +2385,7 @@ class WeatherBot(BaseBot):
             opp["ensemble_count"] = len(ensemble)
             opp["market_type"] = "precipitation"
             await self._log_weather_prediction(
-                opp["market_id"], self._yes_frame_prob(opp), opp["price"],
+                opp["market_id"], self._yes_frame_prob(opp), self._yes_frame_price(opp),
                 opp.get("confidence", opp["model_prob"]), "precipitation",
             )
 
@@ -2481,7 +2481,7 @@ class WeatherBot(BaseBot):
             opp["ensemble_count"] = len(ensemble)
             opp["market_type"] = "snowfall"
             await self._log_weather_prediction(
-                opp["market_id"], self._yes_frame_prob(opp), opp["price"],
+                opp["market_id"], self._yes_frame_prob(opp), self._yes_frame_price(opp),
                 opp.get("confidence", opp["model_prob"]), "snowfall",
             )
 
@@ -2603,7 +2603,7 @@ class WeatherBot(BaseBot):
             opp["ensemble_count"] = len(ensemble)
             opp["market_type"] = "wind"
             await self._log_weather_prediction(
-                opp["market_id"], self._yes_frame_prob(opp), opp["price"],
+                opp["market_id"], self._yes_frame_prob(opp), self._yes_frame_price(opp),
                 opp.get("confidence", opp["model_prob"]), "wind",
             )
 
@@ -3056,7 +3056,7 @@ class WeatherBot(BaseBot):
                 "bucket_type": bucket.bucket_type,
             })
             await self._log_weather_prediction(
-                e["market_id"], e["model_prob"], price,
+                e["market_id"], e["model_prob"], bucket.yes_price,
                 effective_confidence, "temperature",
             )
 
@@ -3955,7 +3955,7 @@ class WeatherBot(BaseBot):
                     logger.warning("weatherbot_daily_counter_write_failed", error=str(exc))
             # Log prediction for accuracy tracking at trade execution time
             await self._log_weather_prediction(
-                opp["market_id"], self._yes_frame_prob(opp), opp["price"],
+                opp["market_id"], self._yes_frame_prob(opp), self._yes_frame_price(opp),
                 opp.get("confidence", opp["model_prob"]),
                 opp.get("market_type", "temperature"),
             )
@@ -4671,6 +4671,22 @@ class WeatherBot(BaseBot):
         logs an opp dict must go through this helper.
         """
         return float(opp.get("model_prob_yes", opp["model_prob"]))
+
+    @staticmethod
+    def _yes_frame_price(opp: Dict) -> float:
+        """S226 (V23 sibling): the YES-token price for prediction_log.
+
+        The grader computes realized_edge = 1 - market_price on YES resolution
+        / market_price on NO resolution — a YES-frame read. Opp dicts store
+        the CHOSEN side's entry price in "price" (trading needs it — do not
+        change it); for NO opps the YES price is the complement. Opps without
+        a "side" default to YES. Pair with _yes_frame_prob at every
+        _log_weather_prediction opp call site.
+        """
+        price = float(opp["price"])
+        if opp.get("side", "YES") == "NO":
+            return round(1.0 - price, 6)
+        return price
 
     def _check_executable_edge(self, opp: Dict) -> bool:
         """S221 Phase 2 (2026-05-18): Validate edge against EXECUTABLE price.

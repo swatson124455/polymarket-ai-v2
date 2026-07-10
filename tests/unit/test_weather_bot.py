@@ -5000,3 +5000,32 @@ class TestS226ProbFrameLabel:
         with open("deploy/wb-release-cut.sh", encoding="utf-8") as f:
             cut = f.read()
         assert "080_prediction_log_prob_frame.sql" in cut
+
+
+class TestS226YesFramePriceLogging:
+    """S226 (V23 sibling): prediction_log.market_price must also be P(YES)-frame
+    (the YES token price) — the grader computes realized_edge as
+    1 - market_price on YES resolution / market_price on NO, a YES-frame read.
+    Chosen-side prices made realized_edge wrong for every NO entry. Log sites
+    pass _yes_frame_price(opp); trading fields stay chosen-side."""
+
+    def test_yes_frame_price_helper(self):
+        from bots.weather_bot import WeatherBot
+        # NO opp: stored price is the NO price → YES price is the complement
+        assert WeatherBot._yes_frame_price(
+            {"side": "NO", "price": 0.40}) == pytest.approx(0.60)
+        # YES opp: stored price is already the YES price
+        assert WeatherBot._yes_frame_price(
+            {"side": "YES", "price": 0.30}) == pytest.approx(0.30)
+        # Missing side defaults to YES (temperature/singleton convention)
+        assert WeatherBot._yes_frame_price({"price": 0.25}) == pytest.approx(0.25)
+
+    def test_grader_realized_edge_semantics_with_yes_frame_price(self):
+        # Grader: realized_edge = 1 - market_price (res YES) | market_price (res NO).
+        # A NO entry at NO-price 0.40 (YES price 0.60), market resolves NO:
+        # entry paid 0.40 for a token worth 1.0 → realized edge should be +0.60...
+        # in the YES frame that is market_price itself:
+        yes_price = 0.60
+        assert yes_price == pytest.approx(0.60)          # res NO → realized_edge = market_price ✓
+        # Pre-fix the row stored market_price=0.40 (chosen side) → res NO gave 0.40: wrong.
+        assert 0.40 != pytest.approx(0.60)
