@@ -174,7 +174,9 @@ def write_jsonl(rows: List[dict], path: Path) -> int:
 
 def _default_http_get(url: str) -> Optional[list]:
     """Authorized GET -> JSON list, or None. 429 Retry-After respected."""
-    key = os.environ.get("PANDASCORE_API_KEY", "").strip()
+    # .env values sometimes arrive quoted ('KEY="abc"') or CRLF-tailed when a
+    # shell exports them verbatim — strip both, they are never part of a token.
+    key = os.environ.get("PANDASCORE_API_KEY", "").strip().strip('"').strip("'")
     if not key:
         raise SystemExit("PANDASCORE_API_KEY not set in environment")
     req = urllib.request.Request(url, headers={
