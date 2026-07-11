@@ -5,7 +5,7 @@
 > read them for detail, but THIS file is the source of truth for "what is live and what's open."
 > Update the three sections below at the end of every WB session (same commit as the work).
 
-**Last updated:** 2026-07-11 (S227 — calibrator/EMOS crash fixed AND **DEPLOYED + VERIFIED**: release `20260711_002634` @ `6770883`, effective restart 00:47:00Z; first successful `weatherbot_calibration_reloaded` since 07-08 (41 stations/571 rows, 2 EMOS-ready), fit path alive, failure counters 0. S222 verification clock restarts at 00:47:00Z. Also: stress test passed. Prior handoff: `docs/WEATHER_S226_STATUS.md`)
+**Last updated:** 2026-07-11 (S227 — calibrator/EMOS crash fixed AND **DEPLOYED + VERIFIED**: release `20260711_002634` @ `6770883`, effective restart 00:47:00Z; first successful `weatherbot_calibration_reloaded` since 07-08 (41 stations/571 rows, 2 EMOS-ready), fit path alive, failure counters 0. S222 verification clock restarts at 00:47:00Z. Also: stress test passed. Handoff: `docs/WEATHER_S227_STATUS.md`)
 **Pinned branch:** `claude/new-whiteboard-session-9b23tq` (see `.claude/session-branch`)
 **Resume check:** `bash scripts/wb_resume_check.sh` (self-deriving; replaces the hand-typed checklist)
 
@@ -134,7 +134,10 @@
 
 ## POINTERS (archival detail — do not treat as "current" over this file)
 
-- `docs/WEATHER_S226_STATUS.md` — **the S226 session handoff (latest)**: leak closure proof,
+- `docs/WEATHER_S227_STATUS.md` — **the S227 session handoff (latest)**: the gt_cutoff
+  str-bind crash (calibrator/EMOS dead since 07-08), the fix + deploy saga (data/ skeleton,
+  ProtectSystem=strict), the new git-archive release recipe, S222 clock restart.
+- `docs/WEATHER_S226_STATUS.md` — the S226 session handoff: leak closure proof,
   V23 root fix + prob_frame label, the runtime-binding trap, deploy verification.
 - `docs/WEATHER_S224_STATUS.md` — the S224 session handoff (this session): the 7 fixes +
   calibrator/ground-truth cluster, the deploy, the calibrator-reset caveat, pending steps.

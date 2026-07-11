@@ -23,7 +23,8 @@
     "docs/WB_FALLACY_AUDIT_S223_raw.json",
     "docs/WEATHER_S222_STATUS.md",
     "WB_S222_POSTFIX_VERIFICATION_PROMPT.md",
-    "docs/WEATHER_S226_STATUS.md"
+    "docs/WEATHER_S226_STATUS.md",
+    "docs/WEATHER_S227_STATUS.md"
   ],
   "fingerprints": [
     {
