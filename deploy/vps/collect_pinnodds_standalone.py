@@ -128,13 +128,35 @@ def gamma_page(off):
         with urllib.request.urlopen(req,timeout=20) as r: d=json.load(r)
         return d if isinstance(d,list) else None
     except Exception: return None
+def gamma_pages(workers=8,max_pages=30):
+    # Wave-parallel paging (mirrors pm_market_index.build_pm_index latency fix):
+    # page 0 first (fail->{} contract), then waves of `workers`; stop at the
+    # first wave with a short/empty/failed page; retry only provable mid-holes.
+    first=gamma_page(0)
+    if not first: return {}
+    pages={0:first}
+    if len(first)>=100:
+        from concurrent.futures import ThreadPoolExecutor
+        nxt=1
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            while nxt<max_pages:
+                wave=list(range(nxt,min(nxt+workers,max_pages)))
+                pages.update(dict(pool.map(lambda p:(p,gamma_page(p*100)),wave)))
+                holes=[p for p in wave if pages[p] is None and any(pages.get(q) for q in pages if q>p)]
+                if holes: pages.update(dict(pool.map(lambda p:(p,gamma_page(p*100)),holes)))
+                if any(pages[p] is None or len(pages[p])<100 for p in wave): break
+                nxt=wave[-1]+1
+    return pages
 def pm_index():
     # list of (condition_id, yes_token_id, yes_outcome, market_price, team_a, team_b, day);
     # de-dup by condition_id. Ambiguity resolved at match time (match_ref).
-    refs=[]; seen=set()
+    refs=[]; seen=set(); pages=gamma_pages()
     for pg in range(30):
-        ms=gamma_page(pg*100)
-        if not ms: break
+        ms=pages.get(pg)
+        if ms is None:
+            if pg in pages and any(pages.get(q) for q in range(pg+1,30)):
+                print(f"pm_index page {pg} absent after retry (hole)"); continue
+            break
         for m in ms:
             if not isinstance(m,dict): continue
             q=str(m.get("question") or "").strip()
@@ -155,12 +177,22 @@ def pm_index():
             seen.add(cid); refs.append((cid,str(toks[0]).strip(),ta,mp,ta,tb,day))
         if len(ms)<100: break
     return refs
+def safe_pm_index():
+    try: return pm_index()
+    except Exception as e:
+        print(f"pm_index failed {type(e).__name__}, null PM fields"); return []
 def main():
-    cap=datetime.now(timezone.utc).isoformat(); recs=[]
-    try: pmi=pm_index()
-    except Exception as e: print(f"pm_index failed {type(e).__name__}, null PM fields"); pmi={}
+    cap=datetime.now(timezone.utc).isoformat(); recs=[]; t0=time.monotonic()
+    # LATENCY: fetch the PM index and the PinnOdds odds CONCURRENTLY — both are
+    # pure I/O; this halves tick wall-time AND captures market_price closer in
+    # time to the odds it is stored beside (better price/line simultaneity).
+    k=key()
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fut_pm=ex.submit(safe_pm_index); fut_ev=ex.submit(fetch,k)
+        pmi=fut_pm.result(); data=fut_ev.result()
     am=load_aliases()
-    for ev in fetch(key()).get("events",[]):
+    for ev in data.get("events",[]):
         h,a=str(ev.get("home") or "").strip(),str(ev.get("away") or "").strip()
         if not h or not a or PROP.search(h) or PROP.search(a): continue
         p=ev.get("periods") or {}; n0=p.get("num_0") if isinstance(p,dict) else None
@@ -179,5 +211,5 @@ def main():
         for r in recs: f.write(json.dumps(r,ensure_ascii=False)+"\n")
     total=sum(1 for _ in open(SNAP,encoding="utf-8"))
     matched=sum(1 for r in recs if r.get("condition_id"))
-    print(f"{cap} appended={len(recs)} pm_matched={matched} total_lines={total} file={SNAP}")
+    print(f"{cap} appended={len(recs)} pm_matched={matched} total_lines={total} dur={time.monotonic()-t0:.1f}s file={SNAP}")
 if __name__=="__main__": main()

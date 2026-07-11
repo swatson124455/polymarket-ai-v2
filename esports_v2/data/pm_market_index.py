@@ -194,6 +194,7 @@ def build_pm_index(
     *,
     fetch_page: Optional[FetchPage] = None,
     max_pages: int = 30,
+    workers: int = 8,
 ) -> List[PMMarketRef]:
     """Page the Gamma esports tag into a list of PM match-winner refs.
 
@@ -201,16 +202,62 @@ def build_pm_index(
     overlap). Returns [] on any fetch failure at page 0 (the collector then simply
     writes odds with null PM fields — no regression). Ambiguity between distinct
     markets is resolved at MATCH time (``match_pm_ref``), not here.
+
+    LATENCY (2026-07-11): page 0 is fetched first (it alone decides the
+    fail-to-[] contract), then the remaining pages fetch CONCURRENTLY in
+    WAVES of ``workers`` (stdlib threads; the work is pure I/O wait). Wave
+    scheduling stops at the first wave containing a short/empty/failed page,
+    so only one wave probes past the end/offset-cap instead of blind-fetching
+    all ``max_pages``. A failed page with data on a LATER page (a provable
+    mid-range hole) gets ONE retry; if it still fails it is logged and
+    treated as absent — coverage is >= the old sequential behavior, which
+    silently dropped that page AND every page after it. Assembly is in page
+    order, so output ordering and dedup semantics are unchanged.
+    ``workers=1`` degrades to strictly sequential fetching.
     """
     fetch_page = fetch_page or _default_fetch_page
+
+    first = fetch_page(0, _GAMMA_PAGE)
+    if not first:
+        logger.info("pm_index_built refs=0 (page 0 empty/failed)")
+        return []
+
+    pages: Dict[int, Optional[List[dict]]] = {0: first}
+    if len(first) >= _GAMMA_PAGE and max_pages > 1:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _fetch(p: int):
+            return p, fetch_page(p * _GAMMA_PAGE, _GAMMA_PAGE)
+
+        next_page = 1
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            while next_page < max_pages:
+                wave = list(range(next_page, min(next_page + max(1, workers),
+                                                 max_pages)))
+                pages.update(dict(pool.map(_fetch, wave)))
+                # retry ONLY provable mid-range holes (None with data later)
+                holes = [p for p in wave if pages[p] is None
+                         and any(pages.get(q) for q in pages if q > p)]
+                if holes:
+                    pages.update(dict(pool.map(_fetch, holes)))
+                    for p in holes:
+                        if pages[p] is None:
+                            logger.warning(f"pm_index_page_absent page={p} "
+                                           f"(hole after retry)")
+                if any(pages[p] is None or len(pages[p]) < _GAMMA_PAGE
+                       for p in wave):
+                    break  # end of data / offset cap reached in this wave
+                next_page = wave[-1] + 1
 
     refs: List[PMMarketRef] = []
     seen_cid: set = set()
     for page in range(max_pages):
-        offset = page * _GAMMA_PAGE
-        markets = fetch_page(offset, _GAMMA_PAGE)
-        if not markets:
-            break
+        markets = pages.get(page)
+        if markets is None:
+            if page in pages and any(pages.get(q) for q in range(page + 1, max_pages)):
+                logger.warning(f"pm_index_page_absent page={page} (hole after retry)")
+                continue  # later pages exist -> mid-range hole, keep going
+            break         # deterministic end (cap/end-of-data) or sequential tail
         for m in markets:
             ref = parse_gamma_market(m)
             if ref is None or ref.condition_id in seen_cid:

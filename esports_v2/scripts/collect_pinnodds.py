@@ -127,17 +127,29 @@ def _resolve_pm_index(
 
 
 def collect(path: Path) -> Dict[str, int]:
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    t0 = time.monotonic()
     loader = PinnOddsLoader.from_env()
-    rows = loader.fetch_rows(event_types=("live", "prematch"))
+    # LATENCY: the odds fetch and the PM index build are both pure I/O — run
+    # them concurrently. Halves tick wall-time and captures market_price closer
+    # in time to the odds it is stored beside (price/line simultaneity).
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fut_refs = ex.submit(_safe_build_pm_refs)
+        fut_rows = ex.submit(loader.fetch_rows, event_types=("live", "prematch"))
+        refs = fut_refs.result()
+        rows = fut_rows.result()
     alias_expand = load_alias_expand(os.environ.get("EB_ALIASES_PATH"))
-    pm_index = _resolve_pm_index(rows, _safe_build_pm_refs(), alias_expand)
+    pm_index = _resolve_pm_index(rows, refs, alias_expand)
     captured_at = datetime.now(timezone.utc).isoformat()
     records = build_snapshot_records(rows, captured_at, pm_index)
     matched = sum(1 for r in records if r.get("condition_id"))
     written = append_jsonl(records, path)
     total = sum(1 for _ in open(path, encoding="utf-8")) if path.exists() else written
     logger.info(f"collected snapshots={written} pm_matched={matched} "
-                f"captured_at={captured_at} file={path} total_lines={total}")
+                f"captured_at={captured_at} dur={time.monotonic() - t0:.1f}s "
+                f"file={path} total_lines={total}")
     return {"written": written, "total_lines": total, "pm_matched": matched}
 
 
