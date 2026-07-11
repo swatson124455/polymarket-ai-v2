@@ -78,6 +78,10 @@ class _Db:
     """Minimal shim exposing get_session() for data_access reuse."""
 
     def __init__(self, url: str):
+        if url.startswith("postgresql://"):
+            url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        elif url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql+asyncpg://", 1)
         self._engine = create_async_engine(url, pool_size=2, max_overflow=0)
         self._maker = async_sessionmaker(self._engine, expire_on_commit=False)
 
