@@ -1,7 +1,7 @@
 {
-  "release_stamp": "20260710_204822",
-  "git_sha": "c1a170c8f92093a4a19afcefee4050e08e23d8ed",
+  "release_stamp": "20260711_002634",
+  "git_sha": "67708835bb6daeb2d640b7f294a7c1014ae8cbf4",
   "git_branch": "claude/new-whiteboard-session-9b23tq",
-  "recorded_at": "2026-07-10T20:55:24Z",
-  "recorded_by": "powershell-inline"
+  "recorded_at": "2026-07-11T00:54:12Z",
+  "recorded_by": "cloud-session-S227 (content-verified on box: S227 markers=4; effective restart 2026-07-11T00:47:00Z after crash-loop repair)"
 }
