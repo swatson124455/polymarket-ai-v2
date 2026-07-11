@@ -5,7 +5,7 @@
 > read them for detail, but THIS file is the source of truth for "what is live and what's open."
 > Update the three sections below at the end of every WB session (same commit as the work).
 
-**Last updated:** 2026-07-10 (S227 — S222 verification gate OPEN at 50/50 distinct resolved markets; verification prompt trued up to the real restart cutoff, awaiting VPS run. Prior: S226 ALL DEPLOYED in `20260710_204822` and verified — leak CLOSED, V23 fixed at root + labelled + hotfixed. Handoff: `docs/WEATHER_S226_STATUS.md`)
+**Last updated:** 2026-07-11 (S227 — **calibrator/EMOS crash found + fixed on branch, NEEDS DEPLOY** (`92740f3`): gt_cutoff str-bind DataError killed every calibrator fit AND every EMOS/bias reload since 07-08; S222 verification clock restarts at the fix deploy. Also: stress test passed, box healthy. Prior: S226 ALL DEPLOYED in `20260710_204822`. Handoff: `docs/WEATHER_S226_STATUS.md`)
 **Pinned branch:** `claude/new-whiteboard-session-9b23tq` (see `.claude/session-branch`)
 **Resume check:** `bash scripts/wb_resume_check.sh` (self-deriving; replaces the hand-typed checklist)
 
@@ -13,25 +13,35 @@
 
 ## OPEN DECISIONS  ← always at the top, always the first thing a resume reads
 
-1. **WATCH the calibrator reset (S224 just deployed, release `20260708_151330`).** The
-   ground-truth cluster is LIVE, so the calibrator now excludes pre-2026-07-01 + self-looped
-   data → it will fall to **identity** and re-learn from clean, raw-X data over the next days.
-   Expected, safe. Verify it's happening: `journalctl -u polymarket-weather | grep -E
-   "calibrator|actual_source|abstain|holdout_valid"`. Watch for the OOS Brier trending sane as
-   clean resolutions accumulate — that verdict gates enabling the V28 gate (#3).
+1. **CALIBRATOR RE-LEARN NEVER STARTED — S227 found the crash, fix on branch NEEDS DEPLOY
+   (`92740f3`).** The S224 WS-3 cutoff was bound as a **str** into `CAST(:gt_cutoff AS
+   timestamptz)`; asyncpg raises DataError on str-for-timestamptz, so since the 07-08 restart
+   EVERY `fit_from_trade_events` crashed (warning `weatherbot_confidence_cal_fit_failed`) and
+   EVERY `_maybe_reload_calibration` crashed at its first query (debug —
+   **silent**): no confidence-calibrator fit, no station bias averages, no EMOS, no tail
+   calibration loaded AT ALL since 07-08 19:18. The observed "reset toward identity" was the
+   crash, not the designed re-learn. Found via stress-test error triage 07-11; the watch-grep
+   ("calibrator|actual_source|abstain|holdout_valid") never matched the failure event names.
+   Fixed root-cause (datetime bind + swallow elevated to warning); defect-tested; NOT deployed.
+   **The re-learn clock starts at the fix deploy**, not 07-08. The 53 leak-era-entry
+   contamination note (ages out ~2026-08-07) is unchanged. Post-deploy verification:
+   `weatherbot_calibration_reloaded` info lines return; `cal_fit_failed` goes quiet.
 
-2. **S222 post-fix verification — GATE OPEN, ready to run (S227).** Operator count 2026-07-10:
-   **50/50** distinct resolved markets post-07-08 (cutoff `2026-07-08 15:13:30`, the S224 tarball
-   stamp). `WB_S222_POSTFIX_VERIFICATION_PROMPT.md` was trued up in S227 before firing: the
-   VERDICT window now starts at the ACTUAL S224 restart (`2026-07-08 19:18:38`, journal-confirmed)
-   because the 15:13→19:18 slice is pre-fix code output containing known `predicted_prob=1.0`
-   leak rows (last 17:59:38) that would false-FAIL the [0.9,1.0) reliability verdicts; plus
-   `--dedup-markets` counting and window-integrity checks (leak-regression must be 0, PSW
-   frame-ambiguity count, the 07-10 20:12→20:48 log outage is a known gap). Run it from a
-   VPS-access session; it self-aborts if the CLEAN window holds <50 distinct resolved markets.
-   Only after a PASS: retire containment gates per `WEATHER_S222_STATUS.md` §4-B (order:
-   A1/A3 → dampeners → caps; C0 Kelly stays deferred until the calibrator re-learn verdict
-   regardless of this PASS).
+2. **S222 post-fix verification — CLOCK RESTARTS AT THE S227 FIX DEPLOY (superseding the
+   07-11 "gate open" call).** History: operator counted 50 distinct resolved markets at the
+   S224 tarball stamp; S227 trued the prompt up to the REAL restart cutoff (`2026-07-08
+   19:18:38` — the 15:13→19:18 slice is pre-fix leak-row output) and the clean window held
+   only 40/50 (correct self-abort, integrity checks green: leak-regression 0, PSW-ambiguous 0).
+   THEN S227 found the gt_cutoff crash (#1): the ENTIRE post-07-08 window ran **without
+   EMOS/bias/tail calibration and without a fitted confidence calibrator**, while the 07-02
+   pre-fix baseline had them working — the A/B would compare fixes-minus-calibration against
+   baseline-with-calibration. Do NOT run the verification on the pre-S227-fix window: even a
+   PASS wouldn't transfer to the repaired system (probabilities shift when EMOS returns).
+   Sequence: deploy `92740f3` → restart the ≥50 distinct-resolved-market clock at that deploy
+   stamp (~2.5 days at the observed ~19/day) → update the `--since` cutoffs in
+   `WB_S222_POSTFIX_VERIFICATION_PROMPT.md` to the fix-deploy restart time → run it. Only
+   after a PASS: retire containment gates per `WEATHER_S222_STATUS.md` §4-B (order: A1/A3 →
+   dampeners → caps; C0 Kelly stays deferred until the calibrator re-learn verdict regardless).
 
 3. **Deferred switches (do after the calibrator re-learns + S222 passes):** enable the V28
    calibrated-edge gate (`WEATHER_CALIBRATED_EDGE_GATE_ENABLED=true`); V34 follow-ups
@@ -136,6 +146,15 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-11 (S227 FIX, needs deploy):** `92740f3` — gt_cutoff bound as str into
+  `CAST(:gt_cutoff AS timestamptz)` = asyncpg DataError on all 3 WS-3 cutoff sites: every
+  confidence-calibrator fit crashed (warning) and every EMOS/bias/tail calibration reload
+  crashed (debug — silent) since the 07-08 deploy. The "reset toward identity" was the crash.
+  Fix: `_gt_cutoff_datetime()` tz-aware bind at both call sites; reload swallow elevated
+  debug→warning (S177 precedent). 3 defect tests (bind-param capture, red→green); WB suites
+  361 passed. Found during 07-11 stress-test error triage (stress test itself: box PASSED,
+  services survived combined cpu+mem+io, window 00:01:38→00:08:30Z recorded). Consequence:
+  S222 verification clock restarts at this fix's deploy; OPEN DECISIONS #1/#2 rewritten.
 - **2026-07-10 (S227):** S222 verification gate OPEN — operator count 50/50 distinct resolved
   markets post-07-08. `WB_S222_POSTFIX_VERIFICATION_PROMPT.md` trued up: verdict cutoff moved
   from the tarball stamp (15:13:30) to the real restart (19:18:38, avoids pre-fix leak rows in
