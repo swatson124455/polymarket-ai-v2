@@ -6,57 +6,56 @@
 
 ---
 
-## 0. IMMEDIATE RESUME (2026-07-10 ~20:20 UTC — do this first, nothing is lost)
-
-**A full-coverage pipeline is RUNNING detached on the VPS and needs no
-babysitting.** It survives the operator's machine being off — only a VPS
-reboot would kill it (data is snapshotted against that, see below).
+## 0. IMMEDIATE RESUME (2026-07-11 ~03:30 UTC — the pipeline is DONE; results below)
 
 **The operator runs all VPS commands** via single-line SSH one-liners from
 Windows PowerShell (he cannot paste after connecting; never give multi-line).
 Template: `ssh -t -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 "..."`.
+PowerShell EATS `$` and `"` inside the quoted command — never put either in a
+one-liner (the 2026-07-10 probe false-negative was PS mangling `\"` JSON).
 
-**Live state right now:**
-- Pipeline (backfill `&&` walk-forward) launched ~16:59 UTC from `/tmp/mbpc2`
-  (= commit `b609c14`). Backfill at 20:15 UTC: chunk 5,760/8,189, **139,357
-  labels, errors=2** (negligible). ETA backfill done **~21:40 UTC**, then the
-  walk-forward auto-fires; table lands in **`/tmp/walkforward3.log`**
-  (JSON `/tmp/walkforward3.json`) a few minutes later.
-- Durable snapshot SECURED: `/opt/pa2-shared/mb_copyable_data` (3.4GB —
-  `copyable_cache` + `gamma2.log`). A VPS reboot no longer costs the 14h+ of
-  API work. NOTE: that snapshot's `gamma_resolutions.json` may be torn (taken
-  mid-checkpoint; running code predates atomic-write fix `0bdd4de`) — the
-  post-finish re-copy (step 2 below) is the authoritative one.
+**RESULTS CHAIN (2026-07-10/11 overnight, all artifacts snapshotted to
+`/opt/pa2-shared/mb_copyable_data/`):**
+1. **Walk-forward PASS** (full-coverage run, header-gated: labeled
+   first-buys=100,180, gamma merged=69,977 market keys, coverage 97%):
+   PRIMARY edge **+0.0237, P(edge>0)=1.000, upper95 +0.0284**, 24,919 bets /
+   19,281 mkts / 28 traders; robustness +0.0224/+0.0203; econ floor +0.02
+   cleared, thinly. `/tmp/walkforward3.{log,json}` + snapshot.
+2. **Chain audit (fixed × 3, see §7 landmines): 16/29 CLEAN** — 580 samples:
+   505 verified / 20 mismatch / 55 not-found / 0 rpc-err.
+   DISCREPANT (9) EXCLUDED (chain wins; some may be ±30min window-blend
+   artifacts — a tx-hash-exact matcher would settle it, later). THIN (1)
+   excluded pending wider window. `/tmp/chain_audit.{log,json}` + snapshot.
+3. **Fill gate: NO VERDICT — 0% orderbook_snapshots coverage** for the
+   roster (probe `scripts/probe_ob_coverage.py` pushed to settle key-mismatch
+   vs genuine-gap; genuine-gap expected: snapshots cover the bots' old ~top-200
+   universe; roster edge is 60% long-tail "other"). NOT fill-killed —
+   unverifiable retrospectively.
+4. **Operator decision (2026-07-11): build the forward shadow instrument.**
+   BUILT: `mirror_v3/copy_watcher.py` — on-chain OrderFilled polling of the
+   CLEAN roster (~2-4s detection vs ~10s REST), pre-trade gates
+   (NO_BOOK / SPREAD_TOO_WIDE / PRICE_RAN_AWAY / OK), shadow fill = real CLOB
+   ask, JSONL sink + detect-lag metrics. NO orders, NO DB writes. Wired into
+   `mirror_v3/run.py` behind `MIRROR3_COPY_WATCHER=true` (default OFF,
+   fail-loud). Env template: `deploy/env.mirror3.example`.
 
-**NEXT ACTION — hand the operator this, from ~21:45 UTC on:**
-```
-ssh -t -i ~/.ssh/LightsailDefaultKey-eu-west-1.pem ubuntu@18.201.216.0 "date -u; tail -n 3 /tmp/gamma2.log; ls -l --time-style=full-iso /tmp/walkforward3.log 2>&1 && tail -n 45 /tmp/walkforward3.log"
-```
-Then read the PRIMARY (VOL-sourced, non-truncated) verdict per §5 decision
-tree. **ACCEPT the table only if** the header shows `gamma-backfilled labels
-merged=` in the six figures AND `labeled first-buys` far exceeds run-2's
-29,635 — otherwise it isn't the full-coverage run (chain wins on any mismatch;
-descriptive cells are leads, not results).
-
-**On PASS, in order:** (1) re-copy the authoritative snapshot:
-`ssh ... "sudo cp -a /tmp/copyable_cache /tmp/walkforward3.json /tmp/walkforward3.log /tmp/gamma2.log /opt/pa2-shared/mb_copyable_data/ && du -sh /opt/pa2-shared/mb_copyable_data"`
-(2) re-clone `/tmp/mbpc2` to head (the running clone predates the chain-audit
-+ atomic-write commits): `rm -rf /tmp/mbpc2 && git clone -q --depth 1 -b claude/mirrorbot-persistence-check-irq7r5 <repo> /tmp/mbpc2`
-(3) **mandatory** per-fill chain audit (~15-20 min):
-`sudo -u polymarket env PYTHONPATH=/tmp/mbpc2 venv/bin/python /tmp/mbpc2/scripts/audit_roster_chain.py --from-json /tmp/walkforward3.json --cache /tmp/copyable_cache | tee /tmp/chain_audit.log`
-(4) fill-quality gate on the CLEAN roster:
-`scripts/backtest_copyable_fills.py --traders <clean addrs> --lags 5,10,30`
-(verdict at the measured 10s; 5s is a sensitivity lead only, NOT the money
-lag). (5) operator decision on a v3 forward PAPER deploy — never a live deploy
-from a backtest.
-**On FAIL-TERMINAL / INCONCLUSIVE / UNDERPOWERED / NO-DATA:** §5 tree — widen
-DATA, never loosen thresholds.
-
-**If the pipeline is interrupted:** everything is resumable + atomic-safe.
-Re-clone `/tmp/mbpc2` to head, then relaunch backfill `&&` walk-forward (the
-banked labels + 14h cache make completed work free). Kill stale runs with a
-BRACKET pattern (`pkill -f 'backfill_resol[u]tions'`) — a plain `-f` pattern
-matches the SSH one-liner's own shell and kills the session (§7 landmine).
+**NEXT ACTIONS:**
+1. [operator] Run `scripts/probe_ob_coverage.py` (one-liner in session log /
+   §5) — confirms the 0% coverage cause. If KEY MISMATCH: fix the fill-gate
+   join and rerun it. If GENUINE GAP (expected): the shadow is the only
+   instrument; proceed.
+2. [operator] Deploy the v3 shadow: install `deploy/polymarket-mirror3.service`
+   + `.env.mirror3` from the example (safety trio + DATABASE_URL +
+   MIRROR3_COPY_WATCHER block, roster = snapshot's `chain_audit.json`),
+   start, verify heartbeat shows `watcher=RUNNING(shadow)` and
+   `/opt/pa2-shared/mirror3_shadow.jsonl` accumulates records.
+3. [analysis, ~2-4 weeks of records] Shadow verdict: per-trader mean
+   (resolution_outcome − shadow_fill) on first_buy=true OK records vs the
+   +0.02 econ floor; gate-skip rates; detect-lag distribution. Pre-register
+   before reading: OK-rate ≥50%, pooled shadow edge P(>0) ≥0.95 on ≥30 mkts.
+4. [later, optional] WSS subscription upgrade (Alchemy free tier) to cut
+   detection to ~2-3s; tx-hash-exact audit matcher to re-adjudicate the 9
+   DISCREPANT traders.
 
 ---
 
@@ -258,6 +257,26 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
 
 ## 7. Landmines (do not trip)
 
+- **web3 v7 renamed `get_logs` kwargs to `from_block`/`to_block`** — the
+  camelCase spelling TypeErrors on EVERY call and a bare `except` can launder
+  that into "rpc_error" (2026-07-10: 580/580 dead samples). Use
+  `get_logs_compat`; the real-library binding test in
+  `test_audit_roster_chain.py` guards the regression. Same latent bug still
+  in shared `base_engine/data/{blockchain_client,uma_proposal_monitor,
+  oracle_monitor}.py` — NOT fixed (shared-module protocol).
+- **`get_block_number_from_timestamp` (shared client) is a one-shot linear
+  estimate at 2.0s/block — off by ~1-2M blocks a year back.** Never use it
+  to window a chain search. Use `locate_block_by_ts` (Newton on real block
+  timestamps, audit script) instead.
+- **publicnode 403s archive eth_getLogs; polygon-rpc.com is key-gated;
+  blastapi discontinued.** Probe-verified working free archive-logs endpoint:
+  `https://polygon.gateway.tenderly.co`. Probe with a curl BODY built
+  server-side (sed placeholder trick) — PowerShell mangles `\"` JSON.
+- **PowerShell one-liners: never include `$` or `"`** inside the SSH command
+  string ($var interpolates to empty; `\"` arrives as literal backslashes).
+- **Two detached runs writing the same log/JSON corrupt both** — always kill
+  the previous run (exact PID, not pattern) before relaunching a pipeline
+  that writes the same output paths.
 - **gamma `/markets?condition_ids=` is a silent no-op** — HTTP 200, `[]`,
   zero errors; it burned two full backfill runs before being caught
   (probe-verified 2026-07-10). Per-key CLOB `/markets/{condition_id}` is the
