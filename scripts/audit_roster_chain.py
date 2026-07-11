@@ -161,6 +161,41 @@ async def get_logs_compat(event, b0: int, b1: int, filters: dict):
                                     fromBlock=b0, toBlock=b1)
 
 
+POLYGON_SPB = 2.1  # seconds/block prior for Newton steps (self-correcting)
+
+
+async def locate_block_by_ts(epoch: int, get_block_ts, latest_num: int,
+                             latest_ts: int, anchors: list, tol_s: float,
+                             max_iter: int = 12,
+                             spb: float = POLYGON_SPB) -> Optional[int]:
+    """Find a block whose timestamp is within tol_s of epoch, by Newton
+    iteration on REAL block timestamps (get_block_ts(number) -> ts).
+
+    WHY (2026-07-11): the shared client's get_block_number_from_timestamp
+    is a one-shot linear extrapolation at 2.0s/block, never verified — off
+    by ~1-2 MILLION blocks a year back (actual Polygon ~2.1-2.2s/block),
+    while the audit searches +/-900 blocks. That run produced not_found
+    verdicts for nearly every old fill: a measurement artifact, not trader
+    evidence. This locator converges on the true block or returns None
+    LOUDLY (counted as rpc_error, fail-fast eligible) — it never silently
+    hands back a wrong window.
+
+    anchors: mutable [(ts, block)] cache of verified points; later lookups
+    start from the nearest anchor and converge in ~2-3 calls."""
+    est_ts, est_b = min(list(anchors) + [(latest_ts, latest_num)],
+                        key=lambda a: abs(a[0] - epoch))
+    for _ in range(max_iter):
+        if abs(est_ts - epoch) <= tol_s:
+            anchors.append((est_ts, est_b))
+            return est_b
+        est_b = max(1, min(latest_num, est_b + int((epoch - est_ts) / spb)))
+        est_ts = await get_block_ts(est_b)
+    if abs(est_ts - epoch) <= tol_s:
+        anchors.append((est_ts, est_b))
+        return est_b
+    return None
+
+
 def resolve_rpc_url(rpc_url_arg: str, rpc_env_arg: str,
                     environ: dict) -> tuple[Optional[str], Optional[str]]:
     """(url, error). Explicit --rpc-url wins; --rpc-env reads a named env var
@@ -242,8 +277,15 @@ async def run(args) -> int:
                     await asyncio.sleep(1.0 / max(args.rps, 0.1))
         return out, errs, n_q
 
+    latest_blk = await bc.w3.eth.get_block("latest")
+    latest_num, latest_ts = int(latest_blk["number"]), int(latest_blk["timestamp"])
+    anchors: list[tuple[int, int]] = []  # verified (ts, block) cache
+
+    async def _get_block_ts(b: int) -> int:
+        await asyncio.sleep(1.0 / max(args.rps, 0.1))
+        return int((await bc.w3.eth.get_block(b))["timestamp"])
+
     results: dict[str, dict] = {}
-    prev_ts = prev_block = None
     total = {"verified": 0, "price_mismatch": 0, "not_found": 0, "rpc_error": 0}
     samples_done = samples_rpc_err = 0  # fail-fast: don't grind a dead endpoint
     for ai, addr in enumerate(roster):
@@ -264,13 +306,15 @@ async def run(args) -> int:
                 continue
             epoch = int(ts.timestamp())
             try:
-                # block for this ts: binary-search once, then reuse by offset
-                # for nearby fills (Polygon ~2.1s/block), generously padded
-                if prev_ts is not None and abs(epoch - prev_ts) < 6 * 3600:
-                    center = prev_block + int((epoch - prev_ts) / 2.1)
-                else:
-                    center = await bc.get_block_number_from_timestamp(epoch)
-                prev_ts, prev_block = epoch, center
+                # true block for this ts — Newton on real block timestamps
+                # (the shared client's linear estimate is off by ~1-2M blocks
+                # a year back; see locate_block_by_ts)
+                center = await locate_block_by_ts(
+                    epoch, _get_block_ts, latest_num, latest_ts, anchors,
+                    tol_s=args.window_s / 3)
+                if center is None:
+                    raise RuntimeError(
+                        f"block locate did not converge for ts={epoch}")
                 span = max(args.pad_blocks, int(args.window_s / 2.1)) + 300
                 events, errs, n_q = await events_around(addr_cs, center - span, center + span)
                 samples_done += 1

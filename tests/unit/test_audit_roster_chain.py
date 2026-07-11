@@ -163,6 +163,84 @@ def test_block_chunks_cap_and_cover():
     assert all(spans[i + 1][0] == spans[i][1] + 1 for i in range(len(spans) - 1))
 
 
+# ── block locator (the 2026-07-11 failure class) ─────────────────────────────
+# The shared client's block-from-timestamp is a one-shot 2.0s/block linear
+# extrapolation — off by ~1-2M blocks a year back vs a ±900-block search
+# window, which made the audit report not_found for nearly every old fill.
+# The locator must converge on REAL (synthetic) chains with drifting block
+# time, and must refuse rather than return a wrong block.
+
+def _mk_chain(latest_num, t0=1_600_000_000):
+    """Synthetic chain: block time drifts 2.35s -> 2.05s across history —
+    the realistic Polygon profile that breaks constant-rate extrapolation."""
+    ts = {}
+    t = t0
+    for b in range(latest_num + 1):
+        rate = 2.35 - 0.30 * (b / latest_num)
+        t += rate
+        ts[b] = int(t)
+    return ts
+
+
+def test_locate_block_converges_on_drifting_chain():
+    import asyncio
+    latest = 200_000
+    chain = _mk_chain(latest)
+    calls = []
+
+    async def get_ts(b):
+        calls.append(b)
+        return chain[b]
+
+    anchors = []
+    # an "old" timestamp, ~75% back through history
+    target_block = 50_000
+    epoch = chain[target_block]
+    got = asyncio.run(ac.locate_block_by_ts(
+        epoch, get_ts, latest, chain[latest], anchors, tol_s=300))
+    assert got is not None
+    assert abs(chain[got] - epoch) <= 300
+    # linear extrapolation from latest at 2.1s/block would land ~half a
+    # percent of the chain away — assert we did materially better
+    assert abs(got - target_block) < 1000
+
+
+def test_locate_block_anchor_reuse_shrinks_calls():
+    import asyncio
+    latest = 200_000
+    chain = _mk_chain(latest)
+    counts = []
+    anchors = []
+    for target in (50_000, 51_000, 52_000):
+        calls = []
+
+        async def get_ts(b, _c=calls):
+            _c.append(b)
+            return chain[b]
+
+        got = asyncio.run(ac.locate_block_by_ts(
+            chain[target], get_ts, latest, chain[latest], anchors, tol_s=300))
+        assert got is not None and abs(chain[got] - chain[target]) <= 300
+        counts.append(len(calls))
+    # nearby follow-ups start from the fresh anchor: ~1-2 calls, not a
+    # from-scratch walk
+    assert counts[1] <= 2 and counts[2] <= 2
+
+
+def test_locate_block_refuses_impossible_target():
+    import asyncio
+    latest = 10_000
+    chain = _mk_chain(latest)
+
+    async def get_ts(b):
+        return chain[b]
+
+    # target older than genesis — must return None, never a wrong block
+    got = asyncio.run(ac.locate_block_by_ts(
+        chain[0] - 10_000_000, get_ts, latest, chain[latest], [], tol_s=300))
+    assert got is None
+
+
 def test_resolve_rpc_url():
     # explicit URL wins over everything
     assert ac.resolve_rpc_url("https://x", "SOME_VAR", {"SOME_VAR": "https://y"}) \
