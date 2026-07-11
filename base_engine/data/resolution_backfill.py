@@ -165,6 +165,7 @@ async def run_resolution_backfill(
     *,
     missing_limit: int = 200,
     resolution_limit: int = 500,
+    prediction_log_limit: int = 150,
     delay_seconds: float = 0.03,
     log_progress: bool = True,
     priority_bot: Optional[str] = None,
@@ -347,10 +348,47 @@ async def run_resolution_backfill(
         except Exception as _pos_err:
             logger.debug("Resolution backfill: positions-driven discovery failed (non-critical): %s", _pos_err)
 
+        # 2c (S228 root fix): prediction-log-driven discovery. Markets a bot only
+        # LOGGED predictions on (never traded) are invisible to 2a (traded_markets),
+        # 2b (on-chain trades) and the positions prepend — their `markets` rows are
+        # never resolution-checked, so prediction_log rows stay unlabeled forever.
+        # Observed 2026-07-11 (WeatherBot): 132 of 185 window markets untracked;
+        # daily weather markets ended 3-4 days earlier still resolved=f; per-day
+        # resolution rate decayed 87%→12% as prediction volume outgrew the lazy
+        # bulk-ingestion path. Dedicated budget (NOT leftover slots — 2a can consume
+        # the whole batch) so trade-driven discovery keeps its full allocation.
+        # Most-recently-ended first: fresh dailies resolve fast and leave the set,
+        # older stragglers rise as the top clears (no last_checked_at bookkeeping
+        # exists for untracked markets, so oldest-first could pin on dead markets).
+        # 14-day prediction window bounds the scan via idx_prediction_log_time.
+        pred_market_ids: list = []
+        if prediction_log_limit > 0:
+            try:
+                _pred_res = await session.execute(text("""
+                    SELECT DISTINCT m.id, m.end_date_iso
+                    FROM (
+                        SELECT DISTINCT market_id FROM prediction_log
+                        WHERE resolution IS NULL
+                          AND prediction_time > NOW() - INTERVAL '14 days'
+                    ) pl
+                    JOIN markets m
+                      ON (CAST(m.id AS TEXT) = pl.market_id OR m.condition_id = pl.market_id)
+                    WHERE (m.resolution IS NULL OR m.resolution NOT IN ('YES', 'NO'))
+                      AND m.resolved IS NOT TRUE
+                      AND m.end_date_iso < NOW()
+                    ORDER BY m.end_date_iso DESC
+                    LIMIT :plim
+                """), {"plim": prediction_log_limit})
+                pred_market_ids = [r[0] for r in _pred_res.fetchall() if r[0]]
+            except Exception as _pred_err:
+                logger.debug("Resolution backfill: prediction_log discovery failed (non-critical): %s", _pred_err)
+        if pred_market_ids and log_progress:
+            logger.info("Resolution backfill: +%d prediction-log-sourced markets (untraded)", len(pred_market_ids))
+
         # Prepend open-position markets, dedup preserving order.
         _seen_ids: set = set()
         market_ids = []
-        for _mid in position_market_ids + paper_market_ids + other_ids:
+        for _mid in position_market_ids + paper_market_ids + other_ids + pred_market_ids:
             if _mid and _mid not in _seen_ids:
                 _seen_ids.add(_mid)
                 market_ids.append(_mid)
