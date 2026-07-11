@@ -238,7 +238,14 @@ class PinnOddsLoader:
                 self._request_count += 1
 
                 if resp.status_code == 429:
-                    retry_after = int(resp.headers.get("Retry-After", "30"))
+                    # Retry-After may be an HTTP-date (RFC 7231) or garbage —
+                    # never crash on it; and cap the sleep so an honest huge
+                    # value (e.g. 3600) cannot hang a cron tick for an hour.
+                    try:
+                        retry_after = int(resp.headers.get("Retry-After", "30"))
+                    except (ValueError, TypeError):
+                        retry_after = 30
+                    retry_after = max(1, min(retry_after, 60))
                     logger.warning(f"pinnodds_rate_limited retry_after={retry_after}")
                     time.sleep(retry_after)
                     continue

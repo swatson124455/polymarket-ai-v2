@@ -105,6 +105,9 @@ def fetch(k):
     for a in range(1,5):
         try:
             with urllib.request.urlopen(req,timeout=25) as r: return json.load(r)
+        except ValueError:
+            # 200 with a non-JSON body (WAF challenge page): lost tick, not a crash
+            print("non-JSON 200 body, giving up"); return {}
         except urllib.error.HTTPError as e:
             if e.code==429 and a<4:
                 ra=e.headers.get("Retry-After") if e.headers else None
