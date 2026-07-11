@@ -144,6 +144,12 @@ async def book_at(db, token_id: str, at: datetime, staleness_s: int,
 def load_addresses(args) -> list[str]:
     if args.traders:
         return [a.strip() for a in args.traders.split(",") if a.strip().startswith("0x")]
+    if getattr(args, "from_audit", ""):
+        # audit_roster_chain.py output: run ONLY the chain-verified roster
+        # ("chain wins" — DISCREPANT/THIN never reach a money decision)
+        with open(args.from_audit) as f:
+            return [a for a in json.load(f).get("clean", [])
+                    if str(a).startswith("0x")]
     with open(args.from_json) as f:
         blob = json.load(f)
     q = blob.get("qualified", {})
@@ -341,6 +347,9 @@ if __name__ == "__main__":
     ap.add_argument("--only-primary", action="store_true", dest="only_primary",
                     help="keep only VOL-sourced, non-truncated qualifiers (the primary set)")
     ap.add_argument("--traders", default="", help="explicit comma-separated addresses (overrides --from-json)")
+    ap.add_argument("--from-audit", default="", dest="from_audit",
+                    help="audit_roster_chain.py --out JSON; runs its CLEAN "
+                         "roster (chain-verified traders only)")
     ap.add_argument("--cache", default="/tmp/copyable_cache", help="history cache dir written by find_copyable")
     ap.add_argument("--lags", default="10,30", help="copy latencies in seconds (default 10,30)")
     ap.add_argument("--size-usd", type=float, default=50.0, dest="size_usd",

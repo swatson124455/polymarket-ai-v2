@@ -64,3 +64,22 @@ def test_load_addresses_only_primary(tmp_path):
     assert cf.load_addresses(A()) == ["0xVOL"]
     A.only_primary = False
     assert set(cf.load_addresses(A())) == {"0xVOL", "0xPNL", "0xVOLtrunc"}
+
+
+def test_load_addresses_from_audit(tmp_path):
+    import json
+    audit = {"clean": ["0xAAA", "0xBBB", "not-an-address"],
+             "results": {"0xAAA": {"verdict": "CLEAN"}}}
+    p = tmp_path / "chain_audit.json"
+    p.write_text(json.dumps(audit))
+
+    class A:
+        traders = ""
+        from_audit = str(p)
+        from_json = "/nonexistent"     # must not be touched
+        only_primary = False
+    assert cf.load_addresses(A()) == ["0xAAA", "0xBBB"]
+
+    # explicit --traders still wins over --from-audit
+    A.traders = "0xCCC"
+    assert cf.load_addresses(A()) == ["0xCCC"]
