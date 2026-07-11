@@ -69,23 +69,37 @@ async def run(args) -> int:
             print("\nsample orderbook_snapshots.token_id (newest 5):")
             for r in rows:
                 print(f"  {str(r[0])[:70]}  @ {r[1]}")
-            rng = (await s.execute(text(
-                "SELECT min(snapshot_time), max(snapshot_time), count(*) "
-                "FROM orderbook_snapshots"))).fetchone()
-            print(f"table range: {rng[0]} .. {rng[1]}  rows={rng[2]:,}")
+            # catalog ESTIMATE — a real count(*)/min/max seq-scans 37.7M rows
+            # and times out (the mirror_rejected_signals lesson, re-learned
+            # 2026-07-11 when v1 of this probe did exactly that)
+            est = (await s.execute(text(
+                "SELECT reltuples::bigint FROM pg_class "
+                "WHERE relname = 'orderbook_snapshots'"))).scalar()
+            print(f"table rows (catalog estimate): {int(est or 0):,}")
 
         # membership: which roster tokens exist in the table AT ALL
+        # (token_id lookups are index-backed — the fills gate's point
+        # queries return fast; a timed-out chunk is reported, not fatal)
         tok_list = sorted(tokens)
         found: set[str] = set()
+        chunks_failed = 0
         B = 500
         for i in range(0, len(tok_list), B):
             chunk = tok_list[i:i + B]
-            async with db.get_session() as s:
-                await s.execute(text("SET LOCAL statement_timeout = '60s'"))
-                rows = (await s.execute(text(
-                    "SELECT DISTINCT token_id FROM orderbook_snapshots "
-                    "WHERE token_id = ANY(:toks)"), {"toks": chunk})).fetchall()
-            found |= {str(r[0]) for r in rows}
+            try:
+                async with db.get_session() as s:
+                    await s.execute(text("SET LOCAL statement_timeout = '60s'"))
+                    rows = (await s.execute(text(
+                        "SELECT DISTINCT token_id FROM orderbook_snapshots "
+                        "WHERE token_id = ANY(:toks)"), {"toks": chunk})).fetchall()
+                found |= {str(r[0]) for r in rows}
+            except Exception as e:
+                chunks_failed += 1
+                print(f"  chunk {i // B} FAILED ({type(e).__name__}) — "
+                      f"skipped, membership is a lower bound")
+        if chunks_failed:
+            print(f"NOTE: {chunks_failed} chunk(s) failed — 'present' counts "
+                  f"are lower bounds")
         print(f"\nroster tokens present in orderbook_snapshots (ANY time): "
               f"{len(found):,}/{len(tokens):,}")
         print("\nper trader (tokens present / tokens):")
