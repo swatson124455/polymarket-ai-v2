@@ -114,7 +114,8 @@
   executing, failure counters 0. Migrations 079+080 remain applied (no new migrations in S227).
 - **⚠ NEW RELEASE-CUT RECIPE (learned the hard way 07-11):** this release was cut with
   `git archive` (clean, 39M, tracked-files-only) instead of the old tar-the-working-tree
-  flow (~4G with ~250 untracked files swept in, incl. `wallet.txt` — cleanup pending). The
+  flow (~4G with ~250 untracked files swept in, incl. `wallet.txt` — all 11 release-dir
+  copies shredded 2026-07-11 01:0xZ; local original + wallet-rotation question with operator). The
   service runs under `ProtectSystem=strict` (whitelist: `/opt/pa2-shared/data`,
   `/opt/pa2-shared/saved_models`, `/var/log/polymarket`), so the release tree is READ-ONLY
   at runtime and the engine cannot mkdir — **a clean tarball MUST pre-create the `data/`
@@ -161,9 +162,12 @@
   skeleton, re-flipped: `service: active`. Proof-of-life 00:48: first
   `weatherbot_calibration_reloaded` since 07-08 (41 stations/571 rows, EMOS-ready EDDM+LIML),
   `cal_fit` path executing (`insufficient_data n=0 need=200`), reload_failed/fit_failed = 0.
-  Verification prompt re-pointed to `--since 20260711_004700`. Also on the box: old releases
-  carry a swept-in `wallet.txt` + ~250 untracked files (old tar flow) — operator cleanup
-  pending, alongside the Pinnacle key rotation (now URGENT: key echoed into journal + chat).
+  Verification prompt re-pointed to `--since 20260711_004700`. Box hygiene DONE same night:
+  all 11 swept-in `wallet.txt` release-dir copies shredded (code references grep-verified
+  zero first; never git-tracked), stale /tmp tarball removed. STILL OPEN (operator): Pinnacle
+  key rotation (URGENT: echoed into journal + chat), check the local `wallet.txt` original
+  (172B, world-writable copies sat on box for weeks — consider wallet rotation; move the
+  file out of the repo dir), prune old releases only after the S222 verdict.
 - **2026-07-11 (S227 FIX, needs deploy):** `92740f3` — gt_cutoff bound as str into
   `CAST(:gt_cutoff AS timestamptz)` = asyncpg DataError on all 3 WS-3 cutoff sites: every
   confidence-calibrator fit crashed (warning) and every EMOS/bias/tail calibration reload

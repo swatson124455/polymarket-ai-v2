@@ -77,10 +77,13 @@ headline commit added.
 1. **(Operator, URGENT) Rotate the Pinnacle API key.** It is now exposed in THREE places:
    `/opt/pa2-shared/.env` junk lines (~360/367), the systemd journal (echoed on every service
    start), and pasted chat transcripts. Rotate at the provider, delete both junk lines.
-2. **(Operator) Box security/hygiene cleanup:** old releases (`20260710_*` and earlier)
-   contain a swept-in **`wallet.txt`** + ~250 untracked working-tree files (old tar flow);
-   also a stale `/tmp/wb-20260710_165940.tar.gz` and `%TEMP%\wb-*.tar.gz` on the Windows box.
-   List first, then delete (operator judgment — do not bulk-delete blind).
+2. **(Operator) Box security/hygiene — MOSTLY DONE 2026-07-11 ~01:05Z:** all 11 swept-in
+   `wallet.txt` release-dir copies shredded (grep-verified zero code references first; never
+   git-tracked) and the stale `/tmp/wb-20260710_165940.tar.gz` removed. STILL OPEN:
+   `%TEMP%\wb-*.tar.gz` on the Windows box; check the LOCAL `wallet.txt` original (172B,
+   May 15 — if it holds a real key: consider wallet rotation, and move the file out of the
+   repo dir so tooling can never sweep it again); prune old releases after the S222 verdict
+   (keep `_204822` rollback + current).
 3. **S222 verification — time-gated on ≥50 distinct resolved markets after 00:47:00Z**
    (ETA ~07-13; 56 distinct markets already logged in the first 90 min, so possibly sooner).
    Gate query:
