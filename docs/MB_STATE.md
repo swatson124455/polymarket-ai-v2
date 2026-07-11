@@ -26,11 +26,11 @@ one-liner (the 2026-07-10 probe false-negative was PS mangling `\"` JSON).
    DISCREPANT (9) EXCLUDED (chain wins; some may be ±30min window-blend
    artifacts — a tx-hash-exact matcher would settle it, later). THIN (1)
    excluded pending wider window. `/tmp/chain_audit.{log,json}` + snapshot.
-3. **Fill gate: NO VERDICT — 0% orderbook_snapshots coverage** for the
-   roster (probe `scripts/probe_ob_coverage.py` pushed to settle key-mismatch
-   vs genuine-gap; genuine-gap expected: snapshots cover the bots' old ~top-200
-   universe; roster edge is 60% long-tail "other"). NOT fill-killed —
-   unverifiable retrospectively.
+3. **Fill gate: NO VERDICT — GENUINE coverage gap, probe-CONFIRMED
+   2026-07-11:** only 164/34,507 roster tokens (0.5%) exist in
+   orderbook_snapshots at all (token shapes match — no key bug, no window
+   bug). Retrospective fill measurement is CLOSED for this roster; the
+   forward shadow is the only instrument. NOT fill-killed.
 4. **Operator decision (2026-07-11): build the forward shadow instrument.**
    BUILT: `mirror_v3/copy_watcher.py` — on-chain OrderFilled polling of the
    CLEAN roster (~2-4s detection vs ~10s REST), pre-trade gates
@@ -39,21 +39,27 @@ one-liner (the 2026-07-10 probe false-negative was PS mangling `\"` JSON).
    `mirror_v3/run.py` behind `MIRROR3_COPY_WATCHER=true` (default OFF,
    fail-loud). Env template: `deploy/env.mirror3.example`.
 
+**SHADOW IS DEPLOYED AND RUNNING (2026-07-11 12:46 UTC, commit `eac8a92`):**
+`polymarket-mirror3.service` on the VPS — env-guarded paper silo, watcher
+polling both exchanges at 2s for the 16 CLEAN traders, retry-don't-skip
+cursor (Tenderly head-race absorbed; only `SKIPPING (dropped window)` log
+lines mean lost samples), sink `/opt/pa2-shared/mirror3_shadow.jsonl`
+(world-readable), code at `/opt/mirror3`, redeploy = rerun
+`deploy/mirror3_shadow_deploy.sh` (idempotent; never touches an existing
+`.env.mirror3`).
+
 **NEXT ACTIONS:**
-1. [operator] Run `scripts/probe_ob_coverage.py` (one-liner in session log /
-   §5) — confirms the 0% coverage cause. If KEY MISMATCH: fix the fill-gate
-   join and rerun it. If GENUINE GAP (expected): the shadow is the only
-   instrument; proceed.
-2. [operator] Deploy the v3 shadow: install `deploy/polymarket-mirror3.service`
-   + `.env.mirror3` from the example (safety trio + DATABASE_URL +
-   MIRROR3_COPY_WATCHER block, roster = snapshot's `chain_audit.json`),
-   start, verify heartbeat shows `watcher=RUNNING(shadow)` and
-   `/opt/pa2-shared/mirror3_shadow.jsonl` accumulates records.
-3. [analysis, ~2-4 weeks of records] Shadow verdict: per-trader mean
-   (resolution_outcome − shadow_fill) on first_buy=true OK records vs the
-   +0.02 econ floor; gate-skip rates; detect-lag distribution. Pre-register
-   before reading: OK-rate ≥50%, pooled shadow edge P(>0) ≥0.95 on ≥30 mkts.
-4. [later, optional] WSS subscription upgrade (Alchemy free tier) to cut
+1. [operator, ~daily glance] `systemctl is-active polymarket-mirror3;
+   wc -l /opt/pa2-shared/mirror3_shadow.jsonl` — count should grow as the
+   roster trades (humans: hours of silence normal).
+2. [analysis, ~2-4 weeks of records] `scripts/analyze_shadow.py --log
+   /opt/pa2-shared/mirror3_shadow.jsonl --gamma-cache
+   /tmp/copyable_cache/gamma_resolutions.json` — the PRE-REGISTERED readout:
+   OK-rate ≥50% on first-buys; pooled shadow edge net of fee ≥ +0.02 with
+   P(>0) ≥0.95 on ≥30 resolved mkts (it refuses a verdict when
+   underpowered). SURVIVES → operator decision on paper trading with real
+   order flow. Never live from a backtest.
+3. [later, optional] WSS subscription upgrade (Alchemy free tier) to cut
    detection to ~2-3s; tx-hash-exact audit matcher to re-adjudicate the 9
    DISCREPANT traders.
 
