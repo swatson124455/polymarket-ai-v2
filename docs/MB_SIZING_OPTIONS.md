@@ -110,5 +110,18 @@ P ≥ 0.95 AND ≥100 resolved fills.
 
 ## Decision record
 
-- [ ] Option chosen: ____ (operator, date)
-- [ ] Readout verdict it was conditioned on: ____
+- [x] Option chosen: **A+D hybrid** (operator, 2026-07-11): flat 1-unit base
+  wage per approved copy + conviction bonus on wagers above the trader's
+  own trailing median. PRE-REGISTERED FORMULA (locked blind to data):
+  - r = same-tx-aggregated wager / trailing median of trader's last 50
+    entry wagers (median not mean; window seeded from the full cached
+    history at cold start).
+  - Multiplier: r<2 → 1.0x | 2≤r<5 → 1.25x | r≥5 → 1.5x (hard cap).
+    No malus below median (base wage floor).
+  - All rails R1-R8 apply AFTER the multiplier.
+  - PAPER from day one; the bonus component touches LIVE sizing only
+    after passing D's pre-registered test (§Option D: pooled Spearman
+    ρ>0, P≥0.95, ≥100 resolved fills — evaluable from shadow
+    whale_size_usd already being recorded). Test fails → bonus dies,
+    flat base stands.
+- [ ] Readout verdict it was conditioned on: ____ (fill at readout)
