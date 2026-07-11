@@ -1,5 +1,14 @@
 # SWOT / EV Audit — polymarket-ai-v2 pilot system
 
+> **TRIAGE ADDENDUM (operator review, 2026-07-11) — read before citing anything below.**
+> Operator frame supersedes this audit's original scope: **only MB/WB/EB exist**; total P&L is
+> known-corrupted and banned as an input; devig is decided IN; this session is now MB-only.
+> Retired as BAD INTEL / noise: the 2026-04-13 fleet edge verdicts (stale, pre-fix, P&L-derived),
+> the EnsembleBot/LLMForecaster orphan finding, all non-3-bot fleet items (W2, W5, O9, and the
+> live-reconciliation thread O7/W4 — total-P&L class). Survives as current, code-verified, or
+> canonical-script-verified: S1–S3, S5, W3, W7, O1–O6, O8 (EB lane), T1–T7. WB figures (S4, W6,
+> O4) are structure-valid but magnitude-stale — re-derive via `bot_pnl.py` before acting.
+
 **Date:** 2026-07-11 · **Session branch:** `claude/polymarket-ai-v2-setup-7tq1sh` · **Tree audited:** `c88d50d`
 **Method:** read-only repo + docs audit (6 parallel sweeps: fleet, money path, edge evidence, data assets, EB/WB lanes, MB lane context). No code modified. No DB access from this session.
 
