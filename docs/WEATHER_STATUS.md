@@ -71,8 +71,10 @@ operator env flip AFTER the S222 verdict. Prior: S227 calibrator fix LIVE, relea
    `git hash-object` = `385af285c4…` (the dc7763e blob), `polymarket-ingestion` active.
    Rollback: `sudo cp -a .../resolution_backfill.py.bak-s228 .../resolution_backfill.py &&
    sudo systemctl restart polymarket-ingestion`.
-   Verify: `journalctl -u polymarket-ingestion | grep "prediction-log-sourced"` then re-run
-   the gate query — `ended_but_unresolved` from the S228 diagnostic should collapse.
+   Verify via SQL (per-day resolved-rate query), NOT the journal: the mini scheduler passes
+   `log_progress=False`, so the `prediction-log-sourced` log line only prints on full
+   ingestion passes. VERIFIED WORKING 2026-07-11 evening: +43 markets resolved in the first
+   cycles (07-09: 92→112, 07-10: 22→36, 07-11: 0→6), draining newest-ended-first.
    ⚠ OPS DEBT (S228 finding): the main tree is an unversioned CRLF snapshot from 2026-06-03 —
    it has NO deploy mechanism and predates a month of repo fixes. Document/rebuild after S222.
 
