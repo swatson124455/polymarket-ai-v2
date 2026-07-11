@@ -107,8 +107,36 @@ def main() -> int:
         print("     GAP-B capture must overlap the results window. Skipping the edge")
         print("     backtest; no CLOB orientation calls made.)")
         return 0
-    edge = edge_backtest_from_joined(joined)  # resolves orientation via live CLOB
+    # Orientation is resolved ONCE per record via live CLOB and cached, so the
+    # threshold sweep below adds zero extra CLOB calls.
+    from esports_v2.model.sharp_eval import _default_orientation_resolver
+
+    _cache: dict = {}
+
+    def cached_resolver(cid, tok, ta, tb):
+        key = (cid, tok, ta, tb)
+        if key not in _cache:
+            _cache[key] = _default_orientation_resolver(cid, tok, ta, tb)
+        return _cache[key]
+
+    edge = edge_backtest_from_joined(joined, resolve_orientation=cached_resolver)
     print("\n" + edge.summary())
+
+    # THRESHOLD SWEEP (diagnostic): the 2026-07-11 edge-distribution measurement
+    # showed PM tracks the sharp line within ~1.5pt median / ~5pt max, so the
+    # default 5%+2% rule may never fire. Grade the SAME records at smaller
+    # thresholds to see whether small gaps carried real signal. EXPLORATORY —
+    # multiple comparisons; a bar that "wins" here must be re-validated on
+    # fresh data before any config change.
+    print("\nThreshold sweep (EXPLORATORY — same records, pick nothing from "
+          "this without fresh-data validation):")
+    for fee_v, me_v in ((0.02, 0.03), (0.0, 0.03), (0.0, 0.02)):
+        r = edge_backtest_from_joined(joined, resolve_orientation=cached_resolver,
+                                      fee=fee_v, min_edge=me_v)
+        roi = "n/a" if r.roi is None else f"{r.roi:+.3f}"
+        hit = "n/a" if r.hit_rate is None else f"{r.hit_rate:.3f}"
+        print(f"  fee={fee_v:.2f} min_edge={me_v:.2f}: bets={r.n_bets} "
+              f"hit={hit} roi={roi}")
     return 0
 
 
