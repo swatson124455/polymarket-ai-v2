@@ -13,7 +13,8 @@
     "caffc68": "fix(weather): S224 renorm over non-exhaustive bucket sets manufactured certainty (audit #1)",
     "95c732c": "fix(weather): S226 V23 root fix — prediction_log.predicted_prob is P(YES) on every row",
     "14006b0": "fix(weather): S226 V23 — durable prob_frame label; graders never grade frame-ambiguous PSW rows",
-    "535ec86": "fix(weather): S226 hotfix — top-level Database must accept prob_frame; WB binds it at runtime"
+    "535ec86": "fix(weather): S226 hotfix — top-level Database must accept prob_frame; WB binds it at runtime",
+    "92740f3": "fix(weather): S227 gt_cutoff must bind datetime, not str — asyncpg DataError killed calibrator fit + EMOS reload since 07-08"
   },
   "required_docs": [
     "docs/WEATHER_STATUS.md",

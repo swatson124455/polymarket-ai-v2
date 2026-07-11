@@ -5,7 +5,7 @@
 > read them for detail, but THIS file is the source of truth for "what is live and what's open."
 > Update the three sections below at the end of every WB session (same commit as the work).
 
-**Last updated:** 2026-07-11 (S227 — **calibrator/EMOS crash found + fixed on branch, NEEDS DEPLOY** (`92740f3`): gt_cutoff str-bind DataError killed every calibrator fit AND every EMOS/bias reload since 07-08; S222 verification clock restarts at the fix deploy. Also: stress test passed, box healthy. Prior: S226 ALL DEPLOYED in `20260710_204822`. Handoff: `docs/WEATHER_S226_STATUS.md`)
+**Last updated:** 2026-07-11 (S227 — calibrator/EMOS crash fixed AND **DEPLOYED + VERIFIED**: release `20260711_002634` @ `6770883`, effective restart 00:47:00Z; first successful `weatherbot_calibration_reloaded` since 07-08 (41 stations/571 rows, 2 EMOS-ready), fit path alive, failure counters 0. S222 verification clock restarts at 00:47:00Z. Also: stress test passed. Prior handoff: `docs/WEATHER_S226_STATUS.md`)
 **Pinned branch:** `claude/new-whiteboard-session-9b23tq` (see `.claude/session-branch`)
 **Resume check:** `bash scripts/wb_resume_check.sh` (self-deriving; replaces the hand-typed checklist)
 
@@ -13,35 +13,34 @@
 
 ## OPEN DECISIONS  ← always at the top, always the first thing a resume reads
 
-1. **CALIBRATOR RE-LEARN NEVER STARTED — S227 found the crash, fix on branch NEEDS DEPLOY
-   (`92740f3`).** The S224 WS-3 cutoff was bound as a **str** into `CAST(:gt_cutoff AS
-   timestamptz)`; asyncpg raises DataError on str-for-timestamptz, so since the 07-08 restart
-   EVERY `fit_from_trade_events` crashed (warning `weatherbot_confidence_cal_fit_failed`) and
-   EVERY `_maybe_reload_calibration` crashed at its first query (debug —
-   **silent**): no confidence-calibrator fit, no station bias averages, no EMOS, no tail
-   calibration loaded AT ALL since 07-08 19:18. The observed "reset toward identity" was the
-   crash, not the designed re-learn. Found via stress-test error triage 07-11; the watch-grep
-   ("calibrator|actual_source|abstain|holdout_valid") never matched the failure event names.
-   Fixed root-cause (datetime bind + swallow elevated to warning); defect-tested; NOT deployed.
-   **The re-learn clock starts at the fix deploy**, not 07-08. The 53 leak-era-entry
-   contamination note (ages out ~2026-08-07) is unchanged. Post-deploy verification:
-   `weatherbot_calibration_reloaded` info lines return; `cal_fit_failed` goes quiet.
+1. **WATCH the calibrator re-learn — NOW ACTUALLY RUNNING (S227 fix deployed 2026-07-11
+   00:47:00Z).** Backstory: the S224 WS-3 cutoff was bound as a **str** into
+   `CAST(:gt_cutoff AS timestamptz)` → asyncpg DataError → since 07-08 EVERY calibrator fit
+   crashed (1,109 warning-level failures) and EVERY EMOS/bias/tail reload crashed (debug —
+   silent; 0 successful reloads journal-wide). The observed "reset toward identity" was the
+   crash, not the designed re-learn. Fixed in `92740f3` (datetime bind; reload swallow
+   elevated debug→warning), deployed in `20260711_002634`, proof-of-life verified 00:48:
+   `weatherbot_calibration_reloaded` (41 stations / 571 rows, EMOS-ready: EDDM+LIML),
+   `weatherbot_confidence_cal_insufficient_data n=0 need=200` (fit path executing; re-learn
+   accumulates from zero). **The re-learn clock starts 2026-07-11, not 07-08.** The 53
+   leak-era-entry contamination (ages out ~2026-08-07) is unchanged. Watch:
+   `journalctl -u polymarket-weather | grep -E "calibration_reloaded|calibration_reload_failed|cal_fit|insufficient_data|holdout_valid"`
+   — reload_failed / cal_fit_failed must STAY 0 (both are warning-level now).
 
-2. **S222 post-fix verification — CLOCK RESTARTS AT THE S227 FIX DEPLOY (superseding the
-   07-11 "gate open" call).** History: operator counted 50 distinct resolved markets at the
-   S224 tarball stamp; S227 trued the prompt up to the REAL restart cutoff (`2026-07-08
-   19:18:38` — the 15:13→19:18 slice is pre-fix leak-row output) and the clean window held
-   only 40/50 (correct self-abort, integrity checks green: leak-regression 0, PSW-ambiguous 0).
-   THEN S227 found the gt_cutoff crash (#1): the ENTIRE post-07-08 window ran **without
-   EMOS/bias/tail calibration and without a fitted confidence calibrator**, while the 07-02
-   pre-fix baseline had them working — the A/B would compare fixes-minus-calibration against
-   baseline-with-calibration. Do NOT run the verification on the pre-S227-fix window: even a
-   PASS wouldn't transfer to the repaired system (probabilities shift when EMOS returns).
-   Sequence: deploy `92740f3` → restart the ≥50 distinct-resolved-market clock at that deploy
-   stamp (~2.5 days at the observed ~19/day) → update the `--since` cutoffs in
-   `WB_S222_POSTFIX_VERIFICATION_PROMPT.md` to the fix-deploy restart time → run it. Only
-   after a PASS: retire containment gates per `WEATHER_S222_STATUS.md` §4-B (order: A1/A3 →
-   dampeners → caps; C0 Kelly stays deferred until the calibrator re-learn verdict regardless).
+2. **S222 post-fix verification — clock RESTARTED at 2026-07-11 00:47:00Z (the S227 fix
+   restart); ETA to the ≥50 gate ~07-13/07-14.** The entire 07-08→07-11 window is DISCARDED
+   for verification: it ran without EMOS/bias/tail calibration and without a fitted
+   confidence calibrator (see #1), while the 07-02 baseline had them working — not
+   comparable. Rows 07-11 00:26→00:47 are also old-code output (crash-loop + rollback
+   interlude; stamp≠restart, third occurrence). `WB_S222_POSTFIX_VERIFICATION_PROMPT.md` is
+   fully re-pointed: cutoff `--since 20260711_004700`, S227-marker precondition, calibration-
+   alive check (reload_failed/fit_failed must be 0), leak-regression check, PSW-label check.
+   Gate count query:
+   `SELECT count(DISTINCT market_id) FILTER (WHERE resolution IS NOT NULL) FROM prediction_log
+    WHERE bot_name='WeatherBot' AND prediction_time > '2026-07-11 00:47:00';`
+   When ≥50: run the prompt from a VPS session. Only after a PASS: retire containment gates
+   per `WEATHER_S222_STATUS.md` §4-B (order: A1/A3 → dampeners → caps; C0 Kelly stays
+   deferred until the calibrator re-learn verdict regardless).
 
 3. **Deferred switches (do after the calibrator re-learns + S222 passes):** enable the V28
    calibrated-edge gate (`WEATHER_CALIBRATED_EDGE_GATE_ENABLED=true`); V34 follow-ups
@@ -108,15 +107,21 @@
 
 ## WHAT IS LIVE NOW
 
-- **Deployed:** WeatherBot on its splinter, release **`20260710_204822`** (cut from `c1a170c`-era
-  tip incl. hotfix `535ec86`; rollback target `20260710_201020` — note `_201020` had the silent
-  prediction-log outage, prefer `_165646` for a deep rollback). Paper mode, treated as production. Carries the six S223
-  fixes, the full **S224 batch** (renorm deflate-only, N1 bias sign-flip, V42 circuit breakers,
-  V37 NDFD PoP, V34 synthetic sigma, V26 exec-edge floor 0.04, V28 gate built/OFF, ground-truth/
-  calibrator cluster), PLUS the **S225 diagnostics** (manufactured-certainty tripwire live;
-  bot_pnl f-string fix; calibration_check `--dedup-markets`).
-  **Migrations 079 + 080 applied** (`actual_source`, `prob_frame` columns live; verified:
-  14 `prob_frame='yes'` rows within 2 scans, `ungraded_psw_ok=0`).
+- **Deployed:** WeatherBot on its splinter, release **`20260711_002634`** (cut from `6770883`;
+  rollback target `20260710_204822`). Paper mode, treated as production. Carries everything
+  S223→S226 PLUS the **S227 calibrator fix** (`92740f3` — gt_cutoff datetime bind; reload
+  swallow warning-level). Verified live 00:48Z: calibration reloading again, fit path
+  executing, failure counters 0. Migrations 079+080 remain applied (no new migrations in S227).
+- **⚠ NEW RELEASE-CUT RECIPE (learned the hard way 07-11):** this release was cut with
+  `git archive` (clean, 39M, tracked-files-only) instead of the old tar-the-working-tree
+  flow (~4G with ~250 untracked files swept in, incl. `wallet.txt` — cleanup pending). The
+  service runs under `ProtectSystem=strict` (whitelist: `/opt/pa2-shared/data`,
+  `/opt/pa2-shared/saved_models`, `/var/log/polymarket`), so the release tree is READ-ONLY
+  at runtime and the engine cannot mkdir — **a clean tarball MUST pre-create the `data/`
+  skeleton** (`data/backups`, `data/wb_snapshots`, etc.; mirror the previous release:
+  `find <old>/data -type d -exec mkdir -p <new>/{} \;` + chown) or the service crash-loops
+  on `Read-only file system: 'data/backups'`. First cut attempt did exactly that (43
+  restarts, 00:26→00:42), was rolled back, repaired, re-flipped at ~00:46.
 - **Health (at deploy 07-08):** `service: active`, clean restart, S224 markers=24 on the box.
   All S222 safety gates still **ON as containment**. The calibrator is mid-reset toward
   identity (see OPEN DECISIONS #1) — expected. Quality via **calibration** (Brier/PIT/
@@ -146,6 +151,16 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-11 (S227 DEPLOYED + VERIFIED):** release `20260711_002634` @ `6770883`, effective
+  restart 00:47:00Z (record `82302b7`). First cut crash-looped 43× — clean `git archive`
+  tarball lacked the `data/` skeleton the `ProtectSystem=strict` sandbox requires to pre-exist
+  (release tree is read-only at runtime); rolled back to `_204822`, mirrored the data/ dir
+  skeleton, re-flipped: `service: active`. Proof-of-life 00:48: first
+  `weatherbot_calibration_reloaded` since 07-08 (41 stations/571 rows, EMOS-ready EDDM+LIML),
+  `cal_fit` path executing (`insufficient_data n=0 need=200`), reload_failed/fit_failed = 0.
+  Verification prompt re-pointed to `--since 20260711_004700`. Also on the box: old releases
+  carry a swept-in `wallet.txt` + ~250 untracked files (old tar flow) — operator cleanup
+  pending, alongside the Pinnacle key rotation (now URGENT: key echoed into journal + chat).
 - **2026-07-11 (S227 FIX, needs deploy):** `92740f3` — gt_cutoff bound as str into
   `CAST(:gt_cutoff AS timestamptz)` = asyncpg DataError on all 3 WS-3 cutoff sites: every
   confidence-calibrator fit crashed (warning) and every EMOS/bias/tail calibration reload

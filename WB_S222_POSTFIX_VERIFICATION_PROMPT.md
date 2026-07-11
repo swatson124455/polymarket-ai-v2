@@ -3,27 +3,26 @@
 **Purpose:** copy-paste prompt for a VPS-access session, to A/B the deployed S222
 fixes against the pre-fix baseline captured 2026-07-02 and decide gate retirement.
 
-**S227 true-up (2026-07-10):** the substrate changed again at the S224 deploy
-(2026-07-08), so the verification window starts THERE, not at the original S222
-release. Operator confirmed the ≥50 gate: **50 distinct resolved markets** at
-cutoff `2026-07-08 15:13:30` (counted 2026-07-10). Three window hazards are now
-encoded below — do not skip them:
-- **Stamp ≠ restart (S226 gotcha #3):** the S224 tarball stamp is 15:13:30Z but the
-  service restarts were **18:08:41 / 19:18:38** (journal-confirmed; deploy record
-  19:18:44Z). Rows between 15:13:30 and 19:18:38 are PRE-fix code output and include
-  known `predicted_prob = 1.0` leak rows (last at 17:59:38). **The verdict window
-  therefore starts at `2026-07-08 19:18:38`.**
-- **PSW frame ambiguity:** `weather_precipitation/snowfall/wind` rows written before
-  migration 080 went live (release `20260710_204822`, ~2026-07-10 20:48Z) are
-  frame-ambiguous (`prob_frame IS NULL`). calibration_check reads predicted_prob +
-  resolution directly, so any such resolved rows in the window pollute PSW cells.
-- **Known log outage:** prediction logging was silently DOWN 2026-07-10
-  20:12→20:48Z (S226 hotfix `535ec86`). A row gap there is a known outage, NOT a
-  data regression.
+**S227 re-point (2026-07-11):** the verification window now starts at the **S227 fix
+deploy** (release `20260711_002634`, effective service restart **2026-07-11 00:47:00Z**).
+Why the restart moved twice:
+- The original post-S224 window (07-08 →) is **DISCARDED for verification**: S227 found
+  that a str-vs-datetime bind crashed every confidence-calibrator fit AND every
+  EMOS/bias/tail calibration reload since the 07-08 deploy (journal-proven: 0
+  `weatherbot_calibration_reloaded`, 1109 `cal_fit_failed`). That whole window traded
+  without calibration while the 07-02 baseline had it working — not comparable.
+- Rows written 2026-07-11 00:26→00:47 are ALSO old-code output (the release stamp is
+  00:26 but the first cut crash-looped on a missing `data/` skeleton and the box ran
+  the rolled-back old release until the repaired flip at ~00:46; startup at 00:47:11).
+  Tarball stamp ≠ restart time — third occurrence, encoded on day one this time.
+- Post-fix proof-of-life (2026-07-11 00:48): `weatherbot_calibration_reloaded`
+  (41 stations / 571 rows, 2 EMOS-ready), `cal_fit` path executing
+  (`insufficient_data n=0 need=200`), both failure counters 0.
 
-**Preconditions before firing:** (1) deployed release is `20260710_204822` or later,
-(2) ≥50 DISTINCT resolved markets in the CLEAN window (Precondition 0.4b). The
-prompt self-aborts if either fails.
+**Preconditions before firing:** (1) deployed release is `20260711_002634` or later
+with S227 markers present, (2) ≥50 DISTINCT resolved markets in the clean window
+(Precondition 0.4a). The prompt self-aborts if either fails. ETA to the gate:
+~2.5–3 days from 2026-07-11 at the observed ~19 distinct resolutions/day.
 
 **Pre-fix baseline reference (2026-07-02, release 20260701_144329, PAPER mode):**
 PIT KS stat 0.155 / p<1e-4 / mean 0.563 / U-shaped · traded-subset Brier 0.2907,
@@ -34,6 +33,12 @@ below stated in every bin (0.90+ → 56%; 0.55-0.59 → 17%, canonical bot_pnl.p
 · `weather_tail_calibration` 0 rows · calibrator fitted (n_no=153, n_yes=72,
 oos 0.281 vs raw 0.308).
 
+**Baseline-comparability note:** the baseline system had a FITTED calibrator; the
+post-S227 system starts with an identity calibrator that re-learns as clean samples
+accumulate (and its fit window carries 53 leak-era entries until ~2026-08-07). The
+A1/A3 raw-probability verdicts (PIT, reliability) are about the RAW pipeline and
+remain comparable; treat calibrator-dependent observations as context, not verdicts.
+
 ---
 
 ## PROMPT (copy from here down)
@@ -42,8 +47,8 @@ oos 0.281 vs raw 0.308).
 WeatherBot POST-FIX verification — A/B vs the pre-fix baseline (read-only)
 
 The 5 S222 root-cause fixes (commits 3a3fd20, 3b71e54, b1892b1, 2783708, 9e3a288)
-+ 2 repaired measurement scripts are deployed (along with the S223/S224/S225/S226
-batches — the deployed release should be 20260710_204822 or later). This re-runs
++ 2 repaired measurement scripts + the S223/S224/S225/S226 batches + the S227
+calibrator-crash fix are deployed (release 20260711_002634 or later). This re-runs
 the same measurements captured as the PRE-FIX baseline (2026-07-02), to decide
 whether the YES/NO price caps + confidence dampeners can start being retired.
 
@@ -57,52 +62,49 @@ source). Win-rate + counts = source from canonical bot_pnl.py, not the trade_eve
 brier scripts. Everything read-only; clean up temp files; modify nothing.
 
 ── PRECONDITION 0 — prove this is actually POST-FIX (do NOT skip) ──────────
-Do not trust any number below as "post-fix" until the DEPLOYED code contains the
-fixes AND enough post-restart resolutions exist.
   1. Deployed WB release:  readlink -f /opt/polymarket-ai-v2-weather
-     Report the release stamp; confirm it is 20260710_204822 or later.
+     Report the release stamp; confirm it is 20260711_002634 or later.
   2. Code fingerprint (the fixes must be physically present in the deployed release):
      grep -n "S222 A1" <deployed>/bots/weather/engine/base_engine/weather/probability_engine.py
      grep -n "S222 A3" <deployed>/bots/weather/engine/base_engine/weather/probability_engine.py
-     grep -n "S222" <deployed>/bots/weather_bot.py | head
-     grep -c "S226" <deployed>/bots/weather_bot.py    # must be >=18 (latest batch present)
+     grep -c "S227" <deployed>/bots/weather_bot.py    # must be >=4 (calibrator fix present)
      If any marker is ABSENT → the fixes are NOT deployed; STOP and report that.
   3. Effective config from the running bot:  read /proc/<wb_pid>/environ
      Report effective WEATHER_VARIANCE_INFLATION_FACTOR (default 1.4) — the A1 knob.
   4. WINDOW INTEGRITY + gate counts (all SQL via: sudo -u postgres psql polymarket -f -):
-     4a. Stamp-window gate (context only — this is the count the operator tracked):
+     4a. CLEAN-window gate (THE gate — post-S227-restart code only):
          SELECT count(DISTINCT market_id) FILTER (WHERE resolution IS NOT NULL)
          FROM prediction_log
-         WHERE bot_name='WeatherBot' AND prediction_time > '2026-07-08 15:13:30';
-         (Operator got 50 on 2026-07-10.)
-     4b. CLEAN-window gate (THE gate — post-restart code only):
-         SELECT count(DISTINCT market_id) FILTER (WHERE resolution IS NOT NULL)
-         FROM prediction_log
-         WHERE bot_name='WeatherBot' AND prediction_time > '2026-07-08 19:18:38';
-         If <50 → measurements are premature; report BOTH counts (4a vs 4b) and the
-         ETA to 50, then STOP.
+         WHERE bot_name='WeatherBot' AND prediction_time > '2026-07-11 00:47:00';
+         If <50 → measurements are premature; report the count and the ETA to 50,
+         then STOP.
+     4b. Calibration alive check (the S227 regression guard):
+         journalctl -u polymarket-weather --since "24 hours ago" | grep -c weatherbot_calibration_reloaded   (expect >=1 per ~6h)
+         journalctl -u polymarket-weather --since "24 hours ago" | grep -c weatherbot_calibration_reload_failed  (expect 0)
+         journalctl -u polymarket-weather --since "24 hours ago" | grep -c weatherbot_confidence_cal_fit_failed  (expect 0)
+         If reload_failed or fit_failed is nonzero → calibration is crashing again;
+         STOP and report the error lines.
      4c. Leak-regression check (must be ZERO — the tripwire is also live):
          SELECT count(*) FROM prediction_log
-         WHERE bot_name='WeatherBot' AND prediction_time > '2026-07-08 19:18:38'
+         WHERE bot_name='WeatherBot' AND prediction_time > '2026-07-11 00:47:00'
            AND predicted_prob >= 0.9995;
          If nonzero → REGRESSION of the closed manufactured-certainty leak; STOP,
          report rows + journalctl grep 'weatherbot_impossible_certainty'.
-     4d. PSW frame-ambiguity count (caveat, not a blocker):
+     4d. PSW frame-ambiguity count (should be structurally 0 — all post-window rows
+         are post-migration-080 and prob_frame-labelled; nonzero = labelling broke):
          SELECT count(*) FROM prediction_log
-         WHERE bot_name='WeatherBot' AND prediction_time > '2026-07-08 19:18:38'
+         WHERE bot_name='WeatherBot' AND prediction_time > '2026-07-11 00:47:00'
            AND model_name IN ('weather_precipitation','weather_snowfall','weather_wind')
            AND prob_frame IS NULL AND resolution IS NOT NULL;
-         Report the count. If >~5% of resolved rows in the window, flag every
-         PSW-containing cell in the results as PARTIAL (frame-ambiguous rows inside).
 
 ── MEASUREMENTS (only if Precondition 0 passes) ───────────────────────────
-Cutoff at the REAL restart so no pre-fix data leaks in.
-  a. PYTHONPATH=. python scripts/calibration_check.py WeatherBot --since 20260708_191838 --clean --dedup-markets
+Cutoff at the S227 restart so no dead-calibration data leaks in.
+  a. PYTHONPATH=. python scripts/calibration_check.py WeatherBot --since 20260711_004700 --clean --dedup-markets
   b. PYTHONPATH=. python scripts/weather_brier.py <days>
-     # <days> = full days since 2026-07-08 19:19Z, ROUNDED DOWN (so the window
+     # <days> = full days since 2026-07-11 00:47Z, ROUNDED DOWN (so the window
      # cannot reach back past the restart). State the days value used.
   c. python scripts/weather_brier_by_side.py <hours>
-     # <hours> = hours since 2026-07-08 19:19Z, ROUNDED DOWN. State it.
+     # <hours> = hours since 2026-07-11 00:47Z, ROUNDED DOWN. State it.
   d. PYTHONPATH=. python scripts/bot_pnl.py WeatherBot <hours>   # canonical WR/counts/conf-bins; same <hours>
 (The repaired brier scripts are IN the deployed release — no /tmp copies needed.)
 
@@ -114,12 +116,12 @@ Cutoff at the REAL restart so no pre-fix data leaks in.
   - Per (side × price-bucket) Brier (step c).                (baseline: NO 80-100¢ 0.11 best; 0-20¢ cells ~0.43-0.44 worst)
   - Per-confidence-bin realized WR vs stated (step d).       (baseline: 0.90+ → 56%; 0.55-0.59 → 17%)
   - Calibrator status: REPORT (fitted, n_no/n_yes, oos vs raw_oos Brier) but do
-    NOT judge or gate on it — it is mid-re-learn toward identity (S224 reset) and
-    mildly contaminated by 53 leak-era entries until ~2026-08-07 (self-clears).
+    NOT judge or gate on it — it re-learns from zero starting 2026-07-11 and its
+    fit window carries 53 leak-era entries until ~2026-08-07 (self-clears).
     Do NOT touch it regardless of the verdict.
 
 ── GATE-RETIREMENT PASS/FAIL (state each verdict explicitly) ──────────────
-N = distinct resolved markets in the CLEAN window (Precondition 0.4b).
+N = distinct resolved markets in the CLEAN window (Precondition 0.4a).
 Retire NOTHING unless its criterion is met on N>=50:
   * A1/A3 effectiveness: PASS if PIT KS p-value RISES AND |high-conf reliability
       gap| shrinks vs baseline. FAIL/PARTIAL if PIT still U-shaped with p<0.05 →
@@ -132,7 +134,7 @@ Retire NOTHING unless its criterion is met on N>=50:
   * Flat-size → Kelly re-enable (C0): ONLY if the [0.9,1.0) bin is no longer
       anti-calibrated (realized WR >= ~0.85) AND PIT KS no longer rejects. Last —
       and even then it stays DEFERRED until the calibrator re-learn verdict
-      (WEATHER_STATUS.md OPEN DECISION #1, ~2026-08-07) is in.
+      (WEATHER_STATUS.md OPEN DECISION #1) is in.
 
 Report each as PASS / PARTIAL / FAIL with the numbers behind it. If Precondition 0
 fails, the entire answer is just "fixes not deployed / window too narrow" + counts.
