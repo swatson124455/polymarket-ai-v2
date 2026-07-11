@@ -977,6 +977,11 @@ class Settings(BaseSettings):
     # Minimum quiet period (s) after a scan before a priority event may wake the
     # loop — an event burst cannot pin the bot at zero-gap scanning.
     WEATHER_PRIORITY_WAKE_MIN_SLEEP_S: float = float(os.getenv("WEATHER_PRIORITY_WAKE_MIN_SLEEP_S", "20"))
+    # S228: ModelRunMonitor NOMADS/AWS availability-poll cadence (s). 300 is the
+    # previously hardcoded constructor default — behavior unchanged unless tuned.
+    # Lower (e.g. 120) detects new GFS/ECMWF runs sooner; these are cheap
+    # availability checks, not forecast fetches (no Open-Meteo quota). Tier-1 knob.
+    WEATHER_MODEL_RUN_POLL_INTERVAL_S: float = float(os.getenv("WEATHER_MODEL_RUN_POLL_INTERVAL_S", "300"))
     # S120: EMOS calibration rolling window (days). Prevents seasonal contamination.
     WEATHER_EMOS_WINDOW_DAYS: int = int(os.getenv("WEATHER_EMOS_WINDOW_DAYS", "90"))
     # S121: Externalized hardcoded values

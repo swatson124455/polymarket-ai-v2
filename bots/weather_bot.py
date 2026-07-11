@@ -864,6 +864,8 @@ class WeatherBot(BaseBot):
             forecast_client=self._forecast_client,
             stations=_all_stations,
             priority_queue=self._priority_queue,
+            # S228: configurable poll cadence (default 300 = old hardcoded value)
+            poll_interval=float(getattr(settings, "WEATHER_MODEL_RUN_POLL_INTERVAL_S", 300.0)),
         )
         # S102: Pass Redis cache to MetarMonitor for daily max persistence
         _redis_cache = getattr(base_engine, "cache", None) if base_engine else None

@@ -5199,3 +5199,23 @@ class TestS228PriorityWake:
         from bots.weather.engine.base_bot import BaseBot
         src = inspect.getsource(BaseBot._scan_loop)
         assert "_sleep_until_next_scan" in src, "_scan_loop no longer calls the S228 sleep hook"
+
+
+class TestS228ModelRunPollInterval:
+    """S228: ModelRunMonitor's poll cadence was a hardcoded constructor
+    default (300s) — new-model-run detection latency could not be tuned
+    without a code change. WeatherBot must wire the setting through."""
+
+    def test_default_matches_old_hardcoded_300(self, weather_bot):
+        assert weather_bot._model_run_monitor._poll_interval == 300.0, (
+            "default poll cadence changed — S228 intended zero behavior change at default"
+        )
+
+    def test_setting_is_wired_through(self, mock_engine, monkeypatch):
+        from bots.weather.engine.config import settings as _settings_mod
+        monkeypatch.setattr(_settings_mod.settings, "WEATHER_MODEL_RUN_POLL_INTERVAL_S", 120.0, raising=False)
+        from bots.weather_bot import WeatherBot
+        bot = WeatherBot(mock_engine)
+        assert bot._model_run_monitor._poll_interval == 120.0, (
+            "WEATHER_MODEL_RUN_POLL_INTERVAL_S is not reaching ModelRunMonitor"
+        )
