@@ -968,6 +968,15 @@ class Settings(BaseSettings):
     # S99: Adaptive backoff
     WEATHER_ADAPTIVE_BACKOFF_THRESHOLD: int = int(os.getenv("WEATHER_ADAPTIVE_BACKOFF_THRESHOLD", "6"))
     WEATHER_MAX_SCAN_INTERVAL: float = float(os.getenv("WEATHER_MAX_SCAN_INTERVAL", "600"))
+    # S228: Priority wake — end the inter-scan sleep early when ModelRunMonitor/
+    # MetarMonitor push a priority event (model-run jump, METAR boundary), instead
+    # of letting the event sit in the queue for up to a full scan interval.
+    # Default OFF: behavior identical to pre-S228 until explicitly enabled
+    # (keeps the S222 verification window comparable). Tier-2 gating flag.
+    WEATHER_PRIORITY_WAKE_ENABLED: bool = os.getenv("WEATHER_PRIORITY_WAKE_ENABLED", "false").lower() in ("true", "1", "yes")
+    # Minimum quiet period (s) after a scan before a priority event may wake the
+    # loop — an event burst cannot pin the bot at zero-gap scanning.
+    WEATHER_PRIORITY_WAKE_MIN_SLEEP_S: float = float(os.getenv("WEATHER_PRIORITY_WAKE_MIN_SLEEP_S", "20"))
     # S120: EMOS calibration rolling window (days). Prevents seasonal contamination.
     WEATHER_EMOS_WINDOW_DAYS: int = int(os.getenv("WEATHER_EMOS_WINDOW_DAYS", "90"))
     # S121: Externalized hardcoded values

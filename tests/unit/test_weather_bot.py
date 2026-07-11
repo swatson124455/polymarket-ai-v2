@@ -2,6 +2,7 @@
 
 import asyncio
 import math
+import time
 from datetime import date, datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -5113,3 +5114,88 @@ class TestS227GtCutoffBindsDatetime:
             "production; bias/EMOS/tail calibration silently never loads"
         )
         assert gt.tzinfo is not None
+
+
+class TestS228PriorityWake:
+    """S228: ModelRunMonitor/MetarMonitor push priority events (model-run
+    jumps, METAR boundary crossings) onto _priority_queue within seconds of
+    detection, but the queue was only drained at the TOP of the next scan —
+    an event sat unactioned for up to a full scan interval (300-600s).
+    _sleep_until_next_scan() now (flag-gated) waits ON the queue: an event
+    ends the inter-scan sleep after a minimum quiet period and is re-queued
+    so the existing scan-top drain processes it unchanged. Default OFF must
+    be byte-for-byte pre-S228 behavior."""
+
+    @pytest.mark.asyncio
+    async def test_default_off_sleeps_full_delay_and_ignores_queue(self, weather_bot, monkeypatch):
+        """Flag OFF (default): full sleep, queue untouched even with an event waiting."""
+        from bots.weather.engine.config import settings as _settings_mod
+        monkeypatch.setattr(_settings_mod.settings, "WEATHER_PRIORITY_WAKE_ENABLED", False, raising=False)
+        weather_bot._priority_queue.put_nowait({"source": "model_run_jump"})
+        t0 = time.monotonic()
+        await weather_bot._sleep_until_next_scan(0.25)
+        elapsed = time.monotonic() - t0
+        assert elapsed >= 0.24, f"flag OFF must sleep the full delay (slept {elapsed:.3f}s)"
+        assert weather_bot._priority_queue.qsize() == 1, "flag OFF must not consume the queue"
+
+    @pytest.mark.asyncio
+    async def test_enabled_wakes_early_on_event_and_requeues(self, weather_bot, monkeypatch):
+        """Flag ON: a queued event ends the sleep early and survives for the scan-top drain."""
+        from bots.weather.engine.config import settings as _settings_mod
+        monkeypatch.setattr(_settings_mod.settings, "WEATHER_PRIORITY_WAKE_ENABLED", True, raising=False)
+        monkeypatch.setattr(_settings_mod.settings, "WEATHER_PRIORITY_WAKE_MIN_SLEEP_S", 0.0, raising=False)
+
+        async def _push_later():
+            await asyncio.sleep(0.05)
+            weather_bot._priority_queue.put_nowait({"source": "model_run_jump"})
+
+        pusher = asyncio.create_task(_push_later())
+        t0 = time.monotonic()
+        await weather_bot._sleep_until_next_scan(10.0)  # would sleep 10s without the wake
+        elapsed = time.monotonic() - t0
+        await pusher
+        assert elapsed < 2.0, f"event must wake the sleep early (took {elapsed:.3f}s of 10s)"
+        assert weather_bot._priority_queue.qsize() == 1, "event must be re-queued for the scan-top drain"
+        item = weather_bot._priority_queue.get_nowait()
+        assert item.get("source") == "model_run_jump", "re-queued item must be the original event"
+
+    @pytest.mark.asyncio
+    async def test_enabled_honors_min_quiet_period(self, weather_bot, monkeypatch):
+        """Flag ON: even with an event already waiting, never wake before the floor."""
+        from bots.weather.engine.config import settings as _settings_mod
+        monkeypatch.setattr(_settings_mod.settings, "WEATHER_PRIORITY_WAKE_ENABLED", True, raising=False)
+        monkeypatch.setattr(_settings_mod.settings, "WEATHER_PRIORITY_WAKE_MIN_SLEEP_S", 0.2, raising=False)
+        weather_bot._priority_queue.put_nowait({"source": "metar_boundary"})
+        t0 = time.monotonic()
+        await weather_bot._sleep_until_next_scan(10.0)
+        elapsed = time.monotonic() - t0
+        assert elapsed >= 0.19, f"woke before the minimum quiet period ({elapsed:.3f}s < 0.2s)"
+        assert elapsed < 2.0, "event after the floor must still wake early"
+        assert weather_bot._priority_queue.qsize() == 1
+
+    @pytest.mark.asyncio
+    async def test_enabled_no_event_sleeps_full_delay(self, weather_bot, monkeypatch):
+        """Flag ON, empty queue: cadence unchanged — sleeps the full delay."""
+        from bots.weather.engine.config import settings as _settings_mod
+        monkeypatch.setattr(_settings_mod.settings, "WEATHER_PRIORITY_WAKE_ENABLED", True, raising=False)
+        monkeypatch.setattr(_settings_mod.settings, "WEATHER_PRIORITY_WAKE_MIN_SLEEP_S", 0.05, raising=False)
+        t0 = time.monotonic()
+        await weather_bot._sleep_until_next_scan(0.3)
+        elapsed = time.monotonic() - t0
+        assert elapsed >= 0.29, f"no event → must sleep the full delay (slept {elapsed:.3f}s)"
+
+    @pytest.mark.asyncio
+    async def test_base_hook_defaults_to_plain_sleep(self):
+        """The base-class hook (non-WB bots on this engine) is a plain sleep."""
+        from bots.weather.engine.base_bot import BaseBot
+        t0 = time.monotonic()
+        await BaseBot._sleep_until_next_scan(MagicMock(), 0.15)
+        assert time.monotonic() - t0 >= 0.14
+
+    def test_scan_loop_uses_the_hook(self):
+        """The inter-scan sleep in _scan_loop must go through the hook —
+        a direct asyncio.sleep(interval) would silently disable the wake."""
+        import inspect
+        from bots.weather.engine.base_bot import BaseBot
+        src = inspect.getsource(BaseBot._scan_loop)
+        assert "_sleep_until_next_scan" in src, "_scan_loop no longer calls the S228 sleep hook"

@@ -276,6 +276,13 @@ class BaseBot(ABC):
                 logger.debug("strategic timer jitter calculation failed: %s", e)
         return base
 
+    async def _sleep_until_next_scan(self, delay: float) -> None:
+        """Inter-scan sleep hook (S228). Default: plain sleep for the remainder
+        of the interval — identical to the historical inline asyncio.sleep().
+        Subclasses may override to wake early on priority events (e.g.
+        WeatherBot's model-run/METAR priority queue)."""
+        await asyncio.sleep(delay)
+
     async def on_price_update(self, event: Dict[str, Any]) -> None:
         """
         Handle real-time price updates from WebSocket via EventBus.
@@ -859,7 +866,7 @@ class BaseBot(ABC):
                 # Fixes: 8s scan + 60s sleep = 68s cycle → now correctly targets 60s true cadence
                 _scan_elapsed = (time.monotonic() - _scan_t0)
                 _interval = self._get_scan_interval_seconds()
-                await asyncio.sleep(max(0.0, _interval - _scan_elapsed))
+                await self._sleep_until_next_scan(max(0.0, _interval - _scan_elapsed))
             except Exception as e:
                 consecutive_failures += 1
                 # Report error to state machine for fleet health tracking.

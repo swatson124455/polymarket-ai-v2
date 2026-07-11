@@ -1694,6 +1694,49 @@ class WeatherBot(BaseBot):
             return min(base * 1.5, self._max_scan_interval)
         return base
 
+    async def _sleep_until_next_scan(self, delay: float) -> None:
+        """S228: wake the scan loop early when a priority event arrives.
+
+        ModelRunMonitor / MetarMonitor detect new model runs, >=3F ensemble
+        jumps and METAR boundary events within seconds, but push them onto
+        _priority_queue — which was only drained at the TOP of the next scan,
+        so an event sat unactioned for up to a full scan interval (300-600s).
+        With WEATHER_PRIORITY_WAKE_ENABLED, the inter-scan sleep waits on the
+        queue instead: an event ends the sleep immediately (after a minimum
+        quiet period) and is re-queued so the existing scan-top drain handles
+        it unchanged.
+
+        Default OFF — plain sleep, byte-for-byte pre-S228 behavior (protects
+        the S222 verification window until the operator flips the flag).
+        """
+        if not bool(getattr(settings, "WEATHER_PRIORITY_WAKE_ENABLED", False)):
+            await asyncio.sleep(delay)
+            return
+        # Minimum quiet period: an event burst must not pin the loop at
+        # zero-gap scanning (free-API rate limits; per-scan boundary work).
+        _floor = min(delay, max(0.0, float(getattr(settings, "WEATHER_PRIORITY_WAKE_MIN_SLEEP_S", 20.0))))
+        if _floor > 0:
+            await asyncio.sleep(_floor)
+        _remaining = delay - _floor
+        if _remaining <= 0:
+            return
+        _wait_t0 = time.monotonic()
+        try:
+            _item = await asyncio.wait_for(self._priority_queue.get(), timeout=_remaining)
+        except asyncio.TimeoutError:
+            return  # no event — slept the full interval, normal cadence
+        # Re-queue for the scan-top drain. No await between get() and
+        # put_nowait() → no other task can fill the freed slot in between.
+        try:
+            self._priority_queue.put_nowait(_item)
+        except asyncio.QueueFull:  # pragma: no cover — defensive only
+            logger.warning("weatherbot_priority_wake_requeue_full")
+        logger.info(
+            "weatherbot_priority_wake",
+            woke_early_by_s=round(max(0.0, _remaining - (time.monotonic() - _wait_t0)), 1),
+            event_source=str(_item.get("source", "unknown")) if isinstance(_item, dict) else "unknown",
+        )
+
     # ── Main scan loop ────────────────────────────────────────────────────
 
     async def scan_and_trade(self) -> None:
