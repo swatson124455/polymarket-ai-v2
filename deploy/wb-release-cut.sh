@@ -25,6 +25,17 @@ echo "previous release: $OLD"
 
 sudo mkdir -p "$RELEASE"
 sudo tar xzf "$TARBALL" -C "$RELEASE"
+# S228: mirror the previous release's data/ directory SKELETON (dirs only).
+# ProtectSystem=strict makes the release tree read-only at runtime, so the
+# engine cannot mkdir — a clean `git archive` tarball ships no data/ tree and
+# the service crash-loops on "Read-only file system: 'data/backups'"
+# (S227: 43 restarts before rollback). Dirs must pre-exist in the release.
+if [ -d "$OLD/data" ]; then
+    (cd "$OLD" && find data -type d) | while read -r _d; do sudo mkdir -p "$RELEASE/$_d"; done
+else
+    # No previous data/ to mirror — create the known-required minimum.
+    sudo mkdir -p "$RELEASE/data/backups" "$RELEASE/data/wb_snapshots"
+fi
 # Reuse venv — valid while requirements are unchanged. If a release adds deps,
 # rebuild instead: python -m venv + pip install -r requirements.txt.
 sudo cp -a "$OLD/venv" "$RELEASE/venv"
