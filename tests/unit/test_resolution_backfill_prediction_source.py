@@ -145,3 +145,13 @@ class TestS228PredictionLogDiscovery:
         assert "INTERVAL '14 days'" in s
         assert "LIMIT" in s.upper()
         assert "resolution IS NULL" in s
+        # S228 follow-up: markets with NULL end_date_iso (35 of 44 residual
+        # unresolved on 2026-07-11, CLOB-verified closed+settled) must qualify
+        # once their latest prediction is >48h old — a bare `end_date < NOW()`
+        # filter silently strands them forever.
+        assert "m.end_date_iso IS NULL" in s, (
+            "NULL-end-date markets are excluded from discovery again — "
+            "they strand unresolved forever (S228 follow-up regression)"
+        )
+        assert "48 hours" in s and "latest_pred" in s
+        assert "NULLS LAST" in s, "dated backlog must drain before NULL-end-date stragglers"

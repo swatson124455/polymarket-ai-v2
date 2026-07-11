@@ -361,22 +361,34 @@ async def run_resolution_backfill(
         # older stragglers rise as the top clears (no last_checked_at bookkeeping
         # exists for untracked markets, so oldest-first could pin on dead markets).
         # 14-day prediction window bounds the scan via idx_prediction_log_time.
+        # S228 follow-up (same session): 35 of 44 residual unresolved markets had
+        # end_date_iso NULL in `markets` — the `< NOW()` filter excluded them from
+        # discovery even though CLOB showed them closed+settled (verified on 3
+        # samples). NULL-end-date markets qualify once their LATEST prediction is
+        # >48h old (WB predicts a market every scan until it closes, so last-
+        # prediction age ~ time since close). NULLS LAST: dated backlog drains
+        # first. Once fetched, the per-market loop patches end_date_iso from the
+        # API response, so these markets rejoin the normal dated flow.
         pred_market_ids: list = []
         if prediction_log_limit > 0:
             try:
                 _pred_res = await session.execute(text("""
                     SELECT DISTINCT m.id, m.end_date_iso
                     FROM (
-                        SELECT DISTINCT market_id FROM prediction_log
+                        SELECT market_id, MAX(prediction_time) AS latest_pred
+                        FROM prediction_log
                         WHERE resolution IS NULL
                           AND prediction_time > NOW() - INTERVAL '14 days'
+                        GROUP BY market_id
                     ) pl
                     JOIN markets m
                       ON (CAST(m.id AS TEXT) = pl.market_id OR m.condition_id = pl.market_id)
                     WHERE (m.resolution IS NULL OR m.resolution NOT IN ('YES', 'NO'))
                       AND m.resolved IS NOT TRUE
-                      AND m.end_date_iso < NOW()
-                    ORDER BY m.end_date_iso DESC
+                      AND (m.end_date_iso < NOW()
+                           OR (m.end_date_iso IS NULL
+                               AND pl.latest_pred < NOW() - INTERVAL '48 hours'))
+                    ORDER BY m.end_date_iso DESC NULLS LAST
                     LIMIT :plim
                 """), {"plim": prediction_log_limit})
                 pred_market_ids = [r[0] for r in _pred_res.fetchall() if r[0]]

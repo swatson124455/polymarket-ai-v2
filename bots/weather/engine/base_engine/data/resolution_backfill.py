@@ -306,22 +306,28 @@ async def run_resolution_backfill(
         # NOTE: this vendored copy is a stale snapshot in other respects (predates
         # the positions-prepend and outcome-prices-primary fixes) — kept in sync
         # for THIS fix only, per the both-copies rule.
+        # S228 follow-up: NULL-end-date markets qualify once their latest
+        # prediction is >48h old (see top-level copy for full rationale).
         pred_market_ids: list = []
         if prediction_log_limit > 0:
             try:
                 _pred_res = await session.execute(text("""
                     SELECT DISTINCT m.id, m.end_date_iso
                     FROM (
-                        SELECT DISTINCT market_id FROM prediction_log
+                        SELECT market_id, MAX(prediction_time) AS latest_pred
+                        FROM prediction_log
                         WHERE resolution IS NULL
                           AND prediction_time > NOW() - INTERVAL '14 days'
+                        GROUP BY market_id
                     ) pl
                     JOIN markets m
                       ON (CAST(m.id AS TEXT) = pl.market_id OR m.condition_id = pl.market_id)
                     WHERE (m.resolution IS NULL OR m.resolution NOT IN ('YES', 'NO'))
                       AND m.resolved IS NOT TRUE
-                      AND m.end_date_iso < NOW()
-                    ORDER BY m.end_date_iso DESC
+                      AND (m.end_date_iso < NOW()
+                           OR (m.end_date_iso IS NULL
+                               AND pl.latest_pred < NOW() - INTERVAL '48 hours'))
+                    ORDER BY m.end_date_iso DESC NULLS LAST
                     LIMIT :plim
                 """), {"plim": prediction_log_limit})
                 pred_market_ids = [r[0] for r in _pred_res.fetchall() if r[0]]
