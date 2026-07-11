@@ -8,6 +8,27 @@
 
 ---
 
+## 0-S4d. SESSION-4 STRESS HARNESS (`633f5a9`) — PIPELINE PASSES ON SYNTHETIC GROUND TRUTH
+
+`esports_v2/scripts/stress_sharp_pipeline.py` (+CI wrapper, quick config): a
+seeded synthetic universe with KNOWN answers run through the REAL chain. Full
+run (4000 matches / 2419 bets / 88K-line scale stage) PASSES all scenarios:
+0 mislabels, 0 look-ahead leaks, calibration recovered (Brier gap 0.0003),
+planted +0.10 edge recovered at +0.097, absent-orientation drops never corrupt,
+sibling fixtures never cross-join, garbage survived, 88K lines in 42s.
+Re-run anytime: `python -m esports_v2.scripts.stress_sharp_pipeline` (all its
+numbers are SYNTHETIC — validates software, not market edge).
+
+**PERMANENT FINDING (S5b/S5c): backtest P&L is structurally BLIND to
+orientation flips.** A flipped resolver settles with the same wrong bool it
+decided with → self-consistent phantom PROFIT (+0.416 "ROI"); the same
+decisions settled against reality destroy the edge (+0.097 → +0.025). So a
+healthy-looking backtest P&L can NEVER be cited as evidence that orientation
+is correct — only the independent CLOB label check (clob_labels) can. Keep
+this in mind when interpreting the first real edge readout.
+
+---
+
 ## 0-S4c. SESSION-4 FINAL (2026-07-10) — SIBLING-ROSTER VETO (matcher root fix)
 
 **Bug (operator-directed "fix the naming issue for good", `672f5a7`):** the
