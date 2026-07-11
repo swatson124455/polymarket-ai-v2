@@ -5044,3 +5044,72 @@ class TestS226ProbFrameTopLevelDatabase:
         from base_engine.data.database import Database, PredictionLog
         assert "prob_frame" in inspect.signature(Database.insert_prediction_log).parameters
         assert hasattr(PredictionLog, "prob_frame")
+
+
+class TestS227GtCutoffBindsDatetime:
+    """S227: asyncpg raises DataError when a Python str is bound to a
+    timestamptz parameter (CAST(:gt_cutoff AS timestamptz)). All three
+    ground-truth-cutoff SQL sites bound the cutoff as str, so from the
+    2026-07-08 deploy onward EVERY confidence-calibrator fit crashed
+    (weatherbot_confidence_cal_fit_failed, warning) and EVERY EMOS/bias
+    calibration reload crashed (weatherbot_calibration_reload_failed,
+    debug — silent in production): the calibrator never re-learned and the
+    bot ran with no station bias/EMOS/tail calibration at all. Every
+    gt_cutoff bind must be a tz-aware datetime, never a str."""
+
+    @staticmethod
+    def _capture_session():
+        """AsyncMock session whose execute() records bind params."""
+        captured = []
+        mock_result = MagicMock()
+        mock_result.fetchall.return_value = []
+
+        async def _exec(sql, params=None):
+            captured.append(params)
+            return mock_result
+
+        session = AsyncMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+        session.execute = AsyncMock(side_effect=_exec)
+        db = MagicMock()
+        db.get_session = MagicMock(return_value=session)
+        return db, captured
+
+    def test_helper_returns_aware_datetime(self):
+        from bots.weather_bot import _gt_cutoff_datetime
+        dt = _gt_cutoff_datetime()
+        assert isinstance(dt, datetime)
+        assert dt.tzinfo is not None, "naive datetime — must be pinned to UTC"
+        assert (dt.year, dt.month, dt.day) == (2026, 7, 1)
+
+    @pytest.mark.asyncio
+    async def test_fit_binds_datetime_gt_cutoff(self):
+        """Confidence-calibrator fit SQL must bind gt_cutoff as datetime."""
+        from bots.weather_bot import WeatherConfidenceCalibrator
+        cal = WeatherConfidenceCalibrator()
+        db, captured = self._capture_session()
+        await cal.fit_from_trade_events(db=db, window_days=30, min_samples=10)
+        assert captured, "fit_from_trade_events never executed its SQL"
+        gt = captured[0].get("gt_cutoff")
+        assert isinstance(gt, datetime), (
+            f"gt_cutoff bound as {type(gt).__name__} — asyncpg DataError in "
+            "production; the calibrator can never fit"
+        )
+        assert gt.tzinfo is not None
+
+    @pytest.mark.asyncio
+    async def test_emos_reload_binds_datetime_gt_cutoff(self, weather_bot):
+        """EMOS/bias reload SQL must bind gt_cutoff as datetime."""
+        db, captured = self._capture_session()
+        weather_bot.base_engine.db = db
+        weather_bot._calibration_last_loaded = 0.0
+        weather_bot._calibration_reload_interval = 0.0  # monotonic() may be < 6h in sandbox
+        await weather_bot._maybe_reload_calibration()
+        assert captured, "_maybe_reload_calibration never executed its SQL"
+        gt = captured[0].get("gt_cutoff")
+        assert isinstance(gt, datetime), (
+            f"gt_cutoff bound as {type(gt).__name__} — asyncpg DataError in "
+            "production; bias/EMOS/tail calibration silently never loads"
+        )
+        assert gt.tzinfo is not None

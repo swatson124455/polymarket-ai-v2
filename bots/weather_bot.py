@@ -86,6 +86,21 @@ def _is_impossible_certainty(model_prob: float) -> bool:
         return False
 
 
+def _gt_cutoff_datetime() -> datetime:
+    """S227: WEATHER_GROUND_TRUTH_CUTOFF as a tz-aware UTC datetime.
+
+    asyncpg refuses a Python str bound to a timestamptz parameter (DataError),
+    so every SQL comparing against the WS-3 ground-truth cutoff must bind a
+    real datetime. Bound as str, the cutoff crashed EVERY confidence-calibrator
+    fit (warning-level) and EVERY EMOS/bias calibration reload (debug-level —
+    silent) from the 2026-07-08 deploy until this fix. Date-only input pins to
+    midnight UTC, matching CAST('2026-07-01' AS timestamptz) on the UTC box.
+    """
+    raw = str(getattr(settings, "WEATHER_GROUND_TRUTH_CUTOFF", "2026-07-01"))
+    dt = datetime.fromisoformat(raw)
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
 class WeatherConfidenceCalibrator:
     """Per-side calibrator: Beta calibration (Kull et al. 2017) with isotonic fallback.
 
@@ -242,7 +257,9 @@ class WeatherConfidenceCalibrator:
             # entries from the pre-WU-fix model describe a dead model.
             _raw_x = ("COALESCE((event_data->>'raw_confidence')::float, "
                       "confidence - (event_data->>'cal_divergence')::float)")
-            _gt_cutoff = str(getattr(settings, "WEATHER_GROUND_TRUTH_CUTOFF", "2026-07-01"))
+            # S227: must bind a datetime — a str here is an asyncpg DataError
+            # that killed every fit from the 07-08 deploy to this fix.
+            _gt_cutoff = _gt_cutoff_datetime()
 
             async with db.get_session() as session:
                 result = await session.execute(text(f"""
@@ -6285,7 +6302,8 @@ class WeatherBot(BaseBot):
                       AND created_at >= NOW() - make_interval(days => :emos_window)
                       AND created_at >= CAST(:gt_cutoff AS timestamptz)
                 """), {"emos_window": _emos_window_days,
-                       "gt_cutoff": str(getattr(settings, "WEATHER_GROUND_TRUTH_CUTOFF", "2026-07-01"))})
+                       # S227: datetime bind, never str (asyncpg DataError)
+                       "gt_cutoff": _gt_cutoff_datetime()})
                 all_rows = rows.fetchall()
 
             if not all_rows:
@@ -6550,7 +6568,11 @@ class WeatherBot(BaseBot):
                 emos_pending=_emos_pending,
             )
         except Exception as exc:
-            logger.debug("weatherbot_calibration_reload_failed", error=str(exc))
+            # S227: elevated debug → warning (S177 precedent; same class as
+            # the 07-10 prediction-log outage). This debug-level swallow hid
+            # the gt_cutoff str-bind DataError for 3 days — the bot ran with
+            # NO bias/EMOS/tail calibration and the journal showed nothing.
+            logger.warning("weatherbot_calibration_reload_failed", error=str(exc))
 
         # S135: Refit logistic regression confidence calibrator from trade_events
         _conf_cal_enabled = getattr(settings, "WEATHER_CONFIDENCE_CAL_ENABLED", True)

@@ -84,6 +84,11 @@
       "file": "bots/weather/engine/base_engine/weather/forecast_client.py",
       "pattern": "S226",
       "expect": 12
+    },
+    {
+      "file": "bots/weather_bot.py",
+      "pattern": "S227",
+      "expect": 4
     }
   ]
 }
