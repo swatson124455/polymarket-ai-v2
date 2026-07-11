@@ -65,9 +65,16 @@ operator env flip AFTER the S222 verdict. Prior: S227 calibrator fix LIVE, relea
    most-recently-ended first, deduped after trade-driven ids (S125 starvation lesson: trade
    discovery keeps its full batch). Applied to BOTH copies (top-level = the one the ingestion
    service executes; vendored copy is a stale snapshot otherwise — synced for this fix only).
-   Deploy: update the MAIN tree on the box + `systemctl restart polymarket-ingestion`.
+   **DEPLOYED 2026-07-11 ~15:3xZ** via surgical single-file patch (the main tree at
+   `/opt/polymarket-ai-v2` is NOT a git repo — it's a June-3 Windows-deployed snapshot with
+   CRLF endings): scp + `tr -d '\r'` + py_compile gate + install; verified
+   `git hash-object` = `385af285c4…` (the dc7763e blob), `polymarket-ingestion` active.
+   Rollback: `sudo cp -a .../resolution_backfill.py.bak-s228 .../resolution_backfill.py &&
+   sudo systemctl restart polymarket-ingestion`.
    Verify: `journalctl -u polymarket-ingestion | grep "prediction-log-sourced"` then re-run
    the gate query — `ended_but_unresolved` from the S228 diagnostic should collapse.
+   ⚠ OPS DEBT (S228 finding): the main tree is an unversioned CRLF snapshot from 2026-06-03 —
+   it has NO deploy mechanism and predates a month of repo fixes. Document/rebuild after S222.
 
 3. **Deferred switches (do after the calibrator re-learns + S222 passes):** enable the V28
    calibrated-edge gate (`WEATHER_CALIBRATED_EDGE_GATE_ENABLED=true`); V34 follow-ups
