@@ -8,6 +8,40 @@
 
 ---
 
+## 0-S4e. SESSION-4/5 NETWORK-EDGE COVERAGE (`595b1af`) — LIVE CLOB SWEEP 111/111; HTTP GAPS FIXED
+
+Operator directive: "test what we didn't, on anything we can; skips need a
+reason." Done 2026-07-11:
+
+- **LIVE CLOB orientation sweep, FULL index:** 111/111 markets resolved
+  correctly (True), **0 flips, 0 absents**, and 111/111 swap-checks (teams
+  passed reversed must give False) correct — 222 live CLOB resolutions of the
+  exact `clob_labels` path the edge backtest uses. Prior coverage was 5/5.
+- **Collector dress rehearsal** (deployed standalone code, REAL gamma index,
+  faked PinnOdds payload, real alias file + JSONL append): 6/6 rows written,
+  5/5 real-name matches with correct condition_ids, alias path verified,
+  3/3 junk rows dropped. Bonus: the sibling veto correctly REFUSED an alias
+  link to "Passion Academy" from a non-qualifier name — by design.
+- **HTTP failure paths (13 new mocked tests, 3 failed pre-fix):** canonical
+  `_get` crashed on HTTP-date Retry-After and honored unbounded sleeps (now
+  tolerant + capped [1,60]); standalone `fetch()` crashed the tick on a
+  non-JSON 200 (WAF challenge page — now a printed lost tick, `{}`).
+  **New collector md5 `c5824b670c098f3ce5a1a1fa4138342c`** (supersedes
+  `5c67c2ba…`; same redeploy one-liner as §0-S4c with this md5 swapped in).
+- **Shell scripts:** all `deploy/vps/*.sh` pass `bash -n`; the python heredoc
+  in `eb_dump_aliases.sh` compiles.
+
+**SKIPPED, with reasons:** PinnOdds live fetch (quota stall TABLED by
+operator; client logic now mock-covered; liveness proven by 994 real
+snapshots). PandaScore live fetch (no key in cloud env + key pending
+rotation; parsing unit-tested; proven on real data 2026-07-10, 226 rows).
+`eb_dump_aliases.sh` against the real DB (no DB from cloud; already ran
+successfully on the VPS 2026-07-10). Live bot / order path (EB HALTED —
+operator decision; out of scope until the edge readout). Cron execution env
+(no VPS access; proven by hourly log ticks since 2026-07-09).
+
+---
+
 ## 0-S4d. SESSION-4 STRESS HARNESS (`633f5a9`) — PIPELINE PASSES ON SYNTHETIC GROUND TRUTH
 
 `esports_v2/scripts/stress_sharp_pipeline.py` (+CI wrapper, quick config): a
@@ -160,10 +194,11 @@ in place. Everything else from §0-FINAL stands (do not redo).
 > **STATE — everything below is DONE and verified; do not redo (details §0-FINAL):**
 > pipeline is FULLY LIVE end-to-end (odds+PM capture → results → join → metrics →
 > PM-edge backtest). VPS steady state: collector HOURLY cron with PM capture
-> (current drop = md5 `5c67c2ba3b03af1eeddee9739a26510b`, §0-S4c sibling-roster
-> veto; older drops: `0673cb50…` alias-support, `4d46e275…` coverage-fix,
-> `5fcb2c4f…` pre-fix. VPS showing anything older than `5c67c2ba…` → run
-> §0-S4b one-liner A once, then the §0-S4c redeploy one-liner),
+> (current drop = md5 `c5824b670c098f3ce5a1a1fa4138342c`, §0-S4e HTTP
+> robustness; older: `5c67c2ba…` sibling-veto, `0673cb50…` alias-support,
+> `4d46e275…` coverage-fix, `5fcb2c4f…` pre-fix. VPS showing anything older
+> than `c5824b67…` → run §0-S4b one-liner A once if aliases.json is missing,
+> then the §0-S4c redeploy one-liner with md5 `c5824b67…`),
 > PM-first-hit watcher hourly at :07 (marker exists — first capture was
 > JD Gaming vs TYLOO, 39 snaps, orientation sanity-checked). First labeled run:
 > 19/36 closing lines joined; labels AUDITED correct (LYON 3-0 G2 at MSI verified
