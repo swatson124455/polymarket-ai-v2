@@ -5,7 +5,11 @@
 > read them for detail, but THIS file is the source of truth for "what is live and what's open."
 > Update the three sections below at the end of every WB session (same commit as the work).
 
-**Last updated:** 2026-07-11 (S227 — calibrator/EMOS crash fixed AND **DEPLOYED + VERIFIED**: release `20260711_002634` @ `6770883`, effective restart 00:47:00Z; first successful `weatherbot_calibration_reloaded` since 07-08 (41 stations/571 rows, 2 EMOS-ready), fit path alive, failure counters 0. S222 verification clock restarts at 00:47:00Z. Also: stress test passed. Handoff: `docs/WEATHER_S227_STATUS.md`)
+**Last updated:** 2026-07-11 (S228 — latency work built on-branch, NOT deployed: priority-wake
+(flag-gated OFF), tunable model-run poll cadence (default unchanged), release-cut data/-skeleton
+fix folded into `deploy/wb-release-cut.sh`. Everything inert-by-default — activation is an
+operator env flip AFTER the S222 verdict. Prior: S227 calibrator fix LIVE, release
+`20260711_002634` @ `6770883`, effective restart 00:47:00Z. Handoff: `docs/WEATHER_S227_STATUS.md`)
 **Pinned branch:** `claude/new-whiteboard-session-9b23tq` (see `.claude/session-branch`)
 **Resume check:** `bash scripts/wb_resume_check.sh` (self-deriving; replaces the hand-typed checklist)
 
@@ -47,6 +51,23 @@
    (synthetic marker / RNG determinism); deeper V26 (orders submitted at midpoint, not
    executable price); optional retro-purge of flipped `bootstrap_gfs` rows (N1 changelog);
    optional WU-only training filter on `actual_source` once the column has populated.
+
+3a. **S228 latency package — ON BRANCH, inert-by-default, activate AFTER the S222 verdict.**
+   Code ships at the next release cut but changes nothing until env-flipped (protects window
+   comparability; an emergency hotfix cut mid-window stays safe). Activation block (Tier-1/2,
+   add to the WB service env + restart):
+   `WEATHER_PRIORITY_WAKE_ENABLED=true` (scan loop wakes on model-run/METAR priority events —
+   the queue events previously sat up to a full 300–600s interval; min quiet period
+   `WEATHER_PRIORITY_WAKE_MIN_SLEEP_S=20`); `WEATHER_MODEL_RUN_POLL_INTERVAL_S=120` (new-run
+   detection, default 300); plus existing knobs to consider at the same time:
+   `SCAN_INTERVAL_WEATHER=120–180` (default 300), `WEATHER_MAX_SCAN_INTERVAL=300` (caps no-edge
+   backoff, default 600), `WEATHER_PSW_SCAN_DIVISOR=1` (PSW every scan, default 2),
+   `WEATHER_FORECAST_CACHE_TTL=900` (default 1800 — the one knob that raises API volume; watch
+   `api_calls` in `weatherbot_scan_done` + 429 events after). Verify wake-ups via
+   `grep weatherbot_priority_wake` (logs `woke_early_by_s` + `event_source`). Rollback: remove
+   the env lines + restart. NOT-DONE by design: HRRR-window cache invalidation — the forecast
+   mix is GFS/ECMWF-IFS/ECMWF-AIFS only (`forecast_client.py:408-411`), refetch would return
+   identical data.
 
 3b. **V23 — FULLY FIXED AT ROOT (on-branch NOT deployed): `95c732c` (P(YES) predicted_prob) +
    `14006b0` (durable `prob_frame` label, migration 080, BOTH graders guard unlabelled PSW rows)
@@ -155,6 +176,16 @@
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-11 (S228, on-branch NOT deployed):** latency package, inert-by-default (see OPEN
+  DECISION 3a): `be7dd93` priority-wake — inter-scan sleep is now an overridable hook (vendored
+  `base_bot.py`; base = plain sleep) and WeatherBot's override wakes on `_priority_queue` events
+  with a min quiet period, re-queuing the event for the unchanged scan-top drain — flag
+  `WEATHER_PRIORITY_WAKE_ENABLED` default OFF; `86c6bcb` `WEATHER_MODEL_RUN_POLL_INTERVAL_S`
+  (default 300 = old hardcoded ModelRunMonitor cadence); `58488d7` `wb-release-cut.sh` now
+  pre-creates the `data/` skeleton (S227 crash-loop recipe folded in — closes S227 pending #5).
+  8 defect tests red→green; WB suites 362 passed (354 baseline, zero delta). HRRR-window cache
+  invalidation investigated and rejected (forecast mix has no HRRR). Session ran on env branch
+  `claude/weatherbot-s228-h6wq0y` (whiteboard branch fast-forwardable).
 - **2026-07-11 (S227 DEPLOYED + VERIFIED):** release `20260711_002634` @ `6770883`, effective
   restart 00:47:00Z (record `82302b7`). First cut crash-looped 43× — clean `git archive`
   tarball lacked the `data/` skeleton the `ProtectSystem=strict` sandbox requires to pre-exist
