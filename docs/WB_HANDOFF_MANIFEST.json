@@ -17,7 +17,8 @@
     "92740f3": "fix(weather): S227 gt_cutoff must bind datetime, not str — asyncpg DataError killed calibrator fit + EMOS reload since 07-08",
     "58488d7": "fix(deploy): S228 wb-release-cut.sh pre-creates data/ skeleton (ProtectSystem=strict crash-loop)",
     "be7dd93": "feat(weather): S228 priority-wake — scan loop wakes on model-run/METAR events (flag-gated OFF)",
-    "86c6bcb": "feat(weather): S228 WEATHER_MODEL_RUN_POLL_INTERVAL_S — model-run detection cadence tunable (default 300 = old hardcoded)"
+    "86c6bcb": "feat(weather): S228 WEATHER_MODEL_RUN_POLL_INTERVAL_S — model-run detection cadence tunable (default 300 = old hardcoded)",
+    "56716e8": "fix(ingestion): S228 resolution backfill never checked untraded markets — prediction_log rows stayed unlabeled forever"
   },
   "required_docs": [
     "docs/WEATHER_STATUS.md",
@@ -107,6 +108,16 @@
     },
     {
       "file": "bots/weather/engine/base_bot.py",
+      "pattern": "S228",
+      "expect": 1
+    },
+    {
+      "file": "base_engine/data/resolution_backfill.py",
+      "pattern": "S228",
+      "expect": 1
+    },
+    {
+      "file": "bots/weather/engine/base_engine/data/resolution_backfill.py",
       "pattern": "S228",
       "expect": 1
     }

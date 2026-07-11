@@ -45,6 +45,29 @@ operator env flip AFTER the S222 verdict. Prior: S227 calibrator fix LIVE, relea
    When ≥50: run the prompt from a VPS session. Only after a PASS: retire containment gates
    per `WEATHER_S222_STATUS.md` §4-B (order: A1/A3 → dampeners → caps; C0 Kelly stays
    deferred until the calibrator re-learn verdict regardless).
+   **S228 ADDENDUM — the gate count was starving on a resolution-discovery bug, now fixed
+   on-branch (see 2a below): only ~29% of WB's logged markets were in `traded_markets`, and
+   the resolution backfill never checked untraded markets — daily markets sat unresolved for
+   3-4 days (07-09: 32% resolved, 07-10: 12%, 07-11: 0% at 14h). The ~19/day arrival rate was
+   the lazy bulk-ingestion path, not real resolution latency. After the ingestion-service
+   deploy, expect the backlog to drain within hours and the gate to open ~1 day after (markets
+   must still actually resolve on Polymarket). This is a MEASUREMENT fix (labels arrive), not
+   a behavior change — window comparability is unaffected.**
+
+2a. **S228 root fix — prediction-log-driven resolution discovery (shared module, deploys with
+   the INGESTION service, NOT the WB release cut).** `run_resolution_backfill` Phase 2
+   discovered markets only from `traded_markets`/on-chain `trades`/open live positions;
+   prediction-only markets were never resolution-checked, so `markets.resolution` stayed NULL
+   and `prediction_log` rows were never labeled (proven 2026-07-11: 132/185 window markets
+   untracked; ended-days-ago dailies still `resolved=f`; sync_log showed the backfill running
+   110×/day — checking the wrong set). Fix: Phase 2c with a dedicated budget
+   (`prediction_log_limit=150` default), ended-markets only, 14-day prediction window,
+   most-recently-ended first, deduped after trade-driven ids (S125 starvation lesson: trade
+   discovery keeps its full batch). Applied to BOTH copies (top-level = the one the ingestion
+   service executes; vendored copy is a stale snapshot otherwise — synced for this fix only).
+   Deploy: update the MAIN tree on the box + `systemctl restart polymarket-ingestion`.
+   Verify: `journalctl -u polymarket-ingestion | grep "prediction-log-sourced"` then re-run
+   the gate query — `ended_but_unresolved` from the S228 diagnostic should collapse.
 
 3. **Deferred switches (do after the calibrator re-learns + S222 passes):** enable the V28
    calibrated-edge gate (`WEATHER_CALIBRATED_EDGE_GATE_ENABLED=true`); V34 follow-ups
@@ -176,6 +199,17 @@ operator env flip AFTER the S222 verdict. Prior: S227 calibrator fix LIVE, relea
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-11 (S228 ROOT FIX, needs INGESTION deploy):** `56716e8` — resolution backfill
+  never checked untraded markets: Phase 2 discovery covered traded_markets/on-chain
+  trades/live positions only, so prediction-only markets (132/185 of WB's 07-11 window;
+  71% of logged markets) never got `markets.resolution` and prediction_log rows stayed
+  unlabeled forever — the S222 gate count and per-day resolution rates (87%→12% decay)
+  were starving on this, and the CLAUDE.md #9 \"impossible 8% resolution rate on daily
+  markets\" example was this bug. Fix: Phase 2c prediction-log-driven discovery
+  (dedicated 150 budget, ended-only, 14-day window, newest-ended first, deduped last);
+  BOTH resolution_backfill.py copies; 3 defect tests red→green. Measurement-only fix.
+  Deploys with the MAIN tree (`polymarket-ingestion` restart) — NOT the WB release cut.
+  Diagnosis trail in OPEN DECISION 2/2a.
 - **2026-07-11 (S228, on-branch NOT deployed):** latency package, inert-by-default (see OPEN
   DECISION 3a): `be7dd93` priority-wake — inter-scan sleep is now an overridable hook (vendored
   `base_bot.py`; base = plain sleep) and WeatherBot's override wakes on `_priority_queue` events
