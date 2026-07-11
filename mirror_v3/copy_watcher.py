@@ -51,6 +51,7 @@ USDC_ASSET_ID = 0
 SCALE = 1e6  # USDC + CTF outcome tokens are 6-decimals
 CLOB_PRICE_URL = "https://clob.polymarket.com/price"
 GETLOGS_CHUNK = 900  # public-RPC eth_getLogs range cap (audit-proven)
+MAX_WINDOW_RETRIES = 5  # same-window failures before a LOUD skip
 
 
 # ── Pure, offline-testable core ──────────────────────────────────────────────
@@ -244,6 +245,7 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
     os.makedirs(os.path.dirname(cfg.shadow_path) or ".", exist_ok=True)
     dedup = FirstBuyDedup()
     cursor = int(await bc.w3.eth.get_block_number()) + 1  # forward-only
+    fail_streak = 0  # consecutive failures of the SAME window (stall guard)
 
     async with aiohttp.ClientSession() as session:
         while True:
@@ -256,7 +258,14 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
             if head < cursor:
                 continue
             for lo, hi in block_chunks(cursor, head):
+                # RETRY-DON'T-SKIP: a failed window is retried from the same
+                # cursor next poll (Tenderly's balancer races its own head:
+                # 'invalid block range params' for blocks another node just
+                # announced). Silently advancing past a failure would DROP
+                # the window's fills — lost samples. A window that fails
+                # MAX_WINDOW_RETRIES in a row is skipped LOUDLY.
                 events: list = []
+                window_ok = True
                 for c in contracts:
                     for field in ("maker", "taker"):
                         try:
@@ -265,8 +274,22 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                                 {field: roster_cs})
                             events.extend(evs)
                         except Exception as e:
+                            window_ok = False
                             log(f"[copy_watcher] get_logs error "
                                 f"[{lo},{hi}] {field}: {e!r}")
+                if not window_ok:
+                    fail_streak += 1
+                    if fail_streak >= MAX_WINDOW_RETRIES:
+                        log(f"[copy_watcher] window [{lo},{hi}] failed "
+                            f"{fail_streak}x — SKIPPING (dropped window, "
+                            f"lost samples possible)")
+                        fail_streak = 0
+                        cursor = hi + 1
+                        continue
+                    cursor = lo  # retry this window next poll
+                    break
+                fail_streak = 0
+                cursor = hi + 1
                 for ev in events:
                     sig = decode_fill(dict(ev["args"]), roster_set)
                     if sig is None:
@@ -294,4 +317,5 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                         f"tok={sig['token_id'][:10]}… whale={sig['whale_price']:.3f} "
                         f"ask={ask} lag={rec['detect_lag_s']}s "
                         f"first={sig['first_buy']}")
-            cursor = head + 1
+            # cursor is advanced per-window above (retry-don't-skip); no
+            # blanket jump to head here — that was the dropped-window bug
