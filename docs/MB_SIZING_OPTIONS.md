@@ -116,8 +116,13 @@ P ≥ 0.95 AND ≥100 resolved fills.
   - r = same-tx-aggregated wager / trailing median of trader's last 50
     entry wagers (median not mean; window seeded from the full cached
     history at cold start).
-  - Multiplier: r<2 → 1.0x | 2≤r<5 → 1.25x | r≥5 → 1.5x (hard cap).
-    No malus below median (base wage floor).
+  - Multiplier (operator-set 2026-07-11): r<2 → 1.0x | 2≤r<4 → 1.25x |
+    r≥4 → 1.5x (hard cap). No malus below median (base wage floor).
+  - Cold start: multiplier locked to 1.0x until the trader's median has
+    ≥20 observations (cache-seeded, so normally immediate).
+  - SHIPPED to the shadow watcher (mirror_v3/sizing.py): every shadow
+    record carries conviction_r + size_multiplier, so the readout
+    evaluates THIS rule, not an approximation.
   - All rails R1-R8 apply AFTER the multiplier.
   - PAPER from day one; the bonus component touches LIVE sizing only
     after passing D's pre-registered test (§Option D: pooled Spearman

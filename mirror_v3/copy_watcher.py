@@ -144,6 +144,7 @@ class WatcherConfig:
     roster_path: str
     rpc_url: str
     shadow_path: str = "/opt/pa2-shared/mirror3_shadow.jsonl"
+    median_cache: str = "/opt/pa2-shared/mb_copyable_data/copyable_cache"
     max_chase: float = 0.02
     max_spread: float = 0.05
     poll_s: float = 2.0
@@ -161,6 +162,9 @@ class WatcherConfig:
             rpc_url=env["MIRROR3_RPC_URL"],
             shadow_path=env.get("MIRROR3_SHADOW_PATH",
                                 "/opt/pa2-shared/mirror3_shadow.jsonl"),
+            median_cache=env.get(
+                "MIRROR3_MEDIAN_CACHE",
+                "/opt/pa2-shared/mb_copyable_data/copyable_cache"),
             max_chase=float(env.get("MIRROR3_MAX_CHASE_C", "2")) / 100.0,
             max_spread=float(env.get("MIRROR3_MAX_SPREAD_C", "5")) / 100.0,
             poll_s=float(env.get("MIRROR3_POLL_S", "2")),
@@ -229,9 +233,22 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
         ORDER_FILLED_EVENT_ABI)
     from web3 import Web3
 
+    from mirror_v3.sizing import (
+        TrailingMedians, conviction_multiplier, merge_same_tx,
+        seed_medians_from_cache)
+
     roster = load_roster(cfg.roster_path)
     roster_set = set(roster)
     roster_cs = [Web3.to_checksum_address(a) for a in roster]
+    if cfg.median_cache and os.path.isdir(cfg.median_cache):
+        medians = seed_medians_from_cache(cfg.median_cache, roster)
+        seeded = sum(1 for a in roster if medians.stats(a)[1] > 0)
+        log(f"[copy_watcher] conviction medians seeded for {seeded}/{len(roster)} "
+            f"traders from {cfg.median_cache}")
+    else:
+        medians = TrailingMedians()
+        log(f"[copy_watcher] NO median cache ({cfg.median_cache!r}) — all "
+            f"traders cold-start at 1.0x until {20} observed wagers")
     log(f"[copy_watcher] roster={len(roster)} rpc={cfg.rpc_url} "
         f"gates: chase<={cfg.max_chase:.02f} spread<={cfg.max_spread:.02f} "
         f"poll={cfg.poll_s}s sink={cfg.shadow_path}")
@@ -290,32 +307,48 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                     break
                 fail_streak = 0
                 cursor = hi + 1
+                # decode, then merge same-tx fills into ONE wager (a split
+                # order's first fill alone under-reads conviction)
+                decoded: list[dict] = []
                 for ev in events:
                     sig = decode_fill(dict(ev["args"]), roster_set)
                     if sig is None:
                         continue
+                    txh = ev.get("transactionHash", "")
+                    sig["tx"] = txh.hex() if hasattr(txh, "hex") else str(txh)
+                    sig["_block"] = int(ev.get("blockNumber", 0))
+                    decoded.append(sig)
+                for sig in merge_same_tx(decoded):
                     now = time.time()
                     try:
-                        blk = await bc.w3.eth.get_block(ev["blockNumber"])
+                        blk = await bc.w3.eth.get_block(sig["_block"])
                         block_ts = int(blk["timestamp"])
                     except Exception:
                         block_ts = int(now)
+                    sig.pop("_block", None)
                     sig["first_buy"] = dedup.is_first(
                         sig["trader"], sig["token_id"])
+                    # conviction annotation (A+D rule): r vs the trader's
+                    # median BEFORE this wager, then observe it
+                    tmed, n_obs = medians.stats(sig["trader"])
+                    mult, r = conviction_multiplier(
+                        sig["whale_size_usd"], tmed, n_obs)
+                    medians.observe(sig["trader"], sig["whale_size_usd"])
+                    sig["trailing_median_usd"] = tmed
+                    sig["conviction_r"] = round(r, 4) if r is not None else None
+                    sig["size_multiplier"] = mult
                     bid, ask = await quote_book(session, sig["token_id"])
                     verdict, fill = evaluate_gates(
                         sig["whale_price"], bid, ask,
                         cfg.max_chase, cfg.max_spread)
                     rec = shadow_record(
                         sig, verdict, fill, bid, ask, block_ts, now,
-                        tx=str(ev.get("transactionHash", "")
-                               if not hasattr(ev.get("transactionHash"), "hex")
-                               else ev["transactionHash"].hex()))
+                        tx=sig.pop("tx", ""))
                     with open(cfg.shadow_path, "a") as f:
                         f.write(json.dumps(rec) + "\n")
                     log(f"[copy_watcher] {verdict:<15} {sig['trader'][:10]}… "
                         f"tok={sig['token_id'][:10]}… whale={sig['whale_price']:.3f} "
                         f"ask={ask} lag={rec['detect_lag_s']}s "
-                        f"first={sig['first_buy']}")
+                        f"first={sig['first_buy']} mult={mult}x")
             # cursor is advanced per-window above (retry-don't-skip); no
             # blanket jump to head here — that was the dropped-window bug
