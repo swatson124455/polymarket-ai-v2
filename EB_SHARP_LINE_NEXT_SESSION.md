@@ -8,6 +8,26 @@
 
 ---
 
+## 0-S4f. SESSION-5 LATENCY (`335f359`) — TICK 20s → ~4.5s; NEW COLLECTOR md5 `bae64c85…`
+
+Operator directive: "reduce latency, no function or safety lost." Done:
+gamma paging is now WAVE-PARALLEL (8 stdlib threads, page-0 contract kept,
+mid-hole retry, early stop at the cap — live: **18.8s → 2.8s**, identical
+106==106 refs), and the PinnOdds fetch runs CONCURRENTLY with the index
+build in both collectors (**full tick ~4.5s** in a timed dress rehearsal;
+also improves price/line simultaneity — PM price now captured alongside the
+odds instead of ~20s earlier). `dur=` added to the collector log line.
+65 tests green incl. 8 new (parity, early-stop, hole-retry, leg-overlap).
+NOT touched, deliberately: PinnOdds backoff sleeps + 1.5s inter-request
+delay (quota politeness), cron cadence (quota decision, tabled), audit-time
+CLOB lookups (rare, rate-gentle by design).
+
+**⚠️ OPERATOR: redeploy the collector — md5 `bae64c85cd6b875e1f91720286742a9f`**
+(supersedes `c5824b67…`; same §0-S4c one-liner shape with this md5). After
+redeploy, the log's new `dur=` field shows tick time (~expect <10s vs ~25s).
+
+---
+
 ## 0-S4e. SESSION-4/5 NETWORK-EDGE COVERAGE (`595b1af`) — LIVE CLOB SWEEP 111/111; HTTP GAPS FIXED
 
 Operator directive: "test what we didn't, on anything we can; skips need a
@@ -194,11 +214,12 @@ in place. Everything else from §0-FINAL stands (do not redo).
 > **STATE — everything below is DONE and verified; do not redo (details §0-FINAL):**
 > pipeline is FULLY LIVE end-to-end (odds+PM capture → results → join → metrics →
 > PM-edge backtest). VPS steady state: collector HOURLY cron with PM capture
-> (current drop = md5 `c5824b670c098f3ce5a1a1fa4138342c`, §0-S4e HTTP
-> robustness; older: `5c67c2ba…` sibling-veto, `0673cb50…` alias-support,
-> `4d46e275…` coverage-fix, `5fcb2c4f…` pre-fix. VPS showing anything older
-> than `c5824b67…` → run §0-S4b one-liner A once if aliases.json is missing,
-> then the §0-S4c redeploy one-liner with md5 `c5824b67…`),
+> (current drop = md5 `bae64c85cd6b875e1f91720286742a9f`, §0-S4f latency;
+> prior: `c5824b67…` HTTP robustness, `5c67c2ba…` sibling-veto, `0673cb50…`
+> alias-support, `4d46e275…` coverage-fix, `5fcb2c4f…` pre-fix. VPS showing
+> anything older than `bae64c85…` → run §0-S4b one-liner A once if
+> aliases.json is missing, then the §0-S4c redeploy one-liner with md5
+> `bae64c85…`),
 > PM-first-hit watcher hourly at :07 (marker exists — first capture was
 > JD Gaming vs TYLOO, 39 snaps, orientation sanity-checked). First labeled run:
 > 19/36 closing lines joined; labels AUDITED correct (LYON 3-0 G2 at MSI verified
