@@ -31,7 +31,13 @@ DATA_API = "https://data-api.polymarket.com/activity"
 def fetch_activity(addr: str, limit: int, timeout_s: float) -> list[dict]:
     url = DATA_API + "?" + urllib.parse.urlencode(
         {"user": addr, "limit": limit, "type": "TRADE"})
-    with urllib.request.urlopen(url, timeout=timeout_s) as r:
+    # the data-api 403s urllib's default UA (probe-confirmed 2026-07-12);
+    # same UA the repo's client sends (polymarket_client.py:203)
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "PolymarketAI/1.0 (https://github.com; data)",
+        "Accept": "application/json",
+    })
+    with urllib.request.urlopen(req, timeout=timeout_s) as r:
         blob = json.load(r)
     return blob if isinstance(blob, list) else []
 
