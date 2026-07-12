@@ -458,6 +458,7 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
     cursor = int(await bc.w3.eth.get_block_number()) + 1  # forward-only
     fail_streak = 0  # consecutive failures of the SAME window (stall guard)
     canary_zero_streak = 0
+    canary_seen_first = False  # first result is logged either way
     canary_next = 0.0  # first canary fires on the first poll (fail fast)
 
     async with aiohttp.ClientSession() as session:
@@ -477,6 +478,11 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                     log(f"[copy_watcher] canary query error: {e!r}")
                     n_canary = -1
                 if n_canary >= 0:
+                    if not canary_seen_first:
+                        canary_seen_first = True
+                        log(f"[copy_watcher] first canary: {n_canary} V2 fill "
+                            f"events in the settled {CANARY_SPAN}-block window "
+                            f"({'detection sees the market' if n_canary else 'quiet or blind — alarm decides after next cycle'})")
                     canary_zero_streak, msg = canary_state(
                         canary_zero_streak, n_canary)
                     if msg:
