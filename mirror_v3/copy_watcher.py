@@ -79,8 +79,10 @@ MAX_WINDOW_RETRIES = 5  # same-window failures before a LOUD skip
 # repeated zeros mean the RPC serves no logs and detection is blind.
 CANARY_EVERY_S = 600       # one canary query cycle per 10 min
 CANARY_SETTLE_BLOCKS = 60  # window ends this far behind head (settled)
-CANARY_SPAN = 300          # window size in blocks (~10.5 min of chain —
-                           # 40 blocks false-alarmed on a quiet Saturday)
+CANARY_SPAN = 20           # window size in blocks (~42s of chain). Measured
+                           # 2026-07-12: ~83 V2 fills/block — 300 blocks
+                           # pulled ~25k full logs per cycle (~20s, ~12MB)
+                           # for a yes/no question 20 blocks answer fine
 CANARY_ALARM_AFTER = 2     # consecutive zero cycles before the LOUD alarm
 
 # ── V2 exchange constants (2026-07-12; see DETECTION in the docstring) ───────
