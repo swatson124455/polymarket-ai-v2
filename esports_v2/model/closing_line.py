@@ -148,12 +148,18 @@ def reduce_to_closing_lines(
             "odds_b": ob,
             "raw": snap,
         })
-        # First-seen starts string for the key (all snapshots share it).
-        if key not in starts_raw:
-            starts_raw[key] = str(snap.get("starts") or "")
 
     out: Dict[str, ClosingLine] = {}
     for key, obs in grouped.items():
+        # The start time DRIFTS across snapshots when matches are delayed
+        # (measured 2026-07-12: 235 same-day drift rows across 104 matches —
+        # e.g. 08:00 -> 08:15). Use the LATEST-captured snapshot's ``starts``:
+        # the most current schedule knowledge. First-seen (the old rule) used
+        # the STALE time as the cutoff, discarding genuinely pre-start
+        # snapshots for every delayed match (stale closing line); latest-seen
+        # also correctly EXCLUDES look-ahead if a match ever moves earlier.
+        latest = max(obs, key=lambda o: o["cap_dt"])
+        starts_raw[key] = str(latest["raw"].get("starts") or "")
         starts_dt = parse_ts(starts_raw.get(key))
         if starts_dt is None:
             continue  # cannot define a no-look-ahead closing line without start

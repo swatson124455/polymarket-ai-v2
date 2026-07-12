@@ -216,3 +216,31 @@ def test_closing_line_degenerate_pm_price_becomes_none():
               "yes_token_id": "tok0", "market_price": 1.0}]  # resolved/degenerate
     cl = reduce_to_closing_lines(snaps)["a||b||2026-07-10"]
     assert cl.condition_id == "0xabc" and cl.market_price is None
+
+
+# ── schedule drift (2026-07-12 live finding: starts moves when matches delay) ─
+
+
+def _drift_snap(cap, starts, oa, ob):
+    return {"captured_at": cap, "match_key": "a||b||2026-08-01", "home": "A",
+            "away": "B", "starts": starts, "league_name": "L",
+            "odds_a": oa, "odds_b": ob, "event_type": "prematch"}
+
+
+def test_delayed_match_uses_latest_starts_and_keeps_fresh_snapshot():
+    # match delayed 08:00 -> 08:15; the 08:10 capture IS pre-start and must win
+    snaps = [_drift_snap("2026-08-01T07:00:00Z", "2026-08-01T08:00:00Z", 2.0, 1.8),
+             _drift_snap("2026-08-01T08:10:00Z", "2026-08-01T08:15:00Z", 1.5, 2.6)]
+    out = reduce_to_closing_lines(snaps)
+    cl = out["a||b||2026-08-01"]
+    assert cl.odds_a == 1.5                       # fresh line, not the stale one
+    assert cl.starts == "2026-08-01T08:15:00Z"    # latest schedule knowledge
+
+
+def test_match_moved_earlier_excludes_lookahead():
+    # match moved 08:15 -> 08:00; the 08:10 capture is POST-start -> excluded
+    snaps = [_drift_snap("2026-08-01T07:00:00Z", "2026-08-01T08:15:00Z", 2.0, 1.8),
+             _drift_snap("2026-08-01T08:10:00Z", "2026-08-01T08:00:00Z", 9.0, 1.01)]
+    out = reduce_to_closing_lines(snaps)
+    cl = out["a||b||2026-08-01"]
+    assert cl.odds_a == 2.0                       # look-ahead odds rejected
