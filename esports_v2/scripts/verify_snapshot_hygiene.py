@@ -11,7 +11,8 @@ descends from it. This verifies, line by line, that what's stored is clean:
     - PM-field incoherence (condition_id present but token/outcome missing)
     - stored yes_outcome matching NEITHER or BOTH of home/away (orientation)
     - one condition_id mapping to different token/outcome across rows
-    - one match_key mapping to different home/away/starts across rows
+    - one match_key mapping to different TEAMS or a different DAY across rows
+      (same-teams same-day start-TIME drift = schedule delay -> a NOTE)
     - match_key not reproducible from (home, away, starts)
     - exact duplicate (captured_at, match_key) rows (double-append)
 
@@ -51,7 +52,7 @@ def audit(lines) -> Dict:
         "n_lines", "json_bad", "missing_core", "bad_odds", "bad_price",
         "pm_incoherent", "orient_bad", "key_mismatch", "dup_rows",
         "cid_conflicts", "match_conflicts", "pre_gapb", "pm_null_rows",
-        "pm_priced_rows", "ts_backwards")}
+        "pm_priced_rows", "ts_backwards", "starts_drift")}
     r["examples"] = []
     seen_rows = set()
     cid_map: Dict[str, tuple] = {}
@@ -139,8 +140,17 @@ def audit(lines) -> Dict:
         if prev_m is None:
             match_map[d["match_key"]] = cur_m
         elif prev_m != cur_m:
-            r["match_conflicts"] += 1
-            ex("match_conflict", f"{d['match_key']} {prev_m} != {cur_m}")
+            # Same teams + same day with a different start TIME is schedule
+            # drift (matches get delayed; measured live 2026-07-12) — a NOTE,
+            # handled by the reducer's latest-seen-starts rule. A change of
+            # TEAMS or DAY under one key is real identity corruption — HARD.
+            same_teams = {prev_m[0], prev_m[1]} == {cur_m[0], cur_m[1]}
+            same_day = str(prev_m[2])[:10] == str(cur_m[2])[:10]
+            if same_teams and same_day:
+                r["starts_drift"] += 1
+            else:
+                r["match_conflicts"] += 1
+                ex("match_conflict", f"{d['match_key']} {prev_m} != {cur_m}")
 
         ts = parse_ts(d["captured_at"])
         if ts is not None and prev_ts is not None and ts < prev_ts:
@@ -167,6 +177,7 @@ def render(r: Dict) -> str:
     out.append("HARD failures: " + (str(bad) if bad else "NONE — clean"))
     out.append(f"Notes: pre-GAP-B rows (no PM keys, expected history)={r['pre_gapb']}  "
                f"unmatched-PM rows (nulls, expected)={r['pm_null_rows']}  "
+               f"start-time drift rows (delays, reducer-handled)={r['starts_drift']}  "
                f"timestamp-backwards={r['ts_backwards']}")
     for e in r["examples"]:
         out.append(f"  ex {e}")

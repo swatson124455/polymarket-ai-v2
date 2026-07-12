@@ -56,7 +56,19 @@ def test_pre_gapb_and_null_pm_are_notes_not_failures():
     assert not any(r[k] for k in HARD)
 
 
-def test_match_conflict_detected():
+def test_start_time_drift_is_a_note_not_a_failure():
+    # schedule delay: same teams, same day, shifted start (measured live
+    # 2026-07-12: 235 such rows) -> NOTE, reducer handles via latest-seen starts
     r = audit([_row(), _row(captured_at="2026-07-12T11:00:00+00:00",
                             starts="2026-07-15T14:00:00Z")])
+    assert r["starts_drift"] == 1 and r["match_conflicts"] == 0
+    assert not any(r[k] for k in HARD)
+
+
+def test_team_change_under_one_key_is_hard():
+    r = audit([_row(), _row(captured_at="2026-07-12T11:00:00+00:00",
+                            home="Different Org",
+                            condition_id=None, yes_token_id=None,
+                            yes_outcome=None, market_price=None)])
+    # (key_mismatch also fires since the key no longer reproduces — both HARD)
     assert r["match_conflicts"] == 1
