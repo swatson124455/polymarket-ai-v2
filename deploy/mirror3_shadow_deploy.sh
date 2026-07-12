@@ -80,7 +80,11 @@ echo "   sink OK: ${SINK}"
 echo "== [4/4] systemd"
 cp "${CODE_DIR}/${UNIT_SRC_REL}" "${UNIT_DST}"
 systemctl daemon-reload
-systemctl enable --now polymarket-mirror3.service
+# enable + explicit restart: `enable --now` does NOT restart an already-
+# running service, so redeploys silently kept the OLD process alive
+# (found 2026-07-12: disk had new code, process was 33h old)
+systemctl enable polymarket-mirror3.service
+systemctl restart polymarket-mirror3.service
 sleep 8
 systemctl --no-pager --lines=0 status polymarket-mirror3.service || true
 journalctl -u polymarket-mirror3.service -n 12 --no-pager
