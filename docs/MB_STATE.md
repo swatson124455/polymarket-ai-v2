@@ -1,15 +1,6 @@
 # MirrorBot Rebuild — Living State / Handoff (docs/MB_STATE.md)
 
-**Last updated:** 2026-07-11 · **Branch:** `claude/mirror-bot-salvage-rebuild-d08v6x` (= `master`, both at `b5a0c89`); scope update pushed from `claude/polymarket-ai-v2-setup-7tq1sh`
-
-> **SESSION SCOPE + FRAME (operator directives, 2026-07-11):**
-> 1. The session on branch `claude/polymarket-ai-v2-setup-7tq1sh` is now **MB-only**; its EB/WB threads are dropped.
-> 2. **Only three bots exist for all analysis and handoffs: MB, WB, EB.** Every other registry bot is a dead notion — do not audit, cite, or plan around them.
-> 3. **Total P&L is banned from all analyses** — known-corrupted/hardcoded. Per-bucket, per-trader-subset, per-gate numbers only.
-> 4. **Devig is decided IN** — do not re-litigate the "devig killed fleet-wide" blocker.
-> 5. Figures not re-derived from canonical scripts this session are BAD INTEL until re-measured (protocol §START.4, now enforced strictly — the 2026-04-13 fleet edge verdicts are retired as decision inputs).
->
-> **Coordination flag [operator]:** a prior dedicated MB session exists (deployed branch `claude/mirrorbot-persistence-check-irq7r5` @ `4d6c3da`, wake-ups Jul 14 + Jul 25). Two MB sessions is a scope collision — operator to retire one or declare precedence. Until then nobody pushes to the deployed branch (a push there desyncs the running `polymarket-mirror3` service).
+**Last updated:** 2026-07-05 · **Branch:** `claude/mirror-bot-salvage-rebuild-d08v6x` (= `master`, both at `b5a0c89`)
 **Read first:** `CLAUDE.md` (binding directives), `MB_REBUILD_PLAN.md` (the plan + operator decisions), then this file.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
