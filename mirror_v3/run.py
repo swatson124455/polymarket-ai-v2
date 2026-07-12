@@ -98,10 +98,28 @@ async def main() -> int:
               f"open={result.open_loaded} daily_exposure=${result.daily_exposure_usd:.2f} "
               f"mode={mode}", flush=True)
 
-        # 4. Idle heartbeat — strategy slot intentionally empty behind the gate.
+        # 4a. Copy-trade SHADOW watcher (2026-07-11): detection + gates +
+        # shadow fills only — NO orders, NO DB writes. Opt-in via explicit
+        # env; its config errors are boot errors (fail-loud, not silent-off).
+        watcher_task = None
+        if os.environ.get("MIRROR3_COPY_WATCHER", "").strip().lower() in ("true", "1", "yes"):
+            from mirror_v3.copy_watcher import WatcherConfig, watch
+            cfg = WatcherConfig.from_env(os.environ)
+            watcher_task = asyncio.create_task(
+                watch(cfg, log=lambda m: print(f"[{BOT_NAME}] {m}", flush=True)))
+            print(f"[{BOT_NAME}] copy watcher STARTED (shadow-only)", flush=True)
+
+        # 4b. Idle heartbeat — strategy slot intentionally empty behind the gate.
         while True:
+            if watcher_task is not None and watcher_task.done():
+                # fail-loud: a dead watcher must not fake a healthy heartbeat
+                exc = watcher_task.exception()
+                print(f"[{BOT_NAME}] COPY WATCHER DIED — exiting for systemd "
+                      f"restart: {exc!r}", file=sys.stderr)
+                return 1
             print(f"[{BOT_NAME}] heartbeat {guards.snapshot()} mode={mode} "
-                  f"strategy=EMPTY(gated)", flush=True)
+                  f"strategy=EMPTY(gated)"
+                  f"{' watcher=RUNNING(shadow)' if watcher_task else ''}", flush=True)
             await asyncio.sleep(HEARTBEAT_S)
     finally:
         await db.close()
