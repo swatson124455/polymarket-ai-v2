@@ -154,4 +154,55 @@ class TestS228PredictionLogDiscovery:
             "they strand unresolved forever (S228 follow-up regression)"
         )
         assert "48 hours" in s and "latest_pred" in s
-        assert "NULLS LAST" in s, "dated backlog must drain before NULL-end-date stragglers"
+        # S228 follow-up 2: TWO slices must run — newest-first for fresh dailies
+        # AND oldest-first (NULLS FIRST) as the dedicated anti-starvation lane.
+        # A single newest-first LIMIT is perpetually consumed by the churn of
+        # just-ended-awaiting-UMA markets, so the tail (NULL end dates, oldest
+        # stragglers) never gets a slot — observed live 2026-07-11/12: 44
+        # stranded markets showed zero movement while fresh cohorts advanced.
+        assert any("DESC NULLS LAST" in q for q in pred_sql), "newest-first slice missing"
+        assert any("ASC NULLS FIRST" in q for q in pred_sql), (
+            "oldest-first tail lane missing — NULL-end-date/oldest markets "
+            "starve behind the daily churn (S228 follow-up 2 regression)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_tail_lane_ids_join_the_check_list(self):
+        """Markets surfaced ONLY by the oldest-first tail lane must be checked."""
+        tail_calls = {"n": 0}
+
+        async def _route(sql, params=None):
+            s = " ".join(str(sql).split())
+            if "FROM prediction_log" in s and "ASC NULLS FIRST" in s:
+                tail_calls["n"] += 1
+                return _result([(PRED_ONLY_MARKET_ID, None)])
+            return _result([])
+
+        session = AsyncMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+        session.execute = AsyncMock(side_effect=_route)
+        session.commit = AsyncMock()
+        db = MagicMock()
+        db.session_factory = object()
+        db.get_session = MagicMock(return_value=session)
+        db.save_market_resolution = AsyncMock()
+        db.mark_market_resolved = AsyncMock()
+        db.bulk_insert_markets = AsyncMock()
+        for _bf in (
+            "backfill_prediction_log_resolution",
+            "backfill_mirror_rejected_signals_resolution",
+            "backfill_prediction_log_from_closed_trades",
+            "backfill_paper_trades_resolution",
+            "backfill_trade_events_resolution",
+            "backfill_shadow_resolution",
+            "backfill_positions_resolution",
+        ):
+            setattr(db, _bf, AsyncMock(return_value=0))
+        client = _make_client(CLOSED_YES_MARKET)
+
+        await run_resolution_backfill(db, client, delay_seconds=0, log_progress=False)
+
+        assert tail_calls["n"] == 1, "oldest-first tail query did not run"
+        db.save_market_resolution.assert_awaited()
+        assert db.save_market_resolution.await_args_list[0].args[0] == PRED_ONLY_MARKET_ID

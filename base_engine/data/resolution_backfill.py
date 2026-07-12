@@ -369,29 +369,49 @@ async def run_resolution_backfill(
         # prediction age ~ time since close). NULLS LAST: dated backlog drains
         # first. Once fetched, the per-market loop patches end_date_iso from the
         # API response, so these markets rejoin the normal dated flow.
+        # S228 follow-up 2 — split budget against TAIL STARVATION: a single
+        # newest-first LIMIT is perpetually consumed by the standing churn of
+        # just-ended markets awaiting UMA settlement (they re-queue every cycle;
+        # untracked markets have no last_checked_at bookkeeping), so NULL-end-date
+        # and oldest stragglers below the churn line NEVER get a slot (observed:
+        # the 44 stranded markets showed zero movement while fresh cohorts
+        # advanced). 2/3 newest-first for fresh dailies + 1/3 oldest-first with
+        # NULLS FIRST as a dedicated lane for exactly the starved set. The 14-day
+        # prediction window self-limits the tail (dead markets age out of
+        # discovery when their last unresolved prediction passes 14 days).
         pred_market_ids: list = []
         if prediction_log_limit > 0:
+            _pred_discovery_sql = """
+                SELECT DISTINCT m.id, m.end_date_iso
+                FROM (
+                    SELECT market_id, MAX(prediction_time) AS latest_pred
+                    FROM prediction_log
+                    WHERE resolution IS NULL
+                      AND prediction_time > NOW() - INTERVAL '14 days'
+                    GROUP BY market_id
+                ) pl
+                JOIN markets m
+                  ON (CAST(m.id AS TEXT) = pl.market_id OR m.condition_id = pl.market_id)
+                WHERE (m.resolution IS NULL OR m.resolution NOT IN ('YES', 'NO'))
+                  AND m.resolved IS NOT TRUE
+                  AND (m.end_date_iso < NOW()
+                       OR (m.end_date_iso IS NULL
+                           AND pl.latest_pred < NOW() - INTERVAL '48 hours'))
+                ORDER BY m.end_date_iso {order}
+                LIMIT :plim
+            """
+            _newest_lim = max(1, (prediction_log_limit * 2) // 3)
+            _oldest_lim = max(1, prediction_log_limit - _newest_lim)
             try:
-                _pred_res = await session.execute(text("""
-                    SELECT DISTINCT m.id, m.end_date_iso
-                    FROM (
-                        SELECT market_id, MAX(prediction_time) AS latest_pred
-                        FROM prediction_log
-                        WHERE resolution IS NULL
-                          AND prediction_time > NOW() - INTERVAL '14 days'
-                        GROUP BY market_id
-                    ) pl
-                    JOIN markets m
-                      ON (CAST(m.id AS TEXT) = pl.market_id OR m.condition_id = pl.market_id)
-                    WHERE (m.resolution IS NULL OR m.resolution NOT IN ('YES', 'NO'))
-                      AND m.resolved IS NOT TRUE
-                      AND (m.end_date_iso < NOW()
-                           OR (m.end_date_iso IS NULL
-                               AND pl.latest_pred < NOW() - INTERVAL '48 hours'))
-                    ORDER BY m.end_date_iso DESC NULLS LAST
-                    LIMIT :plim
-                """), {"plim": prediction_log_limit})
+                _pred_res = await session.execute(
+                    text(_pred_discovery_sql.format(order="DESC NULLS LAST")),
+                    {"plim": _newest_lim})
                 pred_market_ids = [r[0] for r in _pred_res.fetchall() if r[0]]
+                _tail_res = await session.execute(
+                    text(_pred_discovery_sql.format(order="ASC NULLS FIRST")),
+                    {"plim": _oldest_lim})
+                _newest_set = set(pred_market_ids)
+                pred_market_ids += [r[0] for r in _tail_res.fetchall() if r[0] and r[0] not in _newest_set]
             except Exception as _pred_err:
                 logger.debug("Resolution backfill: prediction_log discovery failed (non-critical): %s", _pred_err)
         if pred_market_ids and log_progress:

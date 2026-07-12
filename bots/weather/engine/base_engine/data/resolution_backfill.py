@@ -306,31 +306,43 @@ async def run_resolution_backfill(
         # NOTE: this vendored copy is a stale snapshot in other respects (predates
         # the positions-prepend and outcome-prices-primary fixes) — kept in sync
         # for THIS fix only, per the both-copies rule.
-        # S228 follow-up: NULL-end-date markets qualify once their latest
-        # prediction is >48h old (see top-level copy for full rationale).
+        # S228 follow-ups: NULL-end-date markets qualify once their latest
+        # prediction is >48h old; split budget (2/3 newest-first + 1/3
+        # oldest-first NULLS FIRST) prevents tail starvation behind the churn
+        # of just-ended markets. See top-level copy for full rationale.
         pred_market_ids: list = []
         if prediction_log_limit > 0:
+            _pred_discovery_sql = """
+                SELECT DISTINCT m.id, m.end_date_iso
+                FROM (
+                    SELECT market_id, MAX(prediction_time) AS latest_pred
+                    FROM prediction_log
+                    WHERE resolution IS NULL
+                      AND prediction_time > NOW() - INTERVAL '14 days'
+                    GROUP BY market_id
+                ) pl
+                JOIN markets m
+                  ON (CAST(m.id AS TEXT) = pl.market_id OR m.condition_id = pl.market_id)
+                WHERE (m.resolution IS NULL OR m.resolution NOT IN ('YES', 'NO'))
+                  AND m.resolved IS NOT TRUE
+                  AND (m.end_date_iso < NOW()
+                       OR (m.end_date_iso IS NULL
+                           AND pl.latest_pred < NOW() - INTERVAL '48 hours'))
+                ORDER BY m.end_date_iso {order}
+                LIMIT :plim
+            """
+            _newest_lim = max(1, (prediction_log_limit * 2) // 3)
+            _oldest_lim = max(1, prediction_log_limit - _newest_lim)
             try:
-                _pred_res = await session.execute(text("""
-                    SELECT DISTINCT m.id, m.end_date_iso
-                    FROM (
-                        SELECT market_id, MAX(prediction_time) AS latest_pred
-                        FROM prediction_log
-                        WHERE resolution IS NULL
-                          AND prediction_time > NOW() - INTERVAL '14 days'
-                        GROUP BY market_id
-                    ) pl
-                    JOIN markets m
-                      ON (CAST(m.id AS TEXT) = pl.market_id OR m.condition_id = pl.market_id)
-                    WHERE (m.resolution IS NULL OR m.resolution NOT IN ('YES', 'NO'))
-                      AND m.resolved IS NOT TRUE
-                      AND (m.end_date_iso < NOW()
-                           OR (m.end_date_iso IS NULL
-                               AND pl.latest_pred < NOW() - INTERVAL '48 hours'))
-                    ORDER BY m.end_date_iso DESC NULLS LAST
-                    LIMIT :plim
-                """), {"plim": prediction_log_limit})
+                _pred_res = await session.execute(
+                    text(_pred_discovery_sql.format(order="DESC NULLS LAST")),
+                    {"plim": _newest_lim})
                 pred_market_ids = [r[0] for r in _pred_res.fetchall() if r[0]]
+                _tail_res = await session.execute(
+                    text(_pred_discovery_sql.format(order="ASC NULLS FIRST")),
+                    {"plim": _oldest_lim})
+                _newest_set = set(pred_market_ids)
+                pred_market_ids += [r[0] for r in _tail_res.fetchall() if r[0] and r[0] not in _newest_set]
             except Exception as _pred_err:
                 logger.debug("Resolution backfill: prediction_log discovery failed (non-critical): %s", _pred_err)
         if pred_market_ids and log_progress:
