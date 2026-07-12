@@ -42,6 +42,31 @@
 >    floor). Awaiting operator VPS run, after (3).
 > A daily 13:00 UTC steward check-in Routine now fires into this session
 > (king's wake-ups are dead with it).
+>
+> **2026-07-12 LATE UPDATE — THE SHADOW WAS BLIND FROM BIRTH; FIXED, NEEDS
+> REDEPLOY.** The watcher's first ~33h produced ZERO records while the
+> data-api showed **179 roster BUYs in 40h** (probe `roster_activity_check.py`,
+> 16 traders, 0 fetch errors). Root cause chain, each step receipt-verified:
+> (1) Polymarket moved trading to the **V2 exchanges** (Exchange V2
+> `0xE111180000d2663C0091e4f400237545B87B996B`, NegRisk V2
+> `0xe2222d279d744050d28e00520010520000310F59`) — WI-24 verified this
+> 2026-06-11, BEFORE the watcher ever deployed; (2) V1 `OrderFilled` never
+> fires for current flow (all probes zero across 4 RPCs — the RPC was
+> innocent); (3) V2 fills emit an UNNAMED event, topic0
+> `0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee`,
+> layout reverse-engineered from known trades and validated to 4 decimals
+> (`scripts/decode_v2_fill.py`): topics[2]=order owner (server-side
+> filterable), data=[?, token_id, usdc*1e6, tokens*1e6, 0,0,0]; (4)
+> **BUY/SELL is NOT in the V2 event** — direction read from the tx
+> receipt's ERC-1155/pUSD transfers on roster hits (`side_from_receipt_logs`).
+> Watcher reworked accordingly (`c77e2dd`), plus a blind-RPC canary
+> (10-min unfiltered fill count, alarms after 2 zero cycles, first result
+> always logged) so silent blindness is structurally impossible now.
+> Diagnostic toolchain kept: `diagnose_watcher_detection.py`,
+> `rpc_logs_probe.py`, `trace_real_fill.py`, `decode_v2_fill.py`.
+> **The shadow readout clock starts at the post-fix redeploy, not at
+> 2026-07-11 12:46.** The walk-forward/audit are NOT invalidated (their
+> fills genuinely lived on V1-era history).
 
 **The operator runs all VPS commands** via single-line SSH one-liners from
 Windows PowerShell (he cannot paste after connecting; never give multi-line).
@@ -316,6 +341,13 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
 
 ## 7. Landmines (do not trip)
 
+- **The V1 exchanges are DEAD for live flow (2026-07-12).** Any forward-
+  looking on-chain detection MUST use the V2 exchanges + topic0
+  `0xd543adfd…` (constants in `mirror_v3/copy_watcher.py`); V1
+  `OrderFilled` via `blockchain_client` constants is history-only (audits
+  of pre-migration fills). A watcher/canary pointed at V1 reads as
+  "running, zero events" — silently. Also: the V2 fill event does NOT
+  carry BUY/SELL; direction needs the receipt's transfer logs.
 - **A frozen session's unpushed work is GONE (2026-07-12).** Remote session
   containers are ephemeral; when the `irq7r5` session froze, its built-but-
   unpushed ladder-capture patch died with it and had to be rebuilt from
