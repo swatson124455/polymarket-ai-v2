@@ -24,6 +24,13 @@ GATES (per signal, all recorded, none fatal to the run):
   PRICE_RAN_AWAY   ask > whale_price + max_chase (the edge already left)
   OK               shadow-filled at the current ask (our copy price)
 
+LADDER CAPTURE (2026-07-12, additive): each record also carries the top
+BOOK_DEPTH levels of the CLOB /book ladder (book_asks/book_bids) so the
+readout can price AT-SIZE fills with the PRECISE VWAP walk
+(bots/mirror_backtest/fill_models.py) instead of assuming the whole copy
+fills at best ask. Fail-soft: a /book error records null ladders and does
+NOT change any gate verdict — gating stays on /price exactly as deployed.
+
 SAFETY: read-only everywhere — RPC GETs, CLOB public GETs, JSONL append.
 No orders (paper or live), no DB writes, no shared-module imports beyond
 the ABI/contract constants. Runs inside mirror_v3's env-guarded process.
@@ -50,6 +57,8 @@ from typing import Any, Callable, Iterable, Optional
 USDC_ASSET_ID = 0
 SCALE = 1e6  # USDC + CTF outcome tokens are 6-decimals
 CLOB_PRICE_URL = "https://clob.polymarket.com/price"
+CLOB_BOOK_URL = "https://clob.polymarket.com/book"
+BOOK_DEPTH = 20  # ladder levels kept per side (max copy is ~1.5 units — ample)
 GETLOGS_CHUNK = 900  # public-RPC eth_getLogs range cap (audit-proven)
 MAX_WINDOW_RETRIES = 5  # same-window failures before a LOUD skip
 
@@ -119,6 +128,31 @@ def evaluate_gates(whale_price: float, best_bid: Optional[float],
     return "OK", best_ask
 
 
+def trim_book(raw: Any, depth: int = BOOK_DEPTH) -> Optional[dict]:
+    """CLOB /book JSON -> {"asks": [{price, size}, ...], "bids": [...]} with
+    asks ascending / bids descending by price, truncated to `depth` levels.
+    Sorted here — the API's level ordering is NOT relied upon. Levels that
+    fail float coercion are dropped. None when no side has a valid level
+    (record null rather than an empty ladder that looks measured)."""
+    if not isinstance(raw, dict):
+        return None
+    out: dict[str, list[dict]] = {}
+    for side in ("asks", "bids"):
+        levels = []
+        for lvl in raw.get(side) or []:
+            try:
+                p, s = float(lvl["price"]), float(lvl["size"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if p > 0 and s > 0:
+                levels.append({"price": p, "size": s})
+        levels.sort(key=lambda x: x["price"], reverse=(side == "bids"))
+        out[side] = levels[:depth]
+    if not out["asks"] and not out["bids"]:
+        return None
+    return out
+
+
 def block_chunks(b0: int, b1: int, chunk: int = GETLOGS_CHUNK) -> list[tuple[int, int]]:
     spans, lo = [], b0
     while lo <= b1:
@@ -173,13 +207,16 @@ class WatcherConfig:
 
 def shadow_record(sig: dict, verdict: str, fill: Optional[float],
                   best_bid: Optional[float], best_ask: Optional[float],
-                  block_ts: int, now_ts: float, tx: str) -> dict:
+                  block_ts: int, now_ts: float, tx: str,
+                  book: Optional[dict] = None) -> dict:
     return {
         **sig,
         "verdict": verdict,
         "shadow_fill": fill,
         "best_bid": best_bid,
         "best_ask": best_ask,
+        "book_asks": book["asks"] if book else None,
+        "book_bids": book["bids"] if book else None,
         "block_ts": block_ts,
         "detect_ts": round(now_ts, 3),
         "detect_lag_s": round(now_ts - block_ts, 3),
@@ -222,6 +259,20 @@ async def quote_book(session, token_id: str,
         else:
             ask = px
     return bid, ask
+
+
+async def fetch_book(session, token_id: str,
+                     timeout_s: float = 2.0) -> Optional[dict]:
+    """Trimmed /book ladder for the record, or None. Fail-soft by design:
+    ladder capture must never turn a quotable signal into an error — gate
+    verdicts come from quote_book alone."""
+    try:
+        async with session.get(CLOB_BOOK_URL,
+                               params={"token_id": token_id},
+                               timeout=timeout_s) as r:
+            return trim_book(await r.json())
+    except Exception:
+        return None
 
 
 async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
@@ -338,12 +389,13 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                     sig["conviction_r"] = round(r, 4) if r is not None else None
                     sig["size_multiplier"] = mult
                     bid, ask = await quote_book(session, sig["token_id"])
+                    book = await fetch_book(session, sig["token_id"])
                     verdict, fill = evaluate_gates(
                         sig["whale_price"], bid, ask,
                         cfg.max_chase, cfg.max_spread)
                     rec = shadow_record(
                         sig, verdict, fill, bid, ask, block_ts, now,
-                        tx=sig.pop("tx", ""))
+                        tx=sig.pop("tx", ""), book=book)
                     with open(cfg.shadow_path, "a") as f:
                         f.write(json.dumps(rec) + "\n")
                     log(f"[copy_watcher] {verdict:<15} {sig['trader'][:10]}… "

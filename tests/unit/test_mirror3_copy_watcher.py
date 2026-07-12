@@ -124,6 +124,80 @@ def test_shadow_record_shape_and_lag():
     json.dumps(rec)  # must be JSONL-serializable as-is
 
 
+def test_shadow_record_book_fields():
+    sig = {"trader": A, "token_id": "777", "side": "BUY",
+           "whale_price": 0.6, "whale_size_usd": 60.0, "first_buy": True}
+    book = {"asks": [{"price": 0.61, "size": 50.0}],
+            "bids": [{"price": 0.59, "size": 40.0}]}
+    rec = cw.shadow_record(sig, "OK", 0.61, 0.59, 0.61,
+                           block_ts=1, now_ts=2.0, tx="0x1", book=book)
+    assert rec["book_asks"] == book["asks"] and rec["book_bids"] == book["bids"]
+    json.dumps(rec)
+    # no book -> explicit nulls, and the pre-ladder call shape still works
+    rec = cw.shadow_record(sig, "OK", 0.61, 0.59, 0.61,
+                           block_ts=1, now_ts=2.0, tx="0x1")
+    assert rec["book_asks"] is None and rec["book_bids"] is None
+    json.dumps(rec)
+
+
+# ── trim_book / fetch_book ────────────────────────────────────────────────────
+def test_trim_book_sorts_coerces_truncates():
+    raw = {"asks": [{"price": "0.65", "size": "10"},
+                    {"price": "0.61", "size": "50"},
+                    {"price": "bad", "size": "1"},
+                    {"size": "5"}],
+           "bids": [{"price": "0.55", "size": "20"},
+                    {"price": "0.59", "size": "40"}]}
+    book = cw.trim_book(raw)
+    assert [l["price"] for l in book["asks"]] == [0.61, 0.65]  # ascending
+    assert [l["price"] for l in book["bids"]] == [0.59, 0.55]  # descending
+    assert all(isinstance(l["price"], float) for l in book["asks"])
+    deep = {"asks": [{"price": str(0.5 + i / 1000), "size": "1"}
+                     for i in range(100)], "bids": []}
+    assert len(cw.trim_book(deep)["asks"]) == cw.BOOK_DEPTH
+
+
+def test_trim_book_rejects_empty_and_garbage():
+    assert cw.trim_book(None) is None
+    assert cw.trim_book("nope") is None
+    assert cw.trim_book({}) is None
+    assert cw.trim_book({"asks": [], "bids": None}) is None
+    assert cw.trim_book({"asks": [{"price": "0", "size": "5"}]}) is None
+    # one valid side is enough
+    one = cw.trim_book({"asks": [{"price": "0.6", "size": "5"}]})
+    assert one["asks"] and one["bids"] == []
+
+
+def test_fetch_book_fail_soft():
+    import asyncio
+
+    class BoomSession:
+        def get(self, *a, **k):
+            raise RuntimeError("network down")
+
+    class Resp:
+        def __init__(self, payload):
+            self._p = payload
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def json(self):
+            return self._p
+
+    class OkSession:
+        def get(self, *a, **k):
+            return Resp({"asks": [{"price": "0.61", "size": "50"}],
+                         "bids": [{"price": "0.59", "size": "40"}]})
+
+    assert asyncio.run(cw.fetch_book(BoomSession(), "777")) is None
+    book = asyncio.run(cw.fetch_book(OkSession(), "777"))
+    assert book["asks"][0] == {"price": 0.61, "size": 50.0}
+
+
 def test_block_chunks_cap():
     spans = cw.block_chunks(0, 2000)
     assert all(hi - lo + 1 <= cw.GETLOGS_CHUNK for lo, hi in spans)
