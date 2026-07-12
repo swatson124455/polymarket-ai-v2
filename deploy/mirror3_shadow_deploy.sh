@@ -14,7 +14,7 @@
 #      show first heartbeat lines.
 set -euo pipefail
 
-BRANCH="claude/mirrorbot-persistence-check-irq7r5"
+BRANCH="claude/repo-setup-docs-fq9bhn"  # 2026-07-12: superset of irq7r5 (frozen) + ladder capture
 REPO="https://github.com/swatson124455/polymarket-ai-v2"
 CODE_DIR="/opt/mirror3"
 ENV_FILE="/opt/pa2-shared/.env.mirror3"
