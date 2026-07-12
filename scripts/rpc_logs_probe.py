@@ -37,13 +37,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from typing import Optional
 import urllib.request
 
 # keccak256("OrderFilled(bytes32,address,address,uint256,uint256,uint256,uint256,uint256)")
 TOPIC0 = "0xd0a08e8c493f9c94f29311604c9de1b4e8c8d4c06bd0c789af57f2d65bfec0f6"
-EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"          # main CTF exchange
-NEGRISK = "0xC5d563A36AE78145C45a50134d48A1215220f80a"           # NegRisk exchange
+# V1 exchanges — blockchain_client's constants, what the watcher queries
+# today. WI-24 (WORK_PROGRAM, on-chain verified 2026-06-11) shows trading
+# moved to the V2 exchanges; recent fills may not emit here at all.
+EXCHANGE_V1 = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+NEGRISK_V1 = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
+# V2 main exchange — full address in base_engine/execution/contract_manager.py:34
+EXCHANGE_V2 = "0xE111180000d2663C0091e4f400237545B87B996B"
+# V2 NegRisk (0xe2222d279d…0F59) — full address only exists on the VPS in
+# py_clob_client_v2; find_negrisk_v2() greps site-packages for it.
+NEGRISK_V2_PREFIX = "0xe2222d279d"
 
 DEFAULT_RPCS = [
     "https://polygon.gateway.tenderly.co",   # current .env.mirror3 (suspect)
@@ -82,6 +92,27 @@ def pad_addr(a: str) -> str:
     return "0x" + "0" * 24 + a.lower().replace("0x", "")
 
 
+def find_negrisk_v2(venv_lib: str = "/opt/polymarket-ai-v2/venv/lib") -> Optional[str]:
+    """Grep the venv's py_clob_client(_v2) sources for the full NegRisk V2
+    address (only its 0xe2222d279d… prefix is recorded in the repo)."""
+    import re
+    pat = re.compile(NEGRISK_V2_PREFIX[2:] + r"[0-9a-fA-F]{30}", re.I)
+    for root, _dirs, files in os.walk(venv_lib):
+        if "clob" not in root.lower():
+            continue
+        for fn in files:
+            if not fn.endswith((".py", ".json")):
+                continue
+            try:
+                with open(os.path.join(root, fn), errors="ignore") as f:
+                    m = pat.search(f.read())
+            except OSError:
+                continue
+            if m:
+                return "0x" + m.group(0)
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Polygon RPC getLogs shootout")
     ap.add_argument("--roster", default="",
@@ -97,7 +128,16 @@ def main() -> int:
         roster_topics = [pad_addr(a) for a in roster]
         print(f"roster list-filter check enabled ({len(roster)} addresses)")
 
-    winner = None
+    exchanges = [("V1-main", EXCHANGE_V1), ("V1-negrisk", NEGRISK_V1),
+                 ("V2-main", EXCHANGE_V2)]
+    nr2 = find_negrisk_v2()
+    if nr2:
+        exchanges.append(("V2-negrisk", nr2))
+        print(f"NegRisk V2 resolved from venv: {nr2}")
+    else:
+        print("NegRisk V2 NOT found in venv site-packages — testing 3 contracts")
+
+    winner = None          # (rpc, exchange_label, addr)
     for rpc in [r.strip() for r in args.rpcs.split(",") if r.strip()]:
         try:
             head = int(call(rpc, "eth_blockNumber", [])["result"], 16)
@@ -105,39 +145,38 @@ def main() -> int:
             print(f"\n{rpc}\n    eth_blockNumber ERROR {e!r}")
             continue
         s0, s1 = head - 100, head - 60          # settled 40 blocks
-        n_settled, err_s = get_logs(rpc, s0, s1, EXCHANGE, [TOPIC0])
-        n_head, err_h = get_logs(rpc, head - 6, head - 1, EXCHANGE, [TOPIC0])
-        print(f"\n{rpc}\n    head={head}")
-        print(f"    settled [{s0},{s1}]: "
-              f"{n_settled if n_settled >= 0 else 'ERROR ' + err_s}")
-        print(f"    near-head [head-6,head-1]: "
-              f"{n_head if n_head >= 0 else 'ERROR ' + err_h}")
-        list_ok = True
-        if roster_topics is not None and n_settled > 0:
-            nm, em = get_logs(rpc, s0, s1, EXCHANGE,
-                              [TOPIC0, None, roster_topics])
-            nt, et = get_logs(rpc, s0, s1, EXCHANGE,
-                              [TOPIC0, None, None, roster_topics])
-            list_ok = nm >= 0 and nt >= 0
-            print(f"    16-addr list filter: maker="
-                  f"{nm if nm >= 0 else 'ERROR ' + em}  taker="
-                  f"{nt if nt >= 0 else 'ERROR ' + et}"
-                  f"  ({'call shape OK' if list_ok else 'BROKEN'})")
-        if winner is None and n_settled > 0 and list_ok:
-            winner = rpc
+        print(f"\n{rpc}\n    head={head}  settled window [{s0},{s1}]")
+        for label, addr in exchanges:
+            n_settled, err_s = get_logs(rpc, s0, s1, addr, [TOPIC0])
+            n_head, _ = get_logs(rpc, head - 6, head - 1, addr, [TOPIC0])
+            print(f"    {label:<11} settled="
+                  f"{n_settled if n_settled >= 0 else 'ERROR ' + err_s}"
+                  f"  near-head={n_head if n_head >= 0 else 'ERR'}")
+            list_ok = True
+            if roster_topics is not None and n_settled > 0:
+                nm, em = get_logs(rpc, s0, s1, addr,
+                                  [TOPIC0, None, roster_topics])
+                nt, et = get_logs(rpc, s0, s1, addr,
+                                  [TOPIC0, None, None, roster_topics])
+                list_ok = nm >= 0 and nt >= 0
+                print(f"      16-addr list filter: maker="
+                      f"{nm if nm >= 0 else 'ERROR ' + em}  taker="
+                      f"{nt if nt >= 0 else 'ERROR ' + et}"
+                      f"  ({'call shape OK' if list_ok else 'BROKEN'})")
+            if winner is None and n_settled > 0 and list_ok:
+                winner = (rpc, label, addr)
 
     print("\n" + "=" * 78)
     if winner:
-        print(f"  WINNER: {winner}")
-        print("  Fix: set MIRROR3_RPC_URL to the winner in "
-              "/opt/pa2-shared/.env.mirror3 and restart polymarket-mirror3.")
-        print("  (A zero near-head count with a nonzero settled count means "
-              "the winner also lags at head — the watcher's canary + retry "
-              "absorb that; only a settled-zero endpoint is disqualifying.)")
+        rpc, label, addr = winner
+        print(f"  WINNER: {rpc}  via  {label} ({addr})")
+        print("  READ: nonzero on V2 with zero on V1 = the watcher queries")
+        print("  DEAD contracts — fix the watcher's exchange constants (and")
+        print("  the topic0/event shape is confirmed compatible, since these")
+        print("  counts are topic0-filtered). RPC itself may be fine.")
     else:
-        print("  NO WINNER: no candidate returned settled OrderFilled logs — "
-              "try paid endpoints (Alchemy/Infura key) before touching the "
-              "watcher code.")
+        print("  NO WINNER: no candidate returned settled OrderFilled logs on "
+              "any contract — try paid endpoints before touching watcher code.")
     print("=" * 78)
     return 0
 
