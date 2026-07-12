@@ -10,13 +10,38 @@
 > 2026-07-11 incident: a fresh session read master's stale copy and
 > recommended the BANNED circular validate rerun it found there.)
 
-**Last updated:** 2026-07-10 (second session, ~20:20 UTC) · **Branch:** `claude/mirrorbot-persistence-check-irq7r5` (fast-forward superset of `oc02tk`/PR #1; head = this commit)
+**Last updated:** 2026-07-12 (shadow-steward session) · **Branch:** `claude/repo-setup-docs-fq9bhn` (merge superset of `irq7r5` + master `e2a406d`; head = this commit)
 **Read first:** `CLAUDE.md` (binding directives), then this file, then **`docs/MB_COPYTRADER_CONTEXT.md` (FULL context brief for the live copy-trader investigation — the complete reasoning chain, API gotchas, and decision tree)**. `MB_REBUILD_PLAN.md` holds the older plan + operator decisions.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
 ---
 
 ## 0. IMMEDIATE RESUME (2026-07-11 ~03:30 UTC — the pipeline is DONE; results below)
+
+> **2026-07-12 UPDATE (shadow-steward session, `claude/repo-setup-docs-fq9bhn`):**
+> the `irq7r5` session ("king") is FROZEN; this session stewards the shadow
+> (operator-authorized, all four items). Everything king pushed survives
+> (head `1c08793`, incl. A+D sizing `4d6c3da`); its UNPUSHED ladder-capture
+> patch is presumed lost with the container and was REBUILT (below). New
+> since 2026-07-11, all on this branch, none deployed yet:
+> 1. **Ladder capture in the shadow watcher** — `mirror_v3/copy_watcher.py`
+>    now records `book_asks`/`book_bids` (top 20 CLOB `/book` levels, shaped
+>    for `fill_models.precise_fill`) per record; gates still quote `/price`
+>    unchanged, `/book` failure = null ladders, never a verdict change.
+>    17 unit tests. NEEDS A REDEPLOY to take effect.
+> 2. **DEPLOY-VERSION QUESTION (UNVERIFIED):** §0 says the service runs
+>    commit `eac8a92`, but A+D sizing landed AFTER it (`4d6c3da`) — if no
+>    redeploy happened, live records lack `conviction_r`/`size_multiplier`.
+>    Operator check + the ladder redeploy resolve this together (see §5).
+> 3. **Tx-exact re-adjudication of the 9 DISCREPANT** —
+>    `scripts/readjudicate_discrepant.py` (pre-registered VINDICATED /
+>    STILL_DISCREPANT rule in its docstring; vindicated traders only ever
+>    join as a SECOND cohort, operator-gated). Awaiting operator VPS run.
+> 4. **Crypto kill-test runner** — `scripts/crypto_kill_test.py`
+>    (pre-registered KILLED/SURVIVES/INCONCLUSIVE at lag 10s vs +0.02
+>    floor). Awaiting operator VPS run, after (3).
+> A daily 13:00 UTC steward check-in Routine now fires into this session
+> (king's wake-ups are dead with it).
 
 **The operator runs all VPS commands** via single-line SSH one-liners from
 Windows PowerShell (he cannot paste after connecting; never give multi-line).
@@ -178,6 +203,9 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
 | Fill-quality gate | `scripts/backtest_copyable_fills.py` | audited coarse model at real ask for a NAMED roster; SURVIVES/FILL-KILLED/NO-BOOK; runs after a walk-forward PASS |
 | Persistence check (secondary) | `scripts/check_trader_persistence.py` | read-only; reworked verdicts (SIGNIFICANT-BUT-SMALL; NULL can't discard underpowered-significant cutoffs), UNION-ALL planner-safe SQL, estimand-faithful first-entry selection, `--since/--until`, LIMIT sentinel; anti-conservative-null caveat printed; self-test + 11 unit tests green; **awaiting operator VPS run** |
 | Operator runbooks | `docs/VPS_RUNBOOK_2026-07-02.md`, `deploy/mb_vps_oneshot.sh` | one-paste checks; mktemp-safe |
+| Shadow ladder capture | `mirror_v3/copy_watcher.py` (`trim_book`/`fetch_book`, `book_asks`/`book_bids` fields) | additive, gates untouched; 17 unit tests; **needs redeploy to take effect** |
+| Tx-exact re-adjudication | `scripts/readjudicate_discrepant.py` | per-tx/per-event size+price matcher (kills the ±window blend artifact); pre-registered VINDICATED rule; self-test + 8 unit tests; **awaiting operator VPS run** |
+| Crypto kill-test runner | `scripts/crypto_kill_test.py` | coarse fills at lag 0/10/30s over `mirror_rejected_signals` crypto prints; pre-registered KILLED/SURVIVES/INCONCLUSIVE; self-test + 6 unit tests; **awaiting operator VPS run** |
 
 ## 5. Open threads / what's next
 
@@ -254,7 +282,22 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
   (anti-conservative); (5) `DELTA_SECONDS` from measured `feed_lag_p95_s` (~10s), not 60.
 - **[operator] OddsPapi paid tier** — confirm sports coverage + that `ODDSPAPI_API_KEY` is set in the VPS env (presence only). Then the sharp-line engine wires to live data.
 - **[build, blocked on above] Sports sharp-line pipeline:** live OddsPapi fetch, sports team-name → Polymarket condition_id matcher (esports matcher exists in EB, sports is net-new), offline backfill of `sharp_prob` onto signals, then run through the gate.
-- **[build, unblocked] Crypto kill-test:** run crypto signals through the harness at realistic latency to confirm the latency-trap hypothesis and formally drop crypto.
+- **[operator, FIRST — one paste] Deploy-version check + ladder redeploy:**
+  `ls /opt/mirror3/mirror_v3` — if `sizing.py` is absent the box predates
+  A+D sizing AND the ladder capture; either way one rerun of
+  `deploy/mirror3_shadow_deploy.sh` from this branch picks up both
+  (idempotent; never touches `.env.mirror3`). Until then, live shadow
+  records carry no `conviction_r` (UNVERIFIED which commit runs) and no
+  ladders (VERIFIED — capture merged 2026-07-12, post-deploy).
+- **[operator] Run the tx-exact re-adjudication** (`readjudicate_discrepant.py`,
+  from a /tmp clone of this branch; roster = the audit json's 9 DISCREPANT).
+  VINDICATED traders are PROPOSED for a SECOND shadow cohort with its own
+  start date — operator decision, never automatic. Ceiling is 16→25; the
+  matcher may equally confirm real discrepancies.
+- **[build DONE 2026-07-12 → operator run] Crypto kill-test:**
+  `scripts/crypto_kill_test.py`, pre-registered verdict at lag 10s vs the
+  +0.02 econ floor; INCONCLUSIVE can never kill. Run after the
+  re-adjudication (lower priority; it buys focus, not money).
 - **[build, unblocked] v3 rejection logging + RTDS plumbing** so the silo collects its own signal stream (then old MB can be fully stopped, not just paused).
 - **[decision] Merge/PR hygiene:** master is current; direct master pushes are operator-gated by the sandbox.
 
@@ -273,6 +316,17 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
 
 ## 7. Landmines (do not trip)
 
+- **A frozen session's unpushed work is GONE (2026-07-12).** Remote session
+  containers are ephemeral; when the `irq7r5` session froze, its built-but-
+  unpushed ladder-capture patch died with it and had to be rebuilt from
+  scratch. Push after every completed unit of work, before idling or waiting
+  on the operator — "built, tested" means nothing until it is on origin.
+- **The chain audit's ±window matcher BLENDS same-token trades** — two real
+  trades at different prices inside the window produce a chain price that
+  matches neither API row → false DISCREPANT. Any future audit verdict
+  should use (or cross-check with) the tx-exact matcher
+  (`scripts/readjudicate_discrepant.py`); the audit's own mismatches are an
+  upper bound on real discrepancies, not a count of them.
 - **web3 v7 renamed `get_logs` kwargs to `from_block`/`to_block`** — the
   camelCase spelling TypeErrors on EVERY call and a bare `except` can launder
   that into "rpc_error" (2026-07-10: 580/580 dead samples). Use
