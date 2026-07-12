@@ -6,12 +6,21 @@ cannot trip a known landmine.
 
 ## On every session START
 
-1. Read in order: `CLAUDE.md` → `MB_REBUILD_PLAN.md` → `docs/MB_STATE.md`.
-2. `git fetch` and check branch `claude/mirror-bot-salvage-rebuild-d08v6x` vs `master`.
-3. Confirm live state before touching anything: is the bot paper or live?
-   `deploy/mb_vps_oneshot.sh` §1 (or the runbook) answers it. **Never assume.**
-4. Re-derive any number you're about to rely on. Prior figures are stale until
+1. **STEP ZERO — find the authoritative state doc (2026-07-11, mandatory).**
+   MB docs are branch-versioned and master's copy can be stale or actively
+   wrong. Never hardcode a branch name in this protocol or in prompts —
+   DISCOVER it: `git ls-remote origin 'refs/heads/claude/*'`, then for the
+   recent heads `git fetch origin <branch> && git show
+   FETCH_HEAD:docs/MB_STATE.md | head -5` and take the newest `Last updated`.
+   Read THAT copy (via `git show`, or check the branch out). Only then read
+   in order: `CLAUDE.md` → newest `docs/MB_STATE.md` → its companions.
+2. Confirm live state before touching anything: is the bot paper or live?
+   What services run? (`systemctl` via operator paste, or the runbook).
+   **Never assume.**
+3. Re-derive any number you're about to rely on. Prior figures are stale until
    re-measured (`scripts/verify_salvage_data.py`, `scripts/bot_pnl.py`).
+4. New sessions are started with the prompt template in
+   `docs/MB_SESSION_STARTUP.md` — never a from-memory prompt.
 
 ## On every session END — update `docs/MB_STATE.md`
 
@@ -22,6 +31,14 @@ Edit these sections so they reflect reality (not intentions):
 - **§5 Open threads** — tag each `[operator]` or `[build]`; delete done ones.
 - **§7 Landmines** — add any new one you discovered.
 Bump the "Last updated" date + the commit SHA line. Commit the handoff with your work.
+
+**Then SYNC MASTER (mandatory since 2026-07-11):** open a docs-only PR to
+`master` carrying the updated state docs (`MB_STATE.md`, companions, and any
+CLAUDE.md/protocol changes). Master merges are operator-gated — the PR is the
+session's job, the click is the operator's. A session that advances MB state
+without opening the sync PR has NOT finished its handoff. (Why: on 2026-07-11
+a fresh session read master's 6-day-stale MB_STATE and recommended the banned
+circular validate rerun that the stale copy still listed as an operator action.)
 
 ## Rules that make handoffs trustworthy
 

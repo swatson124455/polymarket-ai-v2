@@ -1,5 +1,15 @@
 # MirrorBot Rebuild — Living State / Handoff (docs/MB_STATE.md)
 
+> **⚠ BRANCH-VERSIONED DOCUMENT — the copy you are reading may be stale.**
+> This doc advances on session branches; master's copy lags until the
+> end-of-session docs-sync PR merges. Before trusting ANY fact here, find
+> the newest copy: `git ls-remote origin 'refs/heads/claude/*'` then
+> compare `Last updated` lines via
+> `git fetch origin <branch> && git show FETCH_HEAD:docs/MB_STATE.md | head -5`.
+> Newest wins. (Protocol: CLAUDE.md "STATE DOCS ARE BRANCH-VERSIONED";
+> 2026-07-11 incident: a fresh session read master's stale copy and
+> recommended the BANNED circular validate rerun it found there.)
+
 **Last updated:** 2026-07-10 (second session, ~20:20 UTC) · **Branch:** `claude/mirrorbot-persistence-check-irq7r5` (fast-forward superset of `oc02tk`/PR #1; head = this commit)
 **Read first:** `CLAUDE.md` (binding directives), then this file, then **`docs/MB_COPYTRADER_CONTEXT.md` (FULL context brief for the live copy-trader investigation — the complete reasoning chain, API gotchas, and decision tree)**. `MB_REBUILD_PLAN.md` holds the older plan + operator decisions.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
