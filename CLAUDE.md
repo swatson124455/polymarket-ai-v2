@@ -41,6 +41,25 @@ If you think you need to block neg-risk, you don't. Read `feedback_negrisk_routi
 
 EB and WB sessions are SUBORDINATE. When in doubt, stop and ask.
 
+## STATE DOCS ARE BRANCH-VERSIONED (CODIFIED 2026-07-11 — CHECK BEFORE ANY MB WORK)
+
+The living MirrorBot state (`docs/MB_STATE.md` + companions) advances on
+session branches; **the copy on master (or in your working tree) may be stale
+or ACTIVELY WRONG.** Incident 2026-07-11: a fresh session read master's
+6-day-stale MB_STATE and recommended re-running the scoring validate — an
+action the current doc BANS as a confirmed circular false-PASS machine. The
+stale copy listed it as a recommended operator step.
+
+Protocol (mandatory before trusting any MB doc or starting MB work):
+1. `git ls-remote origin 'refs/heads/claude/*'` — then for recent heads,
+   `git fetch origin <branch> && git show FETCH_HEAD:docs/MB_STATE.md | head -5`.
+   The newest `Last updated` line is the authoritative copy. Read THAT one.
+2. Every session that advances MB state ends with a **docs-only sync PR to
+   master** (docs/MB_HANDOFF_PROTOCOL.md) — the handoff is not complete
+   without it.
+3. New-session prompts come from `docs/MB_SESSION_STARTUP.md` (branch-pinned,
+   step-zero discovery built in) — never from memory.
+
 ## Prime Directive
 
 Working code is sacred. Fix only what is broken. Fix it at the root. Prove it before and after. If you cannot explain exactly why a line needs to change and exactly what breaks if you don't change it, do not change it.
