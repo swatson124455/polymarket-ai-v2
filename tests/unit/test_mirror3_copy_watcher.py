@@ -198,6 +198,92 @@ def test_fetch_book_fail_soft():
     assert book["asks"][0] == {"price": 0.61, "size": 50.0}
 
 
+# ── V2 decode + direction (layout validated on-chain 2026-07-12) ─────────────
+TOK = 61122849617506817837555062824416940793332636909568241444602408963781913414334
+
+
+def _pad32(n):
+    return f"{n:064x}"
+
+
+def _v2_log(owner=A, taker="0x" + "9" * 40, usdc=23_141_920_320,
+            tok=23_808_560_000, token=TOK, topic0=None,
+            address="0xe111180000d2663c0091e4f400237545b87b996b"):
+    return {"address": address,
+            "topics": [topic0 or cw.FILL_TOPIC_V2,
+                       "0x" + "ab" * 32,                      # orderHash
+                       "0x" + "0" * 24 + owner[2:].lower(),   # order owner
+                       "0x" + "0" * 24 + taker[2:].lower()],
+            "data": "0x" + _pad32(0) + _pad32(token) + _pad32(usdc)
+                    + _pad32(tok) + _pad32(0) + _pad32(0) + _pad32(0)}
+
+
+def test_decode_fill_v2_roster_order():
+    sig = cw.decode_fill_v2(_v2_log(), ROSTER)
+    assert sig is not None and sig["trader"] == A
+    assert sig["token_id"] == str(TOK)
+    assert abs(sig["whale_price"] - 0.972) < 1e-4      # ground-truth trade
+    assert abs(sig["whale_size_usd"] - 23141.92032) < 1e-6
+    assert sig["was_taker"] is False
+
+
+def test_decode_fill_v2_taker_summary_and_rejects():
+    # taker summary: topic3 == emitting exchange
+    ex = "0xe111180000d2663c0091e4f400237545b87b996b"
+    sig = cw.decode_fill_v2(_v2_log(taker=ex, address=ex), ROSTER)
+    assert sig is not None and sig["was_taker"] is True
+    # non-roster owner, wrong topic0, zero amounts, short data
+    assert cw.decode_fill_v2(_v2_log(owner=B), ROSTER) is None
+    assert cw.decode_fill_v2(_v2_log(topic0="0x" + "00" * 32), ROSTER) is None
+    assert cw.decode_fill_v2(_v2_log(tok=0), ROSTER) is None
+    bad = _v2_log()
+    bad["data"] = "0x" + _pad32(0)
+    assert cw.decode_fill_v2(bad, ROSTER) is None
+
+
+def test_side_from_receipt_logs():
+    def t1155(frm, to, token=TOK):
+        return {"address": "0x4d97dcd97ec945f40cf65f87097ace5ea0476045",
+                "topics": [cw.T1155_SINGLE, "0x" + "0" * 64,
+                           "0x" + "0" * 24 + frm[2:].lower(),
+                           "0x" + "0" * 24 + to[2:].lower()],
+                "data": "0x" + _pad32(token) + _pad32(5_000_000)}
+
+    def pusd(frm, to):
+        return {"address": cw.PUSD_CONTRACT,
+                "topics": [cw.T20_TRANSFER,
+                           "0x" + "0" * 24 + frm[2:].lower(),
+                           "0x" + "0" * 24 + to[2:].lower()],
+                "data": "0x" + _pad32(1_000_000)}
+
+    X = "0x" + "c" * 40
+    assert cw.side_from_receipt_logs([t1155(X, A)], A, str(TOK)) == "BUY"
+    assert cw.side_from_receipt_logs([t1155(A, X)], A, str(TOK)) == "SELL"
+    # wrong token id -> no 1155 evidence; pUSD fallback decides
+    assert cw.side_from_receipt_logs(
+        [t1155(X, A, token=42), pusd(A, X)], A, str(TOK)) == "BUY"
+    assert cw.side_from_receipt_logs(
+        [t1155(X, A, token=42), pusd(X, A)], A, str(TOK)) == "SELL"
+    # 1155 evidence beats the pUSD hint
+    assert cw.side_from_receipt_logs(
+        [pusd(X, A), t1155(X, A)], A, str(TOK)) == "BUY"
+    assert cw.side_from_receipt_logs([], A, str(TOK)) is None
+
+
+def test_hex_words_helpers():
+    class HB:  # HexBytes-alike
+        def __init__(self, s):
+            self._s = s
+
+        def hex(self):
+            return self._s
+
+    assert cw._hex(HB("0xab")) == "0xab" and cw._hex(HB("ab")) == "0xab"
+    assert cw._hex("0xab") == "0xab"
+    assert cw._words("0x" + _pad32(7) + _pad32(9)) == [7, 9]
+    assert cw._topic_addr("0x" + "0" * 24 + "AB" * 20) == "0x" + "ab" * 20
+
+
 def test_canary_state_alarm_and_recovery():
     # healthy: events seen, streak stays 0, no message
     assert cw.canary_state(0, 37) == (0, None)

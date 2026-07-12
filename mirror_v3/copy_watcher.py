@@ -12,11 +12,22 @@ data-api), applies the pre-trade gates a live copier would apply, quotes
 the REAL current ask as our hypothetical fill, and appends one JSONL
 record per signal. The shadow log IS the fill-quality dataset.
 
-DETECTION: polls OrderFilled on both CTF exchanges (main + NegRisk) with
-the roster addresses as indexed-topic filters (maker OR taker), from a
-block cursor. Poll floor ~POLL_S + block time => ~3-4s detection lag,
-measured and recorded per signal (detect_lag_s). WSS subscription is a
-later upgrade; polling works on any HTTP RPC that serves eth_getLogs.
+DETECTION (REWORKED 2026-07-12 — V2 exchanges): trading migrated off the
+V1 exchanges (WI-24, on-chain verified 2026-06-11); the original V1
+OrderFilled watch was blind from its first minute (33h, zero records,
+while the roster made 179 BUYs — receipt-traced). Fills now emit an
+UNNAMED event (topic0 FILL_TOPIC_V2, layout reverse-engineered from
+known trades via scripts/decode_v2_fill.py and validated against API
+ground truth: price matched to 4 decimals) on the V2 exchanges:
+  topics: [FILL_TOPIC_V2, orderHash, ORDER OWNER, counterparty-or-exchange]
+  data:   [?, ctf_token_id, usdc_amount, token_amount, 0, 0, 0]  (6-dec)
+The poll is ONE raw eth_getLogs per window: address=[both V2 exchanges],
+topics=[FILL_TOPIC_V2, None, <roster as topic-2 list>]. BUY/SELL is NOT
+in the event (seller legs have identical shape — proven); direction
+comes from the tx receipt's token-transfer logs (outcome tokens TO the
+trader = BUY; pUSD paid BY the trader corroborates), fetched only on
+roster hits. Poll floor ~POLL_S + block time => ~3-4s detection lag,
+measured and recorded per signal (detect_lag_s).
 
 GATES (per signal, all recorded, none fatal to the run):
   NO_BOOK          could not quote a book (CLOB /price timeout/empty)
@@ -68,8 +79,25 @@ MAX_WINDOW_RETRIES = 5  # same-window failures before a LOUD skip
 # repeated zeros mean the RPC serves no logs and detection is blind.
 CANARY_EVERY_S = 600       # one canary query cycle per 10 min
 CANARY_SETTLE_BLOCKS = 60  # window ends this far behind head (settled)
-CANARY_SPAN = 40           # window size in blocks (~85s of chain)
+CANARY_SPAN = 300          # window size in blocks (~10.5 min of chain —
+                           # 40 blocks false-alarmed on a quiet Saturday)
 CANARY_ALARM_AFTER = 2     # consecutive zero cycles before the LOUD alarm
+
+# ── V2 exchange constants (2026-07-12; see DETECTION in the docstring) ───────
+# Main V2: base_engine/execution/contract_manager.py:34. NegRisk V2: resolved
+# from py_clob_client_v2 on the VPS (scripts/rpc_logs_probe.find_negrisk_v2).
+# Kept LOCAL to mirror_v3 on purpose — blockchain_client's V1 constants serve
+# historical queries (the audit) and must not change under other consumers.
+EXCHANGE_V2 = "0xE111180000d2663C0091e4f400237545B87B996B"
+NEGRISK_EXCHANGE_V2 = "0xe2222d279d744050d28e00520010520000310F59"
+# The V2 fill event's topic0 (unnamed; receipt-traced 2026-07-12, one event
+# per matched order, layout validated against data-api ground truth)
+FILL_TOPIC_V2 = "0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee"
+# Direction evidence in the tx receipt (standard signatures)
+T1155_SINGLE = "0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62"
+T1155_BATCH = "0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb"
+T20_TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+PUSD_CONTRACT = "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb"  # V2 trading collateral
 
 
 # ── Pure, offline-testable core ──────────────────────────────────────────────
@@ -121,6 +149,86 @@ def decode_fill(args: dict, roster: set[str]) -> Optional[dict]:
         "whale_price": (usdc / SCALE) / (tok / SCALE),
         "whale_size_usd": usdc / SCALE,
     }
+
+
+def _hex(x: Any) -> str:
+    """Normalize a topic/data value (HexBytes | bytes | str) to 0x-hex."""
+    if hasattr(x, "hex"):
+        s = x.hex()
+    else:
+        s = str(x)
+    return s if s.startswith("0x") else "0x" + s
+
+
+def _words(data: Any) -> list[int]:
+    h = _hex(data)[2:]
+    return [int(h[i:i + 64], 16) for i in range(0, len(h) - 63, 64)]
+
+
+def _topic_addr(topic: Any) -> str:
+    return "0x" + _hex(topic)[-40:].lower()
+
+
+def decode_fill_v2(lg: dict, roster: set[str]) -> Optional[dict]:
+    """Raw V2 fill log -> copy signal, or None if not a roster order.
+
+    Layout (empirically validated, scripts/decode_v2_fill.py 2026-07-12):
+      topics[2] = order owner (server-side filtered to the roster)
+      data[1]   = ctf token id; data[2] = usdc*1e6; data[3] = tokens*1e6
+      price = usdc/tokens (matched API ground truth to 4 decimals)
+    Direction is NOT here — side_from_receipt_logs() supplies it."""
+    topics = lg.get("topics") or []
+    if len(topics) < 3 or _hex(topics[0]).lower() != FILL_TOPIC_V2:
+        return None
+    trader = _topic_addr(topics[2])
+    if trader not in roster:
+        return None
+    w = _words(lg.get("data", "0x"))
+    if len(w) < 4:
+        return None
+    token, usdc, tok = w[1], w[2], w[3]
+    if tok <= 0 or usdc <= 0:
+        return None
+    was_taker = (len(topics) > 3
+                 and _topic_addr(topics[3]) == str(lg.get("address", "")).lower())
+    return {
+        "trader": trader,
+        "token_id": str(token),
+        "whale_price": (usdc / SCALE) / (tok / SCALE),
+        "whale_size_usd": usdc / SCALE,
+        "was_taker": was_taker,
+    }
+
+
+def side_from_receipt_logs(logs: list, trader: str,
+                           token_id: str) -> Optional[str]:
+    """BUY | SELL | None from a tx receipt's transfer logs.
+
+    Primary: ERC-1155 movement of THIS token id relative to the trader
+    (to trader = BUY — covers both direct transfers and mint/split legs;
+    from trader = SELL). Fallback: pUSD flow (trader pays = BUY)."""
+    tid = int(token_id)
+    pusd_hint: Optional[str] = None
+    a = trader.lower()
+    for lg in logs:
+        topics = lg.get("topics") or []
+        if not topics:
+            continue
+        t0 = _hex(topics[0]).lower()
+        addr = str(lg.get("address", "")).lower()
+        if t0 in (T1155_SINGLE, T1155_BATCH) and len(topics) >= 4:
+            if tid not in _words(lg.get("data", "0x")):
+                continue
+            if _topic_addr(topics[3]) == a:
+                return "BUY"
+            if _topic_addr(topics[2]) == a:
+                return "SELL"
+        elif t0 == T20_TRANSFER and addr == PUSD_CONTRACT and len(topics) >= 3:
+            if _topic_addr(topics[1]) == a:
+                pusd_hint = pusd_hint or "BUY"
+            elif _topic_addr(topics[2]) == a:
+                pusd_hint = pusd_hint or "SELL"
+    return pusd_hint
 
 
 def evaluate_gates(whale_price: float, best_bid: Optional[float],
@@ -306,9 +414,7 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
     """Poll loop. Raises on wiring errors (fail-loud; run.py exits so
     systemd restarts); per-signal errors are recorded, never fatal."""
     import aiohttp
-    from base_engine.data.blockchain_client import (
-        BlockchainClient, EXCHANGE_CONTRACT, NEGRISK_EXCHANGE_CONTRACT,
-        ORDER_FILLED_EVENT_ABI)
+    from base_engine.data.blockchain_client import BlockchainClient
     from web3 import Web3
 
     from mirror_v3.sizing import (
@@ -317,7 +423,9 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
 
     roster = load_roster(cfg.roster_path)
     roster_set = set(roster)
-    roster_cs = [Web3.to_checksum_address(a) for a in roster]
+    roster_topics = [addr_topic(a) for a in roster]  # topic-2 = order owner
+    v2_addrs = [Web3.to_checksum_address(a)
+                for a in (EXCHANGE_V2, NEGRISK_EXCHANGE_V2)]
     if cfg.median_cache and os.path.isdir(cfg.median_cache):
         medians = seed_medians_from_cache(cfg.median_cache, roster)
         seeded = sum(1 for a in roster if medians.stats(a)[1] > 0)
@@ -329,13 +437,21 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
             f"traders cold-start at 1.0x until {20} observed wagers")
     log(f"[copy_watcher] roster={len(roster)} rpc={cfg.rpc_url} "
         f"gates: chase<={cfg.max_chase:.02f} spread<={cfg.max_spread:.02f} "
-        f"poll={cfg.poll_s}s sink={cfg.shadow_path}")
+        f"poll={cfg.poll_s}s sink={cfg.shadow_path} "
+        f"exchanges=V2 topic={FILL_TOPIC_V2[:10]}…")
 
     bc = BlockchainClient(rpc_url=cfg.rpc_url)
     await bc.ensure_client()
-    contracts = [bc.w3.eth.contract(
-        address=Web3.to_checksum_address(c), abi=[ORDER_FILLED_EVENT_ABI])
-        for c in dict.fromkeys((EXCHANGE_CONTRACT, NEGRISK_EXCHANGE_CONTRACT))]
+
+    async def fill_logs(lo: int, hi: int, owner_topics: Optional[list]) -> list:
+        """Raw V2 fill logs in [lo, hi]; owner_topics=None for the canary
+        (unfiltered count). ONE eth_getLogs covers both exchanges."""
+        topics: list = [FILL_TOPIC_V2]
+        if owner_topics is not None:
+            topics += [None, owner_topics]
+        return await bc.w3.eth.get_logs({
+            "fromBlock": lo, "toBlock": hi,
+            "address": v2_addrs, "topics": topics})
 
     os.makedirs(os.path.dirname(cfg.shadow_path) or ".", exist_ok=True)
     dedup = FirstBuyDedup()
@@ -354,17 +470,12 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                 continue
             if time.time() >= canary_next:
                 canary_next = time.time() + CANARY_EVERY_S
-                n_canary = 0
                 b1 = head - CANARY_SETTLE_BLOCKS
-                for c in contracts:
-                    try:
-                        evs = await get_logs_compat(
-                            c.events.OrderFilled, b1 - CANARY_SPAN, b1, {})
-                        n_canary += len(evs)
-                    except Exception as e:
-                        log(f"[copy_watcher] canary query error: {e!r}")
-                        n_canary = -1
-                        break
+                try:
+                    n_canary = len(await fill_logs(b1 - CANARY_SPAN, b1, None))
+                except Exception as e:
+                    log(f"[copy_watcher] canary query error: {e!r}")
+                    n_canary = -1
                 if n_canary >= 0:
                     canary_zero_streak, msg = canary_state(
                         canary_zero_streak, n_canary)
@@ -381,17 +492,11 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                 # MAX_WINDOW_RETRIES in a row is skipped LOUDLY.
                 events: list = []
                 window_ok = True
-                for c in contracts:
-                    for field in ("maker", "taker"):
-                        try:
-                            evs = await get_logs_compat(
-                                c.events.OrderFilled, lo, hi,
-                                {field: roster_cs})
-                            events.extend(evs)
-                        except Exception as e:
-                            window_ok = False
-                            log(f"[copy_watcher] get_logs error "
-                                f"[{lo},{hi}] {field}: {e!r}")
+                try:
+                    events = await fill_logs(lo, hi, roster_topics)
+                except Exception as e:
+                    window_ok = False
+                    log(f"[copy_watcher] get_logs error [{lo},{hi}]: {e!r}")
                 if not window_ok:
                     fail_streak += 1
                     if fail_streak >= MAX_WINDOW_RETRIES:
@@ -405,19 +510,37 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                     break
                 fail_streak = 0
                 cursor = hi + 1
-                # decode, then merge same-tx fills into ONE wager (a split
-                # order's first fill alone under-reads conviction)
+                # decode raw V2 logs, then merge same-tx fills into ONE wager
+                # (a split order's first fill alone under-reads conviction)
                 decoded: list[dict] = []
                 for ev in events:
-                    sig = decode_fill(dict(ev["args"]), roster_set)
+                    sig = decode_fill_v2(dict(ev), roster_set)
                     if sig is None:
                         continue
-                    txh = ev.get("transactionHash", "")
-                    sig["tx"] = txh.hex() if hasattr(txh, "hex") else str(txh)
+                    sig["tx"] = _hex(ev.get("transactionHash", ""))
                     sig["_block"] = int(ev.get("blockNumber", 0))
                     decoded.append(sig)
                 for sig in merge_same_tx(decoded):
                     now = time.time()
+                    # direction is not in the V2 event — read the receipt
+                    # (roster hits only, so this is rare and cheap)
+                    try:
+                        rcpt = await bc.w3.eth.get_transaction_receipt(
+                            sig["tx"])
+                        side = side_from_receipt_logs(
+                            [dict(lg) for lg in rcpt["logs"]],
+                            sig["trader"], sig["token_id"])
+                    except Exception as e:
+                        log(f"[copy_watcher] receipt error {sig['tx'][:18]}…: "
+                            f"{e!r}")
+                        side = None
+                    if side != "BUY":
+                        if side is None:
+                            log(f"[copy_watcher] SIDE UNKNOWN (skipped) "
+                                f"{sig['trader'][:10]}… tok="
+                                f"{sig['token_id'][:10]}… tx={sig['tx'][:18]}…")
+                        continue  # estimand is first BUY; SELLs are ignored
+                    sig["side"] = "BUY"
                     try:
                         blk = await bc.w3.eth.get_block(sig["_block"])
                         block_ts = int(blk["timestamp"])
