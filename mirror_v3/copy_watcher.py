@@ -61,6 +61,15 @@ CLOB_BOOK_URL = "https://clob.polymarket.com/book"
 BOOK_DEPTH = 20  # ladder levels kept per side (max copy is ~1.5 units — ample)
 GETLOGS_CHUNK = 900  # public-RPC eth_getLogs range cap (audit-proven)
 MAX_WINDOW_RETRIES = 5  # same-window failures before a LOUD skip
+# Blind-RPC canary (2026-07-12): Tenderly's gateway answered eth_getLogs
+# with [] instead of data for 33h — no errors, zero detections, invisible
+# to retry-don't-skip. The canary periodically counts UNFILTERED
+# OrderFilled events in a settled window; Polymarket fills constantly, so
+# repeated zeros mean the RPC serves no logs and detection is blind.
+CANARY_EVERY_S = 600       # one canary query cycle per 10 min
+CANARY_SETTLE_BLOCKS = 60  # window ends this far behind head (settled)
+CANARY_SPAN = 40           # window size in blocks (~85s of chain)
+CANARY_ALARM_AFTER = 2     # consecutive zero cycles before the LOUD alarm
 
 
 # ── Pure, offline-testable core ──────────────────────────────────────────────
@@ -224,6 +233,24 @@ def shadow_record(sig: dict, verdict: str, fill: Optional[float],
     }
 
 
+def canary_state(zero_streak: int, n_events: int) -> tuple[int, Optional[str]]:
+    """Fold one canary observation into the zero-streak. Returns the new
+    streak and a message to log (alarm on the threshold crossing and on
+    every cycle while blind; recovery notice when events reappear)."""
+    if n_events > 0:
+        msg = ("canary RECOVERED: RPC serves logs again "
+               f"({n_events} events in settled window)") if \
+            zero_streak >= CANARY_ALARM_AFTER else None
+        return 0, msg
+    streak = zero_streak + 1
+    if streak >= CANARY_ALARM_AFTER:
+        return streak, (f"CANARY ALARM ({streak}x): 0 OrderFilled events in a "
+                        f"settled {CANARY_SPAN}-block window — Polymarket "
+                        "never sleeps that long. The RPC is serving empty "
+                        "logs; DETECTION IS BLIND. Change MIRROR3_RPC_URL.")
+    return streak, None
+
+
 class FirstBuyDedup:
     """The graded estimand is FIRST BUY per (trader, token); repeat fills
     (multi-fill orders, later adds) are recorded but marked duplicate so
@@ -314,6 +341,8 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
     dedup = FirstBuyDedup()
     cursor = int(await bc.w3.eth.get_block_number()) + 1  # forward-only
     fail_streak = 0  # consecutive failures of the SAME window (stall guard)
+    canary_zero_streak = 0
+    canary_next = 0.0  # first canary fires on the first poll (fail fast)
 
     async with aiohttp.ClientSession() as session:
         while True:
@@ -323,6 +352,24 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
             except Exception as e:
                 log(f"[copy_watcher] head fetch error: {e!r}")
                 continue
+            if time.time() >= canary_next:
+                canary_next = time.time() + CANARY_EVERY_S
+                n_canary = 0
+                b1 = head - CANARY_SETTLE_BLOCKS
+                for c in contracts:
+                    try:
+                        evs = await get_logs_compat(
+                            c.events.OrderFilled, b1 - CANARY_SPAN, b1, {})
+                        n_canary += len(evs)
+                    except Exception as e:
+                        log(f"[copy_watcher] canary query error: {e!r}")
+                        n_canary = -1
+                        break
+                if n_canary >= 0:
+                    canary_zero_streak, msg = canary_state(
+                        canary_zero_streak, n_canary)
+                    if msg:
+                        log(f"[copy_watcher] {msg}")
             if head < cursor:
                 continue
             for lo, hi in block_chunks(cursor, head):

@@ -198,6 +198,24 @@ def test_fetch_book_fail_soft():
     assert book["asks"][0] == {"price": 0.61, "size": 50.0}
 
 
+def test_canary_state_alarm_and_recovery():
+    # healthy: events seen, streak stays 0, no message
+    assert cw.canary_state(0, 37) == (0, None)
+    # first zero: streak 1, silent (single quiet window can happen)
+    s, msg = cw.canary_state(0, 0)
+    assert s == 1 and msg is None
+    # second zero: alarm fires and keeps firing while blind
+    s, msg = cw.canary_state(1, 0)
+    assert s == 2 and "CANARY ALARM" in msg and "BLIND" in msg
+    s, msg = cw.canary_state(2, 0)
+    assert s == 3 and "CANARY ALARM (3x)" in msg
+    # recovery after an alarm is announced
+    s, msg = cw.canary_state(3, 12)
+    assert s == 0 and "RECOVERED" in msg
+    # recovery from a single silent zero is not announced
+    assert cw.canary_state(1, 12) == (0, None)
+
+
 def test_block_chunks_cap():
     spans = cw.block_chunks(0, 2000)
     assert all(hi - lo + 1 <= cw.GETLOGS_CHUNK for lo, hi in spans)
