@@ -52,6 +52,14 @@ def main() -> int:
                          "join runs without aliases, exactly as before")
     args = ap.parse_args()
 
+    if args.de_vig == "shin":
+        from esports_v2.model.clv import shin_available
+        if not shin_available():
+            print("!! --de-vig shin requested but the 'shin' package is NOT "
+                  "installed — refusing to print simple-de-vig numbers under a "
+                  "shin label. `pip install shin` or use --de-vig simple.")
+            return 2
+
     alias_expand = load_alias_expand(args.aliases)
     if args.aliases:
         print(f"[0] aliases: {'loaded' if alias_expand else 'ABSENT/unusable'} "
