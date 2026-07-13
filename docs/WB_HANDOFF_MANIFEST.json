@@ -106,7 +106,12 @@
     {
       "file": "bots/weather_bot.py",
       "pattern": "S229",
-      "expect": 5
+      "expect": 9
+    },
+    {
+      "file": "bots/weather/engine/base_engine/weather/probability_engine.py",
+      "pattern": "S229",
+      "expect": 4
     },
     {
       "file": "bots/weather/engine/config/settings.py",

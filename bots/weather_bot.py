@@ -5960,6 +5960,78 @@ class WeatherBot(BaseBot):
         return (a, b, sigma)
 
     @staticmethod
+    def _samos_global_by_station(
+        samos_params: Tuple[float, float, float],
+        clim_lookup: Dict[Tuple[str, int], Tuple[float, float]],
+        day_of_year: int,
+        station_ids: List[str],
+    ) -> Dict[str, Tuple[float, float, float]]:
+        """S229: de-normalize anomaly-space SAMOS params into raw-space EMOS
+        (a, b, sigma) PER STATION using that station's OWN climatology:
+
+            a_raw = μ_c·(1 − b_s) + σ_c·a_s;  b_raw = b_s;  σ_raw = σ_c·σ_s
+
+        Root fix for the mixed-unit pooling defect: the old conversion used
+        climatology AVERAGED ACROSS ALL stations — °C and °F pooled
+        (avg_clim_mean≈43.6, unit soup) — so the single raw-space tuple
+        (9.28, 0.79, 2.10) dragged every °F station ~10°F cold and °C
+        stations ~3°C warm (KORD 2026-07-14: forecast 97.2°F → corrected
+        86.4°F, P(≤93.5°F)=0.9996 vs market ~5% — phantom NO edge on ~90%
+        of bucket families).
+
+        Climatology is looked up at day_of_year with ±3-day tolerance;
+        stations without a usable row are OMITTED — they fall back to their
+        per-station simple bias offset, then identity, never to a
+        cross-station pooled correction.
+        """
+        a_s, b_s, s_s = samos_params
+        out: Dict[str, Tuple[float, float, float]] = {}
+        for sid in station_ids:
+            clim = None
+            for delta in (0, 1, -1, 2, -2, 3, -3):
+                doy = (day_of_year - 1 + delta) % 366 + 1
+                clim = clim_lookup.get((sid, doy))
+                if clim is not None:
+                    break
+            if clim is None:
+                continue
+            cm, cs = clim
+            if not (cs and cs > 0.5):
+                continue
+            a_raw = cm * (1.0 - b_s) + cs * a_s
+            sigma_raw = max(cs * s_s, 0.5)
+            out[sid] = (a_raw, b_s, sigma_raw)
+        return out
+
+    @staticmethod
+    def _fit_global_emos_by_unit(
+        raw_pairs_by_station: Dict[str, List[Tuple[float, float]]],
+        station_units: Dict[str, str],
+        min_samples: int,
+    ) -> Dict[str, Tuple[float, float, float]]:
+        """S229: legacy global-EMOS fallback for when SAMOS/climatology is
+        unavailable — one OLS per TEMPERATURE UNIT instead of pooling °C+°F
+        pairs into a single regression (same unit-soup defect as the SAMOS
+        conversion, in miniature). Every registry station of a unit inherits
+        its unit's fit; units with < min_samples pairs are skipped."""
+        pools: Dict[str, List[Tuple[float, float]]] = {}
+        for sid, pairs in raw_pairs_by_station.items():
+            unit = (station_units.get(sid) or "").upper()
+            if unit in ("F", "C"):
+                pools.setdefault(unit, []).extend(pairs)
+        fits = {
+            unit: WeatherBot._fit_emos(pairs)
+            for unit, pairs in pools.items()
+            if len(pairs) >= min_samples
+        }
+        out: Dict[str, Tuple[float, float, float]] = {}
+        for sid, unit in station_units.items():
+            fit = fits.get((unit or "").upper())
+            if fit is not None:
+                out[sid] = fit
+        return out
+
+    @staticmethod
     def _fit_samos(
         pairs: List[Tuple[float, float, float, float]],
     ) -> Optional[Tuple[float, float, float]]:
@@ -6569,55 +6641,79 @@ class WeatherBot(BaseBot):
                     _all_pairs.extend(data["pairs"])
                     _samos_pairs.extend(data.get("samos_pairs", []))
 
-            _computed_global_emos: Optional[Tuple[float, float, float]] = None
-            _global_method = "raw_emos"
+            # S229 root fix: NEVER install a single raw-space global tuple —
+            # the old conversion averaged climatology across mixed °C/°F
+            # stations (journal 2026-07-13: avg_clim_mean=43.6, unit soup),
+            # yielding corrected = 9.28 + 0.79·x + σ=2.10 for EVERY station
+            # without local EMOS: °F forecasts dragged ~10°F cold (KORD
+            # 07-14: 97.2°F → 86.4°F, P(≤93.5)=0.9996 vs market ~5%), °C
+            # ~3°C warm (EGLC 30.4 → 33.4). SAMOS params stay in anomaly
+            # space and are de-normalized PER STATION with that station's
+            # own climatology; the no-climatology fallback fits per
+            # temperature unit instead of pooling °C+°F into one OLS.
+            _global_by_station: Dict[str, Tuple[float, float, Optional[float]]] = {}
+            _global_method = "none"
             if len(_samos_pairs) >= _MIN_EMOS_SAMPLES:
                 _samos_result = WeatherBot._fit_samos(_samos_pairs)
                 if _samos_result is not None:
-                    # Convert SAMOS (anomaly space) back to raw space using avg climatology:
-                    # a_raw = μ_c*(1 - b_s) + σ_c*a_s, b_raw = b_s, σ_raw = σ_c * σ_s
-                    _clim_means = [p[2] for p in _samos_pairs]
-                    _clim_stds = [p[3] for p in _samos_pairs if p[3] > 0.5]
-                    _avg_cm = sum(_clim_means) / len(_clim_means)
-                    _avg_cs = sum(_clim_stds) / len(_clim_stds) if _clim_stds else 3.0
-                    _sa, _sb, _ss = _samos_result
-                    _raw_a = _avg_cm * (1.0 - _sb) + _avg_cs * _sa
-                    _raw_b = _sb
-                    _raw_sigma = _avg_cs * _ss
-                    self._prob_engine.load_global_emos((_raw_a, _raw_b, _raw_sigma))
-                    _computed_global_emos = (_raw_a, _raw_b, _raw_sigma)
-                    _global_method = "samos"
+                    _doy_now = datetime.now(timezone.utc).timetuple().tm_yday
+                    _global_by_station = WeatherBot._samos_global_by_station(
+                        _samos_result,
+                        _clim_lookup,
+                        _doy_now,
+                        [s.station_id for s in STATION_REGISTRY.values()],
+                    )
+                    if _global_by_station:
+                        _global_method = "samos_by_station"
+                        _sa, _sb, _ss = _samos_result
+                        logger.info(
+                            "weatherbot_global_samos_fitted",
+                            n_pairs=len(_samos_pairs),
+                            samos_a=round(_sa, 4), samos_b=round(_sb, 4), samos_sigma=round(_ss, 4),
+                            stations_materialized=len(_global_by_station),
+                            method="per_station",
+                        )
+
+            if _global_method == "none" and len(_all_pairs) >= _MIN_EMOS_SAMPLES:
+                _station_units = {
+                    s.station_id: s.temp_unit for s in STATION_REGISTRY.values()
+                }
+                _pairs_by_station = {
+                    sid: [p for data in buckets.values() for p in data["pairs"]]
+                    for sid, buckets in raw.items()
+                }
+                _global_by_station = WeatherBot._fit_global_emos_by_unit(
+                    _pairs_by_station, _station_units, _MIN_EMOS_SAMPLES
+                )
+                if _global_by_station:
+                    _global_method = "unit_partitioned"
                     logger.info(
-                        "weatherbot_global_samos_fitted",
-                        n_pairs=len(_samos_pairs),
-                        samos_a=round(_sa, 4), samos_b=round(_sb, 4), samos_sigma=round(_ss, 4),
-                        raw_a=round(_raw_a, 4), raw_b=round(_raw_b, 4), raw_sigma=round(_raw_sigma, 4),
-                        avg_clim_mean=round(_avg_cm, 1), avg_clim_std=round(_avg_cs, 2),
+                        "weatherbot_global_emos_fitted",
+                        n_pairs=len(_all_pairs),
+                        stations_materialized=len(_global_by_station),
+                        method="unit_partitioned",
                     )
 
-            if _global_method != "samos" and len(_all_pairs) >= _MIN_EMOS_SAMPLES:
-                _global_a, _global_b, _global_sigma = WeatherBot._fit_emos(_all_pairs)
-                self._prob_engine.load_global_emos((_global_a, _global_b, _global_sigma))
-                _computed_global_emos = (_global_a, _global_b, _global_sigma)
-                logger.info(
-                    "weatherbot_global_emos_fitted",
-                    n_pairs=len(_all_pairs),
-                    a=round(_global_a, 4),
-                    b=round(_global_b, 4),
-                    sigma=round(_global_sigma, 4),
-                )
+            if _global_by_station:
+                self._prob_engine.load_global_emos_by_station(_global_by_station)
 
             # T0-C: Bühlmann credibility blending — continuously blends local + global EMOS
             # using w = n/(n+30). Replaces binary 20-pair threshold for cold stations.
             # Feature flag: WEATHER_EMOS_SHRINKAGE_ENABLED (default: false).
             # When enabled, replaces the earlier load_emos_calibration() call with blended params.
             _shrinkage_enabled = getattr(settings, "WEATHER_EMOS_SHRINKAGE_ENABLED", False)
-            if _shrinkage_enabled and _computed_global_emos is not None:
-                _ga, _gb, _gs = _computed_global_emos
+            if _shrinkage_enabled and _global_by_station:
+                # S229: blend toward the STATION's own materialized global
+                # tuple (was: one pooled cross-unit tuple — the unit-soup
+                # defect would have poisoned every blend).
                 _KAPPA = 30.0
                 _SHRINK_MIN = 3
                 blended_emos: Dict[str, Dict[int, Tuple[float, float, Optional[float]]]] = {}
                 for sid, buckets_data in raw.items():
+                    _station_global = _global_by_station.get(sid)
+                    if _station_global is None:
+                        continue
+                    _ga, _gb, _gs = _station_global
                     for bucket, data in buckets_data.items():
                         pairs = data["pairs"]
                         n = len(pairs)

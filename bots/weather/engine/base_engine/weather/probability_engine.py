@@ -46,6 +46,13 @@ class WeatherProbabilityEngine:
         # Used as fallback for cold stations with no local EMOS.
         # Bühlmann blending: params = w*local + (1-w)*global where w = n/(n+κ).
         self._global_emos: Optional[Tuple[float, float, float]] = None
+        # S229: per-station global fallback — SAMOS de-normalized with EACH
+        # station's own climatology (or unit-partitioned raw fits). Consulted
+        # BEFORE _global_emos: the single pooled tuple was fit/converted
+        # across mixed °C/°F stations (avg_clim_mean≈43.6 = unit soup) and
+        # dragged °F forecasts ~10°F cold / °C ~3°C warm (KORD 2026-07-14:
+        # 97.2°F → 86.4°F "certainty" while the market said 5%).
+        self._global_emos_by_station: Dict[str, Tuple[float, float, Optional[float]]] = {}
         # S154: Variance inflation factor for non-EMOS paths.
         self._variance_inflation_factor = float(getattr(settings, "WEATHER_VARIANCE_INFLATION_FACTOR", 1.4))
         # Isotonic tail calibration: (bucket_type, lead_bucket) → List[(model_prob, actual_freq)]
@@ -541,6 +548,12 @@ class WeatherProbabilityEngine:
             if params is not None:
                 return params
 
+        # S229: per-station global fallback takes precedence over the pooled
+        # tuple (see __init__ note — mixed-unit pooling displaced forecasts).
+        _by_station = self._global_emos_by_station.get(station_id)
+        if _by_station is not None:
+            return _by_station
+
         # S114 Item 3: Fall back to global EMOS baseline
         if self._global_emos is not None:
             return self._global_emos
@@ -568,8 +581,23 @@ class WeatherProbabilityEngine:
         """S114: Load global EMOS baseline (pooled from all stations).
 
         Used as fallback for cold stations with no local EMOS data.
+        S229 NOTE: the reload path no longer calls this (mixed-unit pooling
+        defect) — kept for compatibility; _global_emos_by_station wins.
         """
         self._global_emos = global_params
+
+    def load_global_emos_by_station(
+        self,
+        params_by_station: Dict[str, Tuple[float, float, Optional[float]]],
+    ) -> None:
+        """S229: Load per-station global-EMOS fallback (SAMOS de-normalized
+        with each station's own climatology, or unit-partitioned raw fits).
+        Consulted after local EMOS, before the legacy pooled tuple."""
+        self._global_emos_by_station = params_by_station
+        logger.info(
+            "weather_global_emos_by_station_loaded",
+            stations=len(params_by_station),
+        )
 
     def compute_nbm_benchmark(
         self,

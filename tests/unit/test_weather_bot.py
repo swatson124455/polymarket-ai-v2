@@ -5370,3 +5370,122 @@ class TestS228ModelRunPollInterval:
         assert bot._model_run_monitor._poll_interval == 120.0, (
             "WEATHER_MODEL_RUN_POLL_INTERVAL_S is not reaching ModelRunMonitor"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# S229: global EMOS/SAMOS mixed-unit pooling — per-station de-normalization
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestS229GlobalEmosPerStation:
+    """S229 defect tests: the global SAMOS→raw conversion averaged climatology
+    ACROSS ALL stations — °C and °F pooled (journal 2026-07-13:
+    avg_clim_mean=43.6, unit soup) — producing one raw-space corrector
+    (a=9.28, b=0.79, σ=2.10) applied to every station without local EMOS.
+    Effect: °F forecasts dragged ~10°F cold (KORD 2026-07-14: forecast
+    97.2°F → corrected 86.4°F, P(≤93.5°F)=0.9996 while the market said ~5%),
+    °C forecasts dragged ~3°C warm (EGLC: 30.4°C → 33.4°C), spread pinned at
+    2.10 — phantom NO edge on ~90% of bucket families, 0.90+ confidence bin
+    realizing ~17%.
+
+    Fix: SAMOS params stay in anomaly space; de-normalize PER STATION with
+    that station's own climatology (a_raw = μ_c·(1−b_s) + σ_c·a_s,
+    σ_raw = σ_c·σ_s); engine gets load_global_emos_by_station() consulted
+    before the legacy pooled tuple. Raw (non-SAMOS) global fallback is
+    partitioned by temperature unit instead of pooling °C+°F into one OLS.
+    """
+
+    # Journal-observed values, 2026-07-13 00:52:57Z reload
+    SAMOS = (0.0842, 0.7935, 0.6345)
+    OLD_POOLED = (9.2831, 0.7935, 2.1024)
+
+    def test_engine_prefers_station_global_over_pooled(self):
+        from bots.weather.engine.base_engine.weather.probability_engine import (
+            WeatherProbabilityEngine,
+        )
+        eng = WeatherProbabilityEngine()
+        eng.load_global_emos(self.OLD_POOLED)
+        eng.load_global_emos_by_station({"KORD": (17.8, 0.7935, 1.90)})
+        assert eng._get_emos_params("KORD", 24.0) == (17.8, 0.7935, 1.90)
+        # station without a materialized entry keeps the legacy chain
+        assert eng._get_emos_params("XXXX", 24.0) == self.OLD_POOLED
+
+    def test_samos_denormalizes_with_own_climatology(self):
+        from bots.weather_bot import WeatherBot
+        clim = {
+            ("KORD", 195): (85.0, 3.0),   # Chicago July: °F climatology
+            ("EGLC", 195): (23.0, 2.0),   # London July: °C climatology
+        }
+        by_station = WeatherBot._samos_global_by_station(
+            self.SAMOS, clim, 195, ["KORD", "EGLC"]
+        )
+        a_k, b_k, s_k = by_station["KORD"]
+        corrected_kord = a_k + b_k * 97.2
+        # Own-climatology shrink pulls 97.2 toward 85 by (1-b)≈0.2 → ~94.9.
+        # The old pooled conversion gave 86.4 (≥8°F cold) — the defect.
+        assert 93.5 < corrected_kord < 97.5, corrected_kord
+        old_corrected = self.OLD_POOLED[0] + self.OLD_POOLED[1] * 97.2
+        assert corrected_kord - old_corrected > 5.0
+        a_e, b_e, s_e = by_station["EGLC"]
+        corrected_eglc = a_e + b_e * 30.4
+        assert 28.5 < corrected_eglc < 30.5, corrected_eglc
+        # σ_raw = σ_c·σ_s per station, floored at 0.5
+        assert abs(s_k - 3.0 * self.SAMOS[2]) < 1e-6
+        assert abs(s_e - 2.0 * self.SAMOS[2]) < 1e-6
+
+    def test_samos_skips_stations_without_climatology(self):
+        from bots.weather_bot import WeatherBot
+        clim = {("KORD", 195): (85.0, 3.0)}
+        by_station = WeatherBot._samos_global_by_station(
+            self.SAMOS, clim, 195, ["KORD", "ZZZZ"]
+        )
+        assert "KORD" in by_station and "ZZZZ" not in by_station
+
+    def test_samos_tolerates_nearby_day_of_year(self):
+        from bots.weather_bot import WeatherBot
+        clim = {("KORD", 197): (85.0, 3.0)}  # only doy 197 present
+        by_station = WeatherBot._samos_global_by_station(
+            self.SAMOS, clim, 195, ["KORD"]
+        )
+        assert "KORD" in by_station
+
+    def test_raw_global_fallback_partitions_by_unit(self):
+        from bots.weather_bot import WeatherBot
+        # °F station pairs: actual = forecast - 2; °C: actual = forecast + 1.
+        # Pooled °C+°F OLS would fit a line through both clusters (the defect);
+        # per-unit fits must each recover slope ≈ 1 with their own bias.
+        pairs_f = [(80.0 + i, 78.0 + i) for i in range(25)]
+        pairs_c = [(20.0 + i * 0.4, 21.0 + i * 0.4) for i in range(25)]
+        by_station = WeatherBot._fit_global_emos_by_unit(
+            {"KORD": pairs_f, "EGLC": pairs_c},
+            {"KORD": "F", "EGLC": "C", "KMIA": "F"},
+            min_samples=20,
+        )
+        a_f, b_f, _ = by_station["KORD"]
+        a_c, b_c, _ = by_station["EGLC"]
+        assert 0.9 < b_f < 1.1
+        assert 0.9 < b_c < 1.1
+        assert abs((a_f + b_f * 90.0) - 88.0) < 1.0   # °F corrected stays °F-sane
+        assert abs((a_c + b_c * 25.0) - 26.0) < 1.0   # °C corrected stays °C-sane
+        # unit-mates without their own pairs inherit their unit's fit
+        assert by_station.get("KMIA") == by_station["KORD"]
+
+    def test_fit_distribution_no_longer_manufactures_cold_certainty(self):
+        """End-to-end: KORD members ~N(97,2.4), det high 97.2. With the
+        per-station global loaded, the fitted loc must stay near the
+        forecast (old pooled tuple put it at 86.4 → P(≤93.5)=0.9996)."""
+        from bots.weather.engine.base_engine.weather.probability_engine import (
+            WeatherProbabilityEngine,
+        )
+        from bots.weather_bot import WeatherBot
+        clim = {("KORD", 195): (85.0, 3.0)}
+        by_station = WeatherBot._samos_global_by_station(
+            self.SAMOS, clim, 195, ["KORD"]
+        )
+        eng = WeatherProbabilityEngine()
+        eng.load_global_emos_by_station(by_station)
+        members = [97.2 + d for d in (-4, -3, -2, -1, -0.5, 0, 0.5, 1, 2, 3, 4, -2.5, 1.5, 0.2, -0.8)]
+        loc, scale, shape = eng.fit_distribution(
+            members, 24.0, station_id="KORD", deterministic_high=97.2
+        )
+        assert loc > 93.0, f"still cold-displaced: loc={loc}"
