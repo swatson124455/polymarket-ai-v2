@@ -343,6 +343,24 @@ def shadow_record(sig: dict, verdict: str, fill: Optional[float],
     }
 
 
+def quote_sanity_msg(bid: Optional[float],
+                     ask: Optional[float]) -> Optional[str]:
+    """LOUD message if /price returns a crossed book (ask < bid), else None.
+
+    A persistently crossed book from /price means the endpoint's side
+    semantics changed (again) or the quotes are garbage — either way the
+    labels can't be trusted and the fix is verification, not use. This is
+    the structural guard for the exact failure class found 2026-07-13
+    (mapping reversed => every book 'crossed'); same philosophy as the RPC
+    canary: an instrument must be able to notice it has gone blind."""
+    if bid is None or ask is None or ask >= bid:
+        return None
+    return (f"QUOTE SANITY ALARM: /price returned a CROSSED book "
+            f"(bid={bid} > ask={ask}) — side semantics may have changed; "
+            f"run scripts/verify_clob_price_sides.py before trusting "
+            f"any new record")
+
+
 def canary_state(zero_streak: int, n_events: int) -> tuple[int, Optional[str]]:
     """Fold one canary observation into the zero-streak. Returns the new
     streak and a message to log (alarm on the threshold crossing and on
@@ -574,6 +592,10 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                     sig["conviction_r"] = round(r, 4) if r is not None else None
                     sig["size_multiplier"] = mult
                     bid, ask = await quote_book(session, sig["token_id"])
+                    sanity = quote_sanity_msg(bid, ask)
+                    if sanity:
+                        log(f"[copy_watcher] {sanity} "
+                            f"tok={sig['token_id'][:10]}…")
                     book = await fetch_book(session, sig["token_id"])
                     verdict, fill = evaluate_gates(
                         sig["whale_price"], bid, ask,

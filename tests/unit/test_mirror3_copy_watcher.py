@@ -385,3 +385,17 @@ def test_quote_book_error_isolation_per_side():
 
     bid, ask = asyncio.run(cw.quote_book(_Boom(), "123"))
     assert bid == 0.4 and ask is None  # one side failing never poisons the other
+
+
+# ── quote_sanity_msg (crossed-book structural guard) ─────────────────────────
+def test_quote_sanity_crossed_book_alarms():
+    msg = cw.quote_sanity_msg(0.90, 0.87)  # bid > ask = crossed
+    assert msg is not None and "CROSSED" in msg
+
+
+def test_quote_sanity_normal_and_partial_books_stay_silent():
+    assert cw.quote_sanity_msg(0.87, 0.90) is None   # normal
+    assert cw.quote_sanity_msg(0.90, 0.90) is None   # touching is legal
+    assert cw.quote_sanity_msg(None, 0.90) is None   # one-sided: not provable
+    assert cw.quote_sanity_msg(0.87, None) is None
+    assert cw.quote_sanity_msg(None, None) is None
