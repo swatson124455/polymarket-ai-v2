@@ -18,7 +18,9 @@
     "58488d7": "fix(deploy): S228 wb-release-cut.sh pre-creates data/ skeleton (ProtectSystem=strict crash-loop)",
     "be7dd93": "feat(weather): S228 priority-wake — scan loop wakes on model-run/METAR events (flag-gated OFF)",
     "86c6bcb": "feat(weather): S228 WEATHER_MODEL_RUN_POLL_INTERVAL_S — model-run detection cadence tunable (default 300 = old hardcoded)",
-    "56716e8": "fix(ingestion): S228 resolution backfill never checked untraded markets — prediction_log rows stayed unlabeled forever"
+    "56716e8": "fix(ingestion): S228 resolution backfill never checked untraded markets — prediction_log rows stayed unlabeled forever",
+    "dabb799": "fix(ingestion): S228 follow-up — NULL-end-date markets stranded outside resolution discovery",
+    "863fae8": "fix(ingestion): S228 follow-up 2 — split discovery budget; tail lane defeats churn starvation"
   },
   "required_docs": [
     "docs/WEATHER_STATUS.md",
@@ -114,12 +116,12 @@
     {
       "file": "base_engine/data/resolution_backfill.py",
       "pattern": "S228",
-      "expect": 1
+      "expect": 3
     },
     {
       "file": "bots/weather/engine/base_engine/data/resolution_backfill.py",
       "pattern": "S228",
-      "expect": 1
+      "expect": 2
     }
   ]
 }
