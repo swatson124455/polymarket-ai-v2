@@ -380,9 +380,16 @@ class FirstBuyDedup:
 # ── Network runner (VPS; everything above is testable offline) ──────────────
 async def quote_book(session, token_id: str,
                      timeout_s: float = 2.0) -> tuple[Optional[float], Optional[float]]:
-    """(best_bid, best_ask) from the public CLOB /price endpoint."""
+    """(best_bid, best_ask) from the public CLOB /price endpoint.
+
+    /price's `side` names the BOOK SIDE being read: side=BUY returns the
+    best bid, side=SELL returns the best ask. Receipt-verified 2026-07-13
+    two ways (31/31 shadow-record ladders + live /book probe; pinned by
+    scripts/verify_clob_price_sides.py). The first deployment had this
+    mapping REVERSED — every record's bid/ask were swapped and shadow
+    fills quoted the bid, flattering edge by the spread."""
     bid = ask = None
-    for side, out in (("SELL", "bid"), ("BUY", "ask")):
+    for side, out in (("BUY", "bid"), ("SELL", "ask")):
         try:
             async with session.get(
                     CLOB_PRICE_URL,

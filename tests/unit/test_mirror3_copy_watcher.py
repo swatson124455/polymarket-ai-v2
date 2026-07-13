@@ -323,3 +323,65 @@ def test_get_logs_compat_both_signatures():
 
     assert asyncio.run(cw.get_logs_compat(V7(), 1, 2, {})) == [("v7", 1, 2)]
     assert asyncio.run(cw.get_logs_compat(V6(), 1, 2, {})) == [("v6", 1, 2)]
+
+
+# ── quote_book /price side mapping (REGRESSION — bug found 2026-07-13) ───────
+# The CLOB /price endpoint's `side` names the BOOK SIDE read: side=BUY is the
+# best BID, side=SELL is the best ASK (receipt-verified against /book on
+# 31/31 live shadow records + live probe). The first deployment had it
+# reversed: every record's bid/ask swapped, shadow fills quoted at the bid.
+def test_quote_book_side_mapping_pins_endpoint_semantics():
+    import asyncio
+
+    class _Resp:
+        def __init__(self, price):
+            self._price = price
+
+        async def json(self):
+            return {"price": self._price}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Session:
+        """side=BUY serves the bid (0.08), side=SELL serves the ask (0.09) —
+        exactly what the live endpoint does."""
+        def __init__(self):
+            self.sides_called = []
+
+        def get(self, url, params=None, timeout=None):
+            self.sides_called.append(params["side"])
+            return _Resp({"BUY": "0.08", "SELL": "0.09"}[params["side"]])
+
+    s = _Session()
+    bid, ask = asyncio.run(cw.quote_book(s, "123"))
+    assert bid == 0.08, f"side=BUY must land in bid, got bid={bid}"
+    assert ask == 0.09, f"side=SELL must land in ask, got ask={ask}"
+    assert ask >= bid, "a correct mapping yields an uncrossed book"
+    assert sorted(s.sides_called) == ["BUY", "SELL"]
+
+
+def test_quote_book_error_isolation_per_side():
+    import asyncio
+
+    class _Boom:
+        def get(self, url, params=None, timeout=None):
+            if params["side"] == "SELL":
+                raise RuntimeError("ask fetch died")
+
+            class _R:
+                async def json(self):
+                    return {"price": "0.4"}
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *a):
+                    return False
+            return _R()
+
+    bid, ask = asyncio.run(cw.quote_book(_Boom(), "123"))
+    assert bid == 0.4 and ask is None  # one side failing never poisons the other
