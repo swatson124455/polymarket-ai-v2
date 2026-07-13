@@ -74,9 +74,10 @@ headline commit added.
 
 ## 4. PENDING WORK — exact next steps
 
-1. **(Operator, URGENT) Rotate the Pinnacle API key.** It is now exposed in THREE places:
-   `/opt/pa2-shared/.env` junk lines (~360/367), the systemd journal (echoed on every service
-   start), and pasted chat transcripts. Rotate at the provider, delete both junk lines.
+1. ~~(item removed S229 — cross-bot bleed)~~ A third-party API secret belonging to ANOTHER
+   bot leaks via malformed `/opt/pa2-shared/.env` lines into every service journal. That is
+   a shared-infra/operator item owned by the affected bot's session — WB docs do not track
+   other bots' vendors or secrets (codified S229).
 2. **(Operator) Box security/hygiene — MOSTLY DONE 2026-07-11 ~01:05Z:** all 11 swept-in
    `wallet.txt` release-dir copies shredded (grep-verified zero code references first; never
    git-tracked) and the stale `/tmp/wb-20260710_165940.tar.gz` removed. STILL OPEN:

@@ -290,8 +290,7 @@ latency package (still inert/flag-OFF). S222 verification clock RESTARTS at 16:0
   `cal_fit` path executing (`insufficient_data n=0 need=200`), reload_failed/fit_failed = 0.
   Verification prompt re-pointed to `--since 20260711_004700`. Box hygiene DONE same night:
   all 11 swept-in `wallet.txt` release-dir copies shredded (code references grep-verified
-  zero first; never git-tracked), stale /tmp tarball removed. STILL OPEN (operator): Pinnacle
-  key rotation (URGENT: echoed into journal + chat), check the local `wallet.txt` original
+  zero first; never git-tracked), stale /tmp tarball removed. STILL OPEN (operator): check the local `wallet.txt` original
   (172B, world-writable copies sat on box for weeks — consider wallet rotation; move the
   file out of the repo dir), prune old releases only after the S222 verdict.
 - **2026-07-11 (S227 FIX, needs deploy):** `92740f3` — gt_cutoff bound as str into

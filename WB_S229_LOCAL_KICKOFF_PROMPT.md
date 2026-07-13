@@ -75,10 +75,12 @@ instead of ~12h.
 3. **Stranded-market residue:** the 07-06/07-07 buckets (`end_date NULL` was 22 and
    falling, `ENDED LONG AGO` 9 queued behind the cross-bot NULL pool). If any ids survive
    past a day, CLOB-check them (`https://clob.polymarket.com/markets/<condition_id>`).
-4. **Operator nags (still open):** Pinnacle API key rotation (URGENT — echoed in journal +
-   chat) then delete `/opt/pa2-shared/.env` junk lines ~360/367; local `wallet.txt`
+4. **Operator nags (still open, WB-scope only):** local `wallet.txt`
    original (move out of repo; consider wallet rotation); `Remove-Item $env:TEMP\wb-*.tar.gz`;
-   prune old WB releases only after the S222 verdict.
+   prune old WB releases only after the S222 verdict. (An EB-vendor secret leak via
+   `/opt/pa2-shared/.env` junk lines was previously tracked here — REMOVED S229: other
+   bots' vendors/secrets are never WB nags; shared-env issues belong to the owning
+   session/operator, WB docs do not carry them.)
 5. **Post-S222:** latency-package activation env block (OPEN DECISION 3a); deferred
    switches (OPEN DECISION 3); ops-debt: give the main tree a real deploy mechanism.
 
