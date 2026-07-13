@@ -5,11 +5,13 @@
 > read them for detail, but THIS file is the source of truth for "what is live and what's open."
 > Update the three sections below at the end of every WB session (same commit as the work).
 
-**Last updated:** 2026-07-11 (S228 — latency work built on-branch, NOT deployed: priority-wake
-(flag-gated OFF), tunable model-run poll cadence (default unchanged), release-cut data/-skeleton
-fix folded into `deploy/wb-release-cut.sh`. Everything inert-by-default — activation is an
-operator env flip AFTER the S222 verdict. Prior: S227 calibrator fix LIVE, release
-`20260711_002634` @ `6770883`, effective restart 00:47:00Z. Handoff: `docs/WEATHER_S227_STATUS.md`)
+**Last updated:** 2026-07-13 (S229 — **S222 verification ran: FAIL, retire nothing** — and the
+failure's ROOT CAUSE was found, fixed, and DEPLOYED the same day: the global SAMOS→raw
+conversion pooled climatology across mixed °C/°F stations (avg_clim_mean=43.6 unit soup),
+displacing every non-EMOS-ready station's forecast (KORD 97.2°F→86.4°F "certainty"; phantom
+NO edges at 0.95 conf realizing ~17%). Release **`20260713_160143`** @ `24b2847`, restart
+16:02:29Z — carries the per-station EMOS fix + the end_date_iso persistence fix + the S228
+latency package (still inert/flag-OFF). S222 verification clock RESTARTS at 16:02:29Z.)
 **Pinned branch:** `claude/new-whiteboard-session-9b23tq` (see `.claude/session-branch`)
 **Resume check:** `bash scripts/wb_resume_check.sh` (self-deriving; replaces the hand-typed checklist)
 
@@ -31,8 +33,18 @@ operator env flip AFTER the S222 verdict. Prior: S227 calibrator fix LIVE, relea
    `journalctl -u polymarket-weather | grep -E "calibration_reloaded|calibration_reload_failed|cal_fit|insufficient_data|holdout_valid"`
    — reload_failed / cal_fit_failed must STAY 0 (both are warning-level now).
 
-2. **S222 post-fix verification — clock RESTARTED at 2026-07-11 00:47:00Z (the S227 fix
-   restart); ETA to the ≥50 gate ~07-13/07-14.** The entire 07-08→07-11 window is DISCARDED
+2. **S222 post-fix verification — RAN 2026-07-13 (S229) on 77 resolved markets: FAIL on every
+   criterion; NOTHING retired. Clock RESTARTS at the S229 EMOS-fix deploy (2026-07-13
+   16:02:29Z, release `20260713_160143`); re-run the prompt when the NEW window reaches ≥50
+   (~3-4 days at ~19/day).** Verdicts on the 07-11→07-13 window: A1/A3 FAIL (PIT KS 0.285
+   p≈0, WORSE than baseline 0.155; right-spiked, mean 0.628); dampener retirement FAIL
+   (traded-subset BSS deeply negative, tiny N=4-16 — caps kept trade count low); price-cap
+   retirement INCONCLUSIVE (caps active → no 80-100¢ cells); C0 Kelly FAIL (0.90+ conf bin
+   realized ~17% vs stated, canonical bot_pnl.py, 24 trades). BUT the failure is now
+   EXPLAINED and FIXED — see 2b (S229 root cause): the window traded on a poisoned global
+   EMOS corrector, so these verdicts measure the defect, not the S222 fixes. The NEXT
+   window is the first clean read of A1/A3.
+   ORIGINAL (superseded) window framing: The entire 07-08→07-11 window is DISCARDED
    for verification: it ran without EMOS/bias/tail calibration and without a fitted
    confidence calibrator (see #1), while the 07-02 baseline had them working — not
    comparable. Rows 07-11 00:26→00:47 are also old-code output (crash-loop + rollback
@@ -77,6 +89,25 @@ operator env flip AFTER the S222 verdict. Prior: S227 calibrator fix LIVE, relea
    cycles (07-09: 92→112, 07-10: 22→36, 07-11: 0→6), draining newest-ended-first.
    ⚠ OPS DEBT (S228 finding): the main tree is an unversioned CRLF snapshot from 2026-06-03 —
    it has NO deploy mechanism and predates a month of repo fixes. Document/rebuild after S222.
+
+2b. **S229 ROOT CAUSE — global SAMOS/EMOS mixed-unit pooling (FIXED + DEPLOYED 2026-07-13
+   16:02:29Z, `24b2847`, release `20260713_160143`).** The global SAMOS→raw conversion
+   de-normalized anomaly-space params with climatology AVERAGED ACROSS ALL stations — °C
+   and °F pooled (journal: `avg_clim_mean=43.6`) — installing ONE corrector
+   (a=9.28, b=0.79, σ=2.10) for every station without local EMOS (all but 4 post-cutoff).
+   Numerically verified: KORD 07-14 forecast 97.2°F → corrected 86.4°F → P(≤93.5°F)=0.9996
+   (logged 0.999; market said ~5%); EGLC 30.4°C → 33.4°C. The RAW ensemble is GOOD
+   (independent refetch of the bot's own Open-Meteo call matches the market); ~90% of
+   bucket families carried <40% total model mass → phantom NO edges at 0.95 confidence.
+   Fix: SAMOS stays in anomaly space, de-normalized PER STATION with its own climatology
+   (`_samos_global_by_station`), engine `load_global_emos_by_station()` consulted before
+   the legacy pooled tuple; no-climatology fallback fits per temperature unit. Watch after
+   each ~6h reload: `grep 'weather_global_emos_by_station_loaded'` (stations≈40) and
+   `weatherbot_global_samos_fitted ... method=per_station`. NOTE: entries made 07-11→07-13
+   under the poisoned corrector sit in the confidence-calibrator's 30-day fit window
+   (like the 53 leak-era entries, self-clears; do NOT hand-filter). ALSO NOTE: the
+   07-08→07-11 crash window traded with NO corrections at all (raw+VIF) — different regime
+   again; never pool it with either neighbor.
 
 3. **Deferred switches (do after the calibrator re-learns + S222 passes):** enable the V28
    calibrated-edge gate (`WEATHER_CALIBRATED_EDGE_GATE_ENABLED=true`); V34 follow-ups
@@ -160,11 +191,16 @@ operator env flip AFTER the S222 verdict. Prior: S227 calibrator fix LIVE, relea
 
 ## WHAT IS LIVE NOW
 
-- **Deployed:** WeatherBot on its splinter, release **`20260711_002634`** (cut from `6770883`;
-  rollback target `20260710_204822`). Paper mode, treated as production. Carries everything
-  S223→S226 PLUS the **S227 calibrator fix** (`92740f3` — gt_cutoff datetime bind; reload
-  swallow warning-level). Verified live 00:48Z: calibration reloading again, fit path
-  executing, failure counters 0. Migrations 079+080 remain applied (no new migrations in S227).
+- **Deployed:** WeatherBot on its splinter, release **`20260713_160143`** (cut from `24b2847`;
+  rollback target `20260711_002634`). Paper mode, treated as production. Carries everything
+  through S227 PLUS: **S229 per-station global EMOS fix** (`24b2847` — the mixed-unit pooled
+  corrector killed; see OPEN DECISION 2b), **S229 end_date_iso persistence** (`4fa67a3` —
+  WB-discovered markets now store their end date; NULL-end rows healed on rediscovery; also
+  activates the designed S172-D10 dynamic exit-cooldown TTL that had been silently inert
+  because the key was never populated), and the **S228 latency package** (still flag-OFF /
+  default-cadence — activation remains OPEN DECISION 3a). Restart 16:02:29Z (old process
+  needed SIGKILL after stop-timeout — pre-existing shutdown slowness, watch it next cut).
+  Migrations 079+080 idempotent-reapplied clean.
 - **⚠ NEW RELEASE-CUT RECIPE (learned the hard way 07-11):** this release was cut with
   `git archive` (clean, 39M, tracked-files-only) instead of the old tar-the-working-tree
   flow (~4G with ~250 untracked files swept in, incl. `wallet.txt` — all 11 release-dir
@@ -208,6 +244,22 @@ operator env flip AFTER the S222 verdict. Prior: S227 calibrator fix LIVE, relea
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-13 (S229 ROOT FIX, DEPLOYED `20260713_160143`):** `24b2847` — global SAMOS→raw
+  conversion pooled climatology across mixed °C/°F stations (avg_clim_mean=43.6) → one
+  corrector (9.28, 0.79, σ2.10) for every non-EMOS-ready station → KORD 97.2°F read as
+  86.4°F "certainty", phantom NO edges everywhere (0.90+ bin realized ~17%). Fix:
+  per-station de-normalization (`_samos_global_by_station` + engine
+  `load_global_emos_by_station`), unit-partitioned legacy fallback, shrinkage blends toward
+  own-station tuple. 6 defect tests red→green; 428-test weather sweep green. S222
+  verification (ran same day on 77 mkts) FAIL verdicts recorded; clock restarts at this
+  deploy.
+- **2026-07-13 (S229, same release):** `4fa67a3` — WB discovery dropped Gamma `endDate` and
+  `_ensure_markets_in_db` never wrote `end_date_iso` (349/447 WB-predicted markets NULL →
+  resolved ~2 days late via the S228 48h rule). Tag-fetch dicts carry the date;
+  `_parse_end_date` normalizes all spellings; conflict clause heals NULL-end rows on
+  rediscovery. 5+1 defect tests red→green. (Kickoff's suspected missing database.py
+  backport was DISPROVEN — box database.py = repo blob `08c0b06` 06-18, already has
+  `abf5a34`.) Also `9cc067e` manifest repair (S228 follow-ups had stale fingerprint counts).
 - **2026-07-11 (S228 ROOT FIX, needs INGESTION deploy):** `56716e8` — resolution backfill
   never checked untraded markets: Phase 2 discovery covered traded_markets/on-chain
   trades/live positions only, so prediction-only markets (132/185 of WB's 07-11 window;

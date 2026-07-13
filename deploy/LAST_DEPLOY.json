@@ -1,7 +1,7 @@
 {
-  "release_stamp": "20260711_002634",
-  "git_sha": "67708835bb6daeb2d640b7f294a7c1014ae8cbf4",
+  "release_stamp": "20260713_160143",
+  "git_sha": "24b28472a98bbf3d246c10b0bace7d2fcd1d5d68",
   "git_branch": "claude/new-whiteboard-session-9b23tq",
-  "recorded_at": "2026-07-11T00:54:12Z",
-  "recorded_by": "cloud-session-S227 (content-verified on box: S227 markers=4; effective restart 2026-07-11T00:47:00Z after crash-loop repair)"
+  "recorded_at": "2026-07-13T16:05:25Z",
+  "recorded_by": "local-session-S229 (wb-release-cut.sh; service active; effective restart 2026-07-13T16:02:29Z; carries S229 per-station EMOS fix + end_date_iso fix + inert S228 latency package)"
 }

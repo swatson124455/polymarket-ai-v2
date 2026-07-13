@@ -3,6 +3,19 @@
 **Purpose:** copy-paste prompt for a VPS-access session, to A/B the deployed S222
 fixes against the pre-fix baseline captured 2026-07-02 and decide gate retirement.
 
+**S229 re-point (2026-07-13):** this prompt RAN on the 07-11→07-13 window (77 resolved
+markets) and returned **FAIL on every criterion — nothing retired**. Root cause found the
+same day: that window traded on a poisoned global EMOS corrector (mixed °C/°F climatology
+pooling — see `WEATHER_STATUS.md` OPEN DECISION 2b), fixed + deployed in release
+`20260713_160143` @ `24b2847`, effective restart **2026-07-13 16:02:29Z**. For the NEXT
+run, substitute cutoffs throughout: window start `2026-07-13 16:02:29` (SQL) /
+`--since 20260713_160229` (scripts), deployed release `20260713_160143` or later, and add
+a precondition: `grep -c 'S229' <deployed>/bots/weather_bot.py` must be ≥9 and the journal
+must show `weather_global_emos_by_station_loaded` (stations≈40) after each ~6h reload —
+if the pooled `avg_clim_mean` field EVER reappears in `weatherbot_global_samos_fitted`,
+the defect is back; STOP. Everything else below applies unchanged (read the old 00:47
+cutoffs as 16:02:29).
+
 **S227 re-point (2026-07-11):** the verification window now starts at the **S227 fix
 deploy** (release `20260711_002634`, effective service restart **2026-07-11 00:47:00Z**).
 Why the restart moved twice:

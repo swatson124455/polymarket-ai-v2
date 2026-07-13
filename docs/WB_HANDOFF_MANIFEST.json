@@ -1,6 +1,6 @@
 {
   "_comment": "WeatherBot session-handoff manifest — consumed by scripts/wb_resume_check.sh. RULE: any commit that changes a fingerprinted file's markers, adds a headline fix, or moves the session branch MUST update this manifest in the SAME commit. That is what keeps the resume check self-deriving instead of stale.",
-  "session": "S228",
+  "session": "S229",
   "repo": "swatson124455/polymarket-ai-v2",
   "branch": "claude/new-whiteboard-session-9b23tq",
   "headline_commits": {
@@ -20,7 +20,9 @@
     "86c6bcb": "feat(weather): S228 WEATHER_MODEL_RUN_POLL_INTERVAL_S — model-run detection cadence tunable (default 300 = old hardcoded)",
     "56716e8": "fix(ingestion): S228 resolution backfill never checked untraded markets — prediction_log rows stayed unlabeled forever",
     "dabb799": "fix(ingestion): S228 follow-up — NULL-end-date markets stranded outside resolution discovery",
-    "863fae8": "fix(ingestion): S228 follow-up 2 — split discovery budget; tail lane defeats churn starvation"
+    "863fae8": "fix(ingestion): S228 follow-up 2 — split discovery budget; tail lane defeats churn starvation",
+    "4fa67a3": "fix(weather): S229 — persist end_date_iso for WB-discovered markets; heal NULL-end rows on rediscovery",
+    "24b2847": "fix(weather): S229 — global SAMOS/EMOS pooled climatology across mixed C/F units; de-normalize per station"
   },
   "required_docs": [
     "docs/WEATHER_STATUS.md",
