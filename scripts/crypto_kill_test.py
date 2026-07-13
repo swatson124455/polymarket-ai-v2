@@ -171,6 +171,7 @@ async def run(args) -> int:
     from bots.mirror_backtest.replay import Decision, replay_signals
 
     db = Database()
+    await db.init()
     t1 = datetime.now(timezone.utc).replace(tzinfo=None)
     t0 = t1 - timedelta(days=args.days)
     print(f"fetching crypto-candidate first prints {t0:%Y-%m-%d}..{t1:%Y-%m-%d} "
@@ -186,6 +187,7 @@ async def run(args) -> int:
           f"(bucketer: find_copyable_traders.bucket_category)", file=sys.stderr)
     if not sigs:
         print("no crypto signals in the window — INCONCLUSIVE by construction")
+        await db.close()
         return 2
 
     lags = sorted({int(x) for x in args.lags.split(",")} | {0, args.decision_lag})
@@ -257,6 +259,7 @@ async def run(args) -> int:
                     "staleness": args.staleness, "min_cov": args.min_cov,
                     "min_markets": args.min_markets, "seed": args.seed}}))
     print(f"full results -> {args.out}")
+    await db.close()
     return 0
 
 
