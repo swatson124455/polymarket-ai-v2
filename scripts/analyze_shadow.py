@@ -21,11 +21,23 @@ WHAT IT ANSWERS (registered in docs/MB_STATE.md §0 BEFORE data was read):
                     net of the --fee haircut. UNRESOLVED tokens are counted,
                     never guessed.
 
+MEASUREMENT REPAIR (2026-07-13, mandatory default): the watcher's first
+deployment read /price sides REVERSED — recorded best_bid/best_ask were
+swapped and shadow_fill quoted the BID (edge flattered by the spread;
+5/31 live verdicts wrong). Records carry the /book ladders, so before any
+analysis every record with ladders is re-derived from them (real ask =
+lowest ask level, real bid = highest bid level; gates re-evaluated with
+the watcher's constants). Records WITHOUT ladders cannot prove their
+labels and are EXCLUDED (counted loudly) unless --trust-quotes-after
+<epoch> marks them as written by the fixed watcher. This repairs the
+MEASUREMENT only; the pre-registered criteria are untouched.
+
 READ-ONLY. Pure stdlib. --self-test runs offline on synthetic records.
 INVOCATION (VPS):
     /opt/polymarket-ai-v2/venv/bin/python /opt/mirror3/scripts/analyze_shadow.py \
       --log /opt/pa2-shared/mirror3_shadow.jsonl \
-      --gamma-cache /tmp/copyable_cache/gamma_resolutions.json
+      --gamma-cache /tmp/copyable_cache/gamma_resolutions.json \
+      --trust-quotes-after <epoch of the quote-fix redeploy>
 """
 from __future__ import annotations
 
@@ -50,6 +62,54 @@ def load_records(path: str) -> list[dict]:
             except json.JSONDecodeError:
                 continue  # torn tail line from a live writer is expected
     return out
+
+
+def repair_record(r: dict, max_chase: float = 0.02, max_spread: float = 0.05,
+                  trust_after: Optional[float] = None
+                  ) -> tuple[Optional[dict], str]:
+    """(repaired record | None, status) — status REPAIRED | KEPT | EXCLUDED.
+
+    Ladder-armed records are re-derived (ladders came from /book moments
+    after the /price quotes and their sides are unambiguous); the gate
+    logic mirrors copy_watcher.evaluate_gates exactly. Ladderless records
+    are only KEPT when detect_ts says the fixed watcher wrote them."""
+    aks, bds = r.get("book_asks"), r.get("book_bids")
+    if aks:
+        try:
+            real_ask = min(float(l["price"]) for l in aks)
+            real_bid = (max(float(l["price"]) for l in bds)
+                        if bds else None)
+        except (KeyError, TypeError, ValueError):
+            real_ask = real_bid = None
+        wp = r.get("whale_price")
+        if real_ask is None or real_ask <= 0:
+            v, fill = "NO_BOOK", None
+        elif real_bid is not None and (real_ask - real_bid) > max_spread:
+            v, fill = "SPREAD_TOO_WIDE", None
+        elif isinstance(wp, (int, float)) and real_ask > wp + max_chase:
+            v, fill = "PRICE_RAN_AWAY", None
+        else:
+            v, fill = "OK", real_ask
+        r2 = dict(r)
+        r2.update({"best_bid": real_bid, "best_ask": real_ask,
+                   "verdict": v, "shadow_fill": fill})
+        return r2, "REPAIRED"
+    if trust_after is not None and \
+            float(r.get("detect_ts") or 0) >= trust_after:
+        return r, "KEPT"
+    return None, "EXCLUDED"
+
+
+def repair_records(records: list[dict], max_chase: float, max_spread: float,
+                   trust_after: Optional[float]
+                   ) -> tuple[list[dict], Counter]:
+    out, counts = [], Counter()
+    for r in records:
+        r2, status = repair_record(r, max_chase, max_spread, trust_after)
+        counts[status] += 1
+        if r2 is not None:
+            out.append(r2)
+    return out, counts
 
 
 def pct(xs: list[float], q: float) -> float:
@@ -206,6 +266,28 @@ def _self_test() -> int:
     res3 = analyze(recs, {}, fee=0.0, econ_floor=0.02, p_min=0.95, min_markets=30)
     ok6 = res3["resolved_mkts"] == 0 and res3["unresolved_ok_fills"] == 200
     print(f"  [unresolved] counted not guessed : {ok6}"); ok &= ok6
+    # 2026-07-13 repair: a swapped-quote record (bug era) is re-derived from
+    # its ladders — fill moves bid->ask, and a should-have-been-skip flips
+    swapped = {"trader": "0xgoat", "token_id": "7", "side": "BUY",
+               "whale_price": 0.50, "verdict": "OK",
+               "shadow_fill": 0.50,          # the BID (flattering)
+               "best_bid": 0.53, "best_ask": 0.50,   # crossed = swapped
+               "book_asks": [{"price": 0.53, "size": 9}],
+               "book_bids": [{"price": 0.50, "size": 9}],
+               "detect_ts": 100.0, "first_buy": True}
+    r2, st = repair_record(swapped, max_chase=0.02, max_spread=0.05)
+    ok7 = (st == "REPAIRED" and r2["best_ask"] == 0.53 and r2["best_bid"] == 0.50
+           and r2["verdict"] == "PRICE_RAN_AWAY" and r2["shadow_fill"] is None)
+    print(f"  [repair] swapped record re-derived, flattery removed : {ok7}")
+    ok &= ok7
+    lless = {"trader": "0xgoat", "token_id": "8", "whale_price": 0.5,
+             "verdict": "OK", "shadow_fill": 0.5, "book_asks": None,
+             "book_bids": None, "detect_ts": 100.0}
+    ok8 = (repair_record(lless)[1] == "EXCLUDED"
+           and repair_record(lless, trust_after=50.0)[1] == "KEPT"
+           and repair_record(lless, trust_after=200.0)[1] == "EXCLUDED")
+    print(f"  [repair] ladderless: excluded unless post-fix trusted : {ok8}")
+    ok &= ok8
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -219,11 +301,30 @@ if __name__ == "__main__":
     ap.add_argument("--econ-floor", type=float, default=0.02, dest="econ_floor")
     ap.add_argument("--p-min", type=float, default=0.95, dest="p_min")
     ap.add_argument("--min-markets", type=int, default=30, dest="min_markets")
+    ap.add_argument("--max-chase", type=float, default=0.02, dest="max_chase")
+    ap.add_argument("--max-spread", type=float, default=0.05, dest="max_spread")
+    ap.add_argument("--trust-quotes-after", type=float, default=None,
+                    dest="trust_after", metavar="EPOCH",
+                    help="detect_ts >= EPOCH written by the FIXED watcher: "
+                         "ladderless records kept as-is instead of excluded")
+    ap.add_argument("--no-repair", action="store_true",
+                    help="UNSAFE: analyze raw records (pre-2026-07-13-fix "
+                         "quotes are swapped); diagnostics only")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
     if args.self_test:
         raise SystemExit(_self_test())
     recs = load_records(args.log)
+    if args.no_repair:
+        print("!! RAW MODE (--no-repair): pre-fix records carry SWAPPED "
+              "bid/ask and bid-priced fills — diagnostics only, never a "
+              "readout verdict")
+    else:
+        recs, rep_counts = repair_records(recs, args.max_chase,
+                                          args.max_spread, args.trust_after)
+        print(f"measurement repair (2026-07-13 quote-swap): {dict(rep_counts)}"
+              f"  [REPAIRED=re-derived from ladders; KEPT=post-fix trusted; "
+              f"EXCLUDED=ladderless+unprovable — widen by fixing, not trusting]")
     outc = token_outcomes(args.gamma_cache) if args.gamma_cache and \
         os.path.exists(args.gamma_cache) else None
     report(analyze(recs, outc, args.fee, args.econ_floor, args.p_min,
