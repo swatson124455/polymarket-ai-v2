@@ -150,6 +150,30 @@ loop is automated via `scripts/redeem_and_retrade.py` + the 6h `polymarket-redee
 above): on-chain `eth_getLogs` trace shows no $20 USDC.e ever entered the deposit wallet — a
 phantom S235 reading, no money missing.
 
+**2026-06-18 (S247) — first NEG-RISK redemption (capital-recovery).**
+Approved by operator ("execute"). Source: 4 resolved winning **neg-risk** CTF tokens the maiden
+loop had SILENTLY SKIPPED — neg-risk positions mint against the NegRisk wrapped collateral
+(`0x3A3BD7…`), which the old `derive_collateral` (pUSD/USDC.e only) never matched, so the 6h timer
+recovered $0 from them. Root-caused + fixed this session (`309cfd4`; deployed `20260618_102128`).
+Destination: same deposit wallet (collecting winnings — no funds left operator control). Gasless.
+
+| Item | Value |
+|---|---|
+| Redeem tx | `0x02a478c049219d8faf184eded03514dab56652e013ed6360423d73ff90dcfc86` (relayer STATE_EXECUTED, txID `019edb11-…`) |
+| Route | `redeem_and_retrade.py --execute --phase redeem` → 4× `NegRiskAdapter.redeemPositions(conditionId, amounts)` (adapter `0xd91E80…`, `col()`=USDC.e) in one DepositWallet WALLET batch — redeems AND unwraps to USDC.e in one call |
+| Markets redeemed | Ghana win 2026-06-17 (YES, 2.46); highest-temp neg-risk groups — Munich 26°C (NO, 1.50), Karachi 35°C (NO, 1.86), Madrid 36°C (NO, 0.68) |
+| Result | 6.5 winning tokens burned (4/4 → 0); deposit-wallet **USDC.e $0.00 → $6.50** |
+
+**Conversion (USDC.e → pUSD), same session:**
+
+| Item | Value |
+|---|---|
+| Convert tx | `0xb6a8bbb7ef3b5b86252c9cdf75d4fa37e926a527aa1fb65b59443175e1c8b748` (relayer STATE_EXECUTED, txID `019edb14-…`) |
+| Route | `--phase convert` → `USDC.e.approve(Onramp)` + `Onramp.wrap(USDC.e, depositWallet, 6.5)` (Permissionless Collateral Onramp `0x93070a84…`) |
+| Result | deposit-wallet **USDC.e $6.50 → $0.00**; **pUSD → ~$12.51**; CLOB COLLATERAL cache refreshed (ok) → capital-guard rejects stopped, bot retrades |
+
+**Why it matters:** this is the capital-starvation lever — the maiden loop's neg-risk blind spot meant winnings accumulated unredeemed. Fix `309cfd4` detects neg-risk via the CLOB flag (local `markets.neg_risk` is stale-false) and redeems via the NegRiskAdapter; the 6h timer now recovers neg-risk winnings going forward. Detail: memory `project_mb_redemption_negrisk_support.md`.
+
 ### EOA → trading-wallet sweep + convert (2026-06-11, operator-approved)
 
 Operator: "review ledger … xfer to be in the active trading wallet." The EOA signer wallet held
