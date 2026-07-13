@@ -65,6 +65,43 @@ irreplaceable slate window + densifies the closing line.
 
 ---
 
+## 0-S6b. SESSION-6 LATE (2026-07-13) — EDGE-ARTIFACT DISCRIMINATORS RUN; MOST OF THE "UNDERDOG EDGE" IS A DE-VIG ARTIFACT
+
+Operator GO on three theory analyses (commits `7bdbe3e` fix + `1a33dec` feat;
+598 related tests green). All run locally on the md5-verified 07-13 backup.
+**These change how the first readout must be read:**
+
+1. **Convergence (`pm_convergence.py`, n=42 entry gaps ≥1pt):** 67% of gaps
+   shrink by start, BUT decomposition shows the closure is mostly the SHARP
+   line settling toward PM (+1.1pt mean) — PM moves toward sharp only +0.4pt.
+   Price-CLV of buying the gap side at first sight ≈ +0.4pt (and NEGATIVE in
+   the ≥5pt bucket). The big favorite-premium gaps (T1, Gen.G, HLE) sit
+   unmoved for ~19h. Early PinnOdds lines are soft openers; a gap vs the
+   EARLY line mostly measures sharp-line noise, not PM error.
+2. **Shin vs simple de-vig (existing flag, settled n=65):** Shin Brier 0.1883
+   vs simple 0.1898 (Shin slightly better); dogs underperform even Shin's
+   fair prob (bin [0.2,0.4): pred 0.321, realized 0.167 — tiny n). Realized
+   outcomes side with Shin.
+3. **Favorite premium by price level (`edge_distribution` extension):** under
+   SIMPLE de-vig the premium grows monotonically with favorite price (+0.2pt
+   at 0.50–0.60 → +5.0pt at 0.90+; 16/16 positive above 0.80). Under SHIN it
+   collapses to ~0 in every bin except +2.1pt at 0.90+ (n=4). Median |gap|
+   drops 1.4pt → 1.1pt; NOTHING clears edge≥0.03 at fee=0.02 under Shin.
+
+**Synthesis:** the "PM overprices favorites / dog value" pattern is MOSTLY a
+proportional-de-vig artifact at extreme prices, plus soft early lines. What
+survives Shin: a small ~2pt residual at 0.90+ favorites (n=4 — noise-level).
+**Implications for the readout:** (a) run the audit's eval BOTH de-vig ways —
+`pip install shin` on the VPS first, or the shin run refuses (guard added
+`7bdbe3e` — previously it silently printed simple numbers under a shin label);
+(b) an edge that appears only under simple de-vig and only in extreme-price
+buckets is presumptively artifact, not alpha; (c) the de-vig operator decision
+(simple, 2026-07-09, made pre-data) deserves revisiting WITH the settled
+readout in hand. New VPS wrapper: `deploy/vps/eb_convergence.sh`
+(md5 `31eedd581c92559948cd0e2330fa165b`).
+
+---
+
 ## 0-S4f. SESSION-5 LATENCY (`335f359`) — TICK 20s → ~4.5s; NEW COLLECTOR md5 `bae64c85…`
 
 Operator directive: "reduce latency, no function or safety lost." Done:
