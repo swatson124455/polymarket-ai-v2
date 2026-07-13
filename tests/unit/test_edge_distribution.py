@@ -43,3 +43,29 @@ def test_rows_and_report_shape():
 
 def test_report_empty():
     assert "nothing to measure" in report([])
+
+
+def test_fav_premium_sign_and_price_bin():
+    # PM prices the home favorite 0.70 vs sharp fair ~0.634 -> premium ~ +0.066
+    rows = edge_rows({"a": _cl(price=0.70)})
+    r = rows[0]
+    assert abs(r["pm_fav"] - 0.70) < 1e-9
+    assert abs(r["fav_premium"] - (0.70 - r["sharp_yes"])) < 1e-9
+    assert r["fav_premium"] > 0
+    # YES on the dog side at 0.30: favorite = NO at 0.70, sharp fav ~0.634 ->
+    # SAME premium (sign is favorite-relative, not YES-relative).
+    rows2 = edge_rows({"a": _cl(price=0.30, yes="GAM Esports")})
+    assert abs(rows2[0]["fav_premium"] - r["fav_premium"]) < 0.01
+    rep = report(rows)
+    assert "Favorite premium by PM favorite price" in rep
+    assert "[0.70,0.80)" in rep
+
+
+def test_de_vig_method_changes_sharp_prob():
+    import pytest
+    pytest.importorskip("shin")
+    # extreme line: shin shifts fair prob toward the favorite vs simple
+    simple = yes_side_sharp_prob(_cl(odds_a=1.103, odds_b=6.31))
+    shin_p = yes_side_sharp_prob(_cl(odds_a=1.103, odds_b=6.31), method="shin")
+    assert simple is not None and shin_p is not None
+    assert shin_p > simple + 0.01

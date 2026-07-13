@@ -112,3 +112,29 @@ class TestEnrichWithCLV:
         enriched = enrich_with_clv(preds, odds_lookup=lookup)
         assert enriched[0]["clv"] is not None
         assert enriched[0]["clv"] > 0
+
+
+class TestShinAvailable:
+    def test_shin_available_matches_importability(self):
+        from esports_v2.model.clv import shin_available
+        try:
+            import shin  # noqa: F401
+            expected = True
+        except ImportError:
+            expected = False
+        assert shin_available() is expected
+
+    def test_drivers_refuse_mislabeled_shin(self, monkeypatch, tmp_path, capsys):
+        """--de-vig shin with no shin package must exit 2, not print
+        simple-de-vig numbers under a shin label."""
+        import esports_v2.model.clv as clv
+        from esports_v2.scripts import edge_distribution, pm_convergence
+        monkeypatch.setattr(clv, "shin_available", lambda: False)
+        snaps = tmp_path / "s.jsonl"
+        snaps.write_text("")
+        for mod in (edge_distribution, pm_convergence):
+            monkeypatch.setattr(
+                "sys.argv",
+                ["x", "--snapshots", str(snaps), "--de-vig", "shin"])
+            assert mod.main() == 2
+            assert "refusing" in capsys.readouterr().out
