@@ -2,9 +2,66 @@
 
 **Branch:** `claude/esports-sharp-line-rebuild-gqy1na` (session 4; supersedes
 `…-36c8u9-7m96gg` — same history + the PM-index coverage fix below)
-**Updated:** 2026-07-10 (session 4 — CRITICAL collector coverage fix, redeploy pending)
+**Updated:** 2026-07-13 (session 6 — pre-slate health check; start reading at §0-S6)
 **Read order:** this file → `EB_SHARP_LINE_STATE.md` → `EB_SHARP_LINE_PLUMBING.md`
 (esp. "Step-3 PREFLIGHT" + "LIVE MEASUREMENT") → `EB_MARKET_SHAPE_RESULTS.md` → `CLAUDE.md`.
+
+---
+
+## 0-S6. SESSION-6 (2026-07-13) — PRE-SLATE HEALTH CHECK GREEN; BACKUP TAKEN; EDGE PICTURE CONFIRMED AT n=80
+
+**Session type note:** this session ran LOCALLY on the operator's Windows box
+(not cloud) — the SSH key at `C:/Users/samwa/.ssh/LightsailDefaultKey-eu-west-1.pem`
+is directly usable, so read-only VPS checks/backups need no operator relay.
+Cloud sessions still relay via the operator as before.
+
+**All checks read-only, zero PinnOdds quota spent. Verified 2026-07-13 ~19:03 UTC:**
+
+- **Collector HEALTHY going into the slate** (`collect.log` tail): last 3 hourly
+  ticks `appended=62/58/57`, `pm_matched=42/40/39`, `dur=2.8/2.6/2.5s`. File at
+  2,918 lines. Deployed md5 re-verified `bae64c85cd6b875e1f91720286742a9f`.
+  Cron intact (hourly collector + :07 pm_hit_watch, 2 lines). 429s: 236 lifetime
+  (mostly the old `*/15` era); only 4 of the last 30 ticks appended 0.
+- **Single-copy risk CLOSED (point-in-time):** snapshots + aliases pulled to
+  `data/backups/pinnodds_snapshots_20260713.jsonl` + `eb_aliases_20260713.json`
+  (gitignored, operator machine), **md5-verified byte-identical** to the VPS
+  (`42bc23c1…` / `7ebc5b1d…`). Re-pull after the slate resolves.
+- **Local collector setup NOT run** (no `C:\eb-odds`, no scheduled task) —
+  only the VPS collector runs; no key double-burn. `deploy/local/` remains
+  available if the operator wants it.
+- **Suite green locally:** 562 passed / 0 failed (esports+sharp-line filter,
+  superset of the 253-test sharp-line suite).
+- **Edge distribution re-run on the 2026-07-13 backup (n=80 PM-priced, was 29):**
+  median |gap| **0.014**, ex-placeholder max **0.055**, **zero clear the default
+  0.05+0.02 bar** — the handoff finding holds at ~3× the sample; "0 bets" is the
+  rule working. At the EXPLORATORY 0.03 threshold (fee 0.02): 5 clear. Pattern
+  confirmed and directional: **PM prices favorites ABOVE Pinnacle** (T1 0.905 PM
+  vs 0.850 sharp; Gen.G 0.855 vs 0.801) → residual edge, if real, sits on
+  UNDERDOG sides. 07-15 slate matches (T1/GAM, Gen.G/KC, HLE, BLG) are already
+  captured WITH PM prices — pre-start capture is working as designed.
+  (DIAGNOSTIC — no outcomes, no P&L; go/no-go still waits for the settled
+  readout per §PRIMARY.)
+
+**Record of the 6 commits after §0-S4f** (previously only in the session-6
+kickoff prompt): `da008b7` edge-distribution diagnostic
+(`esports_v2/scripts/edge_distribution.py` + `deploy/vps/eb_edge_dist.sh`);
+`2607765` threshold sweep in the eval driver (grades 0.02/0.03 edges, labeled
+EXPLORATORY); `2654654`+`efad50f` snapshot hygiene auditor
+(`deploy/vps/eb_hygiene.sh`, re-clones HEAD; audit = PASS; same-teams/same-day
+start drift downgraded to NOTE); `d2fad72` **real bug fixed** — closing-line
+reducer now uses LATEST-seen `starts` (schedule drift was discarding fresh
+pre-start snapshots; +2 drift tests); `b7af863` one-shot Windows local-collector
+setup (`deploy/local/`).
+
+**STILL OPEN (operator):** (1) rotate `PANDASCORE_API_KEY` +
+`PINNACLE_ODDS_API_KEY` — both chat-exposed; rotate in each vendor panel, then
+update `/opt/pa2-shared/.env` (backup `.env.bak_eb` exists). NOTE: that env file
+is shared runtime infra — EB sessions propose, operator executes. The collector
+reads the key at tick time, so rotation mid-window is safe (worst case one lost
+tick). (2) API-tier decision — ask PinnOdds (pinnapi.com): does any paid tier
+include HISTORICAL esports odds (would replace forward-collection), what are the
+hourly/daily rate limits per tier, and price. A paid tier protects the
+irreplaceable slate window + densifies the closing line.
 
 ---
 
@@ -194,9 +251,16 @@ in place. Everything else from §0-FINAL stands (do not redo).
 > seamlessly. Branch:
 > `git checkout claude/esports-sharp-line-rebuild-gqy1na && git pull`.**
 >
-> Read first, in order: `EB_SHARP_LINE_NEXT_SESSION.md` (start at §0-S4c, then
-> §0-S4b, §0-S4, §0-FINAL, §0a/§0b), `EB_SHARP_LINE_STATE.md`,
+> Read first, in order: `EB_SHARP_LINE_NEXT_SESSION.md` (start at §0-S6, then
+> work down §0-S4f…§0-FINAL as needed), `EB_SHARP_LINE_STATE.md`,
 > `EB_SHARP_LINE_PLUMBING.md`, `EB_MARKET_SHAPE_RESULTS.md`, then `CLAUDE.md`.
+>
+> **(2026-07-13 update):** if running LOCALLY on the operator's Windows box, the
+> SSH key works directly (see §0-S6) — read-only VPS checks need no relay. The
+> PRIMARY action below is unchanged: audit one-liner after the 07-15..19 slate
+> resolves; hold the readout to the go-criteria (ROI>0 with 95% CI excluding
+> zero, ≥100 settled flat-stake bets, profit not one-bucket-concentrated); a
+> first readout under n=50 prints UNSTABLE — directional only, do NOT act.
 >
 > **Context:** cloud session — no direct VPS/DB/PinnOdds/PandaScore access.
 > CLOB + gamma-api + raw.githubusercontent ARE reachable. The operator runs VPS
