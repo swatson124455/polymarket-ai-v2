@@ -4573,6 +4573,33 @@ class WeatherBot(BaseBot):
 
         return found
 
+    @staticmethod
+    def _parse_end_date(market: Dict) -> Optional[datetime]:
+        """S229: read a market dict's end date under all known spellings and
+        normalize to a naive UTC datetime for the timestamp-without-tz
+        markets.end_date_iso column (asyncpg needs a datetime bind, never a
+        str). Mirrors the database.py bulk_insert_markets root fix (abf5a34):
+        CLOB uses "end_date_iso", Gamma uses "endDate"/"endDateIso", DB-lane
+        dicts carry datetime objects. Unparseable values degrade to None —
+        the pre-S229 status quo for that row."""
+        raw = (
+            market.get("end_date_iso")
+            or market.get("endDateISO")
+            or market.get("endDateIso")
+            or market.get("endDate")
+            or market.get("end_date")
+        )
+        if isinstance(raw, str):
+            try:
+                raw = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                return None
+        if isinstance(raw, datetime):
+            if raw.tzinfo is not None:
+                return raw.astimezone(timezone.utc).replace(tzinfo=None)
+            return raw
+        return None
+
     async def _ensure_markets_in_db(self, markets: List[Dict]) -> None:
         """S177: Persist Gamma-discovered markets to the markets table.
 
@@ -4618,6 +4645,12 @@ class WeatherBot(BaseBot):
                 "no_p": m.get("no_price"),
                 "vol": m.get("volume", 0),
                 "active": True,
+                # S229: persist the market's end date. Pre-fix this insert
+                # omitted end_date_iso entirely, so every WB-discovered
+                # market row sat NULL (349/447 WB-predicted markets in the
+                # 07-10→07-13 window) and only resolved ~2 days late via the
+                # S228 48h NULL-end-date rule instead of ~12h after close.
+                "end_dt": self._parse_end_date(m),
             })
 
         _seen_tids: set = set()
@@ -4644,18 +4677,28 @@ class WeatherBot(BaseBot):
                     _ph = ",".join(
                         f"(:id_{i}, :cid_{i}, :q_{i}, :slug_{i}, :cat_{i},"
                         f" :yes_tid_{i}, :no_tid_{i}, :yes_p_{i}, :no_p_{i},"
-                        f" :vol_{i}, :active_{i})"
+                        f" :vol_{i}, :active_{i}, :end_dt_{i})"
                         for i in range(len(_market_rows))
                     )
                     _params: Dict[str, Any] = {}
                     for i, row in enumerate(_market_rows):
                         for k, v in row.items():
                             _params[f"{k}_{i}"] = v
+                    # S229: conflict clause heals existing NULL-end rows on
+                    # rediscovery (WB rescans active markets every cycle) but
+                    # never overwrites a real date and skips the row write
+                    # entirely when there is nothing to heal — dated rows keep
+                    # the old DO NOTHING behavior. Intra-batch id dupes are
+                    # already removed via _seen_mids (DO UPDATE would raise
+                    # "cannot affect row a second time" on dupes).
                     _sql = _sa_text(
                         "INSERT INTO markets (id, condition_id, question, slug, category,"
-                        " yes_token_id, no_token_id, yes_price, no_price, volume, active)"
+                        " yes_token_id, no_token_id, yes_price, no_price, volume, active,"
+                        " end_date_iso)"
                         f" VALUES {_ph}"
-                        " ON CONFLICT (id) DO NOTHING"
+                        " ON CONFLICT (id) DO UPDATE SET end_date_iso = EXCLUDED.end_date_iso"
+                        " WHERE markets.end_date_iso IS NULL"
+                        " AND EXCLUDED.end_date_iso IS NOT NULL"
                     )
                     await session.execute(_sql, _params)
 
@@ -5139,6 +5182,11 @@ class WeatherBot(BaseBot):
                     "category": "weather",
                     "slug": m.get("slug") or "",
                     "condition_id": m.get("conditionId") or "",
+                    # S229: carry Gamma's end date through discovery so
+                    # _ensure_markets_in_db can persist it. Pre-fix it was
+                    # dropped here, the markets row stored NULL, and the
+                    # market resolved ~2 days late via the 48h NULL-end rule.
+                    "end_date_iso": m.get("endDate") or m.get("endDateIso") or None,
                 }
                 markets.append(market_dict)
 

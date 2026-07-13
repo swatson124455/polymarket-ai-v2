@@ -4001,12 +4001,163 @@ class TestEnsureMarketsInDbBatching:
         assert ":id_0" in markets_sql and ":id_1" in markets_sql, (
             f"markets batch SQL missing multi-row VALUES tuples: {markets_sql}"
         )
-        assert "ON CONFLICT (id) DO NOTHING" in markets_sql
+        # S229: conflict clause changed from DO NOTHING to a NULL-end-date
+        # heal; still a single batched statement (the S215 property).
+        assert "ON CONFLICT (id) DO UPDATE" in markets_sql
         prices_sql = str(batched_engine._mock_session.execute.call_args_list[1].args[0])
         assert ":tid_0" in prices_sql and ":tid_1" in prices_sql, (
             f"prices batch SQL missing multi-row VALUES tuples: {prices_sql}"
         )
         assert "ON CONFLICT (token_id) DO UPDATE" in prices_sql
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# S229: end_date_iso persisted through WB discovery → markets table
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestS229EndDatePersistence:
+    """S229 defect tests: WB's Gamma tag discovery dropped `endDate` when
+    building market dicts, and _ensure_markets_in_db inserted rows without
+    end_date_iso (ON CONFLICT DO NOTHING) — so ~78% of WB-predicted markets
+    (349/447 in the 07-10→07-13 window) sat with end_date_iso NULL and only
+    resolved ~2 days late via the S228 48h NULL-end-date rule instead of
+    ~12h after their real end date.
+
+    Fix: (a) tag-fetch market dicts carry end_date_iso from Gamma's
+    endDate/endDateIso; (b) _ensure_markets_in_db parses all known end-date
+    spellings (mirrors database.py bulk_insert_markets root fix abf5a34),
+    writes the column, and heals existing NULL rows via
+    ON CONFLICT (id) DO UPDATE ... WHERE markets.end_date_iso IS NULL.
+    """
+
+    @pytest.fixture
+    def batched_engine(self):
+        engine = MagicMock()
+        engine.trade_coordinator = None
+        engine.cache = None
+        engine.risk_manager = MagicMock()
+        engine.order_gateway = MagicMock()
+        engine.order_gateway._open_position_markets = {"WeatherBot": set()}
+        engine.get_all_tradeable_markets = AsyncMock(return_value=[])
+        engine.place_order = AsyncMock(return_value={"success": True, "order_id": "t1"})
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock()
+        mock_session.commit = AsyncMock()
+
+        class _AsyncCM:
+            async def __aenter__(self_inner):
+                return mock_session
+            async def __aexit__(self_inner, exc_type, exc, tb):
+                return False
+
+        mock_db = MagicMock()
+        mock_db.get_session = MagicMock(side_effect=lambda: _AsyncCM())
+        engine.db = mock_db
+        engine._mock_session = mock_session
+        return engine
+
+    @pytest.fixture
+    def bot(self, batched_engine):
+        from bots.weather_bot import WeatherBot
+        return WeatherBot(batched_engine)
+
+    def _market(self, i=0, **overrides):
+        m = {
+            "id": f"m{i}", "condition_id": f"c{i}", "question": f"q{i}",
+            "slug": f"s{i}", "yes_token_id": f"yt{i}", "no_token_id": f"nt{i}",
+            "yes_price": 0.5, "no_price": 0.5, "volume": 100,
+        }
+        m.update(overrides)
+        return m
+
+    @pytest.mark.asyncio
+    async def test_ensure_markets_sql_includes_end_date_column(self, bot, batched_engine):
+        """The markets INSERT must persist end_date_iso, parsed to a naive
+        UTC datetime (asyncpg: timestamp-without-tz column takes naive)."""
+        await bot._ensure_markets_in_db(
+            [self._market(0, end_date_iso="2026-07-14T12:00:00Z")]
+        )
+        call = batched_engine._mock_session.execute.call_args_list[0]
+        markets_sql = str(call.args[0])
+        assert "end_date_iso" in markets_sql, (
+            f"markets INSERT does not persist end_date_iso: {markets_sql}"
+        )
+        params = call.args[1]
+        bound = [v for k, v in params.items() if k.startswith("end_dt")]
+        assert bound, f"no end-date bind param found in {sorted(params)}"
+        assert bound[0] == datetime(2026, 7, 14, 12, 0), (
+            f"end date must bind as naive UTC datetime, got {bound[0]!r}"
+        )
+        assert getattr(bound[0], "tzinfo", None) is None
+
+    @pytest.mark.asyncio
+    async def test_ensure_markets_heals_null_end_date_on_conflict(self, bot, batched_engine):
+        """Existing NULL-end rows must be healed on rediscovery, without
+        touching rows that already have a date (and without rewriting every
+        conflicting row on every scan)."""
+        await bot._ensure_markets_in_db(
+            [self._market(0, end_date_iso="2026-07-14T12:00:00Z")]
+        )
+        markets_sql = str(batched_engine._mock_session.execute.call_args_list[0].args[0])
+        assert "ON CONFLICT (id) DO UPDATE" in markets_sql, (
+            f"conflict clause must heal NULL end dates: {markets_sql}"
+        )
+        assert "markets.end_date_iso IS NULL" in markets_sql
+        assert "EXCLUDED.end_date_iso IS NOT NULL" in markets_sql
+
+    @pytest.mark.asyncio
+    async def test_ensure_markets_tolerates_missing_end_date(self, bot, batched_engine):
+        """No end-date key anywhere → NULL bind, no crash (the pre-S229
+        status quo for that row)."""
+        await bot._ensure_markets_in_db([self._market(0)])
+        call = batched_engine._mock_session.execute.call_args_list[0]
+        params = call.args[1]
+        bound = [v for k, v in params.items() if k.startswith("end_dt")]
+        assert bound and bound[0] is None
+
+    @pytest.mark.asyncio
+    async def test_ensure_markets_parses_alternate_spellings_and_tzaware(self, bot, batched_engine):
+        """Gamma camelCase spellings and tz-aware datetimes both normalize
+        to naive UTC. Bad strings degrade to NULL, never raise."""
+        await bot._ensure_markets_in_db([
+            self._market(0, endDate="2026-07-15T12:00:00Z"),
+            self._market(1, endDateIso="2026-07-16"),
+            self._market(2, end_date_iso=datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc)),
+            self._market(3, endDate="not-a-date"),
+        ])
+        params = batched_engine._mock_session.execute.call_args_list[0].args[1]
+        assert params["end_dt_0"] == datetime(2026, 7, 15, 12, 0)
+        assert params["end_dt_1"] == datetime(2026, 7, 16, 0, 0)
+        assert params["end_dt_2"] == datetime(2026, 7, 17, 12, 0)
+        assert getattr(params["end_dt_2"], "tzinfo", None) is None
+        assert params["end_dt_3"] is None
+
+    @pytest.mark.asyncio
+    async def test_tag_fetch_market_dict_carries_end_date(self, bot):
+        """_fetch_weather_events_by_tag must not drop Gamma's endDate — it is
+        the only source of a real end date for WB-discovered markets."""
+        gamma_event = {
+            "markets": [{
+                "conditionId": "0xabc",
+                "question": "Will the highest temperature in Testville be 30°C on July 14?",
+                "outcomePrices": '["0.31", "0.69"]',
+                "clobTokenIds": '["t1", "t2"]',
+                "volumeNum": 5000, "liquidityNum": 5000,
+                "bestBid": 0.30, "bestAsk": 0.32,
+                "endDate": "2026-07-14T12:00:00Z",
+            }]
+        }
+        responses = {0: [_FakeAioResp(200, [gamma_event])]}
+        fake = _FakeAioSession(responses)
+        bot._forecast_client._session = fake
+
+        markets = await bot._fetch_weather_events_by_tag()
+        assert len(markets) == 1
+        assert markets[0].get("end_date_iso") == "2026-07-14T12:00:00Z", (
+            "tag-fetch market dict dropped the Gamma endDate"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════

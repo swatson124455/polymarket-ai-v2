@@ -101,7 +101,12 @@
     {
       "file": "bots/weather_bot.py",
       "pattern": "S228",
-      "expect": 4
+      "expect": 5
+    },
+    {
+      "file": "bots/weather_bot.py",
+      "pattern": "S229",
+      "expect": 5
     },
     {
       "file": "bots/weather/engine/config/settings.py",
