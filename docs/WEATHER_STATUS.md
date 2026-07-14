@@ -145,6 +145,26 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
      historical book snapshots exist; proposal = a read-only SHADOW-BOOK LOGGER
      (on each obs event, snapshot the books it would have hit) built AFTER the
      S222 re-run. It prices both the leader-following capture and maker fills.
+     **FIRST PASS (2026-07-14, S230; 1 day / 322 ticks / 11 US cities / local
+     h10-19 in `shadow_books_20260714.jsonl`; book-structure only, NO outcomes
+     yet):** identified the leader bucket per tick (range containing the METAR
+     running max) and compared executable ASK vs MID. Findings: (a) leader ask
+     climbs cheap→~1.00 over the day (h10-12 ~0.00-0.04 = current-max bucket that
+     will be exceeded; h13 0.19; h15 0.875; h18-19 0.999). (b) TAKER route at the
+     high-EV end is DEAD: by h18-19 the leader is ~0.999 with **71-80% of ticks
+     showing NO ask** — the +0.085 mid-edge at h17 (2c above) is largely a
+     one-sided/near-resolved mid-price artifact, not buyable as a taker.
+     (c) Only clean taker window is ~**h15**: ask ~0.875, half-spread ~1.5¢, so
+     the +0.037 h15 mid-edge nets ~**+0.022/$1** gross of fees, on thin depth
+     (~24 sh @ best, ~120 over 3 levels). CAVEATS: 1 day / summer-week regime;
+     **h16-17 gap** in the captured window (the +0.085 peak hour has zero
+     snapshots — can't test directly); no resolutions yet. READ: the edge is real
+     as intraday drift but the takeable portion is marginal — this points to a
+     MAKER capture (rest bids, get lifted 0.75→1.00), so weigh **latency-package
+     activation (3a) against a maker impl, not a taker one.** Re-run over 3-4 days
+     + once outcomes land for the real capture number. Harness:
+     `scripts/wb_research/` conventions; ad-hoc analyzer was run read-only (not
+     committed — trivial to reconstruct from this note).
    Timezone audit for all of the above: PASS (Open-Meteo `timezone=auto` local-day
    seam verified at Seoul; stored targets per-station local; date-string matching
    not index). Quirk: Gamma endDate=12:00Z precedes eastern local day-end —
