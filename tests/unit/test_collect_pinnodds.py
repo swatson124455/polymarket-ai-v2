@@ -93,3 +93,47 @@ def test_build_snapshot_records_attaches_touch_quote_by_yes_token():
     # matched but book missing -> nulls, row intact
     r2 = build_snapshot_records(_ROWS, "t", {"big||pvision||2026-07-10": pm}, {})[0]
     assert r2["condition_id"] == "0xabc" and r2["best_bid"] is None
+
+
+def test_fetch_rows_dedups_live_and_prematch_prefer_prematch(monkeypatch):
+    # Same match in BOTH feeds within a tick, different odds -> ONE row, prematch.
+    loader = PinnOddsLoader(api_key="dummy")
+    def ev(oa, ob):
+        return {"home": "BIG", "away": "PVISION", "starts": "2026-07-10T08:00:00Z",
+                "league_name": "L",
+                "periods": {"num_0": {"money_line": {"home": oa, "away": ob}}}}
+    def fake_get(path, params=None):
+        return {"events": [ev(2.5, 1.5)]} if params["event_type"] == "live" \
+            else {"events": [ev(2.3, 1.632)]}
+    monkeypatch.setattr(loader, "_get", fake_get)
+    monkeypatch.setattr("esports_v2.data.pinnodds_loader.time.sleep", lambda *_: None)
+    rows = loader.fetch_rows(event_types=("live", "prematch"))
+    assert len(rows) == 1
+    assert rows[0]["event_type"] == "prematch"
+    assert rows[0]["odds_a"] == 2.3      # prematch odds won, not the live 2.5
+
+
+def test_fetch_rows_keeps_live_when_no_prematch(monkeypatch):
+    loader = PinnOddsLoader(api_key="dummy")
+    ev = {"home": "BIG", "away": "PVISION", "starts": "2026-07-10T08:00:00Z",
+          "league_name": "L",
+          "periods": {"num_0": {"money_line": {"home": 2.5, "away": 1.5}}}}
+    monkeypatch.setattr(loader, "_get",
+                        lambda path, params=None: {"events": [ev]} if params["event_type"] == "live" else {"events": []})
+    monkeypatch.setattr("esports_v2.data.pinnodds_loader.time.sleep", lambda *_: None)
+    rows = loader.fetch_rows(event_types=("live", "prematch"))
+    assert len(rows) == 1 and rows[0]["event_type"] == "live"
+
+
+def test_fetch_rows_distinct_matches_both_kept(monkeypatch):
+    loader = PinnOddsLoader(api_key="dummy")
+    def fake_get(path, params=None):
+        e = {"home": "A", "away": "B", "starts": "2026-07-10T08:00:00Z", "league_name": "L",
+             "periods": {"num_0": {"money_line": {"home": 2.0, "away": 1.9}}}}
+        e2 = {"home": "C", "away": "D", "starts": "2026-07-10T09:00:00Z", "league_name": "L",
+              "periods": {"num_0": {"money_line": {"home": 1.7, "away": 2.2}}}}
+        return {"events": [e, e2]}
+    monkeypatch.setattr(loader, "_get", fake_get)
+    monkeypatch.setattr("esports_v2.data.pinnodds_loader.time.sleep", lambda *_: None)
+    rows = loader.fetch_rows(event_types=("prematch",))
+    assert len(rows) == 2

@@ -130,15 +130,24 @@ class PinnOddsLoader:
         collection): match_key, home, away, starts, league_name, odds_a, odds_b,
         event_type. Same correct-or-absent filtering as fetch_odds (reuses
         _parse_event). Used by the forward-collector to persist line movement so
-        closing lines can be derived later (last snapshot before `starts`)."""
-        rows: List[dict] = []
+        closing lines can be derived later (last snapshot before `starts`).
+
+        DEDUP BY match_key, preferring ``prematch``: a match present in BOTH the
+        live and prematch feeds within one tick would otherwise emit two rows
+        with the SAME collector-stamped captured_at and DIFFERENT odds, and the
+        closing-line reducer (max-by-captured_at) would then break that tie
+        nondeterministically. prematch is the sharp PRE-start line the closing
+        line wants; the live row is post-start look-ahead the reducer discards
+        anyway. One row per match_key out (correct-or-absent: drop the redundant
+        line, never blend)."""
+        by_key: Dict[str, dict] = {}
         for et in event_types:
             for ev in self._fetch_events(et):
                 parsed = self._parse_event(ev)
                 if parsed is None:
                     continue
                 key, (oa, ob) = parsed
-                rows.append({
+                row = {
                     "match_key": key,
                     "home": str(ev.get("home") or "").strip(),
                     "away": str(ev.get("away") or "").strip(),
@@ -147,8 +156,15 @@ class PinnOddsLoader:
                     "odds_a": oa,
                     "odds_b": ob,
                     "event_type": et,
-                })
+                }
+                prev = by_key.get(key)
+                # keep the first occurrence, but let a prematch row REPLACE a
+                # non-prematch (live) one for the same match_key
+                if prev is None or (et == "prematch"
+                                    and prev.get("event_type") != "prematch"):
+                    by_key[key] = row
             time.sleep(_REQ_DELAY)
+        rows = list(by_key.values())
         logger.info(f"pinnodds_rows event_types={event_types} rows={len(rows)}")
         return rows
 
