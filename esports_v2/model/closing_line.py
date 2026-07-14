@@ -85,6 +85,15 @@ def _coerce_price(v) -> Optional[float]:
     return f if 0.0 < f < 1.0 else None
 
 
+def _coerce_size(v) -> Optional[float]:
+    """A touch size is a positive share count, else None (correct-or-absent)."""
+    try:
+        f = float(v)
+    except (ValueError, TypeError):
+        return None
+    return f if f > 0.0 else None
+
+
 @dataclass
 class ClosingLine:
     """The closing sharp line for one match, plus line-movement diagnostics."""
@@ -108,6 +117,13 @@ class ClosingLine:
     yes_token_id: Optional[str] = None
     yes_outcome: Optional[str] = None
     market_price: Optional[float] = None
+    # GAP C (2026-07-13): executable prices from the CLOSING snapshot's live
+    # CLOB book (market_price is the MID by construction). None on snapshots
+    # that predate GAP C or whose book fetch failed/was empty.
+    best_bid: Optional[float] = None
+    best_ask: Optional[float] = None
+    bid_size: Optional[float] = None
+    ask_size: Optional[float] = None
 
 
 def reduce_to_closing_lines(
@@ -187,6 +203,10 @@ def reduce_to_closing_lines(
             yes_token_id=(str(craw.get("yes_token_id")) if craw.get("yes_token_id") else None),
             yes_outcome=(str(craw.get("yes_outcome")) if craw.get("yes_outcome") else None),
             market_price=_coerce_price(craw.get("market_price")),
+            best_bid=_coerce_price(craw.get("best_bid")),
+            best_ask=_coerce_price(craw.get("best_ask")),
+            bid_size=_coerce_size(craw.get("bid_size")),
+            ask_size=_coerce_size(craw.get("ask_size")),
         )
     return out
 

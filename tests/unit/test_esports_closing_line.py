@@ -244,3 +244,29 @@ def test_match_moved_earlier_excludes_lookahead():
     out = reduce_to_closing_lines(snaps)
     cl = out["a||b||2026-08-01"]
     assert cl.odds_a == 2.0                       # look-ahead odds rejected
+
+
+def test_closing_line_threads_touch_quote_fields():
+    snaps = [{"match_key": "k", "home": "A", "away": "B",
+              "starts": "2026-07-10T18:00:00Z", "league_name": "L",
+              "captured_at": "2026-07-10T17:00:00Z", "odds_a": 2.0, "odds_b": 1.8,
+              "condition_id": "0xabc", "yes_token_id": "tok0", "yes_outcome": "A",
+              "market_price": 0.55, "best_bid": 0.54, "best_ask": 0.56,
+              "bid_size": 100, "ask_size": 25}]
+    from esports_v2.model.closing_line import reduce_to_closing_lines
+    cl = reduce_to_closing_lines(snaps)["k"]
+    assert (cl.best_bid, cl.best_ask) == (0.54, 0.56)
+    assert (cl.bid_size, cl.ask_size) == (100.0, 25.0)
+
+
+def test_closing_line_pre_gap_c_rows_and_junk_default_none():
+    from esports_v2.model.closing_line import reduce_to_closing_lines
+    old = [{"match_key": "k", "home": "A", "away": "B",
+            "starts": "2026-07-10T18:00:00Z", "league_name": "L",
+            "captured_at": "2026-07-10T17:00:00Z", "odds_a": 2.0, "odds_b": 1.8}]
+    cl = reduce_to_closing_lines(old)["k"]
+    assert cl.best_bid is None and cl.ask_size is None
+    junk = [dict(old[0], best_bid="x", best_ask=1.0, bid_size=-5, ask_size=0)]
+    cl2 = reduce_to_closing_lines(junk)["k"]
+    assert cl2.best_bid is None and cl2.best_ask is None
+    assert cl2.bid_size is None and cl2.ask_size is None

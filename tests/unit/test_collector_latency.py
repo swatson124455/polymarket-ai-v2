@@ -181,3 +181,43 @@ def test_standalone_wave_paging_matches_flat(monkeypatch):
     refs = sa.pm_index()
     assert len(refs) == 101
     assert any(r[0] == "0xc777" for r in refs)
+
+
+# ── GAP C parity: canonical parse_book == standalone best_level ─────────────
+
+
+def test_standalone_touch_quote_parity_with_canonical():
+    from esports_v2.data.pm_market_index import parse_book
+    sa = _load_standalone()
+    books = [
+        {"bids": [{"price": "0.60", "size": "50"}, {"price": "0.64", "size": "10"}],
+         "asks": [{"price": "0.70", "size": "5"}, {"price": "0.66", "size": "80"}]},
+        {"bids": [], "asks": [{"price": "0.92", "size": "7"}]},
+        {"bids": [{"price": "junk", "size": "5"}, {"price": "1.5", "size": "1"}],
+         "asks": []},
+        {"bids": [], "asks": []},
+    ]
+    for b in books:
+        can = parse_book(b)
+        sbb, sbs = sa.best_level(b.get("bids"), "bid")
+        sba, sas = sa.best_level(b.get("asks"), "ask")
+        if can is None:
+            assert sbb is None and sba is None
+        else:
+            assert (can.best_bid, can.bid_size) == (sbb, sbs)
+            assert (can.best_ask, can.ask_size) == (sba, sas)
+
+
+def test_standalone_touch_quotes_dedup_and_isolation(monkeypatch):
+    sa = _load_standalone()
+    calls = []
+    def fake_book(tid):
+        calls.append(tid)
+        if tid == "boom":
+            raise RuntimeError("x")
+        return {"bids": [{"price": "0.40", "size": "3"}], "asks": []}
+    monkeypatch.setattr(sa, "clob_book", fake_book)
+    out = sa.touch_quotes(["a", "a", "boom", "b", ""], workers=2)
+    assert sorted(calls) == ["a", "b", "boom"]
+    assert set(out) == {"a", "b"}
+    assert out["a"] == (0.40, None, 3.0, None)

@@ -202,3 +202,55 @@ def test_match_pm_ref_does_not_attach_academy_market():
     m = _mw_market(outcomes=json.dumps(["T1 Academy", "Gen.G Academy"]),
                    question="LoL: T1 Academy vs Gen.G Academy (BO3) - LCK CL")
     assert match_pm_ref("T1", "Gen.G", "2026-01-27T19:00:00Z", _refs(m)) is None
+
+
+# ── GAP C: touch quotes (bid/ask + depth) from the live CLOB book ────────────
+
+
+def _book(bids=None, asks=None):
+    return {"bids": bids if bids is not None else [],
+            "asks": asks if asks is not None else []}
+
+
+def test_parse_book_takes_best_of_unsorted_levels():
+    from esports_v2.data.pm_market_index import parse_book
+    q = parse_book(_book(
+        bids=[{"price": "0.60", "size": "50"}, {"price": "0.64", "size": "10"}],
+        asks=[{"price": "0.70", "size": "5"}, {"price": "0.66", "size": "80"}]))
+    assert (q.best_bid, q.bid_size) == (0.64, 10.0)
+    assert (q.best_ask, q.ask_size) == (0.66, 80.0)
+
+
+def test_parse_book_one_sided_and_junk_levels():
+    from esports_v2.data.pm_market_index import parse_book
+    q = parse_book(_book(
+        bids=[{"price": "junk", "size": "5"}, {"price": "1.5", "size": "5"},
+              {"price": "0.10", "size": "0"}],
+        asks=[{"price": "0.92", "size": "7"}]))
+    assert q.best_bid is None and q.bid_size is None   # all bid levels invalid
+    assert (q.best_ask, q.ask_size) == (0.92, 7.0)
+
+
+def test_parse_book_empty_or_malformed_is_none():
+    from esports_v2.data.pm_market_index import parse_book
+    assert parse_book(_book()) is None
+    assert parse_book(None) is None
+    assert parse_book([1, 2]) is None
+
+
+def test_fetch_touch_quotes_dedups_isolates_and_drops_failures():
+    from esports_v2.data.pm_market_index import fetch_touch_quotes
+    calls = []
+    def fake(tid):
+        calls.append(tid)
+        if tid == "boom":
+            raise RuntimeError("x")
+        if tid == "empty":
+            return _book()
+        return _book(bids=[{"price": "0.40", "size": "3"}],
+                     asks=[{"price": "0.42", "size": "4"}])
+    out = fetch_touch_quotes(["a", "a", "boom", "empty", "b", ""],
+                             fetch_book=fake, workers=2)
+    assert sorted(calls) == ["a", "b", "boom", "empty"]   # dedup + skip blank
+    assert set(out) == {"a", "b"}                          # failures absent
+    assert out["a"].best_bid == 0.40 and out["b"].ask_size == 4.0

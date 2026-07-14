@@ -181,6 +181,49 @@ def safe_pm_index():
     try: return pm_index()
     except Exception as e:
         print(f"pm_index failed {type(e).__name__}, null PM fields"); return []
+# GAP C: executable prices — best bid/ask (+ touch sizes) from the live CLOB
+# book of each MATCHED market's yes token. market_price is the mid BY
+# CONSTRUCTION (gamma outcomePrices == (bestBid+bestAsk)/2, verified
+# 2026-07-13); the touch is what a fill actually costs. Mirrors
+# pm_market_index.fetch_touch_quotes. Correct-or-absent: any failure/empty
+# book -> null quote fields; odds + mid capture never blocked.
+CLOB="https://clob.polymarket.com/book"
+def best_level(levels,side):
+    best=None
+    for lv in levels if isinstance(levels,list) else []:
+        if not isinstance(lv,dict): continue
+        try: p,s=float(lv.get("price")),float(lv.get("size"))
+        except (TypeError,ValueError): continue
+        if not (0.0<p<1.0) or s<=0: continue
+        if best is None or (p>best[0] if side=="bid" else p<best[0]): best=(p,s)
+    return best if best is not None else (None,None)
+def clob_book(tid):
+    req=urllib.request.Request(CLOB+"?token_id="+urllib.parse.quote(str(tid)),headers={"User-Agent":"eb-pm-index/1.0"})
+    try:
+        with urllib.request.urlopen(req,timeout=10) as r: d=json.load(r)
+        return d if isinstance(d,dict) else None
+    except Exception: return None
+def touch_quotes(tids,workers=8):
+    tids=[t for t in dict.fromkeys(tids) if t]
+    if not tids: return {}
+    from concurrent.futures import ThreadPoolExecutor
+    def one(tid):
+        try:
+            b=clob_book(tid)
+            if not isinstance(b,dict): return tid,None
+            bb,bs=best_level(b.get("bids"),"bid"); ba,az=best_level(b.get("asks"),"ask")
+            if bb is None and ba is None: return tid,None
+            return tid,(bb,ba,bs,az)
+        except Exception: return tid,None
+    out={}
+    with ThreadPoolExecutor(max_workers=max(1,workers)) as pool:
+        for tid,q in pool.map(one,tids):
+            if q is not None: out[tid]=q
+    return out
+def safe_touch_quotes(tids):
+    try: return touch_quotes(tids)
+    except Exception as e:
+        print(f"touch_quotes failed {type(e).__name__}, null quote fields"); return {}
 def main():
     cap=datetime.now(timezone.utc).isoformat(); recs=[]; t0=time.monotonic()
     # LATENCY: fetch the PM index and the PinnOdds odds CONCURRENTLY — both are
@@ -205,11 +248,18 @@ def main():
                      "starts":ev.get("starts"),"league_name":ev.get("league_name"),
                      "odds_a":oa,"odds_b":ob,"event_type":"prematch",
                      "condition_id":pm[0] if pm else None,"yes_token_id":pm[1] if pm else None,
-                     "yes_outcome":pm[2] if pm else None,"market_price":pm[3] if pm else None})
+                     "yes_outcome":pm[2] if pm else None,"market_price":pm[3] if pm else None,
+                     "best_bid":None,"best_ask":None,"bid_size":None,"ask_size":None})
+    # GAP C: one CLOB book read per distinct matched market, concurrent.
+    tq=safe_touch_quotes([r["yes_token_id"] for r in recs if r.get("yes_token_id")])
+    for r in recs:
+        q=tq.get(r.get("yes_token_id"))
+        if q: r["best_bid"],r["best_ask"],r["bid_size"],r["ask_size"]=q
     os.makedirs(os.path.dirname(SNAP),exist_ok=True)
     with open(SNAP,"a",encoding="utf-8") as f:
         for r in recs: f.write(json.dumps(r,ensure_ascii=False)+"\n")
     total=sum(1 for _ in open(SNAP,encoding="utf-8"))
     matched=sum(1 for r in recs if r.get("condition_id"))
-    print(f"{cap} appended={len(recs)} pm_matched={matched} total_lines={total} dur={time.monotonic()-t0:.1f}s file={SNAP}")
+    quoted=sum(1 for r in recs if r.get("best_bid") is not None or r.get("best_ask") is not None)
+    print(f"{cap} appended={len(recs)} pm_matched={matched} books={quoted} total_lines={total} dur={time.monotonic()-t0:.1f}s file={SNAP}")
 if __name__=="__main__": main()

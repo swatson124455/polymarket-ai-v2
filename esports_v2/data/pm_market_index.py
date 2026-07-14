@@ -37,7 +37,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Callable, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional
 
 from esports_v2.model.team_match import match_teams
 
@@ -344,3 +344,108 @@ def _default_fetch_page(offset: int, limit: int) -> Optional[List[dict]]:
         logger.warning(f"pm_index_gamma_error offset={offset} err={type(e).__name__}")
         return None
     return data if isinstance(data, list) else None
+
+
+# ── GAP C: executable-price capture (best bid/ask + touch depth) ─────────────
+# The captured ``market_price`` is the book MID BY CONSTRUCTION (gamma
+# ``outcomePrices`` == (bestBid+bestAsk)/2, verified same-instant 2026-07-13) —
+# a mid is not a price anyone will fill you at. These quotes from the live CLOB
+# book of the matched YES token are the executable prices + touch depth the
+# fill-realism analysis and the readout's capacity line need.
+
+_CLOB_BOOK_URL = "https://clob.polymarket.com/book"
+
+# fetch_book(token_id) -> raw book dict {"bids":[{"price","size"},..],"asks":[..]}
+# or None on any failure (correct-or-absent).
+FetchBook = Callable[[str], Optional[dict]]
+
+
+@dataclass
+class TouchQuote:
+    """Best bid/ask (+ size at each touch) of one CLOB token's book. A side with
+    no resting orders is None/None — partial books are still informative."""
+
+    best_bid: Optional[float] = None
+    best_ask: Optional[float] = None
+    bid_size: Optional[float] = None
+    ask_size: Optional[float] = None
+
+
+def _best_level(levels, side: str):
+    """(price, size) of the best level, or (None, None). Defensive: takes
+    max-price bid / min-price ask regardless of the feed's sort order; drops
+    non-numeric or out-of-range entries (price must be in (0,1), size > 0)."""
+    best = None
+    for lv in levels if isinstance(levels, list) else []:
+        if not isinstance(lv, dict):
+            continue
+        try:
+            p, s = float(lv.get("price")), float(lv.get("size"))
+        except (TypeError, ValueError):
+            continue
+        if not (0.0 < p < 1.0) or s <= 0:
+            continue
+        if best is None or (p > best[0] if side == "bid" else p < best[0]):
+            best = (p, s)
+    return best if best is not None else (None, None)
+
+
+def parse_book(book) -> Optional[TouchQuote]:
+    """Parse a raw CLOB book into a ``TouchQuote``, or None when there is
+    nothing usable on either side (correct-or-absent)."""
+    if not isinstance(book, dict):
+        return None
+    bb, bs = _best_level(book.get("bids"), "bid")
+    ba, as_ = _best_level(book.get("asks"), "ask")
+    if bb is None and ba is None:
+        return None
+    return TouchQuote(best_bid=bb, best_ask=ba, bid_size=bs, ask_size=as_)
+
+
+def _default_fetch_book(token_id: str) -> Optional[dict]:
+    """GET one CLOB book. None on any failure (correct-or-absent — the snapshot
+    row keeps null quote fields; odds + mid capture are never blocked)."""
+    import requests
+
+    try:
+        r = requests.get(_CLOB_BOOK_URL, params={"token_id": token_id},
+                         timeout=10, headers={"User-Agent": "eb-pm-index/1.0"})
+        if r.status_code != 200:
+            return None
+        data = r.json()
+    except Exception:  # noqa: BLE001 — correct-or-absent on any transport error
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def fetch_touch_quotes(
+    token_ids: Iterable[str],
+    *,
+    fetch_book: Optional[FetchBook] = None,
+    workers: int = 8,
+) -> Dict[str, TouchQuote]:
+    """Fetch the live book touch for each distinct token id, concurrently.
+
+    Returns ``{token_id: TouchQuote}`` with FAILED/EMPTY books simply absent —
+    callers write null quote fields for missing tokens, never a guessed price.
+    One fetch per distinct token per tick (~pm_matched calls hourly — public
+    endpoint, no key, rate-trivial; the same endpoint the 2026-07-13 probe hit
+    111x in a minute without incident)."""
+    fetch_book = fetch_book or _default_fetch_book
+    tids = [t for t in dict.fromkeys(token_ids) if t]
+    if not tids:
+        return {}
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(tid: str):
+        try:
+            return tid, parse_book(fetch_book(tid))
+        except Exception:  # noqa: BLE001 — per-token isolation
+            return tid, None
+
+    out: Dict[str, TouchQuote] = {}
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        for tid, quote in pool.map(one, tids):
+            if quote is not None:
+                out[tid] = quote
+    return out

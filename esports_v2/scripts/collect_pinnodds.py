@@ -16,7 +16,8 @@ Storage is an append-only JSONL — deliberately DECOUPLED from the DB:
 
 Each line: {captured_at, match_key, home, away, starts, league_name,
             odds_a, odds_b, event_type,
-            condition_id, yes_token_id, yes_outcome, market_price}.
+            condition_id, yes_token_id, yes_outcome, market_price,
+            best_bid, best_ask, bid_size, ask_size}.
 
 The last four are the matched Polymarket match-winner reference (GAP B): the
 bet-time PM price + the condition_id/yes_token_id needed for the flip-proof
@@ -48,7 +49,9 @@ from esports_v2.data.alias_file import load_alias_expand
 from esports_v2.data.pinnodds_loader import PinnOddsLoader
 from esports_v2.data.pm_market_index import (
     PMMarketRef,
+    TouchQuote,
     build_pm_index,
+    fetch_touch_quotes,
     match_pm_ref,
 )
 
@@ -62,15 +65,23 @@ def build_snapshot_records(
     rows: List[dict],
     captured_at: str,
     pm_index: Optional[Dict[str, PMMarketRef]] = None,
+    touch_quotes: Optional[Dict[str, TouchQuote]] = None,
 ) -> List[dict]:
     """Stamp each fetched row with the capture time, and attach the matched
     Polymarket match-winner reference (GAP B) when one exists. Pure —
     unit-testable. ``pm_index`` maps ``match_key -> PMMarketRef``; a row with no
-    match keeps ``None`` PM fields (correct-or-absent)."""
+    match keeps ``None`` PM fields (correct-or-absent).
+
+    ``touch_quotes`` (GAP C, 2026-07-13) maps ``yes_token_id -> TouchQuote``
+    from the live CLOB book — the EXECUTABLE prices (``market_price`` is the
+    mid by construction). A matched row whose book fetch failed/was empty keeps
+    all four quote fields ``None``; unmatched rows always do."""
     pm_index = pm_index or {}
+    touch_quotes = touch_quotes or {}
     out = []
     for r in rows:
         pm = pm_index.get(r.get("match_key"))
+        tq = touch_quotes.get(pm.yes_token_id) if pm else None
         out.append({
             "captured_at": captured_at,
             "match_key": r.get("match_key"),
@@ -85,6 +96,10 @@ def build_snapshot_records(
             "yes_token_id": pm.yes_token_id if pm else None,
             "yes_outcome": pm.yes_outcome if pm else None,
             "market_price": pm.market_price if pm else None,
+            "best_bid": tq.best_bid if tq else None,
+            "best_ask": tq.best_ask if tq else None,
+            "bid_size": tq.bid_size if tq else None,
+            "ask_size": tq.ask_size if tq else None,
         })
     return out
 
@@ -142,15 +157,26 @@ def collect(path: Path) -> Dict[str, int]:
         rows = fut_rows.result()
     alias_expand = load_alias_expand(os.environ.get("EB_ALIASES_PATH"))
     pm_index = _resolve_pm_index(rows, refs, alias_expand)
+    # GAP C: executable prices — one CLOB book read per distinct matched market
+    # (touch quotes are useless without a match; failures -> null quote fields,
+    # never a blocked tick).
+    try:
+        quotes = fetch_touch_quotes(pm.yes_token_id for pm in pm_index.values())
+    except Exception as e:  # noqa: BLE001 — quotes must never break odds capture
+        logger.warning(f"touch_quotes_failed err={type(e).__name__} — null quote fields")
+        quotes = {}
     captured_at = datetime.now(timezone.utc).isoformat()
-    records = build_snapshot_records(rows, captured_at, pm_index)
+    records = build_snapshot_records(rows, captured_at, pm_index, quotes)
     matched = sum(1 for r in records if r.get("condition_id"))
+    quoted = sum(1 for r in records if r.get("best_bid") is not None
+                 or r.get("best_ask") is not None)
     written = append_jsonl(records, path)
     total = sum(1 for _ in open(path, encoding="utf-8")) if path.exists() else written
-    logger.info(f"collected snapshots={written} pm_matched={matched} "
+    logger.info(f"collected snapshots={written} pm_matched={matched} books={quoted} "
                 f"captured_at={captured_at} dur={time.monotonic() - t0:.1f}s "
                 f"file={path} total_lines={total}")
-    return {"written": written, "total_lines": total, "pm_matched": matched}
+    return {"written": written, "total_lines": total, "pm_matched": matched,
+            "books": quoted}
 
 
 if __name__ == "__main__":

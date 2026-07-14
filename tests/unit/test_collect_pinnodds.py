@@ -72,3 +72,24 @@ def test_fetch_rows_shape(monkeypatch):
     assert len(rows) == 1
     assert rows[0]["match_key"] == "big||pvision||2026-07-10"
     assert rows[0]["odds_a"] == 2.3 and rows[0]["league_name"] == "CS2 - XSE Pro League"
+
+
+def test_build_snapshot_records_quote_fields_null_without_touch_quotes():
+    r = build_snapshot_records(_ROWS, "t")[0]
+    for f in ("best_bid", "best_ask", "bid_size", "ask_size"):
+        assert f in r and r[f] is None
+
+
+def test_build_snapshot_records_attaches_touch_quote_by_yes_token():
+    from esports_v2.data.pm_market_index import TouchQuote
+    pm = PMMarketRef(condition_id="0xabc", yes_token_id="tok0", yes_outcome="BIG",
+                     market_price=0.57, question="BIG vs PVISION", game_start="2026-07-10",
+                     team_a="BIG", team_b="PVISION", day="2026-07-10")
+    quotes = {"tok0": TouchQuote(best_bid=0.56, best_ask=0.58,
+                                 bid_size=120.0, ask_size=40.0)}
+    r = build_snapshot_records(_ROWS, "t", {"big||pvision||2026-07-10": pm}, quotes)[0]
+    assert (r["best_bid"], r["best_ask"]) == (0.56, 0.58)
+    assert (r["bid_size"], r["ask_size"]) == (120.0, 40.0)
+    # matched but book missing -> nulls, row intact
+    r2 = build_snapshot_records(_ROWS, "t", {"big||pvision||2026-07-10": pm}, {})[0]
+    assert r2["condition_id"] == "0xabc" and r2["best_bid"] is None
