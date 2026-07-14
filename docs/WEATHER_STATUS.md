@@ -109,6 +109,39 @@ latency package (still inert/flag-OFF). S222 verification clock RESTARTS at 16:0
    07-08→07-11 crash window traded with NO corrections at all (raw+VIF) — different regime
    again; never pool it with either neighbor.
 
+2c. **S229 EV research scoreboard (read-only market-structure studies, 2026-07-13;
+   harnesses committed at `scripts/wb_research/`, README has run instructions +
+   full numbers).** Terminology: "ensemble" = the bot's raw INPUT (public GFS/ECMWF
+   members), not the bot; chain = ensemble → corrections → bot. Verdicts, all on
+   primary sources (CLOB price-history/books, IEM METAR, CLOB-verified outcomes,
+   matched timestamps):
+   - **DEAD — day-ahead directional:** market Brier 0.195 vs raw-ensemble 0.243
+     (n=186, 24h lead); still dead morning-of (0.191 vs 0.250, n=230, 8h lead).
+     The market prices MORE than the public ensemble. Never trade pre-afternoon
+     direction on raw signal.
+   - **DEAD — family Dutch-book (taker):** best-ask family sums 0.997–1.062 with
+     3–8 shares best-ask depth on tail legs; the ~2% mid-price "underround" is a
+     spread artifact. (Fresh-Gamma family scan: 118 families, avg YES-sum 1.020
+     at mid = the juice a MAKER collects.)
+   - **ALIVE — resolution-day leader-following (the one confirmed edge):**
+     buy the bucket containing the METAR running max at local hour H, hold to
+     resolution, losers included: monotone +EV, H=15 +0.037/68% (n=31) →
+     H=17 +0.085/89% (n=18) per $1 at mid pre-costs; winners jump 0.54→0.72
+     within 15 min of the deciding ob, then drift ~0.75→1.00 over hours (the
+     harvestable leg). Caveat: one summer week, mid prices — DO NOT trade yet.
+   - **OPEN (time-gated) — station wedge:** does the FIXED bot (per-station EMOS)
+     beat the market anywhere? Re-run brier_duel with prediction_log probs on the
+     clean window ≥50 (~07-16/17), per (station×lead×side) cell; whitelist only
+     cells beating the market by >2×(half-spread+slippage).
+   - **OPEN (needs live shadow) — maker economics + executable capture:** no
+     historical book snapshots exist; proposal = a read-only SHADOW-BOOK LOGGER
+     (on each obs event, snapshot the books it would have hit) built AFTER the
+     S222 re-run. It prices both the leader-following capture and maker fills.
+   Timezone audit for all of the above: PASS (Open-Meteo `timezone=auto` local-day
+   seam verified at Seoul; stored targets per-station local; date-string matching
+   not index). Quirk: Gamma endDate=12:00Z precedes eastern local day-end —
+   resolution arrives on retry, harmless.
+
 3. **Deferred switches (do after the calibrator re-learns + S222 passes):** enable the V28
    calibrated-edge gate (`WEATHER_CALIBRATED_EDGE_GATE_ENABLED=true`); V34 follow-ups
    (synthetic marker / RNG determinism); deeper V26 (orders submitted at midpoint, not
