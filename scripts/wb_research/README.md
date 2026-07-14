@@ -29,5 +29,20 @@ winner reaction curve at first bucket entry.
 S229 results (46 families, one summer week): +EV every afternoon hour,
 monotone: H=15 +0.037 (68% win, n=31) → H=17 +0.085 (89% win, n=18) per $1 at
 mid, pre-costs; winners 0.536 → 0.715 within 15 min → drift to ~1.0 over hours.
+NOTE (S230): the nightly accrual updates these — read the latest
+`~/wb_research/nightly_*.log` on the VPS, not this snapshot (H=17 had already
+thinned to +0.035/n=22 by 07-14).
 Caveats: one week, one season, mid prices, thin best-ask depth (3–8 shares on
 tail legs) — needs the shadow-book logger before anything trades on it.
+
+## executable_replay.py — "same strategy, but at prices you can actually get"
+Runs on the VPS (psql for resolutions; `--res file.json` for offline testing).
+Replays buy-the-leader against the shadow-book logger's captured books
+(`~/wb_research/shadow_books_*.jsonl`): one simulated entry per
+(family-day, local hour) at the earliest tick of that hour, filled at the
+LOGGED BEST ASK, graded vs `markets.resolution`. Same EV units as race_study
+(profit per share = outcome − price) so mid-vs-executable capture is a direct
+subtraction. Also counts 'unbuyable' (leader had no ask) and 'ask>=0.98'
+(priced-in) entries — the h17+ mid-edge largely lives there (S230 first pass,
+WEATHER_STATUS 2c). Sample accrues at ~11 US family-days/day; hold verdicts to
+the same ≥50-per-cell bar as everything else.
