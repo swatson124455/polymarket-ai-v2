@@ -31,6 +31,7 @@ from typing import Callable, Dict, List, Optional
 
 from esports_v2.model.clv import odds_to_implied
 from esports_v2.model.results_join import JoinedRecord
+from esports_v2.model.team_match import same_team
 from esports_v2.model.sharp_reference import (
     DEFAULT_FEE,
     DEFAULT_MIN_EDGE,
@@ -414,6 +415,31 @@ def _default_orientation_resolver(
     )
 
 
+def _frozen_yes_is_team_a(
+    yes_outcome: Optional[str], home: str, away: str
+) -> Optional[bool]:
+    """Orientation from the CAPTURE-time ``yes_outcome`` name (frozen).
+
+    The snapshot froze the PM YES outcome (== gamma outcomes[0]) at capture. The
+    2026-07-14 data-hygiene audit censused all distinct PM markets and found the
+    stored ``yes_outcome`` == the live CLOB token's outcome 95/95 (0 flips), so
+    the frozen name is a trustworthy authority — and unlike a live refetch it is
+    ALWAYS available (a resolved market that has left the CLOB still has its
+    frozen name), which is what makes the backtest reproducible.
+
+    Returns True iff ``yes_outcome`` is the ``home``/team_a side, False iff it is
+    the ``away`` side, None if it matches neither or both (correct-or-absent —
+    never a guessed side).
+    """
+    if not yes_outcome:
+        return None
+    is_home = same_team(yes_outcome, home, None)
+    is_away = same_team(yes_outcome, away, None)
+    if is_home == is_away:
+        return None
+    return bool(is_home)
+
+
 def edge_backtest_from_joined(
     joined: List,  # List[results_join.JoinedRecord]
     *,
@@ -427,15 +453,21 @@ def edge_backtest_from_joined(
     Bridges Step 2's ``JoinedRecord`` (which now carries the GAP-B PM fields) to
     ``edge_backtest``: builds the ``match_key -> (odds_a, odds_b)`` lookup and the
     per-record dicts (``match_key``/``market_price``/``yes_is_team_a``/
-    ``home_won``), resolving orientation flip-proof from the captured
-    ``condition_id``/``yes_token_id`` via ``resolve_orientation`` (default = live
-    CLOB label). team_a passed to the resolver is the odds_a/``home`` side, so
-    ``yes_is_team_a`` aligns to the same side the odds do.
+    ``home_won``/``best_bid``/``best_ask``).
+
+    Orientation (2026-07-14 reproducibility fix): PRIMARY is the FROZEN
+    capture-time ``yes_outcome`` (``_frozen_yes_is_team_a``) — always present, so
+    the record set no longer drifts as resolved markets leave the CLOB, and the
+    backtest is reproducible from the snapshot alone. ``resolve_orientation``
+    (default = live CLOB label) is a VETO-ONLY cross-check: a live bool that
+    DISAGREES with the frozen name drops the record (contested orientation ->
+    never bet); a live None (market archived/unreachable) keeps the frozen name.
+    team_a passed to the resolver is the odds_a/``home`` side.
 
     Correct-or-absent: a JoinedRecord is skipped when it has no ``market_price``,
-    no ``condition_id``/``yes_token_id``, or orientation cannot be resolved to a
-    bool — never a guessed side. Only records that survive reach ``edge_backtest``
-    (which itself reports the no-PM-price gap when nothing has a price).
+    no ``condition_id``/``yes_token_id``, an unresolvable frozen orientation, or a
+    live cross-check that disagrees — never a guessed side. Only survivors reach
+    ``edge_backtest`` (which itself reports the no-PM-price gap when none price).
     """
     resolve = resolve_orientation or _default_orientation_resolver
 
@@ -445,15 +477,23 @@ def edge_backtest_from_joined(
         odds_lookup[jr.match_key] = (jr.odds_a, jr.odds_b)
         if jr.market_price is None or not jr.condition_id or not jr.yes_token_id:
             continue
-        yes_is_team_a = resolve(
-            jr.condition_id, jr.yes_token_id, jr.home, jr.away
-        )
-        if not isinstance(yes_is_team_a, bool):
-            continue  # orientation unresolved -> never guess (would invert edge)
+        # PRIMARY: frozen orientation from the capture-time yes_outcome. The
+        # backtest no longer drifts as resolved markets leave the CLOB (the frozen
+        # name is always present), and it is reproducible from the snapshot alone.
+        frozen = _frozen_yes_is_team_a(jr.yes_outcome, jr.home, jr.away)
+        if frozen is None:
+            continue  # can't orient from the frozen name -> drop (never guess)
+        # CROSS-CHECK: when the market is STILL served, the live CLOB label is a
+        # veto — a bool that DISAGREES with the frozen name means the orientation
+        # is contested, so drop (never bet a contested side). Live None (market
+        # resolved/archived or unreachable) -> keep the frozen name (audit 95/95).
+        live = resolve(jr.condition_id, jr.yes_token_id, jr.home, jr.away)
+        if isinstance(live, bool) and live != frozen:
+            continue
         records.append({
             "match_key": jr.match_key,
             "market_price": jr.market_price,
-            "yes_is_team_a": yes_is_team_a,
+            "yes_is_team_a": frozen,
             "home_won": jr.home_won,
             # GAP C: executable touch for fill-realistic P&L (None -> mid fallback)
             "best_bid": jr.best_bid,

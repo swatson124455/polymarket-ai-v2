@@ -160,11 +160,38 @@ def test_edge_from_joined_no_pm_price_reports_gap():
     assert "PM price" in rep.note
 
 
-def test_edge_from_joined_skips_unresolved_orientation():
-    # market price present but resolver returns None -> record dropped, gap note.
+def test_edge_from_joined_live_absent_keeps_frozen_orientation():
+    # 2026-07-14: frozen yes_outcome resolves (=="A"), live cross-check returns
+    # None (market archived/unreachable) -> KEEP frozen (reproducibility fix; the
+    # record no longer drops just because the live market is gone).
     rep = edge_backtest_from_joined([_jr_pm("k", 1.5, 3.0, True, 0.40)],
                                     resolve_orientation=lambda *a: None)
+    assert rep.n_with_market_price == 1 and rep.n_bets == 1
+
+
+def test_edge_from_joined_live_disagreement_drops_record():
+    # frozen says A (yes_outcome "A"); live cross-check says NOT-A -> contested
+    # orientation -> drop (never bet a contested side).
+    rep = edge_backtest_from_joined([_jr_pm("k", 1.5, 3.0, True, 0.40)],
+                                    resolve_orientation=lambda *a: False)
     assert rep.n_with_market_price == 0
+
+
+def test_edge_from_joined_unresolvable_frozen_drops_record():
+    # yes_outcome matches NEITHER home nor away -> frozen None -> drop, and the
+    # live resolver is never consulted (short-circuit).
+    called = {"n": 0}
+    def resolver(*a):
+        called["n"] += 1
+        return True
+    jr = JoinedRecord(
+        match_key="k", home="A", away="B", starts="2026-07-10T18:00:00Z",
+        day="2026-07-10", odds_a=1.5, odds_b=3.0, open_odds_a=1.5, open_odds_b=3.0,
+        winner="A", home_won=True, game="cs2", source="t", result_match_id="m",
+        condition_id="0xc", yes_token_id="t0", yes_outcome="Unrelated Org",
+        market_price=0.40)
+    rep = edge_backtest_from_joined([jr], resolve_orientation=resolver)
+    assert rep.n_with_market_price == 0 and called["n"] == 0
 
 
 def test_edge_from_joined_prices_a_winning_yes_bet():
