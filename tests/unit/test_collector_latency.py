@@ -221,3 +221,16 @@ def test_standalone_touch_quotes_dedup_and_isolation(monkeypatch):
     assert sorted(calls) == ["a", "b", "boom"]
     assert set(out) == {"a", "b"}
     assert out["a"] == (0.40, None, 3.0, None)
+
+
+def test_standalone_pm_index_flattens_event_pages(monkeypatch):
+    sa = _load_standalone()
+    ev = {"title": "E", "markets": [
+        _mw(1),
+        dict(_mw(2), closed=True),      # resolved nested market -> skipped
+        dict(_mw(3), active=False),     # inactive nested market -> skipped
+    ]}
+    monkeypatch.setattr(sa, "gamma_pages", lambda: {0: [ev]})
+    refs = sa.pm_index()
+    assert len(refs) == 1
+    assert refs[0][0] == _mw(1)["conditionId"]

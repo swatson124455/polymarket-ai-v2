@@ -254,3 +254,37 @@ def test_fetch_touch_quotes_dedups_isolates_and_drops_failures():
     assert sorted(calls) == ["a", "b", "boom", "empty"]   # dedup + skip blank
     assert set(out) == {"a", "b"}                          # failures absent
     assert out["a"].best_bid == 0.40 and out["b"].ask_size == 4.0
+
+
+# ── 2026-07-14 coverage fix: /events pages with nested markets ──────────────
+
+
+def test_build_pm_index_flattens_event_pages():
+    from esports_v2.data.pm_market_index import build_pm_index
+    ev = {"title": "Road Of Legends", "markets": [
+        _mw_market(),
+        _mw_market(conditionId="0xdead", closed=True),           # resolved -> skip
+        _mw_market(conditionId="0xbeef", active=False),          # inactive -> skip
+        "junk",
+    ]}
+    refs = build_pm_index(fetch_page=lambda off, lim: [ev] if off == 0 else [])
+    assert len(refs) == 1
+    assert refs[0].condition_id.startswith("0x872ccf45")
+
+
+def test_build_pm_index_bare_market_pages_still_work():
+    # back-compat: a page of bare market dicts (the old /markets shape and all
+    # existing injected tests) parses exactly as before.
+    from esports_v2.data.pm_market_index import build_pm_index
+    refs = build_pm_index(fetch_page=lambda off, lim: [_mw_market()] if off == 0 else [])
+    assert len(refs) == 1
+
+
+def test_flatten_page_item_shapes():
+    from esports_v2.data.pm_market_index import _flatten_page_item
+    m = _mw_market()
+    assert _flatten_page_item(m) == [m]                      # bare market
+    assert _flatten_page_item({"markets": [m]}) == [m]       # event wrapper
+    assert _flatten_page_item({"markets": "junk"}) == [{"markets": "junk"}]
+    assert _flatten_page_item(None) == []
+    assert _flatten_page_item({"markets": [dict(m, closed=True)]}) == []

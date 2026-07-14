@@ -44,6 +44,7 @@ from esports_v2.model.team_match import match_teams
 logger = logging.getLogger(__name__)
 
 _GAMMA_URL = "https://gamma-api.polymarket.com/markets"
+_GAMMA_EVENTS_URL = "https://gamma-api.polymarket.com/events"
 _ESPORTS_TAG_ID = 64  # gamma tag slug "esports" (verified 2026-07-08)
 _GAMMA_PAGE = 100     # gamma caps `limit` at 100 regardless of the value asked
 
@@ -258,12 +259,13 @@ def build_pm_index(
                 logger.warning(f"pm_index_page_absent page={page} (hole after retry)")
                 continue  # later pages exist -> mid-range hole, keep going
             break         # deterministic end (cap/end-of-data) or sequential tail
-        for m in markets:
-            ref = parse_gamma_market(m)
-            if ref is None or ref.condition_id in seen_cid:
-                continue
-            seen_cid.add(ref.condition_id)
-            refs.append(ref)
+        for item in markets:
+            for m in _flatten_page_item(item):
+                ref = parse_gamma_market(m)
+                if ref is None or ref.condition_id in seen_cid:
+                    continue
+                seen_cid.add(ref.condition_id)
+                refs.append(ref)
         if len(markets) < _GAMMA_PAGE:
             break
 
@@ -319,19 +321,45 @@ def match_pm_ref(
     return candidates[0]
 
 
+def _flatten_page_item(item) -> List[dict]:
+    """A page item is either a bare MARKET dict (the pre-2026-07-14 /markets
+    shape — and every injected test page) or an EVENT dict carrying a nested
+    ``markets`` array (the /events shape). Flatten to market dicts.
+
+    Nested markets that are explicitly closed/inactive are dropped: the old
+    /markets query filtered those SERVER-side, but /events does not filter the
+    markets nested inside an active event (e.g. an already-resolved game-1
+    market inside a live series event) — letting them through would create
+    false ambiguity vetoes and stale-price attach risk."""
+    if not isinstance(item, dict):
+        return []
+    nested = item.get("markets")
+    if not isinstance(nested, list):
+        return [item]
+    return [m for m in nested
+            if isinstance(m, dict)
+            and m.get("closed") is not True
+            and m.get("active") is not False]
+
+
 def _default_fetch_page(offset: int, limit: int) -> Optional[List[dict]]:
-    """GET one page of the live esports-tag Gamma feed. None on any failure
-    (correct-or-absent — the collector then skips PM enrichment for this tick)."""
+    """GET one page of live esports-tag Gamma EVENTS (each carrying its nested
+    ``markets``). None on any failure (correct-or-absent — the collector then
+    skips PM enrichment for this tick)."""
     import requests
 
-    # order=id&ascending=false (newest market first) is REQUIRED for coverage:
-    # Gamma hard-caps offset paging (422 "offset too large" past ~2100) and the
-    # esports tag holds ~3600 active markets. Default (oldest-first) order left
-    # the newest ~1500 markets unreachable — 93 of 130 live match-winner markets
-    # were invisible to the index (measured 2026-07-10). Newest-first puts the
-    # upcoming slate in page 0 and pushes the truncation onto stale history.
+    # EVENTS (not /markets) is REQUIRED for coverage since 2026-07-14: Gamma
+    # hard-caps offset paging with HTTP 422 at ~2000-2500, and the esports tag
+    # ballooned to ~7800 active markets when the EWC prop flood landed
+    # (2026-07-14 ~08:00Z) — the slate's match-winner markets (T1/Gen.G/...)
+    # sank BEYOND the reachable /markets window in ANY sort order and silently
+    # lost PM capture for 8 ticks. The tag holds only ~651 active EVENTS
+    # (~7 pages, far inside the cap), and each event carries its full nested
+    # markets array with every field parse_gamma_market needs (verified live).
+    # order=id&ascending=false (newest event first) keeps the upcoming slate
+    # on page 0, same rationale as the 2026-07-10 /markets ordering fix.
     url = (
-        f"{_GAMMA_URL}?tag_id={_ESPORTS_TAG_ID}&closed=false&active=true"
+        f"{_GAMMA_EVENTS_URL}?tag_id={_ESPORTS_TAG_ID}&closed=false&active=true"
         f"&archived=false&order=id&ascending=false&limit={limit}&offset={offset}"
     )
     try:

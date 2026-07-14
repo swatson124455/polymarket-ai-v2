@@ -8,7 +8,12 @@ URL="https://pinnodds.com/kit/v1/markets?sport_id=11&event_type=prematch"
 UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 PROP=re.compile(r"\((kills?|games?|maps?|rounds?|towers?|handicap|total)\)\s*$",re.I)
 # GAP B: Polymarket match-winner index (Gamma tag_id=64) for bet-time PM price.
-GAMMA="https://gamma-api.polymarket.com/markets"
+# EVENTS endpoint (2026-07-14 coverage fix): /markets offset paging 422-caps at
+# ~2000-2500 and the tag ballooned to ~7800 markets when the EWC prop flood
+# landed — slate match winners sank beyond the reachable window in ANY order.
+# ~651 active EVENTS (~7 pages) carry ALL nested markets. Mirrors
+# pm_market_index._default_fetch_page/_flatten_page_item.
+GAMMA="https://gamma-api.polymarket.com/events"
 YESNO={"YES","NO","1","0","TRUE","FALSE"}
 VS=re.compile(r"\bvs\.?\b",re.I)
 PMPROP=re.compile(r"\bgame\s*\d|\bmap\s*\d|handicap|\bkills?\b|\btotal\b|odd\s*/\s*even|\bodd\b|\beven\b|over\s*/\s*under|\bover\b|\bunder\b|\brounds?\b|\btowers?\b|first blood|\bspread\b|correct score|most (picked|banned)",re.I)
@@ -147,6 +152,15 @@ def gamma_pages(workers=8,max_pages=30):
                 if any(pages[p] is None or len(pages[p])<100 for p in wave): break
                 nxt=wave[-1]+1
     return pages
+def flatten_item(it):
+    # page item = bare market dict (old shape) OR event dict with nested
+    # markets. /events does NOT server-filter nested markets -> drop the
+    # explicitly closed/inactive ones (stale-price + false-ambiguity risk).
+    if not isinstance(it,dict): return []
+    nested=it.get("markets")
+    if not isinstance(nested,list): return [it]
+    return [m for m in nested if isinstance(m,dict)
+            and m.get("closed") is not True and m.get("active") is not False]
 def pm_index():
     # list of (condition_id, yes_token_id, yes_outcome, market_price, team_a, team_b, day);
     # de-dup by condition_id. Ambiguity resolved at match time (match_ref).
@@ -157,7 +171,7 @@ def pm_index():
             if pg in pages and any(pages.get(q) for q in range(pg+1,30)):
                 print(f"pm_index page {pg} absent after retry (hole)"); continue
             break
-        for m in ms:
+        for m in (x for it in ms for x in flatten_item(it)):
             if not isinstance(m,dict): continue
             q=str(m.get("question") or "").strip()
             if not q or not VS.search(q) or PMPROP.search(q): continue
