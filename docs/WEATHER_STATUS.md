@@ -39,7 +39,12 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
 2. **S222 post-fix verification — RAN 2026-07-13 (S229) on 77 resolved markets: FAIL on every
    criterion; NOTHING retired. Clock RESTARTS at the S229 EMOS-fix deploy (2026-07-13
    16:02:29Z, release `20260713_160143`); re-run the prompt when the NEW window reaches ≥50
-   (~3-4 days at ~19/day).** Verdicts on the 07-11→07-13 window: A1/A3 FAIL (PIT KS 0.285
+   (~3-4 days at ~19/day).**
+   **CURRENT gate-count query (use THIS cutoff — 16:02:29Z; the 07-11 00:47 query lower in
+   this item is SUPERSEDED):**
+   `SELECT count(DISTINCT market_id) FILTER (WHERE resolution IS NOT NULL) FROM prediction_log
+    WHERE bot_name='WeatherBot' AND prediction_time > '2026-07-13 16:02:29';`
+   Verdicts on the 07-11→07-13 window: A1/A3 FAIL (PIT KS 0.285
    p≈0, WORSE than baseline 0.155; right-spiked, mean 0.628); dampener retirement FAIL
    (traded-subset BSS deeply negative, tiny N=4-16 — caps kept trade count low); price-cap
    retirement INCONCLUSIVE (caps active → no 80-100¢ cells); C0 Kelly FAIL (0.90+ conf bin
@@ -149,10 +154,11 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
    Sweep verdict: green (2 reloads, per-station EMOS ×106, failure counters 0, no
    post-startup tracebacks, 1,271 prediction rows / 89 markets since deploy). Items found
    and their dispositions:
-   - **FIXED on branch (`9dc6d59`, needs next release cut):** CancelledError escaped
-     `isinstance(result, Exception)` on gather results → tuple-unpack TypeError aborted the
-     ENTIRE scan ("Bot scan error: cannot unpack non-iterable CancelledError", 69× 07-11→13
-     — pre-existing, not an S229 regression). Both gather sites now check BaseException.
+   - **FIXED + DEPLOYED (`9dc6d59` in release `20260714_003205`; prod-verified 0 recurrences
+     since the 00:32:41Z restart):** CancelledError escaped `isinstance(result, Exception)` on
+     gather results → tuple-unpack TypeError aborted the ENTIRE scan ("Bot scan error: cannot
+     unpack non-iterable CancelledError", 69× 07-11→13 — pre-existing, not an S229 regression).
+     Both gather sites now check BaseException.
    - **⚠ DORMANT LANDMINE — DO NOT FIX NAIVELY:** `_maybe_bootstrap_cold_station` binds
      `target_date_str` (str) into a date column → asyncpg DataError → cold-start ERA5
      bootstrap inserts have ALWAYS silently failed (why weather_calibration has zero
@@ -165,9 +171,12 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
      poisoned-window trades arriving (compressor correctly throttling sizing);
      London/Madrid day-ahead "edges" (~0.2-0.3 raw) = small-n local-EMOS claims —
      adjudicated by the clean-window duel, contained by flat sizing + caps meanwhile.
-   - **NULL-end backfill EXECUTED:** WB-predicted subset now **0** NULL (171/171 filled
-     from CLOB, fill-NULL-only UPDATEs); historical pool (~17.8k weather markets, all
-     sources/years) drains via the nightly cron (2e).
+   - **NULL-end backfill EXECUTED:** the RECENT-window WB-predicted subset (last 3 days,
+     still-active markets) is now **0** NULL (171/171 filled from CLOB, fill-NULL-only
+     UPDATEs) — proves the end-date fix works going forward. NOT all-time: ~1.7k older
+     WB-predicted markets (already-ended, no longer rediscovered so the heal-on-rediscovery
+     can't touch them) remain NULL, inside the whole-pool ~13.6k (was 17.8k) that the
+     nightly cron drains 2k/night (2e).
    - **S222 prompt RAN (per operator):** self-aborted at Precondition 0.4a as designed —
      0/50 resolved in the post-16:02:29Z window (91 predicted); ETA ~07-16.
      Station-wedge duel: same gate, structurally blocked until first resolutions ~07-15.
@@ -180,7 +189,7 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
    | 3 | Shadow-book logger (read-only: snapshot books on obs events) — prices leader-following capture + maker fills | after 1; prerequisite for trading the confirmed edge |
    | 4 | Latency package activation (3a) — decide WITH 3 (priority-wake is the nowcast weapon) | after 3 |
    | 5 | Bootstrap landmine proper fix (date-bind + actual_source training filter, same commit) | post-S222 |
-   | 6 | Release cut carrying `9dc6d59` (CancelledError fix) | next cut, any time |
+   | 6 | ~~Release cut carrying `9dc6d59`~~ **DONE** — deployed in `20260714_003205` (07-14 00:32:41Z) | ✅ |
    | 7 | Ops debt: main-tree deploy mechanism | after verdict |
    | 8 | **STANDING REMINDERS — echo EVERY handoff until operator confirms done:** (a) **ROTATE TRADING WALLET `0xd6a5…627F`** — key lived in repo since May 15 + weeks of world-readable VPS copies; wallet ACTIVE (nonce 10, ~9.3 POL); cheapest now (paper mode, no live positions): new wallet → move POL/tokens → update `/opt/pa2-shared/.env` → restart all 4 services (shared env!); file relocated out of repo 07-14. (b) **REVIEW VPS RELEASE PRUNING** — 19 releases / 43G, disk 61%; after the S222 verdict keep live `20260714_003205` + rollback `20260713_160143`, delete the other 17 (~40G); gated as forensic insurance until then. (`$env:TEMP\wb-*.tar.gz` DELETED 07-14, verified secret-free.) | operator |
    Automation live (2026-07-13/14, ubuntu crontab on VPS, rollback = remove crontab lines):
@@ -281,16 +290,21 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
 
 ## WHAT IS LIVE NOW
 
-- **Deployed:** WeatherBot on its splinter, release **`20260713_160143`** (cut from `24b2847`;
-  rollback target `20260711_002634`). Paper mode, treated as production. Carries everything
-  through S227 PLUS: **S229 per-station global EMOS fix** (`24b2847` — the mixed-unit pooled
-  corrector killed; see OPEN DECISION 2b), **S229 end_date_iso persistence** (`4fa67a3` —
-  WB-discovered markets now store their end date; NULL-end rows healed on rediscovery; also
-  activates the designed S172-D10 dynamic exit-cooldown TTL that had been silently inert
-  because the key was never populated), and the **S228 latency package** (still flag-OFF /
-  default-cadence — activation remains OPEN DECISION 3a). Restart 16:02:29Z (old process
-  needed SIGKILL after stop-timeout — pre-existing shutdown slowness, watch it next cut).
-  Migrations 079+080 idempotent-reapplied clean.
+- **Deployed:** WeatherBot on its splinter, release **`20260714_003205`** (restart
+  **2026-07-14 00:32:41Z**, clean stop; **rollback target `20260713_160143`** — the
+  prior S229 release, which ALSO carries the EMOS + end-date fixes, so rollback is safe).
+  Paper mode, treated as production. Carries everything through S227 PLUS the full S229 set:
+  **per-station global EMOS fix** (`24b2847` — mixed-unit pooled corrector killed; OPEN
+  DECISION 2b), **end_date_iso persistence** (`4fa67a3` — WB markets store their end date;
+  NULL rows healed on rediscovery; also activates the S172-D10 dynamic exit-cooldown TTL),
+  **CancelledError scan-abort fix** (`9dc6d59` — prod-verified 0 recurrences since this
+  deploy; OPEN DECISION 2d), the research harnesses (`scripts/wb_research/`), and the
+  **S228 latency package** (still flag-OFF; OPEN DECISION 3a). S229 markers=11 on box.
+  Migrations 079+080 idempotent-reapplied clean. **DO NOT roll back past `20260713_160143`**
+  (`20260711_002634` and earlier predate the EMOS unit-soup fix — reverting re-poisons the
+  corrector and re-contaminates the S222 window).
+  Deploy history this session: `20260713_160143` (EMOS+end-date, restart 16:02:29Z = the
+  S222 clock) → `20260714_003205` (+CancelledError, restart 00:32:41Z).
 - **⚠ NEW RELEASE-CUT RECIPE (learned the hard way 07-11):** this release was cut with
   `git archive` (clean, 39M, tracked-files-only) instead of the old tar-the-working-tree
   flow (~4G with ~250 untracked files swept in, incl. `wallet.txt` — all 11 release-dir

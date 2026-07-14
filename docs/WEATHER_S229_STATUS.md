@@ -76,7 +76,7 @@ Timezone audit: PASS (Open-Meteo `timezone=auto` local-day seam verified at Seou
 
 ## 7. Automation LIVE (VPS ubuntu crontab; rollback = remove the crontab line)
 
-- `17 9 * * * /home/ubuntu/wb_research/nightly.sh` — (a) drains the NULL-end market pool 2k/night from CLOB (fill-NULL-only UPDATEs; whole-pool 17.8k→13.6k so far, WB-predicted subset already 0), (b) re-runs the race study to accrue leader-following samples. Logs `~/wb_research/nightly_*.log` (30-day self-prune).
+- `17 9 * * * /home/ubuntu/wb_research/nightly.sh` — (a) drains the NULL-end market pool 2k/night from CLOB (fill-NULL-only UPDATEs; whole-pool 17.8k→13.6k so far; the recent-window WB-predicted subset was explicitly backfilled to 0, but ~1.7k older already-ended WB-predicted markets remain NULL and drain with the pool), (b) re-runs the race study to accrue leader-following samples. Logs `~/wb_research/nightly_*.log` (30-day self-prune).
 - `*/10 * * * * /home/ubuntu/wb_research/shadow_book.sh` — **shadow-book logger** (queue item 3, built early per operator): for every active US highest-temp family in its local 10:00–20:00 window, records METAR running max + leader + 3-deep CLOB books both sides → `shadow_books_YYYYMMDD.jsonl` (84 lines day 1). Read-only. THE canonical executable-capture dataset for the leader-following review.
 
 ## 8. Hygiene state
