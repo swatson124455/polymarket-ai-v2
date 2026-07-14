@@ -102,6 +102,58 @@ readout in hand. New VPS wrapper: `deploy/vps/eb_convergence.sh`
 
 ---
 
+## 0-S6c. SESSION-6 CLOSE (2026-07-13) — MICROSTRUCTURE CANON + BACKTEST SHIN FIX + OPERATOR DECISIONS
+
+Read-only CLOB/gamma/docs probes (37 upcoming slate markets, ~20:30 UTC) +
+one authorized fix. Operator dispositions recorded inline.
+
+**CANON (cite these, stop re-deriving):**
+- **Captured `market_price` IS the book mid BY CONSTRUCTION.** Gamma
+  `outcomePrices[0]` == gamma `(bestBid+bestAsk)/2` == live CLOB mid, exactly
+  (6/6 same-instant; 22/37 still exact 90min later = unmoved books). Operator
+  challenged this as "fake data" — verdict: not fake, tautological. Dataset
+  therefore contains ZERO executable-price info; only bid/ask capture adds it.
+- **Fees (docs.polymarket.com/trading/fees.md):** taker fee = shares × rate ×
+  p×(1−p); sports rate 0.05; **makers pay ZERO + earn 15–25% rebates**;
+  geopolitics fee-free. Max taker fee ≈1.25pt at p=0.5, ≈0.45pt at p=0.1 →
+  the edge rule's flat 2pt fee is CONSERVATIVE at every price (true for any
+  category rate 0.04–0.07; whether esports bills as "sports" is unverified —
+  conclusion holds regardless). Gamma `feesEnabled=True` on our markets; the
+  CLOB `takerBaseFee=1000` field's scaling is undocumented — docs schedule is
+  operative. Public trade prints expose no fee fields (checked).
+- **Books (single point-in-time, 37 markets):** median spread 1–2pt, TIGHTEST
+  at 0.90+ (0.6pt) → spread-artifact explanation for the 0.90+ premium
+  REJECTED. Depth at touch: median ~$250 (YES) / ~$150 (NO); marquee dog
+  sides $132–$1,191. Zero structural arb (min ask-sum 1.001, max bid-sum
+  0.999). neg_risk 0/37. Real flow executes at the touch (data-api prints).
+- **Touch edges under Shin** (⚠ odds ≤19:00Z vs books 20:30Z — simultaneity
+  assumption, unverifiable without quota): 21/37 positive somewhere but sides
+  split 10 dog / 11 fav (noise); survivors ≥2pt are dog-side on marquee EWC
+  LoL: Gen.G +3.0, T1 +2.7, BLG +2.4pt.
+- **Settled counter-evidence (n=26, UNSTABLE; operator: IGNORE for now):**
+  buy-every-dog −14.3% ROI, buy-every-fav +12.1% at canonical fees.
+
+**FIX SHIPPED (`837215d`, operator "resolve/fix"):** the edge backtest was
+SIMPLE-ONLY (enrich_with_sharp_prob hardcoded no_vig_two_way; --de-vig never
+reached P&L). Now: injectable `no_vig_a_fn` in enrich (default = historical
+simple, byte-identical), `method=` threaded through
+edge_backtest/from_joined, report labeled `(de-vig=...)`, driver passes the
+flag to backtest + sweep. Verified: shin sweep differs from simple on real
+data. **VPS prerequisite for a shin readout: `pip3 install shin`** (else the
+7bdbe3e guard refuses the run).
+
+**OPERATOR DECISIONS (this session):** (a) taker edge rule: PARK + keep
+collecting (cron healthy, no action); (b) favorites-over-deliver signal:
+IGNORE at n=26; (c) maker-mode: plan requested, delivered in chat (phased:
+bid/ask+trade-print capture → offline maker replay sim → operator-gated
+micro pilot; NOT scheduled); (d) capacity in the go/no-go waterfall:
+recommended as a REPORTING line (median fillable $ at touch on fired bets),
+hard-gate only if fillable < bet size; (e) intra-PM dutch arb: structurally
+dead under taker fees (needs ask-sum < ~0.98, measured min 1.001) — no
+standalone monitor; the check falls out free if bid/ask capture is built.
+
+---
+
 ## 0-S4f. SESSION-5 LATENCY (`335f359`) — TICK 20s → ~4.5s; NEW COLLECTOR md5 `bae64c85…`
 
 Operator directive: "reduce latency, no function or safety lost." Done:
