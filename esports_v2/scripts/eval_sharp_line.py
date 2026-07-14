@@ -127,7 +127,8 @@ def main() -> int:
             _cache[key] = _default_orientation_resolver(cid, tok, ta, tb)
         return _cache[key]
 
-    edge = edge_backtest_from_joined(joined, resolve_orientation=cached_resolver)
+    edge = edge_backtest_from_joined(joined, resolve_orientation=cached_resolver,
+                                     method=args.de_vig)
     print("\n" + edge.summary())
 
     # THRESHOLD SWEEP (diagnostic): the 2026-07-11 edge-distribution measurement
@@ -140,7 +141,7 @@ def main() -> int:
           "this without fresh-data validation):")
     for fee_v, me_v in ((0.02, 0.03), (0.0, 0.03), (0.0, 0.02)):
         r = edge_backtest_from_joined(joined, resolve_orientation=cached_resolver,
-                                      fee=fee_v, min_edge=me_v)
+                                      fee=fee_v, min_edge=me_v, method=args.de_vig)
         roi = "n/a" if r.roi is None else f"{r.roi:+.3f}"
         hit = "n/a" if r.hit_rate is None else f"{r.hit_rate:.3f}"
         print(f"  fee={fee_v:.2f} min_edge={me_v:.2f}: bets={r.n_bets} "

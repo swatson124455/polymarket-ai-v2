@@ -38,7 +38,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 # Defaults: match EB's existing risk controls. MIN_EDGE mirrors
 # esports_v2/model/pipeline.py:MIN_EDGE (0.05); FEE is the round-trip taker
@@ -169,6 +169,7 @@ def enrich_with_sharp_prob(
     *,
     fee: float = DEFAULT_FEE,
     min_edge: float = DEFAULT_MIN_EDGE,
+    no_vig_a_fn: Optional[Callable[[float, float], Optional[float]]] = None,
 ) -> List[dict]:
     """Attach a no-vig ``sharp_prob`` + edge to market records, offline.
 
@@ -190,6 +191,13 @@ def enrich_with_sharp_prob(
 
     A record is UNCOVERED (all-None, should_bet False) — never guessed — when it
     lacks odds, lacks the orientation flag, or the odds/market are degenerate.
+
+    ``no_vig_a_fn`` (optional): injectable de-vig — ``(odds_a, odds_b) ->
+    fair prob of the A side, or None``. Default None keeps the historical
+    SIMPLE proportional no-vig. Callers that grade under Shin pass
+    ``sharp_eval.no_vig_prob_a`` with ``method='shin'`` (kept injectable here
+    so this pure module never imports the shin-capable ``clv`` layer).
+    Correct-or-absent is preserved: fn returning None -> record UNCOVERED.
     """
     for rec in records:
         rec["sharp_prob"] = None
@@ -208,11 +216,15 @@ def enrich_with_sharp_prob(
         if market_price is None:
             continue
 
-        no_vig = no_vig_two_way(float(odds[0]), float(odds[1]))
-        if no_vig is None:
+        if no_vig_a_fn is not None:
+            no_vig_a = no_vig_a_fn(float(odds[0]), float(odds[1]))
+        else:
+            nv = no_vig_two_way(float(odds[0]), float(odds[1]))
+            no_vig_a = None if nv is None else nv[0]
+        if no_vig_a is None:
             continue
 
-        sharp_yes = sharp_yes_prob(no_vig[0], yes_is_team_a)
+        sharp_yes = sharp_yes_prob(no_vig_a, yes_is_team_a)
         result = evaluate_edge(
             sharp_yes, float(market_price), fee=fee, min_edge=min_edge
         )

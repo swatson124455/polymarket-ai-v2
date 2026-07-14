@@ -218,10 +218,11 @@ class EdgeBacktestReport:
     # Per-edge-size breakdown: does a bigger measured edge actually win/pay
     # more? Flat-ROI-vs-edge is the go/no-go signal for the edge rule itself.
     edge_buckets: List[dict] = field(default_factory=list)
+    method: str = "simple"   # de-vig used for the sharp fair prob
 
     def summary(self) -> str:
         lines = [
-            "Sharp-vs-Polymarket edge backtest",
+            f"Sharp-vs-Polymarket edge backtest (de-vig={self.method})",
             f"  records: {self.n_records}  with_market_price: {self.n_with_market_price}",
         ]
         if self.n_with_market_price == 0:
@@ -258,6 +259,7 @@ def edge_backtest(
     *,
     fee: float = DEFAULT_FEE,
     min_edge: float = DEFAULT_MIN_EDGE,
+    method: str = "simple",
 ) -> EdgeBacktestReport:
     """Backtest the actual EB edge rule, IF records carry Polymarket prices.
 
@@ -266,23 +268,35 @@ def edge_backtest(
     ``enrich_with_sharp_prob`` then scores realized P&L at flat $1 stakes on the
     ``sharp_should_bet`` side. When no record has a ``market_price``, returns a
     report that says so — the forward-collector does not yet capture PM prices.
+
+    ``method`` (2026-07-13, operator "resolve/fix"): de-vig for the sharp fair
+    prob — 'simple' (historical default, behavior unchanged) or 'shin'
+    (injected via ``no_vig_prob_a``). Callers must gate shin on
+    ``clv.shin_available()`` (the CLI drivers do) — inside ``odds_to_implied``
+    an absent shin package silently degrades to simple.
     """
     n_with_price = sum(1 for r in records if r.get("market_price") is not None)
     if n_with_price == 0:
         return EdgeBacktestReport(
-            n_records=len(records), n_with_market_price=0,
+            n_records=len(records), n_with_market_price=0, method=method,
             note="No market_price on any record — the forward-collector captures "
                  "PinnOdds only. Collect the matched Polymarket price alongside the "
                  "odds to enable this backtest (see handoff §gaps).",
         )
 
-    enrich_with_sharp_prob(records, odds_lookup, fee=fee, min_edge=min_edge)
+    no_vig_a_fn = None
+    if method != "simple":
+        def no_vig_a_fn(oa: float, ob: float):
+            return no_vig_prob_a(oa, ob, method)
+
+    enrich_with_sharp_prob(records, odds_lookup, fee=fee, min_edge=min_edge,
+                           no_vig_a_fn=no_vig_a_fn)
     bets = [r for r in records if r.get("sharp_should_bet")]
     n_bets = len(bets)
     if n_bets == 0:
         return EdgeBacktestReport(
             n_records=len(records), n_with_market_price=n_with_price, n_bets=0,
-            note="No bets cleared min_edge.",
+            method=method, note="No bets cleared min_edge.",
         )
 
     pnl = 0.0
@@ -314,6 +328,7 @@ def edge_backtest(
         roi=(pnl / n_bets) if n_bets else None,
         n_wins=wins,
         edge_buckets=_edge_buckets(settled, min_edge),
+        method=method,
     )
 
 
@@ -365,6 +380,7 @@ def edge_backtest_from_joined(
     resolve_orientation: Optional[OrientationResolver] = None,
     fee: float = DEFAULT_FEE,
     min_edge: float = DEFAULT_MIN_EDGE,
+    method: str = "simple",
 ) -> EdgeBacktestReport:
     """Run the sharp-vs-Polymarket edge backtest directly from JoinedRecords.
 
@@ -403,9 +419,10 @@ def edge_backtest_from_joined(
 
     if not records:
         return EdgeBacktestReport(
-            n_records=len(joined), n_with_market_price=0,
+            n_records=len(joined), n_with_market_price=0, method=method,
             note="No JoinedRecord carried a PM price + resolvable orientation. "
                  "Once the forward-collector's PM capture (GAP B) overlaps the "
                  "results window, records will price out here.",
         )
-    return edge_backtest(records, odds_lookup, fee=fee, min_edge=min_edge)
+    return edge_backtest(records, odds_lookup, fee=fee, min_edge=min_edge,
+                         method=method)

@@ -244,3 +244,39 @@ def test_edge_buckets_empty_when_no_bets():
              "yes_is_team_a": True, "home_won": True}]
     rep = edge_backtest(recs, {"k": (1.5, 2.6)}, min_edge=0.05)
     assert rep.edge_buckets == []
+
+
+# ── de-vig method threading (2026-07-13: backtest was simple-only) ──────────
+
+
+def test_edge_backtest_method_defaults_simple_and_labels_summary():
+    rep = edge_backtest_from_joined([_jr_pm("k", 1.5, 3.0, True, 0.40)],
+                                    resolve_orientation=lambda *a: True)
+    assert rep.method == "simple"
+    assert "de-vig=simple" in rep.summary()
+
+
+def test_edge_backtest_shin_changes_the_graded_edge():
+    import pytest
+    pytest.importorskip("shin")
+    # Extreme line (1.103, 6.31): shin fair(A) ~0.874 vs simple ~0.851.
+    # PM YES price 0.845: simple edge = 0.851-0.845-0.02 < 0 -> NO BET;
+    # shin edge = 0.874-0.845-0.02 = +0.009 >= min_edge 0.005 -> bet fires.
+    jr = _jr_pm("k", 1.103, 6.31, True, 0.845)
+    rep_simple = edge_backtest_from_joined(
+        [jr], resolve_orientation=lambda *a: True, min_edge=0.005)
+    rep_shin = edge_backtest_from_joined(
+        [jr], resolve_orientation=lambda *a: True, min_edge=0.005,
+        method="shin")
+    assert rep_simple.n_bets == 0
+    assert rep_shin.n_bets == 1 and rep_shin.method == "shin"
+    assert "de-vig=shin" in rep_shin.summary()
+
+
+def test_enrich_no_vig_a_fn_none_result_means_uncovered():
+    from esports_v2.model.sharp_reference import enrich_with_sharp_prob
+    recs = [{"match_key": "k", "market_price": 0.4, "yes_is_team_a": True}]
+    out = enrich_with_sharp_prob(recs, {"k": (1.5, 3.0)},
+                                 no_vig_a_fn=lambda a, b: None)
+    assert out[0]["sharp_prob"] is None
+    assert out[0]["sharp_should_bet"] is False
