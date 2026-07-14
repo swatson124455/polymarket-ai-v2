@@ -108,7 +108,7 @@
     {
       "file": "bots/weather_bot.py",
       "pattern": "S229",
-      "expect": 9
+      "expect": 11
     },
     {
       "file": "bots/weather/engine/base_engine/weather/probability_engine.py",

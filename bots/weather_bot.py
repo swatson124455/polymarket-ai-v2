@@ -2037,7 +2037,13 @@ class WeatherBot(BaseBot):
         )
         analyzed: List[Tuple[List[Dict], WeatherMarketGroup, Dict[str, float]]] = []
         for group, result in zip(groups, _results):
-            if isinstance(result, Exception):
+            # S229: BaseException, not Exception — asyncio.CancelledError is a
+            # BaseException since Py3.8, so gather(return_exceptions=True) can
+            # hand back a CancelledError that an Exception check misses; it
+            # then hit the tuple-unpack below and aborted the ENTIRE scan
+            # ("cannot unpack non-iterable CancelledError object", 69× in the
+            # 07-11→07-13 journal). A cancelled group is logged and skipped.
+            if isinstance(result, BaseException):
                 logger.warning(
                     "weatherbot_group_error",
                     city=group.city,
@@ -2092,7 +2098,9 @@ class WeatherBot(BaseBot):
             for r in _trade_results:
                 if isinstance(r, int):
                     _traded += r
-                elif isinstance(r, Exception):
+                elif isinstance(r, BaseException):
+                    # S229: same CancelledError blind spot as the analyze
+                    # loop above (was silently dropped here, not crashed).
                     logger.warning("weatherbot_parallel_trade_error", error=str(r))
 
         # Phase 4: Re-evaluate open positions with fresh model probabilities

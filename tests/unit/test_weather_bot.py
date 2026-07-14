@@ -5489,3 +5489,63 @@ class TestS229GlobalEmosPerStation:
             members, 24.0, station_id="KORD", deterministic_high=97.2
         )
         assert loc > 93.0, f"still cold-displaced: loc={loc}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# S229b: CancelledError survives gather(return_exceptions=True) type checks
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestS229CancelledErrorInScanGather:
+    """S229 defect test: CancelledError inherits BaseException (not Exception)
+    since Py3.8, so `isinstance(result, Exception)` in the analyze-gather loop
+    let a cancelled group task fall through to `opps, model_probs = result` →
+    'cannot unpack non-iterable CancelledError object' → whole scan aborted
+    (69 occurrences 07-11→07-13, 6 more post-S229-deploy). Fix: check
+    BaseException at both gather-result sites; a cancelled group is logged and
+    skipped, the scan continues."""
+
+    @pytest.mark.asyncio
+    async def test_cancelled_group_does_not_abort_scan(self):
+        from bots.weather_bot import WeatherBot
+
+        engine = MagicMock()
+        engine.trade_coordinator = None
+        engine.cache = None
+        engine.db = None
+        engine.risk_manager = MagicMock()
+        engine.order_gateway = MagicMock()
+        engine.order_gateway._open_position_markets = {"WeatherBot": set()}
+        engine.get_all_tradeable_markets = AsyncMock(return_value=[])
+        engine.place_order = AsyncMock(return_value={"success": True})
+        engine.update_market_index = MagicMock()
+
+        bot = WeatherBot(engine)
+        fake_markets = [
+            {"id": "m1", "condition_id": "c1", "yes_token_id": "yt1",
+             "no_token_id": "nt1", "yes_price": 0.5, "no_price": 0.5,
+             "question": "Will the highest temperature in Testville be 30°C on July 14?",
+             "slug": "s", "volume": 5000, "liquidity": 5000,
+             "bestBid": 0.48, "bestAsk": 0.52},
+        ]
+        bot._fetch_weather_events_by_tag = AsyncMock(return_value=fake_markets)
+        bot._cache_warmed = True
+        bot._ensure_markets_in_db = AsyncMock(return_value=None)
+        bot._psw_scan_divisor = 999999  # skip PSW phases
+        bot._scan_count = 1
+
+        group = MagicMock()
+        group.city = "Testville"
+        group.target_date = date(2026, 7, 14)
+        bot._market_mapper.group_markets = MagicMock(return_value=[group])
+
+        async def _cancelled_analyze(g):
+            raise asyncio.CancelledError()
+
+        bot._analyze_group = _cancelled_analyze
+        bot._reevaluate_open_positions = AsyncMock(return_value=None)
+        bot._evaluate_mid_life_exits = AsyncMock(return_value=None)
+
+        # Pre-fix: TypeError('cannot unpack non-iterable CancelledError object')
+        # escapes scan_and_trade(). Post-fix: the scan completes normally.
+        await bot.scan_and_trade()
