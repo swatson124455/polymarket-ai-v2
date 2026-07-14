@@ -10,13 +10,128 @@
 > 2026-07-11 incident: a fresh session read master's stale copy and
 > recommended the BANNED circular validate rerun it found there.)
 
-**Last updated:** 2026-07-10 (second session, ~20:20 UTC) · **Branch:** `claude/mirrorbot-persistence-check-irq7r5` (fast-forward superset of `oc02tk`/PR #1; head = this commit)
+**Last updated:** 2026-07-14 (local steward session, ~02:45 UTC) · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
 **Read first:** `CLAUDE.md` (binding directives), then this file, then **`docs/MB_COPYTRADER_CONTEXT.md` (FULL context brief for the live copy-trader investigation — the complete reasoning chain, API gotchas, and decision tree)**. `MB_REBUILD_PLAN.md` holds the older plan + operator decisions.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
 ---
 
-## 0. IMMEDIATE RESUME (2026-07-11 ~03:30 UTC — the pipeline is DONE; results below)
+## 0. IMMEDIATE RESUME (2026-07-14 local steward session — read this block first)
+
+> **2026-07-14 UPDATE (local steward session; VPS-direct SSH, operator-
+> approved per-command).** Five instrument bugs found & root-fixed in one
+> day; ZERO trader lies ever confirmed (~800 receipt-level checks). State:
+>
+> 1. **QUOTE-SWAP (deployed watcher read /price sides REVERSED).** side=BUY
+>    returns the best BID, side=SELL the best ASK — the watcher had it
+>    backwards, so every pre-fix record's bid/ask were swapped and
+>    shadow_fill quoted the BID (median +1.5c flattery vs the +0.02 floor;
+>    counterfactual: 5/31 "OK" were really PRICE_RAN_AWAY; spread gate
+>    could never fire). Fixed `2686e5c` + crossed-book runtime alarm
+>    `5ce37ba` + live verify method `scripts/verify_clob_price_sides.py`
+>    `875e389` (ran 5/5 AGREES) + readout repair `25b54d4`
+>    (analyze_shadow re-derives every ladder-armed record; ladderless
+>    pre-fix records EXCLUDED unless `--trust-quotes-after 1783985376` —
+>    THE FIX-DEPLOY EPOCH, memorize it). Deployed 2026-07-13 23:29:27 UTC
+>    (`/opt/mirror3` = `25b54d4`+); first post-fix record verified
+>    (ask>=bid, fill=ask, ladder MATCH). Records are trustworthy from the
+>    epoch; pre-fix records are ladder-repairable (all 83 had ladders).
+> 2. **DUAL-ERA RE-ADJUDICATION — ALL 29 AUDITED TRADERS CLEAR.** The
+>    audit toolchain searched V1 exchanges only (predates the 07-12 V2
+>    discovery) → every post-migration fill was a structural not_found.
+>    Fixed in `readjudicate_discrepant.py` (`fa21111`: V1 OrderFilled +
+>    V2 fill topic, V2 candidates receipt-confirmed per (tx,token)).
+>    Results: original 12 DISCREPANT → 9 VINDICATED (0 mismatch); grey-4
+>    re-run dual-era n=60 ±3600s → 4/4 VINDICATED, 239/240 verified,
+>    **0 not_found**; CLEAN-16 symmetric check → 16/16, 320/320 verified.
+>    Artifacts: `mb_copyable_data/readjudicate{,_grey2,_clean2}.{json,log}`.
+> 3. **OPERATOR RULES (2026-07-14, binding):** (a) the not-found quota is
+>    REMOVED — not_found is an evidence gap, NEVER an accusation; the
+>    response is a deeper search (window, samples, second RPC, dual-era),
+>    never a threshold change; a lie exists only when the chain SAYS so
+>    (size-matched tx at a different price) or when silence survives an
+>    EXHAUSTIVE search of a complete record. (b) **CHAIN DEEP-DIVE GATE:
+>    nobody joins any roster until they pass a full chain-native deep
+>    dive** (see §5 TO-DO). API data is demoted to candidate-finding only.
+> 4. **CRYPTO: UNRESOLVED, out of scope BY DEFAULT (never "killed").**
+>    Kill-test ran (db.init bug fixed `23200e9`): INCONCLUSIVE by
+>    construction — 0/2,720 crypto signals had ANY orderbook_snapshots
+>    coverage at any lag. Retrospective crypto measurement is CLOSED;
+>    only the forward shadow (correct books post-fix) can answer it.
+> 5. **FUNNEL TRIPLE-CHECK:** hire→audit census perfect (29=29, 0 fetch
+>    drops). BUT the HFT/bot filter judged on a 1-2.5 day burst page —
+>    **34 borderline dismissals (203-469/day page rate) incl
+>    `0xa6a856a8c8a7…` (run-1 named strong candidate, +2.5pts/593 mkts)**
+>    never got the lifetime-rate test. They join the deep-dive batch.
+>    Also: 38 traders rostered in the ALL universe never got a primary
+>    shot (truncation scope); 496-leaderboard universe misses small
+>    traders (documented scope limits).
+> 6. **Shadow probes S1-S5 ran** (pre-registered 2026-07-13, descriptive):
+>    83 records → **9 distinct (trader,token) firsts** (flow is heavily
+>    concentrated — power = distinct positions, not detections). Capacity
+>    CLEAR at paper size ($300 slip med +0.19c p90 +0.96c; >=$5k at <=1c
+>    median). First-buy spread med 1c. Copy tax med +1c p90 +2c (n=7).
+>    S1/S2 0/9 resolved — rerun when markets close. Artifacts:
+>    `mb_copyable_data/shadow_probes_20260713.{py,out}`.
+> 7. **Cohort-2 pool = 13** (9 + grey-4), NONE admitted — all gated on the
+>    deep dive. Boundary-pass caveats retired (were the V1 blind spot).
+> 8. Local-session logistics: work from the dedicated worktree
+>    `C:/lockes-picks/mb-steward` (operator-directed exception to the
+>    parent-dir fence — the Claude app yanks the main checkout between
+>    branches); `git pull --ff-only` before EVERY commit (two writers).
+>
+> *(The 2026-07-12 block below is prior state; its "NEEDS REDEPLOY" and
+> deploy-version questions are RESOLVED by the above.)*
+
+> **2026-07-12 UPDATE (shadow-steward session, `claude/repo-setup-docs-fq9bhn`):**
+> the `irq7r5` session ("king") is FROZEN; this session stewards the shadow
+> (operator-authorized, all four items). Everything king pushed survives
+> (head `1c08793`, incl. A+D sizing `4d6c3da`); its UNPUSHED ladder-capture
+> patch is presumed lost with the container and was REBUILT (below). New
+> since 2026-07-11, all on this branch, none deployed yet:
+> 1. **Ladder capture in the shadow watcher** — `mirror_v3/copy_watcher.py`
+>    now records `book_asks`/`book_bids` (top 20 CLOB `/book` levels, shaped
+>    for `fill_models.precise_fill`) per record; gates still quote `/price`
+>    unchanged, `/book` failure = null ladders, never a verdict change.
+>    17 unit tests. NEEDS A REDEPLOY to take effect.
+> 2. **DEPLOY-VERSION QUESTION (UNVERIFIED):** §0 says the service runs
+>    commit `eac8a92`, but A+D sizing landed AFTER it (`4d6c3da`) — if no
+>    redeploy happened, live records lack `conviction_r`/`size_multiplier`.
+>    Operator check + the ladder redeploy resolve this together (see §5).
+> 3. **Tx-exact re-adjudication of the 9 DISCREPANT** —
+>    `scripts/readjudicate_discrepant.py` (pre-registered VINDICATED /
+>    STILL_DISCREPANT rule in its docstring; vindicated traders only ever
+>    join as a SECOND cohort, operator-gated). Awaiting operator VPS run.
+> 4. **Crypto kill-test runner** — `scripts/crypto_kill_test.py`
+>    (pre-registered KILLED/SURVIVES/INCONCLUSIVE at lag 10s vs +0.02
+>    floor). Awaiting operator VPS run, after (3).
+> A daily 13:00 UTC steward check-in Routine now fires into this session
+> (king's wake-ups are dead with it).
+>
+> **2026-07-12 LATE UPDATE — THE SHADOW WAS BLIND FROM BIRTH; FIXED, NEEDS
+> REDEPLOY.** The watcher's first ~33h produced ZERO records while the
+> data-api showed **179 roster BUYs in 40h** (probe `roster_activity_check.py`,
+> 16 traders, 0 fetch errors). Root cause chain, each step receipt-verified:
+> (1) Polymarket moved trading to the **V2 exchanges** (Exchange V2
+> `0xE111180000d2663C0091e4f400237545B87B996B`, NegRisk V2
+> `0xe2222d279d744050d28e00520010520000310F59`) — WI-24 verified this
+> 2026-06-11, BEFORE the watcher ever deployed; (2) V1 `OrderFilled` never
+> fires for current flow (all probes zero across 4 RPCs — the RPC was
+> innocent); (3) V2 fills emit an UNNAMED event, topic0
+> `0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee`,
+> layout reverse-engineered from known trades and validated to 4 decimals
+> (`scripts/decode_v2_fill.py`): topics[2]=order owner (server-side
+> filterable), data=[?, token_id, usdc*1e6, tokens*1e6, 0,0,0]; (4)
+> **BUY/SELL is NOT in the V2 event** — direction read from the tx
+> receipt's ERC-1155/pUSD transfers on roster hits (`side_from_receipt_logs`).
+> Watcher reworked accordingly (`c77e2dd`), plus a blind-RPC canary
+> (10-min unfiltered fill count, alarms after 2 zero cycles, first result
+> always logged) so silent blindness is structurally impossible now.
+> Diagnostic toolchain kept: `diagnose_watcher_detection.py`,
+> `rpc_logs_probe.py`, `trace_real_fill.py`, `decode_v2_fill.py`.
+> **The shadow readout clock starts at the post-fix redeploy, not at
+> 2026-07-11 12:46.** The walk-forward/audit are NOT invalidated (their
+> fills genuinely lived on V1-era history).
 
 **The operator runs all VPS commands** via single-line SSH one-liners from
 Windows PowerShell (he cannot paste after connecting; never give multi-line).
@@ -178,8 +293,61 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
 | Fill-quality gate | `scripts/backtest_copyable_fills.py` | audited coarse model at real ask for a NAMED roster; SURVIVES/FILL-KILLED/NO-BOOK; runs after a walk-forward PASS |
 | Persistence check (secondary) | `scripts/check_trader_persistence.py` | read-only; reworked verdicts (SIGNIFICANT-BUT-SMALL; NULL can't discard underpowered-significant cutoffs), UNION-ALL planner-safe SQL, estimand-faithful first-entry selection, `--since/--until`, LIMIT sentinel; anti-conservative-null caveat printed; self-test + 11 unit tests green; **awaiting operator VPS run** |
 | Operator runbooks | `docs/VPS_RUNBOOK_2026-07-02.md`, `deploy/mb_vps_oneshot.sh` | one-paste checks; mktemp-safe |
+| Shadow ladder capture | `mirror_v3/copy_watcher.py` (`trim_book`/`fetch_book`, `book_asks`/`book_bids` fields) | additive, gates untouched; 17 unit tests; **needs redeploy to take effect** |
+| Tx-exact re-adjudication | `scripts/readjudicate_discrepant.py` | per-tx/per-event size+price matcher (kills the ±window blend artifact); pre-registered VINDICATED rule; self-test + 8 unit tests; **awaiting operator VPS run** |
+| Crypto kill-test runner | `scripts/crypto_kill_test.py` | RAN 2026-07-13 (after db.init fix `23200e9`): INCONCLUSIVE by construction (0/2,720 orderbook coverage) → crypto UNRESOLVED, out of scope by default |
+| Tx-exact re-adjudication v2 | `scripts/readjudicate_discrepant.py` | DUAL-ERA (`fa21111`): V1+V2 events, V2 receipt-confirmed; 10 unit tests; all 29 traders cleared (see §0.2) |
+| /price semantics pin | `scripts/verify_clob_price_sides.py` | live PASS/FAIL vs /book (`875e389`); ran 5/5 AGREES pre-deploy; run before any watcher deploy or on QUOTE SANITY alarm |
+| Readout repair | `scripts/analyze_shadow.py` | ladder re-derivation default-ON (`25b54d4`); `--trust-quotes-after 1783985376` for post-fix ladderless records |
+| Quote sanity alarm | `mirror_v3/copy_watcher.py` `quote_sanity_msg` | crossed-book LOUD alarm (`5ce37ba`); 27 watcher tests total |
+| Shadow probe battery | `mb_copyable_data/shadow_probes_20260713.{py,out}` | S1-S5 pre-registered descriptive; capacity/spread/tax measured; S1/S2 await resolutions |
+| Stress suite | `tests/unit/test_mirror3_stress.py` | 9 tests/10 invariants (cloud session `d7fa2bf`); full mirror_v3 surface 93+ green |
 
 ## 5. Open threads / what's next
+
+### TO-DO (2026-07-14 plan — next session starts HERE)
+
+1. **[build, FIRST] `scripts/chain_deep_dive.py` — the roster-admission
+   gate (operator-mandated: no trader joins any roster without it).**
+   - Tier 1: lifetime fill reconstruction from chain, BOTH eras (V1
+     OrderFilled + V2 fill topic, server-side owner-topic filter; reuse
+     `mirror_v3/copy_watcher` decoders + `readjudicate_discrepant.py`
+     dual-era pattern). ~40-60 min/trader at 6 rps on tenderly.
+   - Tier 2: API↔chain reconciliation BOTH directions (API claim absent
+     on-chain after exhaustive sweep = fabricated; chain fill absent from
+     API = hidden activity).
+   - Tier 3: skill re-grade on the chain-reconstructed record (same
+     walk-forward hire bar; resolutions from the CLOB label cache).
+   - Tier 4 forensics: counterparty concentration (wash), copier-latency
+     (are THEY copying someone — double-lag alpha), funding lineage
+     (sybils), maker/taker + rate profile (true lifetime bets/day — the
+     fair HFT test the burst-page filter never ran).
+   - Admission = zero contradictions + chain-graded skill clears the bar
+     + no forensic flag. Evidence gaps → deeper search, never quotas.
+2. **[run] Deep-dive batch (~47):** 13 cohort-2 candidates (9 VINDICATED
+   + grey-4) **+ 34 HFT-borderline** (incl `0xa6a856a8c8a7…`). Optional
+   wave 2: the 38 ALL-universe scope-outs. Overnight batch, read-only.
+3. **[operator] Cohort-2 admission word** AFTER deep-dive results — own
+   start date, separate readout, never pooled with cohort-1.
+4. **[analysis, when markets resolve] Rerun probes S1/S2**
+   (`shadow_probes_20260713.py`) — gate-optionality (OK vs RAN_AWAY
+   win-rate) + conviction-signal cells; both pre-registered 2026-07-13.
+5. **[readout, ~2-4wk from 2026-07-13 23:29 UTC] `analyze_shadow.py
+   --trust-quotes-after 1783985376`** — the pre-registered verdict.
+   Pre-fix records auto-repair from ladders; criteria unchanged.
+6. **[flag-flip, proposed] Record roster SELLs** in the watcher (record-
+   only, no strategy) — starts the exit-follow dataset clock.
+7. **[build, before any real order flow] Per-event exposure caps in
+   sizing** (neg-risk sibling correlation — the one guard gap; belongs in
+   sizing, NEVER market gating per CLAUDE.md Bug-14 ban).
+8. **[monitor, ~daily] `systemctl is-active polymarket-mirror3; wc -l
+   /opt/pa2-shared/mirror3_shadow.jsonl`** + journal grep for
+   `QUOTE SANITY` (must be absent) and `CANARY ALARM`.
+
+- **[superseded — resolved threads]** The walkforward3 decision tree ran
+  to PASS; audit + re-adjudication + symmetric check complete (all 29
+  clear); deploy-version question resolved (`25b54d4` live); crypto
+  kill-test ran → UNRESOLVED (out of scope by default, never "killed").
 
 - **[NOW — decision tree for /tmp/walkforward3.log]** (the OLD
   `/tmp/walkforward.log` is a stale pre-pipeline artifact — ignore it; use
@@ -254,7 +422,22 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
   (anti-conservative); (5) `DELTA_SECONDS` from measured `feed_lag_p95_s` (~10s), not 60.
 - **[operator] OddsPapi paid tier** — confirm sports coverage + that `ODDSPAPI_API_KEY` is set in the VPS env (presence only). Then the sharp-line engine wires to live data.
 - **[build, blocked on above] Sports sharp-line pipeline:** live OddsPapi fetch, sports team-name → Polymarket condition_id matcher (esports matcher exists in EB, sports is net-new), offline backfill of `sharp_prob` onto signals, then run through the gate.
-- **[build, unblocked] Crypto kill-test:** run crypto signals through the harness at realistic latency to confirm the latency-trap hypothesis and formally drop crypto.
+- **[operator, FIRST — one paste] Deploy-version check + ladder redeploy:**
+  `ls /opt/mirror3/mirror_v3` — if `sizing.py` is absent the box predates
+  A+D sizing AND the ladder capture; either way one rerun of
+  `deploy/mirror3_shadow_deploy.sh` from this branch picks up both
+  (idempotent; never touches `.env.mirror3`). Until then, live shadow
+  records carry no `conviction_r` (UNVERIFIED which commit runs) and no
+  ladders (VERIFIED — capture merged 2026-07-12, post-deploy).
+- **[operator] Run the tx-exact re-adjudication** (`readjudicate_discrepant.py`,
+  from a /tmp clone of this branch; roster = the audit json's 9 DISCREPANT).
+  VINDICATED traders are PROPOSED for a SECOND shadow cohort with its own
+  start date — operator decision, never automatic. Ceiling is 16→25; the
+  matcher may equally confirm real discrepancies.
+- **[build DONE 2026-07-12 → operator run] Crypto kill-test:**
+  `scripts/crypto_kill_test.py`, pre-registered verdict at lag 10s vs the
+  +0.02 econ floor; INCONCLUSIVE can never kill. Run after the
+  re-adjudication (lower priority; it buys focus, not money).
 - **[build, unblocked] v3 rejection logging + RTDS plumbing** so the silo collects its own signal stream (then old MB can be fully stopped, not just paused).
 - **[decision] Merge/PR hygiene:** master is current; direct master pushes are operator-gated by the sandbox.
 
@@ -273,6 +456,24 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
 
 ## 7. Landmines (do not trip)
 
+- **The V1 exchanges are DEAD for live flow (2026-07-12).** Any forward-
+  looking on-chain detection MUST use the V2 exchanges + topic0
+  `0xd543adfd…` (constants in `mirror_v3/copy_watcher.py`); V1
+  `OrderFilled` via `blockchain_client` constants is history-only (audits
+  of pre-migration fills). A watcher/canary pointed at V1 reads as
+  "running, zero events" — silently. Also: the V2 fill event does NOT
+  carry BUY/SELL; direction needs the receipt's transfer logs.
+- **A frozen session's unpushed work is GONE (2026-07-12).** Remote session
+  containers are ephemeral; when the `irq7r5` session froze, its built-but-
+  unpushed ladder-capture patch died with it and had to be rebuilt from
+  scratch. Push after every completed unit of work, before idling or waiting
+  on the operator — "built, tested" means nothing until it is on origin.
+- **The chain audit's ±window matcher BLENDS same-token trades** — two real
+  trades at different prices inside the window produce a chain price that
+  matches neither API row → false DISCREPANT. Any future audit verdict
+  should use (or cross-check with) the tx-exact matcher
+  (`scripts/readjudicate_discrepant.py`); the audit's own mismatches are an
+  upper bound on real discrepancies, not a count of them.
 - **web3 v7 renamed `get_logs` kwargs to `from_block`/`to_block`** — the
   camelCase spelling TypeErrors on EVERY call and a bare `except` can launder
   that into "rpc_error" (2026-07-10: 580/580 dead samples). Use
@@ -314,3 +515,41 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
 - **`mirrored_trades` is bookkeeping, not a guard** — the real same-side dedup is the `_open_positions` scan.
 - **CANARY_AUTO_ADVANCE unset → true** by code default. Any live-capable path must set it false explicitly.
 - **orderbook_snapshots is aggregated buckets, not L2** — precise replay needs `shadow_fills.book_snapshot`.
+
+### Added 2026-07-14 (local steward session)
+
+- **CLOB `/price` `side` names the BOOK SIDE read: BUY=best bid, SELL=best
+  ask.** The watcher shipped with it REVERSED (every record's bid/ask
+  swapped, fills at the bid). Pin it any time with
+  `scripts/verify_clob_price_sides.py`; the watcher now alarms LOUDLY on a
+  crossed book. Fix-deploy epoch `1783985376` — analyze_shadow needs
+  `--trust-quotes-after` that value for ladderless post-fix records.
+- **`scripts/audit_roster_chain.py` is V1-ONLY — its not_found column is
+  structurally inflated for post-migration fills.** Superseded by the
+  dual-era `readjudicate_discrepant.py` (`fa21111`). Never adjudicate
+  anyone on the old audit's not_found numbers.
+- **not_found is an evidence gap, NEVER an accusation (operator rule
+  2026-07-14).** The quota rule is gone; escalate the search (window,
+  samples, second RPC, dual-era) until silence survives an EXHAUSTIVE
+  sweep — only then is it fabrication evidence.
+- **The HFT/bot filter (`looks_like_market_maker`) judges a 1-2.5 day
+  burst page, not lifetime rate** — it can dismiss bursty humans (34
+  borderline, incl a run-1 strong candidate). The fair lifetime test only
+  exists for FETCHED histories; chain deep-dive Tier 4 replaces it.
+- **The local Claude app yanks the MAIN checkout between session branches**
+  (mis-branched a commit 2026-07-13). MB local work happens in the
+  dedicated worktree `C:/lockes-picks/mb-steward` (operator-directed
+  exception to the parent-dir fence; the checked-out branch is thereby
+  locked). TWO WRITERS share the branch — `git pull --ff-only` before
+  every commit.
+- **`pgrep -f` waiters self-match their own command line** — bracket the
+  pattern (`discrepan[t]`) in the WAITER too, or wait on output files
+  (bit us 2026-07-13: a waiter hung 3+ hours on itself).
+- **Shared `.env` line 367 is malformed** — python-dotenv aborts there;
+  scripts needing DATABASE_URL must `set -a; . /opt/pa2-shared/.env` in
+  the shell (runbook pattern) AND call `await db.init()` (crypto_kill
+  shipped without it — any new DB runner needs an integration smoke-run
+  `--days 1` before handover, not just unit tests).
+- **`detect_lag_s` can be legitimately negative** (~-1s; producer-set
+  block timestamps) — clamp to 0 in ANALYSIS, never "fix" the recorder.
+  `block_ts` falls back to detect-time on fetch error (lag reads 0).
