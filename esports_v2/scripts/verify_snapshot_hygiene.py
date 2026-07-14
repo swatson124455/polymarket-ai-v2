@@ -15,12 +15,17 @@ descends from it. This verifies, line by line, that what's stored is clean:
       (same-teams same-day start-TIME drift = schedule delay -> a NOTE)
     - match_key not reproducible from (home, away, starts)
     - exact duplicate (captured_at, match_key) rows (double-append)
+    - GAP-C quote fields: best_bid/best_ask outside (0,1); bid_size/ask_size
+      not > 0; a CROSSED book (best_bid > best_ask); price/size pairing
+      corruption (a side's price present without its size, or vice versa)
 
   NOTES (reported, not failures):
     - rows predating GAP-B (no PM keys at all — expected history)
     - captured_at going backwards (append-order oddity; harmless to the
       reducer, which sorts, but worth eyes)
     - null-PM rows (unmatched odds — expected, correct-or-absent)
+    - market_price outside [best_bid, best_ask] — legit gamma-mid vs CLOB-book
+      capture skew (the mid and the touch are separate fetches), not corruption
 
 Usage:  python -m esports_v2.scripts.verify_snapshot_hygiene --snapshots <jsonl>
 """
@@ -52,7 +57,9 @@ def audit(lines) -> Dict:
         "n_lines", "json_bad", "missing_core", "bad_odds", "bad_price",
         "pm_incoherent", "orient_bad", "key_mismatch", "dup_rows",
         "cid_conflicts", "match_conflicts", "pre_gapb", "pm_null_rows",
-        "pm_priced_rows", "ts_backwards", "starts_drift")}
+        "pm_priced_rows", "ts_backwards", "starts_drift",
+        "bad_quote", "crossed_book", "quote_pairing", "book_rows",
+        "mid_outside_touch")}
     r["examples"] = []
     seen_rows = set()
     cid_map: Dict[str, tuple] = {}
@@ -97,6 +104,54 @@ def audit(lines) -> Dict:
             except (ValueError, TypeError):
                 r["bad_price"] += 1
                 ex("bad_price", f"{d['match_key']} price={mp!r}")
+
+        # GAP-C quote-field hygiene (17-field era). One-sided books are LEGIT
+        # (a thin side has no resting order -> that price+size both null), so the
+        # pairing rule is price<->size per side, not both-sides-present.
+        def _num_in_unit(v):
+            try:
+                f = float(v)
+            except (ValueError, TypeError):
+                return None
+            return f if 0.0 < f < 1.0 else False   # False = present but invalid
+
+        def _pos_size(v):
+            try:
+                f = float(v)
+            except (ValueError, TypeError):
+                return None
+            return f if f > 0.0 else False
+
+        has_quote = any(d.get(k) is not None
+                        for k in ("best_bid", "best_ask", "bid_size", "ask_size"))
+        if has_quote:
+            r["book_rows"] += 1
+            bb = _num_in_unit(d.get("best_bid")) if d.get("best_bid") is not None else None
+            ba = _num_in_unit(d.get("best_ask")) if d.get("best_ask") is not None else None
+            bs = _pos_size(d.get("bid_size")) if d.get("bid_size") is not None else None
+            as_ = _pos_size(d.get("ask_size")) if d.get("ask_size") is not None else None
+            if bb is False or ba is False:
+                r["bad_quote"] += 1
+                ex("bad_quote", f"{d['match_key']} bid={d.get('best_bid')!r} ask={d.get('best_ask')!r}")
+            if bs is False or as_ is False:
+                r["bad_quote"] += 1
+                ex("bad_quote", f"{d['match_key']} bidsz={d.get('bid_size')!r} asksz={d.get('ask_size')!r}")
+            # price<->size pairing per side (present-together or absent-together)
+            if (d.get("best_bid") is None) != (d.get("bid_size") is None) or \
+               (d.get("best_ask") is None) != (d.get("ask_size") is None):
+                r["quote_pairing"] += 1
+                ex("quote_pairing", f"{d['match_key']} bid({d.get('best_bid')!r},{d.get('bid_size')!r}) ask({d.get('best_ask')!r},{d.get('ask_size')!r})")
+            # crossed book: a valid bid strictly above a valid ask
+            if isinstance(bb, float) and isinstance(ba, float) and bb > ba:
+                r["crossed_book"] += 1
+                ex("crossed_book", f"{d['match_key']} bid={bb} > ask={ba}")
+            # NOTE (not HARD): mid outside the touch = gamma-vs-CLOB capture skew
+            if mp is not None and isinstance(bb, float) and isinstance(ba, float):
+                try:
+                    if not (bb <= float(mp) <= ba):
+                        r["mid_outside_touch"] += 1
+                except (ValueError, TypeError):
+                    pass
 
         if "condition_id" not in d:
             r["pre_gapb"] += 1
@@ -165,7 +220,7 @@ def audit(lines) -> Dict:
 
 HARD = ("json_bad", "missing_core", "bad_odds", "bad_price", "pm_incoherent",
         "orient_bad", "key_mismatch", "dup_rows", "cid_conflicts",
-        "match_conflicts")
+        "match_conflicts", "bad_quote", "crossed_book", "quote_pairing")
 
 
 def render(r: Dict) -> str:
@@ -179,6 +234,8 @@ def render(r: Dict) -> str:
                f"unmatched-PM rows (nulls, expected)={r['pm_null_rows']}  "
                f"start-time drift rows (delays, reducer-handled)={r['starts_drift']}  "
                f"timestamp-backwards={r['ts_backwards']}")
+    out.append(f"Quotes (GAP-C): book-bearing rows={r['book_rows']}  "
+               f"mid-outside-touch (gamma/CLOB skew, expected)={r['mid_outside_touch']}")
     for e in r["examples"]:
         out.append(f"  ex {e}")
     out.append("VERDICT: " + ("FAIL" if bad else "PASS"))
