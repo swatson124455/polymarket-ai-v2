@@ -180,10 +180,21 @@ latency package (still inert/flag-OFF). S222 verification clock RESTARTS at 16:0
    | 6 | Release cut carrying `9dc6d59` (CancelledError fix) | next cut, any time |
    | 7 | Ops debt: main-tree deploy mechanism; prune old WB releases | after verdict |
    | 8 | Operator: wallet.txt out of repo; `$env:TEMP\wb-*.tar.gz`; per-bot worktrees | operator |
-   Automation live (2026-07-13, ubuntu crontab on VPS, rollback = remove crontab line):
+   Automation live (2026-07-13/14, ubuntu crontab on VPS, rollback = remove crontab lines):
    nightly 09:17 UTC `/home/ubuntu/wb_research/nightly.sh` — (a) drains the NULL-end pool
    2k/night (CLOB, fill-NULL-only), (b) re-runs the race study to accrue leader-following
-   samples; logs in `/home/ubuntu/wb_research/`.
+   samples; PLUS `*/10 * * * * shadow_book.sh` — **SHADOW-BOOK LOGGER (queue item 3, built
+   early per operator 07-14)**: for every active US highest-temp family in its local
+   10:00–20:00 window, records METAR running max + leader + 3-deep CLOB books both sides
+   to `shadow_books_YYYYMMDD.jsonl`. Read-only. REVIEW AT HANDOFF with canonical data
+   (books+outcomes): executable capture vs the mid-price race-study numbers, and maker
+   fill feasibility. Logs in `/home/ubuntu/wb_research/`.
+   OPERATOR DECISIONS RECORDED (2026-07-14): per-bot worktree DONE — WB local sessions now
+   work in `.claude/worktrees/wb-whiteboard` (pins the branch; git refuses checkouts
+   elsewhere — flip hazard structurally closed); shadow logger BUILT (above); hygiene
+   items (wallet.txt/tarballs/release-prune) HELD by operator; leader-following edge =
+   keep VERIFYING with canonical data over time (nightly accrual + logger), no trading
+   before the shadow-capture review + S222 verdict.
 
 3. **Deferred switches (do after the calibrator re-learns + S222 passes):** enable the V28
    calibrated-edge gate (`WEATHER_CALIBRATED_EDGE_GATE_ENABLED=true`); V34 follow-ups
