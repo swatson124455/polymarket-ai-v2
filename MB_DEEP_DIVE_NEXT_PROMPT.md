@@ -39,6 +39,21 @@ state (writes outside `/tmp`, restarts, kills).
    head + verify blob first**, and only feed it the not-yet-done addresses
    (e.g. build a remaining-list via `--traders`).
 
+## ROSTER — you MAY add/subtract, but NOTIFY + CLARIFY at handoff (operator directive 2026-07-14)
+You have standing authority to add/subtract candidate traders from the deep-dive
+roster (fold in wave-2 candidates, drop invalid/dup/out-of-scope addresses)
+WITHOUT asking first — but EVERY add/subtract MUST be logged with the delta +
+reason in `docs/MB_STATE.md` §0 ROSTER LEDGER AND in this prompt, and the
+durable address files kept in sync. Admissions still need the operator's WORD
+(this authority is over the CANDIDATE roster, not who joins a live cohort).
+- **Wave-1 (this batch) = 47** — 9 cohort-2 (`readjudicate.json`) + 4 grey
+  (`readjudicate_grey2.json`) + 34 HFT-borderline (`deep_dive_extra_38.txt`).
+- **Candidate-add menu for wave-2** (deferred to avoid a concurrent 2nd batch
+  double-loading the shared tenderly RPC): `0x6bab41a0dc40d6dd4c1a915b8c01969479fd1292`,
+  `0x4dfd481c16d9995b809780fd8a9808e8689f6e4a` (both run-1 strong candidates,
+  cached, NOT in wave-1) + the ~38 ALL-universe scope-outs. Run wave-2 after
+  wave-1 completes; **log the exact addresses you add in §0 when you do.**
+
 ## REVIEW DISCIPLINE (binding)
 - **ADMIT = a PROPOSAL** to the operator for a cohort (own start date, separate
   readout, NEVER pooled with cohort-1). Nobody joins any roster without the

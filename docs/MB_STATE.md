@@ -66,6 +66,26 @@
 >    (the batch shares the tenderly endpoint with the LIVE mirror3 watcher —
 >    watch that canary count stays 0).
 >
+> **ROSTER LEDGER + add/subtract protocol (operator directive 2026-07-14):**
+> the steward MAY add/subtract candidate traders from the deep-dive roster
+> autonomously, but EVERY add/subtract MUST be logged here + in
+> `MB_DEEP_DIVE_NEXT_PROMPT.md` with the delta + reason (nothing enters/leaves
+> the roster invisibly). Admissions still need the operator's WORD (this
+> authority is over the CANDIDATE roster, not who joins a live cohort).
+>   - **WAVE-1 (RUNNING) = 47:** 9 cohort-2 (`readjudicate.json` VINDICATED) +
+>     4 grey (`readjudicate_grey2.json` VINDICATED) + 34 HFT-borderline
+>     (`deep_dive_extra_38.txt` = grey-4 ∪ the 34, dedup). No change since
+>     launch.
+>   - **CANDIDATE-ADD MENU for WAVE-2 (identified 2026-07-14 PM, NOT yet run —
+>     deferred so a 2nd batch doesn't double RPC load on the shared tenderly
+>     endpoint while wave-1 + the live mirror3 watcher run):**
+>     `0x6bab41a0dc40d6dd4c1a915b8c01969479fd1292` (run-1 strong: 264 P1 mkts
+>     +0.067 → 109 P2 +0.089 P=0.99) and
+>     `0x4dfd481c16d9995b809780fd8a9808e8689f6e4a` (run-1 politics: 17 mkts
+>     +0.410 P=1.00) — both cached, both confirmed NOT in wave-1; plus the
+>     ~38 ALL-universe scope-outs (§0 item 5, less concrete). Run wave-2 AFTER
+>     wave-1 completes; log the exact added addresses here when you do.
+>
 > *(The 2026-07-14 ~02:45 block below is prior state from earlier the same day;
 > its deep-dive-gate TO-DO is DONE per the above.)*
 
