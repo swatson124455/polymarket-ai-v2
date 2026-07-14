@@ -51,6 +51,7 @@ import random
 import sys
 import tempfile
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -61,6 +62,7 @@ from esports_v2.model.sharp_eval import (
     edge_backtest_from_joined,
     evaluate_sharp_line,
 )
+from esports_v2.model.team_match import same_team as _stress_same_team
 from esports_v2.data.pm_market_index import PMMarketRef, match_pm_ref
 
 FEE = 0.02
@@ -266,38 +268,64 @@ def run(n_matches: int, seed: int, scale_lines: int) -> int:
               f"(tol {roi_tol(eb.n_bets):.3f}), "
               f"buckets {[(b['lo'], b['n']) for b in eb.edge_buckets]}")
 
-        # S5a: resolver returns None for half -> records DROP, ROI stays ~planted.
-        def resolver_half_absent(cid, tok, ta, tb):
-            if cid and int(cid.replace("0xsynth", "")) % 2 == 0:
-                return None
-            return orient_truth.get(cid)
+        # Orientation is now PRIMARY from the FROZEN yes_outcome (2026-07-14 fix);
+        # the injected resolver is a VETO-ONLY cross-check. So the S5 scenarios
+        # corrupt orientation at the FROZEN source (yes_outcome), not the resolver.
+        _fmt = lambda x: "n/a" if x is None else f"{x:+.3f}"
 
+        def _unrelated_yes(r):
+            """Frozen orientation unresolvable: yes_outcome matches neither team."""
+            return replace(r, yes_outcome="Nonexistent Nonteam XYZ")
+
+        def _flip_yes(r):
+            """Flip orientation at the frozen source: yes_outcome -> the WRONG team."""
+            to_home = _stress_same_team(r.yes_outcome, r.home, None)
+            return replace(r, yes_outcome=(r.away if to_home else r.home))
+
+        # S5a: correct-or-absent DROP now triggers on an UNRESOLVABLE FROZEN name
+        # (the authority post-fix). Half the records get an unrelated yes_outcome
+        # -> dropped; ROI on the surviving half stays ~planted (drops never corrupt).
+        joined_halfbad = [
+            _unrelated_yes(r) if (r.condition_id
+                                  and int(r.condition_id.replace("0xsynth", "")) % 2 == 0)
+            else r
+            for r in joined]
         eb_abs = edge_backtest_from_joined(
-            joined, resolve_orientation=resolver_half_absent,
+            joined_halfbad, resolve_orientation=resolver_truth,
             fee=FEE, min_edge=MIN_EDGE)
         s5a_ok = (eb_abs.n_bets < eb.n_bets and eb_abs.roi is not None
                   and abs(eb_abs.roi - edge) < roi_tol(eb_abs.n_bets))
-        check("S5a absent-orientation-drops", s5a_ok,
-              f"bets {eb.n_bets}->{eb_abs.n_bets}, ROI {eb_abs.roi:+.3f} "
+        check("S5a absent-orientation-drops (unresolvable frozen)", s5a_ok,
+              f"bets {eb.n_bets}->{eb_abs.n_bets}, ROI {_fmt(eb_abs.roi)} "
               f"(tol {roi_tol(eb_abs.n_bets):.3f}; drops never corrupt)")
 
-        # S5b: BLIND SPOT (permanent demonstration). A flipped resolver settles
-        # with the same wrong bool it decided with, so the backtest is
-        # self-consistent and shows phantom PROFIT — P&L CANNOT detect a flip.
-        # Orientation correctness must come from independent CLOB label checks
-        # (clob_labels, live-verified 5/5), never from backtest P&L.
-        def resolver_flipped(cid, tok, ta, tb):
-            t = orient_truth.get(cid)
-            return None if t is None else (not t)
-
+        # S5b: BLIND SPOT (permanent demonstration). If the AUTHORITATIVE frozen
+        # yes_outcome is itself flipped AND no live cross-check is available (the
+        # market resolved/archived -> resolver None), the backtest settles with the
+        # same wrong bool it decided with -> self-consistent phantom PROFIT. P&L
+        # CANNOT detect it; only the live-CLOB cross-check (S5d) or an independent
+        # label check (clob_labels) can.
+        joined_flip = [_flip_yes(r) for r in joined]
         eb_flip = edge_backtest_from_joined(
-            joined, resolve_orientation=resolver_flipped,
+            joined_flip, resolve_orientation=lambda *a: None,
             fee=FEE, min_edge=MIN_EDGE)
         s5b_ok = (eb_flip.roi is not None and eb_flip.roi > 0
                   and eb_flip.n_bets > 0)
         check("S5b flip-blind-spot (backtest P&L cannot detect a flip)", s5b_ok,
-              f"flipped-resolver backtest 'shows' ROI {eb_flip.roi:+.3f} on "
+              f"flipped-frozen backtest 'shows' ROI {_fmt(eb_flip.roi)} on "
               f"{eb_flip.n_bets} bets — phantom profit, NOT a real edge")
+
+        # S5d: the NEW protection (2026-07-14). The SAME frozen flip, but with the
+        # live CLOB cross-check AVAILABLE and correct, is CAUGHT — frozen(flipped)
+        # disagrees with the live truth -> every such record is dropped, never bet.
+        # The flip cannot reach P&L when the market is still served.
+        eb_caught = edge_backtest_from_joined(
+            joined_flip, resolve_orientation=resolver_truth,
+            fee=FEE, min_edge=MIN_EDGE)
+        s5d_ok = eb_caught.n_bets == 0
+        check("S5d flip-caught-by-live-crosscheck", s5d_ok,
+              f"flipped frozen + correct live check -> {eb_caught.n_bets} bets "
+              f"(0 = every flip vetoed before it reaches P&L)")
 
         # S5c: the REAL damage — same flipped decisions, settled against TRUTH
         # (edge_backtest honors an explicit yes_won over the orientation bool).
