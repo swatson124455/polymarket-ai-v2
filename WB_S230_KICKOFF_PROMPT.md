@@ -31,7 +31,7 @@ Then read `docs/WEATHER_STATUS.md` (OPEN DECISIONS 1–4 + WHAT IS LIVE) and `do
 ## PRIMARY TASK — S222 re-run (the whole session gates on this)
 S229 deployed the EMOS unit-soup root fix; the S222 clock RESTARTED **2026-07-13 16:02:29Z**.
 The 07-11→13 verdict was FAIL but measured the bug, not the fixes — that window is void.
-1. Gate count:
+1. Gate count (was 19/50 at 2026-07-14 16:40Z, on track for the ≥50 gate ~07-16/17):
    `SELECT count(DISTINCT market_id) FILTER (WHERE resolution IS NOT NULL) FROM prediction_log WHERE bot_name='WeatherBot' AND prediction_time > '2026-07-13 16:02:29';`
 2. If <50 → report count + ETA (~19/day), watch health (below), STOP.
 3. If ≥50 → run `WB_S222_POSTFIX_VERIFICATION_PROMPT.md` using its **S229 re-point block** (cutoffs `2026-07-13 16:02:29` / `--since 20260713_160229`; deployed release `20260714_003205`+; S229 markers ≥9 in the box's `weather_bot.py`; journal must show `weather_global_emos_by_station_loaded` each ~6h — if `avg_clim_mean` reappears in `weatherbot_global_samos_fitted`, the unit-soup defect regressed → STOP).
@@ -49,7 +49,7 @@ NOTE: a local scheduled task `wb-s222-gate-check` may fire 09:00 daily 07-16→1
 ## HEALTH WATCH (every session, ~1 min)
 - `journalctl -u polymarket-weather --since "24 hours ago" | grep -cE "calibration_reload_failed|cal_fit_failed"` → 0.
 - `… | grep -c weather_global_emos_by_station_loaded` → ≥1 per ~6h (~106 stations); `… | grep -c avg_clim_mean` → 0 (regression tripwire).
-- `… | grep -c "cannot unpack non-iterable CancelledError"` → 0 (S229 fix holds).
+- CancelledError check — use the DEPLOY cutoff, NOT "24h ago": `journalctl -u polymarket-weather --since '2026-07-14 00:32:41' | grep -c "cannot unpack non-iterable CancelledError"` → 0 (S229 fix holds). ⚠ A "24h ago" window shows ~6 PRE-deploy hits until 07-14 ~23:40Z (last pre-fix occurrence 07-13 23:40) — those are expected residue, not a regression.
 - Nightly automation: tail `~/wb_research/nightly_*.log` (NULL-end drain + race accrual) and confirm shadow-book file grows.
 
 ## STANDING OPERATOR REMINDERS — echo these in EVERY handoff until the operator confirms done
