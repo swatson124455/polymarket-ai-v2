@@ -280,3 +280,63 @@ def test_enrich_no_vig_a_fn_none_result_means_uncovered():
                                  no_vig_a_fn=lambda a, b: None)
     assert out[0]["sharp_prob"] is None
     assert out[0]["sharp_should_bet"] is False
+
+
+# ── GAP C: fill graded at executable touch, not the unfillable mid ──────────
+
+
+def _jr_pm_book(match_key, odds_a, odds_b, home_won, market_price,
+                best_bid=None, best_ask=None):
+    return JoinedRecord(
+        match_key=match_key, home="A", away="B", starts="2026-07-10T18:00:00Z",
+        day="2026-07-10", odds_a=odds_a, odds_b=odds_b,
+        open_odds_a=odds_a, open_odds_b=odds_b,
+        winner="A" if home_won else "B", home_won=home_won,
+        game="cs2", source="test", result_match_id="m",
+        condition_id="0xc", yes_token_id="t0", yes_outcome="A",
+        market_price=market_price, best_bid=best_bid, best_ask=best_ask,
+    )
+
+
+def test_yes_bet_fills_at_best_ask_not_mid():
+    # Sharp fair A ~0.667 (odds 1.5/3.0); YES=A; mid 0.40 -> big edge -> bet YES; A won.
+    # Mid fill entry 0.40 -> pnl +0.60. Executable ask 0.44 -> pnl +0.56.
+    rep = edge_backtest_from_joined(
+        [_jr_pm_book("k", 1.5, 3.0, True, 0.40, best_bid=0.38, best_ask=0.44)],
+        resolve_orientation=lambda *a: True)
+    assert rep.n_bets == 1 and rep.n_fill_executable == 1
+    assert abs(rep.total_pnl - 0.56) < 1e-9          # graded at ask
+    assert abs(rep.pnl_at_mid - 0.60) < 1e-9         # mid was optimistic
+    assert abs(rep.mean_fill_slippage - 0.04) < 1e-9 # ask - mid
+    assert "executable-fill" in rep.summary() and "OPTIMISTIC" in rep.summary()
+
+
+def test_no_bet_fills_at_no_ask_one_minus_bid():
+    # Sharp fair A ~0.667 -> sharp NO(=B) ~0.333; market YES price 0.90 means the
+    # rule bets NO (market overprices A). NO ask = 1 - best_bid.
+    # A LOST (home_won False) -> NO wins. mid entry (1-0.90)=0.10 -> pnl +0.90.
+    # executable: best_bid 0.88 -> NO ask 0.12 -> pnl +0.88.
+    rep = edge_backtest_from_joined(
+        [_jr_pm_book("k", 1.5, 3.0, False, 0.90, best_bid=0.88, best_ask=0.92)],
+        resolve_orientation=lambda *a: True)
+    assert rep.n_bets == 1 and rep.n_fill_executable == 1
+    assert abs(rep.total_pnl - 0.88) < 1e-9
+    assert abs(rep.pnl_at_mid - 0.90) < 1e-9
+
+
+def test_missing_book_falls_back_to_mid_unchanged():
+    # No quote fields -> mid fill, exactly the pre-GAP-C behavior; slippage None.
+    rep = edge_backtest_from_joined([_jr_pm_book("k", 1.5, 3.0, True, 0.40)],
+                                    resolve_orientation=lambda *a: True)
+    assert rep.n_bets == 1 and rep.n_fill_executable == 0
+    assert abs(rep.total_pnl - 0.60) < 1e-9
+    assert rep.total_pnl == rep.pnl_at_mid
+    assert rep.mean_fill_slippage is None
+
+
+def test_degenerate_touch_ignored_falls_back_to_mid():
+    # best_ask at/beyond bounds -> ignored, mid fallback (correct-or-absent).
+    rep = edge_backtest_from_joined(
+        [_jr_pm_book("k", 1.5, 3.0, True, 0.40, best_bid=0.38, best_ask=1.0)],
+        resolve_orientation=lambda *a: True)
+    assert rep.n_fill_executable == 0 and abs(rep.total_pnl - 0.60) < 1e-9

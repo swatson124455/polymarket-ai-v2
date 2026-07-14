@@ -219,6 +219,13 @@ class EdgeBacktestReport:
     # more? Flat-ROI-vs-edge is the go/no-go signal for the edge rule itself.
     edge_buckets: List[dict] = field(default_factory=list)
     method: str = "simple"   # de-vig used for the sharp fair prob
+    # GAP C fill realism: total_pnl/roi are graded at the EXECUTABLE touch when
+    # the closing snapshot carried a book (YES buy pays best_ask, NO buy pays
+    # 1-best_bid); pnl_at_mid is the optimistic mid-fill for the SAME bets so the
+    # slippage is visible. The should_bet GATE is still mid-based (unchanged).
+    pnl_at_mid: Optional[float] = None
+    n_fill_executable: int = 0
+    mean_fill_slippage: Optional[float] = None
 
     def summary(self) -> str:
         lines = [
@@ -238,11 +245,24 @@ class EdgeBacktestReport:
         unstable = ("" if self.n_bets >= MIN_STABLE_N
                     else f" — UNSTABLE (n<{MIN_STABLE_N}), do not act on")
         lines += [
-            f"  bets fired (should_bet): {self.n_bets}{unstable}",
+            f"  bets fired (should_bet, MID-based gate): {self.n_bets}{unstable}",
             hit,
-            f"  P&L: {self.total_pnl:+.4f}  ROI: {self.roi:+.2%}"
+            f"  P&L @executable-fill: {self.total_pnl:+.4f}  ROI: {self.roi:+.2%}"
             if self.total_pnl is not None else "  P&L: n/a",
         ]
+        # Fill-realism disclosure: how many bets filled at a real touch, the
+        # slippage vs the mid, and what the optimistic mid-fill would have paid.
+        if self.total_pnl is not None:
+            cov = (f"{self.n_fill_executable}/{self.n_bets} at executable touch"
+                   if self.n_bets else "n/a")
+            slip = ("" if self.mean_fill_slippage is None
+                    else f"  mean slippage vs mid: {self.mean_fill_slippage:+.4f}")
+            lines.append(f"  fill coverage: {cov}{slip}")
+            if self.pnl_at_mid is not None and self.n_bets:
+                lines.append(
+                    f"  P&L @mid (OPTIMISTIC, unfillable): {self.pnl_at_mid:+.4f}  "
+                    f"ROI: {self.pnl_at_mid / self.n_bets:+.2%}  "
+                    f"— gap = fill cost the mid hides")
         if self.edge_buckets:
             lines.append("  By edge size (flat $1 stakes):")
             for b in self.edge_buckets:
@@ -300,7 +320,10 @@ def edge_backtest(
         )
 
     pnl = 0.0
+    pnl_at_mid = 0.0     # what the mid-based fill WOULD have scored (disclosure)
     wins = 0
+    n_fill_exec = 0      # bets filled at the executable touch
+    slippage_sum = 0.0   # sum of (touch entry - mid entry) over executable fills
     settled = []  # (edge, won, bet_pnl) for the per-edge-size breakdown
     for r in bets:
         side = r.get("sharp_side")
@@ -313,9 +336,23 @@ def edge_backtest(
             continue
         bet_yes = side == "YES"
         won = (bet_yes and yes_won) or ((not bet_yes) and not yes_won)
-        entry = price if bet_yes else (1.0 - price)
+        # entry_mid is the MID fill (optimistic — market_price is the book mid by
+        # construction). entry_fill is the EXECUTABLE fill: a YES buy pays the YES
+        # best_ask, a NO buy pays the NO ask == 1 - YES best_bid. Fall back to mid
+        # when the closing snapshot carried no touch (pre-GAP-C / empty book).
+        entry_mid = price if bet_yes else (1.0 - price)
+        touch = r.get("best_ask") if bet_yes else (
+            (1.0 - r["best_bid"]) if r.get("best_bid") is not None else None)
+        if touch is not None and 0.0 < float(touch) < 1.0:
+            entry = float(touch)
+            n_fill_exec += 1
+            slippage_sum += entry - entry_mid
+        else:
+            entry = entry_mid
         bet_pnl = (1.0 - entry) if won else (-entry)
+        bet_pnl_mid = (1.0 - entry_mid) if won else (-entry_mid)
         pnl += bet_pnl
+        pnl_at_mid += bet_pnl_mid
         wins += 1 if won else 0
         edge = r.get("sharp_edge")
         if edge is not None:
@@ -326,6 +363,9 @@ def edge_backtest(
         hit_rate=(wins / n_bets) if n_bets else None,
         total_pnl=pnl,
         roi=(pnl / n_bets) if n_bets else None,
+        pnl_at_mid=pnl_at_mid,
+        n_fill_executable=n_fill_exec,
+        mean_fill_slippage=(slippage_sum / n_fill_exec) if n_fill_exec else None,
         n_wins=wins,
         edge_buckets=_edge_buckets(settled, min_edge),
         method=method,
@@ -415,6 +455,9 @@ def edge_backtest_from_joined(
             "market_price": jr.market_price,
             "yes_is_team_a": yes_is_team_a,
             "home_won": jr.home_won,
+            # GAP C: executable touch for fill-realistic P&L (None -> mid fallback)
+            "best_bid": jr.best_bid,
+            "best_ask": jr.best_ask,
         })
 
     if not records:

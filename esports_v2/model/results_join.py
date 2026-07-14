@@ -80,6 +80,14 @@ class JoinedRecord:
     yes_token_id: Optional[str] = None
     yes_outcome: Optional[str] = None
     market_price: Optional[float] = None
+    # GAP C: executable touch from the closing snapshot's CLOB book. Threaded so
+    # the edge backtest can grade the realized FILL at the executable price
+    # (market_price is the unfillable MID by construction). None pre-GAP-C or
+    # when the book fetch was empty at close.
+    best_bid: Optional[float] = None
+    best_ask: Optional[float] = None
+    bid_size: Optional[float] = None
+    ask_size: Optional[float] = None
 
 
 # ── team-equality primitives now live in esports_v2/model/team_match.py ──────
@@ -268,6 +276,8 @@ def join_closing_lines_to_results(
             game=r0.game, source=r0.source, result_match_id=r0.match_id,
             condition_id=cl.condition_id, yes_token_id=cl.yes_token_id,
             yes_outcome=cl.yes_outcome, market_price=cl.market_price,
+            best_bid=cl.best_bid, best_ask=cl.best_ask,
+            bid_size=cl.bid_size, ask_size=cl.ask_size,
         ))
         stats.joined += 1
 
