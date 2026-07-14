@@ -142,6 +142,49 @@ latency package (still inert/flag-OFF). S222 verification clock RESTARTS at 16:0
    not index). Quirk: Gamma endDate=12:00Z precedes eastern local day-end —
    resolution arrives on retry, harmless.
 
+2d. **S229b night pass (2026-07-13 late) — full health sweep + queue table.**
+   Sweep verdict: green (2 reloads, per-station EMOS ×106, failure counters 0, no
+   post-startup tracebacks, 1,271 prediction rows / 89 markets since deploy). Items found
+   and their dispositions:
+   - **FIXED on branch (`9dc6d59`, needs next release cut):** CancelledError escaped
+     `isinstance(result, Exception)` on gather results → tuple-unpack TypeError aborted the
+     ENTIRE scan ("Bot scan error: cannot unpack non-iterable CancelledError", 69× 07-11→13
+     — pre-existing, not an S229 regression). Both gather sites now check BaseException.
+   - **⚠ DORMANT LANDMINE — DO NOT FIX NAIVELY:** `_maybe_bootstrap_cold_station` binds
+     `target_date_str` (str) into a date column → asyncpg DataError → cold-start ERA5
+     bootstrap inserts have ALWAYS silently failed (why weather_calibration has zero
+     `era5_bootstrap` rows). This failure is accidentally PROTECTIVE post-S224: the EMOS
+     fit has NO `actual_source` filter, so "fixing" the bind alone would inject
+     ERA5-ground-truth pairs into the clean training window (the exact contamination WS-3
+     cut out). Only acceptable fix: date-bind + WU-only/`actual_source` training filter
+     in the SAME commit, post-S222 (pairs with OPEN DECISION 3's filter item).
+   - **NOT bugs:** `losing_streak consecutive_losses=176` = bulk resolution of
+     poisoned-window trades arriving (compressor correctly throttling sizing);
+     London/Madrid day-ahead "edges" (~0.2-0.3 raw) = small-n local-EMOS claims —
+     adjudicated by the clean-window duel, contained by flat sizing + caps meanwhile.
+   - **NULL-end backfill EXECUTED:** WB-predicted subset now **0** NULL (171/171 filled
+     from CLOB, fill-NULL-only UPDATEs); historical pool (~17.8k weather markets, all
+     sources/years) drains via the nightly cron (2e).
+   - **S222 prompt RAN (per operator):** self-aborted at Precondition 0.4a as designed —
+     0/50 resolved in the post-16:02:29Z window (91 predicted); ETA ~07-16.
+     Station-wedge duel: same gate, structurally blocked until first resolutions ~07-15.
+
+2e. **NEXT QUEUE (post-verdict roadmap, S229 close):**
+   | # | Item | Trigger / order |
+   |---|------|-----------------|
+   | 1 | S222 re-run + station-wedge duel (per-cell, `scripts/wb_research/brier_duel.py` fed prediction_log probs) | clean window ≥50 (~07-16/17) |
+   | 2 | Gate retirement IF PASS (A1/A3 → dampeners → caps; C0 Kelly last, calibrator-gated) | after 1 |
+   | 3 | Shadow-book logger (read-only: snapshot books on obs events) — prices leader-following capture + maker fills | after 1; prerequisite for trading the confirmed edge |
+   | 4 | Latency package activation (3a) — decide WITH 3 (priority-wake is the nowcast weapon) | after 3 |
+   | 5 | Bootstrap landmine proper fix (date-bind + actual_source training filter, same commit) | post-S222 |
+   | 6 | Release cut carrying `9dc6d59` (CancelledError fix) | next cut, any time |
+   | 7 | Ops debt: main-tree deploy mechanism; prune old WB releases | after verdict |
+   | 8 | Operator: wallet.txt out of repo; `$env:TEMP\wb-*.tar.gz`; per-bot worktrees | operator |
+   Automation live (2026-07-13, ubuntu crontab on VPS, rollback = remove crontab line):
+   nightly 09:17 UTC `/home/ubuntu/wb_research/nightly.sh` — (a) drains the NULL-end pool
+   2k/night (CLOB, fill-NULL-only), (b) re-runs the race study to accrue leader-following
+   samples; logs in `/home/ubuntu/wb_research/`.
+
 3. **Deferred switches (do after the calibrator re-learns + S222 passes):** enable the V28
    calibrated-edge gate (`WEATHER_CALIBRATED_EDGE_GATE_ENABLED=true`); V34 follow-ups
    (synthetic marker / RNG determinism); deeper V26 (orders submitted at midpoint, not
