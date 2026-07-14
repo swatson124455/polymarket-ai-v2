@@ -84,15 +84,17 @@ def add(table, check, status, detail):
 # ── orderbook_snapshots ──────────────────────────────────────────────────────
 def check_orderbook_snapshots():
     t = "orderbook_snapshots"
+    # 30-min window: ~10K rows is ample for the signature and keeps the
+    # aggregate inside the statement timeout under DB load (2h window was flaky)
     r = q("SELECT count(*),"
           " round(100.0*count(*) FILTER (WHERE spread>0.9)/GREATEST(count(*),1),1),"
           " round(avg(mid_price)::numeric,4)"
-          " FROM orderbook_snapshots WHERE snapshot_time > now()-interval '2 hours'")
+          " FROM orderbook_snapshots WHERE snapshot_time > now()-interval '30 minutes'")
     if not r:
         return add(t, "sig:worst-of-book", "WARN", "no data / query failed")
     n, pct_wide, avg_mid = int(r[0][0]), float(r[0][1] or 0), r[0][2]
     if n == 0:
-        return add(t, "leg3:liveness", "FAIL", "0 rows in last 2h — collector down?")
+        return add(t, "leg3:liveness", "FAIL", "0 rows in last 30min — collector down?")
     # 61541c5 regression gate: worst-of-book capture makes spread~0.998, mid~0.5
     if pct_wide > 50:
         add(t, "sig:worst-of-book", "FAIL",
@@ -139,8 +141,10 @@ def check_market_prices():
 # ── positions ────────────────────────────────────────────────────────────────
 def check_positions():
     t = "positions"
+    # status values are stored lowercase ('open'/'closed') — match case-insensitively
+    # (first harness run compared ='OPEN' and silently sampled zero rows, 2026-07-14)
     rows = q("SELECT token_id, current_price FROM positions"
-             " WHERE status='OPEN' AND token_id IS NOT NULL AND current_price IS NOT NULL"
+             " WHERE lower(status)='open' AND token_id IS NOT NULL AND current_price IS NOT NULL"
              " ORDER BY opened_at DESC LIMIT 5")
     if not rows:
         return add(t, "live:marks-vs-clob", "WARN", "no open positions to check")
