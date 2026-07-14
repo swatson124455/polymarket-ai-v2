@@ -46,3 +46,15 @@ subtraction. Also counts 'unbuyable' (leader had no ask) and 'ask>=0.98'
 (priced-in) entries — the h17+ mid-edge largely lives there (S230 first pass,
 WEATHER_STATUS 2c). Sample accrues at ~11 US family-days/day; hold verdicts to
 the same ≥50-per-cell bar as everything else.
+
+## trade_prints.py — "do resting orders actually get filled?" (maker leg)
+Runs on the VPS via cron (`trade_prints.sh`, every 10 min at :05 offset,
+alongside shadow_book.sh at :00). For each active US highest-temp family
+(station local time >= 10:00): fetches public prints from
+`data-api.polymarket.com/trades?market=<condition_id>` for every bucket and
+appends NEW ones (per-market timestamp cursor in `.trade_prints_state.json`)
+to `~/wb_research/trade_prints_YYYYMMDD.jsonl`. `side` is the TAKER side, so
+a print with side=SELL means a resting BID got hit — joined with the shadow
+books this prices maker fill-probability at each level. First tick backfills
+up to 200 prints/market (dedup-safe). Analysis should still dedup on
+(transactionHash, asset, timestamp, price, size).
