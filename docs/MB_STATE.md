@@ -10,13 +10,64 @@
 > 2026-07-11 incident: a fresh session read master's stale copy and
 > recommended the BANNED circular validate rerun it found there.)
 
-**Last updated:** 2026-07-14 (local steward session, ~02:45 UTC) · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
+**Last updated:** 2026-07-14 (local steward session, ~19:35 UTC — chain deep-dive gate built + reviewed + smoke-validated + 47-batch launched) · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
 **Read first:** `CLAUDE.md` (binding directives), then this file, then **`docs/MB_COPYTRADER_CONTEXT.md` (FULL context brief for the live copy-trader investigation — the complete reasoning chain, API gotchas, and decision tree)**. `MB_REBUILD_PLAN.md` holds the older plan + operator decisions.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
 ---
 
 ## 0. IMMEDIATE RESUME (2026-07-14 local steward session — read this block first)
+
+> **2026-07-14 PM UPDATE (local steward session; VPS-direct SSH, operator-
+> approved per-command) — CHAIN DEEP-DIVE GATE BUILT, REVIEWED, VALIDATED,
+> AND THE 47-BATCH IS RUNNING.**
+>
+> 1. **`scripts/chain_deep_dive.py` — the roster-admission gate — is DONE**
+>    (§5 TO-DO item 1). Four tiers: T1 lifetime dual-era fill reconstruction
+>    (V1 OrderFilled maker+taker both exchanges + V2 fill topic owner-filtered;
+>    V1 direction implicit in the USDC leg, V2 direction from tx receipts,
+>    capped); T2 API↔chain reconciliation BOTH directions (tx-exact matcher,
+>    BUY-only candidates); T3 skill re-grade on chain data vs the SAME
+>    walk-forward hire bar; T4 forensics (counterparty/wash, maker-taker +
+>    TRUE lifetime rate = the fair HFT test, sampled copier probe, pUSD funder).
+>    Reuses the audited siblings as-is; read-only; no shared-module edits.
+> 2. **Pre-registered verdict (locked in the docstring): REJECT only on an
+>    AFFIRMATIVE contradiction (mismatch / fabrication / adequately-powered
+>    NEGATIVE chain edge) or a MEASURED infeasibility (true rate > cap);
+>    every evidence gap or unverified forensic suspicion (short-span/underpowered
+>    skill, thin backing, too-few API BUYs, ts-uncomputable, receipt-cap, wash,
+>    copier) → INSUFFICIENT-EVIDENCE. ADMIT is a PROPOSAL to the operator for a
+>    cohort — never auto-add, never pooled with cohort-1.** Chain wins; a gap is
+>    never an accusation (binding operator rule 2026-07-14).
+> 3. **Validation:** 61-agent-style adversarial review (5 lenses → adversarial
+>    verify) surfaced **16 confirmed findings; all fixed** (top: T2A folded
+>    SELLs/unknown into BUY candidates → could mask a lie / false-REJECT — the
+>    core chain-wins bug). A bounded integration smoke on `0xd1acd3925d` then
+>    caught **2 more** (API-buy windowing → false 99% FABRICATION; receipt-cap
+>    → false not_found) — both fixed. Re-smoke CLEAN: tier-2 backing 1.00,
+>    direction fully resolved, correct INSUFFICIENT (recent markets unresolved).
+>    `--self-test` (16-case verdict table) + 23 pytest green LOCAL + VPS venv
+>    (web3 7.5.0); siblings unregressed (53). Commits on this branch through
+>    `0231f2c`.
+> 4. **THE 47-BATCH IS RUNNING** (launched 2026-07-14 19:31 UTC, detached
+>    setsid+nohup, reparented to PID 1, rps=4, max_receipts=30000): 9 cohort-2
+>    (`readjudicate.json` VINDICATED) + 38 (`deep_dive_extra_38.txt` = grey-4 +
+>    the 34 HFT-borderline incl `0xa6a856a8c8…`) = 47. Log `/tmp/deep_dive_batch.log`;
+>    per-trader JSONs + `_summary.json` land in the polymarket-owned
+>    `/opt/pa2-shared/mb_copyable_data/deep_dive/` (mb_copyable_data itself is
+>    root-owned — see landmine). Est. ~17-25h. **NEXT SESSION: collect
+>    `deep_dive/_summary.json`, review the ADMIT/REJECT/INSUFFICIENT split;
+>    admissions to any cohort need the OPERATOR'S WORD (own start date, separate
+>    readout, never pooled with cohort-1). INSUFFICIENT = deepen (raise
+>    --max-receipts / widen window / --refresh cache), NEVER accuse.**
+>    Monitor cmd: `wc -l /tmp/deep_dive_batch.log; ls
+>    /opt/pa2-shared/mb_copyable_data/deep_dive/0x*.json | wc -l;
+>    journalctl -u polymarket-mirror3 --since '1 hour ago' | grep -cE 'CANARY ALARM|QUOTE SANITY'`
+>    (the batch shares the tenderly endpoint with the LIVE mirror3 watcher —
+>    watch that canary count stays 0).
+>
+> *(The 2026-07-14 ~02:45 block below is prior state from earlier the same day;
+> its deep-dive-gate TO-DO is DONE per the above.)*
 
 > **2026-07-14 UPDATE (local steward session; VPS-direct SSH, operator-
 > approved per-command).** Five instrument bugs found & root-fixed in one
@@ -302,12 +353,18 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
 | Quote sanity alarm | `mirror_v3/copy_watcher.py` `quote_sanity_msg` | crossed-book LOUD alarm (`5ce37ba`); 27 watcher tests total |
 | Shadow probe battery | `mb_copyable_data/shadow_probes_20260713.{py,out}` | S1-S5 pre-registered descriptive; capacity/spread/tax measured; S1/S2 await resolutions |
 | Stress suite | `tests/unit/test_mirror3_stress.py` | 9 tests/10 invariants (cloud session `d7fa2bf`); full mirror_v3 surface 93+ green |
+| **Chain deep-dive gate (roster admission)** | `scripts/chain_deep_dive.py` + `tests/unit/test_chain_deep_dive.py` | NEW 2026-07-14 (`0231f2c`): 4-tier chain-native gate (lifetime dual-era reconstruction → API↔chain reconcile both ways → chain skill re-grade → forensics/fair-HFT); adversarially reviewed (16 findings fixed) + smoke-validated; `--self-test` 16-case verdict table + 23 pytest green (local+VPS venv); read-only, reuses siblings as-is. **47-batch RUNNING** (see §0). |
 
 ## 5. Open threads / what's next
 
 ### TO-DO (2026-07-14 plan — next session starts HERE)
 
-1. **[build, FIRST] `scripts/chain_deep_dive.py` — the roster-admission
+> **STATUS 2026-07-14 PM:** item 1 **DONE** (`chain_deep_dive.py` built,
+> reviewed, smoke-validated, `0231f2c`); item 2 **RUNNING** (47-batch launched
+> 19:31 UTC — see §0 for collect/monitor + admission-gate instructions); item 3
+> (operator admission word) pending the batch results.
+
+1. **[build, DONE `0231f2c`] `scripts/chain_deep_dive.py` — the roster-admission
    gate (operator-mandated: no trader joins any roster without it).**
    - Tier 1: lifetime fill reconstruction from chain, BOTH eras (V1
      OrderFilled + V2 fill topic, server-side owner-topic filter; reuse
@@ -553,3 +610,38 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
 - **`detect_lag_s` can be legitimately negative** (~-1s; producer-set
   block timestamps) — clamp to 0 in ANALYSIS, never "fix" the recorder.
   `block_ts` falls back to detect-time on fetch error (lag reads 0).
+
+### Added 2026-07-14 PM (chain deep-dive build + batch launch)
+
+- **`/opt/pa2-shared/mb_copyable_data` is ROOT-owned** (`drwxr-xr-x root
+  root`) — `polymarket` (which runs the batch via `sudo -u polymarket`)
+  CANNOT create files/dirs there. The deep-dive batch writes into a
+  pre-created `polymarket`-owned subdir `.../deep_dive/` (both `--out-dir`
+  AND `--out` live inside it). Any new polymarket-run job writing durable
+  output needs a `sudo mkdir + sudo chown polymarket:polymarket` subdir first
+  (first batch launch crashed at `os.makedirs` PermissionError).
+- **`pgrep` without `-f` does NOT match python-script jobs** — the process
+  `comm` is `python`/`python3`, not the script name, so `pgrep 'chain_deep_
+  dive[.]py'` returns 0 (false "it died!"). ALWAYS use `pgrep -f` (or
+  `pgrep -fc`) for these; the batch was falsely reported dead once this way.
+  A `setsid`-launched job is reparented to PID 1 — verify with `ps -ef`.
+- **`sudo env DATABASE_URL=...` exposes the DB password in the process
+  table** (`ps -ef`). It is a localhost pgbouncer credential and this matches
+  the deployed-service pattern (sudo scrubs env, so the value must be passed
+  as an argv assignment) — acceptable on the single-tenant VPS, but do NOT
+  echo `ps`/pgrep output containing it into chat/logs. Extract it at runtime
+  (`grep '^DATABASE_URL=' /opt/pa2-shared/.env`) so it never lands in a file.
+- **chain_deep_dive reconciliation must PRESERVE reconstructed direction** —
+  reconcile_api_to_chain only takes BUY-side chain fills as candidates; folding
+  SELLs/direction-unknown V2 fills into BUY-shaped candidates would let an API
+  BUY 'verify' against a SELL (mask a lie) or false-mismatch (false REJECT).
+  Same discipline: `direction_complete` (v2_receipts >= v2_txs) gates the
+  direction-dependent tiers — a receipt-capped sweep reads real BUYs as unknown
+  and would manufacture false not_found → INSUFFICIENT (raise --max-receipts),
+  never REJECT. And reconcile ONLY API BUYs inside the SWEPT block window
+  (`window_api_buys`) — a bounded/narrow sweep vs full-history API BUYs invents
+  false FABRICATION (both bugs were smoke-caught 2026-07-14, now unit-tested).
+- **UNCOPYABLE (fill-rate) is checked BEFORE the direction-complete gate** —
+  it needs no receipts, so a genuinely un-tailable HFT account rejects fast
+  without paying for full receipts; and it uses FRACTIONAL span-days (integer
+  floor inflated the rate for the 1-2.5-day-history borderline cohort).
