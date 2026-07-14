@@ -179,7 +179,7 @@ latency package (still inert/flag-OFF). S222 verification clock RESTARTS at 16:0
    | 5 | Bootstrap landmine proper fix (date-bind + actual_source training filter, same commit) | post-S222 |
    | 6 | Release cut carrying `9dc6d59` (CancelledError fix) | next cut, any time |
    | 7 | Ops debt: main-tree deploy mechanism; prune old WB releases | after verdict |
-   | 8 | Operator: wallet.txt out of repo; `$env:TEMP\wb-*.tar.gz`; per-bot worktrees | operator |
+   | 8 | **Operator: ROTATE TRADING WALLET `0xd6a5…627F` — REMIND EVERY HANDOFF until done.** Key lived in repo since May 15 + weeks of world-readable VPS copies; wallet is ACTIVE (nonce 10, ~9.3 POL). Cheapest now (paper mode, no live positions): new wallet → move POL/tokens → update `/opt/pa2-shared/.env` → restart all 4 services (shared env!). File moved out of repo 07-14 (S229b) to a private local path. Also: `Remove-Item $env:TEMP\wb-*.tar.gz` (verified secret-free, ~2.4GB) | operator |
    Automation live (2026-07-13/14, ubuntu crontab on VPS, rollback = remove crontab lines):
    nightly 09:17 UTC `/home/ubuntu/wb_research/nightly.sh` — (a) drains the NULL-end pool
    2k/night (CLOB, fill-NULL-only), (b) re-runs the race study to accrue leader-following
