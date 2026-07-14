@@ -22,7 +22,8 @@
     "dabb799": "fix(ingestion): S228 follow-up — NULL-end-date markets stranded outside resolution discovery",
     "863fae8": "fix(ingestion): S228 follow-up 2 — split discovery budget; tail lane defeats churn starvation",
     "4fa67a3": "fix(weather): S229 — persist end_date_iso for WB-discovered markets; heal NULL-end rows on rediscovery",
-    "24b2847": "fix(weather): S229 — global SAMOS/EMOS pooled climatology across mixed C/F units; de-normalize per station"
+    "24b2847": "fix(weather): S229 — global SAMOS/EMOS pooled climatology across mixed C/F units; de-normalize per station",
+    "9dc6d59": "fix(weather): S229 — CancelledError escapes Exception checks on gather results; aborted whole scans"
   },
   "required_docs": [
     "docs/WEATHER_STATUS.md",

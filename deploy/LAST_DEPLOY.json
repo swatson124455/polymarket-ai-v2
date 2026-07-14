@@ -1,7 +1,7 @@
 {
-  "release_stamp": "20260713_160143",
-  "git_sha": "24b28472a98bbf3d246c10b0bace7d2fcd1d5d68",
+  "release_stamp": "20260714_003205",
+  "git_sha": "b1bf61c7918a04746f874a9dea4ad4ed3959767d",
   "git_branch": "claude/new-whiteboard-session-9b23tq",
-  "recorded_at": "2026-07-13T16:05:25Z",
-  "recorded_by": "local-session-S229 (wb-release-cut.sh; service active; effective restart 2026-07-13T16:02:29Z; carries S229 per-station EMOS fix + end_date_iso fix + inert S228 latency package)"
+  "recorded_at": "2026-07-14T00:35:00Z",
+  "recorded_by": "local-session-S229b (wb-release-cut.sh; clean stop, no SIGKILL; startup transient did NOT recur; S229 markers=11 verified on box; carries 9dc6d59 CancelledError fix + scripts/wb_research)"
 }
