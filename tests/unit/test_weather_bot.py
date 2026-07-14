@@ -27,6 +27,24 @@ from bots.weather.engine.base_engine.weather.probability_engine import WeatherPr
 from bots.weather.engine.base_engine.weather.forecast_client import CombinedForecast, WeatherForecastClient
 
 
+def _run(coro):
+    """Run a coroutine on a private event loop (ordering-pollution immunity).
+
+    The deprecated ``asyncio.get_event_loop().run_until_complete(...)`` pattern
+    breaks under full-suite ordering: any earlier sync test that calls
+    ``asyncio.run()`` (e.g. test_mirror_scoring_runner.py, test_mirror_v3_silo.py)
+    leaves the policy with ``_set_called=True`` and no current loop, after which
+    ``get_event_loop()`` raises ``RuntimeError: There is no current event loop``
+    instead of auto-creating one (Python 3.12+). A private loop that is never
+    registered as the current loop is immune to that global state — same pattern
+    as ``_run`` in test_bug21_terminal_exit_close.py."""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Station Registry
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1977,9 +1995,8 @@ class TestWeatherConfidenceCalibrator:
 
     def test_no_db_returns_false(self):
         """fit_from_trade_events returns False when no DB provided."""
-        import asyncio
         cal = WeatherConfidenceCalibrator()
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             cal.fit_from_trade_events(db=None, window_days=30)
         )
         assert result is False
@@ -2033,7 +2050,6 @@ class TestWeatherConfidenceCalibrator:
 
     def test_brier_guard_rejects_worse_calibration(self):
         """Calibration that worsens Brier score is rejected."""
-        import asyncio
         cal = WeatherConfidenceCalibrator()
         mock_session = AsyncMock()
         # Generate well-calibrated data — LR can't improve it
@@ -2056,7 +2072,7 @@ class TestWeatherConfidenceCalibrator:
         mock_session.execute = AsyncMock(return_value=mock_result)
         mock_db = MagicMock()
         mock_db.get_session = MagicMock(return_value=mock_session)
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             cal.fit_from_trade_events(db=mock_db, window_days=30, min_samples=200)
         )
         # Either fitted (no harm) or rejected — both are correct behavior
@@ -2387,7 +2403,7 @@ class TestZeroKellyGuard:
         group.station = MagicMock()
         group.station.station_id = "KJFK"
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             WeatherBot._execute_weather_trade(bot, opp, group)
         )
         assert result is False, "Zero-Kelly trade should return False, not fire at $5"
@@ -2423,7 +2439,7 @@ class TestZeroKellyGuard:
         group.station = MagicMock()
         group.station.station_id = "KJFK"
 
-        asyncio.get_event_loop().run_until_complete(
+        _run(
             WeatherBot._execute_weather_trade(bot, opp, group)
         )
         bot.base_engine.db.insert_trade_event.assert_called_once()
