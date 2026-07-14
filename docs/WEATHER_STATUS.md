@@ -165,6 +165,24 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
      + once outcomes land for the real capture number. Harness:
      `scripts/wb_research/` conventions; ad-hoc analyzer was run read-only (not
      committed — trivial to reconstruct from this note).
+     **TOOLING SHIPPED (2026-07-14 eve, S230, both committed + live on VPS):**
+     (a) `scripts/wb_research/executable_replay.py` (`b480c5d`) — replays
+     buy-the-leader at the LOGGED ASK from shadow_books_*.jsonl, graded vs
+     markets.resolution, same EV units as race_study; run it any session
+     (`python3 ~/wb_research/executable_replay.py` on the box) — EV rows
+     populate as families resolve (first 3 resolved entries: unbuyable/
+     priced-in, consistent with the book-structure read).
+     (b) `scripts/wb_research/trade_prints.py` (`475d342`) — 10-min cron
+     (5-55/10, offset from shadow_book at :00) appending public data-api
+     trade prints per active family bucket to
+     `~/wb_research/trade_prints_YYYYMMDD.jsonl` (per-market ts cursor;
+     side=TAKER side, so SELL prints = resting bids hit) — the maker-fill
+     evidence the shadow books alone can't provide. ALSO: nightly race-study
+     accrual UPDATED the mid numbers — H17 +0.035/86% (n=22), H16 +0.040
+     (n=27), H13 +0.052 (n=30), H14 slightly negative (source:
+     `nightly_20260714.log`); the S229 H17 +0.085 (n=18) snapshot is STALE —
+     always read the latest nightly log, and the thinner peak strengthens
+     the maker-not-taker conclusion.
    Timezone audit for all of the above: PASS (Open-Meteo `timezone=auto` local-day
    seam verified at Seoul; stored targets per-station local; date-string matching
    not index). Quirk: Gamma endDate=12:00Z precedes eastern local day-end —
