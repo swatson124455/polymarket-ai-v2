@@ -5,13 +5,16 @@
 > read them for detail, but THIS file is the source of truth for "what is live and what's open."
 > Update the three sections below at the end of every WB session (same commit as the work).
 
-**Last updated:** 2026-07-13 (S229 — **S222 verification ran: FAIL, retire nothing** — and the
-failure's ROOT CAUSE was found, fixed, and DEPLOYED the same day: the global SAMOS→raw
-conversion pooled climatology across mixed °C/°F stations (avg_clim_mean=43.6 unit soup),
-displacing every non-EMOS-ready station's forecast (KORD 97.2°F→86.4°F "certainty"; phantom
-NO edges at 0.95 conf realizing ~17%). Release **`20260713_160143`** @ `24b2847`, restart
-16:02:29Z — carries the per-station EMOS fix + the end_date_iso persistence fix + the S228
-latency package (still inert/flag-OFF). S222 verification clock RESTARTS at 16:02:29Z.)
+**Last updated:** 2026-07-14 (S229/S229b close — full deep-dive + next-session kickoff written:
+`docs/WEATHER_S229_STATUS.md`, `WB_S230_KICKOFF_PROMPT.md`. **S222 verification RAN: FAIL, retire
+nothing** — but the failure's ROOT CAUSE (global SAMOS pooled °C/°F climatology, avg_clim_mean=43.6
+unit soup → KORD 97°F read as 86°F "certainty" → phantom NO edges) was found, fixed, and DEPLOYED
+same day. **S222 clock RESTARTED 2026-07-13 16:02:29Z; re-run at ≥50 resolved (~07-16/17).** Now
+live: release **`20260714_003205`** (restart 07-14 00:32:41Z) = per-station EMOS fix (`24b2847`) +
+end_date_iso persistence (`4fa67a3`) + CancelledError scan-abort fix (`9dc6d59`, prod-verified 0
+recurrences) + S228 latency package (flag-OFF). Automation LIVE (nightly NULL-end drain + race
+accrual; 10-min shadow-book logger). Hygiene: wallet.txt relocated out of repo (ROTATION = standing
+operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.)
 **Pinned branch:** `claude/new-whiteboard-session-9b23tq` (see `.claude/session-branch`)
 **Resume check:** `bash scripts/wb_resume_check.sh` (self-deriving; replaces the hand-typed checklist)
 
@@ -178,8 +181,8 @@ latency package (still inert/flag-OFF). S222 verification clock RESTARTS at 16:0
    | 4 | Latency package activation (3a) — decide WITH 3 (priority-wake is the nowcast weapon) | after 3 |
    | 5 | Bootstrap landmine proper fix (date-bind + actual_source training filter, same commit) | post-S222 |
    | 6 | Release cut carrying `9dc6d59` (CancelledError fix) | next cut, any time |
-   | 7 | Ops debt: main-tree deploy mechanism; prune old WB releases | after verdict |
-   | 8 | **Operator: ROTATE TRADING WALLET `0xd6a5…627F` — REMIND EVERY HANDOFF until done.** Key lived in repo since May 15 + weeks of world-readable VPS copies; wallet is ACTIVE (nonce 10, ~9.3 POL). Cheapest now (paper mode, no live positions): new wallet → move POL/tokens → update `/opt/pa2-shared/.env` → restart all 4 services (shared env!). File moved out of repo 07-14 (S229b) to a private local path. Also: `Remove-Item $env:TEMP\wb-*.tar.gz` (verified secret-free, ~2.4GB) | operator |
+   | 7 | Ops debt: main-tree deploy mechanism | after verdict |
+   | 8 | **STANDING REMINDERS — echo EVERY handoff until operator confirms done:** (a) **ROTATE TRADING WALLET `0xd6a5…627F`** — key lived in repo since May 15 + weeks of world-readable VPS copies; wallet ACTIVE (nonce 10, ~9.3 POL); cheapest now (paper mode, no live positions): new wallet → move POL/tokens → update `/opt/pa2-shared/.env` → restart all 4 services (shared env!); file relocated out of repo 07-14. (b) **REVIEW VPS RELEASE PRUNING** — 19 releases / 43G, disk 61%; after the S222 verdict keep live `20260714_003205` + rollback `20260713_160143`, delete the other 17 (~40G); gated as forensic insurance until then. (`$env:TEMP\wb-*.tar.gz` DELETED 07-14, verified secret-free.) | operator |
    Automation live (2026-07-13/14, ubuntu crontab on VPS, rollback = remove crontab lines):
    nightly 09:17 UTC `/home/ubuntu/wb_research/nightly.sh` — (a) drains the NULL-end pool
    2k/night (CLOB, fill-NULL-only), (b) re-runs the race study to accrue leader-following
@@ -311,7 +314,11 @@ latency package (still inert/flag-OFF). S222 verification clock RESTARTS at 16:0
 
 ## POINTERS (archival detail — do not treat as "current" over this file)
 
-- `docs/WEATHER_S227_STATUS.md` — **the S227 session handoff (latest)**: the gt_cutoff
+- `docs/WEATHER_S229_STATUS.md` — **the S229 session handoff (latest)**: S222 FAIL verdict,
+  the EMOS unit-soup ROOT cause + per-station fix, end-date + CancelledError fixes, EV research
+  scoreboard, automation crons, hygiene, dormant bootstrap landmine. `WB_S230_KICKOFF_PROMPT.md`
+  = paste-in for the next session.
+- `docs/WEATHER_S227_STATUS.md` — **the S227 session handoff**: the gt_cutoff
   str-bind crash (calibrator/EMOS dead since 07-08), the fix + deploy saga (data/ skeleton,
   ProtectSystem=strict), the new git-archive release recipe, S222 clock restart.
 - `docs/WEATHER_S226_STATUS.md` — the S226 session handoff: leak closure proof,
