@@ -36,10 +36,43 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
    `journalctl -u polymarket-weather | grep -E "calibration_reloaded|calibration_reload_failed|cal_fit|insufficient_data|holdout_valid"`
    — reload_failed / cal_fit_failed must STAY 0 (both are warning-level now).
 
-2. **S222 post-fix verification — RAN 2026-07-13 (S229) on 77 resolved markets: FAIL on every
-   criterion; NOTHING retired. Clock RESTARTS at the S229 EMOS-fix deploy (2026-07-13
-   16:02:29Z, release `20260713_160143`); re-run the prompt when the NEW window reaches ≥50
-   (~3-4 days at ~19/day).**
+2. **S222 post-fix verification — CLEAN-WINDOW RUN 2026-07-14 ~23:45Z (S230): PARTIAL;
+   NOTHING retired (operator decides).** Gate hit 50/50 distinct resolved (299 predicted)
+   ~31h after the 16:02:29Z restart (resolution backfill drains in bursts — much faster
+   than the ~19/day estimate). Verdicts (full numbers in the S230 session report;
+   sources = calibration_check --dedup-markets, weather_brier{,_by_side}, bot_pnl conf-bins,
+   one-off prediction_log-vs-CLOB duel, all on the 2026-07-13 16:02:29 cutoff):
+   - **A1/A3: PASS-leaning PARTIAL.** PIT KS p=0.2817 (stat 0.1366, n=50) — uniform NOT
+     rejected, FIRST time ever (baseline p<1e-4; poisoned window p≈0). Manufactured
+     high-conf mass GONE (no dedup predictions ≥0.7 except n=1). BUT a real residual
+     miscalibration moved to the CHEAP-NO tail: [0.0-0.1) predicted 0.04 → actual 0.24
+     (n=25, +0.203); [0.1-0.2) 0.14 → 0.31 (n=16, +0.177). VIF confirmed default 1.4
+     (not overridden in service env). Caveat: n=50 KS has weak power; one weather day.
+   - **Dampeners: FAIL / insufficient.** Traded subset is tiny (N=5-9 resolved, all NO
+     side; Brier 0.37-0.54, BSS deeply negative) — caps keep trade counts low, and the
+     canonical conf-bin table (bot_pnl 31h) windows by EVENT time, so its 0.90+ bin
+     (30 resolutions, realized 26.7%) is dominated by PRE-cutoff entries resolving now —
+     NOT a clean read of the fixed code. Keep dampeners.
+   - **Price caps: INCONCLUSIVE** (unchanged) — caps active → no 80-100¢ cells exist
+     to test the skew. Keep caps.
+   - **C0 Kelly: FAIL on available data** (0.90+ traded bin anti-calibrated, though
+     event-time-contaminated; prediction-side has no 0.9+ mass to grade). Stays
+     DEFERRED until the calibrator re-learn verdict regardless.
+   - **Station-wedge duel (first clean read, bot-vs-market):** market decisively better
+     overall — bot Brier 0.2338 vs market 0.1427 (n=50, matched timestamps; bot value
+     cross-validates exactly vs calibration_check). Head-to-head bot closer on 35/50
+     (70%) but loses on magnitude: the cheap-NO tail bites hard when YES lands
+     (same defect as the reliability table). Disagreements >15pts: bot closer 18/33
+     (55%) — coin-flip. NO per-city cell reached even n=4 → wedge whitelist needs
+     WEEKS of accrual, not this window. No edge cell identifiable yet.
+   - **Calibrator status (context, NOT a verdict):** conf-cal still
+     `insufficient_data n=0 need=200` — identity; re-learn clock runs to ~08-07.
+   NEXT: keep accruing; re-run at n≥100-150 for bin-level power + any wedge-cell reads;
+   the cheap-NO-tail miscalibration (bins [0.0-0.2)) is the concrete post-S229 defect
+   to root-cause next (it is also what the market beats us with). Operator: the local
+   `wb-s222-gate-check` daily task (07-16→19) can be DELETED — the verification ran.
+   PRIOR RUN (07-11→13 window, 77 mkts): FAIL on every criterion — measured the
+   poisoned corrector, not the fixes; window void (see 2b).
    **CURRENT gate-count query (use THIS cutoff — 16:02:29Z; the 07-11 00:47 query lower in
    this item is SUPERSEDED):**
    `SELECT count(DISTINCT market_id) FILTER (WHERE resolution IS NOT NULL) FROM prediction_log
