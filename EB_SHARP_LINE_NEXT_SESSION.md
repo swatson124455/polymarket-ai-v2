@@ -154,6 +154,41 @@ standalone monitor; the check falls out free if bid/ask capture is built.
 
 ---
 
+## 0-S6d. SESSION-6 FINAL (2026-07-14) — GAP C SHIPPED+DEPLOYED: BID/ASK + TOUCH-DEPTH CAPTURE; COLLECTOR md5 `5ed5fc79…`
+
+Operator "do 4" → executable-price capture built, tested, dress-rehearsed,
+and **DEPLOYED to the VPS 2026-07-14 01:50:37Z** (commit `aa639d0`; md5
+`5ed5fc791f9b8aad5eb21844126ca7f2` verified on the VPS; rollback copy at
+`/home/ubuntu/eb-odds/collect_pinnodds_standalone.py.bak_bae64c85`).
+⚠ md5 gotcha: compute one-liner md5s from the GIT BLOB
+(`git show HEAD:<file> | md5sum`) — the Windows working copy CRLF md5 differs
+from what raw.githubusercontent serves.
+
+- **New snapshot fields (matched rows only):** `best_bid`,`best_ask`,
+  `bid_size`,`ask_size` from the live CLOB book of the yes token — the
+  EXECUTABLE prices (`market_price` is the mid by construction, §0-S6c). One
+  concurrent book read per distinct matched market per tick; zero PinnOdds
+  cost; failures → null quote fields, odds capture never blocked. Log line
+  gains `books=<n>`.
+- Canonical: `pm_market_index.TouchQuote/parse_book/fetch_touch_quotes`
+  (injectable fetch) + `collect_pinnodds` wiring; `ClosingLine` carries the
+  four fields from the closing snapshot. Standalone mirrors via
+  `clob_book/best_level/touch_quotes` (parity-tested). 637 related tests
+  green (12 new).
+- **Dress rehearsal (deployed bytes, real gamma + real CLOB, faked
+  PinnOdds):** 3/3 slate matches quoted with correct condition_ids (T1
+  `0x6cbd8aff`, Gen.G `0xaa5c804f`, SPARTA `0xc3c18d9d`), mid inside every
+  bid/ask, junk dropped, unmatched nulled, tick 2.7s.
+- **What this buys the readout:** touch-based edge grading (mid is ~0.5–1pt
+  optimistic), the capacity report line (median fillable $ at touch on fired
+  bets, per §0-S6c disposition d), and the passive dutch-arb check —
+  everything §0-S6c said needed executable prices. The slate's pre-start
+  snapshots from 02:00Z onward carry quotes.
+- First-tick verification: expect the 02:00Z log line to show
+  `books=` within ~±2 of `pm_matched=` and `dur<10s`.
+
+---
+
 ## 0-S4f. SESSION-5 LATENCY (`335f359`) — TICK 20s → ~4.5s; NEW COLLECTOR md5 `bae64c85…`
 
 Operator directive: "reduce latency, no function or safety lost." Done:
