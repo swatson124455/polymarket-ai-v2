@@ -154,6 +154,77 @@ standalone monitor; the check falls out free if bid/ask capture is built.
 
 ---
 
+## 0-S6f. SESSION-6 FULL DATA-HYGIENE AUDIT (2026-07-14) — CANON VERIFIED; 1 MEDIUM + 3 LOW DEFECTS FIXED; STANDALONE md5 `36743c45…`
+
+Operator: "rereview all data hygiene top-to-bottom; verify canon; the bot
+assumes nothing." Ran a 25-agent workflow (7 dimension auditors → adversarial
+verify → live canon cross-check → completeness critic) on the md5-verified
+canonical snapshot (3848 rows), then independently re-verified the money-
+critical numbers and fixed every confirmed defect.
+
+**VERDICT: the captured data IS canon and correct-or-absent holds everywhere in
+the LIVE path.** Independently confirmed (not on an auditor's word):
+- **Orientation (S152/B2 edge-inversion seam): 95/95 stored yes_outcome ==
+  live-CLOB token outcome, 0 flips, 0 absent** over ALL distinct PM cids. The
+  bot does NOT assume orientation — it's canon.
+- Snapshot hygiene: 0 corruption across null-together discipline, impossible
+  values, duplicates, crossed books, orientation, identity.
+- Alias table (external input): 13 cross-roster collision pairs exist but ALL
+  13 are neutralized by SIBLING_QUALIFIERS — **0 survive the veto**.
+- Fee: code uses a documented, conservative flat 0.02 (NOT an assumed 0.05
+  sports rate); real taker fee is shares*rate*p(1-p), makers pay 0.
+
+**FIXED THIS SESSION (4 commits, each its own, 662 related tests green):**
+- `9e22f54` **(the one real "assumes something")**: edge backtest priced fills
+  at the unfillable MID; GAP-C best_ask was DROPPED at the JoinedRecord
+  boundary. Measured overstatement: median +0.5pt / p90 +1.5pt / max +7pt —
+  on the order of the whole edge. Now grades the FILL at the executable touch
+  (YES→best_ask, NO→1-best_bid), falls back to mid with disclosure; report
+  prints P&L@executable-fill (headline), fill coverage, slippage, and
+  P&L@mid labeled OPTIMISTIC. should_bet gate stays mid-based (unchanged).
+- `86dd040`: verify_snapshot_hygiene.py was blind to the 4 GAP-C quote fields
+  (certified only the pre-GAP-C surface). Added HARD checks (range, crossed
+  book, price↔size pairing) + a mid-outside-touch NOTE. Real data still PASS.
+- `9087e79`: PM-index max_pages=30 was a new silent-drop ceiling (same class
+  as the /markets cap, one tier up). Warns when paging hits the cap with a
+  full final page. Canonical + standalone.
+- `b9c7ec9`: fetch_rows appended live+prematch without dedup → same-captured_at
+  duplicate rows → nondeterministic closing line. Now dedups by match_key,
+  prefers prematch.
+
+**Standalone redeployed 2026-07-14 17:35:34Z**, md5 `36743c454e98cef08461f26b1158d963`
+(truncation guard; GAP C + /events already live). Rollback chain on VPS:
+`.bak_51523d06`, `.bak_5ed5fc79`, `.bak_bae64c85`.
+
+**SURFACED — operator judgment / roadmap (NOT fixed, by design):**
+1. **PM-resolution vs PandaScore settlement is never cross-checked** (highest-
+   value gap). The P&L assumes PandaScore's winner == the PM payout side,
+   including VOIDS on forfeits/walkovers/remakes (PandaScore marks these
+   "finished" with a winner; PM routinely voids/refunds). Only checkable
+   AFTER markets resolve → fold into the readout as a settlement-risk audit
+   (this is the "PM-resolution capture" secondary item already flagged).
+2. **Backtest not reproducible from frozen data**: orientation is re-resolved
+   LIVE at eval time; a resolved market leaving the CLOB silently drops the
+   record, so n (and ROI) drift with PM state over time. Candidate fix: freeze
+   the CLOB-authoritative name at capture. Orientation is 95/95 today, so no
+   live harm — but the readout should be run+recorded promptly after resolve.
+3. **Results join is game/league-blind**: cross-game namesakes (Fnatic/FaZe/
+   Liquid field rosters in LoL+CS2+Valorant same day) could attach the wrong
+   game's result IF both have the same winner. 0 observed; unguarded by
+   construction. Candidate: gate the join on inferred game.
+4. Minor/dormant: odds_to_implied returns (0.5,0.5) on degenerate odds
+   (neutralized by caller guards); standalone tnorm doesn't NFKD-fold
+   diacritics (runs the STRICTER side → under-coverage only, never wrong);
+   a truthful event_type=="live" tag on a delayed match is a 1/158 latent
+   look-ahead the reducer's latest-starts rule could admit.
+
+**Sufficiency reminder:** today's data yields ~95 PM-attached matches but only
+a fraction settle — below the n≥50 floor and far below the n≥100 go-bar. The
+readout stays UNSTABLE until the 07-15..19 slate resolves; correctness is now
+audited, but the DECISION still waits for volume.
+
+---
+
 ## 0-S6e. SESSION-6 EMERGENCY FIX (2026-07-14) — /MARKETS OFFSET CAP KILLED SLATE PM CAPTURE; INDEX NOW SOURCES /EVENTS; COLLECTOR md5 `51523d06…`
 
 **Caught by an operator-ordered "verify still live, no assumptions" sweep.**
