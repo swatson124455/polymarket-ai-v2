@@ -154,6 +154,38 @@ standalone monitor; the check falls out free if bid/ask capture is built.
 
 ---
 
+## 0-S6e. SESSION-6 EMERGENCY FIX (2026-07-14) — /MARKETS OFFSET CAP KILLED SLATE PM CAPTURE; INDEX NOW SOURCES /EVENTS; COLLECTOR md5 `51523d06…`
+
+**Caught by an operator-ordered "verify still live, no assumptions" sweep.**
+From 08:00Z the slate match winners (T1/Gen.G/HLE/BLG…) silently lost ALL PM
+fields — 8 ticks of nulls — while the aggregate `pm_matched≈30` looked
+healthy on minor markets. **Aggregate health does NOT prove marquee-market
+coverage; verify named matches.**
+
+- **Root cause:** gamma `/markets` offset paging 422-caps at ~2000-2500 rows;
+  the EWC prop flood (~08:00Z) ballooned the esports tag to ~7,800 active
+  markets, sinking the older-id slate match winners beyond the reachable
+  window in ANY sort order. Same class as the 2026-07-10 ordering fix
+  (`f4bd962`) — no ordering can fix it once newer-than-target rows exceed
+  the cap.
+- **Fix (`a4facd2`):** the PM index now pages `/events` (tag holds ~651
+  active events ≈ 7 pages, far inside the cap) and flattens each event's
+  nested `markets` through the unchanged parser. Nested closed/inactive
+  markets are dropped (the /markets query filtered server-side; /events
+  doesn't). Bare-market pages still parse (all injected tests unchanged).
+  Standalone mirrored. Index 106→**162 refs**; tick FASTER (7 pages).
+- **DEPLOYED 2026-07-14 15:25:14Z**, md5 `51523d065d6e9507c1eaf2cd71d17121`
+  verified (rollback chain on VPS: `.bak_5ed5fc79` = GAP C build,
+  `.bak_bae64c85` = pre-GAP-C). Live-verified pre-deploy: T1 `0x6cbd8aff`
+  mid 0.905, HLE `0x59ee8450`, BLG `0x53de0758` all back with prices;
+  rehearsal 3/3 matched+quoted.
+- **Data gap to remember at readout:** slate PM fields are NULL for ticks
+  2026-07-14 08:00Z..15:00Z (8 ticks). Pre-start closing lines for the
+  07-15+ slate are unaffected (capture resumed 16:00Z, matches start
+  07-15 ~08:00Z+).
+
+---
+
 ## 0-S6d. SESSION-6 FINAL (2026-07-14) — GAP C SHIPPED+DEPLOYED: BID/ASK + TOUCH-DEPTH CAPTURE; COLLECTOR md5 `5ed5fc79…`
 
 Operator "do 4" → executable-price capture built, tested, dress-rehearsed,
