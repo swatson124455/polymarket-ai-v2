@@ -214,3 +214,63 @@ def test_join_carries_pm_fields_from_closing_line():
     assert jr.condition_id == "0xabc"
     assert jr.yes_token_id == "tok0"
     assert jr.market_price == 0.55
+
+
+# ── game gate: refuse cross-game namesake attach (2026-07-14) ───────────────
+
+
+from esports_v2.model.results_join import infer_game as _infer_game
+
+
+def _cl_league(match_key, home, away, league, day="2026-07-10"):
+    return ClosingLine(
+        match_key=match_key, home=home, away=away,
+        starts=f"{day}T18:00:00Z", league_name=league,
+        odds_a=2.0, odds_b=1.9, captured_at="t", n_snapshots=1, n_before_start=1,
+        open_odds_a=2.0, open_odds_b=1.9)
+
+
+def test_infer_game_from_league_prefix():
+    assert _infer_game("CS2 - XSE Pro League") == "cs2"
+    assert _infer_game("League of Legends - MSI") == "lol"
+    assert _infer_game("Valorant - Champions Tour: China") == "valorant"
+    assert _infer_game("Dota 2 - Esports World Cup") == "dota2"
+    assert _infer_game("Rainbow Six - North America League") == "r6"
+    assert _infer_game("Mystery Game - Whatever") is None     # unmapped
+    assert _infer_game("L") is None and _infer_game("") is None
+
+
+def test_game_gate_blocks_cross_game_namesake():
+    # Line is a LoL match; a same-day CS2 result with the SAME teams must NOT
+    # attach (different game). No LoL result present -> no_result_match.
+    cl = {"k": _cl_league("k", "Fnatic", "G2", "League of Legends - LEC")}
+    cs2_result = _res("m_cs2", "Fnatic", "G2", "Fnatic", game="cs2")
+    recs, stats = join_closing_lines_to_results(cl, [cs2_result])
+    assert stats.joined == 0 and stats.no_result_match == 1
+
+
+def test_game_gate_allows_same_game():
+    cl = {"k": _cl_league("k", "Fnatic", "G2", "League of Legends - LEC")}
+    lol_result = _res("m_lol", "Fnatic", "G2", "Fnatic", game="lol")
+    recs, stats = join_closing_lines_to_results(cl, [lol_result])
+    assert stats.joined == 1 and recs[0].game == "lol"
+
+
+def test_game_gate_disambiguates_same_day_namesakes():
+    # Fnatic vs G2 on the SAME day in BOTH LoL and CS2, DIFFERENT winners.
+    # Without the gate this is ambiguous_multi_winner (dropped); WITH the gate
+    # the LoL line attaches only the LoL result -> a clean join.
+    cl = {"k": _cl_league("k", "Fnatic", "G2", "League of Legends - LEC")}
+    results = [_res("m_lol", "Fnatic", "G2", "Fnatic", game="lol"),
+               _res("m_cs2", "Fnatic", "G2", "G2", game="cs2")]
+    recs, stats = join_closing_lines_to_results(cl, results)
+    assert stats.joined == 1
+    assert recs[0].game == "lol" and recs[0].home_won is True   # Fnatic (home) won LoL
+
+
+def test_unmapped_league_falls_back_no_gate():
+    # league_name "L" -> game None -> no gate -> joins the cs2 result as before.
+    cl = {"k": _cl_league("k", "Fnatic", "G2", "L")}
+    recs, stats = join_closing_lines_to_results(
+        cl, [_res("m", "Fnatic", "G2", "Fnatic", game="cs2")])
+    assert stats.joined == 1

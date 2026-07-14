@@ -25,9 +25,10 @@ offline it works on exact-normalized + token-subset matches.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from esports_v2.model.closing_line import ClosingLine, parse_ts
 from esports_v2.model.orientation import normalize_team
@@ -40,6 +41,42 @@ from esports_v2.model.team_match import (
     match_teams as _match_teams,
     same_team as _same_team,
 )
+
+logger = logging.getLogger(__name__)
+
+# PinnOdds ``league_name`` is "<Game> - <Tournament>" (verified on the full live
+# league set 2026-07-14: 37/37 distinct leagues carry the game as the prefix).
+# Map that prefix to the RESULT ``game`` token so the join can refuse a
+# cross-game namesake attach (Fnatic/FaZe/Liquid field rosters in LoL+CS2+
+# Valorant on the same day). Values match ResultRecord.game (valorant/cs2/lol/
+# dota2/r6); cod/sc2/mlbb have no free results, so those lines simply never join.
+_GAME_PREFIX = {
+    "cs2": "cs2", "counter-strike": "cs2", "counter-strike 2": "cs2",
+    "cs:go": "cs2", "csgo": "cs2",
+    "valorant": "valorant",
+    "league of legends": "lol", "lol": "lol",
+    "dota 2": "dota2", "dota2": "dota2", "dota": "dota2",
+    "rainbow six": "r6", "rainbow six siege": "r6", "r6": "r6",
+    "call of duty": "cod",
+    "starcraft 2": "sc2", "starcraft ii": "sc2",
+    "mobile legends": "mlbb", "mobile legends bang bang": "mlbb",
+}
+
+# Leagues whose game we could NOT infer, logged once each (surfaced, not silent).
+_UNMAPPED_LEAGUES: Set[str] = set()
+
+
+def infer_game(league_name: Optional[str]) -> Optional[str]:
+    """Canonical game token from a PinnOdds ``league_name`` prefix, or None.
+
+    Correct-or-absent: an unrecognized prefix returns None (the join then falls
+    back to team+day for that line and logs the league once) rather than
+    guessing a game — a wrong game would drop the right result."""
+    s = str(league_name or "").strip()
+    if not s:
+        return None
+    prefix = s.split(" - ", 1)[0].strip().lower()
+    return _GAME_PREFIX.get(prefix)
 
 
 @dataclass
@@ -227,11 +264,26 @@ def join_closing_lines_to_results(
         if starts_dt is not None:
             day = starts_dt.strftime("%Y-%m-%d")
 
+        # Game gate (2026-07-14): a candidate result must be the SAME game as the
+        # line, so a same-day team-name collision across games (Fnatic in LoL and
+        # CS2 the same day) can't wrong-attach. Inferred from the PinnOdds
+        # league_name prefix; an unmappable league logs once and falls back to
+        # team+day (no coverage regression — correct-or-absent, never a guessed
+        # game). A result with no game field is not gated.
+        line_game = infer_game(cl.league_name)
+        if line_game is None and cl.league_name and cl.league_name not in _UNMAPPED_LEAGUES:
+            _UNMAPPED_LEAGUES.add(cl.league_name)
+            logger.warning(
+                f"results_join_unmapped_league {cl.league_name!r} — game gate "
+                f"skipped (team+day only); add its prefix to _GAME_PREFIX")
+
         # Candidate results across the day window that bijectively match teams.
         candidates: List[Tuple[ResultRecord, bool]] = []
         seen_days = _days_in_window(day, day_window) if day else []
         for d in seen_days:
             for r in by_day.get(d, []):
+                if line_game is not None and r.game and r.game != line_game:
+                    continue  # cross-game namesake -> refuse the attach
                 orient = _match_teams(cl.home, cl.away, r.team_a, r.team_b, alias_expand)
                 if orient is None:
                     continue
