@@ -274,6 +274,20 @@ def reconcile_api_to_chain(api_buys: list[dict], chain_fills: list[dict],
     return {"counts": counts, "mismatches": mismatches}
 
 
+def window_api_buys(api_trades: list[dict], lo, hi) -> list[dict]:
+    """API BUY rows (numeric token) whose _ts is inside the SWEPT window
+    [lo, hi] (naive-UTC datetimes). Reconciling API BUYs OUTSIDE the swept
+    block range against a partial chain sweep manufactures false not_found ->
+    a false FABRICATION verdict (smoke 2026-07-14 flagged a 99% artifact; also
+    the general form of review finding H — a narrow/stale head must never
+    invent unbacked claims). For a default full sweep (from = first_api - pad)
+    this includes the whole history and is a no-op."""
+    return [t for t in api_trades
+            if str(t.get("side", "")).upper() == "BUY"
+            and str(t.get("tokenId", "")).isdigit()
+            and t.get("_ts") is not None and lo <= t["_ts"] <= hi]
+
+
 def reconcile_chain_to_api(chain_buys: list[dict], api_rows: list[dict],
                            tol_price: float, tol_size: float) -> dict:
     """Direction B. Reconstructed chain BUYs with no size+price API row for
@@ -405,23 +419,42 @@ def deep_dive_verdict(m: dict, cfg) -> tuple[str, list[str]]:
     """PRE-REGISTERED admission rule (module docstring). `m` carries the
     computed metrics; thresholds come from cfg and are NEVER moved during a
     run. Evidence gaps deepen the search (INSUFFICIENT), they never accuse."""
-    complete = (m["rpc_err_frac"] <= cfg.max_rpc_err_frac and m["canary_ok"]
-                and m["n_chain_fills"] > 0)
-    if not complete:
+    sweep_complete = (m["rpc_err_frac"] <= cfg.max_rpc_err_frac and m["canary_ok"]
+                      and m["n_chain_fills"] > 0)
+    if not sweep_complete:
         return "INSUFFICIENT-EVIDENCE", [
             f"sweep not provably complete: rpc_err_frac={m['rpc_err_frac']:.2f}"
             f" (max {cfg.max_rpc_err_frac}), canary_ok={m['canary_ok']}, "
             f"chain_fills={m['n_chain_fills']} — widen range / second RPC, "
             f"never admit or accuse"]
 
+    # UNCOPYABLE is a measured fill-RATE fact (count / span) — it needs no V2
+    # direction receipts, so it is judged on the getLogs-complete sweep BEFORE
+    # the direction gate: a genuinely un-tailable HFT account rejects fast
+    # without paying for full receipts.
+    if m["rate_flag"]:
+        return "REJECT", [
+            f"UNCOPYABLE: true chain rate {m['true_rate']:.0f} bets/day > cap "
+            f"{cfg.hft_max_rate:.0f} (mechanically un-tailable — a measured "
+            f"fact, not an accusation)"]
+
+    # mismatch / fabrication / skill all need the BUY set fully resolved; if the
+    # V2 receipt cap truncated direction classification, DEFER — a capped sweep
+    # reads real BUYs as unknown and would manufacture false not_found
+    # (smoke 2026-07-14). Response: raise --max-receipts (deepen), never accuse.
+    if not m["direction_complete"]:
+        return "INSUFFICIENT-EVIDENCE", [
+            f"V2 direction incompletely resolved: {m['v2_receipts']} of "
+            f"{m['v2_txs']} V2 txs receipt-classified (--max-receipts cap) — "
+            f"raise --max-receipts before adjudicating direction-dependent tiers"]
+
     backing = m["api_backing"]
     checked = m["api_buys_checked"] >= cfg.min_api_check
 
-    # HARD (REJECT): the chain AFFIRMATIVELY contradicts the trader, or copying
-    # is mechanically infeasible — never a mere evidence gap. Unverified
-    # forensic suspicions (wash/copier) are NOT here; they route to
-    # INSUFFICIENT below (review 2026-07-14 findings D/copier: an unverified
-    # signal is 'investigate', never an accusation).
+    # HARD (REJECT): the chain AFFIRMATIVELY contradicts the trader — never a
+    # mere evidence gap. Unverified forensic suspicions (wash/copier) are NOT
+    # here; they route to INSUFFICIENT below (review 2026-07-14 findings
+    # D/copier: an unverified signal is 'investigate', never an accusation).
     hard: list[str] = []
     if m["mismatch"] > 0:
         hard.append(f"LIE: {m['mismatch']} size-matched chain tx at a materially "
@@ -434,10 +467,6 @@ def deep_dive_verdict(m: dict, cfg) -> tuple[str, list[str]]:
         hard.append(f"SKILL DISPROVEN: adequately-powered negative chain edge "
                     f"(mkts={m['skill_markets']}, span={m['skill_span']}d, "
                     f"edge={m['skill_edge']}, P(edge<0)={m['skill_p_neg']})")
-    if m["rate_flag"]:
-        hard.append(f"UNCOPYABLE: true chain rate {m['true_rate']:.0f} bets/day "
-                    f"> cap {cfg.hft_max_rate:.0f} (mechanically un-tailable — a "
-                    f"measured fact, not an accusation)")
     if hard:
         return "REJECT", hard
 
@@ -796,8 +825,14 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
     skill = chain_skill_grade(chain_first_buys, markets, tok2cond,
                               b_lo, ts_lo, b_hi, ts_hi, cfg, cfg.seed)
 
-    api_buys = [t for t in api_trades if str(t.get("side", "")).upper() == "BUY"
-                and str(t.get("tokenId", "")).isdigit()]
+    # reconcile ONLY API BUYs inside the swept window [from_b_ts, head] — API
+    # BUYs outside the sweep were never searched on chain, so counting them
+    # 'unbacked' is a windowing artifact, not fabrication (finding H + smoke
+    # 2026-07-14 99% false-FABRICATION). Default full sweep -> whole history.
+    from_b_ts = next((ts for ts, b in anchors if b == from_b), low_epoch)
+    sweep_lo = datetime.fromtimestamp(from_b_ts, tz=timezone.utc).replace(tzinfo=None)
+    sweep_hi = datetime.fromtimestamp(latest_ts, tz=timezone.utc).replace(tzinfo=None)
+    api_buys = window_api_buys(api_trades, sweep_lo, sweep_hi)
     a2c = reconcile_api_to_chain(api_buys, fills, cfg.tol_price, cfg.tol_size)
     api_complete = cache_status == "ok"
     # Direction B over ALL chain BUYs (not just first-buys) so a hidden RE-ENTRY
@@ -841,6 +876,12 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
     metrics = {
         "rpc_err_frac": recon["rpc_err_frac"], "canary_ok": canary_ok,
         "n_chain_fills": len(fills),
+        # V2 direction is resolved by per-tx receipts; if the cap truncated them
+        # the BUY set is incomplete and mismatch/fabrication/skill can't be
+        # trusted (smoke 2026-07-14: capped receipts -> in-window buys read as
+        # not_found). rate/UNCOPYABLE needs no receipts and fires first.
+        "direction_complete": recon["v2_receipts"] >= recon["v2_txs"],
+        "v2_txs": recon["v2_txs"], "v2_receipts": recon["v2_receipts"],
         "mismatch": a2c["counts"]["mismatch"],
         "api_buys_checked": a2c["counts"]["n"], "api_backing": a2c["counts"]["backing"],
         "ts_ok": ts_ok,
@@ -1180,6 +1221,7 @@ def _self_test() -> int:
         hft_max_rate = 200.0
         copier_lead_s = 30
     base = {"rpc_err_frac": 0.0, "canary_ok": True, "n_chain_fills": 500,
+            "direction_complete": True, "v2_txs": 100, "v2_receipts": 100,
             "mismatch": 0, "api_buys_checked": 40, "api_backing": 0.95,
             "ts_ok": True, "skill_gradeable": True, "skill_clears": True,
             "skill_contradicts": False, "skill_markets": 40, "skill_span": 120,
@@ -1197,6 +1239,11 @@ def _self_test() -> int:
         "skill_disproven": (V(skill_contradicts=True), "REJECT"),
         "skill_underpowered": (V(skill_clears=False), "INSUFFICIENT-EVIDENCE"),
         "rate_uncopyable": (V(rate_flag=True), "REJECT"),
+        # UNCOPYABLE fires even with receipts capped (needs no direction)
+        "rate_before_direction": (V(rate_flag=True, direction_complete=False),
+                                  "REJECT"),
+        "direction_capped": (V(direction_complete=False, v2_receipts=200,
+                               v2_txs=5000), "INSUFFICIENT-EVIDENCE"),
         "wash_investigate": (V(wash_flag=True), "INSUFFICIENT-EVIDENCE"),
         "copier_investigate": (V(copier_flag=True), "INSUFFICIENT-EVIDENCE"),
         "thin_backing": (V(api_backing=0.6), "INSUFFICIENT-EVIDENCE"),
@@ -1209,7 +1256,7 @@ def _self_test() -> int:
     }
     bad = {k: got for k, (got, want) in checks.items() if got != want}
     ok10 = not bad
-    print(f"  [verdict] 14-case table (REJECT only on contradiction/uncopyable) "
+    print(f"  [verdict] 16-case table (REJECT only on contradiction/uncopyable) "
           f": {ok10}" + (f"  MISMATCHES={bad}" if bad else ""))
     ok &= ok10
 

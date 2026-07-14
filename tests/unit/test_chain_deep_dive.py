@@ -124,6 +124,23 @@ def test_api_to_chain_only_buy_candidates():
     assert r["mismatches"][0]["api_price"] == 0.90
 
 
+def test_window_api_buys_excludes_unswept_claims():
+    """API BUYs outside the swept window are excluded from reconciliation — the
+    fix for the smoke's 99% false-FABRICATION (full history vs partial sweep)."""
+    from datetime import datetime
+    lo, hi = datetime(2026, 7, 1), datetime(2026, 7, 14)
+    rows = [
+        {"side": "BUY", "tokenId": "1", "_ts": datetime(2026, 7, 5)},   # in window
+        {"side": "BUY", "tokenId": "2", "_ts": datetime(2025, 1, 1)},   # before sweep
+        {"side": "BUY", "tokenId": "3", "_ts": datetime(2026, 8, 1)},   # after head
+        {"side": "SELL", "tokenId": "4", "_ts": datetime(2026, 7, 5)},  # not a BUY
+        {"side": "BUY", "tokenId": "nondigit", "_ts": datetime(2026, 7, 5)},
+        {"side": "BUY", "tokenId": "5", "_ts": None},                    # no ts
+    ]
+    kept = dd.window_api_buys(rows, lo, hi)
+    assert [r["tokenId"] for r in kept] == ["1"]
+
+
 def test_chain_to_api_hidden_activity():
     r = dd.reconcile_chain_to_api(
         [{"token_id": "777", "price": 0.6, "tokens": 100, "tx": "0xa"},
@@ -218,6 +235,7 @@ class _VC:
 
 
 _BASE = {"rpc_err_frac": 0.0, "canary_ok": True, "n_chain_fills": 500,
+         "direction_complete": True, "v2_txs": 100, "v2_receipts": 100,
          "mismatch": 0, "api_buys_checked": 40, "api_backing": 0.95,
          "ts_ok": True, "skill_gradeable": True, "skill_clears": True,
          "skill_contradicts": False, "skill_markets": 40, "skill_span": 120,
@@ -267,6 +285,16 @@ def test_verdict_admit_requires_backing_and_min_checks():
     # (review finding G): the fabrication/thin gates are min-check-gated, so the
     # ADMIT branch itself must be unreachable below the check floor.
     assert _v(api_buys_checked=5, api_backing=0.0) == "INSUFFICIENT-EVIDENCE"
+
+
+def test_verdict_receipt_cap_defers_direction_but_uncopyable_still_rejects():
+    # smoke 2026-07-14: a receipt-capped sweep reads real BUYs as unknown ->
+    # direction-dependent checks must DEFER (INSUFFICIENT: raise --max-receipts),
+    # NOT manufacture a FABRICATION. But UNCOPYABLE (fill-rate, no receipts
+    # needed) still fires first even when receipts are capped.
+    assert _v(direction_complete=False, v2_receipts=200, v2_txs=9000,
+              api_backing=0.0) == "INSUFFICIENT-EVIDENCE"
+    assert _v(direction_complete=False, rate_flag=True) == "REJECT"
 
 
 def test_verdict_ungradeable_skill_is_insufficient():
