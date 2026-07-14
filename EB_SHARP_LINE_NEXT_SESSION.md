@@ -196,22 +196,22 @@ the LIVE path.** Independently confirmed (not on an auditor's word):
 (truncation guard; GAP C + /events already live). Rollback chain on VPS:
 `.bak_51523d06`, `.bak_5ed5fc79`, `.bak_bae64c85`.
 
-**SURFACED — operator judgment / roadmap (NOT fixed, by design):**
+**SURFACED — operator judgment / roadmap:**
 1. **PM-resolution vs PandaScore settlement is never cross-checked** (highest-
-   value gap). The P&L assumes PandaScore's winner == the PM payout side,
-   including VOIDS on forfeits/walkovers/remakes (PandaScore marks these
-   "finished" with a winner; PM routinely voids/refunds). Only checkable
-   AFTER markets resolve → fold into the readout as a settlement-risk audit
-   (this is the "PM-resolution capture" secondary item already flagged).
-2. **Backtest not reproducible from frozen data**: orientation is re-resolved
-   LIVE at eval time; a resolved market leaving the CLOB silently drops the
-   record, so n (and ROI) drift with PM state over time. Candidate fix: freeze
-   the CLOB-authoritative name at capture. Orientation is 95/95 today, so no
-   live harm — but the readout should be run+recorded promptly after resolve.
-3. **Results join is game/league-blind**: cross-game namesakes (Fnatic/FaZe/
-   Liquid field rosters in LoL+CS2+Valorant same day) could attach the wrong
-   game's result IF both have the same winner. 0 observed; unguarded by
-   construction. Candidate: gate the join on inferred game.
+   value gap, STILL OPEN — operator said "ignore panda" this pass). The P&L
+   assumes PandaScore's winner == the PM payout side, including VOIDS on
+   forfeits/walkovers/remakes. Only checkable AFTER markets resolve → fold into
+   the readout as a settlement-risk audit.
+2. ✅ **FIXED `97353ae`+`6554729`** — backtest reproducibility. Orientation now
+   PRIMARY from the FROZEN yes_outcome (audit-proven 95/95 == live CLOB), live
+   CLOB is VETO-ONLY (disagree→drop, absent→keep frozen). Records 26→39 on
+   canonical data (the 13 gained were resolved markets the live refetch had
+   been dropping). Stress harness S5 re-expressed + new S5d proves a flipped
+   frozen name is CAUGHT by the live cross-check (0 bets).
+3. ✅ **FIXED `62c3677`** — results join game-gate. Infers game from the
+   PinnOdds league_name prefix (37/37 leagues) and refuses a cross-game
+   namesake attach; unmapped league logs + falls back to team+day. Coverage
+   65→65 (zero regression).
 4. Minor/dormant: odds_to_implied returns (0.5,0.5) on degenerate odds
    (neutralized by caller guards); standalone tnorm doesn't NFKD-fold
    diacritics (runs the STRICTER side → under-coverage only, never wrong);
