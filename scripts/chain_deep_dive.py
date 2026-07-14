@@ -57,24 +57,37 @@ writes, no bot code):
       for cross-batch sybil clustering.
 
 PRE-REGISTERED ADMISSION RULE (locked here BEFORE any run; chain wins; evidence
-gaps deepen the search, they never move a threshold — deep_dive_verdict()):
-  INSUFFICIENT-EVIDENCE  the sweep is not provably complete (rpc-error leaf
-                         fraction > --max-rpc-err-frac, or detection canary
-                         failed) OR the API record is too incomplete to
-                         reconcile. Response: widen (block range, second RPC,
-                         --refresh the API cache), NEVER admit, NEVER accuse.
-  REJECT                 on a COMPLETE sweep: any mismatch (size-matched chain
-                         tx at a different price), OR fabrication (unbacked API
-                         BUY fraction >= --fabrication-frac), OR chain-graded
-                         skill fails the hire bar, OR a hard forensic flag
-                         (wash top-counterparty >= --wash-share, true rate >
-                         --hft-max-rate => mechanically uncopyable, or confirmed
-                         copier).
-  ADMIT                  COMPLETE sweep AND zero mismatch AND API-BUY backing
-                         >= --min-api-backing AND chain-graded skill clears the
-                         hire bar AND no forensic flag. Admission is a PROPOSAL
-                         to the operator for a cohort — never an auto-add, never
-                         pooled with an existing cohort's readout.
+gaps deepen the search, they never move a threshold — deep_dive_verdict()).
+REJECT is reserved for an AFFIRMATIVE chain contradiction or a MEASURED
+infeasibility; every gap or unverified suspicion is INSUFFICIENT, never an
+accusation (binding operator rule 2026-07-14: not_found is an evidence gap):
+  INSUFFICIENT-EVIDENCE  deepen / investigate — never admit, never accuse. Any
+                         of: sweep not provably complete (rpc-error leaf
+                         fraction > --max-rpc-err-frac, canary failed, or zero
+                         chain fills); block-ts uncomputable; skill un-gradeable
+                         (too few labelable chain first-buys) OR underpowered /
+                         short-span (positive edge but P<--p-hire, or span <
+                         --min-span-days — NOT disproven); too few API BUYs
+                         (< --min-api-check) or thin backing (< --min-api-backing);
+                         an UNVERIFIED forensic suspicion (wash concentration, or
+                         the approximate copier probe -> investigate, not convict).
+  REJECT                 on a COMPLETE sweep: a mismatch (size-matched chain tx
+                         at a materially different price = a lie); fabrication
+                         (unbacked API-BUY fraction >= --fabrication-frac); skill
+                         DISPROVEN (adequately-powered AND adequately-spanning
+                         NEGATIVE chain edge, P(edge<0) >= --p-hire); or a true
+                         chain rate > --hft-max-rate (mechanically un-tailable —
+                         a measured fact, not an accusation).
+  ADMIT                  COMPLETE sweep AND zero mismatch AND >= --min-api-check
+                         API BUYs with backing >= --min-api-backing AND
+                         chain-graded skill CLEARS the hire bar AND no forensic
+                         flag. Admission is a PROPOSAL to the operator for a
+                         cohort — never an auto-add, never pooled with an
+                         existing cohort's readout.
+  (Direction-B hidden-activity is REPORTED for operator review, not a verdict
+  gate: size+price-exact chain-vs-API reconciliation is noisy across fill
+  granularity, so an auto-gate would risk a false accusation. A granularity-
+  aware hidden-activity gate is a documented follow-up.)
 
 SAFETY: READ-ONLY everywhere. RPC GETs, CLOB public GETs, two indexed DB reads.
 No DB writes, no orders, no shared-module edits (blockchain_client constants +
@@ -131,7 +144,14 @@ def v1_reconstruct_fill(args: dict, trader: str) -> Optional[dict]:
       maker, takerAsset==USDC  -> receives USDC -> SELL makerAsset
       taker, takerAsset==USDC  -> pays USDC  -> BUY makerAsset
       taker, makerAsset==USDC  -> receives USDC -> SELL takerAsset
-    (usd, tokens) are 6-decimal-scaled to units; counterparty = the other leg."""
+    (usd, tokens) are 6-decimal-scaled to units.
+
+    counterparty is DELIBERATELY None for V1: Polymarket's CTF Exchange is
+    onlyOperator (matchOrders emits every leg with taker = the Exchange
+    contract / operator, never a real order owner), so the OrderFilled `taker`
+    field is NOT a counterparty and using it for wash detection would flag
+    every operator-matched trader (review 2026-07-14 finding D). Only V2
+    maker-side fills name a real counterparty (topics[3])."""
     a = trader.lower()
     mk = str(args.get("maker", "")).lower()
     tk = str(args.get("taker", "")).lower()
@@ -145,7 +165,6 @@ def v1_reconstruct_fill(args: dict, trader: str) -> Optional[dict]:
             token, side, usd, tok = m_id, "SELL", t_amt, m_amt
         else:
             return None
-        cp = tk
     elif a == tk:
         if t_id == USDC_ASSET_ID and m_id != USDC_ASSET_ID:
             token, side, usd, tok = m_id, "BUY", t_amt, m_amt
@@ -153,14 +172,13 @@ def v1_reconstruct_fill(args: dict, trader: str) -> Optional[dict]:
             token, side, usd, tok = t_id, "SELL", m_amt, t_amt
         else:
             return None
-        cp = mk
     else:
         return None
     if tok <= 0 or usd <= 0:
         return None
     return {"token_id": str(token), "side": side, "usd": usd / SCALE,
             "tokens": tok / SCALE, "price": (usd / SCALE) / (tok / SCALE),
-            "counterparty": cp, "era": "v1", "maker": a == mk,
+            "counterparty": None, "era": "v1", "maker": a == mk,
             "tx": str(args.get("_tx", "")), "block": int(args.get("_block", 0))}
 
 
@@ -208,12 +226,21 @@ def reconstruct_first_buys(fills: list[dict], tok2cond: dict[str, str]
 def reconcile_api_to_chain(api_buys: list[dict], chain_fills: list[dict],
                            tol_price: float, tol_size: float) -> dict:
     """Direction A. Each API BUY (token, price, size) is matched against the
-    reconstructed chain fills for THAT token, using the tx-exact matcher
-    (size then nearest price; never blends across txs). Chain wins.
+    reconstructed chain BUYs for THAT token, using the tx-exact matcher (size
+    then nearest price; never blends across txs). Chain wins.
+
+    Only chain fills whose reconstructed side is BUY are candidates — the
+    direction Tier 1 worked out (V1 implicit, V2 receipt-decoded) is PRESERVED,
+    never re-inferred. Folding SELLs / direction-unknown V2 fills into the
+    candidate pool would let an API BUY 'verify' against a SELL (masking a
+    price lie) or size-match a SELL at a wrong price (a false 'LIE' REJECT) —
+    both defeat the chain-wins adjudication (review 2026-07-14 findings A/#1,2,
+    10,11). match_fill_txexact still receipt-shape-checks the leg semantics.
     Returns counts + the mismatch rows (size-matched, materially off price)."""
     by_tok: dict[str, list[dict]] = {}
     for f in chain_fills:
-        by_tok.setdefault(f["token_id"], []).append(f)
+        if f.get("side") == "BUY":  # direction preserved; SELL/None never corroborate a BUY
+            by_tok.setdefault(f["token_id"], []).append(f)
     counts = {"verified": 0, "mismatch": 0, "not_found": 0}
     mismatches: list[dict] = []
     for r in api_buys:
@@ -330,7 +357,16 @@ def chain_skill_grade(first_buys: list[dict], markets: dict, tok2cond: dict,
                       seed: int) -> dict:
     """Tier 3. Label each chain first-BUY, build hire-bar evidence with edges
     from CHAIN prices, apply the exact walk-forward hire bar at the record's
-    end. Returns coverage + the hire-bar result."""
+    end. Returns coverage + the hire-bar result AND a `contradicts` flag.
+
+    `clears_bar` (wf.hire_ok) is the ADMIT signal. `contradicts` is the REJECT
+    signal and is TRUE only when the record AFFIRMATIVELY disproves skill: an
+    adequately-powered, adequately-spanning set (>= min-markets-hire markets,
+    span >= min-span-days) whose mean edge is negative AND bootstrap
+    P(edge<0) >= p-hire. hire_ok also returns False for evidence GAPS (span
+    too short, or positive-but-underpowered P<p-hire) — those must route to
+    INSUFFICIENT, never REJECT (operator rule: a gap is not an accusation;
+    walk-forward FIRE semantics — not-hired != fired). Review 2026-07-14 finding B."""
     evidence: list[dict] = []
     n_labeled = n_unlabelable = 0
     for f in first_buys:
@@ -346,15 +382,22 @@ def chain_skill_grade(first_buys: list[dict], markets: dict, tok2cond: dict,
                          "edge": o - f["price"]})
     result = {"n_first_buys": len(first_buys), "n_labeled": n_labeled,
               "n_unlabelable": n_unlabelable, "clears_bar": False,
-              "n_markets": 0, "span_days": 0.0, "edge": None, "p": None}
+              "contradicts": False, "n_markets": 0, "span_days": 0.0,
+              "edge": None, "p": None, "p_neg": None}
     if not evidence:
         return result
     t_end = max(e["_ts"] for e in evidence) + timedelta(days=1)
     me = fc.per_market_edges([(e["marketId"], e["edge"]) for e in evidence])
-    p, mean, _ = fc.boot_stats(me, cfg.n_boot_roster, seed)
+    p_pos, mean, _ = fc.boot_stats(me, cfg.n_boot_roster, seed)
+    p_neg, _, _ = fc.boot_stats([-x for x in me], cfg.n_boot_roster, seed + 1)
     span = (max(e["_ts"] for e in evidence) - min(e["_ts"] for e in evidence)).days
-    result.update({"n_markets": len(me), "span_days": span, "edge": mean, "p": p,
-                   "clears_bar": wf.hire_ok(evidence, t_end, cfg, seed)})
+    adequately_powered = (len(me) >= cfg.min_markets_hire
+                          and span >= cfg.min_span_days)
+    result.update({"n_markets": len(me), "span_days": span, "edge": mean,
+                   "p": p_pos, "p_neg": p_neg,
+                   "clears_bar": wf.hire_ok(evidence, t_end, cfg, seed),
+                   "contradicts": adequately_powered and mean < 0
+                   and p_neg >= cfg.p_hire})
     return result
 
 
@@ -362,7 +405,6 @@ def deep_dive_verdict(m: dict, cfg) -> tuple[str, list[str]]:
     """PRE-REGISTERED admission rule (module docstring). `m` carries the
     computed metrics; thresholds come from cfg and are NEVER moved during a
     run. Evidence gaps deepen the search (INSUFFICIENT), they never accuse."""
-    reasons: list[str] = []
     complete = (m["rpc_err_frac"] <= cfg.max_rpc_err_frac and m["canary_ok"]
                 and m["n_chain_fills"] > 0)
     if not complete:
@@ -372,45 +414,66 @@ def deep_dive_verdict(m: dict, cfg) -> tuple[str, list[str]]:
             f"chain_fills={m['n_chain_fills']} — widen range / second RPC, "
             f"never admit or accuse"]
 
+    backing = m["api_backing"]
+    checked = m["api_buys_checked"] >= cfg.min_api_check
+
+    # HARD (REJECT): the chain AFFIRMATIVELY contradicts the trader, or copying
+    # is mechanically infeasible — never a mere evidence gap. Unverified
+    # forensic suspicions (wash/copier) are NOT here; they route to
+    # INSUFFICIENT below (review 2026-07-14 findings D/copier: an unverified
+    # signal is 'investigate', never an accusation).
     hard: list[str] = []
     if m["mismatch"] > 0:
         hard.append(f"LIE: {m['mismatch']} size-matched chain tx at a materially "
                     f"different price than the API claim (chain wins)")
-    backing = m["api_backing"]
-    if m["api_buys_checked"] >= cfg.min_api_check and (1 - backing) >= cfg.fabrication_frac:
+    if checked and (1 - backing) >= cfg.fabrication_frac:
         hard.append(f"FABRICATION: {1 - backing:.0%} of {m['api_buys_checked']} "
                     f"API BUY claims unbacked on a complete sweep "
                     f"(>= {cfg.fabrication_frac:.0%})")
-    if m["skill_gradeable"] and not m["skill_clears"]:
-        hard.append(f"SKILL: chain-graded record fails the hire bar "
+    if m["skill_contradicts"]:
+        hard.append(f"SKILL DISPROVEN: adequately-powered negative chain edge "
                     f"(mkts={m['skill_markets']}, span={m['skill_span']}d, "
-                    f"P={m['skill_p']})")
-    if m["wash_flag"]:
-        hard.append(f"WASH: top counterparty {m['wash_share']:.0%} of "
-                    f"{m['wash_named']} named-counterparty fills "
-                    f"(>= {cfg.wash_share:.0%})")
+                    f"edge={m['skill_edge']}, P(edge<0)={m['skill_p_neg']})")
     if m["rate_flag"]:
         hard.append(f"UNCOPYABLE: true chain rate {m['true_rate']:.0f} bets/day "
-                    f"> cap {cfg.hft_max_rate:.0f} (mechanically un-tailable)")
-    if m["copier_flag"]:
-        hard.append(f"COPIER: {m['copier_frac']:.0%} of sampled entries preceded "
-                    f"by another buyer within {cfg.copier_lead_s}s (double-lag)")
+                    f"> cap {cfg.hft_max_rate:.0f} (mechanically un-tailable — a "
+                    f"measured fact, not an accusation)")
     if hard:
         return "REJECT", hard
 
+    # SOFT (INSUFFICIENT-EVIDENCE): evidence gaps + UNVERIFIED forensic flags.
+    # Deepen the search / investigate — never accuse, never admit.
     soft: list[str] = []
     if not m["skill_gradeable"]:
-        soft.append(f"skill un-gradeable: only {m['skill_labeled']} labelable "
-                    f"chain first-buys — widen resolution coverage / API cache")
-    if m["api_buys_checked"] >= cfg.min_api_check and backing < cfg.min_api_backing:
+        soft.append(f"skill un-gradeable: {m['skill_labeled']} labelable chain "
+                    f"first-buys / ts-computable={m['ts_ok']} — widen resolution "
+                    f"coverage / API cache / retry block-ts")
+    elif not m["skill_clears"]:
+        soft.append(f"skill underpowered/short-span, not disproven: "
+                    f"mkts={m['skill_markets']}, span={m['skill_span']}d, "
+                    f"P(edge>0)={m['skill_p']} — deepen (more resolved markets)")
+    if not checked:
+        soft.append(f"too few API BUYs ({m['api_buys_checked']} < "
+                    f"{cfg.min_api_check}) to corroborate the claimed record — "
+                    f"--refresh a full history / wider range")
+    elif backing < cfg.min_api_backing:
         soft.append(f"reconciliation thin: {backing:.0%} of {m['api_buys_checked']} "
                     f"API BUYs chain-backed (< {cfg.min_api_backing:.0%}) — not a "
                     f"lie, not fully corroborated; --refresh cache / wider range")
+    if m["wash_flag"]:
+        soft.append(f"WASH SUSPECT (investigate, not auto-reject): top V2 "
+                    f"counterparty {m['wash_share']:.0%} of {m['wash_named']} "
+                    f"named-counterparty fills (>= {cfg.wash_share:.0%})")
+    if m["copier_flag"]:
+        soft.append(f"COPIER SUSPECT (investigate): {m['copier_frac']:.0%} of "
+                    f"sampled entries preceded by another party on the same token "
+                    f"within {cfg.copier_lead_s}s (approximate double-lag signal)")
     if soft:
         return "INSUFFICIENT-EVIDENCE", soft
 
     return "ADMIT", [
-        f"complete sweep, 0 mismatch, {backing:.0%} API-BUY backed, chain skill "
+        f"complete sweep, 0 mismatch, {backing:.0%} of {m['api_buys_checked']} "
+        f"API-BUYs chain-backed (>= {cfg.min_api_backing:.0%}), chain skill "
         f"clears (mkts={m['skill_markets']}, P={m['skill_p']}), no forensic flag "
         f"— PROPOSED to operator for a cohort (own start date, separate readout)"]
 
@@ -418,6 +481,27 @@ def deep_dive_verdict(m: dict, cfg) -> tuple[str, list[str]]:
 def roster_from_readjudicate(blob: dict) -> list[str]:
     """Cohort-2 candidates = VINDICATED addresses from a readjudicate*.json."""
     return sorted(a.lower() for a in (blob.get("vindicated") or []))
+
+
+def _merge_gamma_preloaded(markets: dict, keys: list[str], gamma: dict) -> int:
+    """fc.merge_gamma_cache with the gamma dict PRELOADED (avoid re-reading the
+    ~70k-key resolutions file once per trader — review finding L). Merge
+    semantics kept identical to fc.merge_gamma_cache: DB wins; fill only holes
+    with a definitive YES/NO gamma resolution."""
+    added = 0
+    for k in keys:
+        if (markets.get(k) or {}).get("resolution") or k not in gamma:
+            continue
+        g = gamma[k]
+        if g.get("resolution") not in ("YES", "NO"):
+            continue
+        markets[k] = {"resolution": g["resolution"],
+                      "resolved_at": g.get("resolved_at"),
+                      "yes_token_id": g.get("yes_token_id"),
+                      "no_token_id": g.get("no_token_id"),
+                      "category": g.get("category") or ""}
+        added += 1
+    return added
 
 
 # ── Network run (VPS) ────────────────────────────────────────────────────────
@@ -609,10 +693,11 @@ async def copier_probe(bc, first_buys: list[dict], addr: str, cfg, note_err
 
 
 async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
-                        markets_loader, cfg, latest_num: int, latest_ts: int
-                        ) -> dict:
+                        markets_loader, cfg) -> dict:
     """Full four-tier deep dive for one trader. markets_loader(cids)->markets
-    dict (async) is injected so the DB session lifetime is caller-owned."""
+    dict (async) is injected so the DB session lifetime is caller-owned. The
+    chain head is fetched PER TRADER (not threaded from batch start) so a
+    late-in-batch sweep never ends at a stale head (review finding H)."""
     first_err: list[str] = []
 
     def note_err(e):
@@ -629,19 +714,41 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
                             "against — fetch a history first (--refresh)"],
                 "cache_status": cache_status}
 
-    # block range: [first_api - pad, head], hard floor at --floor-date. Pre-first
-    # -claim hidden activity needs --from-date (documented scope limit).
     anchors: list[tuple[int, int]] = []
 
     async def _get_block_ts(b):
         await asyncio.sleep(1.0 / max(cfg.rps, 0.1))
         return int((await bc.w3.eth.get_block(b))["timestamp"])
 
+    try:
+        latest = await bc.w3.eth.get_block("latest")
+        latest_num, latest_ts = int(latest["number"]), int(latest["timestamp"])
+    except Exception as e:  # noqa: BLE001
+        note_err(e)
+        return {"address": addr, "verdict": "INSUFFICIENT-EVIDENCE",
+                "reasons": [f"could not fetch chain head: {e!r}"],
+                "cache_status": cache_status,
+                "first_error": first_err[0] if first_err else None}
+
+    # Block range low bound. For a COMPLETE ('ok') API history, the first
+    # API-claimed fill (minus --pad-days) bounds the sweep. For an INCOMPLETE
+    # cache (hft/truncated/partial/missing) the shallow API page's first ts is
+    # NOT the trader's true start — bounding by it would sweep only the last
+    # ~1-2 days and defeat Tier 4's fair lifetime-rate test on exactly the 34
+    # HFT-borderline. So incomplete caches sweep from --floor-date. An explicit
+    # --from-date always overrides. (Pre-first-claim hidden activity on a
+    # complete history still needs --from-date — documented scope limit.)
     floor_dt = fc.parse_ts(cfg.floor_date)
-    from_dt = fc.parse_ts(cfg.from_date) if cfg.from_date else None
-    low_epoch = int((from_dt or (api_ts[0] - timedelta(days=cfg.pad_days)))
-                    .replace(tzinfo=timezone.utc).timestamp())
     floor_epoch = int(floor_dt.replace(tzinfo=timezone.utc).timestamp())
+    from_dt = fc.parse_ts(cfg.from_date) if cfg.from_date else None
+    incomplete_cache = cache_status in ("hft", "truncated", "partial", "missing")
+    if from_dt is not None:
+        low_epoch = int(from_dt.replace(tzinfo=timezone.utc).timestamp())
+    elif incomplete_cache:
+        low_epoch = floor_epoch
+    else:
+        low_epoch = int((api_ts[0] - timedelta(days=cfg.pad_days))
+                        .replace(tzinfo=timezone.utc).timestamp())
     low_epoch = max(low_epoch, floor_epoch)
     try:
         from_b = await ac.locate_block_by_ts(low_epoch, _get_block_ts, latest_num,
@@ -659,8 +766,11 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
     recon = await reconstruct_lifetime(bc, addr, from_b, to_b, cfg, note_err)
     fills = recon["fills"]
 
-    # span endpoints for ts interpolation (2 getBlock calls)
+    # span endpoints for ts interpolation (2 getBlock calls). If either fails,
+    # ts_ok=False -> skill is NOT graded on a fabricated span (review finding I:
+    # a transient getBlock error must yield INSUFFICIENT, never a span-0 REJECT).
     blocks = [int(f.get("block", 0)) for f in fills if int(f.get("block", 0)) > 0]
+    ts_ok = True
     if blocks:
         b_lo, b_hi = min(blocks), max(blocks)
         try:
@@ -669,9 +779,11 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
             note_err(e)
             ts_lo = ts_hi = latest_ts
             b_lo = b_hi = b_lo or latest_num
+            ts_ok = False
     else:
         b_lo = b_hi = latest_num
         ts_lo = ts_hi = latest_ts
+        ts_ok = False  # no fills -> no span; skill ungradeable anyway
 
     # token -> condition map from API rows; load resolutions for Tier 3
     tok2cond = {str(t.get("tokenId")): str(t.get("marketId"))
@@ -680,6 +792,7 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
     markets = await markets_loader(cids)
 
     chain_first_buys = reconstruct_first_buys(fills, tok2cond)
+    chain_buys = [f for f in fills if f.get("side") == "BUY"]
     skill = chain_skill_grade(chain_first_buys, markets, tok2cond,
                               b_lo, ts_lo, b_hi, ts_hi, cfg, cfg.seed)
 
@@ -687,38 +800,65 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
                 and str(t.get("tokenId", "")).isdigit()]
     a2c = reconcile_api_to_chain(api_buys, fills, cfg.tol_price, cfg.tol_size)
     api_complete = cache_status == "ok"
-    c2a = reconcile_chain_to_api(chain_first_buys, api_trades, cfg.tol_price,
+    # Direction B over ALL chain BUYs (not just first-buys) so a hidden RE-ENTRY
+    # BUY in a market whose first buy is public is still caught (review finding
+    # E). REPORT-ONLY: size+price-exact chain-vs-API reconciliation is noisy
+    # across fill granularity, so hidden count is an operator-reviewed forensic,
+    # NOT a verdict gate — a noisy auto-gate would itself risk a false accusation
+    # (a granularity-aware hidden gate is a documented follow-up).
+    c2a = reconcile_chain_to_api(chain_buys, api_trades, cfg.tol_price,
                                  cfg.tol_size) if api_complete else \
-        {"n_chain_buys": len(chain_first_buys), "hidden": None,
+        {"n_chain_buys": len(chain_buys), "hidden": None,
          "hidden_rows": [], "note": f"API cache status={cache_status}: hidden-"
                                     f"activity not conclusive (record incomplete)"}
 
-    span_days = max((interp_ts(b_hi, b_lo, ts_lo, b_hi, ts_hi)
-                     - interp_ts(b_lo, b_lo, ts_lo, b_hi, ts_hi)).days, 0)
+    # fractional span-days for the rate (integer floor inflates the rate of the
+    # 1-2.5-day burst accounts Tier 4 exists to re-judge fairly — review finding J)
+    span_secs = (interp_ts(b_hi, b_lo, ts_lo, b_hi, ts_hi)
+                 - interp_ts(b_lo, b_lo, ts_lo, b_hi, ts_hi)).total_seconds()
+    span_days_frac = max(span_secs / 86400.0, 0.0)
+    span_days = int(span_days_frac)  # whole days for display
     conc = counterparty_concentration(fills)
     mt = maker_taker_profile(fills)
-    rate = true_rate_per_day(len(fills), max(span_days, 1))
+    rate = true_rate_per_day(len(fills), span_days_frac)
 
     copier = {"sampled": 0, "preceded": 0, "frac": 0.0}
     if cfg.copier_sample > 0 and chain_first_buys:
         copier = await copier_probe(bc, chain_first_buys, addr, cfg, note_err)
     funder = None
     if cfg.funding:
-        funder = await find_funder(bc, addr, from_b, to_b, cfg, note_err)
+        # funding predates the first trade — search from the floor, not from_b
+        # (review finding K); one extra locate, only when --funding is set.
+        try:
+            floor_b = await ac.locate_block_by_ts(floor_epoch, _get_block_ts,
+                                                  latest_num, latest_ts, anchors,
+                                                  tol_s=7200) or from_b
+        except Exception as e:  # noqa: BLE001
+            note_err(e)
+            floor_b = from_b
+        funder = await find_funder(bc, addr, floor_b, to_b, cfg, note_err)
 
     metrics = {
         "rpc_err_frac": recon["rpc_err_frac"], "canary_ok": canary_ok,
         "n_chain_fills": len(fills),
         "mismatch": a2c["counts"]["mismatch"],
         "api_buys_checked": a2c["counts"]["n"], "api_backing": a2c["counts"]["backing"],
-        "skill_gradeable": skill["n_markets"] >= 1 and skill["n_labeled"] >= cfg.min_markets_hire,
-        "skill_clears": skill["clears_bar"], "skill_markets": skill["n_markets"],
-        "skill_span": skill["span_days"], "skill_p": skill["p"],
+        "ts_ok": ts_ok,
+        "skill_gradeable": (ts_ok and skill["n_markets"] >= 1
+                            and skill["n_labeled"] >= cfg.min_markets_hire),
+        "skill_clears": skill["clears_bar"], "skill_contradicts": skill["contradicts"],
+        "skill_markets": skill["n_markets"], "skill_span": skill["span_days"],
+        "skill_p": skill["p"], "skill_p_neg": skill["p_neg"],
+        "skill_edge": round(skill["edge"], 4) if skill["edge"] is not None else None,
         "skill_labeled": skill["n_labeled"],
         "wash_flag": (conc["top_share"] >= cfg.wash_share
                       and conc["named_fills"] >= cfg.wash_min_fills),
         "wash_share": conc["top_share"], "wash_named": conc["named_fills"],
-        "rate_flag": rate > cfg.hft_max_rate if cfg.hft_max_rate else False,
+        # min 100 fills before the rate can flag — a tiny-span handful of fills
+        # must not read as HFT (mirrors fc.is_hft_history's sample floor); and
+        # only when ts_ok (a collapsed span would inflate the rate — see finding I)
+        "rate_flag": (bool(cfg.hft_max_rate) and ts_ok and len(fills) >= 100
+                      and rate > cfg.hft_max_rate),
         "true_rate": rate,
         "copier_flag": (copier["sampled"] >= cfg.copier_min_sample
                         and copier["frac"] >= cfg.copier_frac),
@@ -727,7 +867,8 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
     verdict, reasons = deep_dive_verdict(metrics, cfg)
     return {
         "address": addr, "verdict": verdict, "reasons": reasons,
-        "cache_status": cache_status,
+        "cache_status": cache_status, "incomplete_cache_sweep": incomplete_cache,
+        "ts_ok": ts_ok,
         "block_range": [from_b, to_b], "span_days": span_days,
         "tier1_reconstruction": {
             "n_fills": len(fills),
@@ -795,46 +936,51 @@ async def run(args) -> int:
     bc = BlockchainClient(rpc_url=rpc_url)
     await bc.ensure_client()
 
+    # preload the gamma resolution cache ONCE (review finding L)
+    gamma_dict: dict = {}
+    if args.gamma_cache and os.path.exists(args.gamma_cache):
+        try:
+            with open(args.gamma_cache) as gf:
+                gamma_dict = json.load(gf)
+        except Exception as e:  # noqa: BLE001
+            print(f"gamma cache load failed ({e!r}); DB labels only",
+                  file=sys.stderr)
+
     async def markets_loader(cids: list[str]) -> dict:
         if not cids:
             return {}
         markets = await fc.load_markets(db, cids, args.timeout)
-        fc.merge_gamma_cache(markets, cids, args.gamma_cache)
+        _merge_gamma_preloaded(markets, cids, gamma_dict)
         return markets
 
     try:
-        latest = await bc.w3.eth.get_block("latest")
-        latest_num, latest_ts = int(latest["number"]), int(latest["timestamp"])
-
         results: dict[str, dict] = {}
         for i, addr in enumerate(roster):
-            cpath = os.path.join(args.cache, f"{addr}.json")
-            cache_blob: Any = {}
+            print(f"  [{i + 1}/{len(roster)}] {addr[:14]}… …", file=sys.stderr)
+            # cache load is INSIDE the per-trader try (review finding C): one
+            # torn/corrupt cache json must record an INSUFFICIENT and continue,
+            # never abort the ~47-trader / multi-hour batch and lose the summary.
             cache_status = "missing"
-            if os.path.exists(cpath) and not args.refresh:
-                with open(cpath) as f:
-                    cache_blob = json.load(f)
-                cache_status = (cache_blob.get("status", "ok")
-                                if isinstance(cache_blob, dict) else "ok")
-            else:
-                # no cache (or --refresh): pull a fresh API history
-                from base_engine.data.polymarket_client import PolymarketClient
-                if client is None:
-                    client = PolymarketClient()
-                    await client.__aenter__()
-                trades, cache_status = await fc.fetch_history(
-                    client, addr, args.max_bets, args.rps, args.cache,
-                    args.refresh, allow_deepen=True,
-                    hft_max_bets_per_day=0.0)  # deep dive wants the full record
-                cache_blob = {"status": cache_status, "trades": trades}
-
-            print(f"  [{i + 1}/{len(roster)}] {addr[:14]}… "
-                  f"(api={cache_status}) …", file=sys.stderr)
             try:
+                cpath = os.path.join(args.cache, f"{addr}.json")
+                if os.path.exists(cpath) and not args.refresh:
+                    with open(cpath) as f:
+                        cache_blob = json.load(f)
+                    cache_status = (cache_blob.get("status", "ok")
+                                    if isinstance(cache_blob, dict) else "ok")
+                else:
+                    from base_engine.data.polymarket_client import PolymarketClient
+                    if client is None:
+                        client = PolymarketClient()
+                        await client.__aenter__()
+                    trades, cache_status = await fc.fetch_history(
+                        client, addr, args.max_bets, args.rps, args.cache,
+                        args.refresh, allow_deepen=True,
+                        hft_max_bets_per_day=0.0)  # deep dive wants the full record
+                    cache_blob = {"status": cache_status, "trades": trades}
                 res = await deep_dive_one(bc, addr, cache_blob, cache_status,
-                                          markets_loader, args, latest_num,
-                                          latest_ts)
-            except Exception as e:  # noqa: BLE001
+                                          markets_loader, args)
+            except Exception as e:  # noqa: BLE001  (one bad trader must NOT kill the batch)
                 res = {"address": addr, "verdict": "INSUFFICIENT-EVIDENCE",
                        "reasons": [f"deep dive raised: {e!r}"],
                        "cache_status": cache_status}
@@ -843,7 +989,7 @@ async def run(args) -> int:
                                  fc.json_safe(res))
             v = res["verdict"]
             t1 = res.get("tier1_reconstruction", {})
-            print(f"      -> {v}  fills={t1.get('n_fills', '?')} "
+            print(f"      -> {v}  (api={cache_status}) fills={t1.get('n_fills', '?')} "
                   f"buys={t1.get('n_buys', '?')} rpc_err={t1.get('rpc_err_frac', '?')} "
                   f"| {('; '.join(res.get('reasons', []))[:120])}", file=sys.stderr)
     finally:
@@ -911,10 +1057,10 @@ def _self_test() -> int:
         {"maker": "0x9", "taker": A, "makerAssetId": 777, "takerAssetId": 0,
          "makerAmountFilled": 50_000_000, "takerAmountFilled": 33_000_000}, A)
     ok1 = (buy and buy["side"] == "BUY" and abs(buy["price"] - 0.60) < 1e-9
-           and buy["token_id"] == "777" and buy["counterparty"] == "0x9"
+           and buy["token_id"] == "777" and buy["counterparty"] is None  # V1 taker is the operator, not a cp
            and sell and sell["side"] == "SELL" and abs(sell["price"] - 0.80) < 1e-9
            and tkbuy and tkbuy["side"] == "BUY" and abs(tkbuy["price"] - 0.66) < 1e-9)
-    print(f"  [v1 recon] maker-BUY/maker-SELL/taker-BUY, prices+counterparty : {ok1}")
+    print(f"  [v1 recon] maker-BUY/maker-SELL/taker-BUY, prices (V1 cp=None) : {ok1}")
     ok &= ok1
 
     # V1 semantics must agree with the audited _leg on the BUY case
@@ -956,17 +1102,22 @@ def _self_test() -> int:
     print(f"  [first-buy] one per market, earliest block, SELL/None excluded : {ok4}")
     ok &= ok4
 
-    # Tier 2A: verified / mismatch / not_found against reconstructed chain
+    # Tier 2A: only BUY-side chain fills are candidates — a SELL@0.9 must NOT
+    # verify an API BUY@0.9 (that masking flipped REJECT->ADMIT, review finding A)
     chain = [{"token_id": "777", "usd": 60, "tokens": 100, "tx": "0xa",
-              "price": 0.6}]
+              "price": 0.6, "side": "BUY"},
+             {"token_id": "777", "usd": 90, "tokens": 100, "tx": "0xb",
+              "price": 0.9, "side": "SELL"}]  # ignored — SELL never backs a BUY
     r = reconcile_api_to_chain(
-        [{"tokenId": "777", "side": "BUY", "price": 0.60, "size": 100},   # verified
-         {"tokenId": "777", "side": "BUY", "price": 0.90, "size": 100},   # mismatch
+        [{"tokenId": "777", "side": "BUY", "price": 0.60, "size": 100},   # verified vs BUY@0.6
+         {"tokenId": "777", "side": "BUY", "price": 0.90, "size": 100},   # SELL ignored -> matches BUY@0.6 by size -> mismatch
          {"tokenId": "777", "side": "BUY", "price": 0.60, "size": 7}],     # not_found
         chain, 0.02, 0.05)
     ok5 = (r["counts"]["verified"] == 1 and r["counts"]["mismatch"] == 1
-           and r["counts"]["not_found"] == 1 and abs(r["counts"]["backing"] - 1 / 3) < 1e-9)
-    print(f"  [tier2A] api->chain verified/mismatch/not_found : {ok5}")
+           and r["counts"]["not_found"] == 1
+           and abs(r["counts"]["backing"] - 1 / 3) < 1e-9
+           and abs(r["mismatches"][0]["chain_price"] - 0.6) < 1e-9)  # BUY, not the SELL@0.9
+    print(f"  [tier2A] api->chain BUY-only candidates (SELL never backs a BUY) : {ok5}")
     ok &= ok5
 
     # Tier 2B: chain BUY absent from API = hidden
@@ -1017,7 +1168,9 @@ def _self_test() -> int:
     print(f"  [tier3] chain first-buys labeled + hire-bar graded : {ok9}")
     ok &= ok9
 
-    # verdict table (pre-registered rule)
+    # verdict table (pre-registered rule): REJECT only on affirmative
+    # contradiction or mechanical infeasibility; gaps + unverified forensic
+    # suspicions -> INSUFFICIENT (never accuse); ADMIT enforces backing.
     class _VC:
         max_rpc_err_frac = 0.05
         min_api_check = 10
@@ -1028,28 +1181,36 @@ def _self_test() -> int:
         copier_lead_s = 30
     base = {"rpc_err_frac": 0.0, "canary_ok": True, "n_chain_fills": 500,
             "mismatch": 0, "api_buys_checked": 40, "api_backing": 0.95,
-            "skill_gradeable": True, "skill_clears": True, "skill_markets": 40,
-            "skill_span": 120, "skill_p": 0.99, "skill_labeled": 40,
-            "wash_flag": False, "wash_share": 0.1, "wash_named": 100,
-            "rate_flag": False, "true_rate": 5.0, "copier_flag": False,
-            "copier_frac": 0.0}
-    v_admit = deep_dive_verdict(base, _VC())[0]
-    v_incomplete = deep_dive_verdict({**base, "rpc_err_frac": 0.5}, _VC())[0]
-    v_canary = deep_dive_verdict({**base, "canary_ok": False}, _VC())[0]
-    v_lie = deep_dive_verdict({**base, "mismatch": 2}, _VC())[0]
-    v_fab = deep_dive_verdict({**base, "api_backing": 0.3}, _VC())[0]
-    v_skill = deep_dive_verdict({**base, "skill_clears": False}, _VC())[0]
-    v_wash = deep_dive_verdict({**base, "wash_flag": True}, _VC())[0]
-    v_rate = deep_dive_verdict({**base, "rate_flag": True}, _VC())[0]
-    v_thin = deep_dive_verdict({**base, "api_backing": 0.6}, _VC())[0]
-    v_ungr = deep_dive_verdict({**base, "skill_gradeable": False,
-                                "skill_labeled": 2}, _VC())[0]
-    ok10 = (v_admit == "ADMIT" and v_incomplete == "INSUFFICIENT-EVIDENCE"
-            and v_canary == "INSUFFICIENT-EVIDENCE" and v_lie == "REJECT"
-            and v_fab == "REJECT" and v_skill == "REJECT" and v_wash == "REJECT"
-            and v_rate == "REJECT" and v_thin == "INSUFFICIENT-EVIDENCE"
-            and v_ungr == "INSUFFICIENT-EVIDENCE")
-    print(f"  [verdict] ADMIT/incomplete/canary/lie/fab/skill/wash/rate/thin/ungr : {ok10}")
+            "ts_ok": True, "skill_gradeable": True, "skill_clears": True,
+            "skill_contradicts": False, "skill_markets": 40, "skill_span": 120,
+            "skill_p": 0.99, "skill_p_neg": 0.01, "skill_edge": 0.05,
+            "skill_labeled": 40, "wash_flag": False, "wash_share": 0.1,
+            "wash_named": 100, "rate_flag": False, "true_rate": 5.0,
+            "copier_flag": False, "copier_frac": 0.0}
+    V = lambda **o: deep_dive_verdict({**base, **o}, _VC())[0]  # noqa: E731
+    checks = {
+        "admit": (V(), "ADMIT"),
+        "incomplete": (V(rpc_err_frac=0.5), "INSUFFICIENT-EVIDENCE"),
+        "canary": (V(canary_ok=False), "INSUFFICIENT-EVIDENCE"),
+        "lie": (V(mismatch=2), "REJECT"),
+        "fabrication": (V(api_backing=0.3), "REJECT"),
+        "skill_disproven": (V(skill_contradicts=True), "REJECT"),
+        "skill_underpowered": (V(skill_clears=False), "INSUFFICIENT-EVIDENCE"),
+        "rate_uncopyable": (V(rate_flag=True), "REJECT"),
+        "wash_investigate": (V(wash_flag=True), "INSUFFICIENT-EVIDENCE"),
+        "copier_investigate": (V(copier_flag=True), "INSUFFICIENT-EVIDENCE"),
+        "thin_backing": (V(api_backing=0.6), "INSUFFICIENT-EVIDENCE"),
+        "too_few_buys": (V(api_buys_checked=5, api_backing=0.0),
+                         "INSUFFICIENT-EVIDENCE"),  # can't ADMIT below the check floor
+        "ungradeable": (V(skill_gradeable=False, skill_labeled=2),
+                        "INSUFFICIENT-EVIDENCE"),
+        "ts_failed": (V(ts_ok=False, skill_gradeable=False),
+                      "INSUFFICIENT-EVIDENCE"),
+    }
+    bad = {k: got for k, (got, want) in checks.items() if got != want}
+    ok10 = not bad
+    print(f"  [verdict] 14-case table (REJECT only on contradiction/uncopyable) "
+          f": {ok10}" + (f"  MISMATCHES={bad}" if bad else ""))
     ok &= ok10
 
     ok11 = roster_from_readjudicate({"vindicated": ["0xB", "0xA"]}) == ["0xa", "0xb"]

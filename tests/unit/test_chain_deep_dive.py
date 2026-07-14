@@ -103,9 +103,15 @@ def test_first_buys_one_per_market_earliest_block():
 
 
 # ── Tier 2: reconciliation, both directions ──────────────────────────────────
-def test_api_to_chain_verified_mismatch_notfound():
+def test_api_to_chain_only_buy_candidates():
+    # A SELL@0.9 must NOT be a candidate for an API BUY — folding it in would
+    # 'verify' the API BUY@0.9 and mask the price lie (review finding A). With
+    # SELLs excluded, the API BUY@0.9 size-matches the real BUY@0.6 -> mismatch,
+    # and the recorded chain_price is 0.6 (the BUY), never 0.9 (the SELL).
     chain = [{"token_id": "777", "usd": 60, "tokens": 100, "tx": "0xa",
-              "price": 0.6}]
+              "price": 0.6, "side": "BUY"},
+             {"token_id": "777", "usd": 90, "tokens": 100, "tx": "0xb",
+              "price": 0.9, "side": "SELL"}]
     r = dd.reconcile_api_to_chain(
         [{"tokenId": "777", "side": "BUY", "price": 0.60, "size": 100},
          {"tokenId": "777", "side": "BUY", "price": 0.90, "size": 100},
@@ -114,9 +120,7 @@ def test_api_to_chain_verified_mismatch_notfound():
         chain, 0.02, 0.05)
     c = r["counts"]
     assert (c["verified"], c["mismatch"], c["not_found"]) == (1, 1, 2)
-    # chain_price is the CHAIN truth (0.6); the API CLAIMED 0.9 — that gap is
-    # the lie. The mismatch row records the chain price, not the claim.
-    assert r["mismatches"][0]["chain_price"] == 0.6
+    assert r["mismatches"][0]["chain_price"] == 0.6   # the BUY, not the SELL@0.9
     assert r["mismatches"][0]["api_price"] == 0.90
 
 
@@ -180,6 +184,26 @@ def test_chain_skill_identical_edges_are_no_evidence():
     sk = dd.chain_skill_grade(fbs, markets, tok2cond, 10, 1000, 15, 5_000_000,
                               Cfg(), 7)
     assert sk["n_labeled"] == 6 and not sk["clears_bar"]
+    assert not sk["contradicts"]  # degenerate = no evidence, NOT a contradiction
+
+
+def test_chain_skill_negative_edge_contradicts():
+    """An adequately-powered NEGATIVE-edge record affirmatively disproves skill
+    (contradicts=True -> REJECT), distinct from an underpowered gap. Bought YES
+    at high prices; NO won every market -> outcome 0 -> edge strongly negative."""
+    class Cfg:
+        min_markets_hire = 3
+        min_span_days = 0
+        p_hire = 0.10
+        n_boot_roster = 200
+    markets = {f"0xC{i}": {"resolution": "NO", "yes_token_id": str(i),
+                           "no_token_id": "n" + str(i)} for i in range(6)}
+    tok2cond = {str(i): f"0xC{i}" for i in range(6)}
+    fbs = [{"token_id": str(i), "side": "BUY", "price": 0.60 + 0.03 * i,
+            "block": 10 + i, "era": "v1"} for i in range(6)]
+    sk = dd.chain_skill_grade(fbs, markets, tok2cond, 10, 1000, 15, 5_000_000,
+                              Cfg(), 7)
+    assert not sk["clears_bar"] and sk["contradicts"] and sk["edge"] < 0
 
 
 # ── The pre-registered admission verdict table ───────────────────────────────
@@ -195,11 +219,12 @@ class _VC:
 
 _BASE = {"rpc_err_frac": 0.0, "canary_ok": True, "n_chain_fills": 500,
          "mismatch": 0, "api_buys_checked": 40, "api_backing": 0.95,
-         "skill_gradeable": True, "skill_clears": True, "skill_markets": 40,
-         "skill_span": 120, "skill_p": 0.99, "skill_labeled": 40,
-         "wash_flag": False, "wash_share": 0.1, "wash_named": 100,
-         "rate_flag": False, "true_rate": 5.0, "copier_flag": False,
-         "copier_frac": 0.0}
+         "ts_ok": True, "skill_gradeable": True, "skill_clears": True,
+         "skill_contradicts": False, "skill_markets": 40, "skill_span": 120,
+         "skill_p": 0.99, "skill_p_neg": 0.01, "skill_edge": 0.05,
+         "skill_labeled": 40, "wash_flag": False, "wash_share": 0.1,
+         "wash_named": 100, "rate_flag": False, "true_rate": 5.0,
+         "copier_flag": False, "copier_frac": 0.0}
 
 
 def _v(**over):
@@ -218,18 +243,30 @@ def test_verdict_incomplete_sweep_is_insufficient_not_reject():
     assert _v(n_chain_fills=0) == "INSUFFICIENT-EVIDENCE"
 
 
-def test_verdict_hard_rejects_only_on_complete_sweep():
-    assert _v(mismatch=2) == "REJECT"                 # chain says a lie
-    assert _v(api_backing=0.3) == "REJECT"            # fabrication (>50% unbacked)
-    assert _v(skill_clears=False) == "REJECT"         # fails the hire bar
-    assert _v(wash_flag=True) == "REJECT"             # wash concentration
-    assert _v(rate_flag=True) == "REJECT"             # un-tailable HFT rate
-    assert _v(copier_flag=True) == "REJECT"           # double-lag copier
+def test_verdict_rejects_only_on_contradiction_or_uncopyable():
+    # REJECT is reserved for an affirmative chain contradiction or a measured
+    # mechanical infeasibility — never a mere gap (review finding B/D/copier).
+    assert _v(mismatch=2) == "REJECT"                   # chain says a lie
+    assert _v(api_backing=0.3) == "REJECT"              # fabrication (>50% unbacked)
+    assert _v(skill_contradicts=True) == "REJECT"       # skill affirmatively disproven
+    assert _v(rate_flag=True) == "REJECT"               # un-tailable true rate
 
 
-def test_verdict_thin_backing_is_insufficient_not_reject():
-    # Between full backing and fabrication is an evidence gap, not a lie.
-    assert _v(api_backing=0.6) == "INSUFFICIENT-EVIDENCE"
+def test_verdict_gaps_and_suspicions_are_insufficient_never_reject():
+    # The binding operator rule: an evidence gap or an UNVERIFIED forensic
+    # suspicion is 'investigate/deepen', never an accusation.
+    assert _v(skill_clears=False) == "INSUFFICIENT-EVIDENCE"   # underpowered, not disproven
+    assert _v(wash_flag=True) == "INSUFFICIENT-EVIDENCE"       # unverified wash -> investigate
+    assert _v(copier_flag=True) == "INSUFFICIENT-EVIDENCE"     # approximate copier -> investigate
+    assert _v(api_backing=0.6) == "INSUFFICIENT-EVIDENCE"      # thin backing
+    assert _v(ts_ok=False, skill_gradeable=False) == "INSUFFICIENT-EVIDENCE"
+
+
+def test_verdict_admit_requires_backing_and_min_checks():
+    # Too few API BUYs to corroborate must NOT fall through to a free ADMIT
+    # (review finding G): the fabrication/thin gates are min-check-gated, so the
+    # ADMIT branch itself must be unreachable below the check floor.
+    assert _v(api_buys_checked=5, api_backing=0.0) == "INSUFFICIENT-EVIDENCE"
 
 
 def test_verdict_ungradeable_skill_is_insufficient():
