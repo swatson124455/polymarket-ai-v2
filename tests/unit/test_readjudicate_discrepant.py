@@ -96,3 +96,39 @@ def test_discrepant_roster_extraction():
 
 def test_self_test_passes():
     assert rd._self_test() == 0
+
+
+# ── dual-era V2 support (REGRESSION — V1-only matcher found 2026-07-14) ──────
+# Post-migration fills live on the V2 exchanges under an unnamed event; a
+# V1-only window search structurally not_found every one of them.
+def test_v2_log_to_pseudo_event_decodes_buy_shaped():
+    A = "0xabcd000000000000000000000000000000000001"
+    tok, usdc, shares = 777, 60_000_000, 100_000_000
+    data = "0x" + "".join(f"{w:064x}" for w in
+                          [0, tok, usdc, shares, 0, 0, 0])
+    lg = {"topics": [rd.FILL_TOPIC_V2, "0x" + "0" * 64, rd.addr_topic(A)],
+          "data": data, "transactionHash": "0xv2tx1"}
+    pe = rd.v2_log_to_pseudo_event(lg, A)
+    assert pe is not None and pe["_v2"] is True and pe["_tx"] == "0xv2tx1"
+    assert pe["makerAssetId"] == 0 and pe["takerAssetId"] == tok
+    assert pe["makerAmountFilled"] == float(usdc)
+    assert pe["takerAmountFilled"] == float(shares)
+    # and the pseudo-event verifies the API row tx-exactly
+    m = rd.match_fill_txexact([pe], A, tok, "BUY", 0.60, 100.0, 0.02, 0.05)
+    assert m["status"] == "verified_txexact" and m["tx"] == "0xv2tx1"
+
+
+def test_v2_log_rejections():
+    A = "0xabcd000000000000000000000000000000000001"
+    B = "0x9999000000000000000000000000000000000009"
+    good_data = "0x" + "".join(f"{w:064x}" for w in
+                               [0, 777, 60_000_000, 100_000_000, 0, 0, 0])
+    base = {"topics": [rd.FILL_TOPIC_V2, "0x" + "0" * 64, rd.addr_topic(A)],
+            "data": good_data, "transactionHash": "0xv2tx1"}
+    assert rd.v2_log_to_pseudo_event(dict(base, topics=[
+        "0x" + "ab" * 32, "0x" + "0" * 64, rd.addr_topic(A)]), A) is None
+    assert rd.v2_log_to_pseudo_event(base, B) is None      # other owner
+    assert rd.v2_log_to_pseudo_event(dict(base, data="0x" + "00" * 32),
+                                     A) is None            # short data
+    zero = "0x" + "".join(f"{w:064x}" for w in [0, 777, 0, 0, 0, 0, 0])
+    assert rd.v2_log_to_pseudo_event(dict(base, data=zero), A) is None

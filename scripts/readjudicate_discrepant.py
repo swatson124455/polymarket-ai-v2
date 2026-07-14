@@ -33,6 +33,19 @@ Only VINDICATED traders may be PROPOSED for the roster, as a SECOND COHORT
 with its own shadow start date — operator decision required; nothing here
 auto-adds anybody to anything.
 
+DUAL-ERA MATCHING (2026-07-14): Polymarket moved trading to the V2
+exchanges; a V1-only matcher finds NOTHING for post-migration fills, so
+its not_found column was structurally inflated (caught when the grey
+re-review's not_found rates barely moved at a 4x-wider window — wrong
+PLACE, not wrong time). Window events now come from BOTH eras:
+V1 OrderFilled + the V2 unnamed fill event (topic0 FILL_TOPIC_V2, layout
+receipt-validated in mirror_v3/copy_watcher). The V2 event does not carry
+direction, so V2 candidates are emitted BUY-shaped and any size-matched
+winner is RECEIPT-CONFIRMED before it may verify or damn a claim;
+unconfirmable candidates are dropped, never trusted. THIN (operator rule
+2026-07-14) is an evidence gap, never an accusation — the response is a
+deeper search, not a threshold change.
+
 SAFETY: READ-ONLY. RPC GETs only. No DB writes, no orders, no bot code.
 
 INVOCATION (VPS, from a /tmp clone — never the deployed tree):
@@ -54,8 +67,12 @@ import sys
 from typing import Any, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import audit_roster_chain as ac  # noqa: E402  (audited helpers, reused as-is)
 import find_copyable_traders as fc  # noqa: E402
+from mirror_v3.copy_watcher import (  # noqa: E402  (receipt-validated V2 kit)
+    EXCHANGE_V2, FILL_TOPIC_V2, NEGRISK_EXCHANGE_V2, _hex, _words, addr_topic,
+    side_from_receipt_logs)
 
 USDC_ASSET_ID = 0
 SCALE = 1e6  # USDC and CTF outcome tokens are both 6-decimals
@@ -124,6 +141,27 @@ def match_fill_txexact(events: list[dict], addr: str, token: int, side: str,
             "chain_tokens": tok, "tx": tx}
 
 
+def v2_log_to_pseudo_event(lg: dict, addr: str) -> Optional[dict]:
+    """Raw V2 fill log -> V1-args-shaped BUY candidate for match_fill_txexact.
+
+    The V2 event carries (token, usdc, tokens) but NOT direction; candidates
+    are emitted BUY-shaped and marked `_v2` so the run loop receipt-confirms
+    any size-matched winner before it can verify or damn a claim."""
+    topics = lg.get("topics") or []
+    if len(topics) < 3 or _hex(topics[0]).lower() != FILL_TOPIC_V2:
+        return None
+    if _hex(topics[2]).lower()[-40:] != addr.lower().replace("0x", ""):
+        return None
+    w = _words(lg.get("data", "0x"))
+    if len(w) < 4 or w[2] <= 0 or w[3] <= 0:
+        return None
+    txh = lg.get("transactionHash", "")
+    return {"maker": addr.lower(), "taker": "",
+            "makerAssetId": USDC_ASSET_ID, "takerAssetId": w[1],
+            "makerAmountFilled": float(w[2]), "takerAmountFilled": float(w[3]),
+            "_tx": txh.hex() if hasattr(txh, "hex") else str(txh), "_v2": True}
+
+
 def adjudicate(counts: dict, n: int, max_notfound: float) -> str:
     """Pre-registered rule from the module docstring. Chain still wins."""
     if n == 0 or counts.get("rpc_error", 0) > n / 2:
@@ -166,8 +204,9 @@ async def run(args) -> int:
         print("no DISCREPANT traders in the audit json — nothing to re-adjudicate")
         return 2
     print(f"re-adjudicating {len(roster)} traders "
-          f"(tx-exact, window ±{args.window_s}s, tol_price={args.tol_price}, "
-          f"tol_size={args.tol_size})", file=sys.stderr)
+          f"(tx-exact, DUAL-ERA V1+V2, window ±{args.window_s}s, "
+          f"tol_price={args.tol_price}, tol_size={args.tol_size})",
+          file=sys.stderr)
 
     bc = BlockchainClient(rpc_url=rpc_url)
     await bc.ensure_client()
@@ -203,6 +242,32 @@ async def run(args) -> int:
                         _note_err(e)
                     await asyncio.sleep(1.0 / max(args.rps, 0.1))
         return out, errs, n_q
+
+    v2_addrs = [Web3.to_checksum_address(a)
+                for a in (EXCHANGE_V2, NEGRISK_EXCHANGE_V2)]
+
+    async def events_around_v2(addr: str, b0: int, b1: int
+                               ) -> tuple[list[dict], int, int]:
+        """V2-era fills by this order owner (server-side topic filter),
+        BUY-shaped pseudo-events; ONE getLogs covers both V2 exchanges."""
+        out, errs, n_q = [], 0, 0
+        for lo, hi in ac.block_chunks(b0, b1):
+            n_q += 1
+            try:
+                logs = await bc.w3.eth.get_logs({
+                    "fromBlock": lo, "toBlock": hi, "address": v2_addrs,
+                    "topics": [FILL_TOPIC_V2, None, addr_topic(addr)]})
+                for lg in logs:
+                    pe = v2_log_to_pseudo_event(dict(lg), addr)
+                    if pe is not None:
+                        out.append(pe)
+            except Exception as e:
+                errs += 1
+                _note_err(e)
+            await asyncio.sleep(1.0 / max(args.rps, 0.1))
+        return out, errs, n_q
+
+    v2_sides: dict[tuple[str, str], str] = {}  # (tx, token) -> receipt side
 
     latest_blk = await bc.w3.eth.get_block("latest")
     latest_num, latest_ts = int(latest_blk["number"]), int(latest_blk["timestamp"])
@@ -241,6 +306,9 @@ async def run(args) -> int:
                 span = max(args.pad_blocks, int(args.window_s / 2.1)) + 300
                 events, errs, n_q = await events_around(
                     addr_cs, center - span, center + span)
+                ev2, errs2, n_q2 = await events_around_v2(
+                    addr, center - span, center + span)
+                events, errs, n_q = events + ev2, errs + errs2, n_q + n_q2
                 samples_done += 1
                 if errs == n_q:
                     counts["rpc_error"] = counts.get("rpc_error", 0) + 1
@@ -266,10 +334,37 @@ async def run(args) -> int:
                           f"{first_err[0] if first_err else '?'}", file=sys.stderr)
                     return 3
                 continue
-            m = match_fill_txexact(
-                events, addr, int(t["tokenId"]), t.get("side", "BUY"),
-                float(t.get("price", 0)), float(t.get("size", 0)),
-                args.tol_price, args.tol_size)
+            # V2 candidates are direction-ambiguous: receipt-confirm any
+            # size-matched V2 winner; a SELL/unconfirmable one is dropped
+            # from the pool and matching re-runs without it.
+            v2_txs = {e["_tx"] for e in events if e.get("_v2")}
+            pool = events
+            while True:
+                m = match_fill_txexact(
+                    pool, addr, int(t["tokenId"]), t.get("side", "BUY"),
+                    float(t.get("price", 0)), float(t.get("size", 0)),
+                    args.tol_price, args.tol_size)
+                if m["status"] == "not_found" or m["tx"] not in v2_txs:
+                    break
+                ck = (m["tx"], str(t["tokenId"]))
+                side = v2_sides.get(ck)
+                if side is None:
+                    try:
+                        await asyncio.sleep(1.0 / max(args.rps, 0.1))
+                        rcpt = await bc.w3.eth.get_transaction_receipt(m["tx"])
+                        side = side_from_receipt_logs(
+                            [dict(lg) for lg in rcpt["logs"]], addr,
+                            str(t["tokenId"])) or "UNCONFIRMED"
+                    except Exception as e:
+                        _note_err(e)
+                        side = "UNCONFIRMED"
+                    v2_sides[ck] = side
+                want = "SELL" if str(t.get("side", "BUY")).upper() == "SELL" \
+                    else "BUY"
+                if side == want:
+                    break
+                pool = [e for e in pool
+                        if not (e.get("_v2") and e.get("_tx") == m["tx"])]
             counts[m["status"]] = counts.get(m["status"], 0) + 1
             if m["status"] == "mismatch_txexact":
                 mismatches.append({
