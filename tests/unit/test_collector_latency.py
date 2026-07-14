@@ -234,3 +234,14 @@ def test_standalone_pm_index_flattens_event_pages(monkeypatch):
     refs = sa.pm_index()
     assert len(refs) == 1
     assert refs[0][0] == _mw(1)["conditionId"]
+
+
+def test_standalone_pm_index_warns_on_truncation(monkeypatch, capsys):
+    sa = _load_standalone()
+    # 30 full pages (100 each) -> never hits a short page -> cap truncation
+    pages = {p: [dict(_mw(p * 100 + j), conditionId=f"0x{p*100+j:064x}",
+                       gameStartTime="2026-07-15 12:00:00+00")
+                 for j in range(100)] for p in range(30)}
+    monkeypatch.setattr(sa, "gamma_pages", lambda: pages)
+    sa.pm_index()
+    assert "TRUNCATED" in capsys.readouterr().out

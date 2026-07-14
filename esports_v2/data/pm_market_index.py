@@ -269,6 +269,18 @@ def build_pm_index(
         if len(markets) < _GAMMA_PAGE:
             break
 
+    # Silent-drop guard: if paging consumed the FULL max_pages window and the
+    # last page was still full (== _GAMMA_PAGE), there are almost certainly more
+    # events beyond the cap that never entered the index — the exact failure
+    # class the 2026-07-14 /markets->/events switch fixed, just at a higher
+    # ceiling. Surface it loudly (raise max_pages) instead of dropping silently.
+    last = pages.get(max_pages - 1)
+    if last is not None and len(last) >= _GAMMA_PAGE:
+        logger.warning(
+            f"pm_index_TRUNCATED: paging hit max_pages={max_pages} with a full "
+            f"final page — more esports events likely exist beyond the cap and "
+            f"are SILENTLY DROPPED from PM capture. Raise max_pages.")
+
     logger.info(f"pm_index_built refs={len(refs)}")
     return refs
 

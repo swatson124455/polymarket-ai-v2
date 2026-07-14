@@ -190,6 +190,11 @@ def pm_index():
             mp=price(prs[0]) if len(prs)==2 else None
             seen.add(cid); refs.append((cid,str(toks[0]).strip(),ta,mp,ta,tb,day))
         if len(ms)<100: break
+    # Silent-drop guard (mirrors pm_market_index): full final page at the cap
+    # means more events exist beyond page 30 and are dropped from PM capture.
+    last=pages.get(29)
+    if last is not None and len(last)>=100:
+        print("pm_index_TRUNCATED: hit 30-page cap with a full final page — more events beyond the cap are SILENTLY DROPPED; raise the cap")
     return refs
 def safe_pm_index():
     try: return pm_index()

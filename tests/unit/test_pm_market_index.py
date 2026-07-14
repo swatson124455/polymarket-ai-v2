@@ -288,3 +288,30 @@ def test_flatten_page_item_shapes():
     assert _flatten_page_item({"markets": "junk"}) == [{"markets": "junk"}]
     assert _flatten_page_item(None) == []
     assert _flatten_page_item({"markets": [dict(m, closed=True)]}) == []
+
+
+# ── silent-drop guard: full final page at max_pages cap ─────────────────────
+
+
+def test_build_pm_index_warns_on_truncation_at_cap(caplog):
+    import logging
+    from esports_v2.data.pm_market_index import build_pm_index
+    # every page full -> paging never hits a short page -> stops at the cap
+    full_page = [_mw_market(conditionId=f"0x{i:064x}") for i in range(100)]
+    def fetch(off, lim):
+        return [_mw_market(conditionId=f"0x{off+j:064x}") for j in range(100)]
+    with caplog.at_level(logging.WARNING):
+        build_pm_index(fetch_page=fetch, max_pages=3)
+    assert any("TRUNCATED" in rec.message for rec in caplog.records)
+
+
+def test_build_pm_index_no_truncation_warning_on_short_final_page(caplog):
+    import logging
+    from esports_v2.data.pm_market_index import build_pm_index
+    def fetch(off, lim):
+        if off == 0:
+            return [_mw_market(conditionId=f"0x{j:064x}") for j in range(100)]
+        return [_mw_market(conditionId="0xaa")]   # short page -> clean end
+    with caplog.at_level(logging.WARNING):
+        build_pm_index(fetch_page=fetch, max_pages=5)
+    assert not any("TRUNCATED" in rec.message for rec in caplog.records)
