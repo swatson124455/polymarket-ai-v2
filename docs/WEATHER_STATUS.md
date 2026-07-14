@@ -443,7 +443,7 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
   unstable); V28 follow-up top-N bucket selection ranks by calibrated edge ONLY when the V28 gate
   flag is ON (proven inert at default OFF); telemetry truth V16/V20/V21 (S-T docstring/log field
   `proposed_usd`+`applied`, dampener reciprocals documented, `forecast_delta` re-labeled
-  fetch-over-fetch with `delta_basis` field); stray esports probe removed. V23 analyzed and
+  fetch-over-fetch with `delta_basis` field); stray esports probe removed [⚑S229 X-BOT-RESIDUE: historical WB-changelog mention of another bot; scrub on next changelog edit]. V23 analyzed and
   deliberately SKIPPED as behavioral → new OPEN DECISION 3b. Deeper V26 deferred (execution-path,
   operator sign-off). Reaches the box at the next WB release cut.
 - **2026-07-10 (S226):** (a) S225 diagnostics DEPLOYED — release `20260710_165646` cut from
@@ -467,7 +467,7 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
   release-cut script itself** (auto-migration folded in). Calibrator now mid-reset toward
   identity (ground-truth cutoff + raw-X training live) — re-learning from clean data over the
   coming days. Deploy recorded `a9cfcfa`. (That record commit also inadvertently swept in a
-  staged esports probe `scripts/esports_market_shape_probe.py` — harmless, weather never runs it.)
+  staged esports probe `scripts/esports_market_shape_probe.py` — harmless, weather never runs it.) [⚑S229 X-BOT-RESIDUE: historical WB-changelog mention of another bot; scrub on next changelog edit]
 - **2026-07-08 (S224 cluster):** ground-truth/calibrator cluster IMPLEMENTED (`8c778d3`) —
   WS-2 WU-primacy (extreme WU-vs-OM disagreement now abstains, never writes OM as truth);
   WS-1 provenance column `weather_calibration.actual_source` (**migration 079 — RUN ON VPS**,
