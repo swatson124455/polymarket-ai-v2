@@ -47,6 +47,27 @@ subtraction. Also counts 'unbuyable' (leader had no ask) and 'ask>=0.98'
 WEATHER_STATUS 2c). Sample accrues at ~11 US family-days/day; hold verdicts to
 the same ≥50-per-cell bar as everything else.
 
+## nowcast_skill.py — Phase-0a: how much lead does the 1-min curve give? (S230)
+Runs on VPS (needs registry import). IEM 1-min archive vs public instantaneous
+prints (METAR+SPECI), per station-day: every rounded-°F increment of the
+running max is an event; lead = time until a print reveals it (+6min pub-delay
+assumption). S230 RESULT (21d × 12 US stations, 230 station-days, 1,966
+events): median lead **58 min**, 85% of events ≥30 min lead; **14% of events
+never print intraday**; **78% of days the true daily max never appears in any
+intraday print** (resolution uses the continuous max → hourly watchers are
+structurally blind to it). NOTE: IEM 1-min lags ~42h — backtest-only; the live
+substitute is a PWS mesh (see docs/WB_NOWCAST_CAPTURE_SPEC.md).
+
+## nowcast_price_path.py — Phase-0b': does the market front-run the print? (S230)
+Runs on VPS. For resolved WINNER buckets: t_cross (1-min running max enters
+bucket) vs t_reveal (first public print + delay); CLOB minute-price path
+averaged aligned on both. S230 RESULT (33 events, winners-only, gap≥8min):
+cross-aligned path FLAT (0.46→0.47→0.47 through +15m) — nobody trades the
+real-time crossing; reveal-aligned path jumps 0.47→0.68 AT the print and
+drifts to 0.85 by +90m. The ~21¢ repricing is fully concentrated at
+publication → the hole is open. CAVEAT: winners-only conditioning — strategy
+EV needs the loser legs (overshoot) too; that replay is the next step.
+
 ## trade_prints.py — "do resting orders actually get filled?" (maker leg)
 Runs on the VPS via cron (`trade_prints.sh`, every 10 min at :05 offset,
 alongside shadow_book.sh at :00). For each active US highest-temp family

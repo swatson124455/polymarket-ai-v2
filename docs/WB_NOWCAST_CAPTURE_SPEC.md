@@ -23,6 +23,31 @@ working, this is a small-dollar strategy; it must stay cheap to run.
 
 ---
 
+## PHASE 0 RESULTS (RAN 2026-07-15, S230 — same night as the spec)
+
+**0a: PASS, decisively (no model even needed for detection).**
+`nowcast_skill.py`, 21d × 12 US stations, 230 station-days, 1,966
+bucket-boundary events: the station's own 1-min curve leads the public print
+by **median 58 min** (85% of events ≥30 min). **14% of events never print
+intraday at all**, and on **78% of days the true daily max never appears in
+any intraday instantaneous print** (resolution uses the continuous max —
+hourly-print watchers are structurally blind). Detection of a crossing is
+pure observation; the MODEL part (will it keep rising / abstain on
+non-smooth regimes) is only needed for the overshoot leg.
+
+**0b': PASS — the hole is open and quantified.**
+`nowcast_price_path.py`, 33 winner events: market price is FLAT when the
+1-min curve enters the winning bucket (0.46→0.47→0.47 through +15 min) and
+jumps **0.47→0.68 exactly at the print**, drifting to 0.85 by +90 min.
+Nobody currently trades the real-time crossing. Caveat: winners-only
+alignment — full strategy EV must include loser legs (bucket entered, later
+overshot); that replay + capture-at-ask (0b) + maker fills (0c) are the
+remaining Phase-0 items, pending shadow-book/trade-print accrual.
+
+**Remaining before Phase 1 go:** loser-leg EV replay; capture size at the
+logged ask (0b); maker-fill evidence (0c). The live data source must be a
+PWS mesh (IEM 1-min lags ~42h — backtest-only).
+
 ## Phase 0 — validate BOTH halves offline (no new infra, no bot changes)
 
 Gate everything on two backtests, both feasible with existing data:
