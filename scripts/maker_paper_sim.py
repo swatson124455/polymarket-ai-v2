@@ -217,7 +217,14 @@ def sample_market(m, st, now):
     last_ts = st.get("last_trade_ts", now - TICK_SECONDS)
     if prev_bid is not None and prev_ask is not None and m.get("cid"):
         tape = get(TAPE.format(cid=m["cid"])) or []
-        cap = INV_CAP_MULT * msz
+        # Cap uses a FROZEN min-size (refreshed only while flat): gamma adjusts
+        # rewardsMinSize intraday, and a cap recomputed from the CURRENT msz
+        # let positions built under a larger msz exceed 3x (observed 5.0x,
+        # 2026-07-15 verification). Post-fill guard, not pre-fill.
+        cap_msz = st.get("cap_msz")
+        if not cap_msz or pos == 0:
+            cap_msz = st["cap_msz"] = msz
+        cap = INV_CAP_MULT * cap_msz
         for tr in tape if isinstance(tape, list) else []:
             try:
                 ts = float(tr.get("timestamp"))
@@ -227,11 +234,11 @@ def sample_market(m, st, now):
                 continue
             if ts <= last_ts or asset != str(m["yes"]):
                 continue
-            if p < prev_bid and pos < cap:        # someone sold through my bid -> I bought
+            if p < prev_bid and pos + msz <= cap + 1e-9:   # sold through my bid -> I bought
                 pos += msz
                 cost += msz * prev_bid
                 fills += 1
-            elif p > prev_ask and pos > -cap:     # someone bought through my ask -> I sold
+            elif p > prev_ask and pos - msz >= -cap - 1e-9:  # bought through my ask -> I sold
                 if pos > 0:
                     avg = cost / pos if pos else 0.0
                     real += msz * (prev_ask - avg)

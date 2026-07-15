@@ -331,8 +331,14 @@ def run(base):
             if bb is None or ba is None or not (0 < bb < ba <= 1):
                 continue
             mid = (bb + ba) / 2
-            last_mid = st.get("last_mid")
-            if last_mid is not None and abs(mid - last_mid) > VOL_PULL_PTS:
+            # vol trigger over a ~120s WINDOW to match V2's tick-to-tick
+            # semantics (comparing 1s steps never accumulates 2pt — verified
+            # divergence 2026-07-15; window keeps the arms rule-identical)
+            mh = st.setdefault("mid_hist", [])
+            mh.append([now, mid])
+            while mh and now - mh[0][0] > 150:
+                mh.pop(0)
+            if now - mh[0][0] >= 60 and abs(mid - mh[0][1]) > VOL_PULL_PTS:
                 st["pull_until"] = now + VOL_PULL_S
             st["last_mid"] = mid
             g = gate(m, st, now, mid)
@@ -352,7 +358,10 @@ def run(base):
                 continue
             want_bid, want_ask = mid - s_mine, mid + s_mine
             cur = st.get("bid")
-            if cur is None or abs(want_bid - cur) >= REQUOTE_TICKS:
+            # also (re)seed when quote history is empty — after a daemon
+            # restart st carries bid/ask but qh is stripped from persistence,
+            # and without this fill detection stays dead on quiet markets
+            if cur is None or abs(want_bid - cur) >= REQUOTE_TICKS or not st.get("qh"):
                 st["bid"], st["ask"], st["arm"] = want_bid, want_ask, arm
                 qh = st.setdefault("qh", [])
                 qh.append([now, want_bid, want_ask])
@@ -364,6 +373,20 @@ def run(base):
         # ── minute loop: accrual, fills vs time-matched quotes, samples ────
         if now - last_minute >= 60:
             last_minute = now
+            # prefetch tapes CONCURRENTLY — 140 serial GETs blocked this loop
+            # (and therefore the fast requote loop) for up to ~1 min
+            from concurrent.futures import ThreadPoolExecutor
+            tape_cache = {}
+            need = [m for m in universe
+                    if m.get("cid") and (state.get(str(m["id"])) or {}).get("qh")]
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                futs = {ex.submit(get, TAPE.format(cid=m["cid"])): str(m["id"])
+                        for m in need}
+                for fu in futs:
+                    try:
+                        tape_cache[futs[fu]] = fu.result(timeout=30) or []
+                    except Exception:
+                        tape_cache[futs[fu]] = []
             rows = []
             for m in universe:
                 st = state.get(str(m["id"])) or {}
@@ -386,8 +409,13 @@ def run(base):
                 qh = st.get("qh") or []
                 last_ts = st.get("last_trade_ts", now - 60)
                 if qh and m.get("cid"):
-                    tape = get(TAPE.format(cid=m["cid"])) or []
-                    cap = INV_CAP_MULT * m["msz"]
+                    tape = tape_cache.get(str(m["id"])) or []
+                    # frozen-msz cap, post-fill guard (gamma adjusts
+                    # rewardsMinSize intraday; current-msz caps drift to 5x)
+                    cap_msz = st.get("cap_msz")
+                    if not cap_msz or pos == 0:
+                        cap_msz = st["cap_msz"] = m["msz"]
+                    cap = INV_CAP_MULT * cap_msz
                     for tr in tape if isinstance(tape, list) else []:
                         try:
                             ts = float(tr.get("timestamp"))
@@ -406,11 +434,11 @@ def run(base):
                             last_ts = max(last_ts, ts)
                             continue
                         msz = m["msz"]
-                        if p < qbid and pos < cap:
+                        if p < qbid and pos + msz <= cap + 1e-9:
                             pos += msz
                             cost += msz * qbid
                             fills += 1
-                        elif qask is not None and p > qask and pos > -cap:
+                        elif qask is not None and p > qask and pos - msz >= -cap - 1e-9:
                             if pos > 0:
                                 avg = cost / pos if pos else 0.0
                                 real += msz * (qask - avg)
@@ -435,7 +463,7 @@ def run(base):
                 for r in rows:
                     f.write(json.dumps(r) + "\n")
             tmp = state_path + ".tmp"
-            slim = {k: {kk: vv for kk, vv in v.items() if kk != "qh"}
+            slim = {k: {kk: vv for kk, vv in v.items() if kk not in ("qh", "mid_hist")}
                     for k, v in state.items()}
             with open(tmp, "w") as f:
                 json.dump(slim, f)
@@ -446,10 +474,15 @@ def run(base):
                 lm = sorted(lat_ms)
                 med = lm[len(lm) // 2] if lm else -1
                 quoting = sum(1 for r in rows if r["quoting"])
+                # stale-book counter: a silently-dead WS chunk thread would
+                # otherwise leave ~90 books frozen with no visible symptom
+                with BOOKS_LOCK:
+                    stale = sum(1 for b in BOOKS.values() if now - b["ts"] > 300)
                 print(f"hb: {quoting}/{len(rows)} quoting, "
                       f"acc_total=${sum(st.get('acc',0) for st in state.values()):.2f}, "
                       f"fills_min={sum(r['fills'] for r in rows)}, "
-                      f"requote_lat_med={med:.0f}ms, books={len(BOOKS)}", flush=True)
+                      f"requote_lat_med={med:.0f}ms, books={len(BOOKS)}, "
+                      f"stale_books={stale}", flush=True)
 
         time.sleep(1)
 
