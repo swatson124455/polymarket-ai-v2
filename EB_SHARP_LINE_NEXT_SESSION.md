@@ -2,10 +2,45 @@
 
 **Branch:** `claude/esports-sharp-line-rebuild-gqy1na` (session 4; supersedes
 `…-36c8u9-7m96gg` — same history + the PM-index coverage fix below)
-**Updated:** 2026-07-14 (session 6 CLOSE — start at §0-S7; its PICK UP block
-supersedes every older one in this file)
-**Read order:** this file (§0-S7 → §0-S6f..§0-S6) → `EB_SHARP_LINE_STATE.md` →
+**Updated:** 2026-07-15 (session 7 CLOSE — start at §0-S8 delta, then §0-S7;
+§0-S7's PICK UP block still carries the full prompt/guardrails)
+**Read order:** this file (§0-S8 → §0-S7 → §0-S6f..§0-S6) → `EB_SHARP_LINE_STATE.md` →
 `EB_SHARP_LINE_PLUMBING.md` → `EB_MARKET_SHAPE_RESULTS.md` → `CLAUDE.md`.
+
+---
+
+## 0-S8. SESSION-7 CLOSE (2026-07-15) — DIACRITIC MARQUEE MISS FIXED+DEPLOYED (md5 `3c2c43f1…`); VENDOR EMAIL SENT, NO REPLY; READOUT STILL WAITS FOR THE SLATE
+
+Short delta — §0-S7's lane (vendor reply → historical readout; 07-20+ →
+`eb_label_audit.sh` readout) is UNCHANGED and stays the whole next session.
+
+- **STEP 0 verify:** collector healthy (appended 25-29, pm_matched==books,
+  dur≈5s), deployed md5 == git blob, cron intact (2 lines), related suite
+  **730 green** (superset of the ~670 bar).
+- **STEP-0 marquee spot-check caught a REAL miss:** PM's open VCT Americas
+  market "Leviatán Esports vs FURIA" (`0x01a0ddbf…`, mid 0.74, starts
+  07-16T21Z) had pm=None in every tick — §0-S6f item-4's "dormant" diacritic
+  gap went live. Root cause: standalone `tnorm` omitted the NFKD fold that
+  canonical `normalize_team` applies ("leviatán"≠"leviatan" → token match
+  fails). **Fixed `9a0ee2c`** (fold mirrored exactly + parity test proving
+  tnorm==normalize_team and the full match_ref hit), **redeployed
+  2026-07-15 ~19:57Z, md5 `3c2c43f1b479dfde352c57ec7f4abdaa`** (rollback
+  `.bak_36743c45` on VPS). Verified offline against LIVE gamma (zero PinnOdds
+  quota): new index 164 refs, `match_ref("Leviatan","FURIA")` →
+  `0x01a0ddbf…`. **S8 STEP 0: confirm a post-fix tick shows Leviatán matched**
+  (20:00Z tick was a full-429 loss — see next bullet — so live confirmation
+  lands on the next successful tick).
+- **429 watch (no action):** 07-13..15 = 69 ticks, 9 appended=0 (~13%,
+  clustered 07-13/14; 07-15 had ONE — the 20:00Z tick lost to 4×429,
+  dur 181s). Lifetime 429 lines 268 (was 236 on 07-13). Retry loop is coping;
+  the paid-tier/rate-limit question is already in the open vendor thread.
+- **STEP 1 (critical path):** operator 2026-07-15 — vendor email **SENT, NO
+  REPLY yet**. Historical readout stays blocked on the reply; if it arrives
+  with a usable sample, the build is pre-authorized per §0-S7.
+- **STEP 2:** time-gated, untouched (slate resolves ~07-20).
+- **STILL OPEN (operator):** key rotation (`PANDASCORE_API_KEY` +
+  `PINNACLE_ODDS_API_KEY`, chat-exposed; shared env → operator executes);
+  snapshot-backup re-pull AFTER the 07-15..19 slate resolves (last: 07-13).
 
 ---
 
