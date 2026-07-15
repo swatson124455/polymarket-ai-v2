@@ -559,11 +559,14 @@ async def _sweep_leaf(fetch: Callable, lo: int, hi: int, chunk: int,
                 counters["leaf_fail"] += 1
 
 
-async def reconstruct_lifetime(bc, addr: str, from_b: int, to_b: int, cfg,
-                               note_err) -> dict:
-    """Tiers 1: pull all V1 OrderFilled (both exchanges, maker+taker) and all
-    V2 fills (owner-topic, both exchanges) in [from_b, to_b], decode to fills.
-    Direction for V2 needs receipts — done here, capped."""
+async def sweep_lifetime(bc, addr: str, from_b: int, to_b: int, cfg,
+                         note_err) -> dict:
+    """Tier 1 SWEEP ONLY (NO receipts): all V1 OrderFilled (both exchanges,
+    maker+taker) + all V2 fills (owner-topic, both exchanges) in [from_b, to_b],
+    decoded. V1 fills carry direction (asset semantics); V2 fills come back
+    side=None until classify_v2_directions resolves them from receipts. Split
+    from the receipt phase so an UNCOPYABLE rate (a fill-count fact needing NO
+    direction) can short-circuit BEFORE the dominant receipt fetch."""
     from base_engine.data.blockchain_client import (
         EXCHANGE_CONTRACT, NEGRISK_EXCHANGE_CONTRACT, ORDER_FILLED_EVENT_ABI)
     from web3 import Web3
@@ -576,9 +579,7 @@ async def reconstruct_lifetime(bc, addr: str, from_b: int, to_b: int, cfg,
                 for a in (EXCHANGE_V2, NEGRISK_EXCHANGE_V2)]
 
     counters = {"logs": [], "leaf_ok": 0, "leaf_fail": 0}
-    fills: list[dict] = []
-
-    # V1: maker + taker on both exchanges (indexed topics -> sparse -> big chunks)
+    v1_fills: list[dict] = []
     for c in v1_contracts:
         for field in ("maker", "taker"):
             async def _fetch(a, b, _c=c, _f=field):
@@ -598,10 +599,9 @@ async def reconstruct_lifetime(bc, addr: str, from_b: int, to_b: int, cfg,
             for d in counters["logs"][base:]:
                 f = v1_reconstruct_fill(d, addr)
                 if f is not None:
-                    fills.append(f)
+                    v1_fills.append(f)
             counters["logs"] = counters["logs"][:base]  # decoded; free memory
 
-    # V2: one owner-topic getLogs covers both exchanges
     async def _fetch_v2(a, b):
         return await bc.w3.eth.get_logs({
             "fromBlock": a, "toBlock": b, "address": v2_addrs,
@@ -614,10 +614,19 @@ async def reconstruct_lifetime(bc, addr: str, from_b: int, to_b: int, cfg,
         f = v2_reconstruct_fill(dict(lg), addr)
         if f is not None:
             v2_fills.append(f)
-    counters["logs"] = counters["logs"][:base]
 
-    # V2 direction: one receipt per unique tx (capped). Uncapped/errored fills
-    # stay side=None and are excluded from BUY-based tiers (never guessed BUY).
+    total_leaves = counters["leaf_ok"] + counters["leaf_fail"]
+    return {"v1_fills": v1_fills, "v2_fills": v2_fills,
+            "leaf_ok": counters["leaf_ok"], "leaf_fail": counters["leaf_fail"],
+            "rpc_err_frac": (counters["leaf_fail"] / total_leaves) if total_leaves else 1.0}
+
+
+async def classify_v2_directions(bc, addr: str, v2_fills: list[dict], cfg,
+                                 note_err) -> dict:
+    """Resolve V2 BUY/SELL direction from tx receipts (one per unique tx, capped
+    at --max-receipts); sets f['side'] IN PLACE. Uncapped/errored fills stay
+    side=None and are excluded from BUY-based tiers (never guessed BUY). This is
+    the batch's dominant cost, so it runs only AFTER the rate short-circuit."""
     tx_logs: dict[str, Optional[list]] = {}
     uniq_tx = list(dict.fromkeys(f["tx"] for f in v2_fills))
     n_receipts = min(len(uniq_tx), cfg.max_receipts)
@@ -633,13 +642,7 @@ async def reconstruct_lifetime(bc, addr: str, from_b: int, to_b: int, cfg,
         logs = tx_logs.get(f["tx"])
         f["side"] = (side_from_receipt_logs(logs, addr, f["token_id"])
                      if isinstance(logs, list) else None)
-    fills.extend(v2_fills)
-
-    total_leaves = counters["leaf_ok"] + counters["leaf_fail"]
-    return {"fills": fills, "leaf_ok": counters["leaf_ok"],
-            "leaf_fail": counters["leaf_fail"],
-            "rpc_err_frac": (counters["leaf_fail"] / total_leaves) if total_leaves else 1.0,
-            "v2_txs": len(uniq_tx), "v2_receipts": n_receipts}
+    return {"v2_txs": len(uniq_tx), "v2_receipts": n_receipts}
 
 
 async def detection_canary(bc, head: int) -> bool:
@@ -792,8 +795,8 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
     to_b = latest_num
 
     canary_ok = await detection_canary(bc, latest_num)
-    recon = await reconstruct_lifetime(bc, addr, from_b, to_b, cfg, note_err)
-    fills = recon["fills"]
+    recon = await sweep_lifetime(bc, addr, from_b, to_b, cfg, note_err)
+    fills = recon["v1_fills"] + recon["v2_fills"]  # V2 side=None until classified
 
     # span endpoints for ts interpolation (2 getBlock calls). If either fails,
     # ts_ok=False -> skill is NOT graded on a fabricated span (review finding I:
@@ -813,6 +816,54 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
         b_lo = b_hi = latest_num
         ts_lo = ts_hi = latest_ts
         ts_ok = False  # no fills -> no span; skill ungradeable anyway
+
+    # fractional span-days for the rate (integer floor inflates the rate of the
+    # 1-2.5-day burst accounts Tier 4 exists to re-judge fairly — review finding
+    # J). conc / maker-taker / rate need only the SWEEP (no direction), so
+    # compute them HERE — before the dominant receipt phase.
+    span_secs = (interp_ts(b_hi, b_lo, ts_lo, b_hi, ts_hi)
+                 - interp_ts(b_lo, b_lo, ts_lo, b_hi, ts_hi)).total_seconds()
+    span_days_frac = max(span_secs / 86400.0, 0.0)
+    span_days = int(span_days_frac)  # whole days for display
+    conc = counterparty_concentration(fills)
+    mt = maker_taker_profile(fills)
+    rate = true_rate_per_day(len(fills), span_days_frac)
+    sweep_complete = (recon["rpc_err_frac"] <= cfg.max_rpc_err_frac and canary_ok
+                      and len(fills) > 0)
+    rate_flag = (bool(cfg.hft_max_rate) and ts_ok and len(fills) >= 100
+                 and rate > cfg.hft_max_rate)
+
+    # EARLY UNCOPYABLE SHORT-CIRCUIT (efficiency; verdict identical): a complete
+    # sweep whose measured fill-RATE already exceeds the cap is REJECT-uncopyable
+    # regardless of BUY/SELL split — so skip the dominant V2 receipt fetch. This
+    # is exactly what deep_dive_verdict returns (the rate check precedes the
+    # direction gate); direction-independent forensics are still reported.
+    if sweep_complete and rate_flag:
+        v2_txs_est = len({f["tx"] for f in recon["v2_fills"]})
+        return {
+            "address": addr, "verdict": "REJECT",
+            "reasons": [f"UNCOPYABLE: true chain rate {rate:.0f} bets/day > cap "
+                        f"{cfg.hft_max_rate:.0f} (mechanically un-tailable — a "
+                        f"measured fact, not an accusation; V2 receipts SKIPPED, "
+                        f"direction not needed to judge rate)"],
+            "cache_status": cache_status, "incomplete_cache_sweep": incomplete_cache,
+            "ts_ok": ts_ok, "block_range": [from_b, to_b], "span_days": span_days,
+            "tier1_reconstruction": {
+                "n_fills": len(fills), "n_v1": len(recon["v1_fills"]),
+                "n_v2": len(recon["v2_fills"]), "v2_txs": v2_txs_est,
+                "v2_receipts": 0, "receipts_skipped_uncopyable": True,
+                "leaf_ok": recon["leaf_ok"], "leaf_fail": recon["leaf_fail"],
+                "rpc_err_frac": round(recon["rpc_err_frac"], 4),
+                "canary_ok": canary_ok},
+            "tier4_forensics": {"counterparty": conc, "maker_taker": mt,
+                                "true_rate_per_day": round(rate, 2)},
+            "first_error": first_err[0] if first_err else None,
+        }
+
+    # NOT uncopyable -> resolve V2 direction (the receipt phase, capped), then
+    # the direction-dependent tiers (skill, reconciliation).
+    cls = await classify_v2_directions(bc, addr, recon["v2_fills"], cfg, note_err)
+    recon["v2_txs"], recon["v2_receipts"] = cls["v2_txs"], cls["v2_receipts"]
 
     # token -> condition map from API rows; load resolutions for Tier 3
     tok2cond = {str(t.get("tokenId")): str(t.get("marketId"))
@@ -846,16 +897,6 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
         {"n_chain_buys": len(chain_buys), "hidden": None,
          "hidden_rows": [], "note": f"API cache status={cache_status}: hidden-"
                                     f"activity not conclusive (record incomplete)"}
-
-    # fractional span-days for the rate (integer floor inflates the rate of the
-    # 1-2.5-day burst accounts Tier 4 exists to re-judge fairly — review finding J)
-    span_secs = (interp_ts(b_hi, b_lo, ts_lo, b_hi, ts_hi)
-                 - interp_ts(b_lo, b_lo, ts_lo, b_hi, ts_hi)).total_seconds()
-    span_days_frac = max(span_secs / 86400.0, 0.0)
-    span_days = int(span_days_frac)  # whole days for display
-    conc = counterparty_concentration(fills)
-    mt = maker_taker_profile(fills)
-    rate = true_rate_per_day(len(fills), span_days_frac)
 
     copier = {"sampled": 0, "preceded": 0, "frac": 0.0}
     if cfg.copier_sample > 0 and chain_first_buys:
