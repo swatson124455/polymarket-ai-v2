@@ -67,6 +67,16 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
      WEEKS of accrual, not this window. No edge cell identifiable yet.
    - **Calibrator status (context, NOT a verdict):** conf-cal still
      `insufficient_data n=0 need=200` — identity; re-learn clock runs to ~08-07.
+   **S230 lead/EV sweep addendum (07-15, one-off read-only):** (i) weather_forecasts
+   stores NO leads beyond ~60h (1,136 rows ≤36h, 211 at 36-60h, zero above) — 3-5-day
+   edge is UNMEASURABLE and the bot never even fetches there. (ii) Raw-ensemble-vs-market
+   at mid, bet-the-disagreement (14d, admissible): 24h lead n=122 WR 56% meanEV +0.021
+   (SE ±0.041 — noise), 48h n=90 −0.018 (noise); market Brier better at 24h, tied at 48h.
+   (iii) BOT clean-window day-of by hours-to-resolution: EV positive in every bucket
+   3-24h (WR 67-81%, mid-EV +0.026..+0.142), best 9-12h (+0.142, n=27, ~1.6 SE —
+   suggestive NOT significant); but bot Brier worse than market in EVERY bucket
+   (side-picking wins small, magnitude errors lose big — the cheap-NO tail). Same-market
+   rows correlate across buckets (50 independent markets). Watch 9-12h as n accrues.
    NEXT: keep accruing; re-run at n≥100-150 for bin-level power + any wedge-cell reads;
    the cheap-NO-tail miscalibration (bins [0.0-0.2)) is the concrete post-S229 defect
    to root-cause next (it is also what the market beats us with). Operator: the local
