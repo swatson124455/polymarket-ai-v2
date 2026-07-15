@@ -348,6 +348,14 @@ def run(base):
                 assets = []
                 for m in universe:
                     assets.extend((m["yes"], m["no"]))
+                # evict books for assets no longer subscribed — without this the
+                # dict grows per refresh and rolled-out markets pollute the
+                # stale_books metric (observed 498 books / 210 "stale" at 23:40Z
+                # 2026-07-15, masking whether any LIVE subscription was stale)
+                keep = set(assets)
+                with BOOKS_LOCK:
+                    for dead in [a for a in BOOKS if a not in keep]:
+                        BOOKS.pop(dead, None)
                 threads = []
                 for i in range(0, len(assets), WS_CHUNK):
                     t = threading.Thread(target=ws_worker,
