@@ -26,18 +26,29 @@ before EVERY commit; push after each completed unit).
 the operator approves each. State WHAT + WHY before anything that changes VPS
 state (writes outside `/tmp`, restarts, kills).
 
-## FIRST — collect the batch
-1. Finished? `pgrep -fc 'chain_deep_dive[.]py'` (0 = done; **pgrep NEEDS `-f`** —
-   the comm is `python`, landmine). `tail -30 /tmp/deep_dive_batch.log`;
+## FIRST — collect the batch (RUN-2 reality, updated 2026-07-15 PM)
+Run-1 (rps 4) was killed at 12/47 (results preserved: **8 ADMIT / 3
+INSUFFICIENT / 1 REJECT**, and the 8 ADMITs are ALREADY admitted → cohort-2,
+see below). **Run-2** covers the remaining 35 (`/tmp/deep_dive_remaining.txt`)
+at rps 8 with the receipt short-circuit (`d6276f7`).
+1. Finished? `pgrep -fc 'chain_deep_dive[.]py'` (0 = done; **pgrep NEEDS `-f`**,
+   and NEVER put a pkill in the same ssh command as anything naming the script
+   — §7 variant-2 landmine). `tail -30 /tmp/deep_dive_batch.log`;
    `ls /opt/pa2-shared/mb_copyable_data/deep_dive/0x*.json | wc -l` (expect 47).
-2. Read `deep_dive/_summary.json` — `counts` {ADMIT, REJECT,
-   INSUFFICIENT-EVIDENCE}, the `admitted` list, `sybil` funder clusters.
+2. Read `deep_dive/_summary_run2.json` (run-2's 35 ONLY). **No artifact
+   aggregates all 47** — tally the per-trader JSONs:
+   `python3 -c "import json,glob,collections; print(collections.Counter(json.load(open(p))['verdict'] for p in glob.glob('/opt/pa2-shared/mb_copyable_data/deep_dive/0x*.json')))"`
 3. **Died mid-run?** (fewer than 47 result files + process gone) The per-trader
-   JSONs already written are durable. RESUME on the missing addresses only
-   (roster = 9 in `readjudicate.json` + 38 in `deep_dive_extra_38.txt`).
-   Launcher: `/tmp/run_deep_dive_batch.sh` — but **refresh `/tmp/mbre` to branch
-   head + verify blob first**, and only feed it the not-yet-done addresses
-   (e.g. build a remaining-list via `--traders`).
+   JSONs already written are durable. RESUME on the missing addresses only:
+   rebuild the remaining list (roster = 9 in `readjudicate.json` + 38 in
+   `deep_dive_extra_38.txt`, minus done JSONs), **refresh `/tmp/mbre` to branch
+   head + verify blob**, edit `/tmp/run_deep_dive_batch.sh` to point
+   `--extra-traders` at the new remaining list, relaunch detached.
+4. New ADMITs → verify their tiers like the first 8 (100% backing, 0 mismatch,
+   P≥bar, tailable rate, no flags), then batch-admit with ONE watcher restart
+   (same mechanism as 2026-07-15: roster `clean` += addrs + extend the
+   `cohort2` ledger key, rerun `deploy/mirror3_shadow_deploy.sh`, record the
+   new restart epoch — cohort-2B gets ITS OWN start epoch in the ledger).
 
 ## ROSTER — you MAY add/subtract, but NOTIFY + CLARIFY at handoff (operator directive 2026-07-14)
 You have standing authority to add/subtract candidate traders from the deep-dive

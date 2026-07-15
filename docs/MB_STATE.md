@@ -72,10 +72,20 @@
 > `MB_DEEP_DIVE_NEXT_PROMPT.md` with the delta + reason (nothing enters/leaves
 > the roster invisibly). Admissions still need the operator's WORD (this
 > authority is over the CANDIDATE roster, not who joins a live cohort).
->   - **WAVE-1 (RUNNING) = 47:** 9 cohort-2 (`readjudicate.json` VINDICATED) +
->     4 grey (`readjudicate_grey2.json` VINDICATED) + 34 HFT-borderline
->     (`deep_dive_extra_38.txt` = grey-4 ∪ the 34, dedup). No change since
->     launch.
+>   - **WAVE-1 = 47** (roster UNCHANGED): 9 cohort-2 (`readjudicate.json`
+>     VINDICATED) + 4 grey (`readjudicate_grey2.json` VINDICATED) + 34
+>     HFT-borderline (`deep_dive_extra_38.txt` = grey-4 ∪ the 34, dedup).
+>     **EXECUTION UPDATE 2026-07-15:** run-1 (rps 4, code `0231f2c`) was KILLED
+>     at 12/47 done (results preserved) and RELAUNCHED as **run-2** on the
+>     remaining 35 (`/tmp/deep_dive_remaining.txt`) at **rps 8** with the
+>     receipt short-circuit (`d6276f7`). Run-1 tally: **8 ADMIT / 3
+>     INSUFFICIENT / 1 REJECT-uncopyable** (all 12 JSONs parse-verified).
+>     Run-2 writes `deep_dive/_summary_run2.json` (its 35 ONLY) — **NO durable
+>     artifact aggregates all 47**; tally from the per-trader JSONs:
+>     `python3 -c "import json,glob,collections; print(collections.Counter(json.load(open(p))['verdict'] for p in glob.glob('/opt/pa2-shared/mb_copyable_data/deep_dive/0x*.json')))"`
+>     The 3 INSUFFICIENT (skill under the P bar on full data) are DEEPEN
+>     candidates, not re-run-blindly: their gap is resolved-market count, so
+>     re-dive them only after more of their markets resolve.
 >   - **CANDIDATE-ADD MENU for WAVE-2 (identified 2026-07-14 PM, NOT yet run —
 >     deferred so a 2nd batch doesn't double RPC load on the shared tenderly
 >     endpoint while wave-1 + the live mirror3 watcher run):**
@@ -710,3 +720,14 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
   `yes_token_id`/`no_token_id` (resolution YES ⇒ yes-token won). The shadow
   records carry only `token_id` (no condition_id), so resolve via those two
   columns, not condition_id.
+- **pkill self-match, VARIANT 2 (bit TWICE 2026-07-15):** bracketing the
+  pkill pattern (`chain_deep_di[v]e`) is NOT enough when ANY OTHER clause of
+  the same SSH command contains the literal name — a `pgrep -fc
+  'chain_deep_dive[.]py'` check, or even a file path (`git hash-object
+  scripts/chain_deep_dive.py`). pkill -f matches the whole remote shell's
+  command line, which includes those literals → kills your own session
+  mid-command (exit 255; the rest of the command never runs — our /tmp/mbre
+  refresh silently didn't happen). RULE: a kill command contains the pkill
+  and NOTHING ELSE that names the target; verify/refresh in a SEPARATE
+  ssh command afterwards (plain `ps -ef | grep` there is safe — no pkill in
+  that shell).
