@@ -30,8 +30,10 @@ working, this is a small-dollar strategy; it must stay cheap to run.
 bucket-boundary events: the station's own 1-min curve leads the public print
 by **median 58 min** (85% of events ≥30 min). **14% of events never print
 intraday at all**, and on **78% of days the true daily max never appears in
-any intraday instantaneous print** (resolution uses the continuous max —
-hourly-print watchers are structurally blind). Detection of a crossing is
+any intraday instantaneous print** (⚠ CORRECTED by rep_bias_test, addendum
+below: resolution tracks the PRINT world, so hidden peaks are NOT a tradeable
+advantage — the lead matters only as "know the next print early"). Detection
+of a crossing is
 pure observation; the MODEL part (will it keep rising / abstain on
 non-smooth regimes) is only needed for the overshoot leg.
 

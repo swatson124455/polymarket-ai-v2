@@ -54,8 +54,9 @@ running max is an event; lead = time until a print reveals it (+6min pub-delay
 assumption). S230 RESULT (21d × 12 US stations, 230 station-days, 1,966
 events): median lead **58 min**, 85% of events ≥30 min lead; **14% of events
 never print intraday**; **78% of days the true daily max never appears in any
-intraday print** (resolution uses the continuous max → hourly watchers are
-structurally blind to it). NOTE: IEM 1-min lags ~42h — backtest-only; the live
+intraday print** (⚠ CORRECTED by rep_bias_test.py: resolution tracks the
+PRINT world 81%-vs-35%, so hidden peaks are NOT tradeable; the lead matters
+only as "know the next print early"). NOTE: IEM 1-min lags ~42h — backtest-only; the live
 substitute is a PWS mesh (see docs/WB_NOWCAST_CAPTURE_SPEC.md).
 
 ## nowcast_price_path.py — Phase-0b': does the market front-run the print? (S230)
