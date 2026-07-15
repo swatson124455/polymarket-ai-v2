@@ -74,6 +74,46 @@ def get(url, timeout=10):
         return None
 
 
+def fetch_tape(cid, since_ts):
+    """All tape prints since since_ts, OLDEST-FIRST.
+
+    Two verified 2026-07-15 defects this fixes: (1) the endpoint caps limit at
+    200 and hot markets exceed that per tick (200 prints in 255s on match day)
+    — paginate with dedup (offset pages shift as new prints land) until the
+    window is covered or 3 pages; (2) the feed is NEWEST-first, and a fill loop
+    that advances last_trade_ts while iterating skips every older print after
+    the first — prints MUST be processed in ascending time order."""
+    seen, out = set(), []
+    for page in range(3):
+        t = get(TAPE.format(cid=cid) + "&offset=%d" % (200 * page)) or []
+        if not isinstance(t, list) or not t:
+            break
+        oldest = None
+        for tr in t:
+            if not isinstance(tr, dict):
+                continue
+            k = (tr.get("transactionHash"), tr.get("timestamp"),
+                 tr.get("price"), tr.get("size"), tr.get("asset"))
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(tr)
+            try:
+                ts = float(tr.get("timestamp"))
+                oldest = ts if oldest is None else min(oldest, ts)
+            except (TypeError, ValueError):
+                continue
+        if len(t) < 200 or (oldest is not None and oldest <= since_ts):
+            break
+    def _ts(tr):
+        try:
+            return float(tr.get("timestamp") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    out.sort(key=_ts)
+    return out
+
+
 KW = [
     (r"nba|nfl|mlb|nhl|ncaa|premier|epl|serie-a|la-liga|bundesliga|ligue|ufc|atp|wta|pga|f1-|grand-prix|world-cup|fifa|uefa|copa|boxing|tennis|-vs-|derby|open-", "sports"),
     (r"lol-|league-of-legends|cs2|csgo|counter-strike|dota|valorant|esports|lck|lpl|lec|ewc", "esports"),
@@ -216,7 +256,7 @@ def sample_market(m, st, now):
     prev_bid, prev_ask = st.get("bid"), st.get("ask")
     last_ts = st.get("last_trade_ts", now - TICK_SECONDS)
     if prev_bid is not None and prev_ask is not None and m.get("cid"):
-        tape = get(TAPE.format(cid=m["cid"])) or []
+        tape = fetch_tape(m["cid"], last_ts)
         # Cap uses a FROZEN min-size (refreshed only while flat): gamma adjusts
         # rewardsMinSize intraday, and a cap recomputed from the CURRENT msz
         # let positions built under a larger msz exceed 3x (observed 5.0x,

@@ -79,6 +79,41 @@ def get(url, timeout=10):
         return None
 
 
+def fetch_tape(cid, since_ts):
+    """All tape prints since since_ts, OLDEST-FIRST (see v1 docstring: fixes
+    the 200-print truncation AND the newest-first iteration skip that limited
+    fill detection to <=1 print per market per tick — verified 2026-07-15)."""
+    seen, out = set(), []
+    for page in range(3):
+        t = get(TAPE.format(cid=cid) + "&offset=%d" % (200 * page)) or []
+        if not isinstance(t, list) or not t:
+            break
+        oldest = None
+        for tr in t:
+            if not isinstance(tr, dict):
+                continue
+            k = (tr.get("transactionHash"), tr.get("timestamp"),
+                 tr.get("price"), tr.get("size"), tr.get("asset"))
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(tr)
+            try:
+                ts = float(tr.get("timestamp"))
+                oldest = ts if oldest is None else min(oldest, ts)
+            except (TypeError, ValueError):
+                continue
+        if len(t) < 200 or (oldest is not None and oldest <= since_ts):
+            break
+    def _ts(tr):
+        try:
+            return float(tr.get("timestamp") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    out.sort(key=_ts)
+    return out
+
+
 KW = [
     (r"nba|nfl|mlb|nhl|ncaa|premier|epl|serie-a|la-liga|bundesliga|ligue|ufc|atp|wta|pga|f1-|grand-prix|world-cup|fifa|uefa|copa|boxing|tennis|-vs-|derby|open-", "sports"),
     (r"lol-|league-of-legends|cs2|csgo|counter-strike|dota|valorant|esports|lck|lpl|lec|ewc", "esports"),
@@ -264,7 +299,7 @@ def sample_market(m, st, now):
     prev_bid, prev_ask = st.get("bid"), st.get("ask")
     last_ts = st.get("last_trade_ts", now - TICK_SECONDS)
     if prev_bid is not None and prev_ask is not None and m.get("cid"):
-        tape = get(TAPE.format(cid=m["cid"])) or []
+        tape = fetch_tape(m["cid"], last_ts)
         # Frozen-msz cap + post-fill guard (see v1 note: gamma adjusts
         # rewardsMinSize intraday; current-msz caps drifted to 5x observed).
         cap_msz = st.get("cap_msz")
