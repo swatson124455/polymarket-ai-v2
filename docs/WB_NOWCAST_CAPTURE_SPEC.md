@@ -75,7 +75,25 @@ halves both runs; ~13.6¢ pick-vs-reject separation; sharpest a-priori cell =
 E_rem≤0.5 × h12-13: +0.163 n=21) but the 2σ gate is NOT yet met — verdict
 INSUFFICIENT, not fail. A 90-day run (forecasts exist to 2026-03-08) was
 launched 07-15 ~19:1xZ → `~/wb_research/nowcast_peak_90d.out`; expect
-~3x entries → decisive either way. COLLECT IT NEXT SESSION.
+~3x entries → decisive either way. COLLECTED SAME SESSION — see below.
+
+**90d FINAL (all available history — offline route EXHAUSTED): GATE NOT MET.**
+406 family-days, 277 priced entries. TEST half (05-28..07-12): n=57 meanEV
+**+0.074 (SE 0.060, 1.2σ)**, rejects n=193 −0.002. Picks positive in every
+window cut (+0.074..+0.105 test) but significance stalls ~1.2-1.4σ and the
+effect shrinks as the window grows; cell structure shifted (E_rem≤0.5 h<12
++0.117 n=20, h12-13 +0.121 n=38, but h≥14 flipped to −0.021 n=34 — the
+"peak hours" half of the prior weakened; do NOT re-tune post-hoc).
+**DECISION per the pre-registered framework: no Phase 1 infra spend.**
+The edge is plausibly real but small (+7¢ mid ≈ marginal after costs) and
+unprovable with existing history. PATH FORWARD (zero-cost): loggers keep
+accruing; entries accrue ~3/day → re-evaluate at n_test ≥ 150 (~4-6 weeks);
+meanwhile 0b/0c (capture-at-ask, maker fills) get answered from live shadow
+data and decide whether even a proven +7¢ is capturable. NWWS-OI remains
+worth applying for regardless (free, benefits the existing bot's react leg).
+NOTE: the EMOS training pairs already carry the rep-bias shift (post-cutoff
+US pairs mean bias −0.62, n=146) — the calibration root-fix is partially
+self-healing; verify the correction reaches the tail computation (code work).
 
 **S230 late addendum — rep_bias_test.py RESULT bears directly on this program:**
 resolution tracks the HOURLY-PRINT world (81% vs 35% continuous, n=48) — the
