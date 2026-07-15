@@ -5,7 +5,19 @@
 > read them for detail, but THIS file is the source of truth for "what is live and what's open."
 > Update the three sections below at the end of every WB session (same commit as the work).
 
-**Last updated:** 2026-07-14 (S229/S229b close — full deep-dive + next-session kickoff written:
+**Last updated:** 2026-07-15 (S230 close — research mega-session, ZERO deploys/bot-code.
+Full handoff: `docs/WEATHER_S230_STATUS.md` (quick-facts table + verdict chain);
+next session: `WB_S231_KICKOFF_PROMPT.md` (§0 verifies this handoff mechanically).
+Headlines: S222 ran TWICE (n=50 PARTIAL → n=133 **A1/A3 FAIL**, PIT p=0.0001, retire
+nothing); cheap-NO-tail ROOT CAUSE confirmed via `rep_bias_test.py` (resolution =
+hourly-print world 81%/35%; forecast +0.86°F hot; EMOS pairs already carry −0.62 →
+partially self-healing); 9-12h day-of cell SURVIVED accrual (+0.118, 2.1σ, n=66);
+nowcast Phase 0 executed same-session and CLOSED (90d gate not met +0.074 @1.2σ →
+NO infra spend); deep-backtest program queued as next priority (spec §NEXT SESSION
+PLAN); 7 research harnesses + trade-print cron shipped; latency audit (1-min client
+dead ×3 bugs + 42h upstream lag → hourly METAR is everyone's cadence).)
+Prior header (S229, still accurate for WHAT IS LIVE):
+(S229/S229b close — full deep-dive + next-session kickoff written:
 `docs/WEATHER_S229_STATUS.md`, `WB_S230_KICKOFF_PROMPT.md`. **S222 verification RAN: FAIL, retire
 nothing** — but the failure's ROOT CAUSE (global SAMOS pooled °C/°F climatology, avg_clim_mean=43.6
 unit soup → KORD 97°F read as 86°F "certainty" → phantom NO edges) was found, fixed, and DEPLOYED
@@ -462,7 +474,13 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
 
 ## POINTERS (archival detail — do not treat as "current" over this file)
 
-- `docs/WEATHER_S229_STATUS.md` — **the S229 session handoff (latest)**: S222 FAIL verdict,
+- `docs/WEATHER_S230_STATUS.md` — **the S230 session handoff (latest)**: quick-facts
+  table (every number sourced), verdict chain, corrections to stale claims, VPS
+  research-layer state, deep-backtest plan pointer. `WB_S231_KICKOFF_PROMPT.md` =
+  paste-in for the next session (§0 = mechanical handoff verification).
+- `docs/WB_NOWCAST_CAPTURE_SPEC.md` — the nowcast-and-capture program: thesis,
+  Phase-0 results (all five experiments), 90d gate verdict, NEXT SESSION PLAN.
+- `docs/WEATHER_S229_STATUS.md` — the S229 session handoff: S222 FAIL verdict,
   the EMOS unit-soup ROOT cause + per-station fix, end-date + CancelledError fixes, EV research
   scoreboard, automation crons, hygiene, dormant bootstrap landmine. `WB_S230_KICKOFF_PROMPT.md`
   = paste-in for the next session.
@@ -486,6 +504,14 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-15 (S230 close, ZERO deploys):** research mega-session — S222 ran twice
+  (n=50 PARTIAL → n=133 A1/A3 FAIL, nothing retired); cheap-NO-tail root cause
+  confirmed (`rep_bias_test.py`: settlement = print world, forecast +0.86°F hot,
+  EMOS self-healing −0.62); 9-12h cell survived accrual (+0.118, 2.1σ); nowcast
+  Phase 0 executed + CLOSED (90d gate not met → no infra); 7 research harnesses +
+  trade-print cron shipped; latency audit (1-min client dead, hourly METAR = true
+  cadence); deep-backtest program queued. Handoff `docs/WEATHER_S230_STATUS.md`,
+  kickoff `WB_S231_KICKOFF_PROMPT.md`, manifest → S230.
 - **2026-07-13 (S229 ROOT FIX, DEPLOYED `20260713_160143`):** `24b2847` — global SAMOS→raw
   conversion pooled climatology across mixed °C/°F stations (avg_clim_mean=43.6) → one
   corrector (9.28, 0.79, σ2.10) for every non-EMOS-ready station → KORD 97.2°F read as

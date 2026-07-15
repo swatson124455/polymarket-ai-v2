@@ -1,6 +1,6 @@
 {
   "_comment": "WeatherBot session-handoff manifest — consumed by scripts/wb_resume_check.sh. RULE: any commit that changes a fingerprinted file's markers, adds a headline fix, or moves the session branch MUST update this manifest in the SAME commit. That is what keeps the resume check self-deriving instead of stale.",
-  "session": "S229",
+  "session": "S230",
   "repo": "swatson124455/polymarket-ai-v2",
   "branch": "claude/new-whiteboard-session-9b23tq",
   "headline_commits": {
@@ -23,7 +23,16 @@
     "863fae8": "fix(ingestion): S228 follow-up 2 — split discovery budget; tail lane defeats churn starvation",
     "4fa67a3": "fix(weather): S229 — persist end_date_iso for WB-discovered markets; heal NULL-end rows on rediscovery",
     "24b2847": "fix(weather): S229 — global SAMOS/EMOS pooled climatology across mixed C/F units; de-normalize per station",
-    "9dc6d59": "fix(weather): S229 — CancelledError escapes Exception checks on gather results; aborted whole scans"
+    "9dc6d59": "fix(weather): S229 — CancelledError escapes Exception checks on gather results; aborted whole scans",
+    "b480c5d": "feat(wb-research): S230 executable_replay.py — leader-following graded at the LOGGED ASK",
+    "475d342": "feat(wb-research): S230 trade_prints.py — 10-min public trade-print logger (maker-fill evidence)",
+    "b3363d6": "feat(wb-research): S230 Phase-0 nowcast harnesses + RESULTS (58min lead; hole open at the print)",
+    "82f2c3b": "feat(wb-research): S230 loser-leg replay — naive crossing-entry EV-zero; peak-model required",
+    "2151995": "feat(wb-research): S230 peak-model backtest (E_rem x hour, pre-registered rule, date-split)",
+    "9c5bbfb": "feat(wb-research): S230 rep_bias_test — ROOT CAUSE: resolution = print world; forecast +0.86F hot",
+    "f794268": "docs(wb): S230 S222 re-run n=133 — A1/A3 REVERSED to FAIL; 9-12h cell survived 2.1 sigma",
+    "1878a5c": "docs(wb): S230 Phase-0 CLOSED — 90d gate not met; no Phase-1 infra spend",
+    "217b897": "docs(wb): S230 deep-backtest program queued as next-session priority 1"
   },
   "required_docs": [
     "docs/WEATHER_STATUS.md",
@@ -34,7 +43,17 @@
     "WB_S222_POSTFIX_VERIFICATION_PROMPT.md",
     "docs/WEATHER_S226_STATUS.md",
     "docs/WEATHER_S227_STATUS.md",
-    "docs/WEATHER_S229_STATUS.md"
+    "docs/WEATHER_S229_STATUS.md",
+    "docs/WEATHER_S230_STATUS.md",
+    "docs/WB_NOWCAST_CAPTURE_SPEC.md",
+    "WB_S231_KICKOFF_PROMPT.md",
+    "scripts/wb_research/executable_replay.py",
+    "scripts/wb_research/trade_prints.py",
+    "scripts/wb_research/nowcast_skill.py",
+    "scripts/wb_research/nowcast_price_path.py",
+    "scripts/wb_research/nowcast_entry_ev.py",
+    "scripts/wb_research/nowcast_peak_model.py",
+    "scripts/wb_research/rep_bias_test.py"
   ],
   "fingerprints": [
     {
