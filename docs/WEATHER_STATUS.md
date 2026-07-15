@@ -91,16 +91,25 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
      markets (was +0.142/n=27). Every day-of bucket positive (+0.038..+0.118). CAVEAT:
      same-family markets correlate (effective n lower); mid prices. 9-12h-to-res ≈
      noon-3pm local = the PEAK window — same phenomenon the nowcast program formalizes.
-   - **ROOT-CAUSE HYPOTHESIS for the cheap-NO tail (from the S230 1-min research):**
-     resolution grades the CONTINUOUS daily max, which exceeds the hourly-sampled world
-     by ≥1°F(rounded) on **78% of days** (nowcast_skill.py, 230 station-days). If the
-     bot's chain (ensemble members from hourly model output; WU/METAR-anchored ground
-     truth) effectively predicts the HOURLY-world max, every P(max≥X) is biased LOW —
-     exactly the observed signature (bot 4% → reality 27%). CONCRETE TEST (next
-     session): on matched station-days compare forecast-member medians and the bot's
-     graded targets vs (a) hourly-print max vs (b) continuous 1-min max; if the chain
-     tracks (a), a +δ representativeness correction at the bucket-probability layer is
-     the root fix. Do NOT hand-tune a fudge factor without this test.
+   - **ROOT CAUSE of the cheap-NO tail — TESTED AND CONFIRMED, sign INVERTED from the
+     first hypothesis (`rep_bias_test.py`, 190 station-days, 07-15):** Polymarket
+     resolution lives in the HOURLY-PRINT world, not the continuous one — winner
+     buckets contain the hourly-print max **81%** vs the continuous 1-min max only
+     **35%** (n=48 winners). The bot's stored ground truth agrees with settlement
+     (WU−H = −0.18 ± 0.28, n=72 ✓) — but the FORECAST layer runs HOT: ensemble median
+     = **+0.86 ± 0.33°F above the print world** (it tracks the continuous max,
+     Fm−C = −0.10; C−H = +0.95 ± 0.15, n=190). Mechanism: forecast ~0.9°F above
+     settlement-world → buckets BELOW forecast win more than modeled → P(YES) on low
+     buckets biased low → the 4%→27% signature. CONSEQUENCES: (a) root fix = the
+     EMOS/bias layer must learn this −0.9°F shift from WU pairs — verify whether the
+     per-station corrector actually applies it (training pairs post-07-01 cutoff may
+     still be too few, or the correction may not reach the bucket-tail computation);
+     do NOT hand-tune a fudge factor; (b) the '78% hidden-peak days' advantage in the
+     nowcast program is VOID for trading — settlement never sees between-print peaks;
+     the 1-min info-lead remains valid ONLY as 'know the next print early'; (c) the
+     14%-never-print crossings are a RISK to crossing-entries (they chase peaks that
+     never settle), part of why naive crossing entry is EV-zero. Caveats: WU n=72,
+     Fm n=47 (SE ±0.3); winner-bucket test n=48 but the 81/35 split is decisive.
    NEXT: keep accruing; re-run at n≥100-150 for bin-level power + any wedge-cell reads;
    the cheap-NO-tail miscalibration (bins [0.0-0.2)) is the concrete post-S229 defect
    to root-cause next (it is also what the market beats us with). Operator: the local

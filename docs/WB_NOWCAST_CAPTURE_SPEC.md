@@ -75,6 +75,14 @@ INSUFFICIENT, not fail. A 90-day run (forecasts exist to 2026-03-08) was
 launched 07-15 ~19:1xZ → `~/wb_research/nowcast_peak_90d.out`; expect
 ~3x entries → decisive either way. COLLECT IT NEXT SESSION.
 
+**S230 late addendum — rep_bias_test.py RESULT bears directly on this program:**
+resolution tracks the HOURLY-PRINT world (81% vs 35% continuous, n=48) — the
+hidden-peak advantage is VOID for trading; the 1-min lead is valid only as
+"know the next print early", and never-printing crossings (14%) are a risk
+factor for crossing entries. See WEATHER_STATUS OD-2 re-run block for the
+full layer-diff table (forecast +0.86F hot vs settlement world = the bot's
+cheap-NO-tail root cause).
+
 ## Phase 0 — validate BOTH halves offline (no new infra, no bot changes)
 
 Gate everything on two backtests, both feasible with existing data:
