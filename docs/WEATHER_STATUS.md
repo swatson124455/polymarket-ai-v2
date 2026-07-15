@@ -295,6 +295,25 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
    executable price); optional retro-purge of flipped `bootstrap_gfs` rows (N1 changelog);
    optional WU-only training filter on `actual_source` once the column has populated.
 
+3a-pre. **S230 LATENCY AUDIT (07-15) — the ASOS 1-minute path is DEAD, twice over; hourly
+   METAR is the true obs cadence.** Live-probed (VPS curl, 02:29-02:30Z): the bot's
+   `AsosOneMinClient` (`asos_onemin_client.py`) sends params IEM's modernized endpoint
+   now REJECTS — date sep `2026/7/15/0000` (wants `-`), `what=dl` (wants `download`),
+   and 4-char ICAO `KORD` (endpoint wants `ORD`) — three independent request bugs; the
+   client swallows every failure at debug and returns None, so the documented
+   "59-min faster detection" has been silently OFF (falls back to hourly METAR; no
+   behavior break — just a dead feature). AND EVEN IF FIXED IT'S USELESS LIVE: IEM's
+   1-min ingest lags ~42h (newest ORD row 07-13 08:18 at probe time 07-15 02:30).
+   NO public real-time sub-hourly temperature feed exists → everyone in the public-data
+   race sees temp ONCE PER HOUR (AWC METAR, report ~:51-:55, api-visible minutes after
+   :00; SPECIs don't trigger on temperature). Decision needed (post-verdict): fix the
+   3 param bugs anyway (correctness; useful for backfill/research) or rip the client
+   out — but do NOT expect live latency from it. Latency chain measured/code-cited:
+   AWC publication ~2-6min + MetarMonitor poll 300s+0-30s jitter (metar_monitor.py:45,94)
+   + (flag OFF) wait-for-next-scan-top 300-600s → TODAY ~5-15min behind publication =
+   last to the ~15-min repricing. Flag ON (3a) → ~3-6min = mid-pack. Also shrinking the
+   METAR poll (hardcoded 300s default; only the MODEL-RUN poll is env-tunable —
+   settings.py:984) to ~60s → ~1.5-3min ≈ the public-data floor.
 3a. **S228 latency package — ON BRANCH, inert-by-default, activate AFTER the S222 verdict.**
    Code ships at the next release cut but changes nothing until env-flipped (protects window
    comparability; an emergency hotfix cut mid-window stays safe). Activation block (Tier-1/2,
