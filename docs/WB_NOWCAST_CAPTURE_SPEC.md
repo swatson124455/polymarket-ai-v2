@@ -103,6 +103,43 @@ factor for crossing entries. See WEATHER_STATUS OD-2 re-run block for the
 full layer-diff table (forecast +0.86F hot vs settlement world = the bot's
 cheap-NO-tail root cause).
 
+## NEXT SESSION PLAN — DEEP-BACKTEST PROGRAM (queued 2026-07-15, operator-approved)
+
+Converts three "wait for accrual" verdicts into answers from data that already
+exists. Feasibility PROBED 07-15 (all verified live from the VPS):
+CLOB minute-candles retained indefinitely (Feb-2025 market returned all 1,440
+final-day candles); Open-Meteo historical-forecast API serves archived runs
+back to ~2022 in °F (the bot's exact vendor; previous-runs variant needs its
+`..._previous_dayN` param shape, not `forecast_days`); IEM archives years-deep;
+data-api trade prints paginate historically. Our DB is dense from 2026-03
+(~11k resolved highest-temp buckets), near-empty before.
+
+Session tasks, in order:
+1. **Peak-model at full power:** wire archived Open-Meteo forecasts (historical
+   + previous-runs APIs; also the historical ENSEMBLE api for members) into
+   `nowcast_peak_model.py` to (a) fill the missing-forecast holes that cost the
+   90d run ~half its entries, (b) add March. Expect n_test ~120+ → the +0.074
+   estimate lands ~1.8-2σ → gate clears or dies honestly. Keep the
+   pre-registered rule FROZEN (E_rem<=1.0 AND h>=12); report cell table for
+   information only — no post-hoc re-tuning.
+2. **Historical maker-fill study (0c now, not in weeks):** paginate data-api
+   prints for resolved families (03→07); for each reveal window, measure
+   fill-probability of hypothetical resting bids at L1/L2/L3 of the pre-reveal
+   book proxy (prints ARE fills; side=TAKER side). Answers whether even a
+   proven +7¢ is capturable maker-side. Caveat to state in results: queue
+   position unknowable; treat computed fill rates as UPPER bounds.
+3. **9-12h cell at scale:** re-cut the day-of hours-to-resolution EV table over
+   ALL 03→07 resolved families using CLOB minute prices at matched timestamps
+   (not just clean-window prediction_log rows) — bot-independent version of the
+   one surviving cell; family-clustered SEs.
+4. **Gamma probe for pre-2026 listings** (one curl session): if 2025-summer
+   temp dailies exist, backfill markets+prices → out-of-regime validation set
+   (the jackpot; likely absent — DB shows ~13 markets Oct-Dec 2025).
+5. Fold verdicts back into THIS spec + WEATHER_STATUS OD-2; the Phase-1
+   build/kill decision follows directly.
+HARD LIMIT (unchanged): order-book depth cannot be backfilled — executable-ask
+questions stay forward-only via the shadow logger (keep both crons running).
+
 ## Phase 0 — validate BOTH halves offline (no new infra, no bot changes)
 
 Gate everything on two backtests, both feasible with existing data:

@@ -302,7 +302,7 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
    | 2 | Gate retirement IF PASS (A1/A3 → dampeners → caps; C0 Kelly last, calibrator-gated) | after 1 |
    | 3 | Shadow-book logger (read-only: snapshot books on obs events) — prices leader-following capture + maker fills | after 1; prerequisite for trading the confirmed edge |
    | 4 | Latency package activation (3a) — decide WITH 3 (priority-wake is the nowcast weapon) | after 3 |
-   | 4b | **Nowcast-and-capture program (S230 spec: `docs/WB_NOWCAST_CAPTURE_SPEC.md`)** — compete where the market is SLOW (0.54→0.72 post-print jump = unclaimed information); Phase 0 = two offline backtests (nowcast skill + capture size) gate everything; PWS-mesh + NWWS-OI are Phase 1 | Phase 0 next session (read-only, runs alongside queue) |
+   | 4b | **Nowcast-and-capture program (S230 spec: `docs/WB_NOWCAST_CAPTURE_SPEC.md`)** — Phase 0 RAN + CLOSED S230 (gate not met, +0.074 @1.2σ, no infra spend). **NEXT = the DEEP-BACKTEST PROGRAM (spec §"NEXT SESSION PLAN", operator-approved 07-15):** archived Open-Meteo forecasts → peak-model at ~2x n (decisive); historical trade prints → maker-fill study NOW; 9-12h cell at scale over all 03→07 families; Gamma probe for 2025 listings | NEXT WB SESSION, priority 1 (read-only) |
    | 5 | Bootstrap landmine proper fix (date-bind + actual_source training filter, same commit) | post-S222 |
    | 6 | ~~Release cut carrying `9dc6d59`~~ **DONE** — deployed in `20260714_003205` (07-14 00:32:41Z) | ✅ |
    | 7 | Ops debt: main-tree deploy mechanism | after verdict |
