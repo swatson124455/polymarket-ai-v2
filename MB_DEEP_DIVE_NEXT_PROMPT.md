@@ -76,6 +76,23 @@ The batch shares the tenderly RPC with the **LIVE `polymarket-mirror3` watcher**
 stays **0**. If the watcher goes blind, the batch load is a suspect — lower
 `--rps` or point the batch at a second endpoint (`--rpc-env`).
 
+## SHADOW READOUT — recurring, check EVERY session (2026-07-15)
+A **daily VPS cron (12:30 UTC)** runs `deploy/shadow_readout_cron.sh` →
+`scripts/shadow_readout.py`, which rebuilds token→outcome labels **FRESH from
+the `markets` table** (the `analyze_shadow --gamma-cache` default is STALE and
+silently reports "0 resolved" — §7 landmine, operator-caught 2026-07-15) and
+reads **cohort-1 and cohort-2 SEPARATELY** (never pooled).
+- **On session start: `cat /opt/pa2-shared/mb_copyable_data/deep_dive/shadow_readout_ALERT.txt`**
+  (exists only when triggered) **and `tail /opt/pa2-shared/mb_copyable_data/deep_dive/shadow_readout_log.txt`**;
+  RELAY to the operator if an ALERT fired. Triggers: a cohort hits **≥30
+  resolved markets** (→ run the pre-registered verdict) OR its **edge is
+  convincingly negative** (P(>0) ≤ 0.10 on ≥10 mkts).
+- **Current signal (2026-07-15, DESCRIPTIVE, UNDERPOWERED):** cohort-1 edge is
+  **NEGATIVE** (≈ −0.048, P(>0) ≈ 0.37) on ~10/30 resolved — leans the WRONG
+  way; watch it. Cohort-2 is at 0 (just admitted). NEVER quote this as $ P&L
+  (banned) — it's calibration/edge.
+- To read on demand: `sudo -u polymarket bash /opt/pa2-shared/mb_readout/deploy/shadow_readout_cron.sh`.
+
 ## STANDING STATE (verify, don't trust)
 Shadow watcher live since 2026-07-13 23:29:27 UTC on `/opt/mirror3`=`25b54d4`;
 S222-style shadow readout clock ~2-4wk (`analyze_shadow.py --trust-quotes-after
