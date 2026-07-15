@@ -64,6 +64,16 @@ def load_records(path: str) -> list[dict]:
     return out
 
 
+def filter_traders(records: list[dict], traders_csv: str) -> list[dict]:
+    """Keep only records whose trader is in the comma-separated allowlist
+    (case-insensitive). Empty allowlist -> all records. Enables a SEPARATE
+    cohort readout — cohort-2 must NEVER be pooled with cohort-1 (MB_STATE)."""
+    if not traders_csv:
+        return records
+    keep = {a.strip().lower() for a in traders_csv.split(",") if a.strip()}
+    return [r for r in records if str(r.get("trader", "")).lower() in keep]
+
+
 def repair_record(r: dict, max_chase: float = 0.02, max_spread: float = 0.05,
                   trust_after: Optional[float] = None
                   ) -> tuple[Optional[dict], str]:
@@ -288,6 +298,11 @@ def _self_test() -> int:
            and repair_record(lless, trust_after=200.0)[1] == "EXCLUDED")
     print(f"  [repair] ladderless: excluded unless post-fix trusted : {ok8}")
     ok &= ok8
+    okf = (len(filter_traders(recs, "0xGOAT")) == len(recs)  # case-insensitive
+           and filter_traders(recs, "0xnope") == []
+           and len(filter_traders(recs, "")) == len(recs))
+    print(f"  [filter] cohort trader allowlist (case-insensitive) : {okf}")
+    ok &= okf
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -307,6 +322,9 @@ if __name__ == "__main__":
                     dest="trust_after", metavar="EPOCH",
                     help="detect_ts >= EPOCH written by the FIXED watcher: "
                          "ladderless records kept as-is instead of excluded")
+    ap.add_argument("--traders", default="", help="comma-separated address "
+                    "allowlist for a SEPARATE cohort readout (empty = all "
+                    "roster; cohort-2 must never be pooled with cohort-1)")
     ap.add_argument("--no-repair", action="store_true",
                     help="UNSAFE: analyze raw records (pre-2026-07-13-fix "
                          "quotes are swapped); diagnostics only")
@@ -314,7 +332,10 @@ if __name__ == "__main__":
     args = ap.parse_args()
     if args.self_test:
         raise SystemExit(_self_test())
-    recs = load_records(args.log)
+    recs = filter_traders(load_records(args.log), args.traders)
+    if args.traders:
+        print(f"cohort filter: {len(recs)} records for "
+              f"{len(args.traders.split(','))} trader(s)")
     if args.no_repair:
         print("!! RAW MODE (--no-repair): pre-fix records carry SWAPPED "
               "bid/ask and bid-priced fills — diagnostics only, never a "

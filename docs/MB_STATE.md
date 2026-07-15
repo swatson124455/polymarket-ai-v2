@@ -393,6 +393,7 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
 | Shadow probe battery | `mb_copyable_data/shadow_probes_20260713.{py,out}` | S1-S5 pre-registered descriptive; capacity/spread/tax measured; S1/S2 await resolutions |
 | Stress suite | `tests/unit/test_mirror3_stress.py` | 9 tests/10 invariants (cloud session `d7fa2bf`); full mirror_v3 surface 93+ green |
 | **Chain deep-dive gate (roster admission)** | `scripts/chain_deep_dive.py` + `tests/unit/test_chain_deep_dive.py` | NEW 2026-07-14 (`0231f2c`): 4-tier chain-native gate (lifetime dual-era reconstruction → API↔chain reconcile both ways → chain skill re-grade → forensics/fair-HFT); adversarially reviewed (16 findings fixed) + smoke-validated; `--self-test` 16-case verdict table + 23 pytest green (local+VPS venv); read-only, reuses siblings as-is. **47-batch RUNNING** (see §0). |
+| **Shadow readout (fresh-label, per-cohort)** | `scripts/shadow_readout.py` + `scripts/analyze_shadow.py --traders` | NEW 2026-07-15: rebuilds token→outcome FRESH from `markets` each run (default gamma cache is stale — §7 landmine), splits cohort-1 / cohort-2 (never pooled), writes an ALERT on power-bar / negative-firming. Both `--self-test` green. Runs daily on the VPS (durable clone `/opt/pa2-shared/mb_readout`); log `shadow_readout_log.txt`, alert `shadow_readout_ALERT.txt`. |
 
 ## 5. Open threads / what's next
 
@@ -684,3 +685,28 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
   it needs no receipts, so a genuinely un-tailable HFT account rejects fast
   without paying for full receipts; and it uses FRACTIONAL span-days (integer
   floor inflated the rate for the 1-2.5-day-history borderline cohort).
+
+### Added 2026-07-15 PM (shadow readout — stale-label trap)
+
+- **`analyze_shadow.py --gamma-cache` SILENTLY GOES STALE → false "0
+  resolved / UNDERPOWERED" that MASKS the real edge.** The gamma resolution
+  cache (`copyable_cache/gamma_resolutions.json`) is from 2026-07-10 and
+  covers ZERO of the shadow markets (07-13+), so the readout reported 0/30
+  resolved when the live `markets` table already knew ~10 resolved — AND the
+  early edge on those was NEGATIVE (the stale cache hid a real signal).
+  Operator caught it ("0% chance 0 are closed after 3 days"). **NEVER trust
+  the default gamma cache for a readout.** Use `scripts/shadow_readout.py`
+  (rebuilds token→outcome FRESH from `markets` every run; per-cohort split via
+  `analyze_shadow --traders`; writes an ALERT on power-bar / negative-firming).
+  This is the Forbidden-Pattern-9 discipline: an impossible number (0 resolved)
+  means the QUERY is wrong — fix the source, don't explain it away.
+- **EARLY FORWARD SIGNAL (2026-07-15, DESCRIPTIVE, n=10 UNDERPOWERED):**
+  cohort-1's shadow edge on the ~10 resolved-so-far is **NEGATIVE**
+  (edge ≈ -0.048, P(edge>0) ≈ 0.37) net of the ~1c copy tax. NOT a verdict
+  (need ≥30), but it leans the WRONG way — the retrospective +edge may not
+  survive our spread/latency. Watch as resolved climbs; the same tax applies
+  to the 8 cohort-2 admits, so their forward shadow is the real test.
+- **Shadow token→outcome join:** `markets` rows key outcomes by
+  `yes_token_id`/`no_token_id` (resolution YES ⇒ yes-token won). The shadow
+  records carry only `token_id` (no condition_id), so resolve via those two
+  columns, not condition_id.
