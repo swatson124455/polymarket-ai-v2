@@ -77,6 +77,30 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
    suggestive NOT significant); but bot Brier worse than market in EVERY bucket
    (side-picking wins small, magnitude errors lose big — the cheap-NO tail). Same-market
    rows correlate across buckets (50 independent markets). Watch 9-12h as n accrues.
+   **RE-RUN AT n=133 (07-15 ~19:00Z, S230 late session) — VERDICTS SHARPEN, one REVERSES:**
+   - **A1/A3 now FAIL at proper power** (supersedes the n=50 "PASS-leaning"): PIT KS
+     0.1924 **p=0.0001** (right-spiked, [0.9-1.0) bin 2.41x); the cheap-NO tail is
+     statistically solid — [0.0-0.1) predicted 0.04 → actual **0.269 (n=67, +0.228)**;
+     [0.1-0.2) 0.14 → 0.359 (n=39). Brier 0.2542, BSS −0.18 (worse than climatology).
+     The n=50 non-rejection was insufficient power, not calibration.
+   - **Duel at n=133:** market 0.1765 vs bot 0.2542 — decisive again. Head-to-head 68%
+     (side-picks win, magnitude loses). Only per-city cell favoring bot = Seoul n=6
+     (noise); Chinese cities strongly adverse. Still no credible wedge cell.
+   - **BUT the day-of 9-12h-to-resolution cell SURVIVED accrual:** bet-the-disagreement
+     at stored mid, +0.118 (SE 0.055, **~2.1σ from zero**), WR 79%, n=66 distinct
+     markets (was +0.142/n=27). Every day-of bucket positive (+0.038..+0.118). CAVEAT:
+     same-family markets correlate (effective n lower); mid prices. 9-12h-to-res ≈
+     noon-3pm local = the PEAK window — same phenomenon the nowcast program formalizes.
+   - **ROOT-CAUSE HYPOTHESIS for the cheap-NO tail (from the S230 1-min research):**
+     resolution grades the CONTINUOUS daily max, which exceeds the hourly-sampled world
+     by ≥1°F(rounded) on **78% of days** (nowcast_skill.py, 230 station-days). If the
+     bot's chain (ensemble members from hourly model output; WU/METAR-anchored ground
+     truth) effectively predicts the HOURLY-world max, every P(max≥X) is biased LOW —
+     exactly the observed signature (bot 4% → reality 27%). CONCRETE TEST (next
+     session): on matched station-days compare forecast-member medians and the bot's
+     graded targets vs (a) hourly-print max vs (b) continuous 1-min max; if the chain
+     tracks (a), a +δ representativeness correction at the bucket-probability layer is
+     the root fix. Do NOT hand-tune a fudge factor without this test.
    NEXT: keep accruing; re-run at n≥100-150 for bin-level power + any wedge-cell reads;
    the cheap-NO-tail miscalibration (bins [0.0-0.2)) is the concrete post-S229 defect
    to root-cause next (it is also what the market beats us with). Operator: the local
