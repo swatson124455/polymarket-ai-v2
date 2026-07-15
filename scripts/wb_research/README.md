@@ -69,6 +69,56 @@ drifts to 0.85 by +90m. The ~21¢ repricing is fully concentrated at
 publication → the hole is open. CAVEAT: winners-only conditioning — strategy
 EV needs the loser legs (overshoot) too; that replay is the next step.
 
+## nowcast_entry_ev.py — loser-leg replay: is buy-every-crossing +EV? (S230)
+Runs on VPS. Every 1-min crossing entry (winners AND losers) at the CLOB price
+at t_cross vs at t_reveal. S230 RESULT (58 family-days, 121 entries): naive
+crossing entry is EV-ZERO (+0.008 ± 0.041 at cross; −0.043 at reveal) — only
+~33% of crossings are final; the 58-min lead is worth ~+5¢ vs reacting but the
+base strategy has no edge → a peak-proximity model is REQUIRED (next harness).
+
+## nowcast_peak_model.py — Phase-0a-ii: THE gate. "is this crossing final?" (S230/S231)
+Runs on VPS (venv). Pre-registered FROZEN rule: enter iff E_rem <= 1.0F AND
+hour >= 12, date-split, verdict on the TEST half (bar: meanEV >= +0.05 with
+2SE excluding 0). S230: 12d/28d/90d runs — picks positive every cut
+(+0.074..+0.105 TEST) but 1.2-1.4σ, GATE NOT MET; offline DB history exhausted.
+S231: archived Open-Meteo forecasts wired in via the PREVIOUS-RUNS API
+(`temperature_2m_previous_day1` = issued day D-1, no lookahead; the
+historical-forecast mosaic is shortest-lead = lookahead, NOT used;
+historical-ensemble API only reaches 2026-04-13). PRIMARY = DB forecast when
+present, archived fills holes; DB-only/ARCH-only cuts + offset diagnostics;
+family window keyed on the QUESTION date (NULL end_date_iso no longer drops
+families) → 719 family-days 03-01..07-12. Results: `nowcast_peak_133d.out`.
+
+## rep_bias_test.py — which world settles the market? (S230, ROOT CAUSE)
+Runs on VPS. Three-way layer diff over 18d × 12 US stations: continuous 1-min
+max (C) vs hourly-print max (H) vs WU ground truth vs ensemble median (Fm).
+S230 RESULT: resolution lives in the PRINT world (winner bucket contains H 81%
+vs C 35%, n=48); WU−H = −0.18 (n=72); C−H = +0.95; forecast layer +0.86F HOT
+vs print world → the cheap-NO-tail root cause; EMOS pairs already carry −0.62.
+
+## maker_fill_study.py — historical maker fills at reveal windows (S231, task 2)
+Runs on VPS (venv). For each resolved US-F WINNER bucket 03→07: t_reveal =
+first hourly METAR print entering the bucket (+6min); full data-api print
+history (paginated, deduped, YES-frame: taker SELL-Yes or BUY-No both hit a
+resting YES bid via merged-book minting); fills = taker-sell prints <= bid
+level in [-30m,+45m]; same-day control window 3.5h earlier. S231 RESULT
+(304 reveal windows; months 3/4/5/6/7 = 93/95/9/74/33 — May thin in DB;
+median p0 0.68, median repricing +8¢): any-fill 97/95/93/86% at
+p0−0/1/2/5¢ (med ~150-200 sh) BUT control 80-87% — books churn two-sided all
+day; the reveal-specific signal is POST-reveal-only fills 74/71/65/54%.
+ALL UPPER BOUNDS (queue position unknowable; winner-conditioned; wash flow
+included). Read: capture is not the blocker — adverse selection when wrong is,
+i.e. the peak-model gate decides. Capacity confirmed small (~$100/window UB).
+
+## dayof_cell_scale.py — the 9-12h cell, bot-independent, at scale (S231, task 3)
+Runs on VPS (venv). Re-cuts the one surviving S230 cell over ALL resolved
+03→07 US-F families with a signal that never touches the bot: P(bucket) =
+raw DB ensemble members (latest <=24h before T, no lookahead) FLOORED at the
+hourly-METAR running max at T (print world), vs CLOB minute price at
+T = local-midnight-EOD − h (4.5/7.5/10.5/18h). Bet-the-disagreement
+(|P−price| >= 0.10; 0.05/0.15 sensitivity on the 9-12h cell);
+FAMILY-DAY-CLUSTERED SEs. Results: `dayof_cell_133d.out`.
+
 ## trade_prints.py — "do resting orders actually get filled?" (maker leg)
 Runs on the VPS via cron (`trade_prints.sh`, every 10 min at :05 offset,
 alongside shadow_book.sh at :00). For each active US highest-temp family
