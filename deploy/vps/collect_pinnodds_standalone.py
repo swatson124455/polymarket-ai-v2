@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json,os,re,time,urllib.request,urllib.error,urllib.parse
+import json,os,re,time,unicodedata,urllib.request,urllib.error,urllib.parse
 from datetime import datetime,timezone
 ENV=os.environ.get("PINNODDS_ENV_PATH","/opt/pa2-shared/.env")
 SNAP=os.environ.get("PINNODDS_SNAPSHOT_PATH","/home/ubuntu/eb-odds/pinnodds_snapshots.jsonl")
@@ -37,7 +37,11 @@ GENERIC={"esports","esport","e-sports","gaming","team","club","academy","youth",
 # even via aliases. Same-qualifier pairs still match ("T1 Academy"=="T1 Esports Academy").
 QUAL={"academy","youth","junior","juniors","rookies","challenger","challengers","female","fe","women","womens","ladies","gc","blue","white","black","gold","stars"}
 def tnorm(s):
+    # NFKD fold mirrors orientation.normalize_team ('Leviatán'=='Leviatan' —
+    # real 2026-07-15 marquee PM-match miss; sources romanize inconsistently).
     s=str(s or "").lower().replace("_"," ")
+    s=unicodedata.normalize("NFKD",s)
+    s="".join(c for c in s if not unicodedata.combining(c))
     s=re.sub(r"[^\w\s]"," ",s)
     return re.sub(r"\s+"," ",s).strip()
 # Optional alias map (mirrors esports_v2.data.alias_file, correct-or-absent):

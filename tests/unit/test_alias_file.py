@@ -155,6 +155,25 @@ def test_standalone_identity_only_and_malformed_are_none(tmp_path, monkeypatch):
     assert sa2.load_aliases() is None
 
 
+def test_standalone_tnorm_folds_diacritics_like_canonical():
+    """NFKD parity with orientation.normalize_team: 'Leviatán Esports' (PM)
+    must match 'Leviatan' (PinnOdds) — the real 2026-07-15 marquee miss that
+    nulled PM capture for VCT Americas Leviatán vs FURIA."""
+    from esports_v2.model.orientation import normalize_team
+    from esports_v2.model.team_match import same_team as canon_same_team
+
+    sa = _load_standalone()
+    for name in ("Leviatán Esports", "Çilekler", "Gen.G", "Karmine Corp",
+                 "Wildcard", "Bilibili Gaming"):
+        assert sa.tnorm(name) == normalize_team(name)
+    assert sa.same_team("Leviatán Esports", "Leviatan")
+    assert canon_same_team("Leviatán Esports", "Leviatan", None)  # canon agrees
+    ref = ("0xlev", "1", "Leviatán Esports", 0.74, "Leviatán Esports",
+           "FURIA Esports", "2026-07-16")
+    assert sa.match_ref("Leviatan", "FURIA", "2026-07-16T21:00:00Z",
+                        [ref]) == ref
+
+
 def test_standalone_qualifier_veto_parity(tmp_path, monkeypatch):
     """The stdlib mirror applies the same sibling-roster veto, alias or not."""
     p = tmp_path / "aliases.json"
