@@ -65,6 +65,16 @@ bar: model-filtered crossing entries meanEV ≥ +0.05 at mid with CI excluding
 0); (2) capture size at the logged ask (0b); (3) maker-fill evidence (0c).
 The live data source must be a PWS mesh (IEM 1-min lags ~42h — backtest-only).
 
+**0a-ii RESULTS SO FAR (`nowcast_peak_model.py`, rule: E_rem<=1.0F AND h>=12,
+date-split):** 12d run — test n=31 meanEV +0.074 (SE 0.081), rejects −0.029;
+28d run — TRAIN n=12 +0.141, **TEST n=35 +0.105 (SE 0.076, 1.4σ)**, rejects
+n=112 −0.031/28% win. Direction ROBUST across windows (picks positive both
+halves both runs; ~13.6¢ pick-vs-reject separation; sharpest a-priori cell =
+E_rem≤0.5 × h12-13: +0.163 n=21) but the 2σ gate is NOT yet met — verdict
+INSUFFICIENT, not fail. A 90-day run (forecasts exist to 2026-03-08) was
+launched 07-15 ~19:1xZ → `~/wb_research/nowcast_peak_90d.out`; expect
+~3x entries → decisive either way. COLLECT IT NEXT SESSION.
+
 ## Phase 0 — validate BOTH halves offline (no new infra, no bot changes)
 
 Gate everything on two backtests, both feasible with existing data:
