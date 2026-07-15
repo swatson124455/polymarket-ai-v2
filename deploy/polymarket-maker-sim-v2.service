@@ -1,0 +1,21 @@
+# Paper Maker sim V2 (experiment arm) — PAPER ONLY, 100% separate from v1 control.
+# Stop:   sudo touch /opt/pa2-maker-sim-v2/STOP
+# Kill:   sudo systemctl disable --now polymarket-maker-sim-v2.timer
+[Unit]
+Description=Polymarket Paper Maker Sim V2 experiment arm (read-only, no trading)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=polymarket
+Group=polymarket
+WorkingDirectory=/opt/pa2-maker-sim-v2
+ExecStart=/usr/bin/python3 /opt/pa2-maker-sim-v2/maker_paper_sim_v2.py --once
+TimeoutStartSec=115
+ProtectSystem=strict
+ReadWritePaths=/opt/pa2-maker-sim-v2
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectHome=true
+MemoryMax=256M
+CPUQuota=25%

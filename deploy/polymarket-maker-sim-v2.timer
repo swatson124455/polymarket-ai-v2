@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the paper Maker sim V2 experiment arm every 2 minutes
+
+[Timer]
+OnCalendar=*:0/2
+AccuracySec=15s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
