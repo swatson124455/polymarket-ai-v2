@@ -44,9 +44,26 @@ alignment — full strategy EV must include loser legs (bucket entered, later
 overshot); that replay + capture-at-ask (0b) + maker fills (0c) are the
 remaining Phase-0 items, pending shadow-book/trade-print accrual.
 
-**Remaining before Phase 1 go:** loser-leg EV replay; capture size at the
-logged ask (0b); maker-fill evidence (0c). The live data source must be a
-PWS mesh (IEM 1-min lags ~42h — backtest-only).
+**Loser-leg replay: RAN same night (`nowcast_entry_ev.py`, 58 family-days,
+121 crossing entries incl. losers) — NAIVE STRATEGY IS EV-ZERO; a peak-model
+is REQUIRED.** Buy-every-crossing at t_cross: meanEV **+0.008 ± 0.041** (zero);
+same entries at t_reveal: −0.043 ± 0.047. So the 58-min observation lead is
+worth ~**+5¢/share vs reacting to the print**, but the base strategy carries
+no edge: only 33% of crossings are final (median entry 0.32 — the market's
+forecast-based pricing already anticipates crossings without watching
+real-time obs; the 21¢ reveal jump is 'will it STOP here' uncertainty
+resolving, winners-only conditioning made it look free). Hour pattern
+confirms: midday crossings (h12, mostly overshot later) −0.089; h13-14
+crossings +0.024..+0.043. CONCLUSION: the tradeable version = observation
+lead + a PEAK-PROXIMITY MODEL ("is this crossing final?") — time-of-day +
+forecast max + trajectory. The race study's fixed-hour entries were a crude
+version of exactly this.
+
+**Remaining before Phase 1 go (revised):** (1) **0a-ii peak-model backtest —
+now THE critical gate** (offline, same IEM data: predict P(crossing is final);
+bar: model-filtered crossing entries meanEV ≥ +0.05 at mid with CI excluding
+0); (2) capture size at the logged ask (0b); (3) maker-fill evidence (0c).
+The live data source must be a PWS mesh (IEM 1-min lags ~42h — backtest-only).
 
 ## Phase 0 — validate BOTH halves offline (no new infra, no bot changes)
 
