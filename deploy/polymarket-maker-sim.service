@@ -1,0 +1,22 @@
+# Paper Maker sim — PAPER ONLY, kernel-sandboxed. See scripts/maker_paper_sim.py.
+# Stop:   sudo touch /opt/pa2-maker-sim/STOP        (next tick exits instantly)
+# Kill:   sudo systemctl disable --now polymarket-maker-sim.timer
+[Unit]
+Description=Polymarket Paper Maker Sim (read-only public APIs, no trading)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=polymarket
+Group=polymarket
+WorkingDirectory=/opt/pa2-maker-sim
+ExecStart=/usr/bin/python3 /opt/pa2-maker-sim/maker_paper_sim.py --once
+TimeoutStartSec=280
+# Guard rails: kernel-enforced write isolation + resource caps
+ProtectSystem=strict
+ReadWritePaths=/opt/pa2-maker-sim
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectHome=true
+MemoryMax=256M
+CPUQuota=25%
