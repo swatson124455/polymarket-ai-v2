@@ -2,9 +2,123 @@
 
 **Branch:** `claude/esports-sharp-line-rebuild-gqy1na` (session 4; supersedes
 `…-36c8u9-7m96gg` — same history + the PM-index coverage fix below)
-**Updated:** 2026-07-13 (session 6 — pre-slate health check; start reading at §0-S6)
-**Read order:** this file → `EB_SHARP_LINE_STATE.md` → `EB_SHARP_LINE_PLUMBING.md`
-(esp. "Step-3 PREFLIGHT" + "LIVE MEASUREMENT") → `EB_MARKET_SHAPE_RESULTS.md` → `CLAUDE.md`.
+**Updated:** 2026-07-14 (session 6 CLOSE — start at §0-S7; its PICK UP block
+supersedes every older one in this file)
+**Read order:** this file (§0-S7 → §0-S6f..§0-S6) → `EB_SHARP_LINE_STATE.md` →
+`EB_SHARP_LINE_PLUMBING.md` → `EB_MARKET_SHAPE_RESULTS.md` → `CLAUDE.md`.
+
+---
+
+## 0-S7. SESSION-6 CLOSE (2026-07-14) — EDGE SHAPE FOUND (2–5pt BAND); HISTORICAL BACKTEST 2/3 UNLOCKED; VENDOR EMAIL = CRITICAL PATH
+
+Everything committed + pushed through `4182242`+this; 670 related tests green;
+collector healthy (md5 `36743c45…` deployed 17:35Z, `books=` in every tick).
+All numbers below computed this session from the md5-verified canonical
+snapshot (3,848 rows) + PandaScore results via the PRODUCTION pipeline
+(frozen orientation, Shin de-vig) — n=38-39 settled, **ALL UNSTABLE (n<50)**.
+
+### The edge picture (per-point breakdown, settled, gross@mid unless noted)
+| gap | occurs (of 92 priced lines) | settled | wins | net/bet after canonical costs |
+|---|---|---|---|---|
+| 0–1pt | 38 (41%) | 17 | 11 | +0.094 ← **NOISE (variance≫gap), ignore** |
+| 1–2pt | 24 (26%) | 8 | 4 | **−0.016 (dead zone)** |
+| 2–3pt | 18 (20%) | 10 | 7 | **+0.139** |
+| 3–4pt | 10 (11%) | 2 | 2 | +0.415 |
+| 4–5pt | 1 | 1 | 1 | +0.270 |
+| >5pt | **does not exist** ex-placeholder (1 unsettled 6pt outlier) | | | |
+
+- **Candidate strategy compresses to: bet ONLY gaps ≥2pt (≈1/3 of priced
+  lines, ~5-6 candidates/day captured), expected +0.5–1.5pt/bet net IF real**
+  (the realized +19pt/bet on n=13 is luck-inflated — even a fully-real edge
+  predicts gap−costs, not 19pt). Capacity $130–1,200/bet at the touch.
+- Gap→realized conversion: OLS slope **+1.55, 95% CI [−1.44, +4.53]** — point
+  estimate = "fully real", CI = "can't distinguish from noise yet". Mean gross
+  +0.130/bet, CI [−0.008, +0.267]. **The data has the right SHAPE, not proof.**
+- **Trigger-time trace** (when does a gap first cross X?): 2pt fires median
+  ~9h pre-start (27/38 matches). Betting AT the first crossing: wash at 2pt,
+  **WORSE at 3pt (−6.4pt vs waiting for close)** — early gaps are Pinnacle
+  soft-opener noise (matches the §0-S6b convergence finding). **Implied live
+  rule: scan the final 1–2h before start; bet only if still ≥2pt at the
+  TOUCH.** Patience beats speed; no fast infra needed.
+- Settled counter-evidence still open (n=65): favorites over-deliver even vs
+  Shin (0.708 vs 0.671) — the 2pt+ band could still resolve to the WRONG side.
+  Only volume settles it.
+
+### CRITICAL PATH — the vendor email (historical backtest 2/3 unlocked)
+The n problem (38 settled vs the 100+ go-bar ≈ 3 more weeks) collapses to ~a
+weekend of pipeline work IF PinnOdds sells historical esports odds:
+1. **Polymarket historical prices: ✅ VERIFIED this session** — CLOB
+   `/prices-history?market=<token_id>&interval=max&fidelity=60` SERVES RESOLVED
+   markets (JD/TYLOO `0x8c395b57…`: 120 hourly points 07-05→07-10, terminal
+   0.0005 == our settled label). Free, hourly, survives resolution.
+2. **Results history: ✅** PandaScore window fetcher (already built).
+3. **Pinnacle historical odds: ❓ THE ONLY MISSING PIECE.** Ask PinnOdds:
+   (a) does any paid tier include HISTORICAL esports odds? (b) how far back +
+   does it include final pre-match (closing) odds? (c) rate limits + price.
+   **Get a sample file before paying** — this vendor's marketing has claimed
+   unverified things before (`reference_pinnacle_b2b_only`).
+   Caveat if yes: history = hourly MIDs, no order books → historical readout
+   is gross-at-mid; apply the measured 0.5–1.5pt slippage as a haircut.
+
+### Operator dispositions this session (do not re-litigate)
+- Fixes #2 (frozen orientation, `97353ae`+`6554729`) + #3 (game gate,
+  `62c3677`) AUTHORIZED + SHIPPED. Settlement/void cross-check ("panda"):
+  operator said IGNORE for now — needed only if the readout is POSITIVE.
+- n=13 excitement disciplined: numbers stay labeled UNSTABLE; no config/
+  threshold change before the readout (2607765's sweep stays EXPLORATORY).
+
+### PICK UP HERE (copy-paste prompt for the next session)
+> **EsportsBot sharp-line rebuild — continue; new session picking up
+> seamlessly. Branch: `git checkout claude/esports-sharp-line-rebuild-gqy1na
+> && git pull`. Read `EB_SHARP_LINE_NEXT_SESSION.md` §0-S7 first (top), then
+> §0-S6f..§0-S6, then CLAUDE.md. Verify `git branch --show-current` before
+> any write (WB shares this checkout).**
+>
+> **Session type:** if LOCAL on the operator's Windows box, the SSH key
+> `C:/Users/samwa/.ssh/LightsailDefaultKey-eu-west-1.pem` →
+> `ubuntu@18.201.216.0` works directly (read-only checks + scp fine; NEVER
+> run the collector manually — PinnOdds quota). If CLOUD: relay VPS commands
+> via the operator; gamma-api + clob + raw.githubusercontent reachable.
+> Ops-script delivery: commit to `deploy/vps/eb_*.sh`, push, hand ONE
+> curl+md5sum -c+bash line; md5s from the GIT BLOB (`git show HEAD:<file> |
+> md5sum`), never the CRLF working copy.
+>
+> **STATE (all done, do not redo):** pipeline live e2e + audited (§0-S6f:
+> orientation 95/95 canon, 4 defects fixed); GAP C bid/ask+depth capture
+> DEPLOYED; /events coverage fix DEPLOYED (md5 `36743c45…`, rollback .baks on
+> VPS); backtest grades fills at the executable touch, Shin-capable
+> (`pip3 install shin` on the VPS REQUIRED before a shin readout), frozen
+> orientation + veto cross-check, game-gated join. Edge shape: §0-S7 table —
+> candidate = "≥2pt gaps only, final 1-2h before start, at the touch",
+> expected +0.5–1.5pt/bet net IF the readout confirms; >5pt gaps don't exist.
+>
+> **PRIMARY (time-gated ~07-20+):** after the 07-15..19 slate resolves, run
+> the audit one-liner (`deploy/vps/eb_label_audit.sh`, md5 `e56e8ed6…`,
+> re-clones HEAD) → judge BOTH de-vig ways against the pre-registered
+> go-criteria (ROI>0, 95% CI ex-zero, ≥100 settled bets — n<50 prints
+> UNSTABLE, do NOT act), focus the per-bucket 2–5pt band, note fill coverage
+> + capacity lines. If POSITIVE → the settlement/void cross-check (panda)
+> becomes REQUIRED before believing it; if negative/flat under Shin at the
+> touch → taker version is dead, pivot discussion (maker/corners) is §chat
+> 07-14.
+>
+> **CRITICAL PATH (not time-gated — do FIRST if operator hasn't):** the
+> PinnOdds vendor email (§0-S7): historical esports odds? how far back +
+> closing odds included? limits+price? SAMPLE BEFORE PAYING. If YES → build
+> the historical readout (PM prices-history VERIFIED serving resolved
+> markets; results free) → hundreds of settled matches in ~a weekend instead
+> of 3 weeks of waiting.
+>
+> **SECONDARY:** rotate `PANDASCORE_API_KEY`+`PINNACLE_ODDS_API_KEY`
+> (chat-exposed; env edit = shared infra → operator executes); re-pull the
+> snapshot backup after the slate (last: 07-13, md5-verified in
+> `data/backups/`); watch `collect.log` `books=`≈`pm_matched=`.
+>
+> **GUARDRAILS:** EB scope only; MB priority on shared resources; EB stays
+> HALTED (crons ≠ bot deploys); correct-or-absent everywhere; numbers only
+> from cited canonical sources, label n<50 UNSTABLE; one fix per commit,
+> full related suite GREEN before commit (the 62c3677 lesson); commit+push
+> each step.
 
 ---
 
