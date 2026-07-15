@@ -161,8 +161,10 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Durable per-cohort shadow readout "
                                              "with fresh DB labels + alerts")
     ap.add_argument("--log", default="/opt/pa2-shared/mirror3_shadow.jsonl")
-    ap.add_argument("--out", default="/opt/pa2-shared/mb_copyable_data/shadow_readout_log.txt")
-    ap.add_argument("--alert", default="/opt/pa2-shared/mb_copyable_data/shadow_readout_ALERT.txt")
+    # deep_dive/ is polymarket-owned (mb_copyable_data itself is root-owned —
+    # the cron runs as polymarket and must be able to write here)
+    ap.add_argument("--out", default="/opt/pa2-shared/mb_copyable_data/deep_dive/shadow_readout_log.txt")
+    ap.add_argument("--alert", default="/opt/pa2-shared/mb_copyable_data/deep_dive/shadow_readout_ALERT.txt")
     ap.add_argument("--fee", type=float, default=0.02)
     ap.add_argument("--econ-floor", type=float, default=0.02, dest="econ_floor")
     ap.add_argument("--p-min", type=float, default=0.95, dest="p_min")
