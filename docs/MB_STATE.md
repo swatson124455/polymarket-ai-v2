@@ -85,6 +85,25 @@
 >     +0.410 P=1.00) — both cached, both confirmed NOT in wave-1; plus the
 >     ~38 ALL-universe scope-outs (§0 item 5, less concrete). Run wave-2 AFTER
 >     wave-1 completes; log the exact added addresses here when you do.
+>   - **COHORT-2 ADMISSIONS — LIVE (2026-07-15, operator go "batch all 8"):**
+>     the first 8 deep-dive ADMITs (all VERIFIED: 100% API-BUY backing, 0
+>     mismatch, chain skill P 0.925-1.000 on 175-8386 mkts, rate 38-170/day
+>     tailable, no wash/copier) were ADMITTED to the live mirror3 shadow
+>     watcher. Roster `chain_audit.json` `clean` 16→24 (backup
+>     `chain_audit.json.pre-cohort2-20260715`; cohort split kept in its
+>     `cohort1_original`/`cohort2` keys). Restarted via
+>     `mirror3_shadow_deploy.sh` (→ /opt/mirror3 d6276f7; mirror_v3 BYTE-
+>     IDENTICAL to the prior 25b54d4, verified — roster-only in effect).
+>     Watcher healthy: roster=24, first canary 1765 fills, 0 quote/canary
+>     alarms. **COHORT-2 START EPOCH = 1784143245 (2026-07-15 19:20:45 UTC).**
+>     The 8: `0x0e5bd767…`, `0x4ad6cade…`, `0x7744bfd7…`, `0xa2f1fecf…`,
+>     `0xbaa2bcb5…`, `0xc660ae71…`, `0xd1acd392…`, `0xe25b9180…`.
+>     **SEPARATE READOUT (never pool w/ cohort-1):** `analyze_shadow.py
+>     --trust-quotes-after 1784143245` FILTERED to the 8 cohort-2 addresses.
+>     Cohort-2 pool was 13; 5 remain un-admitted (3 INSUFFICIENT — marginal
+>     skill under the P bar / deepen; 1 REJECT-uncopyable 0xf705fa…461/day;
+>     grey-4 pending their deep-dive results). Add later ADMITs (from the
+>     wave-1 run-2 remainder + wave-2) in the SAME way — batch, one restart.
 >
 > *(The 2026-07-14 ~02:45 block below is prior state from earlier the same day;
 > its deep-dive-gate TO-DO is DONE per the above.)*
