@@ -51,8 +51,12 @@
 >    `0231f2c`.
 > 4. **[SUPERSEDED by the ROSTER LEDGER's EXECUTION UPDATE below — run-1 was
 >    killed at 12/47 and relaunched as run-2 (rps 8, receipt short-circuit);
->    the summary is now `deep_dive/_summary_run2.json` and, since `5eae137`,
->    it is rebuilt from the on-disk JSONs after every trader (spans ALL runs).]**
+>    the summary is now `deep_dive/_summary_run2.json`. The summary CODE since
+>    `5eae137` rebuilds from the on-disk JSONs after every trader (crash-
+>    durable, spans all runs sharing the out_dir) — but the IN-FLIGHT run-2
+>    loaded pre-fix `d6276f7`, so its file covers only its own 35 at run end;
+>    the 47-wide view = the per-trader tally one-liner below, or any later
+>    run under `5eae137`+.]**
 >    ~~THE 47-BATCH IS RUNNING~~ (originally launched 2026-07-14 19:31 UTC, detached
 >    setsid+nohup, reparented to PID 1, rps=4, max_receipts=30000): 9 cohort-2
 >    (`readjudicate.json` VINDICATED) + 38 (`deep_dive_extra_38.txt` = grey-4 +
