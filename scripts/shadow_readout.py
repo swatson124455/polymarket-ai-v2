@@ -94,9 +94,27 @@ def cohort_readout(records, outcomes, trust_after, traders, cfg) -> dict:
                       cfg.min_markets)
 
 
+def concentration(res: dict) -> tuple[Optional[str], float]:
+    """(dominant_trader, their share of first-buys). STANDING OPERATOR RULE
+    (2026-07-15): every readout must disclose sample concentration BEFORE its
+    aggregate is presented — the pooled cohort-1 edge turned out to be
+    effectively ONE trader's edge (0x84dbb7 = 1,171 of 1,627 records), which a
+    bare pooled number silently hides. Protocol-14 bucket-concentration applied
+    to traders."""
+    by = res.get("by_trader") or {}
+    tot = sum(sum(c.values()) for c in by.values())
+    if not tot:
+        return None, 0.0
+    top = max(by, key=lambda t: sum(by[t].values()))
+    return top, sum(by[top].values()) / tot
+
+
 def fmt_line(label: str, res: dict, min_markets: int) -> str:
     s = (f"[{label}] first-buys={res['first_buys']} OK-rate={res['ok_rate']:.1%} "
          f"tax_med={res['tax_p50']:+.4f} lag_p50={res['lag_p50']:.1f}s")
+    top, share = concentration(res)
+    if top is not None:
+        s += f" conc={top[:10]}…{share:.0%}"
     if "shadow_edge" in res:
         s += (f" | resolved={res['resolved_mkts']}/{min_markets} "
               f"edge={res['shadow_edge']:+.4f} P(>0)={res['shadow_edge_p']:.3f} "
@@ -107,19 +125,24 @@ def fmt_line(label: str, res: dict, min_markets: int) -> str:
 def alerts_for(label: str, res: dict, min_markets: int,
                neg_p_max: float = 0.10, neg_min_n: int = 10) -> list[str]:
     """Trigger: cohort crosses the power bar (>= min_markets resolved), OR its
-    edge is convincingly NEGATIVE before then (P(>0) <= neg_p_max on >= neg_min_n)."""
+    edge is convincingly NEGATIVE before then (P(>0) <= neg_p_max on >= neg_min_n).
+    Every alert carries the concentration disclosure — a verdict must never be
+    run blind to who dominates the sample (standing operator rule 2026-07-15)."""
     out = []
     if "shadow_edge" not in res:
         return out
+    top, share = concentration(res)
+    conc = (f"; CONCENTRATION {top[:10]}…={share:.0%} — verdict requires the "
+            f"per-trader breakdown + leave-one-out" if top else "")
     n = res["resolved_mkts"]
     if n >= min_markets:
         out.append(f"{label}: resolved {n} >= {min_markets} — POWERED; run the "
                    f"pre-registered verdict (edge={res['shadow_edge']:+.4f} "
-                   f"P(>0)={res['shadow_edge_p']:.3f})")
+                   f"P(>0)={res['shadow_edge_p']:.3f}){conc}")
     if (n >= neg_min_n and res["shadow_edge"] < 0
             and res["shadow_edge_p"] <= neg_p_max):
         out.append(f"{label}: edge NEGATIVE firming (edge={res['shadow_edge']:+.4f} "
-                   f"P(>0)={res['shadow_edge_p']:.2f} on {n} mkts)")
+                   f"P(>0)={res['shadow_edge_p']:.2f} on {n} mkts){conc}")
     return out
 
 
@@ -135,11 +158,19 @@ async def run(args) -> int:
              f"tokens; cohorts from {os.path.basename(args.roster)}: "
              f"{len(c1)}+{len(c2)}) ====="]
     all_alerts: list[str] = []
-    for label, trust, traders in ((f"cohort1({len(c1)})", TRUST1, ",".join(c1)),
-                                  (f"cohort2({len(c2)})", c2_epoch, ",".join(c2))):
-        res = cohort_readout(recs, outcomes, trust, traders, args)
+    for label, trust, members in ((f"cohort1({len(c1)})", TRUST1, c1),
+                                  (f"cohort2({len(c2)})", c2_epoch, c2)):
+        res = cohort_readout(recs, outcomes, trust, ",".join(members), args)
         lines.append(fmt_line(label, res, args.min_markets))
         all_alerts += alerts_for(label, res, args.min_markets)
+        # standing rule: when one trader dominates the sample, ALSO show the
+        # cohort WITHOUT them — the pooled number alone is misleading
+        top, share = concentration(res)
+        if top and share >= args.conc_threshold and len(members) > 1:
+            rest = [a for a in members if a.lower() != top.lower()]
+            loo = cohort_readout(recs, outcomes, trust, ",".join(rest), args)
+            lines.append("  " + fmt_line(f"{label} minus {top[:10]}… (LOO)",
+                                         loo, args.min_markets))
     block = "\n".join(lines)
     print(block)
     with open(args.out, "a") as f:
@@ -200,6 +231,20 @@ def _self_test() -> int:
             ok6 = True
         print(f"  [cohorts] inconsistent ledger -> refuses readout : {ok6}")
         ok &= ok6
+    # concentration disclosure (standing operator rule 2026-07-15)
+    dom = {"by_trader": {"0xwhale": {"OK": 9}, "0xother": {"OK": 1}}}
+    top, share = concentration(dom)
+    ok7 = top == "0xwhale" and abs(share - 0.9) < 1e-9
+    print(f"  [conc] dominant trader + share computed : {ok7}"); ok &= ok7
+    ok8 = concentration({"by_trader": {}}) == (None, 0.0)
+    print(f"  [conc] empty cohort -> no top : {ok8}"); ok &= ok8
+    # concentration string reaches the line and the alert
+    line = fmt_line("c", {**dom, "first_buys": 10, "ok_rate": 1.0,
+                          "tax_p50": 0.01, "lag_p50": 2.0}, 30)
+    al = alerts_for("c", {**dom, "shadow_edge": 0.03, "shadow_edge_p": 0.99,
+                          "resolved_mkts": 35}, 30)
+    ok9 = "conc=0xwhale" in line and any("CONCENTRATION" in a for a in al)
+    print(f"  [conc] disclosed in line AND in every alert : {ok9}"); ok &= ok9
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -221,6 +266,10 @@ if __name__ == "__main__":
     ap.add_argument("--min-markets", type=int, default=30, dest="min_markets")
     ap.add_argument("--max-chase", type=float, default=0.02, dest="max_chase")
     ap.add_argument("--max-spread", type=float, default=0.05, dest="max_spread")
+    ap.add_argument("--conc-threshold", type=float, default=0.50,
+                    dest="conc_threshold",
+                    help="top-trader share of first-buys above which a leave-"
+                         "one-out line is ALSO printed (standing operator rule)")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
     if args.self_test:
