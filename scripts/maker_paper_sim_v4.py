@@ -144,14 +144,25 @@ ESPORTS_KW = re.compile(
 # markets too (SPY/WTI dailies, weather cities, geo dates — live-verified
 # 2026-07-16), so labels must cover ALL sectors, not just games
 KW = [
+    (r"map handicap|map \d|total rounds|first blood|first tower", "esports"),
     (r"nba|nfl|mlb|nhl|ncaa|premier|epl|serie-a|la-liga|bundesliga|ligue|ufc|atp|wta|pga|f1-|grand-prix|world-cup|fifa|uefa|copa|boxing|tennis|-vs-|derby|open-", "sports"),
     (r"bitcoin|btc|ethereum|eth-|solana|xrp|doge|crypto", "crypto"),
     (r"trump|election|president|senate|congress|mayor|governor|primary|nominee|supreme-court|minister|parliament", "politics"),
     (r"temperature|highest-temp|lowest-temp|rainfall|hurricane|snow|heat-|weather", "weather"),
-    (r"fed-|interest-rate|cpi|inflation|gdp|recession|s-p-500|spx|nasdaq|spy|wti|crude|tariff|treasury|up-or-down", "finance"),
+    (r"fed-|interest-rate|cpi|inflation|gdp|recession|s-p-500|spx|nasdaq|spy|wti|crude|tariff|treasury|up-or-down|xauusd|xagusd|gold|silver-", "finance"),
     (r"israel|gaza|ukraine|russia|iran|nato|ceasefire|hormuz|houthi|war-|military", "geopolitical"),
+    (r"post \d|posts from|tweets from|tweet", "mentions"),
     (r"oscar|grammy|emmy|box-office|album|movie|netflix|spotify", "entertainment"),
 ]
+
+# canon taker-fee base rates (Fee V2 + Jul-10 changelog) and maker-rebate
+# shares (docs, verified 2026-07-16). Our rebate SIMPLIFIES to
+# fee_eq_mine x rebate_pct: rebate = (mine/total) x (total x pct).
+FEE_RATE = {"sports": 0.05, "esports": 0.05, "crypto": 0.07, "weather": 0.05,
+            "finance": 0.04, "politics": 0.04, "mentions": 0.04,
+            "entertainment": 0.05, "geopolitical": 0.0, "other": 0.05}
+REBATE_PCT = {"sports": 0.15, "crypto": 0.20, "geopolitical": 0.0}
+REBATE_DEFAULT = 0.25
 
 
 def game_sector(m):
@@ -311,7 +322,7 @@ def finalize_dropped(state, universe_ids):
         st["net"] = round(net_of(st, st["arm"], fm), 4)
 
 
-def match_prints(st, arm, yes_id, no_id, msz, tape, default_since):
+def match_prints(st, arm, yes_id, no_id, msz, tape, default_since, fee_rate=0.0):
     """D5 fill engine, both arms. Prints from BOTH tokens are mapped to YES
     space (p_yes = 1 - p_no). Quotes are time-matched from st['qh']
     ([ts, bid, ask]; either side may be None). Mutates st in place
@@ -370,23 +381,27 @@ def match_prints(st, arm, yes_id, no_id, msz, tape, default_since):
                 break
         if not found or (qbid is None and qask is None):
             continue
+        filled_at = None
         if arm == "split":
             if qask is not None and py > qask \
                     and st.get("yes_inv", 0) >= msz - 1e-9:
                 st["yes_inv"] = st.get("yes_inv", 0) - msz
                 st["cash"] = st.get("cash", 0.0) + msz * qask
                 fills += 1
+                filled_at = qask
             elif qbid is not None and py < qbid \
                     and st.get("no_inv", 0) >= msz - 1e-9:
                 # our YES-space bid IS an ask on the NO token at (1 - qbid)
                 st["no_inv"] = st.get("no_inv", 0) - msz
                 st["cash"] = st.get("cash", 0.0) + msz * (1 - qbid)
                 fills += 1
+                filled_at = qbid
         else:
             if qbid is not None and py < qbid and pos + msz <= cap + 1e-9:
                 pos += msz
                 cost += msz * qbid
                 fills += 1
+                filled_at = qbid
             elif qask is not None and py > qask and pos - msz >= -cap - 1e-9:
                 if pos > 0:
                     avg = cost / pos if pos else 0.0
@@ -396,6 +411,12 @@ def match_prints(st, arm, yes_id, no_id, msz, tape, default_since):
                     cost -= msz * qask
                 pos -= msz
                 fills += 1
+                filled_at = qask
+        if filled_at is not None and fee_rate > 0:
+            # maker-rebate estimator (docs-verified 2026-07-16): our accrued
+            # rebate = our maker-side fee-equivalent x category rebate pct
+            st["fee_eq_mine"] = st.get("fee_eq_mine", 0.0) \
+                + msz * fee_rate * filled_at * (1 - filled_at)
     st.update({"pos": round(pos, 2), "cost": round(cost, 4),
                "real": round(real, 4), "last_trade_ts": max_ts,
                "seen_edge": [list(k) for k in list(cur_edge)[:300]]})
@@ -752,7 +773,8 @@ def run(base):
                     st["last_acc_t"] = now
                 # fills (D5 both-token engine) + split lifecycle (D4)
                 fills = match_prints(st, arm, m["yes"], m["no"], msz,
-                                     tape_cache.get(str(m["id"])), now - 60)
+                                     tape_cache.get(str(m["id"])), now - 60,
+                                     fee_rate=FEE_RATE.get(m["sector"], 0.05))
                 maybe_resplit(st, msz, now)
                 st["net"] = round(net_of(st, arm, mid), 4)
                 st.update({"sector": m["sector"], "q": m["q"], "pool": m["pool"],
@@ -823,9 +845,17 @@ def report(base):
         by[key][0] += 1
         by[key][1] += st.get("acc", 0.0)
         by[key][2] += st.get("net", 0.0)
-    print("%-10s %-10s %4s %10s %10s" % ("sector", "arm", "n", "rewards$", "netPnL$"))
+    reb = defaultdict(float)
+    for st in state.values():
+        if st.get("arm") and st.get("fee_eq_mine"):
+            sec = st.get("sector") or "?"
+            reb[(sec, st["arm"])] += st["fee_eq_mine"] \
+                * REBATE_PCT.get(sec, REBATE_DEFAULT)
+    print("%-10s %-10s %4s %10s %10s %10s"
+          % ("sector", "arm", "n", "rewards$", "rebate$", "netPnL$"))
     for (sec, a), b in sorted(by.items()):
-        print("%-10s %-10s %4d %10.2f %10.2f" % (sec, a, b[0], b[1], b[2]))
+        print("%-10s %-10s %4d %10.2f %10.4f %10.2f"
+              % (sec, a, b[0], b[1], reb.get((sec, a), 0.0), b[2]))
     gates = defaultdict(int)
     for st in state.values():
         for g, c in (st.get("gates") or {}).items():

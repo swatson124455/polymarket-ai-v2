@@ -239,6 +239,20 @@ def test_one_sided_quote_still_fills_active_side():
     assert fills == 1 and st["yes_inv"] == 0.0
 
 
+def test_rebate_fee_equivalent_accrues_on_fills_only():
+    # docs-verified: our rebate = our maker-side fee-equivalent x category pct;
+    # fee_eq = C x rate x p x (1-p) at OUR fill price
+    st = {"qh": [[0.0, 0.48, 0.52]]}
+    tape = [tr(1.0, 0.47, "Y", tx="0x1"),        # fills bid at 0.48
+            tr(2.0, 0.40, "OTHER", tx="0x2")]    # ignored: no fee_eq
+    mps4.match_prints(st, "classic", "Y", "N", MSZ, tape, 0.0, fee_rate=0.05)
+    assert st["fee_eq_mine"] == pytest.approx(MSZ * 0.05 * 0.48 * 0.52)
+    # default fee_rate=0 keeps old callers/tests unaffected
+    st2 = {"qh": [[0.0, 0.48, 0.52]]}
+    mps4.match_prints(st2, "classic", "Y", "N", MSZ, [tr(1.0, 0.47, "Y")], 0.0)
+    assert "fee_eq_mine" not in st2
+
+
 def test_net_of_classic_matches_manual():
     st = {"real": 1.5, "pos": MSZ, "cost": 4.8}
     assert mps4.net_of(st, "classic", 0.50) == pytest.approx(1.5 + MSZ * 0.5 - 4.8)
