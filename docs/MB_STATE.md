@@ -735,6 +735,27 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
   `yes_token_id`/`no_token_id` (resolution YES ⇒ yes-token won). The shadow
   records carry only `token_id` (no condition_id), so resolve via those two
   columns, not condition_id.
+- **Watcher-fidelity audit 2026-07-15 PM (operator-challenged, MEASURED
+  CLEAN):** operator challenged the low shadow wager counts ("0% chance
+  elites trade this little"). Head-to-head vs the independent data-api per
+  trader over each cohort's own window: cohort-1 matches near-exactly
+  (197=197, 1171=1171, 82=82; the 9 zero-record C1 traders show 0 API buys
+  too — genuinely idle 2 days), cohort-2 windowed at its 19:20:45Z start
+  matches exactly (2=2, 1=1, rest truly 0 fills). 0 dropped-window markers, 0
+  side-unknown skips. VERDICT: instrument faithful; the confusion was
+  cohort-mixing (the 38-170/day rates are COHORT-2 machines; cohort-1 are
+  slow/idle humans) + units (records ≈ re-buys; graded unit = first-buys).
+  CAVEAT THIS SURFACED (precise form): cohort-1 flow is EXTREMELY
+  concentrated, on BOTH axes — RECORDS are 72% one trader (0x84dbb7,
+  1,171/1,627 — mostly re-buys), while the EDGE ESTIMAND (first-buys) is
+  led by a different one (0x448861, ~20/51 ≈ 39%). Either way a pooled
+  cohort number can be one trader's story. STANDING OPERATOR RULE
+  (2026-07-15): every readout DISCLOSES concentration inline and auto-
+  prints a leave-one-out line when the top trader ≥ 50% of first-buys
+  (shadow_readout `concentration()`/`--conc-threshold`); every ALERT
+  carries it; NO aggregate is presented without its composition checked
+  first. Even the C2 machines are bursty (0x0e5bd7: 0 fills in its first
+  5.5h despite a ~111/day lifetime rate).
 - **The daily readout cron is BRANCH-PINNED + leaves a root gitconfig
   mutation (session-close review #17/#30):** `deploy/shadow_readout_cron.sh`
   hard-resets `/opt/pa2-shared/mb_readout` to `claude/repo-setup-docs-fq9bhn`
