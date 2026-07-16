@@ -281,6 +281,24 @@ def block_chunks(b0: int, b1: int, chunk: int = GETLOGS_CHUNK) -> list[tuple[int
     return spans
 
 
+RPC_TIMEOUT_S = 90.0
+
+
+async def rpc_call(coro):
+    """Timeout guard on EVERY web3 RPC await in the watcher. 2026-07-16
+    landmine: an RPC await with no read-timeout on a dropped connection parks
+    the coroutine FOREVER with zero CPU and zero sockets — the deep-dive batch
+    hung 13h this way, and this watcher shares the library, the endpoint, and
+    the vulnerability. A parked poll loop is the worst silent failure this
+    instrument can have: systemd stays 'active', the Database heartbeat task
+    keeps logging, and even the blind-RPC canary cannot fire because the loop
+    itself is stuck. The timeout turns a hang into a normal exception that the
+    existing per-site try/excepts already absorb (head-fetch retry, window
+    retry-don't-skip, canary error count, receipt skip, fail-loud startup)."""
+    async with asyncio.timeout(RPC_TIMEOUT_S):
+        return await coro
+
+
 async def get_logs_compat(event, b0: int, b1: int, filters: dict):
     """web3 v7 snake_case first, pre-v7 camelCase fallback (the 2026-07-10
     audit failure class — kept identical to the audited helper)."""
@@ -468,7 +486,7 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
         f"exchanges=V2 topic={FILL_TOPIC_V2[:10]}…")
 
     bc = BlockchainClient(rpc_url=cfg.rpc_url)
-    await bc.ensure_client()
+    await rpc_call(bc.ensure_client())  # hang at startup -> raise -> systemd restart
 
     async def fill_logs(lo: int, hi: int, owner_topics: Optional[list]) -> list:
         """Raw V2 fill logs in [lo, hi]; owner_topics=None for the canary
@@ -476,9 +494,9 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
         topics: list = [FILL_TOPIC_V2]
         if owner_topics is not None:
             topics += [None, owner_topics]
-        return await bc.w3.eth.get_logs({
+        return await rpc_call(bc.w3.eth.get_logs({
             "fromBlock": lo, "toBlock": hi,
-            "address": v2_addrs, "topics": topics})
+            "address": v2_addrs, "topics": topics}))
 
     os.makedirs(os.path.dirname(cfg.shadow_path) or ".", exist_ok=True)
     dedup = FirstBuyDedup()
@@ -492,7 +510,7 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
         while True:
             await asyncio.sleep(cfg.poll_s)
             try:
-                head = int(await bc.w3.eth.get_block_number())
+                head = int(await rpc_call(bc.w3.eth.get_block_number()))
             except Exception as e:
                 log(f"[copy_watcher] head fetch error: {e!r}")
                 continue
@@ -558,8 +576,8 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                     # direction is not in the V2 event — read the receipt
                     # (roster hits only, so this is rare and cheap)
                     try:
-                        rcpt = await bc.w3.eth.get_transaction_receipt(
-                            sig["tx"])
+                        rcpt = await rpc_call(
+                            bc.w3.eth.get_transaction_receipt(sig["tx"]))
                         side = side_from_receipt_logs(
                             [dict(lg) for lg in rcpt["logs"]],
                             sig["trader"], sig["token_id"])
@@ -575,7 +593,7 @@ async def watch(cfg: WatcherConfig, log: Callable[[str], None] = print) -> None:
                         continue  # estimand is first BUY; SELLs are ignored
                     sig["side"] = "BUY"
                     try:
-                        blk = await bc.w3.eth.get_block(sig["_block"])
+                        blk = await rpc_call(bc.w3.eth.get_block(sig["_block"]))
                         block_ts = int(blk["timestamp"])
                     except Exception:
                         block_ts = int(now)

@@ -399,3 +399,40 @@ def test_quote_sanity_normal_and_partial_books_stay_silent():
     assert cw.quote_sanity_msg(None, 0.90) is None   # one-sided: not provable
     assert cw.quote_sanity_msg(0.87, None) is None
     assert cw.quote_sanity_msg(None, None) is None
+
+
+# ── rpc_call timeout guard (2026-07-16 hang-class landmine) ──────────────────
+def test_rpc_call_times_out_a_parked_await():
+    """A dead socket must RAISE, never park the poll loop forever — the exact
+    silent-failure class that hung the deep-dive batch 13h on this endpoint.
+    TimeoutError is a plain Exception, so every existing per-site try/except
+    (head retry, window retry-don't-skip, canary count, receipt skip) absorbs
+    it without behavior change."""
+    import asyncio
+    orig = cw.RPC_TIMEOUT_S
+    cw.RPC_TIMEOUT_S = 0.05
+    try:
+        async def parked():
+            await asyncio.sleep(60)
+
+        async def main():
+            try:
+                await cw.rpc_call(parked())
+                return "no-timeout"
+            except TimeoutError:
+                return "timed-out"
+        assert asyncio.run(main()) == "timed-out"
+        assert issubclass(TimeoutError, Exception)  # absorbed by except Exception
+    finally:
+        cw.RPC_TIMEOUT_S = orig
+
+
+def test_rpc_call_passes_results_through():
+    import asyncio
+
+    async def quick():
+        return 42
+
+    async def main():
+        return await cw.rpc_call(quick())
+    assert asyncio.run(main()) == 42
