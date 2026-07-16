@@ -49,7 +49,11 @@
 >    `--self-test` (16-case verdict table) + 23 pytest green LOCAL + VPS venv
 >    (web3 7.5.0); siblings unregressed (53). Commits on this branch through
 >    `0231f2c`.
-> 4. **THE 47-BATCH IS RUNNING** (launched 2026-07-14 19:31 UTC, detached
+> 4. **[SUPERSEDED by the ROSTER LEDGER's EXECUTION UPDATE below — run-1 was
+>    killed at 12/47 and relaunched as run-2 (rps 8, receipt short-circuit);
+>    the summary is now `deep_dive/_summary_run2.json` and, since `5eae137`,
+>    it is rebuilt from the on-disk JSONs after every trader (spans ALL runs).]**
+>    ~~THE 47-BATCH IS RUNNING~~ (originally launched 2026-07-14 19:31 UTC, detached
 >    setsid+nohup, reparented to PID 1, rps=4, max_receipts=30000): 9 cohort-2
 >    (`readjudicate.json` VINDICATED) + 38 (`deep_dive_extra_38.txt` = grey-4 +
 >    the 34 HFT-borderline incl `0xa6a856a8c8…`) = 47. Log `/tmp/deep_dive_batch.log`;
@@ -72,10 +76,20 @@
 > `MB_DEEP_DIVE_NEXT_PROMPT.md` with the delta + reason (nothing enters/leaves
 > the roster invisibly). Admissions still need the operator's WORD (this
 > authority is over the CANDIDATE roster, not who joins a live cohort).
->   - **WAVE-1 (RUNNING) = 47:** 9 cohort-2 (`readjudicate.json` VINDICATED) +
->     4 grey (`readjudicate_grey2.json` VINDICATED) + 34 HFT-borderline
->     (`deep_dive_extra_38.txt` = grey-4 ∪ the 34, dedup). No change since
->     launch.
+>   - **WAVE-1 = 47** (roster UNCHANGED): 9 cohort-2 (`readjudicate.json`
+>     VINDICATED) + 4 grey (`readjudicate_grey2.json` VINDICATED) + 34
+>     HFT-borderline (`deep_dive_extra_38.txt` = grey-4 ∪ the 34, dedup).
+>     **EXECUTION UPDATE 2026-07-15:** run-1 (rps 4, code `0231f2c`) was KILLED
+>     at 12/47 done (results preserved) and RELAUNCHED as **run-2** on the
+>     remaining 35 (`/tmp/deep_dive_remaining.txt`) at **rps 8** with the
+>     receipt short-circuit (`d6276f7`). Run-1 tally: **8 ADMIT / 3
+>     INSUFFICIENT / 1 REJECT-uncopyable** (all 12 JSONs parse-verified).
+>     Run-2 writes `deep_dive/_summary_run2.json` (its 35 ONLY) — **NO durable
+>     artifact aggregates all 47**; tally from the per-trader JSONs:
+>     `python3 -c "import json,glob,collections; print(collections.Counter(json.load(open(p))['verdict'] for p in glob.glob('/opt/pa2-shared/mb_copyable_data/deep_dive/0x*.json')))"`
+>     The 3 INSUFFICIENT (skill under the P bar on full data) are DEEPEN
+>     candidates, not re-run-blindly: their gap is resolved-market count, so
+>     re-dive them only after more of their markets resolve.
 >   - **CANDIDATE-ADD MENU for WAVE-2 (identified 2026-07-14 PM, NOT yet run —
 >     deferred so a 2nd batch doesn't double RPC load on the shared tenderly
 >     endpoint while wave-1 + the live mirror3 watcher run):**
@@ -85,6 +99,32 @@
 >     +0.410 P=1.00) — both cached, both confirmed NOT in wave-1; plus the
 >     ~38 ALL-universe scope-outs (§0 item 5, less concrete). Run wave-2 AFTER
 >     wave-1 completes; log the exact added addresses here when you do.
+>   - **COHORT-2 ADMISSIONS — LIVE (2026-07-15, operator go "batch all 8"):**
+>     the first 8 deep-dive ADMITs (all VERIFIED: 100% API-BUY backing, 0
+>     mismatch, chain skill P 0.925-1.000 on 175-8386 mkts, rate 38-170/day
+>     tailable, no wash/copier) were ADMITTED to the live mirror3 shadow
+>     watcher. Roster `chain_audit.json` `clean` 16→24 (backup
+>     `chain_audit.json.pre-cohort2-20260715`; cohort split kept in its
+>     `cohort1_original`/`cohort2` keys). Restarted via
+>     `mirror3_shadow_deploy.sh` (→ /opt/mirror3 d6276f7; mirror_v3 BYTE-
+>     IDENTICAL to the prior 25b54d4, verified — roster-only in effect).
+>     Watcher healthy: roster=24, first canary 1765 fills, 0 quote/canary
+>     alarms. **COHORT-2 START EPOCH = 1784143245 (2026-07-15 19:20:45 UTC).**
+>     The 8: `0x0e5bd767…`, `0x4ad6cade…`, `0x7744bfd7…`, `0xa2f1fecf…`,
+>     `0xbaa2bcb5…`, `0xc660ae71…`, `0xd1acd392…`, `0xe25b9180…`.
+>     **SEPARATE READOUT (never pool w/ cohort-1):** `analyze_shadow.py
+>     --trust-quotes-after 1784143245` FILTERED to the 8 cohort-2 addresses.
+>     **Cohort-2 pool (13 = the nine + grey-4) accounting, corrected
+>     2026-07-15 PM (session-close review finding #16):** 8 ADMITTED (6 of the
+>     nine: 0x0e5bd7/0x7744bf/0xa2f1fe/0xbaa2bc/0xd1acd3/0xe25b91 + 2 grey:
+>     0x4ad6ca/0xc660ae) · 3 INSUFFICIENT (0x481858, 0x92672c of the nine;
+>     0xea8ee3 grey — skill under the P bar on FULL data; deepen = wait for
+>     more of their markets to resolve, then re-dive) · 1 REJECT-uncopyable
+>     (0xf705fa, 461/day — honest, skilled, un-tailable) · 1 PENDING
+>     (0xfbf3d5 grey, run-2 trader 1). Add later ADMITs (run-2 remainder +
+>     wave-2) the SAME way — batch, one restart, extend the cohort2 ledger key
+>     (shadow_readout REFUSES a readout if clean != cohort1+cohort2, so an
+>     admission without the ledger update now fails loud).
 >
 > *(The 2026-07-14 ~02:45 block below is prior state from earlier the same day;
 > its deep-dive-gate TO-DO is DONE per the above.)*
@@ -374,6 +414,7 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
 | Shadow probe battery | `mb_copyable_data/shadow_probes_20260713.{py,out}` | S1-S5 pre-registered descriptive; capacity/spread/tax measured; S1/S2 await resolutions |
 | Stress suite | `tests/unit/test_mirror3_stress.py` | 9 tests/10 invariants (cloud session `d7fa2bf`); full mirror_v3 surface 93+ green |
 | **Chain deep-dive gate (roster admission)** | `scripts/chain_deep_dive.py` + `tests/unit/test_chain_deep_dive.py` | NEW 2026-07-14 (`0231f2c`): 4-tier chain-native gate (lifetime dual-era reconstruction → API↔chain reconcile both ways → chain skill re-grade → forensics/fair-HFT); adversarially reviewed (16 findings fixed) + smoke-validated; `--self-test` 16-case verdict table + 23 pytest green (local+VPS venv); read-only, reuses siblings as-is. **47-batch RUNNING** (see §0). |
+| **Shadow readout (fresh-label, per-cohort)** | `scripts/shadow_readout.py` + `scripts/analyze_shadow.py --traders` | NEW 2026-07-15: rebuilds token→outcome FRESH from `markets` each run (default gamma cache is stale — §7 landmine), splits cohort-1 / cohort-2 (never pooled), writes an ALERT on power-bar / negative-firming. Both `--self-test` green. Runs daily on the VPS (durable clone `/opt/pa2-shared/mb_readout`); log `shadow_readout_log.txt`, alert `shadow_readout_ALERT.txt`. |
 
 ## 5. Open threads / what's next
 
@@ -665,3 +706,49 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
   it needs no receipts, so a genuinely un-tailable HFT account rejects fast
   without paying for full receipts; and it uses FRACTIONAL span-days (integer
   floor inflated the rate for the 1-2.5-day-history borderline cohort).
+
+### Added 2026-07-15 PM (shadow readout — stale-label trap)
+
+- **`analyze_shadow.py --gamma-cache` SILENTLY GOES STALE → false "0
+  resolved / UNDERPOWERED" that MASKS the real edge.** The gamma resolution
+  cache (`copyable_cache/gamma_resolutions.json`) is from 2026-07-10 and
+  covers ZERO of the shadow markets (07-13+), so the readout reported 0/30
+  resolved when the live `markets` table already knew ~10 resolved — AND the
+  early edge on those was NEGATIVE (the stale cache hid a real signal).
+  Operator caught it ("0% chance 0 are closed after 3 days"). **NEVER trust
+  the default gamma cache for a readout.** Use `scripts/shadow_readout.py`
+  (rebuilds token→outcome FRESH from `markets` every run; per-cohort split via
+  `analyze_shadow --traders`; writes an ALERT on power-bar / negative-firming).
+  This is the Forbidden-Pattern-9 discipline: an impossible number (0 resolved)
+  means the QUERY is wrong — fix the source, don't explain it away.
+- **EARLY FORWARD SIGNAL (2026-07-15, DESCRIPTIVE, n=10 UNDERPOWERED):**
+  cohort-1's shadow edge on the ~10 resolved-so-far is **NEGATIVE**
+  (edge ≈ -0.048, P(edge>0) ≈ 0.37) net of the ~1c copy tax. NOT a verdict
+  (need ≥30), but it leans the WRONG way — the retrospective +edge may not
+  survive our spread/latency. Watch as resolved climbs; the same tax applies
+  to the 8 cohort-2 admits, so their forward shadow is the real test.
+- **Shadow token→outcome join:** `markets` rows key outcomes by
+  `yes_token_id`/`no_token_id` (resolution YES ⇒ yes-token won). The shadow
+  records carry only `token_id` (no condition_id), so resolve via those two
+  columns, not condition_id.
+- **The daily readout cron is BRANCH-PINNED + leaves a root gitconfig
+  mutation (session-close review #17/#30):** `deploy/shadow_readout_cron.sh`
+  hard-resets `/opt/pa2-shared/mb_readout` to `claude/repo-setup-docs-fq9bhn`
+  daily — if the MB lane moves branches, UPDATE the BR pin or the readout
+  runs frozen code forever (a refresh failure now writes a WARN line into
+  `shadow_readout_log.txt`). Cohort membership is read from
+  `chain_audit.json` at runtime (not code), so admissions don't need a code
+  change — but they DO need the cohort ledger keys extended or the readout
+  refuses to run. Setup also left a `safe.directory /opt/pa2-shared/mb_readout`
+  entry in ROOT's global gitconfig (harmless, recorded here).
+- **pkill self-match, VARIANT 2 (bit TWICE 2026-07-15):** bracketing the
+  pkill pattern (`chain_deep_di[v]e`) is NOT enough when ANY OTHER clause of
+  the same SSH command contains the literal name — a `pgrep -fc
+  'chain_deep_dive[.]py'` check, or even a file path (`git hash-object
+  scripts/chain_deep_dive.py`). pkill -f matches the whole remote shell's
+  command line, which includes those literals → kills your own session
+  mid-command (exit 255; the rest of the command never runs — our /tmp/mbre
+  refresh silently didn't happen). RULE: a kill command contains the pkill
+  and NOTHING ELSE that names the target; verify/refresh in a SEPARATE
+  ssh command afterwards (plain `ps -ef | grep` there is safe — no pkill in
+  that shell).
