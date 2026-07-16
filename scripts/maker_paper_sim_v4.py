@@ -140,6 +140,18 @@ ESPORTS_KW = re.compile(
     r"lck|lpl|lec|ewc|overwatch|rocket-league|call-of-duty|cod-|rainbow-six|"
     r"r6-|pubg|fortnite|starcraft|mlbb|mobile-legends|apex-legends|tekken|"
     r"street-fighter|halo-|smash-")
+# full labeling set (v3/census list): gamma stamps gameStartTime on daily
+# markets too (SPY/WTI dailies, weather cities, geo dates — live-verified
+# 2026-07-16), so labels must cover ALL sectors, not just games
+KW = [
+    (r"nba|nfl|mlb|nhl|ncaa|premier|epl|serie-a|la-liga|bundesliga|ligue|ufc|atp|wta|pga|f1-|grand-prix|world-cup|fifa|uefa|copa|boxing|tennis|-vs-|derby|open-", "sports"),
+    (r"bitcoin|btc|ethereum|eth-|solana|xrp|doge|crypto", "crypto"),
+    (r"trump|election|president|senate|congress|mayor|governor|primary|nominee|supreme-court|minister|parliament", "politics"),
+    (r"temperature|highest-temp|lowest-temp|rainfall|hurricane|snow|heat-|weather", "weather"),
+    (r"fed-|interest-rate|cpi|inflation|gdp|recession|s-p-500|spx|nasdaq|spy|wti|crude|tariff|treasury|up-or-down", "finance"),
+    (r"israel|gaza|ukraine|russia|iran|nato|ceasefire|hormuz|houthi|war-|military", "geopolitical"),
+    (r"oscar|grammy|emmy|box-office|album|movie|netflix|spotify", "entertainment"),
+]
 
 
 def game_sector(m):
@@ -155,9 +167,10 @@ def game_sector(m):
         return c
     text = ((m.get("slug") or "") + " " + (m.get("question") or "")).lower()
     if ESPORTS_KW.search(text):
-        return "esports"
-    if SPORTS_KW.search(text):
-        return "sports"
+        return "esports"                          # before KW: ewc/world-cup clash
+    for pat, lab in KW:
+        if re.search(pat, text):
+            return lab
     return "other"
 
 

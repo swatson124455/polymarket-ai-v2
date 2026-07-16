@@ -262,7 +262,12 @@ def test_game_sector_labels_never_exclude():
     # category is authoritative as a LABEL; nothing maps to None
     assert gs({"category": "Politics",
                "slug": "candidate-a-vs-candidate-b", "question": ""}) == "politics"
-    assert gs({"slug": "bitcoin-up-or-down", "question": ""}) == "other"
+    # full KW labeling (gamma stamps gameStartTime on dailies too)
+    assert gs({"slug": "bitcoin-up-or-down", "question": ""}) == "crypto"
+    assert gs({"slug": "spy-up-or-down-july-16", "question": ""}) == "finance"
+    assert gs({"slug": "", "question": "Will the highest temperature in "
+               "Paris be 33°C on July 16?"}) == "weather"
+    assert gs({"slug": "some-novel-thing", "question": "???"}) == "other"
 
 
 def test_parse_iso_short_offset():
