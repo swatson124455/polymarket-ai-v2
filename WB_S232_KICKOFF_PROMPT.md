@@ -33,33 +33,34 @@ VPS: `ubuntu@18.201.216.0`, key `~/.ssh/wb_deploy2`. Deployed release is still
    `weather_global_emos_by_station_loaded` ≥1/~6h; `avg_clim_mean` → 0;
    leak SQL (WB_S222_POSTFIX_VERIFICATION_PROMPT.md §4c) → 0.
 
-## PRIMARY TASK 1 — MESH VALIDATION (the Phase-1 acceptance test)
+## PRIMARY TASK 1 — MESH LEAD VALIDATION (the Phase-1 acceptance test)
 
-`pws_mesh_*.jsonl` has been accruing since 2026-07-16 ~01:00Z. Once IEM 1-min
-has caught up over the logged window (~42h lag — so data for 07-16 is fetchable
-from ~07-18):
-1. Reconstruct per-city running-max curves from the mesh (median of the ≤4 PWS,
-   qc==1 only; consider per-PWS bias vs the airport METAR first).
-2. Compare against IEM 1-min truth + hourly print times (`nowcast_skill.py`
-   conventions): does the MESH detect bucket-boundary crossings with a usable
-   lead over the public print (target: reproduce a meaningful share of the
-   58-min median lead)? Report per-city lead distribution + false-crossing rate
-   (mesh says crossed, print world never does — the 14% never-print risk).
-3. PWS-vs-METAR bias/scatter per city — the mesh must predict the PRINT world;
-   a systematic mesh-vs-ASOS offset must be learned per station, not ignored.
-Verdict shape: "mesh is/isn't a viable live substitute for the dead 1-min feed",
-with numbers. This gates Phase 2.
+**Status update (S231 late, operator "do next session items now"):** the
+harness `scripts/wb_research/mesh_validation.py` is BUILT + staged on the VPS,
+and the --bias half already RAN on the first evening of mesh data (07-16:
+raw mesh−METAR +0.72F mean, per-city −2.5..+3.4F, sd 1.7F, n=19 prints —
+**per-PWS debiasing is mandatory**; more prints accrue nightly).
 
-## PRIMARY TASK 2 — PHASE-2 DESIGN (operator-scoped; DESIGN ONLY unless told)
+REMAINING (gated on IEM 1-min catching up, ~07-18 for the 07-16 window):
+1. `python3 ~/wb_research/mesh_validation.py --lead 20260716` (then later
+   dates) — mesh running-max increments vs IEM-1min truth + print reveal
+   times: mesh-led share, median lead minutes, false-crossing rate, missed
+   events. Re-run --bias on fuller days too (per-city offsets need n).
+2. Verdict vs the acceptance gates in the spec's PHASE-2 DESIGN block:
+   mesh leads ≥50% of gradeable events, median lead ≥15 min, false-crossing
+   <20%, ≥7 days uptime + debias table. Report "mesh is/isn't a viable live
+   substitute", with numbers. This gates the Phase-2 flag — not its design.
 
-Write the paper-strategy design into the spec (no bot code without operator go):
-entry = peak-model rule (E_rem<=1.0F AND h>=12) on mesh-detected crossings;
-`WEATHER_NOWCAST_ENTRY_ENABLED` flag-OFF default; separate model_name in
-prediction_log (independent grading); maker-first execution (rest bids at
-pre-reveal levels per maker_fill_study); ALL existing risk plumbing unchanged;
-sizing honesty ~$100/window upper bound (task-2 capacity). Include the S228
-latency package activation (OD-3a) in the design as its react leg — activation
-remains a Tier-2 operator decision.
+## PRIMARY TASK 2 — PHASE-2 (design DONE S231; implementation = operator go)
+
+The full design is WRITTEN in the spec (§"PHASE-2 DESIGN (S231)"): frozen peak
+rule on debiased mesh crossings, maker-first at p0−1..2¢ with
+cancel-on-invalidate, `WEATHER_NOWCAST_ENTRY_ENABLED` default-false,
+`model_name='weather_nowcast_peak'`, all risk plumbing unchanged,
+`WEATHER_NOWCAST_MAX_PER_WINDOW_USD=50`, S228 latency package as the react
+leg. If (and only if) the operator gives the implementation go: build it
+defect-test-first, WB release cut, flag stays OFF until the acceptance gates
+above pass.
 
 ## IF TIME — secondary
 

@@ -252,6 +252,49 @@ If 0a fails → the whole thesis dies; write it down and stop. If 0a passes but
 - Keep the existing 10-min shadow-book + trade-print crons running — they are
   the capture-side ground truth.
 
+## PHASE-2 DESIGN (S231, written on operator "do next session items now") —
+## DESIGN ONLY; implementation requires a separate operator go
+
+**Signal (all pieces already validated or logging):**
+1. Mesh consensus curve: median of ≥2 qc==1 PWS obs per 5-min bin, each PWS
+   DEBIASED by its trailing-N-day offset vs the airport METAR PRINT series
+   (mesh_validation.py --bias machinery; raw offsets run −2.5..+3.4F per city,
+   first pass 07-16 — debiasing is mandatory, not optional).
+2. Crossing: debiased consensus running-max enters bucket B (±0.5F convention).
+3. Filter: the FROZEN peak rule — E_rem ≤ 1.0F AND local hour ≥ 12, with
+   E_rem from the bot's own latest ensemble forecast (day-of DB forecasts are
+   the sharper feature: DB-only +0.083 vs ARCH-only +0.059, task 1).
+4. Enter only while price < nowcast-fair minus costs (existing edge math).
+
+**Execution (maker-first, per task 2):** rest a bid on B at (last print price
+− 1..2¢) — post-reveal fill probability 65-71% UPPER bound at those levels;
+cancel-on-invalidate when the mesh runmax exceeds B's hi bound (overshoot) or
+the local day ends. NO taker chasing at h≥17 (dead per executable_replay).
+
+**Bot integration surface (small by design):**
+- `WEATHER_NOWCAST_ENTRY_ENABLED` (default **false**) — Tier-2 flag.
+- Separate `model_name='weather_nowcast_peak'` in prediction_log → graders,
+  calibration_check, and the confidence calibrator treat it independently.
+- ALL existing risk plumbing UNCHANGED (BotBankrollManager sizing,
+  risk_manager limits, caps, dampeners, group/city exposure, existing
+  one-bet-per-market guards). This is a new signal, not a new risk model.
+- Sizing honesty: `WEATHER_NOWCAST_MAX_PER_WINDOW_USD` (default 50) — task-2
+  capacity is ~$100/window UPPER bound; never exceed it.
+- React leg: S228 latency package env flips (OD-3a) activate WITH the flag —
+  Tier-2 operator decision at the same moment.
+
+**Acceptance gates BEFORE the flag ever goes true (paper):**
+- mesh_validation --lead (runnable ~07-18): mesh leads the print on ≥50% of
+  gradeable events with median lead ≥15 min AND false-crossing rate <20%.
+- ≥7 days pws_mesh uptime with per-PWS debias table populated per city.
+- Operator WU key / Synoptic token in place (web-key dependency retired).
+**Judgment (Phase 3 bars unchanged):** ≥50-100 independent market-days per
+cell; calibration + hit-rate only (#11); kill stays on the table.
+
+**Explicit non-goals (S231 evidence):** no 9-12h disagreement betting (dead
+bot-independently, task 3); no hidden-peak trading (print world settles); no
+taker capture at the high-EV end (no ask / 0.999).
+
 ## Phase 2 — paper strategy (bot integration, gated on Phase 0 PASS)
 
 - New resolution-day entry mode: when nowcast says P(running max crosses into

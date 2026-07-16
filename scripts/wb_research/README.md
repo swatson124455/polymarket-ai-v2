@@ -129,6 +129,16 @@ does NOT hold bot-independently — 9-12h +0.002 (cSE 0.019, n=692 bets /
 (n=66 bot rows) was bot-conditional or under-clustered noise; do not build
 on it.**
 
+## mesh_validation.py — Phase-1 acceptance test for the PWS mesh (S231)
+Runs on VPS (venv). Reads `pws_mesh_YYYYMMDD.jsonl`. Two modes:
+`--bias [date]` (runnable immediately) — mesh consensus vs the airport's
+METAR prints, per-city offset/scatter (the debias table Phase 2 must learn).
+FIRST PASS 07-16 (~1h of data, n=19 prints): mean +0.72F, per-city
+−2.5..+3.4F, sd 1.7F → per-PWS debiasing mandatory. `--lead [date]` (needs
+IEM 1-min caught up, ~42h) — mesh running-max increments vs 1-min truth and
+print reveal times: mesh-led share, median lead, false-crossing rate.
+Acceptance gates in the spec's PHASE-2 DESIGN block.
+
 ## trade_prints.py — "do resting orders actually get filled?" (maker leg)
 Runs on the VPS via cron (`trade_prints.sh`, every 10 min at :05 offset,
 alongside shadow_book.sh at :00). For each active US highest-temp family

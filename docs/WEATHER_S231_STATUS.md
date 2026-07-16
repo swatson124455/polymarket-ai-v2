@@ -82,6 +82,14 @@
 
 ## 5. NEXT SESSION (S232) — priorities
 
+> **S231-LATE DELTA (operator "do next session items now"):** item 2's harness
+> is BUILT (`mesh_validation.py`, staged on VPS) and its --bias half RAN on the
+> first evening of mesh data (raw mesh−METAR +0.72F mean, per-city −2.5..+3.4F,
+> sd 1.7F, n=19 → per-PWS debiasing mandatory); item 3's DESIGN is WRITTEN
+> (spec §"PHASE-2 DESIGN (S231)"). S232's real remaining work = --lead runs
+> from ~07-18 + acceptance-gate verdict; Phase-2 IMPLEMENTATION still needs an
+> explicit operator go. Kickoff prompt updated accordingly.
+
 1. §0 mechanical verification (resume check + VPS spot-checks + quick-facts re-derive).
 2. **Mesh validation:** once IEM 1-min catches up (~42h), reconstruct running-max curves
    from `pws_mesh_*.jsonl` and compare vs IEM 1-min + print times — does the mesh
