@@ -776,8 +776,10 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
   through every phase), never just process existence. Timeout-guard every
   network await in any new long-running chain runner. **The LIVE WATCHER
   shared this class (6 unguarded web3 awaits, no systemd watchdog) — fixed
-  `336f6a4` (rpc_call wrapper, 43 tests green), REDEPLOY PENDING OPERATOR GO;
-  until then the running watcher can still park silently.** Sibling one-shot
+  `336f6a4` (rpc_call wrapper, 43 tests green), **DEPLOYED 2026-07-16 16:40:53
+  UTC (operator go): /opt/mirror3 = `5c91261`, watcher blob verified
+  byte-identical to tested, roster=24 reloaded, canary 1216, 0 alarms.
+  Restart boundary note: FirstBuyDedup reset at 16:40:53Z.** Sibling one-shot
   scripts (audit_roster_chain, readjudicate) share the class but are
   operator-attended — a hang is visible, not silent (documented, not churned).
   Restart side-note: each watcher restart resets FirstBuyDedup, so a token
