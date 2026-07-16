@@ -5,9 +5,23 @@
 > read them for detail, but THIS file is the source of truth for "what is live and what's open."
 > Update the three sections below at the end of every WB session (same commit as the work).
 
-**Last updated:** 2026-07-15 (S230 close — research mega-session, ZERO deploys/bot-code.
+**Last updated:** 2026-07-15/16 (S231 close — DEEP-BACKTEST session, ZERO bot-code changes/deploys.
+Full handoff: `docs/WEATHER_S231_STATUS.md`; next session: `WB_S232_KICKOFF_PROMPT.md`.
+Headlines: **nowcast peak-model GATE PASSED** (archived no-lookahead previous-runs forecasts →
+719 family-days, TEST n=135 meanEV +0.091, pre-registered 2σ bar cleared, family-clustered
+~2.7σ; `nowcast_peak_133d.out`); maker-fill history says **capture is NOT the blocker**
+(post-reveal fills 54-74% at p0−0..5¢, UPPER bounds; adverse selection is the cost);
+**9-12h day-of cell is DEAD bot-independently** (+0.002 cSE 0.019 at scale, n=692 —
+supersedes the S230 "survived accrual" watch; do not build on it); **no pre-2026 listings**
+(temp dailies began 2025-12-28 — question closed); **Phase 1 BUILT per operator approval
+07-15** — `pws_mesh.py` PWS-mesh collector cron live on VPS (research layer, bot untouched;
+web-key dependency caveat in the spec); EMOS correction path VERIFIED to reach bucket TAILS
+in both prob-engine routes (self-heal can land — training-pair volume is the only dependency);
+AsosOneMinClient: never instantiated live (`ASOS_1MIN_ENABLED` unset) → leave dormant.
+Prior header (S230):
+(S230 close — research mega-session, ZERO deploys/bot-code.
 Full handoff: `docs/WEATHER_S230_STATUS.md` (quick-facts table + verdict chain);
-next session: `WB_S231_KICKOFF_PROMPT.md` (§0 verifies this handoff mechanically).
+S231 kickoff: `WB_S231_KICKOFF_PROMPT.md` (§0 verified 07-15, all green).
 Headlines: S222 ran TWICE (n=50 PARTIAL → n=133 **A1/A3 FAIL**, PIT p=0.0001, retire
 nothing); cheap-NO-tail ROOT CAUSE confirmed via `rep_bias_test.py` (resolution =
 hourly-print world 81%/35%; forecast +0.86°F hot; EMOS pairs already carry −0.62 →
@@ -98,11 +112,14 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
    - **Duel at n=133:** market 0.1765 vs bot 0.2542 — decisive again. Head-to-head 68%
      (side-picks win, magnitude loses). Only per-city cell favoring bot = Seoul n=6
      (noise); Chinese cities strongly adverse. Still no credible wedge cell.
-   - **BUT the day-of 9-12h-to-resolution cell SURVIVED accrual:** bet-the-disagreement
-     at stored mid, +0.118 (SE 0.055, **~2.1σ from zero**), WR 79%, n=66 distinct
-     markets (was +0.142/n=27). Every day-of bucket positive (+0.038..+0.118). CAVEAT:
-     same-family markets correlate (effective n lower); mid prices. 9-12h-to-res ≈
-     noon-3pm local = the PEAK window — same phenomenon the nowcast program formalizes.
+   - **the day-of 9-12h-to-resolution cell — ⚠ SUPERSEDED S231: DEAD bot-independently.**
+     (S230 read: bet-the-disagreement at stored mid +0.118, SE 0.055, WR 79%, n=66.)
+     S231 re-cut at scale with a bot-free signal (`dayof_cell_scale.py`: raw ensemble
+     floored at METAR runmax vs CLOB minute prices, 433 family-days, FAMILY-CLUSTERED
+     SEs): 9-12h **+0.002 (cSE 0.019, n=692 bets / 368 family-days)**; all hour buckets
+     ≈ 0; thresholds 0.05/0.10/0.15 flat. The n=66 cell was bot-conditional information
+     or under-clustered noise — do NOT build on it; keep only the passive clean-window
+     watch as prediction_log accrues.
    - **ROOT CAUSE of the cheap-NO tail — TESTED AND CONFIRMED, sign INVERTED from the
      first hypothesis (`rep_bias_test.py`, 190 station-days, 07-15):** Polymarket
      resolution lives in the HOURLY-PRINT world, not the continuous one — winner
@@ -314,7 +331,7 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
    | 2 | Gate retirement IF PASS (A1/A3 → dampeners → caps; C0 Kelly last, calibrator-gated) | after 1 |
    | 3 | Shadow-book logger (read-only: snapshot books on obs events) — prices leader-following capture + maker fills | after 1; prerequisite for trading the confirmed edge |
    | 4 | Latency package activation (3a) — decide WITH 3 (priority-wake is the nowcast weapon) | after 3 |
-   | 4b | **Nowcast-and-capture program (S230 spec: `docs/WB_NOWCAST_CAPTURE_SPEC.md`)** — Phase 0 RAN + CLOSED S230 (gate not met, +0.074 @1.2σ, no infra spend). **NEXT = the DEEP-BACKTEST PROGRAM (spec §"NEXT SESSION PLAN", operator-approved 07-15):** archived Open-Meteo forecasts → peak-model at ~2x n (decisive); historical trade prints → maker-fill study NOW; 9-12h cell at scale over all 03→07 families; Gamma probe for 2025 listings | NEXT WB SESSION, priority 1 (read-only) |
+   | 4b | **Nowcast-and-capture program** — DEEP-BACKTEST RAN S231 (spec §"S231 DEEP-BACKTEST RESULTS"): **peak-model GATE PASSED** (TEST n=135 +0.091, 2σ cleared, clustered 2.7σ); maker fills = capture plausible (UPPER bounds); 9-12h cell DEAD bot-independently; no pre-2026 history. **Phase 1 BUILT (operator-approved 07-15): `pws_mesh.py` cron live.** NEXT: (a) mesh-vs-IEM-1min validation once IEM catches up (~42h) — does the mesh reproduce the 58-min lead?; (b) Phase-2 DESIGN (paper strategy, `WEATHER_NOWCAST_ENTRY_ENABLED` flag-OFF, maker-first per task 2, separate model_name) — operator-scoped; (c) operator: WU key or Synoptic token to replace the web-key dependency; NWWS-OI application | NEXT WB SESSION |
    | 5 | Bootstrap landmine proper fix (date-bind + actual_source training filter, same commit) | post-S222 |
    | 6 | ~~Release cut carrying `9dc6d59`~~ **DONE** — deployed in `20260714_003205` (07-14 00:32:41Z) | ✅ |
    | 7 | Ops debt: main-tree deploy mechanism | after verdict |
@@ -504,6 +521,17 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-15/16 (S231 close, ZERO bot-code changes):** deep-backtest session —
+  **peak-model GATE PASSED** (archived previous-runs forecasts, no lookahead; 719
+  family-days, TEST n=135 +0.091, clustered 2.7σ; rejected −0.007); maker-fill history
+  = capture not the blocker (post-reveal fills 54-74%, UPPER bounds, ~$100/window);
+  9-12h cell DEAD bot-independently (+0.002 at scale — S230 n=66 cell was
+  bot-conditional/noise); Gamma probe closed (temp dailies began 2025-12-28);
+  **Phase 1 BUILT** (operator go): `pws_mesh.py` PWS collector cron (2-57/5) live;
+  EMOS correction path verified to reach bucket tails (both routes); AsosOneMinClient
+  = leave dormant (never instantiated, flag unset); stale `wb-s222-gate-check` local
+  task deleted. 4 harness commits + collector + docs. Handoff
+  `docs/WEATHER_S231_STATUS.md`, kickoff `WB_S232_KICKOFF_PROMPT.md`, manifest → S231.
 - **2026-07-15 (S230 close, ZERO deploys):** research mega-session — S222 ran twice
   (n=50 PARTIAL → n=133 A1/A3 FAIL, nothing retired); cheap-NO-tail root cause
   confirmed (`rep_bias_test.py`: settlement = print world, forecast +0.86°F hot,

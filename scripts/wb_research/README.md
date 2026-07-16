@@ -87,7 +87,13 @@ historical-forecast mosaic is shortest-lead = lookahead, NOT used;
 historical-ensemble API only reaches 2026-04-13). PRIMARY = DB forecast when
 present, archived fills holes; DB-only/ARCH-only cuts + offset diagnostics;
 family window keyed on the QUESTION date (NULL end_date_iso no longer drops
-families) → 719 family-days 03-01..07-12. Results: `nowcast_peak_133d.out`.
+families) → 719 family-days 03-01..07-12, 1,072 priced entries.
+**S231 RESULT (`nowcast_peak_133d.out`): GATE PASS — TEST n=135 meanEV
++0.091 (SE ~0.039; +0.091−2SE > 0 and ≥ +0.05); family-clustered ~2.7σ
+(100 family-days, day-mean +0.107); TRAIN +0.084; rejected −0.007 (n=718).
+DB-only TEST +0.083 (n=58); ARCH-only +0.059 (n=148, 1.6σ — consistent but
+weaker at day-1 lead). Caveats: mid prices; May DB hole; ARCH-only alone
+does not clear 2σ.**
 
 ## rep_bias_test.py — which world settles the market? (S230, ROOT CAUSE)
 Runs on VPS. Three-way layer diff over 18d × 12 US stations: continuous 1-min
@@ -117,7 +123,11 @@ raw DB ensemble members (latest <=24h before T, no lookahead) FLOORED at the
 hourly-METAR running max at T (print world), vs CLOB minute price at
 T = local-midnight-EOD − h (4.5/7.5/10.5/18h). Bet-the-disagreement
 (|P−price| >= 0.10; 0.05/0.15 sensitivity on the 9-12h cell);
-FAMILY-DAY-CLUSTERED SEs. Results: `dayof_cell_133d.out`.
+FAMILY-DAY-CLUSTERED SEs. **S231 RESULT (`dayof_cell_133d.out`): the cell
+does NOT hold bot-independently — 9-12h +0.002 (cSE 0.019, n=692 bets /
+368 family-days); all hour buckets ≈ 0; thresholds flat. The S230 +0.118
+(n=66 bot rows) was bot-conditional or under-clustered noise; do not build
+on it.**
 
 ## trade_prints.py — "do resting orders actually get filled?" (maker leg)
 Runs on the VPS via cron (`trade_prints.sh`, every 10 min at :05 offset,

@@ -77,7 +77,9 @@ INSUFFICIENT, not fail. A 90-day run (forecasts exist to 2026-03-08) was
 launched 07-15 ~19:1xZ → `~/wb_research/nowcast_peak_90d.out`; expect
 ~3x entries → decisive either way. COLLECTED SAME SESSION — see below.
 
-**90d FINAL (all available history — offline route EXHAUSTED): GATE NOT MET.**
+**90d FINAL (⚠ SUPERSEDED by the S231 deep-backtest below — GATE now PASSED
+at n_test=135 with archived forecasts; do not re-cite "no Phase-1 infra
+spend"): GATE NOT MET (as of S230).**
 406 family-days, 277 priced entries. TEST half (05-28..07-12): n=57 meanEV
 **+0.074 (SE 0.060, 1.2σ)**, rejects n=193 −0.002. Picks positive in every
 window cut (+0.074..+0.105 test) but significance stalls ~1.2-1.4σ and the
@@ -102,6 +104,76 @@ hidden-peak advantage is VOID for trading; the 1-min lead is valid only as
 factor for crossing entries. See WEATHER_STATUS OD-2 re-run block for the
 full layer-diff table (forecast +0.86F hot vs settlement world = the bot's
 cheap-NO-tail root cause).
+
+## S231 DEEP-BACKTEST RESULTS (RAN 2026-07-15/16, S231) — **GATE PASSED**
+
+**Task 1 — peak-model at full power: GATE PASS (first time).**
+`nowcast_peak_model.py` extended with archived Open-Meteo forecasts via the
+PREVIOUS-RUNS API (`temperature_2m_previous_day1` = issued day D−1, structurally
+before any day-D crossing — no lookahead; the historical-forecast API is a
+shortest-lead mosaic = lookahead and was NOT used; the historical-ensemble API
+only reaches 2026-04-13). Family window keyed on the question date (NULL
+`end_date_iso` no longer drops families) → **719 family-days 03-01..07-12**
+(was 406), 1,072 priced entries (796 DB-forecast, 276 archive-fill, 390 March).
+Rule FROZEN (E_rem≤1.0F AND h≥12), split 05-06. Output: `nowcast_peak_133d.out`.
+- **PRIMARY TEST: n=135 meanEV +0.091 (SE ~0.039) → +0.091−2SE = +0.013 > 0
+  AND ≥ +0.05 → PASS** per the pre-registered bar. Family-clustered
+  cross-check: 100 family-days, day-mean +0.107, clustered SE ~0.040 (~2.7σ).
+- TRAIN +0.084 (n=219) — no train/test divergence. Rejected-by-rule −0.007
+  (n=718) — ~10¢ pick-vs-reject separation. Strongest a-priori cell
+  E_rem≤0.5 × h12-13: +0.125 (n=142). The 90d h≥14 flip REVERSED (+0.054
+  n=175 — it was noise, as suspected; rule stays frozen).
+- Robustness: DB-only TEST +0.083 (n=58 — consistent, underpowered alone);
+  **ARCH-only TEST +0.059 (n=148, ~1.6σ)** — positive but does NOT clear 2σ
+  by itself (day-1-lead forecast is staler; expected). DB-vs-arch forecast-max
+  offset +0.64F mean (DB hotter — the known hot forecast layer).
+- CAVEATS: mid prices (not executable — see task 2); May is a real DB coverage
+  hole (82 resolved YES buckets vs 439-632 adjacent months) thinning early
+  TEST; family correlation handled by the clustered SE (still >2σ).
+
+**Task 2 — historical maker-fill study (0c from history): capture is NOT the
+blocker.** `maker_fill_study.py`, 304 winner-bucket reveal windows 03→07
+(months 3/4/5/6/7 = 93/95/9/74/33), median pre-reveal price 0.68, median
+repricing +8¢. Resting-bid fills (ALL UPPER BOUNDS — queue position unknowable,
+winner-conditioned, wash flow included): any-fill 97/95/93/86% at bid =
+p0−0/1/2/5¢ (median ~150-200 shares when filled); **POST-reveal-only fills
+74/71/65/54%** — sellers still hit stale levels after the print lands. BUT the
+same-length control window 3.5h earlier shows 80-87% any-fill: these books
+churn two-sided all day, so bids also fill when you're WRONG — adverse
+selection is the real cost, and that is exactly what the (now-passed)
+peak-model gate prices. Capacity confirmed small (~$100/window upper bound).
+
+**Task 4 — Gamma probe: CLOSED, no pre-2026 history.** Temp dailies began
+**2025-12-28** (19 events / 133 markets, Dec 28-31 2025 only; matches the DB's
+~13-market shadow). No 2025-summer out-of-regime validation set exists.
+
+**Task 3 — 9-12h cell at scale: DOES NOT HOLD bot-independently.**
+`dayof_cell_scale.py`, 433 family-days with bets (03→07), raw ensemble
+members floored at hourly-METAR runmax vs CLOB minute prices,
+FAMILY-CLUSTERED SEs: 9-12h bet-the-disagreement **+0.002 (cSE 0.019, ~0σ,
+n=692 bets / 368 family-days)**; every hour bucket ≈ 0 (6-9h −0.023; 3-6h
++0.079 on n=21 noise); threshold sensitivity 0.05/0.10/0.15 all flat ≈ 0.
+The S230 +0.118 (n=66, bot prediction_log rows) does NOT replicate with a
+public signal → it was bot-conditional information or under-clustered noise;
+do NOT build on the 9-12h cell. CONSISTENCY READ: the market prices raw
+public signals efficiently (this zero + the S229 day-ahead duel), while the
+peak-model's crossing-finality selection (task 1 PASS) draws on real-time
+obs composition at specific moments — its reject-set EV ≈ 0 matches.
+
+**PHASE-1 DECISION (operator, 2026-07-15): BUILD — executed same session.**
+Recommendation rationale: gate PASSED on pre-registered terms + capture-side
+plausible (task 2) + costs stay research-tier. Built: `pws_mesh.py` collector
+(read-only VPS cron `2-57/5`, alongside shadow_book/trade_prints): per
+active-market US city in local 09-21, polls ≤4 nearby WU PWS, per-PWS epoch
+cursors, daily roster re-resolution, dead-station rotation, logs
+`pws_mesh_YYYYMMDD.jsonl`. DEPENDENCY CAVEAT: uses the public web API key the
+wunderground.com site embeds (no operator WU key exists — the bot's "WU
+integration" is a history-page scrape, not an API); durable path = operator
+WU key or Synoptic token (swap via `WU_WEBKEY` env). NWWS-OI application
+remains an operator action. Phase 2 (bot integration, flag-gated OFF,
+maker-first per task 2) = design next session; capacity honesty stands
+(~$100/window upper bound). Next validation: mesh-vs-IEM-1min lead
+reproduction once IEM catches up (~42h).
 
 ## NEXT SESSION PLAN — DEEP-BACKTEST PROGRAM (queued 2026-07-15, operator-approved)
 

@@ -1,6 +1,6 @@
 {
   "_comment": "WeatherBot session-handoff manifest — consumed by scripts/wb_resume_check.sh. RULE: any commit that changes a fingerprinted file's markers, adds a headline fix, or moves the session branch MUST update this manifest in the SAME commit. That is what keeps the resume check self-deriving instead of stale.",
-  "session": "S230",
+  "session": "S231",
   "repo": "swatson124455/polymarket-ai-v2",
   "branch": "claude/new-whiteboard-session-9b23tq",
   "headline_commits": {
@@ -32,7 +32,12 @@
     "9c5bbfb": "feat(wb-research): S230 rep_bias_test — ROOT CAUSE: resolution = print world; forecast +0.86F hot",
     "f794268": "docs(wb): S230 S222 re-run n=133 — A1/A3 REVERSED to FAIL; 9-12h cell survived 2.1 sigma",
     "1878a5c": "docs(wb): S230 Phase-0 CLOSED — 90d gate not met; no Phase-1 infra spend",
-    "217b897": "docs(wb): S230 deep-backtest program queued as next-session priority 1"
+    "217b897": "docs(wb): S230 deep-backtest program queued as next-session priority 1",
+    "dd428d0": "feat(wb-research): S231 peak-model — archived previous-runs forecasts (no-lookahead day-1 lead) fill DB holes; March added; question-date family keying",
+    "559988e": "feat(wb-research): S231 maker_fill_study.py — historical maker-fill UPPER bounds from data-api prints at reveal windows (spec 0c from history)",
+    "dda3c66": "feat(wb-research): S231 dayof_cell_scale.py — 9-12h cell at scale, bot-independent (raw ensemble + METAR runmax floor vs CLOB minute prices), family-clustered SEs",
+    "2968532": "docs(wb-research): README — S230 late harnesses (entry_ev/peak_model/rep_bias) + S231 harnesses documented; maker-fill task-2 verdict recorded",
+    "332d3f2": "feat(wb-research): S231 Phase-1 pws_mesh.py — read-only PWS-mesh collector cron (operator-approved build after peak-model gate PASS)"
   },
   "required_docs": [
     "docs/WEATHER_STATUS.md",
@@ -53,7 +58,12 @@
     "scripts/wb_research/nowcast_price_path.py",
     "scripts/wb_research/nowcast_entry_ev.py",
     "scripts/wb_research/nowcast_peak_model.py",
-    "scripts/wb_research/rep_bias_test.py"
+    "scripts/wb_research/rep_bias_test.py",
+    "scripts/wb_research/maker_fill_study.py",
+    "scripts/wb_research/dayof_cell_scale.py",
+    "scripts/wb_research/pws_mesh.py",
+    "docs/WEATHER_S231_STATUS.md",
+    "WB_S232_KICKOFF_PROMPT.md"
   ],
   "fingerprints": [
     {
