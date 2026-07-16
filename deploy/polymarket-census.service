@@ -1,0 +1,21 @@
+# Hourly reward-pool census — READ-ONLY, stdlib-only, paper-lane.
+# Stop:   sudo touch /opt/pa2-maker-census/STOP        (runs become no-ops)
+# Kill:   sudo systemctl disable --now polymarket-census.timer
+[Unit]
+Description=Polymarket reward-pool census (read-only)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=polymarket
+Group=polymarket
+WorkingDirectory=/opt/pa2-maker-census
+ExecStart=/usr/bin/python3 /opt/pa2-maker-census/pool_census.py --once
+TimeoutStartSec=300
+ProtectSystem=strict
+ReadWritePaths=/opt/pa2-maker-census
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectHome=true
+MemoryMax=192M
+CPUQuota=20%
