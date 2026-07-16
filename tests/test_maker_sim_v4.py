@@ -246,25 +246,25 @@ def test_net_of_classic_matches_manual():
 
 
 # ── D1: universe filter ──────────────────────────────────────────────────────
-def test_is_sports_excludes_esports_and_others():
-    assert mps4.is_sports({"slug": "mlb-yankees-vs-red-sox", "question": ""})
-    assert mps4.is_sports({"category": "Sports", "slug": "", "question": ""})
-    assert not mps4.is_sports({"slug": "lol-t1-vs-geng", "question": ""})
-    assert not mps4.is_sports({"slug": "cs2-ewc-final", "question": ""})
-    assert not mps4.is_sports({"slug": "bitcoin-up-or-down", "question": ""})
+def test_game_sector_classification():
+    gs = mps4.game_sector
+    assert gs({"slug": "mlb-yankees-vs-red-sox", "question": ""}) == "sports"
+    assert gs({"category": "Sports", "slug": "", "question": ""}) == "sports"
+    # esports is IN scope, attributed separately (operator: don't pre-narrow)
+    assert gs({"slug": "lol-t1-vs-geng", "question": ""}) == "esports"
+    assert gs({"slug": "cs2-ewc-final", "question": ""}) == "esports"
+    assert gs({"category": "Esports", "slug": "world-cup-showmatch",
+               "question": ""}) == "esports"
     # esports keyword beats sports keyword when both appear
-    assert not mps4.is_sports({"slug": "ewc-world-cup-cs2", "question": ""})
-
-
-def test_is_sports_category_is_authoritative():
-    # scan MED: keyword fallback must not override a non-sports category
-    assert not mps4.is_sports({"category": "Politics",
-                               "slug": "candidate-a-vs-candidate-b", "question": ""})
-    assert not mps4.is_sports({"category": "Esports",
-                               "slug": "world-cup-showmatch", "question": ""})
+    assert gs({"slug": "ewc-world-cup-cs2", "question": ""}) == "esports"
     # expanded esports keywords
-    assert not mps4.is_sports({"slug": "overwatch-grand-final", "question": ""})
-    assert not mps4.is_sports({"slug": "rocket-league-major", "question": ""})
+    assert gs({"slug": "overwatch-grand-final", "question": ""}) == "esports"
+    assert gs({"slug": "rocket-league-major", "question": ""}) == "esports"
+    # non-game markets excluded entirely
+    assert gs({"slug": "bitcoin-up-or-down", "question": ""}) is None
+    # scan MED: keyword fallback must not override a non-game category
+    assert gs({"category": "Politics",
+               "slug": "candidate-a-vs-candidate-b", "question": ""}) is None
 
 
 def test_parse_iso_short_offset():

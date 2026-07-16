@@ -4,15 +4,18 @@
 Tests the two Bucket-1 hypotheses from the 2026-07-15 3rd-party review
 (docs/MAKER_V4_LANE_TEST_PLAN.md is the binding spec):
 
-  H1  live-sports lane: quote SPORTS game markets ONLY while in play, with
-      hard +/-1x inventory caps and ~1s WS re-centering (v2/v3 own pre-game;
-      zero overlap => clean attribution).
+  H1  live-game lane: quote GAME markets (sports AND esports, per-sector
+      attribution) ONLY while in play, with hard +/-1x inventory caps and
+      ~1s WS re-centering (v2/v3 own pre-game; zero overlap => clean
+      attribution). Esports is IN (operator 2026-07-16): v1's esports
+      in-play bleed was measured UNPROTECTED — v4 tests whether the armor
+      fixes it, and sports/esports answer separately in the readout.
   H2  split-inventory (ask-ask) quoting vs classic bid/ask-around-mid,
       A/B by market-id parity on the same universe.
 
 Deltas vs V3 (everything else inherited verbatim from 55b089c):
-  D1 universe = rewarded sports markets WITH gameStartTime, top-70 by pool,
-     discovery every 15 min
+  D1 universe = rewarded sports+esports markets WITH gameStartTime,
+     <=40/sector, top-70 by pool, discovery every 15 min
   D2 INVERTED gate: pre_game gated, in-play quoted; NO last_hours gate;
      vol_pull kept
   D3 INV_CAP_MULT = 1 (frozen msz)
@@ -50,7 +53,8 @@ GAMMA = "https://gamma-api.polymarket.com/markets"
 TAPE = "https://data-api.polymarket.com/trades?market={cid}&limit=200"
 WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
-MAX_MARKETS_TOTAL = 70        # sports-only universe (140 assets = 2 WS chunks)
+MAX_MARKETS_TOTAL = 70        # game-market universe (140 assets = 2 WS chunks)
+MAX_PER_SECTOR = 40           # neither sector may crowd the other out
 DISCOVERY_EVERY_S = 900       # game markets churn daily; 15 min (v3: 30)
 DISCOVERY_RETRY_S = 60        # empty-universe retry (NOT every second — scan #3)
 FINALIZE_PER_CYCLE = 20       # resolution-backfill gamma GETs per discovery
@@ -135,19 +139,23 @@ ESPORTS_KW = re.compile(
     r"street-fighter|halo-|smash-")
 
 
-def is_sports(m):
-    """Sports (NOT esports) — esports is explicitly out of this lane.
-    Category is AUTHORITATIVE when present (scan: keyword fallback both
-    leaked esports titles and overrode non-sports categories). Residual
-    risk: an esports market with EMPTY category and team-name-only slug
-    still leaks — documented in the plan, bounded by settled/vol_pull/1x."""
+def game_sector(m):
+    """Which game-market lane a market belongs to: 'sports', 'esports', or
+    None (not a game market). BOTH sectors are IN scope (operator 2026-07-16:
+    paper test — don't pre-narrow it). v1's esports in-play bleed was
+    measured on the UNPROTECTED policy (5-min stale quotes, 3x caps, no
+    settled gate); v4 tests whether the armor fixes it, with per-sector
+    attribution so sports and esports answer separately. Category is
+    AUTHORITATIVE when present (scan: keyword fallback misclassified)."""
     c = (m.get("category") or "").strip().lower()
     if c:
-        return c == "sports"
+        return c if c in ("sports", "esports") else None
     text = ((m.get("slug") or "") + " " + (m.get("question") or "")).lower()
     if ESPORTS_KW.search(text):
-        return False
-    return bool(SPORTS_KW.search(text))
+        return "esports"
+    if SPORTS_KW.search(text):
+        return "sports"
+    return None
 
 
 def parse_iso(s):
@@ -403,7 +411,8 @@ def discover(base):
                 continue
             seen.add(m.get("id"))
             new += 1
-            if not is_sports(m):
+            sec = game_sector(m)
+            if sec is None:
                 continue
             gs = parse_iso(m.get("gameStartTime"))
             if gs is None:                        # D1: game markets only
@@ -428,14 +437,21 @@ def discover(base):
             if not isinstance(toks, list) or len(toks) < 2 or v <= 0 or msz <= 0:
                 continue
             rows.append({"id": m.get("id"), "cid": m.get("conditionId"),
-                         "q": (m.get("question") or "")[:70], "sector": "sports",
+                         "q": (m.get("question") or "")[:70], "sector": sec,
                          "yes": str(toks[0]), "no": str(toks[1]), "v": v, "msz": msz,
                          "pool": pool, "end": (m.get("endDate") or "")[:10],
                          "game_start": gs})
         if new == 0 or len(data) < 100:
             break
-    rows.sort(key=lambda x: -x["pool"])
-    picked = rows[:MAX_MARKETS_TOTAL]
+    by_sec = defaultdict(list)
+    for r in rows:
+        by_sec[r["sector"]].append(r)
+    picked = []
+    for sec, ms in by_sec.items():
+        ms.sort(key=lambda x: -x["pool"])
+        picked.extend(ms[:MAX_PER_SECTOR])
+    picked.sort(key=lambda x: -x["pool"])
+    picked = picked[:MAX_MARKETS_TOTAL]
     with open(os.path.join(base, "universe.json"), "w") as f:
         json.dump({"t": time.time(), "markets": picked}, f)
     return picked
@@ -615,9 +631,13 @@ def run(base):
                     n_threads += 1
                 n_live = sum(1 for m in universe
                              if m.get("game_start") and m["game_start"] <= now)
-                print(f"universe: {len(universe)} sports game markets "
-                      f"({n_live} in play), {len(assets)} assets, "
-                      f"{n_threads} ws conns (gen {gen})", flush=True)
+                sec_n = defaultdict(int)
+                for m in universe:
+                    sec_n[m["sector"]] += 1
+                print(f"universe: {len(universe)} game markets "
+                      f"({dict(sorted(sec_n.items()))}, {n_live} in play), "
+                      f"{len(assets)} assets, {n_threads} ws conns (gen {gen})",
+                      flush=True)
                 finalize_dropped(state, {str(m["id"]) for m in universe})
             last_discovery = now
 
@@ -721,9 +741,10 @@ def run(base):
                                      tape_cache.get(str(m["id"])), now - 60)
                 maybe_resplit(st, msz, now)
                 st["net"] = round(net_of(st, arm, mid), 4)
-                st.update({"sector": "sports", "q": m["q"], "pool": m["pool"],
+                st.update({"sector": m["sector"], "q": m["q"], "pool": m["pool"],
                            "msz": msz})
                 rows.append({"t": round(now), "id": m["id"], "arm": arm,
+                             "sec": m["sector"],
                              "mid": round(mid, 4), "shr": round(share, 4),
                              "fills": fills, "net": st["net"],
                              "in_play": bool(m.get("game_start")
@@ -784,12 +805,13 @@ def report(base):
         a = st.get("arm")
         if not a:
             continue
-        by[a][0] += 1
-        by[a][1] += st.get("acc", 0.0)
-        by[a][2] += st.get("net", 0.0)
-    print("%-10s %4s %10s %10s" % ("arm", "n", "rewards$", "netPnL$"))
-    for a, b in sorted(by.items()):
-        print("%-10s %4d %10.2f %10.2f" % (a, b[0], b[1], b[2]))
+        key = (st.get("sector") or "?", a)
+        by[key][0] += 1
+        by[key][1] += st.get("acc", 0.0)
+        by[key][2] += st.get("net", 0.0)
+    print("%-10s %-10s %4s %10s %10s" % ("sector", "arm", "n", "rewards$", "netPnL$"))
+    for (sec, a), b in sorted(by.items()):
+        print("%-10s %-10s %4d %10.2f %10.2f" % (sec, a, b[0], b[1], b[2]))
     gates = defaultdict(int)
     for st in state.values():
         for g, c in (st.get("gates") or {}).items():
