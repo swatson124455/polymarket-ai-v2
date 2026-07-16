@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the reward-pool census hourly
+
+[Timer]
+OnCalendar=*:07
+AccuracySec=60s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

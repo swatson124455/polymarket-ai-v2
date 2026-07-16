@@ -1,0 +1,26 @@
+# Paper Maker sim V4 (live-sports lane, WS arm) — PAPER ONLY, 100% separate from v1/v2/v3.
+# Stop:   sudo touch /opt/pa2-maker-sim-v4/STOP        (loop exits cleanly)
+# Kill:   sudo systemctl disable --now polymarket-maker-sim-v4.service
+[Unit]
+Description=Polymarket Paper Maker Sim V4 live-sports lane (read-only, no trading)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=polymarket
+Group=polymarket
+WorkingDirectory=/opt/pa2-maker-sim-v4
+ExecStart=/opt/pa2-maker-sim-v4/venv/bin/python /opt/pa2-maker-sim-v4/maker_paper_sim_v4.py --run
+Restart=on-failure
+RestartSec=30
+ProtectSystem=strict
+ReadWritePaths=/opt/pa2-maker-sim-v4
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectHome=true
+MemoryMax=384M
+CPUQuota=30%
+
+[Install]
+WantedBy=multi-user.target
