@@ -104,10 +104,18 @@ reads **cohort-1 and cohort-2 SEPARATELY** (never pooled).
   (banned) — it's calibration/edge.
 - To read on demand: `sudo -u polymarket bash /opt/pa2-shared/mb_readout/deploy/shadow_readout_cron.sh`.
 
-## STANDING STATE (verify, don't trust)
-Shadow watcher live since 2026-07-13 23:29:27 UTC on `/opt/mirror3`=`25b54d4`;
-S222-style shadow readout clock ~2-4wk (`analyze_shadow.py --trust-quotes-after
-1783985376`); roster=16, cohort-2 pool=13 awaiting deep-dive + operator word.
+## STANDING STATE (verify, don't trust — updated 2026-07-15 PM)
+Shadow watcher on `/opt/mirror3`=`d6276f7` (mirror_v3 byte-identical to the
+prior `25b54d4`), restarted 2026-07-15 19:20:45 UTC with **roster=24** (16
+cohort-1 + 8 cohort-2 ADMITTED; cohort-2 start epoch 1784143245). Cohort-1
+readout clock from 2026-07-13 23:29 UTC (epoch 1783985376); cohort-2 from its
+own epoch. Cohort-2-pool accounting: 8 admitted / 3 INSUFFICIENT (deepen when
+their markets resolve) / 1 REJECT-uncopyable / 1 pending in run-2. The daily
+`shadow_readout` cron reads BOTH cohorts separately from the roster ledger.
+**Run-2 note:** its results were produced under `d6276f7` — before the
+receipts-failed fix (`5eae137`); AUDIT each run-2 JSON: `v2_side_unknown > 0`
+(with verdict ≠ rate-REJECT) ⇒ re-run that trader under `5eae137`+ before
+trusting mismatch/fabrication/skill. (Run-1's 12 audited: all 0 — clean.)
 
 ## HARD FENCES (unchanged)
 Never touch `polymarket-mirror3` except via `deploy/mirror3_shadow_deploy.sh`
@@ -117,10 +125,13 @@ without authorization; all CLAUDE.md bans (no `neg_risk` filters, no
 order_gateway keying repair, no mirror_scoring validate, `bot_pnl.py` for P&L).
 
 ## SESSION END
-Update `docs/MB_STATE.md`; refresh the docs-sync PR to master — branch
-`claude/mb-docs-sync-0714pm` is already pushed (open the PR at
-`https://github.com/swatson124455/polymarket-ai-v2/pull/new/claude/mb-docs-sync-0714pm`
-or fold your new docs into a fresh sync branch); write the next handoff prompt.
+Update `docs/MB_STATE.md`; **REFRESH the docs-sync branch before any PR** —
+`claude/mb-docs-sync-0714pm` must carry the CURRENT MB_STATE (the 2026-07-15
+close refreshed it; a stale sync branch is exactly the failure the branch-
+versioned-docs protocol exists to prevent — never PR it as-is without checking
+its MB_STATE matches the session branch's). PR link:
+`https://github.com/swatson124455/polymarket-ai-v2/pull/new/claude/mb-docs-sync-0714pm`.
+Write the next handoff prompt.
 
 **Start by reporting:** newest MB_STATE confirmed, batch status (done / running /
 died + counts), the ADMIT / REJECT / INSUFFICIENT split with per-trader reasons,

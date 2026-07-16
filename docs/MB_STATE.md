@@ -49,7 +49,11 @@
 >    `--self-test` (16-case verdict table) + 23 pytest green LOCAL + VPS venv
 >    (web3 7.5.0); siblings unregressed (53). Commits on this branch through
 >    `0231f2c`.
-> 4. **THE 47-BATCH IS RUNNING** (launched 2026-07-14 19:31 UTC, detached
+> 4. **[SUPERSEDED by the ROSTER LEDGER's EXECUTION UPDATE below — run-1 was
+>    killed at 12/47 and relaunched as run-2 (rps 8, receipt short-circuit);
+>    the summary is now `deep_dive/_summary_run2.json` and, since `5eae137`,
+>    it is rebuilt from the on-disk JSONs after every trader (spans ALL runs).]**
+>    ~~THE 47-BATCH IS RUNNING~~ (originally launched 2026-07-14 19:31 UTC, detached
 >    setsid+nohup, reparented to PID 1, rps=4, max_receipts=30000): 9 cohort-2
 >    (`readjudicate.json` VINDICATED) + 38 (`deep_dive_extra_38.txt` = grey-4 +
 >    the 34 HFT-borderline incl `0xa6a856a8c8…`) = 47. Log `/tmp/deep_dive_batch.log`;
@@ -110,10 +114,17 @@
 >     `0xbaa2bcb5…`, `0xc660ae71…`, `0xd1acd392…`, `0xe25b9180…`.
 >     **SEPARATE READOUT (never pool w/ cohort-1):** `analyze_shadow.py
 >     --trust-quotes-after 1784143245` FILTERED to the 8 cohort-2 addresses.
->     Cohort-2 pool was 13; 5 remain un-admitted (3 INSUFFICIENT — marginal
->     skill under the P bar / deepen; 1 REJECT-uncopyable 0xf705fa…461/day;
->     grey-4 pending their deep-dive results). Add later ADMITs (from the
->     wave-1 run-2 remainder + wave-2) in the SAME way — batch, one restart.
+>     **Cohort-2 pool (13 = the nine + grey-4) accounting, corrected
+>     2026-07-15 PM (session-close review finding #16):** 8 ADMITTED (6 of the
+>     nine: 0x0e5bd7/0x7744bf/0xa2f1fe/0xbaa2bc/0xd1acd3/0xe25b91 + 2 grey:
+>     0x4ad6ca/0xc660ae) · 3 INSUFFICIENT (0x481858, 0x92672c of the nine;
+>     0xea8ee3 grey — skill under the P bar on FULL data; deepen = wait for
+>     more of their markets to resolve, then re-dive) · 1 REJECT-uncopyable
+>     (0xf705fa, 461/day — honest, skilled, un-tailable) · 1 PENDING
+>     (0xfbf3d5 grey, run-2 trader 1). Add later ADMITs (run-2 remainder +
+>     wave-2) the SAME way — batch, one restart, extend the cohort2 ledger key
+>     (shadow_readout REFUSES a readout if clean != cohort1+cohort2, so an
+>     admission without the ledger update now fails loud).
 >
 > *(The 2026-07-14 ~02:45 block below is prior state from earlier the same day;
 > its deep-dive-gate TO-DO is DONE per the above.)*
@@ -720,6 +731,16 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
   `yes_token_id`/`no_token_id` (resolution YES ⇒ yes-token won). The shadow
   records carry only `token_id` (no condition_id), so resolve via those two
   columns, not condition_id.
+- **The daily readout cron is BRANCH-PINNED + leaves a root gitconfig
+  mutation (session-close review #17/#30):** `deploy/shadow_readout_cron.sh`
+  hard-resets `/opt/pa2-shared/mb_readout` to `claude/repo-setup-docs-fq9bhn`
+  daily — if the MB lane moves branches, UPDATE the BR pin or the readout
+  runs frozen code forever (a refresh failure now writes a WARN line into
+  `shadow_readout_log.txt`). Cohort membership is read from
+  `chain_audit.json` at runtime (not code), so admissions don't need a code
+  change — but they DO need the cohort ledger keys extended or the readout
+  refuses to run. Setup also left a `safe.directory /opt/pa2-shared/mb_readout`
+  entry in ROOT's global gitconfig (harmless, recorded here).
 - **pkill self-match, VARIANT 2 (bit TWICE 2026-07-15):** bracketing the
   pkill pattern (`chain_deep_di[v]e`) is NOT enough when ANY OTHER clause of
   the same SSH command contains the literal name — a `pgrep -fc
