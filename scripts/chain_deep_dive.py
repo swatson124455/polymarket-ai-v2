@@ -571,6 +571,22 @@ def _merge_gamma_preloaded(markets: dict, keys: list[str], gamma: dict) -> int:
 
 
 # ── Network run (VPS) ────────────────────────────────────────────────────────
+RPC_TIMEOUT_S = 90.0
+
+
+async def rpc_call(coro):
+    """Timeout guard on EVERY chain RPC await. 2026-07-16 landmine: a dropped
+    tenderly connection with no read-timeout parked run-2 on ONE await for
+    ~13h — zero CPU, zero sockets, but the event loop stayed alive so the DB
+    heartbeat kept printing and process-liveness monitoring saw nothing wrong.
+    A timeout converts that hang into a counted, retryable error that the
+    existing leaf_fail / receipts_failed / rpc_error machinery absorbs. These
+    are idempotent read-only GETs, so task-level cancellation is safe (the
+    asyncio.wait_for ban concerns financial write-throughs, not reads)."""
+    async with asyncio.timeout(RPC_TIMEOUT_S):
+        return await coro
+
+
 async def _sweep_leaf(fetch: Callable, lo: int, hi: int, chunk: int,
                       min_chunk: int, rps: float, note_err, counters: dict
                       ) -> None:
@@ -582,7 +598,7 @@ async def _sweep_leaf(fetch: Callable, lo: int, hi: int, chunk: int,
     for a, b in ac.block_chunks(lo, hi, chunk):
         await asyncio.sleep(1.0 / max(rps, 0.1))
         try:
-            counters["logs"].extend(await fetch(a, b))
+            counters["logs"].extend(await rpc_call(fetch(a, b)))
             counters["leaf_ok"] += 1
         except Exception as e:  # noqa: BLE001
             note_err(e)
@@ -680,7 +696,7 @@ async def classify_v2_directions(bc, addr: str, v2_fills: list[dict], cfg,
         for i, tx in enumerate(attempt):
             await asyncio.sleep(1.0 / max(cfg.rps, 0.1))
             try:
-                rcpt = await bc.w3.eth.get_transaction_receipt(tx)
+                rcpt = await rpc_call(bc.w3.eth.get_transaction_receipt(tx))
                 tx_logs[tx] = [dict(lg) for lg in rcpt["logs"]]
             except Exception as e:  # noqa: BLE001
                 note_err(e)
@@ -710,9 +726,9 @@ async def detection_canary(bc, head: int) -> bool:
                 for a in (EXCHANGE_V2, NEGRISK_EXCHANGE_V2)]
     b1 = head - 60
     try:
-        logs = await bc.w3.eth.get_logs({"fromBlock": b1 - 20, "toBlock": b1,
-                                         "address": v2_addrs,
-                                         "topics": [FILL_TOPIC_V2]})
+        logs = await rpc_call(bc.w3.eth.get_logs(
+            {"fromBlock": b1 - 20, "toBlock": b1, "address": v2_addrs,
+             "topics": [FILL_TOPIC_V2]}))
         return len(logs) > 0
     except Exception:  # noqa: BLE001
         return False
@@ -760,9 +776,9 @@ async def copier_probe(bc, first_buys: list[dict], addr: str, cfg, note_err
         blk = int(f["block"])
         await asyncio.sleep(1.0 / max(cfg.rps, 0.1))
         try:
-            logs = await bc.w3.eth.get_logs({
+            logs = await rpc_call(bc.w3.eth.get_logs({
                 "fromBlock": blk - lead_blocks, "toBlock": blk,
-                "address": v2_addrs, "topics": [FILL_TOPIC_V2]})
+                "address": v2_addrs, "topics": [FILL_TOPIC_V2]}))
         except Exception as e:  # noqa: BLE001
             note_err(e)
             continue
@@ -807,10 +823,10 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
 
     async def _get_block_ts(b):
         await asyncio.sleep(1.0 / max(cfg.rps, 0.1))
-        return int((await bc.w3.eth.get_block(b))["timestamp"])
+        return int((await rpc_call(bc.w3.eth.get_block(b)))["timestamp"])
 
     try:
-        latest = await bc.w3.eth.get_block("latest")
+        latest = await rpc_call(bc.w3.eth.get_block("latest"))
         latest_num, latest_ts = int(latest["number"]), int(latest["timestamp"])
     except Exception as e:  # noqa: BLE001
         note_err(e)
