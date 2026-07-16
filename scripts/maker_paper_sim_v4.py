@@ -52,6 +52,8 @@ WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
 MAX_MARKETS_TOTAL = 70        # sports-only universe (140 assets = 2 WS chunks)
 DISCOVERY_EVERY_S = 900       # game markets churn daily; 15 min (v3: 30)
+DISCOVERY_RETRY_S = 60        # empty-universe retry (NOT every second — scan #3)
+FINALIZE_PER_CYCLE = 20       # resolution-backfill gamma GETs per discovery
 INV_CAP_MULT = 1              # D3 hard caps (v1-v3: 3)
 RESPLIT_MAX_PER_DAY = 3       # D4 split-arm capital bound
 SETTLED_HI, SETTLED_LO = 0.92, 0.08   # D7
@@ -59,7 +61,8 @@ VOL_PULL_PTS = 0.02
 VOL_PULL_S = 600
 REQUOTE_TICKS = 0.002
 MAX_DISK_MB = 500
-HTTP_BUDGET_PER_HOUR = 12000
+HTTP_BUDGET_PER_HOUR = 16000  # 70 mkts x 3 tape pages x 60/min = 12.6K worst case
+                              # (scan #8: 12K starved fills exactly on hot nights)
 WS_CHUNK = 90
 WS_IDLE_RECONNECT_S = 40
 
@@ -127,23 +130,37 @@ SPORTS_KW = re.compile(
     r"derby|open-")
 ESPORTS_KW = re.compile(
     r"lol-|league-of-legends|cs2|csgo|counter-strike|dota|valorant|esports|"
-    r"lck|lpl|lec|ewc")
+    r"lck|lpl|lec|ewc|overwatch|rocket-league|call-of-duty|cod-|rainbow-six|"
+    r"r6-|pubg|fortnite|starcraft|mlbb|mobile-legends|apex-legends|tekken|"
+    r"street-fighter|halo-|smash-")
 
 
 def is_sports(m):
-    """Sports (NOT esports) — esports is explicitly out of this lane."""
+    """Sports (NOT esports) — esports is explicitly out of this lane.
+    Category is AUTHORITATIVE when present (scan: keyword fallback both
+    leaked esports titles and overrode non-sports categories). Residual
+    risk: an esports market with EMPTY category and team-name-only slug
+    still leaks — documented in the plan, bounded by settled/vol_pull/1x."""
     c = (m.get("category") or "").strip().lower()
+    if c:
+        return c == "sports"
     text = ((m.get("slug") or "") + " " + (m.get("question") or "")).lower()
-    if ESPORTS_KW.search(text) or c == "esports":
+    if ESPORTS_KW.search(text):
         return False
-    return c == "sports" or bool(SPORTS_KW.search(text))
+    return bool(SPORTS_KW.search(text))
 
 
 def parse_iso(s):
     if not s:
         return None
     try:
-        return datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
+        t = str(s).strip().replace("Z", "+00:00")
+        # gamma emits short offsets ("2026-07-16 00:00:00+00") which
+        # datetime.fromisoformat only accepts from Python 3.11 — on 3.10 the
+        # whole universe silently emptied (scan #3, live-verified format)
+        if re.search(r"[+-]\d{2}$", t):
+            t += ":00"
+        return datetime.fromisoformat(t).timestamp()
     except Exception:
         return None
 
@@ -218,24 +235,86 @@ def maybe_resplit(st, msz, now):
         st["yes_inv"] = st.get("yes_inv", 0) + msz
         st["no_inv"] = st.get("no_inv", 0) + msz
         st["resplits"] = st.get("resplits", 0) + 1
-        return True
+        st["resplits_total"] = st.get("resplits_total", 0) + 1   # cumulative,
+        return True                    # survives day rollover (scan: unlogged)
     return False
+
+
+def _final_mid_from_gamma(market_id):
+    """Resolution price for a CLOSED market via gamma outcomePrices (YES)."""
+    d = get(f"{GAMMA}/{market_id}", timeout=10)
+    if not isinstance(d, dict) or not d.get("closed"):
+        return None
+    try:
+        op = d.get("outcomePrices")
+        op = json.loads(op) if isinstance(op, str) else op
+        fm = float(op[0])
+        return fm if 0.0 <= fm <= 1.0 else None
+    except Exception:
+        return None
+
+
+def finalize_dropped(state, universe_ids):
+    """Scan finding #1 (CRITICAL): residual inventory used to freeze at the
+    last observed mid — overstating NET for BOTH arms by ~residual x
+    (1 - frozen_mid) on essentially every game, and biasing H2 toward split
+    (which always carries residual). When a market leaves the universe:
+    pull its quotes + drop stale qh (so re-entry can't fill at 15-min-stale
+    prices — scan #5), then mark any residual to its RESOLUTION price once
+    gamma reports the market closed. Bounded gamma GETs per cycle; markets
+    not yet closed are retried next discovery."""
+    fetches = 0
+    for k, st in state.items():
+        if k in universe_ids or st.get("final") or not st.get("arm"):
+            continue
+        if st.get("bid") is not None or st.get("ask") is not None:
+            st["bid"] = st["ask"] = None
+        st["qh"] = []
+        residual = abs(st.get("pos", 0.0)) + st.get("yes_inv", 0.0) \
+            + st.get("no_inv", 0.0)
+        if residual < 1e-9 and "capital" not in st:
+            st["final"] = 1                       # nothing to mark
+            continue
+        if fetches >= FINALIZE_PER_CYCLE:
+            continue
+        fetches += 1
+        fm = _final_mid_from_gamma(k)
+        if fm is None:
+            continue                              # not closed yet — retry later
+        st["final"] = 1
+        st["final_mid"] = fm
+        st["residual"] = round(residual, 2)
+        st["net"] = round(net_of(st, st["arm"], fm), 4)
 
 
 def match_prints(st, arm, yes_id, no_id, msz, tape, default_since):
     """D5 fill engine, both arms. Prints from BOTH tokens are mapped to YES
-    space (p_yes = 1 - p_no); the same trade surfacing via both token views
-    is deduped on (txhash, ts, size). Quotes are time-matched from st['qh']
+    space (p_yes = 1 - p_no). Quotes are time-matched from st['qh']
     ([ts, bid, ask]; either side may be None). Mutates st in place
-    (pos/cost/real | yes_inv/no_inv/cash, and last_trade_ts). Returns fills."""
+    (pos/cost/real | yes_inv/no_inv/cash, last_trade_ts, seen_edge).
+    Returns fills.
+
+    Watermarking (scan #2 rewrite): data-api timestamps are INTEGER SECONDS
+    and ~24% of live prints share a second — a per-print `ts <= last_ts`
+    watermark silently dropped every same-second sibling. Instead: process
+    everything with ts >= last_ts, and make the edge second exactly-once via
+    a persisted identity set (fetch_tape's own 5-tuple) for prints AT the
+    watermark, which are re-fetched next tick by design.
+
+    The default data-api view is TAKER-ONLY (live-verified 2026-07-15:
+    each trade appears once, on the taker's token; 0/1,100 cross-token
+    duplicates). Do NOT switch fetch_tape to takerOnly=false without adding
+    cross-leg dedup — in that view every trade is reported twice."""
     qh = st.get("qh") or []
     last_ts = st.get("last_trade_ts", default_since)
+    edge = set(map(tuple, st.get("seen_edge") or []))
     if not qh:
         return 0
     fills = 0
     cap = INV_CAP_MULT * msz
     pos, cost, real = st.get("pos", 0.0), st.get("cost", 0.0), st.get("real", 0.0)
-    fseen = set()
+    max_ts = last_ts
+    cur_edge = set(edge)
     for tr in tape if isinstance(tape, list) else []:
         try:
             ts = float(tr.get("timestamp"))
@@ -244,7 +323,7 @@ def match_prints(st, arm, yes_id, no_id, msz, tape, default_since):
             asset = str(tr.get("asset") or "")
         except Exception:
             continue
-        if ts <= last_ts:
+        if ts < last_ts:
             continue
         if asset == yes_id:
             py = p
@@ -252,11 +331,13 @@ def match_prints(st, arm, yes_id, no_id, msz, tape, default_since):
             py = 1.0 - p                          # D5 complement mapping
         else:
             continue
-        fk = (tr.get("transactionHash"), ts, round(sz, 4))
-        if fk in fseen:                           # same trade via both tokens
-            last_ts = max(last_ts, ts)
-            continue
-        fseen.add(fk)
+        key = (tr.get("transactionHash"), ts, p, sz, asset)
+        if ts == last_ts and key in edge:
+            continue                              # edge-second re-fetch
+        if ts > max_ts:                           # tape is sorted ascending
+            max_ts = ts
+            cur_edge = set()
+        cur_edge.add(key)
         qbid = qask = None
         found = False
         for qt, qb, qa in reversed(qh):
@@ -264,7 +345,6 @@ def match_prints(st, arm, yes_id, no_id, msz, tape, default_since):
                 qbid, qask, found = qb, qa, True
                 break
         if not found or (qbid is None and qask is None):
-            last_ts = max(last_ts, ts)
             continue
         if arm == "split":
             if qask is not None and py > qask \
@@ -292,9 +372,9 @@ def match_prints(st, arm, yes_id, no_id, msz, tape, default_since):
                     cost -= msz * qask
                 pos -= msz
                 fills += 1
-        last_ts = max(last_ts, ts)
     st.update({"pos": round(pos, 2), "cost": round(cost, 4),
-               "real": round(real, 4), "last_trade_ts": last_ts})
+               "real": round(real, 4), "last_trade_ts": max_ts,
+               "seen_edge": [list(k) for k in list(cur_edge)[:300]]})
     return fills
 
 
@@ -342,7 +422,10 @@ def discover(base):
                 msz = float(m.get("rewardsMinSize"))
             except Exception:
                 continue
-            if len(toks) < 2 or v <= 0 or msz <= 0:
+            # isinstance first: a scalar clobTokenIds made len() raise OUTSIDE
+            # the try -> discover -> run crash loop (scan #6); a JSON string
+            # would yield 1-char garbage token ids
+            if not isinstance(toks, list) or len(toks) < 2 or v <= 0 or msz <= 0:
                 continue
             rows.append({"id": m.get("id"), "cid": m.get("conditionId"),
                          "q": (m.get("question") or "")[:70], "sector": "sports",
@@ -461,7 +544,7 @@ def run(base):
         state = {}
     last_discovery = 0.0
     last_minute = 0.0
-    last_persist = 0.0
+    last_disk = 0.0
     lat_ms = deque(maxlen=2000)
     hb = time.time()
 
@@ -470,7 +553,10 @@ def run(base):
         if os.path.exists(os.path.join(base, "STOP")):
             print("STOP sentinel — exiting cleanly", flush=True)
             return 0
-        if now - last_persist > 3600:
+        # dedicated hourly clock (scan #7: gating on last_persist made this
+        # check dead in steady state — persistence refreshes it every minute)
+        if now - last_disk > 3600:
+            last_disk = now
             size_mb = sum(os.path.getsize(os.path.join(r, f))
                           for r, _, fs in os.walk(base) for f in fs) / 1e6
             if size_mb > MAX_DISK_MB:
@@ -478,7 +564,10 @@ def run(base):
                 return 1
 
         # ── universe (re)discovery + WS thread lifecycle (verbatim v3) ─────
-        if now - last_discovery > DISCOVERY_EVERY_S or not universe:
+        # empty-universe retry is BACKED OFF (scan #3: `or not universe` alone
+        # re-ran 21-page discovery every second, burning the HTTP budget)
+        if (now - last_discovery > DISCOVERY_EVERY_S
+                or (not universe and now - last_discovery > DISCOVERY_RETRY_S)):
             u = discover(base)
             if u:
                 universe = u
@@ -502,6 +591,7 @@ def run(base):
                 print(f"universe: {len(universe)} sports game markets "
                       f"({n_live} in play), {len(assets)} assets, "
                       f"{n_threads} ws conns (gen {gen})", flush=True)
+                finalize_dropped(state, {str(m["id"]) for m in universe})
             last_discovery = now
 
         # ── fast loop: gates + requotes off cached books (~1s cadence) ─────
@@ -529,7 +619,14 @@ def run(base):
             st["arm"] = arm
             s_mine = (ba - bb) / 2
             if S(m["v"], s_mine, m["msz"]) <= 0:
-                continue                          # touch outside incentive band
+                # touch outside incentive band: PULL quotes (scan #9 — a bare
+                # continue left stale quotes standing, fillable at stale prices)
+                if st.get("bid") is not None or st.get("ask") is not None:
+                    st["bid"] = st["ask"] = None
+                    st.setdefault("qh", []).append([now, None, None])
+                st["gates"] = {**st.get("gates", {}),
+                               "band": st.get("gates", {}).get("band", 0) + 1}
+                continue
             if "cap_msz" not in st:
                 st["cap_msz"] = m["msz"]          # freeze once (gamma drifts it)
             msz = st["cap_msz"]
@@ -577,6 +674,12 @@ def run(base):
                 # reward accrual with D6 one-sided haircut
                 q_mine, n_sides = my_qmine(st, mid, m["v"], msz)
                 share = 0.0
+                # freshness guard (scan #4): with no live book, cached_scores
+                # returns (0,0) -> q_comp 0 -> phantom share=1.0 accrual
+                if q_mine > 0:
+                    _, _, bts_m = cached_touch(m["yes"])
+                    if bts_m is None or now - bts_m > 300:
+                        q_mine = 0.0
                 if q_mine > 0:
                     q1, q2 = cached_scores(m, mid)
                     q_comp = max(min(q1, q2), max(q1, q2) / 3.0) \
@@ -604,7 +707,13 @@ def run(base):
                 for r in rows:
                     f.write(json.dumps(r) + "\n")
             tmp = state_path + ".tmp"
-            slim = {k: {kk: vv for kk, vv in v.items() if kk not in ("qh", "mid_hist")}
+            # qh/mid_hist are ephemeral; bid/ask/last_mid/last_acc_t are
+            # DELIBERATELY dropped too (scan #4): persisting them let the first
+            # post-restart minute-loop accrue at share=1.0 against empty book
+            # caches. seen_edge MUST persist (exactly-once fills across
+            # restarts) and does.
+            _EPHEMERAL = ("qh", "mid_hist", "bid", "ask", "last_mid", "last_acc_t")
+            slim = {k: {kk: vv for kk, vv in v.items() if kk not in _EPHEMERAL}
                     for k, v in state.items()}
             with open(tmp, "w") as f:
                 json.dump(slim, f)
@@ -624,14 +733,19 @@ def run(base):
                     by_arm[a][2] += st.get("net", 0.0)
                 with BOOKS_LOCK:
                     stale = sum(1 for b in BOOKS.values() if now - b["ts"] > 300)
+                fills_arm = defaultdict(int)
+                for r in rows:
+                    fills_arm[r["arm"]] += r["fills"]
                 arm_str = " ".join(
-                    f"{a}[n={c[0]} acc=${c[1]:.2f} net=${c[2]:.2f}]"
+                    f"{a}[n={c[0]} acc=${c[1]:.2f} net=${c[2]:.2f} "
+                    f"fills={fills_arm.get(a, 0)}]"
                     for a, c in sorted(by_arm.items()))
+                resplits = sum(st.get("resplits_total", 0) for st in state.values())
                 print(f"hb: {sum(1 for r in rows if r['quoting'])}/{len(rows)} quoting "
                       f"({sum(1 for r in rows if r['in_play'])} in-play), {arm_str}, "
                       f"fills_min={sum(r['fills'] for r in rows)}, "
-                      f"requote_lat_med={med:.0f}ms, books={len(BOOKS)}, "
-                      f"stale_books={stale}", flush=True)
+                      f"resplits={resplits}, requote_lat_med={med:.0f}ms, "
+                      f"books={len(BOOKS)}, stale_books={stale}", flush=True)
 
         time.sleep(1)
 

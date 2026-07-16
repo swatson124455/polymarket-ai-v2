@@ -7,6 +7,7 @@ lifecycle, the D5 both-token fill engine with cross-view dedup, and the D6
 one-sided score haircut. No network access anywhere in this file.
 """
 import importlib.util
+import json
 import pathlib
 import time
 
@@ -169,13 +170,38 @@ def test_d5_complement_print_fills_classic_bid():
     assert st["cost"] == pytest.approx(MSZ * 0.39)
 
 
-def test_d5_cross_view_dedup_single_fill():
+def test_same_second_prints_both_fill():
+    # scan #2: data-api timestamps are integer seconds; ~24% of live prints
+    # share a second. Old watermark dropped the second one — both must count.
     st = {"qh": [[0.0, 0.48, 0.52]]}
-    same = dict(ts=1.0, size=25.0, tx="0xsame")
-    tape = [tr(same["ts"], 0.53, "Y", size=same["size"], tx=same["tx"]),
-            tr(same["ts"], 0.47, "N", size=same["size"], tx=same["tx"])]
+    tape = [tr(1.0, 0.47, "Y", tx="0x1"),        # fills our bid (buy)
+            tr(1.0, 0.53, "Y", tx="0x2")]        # SAME second: fills our ask
     fills = mps4.match_prints(st, "classic", "Y", "N", MSZ, tape, 0.0)
-    assert fills == 1                            # one trade, two views
+    assert fills == 2 and st["pos"] == 0.0       # offsetting round trip
+    assert st["real"] == pytest.approx(MSZ * (0.52 - 0.48))
+
+
+def test_edge_second_exactly_once_across_ticks():
+    # prints AT the watermark are re-fetched next tick; the persisted
+    # edge-identity set must skip them while accepting NEW same-second prints
+    st = {"qh": [[0.0, 0.48, 0.52]]}
+    p1 = tr(5.0, 0.47, "Y", tx="0x1")
+    assert mps4.match_prints(st, "classic", "Y", "N", MSZ, [p1], 0.0) == 1
+    assert st["last_trade_ts"] == 5.0 and st["seen_edge"]
+    # persistence round-trip (seen_edge survives as JSON lists)
+    st2 = json.loads(json.dumps(st))
+    p2 = tr(5.0, 0.53, "Y", tx="0x2")            # new print, same edge second
+    fills = mps4.match_prints(st2, "classic", "Y", "N", MSZ, [p1, p2], 0.0)
+    assert fills == 1                            # p1 deduped, p2 fills
+    assert st2["pos"] == 0.0                     # round trip completed
+
+
+def test_watermark_advances_on_unquoted_prints():
+    # a print during a gated window must advance the watermark (no reprocess)
+    st = {"qh": [[0.0, 0.48, 0.52], [5.0, None, None]]}
+    tape = [tr(6.0, 0.40, "Y")]
+    assert mps4.match_prints(st, "classic", "Y", "N", MSZ, tape, 0.0) == 0
+    assert st["last_trade_ts"] == 6.0
 
 
 def test_classic_cap_is_one_msz():
@@ -224,3 +250,64 @@ def test_is_sports_excludes_esports_and_others():
     assert not mps4.is_sports({"slug": "bitcoin-up-or-down", "question": ""})
     # esports keyword beats sports keyword when both appear
     assert not mps4.is_sports({"slug": "ewc-world-cup-cs2", "question": ""})
+
+
+def test_is_sports_category_is_authoritative():
+    # scan MED: keyword fallback must not override a non-sports category
+    assert not mps4.is_sports({"category": "Politics",
+                               "slug": "candidate-a-vs-candidate-b", "question": ""})
+    assert not mps4.is_sports({"category": "Esports",
+                               "slug": "world-cup-showmatch", "question": ""})
+    # expanded esports keywords
+    assert not mps4.is_sports({"slug": "overwatch-grand-final", "question": ""})
+    assert not mps4.is_sports({"slug": "rocket-league-major", "question": ""})
+
+
+def test_parse_iso_short_offset():
+    # gamma live format (scan HIGH): "+00" chokes fromisoformat on py<=3.10
+    ts = mps4.parse_iso("2026-07-16 00:00:00+00")
+    assert ts is not None
+    assert ts == mps4.parse_iso("2026-07-16T00:00:00+00:00")
+    assert mps4.parse_iso("2026-07-16T00:00:00Z") == ts
+    assert mps4.parse_iso("") is None and mps4.parse_iso(None) is None
+
+
+# ── resolution backfill (scan CRITICAL #1) ───────────────────────────────────
+def test_finalize_dropped_marks_residual_to_resolution(monkeypatch):
+    st = {"arm": "classic", "pos": MSZ, "cost": MSZ * 0.5, "real": 0.0,
+          "bid": 0.49, "ask": 0.51, "qh": [[0.0, 0.49, 0.51]],
+          "net": 4.2}                            # stale mark at mid 0.92
+    state = {"123": st}
+    monkeypatch.setattr(mps4, "get", lambda url, timeout=10:
+                        {"closed": True, "outcomePrices": '["0", "1"]'})
+    mps4.finalize_dropped(state, set())          # market left the universe
+    assert st["final"] == 1 and st["final_mid"] == 0.0
+    # long-the-loser marked to 0, not the frozen 0.92-ish mid
+    assert st["net"] == pytest.approx(0.0 + MSZ * 0.0 - MSZ * 0.5)
+    assert st["bid"] is None and st["ask"] is None and st["qh"] == []
+
+
+def test_finalize_dropped_retries_until_closed(monkeypatch):
+    st = {"arm": "split", "capital": MSZ, "cash": 5.2,
+          "yes_inv": 0.0, "no_inv": MSZ, "pos": 0.0}
+    state = {"9": st}
+    monkeypatch.setattr(mps4, "get", lambda url, timeout=10: {"closed": False})
+    mps4.finalize_dropped(state, set())
+    assert "final" not in st                     # not closed -> retry later
+    monkeypatch.setattr(mps4, "get", lambda url, timeout=10:
+                        {"closed": True, "outcomePrices": '["1", "0"]'})
+    mps4.finalize_dropped(state, set())
+    # split residual: NO side worthless at YES=1.0
+    assert st["final"] == 1
+    assert st["net"] == pytest.approx(5.2 + 0.0 + MSZ * 0.0 - MSZ)
+
+
+def test_finalize_skips_universe_members_and_flat_states(monkeypatch):
+    live = {"arm": "classic", "pos": MSZ, "bid": 0.5, "ask": 0.52}
+    flat = {"arm": "classic", "pos": 0.0}
+    state = {"in": live, "out": flat}
+    calls = []
+    monkeypatch.setattr(mps4, "get", lambda url, timeout=10: calls.append(url))
+    mps4.finalize_dropped(state, {"in"})
+    assert live.get("bid") == 0.5                # untouched: still in universe
+    assert flat["final"] == 1 and not calls      # flat: finalized w/o a fetch

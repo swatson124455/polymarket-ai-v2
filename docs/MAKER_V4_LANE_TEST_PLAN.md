@@ -40,6 +40,7 @@ with qh/mid_hist stripping.
 | D4 | A/B by market-id parity | even id → `classic` (bid+ask at touch, exactly v3-touch); odd id → `split` (ask-ask from pre-split pairs, spec §2). Same assignment mechanic as v2/v3 width A/B (precedented, deterministic, balanced-in-expectation; heartbeat logs per-arm market counts to verify balance). |
 | D5 | Complement-side fills COUNTED | v1–v3 ignore NO-token prints (documented conservative undercount). In-play risk is the question here, so v4 maps NO prints to YES space (p_yes = 1 − p_no, buy↔sell) and matches BOTH tapes against quotes. Symmetric across arms. Cross-arm comparisons to v1–v3 must note the convention difference. |
 | D6 | One-sided score haircut | If the split arm has inventory only on one side, its own q_mine gets the docs' one-sided treatment: ×(1/3) inside mid∈[0.10,0.90], ×0 outside. v1–v3 never need this (always two-sided); v4-split does. |
+| D7 | "settled" pull gate | mid ≥ 0.92 or ≤ 0.08 → pull quotes (gate counter logged). Rationale: the inverted in-play gate would otherwise quote FINISHED-but-unresolved games to resolution — exactly the v1-esports bleed channel. Also pulls during in-play blowouts, when gap risk is worst; the forgone-rewards cost is measured via the gate counter. (Added pre-build after spec review — v3 never faced this because it gates all of in-play.) |
 
 **Split-arm accounting spec (D4/H2), per market:**
 - Virtual capital: at first quote, "split" `PAIRS = 1 × msz` pairs → `yes_inv = no_inv = msz`,
@@ -82,8 +83,9 @@ quoted, no last_hours, vol_pull still pulls), D4 parity assignment, ±1× cap en
 ### 1d. Deploy artifacts (written, NOT executed)
 
 `deploy/polymarket-maker-sim-v4.service` (daemon, own venv w/ websockets, /opt/pa2-maker-sim-v4,
-strict sandbox, MemoryMax=256M CPUQuota=25%) and `deploy/polymarket-census.{service,timer}` (hourly,
-stdlib, /opt/pa2-maker-census). Exact install commands in §4; execution requires operator go.
+strict sandbox, MemoryMax=384M CPUQuota=30% — matches v3 precedent) and
+`deploy/polymarket-census.{service,timer}` (hourly, stdlib, /opt/pa2-maker-census, TimeoutStartSec=900
+for degraded-network worst case). Exact install commands in §4; execution requires operator go.
 
 ## 2. What each comparison isolates (the readout contract)
 
@@ -118,13 +120,20 @@ vol-pull active; H2 dead if split underperforms classic on NET in ≥70% of shar
 
 ```bash
 # on VPS, after operator go:
+python3 --version   # MUST be >= 3.9; parse_iso normalizes gamma's "+00" offsets either way
 sudo mkdir -p /opt/pa2-maker-sim-v4 /opt/pa2-maker-census
 sudo cp scripts/maker_paper_sim_v4.py /opt/pa2-maker-sim-v4/
 sudo cp scripts/pool_census.py /opt/pa2-maker-census/
 sudo python3 -m venv /opt/pa2-maker-sim-v4/venv && sudo /opt/pa2-maker-sim-v4/venv/bin/pip install websockets
+sudo chown -R polymarket:polymarket /opt/pa2-maker-sim-v4 /opt/pa2-maker-census
+# ^ REQUIRED (scan HIGH): units run User=polymarket under ProtectSystem=strict;
+#   root-owned dirs -> first write fails -> census collects ZERO data while looking installed
 sudo cp deploy/polymarket-maker-sim-v4.service deploy/polymarket-census.* /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now polymarket-census.timer polymarket-maker-sim-v4.service
+sudo systemctl start polymarket-census.service   # first census immediately, don't wait for :07
+# verify within 2 min: journalctl -u polymarket-maker-sim-v4 -n 5   (expect "universe: N sports game markets")
+#                      ls -la /opt/pa2-maker-census/                (expect census-YYYYMMDD.jsonl)
 # kill switches: touch /opt/pa2-maker-sim-v4/STOP ; systemctl disable --now polymarket-maker-sim-v4 polymarket-census.timer
 ```
 
@@ -136,3 +145,33 @@ sudo systemctl enable --now polymarket-census.timer polymarket-maker-sim-v4.serv
 - Phase 3 SCAN → independent fresh-context reviewers over the diff (correctness vs this spec;
   adversarial hidden-bug hunt on fills/threading/state; live-data verification of S-1). Findings fixed,
   re-verified, THEN the go/no-go handoff to operator with deploy commands.
+
+## 6. Phase-3 scan errata (2026-07-15/16 — 3 independent reviewers; all fixes applied + re-verified)
+
+**S-1 RESOLVED with live data:** data-api default tape is TAKER-ONLY — each trade appears once, on
+the taker's token (0/1,100 cross-token duplicates sampled). NO-taker prints are 6–50% of live tapes
+with exactly complementary prices ⇒ D5 mapping is correct and NECESSARY (v1–v3 silently miss them).
+The takerOnly=false view double-reports every trade — never switch the fetch without cross-leg dedup.
+
+**Fixed (CRITICAL/HIGH):**
+1. Resolution backfill (`finalize_dropped`): residual inventory was frozen at last mid — overstated
+   NET both arms (~residual×(1−frozen_mid) per game) and biased H2 toward split. Now marked to gamma
+   `outcomePrices` once closed; quotes+qh cleared on universe drop (also kills stale-quote re-entry
+   fills). `residual`/`final_mid` logged per market.
+2. Same-second print drops: per-print `ts<=last_ts` watermark discarded ~24% of live prints (integer-
+   second timestamps) and made the old dedup dead code. Rewritten: batch-end watermark + persisted
+   edge-second identity set (fetch_tape 5-tuple) = exactly-once without drops, restart-safe.
+3. `parse_iso` normalizes gamma's short "+00" offset (Python ≤3.10 returned None → empty universe);
+   empty-universe rediscovery backed off to 60s (was every second → HTTP-budget burn).
+4. Deploy §4: added `chown -R polymarket:polymarket` (root-owned dirs + User=polymarket ⇒ zero data).
+**Fixed (MED/LOW):** restart phantom accrual at share=1.0 (ephemeral bid/ask/last_mid/last_acc_t no
+longer persisted + book-freshness guard); `is_sports` category-authoritative + esports KW expanded
+(residual risk: empty-category team-name-only slugs — bounded by settled/vol_pull/±1× caps); band-exit
+now PULLS quotes (was: stale quotes left standing); disk-cap check on its own hourly clock (was dead
+in steady state); `clobTokenIds` type guard (crash-loop); HTTP budget 12K→16K/hr (fill starvation on
+hot nights); census: `degraded` flag distinguishes truncated sweeps from real pool declines, gzip
+daily rotation, negative-rate guard, non-dict element guard, TimeoutStartSec=900, Wants=network-online.
+**Accepted/documented (no code change):** frozen-msz semantics (declared D3 refinement — freeze-once,
+frozen size for caps+fills+accrual); dust prints fill at full msz (v1–v3 convention, arm-symmetric);
+zombie-book resurrection after GEN swap (metric-only); census dust rows display pool 0.0 (rounding);
+report includes finalized markets at resolution marks (intended).

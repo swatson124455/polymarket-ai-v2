@@ -3,6 +3,7 @@
 # Kill:   sudo systemctl disable --now polymarket-census.timer
 [Unit]
 Description=Polymarket reward-pool census (read-only)
+Wants=network-online.target
 After=network-online.target
 
 [Service]
@@ -11,7 +12,7 @@ User=polymarket
 Group=polymarket
 WorkingDirectory=/opt/pa2-maker-census
 ExecStart=/usr/bin/python3 /opt/pa2-maker-census/pool_census.py --once
-TimeoutStartSec=300
+TimeoutStartSec=900
 ProtectSystem=strict
 ReadWritePaths=/opt/pa2-maker-census
 PrivateTmp=true

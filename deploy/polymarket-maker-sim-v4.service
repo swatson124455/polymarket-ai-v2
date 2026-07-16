@@ -3,6 +3,7 @@
 # Kill:   sudo systemctl disable --now polymarket-maker-sim-v4.service
 [Unit]
 Description=Polymarket Paper Maker Sim V4 live-sports lane (read-only, no trading)
+Wants=network-online.target
 After=network-online.target
 
 [Service]

@@ -20,6 +20,8 @@ requests/run; disk cap 300MB (script exits; timer unit keeps schedule).
 Usage:  pool_census.py --once [--base /opt/pa2-maker-census]
 """
 import argparse
+import glob
+import gzip
 import json
 import os
 import re
@@ -98,6 +100,8 @@ def census(base):
                 walls[order] = f"pg{page}:empty"
                 break
             for m in data:
+                if not isinstance(m, dict):      # a non-dict element must not
+                    continue                     # kill the whole run (scan)
                 mid = m.get("id")
                 if mid in seen:
                     continue
@@ -112,8 +116,8 @@ def census(base):
         pool = 0.0
         for r in (m.get("clobRewards") or []):
             p = fnum(r.get("rewardsDailyRate"))
-            if p:
-                pool += p
+            if p and p > 0:                      # never let a negative rate
+                pool += p                        # subtract from the total
         if pool <= 0:
             continue
         sec = sector_of(m)
@@ -129,20 +133,39 @@ def census(base):
                      "spr": round(ba - bb, 4) if bb is not None and ba is not None else None,
                      "gs": (m.get("gameStartTime") or "")[:16],
                      "end": (m.get("endDate") or "")[:10]})
+    # a sweep is COMPLETE only if every ordering ended on the expected 422
+    # offset wall, an empty page, or the page cap. Anything else (timeout,
+    # 5xx, reset, budget) truncated that ordering -> totals are further
+    # understated and the run must not be read as a pool decline (scan MED:
+    # a network blip could masquerade as the Jul-19 promo step-down).
+    def _clean(w):
+        return "422" in w or w.endswith(":empty") or w == "pg_cap"
+    degraded = not all(_clean(w) for w in walls.values())
     summary = {"k": "run", "t": round(now),
                "utc": time.strftime("%Y-%m-%dT%H:%M", time.gmtime(now)),
                "seen": len(seen), "rewarded": len(rows),
                "total_pool": round(total, 2), "per_sector": per_sector,
-               "walls": walls, "requests": nreq,
+               "walls": walls, "degraded": degraded, "requests": nreq,
                "elapsed_s": round(now - t0, 1),
                "note": "lower_bound_union_3_orderings"}
     day = time.strftime("%Y%m%d", time.gmtime(now))
+    # gzip-rotate previous days' files (plan §1b; keeps the 300MB cap ~years
+    # away instead of ~1 month at ~5-10MB/day of per-market rows)
+    for old in glob.glob(os.path.join(base, "census-*.jsonl")):
+        if not old.endswith(f"census-{day}.jsonl"):
+            try:
+                with open(old, "rb") as i, gzip.open(old + ".gz", "wb") as o:
+                    o.write(i.read())
+                os.remove(old)
+            except Exception:
+                pass                             # rotation is best-effort
     with open(os.path.join(base, f"census-{day}.jsonl"), "a") as f:
         f.write(json.dumps(summary) + "\n")
         for r in sorted(rows, key=lambda x: -x["pool"]):
             f.write(json.dumps(r) + "\n")
-    print(f"census ok: {len(seen)} seen, {len(rows)} rewarded, "
-          f"total=${total:,.0f}/day, {nreq} reqs, {round(now - t0, 1)}s")
+    print(f"census {'DEGRADED' if degraded else 'ok'}: {len(seen)} seen, "
+          f"{len(rows)} rewarded, total=${total:,.0f}/day, {nreq} reqs, "
+          f"{round(now - t0, 1)}s")
     return 0
 
 
