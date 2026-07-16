@@ -774,7 +774,16 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
   `rpc_call()` wraps EVERY chain RPC in `asyncio.timeout(90)` (hang → counted
   retryable error). Monitoring rule: watch LOG GROWTH (the code heartbeats
   through every phase), never just process existence. Timeout-guard every
-  network await in any new long-running chain runner.
+  network await in any new long-running chain runner. **The LIVE WATCHER
+  shared this class (6 unguarded web3 awaits, no systemd watchdog) — fixed
+  `336f6a4` (rpc_call wrapper, 43 tests green), REDEPLOY PENDING OPERATOR GO;
+  until then the running watcher can still park silently.** Sibling one-shot
+  scripts (audit_roster_chain, readjudicate) share the class but are
+  operator-attended — a hang is visible, not silent (documented, not churned).
+  Restart side-note: each watcher restart resets FirstBuyDedup, so a token
+  seen before restart can record first_buy=True again — token-clustered
+  analysis absorbs it, but don't be surprised by duplicate firsts at restart
+  boundaries.
 - **pkill self-match, VARIANT 2 (bit TWICE 2026-07-15):** bracketing the
   pkill pattern (`chain_deep_di[v]e`) is NOT enough when ANY OTHER clause of
   the same SSH command contains the literal name — a `pgrep -fc
