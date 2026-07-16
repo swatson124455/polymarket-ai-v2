@@ -766,6 +766,15 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
   change — but they DO need the cohort ledger keys extended or the readout
   refuses to run. Setup also left a `safe.directory /opt/pa2-shared/mb_readout`
   entry in ROOT's global gitconfig (harmless, recorded here).
+- **An RPC await with no read-timeout can park a batch FOREVER — and
+  process-liveness monitoring cannot see it (2026-07-16):** run-2 hung ~13h
+  on ONE `get_transaction_receipt`/`get_logs` await (zero CPU, ZERO open
+  sockets) while the event loop stayed alive — `db_pool_health` heartbeats
+  kept printing, so `ps`/pgrep checks looked healthy. Fixed `07e7296`:
+  `rpc_call()` wraps EVERY chain RPC in `asyncio.timeout(90)` (hang → counted
+  retryable error). Monitoring rule: watch LOG GROWTH (the code heartbeats
+  through every phase), never just process existence. Timeout-guard every
+  network await in any new long-running chain runner.
 - **pkill self-match, VARIANT 2 (bit TWICE 2026-07-15):** bracketing the
   pkill pattern (`chain_deep_di[v]e`) is NOT enough when ANY OTHER clause of
   the same SSH command contains the literal name — a `pgrep -fc
