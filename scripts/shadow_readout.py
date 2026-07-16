@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -28,19 +29,35 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import analyze_shadow as az  # noqa: E402  (pure readout core, reused)
 
-# cohort-2 = the 8 chain-deep-dive ADMITs (2026-07-15); own start epoch
-COHORT2 = [
-    "0x0e5bd76779e74304d08e759072abf126d87da593",
-    "0x4ad6cadefae3c28f5b2caa32a99ebba3a614464c",
-    "0x7744bfd749a70020d16a1fcbac1d064761c9999e",
-    "0xa2f1fecf1cc7db65a46588f764b6691533052d22",
-    "0xbaa2bcb5439e985ce4ccf815b4700027d1b92c73",
-    "0xc660ae71765d0d9eaf5fa8328c1c959841d2bd28",
-    "0xd1acd3925d895de9aec98ff95f3a30c5279d08d5",
-    "0xe25b9180f5687aa85bd94ee309bb72a464320f1b",
-]
 TRUST1 = 1783985376  # cohort-1: quote-fix redeploy epoch (2026-07-13 23:29 UTC)
-TRUST2 = 1784143245  # cohort-2: watcher restart epoch (2026-07-15 19:20:45 UTC)
+TRUST2 = 1784143245  # cohort-2 fallback: watcher restart epoch (2026-07-15 19:20:45 UTC)
+
+
+def load_cohorts(roster: dict) -> tuple[list[str], list[str], float]:
+    """(cohort1_addrs, cohort2_addrs, cohort2_epoch) from the LIVE roster JSON
+    (chain_audit.json). Membership comes from the roster file, NEVER from
+    hardcoded lists (session-close review 2026-07-15 findings A/#9: the
+    cohort-1 line used an EMPTY filter = the whole 24-roster, silently pooling
+    cohort-2 into cohort-1's pre-registered readout; and a hardcoded cohort-2
+    list would silently diverge when future ADMITs extend the roster).
+    Fail-loud on inconsistency — a wrong split must never produce a readout."""
+    clean = [str(a).lower() for a in roster.get("clean", [])]
+    c1 = [str(a).lower() for a in roster.get("cohort1_original", [])]
+    c2_blob = roster.get("cohort2") or {}
+    c2 = [str(a).lower() for a in c2_blob.get("addresses", [])]
+    if not c1 or not c2:
+        raise ValueError("roster lacks cohort1_original/cohort2 keys — refusing "
+                         "a readout on an ambiguous cohort split")
+    if set(clean) != set(c1) | set(c2):
+        raise ValueError(f"roster clean ({len(clean)}) != cohort1_original "
+                         f"({len(c1)}) + cohort2 ({len(c2)}) — a new admission "
+                         f"was made without extending the cohort ledger; fix "
+                         f"chain_audit.json before reading out")
+    try:  # admitted_utc (ISO, tz-aware) -> epoch; fallback = restart constant
+        epoch = datetime.fromisoformat(str(c2_blob.get("admitted_utc"))).timestamp()
+    except (TypeError, ValueError):
+        epoch = TRUST2
+    return c1, c2, epoch
 
 
 async def fresh_outcomes(tokens: list[str]) -> dict[str, int]:
@@ -107,15 +124,19 @@ def alerts_for(label: str, res: dict, min_markets: int,
 
 
 async def run(args) -> int:
+    with open(args.roster) as f:
+        c1, c2, c2_epoch = load_cohorts(json.load(f))
     recs = az.load_records(args.log)
-    tokens = sorted(set(str(r["token_id"]) for r in recs if str(r.get("token_id"))))
+    tokens = sorted({str(r["token_id"]) for r in recs if r.get("token_id")})
     outcomes = await fresh_outcomes(tokens)
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
     lines = [f"===== shadow readout {stamp}  (fresh DB labels: "
-             f"{len(outcomes) // 2} resolved markets among {len(tokens)} shadow tokens) ====="]
+             f"{len(outcomes) // 2} resolved markets among {len(tokens)} shadow "
+             f"tokens; cohorts from {os.path.basename(args.roster)}: "
+             f"{len(c1)}+{len(c2)}) ====="]
     all_alerts: list[str] = []
-    for label, trust, traders in (("cohort1-all", TRUST1, ""),
-                                  ("cohort2", TRUST2, ",".join(COHORT2))):
+    for label, trust, traders in ((f"cohort1({len(c1)})", TRUST1, ",".join(c1)),
+                                  (f"cohort2({len(c2)})", c2_epoch, ",".join(c2))):
         res = cohort_readout(recs, outcomes, trust, traders, args)
         lines.append(fmt_line(label, res, args.min_markets))
         all_alerts += alerts_for(label, res, args.min_markets)
@@ -128,6 +149,12 @@ async def run(args) -> int:
             f.write(stamp + "\n" + "\n".join(all_alerts) + "\n")
         print("*** ALERT:", "; ".join(all_alerts))
     else:
+        # the ALERT file's EXISTENCE is the documented trigger signal — a
+        # stale one from a prior day must not persist (review finding C)
+        try:
+            os.remove(args.alert)
+        except FileNotFoundError:
+            pass
         print("(no trigger — still accruing; a steward session should relay the "
               "line above to the operator)")
     return 0
@@ -153,6 +180,26 @@ def _self_test() -> int:
     ok4 = alerts_for("c", {"shadow_edge": 0.01, "shadow_edge_p": 0.6,
                            "resolved_mkts": 12}, 30) == []
     print(f"  [alert] underpowered+noisy -> no trigger : {ok4}"); ok &= ok4
+    # cohorts from the roster file, fail-loud on ledger drift
+    good = {"clean": ["0xA", "0xB", "0xC"], "cohort1_original": ["0xa", "0xb"],
+            "cohort2": {"addresses": ["0xC"],
+                        "admitted_utc": "2026-07-15T19:16:00+00:00"}}
+    c1, c2, ep = load_cohorts(good)
+    ok5 = (c1 == ["0xa", "0xb"] and c2 == ["0xc"] and ep > 1_784_000_000
+           and "0xc" not in c1)  # cohort-1 line can never include cohort-2
+    print(f"  [cohorts] loaded from roster, disjoint, epoch parsed : {ok5}")
+    ok &= ok5
+    for bad in ({"clean": ["0xA"], "cohort1_original": [], "cohort2": {}},
+                {"clean": ["0xA", "0xB", "0xC", "0xD"],  # admit w/o ledger
+                 "cohort1_original": ["0xa", "0xb"],
+                 "cohort2": {"addresses": ["0xc"], "admitted_utc": None}}):
+        try:
+            load_cohorts(bad)
+            ok6 = False
+        except ValueError:
+            ok6 = True
+        print(f"  [cohorts] inconsistent ledger -> refuses readout : {ok6}")
+        ok &= ok6
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -161,6 +208,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Durable per-cohort shadow readout "
                                              "with fresh DB labels + alerts")
     ap.add_argument("--log", default="/opt/pa2-shared/mirror3_shadow.jsonl")
+    ap.add_argument("--roster", default="/opt/pa2-shared/mb_copyable_data/chain_audit.json",
+                    help="live roster JSON; cohort membership comes from its "
+                         "cohort1_original/cohort2 keys (NEVER hardcoded)")
     # deep_dive/ is polymarket-owned (mb_copyable_data itself is root-owned —
     # the cron runs as polymarket and must be able to write here)
     ap.add_argument("--out", default="/opt/pa2-shared/mb_copyable_data/deep_dive/shadow_readout_log.txt")

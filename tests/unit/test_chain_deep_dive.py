@@ -287,6 +287,19 @@ def test_verdict_admit_requires_backing_and_min_checks():
     assert _v(api_buys_checked=5, api_backing=0.0) == "INSUFFICIENT-EVIDENCE"
 
 
+def test_verdict_failed_receipts_defer_not_fabricate():
+    """Session-close finding B: an errored receipt left side=None but still
+    counted as 'resolved' — a flaky-RPC stretch could then read as FABRICATION.
+    direction_complete must be false when receipts FAILED beyond the error
+    tolerance, even though all txs were attempted."""
+    # all 100 txs attempted but 30 receipt fetches failed -> gap, never a lie
+    assert _v(direction_complete=False, v2_receipts=100, v2_txs=100,
+              receipts_failed=30, api_backing=0.0) == "INSUFFICIENT-EVIDENCE"
+    # rate still rejects without any receipts
+    assert _v(direction_complete=False, receipts_failed=30,
+              rate_flag=True) == "REJECT"
+
+
 def test_verdict_receipt_cap_defers_direction_but_uncopyable_still_rejects():
     # smoke 2026-07-14: a receipt-capped sweep reads real BUYs as unknown ->
     # direction-dependent checks must DEFER (INSUFFICIENT: raise --max-receipts),

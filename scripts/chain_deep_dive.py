@@ -445,8 +445,10 @@ def deep_dive_verdict(m: dict, cfg) -> tuple[str, list[str]]:
     if not m["direction_complete"]:
         return "INSUFFICIENT-EVIDENCE", [
             f"V2 direction incompletely resolved: {m['v2_receipts']} of "
-            f"{m['v2_txs']} V2 txs receipt-classified (--max-receipts cap) — "
-            f"raise --max-receipts before adjudicating direction-dependent tiers"]
+            f"{m['v2_txs']} V2 txs attempted, {m.get('receipts_failed', 0)} "
+            f"receipt fetches FAILED after retry — raise --max-receipts / "
+            f"retry on a healthier RPC before adjudicating direction-"
+            f"dependent tiers (an RPC gap must never read as fabrication)"]
 
     backing = m["api_backing"]
     checked = m["api_buys_checked"] >= cfg.min_api_check
@@ -510,6 +512,41 @@ def deep_dive_verdict(m: dict, cfg) -> tuple[str, list[str]]:
 def roster_from_readjudicate(blob: dict) -> list[str]:
     """Cohort-2 candidates = VINDICATED addresses from a readjudicate*.json."""
     return sorted(a.lower() for a in (blob.get("vindicated") or []))
+
+
+def write_summary_from_dir(out_dir: str, out_path: str,
+                           params: Optional[dict] = None) -> dict:
+    """Rebuild the batch summary from the ON-DISK per-trader JSONs and write it
+    atomically. Called after every trader AND at batch end, so the summary is
+    crash-durable and automatically spans ALL runs sharing out_dir (session-
+    close finding I: run-1 died before its single end-of-run summary write,
+    leaving no aggregate; run-2's in-memory dict only covered its own roster)."""
+    results: dict[str, dict] = {}
+    for fn in sorted(os.listdir(out_dir)):
+        if not (fn.startswith("0x") and fn.endswith(".json")):
+            continue
+        try:
+            with open(os.path.join(out_dir, fn)) as f:
+                r = json.load(f)
+            results[r.get("address", fn[:-5]).lower()] = r
+        except Exception:  # noqa: BLE001  (torn/foreign file never kills the batch)
+            continue
+    counts: dict[str, int] = {}
+    for r in results.values():
+        counts[r.get("verdict", "?")] = counts.get(r.get("verdict", "?"), 0) + 1
+    admitted = sorted(a for a, r in results.items() if r.get("verdict") == "ADMIT")
+    by_funder: dict[str, list[str]] = {}
+    for a, r in results.items():
+        fu = (r.get("tier4_forensics") or {}).get("funder")
+        if fu:
+            by_funder.setdefault(fu, []).append(a)
+    summary = {"n_traders": len(results), "counts": counts, "admitted": admitted,
+               "sybil": {fu: ad for fu, ad in by_funder.items() if len(ad) > 1},
+               "results": results}
+    if params is not None:
+        summary["params"] = params
+    fc.write_json_atomic(out_path, fc.json_safe(summary))
+    return summary
 
 
 def _merge_gamma_preloaded(markets: dict, keys: list[str], gamma: dict) -> int:
@@ -626,23 +663,43 @@ async def classify_v2_directions(bc, addr: str, v2_fills: list[dict], cfg,
     """Resolve V2 BUY/SELL direction from tx receipts (one per unique tx, capped
     at --max-receipts); sets f['side'] IN PLACE. Uncapped/errored fills stay
     side=None and are excluded from BUY-based tiers (never guessed BUY). This is
-    the batch's dominant cost, so it runs only AFTER the rate short-circuit."""
+    the batch's dominant cost, so it runs only AFTER the rate short-circuit.
+
+    Returns SUCCESS counts, not attempt counts (session-close review 2026-07-15
+    findings B: an errored receipt left side=None but still counted as
+    'resolved', so a flaky-RPC stretch could manufacture false not_found ->
+    a FABRICATION accusation from an evidence gap). Failed receipts are retried
+    once; what still fails is reported as receipts_failed and gates
+    direction_complete in the caller."""
     tx_logs: dict[str, Optional[list]] = {}
     uniq_tx = list(dict.fromkeys(f["tx"] for f in v2_fills))
     n_receipts = min(len(uniq_tx), cfg.max_receipts)
-    for tx in uniq_tx[:n_receipts]:
-        await asyncio.sleep(1.0 / max(cfg.rps, 0.1))
-        try:
-            rcpt = await bc.w3.eth.get_transaction_receipt(tx)
-            tx_logs[tx] = [dict(lg) for lg in rcpt["logs"]]
-        except Exception as e:  # noqa: BLE001
-            note_err(e)
-            tx_logs[tx] = None
+    attempt = list(uniq_tx[:n_receipts])
+    for rnd in (1, 2):  # second round = one retry over transient failures
+        failed: list[str] = []
+        for i, tx in enumerate(attempt):
+            await asyncio.sleep(1.0 / max(cfg.rps, 0.1))
+            try:
+                rcpt = await bc.w3.eth.get_transaction_receipt(tx)
+                tx_logs[tx] = [dict(lg) for lg in rcpt["logs"]]
+            except Exception as e:  # noqa: BLE001
+                note_err(e)
+                tx_logs[tx] = None
+                failed.append(tx)
+            if rnd == 1 and i and i % 2000 == 0:  # heartbeat (finding J)
+                print(f"      … receipts {i}/{len(attempt)} "
+                      f"({len(failed)} failed so far)", file=sys.stderr)
+        if not failed:
+            break
+        attempt = failed  # retry only the failures, once
     for f in v2_fills:
         logs = tx_logs.get(f["tx"])
         f["side"] = (side_from_receipt_logs(logs, addr, f["token_id"])
                      if isinstance(logs, list) else None)
-    return {"v2_txs": len(uniq_tx), "v2_receipts": n_receipts}
+    receipts_ok = sum(1 for v in tx_logs.values() if isinstance(v, list))
+    return {"v2_txs": len(uniq_tx), "v2_receipts": n_receipts,
+            "receipts_ok": receipts_ok,
+            "receipts_failed": n_receipts - receipts_ok}
 
 
 async def detection_canary(bc, head: int) -> bool:
@@ -840,6 +897,19 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
     # direction gate); direction-independent forensics are still reported.
     if sweep_complete and rate_flag:
         v2_txs_est = len({f["tx"] for f in recon["v2_fills"]})
+        funder = None
+        if cfg.funding:
+            # sybil lineage must survive the short-circuit (session-close
+            # finding G): a rate-rejected wallet still matters to funder
+            # clustering, and the trace is cheap vs the skipped receipts.
+            try:
+                floor_b = await ac.locate_block_by_ts(
+                    floor_epoch, _get_block_ts, latest_num, latest_ts, anchors,
+                    tol_s=7200) or from_b
+            except Exception as e:  # noqa: BLE001
+                note_err(e)
+                floor_b = from_b
+            funder = await find_funder(bc, addr, floor_b, to_b, cfg, note_err)
         return {
             "address": addr, "verdict": "REJECT",
             "reasons": [f"UNCOPYABLE: true chain rate {rate:.0f} bets/day > cap "
@@ -856,14 +926,18 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
                 "rpc_err_frac": round(recon["rpc_err_frac"], 4),
                 "canary_ok": canary_ok},
             "tier4_forensics": {"counterparty": conc, "maker_taker": mt,
-                                "true_rate_per_day": round(rate, 2)},
+                                "true_rate_per_day": round(rate, 2),
+                                "funder": funder},
             "first_error": first_err[0] if first_err else None,
         }
 
     # NOT uncopyable -> resolve V2 direction (the receipt phase, capped), then
     # the direction-dependent tiers (skill, reconciliation).
+    print(f"      … sweep done: {len(fills)} fills "
+          f"({len(recon['v2_fills'])} V2, rpc_err={recon['rpc_err_frac']:.3f}); "
+          f"fetching receipts", file=sys.stderr)
     cls = await classify_v2_directions(bc, addr, recon["v2_fills"], cfg, note_err)
-    recon["v2_txs"], recon["v2_receipts"] = cls["v2_txs"], cls["v2_receipts"]
+    recon.update(cls)  # v2_txs, v2_receipts, receipts_ok, receipts_failed
 
     # token -> condition map from API rows; load resolutions for Tier 3
     tok2cond = {str(t.get("tokenId")): str(t.get("marketId"))
@@ -888,15 +962,26 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
     api_complete = cache_status == "ok"
     # Direction B over ALL chain BUYs (not just first-buys) so a hidden RE-ENTRY
     # BUY in a market whose first buy is public is still caught (review finding
-    # E). REPORT-ONLY: size+price-exact chain-vs-API reconciliation is noisy
-    # across fill granularity, so hidden count is an operator-reviewed forensic,
-    # NOT a verdict gate — a noisy auto-gate would itself risk a false accusation
-    # (a granularity-aware hidden gate is a documented follow-up).
-    c2a = reconcile_chain_to_api(chain_buys, api_trades, cfg.tol_price,
-                                 cfg.tol_size) if api_complete else \
-        {"n_chain_buys": len(chain_buys), "hidden": None,
-         "hidden_rows": [], "note": f"API cache status={cache_status}: hidden-"
-                                    f"activity not conclusive (record incomplete)"}
+    # E). Capped at the API cache's NEWEST trade ts (session-close finding H:
+    # the chain sweep runs to the live head, so post-cache-fetch fills would
+    # all read 'hidden' — a staleness artifact, not concealment). REPORT-ONLY:
+    # size+price-exact chain-vs-API reconciliation is noisy across fill
+    # granularity, so hidden count is an operator-reviewed forensic, NOT a
+    # verdict gate (a granularity-aware hidden gate is a documented follow-up).
+    if api_complete:
+        api_hi = max(api_ts)
+        c2a_buys = [f for f in chain_buys
+                    if interp_ts(int(f.get("block", 0)), b_lo, ts_lo, b_hi,
+                                 ts_hi) <= api_hi]
+        c2a = reconcile_chain_to_api(c2a_buys, api_trades, cfg.tol_price,
+                                     cfg.tol_size)
+        c2a["capped_at_api_ts"] = api_hi.isoformat()
+        c2a["chain_buys_after_cache"] = len(chain_buys) - len(c2a_buys)
+    else:
+        c2a = {"n_chain_buys": len(chain_buys), "hidden": None,
+               "hidden_rows": [], "note": f"API cache status={cache_status}: "
+                                          f"hidden-activity not conclusive "
+                                          f"(record incomplete)"}
 
     copier = {"sampled": 0, "preceded": 0, "frac": 0.0}
     if cfg.copier_sample > 0 and chain_first_buys:
@@ -917,12 +1002,18 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
     metrics = {
         "rpc_err_frac": recon["rpc_err_frac"], "canary_ok": canary_ok,
         "n_chain_fills": len(fills),
-        # V2 direction is resolved by per-tx receipts; if the cap truncated them
-        # the BUY set is incomplete and mismatch/fabrication/skill can't be
-        # trusted (smoke 2026-07-14: capped receipts -> in-window buys read as
-        # not_found). rate/UNCOPYABLE needs no receipts and fires first.
-        "direction_complete": recon["v2_receipts"] >= recon["v2_txs"],
+        # V2 direction is resolved by per-tx receipts; if the CAP truncated them
+        # OR receipt fetches FAILED beyond the error-fraction tolerance, the BUY
+        # set is incomplete and mismatch/fabrication/skill can't be trusted
+        # (smoke 2026-07-14 + session-close finding B: an errored receipt left
+        # side=None but counted as resolved -> false not_found -> a FABRICATION
+        # accusation from an RPC gap). rate/UNCOPYABLE fires before this gate.
+        "direction_complete": (recon["v2_receipts"] >= recon["v2_txs"]
+                               and recon.get("receipts_failed", 0)
+                               <= cfg.max_rpc_err_frac
+                               * max(recon["v2_receipts"], 1)),
         "v2_txs": recon["v2_txs"], "v2_receipts": recon["v2_receipts"],
+        "receipts_failed": recon.get("receipts_failed", 0),
         "mismatch": a2c["counts"]["mismatch"],
         "api_buys_checked": a2c["counts"]["n"], "api_backing": a2c["counts"]["backing"],
         "ts_ok": ts_ok,
@@ -961,6 +1052,8 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
             "v2_side_unknown": sum(1 for f in fills
                                    if f["era"] == "v2" and f.get("side") is None),
             "v2_txs": recon["v2_txs"], "v2_receipts": recon["v2_receipts"],
+            "receipts_ok": recon.get("receipts_ok"),
+            "receipts_failed": recon.get("receipts_failed"),
             "leaf_ok": recon["leaf_ok"], "leaf_fail": recon["leaf_fail"],
             "rpc_err_frac": round(recon["rpc_err_frac"], 4),
             "canary_ok": canary_ok},
@@ -1069,6 +1162,14 @@ async def run(args) -> int:
             results[addr] = res
             fc.write_json_atomic(os.path.join(args.out_dir, f"{addr}.json"),
                                  fc.json_safe(res))
+            # crash-durable, CROSS-RUN summary: rebuilt from the on-disk
+            # per-trader JSONs after EVERY trader (session-close finding I —
+            # run-1 died pre-summary and left no aggregate; deriving from
+            # out_dir makes the summary automatically span all runs sharing it)
+            try:
+                write_summary_from_dir(args.out_dir, args.out)
+            except Exception as e:  # noqa: BLE001
+                print(f"      (summary rebuild failed: {e!r})", file=sys.stderr)
             v = res["verdict"]
             t1 = res.get("tier1_reconstruction", {})
             print(f"      -> {v}  (api={cache_status}) fills={t1.get('n_fills', '?')} "
@@ -1107,17 +1208,15 @@ async def run(args) -> int:
     print("  cohort with cohort-1's readout. INSUFFICIENT = deepen the search,")
     print("  never accuse. REJECT = chain contradicts the trader or un-tailable.")
     print("=" * 78)
-    fc.write_json_atomic(args.out, fc.json_safe(
-        {"results": results, "counts": counts, "admitted": admitted,
-         "sybil": sybil, "params": {
-             "tol_price": args.tol_price, "tol_size": args.tol_size,
-             "min_markets_hire": args.min_markets_hire,
-             "min_span_days": args.min_span_days, "p_hire": args.p_hire,
-             "max_rpc_err_frac": args.max_rpc_err_frac,
-             "min_api_backing": args.min_api_backing,
-             "fabrication_frac": args.fabrication_frac,
-             "wash_share": args.wash_share, "hft_max_rate": args.hft_max_rate}}))
-    print(f"full results -> {args.out}  (per-trader -> {args.out_dir}/)")
+    write_summary_from_dir(args.out_dir, args.out, params={
+        "tol_price": args.tol_price, "tol_size": args.tol_size,
+        "min_markets_hire": args.min_markets_hire,
+        "min_span_days": args.min_span_days, "p_hire": args.p_hire,
+        "max_rpc_err_frac": args.max_rpc_err_frac,
+        "min_api_backing": args.min_api_backing,
+        "fabrication_frac": args.fabrication_frac,
+        "wash_share": args.wash_share, "hft_max_rate": args.hft_max_rate})
+    print(f"summary (ALL runs sharing {args.out_dir}) -> {args.out}")
     return 0
 
 
