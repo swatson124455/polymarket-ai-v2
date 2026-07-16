@@ -483,6 +483,31 @@ def _apply_price_change(asset, msg):
         book["ts"] = time.time()
 
 
+def _apply_price_change_batched(msg):
+    # 2026 market-channel shape: no top-level asset_id; each entry in
+    # price_changes[] carries its own asset_id (verified live 2026-07-16 —
+    # under the legacy-only parser every price_change was silently dropped,
+    # so books refreshed only on trade-driven book events / reconnects)
+    with BOOKS_LOCK:
+        for ch in msg.get("price_changes") or []:
+            if not isinstance(ch, dict):
+                continue
+            book = BOOKS.get(str(ch.get("asset_id") or ""))
+            if not book:
+                continue
+            try:
+                p, s = float(ch["price"]), float(ch["size"])
+                side = str(ch.get("side", "")).upper()
+            except Exception:
+                continue
+            levels = book["bids"] if side == "BUY" else book["asks"]
+            if s <= 0:
+                levels.pop(p, None)
+            elif 0 < p < 1:
+                levels[p] = s
+            book["ts"] = time.time()
+
+
 def ws_worker(assets, gen):
     from websockets.sync.client import connect
     while GEN["n"] == gen:
@@ -503,12 +528,14 @@ def ws_worker(assets, gen):
                             continue
                         et = msg.get("event_type") or msg.get("type")
                         asset = str(msg.get("asset_id") or "")
-                        if not asset:
-                            continue
                         if et == "book":
-                            _apply_book_snapshot(asset, msg)
+                            if asset:
+                                _apply_book_snapshot(asset, msg)
                         elif et == "price_change":
-                            _apply_price_change(asset, msg)
+                            if asset:
+                                _apply_price_change(asset, msg)   # legacy single-asset shape
+                            else:
+                                _apply_price_change_batched(msg)
         except Exception:
             time.sleep(3)
 

@@ -1,10 +1,14 @@
 """Unit tests for maker_paper_sim_v4 NEW mechanisms (D2-D7).
 
 Inherited v3 code (WS books, tape fetch, discovery pagination, persistence)
-is live-verified on the running arms and not re-tested here. Everything NEW
-in v4 is: the inverted/settled gates, the parity A/B, the split-inventory
-lifecycle, the D5 both-token fill engine with cross-view dedup, and the D6
-one-sided score haircut. No network access anywhere in this file.
+is live-verified on the running arms and mostly not re-tested here — EXCEPT
+the price_change parser: the "live-verified" assumption failed there (the
+legacy-only parser silently dropped every batched-shape message; found and
+fixed in v3 as 0c9708f, ported here), so the batched shape IS covered below.
+Everything NEW in v4 is: the inverted/settled gates, the parity A/B, the
+split-inventory lifecycle, the D5 both-token fill engine with cross-view
+dedup, and the D6 one-sided score haircut. No network access anywhere in
+this file.
 """
 import importlib.util
 import json
@@ -311,3 +315,49 @@ def test_finalize_skips_universe_members_and_flat_states(monkeypatch):
     mps4.finalize_dropped(state, {"in"})
     assert live.get("bid") == 0.5                # untouched: still in universe
     assert flat["final"] == 1 and not calls      # flat: finalized w/o a fetch
+
+
+# ── WS price_change parsing (batched 2026 shape; port of v3 fix 0c9708f) ─────
+def _seed_book(asset, bids=None, asks=None):
+    mps4.BOOKS[asset] = {"bids": dict(bids or {}), "asks": dict(asks or {}),
+                         "ts": 0.0}
+
+
+def test_batched_price_change_updates_multiple_assets():
+    mps4.BOOKS.clear()
+    _seed_book("a1", bids={0.40: 10.0}, asks={0.60: 10.0})
+    _seed_book("a2", bids={0.30: 5.0})
+    msg = {"event_type": "price_change", "market": "0xm",
+           "price_changes": [
+               {"asset_id": "a1", "price": "0.41", "size": "7", "side": "BUY"},
+               {"asset_id": "a1", "price": "0.60", "size": "0", "side": "SELL"},
+               {"asset_id": "a2", "price": "0.35", "size": "3", "side": "SELL"},
+           ]}
+    mps4._apply_price_change_batched(msg)
+    assert mps4.BOOKS["a1"]["bids"][0.41] == 7.0
+    assert 0.60 not in mps4.BOOKS["a1"]["asks"]      # size 0 removes the level
+    assert mps4.BOOKS["a2"]["asks"][0.35] == 3.0
+    assert mps4.BOOKS["a1"]["ts"] > 0 and mps4.BOOKS["a2"]["ts"] > 0
+
+
+def test_batched_price_change_ignores_unknown_and_malformed():
+    mps4.BOOKS.clear()
+    _seed_book("a1", bids={0.40: 10.0})
+    msg = {"event_type": "price_change",
+           "price_changes": [
+               {"asset_id": "ghost", "price": "0.5", "size": "1", "side": "BUY"},
+               {"asset_id": "a1", "price": "oops", "size": "1", "side": "BUY"},
+               "not-a-dict",
+               {"asset_id": "a1", "price": "1.5", "size": "1", "side": "BUY"},
+           ]}
+    mps4._apply_price_change_batched(msg)            # must not raise
+    assert mps4.BOOKS["a1"]["bids"] == {0.40: 10.0}  # out-of-range/bad: no-op
+
+
+def test_legacy_single_asset_price_change_still_applies():
+    mps4.BOOKS.clear()
+    _seed_book("a1", asks={0.55: 4.0})
+    msg = {"event_type": "price_change", "asset_id": "a1",
+           "changes": [{"price": "0.55", "size": "9", "side": "SELL"}]}
+    mps4._apply_price_change("a1", msg)
+    assert mps4.BOOKS["a1"]["asks"][0.55] == 9.0
