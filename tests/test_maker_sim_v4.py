@@ -246,25 +246,23 @@ def test_net_of_classic_matches_manual():
 
 
 # ── D1: universe filter ──────────────────────────────────────────────────────
-def test_game_sector_classification():
+def test_game_sector_labels_never_exclude():
+    # game_sector is ATTRIBUTION ONLY (operator: v4 covers all it can);
+    # the sole scope filter is gameStartTime presence, applied in discover()
     gs = mps4.game_sector
     assert gs({"slug": "mlb-yankees-vs-red-sox", "question": ""}) == "sports"
     assert gs({"category": "Sports", "slug": "", "question": ""}) == "sports"
-    # esports is IN scope, attributed separately (operator: don't pre-narrow)
     assert gs({"slug": "lol-t1-vs-geng", "question": ""}) == "esports"
     assert gs({"slug": "cs2-ewc-final", "question": ""}) == "esports"
     assert gs({"category": "Esports", "slug": "world-cup-showmatch",
                "question": ""}) == "esports"
     # esports keyword beats sports keyword when both appear
     assert gs({"slug": "ewc-world-cup-cs2", "question": ""}) == "esports"
-    # expanded esports keywords
     assert gs({"slug": "overwatch-grand-final", "question": ""}) == "esports"
-    assert gs({"slug": "rocket-league-major", "question": ""}) == "esports"
-    # non-game markets excluded entirely
-    assert gs({"slug": "bitcoin-up-or-down", "question": ""}) is None
-    # scan MED: keyword fallback must not override a non-game category
+    # category is authoritative as a LABEL; nothing maps to None
     assert gs({"category": "Politics",
-               "slug": "candidate-a-vs-candidate-b", "question": ""}) is None
+               "slug": "candidate-a-vs-candidate-b", "question": ""}) == "politics"
+    assert gs({"slug": "bitcoin-up-or-down", "question": ""}) == "other"
 
 
 def test_parse_iso_short_offset():

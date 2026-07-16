@@ -4,18 +4,20 @@
 Tests the two Bucket-1 hypotheses from the 2026-07-15 3rd-party review
 (docs/MAKER_V4_LANE_TEST_PLAN.md is the binding spec):
 
-  H1  live-game lane: quote GAME markets (sports AND esports, per-sector
-      attribution) ONLY while in play, with hard +/-1x inventory caps and
-      ~1s WS re-centering (v2/v3 own pre-game; zero overlap => clean
-      attribution). Esports is IN (operator 2026-07-16): v1's esports
-      in-play bleed was measured UNPROTECTED — v4 tests whether the armor
-      fixes it, and sports/esports answer separately in the readout.
+  H1  live-game lane: quote EVERY rewarded market with in-play semantics
+      (= has gameStartTime; the only mechanical scope filter) ONLY while in
+      play, with hard +/-1x inventory caps and ~1s WS re-centering (v2/v3
+      own pre-game; zero overlap => clean attribution). Operator 2026-07-16:
+      cover all items it can — sector (sports/esports/other/category label)
+      is ATTRIBUTION ONLY, never exclusion; each answers separately. v1's
+      esports in-play bleed was measured UNPROTECTED — v4 tests whether the
+      armor fixes it.
   H2  split-inventory (ask-ask) quoting vs classic bid/ask-around-mid,
       A/B by market-id parity on the same universe.
 
 Deltas vs V3 (everything else inherited verbatim from 55b089c):
-  D1 universe = rewarded sports+esports markets WITH gameStartTime,
-     <=40/sector, top-70 by pool, discovery every 15 min
+  D1 universe = ALL rewarded markets WITH gameStartTime, <=40/sector-label,
+     top-100 by pool, discovery every 15 min
   D2 INVERTED gate: pre_game gated, in-play quoted; NO last_hours gate;
      vol_pull kept
   D3 INV_CAP_MULT = 1 (frozen msz)
@@ -53,8 +55,8 @@ GAMMA = "https://gamma-api.polymarket.com/markets"
 TAPE = "https://data-api.polymarket.com/trades?market={cid}&limit=200"
 WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
-MAX_MARKETS_TOTAL = 70        # game-market universe (140 assets = 2 WS chunks)
-MAX_PER_SECTOR = 40           # neither sector may crowd the other out
+MAX_MARKETS_TOTAL = 100       # game-market universe (200 assets = 3 WS chunks)
+MAX_PER_SECTOR = 40           # no sector may crowd the others out
 DISCOVERY_EVERY_S = 900       # game markets churn daily; 15 min (v3: 30)
 DISCOVERY_RETRY_S = 60        # empty-universe retry (NOT every second — scan #3)
 FINALIZE_PER_CYCLE = 20       # resolution-backfill gamma GETs per discovery
@@ -65,8 +67,9 @@ VOL_PULL_PTS = 0.02
 VOL_PULL_S = 600
 REQUOTE_TICKS = 0.002
 MAX_DISK_MB = 500
-HTTP_BUDGET_PER_HOUR = 16000  # 70 mkts x 3 tape pages x 60/min = 12.6K worst case
-                              # (scan #8: 12K starved fills exactly on hot nights)
+HTTP_BUDGET_PER_HOUR = 24000  # 100 mkts x 3 tape pages x 60/min = 18K worst case
+                              # (scan #8: starving fills on hot nights is the
+                              # asymmetric failure — rewards accrue via WS, fills don't)
 WS_CHUNK = 90
 WS_IDLE_RECONNECT_S = 40
 
@@ -140,22 +143,22 @@ ESPORTS_KW = re.compile(
 
 
 def game_sector(m):
-    """Which game-market lane a market belongs to: 'sports', 'esports', or
-    None (not a game market). BOTH sectors are IN scope (operator 2026-07-16:
-    paper test — don't pre-narrow it). v1's esports in-play bleed was
-    measured on the UNPROTECTED policy (5-min stale quotes, 3x caps, no
-    settled gate); v4 tests whether the armor fixes it, with per-sector
-    attribution so sports and esports answer separately. Category is
-    AUTHORITATIVE when present (scan: keyword fallback misclassified)."""
+    """Attribution LABEL for a game market — NEVER excludes. v4 covers every
+    rewarded market with in-play semantics, i.e. a gameStartTime (operator
+    2026-07-16: cover all items it can); the only mechanical constraint is
+    that without a start time there is no in-play window to test. Sector
+    labels exist purely so each answers separately in the sector x arm
+    readout. Category is authoritative when present (scan: keyword fallback
+    misclassified); keywords else; 'other' fallback."""
     c = (m.get("category") or "").strip().lower()
     if c:
-        return c if c in ("sports", "esports") else None
+        return c
     text = ((m.get("slug") or "") + " " + (m.get("question") or "")).lower()
     if ESPORTS_KW.search(text):
         return "esports"
     if SPORTS_KW.search(text):
         return "sports"
-    return None
+    return "other"
 
 
 def parse_iso(s):
@@ -411,12 +414,10 @@ def discover(base):
                 continue
             seen.add(m.get("id"))
             new += 1
-            sec = game_sector(m)
-            if sec is None:
-                continue
             gs = parse_iso(m.get("gameStartTime"))
-            if gs is None:                        # D1: game markets only
-                continue
+            if gs is None:                        # D1: the ONLY scope filter —
+                continue                          # no start time = no in-play window
+            sec = game_sector(m)
             pool = 0.0
             for r in (m.get("clobRewards") or []):
                 try:
