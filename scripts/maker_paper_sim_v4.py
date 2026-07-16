@@ -16,8 +16,9 @@ Tests the two Bucket-1 hypotheses from the 2026-07-15 3rd-party review
       A/B by market-id parity on the same universe.
 
 Deltas vs V3 (everything else inherited verbatim from 55b089c):
-  D1 universe = ALL rewarded markets WITH gameStartTime, <=40/sector-label,
-     top-100 by pool, discovery every 15 min
+  D1 universe = ALL rewarded markets WITH gameStartTime, UNCAPPED (operator:
+     "remove 100"; ~284 eligible per census; 600 safety backstop never
+     expected to bind), discovery every 15 min
   D2 INVERTED gate: pre_game gated, in-play quoted; NO last_hours gate;
      vol_pull kept
   D3 INV_CAP_MULT = 1 (frozen msz)
@@ -39,6 +40,8 @@ Usage:  maker_paper_sim_v4.py --run [--base /opt/pa2-maker-sim-v4]
         maker_paper_sim_v4.py --report [--base ...]
 """
 import argparse
+import glob
+import gzip
 import json
 import os
 import re
@@ -55,8 +58,9 @@ GAMMA = "https://gamma-api.polymarket.com/markets"
 TAPE = "https://data-api.polymarket.com/trades?market={cid}&limit=200"
 WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
-MAX_MARKETS_TOTAL = 100       # game-market universe (200 assets = 3 WS chunks)
-MAX_PER_SECTOR = 40           # no sector may crowd the others out
+MAX_MARKETS_TOTAL = 600       # SAFETY BACKSTOP only (operator 2026-07-16:
+                              # "remove 100" — uncapped coverage; census-measured
+                              # eligible universe is ~284, so this never binds)
 DISCOVERY_EVERY_S = 900       # game markets churn daily; 15 min (v3: 30)
 DISCOVERY_RETRY_S = 60        # empty-universe retry (NOT every second — scan #3)
 FINALIZE_PER_CYCLE = 20       # resolution-backfill gamma GETs per discovery
@@ -67,9 +71,11 @@ VOL_PULL_PTS = 0.02
 VOL_PULL_S = 600
 REQUOTE_TICKS = 0.002
 MAX_DISK_MB = 500
-HTTP_BUDGET_PER_HOUR = 24000  # 100 mkts x 3 tape pages x 60/min = 18K worst case
+HTTP_BUDGET_PER_HOUR = 60000  # ~284 mkts x 3 tape pages x 60/min = 51K worst case
                               # (scan #8: starving fills on hot nights is the
-                              # asymmetric failure — rewards accrue via WS, fills don't)
+                              # asymmetric failure — rewards accrue via WS, fills
+                              # don't). Cloudflare general limit is 15K/10s;
+                              # 60K/hr averages ~17/s — far under.
 WS_CHUNK = 90
 WS_IDLE_RECONNECT_S = 40
 
@@ -478,15 +484,11 @@ def discover(base):
                          "game_start": gs})
         if new == 0 or len(data) < 100:
             break
-    by_sec = defaultdict(list)
-    for r in rows:
-        by_sec[r["sector"]].append(r)
-    picked = []
-    for sec, ms in by_sec.items():
-        ms.sort(key=lambda x: -x["pool"])
-        picked.extend(ms[:MAX_PER_SECTOR])
-    picked.sort(key=lambda x: -x["pool"])
-    picked = picked[:MAX_MARKETS_TOTAL]
+    rows.sort(key=lambda x: -x["pool"])
+    if len(rows) > MAX_MARKETS_TOTAL:            # backstop, never expected
+        print(f"WARNING: {len(rows)} eligible markets exceed backstop "
+              f"{MAX_MARKETS_TOTAL}; truncating by pool", flush=True)
+    picked = rows[:MAX_MARKETS_TOTAL]
     with open(os.path.join(base, "universe.json"), "w") as f:
         json.dump({"t": time.time(), "markets": picked}, f)
     return picked
@@ -635,6 +637,17 @@ def run(base):
         # check dead in steady state — persistence refreshes it every minute)
         if now - last_disk > 3600:
             last_disk = now
+            # gzip-rotate previous days' samples (uncapped universe writes
+            # ~60MB/day raw; rotation keeps the cap years away, best-effort)
+            today = time.strftime("%Y%m%d", time.gmtime(now))
+            for old in glob.glob(os.path.join(base, "samples-*.jsonl")):
+                if not old.endswith(f"samples-{today}.jsonl"):
+                    try:
+                        with open(old, "rb") as i, gzip.open(old + ".gz", "wb") as o:
+                            o.write(i.read())
+                        os.remove(old)
+                    except Exception:
+                        pass
             size_mb = sum(os.path.getsize(os.path.join(r, f))
                           for r, _, fs in os.walk(base) for f in fs) / 1e6
             if size_mb > MAX_DISK_MB:
@@ -736,7 +749,7 @@ def run(base):
             tape_cache = {}
             need = [m for m in universe
                     if m.get("cid") and (state.get(str(m["id"])) or {}).get("qh")]
-            with ThreadPoolExecutor(max_workers=8) as ex:
+            with ThreadPoolExecutor(max_workers=12) as ex:
                 futs = {ex.submit(fetch_tape, m["cid"],
                                   (state.get(str(m["id"])) or {}).get("last_trade_ts", now - 60)):
                         str(m["id"]) for m in need}
