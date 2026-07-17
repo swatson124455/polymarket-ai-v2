@@ -105,6 +105,21 @@
 >    becomes a DESIGN PROPOSAL (touches the one-bet-per-market guard: operator
 >    decision); else first-buy-only validated. Every re-buy is already recorded
 >    with executable quotes — zero new collection needed.
+> 9. **OPERATOR APPROVALS (2026-07-17 ~15:20Z, "proceed") — EXECUTE AT RUN-4
+>    BATCH BOUNDARY (the local batch-end watcher fires the sequence):**
+>    (a) PROMOTE `0xf705fa` (probe ADMIT) + `0x7c3db723f1d4…` (run-4 fresh
+>    ADMIT, 395/day: sweep complete, 0 mismatch, 100%/118,606 API-BUYs
+>    backed, skill P=1.0 on 4,280 mkts) — implementation: clean 25→26,
+>    extend `probe.addresses` with 0x7c3db7 (readout's multi-address probe
+>    group VERIFIED to work; group epoch stays 00:49:56Z — 0x7c3db7 has zero
+>    prior shadow records so nothing pools, F1-safe), ONE
+>    mirror3_shadow_deploy.sh restart, verify roster=26 + canary + next
+>    12:30Z readout runs clean. Any FURTHER run-4 ADMITs join the same
+>    single restart. (b) DEEPEN WAVE after run-4 exits: the 9 confounded
+>    INSUFFICIENTs (list in steward runbook) — rename non-ok caches, bare
+>    roster file, detached launch, --max-receipts 30000. (c) THEN
+>    `0x70d94a` solo deepen at --max-receipts 120000 (~4h receipts).
+>    Sequence strictly serial (one batch at a time on the shared RPC).
 
 > **2026-07-14 PM UPDATE (local steward session; VPS-direct SSH, operator-
 > approved per-command) — CHAIN DEEP-DIVE GATE BUILT, REVIEWED, VALIDATED,
