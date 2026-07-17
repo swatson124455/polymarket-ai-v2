@@ -65,6 +65,31 @@ Short delta — §0-S7's lane (vendor reply → historical readout; 07-20+ →
   en route: eb_dump_aliases.sh was never persisted on the VPS (silent
   re-dump no-op caught by md5). **Future name-gaps: add pairs to
   eb_add_aliases.sh (same-team proof required), re-run + re-dump.**
+- **429 QUOTA WALL MITIGATED 2026-07-17 (operator "and 2"):** collector cron
+  re-timed `0 * * * *` → `0 0,1,6-23 * * *` (skip 02–05Z; 20 ticks/day ==
+  observed daily budget; hours chosen from the start-hour histogram — 03/04Z
+  have ZERO recorded starts, 01–06Z ≤4 each, vs 52 matches starting in the
+  previously-dark 20Z–01Z block). WB cron lines untouched; full backup at
+  `/home/ubuntu/eb-odds/crontab.bak_20260717`. **Transitional day 07-17:**
+  ticks 00–05Z had already run, so tonight may still wall at 22/23Z; clean
+  from 07-18. VERIFY next session: 20–23Z ticks appended>0 on 07-18+.
+  Vendor paid tier remains the real fix (open thread).
+- **Alias timeline correction (ground truth via DB created_at):** the 6
+  curated pairs went live 12:04:52Z 07-17 (NOT ~03Z — the operator box slept
+  mid-session and displaced my wall-clock assumption; ticks 03–12Z correctly
+  ran on the OLD aliases, and the 12:00:01 tick raced the dump by 4 min).
+  First tick with new aliases = 13:00Z 07-17. Tick-flow replay on the VPS
+  hits 5/5 open pairs (1WIN/GenOne resolved by then). If 13:00Z+ ticks still
+  null these pairs, THEN investigate — current evidence says they won't.
+- **NEW FALSE-VETO INSTANCE (document-only, operator decision):** PM lists
+  OPEN "Keyd vs Imperial (BO3)" (CS2 RUSH B! Summit); PinnOdds says "Keyd
+  Stars" → the SIBLING_QUALIFIERS veto fires on "stars" (protects Karmine
+  Corp Blue/Blue Stars) even though "(Vivo) Keyd Stars" is the org's real
+  brand name. Veto outranks aliases BY DESIGN, so alias curation cannot fix
+  this pair; only a matcher-design change could (e.g., qualifier-exempt org
+  list) — NOT built, needs operator sign-off. Cost: this fixture class loses
+  PM capture; same-day PM "Keyd"-vs-"Keyd Stars" cross-listing is the
+  tell to watch for.
 - **STEP 1 (critical path):** operator 2026-07-15 — vendor email **SENT, NO
   REPLY yet**. Historical readout stays blocked on the reply; if it arrives
   with a usable sample, the build is pre-authorized per §0-S7.
