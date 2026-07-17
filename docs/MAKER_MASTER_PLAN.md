@@ -12,17 +12,27 @@ market-making bot on Polymarket. The deliverable is an operator decision
 package: config, capital ask, expected return, kill criteria. The operator
 decides; nothing trades real money before that.
 
-## 2. The thesis (what the evidence says so far)
+## 2. The thesis (current-method numbers ONLY — operator directive 2026-07-17:
+nothing computed with superseded methods may be quoted from this document)
 
-1. **Trading edge alone ≈ breakeven at best.** Month-long replay over 1,590
-   resolved markets: only gated+fast quoting was positive (+$1,657/30d floor);
-   naive+stale lost $198K. Live recorder arms confirm the same shape daily.
-2. **The subsidy layer is the actual profit.** Real makers verifiably
-   collected ~$513K/30d (payment records, chain-verified). Our 66-wallet
-   cohort's steady-state (Apr+May, pre-World-Cup) ≈ **$160–185K/month** —
-   **PROVISIONAL** per operator ruling until post-cup re-measurement.
-3. **Mandatory disciplines**, each priced from our own control-arm losses:
-   gates (in-play/settled/vol), sub-second refresh, breadth over size
+1. **Trading edge alone ≈ breakeven at best.** Month-long replay, 1,503
+   full-lifecycle resolved markets, current methods (fee-filter verified
+   1,502/1,503 enabled): only gated+fast was positive (+$1,657/30d floor);
+   naive+stale lost $198K.
+2. **The subsidy pool is real** — that is ALL the cohort receipts are used
+   for: existence proof that Polymarket pays makers at scale (chain-verified
+   payments; post-cup re-measure Jul 20+ sizes the post-promo pool). Cohort
+   receipts are NEVER an income forecast — those wallets run their own
+   algorithms, not ours.
+3. **Our expected income comes from OUR OWN measured capture**: three
+   independent gated implementations converge at **$1.0–1.1K/day
+   model-estimated reward capture** at the 140-market min-size footprint
+   (v2 $1,119/day over 1.8d; v3 $1,055/day post-fix; v5-P0 $978/day) —
+   share-model approximations documented in §7c; verified only by pilot
+   receipts to our own wallet.
+4. **Mandatory disciplines**, each priced from our own control-arm losses:
+   gates (adverse>2pt = 36–44% of fills in a market's final 16h vs 10–12%
+   beyond 48h; 34.1%>1pt overall), sub-second refresh, breadth over size
    (~1% pool share at min-size), auto-redeploy (half the pool base churns
    daily).
 
@@ -65,19 +75,23 @@ v4 universe steps 01:51Z → 02:03Z → 14:22Z → uncapped ~16:45Z 07-16.
 Gated + WS-fast + sports-led + min-size, **plus a farm tier** (breadth
 quoting of weather/politics/finance dailies — the strongest reviewed niche)
 and auto-redeploy (treadmill). Kill criteria pre-registered in
-`docs/MAKER_V4_LANE_TEST_PLAN.md` §5. Capital ask, expected floor (backtest)
-and income basis (real cohort per-$ rates, provisional baseline) get final
-numbers from the readout + post-cup re-measures.
+`docs/MAKER_V4_LANE_TEST_PLAN.md` §5. **Income basis = OUR measured capture
+($1.0–1.1K/day at the current footprint, §2.3), scaled by footprint, floored
+by the backtest trading floor, and VERIFIED by pilot receipts to our own
+wallet within the kill-criteria window. Cohort receipts are a pool-existence
+anchor only — never the forecast.** Final numbers from the readout +
+post-cup pool re-measure.
 
-### Gate elevation (07-17): fitted parameters + the v5 lab
-Fit 1 (vol gate, 21K events): continuation after a 2-min move is TAIL-driven —
-median further move ≈ 0 but p75 = +4c at 10min / +7c at 30min after a 2c move;
-grows with move size. Fit 2 (wind-down, 1,450 fills w/ end dates): adverse>2pt
-peaks 20–31% in the final 1–9h of a market vs ~4% at 1–3 days. Both encoded as
-v5 policies; the lab measures each gate idea and combination against an
-ungated paired control on identical markets/prints. First read: ≥3 days of
-lab data (~07-20). Tier-3 candidates still parked: book-collapse early
-warning (needs depth logging), catalyst calendar.
+### Gate elevation — REFIT numbers (07-17, `acd40ca`; the only quotable set)
+Vol gate (clean-era, de-overlapped, 2,141 events): continuation is tail-only —
+median ≈ 0, p75 = +2c at 10min / +4c at 30min after a 2c move. Wind-down
+(full 613-market mapping, actual resolved_at, side-inferred, censoring
+reported): adverse>2pt = 36–44% ANYWHERE in the final 16h vs 10–12% beyond
+48h (hot-zone censoring makes these floors) — v5's P2 tests a 9h ramp; a 16h
+variant is queued for the next lab round. The v5 lab (6 paired policies,
+identical inputs) is the arbiter of each gate's $ value; first read ~07-20.
+Tier-3 parked: book-collapse early warning (needs depth logging), catalyst
+calendar (GTD orders make it near-free to implement).
 
 ## 6. Niche ledger (reviewed 07-17, data in memory + `scripts/maker_research/`)
 
