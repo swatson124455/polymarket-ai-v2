@@ -55,12 +55,14 @@ def fetch_json(url, timeout=12):
     req = urllib.request.Request(url, headers={"User-Agent": "wb-research/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
+            if r.status == 204:
+                return None      # dead/idle PWS — expected, NOT an alarm
             if r.status != 200:
                 WU_FAILS += 1
                 return None
             return json.loads(r.read().decode())
     except Exception:
-        WU_FAILS += 1
+        WU_FAILS += 1            # network/HTTP errors — ban/outage signal
         return None
 
 
