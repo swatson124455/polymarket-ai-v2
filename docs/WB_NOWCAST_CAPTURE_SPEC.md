@@ -576,6 +576,19 @@ Studies interim: use the remap variants. HISTORY ASSUMPTION to verify in
 S232: descriptions have named these same stations all season (spot-check a
 March market's description).
 
+## CORRECTED-STATION PEAK-MODEL RESULT (`peak_remap.out`, ran 07-17 ~17-18Z)
+
+**GATE: PASS — 4th independent confirmation, under the HARDENED gate.**
+Stations corrected (Dallas=KDAL, Houston=KHOU via 1-min; DENVER EXCLUDED —
+Buckley has no 1-min product; disclosed): PRIMARY TEST n=190 meanEV **+0.070**
+(SE ~0.033; 2SE cleared) AND family-clustered day-mean **+0.087, cSE ~0.035,
+clustered-2σ OK** (139 family-days); TRAIN +0.084; rejected −0.008 (n=823).
+Cuts: DB-only TEST +0.091 (n=58); ARCH-only +0.035 (n=191 — staler day-1
+forecasts dilute, consistent pattern). The pass chain is now: original gate
+(+0.091) → shifted-window global US cut (+0.084) → corrected stations +
+hardened gate (+0.070/clustered +0.087). Caveats stand: mid prices (not
+executable), Denver absent, ARCH-only weak alone.
+
 ## DOUBLE-BLIND VERIFICATION OF THE FIX WAVE (operator-ordered, 07-17 ~16-17Z)
 
 Four independent blind agents (diff review, registry blast-radius, deployed-
