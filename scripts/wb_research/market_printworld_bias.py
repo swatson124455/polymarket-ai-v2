@@ -234,7 +234,7 @@ def main():
         if n == 0:
             print(f"  {hlead:4.0f}h | no bets")
             continue
-        gate = ("TRADE-CANDIDATE" if ev >= 0.05 and ev - 2 * se > 0 else
+        gate = ("TRADE-CANDIDATE" if se > 0 and ev >= 0.05 and ev - 2 * se > 0 else
                 "BIAS-CONFIRMED-NOT-TRADEABLE" if se > 0 and ev - 2 * se > 0 else
                 "DEAD")
         print(f"  {hlead:4.0f}h | {n:4d} | {ev:+.3f} | {se:.3f} | {sig:5.1f} "

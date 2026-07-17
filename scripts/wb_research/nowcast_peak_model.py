@@ -349,15 +349,23 @@ def main():
             line = (f"    {tag}: n={n} meanEV {ev:+.3f} (SE ~{se:.3f}) win% {wr:.0%} "
                     f"med price {median(e['price'] for e in sel):.2f}")
             if flag and key == "e_rem":
-                line += ("  <-- GATE: " + ("PASS" if ev >= 0.05 and ev - 2 * se > 0
-                                           else "FAIL/INSUFFICIENT"))
+                # S231 review deferred #2: the gate must ALSO clear on the
+                # family-clustered SE (same-family entries share one weather
+                # outcome; per-entry SE alone is anti-conservative). The
+                # recorded S231 PASS cleared both; future runs must too.
                 by_fam = defaultdict(list)
                 for e in sel:
                     by_fam[e["fam"]].append(e["ev"])
                 fmeans = [mean(v) for v in by_fam.values()]
                 cse = (pstdev(fmeans) / len(fmeans) ** 0.5) if len(fmeans) > 1 else 0.0
-                line += (f"\n      (family-clustered info: {len(fmeans)} family-days, "
-                         f"day-mean EV {mean(fmeans):+.3f}, clustered SE ~{cse:.3f})")
+                dm = mean(fmeans)
+                clustered_ok = len(fmeans) > 1 and dm - 2 * cse > 0
+                line += ("  <-- GATE: " + ("PASS" if ev >= 0.05 and ev - 2 * se > 0
+                                           and clustered_ok
+                                           else "FAIL/INSUFFICIENT"))
+                line += (f"\n      (family-clustered: {len(fmeans)} family-days, "
+                         f"day-mean EV {dm:+.3f}, clustered SE ~{cse:.3f}, "
+                         f"clustered-2sigma {'OK' if clustered_ok else 'NOT MET'})")
             print(line)
         rej = [e for e in pool if not (e[key] <= 1.0 and e["hour"] >= 12)]
         if rej:
