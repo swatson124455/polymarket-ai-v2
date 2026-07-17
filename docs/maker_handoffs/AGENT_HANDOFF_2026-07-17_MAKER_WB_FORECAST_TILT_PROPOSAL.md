@@ -30,9 +30,12 @@ real money.
 2. **What read pattern is acceptable? — OPERATOR-PREFERRED OPTION (07-17): a
    SHARD MAKER OWNS.** WB adds a small export step: each forecast cycle,
    append/write the shared fields (market id or city+date, probability,
-   timestamp, model version) to a Maker-owned drop location (e.g.,
-   `/opt/pa2-maker-feeds/wb_forecasts.jsonl`, Maker creates the dir,
-   WB-writable). Clean boundary: WB controls exactly what is shared, Maker
+   timestamp, model version) to a Maker-owned drop location **— THE DROP IS LIVE AND READY (07-17 16:22Z):
+   `/opt/pa2-maker-feeds/wb_forecasts.jsonl` exists on the VPS, polymarket-
+   writable, with the full field contract in
+   `/opt/pa2-maker-feeds/README_WB_FORECASTS_CONTRACT.md`. WB's entire task
+   = append one JSON line per forecast; everything else (dedup, staleness,
+   rotation) is Maker's problem.** Clean boundary: WB controls exactly what is shared, Maker
    never touches WB internals, zero read-load on WB, and WB refactors can't
    break the feed (the file format is the contract). Costs WB a few lines —
    WB's call whether that's acceptable vs Maker doing low-frequency
