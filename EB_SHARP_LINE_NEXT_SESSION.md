@@ -52,12 +52,19 @@ Short delta — §0-S7's lane (vendor reply → historical readout; 07-20+ →
   Yandex (EWC Dota), Ninjas In Pyjamas↔**NIP**, GameHunters↔**Game Hunters**,
   KINGZERO↔**Kingzone** (spelling variant — VERIFY same team before aliasing).
   ≈14% of PM-listed matches silently dropped in that tick; aggregate
-  pm_matched conceals it. **Fix path = alias-group additions (esports_team_
-  aliases → eb_dump_aliases.sh → VPS aliases.json), one pair at a time, each
-  verified same-team first — a wrong alias is the S152/B2 wrong-attach loss
-  class. PROPOSE-ONLY: needs operator authorization; do NOT loosen the
-  matcher itself.** Each recovered pair densifies pm_matched → more settled
-  records for the readout.
+  pm_matched conceals it. **FIXED 2026-07-17 (operator "fix 1 now"):** all 6
+  pairs same-team-verified (fixture alignment both books; KINGZERO↔KingZone
+  additionally via shared captain on Liquipedia/Ubisoft) and inserted via NEW
+  `deploy/vps/eb_add_aliases.sh` (`8950e32`, blob md5 `eaa59624…`, idempotent
+  dry-run-default, source='manual_curated') → `eb_dump_aliases.sh` re-run
+  (now persisted on VPS, blob md5 `5307d3f9…`) → aliases.json 16→22
+  non-identity groups, md5 `0a923fd5…`. Offline verify vs live index: **6/6
+  recovered**, adversarial suite PASS (T1/Academy + 1W/1win-Academy QUAL
+  vetoes hold, NIP≠Young Ninjas≠NiP Impact, no contamination), 104 alias/
+  collector tests green. Matcher itself UNTOUCHED (stays strict). Discovered
+  en route: eb_dump_aliases.sh was never persisted on the VPS (silent
+  re-dump no-op caught by md5). **Future name-gaps: add pairs to
+  eb_add_aliases.sh (same-team proof required), re-run + re-dump.**
 - **STEP 1 (critical path):** operator 2026-07-15 — vendor email **SENT, NO
   REPLY yet**. Historical readout stays blocked on the reply; if it arrives
   with a usable sample, the build is pre-authorized per §0-S7.
