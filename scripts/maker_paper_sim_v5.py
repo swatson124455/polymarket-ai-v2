@@ -53,7 +53,11 @@ INV_CAP_MULT = 3
 LAST_HOURS_GATE_UTC = 19
 REQUOTE_TICKS = 0.002
 MAX_DISK_MB = 500
-HTTP_BUDGET_PER_HOUR = 12000
+HTTP_BUDGET_PER_HOUR = 24000  # v5 fetches tape for ALL 140 markets each minute
+                              # (the prints-velocity signal needs it): ~155-450
+                              # reqs/min worst case. v3's 12K/hr assumed the
+                              # quoted-markets filter; exhaustion is SILENT
+                              # (get() -> None), so hb also reports usage.
 WS_CHUNK = 90
 WS_IDLE_RECONNECT_S = 40
 
@@ -640,7 +644,8 @@ def run(base):
                     parts.append("%s[q=%d acc=$%.2f net=$%.2f]"
                                  % (pol_name.split("_")[0], quoting, acc, acc + net))
                 print("hb: " + " ".join(parts)
-                      + f" | requote_lat_med={med:.0f}ms books={len(BOOKS)} stale_books={stale}",
+                      + f" | requote_lat_med={med:.0f}ms books={len(BOOKS)} stale_books={stale}"
+                      + f" http_hr={len(_http_window)}/{HTTP_BUDGET_PER_HOUR}",
                       flush=True)
 
         time.sleep(1)
