@@ -3163,7 +3163,7 @@ class WeatherBot(BaseBot):
             # the 0.80x discount shrank bets below break-even threshold. Kelly already
             # accounts for payoff asymmetry via (p*b - q)/b formula.
 
-            tradeable.append({
+            _tr_opp = {
                 "market_id": e["market_id"],
                 "token_id": token_id,
                 "side": side,
@@ -3185,11 +3185,14 @@ class WeatherBot(BaseBot):
                 "forecast_delta": forecast.forecast_delta,
                 "nbm_high_conviction": e["market_id"] in _nbm_signals,
                 "bucket_type": bucket.bucket_type,
-            })
+            }
+            tradeable.append(_tr_opp)
+            # S231: pass the ENRICHED dict (has city/target_date) as opp for the
+            # Maker export — the raw edge dict `e` lacks those fields.
             await self._log_weather_prediction(
                 e["market_id"], e["model_prob"], bucket.yes_price,
                 effective_confidence, "temperature",
-                opp=e,
+                opp=_tr_opp,
             )
 
         # S226 (V28 follow-up): rank the top-N bucket cut by CALIBRATED edge.
