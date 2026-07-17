@@ -521,6 +521,17 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-17 (S231-late, ZERO bot-code changes):** GLOBAL MANDATE (operator,
+  non-negotiable — memory `feedback_wb_always_global.md`): pws_mesh collector
+  GLOBAL (MMMX first tick), mesh_validation ICAO-global, EGLC half-hourly
+  METARs confirmed. Five pre-registered studies (frozen before running):
+  A market-print-world-bias DEAD; B post-lock drift DEAD (+discovery: ~9%
+  settlement-source boundary risk — Phase-2 sizing input); C sell-the-dead-lane
+  n=10 no-verdict (accrue); D revision-momentum DEAD; GLOBAL peak robustness —
+  US reproduces the gate (TEST +0.084 n=183), non-US inconclusive (n=90,
+  accruing). Phase-2 design + peak-passed second signal written; scheduled
+  `wb-mesh-lead-validation` fires 07-18 10:00 ET. Spec §S231-LATE blocks +
+  `docs/WEATHER_S231_STATUS.md` deltas carry the details.
 - **2026-07-15/16 (S231 close, ZERO bot-code changes):** deep-backtest session —
   **peak-model GATE PASSED** (archived previous-runs forecasts, no lookahead; 719
   family-days, TEST n=135 +0.091, clustered 2.7σ; rejected −0.007); maker-fill history

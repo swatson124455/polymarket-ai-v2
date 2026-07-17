@@ -390,6 +390,15 @@ sibling somehow won).
 GATE: ≥30% of reveal windows show ≥20 shares filled at q0−0.02 post-reveal
 AND meanEV ≥ +0.05 with 2×family-clustered SE excluding 0 → exploitable;
 fills without EV → BIAS-CONFIRMED-NOT-TRADEABLE; else DEAD.
+**RESULT (ran 07-17, `study_c_sibling.out`): SIGNAL-POSITIVE BUT n=10 —
+BELOW DECISION BAR; keep accruing, do NOT build.** Of 1,624 family-days only
+10 windows qualified (345 dead siblings had ALREADY collapsed below 0.10
+pre-reveal; 969 no usable winner-crossing) — the market normally kills the
+old lane BEFORE the print; the exploitable event is rare (~3-4 windows with
+≥20sh fills in 4.5 months). In those 10: premium ~+0.34/share, 0/10
+siblings won, gate line technically "EXPLOITABLE" — but 10 samples is far
+under the program's own n≥50-100 bar. Treat the 4.9σ as UNRELIABLE at this
+n. Forward trade_prints accrual grades it passively.
 
 **STUDY D — forecast-REVISION momentum (the duel tested levels, not deltas).**
 Rule: GLOBAL families 03→07. rev = archived previous_day1 fmax −
@@ -401,11 +410,21 @@ family-day-clustered SEs.
 GATE: case meanEV ≥ +0.05 with 2×cSE excluding 0 AND case meanEV > control
 meanEV → the market lags revisions (trade-candidate); significant-but-small
 → BIAS-CONFIRMED-NOT-TRADEABLE; else DEAD.
+**RESULT (ran 07-17, `study_d_revision.out`): DEAD.** Case (|rev|≥1.5F)
+n=270 meanEV +0.002 (cSE 0.026) vs control n=117 +0.009 — the market does
+not lag day-scale forecast revisions. Non-US case +0.023 (n=31) = noise.
 
 **GLOBAL ROBUSTNESS RUNS (not re-gates; separately reported):** peak-model
 (frozen rule, native 0.556C threshold for C stations) and Study A re-run
 over ALL cities; report global-pooled and non-US-only cuts side by side
 with the US numbers. Regional cuts (Europe/Asia/other) informational.
+**RESULT (ran 07-17, `peak_global.out`, window shifted to 02-28..07-14):**
+US cut REPRODUCES the gate — TEST n=183 meanEV +0.084 (cSE 0.032), rejected
+−0.013 (n=818); global pooled TEST +0.081 (n=201). **NON-US (print-time
+detector): INCONCLUSIVE** — TRAIN −0.082 (n=33) / TEST +0.048 (n=18), mixed
+signs at tiny n (only 90 priced non-US entries — thin CLOB minute history +
+sparser DB forecasts there). No verdict; the now-global mesh + loggers
+accrue the non-US sample forward.
 
 **Candidate queue (listed, NOT pre-registered):** deep-inside lock rule
 (Study-B follow-up, above); PSW radar-lead (precip begins = real-time

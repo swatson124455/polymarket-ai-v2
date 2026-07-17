@@ -139,6 +139,24 @@ IEM 1-min caught up, ~42h) — mesh running-max increments vs 1-min truth and
 print reveal times: mesh-led share, median lead, false-crossing rate.
 Acceptance gates in the spec's PHASE-2 DESIGN block.
 
+## S231-late pre-registered sweep (all frozen-then-run; spec has full blocks)
+- **market_printworld_bias.py (Study A): DEAD** — below-forecast buckets at
+  24h/14h leads EV ≈ 0 (n=696/−0.007, n=552/−0.013, clustered) — the market
+  does NOT share the bot's print-world defect.
+- **postlock_drift.py (Study B): DEAD + discovery** — lock rules false-fire
+  9.3-9.5% (vs <1% gate): even the final print-max bucket loses ~9%
+  (settlement-source/boundary risk; cross-validates rep_bias 81%). No free
+  money at the close; feeds Phase-2 sizing. Candidate: deep-inside lock.
+- **sibling_repricing.py (Study C): signal-positive, n=10 — NO verdict** —
+  market kills the dead lane BEFORE the print in almost all of 1,624
+  family-days; the rare survivor pays ~+0.34/share but ~3-4 fill events in
+  4.5 months. Keep accruing (trade_prints), do not build.
+- **revision_momentum.py (Study D): DEAD** — case +0.002 vs control +0.009;
+  the market does not lag day-scale forecast revisions.
+- **nowcast_peak_global.py (GLOBAL robustness, NOT a re-gate):** US cut
+  reproduces the gate (TEST +0.084, n=183); non-US INCONCLUSIVE (90 entries,
+  mixed signs) — global mesh/loggers accrue the sample forward.
+
 ## trade_prints.py — "do resting orders actually get filled?" (maker leg)
 Runs on the VPS via cron (`trade_prints.sh`, every 10 min at :05 offset,
 alongside shadow_book.sh at :00). For each active US highest-temp family

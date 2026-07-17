@@ -82,6 +82,24 @@
 
 ## 5. NEXT SESSION (S232) — priorities
 
+> **S231-LATE DELTA #2 (operator: "fold in 4-6 also — go — always global, not
+> negotiable"):** GLOBAL MANDATE codified (memory `feedback_wb_always_global.md`
+> + spec §GLOBAL MANDATE) — pws_mesh went GLOBAL 07-17 00:42Z (MMMX confirmed;
+> forward-only data was the urgent piece); mesh_validation ICAO-global; EGLC
+> probe: half-hourly METARs (2× reveal cadence non-US). FIVE pre-registered
+> studies ran frozen-rules-first (commits `c005592`/`6d496fc`): **A DEAD**
+> (market does NOT carry the print-world bias), **B DEAD + discovery** (lock
+> rules false-fire ~9.3-9.5% — settlement-source/boundary risk ≈9%,
+> cross-validates rep_bias 81%; feeds Phase-2 sizing), **C signal-positive at
+> n=10 = NO verdict** (market kills the dead lane pre-print; rare survivor
+> pays ~+0.34/sh; accrue, don't build), **D DEAD** (no revision lag),
+> **GLOBAL peak robustness: US cut REPRODUCES the gate** (TEST +0.084 n=183
+> on the shifted window), **non-US INCONCLUSIVE** (90 entries, mixed signs —
+> global mesh accrues the sample). Ops lesson stamped: 3× pkill/pgrep
+> self-match incidents — ALWAYS use [b]racket patterns in kill one-liners.
+> Anomaly noted: the 14:40Z A/B runs died and re-ran ~00:35Z (same frozen
+> scripts; cause unidentified — likely VPS-side; outputs consistent).
+
 > **S231-LATE DELTA (operator "do next session items now"):** item 2's harness
 > is BUILT (`mesh_validation.py`, staged on VPS) and its --bias half RAN on the
 > first evening of mesh data (raw mesh−METAR +0.72F mean, per-city −2.5..+3.4F,
