@@ -321,6 +321,12 @@ distance-below-forecast bins (1-3F, 3-5F, >5F) — bins are informational,
 the GATE is pooled per lead.
 GATE: meanEV ≥ +0.05 with 2×clustered-SE excluding 0 at either lead →
 trade-candidate; ≥2σ but < +0.05 → BIAS-CONFIRMED-NOT-TRADEABLE; else DEAD.
+**RESULT (ran 07-17, `study_a_bias.out`): DEAD.** 24h lead n=696 meanEV
+−0.007 (cSE 0.013); 14h n=552 −0.013 (cSE 0.015); 420 family-days; no
+distance bin shows bias (>5F +0.020 = noise). The market does NOT carry the
+bot's print-world defect — its low-bucket pricing is already correct.
+Consistent with the market winning every day-ahead duel. The peak-model
+selection remains the only validated edge.
 
 **STUDY B — post-lock drift capture (execution-only edge).**
 Motivation: winners drift 0.85→1.00 for hours after the outcome is

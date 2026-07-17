@@ -55,6 +55,12 @@ def fetch(url, tries=3, timeout=60):
             time.sleep(1.2 * (i + 1))
 
 
+def iem_station(sid):
+    """US ASOS drops the leading K on IEM; international ICAOs are used whole
+    (GLOBAL mandate 2026-07-16 — mesh now logs every active-market city)."""
+    return sid[1:] if sid.startswith("K") else sid
+
+
 def load_mesh(date_tag):
     """-> {sid: [(epoch, temp_f)]} qc==1 only, per-PWS-debiased NOT applied."""
     out = defaultdict(list)
@@ -122,7 +128,7 @@ def mode_bias(date_tag):
     print("  sid  | prints matched | mean(mesh-metar) | median | sd | med PWS/bin")
     alldiff = []
     for sid, series in sorted(mesh.items()):
-        obs = iem_series(sid[1:], d, d + timedelta(days=1), "hourly")
+        obs = iem_series(iem_station(sid), d, d + timedelta(days=1), "hourly")
         time.sleep(0.2)
         diffs, ns = [], []
         for t, v in obs:
@@ -157,9 +163,9 @@ def mode_lead(date_tag):
     for sid, series in sorted(mesh.items()):
         st = SID[sid]
         tz = ZoneInfo(st.timezone)
-        one = [(t, v) for t, v in iem_series(sid[1:], d, d + timedelta(days=1), "1min")
+        one = [(t, v) for t, v in iem_series(iem_station(sid), d, d + timedelta(days=1), "1min")
                if t.astimezone(tz).date() == d and 9 <= t.astimezone(tz).hour < 23]
-        prints = [(t, v) for t, v in iem_series(sid[1:], d, d + timedelta(days=1), "hourly")
+        prints = [(t, v) for t, v in iem_series(iem_station(sid), d, d + timedelta(days=1), "hourly")
                   if t.astimezone(tz).date() == d]
         time.sleep(0.3)
         if len(one) < 300 or not prints:
