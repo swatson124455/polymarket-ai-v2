@@ -341,12 +341,69 @@ GATE: false-lock rate (fired-but-resolved-NO / fired) < 1% for the rule to
 be usable; then viability = ≥50% of locked family-days show ≥20 shares
 buyable at ≤0.97. Report both rules; do NOT tune thresholds post-hoc.
 
-**Candidate queue (listed, NOT pre-registered):** sibling-bucket repricing
-latency at the reveal (sell the overtaken bucket — trade_prints already logs
-all buckets); forecast-REVISION momentum day-ahead (previous_dayN deltas vs
-CLOB — the duel tested levels, not deltas); non-US expansion (30-min METAR
-countries, thinner overnight attention; probe truth sources first); PSW
-radar-lead (precip begins = real-time observable, prints hourly).
+## GLOBAL MANDATE (operator hard directive 2026-07-16 — NOT NEGOTIABLE)
+
+Every WB collector, study, and backtest covers ALL listed cities (any country,
+any temp unit) from now on. US-only filters are forbidden. Unit hygiene:
+bucket bounds match in NATIVE units (±0.5 native); IEM serves tmpf (°F) for
+all ICAOs — convert before matching; frozen F-thresholds apply as native
+equivalents (E_rem ≤ 1.0F ≡ 0.556C). Prior US-only verdicts (the S231
+peak-model gate) are NOT re-gated: global runs are separately-reported
+ROBUSTNESS cuts. pws_mesh went global 2026-07-17 ~00:42Z (Mexico City obs
+confirmed first tick). Probe fact: EGLC METARs are HALF-HOURLY (2x reveal
+cadence) — the non-US microstructure differs, which is part of the point.
+Memory: feedback_wb_always_global.md.
+
+**STUDY B RESULT (ran under the frozen rules above): DEAD — and the
+false-lock finding is the discovery.** L1 fired 550, false-locks 9.27%;
+L2 fired 546, 9.52% — BOTH fail the <1% gate; print analysis correctly
+skipped. Even the day's FINAL print-max bucket loses ~9% of the time:
+independent cross-validation of rep_bias_test's 81%-print-world number —
+settlement (WU history) diverges from METAR prints at bucket boundaries.
+CONSEQUENCES: (a) late 0.95-0.97 sellers are rationally pricing
+settlement-source risk, not being lazy — no free money at the close;
+(b) ~9% boundary risk is a REAL haircut on any "certain" late position and
+must appear in Phase-2 sizing; (c) NEW CANDIDATE (not run, needs its own
+pre-registration): lock only when runmax ≥1.0F INSIDE the bucket bounds —
+expected to collapse the false rate; quantify before any use.
+
+## S231-LATE PRE-REGISTERED STUDIES C & D (GLOBAL; frozen before running)
+
+**STUDY C — sibling-bucket repricing latency ("sell the dead lane").**
+Rule: GLOBAL resolved families 03→07 (native-unit bucket matching; IEM
+station id = ICAO minus leading K for US, full ICAO otherwise). At the
+winner's reveal (first hourly print entering the winner bucket, +6 min), the
+DEAD SIBLING = the bucket the running max occupied immediately before the
+crossing (resolved-anything; graded vs resolution — Study B says adjacent
+buckets carry ~9% boundary risk, so the win-rate haircut is part of the EV,
+not a filter). q0 = last YES-frame print of the sibling before t_reveal−2min;
+require q0 ≥ 0.10. Hypothetical resting ASK at q ∈ {q0, q0−0.01, q0−0.02};
+fills = YES-frame taker-BUY prints ≥ q in [t_reveal, +45min] (UPPER bounds);
+control window at t_reveal−3.5h. EV/share at fill = q − y (y=1 if the
+sibling somehow won).
+GATE: ≥30% of reveal windows show ≥20 shares filled at q0−0.02 post-reveal
+AND meanEV ≥ +0.05 with 2×family-clustered SE excluding 0 → exploitable;
+fills without EV → BIAS-CONFIRMED-NOT-TRADEABLE; else DEAD.
+
+**STUDY D — forecast-REVISION momentum (the duel tested levels, not deltas).**
+Rule: GLOBAL families 03→07. rev = archived previous_day1 fmax −
+previous_day2 fmax (same target date, both no-lookahead, °F). Target bucket =
+the bucket containing the FRESH forecast (previous_day1 max, converted to
+native units). Sample CLOB price at T = local-midnight-EOD − 24h; require
+0.03 < p < 0.90. CASES: |rev| ≥ 1.5F. CONTROL: |rev| < 0.5F. EV/$1 = y − p;
+family-day-clustered SEs.
+GATE: case meanEV ≥ +0.05 with 2×cSE excluding 0 AND case meanEV > control
+meanEV → the market lags revisions (trade-candidate); significant-but-small
+→ BIAS-CONFIRMED-NOT-TRADEABLE; else DEAD.
+
+**GLOBAL ROBUSTNESS RUNS (not re-gates; separately reported):** peak-model
+(frozen rule, native 0.556C threshold for C stations) and Study A re-run
+over ALL cities; report global-pooled and non-US-only cuts side by side
+with the US numbers. Regional cuts (Europe/Asia/other) informational.
+
+**Candidate queue (listed, NOT pre-registered):** deep-inside lock rule
+(Study-B follow-up, above); PSW radar-lead (precip begins = real-time
+observable, prints hourly).
 
 ## Phase 2 — paper strategy (bot integration, gated on Phase 0 PASS)
 

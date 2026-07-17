@@ -3,10 +3,12 @@
 build 2026-07-15 after the peak-model gate PASSED (nowcast_peak_133d.out).
 
 Purpose: the live substitute for the IEM 1-min curve (which lags ~42h). Every
-tick, for each US F-station resolution city whose LOCAL time is 09:00-21:59,
+tick, for EVERY active-market resolution city (GLOBAL — operator hard
+directive 2026-07-16; any country/unit) whose LOCAL time is 09:00-21:59,
 poll current observations from up to STATIONS_PER_CITY nearby Weather
 Underground personal weather stations and append NEW obs (per-PWS epoch
 cursor) to ~/wb_research/pws_mesh_YYYYMMDD.jsonl. Cron: every 5 minutes.
+temp_f is always °F (units=e); convert to station-native units at analysis.
 
 Next-session validation: reconstruct the running-max curve from this mesh and
 compare against IEM 1-min once it catches up (~42h) — does the mesh reproduce
@@ -100,8 +102,9 @@ def main():
     new_count = 0
     with open(OUT, "a") as out:
         for st in STATION_REGISTRY.values():
-            if st.temp_unit != "F" or not st.station_id.startswith("K"):
-                continue
+            # GLOBAL (operator hard directive 2026-07-16): every active-market
+            # city, any country/unit. temp_f stays °F (units=e) — analysis
+            # converts to native units where needed.
             if st.city_name.lower() not in live:
                 continue
             lh = datetime.now(ZoneInfo(st.timezone)).hour
