@@ -115,6 +115,22 @@ Short delta — §0-S7's lane (vendor reply → historical readout; 07-20+ →
   → not worth it; hundreds → a heavily-caveated 1xbet-benchmark CS2 study
   becomes possible.** PinnOdds email (Pinnacle historical) REMAINS the
   critical path.
+- **OWLS HARVEST STARTED 2026-07-17 ~16:05Z (operator "start taking what you
+  can now"), `5ab8a9e`:** (1) **live esports odds recorder**
+  `deploy/vps/eb_owls_collect.py` (blob md5 `8aae5479…`) — RAW-body JSONL to
+  `owls_snapshots.jsonl`, 8 req/tick (v1 odds + v2 thunderpick × cs2/
+  valorant/lol/dota2), cron `30 * * * *` (crontab backup
+  `crontab.bak_20260717b`; runs 24/7 incl. the 20–23Z PinnOdds dark window;
+  ≈5.8k req/mo of 300k). First tick 8/8 OK, cross-checked: 1xbet 23 cs2/14
+  val/64 lol/8 dota events, thunderpick carries competition names (EWC, VCT,
+  LEC). **This is a RECORDER; nothing consumes it yet — offline parsing is
+  future work, and 1xbet ≠ sharp reference (operator decision before any
+  strategy use).** (2) **CS2 history index pulled**
+  `eb_owls_history_index.py` (md5 `d229ee84…`) → `owls_cs2_history_index.
+  jsonl` (~20.7k games, resumable, ~1 req/s). Per-event odds pulls NOT made
+  — the PM-overlap count on this index decides if they ever are. Monitor:
+  `owls_collect.log` `ok=8/8` + `rem_month` (kill = remove the `:30` cron
+  line; both crontab .baks on VPS).
 - **STEP 1 (critical path):** operator 2026-07-15 — vendor email **SENT, NO
   REPLY yet**. Historical readout stays blocked on the reply; if it arrives
   with a usable sample, the build is pre-authorized per §0-S7.
