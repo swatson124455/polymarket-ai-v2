@@ -62,9 +62,19 @@ def iem_station(sid):
 
 
 def load_mesh(date_tag):
-    """-> {sid: [(epoch, temp_f)]} qc==1 only, per-PWS-debiased NOT applied."""
+    """-> {sid: [(epoch, temp_f, pws)]} qc==1 only, no per-PWS debias.
+
+    S231 review fix: mesh files are named by UTC RUN date, but a western-
+    hemisphere city's local evening lands in the NEXT UTC day's file (LA
+    17:00-21:59 PDT = 00:00-05:00Z of D+1). Read BOTH files; callers filter
+    to the local day (mode_lead does; mode_bias matches by timestamp)."""
+    d = datetime.strptime(date_tag, "%Y%m%d")
+    tags = [date_tag, (d + timedelta(days=1)).strftime("%Y%m%d")]
+    paths = []
+    for tag in tags:
+        paths += glob.glob(f"/home/ubuntu/wb_research/pws_mesh_{tag}.jsonl")
     out = defaultdict(list)
-    for path in sorted(glob.glob(f"/home/ubuntu/wb_research/pws_mesh_{date_tag}.jsonl")):
+    for path in sorted(paths):
         with open(path, encoding="utf-8") as f:
             for line in f:
                 try:
@@ -163,6 +173,12 @@ def mode_lead(date_tag):
     for sid, series in sorted(mesh.items()):
         st = SID[sid]
         tz = ZoneInfo(st.timezone)
+        # S231 review fix: restrict the mesh curve to THIS local day so the
+        # two-file load can't mix a neighboring local day into the runmax.
+        series = [(ep, tf, pws) for ep, tf, pws in series
+                  if datetime.fromtimestamp(ep, tz).date() == d]
+        if not series:
+            continue
         one = [(t, v) for t, v in iem_series(iem_station(sid), d, d + timedelta(days=1), "1min")
                if t.astimezone(tz).date() == d and 9 <= t.astimezone(tz).hour < 23]
         prints = [(t, v) for t, v in iem_series(iem_station(sid), d, d + timedelta(days=1), "hourly")
