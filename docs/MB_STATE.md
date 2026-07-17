@@ -129,6 +129,25 @@
 >     wave-2) the SAME way — batch, one restart, extend the cohort2 ledger key
 >     (shadow_readout REFUSES a readout if clean != cohort1+cohort2, so an
 >     admission without the ledger update now fails loud).
+>   - **ROSTER DELTA 2026-07-17 00:49:56Z (operator-agreed "fix not bend"):**
+>     `0xf705fa…` added as a **PROBE** (observation-only, ledger key `probe`,
+>     own epoch/readout line, never pooled; roster clean 24→25, watcher
+>     restarted 00:50:21Z, backup `chain_audit.json.pre-probe-20260716`).
+>     Why: the 461-fills/day REJECT measured the wrong unit — he is a STACKER
+>     (7.6 decisions/day, 16% net-flat, 57% hold; round-trip component wins
+>     only 38%) with +0.0368 P=1.000 on 1,835 mkts and 100% chain backing.
+>   - **COPYABILITY PARAMS REWORKED (`27ee79b`, pre-registered BEFORE any
+>     re-run):** receipt-free REJECT band now >1,000 fills/day; the 200-1,000
+>     band is judged post-receipts on `--max-decisions-per-day 25` (chain
+>     first-buys/day) + `--max-flat-share 0.60` (flow_shape net-flat share,
+>     >=20 positions) — the DIRECT market-maker test. `--hft-max-rate` is
+>     reporting-only now. Adversarial review: no confirmed defects; overlap
+>     rejection + strict probe epoch added.
+>   - **QUEUED [next session or run-3 completion]: BAND RE-RUN** — re-run all
+>     rate-rejects with true_rate in (200,1000] under `27ee79b`+ (they were
+>     rejected under the old 200 cap): currently 938, 749, 461(=probe, gets a
+>     formal verdict), 395, 371, 288(0xfbfd14dd, had a ts issue) + any run-3
+>     additions. Whoever passes -> PROPOSED as probes (operator word each).
 >
 > *(The 2026-07-14 ~02:45 block below is prior state from earlier the same day;
 > its deep-dive-gate TO-DO is DONE per the above.)*
