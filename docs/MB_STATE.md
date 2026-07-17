@@ -10,7 +10,7 @@
 > 2026-07-11 incident: a fresh session read master's stale copy and
 > recommended the BANNED circular validate rerun it found there.)
 
-**Last updated:** 2026-07-14 (local steward session, ~19:35 UTC — chain deep-dive gate built + reviewed + smoke-validated + 47-batch launched) · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
+**Last updated:** 2026-07-15 (local steward session, ~01:30 UTC 07-16 — session-close review done, cohort-2 live, run-2 in flight, concentration rule wired, synced to master via PR #4) · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
 **Read first:** `CLAUDE.md` (binding directives), then this file, then **`docs/MB_COPYTRADER_CONTEXT.md` (FULL context brief for the live copy-trader investigation — the complete reasoning chain, API gotchas, and decision tree)**. `MB_REBUILD_PLAN.md` holds the older plan + operator decisions.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
@@ -129,6 +129,25 @@
 >     wave-2) the SAME way — batch, one restart, extend the cohort2 ledger key
 >     (shadow_readout REFUSES a readout if clean != cohort1+cohort2, so an
 >     admission without the ledger update now fails loud).
+>   - **ROSTER DELTA 2026-07-17 00:49:56Z (operator-agreed "fix not bend"):**
+>     `0xf705fa…` added as a **PROBE** (observation-only, ledger key `probe`,
+>     own epoch/readout line, never pooled; roster clean 24→25, watcher
+>     restarted 00:50:21Z, backup `chain_audit.json.pre-probe-20260716`).
+>     Why: the 461-fills/day REJECT measured the wrong unit — he is a STACKER
+>     (7.6 decisions/day, 16% net-flat, 57% hold; round-trip component wins
+>     only 38%) with +0.0368 P=1.000 on 1,835 mkts and 100% chain backing.
+>   - **COPYABILITY PARAMS REWORKED (`27ee79b`, pre-registered BEFORE any
+>     re-run):** receipt-free REJECT band now >1,000 fills/day; the 200-1,000
+>     band is judged post-receipts on `--max-decisions-per-day 25` (chain
+>     first-buys/day) + `--max-flat-share 0.60` (flow_shape net-flat share,
+>     >=20 positions) — the DIRECT market-maker test. `--hft-max-rate` is
+>     reporting-only now. Adversarial review: no confirmed defects; overlap
+>     rejection + strict probe epoch added.
+>   - **QUEUED [next session or run-3 completion]: BAND RE-RUN** — re-run all
+>     rate-rejects with true_rate in (200,1000] under `27ee79b`+ (they were
+>     rejected under the old 200 cap): currently 938, 749, 461(=probe, gets a
+>     formal verdict), 395, 371, 288(0xfbfd14dd, had a ts issue) + any run-3
+>     additions. Whoever passes -> PROPOSED as probes (operator word each).
 >
 > *(The 2026-07-14 ~02:45 block below is prior state from earlier the same day;
 > its deep-dive-gate TO-DO is DONE per the above.)*
@@ -766,6 +785,26 @@ MirrorBot's old whale-copy strategy is confirmed dead (no measured edge). The ol
   change — but they DO need the cohort ledger keys extended or the readout
   refuses to run. Setup also left a `safe.directory /opt/pa2-shared/mb_readout`
   entry in ROOT's global gitconfig (harmless, recorded here).
+- **An RPC await with no read-timeout can park a batch FOREVER — and
+  process-liveness monitoring cannot see it (2026-07-16):** run-2 hung ~13h
+  on ONE `get_transaction_receipt`/`get_logs` await (zero CPU, ZERO open
+  sockets) while the event loop stayed alive — `db_pool_health` heartbeats
+  kept printing, so `ps`/pgrep checks looked healthy. Fixed `07e7296`:
+  `rpc_call()` wraps EVERY chain RPC in `asyncio.timeout(90)` (hang → counted
+  retryable error). Monitoring rule: watch LOG GROWTH (the code heartbeats
+  through every phase), never just process existence. Timeout-guard every
+  network await in any new long-running chain runner. **The LIVE WATCHER
+  shared this class (6 unguarded web3 awaits, no systemd watchdog) — fixed
+  `336f6a4` (rpc_call wrapper, 43 tests green), **DEPLOYED 2026-07-16 16:40:53
+  UTC (operator go): /opt/mirror3 = `5c91261`, watcher blob verified
+  byte-identical to tested, roster=24 reloaded, canary 1216, 0 alarms.
+  Restart boundary note: FirstBuyDedup reset at 16:40:53Z.** Sibling one-shot
+  scripts (audit_roster_chain, readjudicate) share the class but are
+  operator-attended — a hang is visible, not silent (documented, not churned).
+  Restart side-note: each watcher restart resets FirstBuyDedup, so a token
+  seen before restart can record first_buy=True again — token-clustered
+  analysis absorbs it, but don't be surprised by duplicate firsts at restart
+  boundaries.
 - **pkill self-match, VARIANT 2 (bit TWICE 2026-07-15):** bracketing the
   pkill pattern (`chain_deep_di[v]e`) is NOT enough when ANY OTHER clause of
   the same SSH command contains the literal name — a `pgrep -fc
