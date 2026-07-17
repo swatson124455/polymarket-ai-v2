@@ -37,7 +37,14 @@
     "559988e": "feat(wb-research): S231 maker_fill_study.py — historical maker-fill UPPER bounds from data-api prints at reveal windows (spec 0c from history)",
     "dda3c66": "feat(wb-research): S231 dayof_cell_scale.py — 9-12h cell at scale, bot-independent (raw ensemble + METAR runmax floor vs CLOB minute prices), family-clustered SEs",
     "2968532": "docs(wb-research): README — S230 late harnesses (entry_ev/peak_model/rep_bias) + S231 harnesses documented; maker-fill task-2 verdict recorded",
-    "332d3f2": "feat(wb-research): S231 Phase-1 pws_mesh.py — read-only PWS-mesh collector cron (operator-approved build after peak-model gate PASS)"
+    "332d3f2": "feat(wb-research): S231 Phase-1 pws_mesh.py — read-only PWS-mesh collector cron (operator-approved build after peak-model gate PASS)",
+    "c3eb846": "feat(wb-research): S231-late — mesh_validation.py (Phase-1 acceptance test) + PHASE-2 DESIGN written into spec",
+    "c005592": "docs(wb): S231-late — PRE-REGISTER Study A + Study B; peak-passed second signal; candidate queue",
+    "6d496fc": "feat(wb): GLOBAL MANDATE — pws_mesh global; pre-register Study C/D + global robustness; Study B verdict DEAD",
+    "3a49fce": "feat(wb-research): S231-late — Study C/D harnesses + global peak-model variant + mesh_validation ICAO-global; Study A DEAD",
+    "5e8b283": "docs(wb): S231-late sweep verdicts — A/B/D DEAD, C n=10 no-verdict, GLOBAL peak US reproduces gate",
+    "c7ccfdc": "docs(wb): REAL-TIME SOURCE LEDGER — 6 keyless official feeds verified",
+    "e7a5e70": "fix(wb-research): commit Study A/B harnesses (were untracked while verdicts recorded)"
   },
   "required_docs": [
     "docs/WEATHER_STATUS.md",
@@ -63,6 +70,11 @@
     "scripts/wb_research/dayof_cell_scale.py",
     "scripts/wb_research/pws_mesh.py",
     "scripts/wb_research/mesh_validation.py",
+    "scripts/wb_research/market_printworld_bias.py",
+    "scripts/wb_research/postlock_drift.py",
+    "scripts/wb_research/sibling_repricing.py",
+    "scripts/wb_research/revision_momentum.py",
+    "scripts/wb_research/nowcast_peak_global.py",
     "docs/WEATHER_S231_STATUS.md",
     "WB_S232_KICKOFF_PROMPT.md"
   ],
