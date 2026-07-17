@@ -19,6 +19,20 @@ Policies (fitted params from mm_gate_fits 2026-07-17, recorded-data fits):
               news without needing a start time
   P4_all      P1+P2+P3 combined
   P5_ungated  no gates at all — paired control on the SAME universe
+  P6_tilted   (added 2026-07-17 ~22Z, own era) P0 gates verbatim + quote
+              center tilted toward WB's forecast prob on markets covered by
+              /opt/pa2-maker-feeds/wb_forecasts.jsonl (read-only, append-only
+              contract; WB S231 accepted). No forecast -> shift 0.0 -> quotes
+              BIT-IDENTICAL to P0 (pairing invariant). WB semantics encoded:
+              prob is P(YES) never inverted; Hong Kong weight 0 (mis-
+              stationed); 7 cold-start cities x0.5 until 2026-08-01;
+              non-temperature models x0.5; cheap-NO guard = no NO-ward tilt
+              when wb_prob < 0.20 (WB: low buckets under-price YES). A
+              TILTED quote's rewards score the two-sided MIN (real-program
+              semantics; the family bid-side proxy would inflate a YES-ward
+              tilt — adversarial review 07-17). Known accepted limits: trust
+              weight frozen at feed-load time (one-day smear at the 08-01
+              cold-start boundary); +1/6 sample volume vs the 6-policy era.
 
 Guard rails identical to V3: no keys, no DATABASE_URL, HTTP GET + WS
 subscribe only (cannot trade); STOP sentinel; disk cap + gzip rotation;
@@ -29,6 +43,7 @@ Usage:  maker_paper_sim_v5.py --run [--base /opt/pa2-maker-sim-v5]
         maker_paper_sim_v5.py --report [--base ...]
 """
 import argparse
+import calendar
 import gzip
 import json
 import os
@@ -71,10 +86,125 @@ POLICIES = {
     "P3_tapevel": {"gated": True,  "vol_pts": 0.020, "vol_s": 600, "ramp_h": None, "tapevel": True},
     "P4_all":     {"gated": True,  "vol_pts": 0.015, "vol_s": 900, "ramp_h": 9.0,  "tapevel": True},
     "P5_ungated": {"gated": False, "vol_pts": None,  "vol_s": 0,   "ramp_h": None, "tapevel": False},
+    "P6_tilted":  {"gated": True,  "vol_pts": 0.020, "vol_s": 600, "ramp_h": None, "tapevel": False, "tilt": True},
 }
 TAPEVEL_PRINTS_5M = 8         # prints in 5 min that mark a market "hot"
 TAPEVEL_MOVE_5M = 0.03        # or a 3c mid move over 5 min
 TAPEVEL_OFF_S = 600
+
+# ── P6_tilted: WB forecast feed (contract: README_WB_FORECASTS_CONTRACT.md) ──
+WB_FEED = "/opt/pa2-maker-feeds/wb_forecasts.jsonl"
+WB_STALE_S = 24 * 3600        # cid-matching scopes the market day; this is a
+                              # safety net (WB dedups: silence = unchanged)
+WB_READ_CAP = 8 * 1024 * 1024  # max bytes per load — a runaway writer must
+                               # never turn the minute loop into a giant alloc
+WB_LOW_PROB = 0.20            # WB caveat: [0,0.2) buckets resolve YES ~0.27
+                              # vs ~0.04 predicted -> never tilt toward NO here
+TILT_K = 0.5                  # shift half the WB-vs-market disagreement...
+TILT_MAX = 0.010              # ...capped at 1 cent ("slightly", per proposal)
+WB_EXCLUDE_CITIES = {"Hong Kong"}   # mis-stationed until WB S233 HKO work
+WB_COLDSTART_CITIES = {"Dallas", "Denver", "Houston", "Seoul", "Taipei",
+                       "Milan", "Istanbul"}   # re-stationed 07-17, EMOS reset
+WB_COLDSTART_UNTIL = calendar.timegm((2026, 8, 1, 0, 0, 0))
+WB_TILT = {}                  # cid -> {"prob","t","w"}; read-only elsewhere
+_wb_feed = {"off": 0}
+
+
+def wb_weight(city, model, now):
+    """Trust-tier weight per WB's S231 semantics answer. Pseudo-station
+    cities are not enumerable from our side ("etc.") — they ride at 1.0 and
+    the readout segments by city from the sample rows instead."""
+    if city in WB_EXCLUDE_CITIES:
+        return 0.0
+    w = 1.0
+    if city in WB_COLDSTART_CITIES and now < WB_COLDSTART_UNTIL:
+        w *= 0.5
+    if model != "weather_temperature":
+        w *= 0.5
+    return w
+
+
+def wb_shift(wb, mid, v, s_mine):
+    """Bounded quote-center shift toward WB's P(YES). 0.0 when no forecast,
+    zero weight, cheap-NO guard, or no band room — 0.0 keeps P6's quote
+    arithmetic bit-identical to P0 (mid + 0.0 - s == mid - s)."""
+    if not wb or wb["w"] <= 0:
+        return 0.0
+    raw = TILT_K * (wb["prob"] - mid) * wb["w"]
+    if wb["prob"] < WB_LOW_PROB and raw < 0:
+        return 0.0
+    cap = min(TILT_MAX, max(0.0, v - s_mine - 0.002))
+    return max(-cap, min(cap, raw))
+
+
+def q_mine_of(pol, v, mid, bid, ask, msz, tilt_q):
+    """Reward score for a standing quote. P0-P5 keep the historical bid-side
+    proxy (bid==min side for symmetric quotes; changing it mid-experiment
+    would break the A/B). A TILTED quote must score the two-sided MIN like
+    the real program does — the bid-side proxy would credit a YES-ward tilt
+    with MORE rewards when reality pays LESS (adversarial review 07-17,
+    finding 1: sign-inverted bias on the exact number under test)."""
+    q = S(v, abs(mid - bid), msz)
+    if pol.get("tilt") and tilt_q and ask is not None:
+        q = min(q, S(v, abs(ask - mid), msz))
+    return q
+
+
+def load_wb_feed(now, path=WB_FEED):
+    """Incremental read of WB's append-only feed into WB_TILT. Latest line
+    per market_id wins; a partial trailing line (WB appending concurrently)
+    is left for the next read; file shrink (rotation) resets; entries older
+    than WB_STALE_S pruned. Any failure leaves the previous map untouched
+    (WB contract: silence = no data, handled gracefully)."""
+    try:
+        sz = os.path.getsize(path)
+    except OSError:
+        return
+    if sz < _wb_feed["off"]:
+        _wb_feed["off"] = 0
+        WB_TILT.clear()
+    chunk = b""
+    try:
+        with open(path, "rb") as f:
+            # head-prefix guard: an append-only file's first bytes never
+            # change. A same-or-longer REPLACEMENT (copytruncate race,
+            # history re-emit) passes the size check but would be read from
+            # a misaligned offset — silently skipping whole lines (review
+            # finding 2). Prefix mismatch -> full re-read.
+            head = f.read(64)
+            if _wb_feed["off"] and not head.startswith(_wb_feed.get("head", b"")):
+                _wb_feed["off"] = 0
+                WB_TILT.clear()
+            _wb_feed["head"] = head
+            if sz > _wb_feed["off"]:
+                f.seek(_wb_feed["off"])
+                chunk = f.read(min(sz - _wb_feed["off"], WB_READ_CAP))
+    except OSError:
+        return
+    body, nl, _rest = chunk.rpartition(b"\n")
+    if nl:
+        _wb_feed["off"] += len(body) + 1
+        for line in body.split(b"\n"):
+            try:
+                d = json.loads(line)
+                cid = str(d.get("market_id") or "").strip().lower()
+                t = float(d.get("t") or 0)
+                prob = float(d["prob"])
+            except Exception:
+                continue
+            # t plausibility: NaN/Infinity/ms-epoch would make an entry
+            # immortal vs the staleness prune (review finding 6)
+            if not cid or not (0.0 <= prob <= 1.0) \
+                    or not (0.0 <= t <= now + 86400.0):
+                continue
+            prev = WB_TILT.get(cid)
+            if prev and prev["t"] > t:
+                continue
+            WB_TILT[cid] = {"prob": prob, "t": t,
+                            "w": wb_weight(str(d.get("city") or ""),
+                                           str(d.get("model") or ""), now)}
+    for cid in [c for c, d in WB_TILT.items() if now - d["t"] > WB_STALE_S]:
+        WB_TILT.pop(cid, None)
 
 BOOKS = {}
 BOOKS_LOCK = threading.Lock()
@@ -442,6 +572,9 @@ def run(base):
     for _v in state.values():
         if isinstance(_v, dict) and "last_acc_t" in _v:
             _v["last_acc_t"] = _t0
+    load_wb_feed(_t0)
+    print(f"wb tilt feed: {len(WB_TILT)} forecasts loaded "
+          f"(P6_tilted active)", flush=True)
     last_discovery = 0.0
     last_minute = 0.0
     last_disk = 0.0
@@ -542,6 +675,7 @@ def run(base):
             except Exception:
                 arm = "touch"
             s_touch = (ba - bb) / 2
+            wb = WB_TILT.get(str(m.get("cid") or "").lower())
             for pol_name, pol in POLICIES.items():
                 st = st_of(key, pol_name)
                 if pol["vol_pts"] is not None and vol_ref is not None:
@@ -559,10 +693,37 @@ def run(base):
                 s_mine = max(s_touch, m["v"] / 2) if arm == "wide" else s_touch
                 if S(m["v"], s_mine, m["msz"]) <= 0:
                     continue
-                want_bid, want_ask = mid - s_mine, mid + s_mine
+                shift = 0.0
+                if pol.get("tilt"):
+                    shift = wb_shift(wb, mid, m["v"], s_mine)
+                    if wb:
+                        st["wbp"], st["wbw"] = wb["prob"], wb["w"]
+                    else:
+                        for kk in ("tilt", "wbp", "wbw"):
+                            st.pop(kk, None)
+                want_bid, want_ask = mid + shift - s_mine, mid + shift + s_mine
+                if shift:
+                    # post-only: a tilted quote must never cross the live touch
+                    want_bid = min(want_bid, ba - 0.001)
+                    want_ask = max(want_ask, bb + 0.001)
+                    if want_bid >= want_ask:
+                        # locked/crossed on a <=2-tick book: no room to tilt —
+                        # fall back to the P0 quote (review finding 9)
+                        shift = 0.0
+                        want_bid, want_ask = mid - s_mine, mid + s_mine
+                # a tilt CHANGE forces a requote even under the 2-tick
+                # hysteresis: otherwise a pruned/guarded forecast leaves a
+                # sub-tick zombie tilt standing and fills get misattributed
+                # (review findings 4+5). Always False for P0-P5.
+                tilt_requote = pol.get("tilt") and (
+                    abs(shift - st.get("tilt_q", 0.0)) >= 0.001
+                    or (shift == 0.0 and st.get("tilt_q", 0.0) != 0.0))
                 cur = st.get("bid")
-                if cur is None or abs(want_bid - cur) >= REQUOTE_TICKS or not st.get("qh"):
+                if cur is None or abs(want_bid - cur) >= REQUOTE_TICKS \
+                        or tilt_requote or not st.get("qh"):
                     st["bid"], st["ask"], st["arm"] = want_bid, want_ask, arm
+                    if pol.get("tilt"):
+                        st["tilt_q"] = round(shift, 4)   # the STANDING shift
                     qh = st.setdefault("qh", [])
                     qh.append([now, want_bid, want_ask])
                     if len(qh) > 400:
@@ -574,6 +735,7 @@ def run(base):
         if now - last_minute >= 60:
             last_minute = now
             minute_n += 1
+            load_wb_feed(now)
             from concurrent.futures import ThreadPoolExecutor
             tape_cache = {}
             need = [m for m in universe if m.get("cid")]
@@ -627,7 +789,9 @@ def run(base):
                     dt = min(now - st.get("last_acc_t", now - 60), 120)
                     st["last_acc_t"] = now
                     if st.get("bid") is not None:
-                        q_mine = S(m["v"], abs(mid - st["bid"]), m["msz"])
+                        q_mine = q_mine_of(pol, m["v"], mid, st["bid"],
+                                           st.get("ask"), m["msz"],
+                                           st.get("tilt_q", 0.0))
                         share = q_mine / (q_mine + q_comp) \
                             if (q_mine > 0 and books_live) else 0.0
                         if share > 0:
@@ -644,14 +808,22 @@ def run(base):
                                "pool": m["pool"], "msz": m["msz"]})
                     # per-policy sample every 5 min, plus immediately on fills
                     if fills or minute_n % 5 == 0:
-                        rows.append({"t": round(now), "id": m["id"], "pol": pol_name,
-                                     "sec": m["sector"], "mid": round(mid, 4),
-                                     "shr": round(share, 4),
-                                     "pos": st.get("pos", 0.0), "fills": fills,
-                                     "real": st.get("real", 0.0),
-                                     "unreal": round(st.get("pos", 0.0) * mid
-                                                     - st.get("cost", 0.0), 4),
-                                     "quoting": st.get("bid") is not None})
+                        r = {"t": round(now), "id": m["id"], "pol": pol_name,
+                             "sec": m["sector"], "mid": round(mid, 4),
+                             "shr": round(share, 4),
+                             "pos": st.get("pos", 0.0), "fills": fills,
+                             "real": st.get("real", 0.0),
+                             "unreal": round(st.get("pos", 0.0) * mid
+                                             - st.get("cost", 0.0), 4),
+                             "quoting": st.get("bid") is not None}
+                        if pol.get("tilt") and "wbp" in st:
+                            # trust-tier segmentation at read time (WB ask);
+                            # tilt = the STANDING quote's shift, not the
+                            # latest computed one (review finding 4)
+                            r["tilt"] = st.get("tilt_q", 0.0)
+                            r["wbp"] = st.get("wbp")
+                            r["wbw"] = st.get("wbw")
+                        rows.append(r)
                 # advance the SHARED watermark once, after every policy saw
                 # the same window (per-policy watermarks would skew the A/B)
                 for tr in tape if isinstance(tape, list) else []:
@@ -708,9 +880,15 @@ def run(base):
                 with BOOKS_LOCK:
                     nobook = sum(1 for m2 in universe
                                  for a in (m2["yes"], m2["no"]) if a not in BOOKS)
+                # tilted: universe markets currently matched to a WB forecast
+                # — a structural zero (cid mismatch, dead feed) must be
+                # visible here, not days later (review finding 3)
+                tilted = sum(1 for m2 in universe
+                             if str(m2.get("cid") or "").lower() in WB_TILT)
                 print("hb: " + " ".join(parts)
                       + f" | requote_lat_med={med:.0f}ms books={len(BOOKS)} stale_books={stale}"
-                      + f" nobook={nobook} http_hr={len(_http_window)}/{HTTP_BUDGET_PER_HOUR}",
+                      + f" nobook={nobook} tilted={tilted}"
+                      + f" http_hr={len(_http_window)}/{HTTP_BUDGET_PER_HOUR}",
                       flush=True)
 
         time.sleep(1)
