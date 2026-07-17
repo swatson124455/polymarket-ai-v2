@@ -113,6 +113,43 @@ env, or Redis. Candidates, best first:
 3. **EB match data → sharper in-play gates** — EB lane owns; v4 already uses
    the public gameStartTime field.
 
+## 7b. Blind-review register (2026-07-17, 3 independent reviewers, 58 findings)
+
+**Fixed same-night (`3f4de7d`, v5 redeployed 02:14Z):** daemon crash on
+malformed tape timestamp; per-policy competition-score reads (pairing leak);
+accrual credit at gate-exit (bias correlated with gating) + restart accrual
+normalization + empty-books share=1.0 poison; 1s empty-universe discovery
+churn + partial-discovery universe replacement; silent state.json corruption
+reset (now logged + .bak chain); disk-cap crash-flap (clean stop, venv
+excluded); dead-WS-chunk blindness (hb `nobook=`); hb label; budget 36K;
+backup missing v5 + tar live-writer race + per-dir counts.
+
+**Accepted family-wide behaviors (v1–v5 share them; changing v5 alone would
+break cross-arm comparability — document, don't diverge):** realized/unreal
+split misstated when a fill crosses position through zero (NET is correct —
+readouts must use NET, never the real/unreal columns); vol-pull re-arms while
+the move stays in the 150s window (effective 600–750s); restart loses the
+downtime fill window (correct semantics — no quotes existed); same-second
+boundary prints skipped (v4 has the edge-set fix; symmetric across policies);
+3-page tape cap undercounts fills in the hottest windows (conservative:
+understates ungated bleed, so it biases AGAINST gates); old-gen WS workers
+resurrect pruned books ≤40s; no monotonic clock; departed markets keep
+frozen marks (report now splits them out).
+
+**Methodology caveats — every fitted number is v0 until refit at readout on
+clean-era data:** fit-1 (vol) pooled PRE-fix v3 samples (stale-jump
+artifacts inflate move frequency) and uses overlapping windows
+(pseudo-replication); fit-2's 257/613 end-date mapping selects the benign
+survivor subset AND gamma endDate = scheduled not actual resolution (both
+flatten the near-end toxicity ramp → the 9h ramp is if anything TOO LOOSE);
+the 34%>1pt fill-toxicity baseline signs adversity by post-fill net position
+(attenuates toward zero → true rate likely HIGHER); sharp-alarm v1 spec must
+add an out-of-sample split (sharp set selected on a window containing the
+eval window = circular), client-side type checks, dedup by txhash, and a
+join-rate diagnostic. Income scripts: add txhash dedup + API-failure flags
+before any rerun (current numbers safe: every wallet fit in one page, but
+the claim is unverifiable from request counts alone).
+
 ## 8. TBD register (open questions, owner, when)
 
 - **Cup vs meta** — operator ruled TBD until cup over → census cliff + post-promo
