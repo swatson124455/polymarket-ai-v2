@@ -253,7 +253,18 @@ def _self_test() -> int:
     for bad in ({"clean": ["0xA"], "cohort1_original": [], "cohort2": {}},
                 {"clean": ["0xA", "0xB", "0xC", "0xD"],  # admit w/o ledger
                  "cohort1_original": ["0xa", "0xb"],
-                 "cohort2": {"addresses": ["0xc"], "admitted_utc": None}}):
+                 "cohort2": {"addresses": ["0xc"], "admitted_utc": None}},
+                {"clean": ["0xA", "0xB", "0xC"],  # OVERLAP: 0xC in two groups
+                 "cohort1_original": ["0xa", "0xb"],
+                 "cohort2": {"addresses": ["0xC"],
+                             "admitted_utc": "2026-07-15T19:16:00+00:00"},
+                 "probe": {"addresses": ["0xc"],
+                           "admitted_utc": "2026-07-16T17:00:00+00:00"}},
+                {"clean": ["0xA", "0xB", "0xC", "0xD"],  # probe w/ BAD epoch
+                 "cohort1_original": ["0xa", "0xb"],
+                 "cohort2": {"addresses": ["0xC"],
+                             "admitted_utc": "2026-07-15T19:16:00+00:00"},
+                 "probe": {"addresses": ["0xD"], "admitted_utc": "garbage"}}):
         try:
             load_cohorts(bad)
             ok6 = False
