@@ -1,7 +1,7 @@
 {
-  "release_stamp": "20260717_105239",
-  "git_sha": "5fb0b56",
+  "release_stamp": "20260717_145326",
+  "git_sha": "3798334",
   "git_branch": "claude/new-whiteboard-session-9b23tq",
-  "recorded_at": "2026-07-17T14:54:34Z",
-  "recorded_by": "local-session-S231 (wb-release-cut.sh; operator signed off; S231 INPUT AUDIT registry fix — 7 resolution-station corrections KDAL/KBKF/KHOU/RKSI/RCSS/LIMC/LTFM, HK flagged for S233 HKO integration; old proc needed SIGKILL on stop (known stop-timeout), new proc clean; first scan 156 events/1716 markets/47 cities; single startup ConnectionDoesNotExistError 14:55:50 did not recur; 23 prediction rows in first minutes; rollback 20260714_003205)"
+  "recorded_at": "2026-07-17T18:53:50Z",
+  "recorded_by": "local-session-S231 (wb-release-cut.sh; operator-approved cross-bot Maker forecast feed. Delta vs 20260717_105239 = _export_forecast_for_maker() appends WB YES-frame forecasts to /opt/pa2-maker-feeds/wb_forecasts.jsonl, hard-isolated, kill=WEATHER_MAKER_FEED_ENABLED. INFRA: added /opt/pa2-maker-feeds to WB unit ReadWritePaths (ProtectSystem=strict blocked it; backup polymarket-weather.service.bak_20260717_makerfeed). Two intermediate cuts this deploy: 20260717_143545 (export shipped but temperature site passed raw edge dict -> 0 lines; self-caught) then 20260717_145326 (temp site fixed, lines flowing, verified NYC/Seattle temperature forecasts landing). Rollback code: 20260717_105239. Rollback infra: restore the .bak unit + daemon-reload.)"
 }

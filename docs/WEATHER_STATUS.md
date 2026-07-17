@@ -453,9 +453,22 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
 
 ## WHAT IS LIVE NOW
 
-- **Deployed:** WeatherBot on its splinter, release **`20260717_105239`** (restart
-  **2026-07-17 14:54:34Z**; **rollback target `20260714_003205`**). Delta vs the
-  prior release = the **S231 INPUT-AUDIT registry fix** (`5fb0b56`, operator
+- **Deployed:** WeatherBot on its splinter, release **`20260717_145326`** (restart
+  **2026-07-17 18:53:50Z**; **rollback target `20260717_105239`**). Delta vs
+  `_105239` = the **operator-approved cross-bot Maker forecast feed** (`3798334`):
+  `_export_forecast_for_maker()` appends WB's YES-frame per-city-market forecast
+  to the Maker-owned drop `/opt/pa2-maker-feeds/wb_forecasts.jsonl` (Maker reads
+  only its own file; hard-isolated so a write failure can never touch WB trading;
+  kill = `WEATHER_MAKER_FEED_ENABLED=false`). Lines verified flowing (temperature
+  forecasts, valid JSON, 0 errors). **INFRA CHANGE**: WB's own systemd unit runs
+  `ProtectSystem=strict`; `/opt/pa2-maker-feeds` added to its `ReadWritePaths`
+  (backup `polymarket-weather.service.bak_20260717_makerfeed`; revert = restore
+  backup + `daemon-reload` + restart). Q3 semantics answered in the proposal file.
+  (Intermediate cut `20260717_143545` shipped the export but the temperature site
+  passed the raw edge dict → 0 lines; self-caught in post-deploy verification and
+  fixed in `_145326`.)
+  PRIOR release **`20260717_105239`** (restart 14:54:34Z) = the **S231 INPUT-AUDIT
+  registry fix** (`5fb0b56`, operator
   signed off): 7 resolution-station corrections — Dallas **KDAL** (Love Field),
   Denver **KBKF** (Buckley, no 1-min product), Houston **KHOU** (Hobby), Seoul
   **RKSI** (Incheon), Taipei **RCSS** (Songshan), Milan **LIMC** (Malpensa),
