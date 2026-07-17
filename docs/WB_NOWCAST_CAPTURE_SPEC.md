@@ -440,9 +440,17 @@ Fixed same-night (commits e7a5e70..a73d585): Study A/B scripts committed
 19→181 prints on refetch); pws_mesh atomic state write + malformed-prune
 guard + DB-failure sentinel + wu_fails counter + WU_WEBKEY wrapper wiring.
 
-**DEFERRED — required before the NEXT run of any question-parsing harness
-(all 7: peak_model, peak_global, dayof_cell, printworld_bias, postlock,
-sibling, revision):**
+**RESOLVED 07-17 ~12:xxZ on operator instruction (commits 126fae8..e5af74b):
+items 1-5 below are DONE** — year-guard SQL in all 7 harnesses; px_at
+unified to ±300s; peak-model GATE now requires the family-clustered 2σ
+(+ printworld se>0 guard); get_prints polarity unified to yes_sell;
+wu_fails excludes 204s (live-tested). Item 4's GLOBAL Study A re-run
+LAUNCHED (native units, US/non-US cuts) — result recorded below when it
+lands. Item 6 stays as disclosed caveats. STILL OPEN from the review:
+national-feed wiring (S232, needs unhurried per-station verification) and
+the non-US --lead arbiter gap (national feeds are the fix).
+
+**Original deferred list (all resolved except as noted):**
 1. **Year guard**: families key on (city, mon, day) with year hardcoded 2026
    and no end_date filter. DB-verified: three 2020 'March 1' markets entered
    the S231 window as phantom families (price-gating dropped them from EV
