@@ -48,7 +48,9 @@
     "403b047": "fix(wb-research)!: INPUT AUDIT — 8 resolution-station mismatches; ~9% discovery RETRACTED (0/268 at correct stations)",
     "5fb0b56": "fix(weather)!: S231 INPUT AUDIT — 7 resolution-station corrections per Polymarket market descriptions (DEPLOYED 20260717_105239)",
     "1c570c4": "feat(weather): S231 cross-bot forecast export to Maker feed drop (operator-approved, propose-only)",
-    "3798334": "fix(weather): Maker export temperature site passed raw edge dict — capture enriched dict (DEPLOYED 20260717_145326, lines flowing)"
+    "3798334": "fix(weather): Maker export temperature site passed raw edge dict — capture enriched dict (DEPLOYED 20260717_145326, lines flowing)",
+    "2af2c78": "docs(wb-research): gate docstrings state the S231-hardened bar (blind-review finding #3)",
+    "8ace004": "fix(weather): jacksonville ghcnd_id was Houston Hobby's — corrected (blind-review finding #4)"
   },
   "required_docs": [
     "docs/WEATHER_STATUS.md",

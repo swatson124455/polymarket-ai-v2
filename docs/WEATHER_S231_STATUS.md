@@ -1,4 +1,30 @@
-# WEATHER S231 SESSION HANDOFF (2026-07-15 → 07-16, local Windows session, wb-whiteboard worktree)
+# WEATHER S231 SESSION HANDOFF (2026-07-15 → 07-18, local Windows session, wb-whiteboard worktree)
+
+> **S231-FINAL (2026-07-18 ~00:1xZ) — the late arc in one place.** This session
+> grew far past the §0 below (which covers the deep-backtest phase). The full
+> late-session record lives in `docs/WB_NOWCAST_CAPTURE_SPEC.md` §S231 blocks;
+> chronological summary with commit shas:
+> 1. GLOBAL MANDATE codified + pws_mesh global (`6d496fc`); studies A-D +
+>    global robustness ran pre-registered (A/B/D DEAD, C n=10 accrue, US gate
+>    reproduces) (`3a49fce`,`5e8b283`).
+> 2. Source ledger: 6 keyless official national feeds verified (`c7ccfdc`).
+> 3. 8-angle blind review → 10 findings → 5 fixed same-night (`e7a5e70`..
+>    `a73d585`) + review backlog resolved on operator order (`126fae8`..
+>    `225f020`); global Study A DEAD (`27f83c1`).
+> 4. **INPUT AUDIT** (`403b047`): 8 resolution-station mismatches vs market
+>    descriptions; ~9% claim RETRACTED (0/268 at correct stations).
+> 5. **Registry fix DEPLOYED** `20260717_105239` (`5fb0b56`), double-blind
+>    verified (`2af2c78`,`8ace004` follow-ups); corrected reruns: Study B
+>    locks real / close dead; **peak model 4th PASS under hardened gate**
+>    (TEST +0.070 / clustered +0.087).
+> 6. **Maker forecast feed accepted + DEPLOYED** `20260717_145326`
+>    (`1c570c4`,`3798334`; ReadWritePaths infra change, backup kept); lines
+>    verified flowing; Q3 semantics answered in the proposal file (main
+>    checkout root).
+> 7. Day-2 global bias: first correct-station reads (KDAL/KBKF good); offsets
+>    split scalar-vs-DIURNAL (SFO confirmed); Shenzhen drop confirmed.
+> NEXT SESSION: read `WB_S232_KICKOFF_PROMPT.md` (rewritten at this close —
+> supersedes the §5 plan below).
 
 > Session type: WB-scoped, the DEEP-BACKTEST session (operator-approved program from
 > S230). **ZERO bot-code changes, ZERO deploys** — live release is still

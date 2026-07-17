@@ -546,6 +546,18 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-17/18 (S231-FINAL — TWO operator-approved deploys):** INPUT AUDIT
+  found 8 resolution-station mismatches vs market descriptions → 7 fixed +
+  DEPLOYED `20260717_105239`; ~9% settlement-risk claim RETRACTED (miswiring
+  artifact); peak-model passed a 4th time under the hardened clustered gate at
+  corrected stations (TEST +0.070/clustered +0.087). Maker forecast feed
+  accepted + DEPLOYED `20260717_145326` (hard-isolated export, ReadWritePaths
+  infra change, lines verified flowing; Q3 answered in the proposal file).
+  Double-blind verification of the whole fix wave (deploy bit-for-bit, blind
+  reviews, independent measurement) — 4 more findings, all fixed. Day-2 global
+  mesh: first correct-station reads, scalar-vs-diurnal offset split, Shenzhen
+  drop confirmed. Handoff: `docs/WEATHER_S231_STATUS.md` §S231-FINAL; next:
+  `WB_S232_KICKOFF_PROMPT.md` (rewritten).
 - **2026-07-17 (S231-late, ZERO bot-code changes):** GLOBAL MANDATE (operator,
   non-negotiable — memory `feedback_wb_always_global.md`): pws_mesh collector
   GLOBAL (MMMX first tick), mesh_validation ICAO-global, EGLC half-hourly
