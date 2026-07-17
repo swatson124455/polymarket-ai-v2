@@ -430,6 +430,44 @@ accrue the non-US sample forward.
 (Study-B follow-up, above); PSW radar-lead (precip begins = real-time
 observable, prints hourly).
 
+## REAL-TIME SOURCE LEDGER (probed live from the VPS 2026-07-17 ~02:20Z)
+
+Legit alternatives/additions to the WU PWS mesh, by resolution city.
+"Latency" = probe-measured freshness vs UTC clock at probe time.
+
+**VERIFIED WORKING — keyless, official, wire-ready:**
+| Feed | Cities | Cadence / latency at probe |
+|---|---|---|
+| DWD Open Data (10-min TU "now" files) | Berlin EDDB, Munich EDDM | 10-min; last-modified == probe minute (~0 lag) — EXCELLENT |
+| JMA amedas (`bosai/amedas/data/latest_time.txt` + point JSON) | Tokyo RJTT | 10-min; latest 02:10 @ 02:24 (~10-15 min) |
+| data.gov.sg air-temperature | Singapore WSSS | ~1-5 min fresh (02:15 @ 02:20); station count needs a daytime check |
+| HKO rhrread JSON | Hong Kong VHHH | worked, 26 stations; temp recordTime 02:00 @ 02:20 — cadence (10-min vs hourly) needs a 1h watch |
+| BOM fwo JSON | Sydney YSSY, Melbourne YMML | official; ob 02:00 @ 02:20 (~10-30 min product) |
+| SMN Argentina map_items | Buenos Aires SAEZ | works, 218 stations; ~hourly product |
+
+**FIXABLE — endpoint alive, follow-up needed:** Geosphere Austria (Vienna —
+right station id via metadata); EC MSC Datamart SWOB (Toronto/Vancouver/
+Montreal — listings returned empty from the VPS at probe; retry with proper
+UA/path, and the real prize is the AMQP push).
+
+**FAILED at probe:** INMET (São Paulo) — empty responses.
+
+**NEEDS OPERATOR SIGNUP (free tiers):** KMA data.go.kr (Seoul — MINUTELY
+official AWS, best single upgrade); Météo-France (Paris, ~6-min);
+Met Office DataHub (London); MET Norway Frost (Oslo); DMI (Copenhagen);
+KNMI (Amsterdam); CWA (Taipei); plus the standing four: WU key, Synoptic,
+NWWS-OI, MADIS (5-min US ASOS question).
+
+**NO LEGIT REAL-TIME SOURCE (stay on METAR/half-hourly cadence + WU PWS):**
+China ×6, India ×3, Russia, Mexico, UAE, Turkey, Egypt, Kenya, South
+Africa, Israel, and remaining cities not listed above.
+
+WIRING PLAN: national feeds are debias ANCHORS + redundancy for the PWS
+mesh, not replacements; wire the wire-ready six into a `nat_mesh` collector
+next session (or fold into pws_mesh) — prioritized by which cities actually
+carry active markets, after Friday's mesh-lead verdict says how much the
+PWS mesh alone delivers.
+
 ## Phase 2 — paper strategy (bot integration, gated on Phase 0 PASS)
 
 - New resolution-day entry mode: when nowcast says P(running max crosses into
