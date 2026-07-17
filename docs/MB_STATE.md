@@ -65,12 +65,25 @@
 >    OK-rate 69.2%/conc 69% SURVIVES (trader,token)-dedup; 47-list files
 >    durably copied into `deep_dive/`; 9 pre-rerun verdicts backed up to
 >    `deep_dive/pre_band_rerun_20260717/`.
-> 6. **OPEN**: [operator] cohort-2's 8 live ADMITs never faced the new
+ > 6. **OPEN**: [operator] cohort-2's 8 live ADMITs never faced the new
 >    decision/flow gates — shadow measures copyability empirically (chosen
 >    for now); uniform re-dive = backlog. [next] run-4 completion → tally →
 >    ADMIT proposals by NAME only; probe cross-check vs 7.6 decisions/day,
 >    0.16 flat_share on first JSON. Full procedure + review findings:
 >    steward scratchpad `band_rerun_runbook.md` (v3).
+> 7. **PROBE `0xf705fa` = ADMIT under fair params (run-4 trader 1, ~13:45Z
+>    2026-07-17) — CROSS-CHECK PASSED, PROMOTION QUEUED TO BATCH BOUNDARY
+>    (operator "proceed").** Verdict: complete sweep 135,493 fills, 0
+>    mismatch, 100% of 28,926 API-BUYs chain-backed, skill +0.036 P=1.00 on
+>    1,838 mkts, decisions/day 7.66 (exact match vs pre-registered 7.6),
+>    flat_share 0.39 < 0.60 (differs from the ledgered 0.16 — BENIGN: old
+>    figure was the recent-window API sample, run-4 computes lifetime chain
+>    positions; both far under the bar). Live shadow agrees: 82% OK-rate at
+>    0.9s lag since its 00:50Z probe epoch. PROTOCOL: promotion (probe →
+>    cohort-3 w/ own epoch) happens in ONE batched watcher restart with any
+>    further run-4 ADMITs at batch end — a mid-run restart would reset
+>    FirstBuyDedup for zero informational gain (probe already has its own
+>    epoch + readout line; collection is identical under either label).
 
 > **2026-07-14 PM UPDATE (local steward session; VPS-direct SSH, operator-
 > approved per-command) — CHAIN DEEP-DIVE GATE BUILT, REVIEWED, VALIDATED,
