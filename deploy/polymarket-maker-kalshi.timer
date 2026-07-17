@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Kalshi Maker recorder every 5 minutes
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

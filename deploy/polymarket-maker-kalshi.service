@@ -1,0 +1,23 @@
+# Kalshi Maker RECORDER ARM — read-only public API measurement, NO trading,
+# NO keys, NO auth. See scripts/maker_kalshi_recorder.py.
+# Stop:   sudo touch /opt/pa2-maker-kalshi/STOP        (next tick exits instantly)
+# Kill:   sudo systemctl disable --now polymarket-maker-kalshi.timer
+[Unit]
+Description=Kalshi Maker Recorder (read-only public APIs, no trading)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=polymarket
+Group=polymarket
+WorkingDirectory=/opt/pa2-maker-kalshi
+ExecStart=/usr/bin/python3 /opt/pa2-maker-kalshi/maker_kalshi_recorder.py
+TimeoutStartSec=280
+# Guard rails: kernel-enforced write isolation + resource caps
+ProtectSystem=strict
+ReadWritePaths=/opt/pa2-maker-kalshi
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectHome=true
+MemoryMax=256M
+CPUQuota=25%
