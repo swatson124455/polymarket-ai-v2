@@ -8,17 +8,21 @@ FINAL + PERIOD SCORES, and oddsSnapshots/propsSnapshots counts — so this file
 is both a results archive and the shopping list for the per-event odds harvest
 (Phase 2): only rows with oddsSnapshots > 0 are worth the slow odds calls.
 
-Design:
-  - Month windows (startDate/endDate, verified supported) instead of one big
-    offset walk: a fixed PAST window is a static set, so offset paging inside
-    it can't skip rows while new games are being archived at the head.
-  - Resumable: completed sport-months recorded in .done file; a partial month
-    restarts at offset 0 (duplicate rows possible — consumers dedupe on
-    eventId; append-only file never rewritten).
-  - Quota floor: aborts if X-Ratelimit-Remaining-Month drops below QUOTA_FLOOR
+Design (v2 — offset walk; the v1 month-window design is DEAD, do not revive):
+  - Plain offset paging per sport, newest-first as served. Date-filtered
+    queries (startDate/endDate) TIME OUT (120s+) whenever the window is
+    EMPTY — measured 2026-07-17, same pathology as the broken closing-odds
+    endpoint — so windowed scanning of unknown archive depth is unusable.
+  - limit=100 is the page cap (500 times out, 1000 clamps to 100; measured).
+  - Moving-head caveat: new games are archived at offset 0 during the walk,
+    shifting rows across page boundaries → duplicates (harmless) and rare
+    skips. Mitigation: after the main walk each sport gets a TOP-UP sweep of
+    the first TOPUP_PAGES pages; consumers must dedupe on eventId.
+  - Resumable: per-sport offset in .state JSON; rerun continues mid-sport.
+  - Quota floor: aborts if X-Ratelimit-Remaining-Month < QUOTA_FLOOR
     (default 290000) so a bug here can never drain the shared MVP budget
     (~300k/mo; EB's recorder needs ~6k/mo).
-  - ~1 req/s, HTTP/1.1 via urllib (API hangs on HTTP/2 — probed 2026-07-17).
+  - ~1 req/1.5s, HTTP/1.1 via urllib (API hangs on HTTP/2 — probed 2026-07-17).
 
 Key: /home/ubuntu/.eb_owls_key (0600, NEVER in git/chat).
 Run detached:
@@ -29,12 +33,17 @@ from datetime import datetime, timezone
 
 KEYFILE = os.environ.get("OWLS_KEY_PATH", "/home/ubuntu/.eb_owls_key")
 OUTDIR = os.environ.get("SB_OUT_DIR", "/home/ubuntu/sports-odds")
-DONE = os.path.join(OUTDIR, "sb_history_index.done")
+# SB_STATE + SB_SPORTS let independent lanes run in PARALLEL (one process per
+# lane, each with its OWN state file — the shared-file save_state() would race
+# across processes). History queries are server-latency-bound (~intermittent
+# 120s stalls measured), so parallel lanes cut wall-clock materially.
+STATE = os.environ.get("SB_STATE", os.path.join(OUTDIR, "sb_history_index.state"))
 BASE = "https://api.owlsinsight.com/api/v1/history/games"
 LIMIT = 100
 QUOTA_FLOOR = int(os.environ.get("SB_QUOTA_FLOOR", "290000"))
-SPORTS = ("nfl", "nhl", "nba", "mlb", "tennis", "soccer")  # smallest first
-START_YM = (2023, 1)  # archive depth unknown; empty months cost 1 req each
+SPORTS = tuple(s.strip() for s in os.environ.get(
+    "SB_SPORTS", "nfl,nhl,nba,mlb,tennis,soccer").split(",") if s.strip())
+TOPUP_PAGES = 5  # re-sweep of the head after the main walk (moving-head skips)
 
 
 def key():
@@ -44,22 +53,24 @@ def key():
     return k
 
 
-def month_windows():
-    """Yield (\"YYYY-MM-DD\", \"YYYY-MM-DD\") first..last day, START_YM..now."""
-    now = datetime.now(timezone.utc)
-    y, m = START_YM
-    while (y, m) <= (now.year, now.month):
-        ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
-        # endDate = first day of next month; observed filter is inclusive by
-        # gameDate day, so overlap dupes at the boundary are fine (dedupe key
-        # is eventId).
-        yield f"{y:04d}-{m:02d}-01", f"{ny:04d}-{nm:02d}-01"
-        y, m = ny, nm
+def load_state():
+    if os.path.exists(STATE):
+        try:
+            return json.load(open(STATE, encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
 
 
-def page(k, sport, start, end, off):
-    url = (f"{BASE}?sport={sport}&startDate={start}&endDate={end}"
-           f"&limit={LIMIT}&offset={off}")
+def save_state(st):
+    tmp = STATE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(st, f)
+    os.replace(tmp, STATE)
+
+
+def page(k, sport, off):
+    url = f"{BASE}?sport={sport}&limit={LIMIT}&offset={off}"
     req = urllib.request.Request(url, headers={
         "Authorization": "Bearer " + k, "User-Agent": "sb-owls/1.0",
         "Accept": "application/json"})
@@ -72,58 +83,73 @@ def page(k, sport, start, end, off):
                     return d["data"], rem
                 return None, rem
         except Exception as e:
-            print(f"{sport} {start} off={off} attempt={attempt} "
+            print(f"{sport} off={off} attempt={attempt} "
                   f"{type(e).__name__}: {e}", flush=True)
             time.sleep(5 * attempt)
     return None, None
 
 
+def walk(k, sport, start_off, max_pages=None):
+    """Walk pages from start_off; append rows; return (rows, final_off, ok)."""
+    out = os.path.join(OUTDIR, f"owls_history_index_{sport}.jsonl")
+    st = load_state()
+    off = start_off
+    rows = 0
+    pages = 0
+    t0 = time.monotonic()
+    while True:
+        d, rem = page(k, sport, off)
+        if rem is not None and int(rem) < QUOTA_FLOOR:
+            print(f"QUOTA FLOOR hit (rem={rem} < {QUOTA_FLOOR}) — aborting "
+                  f"cleanly; rerun to resume", flush=True)
+            return rows, off, False
+        if d is None:
+            print(f"GAVE UP {sport} off={off} — rerun to resume", flush=True)
+            return rows, off, False
+        games = d.get("games") or []
+        pag = d.get("pagination") or {}
+        with open(out, "a", encoding="utf-8") as f:
+            for g in games:
+                f.write(json.dumps(g, ensure_ascii=False) + "\n")
+        off += len(games)
+        rows += len(games)
+        pages += 1
+        st[sport] = off
+        save_state(st)
+        if pages % 50 == 0 or not pag.get("hasMore"):
+            print(f"{datetime.now(timezone.utc).isoformat()} {sport} "
+                  f"off={off}/{pag.get('total')} rem={rem} "
+                  f"dur={time.monotonic()-t0:.0f}s", flush=True)
+        if not pag.get("hasMore") or not games:
+            return rows, off, True
+        if max_pages and pages >= max_pages:
+            return rows, off, True
+        time.sleep(1.5)
+
+
 def main():
     k = key()
     os.makedirs(OUTDIR, exist_ok=True)
-    done = set()
-    if os.path.exists(DONE):
-        done = {ln.strip() for ln in open(DONE, encoding="utf-8") if ln.strip()}
-        print(f"resuming: {len(done)} sport-months already done", flush=True)
-    t0 = time.monotonic()
-    n_req = 0
+    st = load_state()
     for sport in SPORTS:
-        out = os.path.join(OUTDIR, f"owls_history_index_{sport}.jsonl")
-        sport_rows = 0
-        for start, end in month_windows():
-            tag = f"{sport}:{start}"
-            if tag in done:
-                continue
-            off = 0
-            while True:
-                d, rem = page(k, sport, start, end, off)
-                n_req += 1
-                if rem is not None and int(rem) < QUOTA_FLOOR:
-                    print(f"QUOTA FLOOR hit (rem={rem} < {QUOTA_FLOOR}) — "
-                          f"aborting cleanly; rerun to resume", flush=True)
-                    return 2
-                if d is None:
-                    print(f"GAVE UP {tag} off={off} — rerun to resume", flush=True)
-                    return 1
-                games = d.get("games") or []
-                pag = d.get("pagination") or {}
-                with open(out, "a", encoding="utf-8") as f:
-                    for g in games:
-                        f.write(json.dumps(g, ensure_ascii=False) + "\n")
-                off += len(games)
-                sport_rows += len(games)
-                if not pag.get("hasMore") or not games:
-                    break
-                time.sleep(1)
-            with open(DONE, "a", encoding="utf-8") as f:
-                f.write(tag + "\n")
-            if off:
-                print(f"{datetime.now(timezone.utc).isoformat()} {tag} "
-                      f"games={off} total_{sport}={sport_rows} req={n_req} "
-                      f"rem={rem} dur={time.monotonic()-t0:.0f}s", flush=True)
-            time.sleep(1)
-        print(f"SPORT DONE {sport}: {sport_rows} rows -> {out}", flush=True)
-    print(f"ALL DONE req={n_req} dur={time.monotonic()-t0:.0f}s", flush=True)
+        done_key = sport + ":done"
+        if st.get(done_key):
+            continue
+        start_off = int(st.get(sport, 0))
+        rows, off, ok = walk(k, sport, start_off)
+        if not ok:
+            return 1
+        st = load_state()
+        st[done_key] = True
+        save_state(st)
+        print(f"SPORT DONE {sport}: +{rows} rows (walk end off={off})", flush=True)
+    # top-up sweep: head pages again (dupes fine; closes moving-head skips)
+    for sport in SPORTS:
+        rows, off, ok = walk(k, sport, 0, max_pages=TOPUP_PAGES)
+        if not ok:
+            return 1
+        print(f"TOPUP DONE {sport}: +{rows} head rows", flush=True)
+    print("ALL DONE", flush=True)
     return 0
 
 
