@@ -78,9 +78,12 @@ Short delta — §0-S7's lane (vendor reply → historical readout; 07-20+ →
   curated pairs went live 12:04:52Z 07-17 (NOT ~03Z — the operator box slept
   mid-session and displaced my wall-clock assumption; ticks 03–12Z correctly
   ran on the OLD aliases, and the 12:00:01 tick raced the dump by 4 min).
-  First tick with new aliases = 13:00Z 07-17. Tick-flow replay on the VPS
-  hits 5/5 open pairs (1WIN/GenOne resolved by then). If 13:00Z+ ticks still
-  null these pairs, THEN investigate — current evidence says they won't.
+  First tick with new aliases = 13:00Z 07-17 — **CONFIRMED LIVE: the 13:00Z
+  tick matched ALL 5 open pairs with prices+books at the exact predicted
+  cids (BB Team 0xcd650a07, KINGZERO 0xce444965, PVISION 0xc1861508,
+  NiP/HEROIC 0x3fb3e660, GameHunters 0xedc045bc); tick pm_matched 45/46
+  (~98%) vs 38/44 pre-fix. Nigma/BB EWC closing line captured 1.5h
+  pre-start.** Nothing left to investigate on this thread.
 - **NEW FALSE-VETO INSTANCE (document-only, operator decision):** PM lists
   OPEN "Keyd vs Imperial (BO3)" (CS2 RUSH B! Summit); PinnOdds says "Keyd
   Stars" → the SIBLING_QUALIFIERS veto fires on "stars" (protects Karmine
