@@ -295,6 +295,59 @@ cell; calibration + hit-rate only (#11); kill stays on the table.
 bot-independently, task 3); no hidden-peak trading (print world settles); no
 taker capture at the high-EV end (no ask / 0.999).
 
+**Second flag-gated signal (S231-late addition, same infra): PEAK-PASSED.**
+The mirror of the crossing trade: when the DEBIASED mesh consensus has fallen
+for ≥K consecutive bins (K default 6 = ~30 min) across ≥2 stations after
+local 14:00, the running-max leader and every surviving at_or_below leg
+become drift candidates (the 0.68→0.85→1.00 leg — the makeable part). Same
+flag, same model_name family (`weather_nowcast_peakpass`), same caps; it
+also converts the 14%-never-print days from a risk into a signal. Gated on
+the same acceptance gates + the Study-B (post-lock) evidence below.
+
+## S231-LATE PRE-REGISTERED STUDIES (written BEFORE running; read-only)
+
+**STUDY A — does the MARKET carry the print-world (cheap-NO) bias?**
+Motivation: rep_bias_test proved settlement = hourly-print world, ~0.9F below
+the continuous-max world the public forecasts describe; our bot's cheap-NO
+tail came from exactly this. If the crowd anchors on the same forecasts, low
+buckets should be underpriced MARKET-WIDE.
+Rule (frozen before run): resolved US-F families 03-01..07-12
+(question-date keyed). fc_max = archived previous-runs day-1 forecast max
+(uniform, no lookahead). Select buckets with hi_bound ≤ fc_max − 1.0F
+(range and at_or_below). Sample CLOB minute price at T = local-midnight-EOD
+minus {24h, 14h}; require 0.01 < p < 0.60. EV/$1 = outcome − price
+(buy-the-bucket). Family-day-clustered SEs. Report by lead and by
+distance-below-forecast bins (1-3F, 3-5F, >5F) — bins are informational,
+the GATE is pooled per lead.
+GATE: meanEV ≥ +0.05 with 2×clustered-SE excluding 0 at either lead →
+trade-candidate; ≥2σ but < +0.05 → BIAS-CONFIRMED-NOT-TRADEABLE; else DEAD.
+
+**STUDY B — post-lock drift capture (execution-only edge).**
+Motivation: winners drift 0.85→1.00 for hours after the outcome is
+physically locked; task 2 excluded 151 already-decided windows — the
+unexamined leg. If sellers still print below fair AFTER lock, that is
+latency/attention money with zero forecast risk (only settlement/void risk).
+Rule (frozen before run): resolved US-F families 03-01..07-12, hourly-METAR
+print series. Two prospective lock rules evaluated on EVERY bucket (not just
+winners — false-lock rate is part of the verdict):
+  L1: after the day's LAST print (local ≥23:30) with runmax inside bucket.
+  L2 (earlier): local hour ≥ 21 AND runmax inside bucket AND latest print
+      ≤ runmax − 2.0F.
+Measure per fired lock: YES-frame taker-SELL prints (data-api full history,
+maker_fill_study conventions) at price ≤ {0.97, 0.95, 0.90} in
+[t_lock, t_lock+12h]; shares and EV/share = 1 − price. UPPER BOUNDS caveat
+carries (queue/wash unknowable).
+GATE: false-lock rate (fired-but-resolved-NO / fired) < 1% for the rule to
+be usable; then viability = ≥50% of locked family-days show ≥20 shares
+buyable at ≤0.97. Report both rules; do NOT tune thresholds post-hoc.
+
+**Candidate queue (listed, NOT pre-registered):** sibling-bucket repricing
+latency at the reveal (sell the overtaken bucket — trade_prints already logs
+all buckets); forecast-REVISION momentum day-ahead (previous_dayN deltas vs
+CLOB — the duel tested levels, not deltas); non-US expansion (30-min METAR
+countries, thinner overnight attention; probe truth sources first); PSW
+radar-lead (precip begins = real-time observable, prints hourly).
+
 ## Phase 2 — paper strategy (bot integration, gated on Phase 0 PASS)
 
 - New resolution-day entry mode: when nowcast says P(running max crosses into
