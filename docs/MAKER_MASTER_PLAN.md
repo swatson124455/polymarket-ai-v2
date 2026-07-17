@@ -59,7 +59,7 @@ nothing computed with superseded methods may be quoted from this document)
 | v2 recorder | gated + touch/wide width A/B | `/opt/pa2-maker-sim-v2`, 2-min timer |
 | v3 recorder | gated + sub-second WS refresh | `/opt/pa2-maker-sim-v3`, daemon |
 | v4 recorder | in-play game lane + classic/split A/B + per-fill rebate meter | `/opt/pa2-maker-sim-v4`, daemon |
-| v5 recorder | **GATE LAB** — 6 gate policies paired on identical inputs (P0 baseline / P1 fitted-vol / P2 wind-down ramp / P3 tape-velocity / P4 all / P5 ungated control); era start 07-17 01:09:09Z, commit `27ba2d7` | `/opt/pa2-maker-sim-v5`, daemon |
+| v5 recorder | **GATE LAB** — 7 gate policies paired on identical inputs (P0 baseline / P1 fitted-vol / P2 wind-down ramp / P3 tape-velocity / P4 all / P5 ungated control / **P6 WB-forecast tilt**, added `ca6c1c5`); eras: 01:09:09Z launch `27ba2d7` → 02:36:41Z clean (P0-P5) → **21:55:09Z 07-17 P6 era start** (P0-P5 ledgers carried, verified) | `/opt/pa2-maker-sim-v5`, daemon |
 | Pool census | hourly count of every reward pool | `/opt/pa2-maker-census`, hourly timer |
 | Backups | nightly 00:20Z tarball + 09:30 local pull (keeps 7) | `/opt/pa2-maker-backups` + operator machine |
 
@@ -159,8 +159,18 @@ env, or Redis. Candidates, best first:
    (27% >2pt)** — the pick-off tail on our own fills. v1 spec (post-readout,
    ≥5 days of fills): sharps = wallets with pnl ≥ +$50K AND ≥50 trades
    (threshold not top-N), per-sector sets, ±60min window, era-split.
-2. **WB forecast → single-sided weather quoting** — highest-value nuance;
-   needs WB handoff (their forecast table schema) + operator sign-off.
+2. **WB forecast → tilted weather quoting — LIVE IN THE LAB (07-17 21:55:09Z,
+   `ca6c1c5`)**: WB ACCEPTED (S231; feed flowing at
+   `/opt/pa2-maker-feeds/wb_forecasts.jsonl`, their writer deployed
+   release 20260717_145326 with kill switch WEATHER_MAKER_FEED_ENABLED).
+   v5 P6_tilted = P0 gates + bounded quote tilt (0.5×disagreement, cap 1c,
+   post-only). WB semantics encoded: prob=P(YES) never inverted; Hong Kong
+   excluded (w=0); cold-start-7 ×0.5 until ~08-01; non-temp models ×0.5;
+   cheap-NO guard (no NO-ward tilt on prob<0.20 — WB's biggest-risk caveat).
+   P6 rewards score two-sided MIN (adversarial-review fix — the family
+   bid-side proxy would have inflated a YES-ward tilt). Paired read ≥3-5d
+   (~07-21+), segmented by trust tier from sample-row tilt/wbp/wbw; results
+   go back to WB in full per the proposal.
 3. **EB match data → sharper in-play gates** — EB lane owns; v4 already uses
    the public gameStartTime field.
 
