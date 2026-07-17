@@ -7,9 +7,11 @@ the continuous-max world public forecasts describe. If the crowd anchors on
 those forecasts, buckets safely BELOW the forecast max are underpriced
 market-wide (the market-side twin of our bot's cheap-NO tail).
 
-FROZEN RULE: resolved US-F families 03-01..07-12 (question-date keyed);
-fc_max = archived previous-runs day-1 forecast max (uniform, no lookahead);
-select buckets with hi_bound <= fc_max - 1.0F (range + at_or_below);
+FROZEN RULE (S231-late: GLOBAL per the spec's pre-registered ROBUSTNESS
+re-run — all cities, native units; original US-F run recorded separately):
+resolved families 03-01..07-12 (question-date keyed); fc_max = archived
+previous-runs day-1 forecast max (station-native unit, no lookahead);
+select buckets with hi_bound <= fc_max - 1.0F-equivalent (0.556C native);
 CLOB minute price at T = local-midnight-EOD - {24h, 14h}; 0.01 < p < 0.60;
 EV/$1 = outcome - price (buy the bucket); FAMILY-DAY-CLUSTERED SEs.
 GATE (per lead): meanEV >= +0.05 with 2*cSE excluding 0 -> trade-candidate;
@@ -103,6 +105,7 @@ def px_at(token, ts, cache):
 
 
 def fetch_archived_fmax(st, d0, d1):
+    unit = "fahrenheit" if st.temp_unit == "F" else "celsius"
     per_model = defaultdict(dict)
     cur = d0
     while cur <= d1:
@@ -112,7 +115,7 @@ def fetch_archived_fmax(st, d0, d1):
              "&hourly=temperature_2m_previous_day1"
              f"&models={','.join(ARCH_MODELS)}"
              f"&start_date={cur}&end_date={end}"
-             "&temperature_unit=fahrenheit&timezone=auto")
+             f"&temperature_unit={unit}&timezone=auto")
         raw = fetch(u, timeout=60)
         cur = end + timedelta(days=1)
         time.sleep(0.15)
@@ -147,11 +150,11 @@ def cluster_stats(bets):
         return 0, 0.0, 0.0, 0, 0.0
     ev = mean(b[0] for b in bets)
     by = defaultdict(list)
-    for e, f in bets:
-        by[f].append(e)
+    for b in bets:
+        by[b[1]].append(b[0])
     fm = [mean(v) for v in by.values()]
     se = (pstdev(fm) / len(fm) ** 0.5) if len(fm) > 1 else 0.0
-    wr = sum(1 for e, _ in bets if e > 0) / len(bets)
+    wr = sum(1 for b in bets if b[0] > 0) / len(bets)
     return len(bets), ev, se, len(by), wr
 
 
@@ -173,7 +176,7 @@ def main():
             continue
         city, mon, day, lo, hi = p
         st = CITY.get(city)
-        if not st or st.temp_unit != "F" or not st.station_id.startswith("K"):
+        if not st:
             continue
         ld = datetime(2026, mon, day).date()
         if not (d0 <= ld <= d1):
@@ -207,7 +210,8 @@ def main():
             skip["no_arch_forecast"] += 1
             continue
         midnight = datetime(2026, mon, day, tzinfo=tz) + timedelta(days=1)
-        below = [b for b in buckets if b["hi"] < 1e8 and b["hi"] <= fc - 1.0]
+        thr = 1.0 if st.temp_unit == "F" else 1.0 * 5.0 / 9.0
+        below = [b for b in buckets if b["hi"] < 1e8 and b["hi"] <= fc - thr]
         if not below:
             skip["no_below_buckets"] += 1
             continue
@@ -219,10 +223,11 @@ def main():
                     continue
                 y = 1.0 if b["won"] else 0.0
                 fam = (city, mon, day)
-                bets[hlead].append((y - pc, fam))
-                dist = fc - b["hi"]
+                us = st.temp_unit == "F" and st.station_id.startswith("K")
+                bets[hlead].append((y - pc, fam, us))
+                dist = (fc - b["hi"]) * (1.0 if st.temp_unit == "F" else 1.8)
                 lab = "1-3F" if dist <= 3 else ("3-5F" if dist <= 5 else ">5F")
-                bins[(hlead, lab)].append((y - pc, fam))
+                bins[(hlead, lab)].append((y - pc, fam, us))
                 fam_used.add(fam)
 
     print(f"\nfamily-days contributing: {len(fam_used)} | skips: {dict(skip)}")
@@ -239,6 +244,12 @@ def main():
                 "DEAD")
         print(f"  {hlead:4.0f}h | {n:4d} | {ev:+.3f} | {se:.3f} | {sig:5.1f} "
               f"| {nf:4d} | {wr:.0%} | {gate}")
+        for reg, want in (("US", True), ("nonUS", False)):
+            rb = [b for b in bets[hlead] if b[2] == want]
+            rn, rev_, rse, rnf, rwr = cluster_stats(rb)
+            if rn:
+                print(f"      {reg:>5}: n={rn:4d} meanEV {rev_:+.3f} "
+                      f"cSE {rse:.3f} fams={rnf} WR {rwr:.0%}")
         for lab in ("1-3F", "3-5F", ">5F"):
             bn, bev, bse, bnf, bwr = cluster_stats(bins[(hlead, lab)])
             if bn:
