@@ -430,6 +430,47 @@ accrue the non-US sample forward.
 (Study-B follow-up, above); PSW radar-lead (precip begins = real-time
 observable, prints hourly).
 
+## S231 ADVERSARIAL REVIEW (8-angle blind sweep, 2026-07-17) — REQUIRED FIXES
+## BEFORE ANY HARNESS RE-RUN (do not re-run the studies until these land)
+
+Fixed same-night (commits e7a5e70..a73d585): Study A/B scripts committed
+(were untracked while verdicts recorded); manifest repaired (+7 commits,
++5 scripts); mesh_validation reads date AND date+1 files + local-day filter
+(western-evening obs were missing from the Phase-1 grade — bias sample went
+19→181 prints on refetch); pws_mesh atomic state write + malformed-prune
+guard + DB-failure sentinel + wu_fails counter + WU_WEBKEY wrapper wiring.
+
+**DEFERRED — required before the NEXT run of any question-parsing harness
+(all 7: peak_model, peak_global, dayof_cell, printworld_bias, postlock,
+sibling, revision):**
+1. **Year guard**: families key on (city, mon, day) with year hardcoded 2026
+   and no end_date filter. DB-verified: three 2020 'March 1' markets entered
+   the S231 window as phantom families (price-gating dropped them from EV
+   studies; ≤3 of Study B's 551 L1 locks affected — its DEAD verdict stands
+   at 9%≫1%). Fix pattern: `AND (end_date_iso IS NULL OR end_date_iso >=
+   '2026-01-01')` in each markets SQL + try/except around
+   `datetime(2026,...)` (Feb-29 ValueError kills a whole run). Fix ALL 7
+   sites in one pre-registered sweep commit.
+2. **Gate SE convention**: the gate decides on the unclustered 0.45/√n SE;
+   the family-clustered SE is print-only. The RECORDED S231 PASS is robust
+   (clustered ~2.7σ also clears), but future pre-registrations must gate on
+   the CLUSTERED SE explicitly.
+3. **px_at drift**: gate uses ±300s match tolerance; all S231-late scripts
+   use ±600s — the 'US cut REPRODUCES the gate' comparison is directionally
+   valid but not like-for-like on price matching. Unify to ±300s in the
+   sweep commit; note nearest-match can sample post-crossing prices (both
+   directions; state it in any consumer).
+4. **Global Study A re-run**: promised in the GLOBAL ROBUSTNESS block,
+   NEVER ran (recorded Study A result is the US run). Either run it in S232
+   or strike the promise.
+5. **get_prints polarity**: sibling's copy returns yes_BUY where maker/
+   postlock return yes_SELL in the same tuple slot — rename the field in
+   the sweep commit before any snippet gets pasted across scripts.
+6. Known-and-accepted skips (disclosed, verdicts robust): maker_fill drops
+   single-step overshoot reveals (31 counted); postlock L1 skips days whose
+   last print lands before 23:30 local — both are non-random-skip caveats
+   to carry, not silent errors.
+
 ## REAL-TIME SOURCE LEDGER (probed live from the VPS 2026-07-17 ~02:20Z)
 
 Legit alternatives/additions to the WU PWS mesh, by resolution city.
