@@ -1,11 +1,13 @@
 # MB STEWARD — NEXT SESSION PROMPT (chain deep-dive results readout)
 
-You are the local MB steward session, continuing from 2026-07-14 PM. The
-chain-native roster-admission gate (`scripts/chain_deep_dive.py`) is built,
-adversarially reviewed (16 findings fixed), smoke-validated, and the
-~47-address batch was **LAUNCHED 2026-07-14 19:31 UTC (detached)**. Your job:
-collect + review the results, then PROPOSE (never auto-add) admissions for the
-operator's word.
+You are the local MB steward session, continuing from 2026-07-16/17. The
+chain-native roster-admission gate (`scripts/chain_deep_dive.py`) is BUILT,
+twice adversarially reviewed (16 + 30 findings fixed + a copyability param
+rework, no confirmed defects), and running its 3rd relaunch (run-3, 24/47 done
+at handoff). 8 cohort-2 ADMITs + 1 tail-feasibility PROBE (0xf705fa) are LIVE
+in the shadow watcher; the daily fresh-label readout cron is armed. Your job:
+finish collecting the batch, run the QUEUED band re-run, review results, and
+PROPOSE (never auto-add) admissions for the operator's word.
 
 **STEP ZERO — before ANY project doc:** MB state docs are BRANCH-VERSIONED.
 Discover the newest copy yourself:
@@ -13,9 +15,17 @@ Discover the newest copy yourself:
 git ls-remote origin 'refs/heads/claude/*'
 git fetch origin <branch> && git show FETCH_HEAD:docs/MB_STATE.md | head -15
 ```
-Expected newest on `claude/repo-setup-docs-fq9bhn` (`5b76608`+) — confirm. THEN
-read in order: `CLAUDE.md` → newest `docs/MB_STATE.md` §0 (the PM block) + §5
-TO-DO + §7 (new landmines) → `docs/MB_HANDOFF_PROTOCOL.md`.
+Expected newest on `claude/repo-setup-docs-fq9bhn` (`4b3b60e`+, Last-updated
+2026-07-15/16) — confirm. THEN read in order: `CLAUDE.md` (Forbidden-Pattern
+sourcing rules) → newest `docs/MB_STATE.md` §0 (ROSTER LEDGER incl. the probe +
+band-re-run queue, the corrected cohort accounting) + §7 (landmines: RPC-hang,
+stale-cache, pkill-variant-2, ship-discipline) → `docs/MB_HANDOFF_PROTOCOL.md`.
+Binding self-rule this session: **NO FAST LANE** — nothing runs on VPS/live
+state without self-test+pytest, a review pass for verdict-producing code, a
+first-output cross-check vs an independent source, timeouts on every network
+await, and kill/deploy one-liners composed against the §7 pkill landmine (the
+pkill and NOTHING else naming the script). Every 07-15/16 incident came from
+skipping this.
 
 **LOCAL LOGISTICS (binding):** all local work from the worktree
 `C:/lockes-picks/mb-steward` (branch locked; TWO writers → `git pull --ff-only`
@@ -26,29 +36,39 @@ before EVERY commit; push after each completed unit).
 the operator approves each. State WHAT + WHY before anything that changes VPS
 state (writes outside `/tmp`, restarts, kills).
 
-## FIRST — collect the batch (RUN-2 reality, updated 2026-07-15 PM)
-Run-1 (rps 4) was killed at 12/47 (results preserved: **8 ADMIT / 3
-INSUFFICIENT / 1 REJECT**, and the 8 ADMITs are ALREADY admitted → cohort-2,
-see below). **Run-2** covers the remaining 35 (`/tmp/deep_dive_remaining.txt`)
-at rps 8 with the receipt short-circuit (`d6276f7`).
-1. Finished? `pgrep -fc 'chain_deep_dive[.]py'` (0 = done; **pgrep NEEDS `-f`**,
-   and NEVER put a pkill in the same ssh command as anything naming the script
-   — §7 variant-2 landmine). `tail -30 /tmp/deep_dive_batch.log`;
-   `ls /opt/pa2-shared/mb_copyable_data/deep_dive/0x*.json | wc -l` (expect 47).
-2. Read `deep_dive/_summary_run2.json` (run-2's 35 ONLY). **No artifact
-   aggregates all 47** — tally the per-trader JSONs:
+## FIRST — collect the batch (RUN-3 reality, updated 2026-07-17 ~01:00Z)
+Timeline: run-1 (rps 4) killed at 12/47; run-2 (rps 8) HUNG 13h on ONE RPC
+await (no read-timeout) → root-fixed (`rpc_call` 90s guard, `07e7296`) and
+relaunched as **run-3** on the 27 remaining (`/tmp/deep_dive_remaining.txt`).
+Now at ~24/47 (5/27 into run-3), the code carries all 46 review fixes + the
+2026-07-16 copyability param rework (`27ee79b`).
+1. Finished? `pgrep -fc 'chain_deep_dive[.]py'` (0 = done; **pgrep NEEDS `-f`**;
+   NEVER put a pkill in the same ssh command as anything naming the script —
+   §7 pkill-variant-2 landmine). Progress: `grep -oE '\[[0-9]+/27\]'
+   /tmp/deep_dive_batch.log | tail -1`; heartbeats `sweep done…`/`receipts N/`
+   prove it's working, not hung (the 13h hang had NONE). `ls
+   .../deep_dive/0x*.json | wc -l` (expect 47).
+2. Tally (the batch summary now rebuilds from on-disk JSONs after every trader
+   → `_summary_run2.json` is 47-wide for run-3+; also the one-liner):
    `python3 -c "import json,glob,collections; print(collections.Counter(json.load(open(p))['verdict'] for p in glob.glob('/opt/pa2-shared/mb_copyable_data/deep_dive/0x*.json')))"`
-3. **Died mid-run?** (fewer than 47 result files + process gone) The per-trader
-   JSONs already written are durable. RESUME on the missing addresses only:
-   rebuild the remaining list (roster = 9 in `readjudicate.json` + 38 in
-   `deep_dive_extra_38.txt`, minus done JSONs), **refresh `/tmp/mbre` to branch
-   head + verify blob**, edit `/tmp/run_deep_dive_batch.sh` to point
-   `--extra-traders` at the new remaining list, relaunch detached.
-4. New ADMITs → verify their tiers like the first 8 (100% backing, 0 mismatch,
-   P≥bar, tailable rate, no flags), then batch-admit with ONE watcher restart
-   (same mechanism as 2026-07-15: roster `clean` += addrs + extend the
-   `cohort2` ledger key, rerun `deploy/mirror3_shadow_deploy.sh`, record the
-   new restart epoch — cohort-2B gets ITS OWN start epoch in the ledger).
+3. **Died/hung mid-run?** (log size static ~25 min while alive = stalled; the
+   monitor watches log growth now.) Per-trader JSONs are durable. RESUME the
+   missing addresses: rebuild remaining (roster = 9 `readjudicate.json` + 38
+   `deep_dive_extra_38.txt`, minus done JSONs), **refresh `/tmp/mbre` + verify
+   blob**, edit `/tmp/run_deep_dive_batch.sh`'s `--extra-traders`, relaunch.
+4. **QUEUED — BAND RE-RUN (do this after run-3 finishes):** the 200-1000
+   fills/day rejects were adjudicated under the OLD cap; re-run them under the
+   reworked params (`27ee79b`+: `--receipt-free-rate 1000 --max-decisions-per-day
+   25 --max-flat-share 0.60`). Candidates: 938/749/395/371/288 + 0xf705fa (=the
+   probe, gets a formal verdict) + any run-3 additions with true_rate in
+   (200,1000]. Whoever now ADMITs → PROPOSE as a probe (operator word each).
+5. New ADMITs → verify tiers like the first 8 (100% backing, 0 mismatch, P≥bar,
+   decisions/day + flat-share within caps, no wash/copier), then batch-admit
+   with ONE watcher restart: roster `clean` += addrs, extend the `cohort2` (or
+   `probe`) ledger key with its OWN `admitted_utc`, rerun
+   `deploy/mirror3_shadow_deploy.sh`, record the restart epoch. The readout
+   `load_cohorts` REFUSES to run if clean ≠ cohort1 ∪ cohort2 ∪ probe (and on
+   overlap / bad epoch) — so a roster edit without the ledger update fails loud.
 
 ## ROSTER — you MAY add/subtract, but NOTIFY + CLARIFY at handoff (operator directive 2026-07-14)
 You have standing authority to add/subtract candidate traders from the deep-dive
