@@ -159,7 +159,8 @@ def main():
     rows = json.loads(psql("""SELECT json_agg(row_to_json(t)) FROM (
       SELECT id, question, resolution FROM markets
       WHERE category='weather' AND resolution IN ('YES','NO')
-        AND question LIKE 'Will the highest temperature%%') t""") or "[]")
+        AND question LIKE 'Will the highest temperature%%'
+        AND (end_date_iso IS NULL OR end_date_iso >= '2026-01-01')) t""") or "[]")
     fams = defaultdict(list)
     for r in rows or []:
         p = parse_q(r["question"])

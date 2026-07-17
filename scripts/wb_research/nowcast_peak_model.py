@@ -200,6 +200,7 @@ def main():
       SELECT question, yes_token_id AS token, resolution FROM markets
       WHERE category='weather' AND resolution IN ('YES','NO')
         AND question LIKE 'Will the highest temperature%%'
+        AND (end_date_iso IS NULL OR end_date_iso >= '2026-01-01')
         AND yes_token_id IS NOT NULL AND yes_token_id <> '') t""") or "[]")
     fams = defaultdict(list)
     for r in rows or []:
