@@ -576,6 +576,43 @@ Studies interim: use the remap variants. HISTORY ASSUMPTION to verify in
 S232: descriptions have named these same stations all season (spot-check a
 March market's description).
 
+## DOUBLE-BLIND VERIFICATION OF THE FIX WAVE (operator-ordered, 07-17 ~16-17Z)
+
+Four independent blind agents (diff review, registry blast-radius, deployed-
+artifact bit-for-bit, live measurement with no expected values). Results:
+- **Deploy VERIFIED**: release 20260717_105239 content-identical to git HEAD
+  (CRLF-only divergence from the Windows tarball — normalize CR before any
+  future raw-hash check); runtime import prints exactly the 7 corrected
+  stations; crons drift-free; rollback intact. Independent measurements
+  matched every claimed number; wu_fails now reads a true 0.
+- **CORRECTED STUDY B (right stations)**: L1 false-locks 0/579 (0.00%),
+  L2 1/579 (0.17%) — both PASS the <1% gate (the old ~9% stays retracted);
+  fills at <=0.97 post-lock exist on only ~1% of locked days → VIABILITY
+  FAIL. Final verdict: **no free money at the close — supply vanishes after
+  certainty** (not settlement risk). The 5 filled windows paid +0.08..0.44/sh
+  on real size — Study-C-class rare events, accrual-watch only.
+- **Blast-radius consequences (registry swap), assessed**: EMOS/calibration/
+  reliability history under old ids is orphaned → the 7 cities run cold-start.
+  That is CORRECT (the orphaned history measured the wrong airports — incl.
+  Milan's "EMOS-ready" status). WATCH ITEM: sizing reliability factors reset
+  to 1.0 baseline for those cities ~14 days (old haircuts lived under old
+  ids); caps/dampeners still bound it. Cleared: no autodiscovery duplicates
+  (static alias map wins), empty ghcnd inert, no stale old-id literals in
+  runtime code. S232 cleanups: has_asos_1min flag is consumer-less;
+  data/city_icao_mapping.yaml stale (not runtime-loaded).
+- **Blind-review finds, fixed same hour**: gate docstrings now state the
+  hardened bar (2af2c78); Jacksonville carried Houston Hobby's GHCND id —
+  corrected (8ace004, inert field, next cut carries it). DISCLOSED: the
+  corrected peak re-run covers Dallas+Houston via 1-min; **Denver is
+  excluded** (Buckley has no 1-min product). Launcher lesson (4th instance):
+  compound ssh `&` backgrounds the whole chain — the corrected peak run
+  initially never started; relaunched with absolute paths.
+- **NEW discovery by the blind measurer**: weather_forecasts contains rows
+  keyed by lowercase CITY NAMES (busan/guangzhou/jeddah/karachi/manila/
+  qingdao) — city_autodiscovery has been auto-covering unregistered cities
+  with geocoded pseudo-stations of UNAUDITED quality. S232 additions task
+  upgraded: replace dynamic auto-entries with verified ICAO stations.
+
 ## REAL-TIME SOURCE LEDGER (probed live from the VPS 2026-07-17 ~02:20Z)
 
 Legit alternatives/additions to the WU PWS mesh, by resolution city.
