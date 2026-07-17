@@ -147,8 +147,28 @@ Short delta — §0-S7's lane (vendor reply → historical readout; 07-20+ →
   **1xbet-benchmark backtest: operator SIGNED OFF 2026-07-17 ("ok go") —
   build it once the pulls land, with the degenerate-price filter and clear
   1xbet-not-Pinnacle labeling in every readout line.**
-- **⚠ CORRECTION 2026-07-17 ~18:30Z — "45× the go-bar" WAS OVERSTATED; real
-  usable n ≈ 415 markets.** The 4,639 PM-market overlap is real for market
+- **⛔ FINAL VERDICT 2026-07-17 ~19:00Z — HISTORICAL 1XBET BACKTEST IS DEAD, 0
+  usable rows (operator "build it" → the build proved the data unusable).**
+  Built the JoinedRecord join to feed the audited `edge_backtest_from_joined`;
+  the coverage census (`esports_v2/scripts/owls_backtest_feasibility.py`,
+  reproducible) found TWO NON-OVERLAPPING quality windows: **(a)** CLOB PM
+  hourly price exists only ≥2026-06-16 (~30d retention); **(b)** Owls
+  `/history/odds` stores esports h2h at proper AMERICAN precision only through
+  Feb-2026, then **FLOORS decimal odds to integers from March** (price=1,2,3…;
+  home=1 ⇒ P(home)∈[0.50,0.99] — precision destroyed; LIVE endpoint is fine,
+  1.35/2.977, only HISTORY is floored). Feb precise-odds is BEFORE the
+  PM-price window; Jun-16+ PM-price is in the floored era → **intersection =
+  0**. Refused to run edge_backtest on floored odds (would fabricate edge
+  numbers — correct-or-absent). **What survives:** the forward live recorder
+  captures PROPER-precision 1xbet odds, so a FORWARD 1xbet-benchmark set
+  accrues over time — but on the SAME timeline as forward PinnOdds (no
+  shortcut) and against a soft book. **Forward PinnOdds (real Pinnacle) is the
+  ONLY viable readout path; the Owls historical shortcut is closed — do not
+  re-attempt.** Owls sub value now = forward backup live feed only; operator
+  may reconsider the $49.99/mo.
+- ~~**CORRECTION 2026-07-17 ~18:30Z — "45× the go-bar" WAS OVERSTATED; real
+  usable n ≈ 415 markets.**~~ (superseded by the FINAL VERDICT above — the
+  415 PM-priced markets ALSO fail on floored odds; true usable = 0) The 4,639 PM-market overlap is real for market
   IDENTITY, but the backtest also needs PM INTRADAY price 1–2h pre-start, and
   **CLOB `/prices-history` retains hourly (fidelity=60) only ~30 days**: of
   4,231 matched markets, only **484 (all ≥2026-06-16) return hourly history**;
