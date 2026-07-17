@@ -44,6 +44,20 @@ Short delta — §0-S7's lane (vendor reply → historical readout; 07-20+ →
   paid tier (raises quota), or re-timing/skipping low-value hours to bank
   daily quota for 20–23Z (changes dataset cadence mid-slate — needs explicit
   sign-off; do NOT just edit the cron).
+- **NAME-GAP CLASS BEYOND DIACRITICS (post-close review #2, 07-17):** ALL SIX
+  pm=None rows in the 07-17T02:00Z tick are REAL open PM markets missed on
+  naming, and the VPS alias table covers none of them (ground truth — the
+  deployed collector ran WITH aliases.json and still nulled them): 1W↔**1WIN**,
+  BB Team↔**BetBoom Team** (EWC Dota), PVISION↔**PARIVISION** + Yandex↔Team
+  Yandex (EWC Dota), Ninjas In Pyjamas↔**NIP**, GameHunters↔**Game Hunters**,
+  KINGZERO↔**Kingzone** (spelling variant — VERIFY same team before aliasing).
+  ≈14% of PM-listed matches silently dropped in that tick; aggregate
+  pm_matched conceals it. **Fix path = alias-group additions (esports_team_
+  aliases → eb_dump_aliases.sh → VPS aliases.json), one pair at a time, each
+  verified same-team first — a wrong alias is the S152/B2 wrong-attach loss
+  class. PROPOSE-ONLY: needs operator authorization; do NOT loosen the
+  matcher itself.** Each recovered pair densifies pm_matched → more settled
+  records for the readout.
 - **STEP 1 (critical path):** operator 2026-07-15 — vendor email **SENT, NO
   REPLY yet**. Historical readout stays blocked on the reply; if it arrives
   with a usable sample, the build is pre-authorized per §0-S7.
