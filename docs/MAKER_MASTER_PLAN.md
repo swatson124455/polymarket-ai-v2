@@ -150,6 +150,36 @@ join-rate diagnostic. Income scripts: add txhash dedup + API-failure flags
 before any rerun (current numbers safe: every wallet fit in one page, but
 the claim is unverifiable from request counts alone).
 
+## 7c. Official-docs fine-print audit (2026-07-17, all 5 market-maker doc pages)
+
+**Exact matches (our canon == docs):** quadratic scoring, complement-book
+Q1/Q2 cross-terms, one-sided divisor c=3.0, [0.10,0.90] band rule, daily
+00:00 UTC payouts, $1 floor, maker-never-pays, geo fee-free, split/merge/
+redeem mechanics, every contract address.
+
+**Fine print we had missed:**
+1. Scoring formula contains `b` = in-game multiplier (value unpublished) —
+   recorders don't model it → in-play rewards (v4 especially) are FLOORS.
+   Census measures the real pool behavior; keep that as the empirical anchor.
+2. Scoring midpoint is "size-cutoff-adjusted" (dust at the touch ignored) —
+   our raw-touch-mid share estimates are approximations.
+3. Rebates only on `feesEnabled: true` markets (fee activation is
+   deploy-date-gated) — v4's rebate meter lacks the filter → overstates on
+   legacy markets (sibling-session arm; flagged, propose-only). Backtest
+   floors unaffected (pools excluded, conservative rates).
+4. Normalization epoch = 10,080 samples (7 days of minutes) vs daily pools/
+   payouts — our per-day accrual is an approximation that converges for
+   continuous presence; open question for intermittent quoting. Real payment
+   records unaffected.
+
+**Pilot-relevant mechanics:** tick sizes vary per market (0.0025 on WC
+ML/spread/totals; 0.0001 exists; ALWAYS fetch dynamically); GTD orders =
+native catalyst-expiry (simplifies the catalyst gate); batch-15 +
+cancelAll() kill switch + WS (already adopted). **Combos** = separate RFQ
+product (400ms quote window, Exchange V3 `0xe3333700…`, PositionManager,
+AutoRedeemer, Last-Look at ~$2.5K notional) — out of scope for pilot v1,
+future niche; addresses recorded so "Exchange V3" surprises no one.
+
 ## 8. TBD register (open questions, owner, when)
 
 - **Cup vs meta** — operator ruled TBD until cup over → census cliff + post-promo
