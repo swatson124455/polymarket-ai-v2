@@ -10,7 +10,7 @@ virtual quotes/fills/rewards ledgers.
 
 Policies (fitted params from mm_gate_fits 2026-07-17, recorded-data fits):
   P0_base     V3 gates verbatim: in_play/extreme_wx/last_hours(19Z)/vol(2c,10m)
-  P1_volfit   vol gate refit: pull at >=1.5c per 2min, off 15min (fit 1:
+  P1_volfit   vol gate refit: pull at >1.5c per 2min, off 15min (fit 1:
               continuation is tail-driven; p75 +4c@10m after a 2c move)
   P2_ramp     last_hours replaced by wind-down: pull when <=9h to market end
               (fit 2: adverse>2pt peaks 20-31% in the final 1-9h vs ~4% at 1-3d)
@@ -49,15 +49,17 @@ WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 MAX_MARKETS_PER_SECTOR = 25
 MAX_MARKETS_TOTAL = 140
 DISCOVERY_EVERY_S = 1800
+DISCOVERY_RETRY_S = 60        # empty-universe retry backoff (review: the 1s
+                              # retry loop could burn the whole HTTP budget)
 INV_CAP_MULT = 3
 LAST_HOURS_GATE_UTC = 19
 REQUOTE_TICKS = 0.002
 MAX_DISK_MB = 500
-HTTP_BUDGET_PER_HOUR = 24000  # v5 fetches tape for ALL 140 markets each minute
-                              # (the prints-velocity signal needs it): ~155-450
-                              # reqs/min worst case. v3's 12K/hr assumed the
-                              # quoted-markets filter; exhaustion is SILENT
-                              # (get() -> None), so hb also reports usage.
+HTTP_BUDGET_PER_HOUR = 36000  # v5 fetches tape for ALL 140 markets each minute
+                              # (the prints-velocity signal needs it): worst
+                              # case 140x3 pages + discovery ~= 27K/hr (review
+                              # finding: 24K did NOT cover it). Exhaustion is
+                              # SILENT (get() -> None) so hb reports usage.
 WS_CHUNK = 90
 WS_IDLE_RECONNECT_S = 40
 
@@ -97,6 +99,15 @@ def get(url, timeout=10):
             return json.load(r)
     except Exception:
         return None
+
+
+def ts_of(tr):
+    """Print timestamp as float, 0.0 on any malformed shape (review: an
+    unguarded float() here crashed the whole daemon on one bad print)."""
+    try:
+        return float(tr.get("timestamp") or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def fetch_tape(cid, since_ts):
@@ -411,10 +422,26 @@ def match_window(prints, qh, st, msz, yes_asset, prev_ts):
 def run(base):
     universe = []
     state_path = os.path.join(base, "state.json")
-    try:
-        state = json.load(open(state_path))
-    except Exception:
-        state = {}
+    state = {}
+    if os.path.exists(state_path):
+        try:
+            state = json.load(open(state_path))
+        except Exception as e:
+            print(f"STATE LOAD FAILED ({type(e).__name__}) — trying .bak", flush=True)
+            try:
+                state = json.load(open(state_path + ".bak"))
+                print("recovered state from .bak", flush=True)
+            except Exception:
+                print("STATE .bak ALSO FAILED — starting with EMPTY ledgers "
+                      "(all acc/pos/real reset; era note this restart!)", flush=True)
+    else:
+        print("no state.json — first boot", flush=True)
+    # restart normalization: never credit accrual across a downtime gap, and
+    # never let a pre-restart pull_until linger against a fresh clock
+    _t0 = time.time()
+    for _v in state.values():
+        if isinstance(_v, dict) and "last_acc_t" in _v:
+            _v["last_acc_t"] = _t0
     last_discovery = 0.0
     last_minute = 0.0
     last_disk = 0.0
@@ -448,14 +475,23 @@ def run(base):
                 except Exception:
                     pass
             size_mb = sum(os.path.getsize(os.path.join(r, f))
-                          for r, _, fs in os.walk(base) for f in fs) / 1e6
+                          for r, _, fs in os.walk(base) if "venv" not in r
+                          for f in fs) / 1e6
             if size_mb > MAX_DISK_MB:
-                print(f"disk cap exceeded ({size_mb:.0f}MB) — exiting", flush=True)
-                return 1
+                # exit 0: Restart=on-failure must NOT flap us back up — each
+                # flap would corrupt accrual/fills (review finding)
+                print(f"disk cap exceeded ({size_mb:.0f}MB) — CLEAN STOP", flush=True)
+                return 0
 
-        # ── universe (re)discovery + WS lifecycle (v3 verbatim) ─────────────
-        if now - last_discovery > DISCOVERY_EVERY_S or not universe:
+        # ── universe (re)discovery + WS lifecycle ───────────────────────────
+        if now - last_discovery > (DISCOVERY_EVERY_S if universe else DISCOVERY_RETRY_S):
             u = discover(base)
+            # reject a PARTIAL discovery (mid-pagination failure) — replacing
+            # 140 markets with a fragment would silently drop live experiments
+            if u and universe and len(u) < max(40, len(universe) // 2):
+                print(f"discovery PARTIAL ({len(u)} vs {len(universe)}) — keeping "
+                      f"current universe", flush=True)
+                u = None
             if u:
                 universe = u
                 GEN["n"] += 1
@@ -561,26 +597,35 @@ def run(base):
                 # shared tape-velocity signal (print-count leg)
                 ph = sh.setdefault("prints_hist", [])
                 n_new = sum(1 for tr in tape
-                            if isinstance(tr, dict)
-                            and (float(tr.get("timestamp") or 0) > prev_ts))
+                            if isinstance(tr, dict) and ts_of(tr) > prev_ts)
                 ph.append([now, n_new])
                 while ph and now - ph[0][0] > 300:
                     ph.pop(0)
                 if sum(c for _, c in ph) >= TAPEVEL_PRINTS_5M:
                     sh["hot_until"] = now + TAPEVEL_OFF_S
                 max_ts_all = prev_ts
+                # competition scores hoisted OUT of the policy loop: reading
+                # live BOOKS per policy let a WS update land between policies
+                # and break the identical-inputs pairing guarantee (review)
+                q1, q2 = cached_scores(m, mid)
+                q_comp = max(min(q1, q2), max(q1, q2) / 3.0) \
+                    if 0.10 <= mid <= 0.90 else min(q1, q2)
+                books_live = (q1 + q2) > 0     # empty books => share=1.0 poison
                 for pol_name, pol in POLICIES.items():
                     st = st_of(key, pol_name)
+                    # dt/last_acc_t advance EVERY minute regardless of gating:
+                    # advancing only-while-quoting credited up to 120s of
+                    # accrual at gate-exit — a bias correlated with gating,
+                    # the exact variable under test (review)
+                    dt = min(now - st.get("last_acc_t", now - 60), 120)
+                    st["last_acc_t"] = now
                     if st.get("bid") is not None:
                         q_mine = S(m["v"], abs(mid - st["bid"]), m["msz"])
-                        q1, q2 = cached_scores(m, mid)
-                        q_comp = max(min(q1, q2), max(q1, q2) / 3.0) \
-                            if 0.10 <= mid <= 0.90 else min(q1, q2)
-                        share = q_mine / (q_mine + q_comp) if q_mine > 0 else 0.0
-                        dt = min(now - st.get("last_acc_t", now - 60), 120)
-                        st["acc"] = round(st.get("acc", 0.0)
-                                          + share * m["pool"] * dt / 86400.0, 6)
-                        st["last_acc_t"] = now
+                        share = q_mine / (q_mine + q_comp) \
+                            if (q_mine > 0 and books_live) else 0.0
+                        if share > 0:
+                            st["acc"] = round(st.get("acc", 0.0)
+                                              + share * m["pool"] * dt / 86400.0, 6)
                     else:
                         share = 0.0
                     fills = 0
@@ -618,6 +663,13 @@ def run(base):
                     for k, v in state.items()}
             with open(tmp, "w") as f:
                 json.dump(slim, f)
+            # keep a one-minute-old good copy: a torn state.json (power loss,
+            # SIGKILL mid-replace) silently reset ALL ledgers before (review)
+            if os.path.exists(state_path):
+                try:
+                    os.replace(state_path, state_path + ".bak")
+                except OSError:
+                    pass
             os.replace(tmp, state_path)
             if now - hb > 300:
                 hb = now
@@ -641,11 +693,17 @@ def run(base):
                         else:
                             net += st.get("real", 0.0)
                         quoting += 1 if st.get("bid") is not None else 0
-                    parts.append("%s[q=%d acc=$%.2f net=$%.2f]"
+                    parts.append("%s[q=%d acc=$%.2f tot=$%.2f]"
                                  % (pol_name.split("_")[0], quoting, acc, acc + net))
+                # nobook: universe assets with NO book at all — a dead WS
+                # chunk was invisible to stale_books (which only counts
+                # books that once arrived) (review)
+                with BOOKS_LOCK:
+                    nobook = sum(1 for m2 in universe
+                                 for a in (m2["yes"], m2["no"]) if a not in BOOKS)
                 print("hb: " + " ".join(parts)
                       + f" | requote_lat_med={med:.0f}ms books={len(BOOKS)} stale_books={stale}"
-                      + f" http_hr={len(_http_window)}/{HTTP_BUDGET_PER_HOUR}",
+                      + f" nobook={nobook} http_hr={len(_http_window)}/{HTTP_BUDGET_PER_HOUR}",
                       flush=True)
 
         time.sleep(1)
@@ -653,12 +711,28 @@ def run(base):
 
 def report(base):
     state = json.load(open(os.path.join(base, "state.json")))
+    # departed markets keep frozen marks forever — split them out so the
+    # headline compares policies on LIVE experiments only (review)
+    try:
+        current = set(str(m["id"]) for m in
+                      json.load(open(os.path.join(base, "universe.json")))["markets"])
+    except Exception:
+        current = None
+    dep_net = defaultdict(float)
+    dep_n = set()
     by = defaultdict(lambda: [0, 0.0, 0.0, 0.0])   # (pol) -> n, acc, real, unreal
     bysec = defaultdict(lambda: [0.0, 0.0])        # (pol, sec) -> acc, pnl
     for k, st in state.items():
         if "|" not in k or k.endswith("|SH"):
             continue
         mkt, pol = k.rsplit("|", 1)
+        if current is not None and mkt not in current:
+            sh = state.get(mkt + "|SH") or {}
+            lm = sh.get("last_mid")
+            dep_net[pol] += st.get("acc", 0.0) + st.get("real", 0.0) + \
+                ((st.get("pos", 0.0) * lm - st.get("cost", 0.0)) if lm is not None else 0.0)
+            dep_n.add(mkt)
+            continue
         sh = state.get(mkt + "|SH") or {}
         lmid = sh.get("last_mid")
         unreal = (st.get("pos", 0.0) * lmid - st.get("cost", 0.0)) \
@@ -675,6 +749,9 @@ def report(base):
     for pol in POLICIES:
         n, a, r, u = by.get(pol, [0, 0, 0, 0])
         print("%-12s %5d %10.2f %10.2f %10.2f %10.2f" % (pol, n, a, r, u, a + r + u))
+    if dep_n:
+        print("departed markets (frozen marks, EXCLUDED above): n=%d, NET by policy: %s"
+              % (len(dep_n), {p: round(v, 2) for p, v in dep_net.items()}))
     print("\nper policy x sector NET$:")
     secs = sorted(set(s for _, s in bysec))
     print("%-12s" % "policy" + "".join("%12s" % s[:11] for s in secs))

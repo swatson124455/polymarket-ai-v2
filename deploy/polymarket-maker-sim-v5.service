@@ -3,6 +3,7 @@
 # Kill:   sudo systemctl disable --now polymarket-maker-sim-v5.service
 [Unit]
 Description=Polymarket Paper Maker Sim V5 GATE LAB arm (6 gate policies, paired) (read-only, no trading)
+Wants=network-online.target
 After=network-online.target
 
 [Service]
