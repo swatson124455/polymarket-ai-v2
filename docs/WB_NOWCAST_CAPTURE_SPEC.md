@@ -525,6 +525,57 @@ the non-US --lead arbiter gap (national feeds are the fix).
   be DIURNAL (sea-breeze/heating cycles). Phase-2 debias likely needs an
   hour-of-day term, not a scalar. Verify as bias samples accrue.
 
+## ⚠⚠ INPUT AUDIT (operator-ordered re-review, 07-17 ~14:3xZ) — THE BIG ONE:
+## RESOLUTION-STATION MISMATCHES + RETRACTION OF THE ~9% "DISCOVERY"
+
+Gamma market DESCRIPTIONS name the exact resolution station (standing memory
+rule finally executed). Verified against the registry — **8 MISMATCHES**:
+
+| City | Polymarket resolves at | Registry uses (WRONG) |
+|---|---|---|
+| Dallas | Love Field (KDAL) | KDFW |
+| Denver | Buckley SFB (KBKF) | KDEN |
+| Houston | Hobby (KHOU) | KIAH |
+| Seoul | Incheon (RKSI) | RKSS Gimpo |
+| Taipei | Songshan city (RCSS) | RCTP Taoyuan |
+| Hong Kong | HK OBSERVATORY (urban; not an airport) | VHHH |
+| Milan | Malpensa (LIMC) | LIML Linate |
+| Istanbul | Istanbul Airport (LTFM) | LTBA Atatürk |
+
+Plus ~10 active market cities ABSENT from the registry entirely (Busan/Gimhae,
+Cape Town, Guangzhou, Jeddah, Jinan, Karachi/Masroor, Manila, Panama
+City/Albrook — NOT Tocumen, Qingdao/Jiaodong, Zhengzhou) → mesh never collects
+them; bot never models them.
+
+**RETRACTION — Study B's "~9% settlement-source risk" was 100% miswiring
+artifact.** Re-derived excluding Dallas/Denver/Houston: false-locks
+**0/268 = 0.00%** (was 35/369; every false lock came from the 3 miswired US
+cities — we watched DFW/DEN/IAH while settlement read DAL/BKF/HOU).
+CONSEQUENCES: (a) settlement DOES follow the print-max at the CORRECT
+station (rep_bias's 81% number is also contaminated by the same 3 cities —
+recompute); (b) the Phase-2 "~9% boundary-risk haircut" is WRONG — replace
+with the remapped number; (c) Study B's free-money-at-the-close question is
+RE-OPENED — its gate now passes, remapped re-run launched
+(`postlock_remap.out`, Dallas=KDAL Denver=KBKF Houston=KHOU); (d) peak-model
+remapped robustness re-run launched (`peak_remap.out`; KDAL/KHOU have 1-min,
+KBKF does not → Denver families self-exclude); prior US numbers carried
+wrong-station noise in 3/11 cities — the gate PASSED DESPITE it (noise, not
+lookahead), expect the corrected run to hold or improve, but VERIFY.
+Mesh-bias reinterpretation: Taipei's −9.4F "suspect" mesh is likely the mesh
+being RIGHT near Songshan while we compared vs Taoyuan; HK's debias target
+must be HKO (whose open-data feed we already verified); Shenzhen's roster is
+Hong Kong stations 26-31km cross-border (mainland has no PWS) — Chinese
+cities: mesh unusable, METAR-only.
+
+**REGISTRY FIX = LIVE BOT CODE (station_registry.py) — Tier-3, S232, full
+protocol + operator sign-off; do NOT hotfix.** The bot has been
+forecasting/grounding 8 cities against wrong stations (a real live defect —
+likely a material chunk of "bot loses to market" in those cities). Fix plan:
+correct 8 station rows + add ~10 missing cities + defect tests + release cut.
+Studies interim: use the remap variants. HISTORY ASSUMPTION to verify in
+S232: descriptions have named these same stations all season (spot-check a
+March market's description).
+
 ## REAL-TIME SOURCE LEDGER (probed live from the VPS 2026-07-17 ~02:20Z)
 
 Legit alternatives/additions to the WU PWS mesh, by resolution city.
