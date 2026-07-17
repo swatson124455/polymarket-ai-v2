@@ -93,6 +93,28 @@ identical inputs) is the arbiter of each gate's $ value; first read ~07-20.
 Tier-3 parked: book-collapse early warning (needs depth logging), catalyst
 calendar (GTD orders make it near-free to implement).
 
+
+## 5b. Algo hardening — assumption -> mechanism map (operator ask 07-17)
+
+| Assumption in the numbers | Algo defense | Calibratable |
+|---|---|---|
+| Through-fills only (fill model) | **Chain-fills study**: real OrderFilled events -> at-price fill-probability curve | NOW — feasibility CONFIRMED (see below) |
+| Share = formula math | Pilot self-calibration loop: predicted share vs next-morning payment, per market, auto-correcting multiplier; + strict per-market qualification (tick/min-size/max-spread fetched live) | harness now, data = pilot day 1 |
+| Our presence changes nothing | Anti-landmark: randomized in-band placement, size jitter, market rotation; share-decay telemetry with AUTO-RETREAT per market | design now, calibrate in pilot |
+| Marks = profit | Scoreboard counts realized+resolution only; unrealized displayed as risk; kill criteria bind to realized | free, accounting discipline |
+| Subsidy persists | Census-driven config: pool gone -> unquote (already); portfolio daily income floor -> auto-halt | wiring now |
+| Regime stability | Monthly self-refit of gate params from own fills (v5 lab process productized) | after lab verdict |
+| Instruments correct | **Paper twin**: identical-logic recorder beside the live bot; model-vs-receipt divergence alarm | nearly free (arms exist) |
+
+**Chain-fills study — FEASIBLE, decode recipe (probe 07-17, scripts/maker_research/mm_chain_probe.py):**
+OrderFilled on both exchanges (0xE111... / 0xe2222...), topic0 = 0xd543adfd945773f1...,
+topics[2]=maker, topics[3]=taker, data words = [orderHash-ish, assetId, makerAmt, takerAmt,
+fee, ...] /1e6; price = makerAmt/takerAmt (verified vs live trade 0.40 exact). Public RPC
+(polygon-bor-rpc.publicnode.com) works from the VPS (403s from residential IP). Study v1:
+getLogs over sampled block ranges -> at-price fill volumes at our hypothetical quote levels
++ real-maker-outcome study (who stood where we would stand, what happened to them).
+Queued as the next research block (post-readout).
+
 ## 6. Niche ledger (reviewed 07-17, data in memory + `scripts/maker_research/`)
 
 | Niche | Status | Next step |
