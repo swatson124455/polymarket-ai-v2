@@ -147,16 +147,34 @@ Short delta — §0-S7's lane (vendor reply → historical readout; 07-20+ →
   **1xbet-benchmark backtest: operator SIGNED OFF 2026-07-17 ("ok go") —
   build it once the pulls land, with the degenerate-price filter and clear
   1xbet-not-Pinnacle labeling in every readout line.**
+- **⚠ CORRECTION 2026-07-17 ~18:30Z — "45× the go-bar" WAS OVERSTATED; real
+  usable n ≈ 415 markets.** The 4,639 PM-market overlap is real for market
+  IDENTITY, but the backtest also needs PM INTRADAY price 1–2h pre-start, and
+  **CLOB `/prices-history` retains hourly (fidelity=60) only ~30 days**: of
+  4,231 matched markets, only **484 (all ≥2026-06-16) return hourly history**;
+  everything Feb–early-June returns empty at fidelity=60 (a clean date cliff,
+  independently reconfirmed — NOT a throttle/bug: fidelity=1440 yields ~3
+  DAILY points for old markets, too sparse to locate a pre-start touch).
+  Of the 484, **415 have ≥12 hourly points** (pre-start-locatable). So the
+  Owls Feb-2026 odds archive (4,636 events pulled, good) is **STRANDED** for
+  hourly-resolution backtesting — the binding constraint is PM-price
+  retention, not odds coverage. **Honest usable dataset = ~415 CS2 markets,
+  2026-06-16→07-17, 1xbet-benchmark; at ~1/3 firing ≈ ~140 candidate bets —
+  just above the n≥100 go-bar, CS2-only, soft-book benchmark → a MODEST,
+  heavily-caveated directional cross-check, NOT the hundreds-of-Pinnacle-grade
+  shortcut hoped.** Forward PinnOdds (real Pinnacle sharp line) REMAINS the
+  primary go/no-go path. Lesson: verify the SCARCEST leg's coverage
+  (PM-price retention) BEFORE sizing a multi-source join.
 - **BACKTEST DATA LEGS (post-sign-off, launched 2026-07-17 ~16:35Z):**
   (1) gamma META for all matched cids fetched locally → `owls_pm_meta.json`
   (VPS + scratch): 4,231 unique markets (the 4,639 rows dedup by cid —
   repeat fixtures), **3,893 clean 1/0 resolution labels** (gamma
   `outcomePrices` post-resolution IS the settlement; 338 void/unresolved
   dropped at join, counted). NOTE gamma cid lookups need `closed=true`.
-  (2) CLOB hourly PM price history puller `eb_owls_pm_prices.py`
-  (`235f3ae`, blob md5 `f581117c…`) detached on VPS → `owls_pm_prices.jsonl`
-  (~25min; log `owls_pm_prices.log`). (3) Owls per-event odds pull ETA ~13h
-  (10.3s/event). **Join plan:** per cid — Owls last pre-start 1xbet h2h
+  (2) CLOB hourly PM price history `owls_pm_prices.jsonl` DONE — 484/4231
+  populated (retention boundary above). (3) Owls per-event odds pull DONE:
+  `owls_cs2_event_odds.jsonl`, ok=4636 fail=3 (finished ~18:25Z, sped to
+  1.8s/event). **Join plan:** per cid — Owls last pre-start 1xbet h2h
   snapshot (closing; American |p|≥100 or sane decimal, REJECT integer 1–4
   degenerates + overround outside [1.00,1.20]) → Shin de-vig → orient via
   production matcher vs frozen gamma outcomes → PM price at last pre-start
