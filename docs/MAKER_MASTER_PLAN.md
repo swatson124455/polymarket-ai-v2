@@ -163,8 +163,10 @@ the claim is unverifiable from request counts alone).
   gate there means "measurement-day"; sector×arm attribution keeps it honest.
 - **w-1 REWARD dip** (Jun 4–10 ≈ $1.5K) — unexplained transition week; do not
   anchor anything on it.
-- **Sept-1 "rewards expire" claim** — no primary source; ask the third party
-  (operator action). True kernel: subsidy is discretionary.
+- ~~Sept-1 "rewards expire" claim~~ — **DROPPED per operator 2026-07-17** ("pretend
+  it doesn't exist"). It never had a primary source across an exhaustive sweep.
+  The real, separate risk — the subsidy is discretionary — stays fully tracked
+  (§9 risk 1: hourly census + changelog watch); no date attached to it.
 
 ## 9. Risks
 
