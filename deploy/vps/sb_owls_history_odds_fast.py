@@ -101,11 +101,21 @@ def load_targets():
     # must not delay the bulk of real major games. The whole archive is the
     # Feb–Jul-2026 era so everything is already "recent"; snapshot-count is what
     # separates a Polymarket-relevant game from the obscure lower-league tail.
-    normal = [t for t in targets if not t[3] or t[3] <= _CAP_SNAPS]
-    mega = [t for t in targets if t[3] and t[3] > _CAP_SNAPS]
-    normal.sort(key=lambda t: (t[3], t[2]), reverse=True)
-    mega.sort(key=lambda t: (t[3], t[2]), reverse=True)
-    return normal + mega
+    # Stable multi-key ordering — apply least-significant sort first:
+    #   1) value: oddsSnapshots DESC, gameDate DESC
+    #   2) fully-capturable events (<= _CAP_SNAPS) before mega-outliers
+    #      (which only get a partial tail-capture)
+    #   3) TENNIS FIRST, then the rest (operator 2026-07-17: "tennis priority
+    #      then the rest"). US sports (nba/mlb/nhl/nfl) are all major-league by
+    #      nature; soccer/tennis carry the minor tail but the API exposes NO
+    #      league field and snapshot-count does NOT separate major from minor
+    #      (a U19 match accrues as many snapshots as a Premier League game), so
+    #      minor-league exclusion is not automatable here — do it offline on the
+    #      stored files with a team/player whitelist if wanted.
+    targets.sort(key=lambda t: (t[3], t[2]), reverse=True)
+    targets.sort(key=lambda t: 0 if (not t[3] or t[3] <= _CAP_SNAPS) else 1)
+    targets.sort(key=lambda t: 0 if t[1] == "tennis" else 1)
+    return targets
 
 
 def load_done():
