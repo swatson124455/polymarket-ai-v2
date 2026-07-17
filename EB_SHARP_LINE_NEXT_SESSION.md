@@ -93,6 +93,28 @@ Short delta — §0-S7's lane (vendor reply → historical readout; 07-20+ →
   list) — NOT built, needs operator sign-off. Cost: this fixture class loses
   PM capture; same-day PM "Keyd"-vs-"Keyd Stars" cross-listing is the
   tell to watch for.
+- **NEW VENDOR PROBED 2026-07-17 — Owls Insight (owlsinsight.com), MVP tier
+  $49.99/mo, operator-supplied key:** key stored VPS `/home/ubuntu/
+  .eb_owls_key` (600, NOT in chat/git; auth `Authorization: Bearer`, base
+  `api.owlsinsight.com`, **HTTP/1.1 REQUIRED — HTTP/2 hangs**; ~300k req/mo,
+  400/min; ~15 req spent probing). **VERDICT: does NOT deliver the §0-S7
+  missing piece.** No Pinnacle esports (live or historical, coverage table +
+  live-probe confirmed). History = **CS2 ONLY** (`lol` invalid), **1xbet
+  ONLY**, starts ~Jan/Feb-2026 (2025-10/12 windows empty; 2026-02 populated),
+  ~20.7k archived games, 2–4 snapshots/game (h2h+totals), **mixed price
+  quality** (some records full-precision American −148/+215, some degenerate
+  integers 1/2/4 — needs per-record sanity filter), `/history/closing-odds`
+  EMPTY for cs2, per-event `/history/odds?eventId=` is the real store
+  (30-60s/call, slow). Forward value: 2nd live esports source (1xbet cs2 h2h
+  23 events; Thunderpick v2 pass-through cs2/dota2/lol/valorant) with a huge
+  quota — could cover the 20–23Z PinnOdds dark window, but 1xbet is NOT a
+  sharp reference; substituting it changes the strategy definition =
+  operator decision. **PROPOSED next (not built): quantify PM-overlap of the
+  CS2 archive (enumerate resolved PM CS2 match-winner markets Feb–Jun 2026
+  via gamma, name-match, count joinable) BEFORE any backtest build — dozens
+  → not worth it; hundreds → a heavily-caveated 1xbet-benchmark CS2 study
+  becomes possible.** PinnOdds email (Pinnacle historical) REMAINS the
+  critical path.
 - **STEP 1 (critical path):** operator 2026-07-15 — vendor email **SENT, NO
   REPLY yet**. Historical readout stays blocked on the reply; if it arrives
   with a usable sample, the build is pre-authorized per §0-S7.
