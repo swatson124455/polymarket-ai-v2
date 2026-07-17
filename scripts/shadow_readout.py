@@ -33,31 +33,46 @@ TRUST1 = 1783985376  # cohort-1: quote-fix redeploy epoch (2026-07-13 23:29 UTC)
 TRUST2 = 1784143245  # cohort-2 fallback: watcher restart epoch (2026-07-15 19:20:45 UTC)
 
 
-def load_cohorts(roster: dict) -> tuple[list[str], list[str], float]:
-    """(cohort1_addrs, cohort2_addrs, cohort2_epoch) from the LIVE roster JSON
-    (chain_audit.json). Membership comes from the roster file, NEVER from
-    hardcoded lists (session-close review 2026-07-15 findings A/#9: the
-    cohort-1 line used an EMPTY filter = the whole 24-roster, silently pooling
-    cohort-2 into cohort-1's pre-registered readout; and a hardcoded cohort-2
-    list would silently diverge when future ADMITs extend the roster).
+def load_cohorts(roster: dict) -> tuple[list[str], list[str], float, list[str], float]:
+    """(cohort1, cohort2, cohort2_epoch, probe, probe_epoch) from the LIVE
+    roster JSON (chain_audit.json). Membership comes from the roster file,
+    NEVER from hardcoded lists (session-close review 2026-07-15 findings A/#9:
+    the cohort-1 line used an EMPTY filter = the whole roster, silently pooling
+    cohort-2 into cohort-1's pre-registered readout). `probe` (optional key,
+    2026-07-16) = tail-feasibility OBSERVATION traders (e.g. 0xf705fa) — its
+    own line, NEVER pooled with either cohort, never part of a cohort verdict.
     Fail-loud on inconsistency — a wrong split must never produce a readout."""
+    def grp(key, strict_epoch):
+        blob = roster.get(key) or {}
+        addrs = [str(a).lower() for a in blob.get("addresses", [])]
+        try:
+            ep = datetime.fromisoformat(str(blob.get("admitted_utc"))).timestamp()
+        except (TypeError, ValueError):
+            if addrs and strict_epoch:  # fail loud: a bad epoch silently
+                raise ValueError(       # WIDENS the group's readout window
+                    f"roster group '{key}' has addresses but an unparsable "
+                    f"admitted_utc — fix the ledger before reading out")
+            ep = TRUST2
+        return addrs, ep
     clean = [str(a).lower() for a in roster.get("clean", [])]
     c1 = [str(a).lower() for a in roster.get("cohort1_original", [])]
-    c2_blob = roster.get("cohort2") or {}
-    c2 = [str(a).lower() for a in c2_blob.get("addresses", [])]
+    c2, c2_ep = grp("cohort2", strict_epoch=False)  # constant matches reality
+    probe, probe_ep = grp("probe", strict_epoch=True)
     if not c1 or not c2:
         raise ValueError("roster lacks cohort1_original/cohort2 keys — refusing "
                          "a readout on an ambiguous cohort split")
-    if set(clean) != set(c1) | set(c2):
+    groups = [set(c1), set(c2), set(probe)]
+    if sum(len(g) for g in groups) != len(set().union(*groups)):
+        raise ValueError("cohort1/cohort2/probe OVERLAP — an address in two "
+                         "groups would be pooled into two readouts; fix the "
+                         "ledger before reading out")
+    if set(clean) != set().union(*groups):
         raise ValueError(f"roster clean ({len(clean)}) != cohort1_original "
-                         f"({len(c1)}) + cohort2 ({len(c2)}) — a new admission "
-                         f"was made without extending the cohort ledger; fix "
-                         f"chain_audit.json before reading out")
-    try:  # admitted_utc (ISO, tz-aware) -> epoch; fallback = restart constant
-        epoch = datetime.fromisoformat(str(c2_blob.get("admitted_utc"))).timestamp()
-    except (TypeError, ValueError):
-        epoch = TRUST2
-    return c1, c2, epoch
+                         f"({len(c1)}) + cohort2 ({len(c2)}) + probe "
+                         f"({len(probe)}) — a roster change was made without "
+                         f"extending the ledger; fix chain_audit.json before "
+                         f"reading out")
+    return c1, c2, c2_ep, probe, probe_ep
 
 
 async def fresh_outcomes(tokens: list[str]) -> dict[str, int]:
@@ -148,7 +163,7 @@ def alerts_for(label: str, res: dict, min_markets: int,
 
 async def run(args) -> int:
     with open(args.roster) as f:
-        c1, c2, c2_epoch = load_cohorts(json.load(f))
+        c1, c2, c2_epoch, probe, probe_epoch = load_cohorts(json.load(f))
     recs = az.load_records(args.log)
     tokens = sorted({str(r["token_id"]) for r in recs if r.get("token_id")})
     outcomes = await fresh_outcomes(tokens)
@@ -156,10 +171,14 @@ async def run(args) -> int:
     lines = [f"===== shadow readout {stamp}  (fresh DB labels: "
              f"{len(outcomes) // 2} resolved markets among {len(tokens)} shadow "
              f"tokens; cohorts from {os.path.basename(args.roster)}: "
-             f"{len(c1)}+{len(c2)}) ====="]
+             f"{len(c1)}+{len(c2)}"
+             + (f"+{len(probe)}probe" if probe else "") + ") ====="]
     all_alerts: list[str] = []
-    for label, trust, members in ((f"cohort1({len(c1)})", TRUST1, c1),
-                                  (f"cohort2({len(c2)})", c2_epoch, c2)):
+    groups = [(f"cohort1({len(c1)})", TRUST1, c1),
+              (f"cohort2({len(c2)})", c2_epoch, c2)]
+    if probe:  # observation-only: own line + alerts, never pooled with cohorts
+        groups.append((f"probe({len(probe)})", probe_epoch, probe))
+    for label, trust, members in groups:
         res = cohort_readout(recs, outcomes, trust, ",".join(members), args)
         lines.append(fmt_line(label, res, args.min_markets))
         all_alerts += alerts_for(label, res, args.min_markets)
@@ -215,11 +234,22 @@ def _self_test() -> int:
     good = {"clean": ["0xA", "0xB", "0xC"], "cohort1_original": ["0xa", "0xb"],
             "cohort2": {"addresses": ["0xC"],
                         "admitted_utc": "2026-07-15T19:16:00+00:00"}}
-    c1, c2, ep = load_cohorts(good)
+    c1, c2, ep, pr, _pep = load_cohorts(good)
     ok5 = (c1 == ["0xa", "0xb"] and c2 == ["0xc"] and ep > 1_784_000_000
-           and "0xc" not in c1)  # cohort-1 line can never include cohort-2
+           and "0xc" not in c1 and pr == [])
     print(f"  [cohorts] loaded from roster, disjoint, epoch parsed : {ok5}")
     ok &= ok5
+    # probe group (2026-07-16): own membership+epoch, counted in the ledger
+    withp = {"clean": ["0xA", "0xB", "0xC", "0xD"],
+             "cohort1_original": ["0xa", "0xb"],
+             "cohort2": {"addresses": ["0xC"],
+                         "admitted_utc": "2026-07-15T19:16:00+00:00"},
+             "probe": {"addresses": ["0xD"],
+                       "admitted_utc": "2026-07-16T17:00:00+00:00"}}
+    c1, c2, ep, pr, pep = load_cohorts(withp)
+    ok5b = pr == ["0xd"] and pep > ep and "0xd" not in c1 and "0xd" not in c2
+    print(f"  [cohorts] probe group parsed, disjoint from both cohorts : {ok5b}")
+    ok &= ok5b
     for bad in ({"clean": ["0xA"], "cohort1_original": [], "cohort2": {}},
                 {"clean": ["0xA", "0xB", "0xC", "0xD"],  # admit w/o ledger
                  "cohort1_original": ["0xa", "0xb"],

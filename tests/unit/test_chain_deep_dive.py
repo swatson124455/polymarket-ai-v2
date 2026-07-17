@@ -231,6 +231,9 @@ class _VC:
     fabrication_frac = 0.50
     wash_share = 0.50
     hft_max_rate = 200.0
+    receipt_free_rate = 1000.0
+    max_decisions = 25.0
+    max_flat_share = 0.60
     copier_lead_s = 30
 
 
@@ -242,6 +245,8 @@ _BASE = {"rpc_err_frac": 0.0, "canary_ok": True, "n_chain_fills": 500,
          "skill_p": 0.99, "skill_p_neg": 0.01, "skill_edge": 0.05,
          "skill_labeled": 40, "wash_flag": False, "wash_share": 0.1,
          "wash_named": 100, "rate_flag": False, "true_rate": 5.0,
+         "decisions_per_day": 7.6, "decision_flag": False,
+         "flat_share": 0.16, "flow_positions": 2000, "flow_flag": False,
          "copier_flag": False, "copier_frac": 0.0}
 
 
@@ -267,7 +272,36 @@ def test_verdict_rejects_only_on_contradiction_or_uncopyable():
     assert _v(mismatch=2) == "REJECT"                   # chain says a lie
     assert _v(api_backing=0.3) == "REJECT"              # fabrication (>50% unbacked)
     assert _v(skill_contradicts=True) == "REJECT"       # skill affirmatively disproven
-    assert _v(rate_flag=True) == "REJECT"               # un-tailable true rate
+    assert _v(rate_flag=True, true_rate=2234) == "REJECT"  # receipt-free machine band
+
+
+def test_copyability_rework_20260716_fix_not_bend():
+    """Operator-agreed rework: total fill rate below the receipt-free band
+    NEVER convicts (it conflates stacking clips with decisions); the sub-band
+    is judged on decisions/day and flow shape instead."""
+    # the 0xf705fa shape: 461 fills/day stacker -> ADMIT under the new rule
+    assert _v(true_rate=461.0, decisions_per_day=7.6, flat_share=0.16) == "ADMIT"
+    # too many decisions for the one-bet-per-market engine -> REJECT
+    assert _v(decisions_per_day=40.0, decision_flag=True) == "REJECT"
+    # flow trader (>=60% net-flat on adequate sample) -> REJECT
+    assert _v(flat_share=0.92, flow_flag=True) == "REJECT"
+    # >=1000 fills/day still rejects receipt-free, even direction-incomplete
+    assert _v(rate_flag=True, true_rate=2234,
+              direction_complete=False) == "REJECT"
+
+
+def test_flow_shape_discriminates_stacker_from_flow_trader():
+    def mkf(tok, side, q):
+        return {"token_id": tok, "side": side, "tokens": q, "era": "v1"}
+    stacker = [mkf("1", "BUY", 100), mkf("1", "SELL", 10),
+               mkf("2", "BUY", 50), mkf("3", "BUY", 80), mkf("3", "SELL", 30)]
+    flowt = [mkf(str(i), "BUY", 100) for i in range(10)] + \
+            [mkf(str(i), "SELL", 98) for i in range(10)]
+    assert dd.flow_shape(stacker)["flat_share"] == 0.0
+    assert dd.flow_shape(flowt) == {"n_positions": 10, "flat": 10, "partial": 0,
+                                    "hold": 0, "flat_share": 1.0}
+    # direction-unresolved fills never count; sell-only tokens never count
+    assert dd.flow_shape([mkf("9", None, 5), mkf("8", "SELL", 5)])["n_positions"] == 0
 
 
 def test_verdict_gaps_and_suspicions_are_insufficient_never_reject():

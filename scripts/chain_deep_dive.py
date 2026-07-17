@@ -75,9 +75,18 @@ accusation (binding operator rule 2026-07-14: not_found is an evidence gap):
                          at a materially different price = a lie); fabrication
                          (unbacked API-BUY fraction >= --fabrication-frac); skill
                          DISPROVEN (adequately-powered AND adequately-spanning
-                         NEGATIVE chain edge, P(edge<0) >= --p-hire); or a true
-                         chain rate > --hft-max-rate (mechanically un-tailable —
-                         a measured fact, not an accusation).
+                         NEGATIVE chain edge, P(edge<0) >= --p-hire); or
+                         mechanically uncopyable — REWORKED 2026-07-16
+                         (operator-agreed "fix not bend"): total fills/day >
+                         --receipt-free-rate (unambiguous machine flow, judged
+                         receipt-free), OR chain first-buys/day >
+                         --max-decisions-per-day (more decisions than the
+                         one-bet-per-market engine absorbs), OR net-flat
+                         position share >= --max-flat-share on >=20 positions
+                         (a flow trader — profit engine is the round-trip, so
+                         copying the entry does not inherit the edge). Total
+                         fill rate BELOW the receipt-free band never convicts:
+                         it conflates stacking clips with decisions.
   ADMIT                  COMPLETE sweep AND zero mismatch AND >= --min-api-check
                          API BUYs with backing >= --min-api-backing AND
                          chain-graded skill CLEARS the hire bar AND no forensic
@@ -315,6 +324,38 @@ def reconcile_chain_to_api(chain_buys: list[dict], api_rows: list[dict],
             "hidden_rows": hidden_rows}
 
 
+def flow_shape(fills: list[dict], flat_frac: float = 0.9) -> dict:
+    """Per-token exit profile from the CHAIN fills — the DIRECT test of the
+    'market-maker, not knowledge' presumption the old fills/day cap only
+    proxied (operator-designed 2026-07-16 after 0xf705fa: 461 fills/day but
+    16% net-flat / 57% hold — a STACKER whose profit engine is resolution,
+    with a round-trip component that loses 62% of the time). A token counts
+    FLAT when sold >= flat_frac of bought before resolution; a true flow
+    trader is ~90%+ flat, a stacker holds. side=None fills are excluded
+    (direction must be resolved first — this runs post-receipts)."""
+    per: dict[str, dict] = {}
+    for f in fills:
+        side = f.get("side")
+        if side not in ("BUY", "SELL"):
+            continue
+        d = per.setdefault(f["token_id"], {"bq": 0.0, "sq": 0.0})
+        d["bq" if side == "BUY" else "sq"] += float(f.get("tokens") or 0)
+    flat = partial = hold = 0
+    for d in per.values():
+        if d["bq"] <= 0:
+            continue
+        frac = d["sq"] / d["bq"]
+        if frac >= flat_frac:
+            flat += 1
+        elif frac >= 0.3:
+            partial += 1
+        else:
+            hold += 1
+    n = flat + partial + hold
+    return {"n_positions": n, "flat": flat, "partial": partial, "hold": hold,
+            "flat_share": (flat / n) if n else 0.0}
+
+
 def counterparty_concentration(fills: list[dict]) -> dict:
     """Top-counterparty share of fills that name a counterparty (wash signal)."""
     cps: dict[str, int] = {}
@@ -428,15 +469,18 @@ def deep_dive_verdict(m: dict, cfg) -> tuple[str, list[str]]:
             f"chain_fills={m['n_chain_fills']} — widen range / second RPC, "
             f"never admit or accuse"]
 
-    # UNCOPYABLE is a measured fill-RATE fact (count / span) — it needs no V2
-    # direction receipts, so it is judged on the getLogs-complete sweep BEFORE
-    # the direction gate: a genuinely un-tailable HFT account rejects fast
-    # without paying for full receipts.
+    # RECEIPT-FREE BAND (params reworked 2026-07-16, operator-agreed "fix not
+    # bend"): total fills/day above --receipt-free-rate (1000) is unambiguous
+    # machine flow — reject cheap, no receipts needed. BELOW that band, total
+    # fill rate NEVER convicts (it conflates stacking clips with decisions —
+    # 0xf705fa: 461 fills/day but 7.6 decisions/day); those traders get full
+    # receipts and are judged on DECISION rate + FLOW SHAPE after the
+    # direction gate.
     if m["rate_flag"]:
         return "REJECT", [
-            f"UNCOPYABLE: true chain rate {m['true_rate']:.0f} bets/day > cap "
-            f"{cfg.hft_max_rate:.0f} (mechanically un-tailable — a measured "
-            f"fact, not an accusation)"]
+            f"UNCOPYABLE (receipt-free band): true chain rate "
+            f"{m['true_rate']:.0f} fills/day > {cfg.receipt_free_rate:.0f} — "
+            f"unambiguous machine flow (a measured fact, not an accusation)"]
 
     # mismatch / fabrication / skill all need the BUY set fully resolved; if the
     # V2 receipt cap truncated direction classification, DEFER — a capped sweep
@@ -469,6 +513,20 @@ def deep_dive_verdict(m: dict, cfg) -> tuple[str, list[str]]:
         hard.append(f"SKILL DISPROVEN: adequately-powered negative chain edge "
                     f"(mkts={m['skill_markets']}, span={m['skill_span']}d, "
                     f"edge={m['skill_edge']}, P(edge<0)={m['skill_p_neg']})")
+    # post-direction copyability gates (pre-registered 2026-07-16): DECISION
+    # rate = new markets entered/day (the unit our one-bet-per-market engine
+    # consumes), and FLOW SHAPE = net-flat position share (the direct
+    # market-maker test). Both are measured facts, not accusations.
+    if m.get("decision_flag"):
+        hard.append(f"UNCOPYABLE: {m['decisions_per_day']:.1f} new markets/day "
+                    f"> cap {cfg.max_decisions:.0f} — more decisions than the "
+                    f"copy engine can absorb")
+    if m.get("flow_flag"):
+        hard.append(f"FLOW TRADER: {m['flat_share']:.0%} of {m['flow_positions']} "
+                    f"positions net-flat before resolution "
+                    f">= {cfg.max_flat_share:.0%} — profit engine is the "
+                    f"round-trip, not the outcome; copying the entry alone "
+                    f"does not inherit that edge")
     if hard:
         return "REJECT", hard
 
@@ -903,8 +961,8 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
     rate = true_rate_per_day(len(fills), span_days_frac)
     sweep_complete = (recon["rpc_err_frac"] <= cfg.max_rpc_err_frac and canary_ok
                       and len(fills) > 0)
-    rate_flag = (bool(cfg.hft_max_rate) and ts_ok and len(fills) >= 100
-                 and rate > cfg.hft_max_rate)
+    rate_flag = (bool(cfg.receipt_free_rate) and ts_ok and len(fills) >= 100
+                 and rate > cfg.receipt_free_rate)
 
     # EARLY UNCOPYABLE SHORT-CIRCUIT (efficiency; verdict identical): a complete
     # sweep whose measured fill-RATE already exceeds the cap is REJECT-uncopyable
@@ -928,10 +986,11 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
             funder = await find_funder(bc, addr, floor_b, to_b, cfg, note_err)
         return {
             "address": addr, "verdict": "REJECT",
-            "reasons": [f"UNCOPYABLE: true chain rate {rate:.0f} bets/day > cap "
-                        f"{cfg.hft_max_rate:.0f} (mechanically un-tailable — a "
-                        f"measured fact, not an accusation; V2 receipts SKIPPED, "
-                        f"direction not needed to judge rate)"],
+            "reasons": [f"UNCOPYABLE (receipt-free band): true chain rate "
+                        f"{rate:.0f} fills/day > {cfg.receipt_free_rate:.0f} — "
+                        f"unambiguous machine flow (measured fact, not an "
+                        f"accusation; V2 receipts SKIPPED — the sub-band is "
+                        f"judged on decisions/day + flow shape instead)"],
             "cache_status": cache_status, "incomplete_cache_sweep": incomplete_cache,
             "ts_ok": ts_ok, "block_range": [from_b, to_b], "span_days": span_days,
             "tier1_reconstruction": {
@@ -999,6 +1058,12 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
                                           f"hidden-activity not conclusive "
                                           f"(record incomplete)"}
 
+    # post-direction copyability inputs (pre-registered 2026-07-16):
+    # decision rate over the CHAIN-lifetime span (1-day floor against
+    # div-explosion), flow shape over direction-resolved fills
+    decisions_per_day = len(chain_first_buys) / max(span_days_frac, 1.0)
+    flow = flow_shape(fills)
+
     copier = {"sampled": 0, "preceded": 0, "frac": 0.0}
     if cfg.copier_sample > 0 and chain_first_buys:
         copier = await copier_probe(bc, chain_first_buys, addr, cfg, note_err)
@@ -1043,12 +1108,24 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
         "wash_flag": (conc["top_share"] >= cfg.wash_share
                       and conc["named_fills"] >= cfg.wash_min_fills),
         "wash_share": conc["top_share"], "wash_named": conc["named_fills"],
-        # min 100 fills before the rate can flag — a tiny-span handful of fills
-        # must not read as HFT (mirrors fc.is_hft_history's sample floor); and
-        # only when ts_ok (a collapsed span would inflate the rate — see finding I)
-        "rate_flag": (bool(cfg.hft_max_rate) and ts_ok and len(fills) >= 100
-                      and rate > cfg.hft_max_rate),
+        # min 100 fills before the receipt-free band can flag — a tiny-span
+        # handful of fills must not read as machine flow (mirrors
+        # fc.is_hft_history's sample floor); only when ts_ok (a collapsed span
+        # inflates the rate — finding I)
+        "rate_flag": (bool(cfg.receipt_free_rate) and ts_ok and len(fills) >= 100
+                      and rate > cfg.receipt_free_rate),
         "true_rate": rate,
+        # post-direction copyability (pre-registered 2026-07-16): decisions/day
+        # = chain first-buys per active day; flow shape = net-flat share.
+        # Sample floors: >=100 fills for the decision rate, >=20 judgeable
+        # positions for the flow gate — small samples never convict.
+        "decisions_per_day": decisions_per_day,
+        "decision_flag": (bool(cfg.max_decisions) and ts_ok
+                          and len(fills) >= 100
+                          and decisions_per_day > cfg.max_decisions),
+        "flat_share": flow["flat_share"], "flow_positions": flow["n_positions"],
+        "flow_flag": (bool(cfg.max_flat_share) and flow["n_positions"] >= 20
+                      and flow["flat_share"] >= cfg.max_flat_share),
         "copier_flag": (copier["sampled"] >= cfg.copier_min_sample
                         and copier["frac"] >= cfg.copier_frac),
         "copier_frac": copier["frac"],
@@ -1079,6 +1156,8 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
         "tier3_skill": skill,
         "tier4_forensics": {"counterparty": conc, "maker_taker": mt,
                             "true_rate_per_day": round(rate, 2),
+                            "decisions_per_day": round(decisions_per_day, 2),
+                            "flow": flow,
                             "copier": copier, "funder": funder},
         "first_error": first_err[0] if first_err else None,
     }
@@ -1231,7 +1310,10 @@ async def run(args) -> int:
         "max_rpc_err_frac": args.max_rpc_err_frac,
         "min_api_backing": args.min_api_backing,
         "fabrication_frac": args.fabrication_frac,
-        "wash_share": args.wash_share, "hft_max_rate": args.hft_max_rate})
+        "wash_share": args.wash_share, "hft_max_rate": args.hft_max_rate,
+        "receipt_free_rate": args.receipt_free_rate,
+        "max_decisions_per_day": args.max_decisions,
+        "max_flat_share": args.max_flat_share})
     print(f"summary (ALL runs sharing {args.out_dir}) -> {args.out}")
     return 0
 
@@ -1375,6 +1457,9 @@ def _self_test() -> int:
         fabrication_frac = 0.50
         wash_share = 0.50
         hft_max_rate = 200.0
+        receipt_free_rate = 1000.0
+        max_decisions = 25.0
+        max_flat_share = 0.60
         copier_lead_s = 30
     base = {"rpc_err_frac": 0.0, "canary_ok": True, "n_chain_fills": 500,
             "direction_complete": True, "v2_txs": 100, "v2_receipts": 100,
@@ -1384,6 +1469,8 @@ def _self_test() -> int:
             "skill_p": 0.99, "skill_p_neg": 0.01, "skill_edge": 0.05,
             "skill_labeled": 40, "wash_flag": False, "wash_share": 0.1,
             "wash_named": 100, "rate_flag": False, "true_rate": 5.0,
+            "decisions_per_day": 7.6, "decision_flag": False,
+            "flat_share": 0.16, "flow_positions": 2000, "flow_flag": False,
             "copier_flag": False, "copier_frac": 0.0}
     V = lambda **o: deep_dive_verdict({**base, **o}, _VC())[0]  # noqa: E731
     checks = {
@@ -1394,10 +1481,16 @@ def _self_test() -> int:
         "fabrication": (V(api_backing=0.3), "REJECT"),
         "skill_disproven": (V(skill_contradicts=True), "REJECT"),
         "skill_underpowered": (V(skill_clears=False), "INSUFFICIENT-EVIDENCE"),
-        "rate_uncopyable": (V(rate_flag=True), "REJECT"),
-        # UNCOPYABLE fires even with receipts capped (needs no direction)
+        "rate_uncopyable": (V(rate_flag=True, true_rate=2234), "REJECT"),
+        # receipt-free band fires even with receipts capped (needs no direction)
         "rate_before_direction": (V(rate_flag=True, direction_complete=False),
                                   "REJECT"),
+        # 2026-07-16 rework: a stacker in the 200-1000 band ADMITS (f705fa
+        # shape: 461 fills/day but 7.6 decisions/day, 16% flat)
+        "stacker_band_admits": (V(true_rate=461.0), "ADMIT"),
+        "decision_rate_rejects": (V(decisions_per_day=40.0, decision_flag=True),
+                                  "REJECT"),
+        "flow_trader_rejects": (V(flat_share=0.92, flow_flag=True), "REJECT"),
         "direction_capped": (V(direction_complete=False, v2_receipts=200,
                                v2_txs=5000), "INSUFFICIENT-EVIDENCE"),
         "wash_investigate": (V(wash_flag=True), "INSUFFICIENT-EVIDENCE"),
@@ -1412,9 +1505,23 @@ def _self_test() -> int:
     }
     bad = {k: got for k, (got, want) in checks.items() if got != want}
     ok10 = not bad
-    print(f"  [verdict] 16-case table (REJECT only on contradiction/uncopyable) "
+    print(f"  [verdict] 19-case table (REJECT only on contradiction/uncopyable) "
           f": {ok10}" + (f"  MISMATCHES={bad}" if bad else ""))
     ok &= ok10
+
+    # flow_shape: stacker vs flow-trader discrimination (pure, chain fills)
+    def mkf(tok, side, q):
+        return {"token_id": tok, "side": side, "tokens": q, "era": "v1"}
+    stacker = [mkf("1", "BUY", 100), mkf("1", "SELL", 10),
+               mkf("2", "BUY", 50), mkf("3", "BUY", 80), mkf("3", "SELL", 30)]
+    flowt = [mkf(str(i), "BUY", 100) for i in range(10)] + \
+            [mkf(str(i), "SELL", 98) for i in range(10)]
+    fs1, fs2 = flow_shape(stacker), flow_shape(flowt)
+    ok12 = (fs1["flat_share"] == 0.0 and fs1["hold"] >= 2
+            and fs2["flat_share"] == 1.0 and fs2["n_positions"] == 10
+            and flow_shape([mkf("9", None, 5)])["n_positions"] == 0)
+    print(f"  [flow] stacker 0% flat vs flow-trader 100% flat; side=None excluded : {ok12}")
+    ok &= ok12
 
     ok11 = roster_from_readjudicate({"vindicated": ["0xB", "0xA"]}) == ["0xa", "0xb"]
     print(f"  [roster] VINDICATED from readjudicate json, lowered+sorted : {ok11}")
@@ -1487,9 +1594,26 @@ if __name__ == "__main__":
     # Tier 4 forensics
     ap.add_argument("--wash-share", type=float, default=0.50, dest="wash_share")
     ap.add_argument("--wash-min-fills", type=int, default=20, dest="wash_min_fills")
+    # copyability params (REWORKED 2026-07-16, operator-agreed "fix not bend":
+    # total fill rate conflated stacking clips with decisions — 0xf705fa was
+    # 461 fills/day but 7.6 decisions/day, 16% net-flat, +0.0368 P=1.000 on
+    # 1,835 mkts. Values pre-registered BEFORE the band re-run.)
+    ap.add_argument("--receipt-free-rate", type=float, default=1000.0,
+                    dest="receipt_free_rate",
+                    help="total chain fills/day above which machine flow is "
+                         "unambiguous — receipt-free REJECT (0 disables)")
+    ap.add_argument("--max-decisions-per-day", type=float, default=25.0,
+                    dest="max_decisions",
+                    help="chain first-buys (new markets) per day above which "
+                         "the copy engine cannot absorb the flow (0 disables)")
+    ap.add_argument("--max-flat-share", type=float, default=0.60,
+                    dest="max_flat_share",
+                    help="net-flat position share at/above which the trader is "
+                         "a flow trader (profit = round-trip, not outcome); "
+                         "needs >=20 judgeable positions (0 disables)")
     ap.add_argument("--hft-max-rate", type=float, default=200.0, dest="hft_max_rate",
-                    help="true chain bets/day above which a trader is un-tailable "
-                         "(the fair lifetime-rate test; 0 disables)")
+                    help="LEGACY (2026-07-16): reporting threshold only — no "
+                         "longer rejects; kept for output compatibility")
     ap.add_argument("--copier-sample", type=int, default=0, dest="copier_sample",
                     help="sampled copier-latency probe size (0 = skip; heavy)")
     ap.add_argument("--copier-min-sample", type=int, default=8, dest="copier_min_sample")
