@@ -358,3 +358,83 @@ def test_roster_from_readjudicate():
     assert dd.roster_from_readjudicate(
         {"vindicated": ["0xB", "0xA"]}) == ["0xa", "0xb"]
     assert dd.roster_from_readjudicate({}) == []
+
+
+# ---- copyability flag DERIVATION boundaries (coverage gap closed 2026-07-17:
+# prior tests fed pre-computed flags into deep_dive_verdict; nothing exercised
+# the derivation at the exact pre-registered boundaries) ----
+
+from types import SimpleNamespace as _NS
+
+
+def _cfg(**kw):
+    base = dict(receipt_free_rate=1000.0, max_decisions=25.0,
+                max_flat_share=0.60)
+    base.update(kw)
+    return _NS(**base)
+
+
+def _flow(n=20, flat=0.60):
+    return {"n_positions": n, "flat_share": flat}
+
+
+def test_rate_flag_boundary_exactly_1000_enters_band_not_rejected():
+    # strictly-greater: exactly 1000.0 fills/day is IN the band (receipts run)
+    assert dd.receipt_free_rate_flag(_cfg(), True, 100, 1000.0) is False
+    assert dd.receipt_free_rate_flag(_cfg(), True, 100, 1000.01) is True
+
+
+def test_rate_flag_sample_floor_and_ts_guard():
+    assert dd.receipt_free_rate_flag(_cfg(), True, 99, 5000.0) is False
+    assert dd.receipt_free_rate_flag(_cfg(), True, 100, 5000.0) is True
+    assert dd.receipt_free_rate_flag(_cfg(), False, 100, 5000.0) is False
+    # 0 disables entirely
+    assert dd.receipt_free_rate_flag(_cfg(receipt_free_rate=0.0),
+                                     True, 100, 5000.0) is False
+
+
+def test_decision_flag_boundary_exactly_25_passes():
+    # strictly-greater: exactly 25.0 decisions/day passes
+    d, _ = dd.post_direction_flags(_cfg(), True, 100, 25.0, _flow(flat=0.0))
+    assert d is False
+    d, _ = dd.post_direction_flags(_cfg(), True, 100, 25.01, _flow(flat=0.0))
+    assert d is True
+
+
+def test_decision_flag_sample_floor_ts_guard_and_disable():
+    d, _ = dd.post_direction_flags(_cfg(), True, 99, 40.0, _flow(flat=0.0))
+    assert d is False
+    d, _ = dd.post_direction_flags(_cfg(), False, 100, 40.0, _flow(flat=0.0))
+    assert d is False
+    d, _ = dd.post_direction_flags(_cfg(max_decisions=0.0), True, 100, 40.0,
+                                   _flow(flat=0.0))
+    assert d is False
+
+
+def test_flow_flag_boundary_exactly_060_rejects():
+    # INCLUSIVE at-or-above: exactly 0.60 flat-share REJECTS (comparator
+    # asymmetry vs the exclusive decision cap is intentional and documented)
+    _, f = dd.post_direction_flags(_cfg(), True, 100, 0.0, _flow(20, 0.60))
+    assert f is True
+    _, f = dd.post_direction_flags(_cfg(), True, 100, 0.0, _flow(20, 0.5999))
+    assert f is False
+
+
+def test_flow_flag_position_floor_exactly_20_judged_and_disable():
+    # >=20 inclusive: exactly 20 positions IS judged; 19 is not
+    _, f = dd.post_direction_flags(_cfg(), True, 100, 0.0, _flow(19, 0.99))
+    assert f is False
+    _, f = dd.post_direction_flags(_cfg(), True, 100, 0.0, _flow(20, 0.99))
+    assert f is True
+    _, f = dd.post_direction_flags(_cfg(max_flat_share=0.0), True, 100, 0.0,
+                                   _flow(20, 0.99))
+    assert f is False
+
+
+def test_flow_flag_ignores_ts_and_fill_floor_documented_asymmetry():
+    # DOCUMENTED design asymmetry (review 2026-07-17): flow_flag has NO ts_ok
+    # or 100-fill guard — only the 20-position floor. If this test breaks
+    # because those guards were added, that is a deliberate design change:
+    # update the pre-registration note, not just this test.
+    _, f = dd.post_direction_flags(_cfg(), False, 0, 0.0, _flow(20, 0.80))
+    assert f is True

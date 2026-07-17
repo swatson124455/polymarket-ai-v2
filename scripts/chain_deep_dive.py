@@ -396,6 +396,29 @@ def true_rate_per_day(n_fills: int, span_days: float) -> float:
     return n_fills / max(span_days, 1e-9) if n_fills else 0.0
 
 
+def receipt_free_rate_flag(cfg, ts_ok: bool, n_fills: int, rate: float) -> bool:
+    """Receipt-free UNCOPYABLE band (pre-registered 2026-07-16): total chain
+    fills/day STRICTLY above --receipt-free-rate (default 1000; 0 disables),
+    only when ts_ok and >=100 fills (small samples never convict)."""
+    return (bool(cfg.receipt_free_rate) and ts_ok and n_fills >= 100
+            and rate > cfg.receipt_free_rate)
+
+
+def post_direction_flags(cfg, ts_ok: bool, n_fills: int,
+                         decisions_per_day: float, flow: dict
+                         ) -> tuple[bool, bool]:
+    """Post-direction copyability gates (pre-registered 2026-07-16).
+    decision_flag: chain first-buys/day STRICTLY above --max-decisions-per-day
+    (default 25; 0 disables), only when ts_ok and >=100 fills.
+    flow_flag: net-flat position share AT OR ABOVE --max-flat-share (default
+    0.60 INCLUSIVE; 0 disables) on >=20 judgeable positions."""
+    decision_flag = (bool(cfg.max_decisions) and ts_ok and n_fills >= 100
+                     and decisions_per_day > cfg.max_decisions)
+    flow_flag = (bool(cfg.max_flat_share) and flow["n_positions"] >= 20
+                 and flow["flat_share"] >= cfg.max_flat_share)
+    return decision_flag, flow_flag
+
+
 def interp_ts(block: int, b_lo: int, ts_lo: int, b_hi: int, ts_hi: int
               ) -> datetime:
     """Linear ts for a block from two verified (block, ts) endpoints — avoids a
@@ -961,8 +984,7 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
     rate = true_rate_per_day(len(fills), span_days_frac)
     sweep_complete = (recon["rpc_err_frac"] <= cfg.max_rpc_err_frac and canary_ok
                       and len(fills) > 0)
-    rate_flag = (bool(cfg.receipt_free_rate) and ts_ok and len(fills) >= 100
-                 and rate > cfg.receipt_free_rate)
+    rate_flag = receipt_free_rate_flag(cfg, ts_ok, len(fills), rate)
 
     # EARLY UNCOPYABLE SHORT-CIRCUIT (efficiency; verdict identical): a complete
     # sweep whose measured fill-RATE already exceeds the cap is REJECT-uncopyable
@@ -1063,6 +1085,8 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
     # div-explosion), flow shape over direction-resolved fills
     decisions_per_day = len(chain_first_buys) / max(span_days_frac, 1.0)
     flow = flow_shape(fills)
+    decision_flag, flow_flag = post_direction_flags(cfg, ts_ok, len(fills),
+                                                    decisions_per_day, flow)
 
     copier = {"sampled": 0, "preceded": 0, "frac": 0.0}
     if cfg.copier_sample > 0 and chain_first_buys:
@@ -1112,20 +1136,15 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
         # handful of fills must not read as machine flow (mirrors
         # fc.is_hft_history's sample floor); only when ts_ok (a collapsed span
         # inflates the rate — finding I)
-        "rate_flag": (bool(cfg.receipt_free_rate) and ts_ok and len(fills) >= 100
-                      and rate > cfg.receipt_free_rate),
+        "rate_flag": receipt_free_rate_flag(cfg, ts_ok, len(fills), rate),
         "true_rate": rate,
         # post-direction copyability (pre-registered 2026-07-16): decisions/day
         # = chain first-buys per active day; flow shape = net-flat share.
-        # Sample floors: >=100 fills for the decision rate, >=20 judgeable
-        # positions for the flow gate — small samples never convict.
+        # Sample floors and boundary semantics live in post_direction_flags.
         "decisions_per_day": decisions_per_day,
-        "decision_flag": (bool(cfg.max_decisions) and ts_ok
-                          and len(fills) >= 100
-                          and decisions_per_day > cfg.max_decisions),
+        "decision_flag": decision_flag,
         "flat_share": flow["flat_share"], "flow_positions": flow["n_positions"],
-        "flow_flag": (bool(cfg.max_flat_share) and flow["n_positions"] >= 20
-                      and flow["flat_share"] >= cfg.max_flat_share),
+        "flow_flag": flow_flag,
         "copier_flag": (copier["sampled"] >= cfg.copier_min_sample
                         and copier["frac"] >= cfg.copier_frac),
         "copier_frac": copier["frac"],
