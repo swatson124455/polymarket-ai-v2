@@ -34,6 +34,7 @@ decides; nothing trades real money before that.
 | v2 recorder | gated + touch/wide width A/B | `/opt/pa2-maker-sim-v2`, 2-min timer |
 | v3 recorder | gated + sub-second WS refresh | `/opt/pa2-maker-sim-v3`, daemon |
 | v4 recorder | in-play game lane + classic/split A/B + per-fill rebate meter | `/opt/pa2-maker-sim-v4`, daemon |
+| v5 recorder | **GATE LAB** — 6 gate policies paired on identical inputs (P0 baseline / P1 fitted-vol / P2 wind-down ramp / P3 tape-velocity / P4 all / P5 ungated control); era start 07-17 01:09:09Z, commit `27ba2d7` | `/opt/pa2-maker-sim-v5`, daemon |
 | Pool census | hourly count of every reward pool | `/opt/pa2-maker-census`, hourly timer |
 | Backups | nightly 00:20Z tarball + 09:30 local pull (keeps 7) | `/opt/pa2-maker-backups` + operator machine |
 
@@ -67,6 +68,16 @@ and auto-redeploy (treadmill). Kill criteria pre-registered in
 `docs/MAKER_V4_LANE_TEST_PLAN.md` §5. Capital ask, expected floor (backtest)
 and income basis (real cohort per-$ rates, provisional baseline) get final
 numbers from the readout + post-cup re-measures.
+
+### Gate elevation (07-17): fitted parameters + the v5 lab
+Fit 1 (vol gate, 21K events): continuation after a 2-min move is TAIL-driven —
+median further move ≈ 0 but p75 = +4c at 10min / +7c at 30min after a 2c move;
+grows with move size. Fit 2 (wind-down, 1,450 fills w/ end dates): adverse>2pt
+peaks 20–31% in the final 1–9h of a market vs ~4% at 1–3 days. Both encoded as
+v5 policies; the lab measures each gate idea and combination against an
+ungated paired control on identical markets/prints. First read: ≥3 days of
+lab data (~07-20). Tier-3 candidates still parked: book-collapse early
+warning (needs depth logging), catalyst calendar.
 
 ## 6. Niche ledger (reviewed 07-17, data in memory + `scripts/maker_research/`)
 
