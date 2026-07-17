@@ -84,6 +84,27 @@
 >    further run-4 ADMITs at batch end — a mid-run restart would reset
 >    FirstBuyDedup for zero informational gain (probe already has its own
 >    epoch + readout line; collection is identical under either label).
+> 8. **STACK-VS-FIRST-BUY TEST (operator-requested 2026-07-17) — PRE-REGISTERED,
+>    retrospective arm VOID, forward arm ARMED.** Question: for a stacker, does
+>    the edge live in the first entry or the accumulation (would re-buying beat
+>    our one-bet-per-market policy)? Retrospective attempt on the probe's API
+>    cache FAILED its own cross-check gate twice (could not reproduce the
+>    deep-dive's 1,838 mkts @ +0.036) — ROOT CAUSE: the data-api record is a
+>    structural SUBSET of chain truth (28,926 API BUYs vs 60,576 chain BUYs for
+>    0xf705fa; deep-dive tier-2 verifies the subset is honest, NOT complete).
+>    NO VERDICT from API-based retrospectives — landmine: never grade a
+>    high-rate trader's entry pattern from /activity alone. UNVERIFIED
+>    descriptive residue (both estimand framings agreed): his stack VWAP sits
+>    ~1.5c WORSE than his first price (P(better)=0.000) but dollar-weighting
+>    his sizing BEATS equal-weight — i.e., size-as-conviction looks real,
+>    price-improvement-by-stacking does not. Do not act on this.
+>    **FORWARD TEST (pre-registered, runs on shadow data):** when >=30 resolved
+>    (trader,token) positions carry >=2 BUY records, compute per position
+>    Delta_exec = (outcome - VWAP of recorded asks) - (outcome - first ask),
+>    market-clustered bootstrap, seed 7. Delta>0 @ P>=0.95 -> re-buy policy
+>    becomes a DESIGN PROPOSAL (touches the one-bet-per-market guard: operator
+>    decision); else first-buy-only validated. Every re-buy is already recorded
+>    with executable quotes — zero new collection needed.
 
 > **2026-07-14 PM UPDATE (local steward session; VPS-direct SSH, operator-
 > approved per-command) — CHAIN DEEP-DIVE GATE BUILT, REVIEWED, VALIDATED,
