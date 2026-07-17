@@ -1,4 +1,19 @@
 # MAKER MASTER PLAN
+
+## §0 — NUMBERS RULE (read every time; hardcoded 2026-07-17 after repeated self-contradiction)
+
+**NEVER quote a Maker number from memory or a prior message.** Every quantity
+has ONE canonical definition + source in `scripts/maker_research/maker_canon.py`.
+To state a number you MUST either (a) run `python scripts/maker_research/maker_canon.py`
+(or an in-session live pull), or (b) cite a specific in-session measurement
+WITH its method tag. Snapshot share/payout are ESTIMATES (~5x above
+time-averaged) — never state them as realized. If a value contradicts an
+earlier one, FLAG IT AS A CORRECTION, never slip it in. This rule exists
+because min-bet got quoted 4 different ways in one session (median-off-subset,
+xprice, xpair) — all wrong except `MIN_BET = rewardsMinSize dollars`.
+
+---
+
 *The single vision/plan anchor for the Maker (market-making) initiative.
 Updated 2026-07-17. Every Maker session reads this first; update it when the
 picture changes. Naming: "Maker", never "MB" (= MirrorBot), never "MM";
