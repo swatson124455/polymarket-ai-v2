@@ -1,7 +1,7 @@
 {
-  "release_stamp": "20260714_003205",
-  "git_sha": "b1bf61c7918a04746f874a9dea4ad4ed3959767d",
+  "release_stamp": "20260717_105239",
+  "git_sha": "5fb0b56",
   "git_branch": "claude/new-whiteboard-session-9b23tq",
-  "recorded_at": "2026-07-14T00:35:00Z",
-  "recorded_by": "local-session-S229b (wb-release-cut.sh; clean stop, no SIGKILL; startup transient did NOT recur; S229 markers=11 verified on box; carries 9dc6d59 CancelledError fix + scripts/wb_research)"
+  "recorded_at": "2026-07-17T14:54:34Z",
+  "recorded_by": "local-session-S231 (wb-release-cut.sh; operator signed off; S231 INPUT AUDIT registry fix — 7 resolution-station corrections KDAL/KBKF/KHOU/RKSI/RCSS/LIMC/LTFM, HK flagged for S233 HKO integration; old proc needed SIGKILL on stop (known stop-timeout), new proc clean; first scan 156 events/1716 markets/47 cities; single startup ConnectionDoesNotExistError 14:55:50 did not recur; 23 prediction rows in first minutes; rollback 20260714_003205)"
 }

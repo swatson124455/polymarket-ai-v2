@@ -453,9 +453,21 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
 
 ## WHAT IS LIVE NOW
 
-- **Deployed:** WeatherBot on its splinter, release **`20260714_003205`** (restart
-  **2026-07-14 00:32:41Z**, clean stop; **rollback target `20260713_160143`** — the
-  prior S229 release, which ALSO carries the EMOS + end-date fixes, so rollback is safe).
+- **Deployed:** WeatherBot on its splinter, release **`20260717_105239`** (restart
+  **2026-07-17 14:54:34Z**; **rollback target `20260714_003205`**). Delta vs the
+  prior release = the **S231 INPUT-AUDIT registry fix** (`5fb0b56`, operator
+  signed off): 7 resolution-station corrections — Dallas **KDAL** (Love Field),
+  Denver **KBKF** (Buckley, no 1-min product), Houston **KHOU** (Hobby), Seoul
+  **RKSI** (Incheon), Taipei **RCSS** (Songshan), Milan **LIMC** (Malpensa),
+  Istanbul **LTFM** — matching the stations Polymarket's market descriptions
+  name (verbatim, current AND March). Hong Kong stays KNOWINGLY mis-stationed
+  (resolution = HK Observatory, not a WU/ICAO station) — flagged in-file, HKO
+  integration is S233. Also ships the inert S231 research harnesses. Post-deploy:
+  first scan 156 events / 1,716 markets / 47 cities; single startup connection
+  transient did not recur; prediction writes flowing.
+  PRIOR (still valid context): release `20260714_003205` (restart
+  2026-07-14 00:32:41Z, clean stop; its rollback `20260713_160143` — the
+  prior S229 release, which ALSO carries the EMOS + end-date fixes).
   Paper mode, treated as production. Carries everything through S227 PLUS the full S229 set:
   **per-station global EMOS fix** (`24b2847` — mixed-unit pooled corrector killed; OPEN
   DECISION 2b), **end_date_iso persistence** (`4fa67a3` — WB markets store their end date;

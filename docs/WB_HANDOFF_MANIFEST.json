@@ -44,7 +44,9 @@
     "3a49fce": "feat(wb-research): S231-late — Study C/D harnesses + global peak-model variant + mesh_validation ICAO-global; Study A DEAD",
     "5e8b283": "docs(wb): S231-late sweep verdicts — A/B/D DEAD, C n=10 no-verdict, GLOBAL peak US reproduces gate",
     "c7ccfdc": "docs(wb): REAL-TIME SOURCE LEDGER — 6 keyless official feeds verified",
-    "e7a5e70": "fix(wb-research): commit Study A/B harnesses (were untracked while verdicts recorded)"
+    "e7a5e70": "fix(wb-research): commit Study A/B harnesses (were untracked while verdicts recorded)",
+    "403b047": "fix(wb-research)!: INPUT AUDIT — 8 resolution-station mismatches; ~9% discovery RETRACTED (0/268 at correct stations)",
+    "5fb0b56": "fix(weather)!: S231 INPUT AUDIT — 7 resolution-station corrections per Polymarket market descriptions (DEPLOYED 20260717_105239)"
   },
   "required_docs": [
     "docs/WEATHER_STATUS.md",
@@ -158,6 +160,16 @@
       "file": "bots/weather/engine/base_engine/weather/probability_engine.py",
       "pattern": "S229",
       "expect": 4
+    },
+    {
+      "file": "bots/weather/engine/base_engine/weather/station_registry.py",
+      "pattern": "S231 INPUT AUDIT",
+      "expect": 1
+    },
+    {
+      "file": "base_engine/weather/station_registry.py",
+      "pattern": "S231 INPUT AUDIT",
+      "expect": 1
     },
     {
       "file": "bots/weather/engine/config/settings.py",
