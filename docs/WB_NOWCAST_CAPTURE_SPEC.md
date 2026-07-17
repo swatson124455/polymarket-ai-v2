@@ -497,6 +497,20 @@ the non-US --lead arbiter gap (national feeds are the fix).
   sd ~0.8); ATL/AUS/MIA sd 2.2-2.7 — those cities may stay marginal for 1F
   buckets even after per-PWS debiasing. Phase-2 input: debias PER PWS and
   drop cities whose post-debias residual sd stays >~1.5F.
+- **DAY-2 FULL GLOBAL BIAS READ (07-17 complete day, 653 prints / 37 cities,
+  run 23:5xZ):** (a) **First correct-station reads** (post-deploy rows):
+  KDAL −0.77 sd 0.94, KBKF −0.62 sd 1.25 (GOOD — and Denver has no 1-min
+  product, so mesh matters most there), KHOU +2.04 sd 0.86 (stable warm,
+  debias-able), LIMC +1.55, LTFM −1.19 but 1 PWS/bin (thin roster — needs
+  candidates). RKSI/RCSS absent — Seoul/Taipei local windows ended before the
+  14:54Z deploy; first reads next local day. Old-id rows (KDFW/KDEN/KIAH/
+  RKSS/RCTP/LIML/LTBA) are pre-deploy morning obs and vanish from tomorrow's
+  table. (b) **Day-over-day stability**: REPRODUCIBLE offsets at EGLC
+  (+3.5→+3.0), EHAM, LEMD, WSSS, WMKK, RJTT, LTBA → scalar debias works
+  there. DIURNAL structure confirmed at KSFO (+0.1 morning vs +2.8 full-day —
+  sea-breeze differential) and suspected at CYYZ (−0.9 evening → +2.6
+  full-day) → those need hour-of-day debias terms. MMMX drifted (+1.4→+3.2,
+  sd 2.5) — watch. ZGSZ still garbage (−22, sd 26) — drop confirmed.
 - The 00:35Z A/B re-run mystery: RESOLVED BENIGN — auth.log shows the
   operator machine's own restarted session re-executed interrupted
   launchers (six logins 00:20-00:31, same IP); frozen scripts, consistent
