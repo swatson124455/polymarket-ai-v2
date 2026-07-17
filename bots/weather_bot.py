@@ -964,10 +964,16 @@ class WeatherBot(BaseBot):
         market_price: float,
         confidence: float,
         market_type: str,
+        opp: Optional[Dict] = None,
     ) -> None:
         """Log prediction to prediction_log for accuracy tracking + drift detection.
 
         Dedup: skip if same market_id has |delta_prob| < 0.01 within 600s.
+
+        S231: `opp` (optional) carries city/target_date/question for the Maker
+        forecast-export drop; passing it is the ONLY reason to thread the dict
+        here. Export is fully isolated (see _export_forecast_for_maker) — it
+        cannot affect prediction logging or trading whether opp is present or not.
         """
         now_mono = time.monotonic()
         cached = self._prediction_log_cache.get(market_id)
@@ -1022,6 +1028,54 @@ class WeatherBot(BaseBot):
             # killed ALL prediction logging for hours after the 07-10 deploy;
             # the journal runs at info, so debug is invisible in production.
             logger.warning("weatherbot_prediction_log_failed", error=str(exc))
+
+        # S231: cross-bot export to the Maker feed drop. Runs AFTER (and
+        # independent of) the prediction_log write so a DB failure and an
+        # export failure cannot affect each other. Fully guarded internally.
+        self._export_forecast_for_maker(market_id, model_prob, market_type, opp)
+
+    def _export_forecast_for_maker(
+        self,
+        market_id: str,
+        prob_yes: float,
+        market_type: str,
+        opp: Optional[Dict],
+    ) -> None:
+        """S231 cross-bot feed (operator-approved 2026-07-17, propose-only).
+
+        Append ONE JSON line of WB's YES-frame forecast to the Maker-owned drop
+        file per its contract (/opt/pa2-maker-feeds/README_WB_FORECASTS_CONTRACT.md).
+        The Maker lane reads ONLY its own file — never WB tables/code/env. This
+        method is HARD-ISOLATED: the entire body is wrapped so any failure (no
+        drop dir, disk full, bad field) is swallowed and can NEVER touch WB's
+        logging or trading path. Kill switch: WEATHER_MAKER_FEED_ENABLED=false.
+        """
+        try:
+            if not getattr(settings, "WEATHER_MAKER_FEED_ENABLED", False):
+                return
+            path = getattr(settings, "WEATHER_MAKER_FEED_PATH", "")
+            if not path or opp is None:
+                return
+            city = opp.get("city")
+            date = opp.get("target_date")
+            if not city or not date:
+                return  # contract requires city + date; skip rather than emit partial
+            rec = {
+                "t": int(time.time()),
+                "city": city,
+                "date": date,
+                "market_id": market_id,
+                "prob": round(float(prob_yes), 4),
+                "model": f"weather_{market_type}",
+            }
+            _q = opp.get("question")
+            if _q:
+                rec["question"] = _q
+            with open(path, "a", encoding="utf-8") as _f:
+                _f.write(json.dumps(rec) + "\n")
+        except Exception:
+            # Isolation guarantee: a cross-bot feed must never break WB. Swallow.
+            pass
 
     async def _backfill_weather_outcomes(self) -> None:
         """Resolve WeatherBot predictions against settled markets.
@@ -2461,6 +2515,7 @@ class WeatherBot(BaseBot):
             await self._log_weather_prediction(
                 opp["market_id"], self._yes_frame_prob(opp), self._yes_frame_price(opp),
                 opp.get("confidence", opp["model_prob"]), "precipitation",
+                opp=opp,
             )
 
         if opps:
@@ -2557,6 +2612,7 @@ class WeatherBot(BaseBot):
             await self._log_weather_prediction(
                 opp["market_id"], self._yes_frame_prob(opp), self._yes_frame_price(opp),
                 opp.get("confidence", opp["model_prob"]), "snowfall",
+                opp=opp,
             )
 
         if opps:
@@ -2679,6 +2735,7 @@ class WeatherBot(BaseBot):
             await self._log_weather_prediction(
                 opp["market_id"], self._yes_frame_prob(opp), self._yes_frame_price(opp),
                 opp.get("confidence", opp["model_prob"]), "wind",
+                opp=opp,
             )
 
         if opps:
@@ -3132,6 +3189,7 @@ class WeatherBot(BaseBot):
             await self._log_weather_prediction(
                 e["market_id"], e["model_prob"], bucket.yes_price,
                 effective_confidence, "temperature",
+                opp=e,
             )
 
         # S226 (V28 follow-up): rank the top-N bucket cut by CALIBRATED edge.
@@ -4032,6 +4090,7 @@ class WeatherBot(BaseBot):
                 opp["market_id"], self._yes_frame_prob(opp), self._yes_frame_price(opp),
                 opp.get("confidence", opp["model_prob"]),
                 opp.get("market_type", "temperature"),
+                opp=opp,
             )
             # S127: Entry-side cooldown REMOVED — cooldown must start at EXIT, not
             # ENTRY.  Exit-side set lives at line ~1015 (PM exit detection).  The old

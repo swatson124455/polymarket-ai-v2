@@ -849,6 +849,14 @@ class Settings(BaseSettings):
     # OS-env value is read at class-definition time (same pattern as every field).
     WEATHER_MID_LIFE_EXIT_ENABLED: bool = os.getenv("WEATHER_MID_LIFE_EXIT_ENABLED", "false").lower() in ("true", "1", "yes")
     WEATHER_EXIT_MIN_EDGE: float = float(os.getenv("WEATHER_EXIT_MIN_EDGE", "0.05"))
+    # S231: cross-bot forecast export to the Maker lane's drop file (propose-only
+    # feed, operator-approved 2026-07-17). WB APPENDS its YES-frame forecast per
+    # city-market; the Maker lane reads its OWN file, never WB internals. Fully
+    # failure-isolated (append errors are swallowed, never touch the trade path).
+    # Tier-2 kill: set WEATHER_MAKER_FEED_ENABLED=false + restart. Default ON so
+    # the operator-provisioned drop starts receiving lines on deploy.
+    WEATHER_MAKER_FEED_ENABLED: bool = os.getenv("WEATHER_MAKER_FEED_ENABLED", "true").lower() in ("true", "1", "yes")
+    WEATHER_MAKER_FEED_PATH: str = os.getenv("WEATHER_MAKER_FEED_PATH", "/opt/pa2-maker-feeds/wb_forecasts.jsonl")
     # S107: Baker-McHale uncertainty floor (prevents 0.26x crush on high-spread forecasts)
     WEATHER_BM_FLOOR: float = float(os.getenv("WEATHER_BM_FLOOR", "0.50"))
     # S107: Minimum trade size in USD (was $1, now $5 — eliminates dust positions)
