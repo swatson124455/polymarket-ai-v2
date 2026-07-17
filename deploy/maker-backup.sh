@@ -16,6 +16,7 @@ FILES=$(ls opt/pa2-maker-sim/state.json opt/pa2-maker-sim/samples-* \
            opt/pa2-maker-sim-v3/state.json opt/pa2-maker-sim-v3/universe.json opt/pa2-maker-sim-v3/samples-* \
            opt/pa2-maker-sim-v4/state.json opt/pa2-maker-sim-v4/universe.json opt/pa2-maker-sim-v4/samples-* \
            opt/pa2-maker-sim-v5/state.json opt/pa2-maker-sim-v5/universe.json opt/pa2-maker-sim-v5/samples-* \
+           opt/pa2-maker-sim-v6/state.json opt/pa2-maker-sim-v6/universe.json opt/pa2-maker-sim-v6/samples-* \
            opt/pa2-maker-census/census-* 2>/dev/null)
 [ -z "$FILES" ] && { echo "backup FAIL: no data files found"; exit 1; }
 COUNTS=$(echo "$FILES" | awk -F/ '{print $2}' | sort | uniq -c | awk '{printf "%s:%s ", $2, $1}')

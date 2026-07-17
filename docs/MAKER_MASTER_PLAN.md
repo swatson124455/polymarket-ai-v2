@@ -60,6 +60,7 @@ nothing computed with superseded methods may be quoted from this document)
 | v3 recorder | gated + sub-second WS refresh | `/opt/pa2-maker-sim-v3`, daemon |
 | v4 recorder | in-play game lane + classic/split A/B + per-fill rebate meter | `/opt/pa2-maker-sim-v4`, daemon |
 | v5 recorder | **GATE LAB** — 7 gate policies paired on identical inputs (P0 baseline / P1 fitted-vol / P2 wind-down ramp / P3 tape-velocity / P4 all / P5 ungated control / **P6 WB-forecast tilt**, added `ca6c1c5`); eras: 01:09:09Z launch `27ba2d7` → 02:36:41Z clean (P0-P5) → **21:55:09Z 07-17 P6 era start** (P0-P5 ledgers carried, verified) | `/opt/pa2-maker-sim-v5`, daemon |
+| v6 recorder | **NEGRISK LAB** — netted multi-outcome quoting, paired N0_all (every covered outcome) vs N1_single (flagship baseline); one-winner floor accounting; era start **07-17 22:20:27Z** `1652ae0` | `/opt/pa2-maker-sim-v6`, daemon |
 | Pool census | hourly count of every reward pool | `/opt/pa2-maker-census`, hourly timer |
 | Backups | nightly 00:20Z tarball + 09:30 local pull (keeps 7) | `/opt/pa2-maker-backups` + operator machine |
 
@@ -142,6 +143,7 @@ Queued as the next research block (post-readout).
 | Ghost-read other bots | propose-only design (see §7) | MB-alarm backtest v0 runs from OUR data (below) |
 | Geopolitical making | demoted (operator) — only toxic sector + fee-free | none |
 | negRisk arb | dead (fee-free era over) | none |
+| negRisk netted quoting | **v6 NEGRISK LAB live 07-17 22:20:27Z** (`1652ae0`): N0 all-outcome vs N1 flagship, paired; worst$ = one-winner floor (winnable-sibling counts from /events; departed inventory kept in floor) | first read ≥3-5d (~07-21+): N0 rew$/cap$ vs N1 |
 | Subjective-settlement markets | size-cap rule adopted from playbook review | encode in pilot config |
 
 ## 7. Ghost-reading other bots (propose-only, operator-acknowledged 07-17)
