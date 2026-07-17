@@ -130,7 +130,7 @@ def px_at(token, ts, cache):
     if not h:
         return None
     b = min(h, key=lambda x: abs(x["t"] - ts))
-    return float(b["p"]) if abs(b["t"] - ts) <= 600 else None
+    return float(b["p"]) if abs(b["t"] - ts) <= 300 else None
 
 
 def cluster_stats(bets):
