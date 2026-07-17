@@ -594,7 +594,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
     "jacksonville": WeatherStation(
         city_name="Jacksonville",
         station_id="KJAX",
-        ghcnd_id="GHCND:USW00012918",
+        ghcnd_id="GHCND:USW00013889",
         latitude=30.4941,
         longitude=-81.6878,
         elevation_m=9.0,
