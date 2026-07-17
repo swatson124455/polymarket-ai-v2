@@ -27,13 +27,23 @@ Short delta — §0-S7's lane (vendor reply → historical readout; 07-20+ →
   2026-07-15 ~19:57Z, md5 `3c2c43f1b479dfde352c57ec7f4abdaa`** (rollback
   `.bak_36743c45` on VPS). Verified offline against LIVE gamma (zero PinnOdds
   quota): new index 164 refs, `match_ref("Leviatan","FURIA")` →
-  `0x01a0ddbf…`. **S8 STEP 0: confirm a post-fix tick shows Leviatán matched**
-  (20:00Z tick was a full-429 loss — see next bullet — so live confirmation
-  lands on the next successful tick).
-- **429 watch (no action):** 07-13..15 = 69 ticks, 9 appended=0 (~13%,
-  clustered 07-13/14; 07-15 had ONE — the 20:00Z tick lost to 4×429,
-  dur 181s). Lifetime 429 lines 268 (was 236 on 07-13). Retry loop is coping;
-  the paid-tier/rate-limit question is already in the open vendor thread.
+  `0x01a0ddbf…`. **S8 STEP 0 ✅ CONFIRMED LIVE (post-close review, 07-17):**
+  20 post-fix Leviatán ticks captured with pm+books, correct cid
+  `0x01a0ddbf…`, through 19:00Z pre-start; deployed bytes re-verified ==
+  git blob (`3c2c43f1…` both sides).
+- **429 wall is SYSTEMATIC, not sporadic (post-close review, 07-17 —
+  supersedes this section's earlier "coping/no action" read):** every day
+  since 07-11, EXACTLY the 20:00–23:00Z ticks are full-429 losses (4/day,
+  dur≈182s = 3×Retry-After-60 exhausted) — the vendor's DAILY quota runs out
+  at 20:00Z and resets at midnight UTC. Consequence: **zero odds capture
+  20:00Z–00:00Z every day → for any match starting 20:00Z–01:00Z the
+  "closing line" is silently the 19:00Z line and the final-1–2h trigger
+  window is DARK.** The 07-15..19 slate readout MUST disclose this per-match
+  (evening starts get stale closing lines; trigger-time rule not evaluable
+  for them). Fix paths are OPERATOR decisions, in the open vendor thread:
+  paid tier (raises quota), or re-timing/skipping low-value hours to bank
+  daily quota for 20–23Z (changes dataset cadence mid-slate — needs explicit
+  sign-off; do NOT just edit the cron).
 - **STEP 1 (critical path):** operator 2026-07-15 — vendor email **SENT, NO
   REPLY yet**. Historical readout stays blocked on the reply; if it arrives
   with a usable sample, the build is pre-authorized per §0-S7.
