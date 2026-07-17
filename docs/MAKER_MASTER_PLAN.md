@@ -72,9 +72,17 @@ v4 universe steps 01:51Z → 02:03Z → 14:22Z → uncapped ~16:45Z 07-16.
 
 ## 5. Pilot shape (current best guess — the readout updates this)
 
-Gated + WS-fast + sports-led + min-size, **plus a farm tier** (breadth
-quoting of weather/politics/finance dailies — the strongest reviewed niche)
-and auto-redeploy (treadmill). Kill criteria pre-registered in
+**FARM-LED, not sports-led (operator risk ruling 07-17: "you are
+underestimating how shredded we can get").** Pilot v1 quotes ONLY
+small-minimum-size sectors (weather ~30sh/politics 50sh/finance dailies) —
+the measured shred lives in big-msz sectors (WC family −$18.5K in one day on
+1,000-share minimums; in-play receipts 49% adverse); on a farm-only book the
+absolute worst simultaneous-gap day is arithmetic-bounded at ~$5-8K deployed
+≈ 5-7 days of reward income. Gated + WS-fast + min-size + auto-redeploy
+(treadmill). Hard per-market notional caps + DAILY PORTFOLIO STOP-LOSS that
+halts the bot. Sports/esports/anything with an in-play phase stays
+recorder-only until the gate lab AND pilot receipts prove the gates at small
+scale. Kill criteria pre-registered in
 `docs/MAKER_V4_LANE_TEST_PLAN.md` §5. **Income basis = OUR measured capture
 ($1.0–1.1K/day at the current footprint, §2.3), scaled by footprint, floored
 by the backtest trading floor, and VERIFIED by pilot receipts to our own
