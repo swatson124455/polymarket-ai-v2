@@ -152,6 +152,11 @@ def test_wb_weight_tiers():
     assert mps5.wb_weight("New York City", "weather_temperature", NOW_JUL) == 1.0
     assert mps5.wb_weight("New York City", "weather_precipitation", NOW_JUL) == 0.5
     assert mps5.wb_weight("Seoul", "weather_wind", NOW_JUL) == 0.25
+    # pseudo-station tier (operator brief: lowest trust) — Title Case as in
+    # the live feed; survives past the cold-start boundary
+    assert mps5.wb_weight("Guangzhou", "weather_temperature", NOW_JUL) == 0.25
+    assert mps5.wb_weight("Busan", "weather_temperature", NOW_AUG) == 0.25
+    assert mps5.wb_weight("Manila", "weather_wind", NOW_JUL) == 0.125
 
 
 def test_wb_shift_no_forecast_is_exact_zero():

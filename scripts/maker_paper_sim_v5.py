@@ -106,19 +106,29 @@ WB_EXCLUDE_CITIES = {"Hong Kong"}   # mis-stationed until WB S233 HKO work
 WB_COLDSTART_CITIES = {"Dallas", "Denver", "Houston", "Seoul", "Taipei",
                        "Milan", "Istanbul"}   # re-stationed 07-17, EMOS reset
 WB_COLDSTART_UNTIL = calendar.timegm((2026, 8, 1, 0, 0, 0))
+WB_PSEUDO_CITIES = {"Busan", "Guangzhou", "Jeddah", "Karachi", "Manila",
+                    "Qingdao"}   # dynamic pseudo-stations: geocoded
+                                 # approximations, UNAUDITED (WB S231) —
+                                 # lowest trust. Named set only; WB's "etc."
+                                 # residual is not enumerable from our side
+                                 # and rides at full weight -> the readout
+                                 # segments by city string. Feed casing is
+                                 # Title Case (verified live 07-17 22:5xZ).
 WB_TILT = {}                  # cid -> {"prob","t","w"}; read-only elsewhere
 _wb_feed = {"off": 0}
 
 
 def wb_weight(city, model, now):
-    """Trust-tier weight per WB's S231 semantics answer. Pseudo-station
-    cities are not enumerable from our side ("etc.") — they ride at 1.0 and
-    the readout segments by city from the sample rows instead."""
+    """Trust-tier weight per WB's S231 semantics answer (and the operator's
+    tilt-experiment brief): HK excluded, cold-start x0.5 until ~08-01,
+    named pseudo-station cities x0.25, non-temperature models x0.5."""
     if city in WB_EXCLUDE_CITIES:
         return 0.0
     w = 1.0
     if city in WB_COLDSTART_CITIES and now < WB_COLDSTART_UNTIL:
         w *= 0.5
+    if city in WB_PSEUDO_CITIES:
+        w *= 0.25
     if model != "weather_temperature":
         w *= 0.5
     return w
