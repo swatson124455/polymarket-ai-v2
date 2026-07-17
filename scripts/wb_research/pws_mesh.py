@@ -47,14 +47,20 @@ DEAD_AFTER = 5          # consecutive empty polls -> rotate to next candidate
 LOCAL_H0, LOCAL_H1 = 9, 21
 
 
+WU_FAILS = 0    # S231 review: a WU ban must be distinguishable from a quiet night
+
+
 def fetch_json(url, timeout=12):
+    global WU_FAILS
     req = urllib.request.Request(url, headers={"User-Agent": "wb-research/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             if r.status != 200:
+                WU_FAILS += 1
                 return None
             return json.loads(r.read().decode())
     except Exception:
+        WU_FAILS += 1
         return None
 
 
@@ -72,18 +78,25 @@ def resolve_roster(st):
 
 
 def active_cities():
-    """US F-station cities with an ACTIVE temp family (same SQL family as
-    trade_prints.py) — bounds the call budget to markets that can trade."""
-    raw = subprocess.run(
-        ["sudo", "-u", "postgres", "psql", "polymarket", "-At", "-c",
-         """SELECT DISTINCT question FROM markets
-            WHERE category='weather' AND resolved IS NOT TRUE
-              AND question LIKE 'Will the highest temperature%'
-              AND end_date_iso BETWEEN NOW() - INTERVAL '1 day'
-                                   AND NOW() + INTERVAL '2 days'"""],
-        capture_output=True, text=True, timeout=60).stdout
+    """Cities (ANY country — GLOBAL mandate 2026-07-16) with an ACTIVE temp
+    family (same SQL family as trade_prints.py) — bounds the call budget to
+    markets that can trade. Returns None on DB failure (S231 review: a psql
+    error must not read as 'no active markets')."""
+    try:
+        proc = subprocess.run(
+            ["sudo", "-u", "postgres", "psql", "polymarket", "-At", "-c",
+             """SELECT DISTINCT question FROM markets
+                WHERE category='weather' AND resolved IS NOT TRUE
+                  AND question LIKE 'Will the highest temperature%'
+                  AND end_date_iso BETWEEN NOW() - INTERVAL '1 day'
+                                       AND NOW() + INTERVAL '2 days'"""],
+            capture_output=True, text=True, timeout=60)
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
     cities = set()
-    for q in raw.splitlines():
+    for q in proc.stdout.splitlines():
         m = re.match(r"Will the highest temperature in (.+?) be ", q)
         if m:
             cities.add(m.group(1).lower())
@@ -99,6 +112,9 @@ def main():
     fetched_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     live = active_cities()
+    if live is None:
+        print("%s pws_mesh DB_QUERY_FAILED — tick skipped" % fetched_at)
+        return
     new_count = 0
     with open(OUT, "a") as out:
         for st in STATION_REGISTRY.values():
@@ -153,13 +169,24 @@ def main():
                 }) + "\n")
                 new_count += 1
 
-    # prune stale city entries (roster not re-resolved for 3+ days)
+    # prune stale city entries (roster not re-resolved for 3+ days);
+    # malformed entries are dropped, never allowed to crash the save (S231)
     cutoff = (datetime.now(timezone.utc).toordinal() - 3)
-    state = {k: v for k, v in state.items()
-             if v.get("resolved") and
-             datetime.strptime(v["resolved"], "%Y-%m-%d").toordinal() >= cutoff}
-    json.dump(state, open(STATE, "w"))
-    print("%s pws_mesh cities=%d new_obs=%d" % (fetched_at, len(live), new_count))
+
+    def _fresh(v):
+        try:
+            return (datetime.strptime(v.get("resolved", ""), "%Y-%m-%d")
+                    .toordinal() >= cutoff)
+        except Exception:
+            return False
+    state = {k: v for k, v in state.items() if _fresh(v)}
+    # atomic write: a crash mid-dump must not wipe every cursor (S231)
+    tmp = STATE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f)
+    os.replace(tmp, STATE)
+    print("%s pws_mesh cities=%d new_obs=%d wu_fails=%d"
+          % (fetched_at, len(live), new_count, WU_FAILS))
 
 
 main()
