@@ -37,7 +37,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, "/opt/polymarket-ai-v2-weather")
 from bots.weather.engine.base_engine.weather.station_registry import STATION_REGISTRY  # noqa
 
-WEBKEY = os.environ.get("WU_WEBKEY", "e1f10a1e78da46f5b10a1e78da96f525")
+WEBKEY = os.environ.get("WU_WEBKEY") or "e1f10a1e78da46f5b10a1e78da96f525"
 OUT = ("/home/ubuntu/wb_research/pws_mesh_%s.jsonl"
        % datetime.now(timezone.utc).strftime("%Y%m%d"))
 STATE = "/home/ubuntu/wb_research/.pws_mesh_state.json"
