@@ -526,6 +526,8 @@ def run(base):
             while mh and now - mh[0][0] > 330:
                 mh.pop(0)
             sh["last_mid"] = mid
+            sh["mid_t"] = now       # freshness stamp: accrual requires a mid
+                                    # recently refreshed from LIVE books
             # shared tape-velocity signal (price leg): 3c move over <=5.5min
             if abs(mid - mh[0][1]) >= TAPEVEL_MOVE_5M and now - mh[0][0] >= 60:
                 sh["hot_until"] = now + TAPEVEL_OFF_S
@@ -610,7 +612,12 @@ def run(base):
                 q1, q2 = cached_scores(m, mid)
                 q_comp = max(min(q1, q2), max(q1, q2) / 3.0) \
                     if 0.10 <= mid <= 0.90 else min(q1, q2)
-                books_live = (q1 + q2) > 0     # empty books => share=1.0 poison
+                # freshness guard, NOT score-emptiness: q1+q2==0 with a live
+                # book is the LEGIT sole-in-band-quoter (farm) case earning
+                # real 100% share (masking check 07-17: the score-based guard
+                # wrongly zeroed ~3% of quoting rows, mostly politics). Only
+                # a STALE mid (restart before books repopulate) may not accrue.
+                books_live = (now - sh.get("mid_t", 0)) < 180
                 for pol_name, pol in POLICIES.items():
                     st = st_of(key, pol_name)
                     # dt/last_acc_t advance EVERY minute regardless of gating:
