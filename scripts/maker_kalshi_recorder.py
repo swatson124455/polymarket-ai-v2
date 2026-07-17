@@ -417,6 +417,9 @@ def sample_market(m, budget, accum):
         "act_cap": res["act"]["capital_usd"],
         "lv_y": len(yes), "lv_n": len(no),
         "usd_day": round(m["usd_day"], 2),
+        # rw/pend since 2026-07-18 era: total program reward $ + program end —
+        # usd_day is a RATE; short windows make rate-sums exceed scheduled money
+        "rw": round(m["reward_usd"], 2), "pend": m["end"],
     })
     return True
 
