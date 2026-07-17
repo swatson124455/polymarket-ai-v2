@@ -471,6 +471,24 @@ sibling, revision):**
    last print lands before 23:30 local — both are non-random-skip caveats
    to carry, not silent errors.
 
+**SECOND-ORDER VERIFICATION (07-17 ~03:0xZ — were the fixes masking more?):**
+- Study B's ~9% independently re-derived (9.89%, 36/364 fresh pass): ZERO
+  double-fires, ZERO phantom contamination — the discovery is real; correct
+  mechanism statement = settlement-source divergence ≥1F (WU vs METAR;
+  integer prints saturate the edge-distance lens, so 'boundary' is shorthand).
+- Fixed bias table (n=181) unmasked per-city heterogeneity: KSFO mesh
+  +3.3F hot (marine microclimate), KIAH +2.0; LGA/LAX/SEA tight (±1F,
+  sd ~0.8); ATL/AUS/MIA sd 2.2-2.7 — those cities may stay marginal for 1F
+  buckets even after per-PWS debiasing. Phase-2 input: debias PER PWS and
+  drop cities whose post-debias residual sd stays >~1.5F.
+- The 00:35Z A/B re-run mystery: RESOLVED BENIGN — auth.log shows the
+  operator machine's own restarted session re-executed interrupted
+  launchers (six logins 00:20-00:31, same IP); frozen scripts, consistent
+  outputs, no third party.
+- Cron post-fix: 0 duplicate (pws,epoch) in 2,479 obs; wu_fails baseline
+  ~5/tick (~2.5% transient). S232 refinement: split 204-dead-station counts
+  from network-error counts so the alarm channel stays clean.
+
 ## REAL-TIME SOURCE LEDGER (probed live from the VPS 2026-07-17 ~02:20Z)
 
 Legit alternatives/additions to the WU PWS mesh, by resolution city.
