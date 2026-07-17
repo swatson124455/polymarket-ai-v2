@@ -503,7 +503,27 @@ the non-US --lead arbiter gap (national feeds are the fix).
   outputs, no third party.
 - Cron post-fix: 0 duplicate (pws,epoch) in 2,479 obs; wu_fails baseline
   ~5/tick (~2.5% transient). S232 refinement: split 204-dead-station counts
-  from network-error counts so the alarm channel stays clean.
+  from network-error counts so the alarm channel stays clean. (DONE 07-17
+  12:xxZ — wu_fails now excludes 204s; ~5/tick = genuine transients.)
+
+**FIRST GLOBAL BIAS READ (07-17 ~13:40Z, `mesh_validation --bias 20260717`,
+371 prints / 32 cities — the day-2 mesh incl. every non-US city):**
+- LEAD verdict still data-gated: IEM 1-min lag ~30h → 0 gradeable events for
+  07-16 (verified by live run); full-day grading possible ~Sat 09:30Z — the
+  scheduled task (Sat 10:00 ET) lands right; partial (US-morning) possible
+  late Fri.
+- Non-US mesh quality TIERS (raw, pre-debias): GOOD (workable with per-PWS
+  debias): CYYZ −0.9, LFPB −0.2, LEMD −1.0, EDDM +0.9, RJTT −1.4, LLBG +0.5,
+  VHHH −1.3. LARGE-BUT-STABLE offsets (debias-able): EGLC +3.5, EFHK +3.3,
+  EHAM +3.0, RKSS +2.3, LTBA −3.1, NZWN +1.4, WSSS +1.7, MMMX +1.4.
+  SUSPECT: EPWA +5.2 (2 PWS/bin — thin roster), WMKK −4.0 sd 4.0,
+  RCTP −9.4 (tight sd — airport 40km from city PWS cluster?).
+  **BROKEN: ZGSZ −23.6F sd 26 — Shenzhen roster is garbage (wrong-location
+  or junk stations passing qc); drop-rule candidate #1.**
+- NEW HYPOTHESIS from day-over-day: KSFO read +3.3F (afternoon-dominated
+  07-16 sample) vs +0.1F (morning-only 07-17 sample) — per-PWS offsets may
+  be DIURNAL (sea-breeze/heating cycles). Phase-2 debias likely needs an
+  hour-of-day term, not a scalar. Verify as bias samples accrue.
 
 ## REAL-TIME SOURCE LEDGER (probed live from the VPS 2026-07-17 ~02:20Z)
 
