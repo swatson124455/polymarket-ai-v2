@@ -14,11 +14,16 @@ odds harvester** that grabs the highest-value events first before access ends.
 - **Harvester:** `sb_owls_history_odds_fast.py` (threaded, `SB_WORKERS=8`).
   Supersedes the serial `sb_owls_history_odds.py`. The chainer `sb_chain.sh` was
   KILLED so it can't launch the serial competitor.
-- **Priority = oddsSnapshots DESC** (major/liquid-game proxy — operator chose
-  "recent + major first"; the whole archive is Feb-Jul-2026 so gameDate barely
-  discriminates, and snapshot-count separates a Polymarket-relevant major game
-  from the obscure lower-league tail). Fully-capturable events first, mega-
-  outliers last.
+- **Priority (operator 07-17): TENNIS FIRST, then the rest**, value-ordered
+  (oddsSnapshots DESC, fully-capturable before mega-outliers) within each group.
+- **⚠ Minor-league cannot be auto-excluded.** Operator said "ignore all minor
+  league items", but the API has NO league field and snapshot-count does NOT
+  separate major from minor — in the live distribution a U19 / lower-division
+  match accrues as many snapshots as a Premier League game (Tottenham@Sunderland
+  3,964 sits among Wollongong Wolves / Eibar III / U19s). No `/leagues` endpoint
+  exists either. US sports (nba/mlb/nhl/nfl) ARE all major-league by nature and
+  kept in full; soccer/tennis carry the minor tail. Minor exclusion must be done
+  OFFLINE on the stored files with a team/player whitelist — not built.
 - **Hard constraints found (measured live 07-17):**
   - **CONCURRENCY cap, not req/min:** 4-8 workers = 0 × 429; 20-24 workers =
     heavy HTTP 429. Do NOT raise SB_WORKERS above ~8-10.
