@@ -12,8 +12,9 @@ knowable features separate final crossings from intermediate ones:
 Output 1: EV per (E_rem bin × hour band) cell — a priori bins, no fitting.
 Output 2: the pre-registered RULE "enter iff E_rem <= 1.0 AND hour >= 12",
           evaluated on a DATE-SPLIT (train days report only context; the
-          verdict is the TEST half). Gate bar (spec): test meanEV >= +0.05
-          at mid with ~2SE excluding 0.
+          verdict is the TEST half). Gate bar (S231-hardened): test meanEV
+          >= +0.05 at mid with 2SE excluding 0 AND family-day-clustered
+          day-mean minus 2 clustered-SE > 0 (>=2 family-days required).
 
 S231 (deep-backtest task 1): archived Open-Meteo forecasts wired in via the
 PREVIOUS-RUNS API (`temperature_2m_previous_day1` — values for day D come
