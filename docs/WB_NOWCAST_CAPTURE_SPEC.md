@@ -327,6 +327,14 @@ distance bin shows bias (>5F +0.020 = noise). The market does NOT carry the
 bot's print-world defect — its low-bucket pricing is already correct.
 Consistent with the market winning every day-ahead duel. The peak-model
 selection remains the only validated edge.
+**GLOBAL RE-RUN (ran 07-17, `study_a_global.out`, per the pre-registered
+robustness block): DEAD pooled at both leads** (24h n=795 +0.000 cSE 0.012;
+14h n=634 −0.004) — the global verdict matches the US one. NOTED FOR
+ACCRUAL, NOT A VERDICT: the **non-US cut is mildly positive at ~1.2-1.4σ**
+(24h +0.062 cSE 0.043 n=70; 14h +0.052 n=59) — consistent with the
+thinner-attention-overseas thesis but far below the bar; also the >5F-below
+bin is +0.03-0.04 (~1.3σ) both leads. No trading, no re-tuning; re-cut as
+non-US family-days accrue.
 
 **STUDY B — post-lock drift capture (execution-only edge).**
 Motivation: winners drift 0.85→1.00 for hours after the outcome is
