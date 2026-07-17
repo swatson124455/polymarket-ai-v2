@@ -145,8 +145,11 @@ def get_prints(mid):
             is_yes = (t.get("outcome") or "").lower() == "yes"
             side = (t.get("side") or "").upper()
             yes_px = px if is_yes else 1.0 - px
-            yes_buy = (side == "BUY") if is_yes else (side == "SELL")
-            out.append((ts, yes_px, yes_buy, sz))
+            # unified contract (S231 review deferred #5): 3rd tuple slot is
+            # yes_sell EVERYWHERE (maker_fill_study/postlock_drift identical);
+            # this script wants taker BUYs -> consumers test `not sell`.
+            yes_sell = (side == "SELL") if is_yes else (side == "BUY")
+            out.append((ts, yes_px, yes_sell, sz))
         if len(page) < 500:
             break
         off += 500
@@ -245,11 +248,11 @@ def main():
         c1 = t_rev - int(3.5 * 3600)
         for dta in DELTAS:
             lvl = q0 - dta
-            fills[dta] = sum(sz for ts, px, buy, sz in prints
-                             if buy and t_rev <= ts <= t_rev + WIN_POST_S
+            fills[dta] = sum(sz for ts, px, sell, sz in prints
+                             if not sell and t_rev <= ts <= t_rev + WIN_POST_S
                              and px >= lvl - 1e-9)
-            ctrl[dta] = sum(sz for ts, px, buy, sz in prints
-                            if buy and c1 <= ts <= c1 + WIN_POST_S
+            ctrl[dta] = sum(sz for ts, px, sell, sz in prints
+                            if not sell and c1 <= ts <= c1 + WIN_POST_S
                             and px >= lvl - 1e-9)
         y = 1.0 if prev_bucket["won"] else 0.0
         results.append(dict(fam=(city, mon, day), q0=q0,
