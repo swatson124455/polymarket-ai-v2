@@ -45,6 +45,13 @@ PAGE_LIMIT = 5000
 WORKERS = int(os.environ.get("SB_WORKERS", "8"))  # 8 = clean (0 429); 20+ trips the concurrency cap
 QUOTA_FLOOR = int(os.environ.get("SB_QUOTA_FLOOR", "25000"))
 MAX_EVENTS = int(os.environ.get("SB_MAX_EVENTS", "0"))  # 0 = no cap
+# Some events have MILLIONS of snapshots (soccer "special bets" 3.9M, Bosnia@
+# Canada 3.0M) = ~800 pages = HOURS each — they'd wedge every worker. Cap pages
+# per event; for oversized events grab the TAIL (closing-line window, the
+# valuable part), not the opening. 6 pages = 30k snapshots.
+MAX_PAGES = int(os.environ.get("SB_MAX_PAGES", "6"))
+_CAP_SNAPS = MAX_PAGES * PAGE_LIMIT
+TRUNC_LOG = os.path.join(OUTDIR, "sb_history_odds.truncated")
 
 _stop = threading.Event()          # tripped at quota floor
 _write_lock = threading.Lock()     # guards gz handles + done file + counters
@@ -87,14 +94,18 @@ def load_targets():
                     continue
                 seen[eid] = (sport, g.get("gameDate") or "", n)
     targets = [(eid, s, d, n) for eid, (s, d, n) in seen.items()]
-    # Primary sort by oddsSnapshots DESC (liquid/major-game proxy — no league
-    # field exists; major games carry far more snapshots), tie-break gameDate
-    # DESC. The whole archive is the Feb–Jul-2026 live-archive era so everything
-    # is already "recent"; snapshot-count is what separates a Polymarket-relevant
-    # major game from the obscure lower-league tail. Under the sub-deadline this
-    # ordering keeps the highest-value events if we can't finish all 122k.
-    targets.sort(key=lambda t: (t[3], t[2]), reverse=True)
-    return targets
+    # Order: FULLY-capturable events (<= _CAP_SNAPS) first, by oddsSnapshots DESC
+    # (liquid/major-game proxy — no league field; major games carry far more
+    # snapshots), tie-break gameDate DESC. Then the mega-outliers (> _CAP_SNAPS,
+    # millions of snapshots) LAST — they only get a partial tail-capture, so they
+    # must not delay the bulk of real major games. The whole archive is the
+    # Feb–Jul-2026 era so everything is already "recent"; snapshot-count is what
+    # separates a Polymarket-relevant game from the obscure lower-league tail.
+    normal = [t for t in targets if not t[3] or t[3] <= _CAP_SNAPS]
+    mega = [t for t in targets if t[3] and t[3] > _CAP_SNAPS]
+    normal.sort(key=lambda t: (t[3], t[2]), reverse=True)
+    mega.sort(key=lambda t: (t[3], t[2]), reverse=True)
+    return normal + mega
 
 
 def load_done():
@@ -168,10 +179,15 @@ def handle_event(k, target):
     global _n_events, _n_req, _rem_seen
     if _stop.is_set():
         return
-    eid, sport, gdate, _n = target
-    off = 0
+    eid, sport, gdate, nsnap = target
+    # Oversized event: start at the TAIL so we capture the closing-line window
+    # (most recent MAX_PAGES pages) rather than the opening. Snapshots are
+    # returned oldest-first, so a high start offset = the latest snapshots.
+    truncated = nsnap and nsnap > _CAP_SNAPS
+    start_off = (((nsnap - _CAP_SNAPS) // PAGE_LIMIT) * PAGE_LIMIT) if truncated else 0
+    off = start_off
     pages = []
-    while True:
+    for _ in range(MAX_PAGES):
         if _stop.is_set():
             return
         snaps, rem = fetch_page(k, eid, off)
@@ -197,10 +213,14 @@ def handle_event(k, target):
             h.write(json.dumps({
                 "eventId": eid, "sport": sport, "gameDate": gdate,
                 "offset": poff, "n": len(snaps), "fetched_at": fetched_at,
+                "truncated": bool(truncated), "index_snapshots": nsnap,
                 "snapshots": snaps}, ensure_ascii=False) + "\n")
         h.flush()
         with open(DONE, "a", encoding="utf-8") as f:
             f.write(eid + "\n")
+        if truncated:
+            with open(TRUNC_LOG, "a", encoding="utf-8") as f:
+                f.write(f"{eid}\t{nsnap}\tcaptured_tail_{MAX_PAGES}p_from_{start_off}\n")
         _done_local.add(eid)
         _n_events += 1
         if _n_events % 50 == 0:

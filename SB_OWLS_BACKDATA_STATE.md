@@ -3,9 +3,53 @@
 **Branch:** `claude/sports-bot-owls-backdata` (session 1, 2026-07-17)
 **Operator directive:** new sports bot; reuse the API EB probed (Owls Insight),
 store back data on ALL sports remotely for future use.
-**Status:** harvest RUNNING unattended on the VPS (Phase 1 → auto-chains → Phase 2).
+**Status:** harvest RUNNING unattended on the VPS.
+
+## §0-DEADLINE — ⏰ SUB CANCELLING IN ~2-3 DAYS (operator, 2026-07-17)
+
+The Owls sub is being cancelled ~2026-07-20. The leisurely serial Phase-2
+(days-weeks) CANNOT finish, so this session pivoted to a **parallel deadline-race
+odds harvester** that grabs the highest-value events first before access ends.
+
+- **Harvester:** `sb_owls_history_odds_fast.py` (threaded, `SB_WORKERS=8`).
+  Supersedes the serial `sb_owls_history_odds.py`. The chainer `sb_chain.sh` was
+  KILLED so it can't launch the serial competitor.
+- **Priority = oddsSnapshots DESC** (major/liquid-game proxy — operator chose
+  "recent + major first"; the whole archive is Feb-Jul-2026 so gameDate barely
+  discriminates, and snapshot-count separates a Polymarket-relevant major game
+  from the obscure lower-league tail). Fully-capturable events first, mega-
+  outliers last.
+- **Hard constraints found (measured live 07-17):**
+  - **CONCURRENCY cap, not req/min:** 4-8 workers = 0 × 429; 20-24 workers =
+    heavy HTTP 429. Do NOT raise SB_WORKERS above ~8-10.
+  - **Per-call latency 30-70s dominates** goodput; quota (~293k left) is NOT the
+    binding constraint, TIME is. 122,944 odds-bearing events total → the full
+    set will NOT complete before the sub closes; the value-ordering means the
+    lost tail is the thin/obscure games.
+  - **Mega-events:** some events have MILLIONS of snapshots (soccer "special
+    bets" 3.9M, Bosnia@Canada 3.0M) = ~800 pages = HOURS each. `MAX_PAGES=6`
+    caps per-event work; oversized events capture the TAIL (closing-line window)
+    and are logged to `sb_history_odds.truncated`. Median event = 383 snapshots
+    (1 page) — the bulk complete fast and fully.
+- **BEFORE THE SUB LAPSES:** pull the data off the VPS (`/home/ubuntu/
+  sports-odds/owls_history_odds_*.jsonl.gz` + `owls_history_index_*.jsonl` +
+  `sb_live_snapshots.jsonl`) to local/cloud — it is NOT backed up anywhere else.
 
 ## §0 — PICK UP HERE (next session)
+
+0. **FIRST: is the sub still alive?** If yes, confirm the fast harvester is still
+   grinding and goodput is sane:
+   ```bash
+   KEY="C:/Users/samwa/.ssh/LightsailDefaultKey-eu-west-1.pem"
+   ssh -i "$KEY" ubuntu@18.201.216.0 'cd /home/ubuntu/sports-odds && \
+     echo done=$(wc -l < sb_history_odds.done); \
+     echo 429=$(grep -c "429\|Too Many" sb_history_odds_fast.log); \
+     echo trunc=$(wc -l < sb_history_odds.truncated 2>/dev/null); \
+     echo alive=$(pgrep -cf "sb_owls_[h]istory_odds_fast"); \
+     ls -la owls_history_odds_*.gz; tail -3 sb_history_odds_fast.log'
+   ```
+   Relaunch if dead (it's resumable via the shared `.done` file):
+   `cd /home/ubuntu/sports-odds && SB_WORKERS=8 setsid python3 sb_owls_history_odds_fast.py >> sb_history_odds_fast.log 2>&1 < /dev/null &`
 
 1. Check harvest state on the VPS (nothing local to run):
    ```bash
@@ -73,10 +117,11 @@ store back data on ALL sports remotely for future use.
 
 | Piece | What | State |
 |---|---|---|
-| `sb_owls_history_index.py` ×3 lanes | Phase 1: full games index, offset walk, newest-first | RUNNING since ~16:50Z 07-17 (lane a: nfl done + nhl/nba/mlb; b: tennis; c: soccer) |
-| `sb_chain.sh` | Babysitter: restarts dead incomplete lanes (cap 20), launches Phase 2 when all done | RUNNING |
-| `sb_owls_history_odds.py` | Phase 2: per-event odds for every event with `oddsSnapshots>0`, newest first, gzip JSONL | auto-starts after Phase 1 |
+| `sb_owls_history_odds_fast.py` | **Phase 2 (deadline race):** threaded (8 workers), per-event odds, value-ordered, page-capped, gzip JSONL | **RUNNING** — the live harvester; see §0-DEADLINE |
 | `sb_owls_live_recorder.py` | **Forward** RAW recorder: live `/odds` (Pinnacle+retail) for all 6 sports, hourly | **LIVE via cron `45 * * * *`** since 07-17 18:30Z; first manual tick 6/6 OK |
+| `sb_owls_history_index.py` ×3 lanes | Phase 1: full games index, offset walk | index mostly complete (nfl/nhl/nba/mlb done; tennis ~46k, soccer ~45k) — STOPPED to free concurrency for the odds race; rerun to finish the older-soccer tail if wanted |
+| `sb_chain.sh` | old babysitter/serial-Phase-2 launcher | **KILLED** — superseded by the fast harvester; do NOT restart (it would launch the slow serial competitor) |
+| `sb_owls_history_odds.py` | old serial Phase-2 | superseded by `_fast`; kept for reference only |
 | `sb_probe_*.py` | one-shot probes (coverage/shape/params), keep for reference | idle |
 
 **Shared crontab (07-17):** appended ONE line — `45 * * * * cd /home/ubuntu/
