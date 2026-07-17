@@ -180,6 +180,15 @@ product (400ms quote window, Exchange V3 `0xe3333700…`, PositionManager,
 AutoRedeemer, Last-Look at ~$2.5K notional) — out of scope for pilot v1,
 future niche; addresses recorded so "Exchange V3" surprises no one.
 
+
+**Rerun with new rules (07-17 13:00Z):** feesEnabled fetched for all 208
+v4 fee-accruing markets (162 enabled / 46 legacy) → v4 rebate estimate
+$141 → **$86 corrected** (naive meter overstated 64%). v4 rewards $823 =
+measured floor; ×2.5 in-game sensitivity = $2,058 (b unpublished — always
+label). Cascade: the 30d backtest's rebate leg lacked the same filter → the
++$1,657 gated+fast floor may shrink on refit (readout item). Real-payment
+cohort numbers need no correction.
+
 ## 8. TBD register (open questions, owner, when)
 
 - **Cup vs meta** — operator ruled TBD until cup over → census cliff + post-promo
