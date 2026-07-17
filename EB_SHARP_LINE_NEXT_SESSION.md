@@ -144,11 +144,36 @@ Short delta — §0-S7's lane (vendor reply → historical readout; 07-20+ →
   `owls_cs2_event_odds.jsonl` (4,639 events, 4 workers, resumable — rerun
   the nohup line to resume; kill `pkill -f eb_owls_odds_pull`; log
   `owls_odds_pull.log` prints ETA every 25). ~4.5k req of 300k/mo.
-  **BOUNDARY: this is data CAPTURE. Any backtest/verdict against 1xbet
-  closing lines (a soft book, NOT the Pinnacle sharp reference the edge rule
-  is defined on) needs explicit operator sign-off on the benchmark change,
-  plus the known price-quality filter (degenerate integer records) and the
-  settled-label join through the EXISTING audited pipeline.**
+  **1xbet-benchmark backtest: operator SIGNED OFF 2026-07-17 ("ok go") —
+  build it once the pulls land, with the degenerate-price filter and clear
+  1xbet-not-Pinnacle labeling in every readout line.**
+- **BACKTEST DATA LEGS (post-sign-off, launched 2026-07-17 ~16:35Z):**
+  (1) gamma META for all matched cids fetched locally → `owls_pm_meta.json`
+  (VPS + scratch): 4,231 unique markets (the 4,639 rows dedup by cid —
+  repeat fixtures), **3,893 clean 1/0 resolution labels** (gamma
+  `outcomePrices` post-resolution IS the settlement; 338 void/unresolved
+  dropped at join, counted). NOTE gamma cid lookups need `closed=true`.
+  (2) CLOB hourly PM price history puller `eb_owls_pm_prices.py`
+  (`235f3ae`, blob md5 `f581117c…`) detached on VPS → `owls_pm_prices.jsonl`
+  (~25min; log `owls_pm_prices.log`). (3) Owls per-event odds pull ETA ~13h
+  (10.3s/event). **Join plan:** per cid — Owls last pre-start 1xbet h2h
+  snapshot (closing; American |p|≥100 or sane decimal, REJECT integer 1–4
+  degenerates + overround outside [1.00,1.20]) → Shin de-vig → orient via
+  production matcher vs frozen gamma outcomes → PM price at last pre-start
+  hour (mid; slippage haircut disclosed) → settle at gamma 1/0 label →
+  edge-rule P&L per §0-S7 buckets, BOTH de-vig ways, labeled
+  1XBET-BENCHMARK throughout.
+- **SHARED-CHECKOUT + SHARED-QUOTA FLAGS (2026-07-17 evening):** an SB
+  (sports-bot) session took the local checkout onto
+  `claude/sports-bot-owls-backdata` (forked from EB HEAD `e49860c`,
+  their commit `8d33b11` = all-sports Owls history harvester) mid-EB-turn;
+  one EB commit briefly landed on their branch — moved to the EB branch via
+  linked worktree (`235f3ae`), their tip restored byte-identical. EB now
+  commits via the worktree (scratch `eb-wt`). ⚠ **The SB session uses the
+  SAME Owls key/quota (300k/mo shared)** — EB's footprint is ~10k total;
+  an all-sports 2016-present harvest could be much larger; if EB pulls
+  start 429ing, check `X-Ratelimit-Remaining-Month` before assuming a
+  vendor problem. Operator owns cross-session quota arbitration.
 - **STEP 1 (critical path):** operator 2026-07-15 — vendor email **SENT, NO
   REPLY yet**. Historical readout stays blocked on the reply; if it arrives
   with a usable sample, the build is pre-authorized per §0-S7.
