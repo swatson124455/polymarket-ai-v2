@@ -27,9 +27,16 @@ real money.
    city-market?** (table or file; fields needed: market id or city+date,
    probability, timestamp, model/version tag). Maker will read whatever WB
    already writes — no new WB code, no schema changes requested.
-2. **What read pattern is acceptable?** (read-only SELECT at low frequency /
-   a file WB already drops / anything else WB prefers). Maker will not touch
-   WB code, runtime, env, Redis, or add load without explicit agreement.
+2. **What read pattern is acceptable? — OPERATOR-PREFERRED OPTION (07-17): a
+   SHARD MAKER OWNS.** WB adds a small export step: each forecast cycle,
+   append/write the shared fields (market id or city+date, probability,
+   timestamp, model version) to a Maker-owned drop location (e.g.,
+   `/opt/pa2-maker-feeds/wb_forecasts.jsonl`, Maker creates the dir,
+   WB-writable). Clean boundary: WB controls exactly what is shared, Maker
+   never touches WB internals, zero read-load on WB, and WB refactors can't
+   break the feed (the file format is the contract). Costs WB a few lines —
+   WB's call whether that's acceptable vs Maker doing low-frequency
+   read-only SELECTs on an existing WB output. Either answer works.
 3. **Any semantics Maker must not misread?** (e.g., calibration caveats,
    cities/units gotchas per the WB-ALWAYS-GLOBAL directive, staleness rules).
    WB owns the interpretation; Maker will not second-guess WB internals.
