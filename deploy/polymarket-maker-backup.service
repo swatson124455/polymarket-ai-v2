@@ -1,0 +1,13 @@
+[Unit]
+Description=Nightly tarball of Maker recorder-arm data (read-only on arms)
+
+[Service]
+Type=oneshot
+User=polymarket
+ExecStart=/opt/pa2-maker-backups/maker-backup.sh
+ProtectSystem=strict
+ReadWritePaths=/opt/pa2-maker-backups
+NoNewPrivileges=true
+PrivateTmp=true
+MemoryMax=256M
+CPUQuota=25%
