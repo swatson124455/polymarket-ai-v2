@@ -127,10 +127,28 @@ Short delta — §0-S7's lane (vendor reply → historical readout; 07-20+ →
   future work, and 1xbet ≠ sharp reference (operator decision before any
   strategy use).** (2) **CS2 history index pulled**
   `eb_owls_history_index.py` (md5 `d229ee84…`) → `owls_cs2_history_index.
-  jsonl` (~20.7k games, resumable, ~1 req/s). Per-event odds pulls NOT made
-  — the PM-overlap count on this index decides if they ever are. Monitor:
+  jsonl` (20,728 games Feb–Jul 2026, 97.4% with ≥2 odds snapshots). Monitor:
   `owls_collect.log` `ok=8/8` + `rem_month` (kill = remove the `:30` cron
   line; both crontab .baks on VPS).
+- **PM-OVERLAP COUNT RUN 2026-07-17 (operator "proceed") — DECISIVE:**
+  enumerated **6,314 closed PM CS2 match-winner markets** (gamma tag-64
+  closed events, weekly startDate windows Feb–Jul, 165 pages, same
+  match-winner filters as the collector) and matched vs the Owls index with
+  the PRODUCTION matcher (tnorm/match2 + live aliases, ±1 day, unique-cid
+  bijection): **4,639 matched (22.4% of archive; 73% of PM's CS2 markets),
+  4,454 with ≥2 odds snapshots, 160 ambiguity-dropped**, monthly 503/1235/
+  1086/898/585/332 (Feb–Jul). vs the n≥100 go-bar this is ~45×. List:
+  `pm_overlap_matched.json` (VPS + scratch).
+- **PER-EVENT ODDS PULL LAUNCHED 2026-07-17 (`8e823e3`, blob md5
+  `1581a33d…`):** `eb_owls_odds_pull.py` detached on VPS → raw
+  `owls_cs2_event_odds.jsonl` (4,639 events, 4 workers, resumable — rerun
+  the nohup line to resume; kill `pkill -f eb_owls_odds_pull`; log
+  `owls_odds_pull.log` prints ETA every 25). ~4.5k req of 300k/mo.
+  **BOUNDARY: this is data CAPTURE. Any backtest/verdict against 1xbet
+  closing lines (a soft book, NOT the Pinnacle sharp reference the edge rule
+  is defined on) needs explicit operator sign-off on the benchmark change,
+  plus the known price-quality filter (degenerate integer records) and the
+  settled-label join through the EXISTING audited pipeline.**
 - **STEP 1 (critical path):** operator 2026-07-15 — vendor email **SENT, NO
   REPLY yet**. Historical readout stays blocked on the reply; if it arrives
   with a usable sample, the build is pre-authorized per §0-S7.
