@@ -61,6 +61,7 @@ nothing computed with superseded methods may be quoted from this document)
 | v4 recorder | in-play game lane + classic/split A/B + per-fill rebate meter | `/opt/pa2-maker-sim-v4`, daemon |
 | v5 recorder | **GATE LAB** — 7 gate policies paired on identical inputs (P0 baseline / P1 fitted-vol / P2 wind-down ramp / P3 tape-velocity / P4 all / P5 ungated control / **P6 WB-forecast tilt**, added `ca6c1c5`); eras: 01:09:09Z launch `27ba2d7` → 02:36:41Z clean (P0-P5) → **21:55:09Z 07-17 P6 era start** (P0-P5 ledgers carried, verified) | `/opt/pa2-maker-sim-v5`, daemon |
 | v6 recorder | **NEGRISK LAB** — netted multi-outcome quoting, paired N0_all (every covered outcome) vs N1_single (flagship baseline); one-winner floor accounting; era start **07-17 22:20:27Z** `1652ae0` | `/opt/pa2-maker-sim-v6`, daemon |
+| Sensor feed | **informed-flow tripwire publisher** — bite/stampede/run events (onset-only, anchored) to `/opt/pa2-maker-feeds/informed_flow.jsonl`; 250-mkt arm-union universe; era start **07-18 00:11:02Z** `e712b67`+`1caf921`; VALIDATION-FIRST ≥1wk before any fleet-consumption proposal | `/opt/pa2-maker-sensor`, daemon |
 | Pool census | hourly count of every reward pool | `/opt/pa2-maker-census`, hourly timer |
 | Backups | nightly 00:20Z tarball + 09:30 local pull (keeps 7) | `/opt/pa2-maker-backups` + operator machine |
 
