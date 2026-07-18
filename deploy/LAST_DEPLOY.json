@@ -1,7 +1,10 @@
 {
-  "release_stamp": "20260717_145326",
-  "git_sha": "3798334",
+  "release_stamp": "20260717_210429",
+  "git_sha": "7fceaa08c4a4d1426aa63d5a65c07df4530f375b",
   "git_branch": "claude/new-whiteboard-session-9b23tq",
-  "recorded_at": "2026-07-17T18:53:50Z",
-  "recorded_by": "local-session-S231 (wb-release-cut.sh; operator-approved cross-bot Maker forecast feed. Delta vs 20260717_105239 = _export_forecast_for_maker() appends WB YES-frame forecasts to /opt/pa2-maker-feeds/wb_forecasts.jsonl, hard-isolated, kill=WEATHER_MAKER_FEED_ENABLED. INFRA: added /opt/pa2-maker-feeds to WB unit ReadWritePaths (ProtectSystem=strict blocked it; backup polymarket-weather.service.bak_20260717_makerfeed). Two intermediate cuts this deploy: 20260717_143545 (export shipped but temperature site passed raw edge dict -> 0 lines; self-caught) then 20260717_145326 (temp site fixed, lines flowing, verified NYC/Seattle temperature forecasts landing). Rollback code: 20260717_105239. Rollback infra: restore the .bak unit + daemon-reload.)"
+  "s223_markers_weather_bot": 10,
+  "tree_state_at_record": "DIRTY-at-record-time",
+  "recorded_at": "2026-07-18T01:10:13Z",
+  "recorded_by": "deploy/wb-record-deploy.sh",
+  "note": "Written locally at deploy time. git_sha is what was tarred+shipped. Commit this file so keyless sessions can verify parity via scripts/wb_resume_check.sh."
 }

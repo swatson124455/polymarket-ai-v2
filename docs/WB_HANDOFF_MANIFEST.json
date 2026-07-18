@@ -1,204 +1,230 @@
 {
-  "_comment": "WeatherBot session-handoff manifest — consumed by scripts/wb_resume_check.sh. RULE: any commit that changes a fingerprinted file's markers, adds a headline fix, or moves the session branch MUST update this manifest in the SAME commit. That is what keeps the resume check self-deriving instead of stale.",
-  "session": "S231",
-  "repo": "swatson124455/polymarket-ai-v2",
-  "branch": "claude/new-whiteboard-session-9b23tq",
-  "headline_commits": {
-    "e0d476e": "fix(weather): dead 'temperature' tag -> daily-temperature (funnel starvation)",
-    "c61a712": "fix(database): DB semaphore slot leak (54h wedge root cause)",
-    "4170a8c": "fix(watchdog): startup grace for E1 stale-bot force-exit (crash-loop race)",
-    "12f68cc": "fix(weather): _check_executable_edge YES-bias on temperature NO opps",
-    "37598b7": "fix(weather): WEATHER_MID_LIFE_EXIT_ENABLED / WEATHER_EXIT_MIN_EDGE declared + honored",
-    "6fb4ded": "fix(weather): exit orders must SELL the held token; mid-life state only on confirmed fill",
-    "caffc68": "fix(weather): S224 renorm over non-exhaustive bucket sets manufactured certainty (audit #1)",
-    "95c732c": "fix(weather): S226 V23 root fix — prediction_log.predicted_prob is P(YES) on every row",
-    "14006b0": "fix(weather): S226 V23 — durable prob_frame label; graders never grade frame-ambiguous PSW rows",
-    "535ec86": "fix(weather): S226 hotfix — top-level Database must accept prob_frame; WB binds it at runtime",
-    "92740f3": "fix(weather): S227 gt_cutoff must bind datetime, not str — asyncpg DataError killed calibrator fit + EMOS reload since 07-08",
-    "58488d7": "fix(deploy): S228 wb-release-cut.sh pre-creates data/ skeleton (ProtectSystem=strict crash-loop)",
-    "be7dd93": "feat(weather): S228 priority-wake — scan loop wakes on model-run/METAR events (flag-gated OFF)",
-    "86c6bcb": "feat(weather): S228 WEATHER_MODEL_RUN_POLL_INTERVAL_S — model-run detection cadence tunable (default 300 = old hardcoded)",
-    "56716e8": "fix(ingestion): S228 resolution backfill never checked untraded markets — prediction_log rows stayed unlabeled forever",
-    "dabb799": "fix(ingestion): S228 follow-up — NULL-end-date markets stranded outside resolution discovery",
-    "863fae8": "fix(ingestion): S228 follow-up 2 — split discovery budget; tail lane defeats churn starvation",
-    "4fa67a3": "fix(weather): S229 — persist end_date_iso for WB-discovered markets; heal NULL-end rows on rediscovery",
-    "24b2847": "fix(weather): S229 — global SAMOS/EMOS pooled climatology across mixed C/F units; de-normalize per station",
-    "9dc6d59": "fix(weather): S229 — CancelledError escapes Exception checks on gather results; aborted whole scans",
-    "b480c5d": "feat(wb-research): S230 executable_replay.py — leader-following graded at the LOGGED ASK",
-    "475d342": "feat(wb-research): S230 trade_prints.py — 10-min public trade-print logger (maker-fill evidence)",
-    "b3363d6": "feat(wb-research): S230 Phase-0 nowcast harnesses + RESULTS (58min lead; hole open at the print)",
-    "82f2c3b": "feat(wb-research): S230 loser-leg replay — naive crossing-entry EV-zero; peak-model required",
-    "2151995": "feat(wb-research): S230 peak-model backtest (E_rem x hour, pre-registered rule, date-split)",
-    "9c5bbfb": "feat(wb-research): S230 rep_bias_test — ROOT CAUSE: resolution = print world; forecast +0.86F hot",
-    "f794268": "docs(wb): S230 S222 re-run n=133 — A1/A3 REVERSED to FAIL; 9-12h cell survived 2.1 sigma",
-    "1878a5c": "docs(wb): S230 Phase-0 CLOSED — 90d gate not met; no Phase-1 infra spend",
-    "217b897": "docs(wb): S230 deep-backtest program queued as next-session priority 1",
-    "dd428d0": "feat(wb-research): S231 peak-model — archived previous-runs forecasts (no-lookahead day-1 lead) fill DB holes; March added; question-date family keying",
-    "559988e": "feat(wb-research): S231 maker_fill_study.py — historical maker-fill UPPER bounds from data-api prints at reveal windows (spec 0c from history)",
-    "dda3c66": "feat(wb-research): S231 dayof_cell_scale.py — 9-12h cell at scale, bot-independent (raw ensemble + METAR runmax floor vs CLOB minute prices), family-clustered SEs",
-    "2968532": "docs(wb-research): README — S230 late harnesses (entry_ev/peak_model/rep_bias) + S231 harnesses documented; maker-fill task-2 verdict recorded",
-    "332d3f2": "feat(wb-research): S231 Phase-1 pws_mesh.py — read-only PWS-mesh collector cron (operator-approved build after peak-model gate PASS)",
-    "c3eb846": "feat(wb-research): S231-late — mesh_validation.py (Phase-1 acceptance test) + PHASE-2 DESIGN written into spec",
-    "c005592": "docs(wb): S231-late — PRE-REGISTER Study A + Study B; peak-passed second signal; candidate queue",
-    "6d496fc": "feat(wb): GLOBAL MANDATE — pws_mesh global; pre-register Study C/D + global robustness; Study B verdict DEAD",
-    "3a49fce": "feat(wb-research): S231-late — Study C/D harnesses + global peak-model variant + mesh_validation ICAO-global; Study A DEAD",
-    "5e8b283": "docs(wb): S231-late sweep verdicts — A/B/D DEAD, C n=10 no-verdict, GLOBAL peak US reproduces gate",
-    "c7ccfdc": "docs(wb): REAL-TIME SOURCE LEDGER — 6 keyless official feeds verified",
-    "e7a5e70": "fix(wb-research): commit Study A/B harnesses (were untracked while verdicts recorded)",
-    "403b047": "fix(wb-research)!: INPUT AUDIT — 8 resolution-station mismatches; ~9% discovery RETRACTED (0/268 at correct stations)",
-    "5fb0b56": "fix(weather)!: S231 INPUT AUDIT — 7 resolution-station corrections per Polymarket market descriptions (DEPLOYED 20260717_105239)",
-    "1c570c4": "feat(weather): S231 cross-bot forecast export to Maker feed drop (operator-approved, propose-only)",
-    "3798334": "fix(weather): Maker export temperature site passed raw edge dict — capture enriched dict (DEPLOYED 20260717_145326, lines flowing)",
-    "2af2c78": "docs(wb-research): gate docstrings state the S231-hardened bar (blind-review finding #3)",
-    "8ace004": "fix(weather): jacksonville ghcnd_id was Houston Hobby's — corrected (blind-review finding #4)"
+ "_comment": "WeatherBot session-handoff manifest \u2014 consumed by scripts/wb_resume_check.sh. RULE: any commit that changes a fingerprinted file's markers, adds a headline fix, or moves the session branch MUST update this manifest in the SAME commit. That is what keeps the resume check self-deriving instead of stale.",
+ "session": "S232",
+ "repo": "swatson124455/polymarket-ai-v2",
+ "branch": "claude/new-whiteboard-session-9b23tq",
+ "headline_commits": {
+  "e0d476e": "fix(weather): dead 'temperature' tag -> daily-temperature (funnel starvation)",
+  "c61a712": "fix(database): DB semaphore slot leak (54h wedge root cause)",
+  "4170a8c": "fix(watchdog): startup grace for E1 stale-bot force-exit (crash-loop race)",
+  "12f68cc": "fix(weather): _check_executable_edge YES-bias on temperature NO opps",
+  "37598b7": "fix(weather): WEATHER_MID_LIFE_EXIT_ENABLED / WEATHER_EXIT_MIN_EDGE declared + honored",
+  "6fb4ded": "fix(weather): exit orders must SELL the held token; mid-life state only on confirmed fill",
+  "caffc68": "fix(weather): S224 renorm over non-exhaustive bucket sets manufactured certainty (audit #1)",
+  "95c732c": "fix(weather): S226 V23 root fix \u2014 prediction_log.predicted_prob is P(YES) on every row",
+  "14006b0": "fix(weather): S226 V23 \u2014 durable prob_frame label; graders never grade frame-ambiguous PSW rows",
+  "535ec86": "fix(weather): S226 hotfix \u2014 top-level Database must accept prob_frame; WB binds it at runtime",
+  "92740f3": "fix(weather): S227 gt_cutoff must bind datetime, not str \u2014 asyncpg DataError killed calibrator fit + EMOS reload since 07-08",
+  "58488d7": "fix(deploy): S228 wb-release-cut.sh pre-creates data/ skeleton (ProtectSystem=strict crash-loop)",
+  "be7dd93": "feat(weather): S228 priority-wake \u2014 scan loop wakes on model-run/METAR events (flag-gated OFF)",
+  "86c6bcb": "feat(weather): S228 WEATHER_MODEL_RUN_POLL_INTERVAL_S \u2014 model-run detection cadence tunable (default 300 = old hardcoded)",
+  "56716e8": "fix(ingestion): S228 resolution backfill never checked untraded markets \u2014 prediction_log rows stayed unlabeled forever",
+  "dabb799": "fix(ingestion): S228 follow-up \u2014 NULL-end-date markets stranded outside resolution discovery",
+  "863fae8": "fix(ingestion): S228 follow-up 2 \u2014 split discovery budget; tail lane defeats churn starvation",
+  "4fa67a3": "fix(weather): S229 \u2014 persist end_date_iso for WB-discovered markets; heal NULL-end rows on rediscovery",
+  "24b2847": "fix(weather): S229 \u2014 global SAMOS/EMOS pooled climatology across mixed C/F units; de-normalize per station",
+  "9dc6d59": "fix(weather): S229 \u2014 CancelledError escapes Exception checks on gather results; aborted whole scans",
+  "b480c5d": "feat(wb-research): S230 executable_replay.py \u2014 leader-following graded at the LOGGED ASK",
+  "475d342": "feat(wb-research): S230 trade_prints.py \u2014 10-min public trade-print logger (maker-fill evidence)",
+  "b3363d6": "feat(wb-research): S230 Phase-0 nowcast harnesses + RESULTS (58min lead; hole open at the print)",
+  "82f2c3b": "feat(wb-research): S230 loser-leg replay \u2014 naive crossing-entry EV-zero; peak-model required",
+  "2151995": "feat(wb-research): S230 peak-model backtest (E_rem x hour, pre-registered rule, date-split)",
+  "9c5bbfb": "feat(wb-research): S230 rep_bias_test \u2014 ROOT CAUSE: resolution = print world; forecast +0.86F hot",
+  "f794268": "docs(wb): S230 S222 re-run n=133 \u2014 A1/A3 REVERSED to FAIL; 9-12h cell survived 2.1 sigma",
+  "1878a5c": "docs(wb): S230 Phase-0 CLOSED \u2014 90d gate not met; no Phase-1 infra spend",
+  "217b897": "docs(wb): S230 deep-backtest program queued as next-session priority 1",
+  "dd428d0": "feat(wb-research): S231 peak-model \u2014 archived previous-runs forecasts (no-lookahead day-1 lead) fill DB holes; March added; question-date family keying",
+  "559988e": "feat(wb-research): S231 maker_fill_study.py \u2014 historical maker-fill UPPER bounds from data-api prints at reveal windows (spec 0c from history)",
+  "dda3c66": "feat(wb-research): S231 dayof_cell_scale.py \u2014 9-12h cell at scale, bot-independent (raw ensemble + METAR runmax floor vs CLOB minute prices), family-clustered SEs",
+  "2968532": "docs(wb-research): README \u2014 S230 late harnesses (entry_ev/peak_model/rep_bias) + S231 harnesses documented; maker-fill task-2 verdict recorded",
+  "332d3f2": "feat(wb-research): S231 Phase-1 pws_mesh.py \u2014 read-only PWS-mesh collector cron (operator-approved build after peak-model gate PASS)",
+  "c3eb846": "feat(wb-research): S231-late \u2014 mesh_validation.py (Phase-1 acceptance test) + PHASE-2 DESIGN written into spec",
+  "c005592": "docs(wb): S231-late \u2014 PRE-REGISTER Study A + Study B; peak-passed second signal; candidate queue",
+  "6d496fc": "feat(wb): GLOBAL MANDATE \u2014 pws_mesh global; pre-register Study C/D + global robustness; Study B verdict DEAD",
+  "3a49fce": "feat(wb-research): S231-late \u2014 Study C/D harnesses + global peak-model variant + mesh_validation ICAO-global; Study A DEAD",
+  "5e8b283": "docs(wb): S231-late sweep verdicts \u2014 A/B/D DEAD, C n=10 no-verdict, GLOBAL peak US reproduces gate",
+  "c7ccfdc": "docs(wb): REAL-TIME SOURCE LEDGER \u2014 6 keyless official feeds verified",
+  "e7a5e70": "fix(wb-research): commit Study A/B harnesses (were untracked while verdicts recorded)",
+  "403b047": "fix(wb-research)!: INPUT AUDIT \u2014 8 resolution-station mismatches; ~9% discovery RETRACTED (0/268 at correct stations)",
+  "5fb0b56": "fix(weather)!: S231 INPUT AUDIT \u2014 7 resolution-station corrections per Polymarket market descriptions (DEPLOYED 20260717_105239)",
+  "1c570c4": "feat(weather): S231 cross-bot forecast export to Maker feed drop (operator-approved, propose-only)",
+  "3798334": "fix(weather): Maker export temperature site passed raw edge dict \u2014 capture enriched dict (DEPLOYED 20260717_145326, lines flowing)",
+  "2af2c78": "docs(wb-research): gate docstrings state the S231-hardened bar (blind-review finding #3)",
+  "8ace004": "fix(weather): jacksonville ghcnd_id was Houston Hobby's \u2014 corrected (blind-review finding #4)",
+  "8778f7d": "fix(wb): mesh_validation --lead gradeable \u2014 LEGACY_SID alias map + pooled-median gate line",
+  "9d3e866": "docs(wb): S232 mesh-lead verdict \u2014 PHASE-2 lead gate PASS day-1 (60%/74.8min/10.8%)",
+  "1a422bb": "docs(wb): S232 registry-additions evidence \u2014 7 ICAOs verified; Karachi=OPMR NO-METAR trap",
+  "399c06b": "docs(wb): S232 rep_bias recompute \u2014 S230 REVERSED: resolution tracks the hourly-print max 61/61",
+  "1bd54f4": "feat(wb): Phase-2 data plane \u2014 pws_mesh bot-readable mirror + mesh_debias.py producer",
+  "1db55e6": "fix(wb): mesh_debias drop-rule residual uses consumer offset (block else scalar)",
+  "9bfd27a": "feat(wb): S232 Phase-2 mesh-nowcast signal \u2014 flag-gated entries + overshoot invalidation (flag OFF)",
+  "7fceaa0": "fix(wb): S232 adversarial-review findings 1-8 (restart-safe tracking, D-1 file, Redis fail-closed, sell guards) \u2014 DEPLOYED 20260717_210429"
+ },
+ "required_docs": [
+  "docs/WEATHER_STATUS.md",
+  "docs/WEATHER_S224_STATUS.md",
+  "docs/WB_FALLACY_AUDIT_S223.md",
+  "docs/WB_FALLACY_AUDIT_S223_raw.json",
+  "docs/WEATHER_S222_STATUS.md",
+  "WB_S222_POSTFIX_VERIFICATION_PROMPT.md",
+  "docs/WEATHER_S226_STATUS.md",
+  "docs/WEATHER_S227_STATUS.md",
+  "docs/WEATHER_S229_STATUS.md",
+  "docs/WEATHER_S230_STATUS.md",
+  "docs/WB_NOWCAST_CAPTURE_SPEC.md",
+  "WB_S231_KICKOFF_PROMPT.md",
+  "scripts/wb_research/executable_replay.py",
+  "scripts/wb_research/trade_prints.py",
+  "scripts/wb_research/nowcast_skill.py",
+  "scripts/wb_research/nowcast_price_path.py",
+  "scripts/wb_research/nowcast_entry_ev.py",
+  "scripts/wb_research/nowcast_peak_model.py",
+  "scripts/wb_research/rep_bias_test.py",
+  "scripts/wb_research/maker_fill_study.py",
+  "scripts/wb_research/dayof_cell_scale.py",
+  "scripts/wb_research/pws_mesh.py",
+  "scripts/wb_research/mesh_validation.py",
+  "scripts/wb_research/market_printworld_bias.py",
+  "scripts/wb_research/postlock_drift.py",
+  "scripts/wb_research/sibling_repricing.py",
+  "scripts/wb_research/revision_momentum.py",
+  "scripts/wb_research/nowcast_peak_global.py",
+  "docs/WEATHER_S231_STATUS.md",
+  "WB_S232_KICKOFF_PROMPT.md",
+  "scripts/wb_research/mesh_debias.py",
+  "bots/weather/engine/base_engine/weather/nowcast_mesh.py",
+  "tests/unit/test_nowcast_mesh.py"
+ ],
+ "fingerprints": [
+  {
+   "file": "bots/weather_bot.py",
+   "pattern": "S223",
+   "expect": 10
   },
-  "required_docs": [
-    "docs/WEATHER_STATUS.md",
-    "docs/WEATHER_S224_STATUS.md",
-    "docs/WB_FALLACY_AUDIT_S223.md",
-    "docs/WB_FALLACY_AUDIT_S223_raw.json",
-    "docs/WEATHER_S222_STATUS.md",
-    "WB_S222_POSTFIX_VERIFICATION_PROMPT.md",
-    "docs/WEATHER_S226_STATUS.md",
-    "docs/WEATHER_S227_STATUS.md",
-    "docs/WEATHER_S229_STATUS.md",
-    "docs/WEATHER_S230_STATUS.md",
-    "docs/WB_NOWCAST_CAPTURE_SPEC.md",
-    "WB_S231_KICKOFF_PROMPT.md",
-    "scripts/wb_research/executable_replay.py",
-    "scripts/wb_research/trade_prints.py",
-    "scripts/wb_research/nowcast_skill.py",
-    "scripts/wb_research/nowcast_price_path.py",
-    "scripts/wb_research/nowcast_entry_ev.py",
-    "scripts/wb_research/nowcast_peak_model.py",
-    "scripts/wb_research/rep_bias_test.py",
-    "scripts/wb_research/maker_fill_study.py",
-    "scripts/wb_research/dayof_cell_scale.py",
-    "scripts/wb_research/pws_mesh.py",
-    "scripts/wb_research/mesh_validation.py",
-    "scripts/wb_research/market_printworld_bias.py",
-    "scripts/wb_research/postlock_drift.py",
-    "scripts/wb_research/sibling_repricing.py",
-    "scripts/wb_research/revision_momentum.py",
-    "scripts/wb_research/nowcast_peak_global.py",
-    "docs/WEATHER_S231_STATUS.md",
-    "WB_S232_KICKOFF_PROMPT.md"
-  ],
-  "fingerprints": [
-    {
-      "file": "bots/weather_bot.py",
-      "pattern": "S223",
-      "expect": 10
-    },
-    {
-      "file": "bots/weather_bot.py",
-      "pattern": "model_prob convention differs by market type",
-      "expect": 1
-    },
-    {
-      "file": "base_engine/data/database.py",
-      "pattern": "finally-guaranteed",
-      "expect": 1
-    },
-    {
-      "file": "bots/weather/engine/config/settings.py",
-      "pattern": "WEATHER_MID_LIFE_EXIT_ENABLED: bool",
-      "expect": 1
-    },
-    {
-      "file": "bots/weather_bot.py",
-      "pattern": "S224",
-      "expect": 24
-    },
-    {
-      "file": "bots/weather/engine/base_engine/weather/probability_engine.py",
-      "pattern": "S224",
-      "expect": 4
-    },
-    {
-      "file": "bots/weather/engine/base_engine/weather/forecast_client.py",
-      "pattern": "S224",
-      "expect": 4
-    },
-    {
-      "file": "bots/weather/engine/config/settings.py",
-      "pattern": "S224",
-      "expect": 3
-    },
-    {
-      "file": "bots/weather_bot.py",
-      "pattern": "S226",
-      "expect": 18
-    },
-    {
-      "file": "base_engine/data/database.py",
-      "pattern": "prob_frame",
-      "expect": 9
-    },
-    {
-      "file": "bots/weather/engine/base_engine/data/database.py",
-      "pattern": "prob_frame",
-      "expect": 9
-    },
-    {
-      "file": "bots/weather/engine/base_engine/weather/forecast_client.py",
-      "pattern": "S226",
-      "expect": 12
-    },
-    {
-      "file": "bots/weather_bot.py",
-      "pattern": "S227",
-      "expect": 4
-    },
-    {
-      "file": "bots/weather_bot.py",
-      "pattern": "S228",
-      "expect": 5
-    },
-    {
-      "file": "bots/weather_bot.py",
-      "pattern": "S229",
-      "expect": 11
-    },
-    {
-      "file": "bots/weather/engine/base_engine/weather/probability_engine.py",
-      "pattern": "S229",
-      "expect": 4
-    },
-    {
-      "file": "bots/weather/engine/base_engine/weather/station_registry.py",
-      "pattern": "S231 INPUT AUDIT",
-      "expect": 1
-    },
-    {
-      "file": "base_engine/weather/station_registry.py",
-      "pattern": "S231 INPUT AUDIT",
-      "expect": 1
-    },
-    {
-      "file": "bots/weather_bot.py",
-      "pattern": "_export_forecast_for_maker",
-      "expect": 3
-    },
-    {
-      "file": "bots/weather/engine/config/settings.py",
-      "pattern": "S228",
-      "expect": 3
-    },
-    {
-      "file": "bots/weather/engine/base_bot.py",
-      "pattern": "S228",
-      "expect": 1
-    },
-    {
-      "file": "base_engine/data/resolution_backfill.py",
-      "pattern": "S228",
-      "expect": 3
-    },
-    {
-      "file": "bots/weather/engine/base_engine/data/resolution_backfill.py",
-      "pattern": "S228",
-      "expect": 2
-    }
-  ]
+  {
+   "file": "bots/weather_bot.py",
+   "pattern": "model_prob convention differs by market type",
+   "expect": 1
+  },
+  {
+   "file": "base_engine/data/database.py",
+   "pattern": "finally-guaranteed",
+   "expect": 1
+  },
+  {
+   "file": "bots/weather/engine/config/settings.py",
+   "pattern": "WEATHER_MID_LIFE_EXIT_ENABLED: bool",
+   "expect": 1
+  },
+  {
+   "file": "bots/weather_bot.py",
+   "pattern": "S224",
+   "expect": 24
+  },
+  {
+   "file": "bots/weather/engine/base_engine/weather/probability_engine.py",
+   "pattern": "S224",
+   "expect": 4
+  },
+  {
+   "file": "bots/weather/engine/base_engine/weather/forecast_client.py",
+   "pattern": "S224",
+   "expect": 4
+  },
+  {
+   "file": "bots/weather/engine/config/settings.py",
+   "pattern": "S224",
+   "expect": 3
+  },
+  {
+   "file": "bots/weather_bot.py",
+   "pattern": "S226",
+   "expect": 18
+  },
+  {
+   "file": "base_engine/data/database.py",
+   "pattern": "prob_frame",
+   "expect": 9
+  },
+  {
+   "file": "bots/weather/engine/base_engine/data/database.py",
+   "pattern": "prob_frame",
+   "expect": 9
+  },
+  {
+   "file": "bots/weather/engine/base_engine/weather/forecast_client.py",
+   "pattern": "S226",
+   "expect": 12
+  },
+  {
+   "file": "bots/weather_bot.py",
+   "pattern": "S227",
+   "expect": 4
+  },
+  {
+   "file": "bots/weather_bot.py",
+   "pattern": "S228",
+   "expect": 5
+  },
+  {
+   "file": "bots/weather_bot.py",
+   "pattern": "S229",
+   "expect": 11
+  },
+  {
+   "file": "bots/weather/engine/base_engine/weather/probability_engine.py",
+   "pattern": "S229",
+   "expect": 4
+  },
+  {
+   "file": "bots/weather/engine/base_engine/weather/station_registry.py",
+   "pattern": "S231 INPUT AUDIT",
+   "expect": 1
+  },
+  {
+   "file": "base_engine/weather/station_registry.py",
+   "pattern": "S231 INPUT AUDIT",
+   "expect": 1
+  },
+  {
+   "file": "bots/weather_bot.py",
+   "pattern": "_export_forecast_for_maker",
+   "expect": 3
+  },
+  {
+   "file": "bots/weather/engine/config/settings.py",
+   "pattern": "S228",
+   "expect": 3
+  },
+  {
+   "file": "bots/weather/engine/base_bot.py",
+   "pattern": "S228",
+   "expect": 1
+  },
+  {
+   "file": "base_engine/data/resolution_backfill.py",
+   "pattern": "S228",
+   "expect": 3
+  },
+  {
+   "file": "bots/weather/engine/base_engine/data/resolution_backfill.py",
+   "pattern": "S228",
+   "expect": 2
+  },
+  {
+   "file": "bots/weather_bot.py",
+   "pattern": "S232",
+   "expect": 9
+  },
+  {
+   "file": "bots/weather/engine/base_engine/weather/nowcast_mesh.py",
+   "pattern": "S232",
+   "expect": 5
+  },
+  {
+   "file": "bots/weather/engine/config/settings.py",
+   "pattern": "WEATHER_NOWCAST_",
+   "expect": 10
+  }
+ ]
 }

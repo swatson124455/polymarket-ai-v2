@@ -5,7 +5,19 @@
 > read them for detail, but THIS file is the source of truth for "what is live and what's open."
 > Update the three sections below at the end of every WB session (same commit as the work).
 
-**Last updated:** 2026-07-15/16 (S231 close — DEEP-BACKTEST session, ZERO bot-code changes/deploys.
+**Last updated:** 2026-07-18 (S232 — PHASE-2 session, operator GO. Headlines:
+**MESH-LEAD GATE PASS day-1** (8 gradeable cities, 93 events, 60% mesh-led, pooled median
+lead 74.8 min, false-crossing 10.8%; spec §"S232 MESH-LEAD VERDICT"; mesh_validation legacy-sid
+crash fixed `8778f7d`); **Phase-2 mesh-nowcast signal BUILT + DEPLOYED flag-OFF** (see OPEN
+DECISION 0; data plane `/opt/pa2-weather-feeds` = pws_mesh mirror + mesh_debias cron 09:15Z;
+signal `9bfd27a` + adversarial-review fixes `7fceaa0`, 393 weather tests + full suite green);
+**rep_bias REVERSED at corrected stations** (resolution tracks the HOURLY-PRINT max 61/61;
+S230's "continuous max 81%" was wrong-station noise; representativeness-bias root-cause DEAD);
+**registry-additions evidence complete** (RKPK/FACT/ZGGG/OEJN/RPLL/MPMG/ZSQD verified;
+⚠ Karachi resolves at Masroor OPMR which publishes NO METARs — WU-only class like HK, never
+add OPKC; Lagos market inactive); Sat task retargeted = day-2 lead grade + flip review.)
+Prior header (S231, still accurate for the S231 arc):
+(2026-07-15/16 — S231 close — DEEP-BACKTEST session, ZERO bot-code changes/deploys.
 Full handoff: `docs/WEATHER_S231_STATUS.md`; next session: `WB_S232_KICKOFF_PROMPT.md`.
 Headlines: **nowcast peak-model GATE PASSED** (archived no-lookahead previous-runs forecasts →
 719 family-days, TEST n=135 meanEV +0.091, pre-registered 2σ bar cleared, family-clustered
@@ -17,7 +29,7 @@ supersedes the S230 "survived accrual" watch; do not build on it); **no pre-2026
 07-15** — `pws_mesh.py` PWS-mesh collector cron live on VPS (research layer, bot untouched;
 web-key dependency caveat in the spec); EMOS correction path VERIFIED to reach bucket TAILS
 in both prob-engine routes (self-heal can land — training-pair volume is the only dependency);
-AsosOneMinClient: never instantiated live (`ASOS_1MIN_ENABLED` unset) → leave dormant.
+AsosOneMinClient: never instantiated live (`ASOS_1MIN_ENABLED` unset) → leave dormant.)
 Prior header (S230):
 (S230 close — research mega-session, ZERO deploys/bot-code.
 Full handoff: `docs/WEATHER_S230_STATUS.md` (quick-facts table + verdict chain);
@@ -47,6 +59,22 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
 ---
 
 ## OPEN DECISIONS  ← always at the top, always the first thing a resume reads
+
+0. **PHASE-2 NOWCAST FLIP (operator decision at the Sat 07-18 day-2 review).**
+   S232: mesh-lead gate PASSED day-1 (60% of 93 events mesh-led, pooled median
+   lead 74.8 min, false-crossing 10.8% — spec §"S232 MESH-LEAD VERDICT") and the
+   operator ordered "go and review to flip on day 2" → Phase-2 is **BUILT and
+   DEPLOYED flag-OFF** (`WEATHER_NOWCAST_ENTRY_ENABLED=false` default; signal
+   `9bfd27a` + review fixes `7fceaa0`; adversarially reviewed — flag-OFF paths
+   verified regression-free, 4 flag-ON blockers found AND fixed pre-deploy).
+   The scheduled task `wb-mesh-lead-validation` (Sat 10:00 ET) grades day 2 and
+   presents the flip recommendation. **A day-2 flip OVERRIDES two of the spec's
+   pre-registered acceptance gates**: (a) ≥7d mesh uptime with populated
+   per-PWS debias tables (mesh started 07-16 → earliest ~07-23; at flip time
+   the tables are ~2-3 days deep, 30 cities, 20 dropped on thin blocks) and
+   (b) the operator WU key/Synoptic token (web-key dependency). Flip = env flip
+   + restart (Tier-2); the S228 react-leg env flips activate WITH it per the
+   design. Kill = flip back false + restart.
 
 1. **WATCH the calibrator re-learn — NOW ACTUALLY RUNNING (S227 fix deployed 2026-07-11
    00:47:00Z).** Backstory: the S224 WS-3 cutoff was bound as a **str** into
@@ -546,6 +574,17 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-18 (S232 — PHASE-2 session, operator GO, ONE deploy):** mesh-lead
+  gate PASS day-1 (60% of 93 events led / 74.8 min pooled median / 10.8%
+  false-crossing; legacy-sid crash fixed `8778f7d`); operator "go and review
+  to flip on day 2" → Phase-2 mesh-nowcast signal BUILT (`9bfd27a`) +
+  adversarially reviewed (flag-OFF regression-free; 4 flag-ON blockers fixed
+  `7fceaa0`) + DEPLOYED **`20260717_210429`** flag-OFF (rollback
+  `20260717_145326`); data plane `/opt/pa2-weather-feeds` (pws_mesh mirror +
+  mesh_debias cron 09:15Z) live; 4002 full-suite + 393 weather tests green;
+  rep_bias REVERSED at corrected stations (resolution = hourly-print max
+  61/61); registry-additions evidence complete (Karachi=OPMR NO-METAR trap);
+  Sat task = day-2 grade + flip review (overrides 7d-debias + WU-key gates).
 - **2026-07-17/18 (S231-FINAL — TWO operator-approved deploys):** INPUT AUDIT
   found 8 resolution-station mismatches vs market descriptions → 7 fixed +
   DEPLOYED `20260717_105239`; ~9% settlement-risk claim RETRACTED (miswiring
