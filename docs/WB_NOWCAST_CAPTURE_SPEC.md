@@ -715,3 +715,47 @@ Phase 1.
 3. Phase 0c: first trade-print analysis (needs ~3+ days of prints — check
    accrual first).
 4. Operator asks: WU rate-limit answer, NWWS-OI application submitted?
+
+## S232 MESH-LEAD VERDICT (2026-07-18 00:2xZ) — PHASE-2 LEAD GATE: **PASS** (day 1)
+
+IEM 1-min backfilled through 07-16 (the 40+h stall ended). First live `--lead`
+run crashed `KeyError: KDEN` — mesh files written before the registry-fix
+deploy (≤07-17 ~14:52Z) carry OLD station ids while `SID` is built from the
+current registry. S232 fix (`8778f7d`): `LEGACY_SID` alias map (7 pairs
+verified against commit `5fb0b56`), skip-don't-crash for unknown sids, pooled
+gate median in the TOTAL line. The Sat 10:00 ET scheduled task would have
+crashed identically.
+
+**RESULT `--lead 20260716`** (run 07-18 00:1xZ; 8 gradeable cities of the 50
+US cities in the file — the rest skipped on <300 1-min obs [partial IEM
+backfill / no 1-min product] or no prints):
+
+```
+  KATL 13 ev / 5 led / 21.0 min / 0 false      KMIA 12 / 7 / 156.0 / 1
+  KDEN 18 / 15 / 52.4 / 0   (legacy-id day)    KORD 11 / 9 /  70.0 / 2
+  KIAH 12 /  9 / 92.1 / 2   (legacy-id day)    KSEA  9 / 1 /   4.2 / 0
+  KLGA 10 /  7 / 93.6 / 1                      KSFO  8 / 3 / 179.9 / 4
+  TOTAL 93 events | mesh-led 56 (60%) | false-crossings 10
+        | pooled median lead 74.8 min (n=56 led events)
+```
+
+**Gate grades (spec bar → measured):** led ≥50% → **60% PASS**; pooled median
+≥15 min → **74.8 min PASS**; false-crossing rate <20% → **10.8%** (10/93 truth
+events; 15.2% under the most conservative denominator led+false) **PASS**.
+
+**Caveats (disclosed):** ONE day of data; KDEN/KIAH are legacy-id days
+(arbiter = the OLD station — Denver's correct station KBKF has no 1-min
+product, so Denver will NEVER be 1-min gradeable going forward); KLGA's 1-min
+reappeared (was absent at S231 close); no city >19% of events (concentration
+OK); per-city weak spots consistent with the diurnal story — KSEA 1/9 led,
+KSFO 3/8 with 4/10 of all false-crossings. The OTHER two acceptance gates are
+NOT yet met: ≥7 days mesh uptime + per-PWS debias table (~07-23 earliest) and
+the operator WU key/Synoptic token. Lead gate passing ≠ flag goes true.
+
+**Day-over-day bias:** 00:0xZ re-run of `--bias 20260717` (651 prints / 37
+cities) reproduces the 23:5xZ S231 day-2 read within print-matching noise
+(KDAL −0.75 vs −0.77, KBKF −0.50 vs −0.62, KHOU +2.25 vs +2.04 medians) —
+table stable, no new classification changes. RKSI/RCSS first correct-station
+reads land with the 07-18 Asia local day (new ids only began logging ~15Z
+07-17 ≈ local midnight). RCTP old-station read (−9.65F median, tight sd)
+retroactively confirms how badly Taipei was miswired.
