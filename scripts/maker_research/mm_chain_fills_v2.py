@@ -105,11 +105,12 @@ def scan():
         return int(b["timestamp"], 16) if b else None
 
     fills_all = 0
+    mid_miss = 0
     at_level, through_by_hour = [], collections.defaultdict(lambda: [0, 0.0])
     t0 = time.time()
     done = 0
     for h in range(1, N_HOURS + 1):
-        if time.time() - t0 > 900:
+        if time.time() - t0 > 3300:   # first run: 900s covered only 13/24 windows
             print("time cap at hour-window", h)
             break
         b1 = head - h * BLOCKS_PER_HOUR
@@ -150,6 +151,7 @@ def scan():
             ts = ts0 + (ts1 - ts0) * (bn - b0) / max(b1 - b0, 1)
             mid = mid_at(mids, mkt, ts)
             if mid is None:
+                mid_miss += 1      # universe rotated / market not sampled then
                 continue
             our_bid, our_ask = mid - v / 2, mid + v / 2
             lvl = our_bid if buy else our_ask
@@ -167,19 +169,22 @@ def scan():
                 through_by_hour[hour][0] += 1
                 through_by_hour[hour][1] += usd
     payload = {"scanned_windows": done, "fills_all": fills_all,
+               "mid_miss": mid_miss,
                "at_level": at_level,
                "through_by_hour": {str(k): v for k, v in through_by_hour.items()},
                "head": head, "scan_t": time.time()}
     json.dump(payload, open(FILLS_PATH, "w"))
     print("scan done: %d/%d hourly windows, %d exchange fills decoded, "
-          "%d at-level on our universe -> %s"
-          % (done, N_HOURS, fills_all, len(at_level), FILLS_PATH))
+          "%d at-level (mid-miss dropped %d) -> %s"
+          % (done, N_HOURS, fills_all, len(at_level), mid_miss, FILLS_PATH))
 
 
 def _psql(sql):
     r = subprocess.run(["sudo", "-u", "postgres", "psql", "-d", "polymarket",
                         "-t", "-A", "-F", "|", "-c", sql],
                        capture_output=True, text=True, timeout=120)
+    if r.returncode != 0 or (not r.stdout.strip() and r.stderr.strip()):
+        print("psql problem:", r.stderr.strip()[:300])
     return [ln.split("|") for ln in r.stdout.splitlines() if ln.strip()]
 
 
