@@ -10,13 +10,116 @@
 > 2026-07-11 incident: a fresh session read master's stale copy and
 > recommended the BANNED circular validate rerun it found there.)
 
-**Last updated:** 2026-07-15 (local steward session, ~01:30 UTC 07-16 — session-close review done, cohort-2 live, run-2 in flight, concentration rule wired, synced to master via PR #4) · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
+**Last updated:** 2026-07-17 (local steward session, ~12:40 UTC — run-3 killed, run-4 merged fair-params batch launched after 3-round blind review; hft-cache + stale-gamma landmines found+mitigated) · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
 **Read first:** `CLAUDE.md` (binding directives), then this file, then **`docs/MB_COPYTRADER_CONTEXT.md` (FULL context brief for the live copy-trader investigation — the complete reasoning chain, API gotchas, and decision tree)**. `MB_REBUILD_PLAN.md` holds the older plan + operator decisions.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
 ---
 
 ## 0. IMMEDIATE RESUME (2026-07-14 local steward session — read this block first)
+
+> **2026-07-17 UPDATE (local steward session; operator-approved "proceed with
+> all action items") — RUN-3 KILLED, RUN-4 (merged, fair-params) LAUNCHED
+> 12:34:57Z after a 3-round blind adversarial review chain. READ THIS FIRST.**
+>
+> 1. **RUN-4 IS THE ACTIVE BATCH**: 28 traders (probe `0xf705fa` line 1 →
+>    band 8 → 19 not-yet-done), code `/tmp/mbre`@`27ee79b` (new-params
+>    defaults: receipt-free >1000, decisions/day ≤25, flat-share <0.60),
+>    python `/opt/polymarket-ai-v2/venv/bin/python` (NOT /tmp/mbre/venv —
+>    doesn't exist; run-3's cmdline used a RELATIVE venv path), log
+>    `/tmp/deep_dive_run4.log`, summary `_summary_run4.json` (spans ALL runs
+>    sharing the out-dir — not run4-only). First-minute checks passed
+>    (28 traders, SKIPDB=0, PID 3269649 detached). Local watchers: batch-end
+>    poller + probe-JSON watcher (steward session scratchpad).
+> 2. **WHY the kill (operator-approved)**: run-3 ran pre-rework code
+>    (`07e7296`, old cap-200) — its band rejects needed re-testing anyway —
+>    AND the blind review found run-3's INSUFFICIENTs confounded (see 3).
+>    Run-3 got through 8/27 before the kill (traders 1-8 have JSONs; last
+>    3: `0xa58d4f` REJECT 1194/day [stays — >1000 in both regimes],
+>    `0xdf2e12` REJECT 390/day [band → in run-4], `0x0c0e27` INSUFFICIENT).
+> 3. **NEW LANDMINES (blind-review chain findings, ALL MITIGATED for run-4)**:
+>    (a) **status="hft" API cache (~500 rows) makes ADMIT deterministically
+>    unreachable** — tok2cond comes ONLY from cached API rows → lifetime
+>    first-buys unlabelable → span<60d → skill can't clear; AND unmapped
+>    tokens inflate decisions/day (each token = a "market") → FALSE-REJECT
+>    through the hard decision gate. ALL 34-HFT-borderline caches were hft.
+>    Fix applied: renamed 27 starved caches to `.hft-bak` → run-4 re-fetches
+>    full histories (missing-cache path disables the HFT short-circuit).
+>    (b) **gamma_resolutions.json was 6 days stale** — suppresses (never
+>    corrupts) recent labels; refreshed 12:24Z via
+>    `backfill_resolutions_gamma.py` (+699 labels, 198,832 total, 0 errors).
+>    ⇒ **run-1/2/3 INSUFFICIENT "un-gradeable/underpowered" verdicts are
+>    confounded by (a)+(b) — they are DEEPEN candidates under fresh
+>    caches/labels, backlog, operator word.**
+>    (c) `ssh 'cmd &'`-style launches: stale /tmp logfile owned by another
+>    user = silent no-launch (bit us 12:12Z; use fresh log names + the
+>    LAUNCHED/ABORTED marker pattern + alive-check after 10s).
+> 4. **ROSTER LEDGER DELTA (deep-dive candidate roster, protocol-logged)**:
+>    ADD `0xdf2e12c6a5…` to the band re-test (390/day, run-3 old-cap
+>    REJECT). ADD `0xed107a85a4…` (trader 5) to run-4 (its INSUFFICIENT was
+>    (a)+(b)-confounded; verdict NOT code-invariant under new gates). No
+>    live-cohort changes — cohort-2 (8) + probe (1) unchanged, watcher
+>    untouched (canary 0 throughout).
+> 5. **Verified this session**: 8 ADMIT JSONs ≡ cohort-2 ledger (set
+>    identity); deployed watcher blob ≡ `336f6a4` (hash match); cohort-2
+>    OK-rate 69.2%/conc 69% SURVIVES (trader,token)-dedup; 47-list files
+>    durably copied into `deep_dive/`; 9 pre-rerun verdicts backed up to
+>    `deep_dive/pre_band_rerun_20260717/`.
+ > 6. **OPEN**: [operator] cohort-2's 8 live ADMITs never faced the new
+>    decision/flow gates — shadow measures copyability empirically (chosen
+>    for now); uniform re-dive = backlog. [next] run-4 completion → tally →
+>    ADMIT proposals by NAME only; probe cross-check vs 7.6 decisions/day,
+>    0.16 flat_share on first JSON. Full procedure + review findings:
+>    steward scratchpad `band_rerun_runbook.md` (v3).
+> 7. **PROBE `0xf705fa` = ADMIT under fair params (run-4 trader 1, ~13:45Z
+>    2026-07-17) — CROSS-CHECK PASSED, PROMOTION QUEUED TO BATCH BOUNDARY
+>    (operator "proceed").** Verdict: complete sweep 135,493 fills, 0
+>    mismatch, 100% of 28,926 API-BUYs chain-backed, skill +0.036 P=1.00 on
+>    1,838 mkts, decisions/day 7.66 (exact match vs pre-registered 7.6),
+>    flat_share 0.39 < 0.60 (differs from the ledgered 0.16 — BENIGN: old
+>    figure was the recent-window API sample, run-4 computes lifetime chain
+>    positions; both far under the bar). Live shadow agrees: 82% OK-rate at
+>    0.9s lag since its 00:50Z probe epoch. PROTOCOL: promotion (probe →
+>    cohort-3 w/ own epoch) happens in ONE batched watcher restart with any
+>    further run-4 ADMITs at batch end — a mid-run restart would reset
+>    FirstBuyDedup for zero informational gain (probe already has its own
+>    epoch + readout line; collection is identical under either label).
+> 8. **STACK-VS-FIRST-BUY TEST (operator-requested 2026-07-17) — PRE-REGISTERED,
+>    retrospective arm VOID, forward arm ARMED.** Question: for a stacker, does
+>    the edge live in the first entry or the accumulation (would re-buying beat
+>    our one-bet-per-market policy)? Retrospective attempt on the probe's API
+>    cache FAILED its own cross-check gate twice (could not reproduce the
+>    deep-dive's 1,838 mkts @ +0.036) — ROOT CAUSE: the data-api record is a
+>    structural SUBSET of chain truth (28,926 API BUYs vs 60,576 chain BUYs for
+>    0xf705fa; deep-dive tier-2 verifies the subset is honest, NOT complete).
+>    NO VERDICT from API-based retrospectives — landmine: never grade a
+>    high-rate trader's entry pattern from /activity alone. UNVERIFIED
+>    descriptive residue (both estimand framings agreed): his stack VWAP sits
+>    ~1.5c WORSE than his first price (P(better)=0.000) but dollar-weighting
+>    his sizing BEATS equal-weight — i.e., size-as-conviction looks real,
+>    price-improvement-by-stacking does not. Do not act on this.
+>    **FORWARD TEST (pre-registered, runs on shadow data):** when >=30 resolved
+>    (trader,token) positions carry >=2 BUY records, compute per position
+>    Delta_exec = (outcome - VWAP of recorded asks) - (outcome - first ask),
+>    market-clustered bootstrap, seed 7. Delta>0 @ P>=0.95 -> re-buy policy
+>    becomes a DESIGN PROPOSAL (touches the one-bet-per-market guard: operator
+>    decision); else first-buy-only validated. Every re-buy is already recorded
+>    with executable quotes — zero new collection needed.
+> 9. **OPERATOR APPROVALS (2026-07-17 ~15:20Z, "proceed") — EXECUTE AT RUN-4
+>    BATCH BOUNDARY (the local batch-end watcher fires the sequence):**
+>    (a) PROMOTE `0xf705fa` (probe ADMIT) + `0x7c3db723f1d4…` (run-4 fresh
+>    ADMIT, 395/day: sweep complete, 0 mismatch, 100%/118,606 API-BUYs
+>    backed, skill P=1.0 on 4,280 mkts) — implementation: clean 25→26,
+>    extend `probe.addresses` with 0x7c3db7 (readout's multi-address probe
+>    group VERIFIED to work; group epoch stays 00:49:56Z — 0x7c3db7 has zero
+>    prior shadow records so nothing pools, F1-safe), ONE
+>    mirror3_shadow_deploy.sh restart, verify roster=26 + canary + next
+>    12:30Z readout runs clean. Any FURTHER run-4 ADMITs join the same
+>    single restart. (b) DEEPEN WAVE after run-4 exits: the 9 confounded
+>    INSUFFICIENTs (list in steward runbook) — rename non-ok caches, bare
+>    roster file, detached launch, --max-receipts 30000. (c) THEN
+>    `0x70d94a` solo deepen at --max-receipts 120000 (~4h receipts).
+>    Sequence strictly serial (one batch at a time on the shared RPC).
 
 > **2026-07-14 PM UPDATE (local steward session; VPS-direct SSH, operator-
 > approved per-command) — CHAIN DEEP-DIVE GATE BUILT, REVIEWED, VALIDATED,
