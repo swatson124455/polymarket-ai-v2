@@ -74,34 +74,59 @@ def pws_offset(entry: Dict, local_hour: int) -> float:
     return float(entry.get("scalar", 0.0))
 
 
+# Per-file parse cache: path -> (mtime_ns, size, {sid: [(epoch, temp_f, pws)]}).
+# S232 review Finding 6: the day file holds ALL cities' rows; re-parsing it
+# once per city per scan was O(cities x file) of synchronous event-loop work.
+# One parse per file change, shared by every caller in the process.
+_FILE_CACHE: Dict[str, Tuple[int, int, Dict[str, List[Tuple[int, float, str]]]]] = {}
+
+
+def _parse_mesh_file(path: str) -> Dict[str, List[Tuple[int, float, str]]]:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return {}
+    cached = _FILE_CACHE.get(path)
+    if cached and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
+        return cached[2]
+    by_sid: Dict[str, List[Tuple[int, float, str]]] = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                if r.get("qc") != 1 or r.get("temp_f") is None:
+                    continue
+                by_sid.setdefault(r["sid"], []).append(
+                    (int(r["epoch"]), float(r["temp_f"]), r["pws"]))
+    except OSError:
+        return {}
+    # keep the cache bounded to the handful of live day files
+    if len(_FILE_CACHE) > 8:
+        _FILE_CACHE.clear()
+    _FILE_CACHE[path] = (st.st_mtime_ns, st.st_size, by_sid)
+    return by_sid
+
+
 def load_mesh_day(feed_dir: str, sid: str, tzinfo, local_date) -> List[Tuple[int, float, str]]:
     """qc==1 obs for `sid` whose LOCAL date == local_date, sorted by epoch.
 
-    Mirrors mesh_validation's two-file rule: a western-hemisphere local
-    evening lands in the NEXT UTC day's file, so read date and date+1 tags.
+    Three-file rule (S232 review Finding 2): files are named by UTC RUN date.
+    A western-hemisphere local evening lands in the NEXT UTC day's file, and
+    an EASTERN-hemisphere (UTC+) local morning lands in the PREVIOUS UTC
+    day's file (Seoul local 00:00-08:59 = UTC day D-1) — read D-1, D, D+1.
     """
-    tags = {local_date.strftime("%Y%m%d"),
+    tags = {(local_date - timedelta(days=1)).strftime("%Y%m%d"),
+            local_date.strftime("%Y%m%d"),
             (local_date + timedelta(days=1)).strftime("%Y%m%d")}
     out: List[Tuple[int, float, str]] = []
     for tag in sorted(tags):
         for path in glob.glob(os.path.join(feed_dir, f"pws_mesh_{tag}.jsonl")):
-            try:
-                with open(path, encoding="utf-8") as f:
-                    for line in f:
-                        try:
-                            r = json.loads(line)
-                        except Exception:
-                            continue
-                        if r.get("sid") != sid or r.get("qc") != 1:
-                            continue
-                        tf = r.get("temp_f")
-                        if tf is None:
-                            continue
-                        ep = int(r["epoch"])
-                        if datetime.fromtimestamp(ep, tzinfo).date() == local_date:
-                            out.append((ep, float(tf), r["pws"]))
-            except OSError:
-                continue
+            for ep, tf, pws in _parse_mesh_file(path).get(sid, []):
+                if datetime.fromtimestamp(ep, tzinfo).date() == local_date:
+                    out.append((ep, tf, pws))
     out.sort()
     return out
 

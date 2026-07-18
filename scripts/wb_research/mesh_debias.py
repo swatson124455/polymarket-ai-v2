@@ -190,11 +190,16 @@ def main():
         "drop_sd_f": DROP_SD_F,
         "cities": cities,
     }
-    os.makedirs(FEED_DIR, exist_ok=True)
-    tmp = OUT_LIVE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(doc, f, separators=(",", ":"))
-    os.replace(tmp, OUT_LIVE)             # atomic — bot never sees a partial
+    # S232 review Finding 7: a missing/unwritable feed dir must not kill the
+    # dated research copy below — the live-table write fails loudly instead.
+    try:
+        os.makedirs(FEED_DIR, exist_ok=True)
+        tmp = OUT_LIVE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(doc, f, separators=(",", ":"))
+        os.replace(tmp, OUT_LIVE)         # atomic — bot never sees a partial
+    except OSError as exc:
+        print(f"mesh_debias FEED_DIR write failed ({exc}) — live table NOT written")
     dated = os.path.join(MESH_DIR, f"mesh_debias_{now:%Y%m%d}.json")
     with open(dated, "w", encoding="utf-8") as f:
         json.dump(doc, f, indent=1)

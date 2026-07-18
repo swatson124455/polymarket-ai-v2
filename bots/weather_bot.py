@@ -4601,6 +4601,14 @@ class WeatherBot(BaseBot):
             if not table:
                 logger.debug("weatherbot_nowcast_no_debias_table")
                 return
+            # S232 review Finding 3: the window cap and the overshoot tracking
+            # BOTH live in Redis — without it the cap fails open ($50 per scan
+            # instead of per window) and invalidation is silently disarmed.
+            # Fail CLOSED: no Redis, no nowcast entries.
+            cache = getattr(self.base_engine, "cache", None)
+            if cache is None or not getattr(cache, "redis", None):
+                logger.warning("weatherbot_nowcast_no_redis_skip")
+                return
             model_prob = float(getattr(settings, "WEATHER_NOWCAST_MODEL_PROB", 0.44))
             min_edge = float(getattr(settings, "WEATHER_NOWCAST_MIN_EDGE", 0.05))
             erem_max_f = float(getattr(settings, "WEATHER_NOWCAST_EREM_MAX_F", 1.0))
@@ -4651,15 +4659,15 @@ class WeatherBot(BaseBot):
                             continue  # no quote / already repriced — no entry
                         window_key = (f"weatherbot:nowcast_spent:"
                                       f"{st.station_id}:{group.target_date.isoformat()}")
-                        spent = 0.0
-                        cache = getattr(self.base_engine, "cache", None)
-                        _redis_ok = cache is not None and getattr(cache, "redis", None)
-                        if _redis_ok:
-                            try:
-                                _raw = await cache.get(window_key)
-                                spent = float(_raw) if _raw is not None else 0.0
-                            except Exception:
-                                spent = 0.0
+                        try:
+                            _raw = await cache.get(window_key)
+                            spent = float(_raw) if _raw is not None else 0.0
+                        except Exception:
+                            # Finding 3: a failed cap read fails CLOSED — skip
+                            # this bucket rather than assume a fresh window.
+                            logger.warning("weatherbot_nowcast_cap_read_failed",
+                                           market_id=bucket.market_id)
+                            continue
                         remaining = window_cap - spent
                         if remaining < min_trade:
                             continue
@@ -4703,7 +4711,7 @@ class WeatherBot(BaseBot):
                             window_remaining=round(remaining, 2),
                         )
                         ok = await self._execute_weather_trade(opp, group)
-                        if ok and _redis_ok:
+                        if ok:
                             try:
                                 await cache.set(window_key, spent + remaining,
                                                 ttl=172800)
@@ -4767,11 +4775,26 @@ class WeatherBot(BaseBot):
                     mid = key.split("weatherbot:nowcast_pos:", 1)[-1]
                     details = og._position_details.get(f"WeatherBot:{mid}")
                     if not details:
-                        # position closed/resolved elsewhere — drop tracking
-                        try:
-                            await cache.redis.delete(key)
-                        except Exception:
-                            pass
+                        # S232 review Finding 1: _position_details is NOT
+                        # seeded at startup (only _open_position_markets is;
+                        # the 5-min reconciler fills details later). Deleting
+                        # here on a fresh restart permanently disarmed
+                        # overshoot tracking. Delete ONLY when the market is
+                        # also absent from the startup-seeded open set.
+                        _open_set = getattr(og, "_open_position_markets", {}) or {}
+                        if str(mid) not in _open_set.get("WeatherBot", set()):
+                            try:
+                                await cache.redis.delete(key)
+                            except Exception:
+                                pass
+                        continue
+                    if str(details.get("side", "")).upper() != "YES":
+                        # Finding 5b: details is one slot per bot:market — a
+                        # later NO entry by the main signal overwrites it;
+                        # selling the YES token with the NO size would corrupt
+                        # the position. Nowcast entries are always YES.
+                        continue
+                    if mid in self._recently_exited:
                         continue
                     rec = await cache.get(key)
                     if not isinstance(rec, dict) or rec.get("bucket_type") != "range":
@@ -4782,7 +4805,10 @@ class WeatherBot(BaseBot):
                         continue   # no fresh price / no table — retry next scan
                     st = group.station
                     city_tab = (table.get("cities") or {}).get(st.station_id)
-                    if not city_tab:
+                    if not city_tab or city_tab.get("dropped"):
+                        # Finding 5a: a dropped city's mesh is too noisy for a
+                        # ±1° overshoot call — HOLD rather than sell on data
+                        # the entry side refuses to trade on.
                         continue
                     tz = ZoneInfo(st.timezone)
                     series = nowcast_mesh.load_mesh_day(
@@ -4800,6 +4826,10 @@ class WeatherBot(BaseBot):
                     if size_shares <= 0:
                         continue
                     current_price = float(bucket.yes_price or 0.0)
+                    if current_price <= 0.0:
+                        # Finding 4: a missing quote would fire-sale the whole
+                        # position at the $0.01 floor — hold, retry next scan.
+                        continue
                     token_id = rec.get("token_id") or bucket.token_id
                     try:
                         _res = await self.base_engine.place_order(

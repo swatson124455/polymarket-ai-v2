@@ -184,6 +184,18 @@ def _feed(tmp_path, dropped=False):
     return local_date
 
 
+def _mk_cache(get_value=None):
+    """Working Redis-cache mock — required since entries now FAIL CLOSED
+    without Redis (S232 review Finding 3)."""
+    cache = MagicMock()
+    cache.redis = MagicMock()
+    cache.redis.keys = AsyncMock(return_value=[])
+    cache.redis.delete = AsyncMock()
+    cache.get = AsyncMock(return_value=get_value)
+    cache.set = AsyncMock()
+    return cache
+
+
 def _nowcast_env(monkeypatch, tmp_path, enabled=True):
     monkeypatch.setattr(settings, "WEATHER_NOWCAST_ENTRY_ENABLED", enabled, raising=False)
     monkeypatch.setattr(settings, "WEATHER_NOWCAST_FEED_DIR", str(tmp_path), raising=False)
@@ -204,9 +216,22 @@ async def test_nowcast_scan_flag_off_is_noop(weather_bot, monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_nowcast_scan_builds_capped_yes_entry(weather_bot, monkeypatch, tmp_path):
+async def test_nowcast_scan_fails_closed_without_redis(weather_bot, mock_engine, monkeypatch, tmp_path):
+    """Finding 3: no Redis → no window-cap accounting → NO entries at all."""
     _nowcast_env(monkeypatch, tmp_path)
     local_date = _feed(tmp_path)
+    mock_engine.cache = None
+    weather_bot._forecast_client.get_combined_forecast = AsyncMock(return_value=_forecast(84.4))
+    weather_bot._execute_weather_trade = AsyncMock(return_value=True)
+    await weather_bot._scan_nowcast_entries([([], _mk_group(local_date), {})])
+    weather_bot._execute_weather_trade.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_nowcast_scan_builds_capped_yes_entry(weather_bot, mock_engine, monkeypatch, tmp_path):
+    _nowcast_env(monkeypatch, tmp_path)
+    local_date = _feed(tmp_path)
+    mock_engine.cache = _mk_cache()
     weather_bot._forecast_client.get_combined_forecast = AsyncMock(return_value=_forecast(84.4))
     weather_bot._execute_weather_trade = AsyncMock(return_value=True)
     await weather_bot._scan_nowcast_entries([([], _mk_group(local_date), {})])
@@ -222,8 +247,9 @@ async def test_nowcast_scan_builds_capped_yes_entry(weather_bot, monkeypatch, tm
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["repriced", "dropped", "erem", "not_crossed"])
-async def test_nowcast_scan_admission_blocks(case, weather_bot, monkeypatch, tmp_path):
+async def test_nowcast_scan_admission_blocks(case, weather_bot, mock_engine, monkeypatch, tmp_path):
     _nowcast_env(monkeypatch, tmp_path)
+    mock_engine.cache = _mk_cache()
     local_date = _feed(tmp_path, dropped=(case == "dropped"))
     det_high = 87.5 if case == "erem" else 84.4       # E_rem 3.5F blocks
     yes_price = 0.50 if case == "repriced" else 0.30  # > 0.44 - 0.05 blocks
@@ -296,6 +322,69 @@ async def test_nowcast_invalidation_sells_on_overshoot(weather_bot, mock_engine,
     assert weather_bot._exit_reasons["m-nowcast-1"] == "NOWCAST_OVERSHOOT"
     assert "m-nowcast-1" in weather_bot._recently_exited
     cache.redis.delete.assert_awaited()                # tracking dropped on fill
+
+
+@pytest.mark.asyncio
+async def test_nowcast_invalidation_restart_does_not_delete_tracking(weather_bot, mock_engine, monkeypatch, tmp_path):
+    """Finding 1: after a restart _position_details is empty but the seeded
+    open set still has the market — tracking must NOT be deleted."""
+    _nowcast_env(monkeypatch, tmp_path)
+    local_date = _feed(tmp_path)
+    cache = _mk_cache(get_value={
+        "token_id": "tok-yes", "sid": "KLGA", "high_bound": 83.0,
+        "bucket_type": "range", "temp_unit": "F",
+        "target_date": local_date.isoformat()})
+    cache.redis.keys = AsyncMock(return_value=["weatherbot:nowcast_pos:m-nowcast-1"])
+    mock_engine.cache = cache
+    mock_engine.order_gateway._position_details = {}                  # restart state
+    mock_engine.order_gateway._open_position_markets = {"WeatherBot": {"m-nowcast-1"}}
+    await weather_bot._evaluate_nowcast_invalidations([([], _mk_group(local_date), {})])
+    cache.redis.delete.assert_not_called()                            # tracking survives
+    mock_engine.place_order.assert_not_called()
+    # ...and once the market is truly gone from the open set, it IS cleaned up
+    mock_engine.order_gateway._open_position_markets = {"WeatherBot": set()}
+    await weather_bot._evaluate_nowcast_invalidations([([], _mk_group(local_date), {})])
+    cache.redis.delete.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_nowcast_invalidation_guards_price_and_side(weather_bot, mock_engine, monkeypatch, tmp_path):
+    """Finding 4: missing quote → HOLD (no $0.01 fire-sale). Finding 5b: a
+    NO-side details record (slot overwritten by the main signal) → HOLD."""
+    _nowcast_env(monkeypatch, tmp_path)
+    local_date = _feed(tmp_path)
+    rec = {"token_id": "tok-yes", "sid": "KLGA", "high_bound": 83.0,
+           "bucket_type": "range", "temp_unit": "F",
+           "target_date": local_date.isoformat()}
+    for details, yes_price in (
+        ({"side": "YES", "price": 0.30, "size": 100.0}, 0.0),   # missing quote
+        ({"side": "NO", "price": 0.60, "size": 40.0}, 0.05),    # NO overwrote slot
+    ):
+        cache = _mk_cache(get_value=rec)
+        cache.redis.keys = AsyncMock(return_value=["weatherbot:nowcast_pos:m-nowcast-1"])
+        mock_engine.cache = cache
+        mock_engine.order_gateway._position_details = {"WeatherBot:m-nowcast-1": details}
+        group = _mk_group(local_date, yes_price=yes_price, low=82.0, high=83.0)
+        await weather_bot._evaluate_nowcast_invalidations([([], group, {})])
+        mock_engine.place_order.assert_not_called()
+
+
+def test_load_mesh_day_reads_previous_utc_day_file(tmp_path):
+    """Finding 2: a UTC+9 city's local morning lives in the PREVIOUS UTC
+    day's file — it must be included in the local-day series."""
+    tz = ZoneInfo("Asia/Seoul")
+    local_date = datetime.now(tz).date()
+    # 00:30 local on local_date = 15:30Z on local_date-1 → file tag D-1
+    early_local = datetime(local_date.year, local_date.month, local_date.day,
+                           0, 30, tzinfo=tz)
+    ep = int(early_local.timestamp())
+    utc_tag_date = early_local.astimezone(timezone.utc).date()
+    assert utc_tag_date == local_date - timedelta(days=1)     # premise of the bug
+    _write_mesh(tmp_path, [
+        {"sid": "RKSI", "pws": "P1", "epoch": ep, "temp_f": 80.0, "qc": 1},
+    ], utc_tag_date)
+    out = nowcast_mesh.load_mesh_day(str(tmp_path), "RKSI", tz, local_date)
+    assert out == [(ep, 80.0, "P1")]
 
 
 @pytest.mark.asyncio
