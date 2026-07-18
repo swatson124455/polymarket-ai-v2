@@ -132,13 +132,28 @@ CANON = {
         "status": "UNVERIFIED-PRIMARY — operator browser download pending",
     },
     "maker_fee": {
-        "value": "25% of taker fee on SOME markets (whirligigbear: 'some'; pm.wiki: "
-                 "presents as universal — sources CONFLICT). Which series charge it "
-                 "is THE blocking unknown for pilot math.",
-        "source": "secondary sources above; help.kalshi.com/13823805 confirms maker "
-                  "fees exist but not where",
-        "status": "UNRESOLVED — do not run pilot economics until the official PDF "
-                  "is read. Recorder unaffected (nothing trades).",
+        "value": "ZERO on 'Most markets' — the kalshi.com/fee-schedule page's Standard "
+                 "fees table lists ONLY taker fees ($0.07-$1.75 per 100 contracts, the "
+                 "0.07xPx(1-P) curve) for 'Most markets', no maker fee; a footnoted "
+                 "minority of markets DOES charge maker fees (~25% of taker per "
+                 "secondary sources). Residual unknown: the exact exception list "
+                 "(fetch per-series before quoting a market in the pilot; historically "
+                 "index-range series).",
+        "source": "OPERATOR-RELAYED from the live kalshi.com/fee-schedule page "
+                  "2026-07-18 ('Most markets ... $0.07 - $1.75 taker fees', maker "
+                  "column empty); consistent w/ whirligigbear 'some markets have a "
+                  "maker fee'. Official PDF remains bot-blocked.",
+        "status": "RESOLVED-FAVORABLE for the farm (maker-free on most markets); "
+                  "exception list still to enumerate at pilot build.",
+    },
+    "lip_renewal_assumption": {
+        "value": "OPERATOR RULING 2026-07-18: assume the Liquidity Incentive Program "
+                 "renews past its Sep 1, 2026 end date — Kalshi has repeatedly re-upped "
+                 "it (Aug 2025 program -> Feb 2026 amendment -> current). Plan on "
+                 "continuity; the hourly census is the tripwire if it actually lapses.",
+        "source": "operator directive in-session 2026-07-18; renewal history per CFTC "
+                  "filings",
+        "status": "PLANNING ASSUMPTION (operator-set), census-verified continuously",
     },
 
     # ---- Rate limits / demo ----
