@@ -759,3 +759,38 @@ table stable, no new classification changes. RKSI/RCSS first correct-station
 reads land with the 07-18 Asia local day (new ids only began logging ~15Z
 07-17 ≈ local midnight). RCTP old-station read (−9.65F median, tight sd)
 retroactively confirms how badly Taipei was miswired.
+
+## S232 REGISTRY-ADDITIONS EVIDENCE (queue item 1 — evidence only; the code
+## change stays Tier-3 + operator sign-off + defect tests + release cut)
+
+Primary source: live Gamma market DESCRIPTIONS (pulled 07-18 00:3xZ; every
+description embeds the resolution WU URL whose last segment is the station
+code). AWC METAR probe = live `api/data/metar` same hour.
+
+| City (dyn key) | Description names | ICAO | METAR live? | Action |
+|---|---|---|---|---|
+| busan | Gimhae Intl | RKPK | YES | ADD |
+| cape_town | Cape Town Intl | FACT | YES | ADD |
+| guangzhou | Baiyun Intl | ZGGG | YES | ADD |
+| jeddah | King Abdulaziz Intl | OEJN | YES | ADD |
+| manila | Ninoy Aquino Intl | RPLL | YES | ADD |
+| panama_city | Marcos A. Gelabert / Albrook | MPMG | YES | ADD (NOT Tocumen MPTO) |
+| qingdao | Jiaodong Intl | ZSQD | YES | ADD |
+| karachi | **Masroor Airbase** | OPMR | **NO — zero METARs** (AWC 72h + IEM 4d both empty) | **SPECIAL** — see below |
+| lagos | (no active market found) | — | — | defer; dyn row exists but roster inactive |
+
+- **Karachi trap:** the description PROSE says "Masroor Airbase Station" while
+  its WU URL says `/pk/karachi/OPKC` (Jinnah Intl). The WU page at that URL
+  RENDERS Masroor/OPMR as its station — WU's Karachi city page defaults to
+  OPMR regardless of the URL slug. Resolution follows the WU page ⇒ correct
+  station = OPMR, which publishes NO METARs. Karachi therefore joins Hong
+  Kong (HKO) in the "resolution source is not a METAR station" class —
+  grounding needs WU-page/synop data, NOT an OPKC proxy. Do NOT add OPKC:
+  that would recreate exactly the S231 wrong-station defect.
+- Istanbul: NOAA `weather.gov/wrh/timeseries?site=LTFM` confirmed in the live
+  description — S231's LTFM fix matches the current resolution source.
+- Jinan / Zhengzhou: not in dynamic_stations and no active events — markets
+  gone; add only if they return (re-pull descriptions then).
+- Remaining before the Tier-3 change: coords/elevation/GHCND per ICAO, WU
+  page spot-check per city (Karachi-style URL-vs-page traps), defect tests,
+  release cut — all under operator sign-off per the S231 fix pattern.
