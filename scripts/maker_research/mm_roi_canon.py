@@ -172,17 +172,46 @@ def main():
           % days)
     print("frozen marks; blind facts only)")
     print()
-    print("%-11s %9s %9s %9s %10s %8s" % ("policy", "rew/day", "trade/day",
-                                          "EV/day", "capital$", "ROI/day"))
+    # trading is a WAVE, not a rate: open marks swing thousands intraday.
+    # Report the 24h band and center EV on the MEDIAN; never print a
+    # point-in-time trading number (2026-07-18 lesson: a crest of a +-$5K
+    # wave was presented as "+$533/day" and rightly called out).
+    import glob, gzip
+    traj = defaultdict(lambda: defaultdict(float))
+    cut = now - 86400
+    for fp in glob.glob(BASE + "/samples-*.jsonl*"):
+        op = gzip.open if fp.endswith(".gz") else open
+        try:
+            for ln in op(fp, "rt"):
+                try:
+                    r = json.loads(ln)
+                except Exception:
+                    continue
+                if r.get("t", 0) >= cut:
+                    traj[r["pol"]][r["t"] // 1800] +=                         r.get("real", 0.0) + r.get("unreal", 0.0)
+        except OSError:
+            continue
+    # EV uses LIFETIME trading (complete accounting incl. markets departed
+    # before the band window — a 24h-band median as the EV input silently
+    # erased the ungated control's older losses and printed it at +2.85%
+    # ROI; caught before presentation 2026-07-18). The band is displayed
+    # ONLY as the uncertainty on any short-window trading read.
+    print("%-11s %8s %9s %22s %8s %10s %8s" % ("policy", "rew/day",
+          "trade/day", "24h band [lo/med/hi]", "EV/day", "capital$", "ROI/day"))
     for p in POLICIES:
         acc, trade = ours[p]
+        xs = sorted(traj[p].values())
+        lo, med, hi = (xs[0], xs[len(xs) // 2], xs[-1]) if xs else (0, 0, 0)
         foot = sum(st.get("msz", 0) for k, st in state.items()
                    if k.endswith("|" + p) and isinstance(st, dict)
                    and st.get("bid") is not None)
         ev = (acc + trade) / days
         cap = foot if foot else 1.0
-        print("%-11s %9.0f %9.0f %9.0f %10.0f %7.2f%%"
-              % (p, acc / days, trade / days, ev, foot, 100 * ev / cap))
+        print("%-11s %8.0f %9.0f %7.0f/%6.0f/%6.0f %8.0f %10.0f %7.2f%%"
+              % (p, acc / days, trade / days, lo, med, hi, ev, foot,
+                 100 * ev / cap))
+    print("  (trade/day = lifetime total / days; the band shows how far any")
+    print("   short-window trading read can swing — quote EV only WITH the band)")
     print()
     print("BLIND CAPITAL TIERS  (rank = offered POOL/MIN_BET, public fields")
     print("only; outcomes = NET incl. open marks; policy = P0_base)")
