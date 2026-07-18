@@ -41,6 +41,15 @@ from bots.weather.engine.base_engine.weather.station_registry import STATION_REG
 PUB_DELAY_MIN = 6
 BIN_S = 300           # mesh consensus bin
 SID = {s.station_id: s for s in STATION_REGISTRY.values()}
+# S232 fix: mesh files written BEFORE the S231 registry fix (deploy
+# 20260717_105239) carry the old station ids; map them to the corrected
+# registry entry for timezone lookup (same city, same tz — pairs verified
+# against commit 5fb0b56). Grading still fetches the arbiter at the FILE's
+# sid, i.e. legacy days grade vs the old station — disclosed in output.
+LEGACY_SID = {
+    "KDFW": "KDAL", "KDEN": "KBKF", "KIAH": "KHOU", "RKSS": "RKSI",
+    "RCTP": "RCSS", "LTBA": "LTFM", "LIML": "LIMC",
+}
 
 
 def fetch(url, tries=3, timeout=60):
@@ -170,8 +179,13 @@ def mode_lead(date_tag):
     print(f"MESH LEAD vs PUBLIC PRINT — {date_tag} (IEM 1-min as arbiter)")
     print("  sid  | events | mesh-led | med lead min | false-crossings | 1min-events missed")
     tot_ev, tot_led, tot_false = 0, 0, 0
+    all_leads = []          # S232: pooled for the acceptance-gate median
     for sid, series in sorted(mesh.items()):
-        st = SID[sid]
+        st = SID.get(sid) or SID.get(LEGACY_SID.get(sid, ""))
+        if st is None:
+            print(f"  {sid} | SKIPPED — sid not in registry and no legacy alias")
+            continue
+        legacy = " (legacy-id day: arbiter = old station)" if sid in LEGACY_SID else ""
         tz = ZoneInfo(st.timezone)
         # S231 review fix: restrict the mesh curve to THIS local day so the
         # two-file load can't mix a neighboring local day into the runmax.
@@ -227,10 +241,13 @@ def mode_lead(date_tag):
         tot_ev += ev
         tot_led += led
         tot_false += false_cross
+        all_leads += leads
         print(f"  {sid} | {ev:3d} | {led:3d} | "
-              f"{median(leads) if leads else float('nan'):6.1f} | {false_cross:2d} | {missed}")
+              f"{median(leads) if leads else float('nan'):6.1f} | {false_cross:2d} | {missed}{legacy}")
     print(f"  TOTAL events {tot_ev} mesh-led {tot_led} "
-          f"({(tot_led/tot_ev if tot_ev else 0):.0%}) false-crossings {tot_false}")
+          f"({(tot_led/tot_ev if tot_ev else 0):.0%}) false-crossings {tot_false} "
+          f"| pooled median lead {median(all_leads) if all_leads else float('nan'):.1f} min "
+          f"(n={len(all_leads)} led events)")
     print("Compare against nowcast_skill.py: 1-min curve median lead 58 min.")
 
 
