@@ -1,0 +1,23 @@
+# Kalshi Maker QUOTER — PLAN-ONLY dress rehearsal (dry-run client, no keys on
+# this host, three-lock safety model in maker_kalshi_client.py). Cannot trade.
+# Stop:   sudo touch /opt/pa2-maker-kalshi-quoter/STOP
+# Kill:   sudo systemctl disable --now polymarket-maker-kalshi-quoter.timer
+[Unit]
+Description=Kalshi Maker Quoter (plan-only dry run, read-only public APIs)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=polymarket
+Group=polymarket
+WorkingDirectory=/opt/pa2-maker-kalshi-quoter
+ExecStart=/usr/bin/python3 /opt/pa2-maker-kalshi-quoter/maker_kalshi_quoter.py
+TimeoutStartSec=280
+ProtectSystem=strict
+ReadWritePaths=/opt/pa2-maker-kalshi-quoter
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectHome=true
+MemoryMax=256M
+CPUQuota=25%
