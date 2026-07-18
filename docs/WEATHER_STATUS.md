@@ -585,6 +585,18 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
   rep_bias REVERSED at corrected stations (resolution = hourly-print max
   61/61); registry-additions evidence complete (Karachi=OPMR NO-METAR trap);
   Sat task = day-2 grade + flip review (overrides 7d-debias + WU-key gates).
+- **2026-07-18 (S232 flag-resolution, operator-ordered):** (a) malformed line
+  367 in `/opt/pa2-shared/.env` DELETED (paste-accident shell fragment dated
+  07-10 embedding another lane's vendor key; systemd ignored it but echoed the
+  secret into journals on every service start; a separate VALID key line
+  exists, so nothing any service consumes changed — no restarts; backup
+  `.env.bak_20260718_malformed_line_fix`; key rotation recommended to the
+  owning lane, journald retains the value). (b) WB stop-sigterm timeout
+  DIAGNOSED PRE-EXISTING + benign: 9/76 stops since ≥07-05 (spans 4+ releases
+  incl. both S231 deploys; WB-only), always AFTER "All services stopped
+  successfully" — process lingers past TimeoutStopSec=30s → SIGKILL; state is
+  DB-restored by design. Real fix = shared main.py teardown (propose-only for
+  a WB session); no live-state action taken.
 - **2026-07-17/18 (S231-FINAL — TWO operator-approved deploys):** INPUT AUDIT
   found 8 resolution-station mismatches vs market descriptions → 7 fixed +
   DEPLOYED `20260717_105239`; ~9% settlement-risk claim RETRACTED (miswiring
