@@ -818,3 +818,71 @@ thing worth leading is the PRINT, and 1-min-only crossings that never print
 are pure false positives — exactly what the false-crossing gate measures;
 (c) any future "resolution is continuous" claim must cite THIS recompute, not
 S230's contaminated table.
+
+## S232 PHASE-2 BUILD (operator GO 07-18 ~00:3xZ; "go and review to flip on day 2")
+
+**BUILT, flag OFF.** Commits `1bd54f4` (data plane) + `1db55e6` (drop-rule
+residual fix) + `9bfd27a` (signal). Flag = `WEATHER_NOWCAST_ENTRY_ENABLED`
+(declared, default false); flip = Tier-2 operator decision at the day-2 review.
+
+**Data plane (research layer, ubuntu crons; bot only READS):**
+- `/opt/pa2-weather-feeds/` (0755, ubuntu-owned; service user reads under
+  ProtectSystem=strict — /home/ubuntu is 750 and unreadable, hence the mirror).
+- pws_mesh dual-writes each tick's rows there (best-effort; research file
+  canonical; mirror verified live 00:27Z).
+- `mesh_debias.py` cron (15 9 * * * UTC): trailing-5d per-PWS offsets vs the
+  METAR PRINT series — scalar + LOCAL hour-block (morning/afternoon/evening,
+  block published at n>=8) so diurnal handling is EMERGENT, never a hardcoded
+  city list; per-city post-debias residual sd; drop rule sd>1.5F. First runs:
+  30 cities tabled; drop list 20 (thin day-1 blocks — expect shrink as block
+  samples accrue; KSFO/ZGSZ stay legitimately dropped). Residual defect
+  caught+fixed on first output: scalar-only residuals over-fired the drop
+  rule at diurnal cities (25→20 after computing residuals with the same
+  offset the consumer applies).
+- Atomic table writes (tmp+rename); feed-dir day files pruned >7d.
+
+**Signal (weather_bot.py, all inside try/except isolation, S231 doctrine):**
+- `_scan_nowcast_entries` (scan_and_trade Phase-4 tail): debiased consensus
+  running-max (median of >=2 known-PWS debiased obs per 5-min bin; unknown
+  PWS excluded — no offset means raw bias) crossing into range/at_or_higher
+  buckets, FROZEN peak rule (E_rem <= 1.0F-equivalent native, local hour >=
+  12), staleness gates (mesh <=900s, table <=48h), dropped-city exclusion,
+  price <= model_prob − min_edge with model_prob 0.44 = the backtest's
+  measured win rate (nowcast_peak_133d.out; NOT calibrated — the paper phase
+  calibrates it under its own model_name `weather_nowcast_peak`).
+- Maker-first approximation (no resting-order machinery exists): enter ONLY
+  when price already sits at/below the would-be bid — strictly conservative
+  vs task-2's 65-71% post-reveal fill upper bounds.
+- Sizing honesty: `WEATHER_NOWCAST_MAX_PER_WINDOW_USD` 50 per
+  (station,date), Redis-tracked (`weatherbot:nowcast_spent:*`, 48h TTL);
+  threaded as `_st_size_override` + `_nowcast_window_remaining` hard clamp;
+  flat-mode bypass (deployed WEATHER_FLAT_SIZE_USD=100 would otherwise
+  consume-and-ignore the override). Window counter increments by the
+  RESERVED amount (>= executed after dampeners) — conservative side.
+- ALL existing risk plumbing unchanged and applies: same-side dedup, exit
+  cooldowns, spread + executable-edge gates (fail-closed), YES price floor,
+  dampeners, group/city caps + lock-guarded reservation, daily loss limit.
+- Cancel-on-invalidate: `_evaluate_nowcast_invalidations` — held RANGE
+  bucket whose debiased runmax ROUNDS above high_bound → SELL held token via
+  the canonical 4-step chain (order first; cooldown→Redis→exposure only on
+  confirmed fill; reason NOWCAST_OVERSHOOT). Tracking in Redis
+  `weatherbot:nowcast_pos:*` (48h TTL, restart-safe); positions without a
+  fresh scan price are HELD and retried. Runs before entries each scan.
+- prediction_log: `model_override` → model_name `weather_nowcast_peak`
+  (graders/calibration_check/calibrator treat it independently).
+
+**Tests:** 15 defect tests (tests/unit/test_nowcast_mesh.py) — debias
+block-vs-scalar, table staleness, local-day/qc/sid filtering, min-PWS +
+unknown-PWS exclusion, crossing/overshoot rounding conventions, flag-off
+no-ops, admission blocks (repriced/dropped/E_rem/not-crossed), window cap
+SURVIVING flat mode through the real _execute_weather_trade path, overshoot
+SELL chain, hold-without-fresh-price. Weather suites 389 passed. A broken
+intermediate edit (flat-branch `if` dropped) was CAUGHT BY the cap test
+before commit — the defect-test-first requirement earned its keep.
+
+**NOT flipped:** the spec's other acceptance gates stand — >=7d mesh uptime
+with populated debias tables (~07-23) + operator WU key/Synoptic token. A
+day-2 flip overrides those two gates: operator's call, to be presented
+explicitly at the Sat review. React leg (S228 env flips) activates WITH the
+flag, same moment, per the design. PEAK-PASSED second signal NOT built this
+session (same infra, separate build after the crossing leg proves out).
