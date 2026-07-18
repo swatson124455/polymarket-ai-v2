@@ -857,6 +857,29 @@ class Settings(BaseSettings):
     # the operator-provisioned drop starts receiving lines on deploy.
     WEATHER_MAKER_FEED_ENABLED: bool = os.getenv("WEATHER_MAKER_FEED_ENABLED", "true").lower() in ("true", "1", "yes")
     WEATHER_MAKER_FEED_PATH: str = os.getenv("WEATHER_MAKER_FEED_PATH", "/opt/pa2-maker-feeds/wb_forecasts.jsonl")
+    # S232 Phase-2 (operator GO 2026-07-18): PWS-mesh nowcast crossing signal.
+    # DEFAULT OFF — the flip is an explicit Tier-2 operator decision at the
+    # day-2 mesh-lead review (spec §S232 MESH-LEAD VERDICT + §PHASE-2 DESIGN
+    # acceptance gates). Declared here per the S223 lesson above: an
+    # undeclared getattr-only flag silently discards the systemd env value.
+    WEATHER_NOWCAST_ENTRY_ENABLED: bool = os.getenv("WEATHER_NOWCAST_ENTRY_ENABLED", "false").lower() in ("true", "1", "yes")
+    WEATHER_NOWCAST_FEED_DIR: str = os.getenv("WEATHER_NOWCAST_FEED_DIR", "/opt/pa2-weather-feeds")
+    # Sizing honesty: hard $ cap per (station, target_date) window — task-2
+    # fill capacity is ~$100/window UPPER bound; spec fixes the cap at $50.
+    WEATHER_NOWCAST_MAX_PER_WINDOW_USD: float = float(os.getenv("WEATHER_NOWCAST_MAX_PER_WINDOW_USD", "50.0"))
+    # Measured win rate of the frozen crossing rule (nowcast_peak_133d.out:
+    # TEST n=135, win% 44, med price 0.37) — NOT a calibrated probability;
+    # the paper phase exists to calibrate it under model_name
+    # weather_nowcast_peak before any flip to live.
+    WEATHER_NOWCAST_MODEL_PROB: float = float(os.getenv("WEATHER_NOWCAST_MODEL_PROB", "0.44"))
+    WEATHER_NOWCAST_MIN_EDGE: float = float(os.getenv("WEATHER_NOWCAST_MIN_EDGE", "0.05"))
+    # Frozen peak rule (spec, 4x gate-passed): E_rem <= 1.0F-equivalent AND
+    # local hour >= 12. Do not tune without a new pre-registered backtest.
+    WEATHER_NOWCAST_EREM_MAX_F: float = float(os.getenv("WEATHER_NOWCAST_EREM_MAX_F", "1.0"))
+    WEATHER_NOWCAST_MIN_LOCAL_HOUR: int = int(os.getenv("WEATHER_NOWCAST_MIN_LOCAL_HOUR", "12"))
+    WEATHER_NOWCAST_MIN_PWS: int = int(os.getenv("WEATHER_NOWCAST_MIN_PWS", "2"))
+    WEATHER_NOWCAST_STALE_S: float = float(os.getenv("WEATHER_NOWCAST_STALE_S", "900"))
+    WEATHER_NOWCAST_TABLE_MAX_AGE_S: int = int(os.getenv("WEATHER_NOWCAST_TABLE_MAX_AGE_S", "172800"))
     # S107: Baker-McHale uncertainty floor (prevents 0.26x crush on high-spread forecasts)
     WEATHER_BM_FLOOR: float = float(os.getenv("WEATHER_BM_FLOOR", "0.50"))
     # S107: Minimum trade size in USD (was $1, now $5 — eliminates dust positions)

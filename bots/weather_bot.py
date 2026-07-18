@@ -26,6 +26,7 @@ import json
 import math
 import time
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import aiohttp
@@ -51,6 +52,7 @@ from bots.weather.engine.base_engine.weather.station_registry import (
     WeatherStation,
 )
 from bots.weather.engine.base_engine.weather.model_run_monitor import ModelRunMonitor
+from bots.weather.engine.base_engine.weather import nowcast_mesh
 from bots.weather.engine.base_engine.weather.metar_monitor import MetarMonitor
 from bots.weather.engine.base_engine.data.daily_counter import increment_counter as _inc_daily, restore_counters as _restore_daily
 from bots.weather.engine.config.settings import settings
@@ -1007,7 +1009,10 @@ class WeatherBot(BaseBot):
                 market_id=market_id,
                 predicted_prob=model_prob,
                 market_price=market_price,
-                model_name=f"weather_{market_type}",
+                # S232: nowcast entries carry model_override so the graders,
+                # calibration_check, and the confidence calibrator treat the
+                # mesh signal as its own model (spec §PHASE-2 DESIGN).
+                model_name=(opp or {}).get("model_override") or f"weather_{market_type}",
                 bot_name="WeatherBot",
                 confidence=confidence,
                 # S226 (V23): every caller passes P(YES) (via _yes_frame_prob
@@ -2162,6 +2167,12 @@ class WeatherBot(BaseBot):
         await self._reevaluate_open_positions(analyzed)
         # T1-A: Proactively exit positions where model probability has reversed.
         await self._evaluate_mid_life_exits(analyzed)
+        # S232 Phase-2 (operator GO 07-18): mesh-nowcast signal. Both are
+        # hard no-ops unless WEATHER_NOWCAST_ENTRY_ENABLED=true (default
+        # false); invalidations run before entries so an overshoot exit
+        # can't race a same-scan re-entry.
+        await self._evaluate_nowcast_invalidations(analyzed)
+        await self._scan_nowcast_entries(analyzed)
 
         # Phase 4b: Outcome backfill + drift detection + cleanup — every 10 scans
         # All three are independent (different tables, no shared mutable state) —
@@ -3749,6 +3760,11 @@ class WeatherBot(BaseBot):
         # bucket has largest losses because Kelly sizes up massively on rare catastrophic losses.
         # When WEATHER_FLAT_SIZE_USD > 0, use flat dollar amount instead of Kelly.
         _flat_size = float(getattr(settings, "WEATHER_FLAT_SIZE_USD", 0.0))
+        if opp.get("_nowcast_window_remaining") is not None:
+            # S232 nowcast: sizing arrives via _st_size_override (window-capped).
+            # Flat mode would consume-and-ignore the override and size at
+            # WEATHER_FLAT_SIZE_USD ($100 default) — breaking the $50/window cap.
+            _flat_size = 0.0
         if _flat_size > 0:
             _raw_size = _flat_size
             # Still consume _st_size_override to avoid stale dict key
@@ -3935,6 +3951,13 @@ class WeatherBot(BaseBot):
             return False
 
         size = max(_min_trade, _raw_size)
+
+        # S232 nowcast: hard window-cap clamp — boosts upstream can only have
+        # inflated size above the Redis-tracked remaining budget; nothing may
+        # exceed it. No-op for every non-nowcast opp (key absent).
+        _nowcast_rem = opp.get("_nowcast_window_remaining")
+        if _nowcast_rem is not None:
+            size = min(size, float(_nowcast_rem))
 
         # S97: Lock-guarded exposure reservation — re-read under lock for parallel safety
         async with self._exposure_lock:
@@ -4542,6 +4565,304 @@ class WeatherBot(BaseBot):
                     current_price=round(current_price, 4),
                     current_ev=round(current_ev, 4),
                 )
+
+    # ── S232 Phase-2: PWS-mesh nowcast signal (flag-gated, isolated) ──────
+
+    async def _scan_nowcast_entries(self, analyzed) -> None:
+        """S232 mesh-nowcast crossing entries (operator GO 07-18; flag OFF by
+        default). Signal per spec §PHASE-2 DESIGN: the DEBIASED mesh consensus
+        running-max has entered a bucket, the FROZEN peak rule holds (E_rem <=
+        1.0F-equivalent AND local hour >= min), and the market has NOT yet
+        repriced (price <= model_prob - min_edge; model_prob default 0.44 =
+        the backtest's measured win rate, nowcast_peak_133d.out).
+
+        Maker-first approximation: this bot has no resting-order machinery,
+        so entries fire only when price ALREADY sits at/below the would-be
+        bid — strictly more conservative than resting one. Sizing honesty:
+        Redis-tracked $/window cap (window = station+date), threaded to
+        _execute_weather_trade via _st_size_override (deterministic size) and
+        _nowcast_window_remaining (hard clamp + flat-mode bypass). The window
+        counter increments by the RESERVED amount on success (>= executed
+        size after dampeners) — overcounting spend is the conservative side.
+        ALL existing risk plumbing (dedup, cooldowns, spread/executable-edge
+        gates, group/city caps, bankroll sizing) applies unchanged inside
+        _execute_weather_trade. Whole body isolated per the S231 maker-feed
+        doctrine: any failure is logged and cannot touch the main scan.
+        """
+        if not getattr(settings, "WEATHER_NOWCAST_ENTRY_ENABLED", False):
+            return
+        try:
+            feed_dir = str(getattr(settings, "WEATHER_NOWCAST_FEED_DIR",
+                                   "/opt/pa2-weather-feeds"))
+            table = nowcast_mesh.load_debias_table(
+                feed_dir,
+                int(getattr(settings, "WEATHER_NOWCAST_TABLE_MAX_AGE_S", 172800)),
+            )
+            if not table:
+                logger.debug("weatherbot_nowcast_no_debias_table")
+                return
+            model_prob = float(getattr(settings, "WEATHER_NOWCAST_MODEL_PROB", 0.44))
+            min_edge = float(getattr(settings, "WEATHER_NOWCAST_MIN_EDGE", 0.05))
+            erem_max_f = float(getattr(settings, "WEATHER_NOWCAST_EREM_MAX_F", 1.0))
+            min_hour = int(getattr(settings, "WEATHER_NOWCAST_MIN_LOCAL_HOUR", 12))
+            min_pws = int(getattr(settings, "WEATHER_NOWCAST_MIN_PWS", 2))
+            stale_s = float(getattr(settings, "WEATHER_NOWCAST_STALE_S", 900))
+            window_cap = float(getattr(settings, "WEATHER_NOWCAST_MAX_PER_WINDOW_USD", 50.0))
+            min_trade = float(getattr(settings, "WEATHER_MIN_TRADE_USD", 5.0))
+            now_utc = datetime.now(timezone.utc)
+            for _opps, group, _probs in analyzed:
+                try:
+                    st = getattr(group, "station", None)
+                    if st is None or not getattr(group, "buckets", None):
+                        continue
+                    tz = ZoneInfo(st.timezone)
+                    now_local = now_utc.astimezone(tz)
+                    if now_local.date() != group.target_date or now_local.hour < min_hour:
+                        continue
+                    city_tab = (table.get("cities") or {}).get(st.station_id)
+                    if not city_tab or city_tab.get("dropped"):
+                        continue
+                    series = nowcast_mesh.load_mesh_day(
+                        feed_dir, st.station_id, tz, group.target_date)
+                    state = nowcast_mesh.debiased_runmax(
+                        series, city_tab, tz, min_pws=min_pws)
+                    if not state:
+                        continue
+                    if now_utc.timestamp() - state["last_epoch"] > stale_s:
+                        continue      # mesh stale — collector down / day over
+                    forecast = await self._forecast_client.get_combined_forecast(
+                        st, group.target_date)
+                    if not forecast:
+                        continue
+                    unit = getattr(group, "temp_unit", "F") or "F"
+                    runmax_nat = nowcast_mesh.f_to_native(state["runmax_f"], unit)
+                    e_rem = forecast.deterministic_high - runmax_nat
+                    if e_rem > nowcast_mesh.f_delta_to_native(erem_max_f, unit):
+                        continue      # frozen peak rule: real upside remains
+                    for bucket in group.buckets:
+                        if bucket.bucket_type not in ("range", "at_or_higher"):
+                            continue
+                        if not nowcast_mesh.bucket_crossed(
+                                runmax_nat, bucket.bucket_type,
+                                bucket.low_bound, bucket.high_bound):
+                            continue
+                        price = float(bucket.yes_price or 0.0)
+                        if price <= 0.0 or price > model_prob - min_edge:
+                            continue  # no quote / already repriced — no entry
+                        window_key = (f"weatherbot:nowcast_spent:"
+                                      f"{st.station_id}:{group.target_date.isoformat()}")
+                        spent = 0.0
+                        cache = getattr(self.base_engine, "cache", None)
+                        _redis_ok = cache is not None and getattr(cache, "redis", None)
+                        if _redis_ok:
+                            try:
+                                _raw = await cache.get(window_key)
+                                spent = float(_raw) if _raw is not None else 0.0
+                            except Exception:
+                                spent = 0.0
+                        remaining = window_cap - spent
+                        if remaining < min_trade:
+                            continue
+                        lead_h = (datetime(group.target_date.year,
+                                           group.target_date.month,
+                                           group.target_date.day,
+                                           18, 0, tzinfo=timezone.utc)
+                                  - now_utc).total_seconds() / 3600.0
+                        opp = {
+                            "market_id": bucket.market_id,
+                            "token_id": bucket.token_id,
+                            "side": "YES",
+                            "price": price,
+                            "confidence": model_prob,
+                            "raw_confidence": model_prob,
+                            "model_prob": model_prob,
+                            "edge": model_prob - price,
+                            "abs_edge": abs(model_prob - price),
+                            "city": group.city,
+                            "target_date": group.target_date.isoformat(),
+                            "lead_time_hours": round(lead_h, 1),
+                            "ensemble_mean": round(forecast.deterministic_high, 1),
+                            "model_spread": round(forecast.model_spread, 2),
+                            "ensemble_count": len(forecast.ensemble_members),
+                            "resolution_boundary_risk": False,
+                            "market_type": "temperature",
+                            "forecast_delta": forecast.forecast_delta,
+                            "nbm_high_conviction": False,
+                            "bucket_type": bucket.bucket_type,
+                            "model_override": "weather_nowcast_peak",
+                            "_st_size_override": remaining,
+                            "_nowcast_window_remaining": remaining,
+                        }
+                        logger.info(
+                            "weatherbot_nowcast_crossing",
+                            market_id=bucket.market_id, city=group.city,
+                            sid=st.station_id,
+                            runmax_native=round(runmax_nat, 2),
+                            e_rem=round(e_rem, 2), price=round(price, 4),
+                            n_pws=state["last_n_pws"],
+                            window_remaining=round(remaining, 2),
+                        )
+                        ok = await self._execute_weather_trade(opp, group)
+                        if ok and _redis_ok:
+                            try:
+                                await cache.set(window_key, spent + remaining,
+                                                ttl=172800)
+                            except Exception:
+                                pass
+                            try:
+                                await cache.set(
+                                    f"weatherbot:nowcast_pos:{bucket.market_id}",
+                                    {"token_id": bucket.token_id,
+                                     "sid": st.station_id,
+                                     "high_bound": bucket.high_bound,
+                                     "bucket_type": bucket.bucket_type,
+                                     "temp_unit": unit,
+                                     "target_date": group.target_date.isoformat()},
+                                    ttl=172800)
+                            except Exception:
+                                pass
+                except Exception as exc:
+                    logger.warning("weatherbot_nowcast_group_failed",
+                                   city=getattr(group, "city", "?"),
+                                   error=str(exc))
+        except Exception as exc:
+            logger.warning("weatherbot_nowcast_scan_failed", error=str(exc))
+
+    async def _evaluate_nowcast_invalidations(self, analyzed) -> None:
+        """S232 cancel-on-invalidate: a held nowcast RANGE bucket whose
+        debiased mesh running-max has OVERSHOT its high bound can no longer
+        win on the mesh's read — SELL the held token now instead of riding
+        it to zero. Follows the canonical 4-step exit chain (order FIRST,
+        state mutates only on a confirmed fill; see _evaluate_mid_life_exits).
+        Positions whose market isn't in the current scan have no fresh price
+        — held and re-checked next scan (fail-safe). Tracking lives in Redis
+        (weatherbot:nowcast_pos:*, 48h TTL) so it survives restarts.
+        """
+        if not getattr(settings, "WEATHER_NOWCAST_ENTRY_ENABLED", False):
+            return
+        try:
+            cache = getattr(self.base_engine, "cache", None)
+            if cache is None or not getattr(cache, "redis", None):
+                return
+            og = getattr(self.base_engine, "order_gateway", None)
+            if not og or not hasattr(og, "_position_details"):
+                return
+            keys = await cache.redis.keys("weatherbot:nowcast_pos:*")
+            if not keys:
+                return
+            feed_dir = str(getattr(settings, "WEATHER_NOWCAST_FEED_DIR",
+                                   "/opt/pa2-weather-feeds"))
+            table = nowcast_mesh.load_debias_table(
+                feed_dir,
+                int(getattr(settings, "WEATHER_NOWCAST_TABLE_MAX_AGE_S", 172800)),
+            )
+            min_pws = int(getattr(settings, "WEATHER_NOWCAST_MIN_PWS", 2))
+            bucket_by_mid, group_by_mid = {}, {}
+            for _opps, group, _probs in analyzed:
+                for b in getattr(group, "buckets", None) or []:
+                    bucket_by_mid[b.market_id] = b
+                    group_by_mid[b.market_id] = group
+            for key in keys:
+                try:
+                    mid = key.split("weatherbot:nowcast_pos:", 1)[-1]
+                    details = og._position_details.get(f"WeatherBot:{mid}")
+                    if not details:
+                        # position closed/resolved elsewhere — drop tracking
+                        try:
+                            await cache.redis.delete(key)
+                        except Exception:
+                            pass
+                        continue
+                    rec = await cache.get(key)
+                    if not isinstance(rec, dict) or rec.get("bucket_type") != "range":
+                        continue
+                    bucket = bucket_by_mid.get(mid)
+                    group = group_by_mid.get(mid)
+                    if bucket is None or group is None or table is None:
+                        continue   # no fresh price / no table — retry next scan
+                    st = group.station
+                    city_tab = (table.get("cities") or {}).get(st.station_id)
+                    if not city_tab:
+                        continue
+                    tz = ZoneInfo(st.timezone)
+                    series = nowcast_mesh.load_mesh_day(
+                        feed_dir, st.station_id, tz, group.target_date)
+                    state = nowcast_mesh.debiased_runmax(
+                        series, city_tab, tz, min_pws=min_pws)
+                    if not state:
+                        continue
+                    unit = rec.get("temp_unit") or getattr(group, "temp_unit", "F") or "F"
+                    runmax_nat = nowcast_mesh.f_to_native(state["runmax_f"], unit)
+                    if not nowcast_mesh.bucket_overshot(
+                            runmax_nat, "range", bucket.high_bound):
+                        continue
+                    size_shares = float(details.get("size", 0.0))
+                    if size_shares <= 0:
+                        continue
+                    current_price = float(bucket.yes_price or 0.0)
+                    token_id = rec.get("token_id") or bucket.token_id
+                    try:
+                        _res = await self.base_engine.place_order(
+                            market_id=mid,
+                            token_id=token_id,
+                            side="SELL",
+                            size=size_shares,
+                            price=max(0.01, current_price),
+                            bot_name=self.bot_name,
+                            confidence=0.0,
+                            event_data={
+                                "exit_reason": "nowcast_overshoot",
+                                "runmax_native": round(runmax_nat, 2),
+                                "high_bound": bucket.high_bound,
+                            },
+                        )
+                    except Exception as exc:
+                        logger.warning("weatherbot_nowcast_exit_exception",
+                                       market_id=mid, exc=str(exc))
+                        continue
+                    if not _res.get("success"):
+                        logger.warning("weatherbot_nowcast_exit_order_failed",
+                                       market_id=mid,
+                                       error=_res.get("error", "unknown"))
+                        continue
+                    # Confirmed fill — canonical state chain:
+                    self._recently_exited[mid] = time.monotonic()
+                    self._exit_reasons[mid] = "NOWCAST_OVERSHOOT"
+                    try:
+                        await self._save_exit_to_redis(mid)
+                    except Exception:
+                        pass
+                    cached = self._market_group_cache.pop(mid, None)
+                    if cached:
+                        group_key, city, exit_cost = cached
+                        async with self._exposure_lock:
+                            self._group_exposure[group_key] = max(
+                                0.0, self._group_exposure.get(group_key, 0.0) - exit_cost)
+                            self._city_exposure[city] = max(
+                                0.0, self._city_exposure.get(city, 0.0) - exit_cost)
+                        _db = getattr(self.base_engine, "db", None)
+                        if _db is not None:
+                            try:
+                                await _inc_daily(_db, "WeatherBot", f"group_{group_key}", -exit_cost)
+                                await _inc_daily(_db, "WeatherBot", f"city_{city}", -exit_cost)
+                            except Exception as exc:
+                                logger.warning(
+                                    "weatherbot_nowcast_exit_exposure_db_failed",
+                                    market_id=mid, exc=str(exc))
+                    try:
+                        await cache.redis.delete(key)
+                    except Exception:
+                        pass
+                    logger.info("weatherbot_nowcast_exit_filled",
+                                market_id=mid,
+                                runmax_native=round(runmax_nat, 2),
+                                high_bound=bucket.high_bound,
+                                size_shares=round(size_shares, 2))
+                except Exception as exc:
+                    logger.warning("weatherbot_nowcast_invalidate_item_failed",
+                                   error=str(exc))
+        except Exception as exc:
+            logger.warning("weatherbot_nowcast_invalidate_failed", error=str(exc))
 
     # ── Regime detection ─────────────────────────────────────────────────
 
