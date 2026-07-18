@@ -1,12 +1,20 @@
-"""Offline unit tests for the Kalshi recorder's scoring core (no network)."""
+"""Offline unit tests for the Kalshi recorder's scoring core (no network). (pytest-collected copy; loads via importlib, no network)"""
+import importlib.util
+import pathlib
 import sys
-import os
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from maker_kalshi_recorder import (  # noqa: E402
-    qualifying_walk, side_share, snapshot_scores, merge_orders, tick_size_for,
-    JOIN_SIZE,
-)
+_SPEC = importlib.util.spec_from_file_location(
+    "maker_kalshi_recorder", pathlib.Path(__file__).resolve().parents[1] / "scripts" / "maker_kalshi_recorder.py")
+maker_kalshi_recorder = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(maker_kalshi_recorder)
+
+qualifying_walk = maker_kalshi_recorder.qualifying_walk
+side_share = maker_kalshi_recorder.side_share
+snapshot_scores = maker_kalshi_recorder.snapshot_scores
+merge_orders = maker_kalshi_recorder.merge_orders
+tick_size_for = maker_kalshi_recorder.tick_size_for
+JOIN_SIZE = maker_kalshi_recorder.JOIN_SIZE
+
 
 
 def test_walk_stops_at_target():

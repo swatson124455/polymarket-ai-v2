@@ -1,12 +1,20 @@
-"""Offline tests for the readout's pure aggregation functions."""
+"""Offline tests for the readout's pure aggregation functions. (pytest-collected copy; loads via importlib, no network)"""
+import importlib.util
+import pathlib
 import sys
-import os
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from maker_kalshi_readout import (  # noqa: E402
-    per_series_table, competition_arrival, share_stability, census_timeline,
-    data_quality, is_wc,
-)
+_SPEC = importlib.util.spec_from_file_location(
+    "maker_kalshi_readout", pathlib.Path(__file__).resolve().parents[1] / "scripts" / "maker_kalshi_readout.py")
+maker_kalshi_readout = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(maker_kalshi_readout)
+
+per_series_table = maker_kalshi_readout.per_series_table
+competition_arrival = maker_kalshi_readout.competition_arrival
+share_stability = maker_kalshi_readout.share_stability
+census_timeline = maker_kalshi_readout.census_timeline
+data_quality = maker_kalshi_readout.data_quality
+is_wc = maker_kalshi_readout.is_wc
+
 
 
 def S(ts, t, join, act, void, cap=None, usd_day=100.0):

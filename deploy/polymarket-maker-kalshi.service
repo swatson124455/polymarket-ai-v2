@@ -4,6 +4,7 @@
 # Kill:   sudo systemctl disable --now polymarket-maker-kalshi.timer
 [Unit]
 Description=Kalshi Maker Recorder (read-only public APIs, no trading)
+Wants=network-online.target
 After=network-online.target
 
 [Service]

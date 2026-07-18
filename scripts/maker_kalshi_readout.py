@@ -4,8 +4,10 @@
 Usage:
     python3 maker_kalshi_readout.py --data-dir <dir with samples-*.jsonl(.gz) + census-*.jsonl(.gz)>
 
-Pull data from the VPS first (read-only):
-    scp -i <key> 'ubuntu@18.201.216.0:/opt/pa2-maker-kalshi/*.jsonl*' <dir>/
+Pull data from the VPS first (read-only), into a KALSHI-DEDICATED local dir —
+the Polymarket arms use the same samples-*/census-* basenames, and both
+readouts glob them; a shared dir silently interleaves venues:
+    scp -i <key> 'ubuntu@18.201.216.0:/opt/pa2-maker-kalshi/*.jsonl*' <kalshi-only-dir>/
 
 Sections:
   A. Data quality — ticks/hour, sampled counts, gaps.
