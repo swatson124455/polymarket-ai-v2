@@ -157,8 +157,15 @@ def main():
                 if not obs:
                     r["misses"] = r.get("misses", 0) + 1
                     continue
-                r["misses"] = 0
                 o = obs[0]
+                # S232 fix (Sat review): a station that responds but reports a
+                # NULL temp is dead for our purposes — count it as a miss so
+                # rotation kicks in (Seoul/Incheon roster returned 600+ rows of
+                # temp_f=None that the qc filter silently dropped downstream).
+                if (o.get("imperial") or {}).get("temp") is None:
+                    r["misses"] = r.get("misses", 0) + 1
+                    continue
+                r["misses"] = 0
                 epoch = o.get("epoch") or 0
                 if epoch <= cursors.get(r["pws"], 0):
                     continue

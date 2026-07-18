@@ -98,6 +98,10 @@ def load_mesh_window(day0, day1):
 
 
 def iem_prints(sid3, d0, d1):
+    # S232 fix (Sat review): asos.py's day2 bound is EXCLUSIVE — passing
+    # d1=today silently dropped the current day, so a city whose mesh data
+    # began today (RCSS after the registry fix) could never enter the table.
+    d1 = d1 + timedelta(days=1)
     u = ("https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py?"
          f"station={sid3}&data=tmpf&year1={d0.year}&month1={d0.month}&day1={d0.day}"
          f"&year2={d1.year}&month2={d1.month}&day2={d1.day}"
