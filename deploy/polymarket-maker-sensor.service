@@ -1,0 +1,31 @@
+# Maker sensor-grid feed publisher — READ-ONLY on markets, writes ONLY its
+# own dir + /opt/pa2-maker-feeds/informed_flow.jsonl. No trading possible.
+# ReadWritePaths grants the FILE, not the shared feeds dir — WB's
+# wb_forecasts.jsonl stays kernel-read-only to this unit (review finding 10);
+# ExecStartPre pre-creates the file so the file-granular grant can bind.
+# Stop:   sudo touch /opt/pa2-maker-sensor/STOP        (loop exits cleanly)
+# Kill:   sudo systemctl disable --now polymarket-maker-sensor.service
+[Unit]
+Description=Polymarket Maker sensor-grid feed (informed-flow tripwire publisher, read-only, no trading)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=polymarket
+Group=polymarket
+WorkingDirectory=/opt/pa2-maker-sensor
+ExecStartPre=+/bin/sh -c 'touch /opt/pa2-maker-feeds/informed_flow.jsonl && chown polymarket:polymarket /opt/pa2-maker-feeds/informed_flow.jsonl'
+ExecStart=/usr/bin/python3 /opt/pa2-maker-sensor/maker_sensor_feed.py --run
+Restart=on-failure
+RestartSec=30
+ProtectSystem=strict
+ReadWritePaths=/opt/pa2-maker-sensor /opt/pa2-maker-feeds/informed_flow.jsonl
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectHome=true
+MemoryMax=256M
+CPUQuota=25%
+
+[Install]
+WantedBy=multi-user.target
