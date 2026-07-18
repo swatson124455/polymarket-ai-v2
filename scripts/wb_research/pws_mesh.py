@@ -41,6 +41,9 @@ WEBKEY = os.environ.get("WU_WEBKEY") or "e1f10a1e78da46f5b10a1e78da96f525"
 OUT = ("/home/ubuntu/wb_research/pws_mesh_%s.jsonl"
        % datetime.now(timezone.utc).strftime("%Y%m%d"))
 STATE = "/home/ubuntu/wb_research/.pws_mesh_state.json"
+# S232 Phase-2: bot-readable mirror (the polymarket service user cannot read
+# /home/ubuntu, mode 750; it CAN read /opt under ProtectSystem=strict).
+FEED_DIR = "/opt/pa2-weather-feeds"
 STATIONS_PER_CITY = 4
 CANDIDATES_PER_CITY = 10
 DEAD_AFTER = 5          # consecutive empty polls -> rotate to next candidate
@@ -118,6 +121,7 @@ def main():
         print("%s pws_mesh DB_QUERY_FAILED — tick skipped" % fetched_at)
         return
     new_count = 0
+    new_lines = []
     with open(OUT, "a") as out:
         for st in STATION_REGISTRY.values():
             # GLOBAL (operator hard directive 2026-07-16): every active-market
@@ -160,7 +164,7 @@ def main():
                     continue
                 cursors[r["pws"]] = epoch
                 imp = o.get("imperial") or {}
-                out.write(json.dumps({
+                line = json.dumps({
                     "sid": st.station_id, "pws": r["pws"],
                     "km": r["km"], "epoch": epoch,
                     "obs_utc": o.get("obsTimeUtc"),
@@ -168,8 +172,20 @@ def main():
                     "qc": o.get("qcStatus"),
                     "lat": o.get("lat"), "lon": o.get("lon"),
                     "fetched_at": fetched_at,
-                }) + "\n")
+                }) + "\n"
+                out.write(line)
+                new_lines.append(line)
                 new_count += 1
+
+    # S232 Phase-2: mirror the new rows to the bot-readable feed dir.
+    # Best-effort — the research file above stays canonical and a feed
+    # failure must never kill the tick (same doctrine as the maker feed).
+    if new_lines:
+        try:
+            with open(os.path.join(FEED_DIR, os.path.basename(OUT)), "a") as f:
+                f.writelines(new_lines)
+        except Exception as exc:
+            print("%s pws_mesh feed_mirror_failed %s" % (fetched_at, exc))
 
     # prune stale city entries (roster not re-resolved for 3+ days);
     # malformed entries are dropped, never allowed to crash the save (S231)
