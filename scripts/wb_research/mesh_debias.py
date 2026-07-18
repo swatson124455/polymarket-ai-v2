@@ -167,7 +167,14 @@ def main():
                 if len(bv) >= MIN_BLOCK_N:
                     blocks[name] = [round(median(bv), 2), len(bv)]
             pws_table[pws] = {"n": len(offs), "scalar": scalar, "blocks": blocks}
-            residuals += [o - scalar for o in vals]
+            # residual uses the SAME offset the consumer will apply: the
+            # hour-block term when published, scalar otherwise — a scalar-only
+            # residual inflates sd at diurnal cities and over-fires the drop
+            # rule (25/30 cities dropped on first run; defect caught 07-18).
+            for o, h in offs:
+                blk = block_of(h)
+                off = blocks[blk][0] if blk in blocks else scalar
+                residuals.append(o - off)
         if not pws_table:
             continue
         rsd = round(pstdev(residuals), 2) if len(residuals) > 1 else None
