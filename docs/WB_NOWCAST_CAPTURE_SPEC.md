@@ -794,3 +794,27 @@ code). AWC METAR probe = live `api/data/metar` same hour.
 - Remaining before the Tier-3 change: coords/elevation/GHCND per ICAO, WU
   page spot-check per city (Karachi-style URL-vs-page traps), defect tests,
   release cut — all under operator sign-off per the S231 fix pattern.
+
+## S232 REP_BIAS RECOMPUTE AT CORRECTED STATIONS (queue item 4) — S230 READ REVERSED
+
+`rep_bias_test.py 18` re-run 07-18 00:4xZ on the deployed (corrected) registry
+— stations incl. KDAL/KBKF/KHOU; output `~/wb_research/rep_bias_s232_corrected.out`.
+Window 06-27..07-15, 180 station-days, n=61 resolved winner buckets:
+
+- winner bucket contains HOURLY-PRINT max H: **61/61 (100%)**
+- winner bucket contains CONTINUOUS 1-min max C: 22/61 (36%)
+- C−H mean +0.84F (SE 0.16) — the continuous max still runs high, but
+  **resolution does NOT track it**
+- WU−H +0.11 (≈0), Fm−H +0.45 vs Fm−C −0.08/WU−C −0.59
+
+VERDICT: the old "81% tracks C ⇒ resolution is the continuous max" number was
+wrong-station noise. At correct stations **resolution = the print-world max**
+(consistent with the S231 audit note "settlement DOES follow the print-max"
+and Study-B 0/268 false locks). Consequences: (a) the S230 representativeness
+-bias root-cause candidate for the cheap-NO tail is DEAD — the bot's stored
+ground truth (WU−H≈0) already lives in the same world resolution grades;
+(b) the mesh/nowcast framing is unchanged and slightly strengthened: the
+thing worth leading is the PRINT, and 1-min-only crossings that never print
+are pure false positives — exactly what the false-crossing gate measures;
+(c) any future "resolution is continuous" claim must cite THIS recompute, not
+S230's contaminated table.
