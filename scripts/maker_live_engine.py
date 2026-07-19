@@ -1028,6 +1028,98 @@ def kill_sequence(execc, state, base, reason):
     return ok
 
 
+RESOLUTION_SWEEP_S = 3600           # departed-market outcome sweep cadence
+RESOLUTION_LOOKUPS_PER_SWEEP = 30   # gamma lookups per sweep (budgeted)
+
+
+def try_settle(st, prices, uma_resolved=False):
+    """Settle a departed market at RESOLVED outcome prices (closes 2nd-pass
+    M3: frozen marks were invisible to the day-loss floor forever).
+    prices = [p_yes, p_no] floats. Acceptance (settlement-review finding
+    2): a decisive 0/1 outcome (ε=1e-3) always settles; NON-decisive
+    payout vectors (50/50 'no answer' splits etc.) settle ONLY when the
+    row is UMA-final (uma_resolved) — the money math y·p_yes + n·p_no is
+    exact for any payout vector, but without UMA finality a non-0/1
+    vector could be a pre-resolution price, so we wait. On settle:
+    inventory zeroed, spend netted so the market's portfolio contribution
+    freezes at realized value — the mark→outcome jump hits day_pnl (and
+    the floor) the day it settles. Returns the realized payout value."""
+    try:
+        py, pn = float(prices[0]), float(prices[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    if not (0.0 <= py <= 1.0 and 0.0 <= pn <= 1.0
+            and abs(py + pn - 1.0) < 1e-3):
+        return None
+    decisive = abs(py - round(py)) < 1e-3 and abs(pn - round(pn)) < 1e-3
+    if not decisive and not uma_resolved:
+        return None
+    if decisive:
+        py, pn = float(round(py)), float(round(pn))
+    y, n = st.get("y", 0.0), st.get("n", 0.0)
+    val = y * py + n * pn
+    st["spent"] = round(st.get("spent", 0.0) - val, 4)
+    st["y"] = st["n"] = 0.0
+    st["last_mid"] = py
+    st["settled"] = True
+    return val
+
+
+def resolution_sweep(state, base, now):
+    """Hourly: look up departed-with-inventory markets on gamma and settle
+    the resolved ones. Round-robin cursor so a long tail all gets visited;
+    lookups go through get() and count against the HTTP budget."""
+    meta = state.setdefault("meta", {})
+    if now - meta.get("res_sweep_t", 0) < RESOLUTION_SWEEP_S:
+        return 0
+    meta["res_sweep_t"] = now
+    cands = sorted(k for k, st in state.items()
+                   if k != "meta" and isinstance(st, dict)
+                   and st.get("departed") and not st.get("settled")
+                   and (st.get("y") or st.get("n") or st.get("spent")))
+    meta["res_pending"] = len(cands)   # heartbeat-visible: a stuck tail of
+                                       # unresolvable departures must not
+                                       # be silent (review finding 2)
+    if not cands:
+        return 0
+    cur = meta.get("res_sweep_cursor", 0) % len(cands)
+    batch = (cands[cur:] + cands[:cur])[:RESOLUTION_LOOKUPS_PER_SWEEP]
+    meta["res_sweep_cursor"] = (cur + len(batch)) % len(cands)
+    settled = 0
+    for k in batch:
+        st = state[k]
+        rows = get(f"{GAMMA}?id={urllib.parse.quote(str(k))}") or []
+        m = rows[0] if isinstance(rows, list) and rows \
+            and isinstance(rows[0], dict) else None
+        # the row must be THIS market — settling k at an unrelated row's
+        # outcome would be a permanent wrong realize (review finding 4)
+        if not m or str(m.get("id")) != str(k) or not m.get("closed"):
+            continue
+        uma = str(m.get("umaResolutionStatus") or "").lower()
+        if uma and uma != "resolved":
+            continue                   # closed but UMA not final: wait
+        try:
+            prices = json.loads(m.get("outcomePrices") or "[]")
+        except Exception:
+            continue
+        pre_spent = st.get("spent", 0.0)
+        val = try_settle(st, prices, uma_resolved=(uma == "resolved"))
+        if val is None:
+            continue
+        settled += 1
+        meta["settle_realized_day"] = round(
+            meta.get("settle_realized_day", 0.0) + (val - pre_spent), 4)
+        ledger_write(base, "settlements",
+                     {"t": round(now), "mkt": k, "payout": round(val, 4),
+                      "realized": round(val - pre_spent, 4),
+                      "uma": uma[:20]})
+    meta["res_pending"] = len(cands) - settled
+    if settled:
+        print(f"resolution sweep: settled {settled}/{len(batch)} looked-up "
+              f"({len(cands) - settled} departed pending)", flush=True)
+    return settled
+
+
 def portfolio_net(state):
     """Mark-to-mid portfolio value minus spend, over ALL markets (departed
     keep their last mid — frozen marks are reported, not hidden)."""
@@ -1193,6 +1285,7 @@ def run(base, cfg):
         meta["acc_day"] = 0.0
         meta["day_pnl"] = 0.0    # stale yesterday's pnl would wrongly deny
                                  # placement for the first minute (NEW-6)
+        meta["settle_realized_day"] = 0.0
         if execc.live and yday_boot:
             # cross-midnight restart: don't lose yesterday's model-vs-
             # receipt comparison (review finding 22)
@@ -1315,6 +1408,19 @@ def run(base, cfg):
                         # marks are reported in --report's departed bucket
                         st["departed"] = True
                 universe = u
+                # departure marking from STATE, not the in-memory old
+                # universe: at boot the old universe is [] and markets that
+                # departed while the engine was DOWN would otherwise never
+                # be marked — never swept/settled, dead spend strangling
+                # the sector cap (settlement-review finding 1, the restart
+                # regression of both M3 and finding 10)
+                for k2, s2 in state.items():
+                    if k2 == "meta" or not isinstance(s2, dict) \
+                            or k2 in new_ids or s2.get("departed"):
+                        continue
+                    if s2.get("y") or s2.get("n") or s2.get("spent") \
+                            or s2.get("tok_y"):
+                        s2["departed"] = True
                 uni_by_ev = defaultdict(list)
                 for m in universe:
                     uni_by_ev[m["ev"]].append(m)
@@ -1652,6 +1758,7 @@ def run(base, cfg):
                 prev_acc = meta.get("acc_day", 0.0)
                 meta["day_anchor"] = portfolio_net(state)
                 meta["acc_day"] = 0.0
+                meta["settle_realized_day"] = 0.0
                 if execc.live and yday:
                     d_iso = f"{yday[:4]}-{yday[4:6]}-{yday[6:]}"
                     rec = execc.earnings_for_day(d_iso)
@@ -1660,6 +1767,13 @@ def run(base, cfg):
                                   "receipt": rec})
                     print(f"receipts {d_iso}: model=${prev_acc:.2f} raw={str(rec)[:200]}",
                           flush=True)
+
+            # departed-market resolution backfill (2nd-pass M3 closure);
+            # save immediately on any settle — a crash before the regular
+            # minute-end save would duplicate settlement ledger rows
+            # (review finding 7)
+            if resolution_sweep(state, base, now):
+                _save_state(base, state_path, state)
 
             # zombie cancel retries (failed cancels from the fast loop);
             # escalate to cancel_all, then kill, if they keep failing
@@ -1694,7 +1808,12 @@ def run(base, cfg):
             if not meta.get("halted") and guards.day_floor_breached(state, day_pnl):
                 kill_sequence(execc, state, base,
                               f"day loss floor: pnl={day_pnl:.2f} "
-                              f"floor=-{cfg['day_loss_floor']:.2f}")
+                              f"floor=-{cfg['day_loss_floor']:.2f} "
+                              f"(of which settle_realized="
+                              f"{meta.get('settle_realized_day', 0.0):.2f} — "
+                              f"a stale-loss settlement kill is not live "
+                              f"bleed; check settlements ledger before "
+                              f"resuming)")
 
             _save_state(base, state_path, state)
 
@@ -1720,6 +1839,7 @@ def run(base, cfg):
                       f"feedfail={meta.get('feed_fail_n', 0)} "
                       f"anom={meta.get('feed_anomaly_n', 0)}"
                       f"/{meta.get('unmatched_fills_n', 0)} "
+                      f"respend={meta.get('res_pending', 0)} "
                       f"deny={dict(dtop)} books={len(BOOKS)} stale={stale} "
                       f"nobook={nobook} http_hr={len(_http_window)}/{HTTP_BUDGET_PER_HOUR}",
                       flush=True)
@@ -1860,6 +1980,11 @@ def _apply_live_trades(execc, state, universe, base, meta):
                 continue
             key, leg = hit
             st = state.setdefault(key, {})
+            if st.get("settled"):
+                # late-arriving fill after settlement: the new tokens are
+                # unrealized again — clear the flag so the next sweep
+                # re-settles idempotently (settlement-review finding 3)
+                st["settled"] = False
             if leg == "yes":
                 st["y"] = round(st.get("y", 0.0) + sz, 4)
             else:
@@ -1898,6 +2023,7 @@ def report(base):
     meta = state.get("meta") or {}
     bysec = defaultdict(lambda: [0, 0.0, 0.0, 0.0, 0.0])  # n, spent, val, acc, merged
     dep = [0, 0.0, 0.0]                                   # n, spent, val (frozen)
+    sett = [0, 0.0]                                       # n, realized$
     for k, st in state.items():
         if k == "meta" or not isinstance(st, dict):
             continue
@@ -1905,8 +2031,12 @@ def report(base):
         y, n = st.get("y", 0.0), st.get("n", 0.0)
         val = (y * lm + n * (1.0 - lm)) if lm is not None else (y + n) * 0.5
         if st.get("departed"):
-            # frozen marks, sector-cap-quarantined — reported, not hidden
-            if y or n or st.get("spent"):
+            if st.get("settled"):
+                # resolution-backfilled: contribution is REALIZED
+                sett[0] += 1
+                sett[1] += -st.get("spent", 0.0)
+            elif y or n or st.get("spent"):
+                # frozen marks, sector-cap-quarantined — reported, not hidden
                 dep[0] += 1
                 dep[1] += st.get("spent", 0.0)
                 dep[2] += val
@@ -1931,10 +2061,12 @@ def report(base):
     print("%-14s %5d %10.2f %10.2f %10.2f %10.2f %10.2f" %
           ("TOTAL", tot[0], tot[1], tot[2], tot[2] - tot[1], tot[3], tot[4]))
     if dep[0]:
-        print("departed (FROZEN marks, excluded above + from sector caps): "
-              "n=%d spent$%.2f value$%.2f pnl$%.2f — resolution backfill is a "
-              "pilot iteration; treat these marks as UNSETTLED"
+        print("departed UNSETTLED (frozen marks, awaiting resolution sweep): "
+              "n=%d spent$%.2f value$%.2f pnl$%.2f"
               % (dep[0], dep[1], dep[2], dep[2] - dep[1]))
+    if sett[0]:
+        print("departed SETTLED (resolution-backfilled, realized): "
+              "n=%d realized$%.2f" % (sett[0], sett[1]))
 
 
 if __name__ == "__main__":

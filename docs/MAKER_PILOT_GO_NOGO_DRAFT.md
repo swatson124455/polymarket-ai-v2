@@ -86,16 +86,18 @@ Do NOT scale before (a) the post-cliff pool re-measure (Jul 20+) and
 - Settlement success rate (#338 metric, expect ~0%).
 - 2 weeks receipt-verified → scale decision package (separate, new canon run).
 
-## 6b. Known accepted risk — NEEDS OPERATOR CONFIRMATION
+## 6b. Departed-market resolution backfill — CLOSED (was M3)
 
-**The automated day-loss floor is blind to departed markets' real losses**
-(2nd-pass review M3): a market that rotates out of the rewarded universe
-keeps a FROZEN mark; if it later resolves worthless, that loss never moves
-`day_pnl` and cannot trip the floor. The `--report` output discloses the
-departed bucket as UNSETTLED. The real fix is resolution backfill
-(gamma outcome join) — queued as a pilot iteration. Until then the floor
-protects only against live-market drawdown. Confirm this is acceptable for
-a $1–2.5K pilot or prioritize the backfill before funding.
+Resolution backfill is BUILT (hourly `resolution_sweep`, gamma outcome
+join, reviewed): departed markets settle at their 0/1 outcome (or UMA-final
+splits), the mark→outcome jump hits `day_pnl` and CAN trip the floor, and
+`--report` splits settled (realized) from unsettled (frozen). Residuals,
+disclosed: (a) settlement lag up to the 1h sweep cadence + gamma resolution
+timing; (b) a stale loss settling today can floor-kill today's healthy
+quoting — the kill reason carries `settle_realized` so the operator can
+distinguish stale-loss kills from live bleed before resuming; (c) settled
+entries accumulate in state (pruning deferred — needs a realized-aggregate
+fold to keep `portfolio_net` and the day anchor consistent).
 
 ## 7. Rollback
 

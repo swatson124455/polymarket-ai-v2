@@ -718,6 +718,110 @@ def test_event_floor_sees_departed_siblings():
     assert not ok and why == "event_cap"    # 60 + 48.5 > 100 with 0-branch
 
 
+# ── resolution backfill (2nd-pass M3 closure) ────────────────────────────────
+def test_try_settle_yes_wins():
+    st = {"y": 100.0, "n": 0.0, "spent": 48.0, "last_mid": 0.5}
+    val = mle.try_settle(st, ["1", "0"])
+    assert val == 100.0
+    assert st["y"] == st["n"] == 0.0
+    assert st["spent"] == pytest.approx(-52.0)     # net contribution = +52
+    assert st["settled"] is True
+    assert st["last_mid"] == 1.0
+    # portfolio_net must now carry the REALIZED value (floor sees it)
+    assert mle.portfolio_net({"1": st}) == pytest.approx(52.0)
+
+
+def test_try_settle_no_wins_and_mixed():
+    st = {"y": 100.0, "n": 40.0, "spent": 60.0}
+    val = mle.try_settle(st, ["0", "1"])
+    assert val == 40.0                              # only NO tokens pay
+    assert st["spent"] == pytest.approx(20.0)       # realized −20
+    assert mle.portfolio_net({"1": st}) == pytest.approx(-20.0)
+
+
+def test_try_settle_refuses_undecided():
+    st = {"y": 100.0, "spent": 48.0}
+    assert mle.try_settle(st, ["0.97", "0.03"]) is None   # not decisive
+    assert mle.try_settle(st, ["0.5", "0.5"]) is None     # split w/o UMA final
+    assert mle.try_settle(st, []) is None
+    assert mle.try_settle(st, ["bogus", "1"]) is None
+    assert mle.try_settle(st, ["0.7", "0.7"]) is None     # doesn't sum to 1
+    assert "settled" not in st and st["y"] == 100.0       # untouched
+
+
+def test_try_settle_uma_final_split():
+    """50/50 'no answer' resolutions settle when UMA-final (review
+    finding 2 — the money math is exact for any payout vector)."""
+    st = {"y": 100.0, "n": 0.0, "spent": 80.0}
+    val = mle.try_settle(st, ["0.5", "0.5"], uma_resolved=True)
+    assert val == pytest.approx(50.0)
+    assert st["spent"] == pytest.approx(30.0)             # realized −30
+    assert st["settled"] is True
+
+
+def test_resolution_sweep_rejects_wrong_row_id(tmp_path, monkeypatch):
+    """Review finding 4: never settle market k at another row's outcome."""
+    state = {"meta": {}, "10": {"departed": True, "y": 50.0, "spent": 20.0}}
+    monkeypatch.setattr(mle, "get", lambda url, timeout=10:
+                        [{"id": "999", "closed": True,
+                          "outcomePrices": '["1", "0"]',
+                          "umaResolutionStatus": "resolved"}])
+    mle.resolution_sweep(state, str(tmp_path), 1e9)
+    assert "settled" not in state["10"] and state["10"]["y"] == 50.0
+
+
+def test_late_fill_clears_settled_flag(tmp_path):
+    """Review finding 3: a post-settlement fill re-opens the market for
+    the next sweep instead of stranding unrealized tokens."""
+    now = time.time()
+    state = {"meta": {"trade_wm": now - 10, "trade_recent": {}},
+             "1234": {"tok_y": "Y", "tok_n": "N", "settled": True,
+                      "departed": True, "y": 0.0, "n": 0.0, "spent": -30.0}}
+    tr = taker_trade("late1", now, [mo("Y", "0.48", "100")])
+    mle._apply_live_trades(FakeFeed([tr]), state, [], str(tmp_path),
+                           state["meta"])
+    st = state["1234"]
+    assert st["settled"] is False
+    assert st["y"] == 100.0
+    assert st["spent"] == pytest.approx(-30.0 + 48.0)
+
+
+def test_resolution_sweep_gating_and_settle(tmp_path, monkeypatch):
+    now = 1e9
+    state = {"meta": {},
+             "10": {"departed": True, "y": 50.0, "n": 0.0, "spent": 20.0,
+                    "sector": "politics"},
+             "11": {"departed": True, "settled": True, "spent": -5.0},   # skip
+             "12": {"departed": False, "y": 9.0},                        # live: skip
+             "13": {"departed": True, "y": 0.0, "n": 0.0, "spent": 0}}   # empty: skip
+    calls = []
+    def fake_get(url, timeout=10):
+        calls.append(url)
+        return [{"id": "10", "closed": True, "outcomePrices": '["1", "0"]',
+                 "umaResolutionStatus": "resolved"}]
+    monkeypatch.setattr(mle, "get", fake_get)
+    mle.resolution_sweep(state, str(tmp_path), now)
+    assert len(calls) == 1 and "id=10" in calls[0]        # only the candidate
+    assert state["10"]["settled"] is True
+    assert state["10"]["spent"] == pytest.approx(-30.0)   # realized +30
+    # cadence gate: immediate re-run does nothing
+    mle.resolution_sweep(state, str(tmp_path), now + 10)
+    assert len(calls) == 1
+    # after the sweep interval, nothing left to look up
+    mle.resolution_sweep(state, str(tmp_path), now + mle.RESOLUTION_SWEEP_S + 1)
+    assert len(calls) == 1
+
+
+def test_resolution_sweep_unresolved_retries_later(tmp_path, monkeypatch):
+    now = 1e9
+    state = {"meta": {}, "10": {"departed": True, "y": 50.0, "spent": 20.0}}
+    monkeypatch.setattr(mle, "get", lambda url, timeout=10:
+                        [{"id": "10", "closed": False,
+                          "outcomePrices": '["0.7", "0.3"]'}])
+    mle.resolution_sweep(state, str(tmp_path), now)
+    assert "settled" not in state["10"] and state["10"]["y"] == 50.0
+
+
 def test_guard_pair_sibling_gross_cap():
     """Review finding 11: the two legs individually pass the gross cap but
     the PAIR must not."""
