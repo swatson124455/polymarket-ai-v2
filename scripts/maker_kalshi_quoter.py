@@ -43,14 +43,29 @@ DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 STOP_FILE = os.path.join(DATA_DIR, "STOP")
 STATE_FILE = os.path.join(DATA_DIR, "quoter_state.json")
 
-# ---- config (calibration dials — readouts tune these) ----
-FOOTPRINT_TOP = 60            # smaller than recorder: quoting is costlier than watching
-PER_SERIES_CAP = 10
-JOIN_SIZE = 100               # contracts per side on non-void markets
-MAX_ACTIVATE_CAPITAL = 150.0  # $ per market to activate a void book
-MAX_PRICE_DOLLARS = 0.97      # never rest a bid above this
-WIND_DOWN_MIN = 45            # pull quotes this many minutes before program/market end
-WRITE_BUDGET_PER_CYCLE = 400  # order-ops ceiling per cycle (10 tokens each @ Basic)
+# ---- config (calibration dials — readouts tune these; env-overridable) ----
+def _envi(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _envf(name, default):
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+FOOTPRINT_TOP = _envi("KALSHI_FOOTPRINT_TOP", 60)   # markets quoted per cycle
+PER_SERIES_CAP = _envi("KALSHI_PER_SERIES_CAP", 10)
+JOIN_SIZE = _envi("KALSHI_JOIN_SIZE", 100)          # contracts/side on non-void markets
+MAX_ACTIVATE_CAPITAL = _envf("KALSHI_MAX_ACTIVATE_CAPITAL", 150.0)  # $/void market
+MAX_PRICE_DOLLARS = _envf("KALSHI_MAX_PRICE_DOLLARS", 0.97)  # never rest a bid above this
+WIND_DOWN_MIN = _envi("KALSHI_WIND_DOWN_MIN", 45)   # pull quotes N min before end
+WRITE_BUDGET_PER_CYCLE = _envi("KALSHI_WRITE_BUDGET", 400)  # order-ops ceiling/cycle
+JOIN_ALWAYS = os.environ.get("KALSHI_JOIN_ALWAYS") == "1"   # drill switch (default off)
 REQ_SPACING_S = 0.55
 READ_BUDGET_PER_CYCLE = 200
 
@@ -132,6 +147,12 @@ def desired_quotes(m, yes_levels, no_levels, now):
     tot_n = sum(float(s) for _, s in no_levels)
     void = tot_y < m["target"] or tot_n < m["target"]
     quotes = []
+    if JOIN_ALWAYS:
+        # drill/testing switch: always rest a tiny join on both sides of any
+        # priceable market, ignoring the void/activate economics — exercises the
+        # place/diff/cancel machinery on real (demo) orders. NOT for prod economics.
+        return [{"side": "yes", "price_dollars": best_y, "count": JOIN_SIZE, "reason": "join"},
+                {"side": "no", "price_dollars": best_n, "count": JOIN_SIZE, "reason": "join"}]
     if void:
         add_y = max(JOIN_SIZE, m["target"] - tot_y)
         add_n = max(JOIN_SIZE, m["target"] - tot_n)

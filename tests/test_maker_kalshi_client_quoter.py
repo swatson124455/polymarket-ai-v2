@@ -211,6 +211,22 @@ def test_diff_orders_cancel_create():
     assert sorted(c["ticker"] for c in creates) == ["KXA-1", "KXB-1"]
 
 
+def test_join_always_switch_places_on_void_market(monkeypatch):
+    # drill switch: even a thin/void market (below target) gets a 1x join both sides
+    monkeypatch.setattr(kq, "JOIN_ALWAYS", True)
+    monkeypatch.setattr(kq, "JOIN_SIZE", 1)
+    q = kq.desired_quotes(M(target=1000), [(0.50, 5)], [(0.49, 5)], kq.utcnow())
+    assert [x["reason"] for x in q] == ["join", "join"]
+    assert q[0]["count"] == 1 and q[1]["count"] == 1
+    # still respects wind-down even with the switch on
+    assert kq.desired_quotes(M(end_min=kq.WIND_DOWN_MIN - 5, target=1000),
+                             [(0.5, 5)], [(0.49, 5)], kq.utcnow()) == []
+
+
+def test_join_always_default_off():
+    assert kq.JOIN_ALWAYS is False   # production default: economics gates apply
+
+
 def test_diff_orders_full_exit():
     standing = {"KXA-1": [{"side": "yes", "price_dollars": 0.50, "count": 100,
                            "order_id": "o1"}]}
