@@ -756,7 +756,8 @@ async def sweep_lifetime(bc, addr: str, from_b: int, to_b: int, cfg,
 
 
 async def classify_v2_directions(bc, addr: str, v2_fills: list[dict], cfg,
-                                 note_err) -> dict:
+                                 note_err,
+                                 known_sides: Optional[dict] = None) -> dict:
     """Resolve V2 BUY/SELL direction from tx receipts (one per unique tx, capped
     at --max-receipts); sets f['side'] IN PLACE. Uncapped/errored fills stay
     side=None and are excluded from BUY-based tiers (never guessed BUY). This is
@@ -767,11 +768,25 @@ async def classify_v2_directions(bc, addr: str, v2_fills: list[dict], cfg,
     'resolved', so a flaky-RPC stretch could manufacture false not_found ->
     a FABRICATION accusation from an evidence gap). Failed receipts are retried
     once; what still fails is reported as receipts_failed and gates
-    direction_complete in the caller."""
+    direction_complete in the caller.
+
+    known_sides ('tx|token_id' -> BUY/SELL, from chain_fill_cache): sides
+    receipt-confirmed in an EARLIER run. A tx whose every fill is known is
+    counted as a successful resolution WITHOUT an RPC fetch (the receipt was
+    fetched before; receipts are immutable), and the --max-receipts cap
+    applies only to NEW fetches — a cached re-dive can resolve MORE txs than
+    a fresh capped run, never fewer. Default None = exact prior behavior."""
+    known = known_sides or {}
+    tx_fills: dict[str, list] = {}
+    for f in v2_fills:
+        tx_fills.setdefault(f["tx"], []).append(f)
     tx_logs: dict[str, Optional[list]] = {}
     uniq_tx = list(dict.fromkeys(f["tx"] for f in v2_fills))
-    n_receipts = min(len(uniq_tx), cfg.max_receipts)
-    attempt = list(uniq_tx[:n_receipts])
+    cached_tx = {tx for tx in uniq_tx if known and all(
+        f"{tx}|{f['token_id']}" in known for f in tx_fills[tx])}
+    to_fetch = [tx for tx in uniq_tx if tx not in cached_tx]
+    n_receipts = min(len(to_fetch), cfg.max_receipts)
+    attempt = list(to_fetch[:n_receipts])
     for rnd in (1, 2):  # second round = one retry over transient failures
         failed: list[str] = []
         for i, tx in enumerate(attempt):
@@ -790,13 +805,17 @@ async def classify_v2_directions(bc, addr: str, v2_fills: list[dict], cfg,
             break
         attempt = failed  # retry only the failures, once
     for f in v2_fills:
-        logs = tx_logs.get(f["tx"])
-        f["side"] = (side_from_receipt_logs(logs, addr, f["token_id"])
-                     if isinstance(logs, list) else None)
-    receipts_ok = sum(1 for v in tx_logs.values() if isinstance(v, list))
-    return {"v2_txs": len(uniq_tx), "v2_receipts": n_receipts,
+        if f["tx"] in cached_tx:
+            f["side"] = known.get(f"{f['tx']}|{f['token_id']}")
+        else:
+            logs = tx_logs.get(f["tx"])
+            f["side"] = (side_from_receipt_logs(logs, addr, f["token_id"])
+                         if isinstance(logs, list) else None)
+    receipts_ok = (sum(1 for v in tx_logs.values() if isinstance(v, list))
+                   + len(cached_tx))
+    return {"v2_txs": len(uniq_tx), "v2_receipts": n_receipts + len(cached_tx),
             "receipts_ok": receipts_ok,
-            "receipts_failed": n_receipts - receipts_ok}
+            "receipts_failed": (n_receipts + len(cached_tx)) - receipts_ok}
 
 
 async def detection_canary(bc, head: int) -> bool:
@@ -949,7 +968,12 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
     to_b = latest_num
 
     canary_ok = await detection_canary(bc, latest_num)
-    recon = await sweep_lifetime(bc, addr, from_b, to_b, cfg, note_err)
+    if getattr(cfg, "fill_cache_dir", ""):
+        import chain_fill_cache as cfc  # noqa: PLC0415
+        recon = await cfc.sweep_with_cache(bc, addr, from_b, to_b, cfg,
+                                           note_err, cfg.fill_cache_dir)
+    else:
+        recon = await sweep_lifetime(bc, addr, from_b, to_b, cfg, note_err)
     fills = recon["v1_fills"] + recon["v2_fills"]  # V2 side=None until classified
 
     # span endpoints for ts interpolation (2 getBlock calls). If either fails,
@@ -1033,7 +1057,14 @@ async def deep_dive_one(bc, addr: str, cache_blob: dict, cache_status: str,
     print(f"      … sweep done: {len(fills)} fills "
           f"({len(recon['v2_fills'])} V2, rpc_err={recon['rpc_err_frac']:.3f}); "
           f"fetching receipts", file=sys.stderr)
-    cls = await classify_v2_directions(bc, addr, recon["v2_fills"], cfg, note_err)
+    _ks = None
+    if getattr(cfg, "fill_cache_dir", ""):
+        import chain_fill_cache as cfc  # noqa: PLC0415
+        _ks = cfc.known_sides(cfg.fill_cache_dir, addr)
+    cls = await classify_v2_directions(bc, addr, recon["v2_fills"], cfg,
+                                       note_err, known_sides=_ks)
+    if getattr(cfg, "fill_cache_dir", ""):
+        cfc.persist_sides(cfg.fill_cache_dir, addr, recon["v2_fills"])
     recon.update(cls)  # v2_txs, v2_receipts, receipts_ok, receipts_failed
 
     # token -> condition map from API rows; load resolutions for Tier 3
@@ -1586,6 +1617,9 @@ if __name__ == "__main__":
                          "unrecoverable coverage leaf (feeds rpc_err_frac)")
     ap.add_argument("--max-receipts", type=int, default=4000, dest="max_receipts",
                     help="cap on V2 direction receipts per trader (HFT bound)")
+    ap.add_argument("--fill-cache-dir", default="", dest="fill_cache_dir",
+                    help="persistent chain-fill cache dir (chain_fill_cache); "
+                         "empty = disabled = the exact uncached sweep path")
     ap.add_argument("--pad-days", type=int, default=14, dest="pad_days",
                     help="sweep starts this far before the first API-claimed fill")
     ap.add_argument("--from-date", default="", dest="from_date",

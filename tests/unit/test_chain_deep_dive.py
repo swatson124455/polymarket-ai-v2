@@ -438,3 +438,50 @@ def test_flow_flag_ignores_ts_and_fill_floor_documented_asymmetry():
     # update the pre-registration note, not just this test.
     _, f = dd.post_direction_flags(_cfg(), False, 0, 0.0, _flow(20, 0.80))
     assert f is True
+
+
+# ---- chain_fill_cache integration (2026-07-19 speedups 1+2: known_sides) ----
+
+def test_classify_known_sides_resolves_without_any_rpc():
+    # every (tx, token) known -> zero receipt fetches: bc=None proves no RPC
+    # is even reachable; cached resolutions count as successes and the cap
+    # applies only to NEW fetches
+    fills = [{"tx": "0xt1", "token_id": "7", "side": None},
+             {"tx": "0xt1", "token_id": "8", "side": None},
+             {"tx": "0xt2", "token_id": "7", "side": None}]
+    cfg = _NS(max_receipts=0, rps=1000.0)   # cap 0: a fetch would fail loud
+    known = {"0xt1|7": "BUY", "0xt1|8": "SELL", "0xt2|7": "BUY"}
+    import asyncio
+    cls = asyncio.run(dd.classify_v2_directions(
+        None, "0xabc", fills, cfg, lambda e: None, known_sides=known))
+    assert [f["side"] for f in fills] == ["BUY", "SELL", "BUY"]
+    assert cls == {"v2_txs": 2, "v2_receipts": 2,
+                   "receipts_ok": 2, "receipts_failed": 0}
+
+
+def test_classify_partial_known_tx_still_needs_fetch():
+    # a tx with ANY unknown (tx, token) pair is NOT skippable — with the
+    # fetch path unreachable (bc=None raises inside try) it must come back
+    # side=None and count as failed, never guessed from the partial cache
+    fills = [{"tx": "0xt1", "token_id": "7", "side": None},
+             {"tx": "0xt1", "token_id": "9", "side": None}]
+    cfg = _NS(max_receipts=10, rps=1000.0)
+    import asyncio
+    cls = asyncio.run(dd.classify_v2_directions(
+        None, "0xabc", fills, cfg, lambda e: None,
+        known_sides={"0xt1|7": "BUY"}))
+    assert [f["side"] for f in fills] == [None, None]
+    assert cls["v2_txs"] == 1 and cls["receipts_failed"] == 1
+
+
+def test_classify_default_path_unchanged_without_known_sides():
+    # known_sides omitted -> byte-identical prior behavior (all fetches fail
+    # against bc=None -> all sides None, counts reflect attempts)
+    fills = [{"tx": "0xt1", "token_id": "7", "side": None}]
+    cfg = _NS(max_receipts=10, rps=1000.0)
+    import asyncio
+    cls = asyncio.run(dd.classify_v2_directions(
+        None, "0xabc", fills, cfg, lambda e: None))
+    assert fills[0]["side"] is None
+    assert cls == {"v2_txs": 1, "v2_receipts": 1,
+                   "receipts_ok": 0, "receipts_failed": 1}
