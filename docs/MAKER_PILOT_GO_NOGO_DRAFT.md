@@ -48,7 +48,7 @@ Do NOT scale before (a) the post-cliff pool re-measure (Jul 20+) and
 
 | Trigger | Threshold (proposed) | Action (automatic) |
 |---|---|---|
-| Portfolio day loss | −$75 (MAKER_DAY_LOSS_FLOOR_USD) | cancel-ALL then HALT (engine) |
+| Portfolio day loss | −$75 (MAKER_DAY_LOSS_FLOOR_USD) — **size to footprint**: burn-in 07-19 killed at −$166 marks on ~$1K gross (cup-final vol); $75 vs $1K = 7.5% daily-drawdown trigger, tight by design for paper | cancel-ALL then HALT (engine) |
 | Settlement revert (#338 class) | first occurrence | operator page + halt (manual day-1, engine metric) |
 | Receipt vs model divergence | >50% and >$5 for 2 consecutive days | halt + share-model investigation |
 | Book freshness | >180s stale | auto-unquote (engine interlock) |
