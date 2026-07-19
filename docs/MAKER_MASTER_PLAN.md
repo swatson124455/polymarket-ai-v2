@@ -62,6 +62,7 @@ nothing computed with superseded methods may be quoted from this document)
 | v5 recorder | **GATE LAB** — 7 gate policies paired on identical inputs (P0 baseline / P1 fitted-vol / P2 wind-down ramp / P3 tape-velocity / P4 all / P5 ungated control / **P6 WB-forecast tilt**, added `ca6c1c5`); eras: 01:09:09Z launch `27ba2d7` → 02:36:41Z clean (P0-P5) → **21:55:09Z 07-17 P6 era start** (P0-P5 ledgers carried, verified) | `/opt/pa2-maker-sim-v5`, daemon |
 | v6 recorder | **NEGRISK LAB** — netted multi-outcome quoting, paired N0_all (every covered outcome) vs N1_single (flagship baseline); one-winner floor accounting; era start **07-17 22:20:27Z** `1652ae0` | `/opt/pa2-maker-sim-v6`, daemon |
 | Sensor feed | **informed-flow tripwire publisher** — bite/stampede/run events (onset-only, anchored) to `/opt/pa2-maker-feeds/informed_flow.jsonl`; 250-mkt arm-union universe; era start **07-18 00:11:02Z** `e712b67`+`1caf921`; VALIDATION-FIRST ≥1wk before any fleet-consumption proposal | `/opt/pa2-maker-sensor`, daemon |
+| **LIVE ENGINE (paper)** | the deployable trader — full guard stack (kill/freshness/caps/event-floor/day-floor), py-clob-client-v2 exec core behind triple live-mode interlocks, resolution backfill; gate policy via env (default P0_base until the gate-lab lock); 3× adversarially reviewed, burn-in since 07-19 00:30Z (day-floor kill + HALT persistence validated live 07-19 07:22Z) | `/opt/pa2-maker-live`, daemon `polymarket-maker-live` |
 | Pool census | hourly count of every reward pool | `/opt/pa2-maker-census`, hourly timer |
 | Backups | nightly 00:20Z tarball + 09:30 local pull (keeps 7) | `/opt/pa2-maker-backups` + operator machine |
 
@@ -294,6 +295,11 @@ cohort numbers need no correction.
 - **Research scripts + measured outputs**: `scripts/maker_research/` (README inside).
 - **Recorder/census/backup code + units**: `scripts/maker_paper_sim*.py`,
   `scripts/pool_census.py`, `deploy/maker-backup.*`, `deploy/polymarket-*.{service,timer}`.
+- **Live engine**: `scripts/maker_live_engine.py` + `tests/test_maker_live_engine.py`
+  + `deploy/polymarket-maker-live.service` + `deploy/maker-live-env.example`;
+  funded preflight `scripts/maker_preflight.py`; decision anchor = repo-root
+  `AGENT_HANDOFF_2026-07-18_MAKER_PILOT_DECISION_PACKAGE_DRAFT.md`, engine
+  annex `docs/MAKER_PILOT_GO_NOGO_DRAFT.md`.
 - **Scheduled tasks** (operator machine): `maker-sim-readout` (Fri),
   `maker-arms-midwindow-health` (Thu), `maker-data-backup-pull` (daily).
 - **Raw data**: VPS `/opt/pa2-maker-*`; nightly tarballs in
