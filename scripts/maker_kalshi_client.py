@@ -130,7 +130,18 @@ class KalshiOrderClient:
         finally:
             self._last_write = time.time()
 
-    # ---------------- orders (shapes per docs.kalshi.com api-reference) ----------------
+    # ---------------- orders ----------------
+    # #1 DEMO-VERIFICATION ITEM (docs check 2026-07-18): Kalshi now documents a
+    # NEWER V2 order surface — `POST /portfolio/events/orders` with side="bid"|"ask"
+    # (bid==yes, ask==no), price as a DOLLAR STRING, count as string,
+    # time_in_force, and native `self_trade_prevention_type` (e.g. "taker_at_cross").
+    # The methods below use the LEGACY shape (`/portfolio/orders`, side="yes"/"no",
+    # action, integer-cent yes_price/no_price, post_only) — the same shape the SB
+    # lane's client uses (`b0c0da3`) and still accepted, but marked deprecated.
+    # DO NOT blind-switch: confirm which shape the DEMO endpoint accepts (and the
+    # exact string/int formatting) against real responses in the demo session,
+    # then pin one. Self-trade prevention is a REQUIRED add on the live path (we
+    # quote both sides of the same market — a taker_at_cross STP is the guard).
 
     def create_order(self, ticker, side, action, count, price_dollars,
                      post_only=True, client_order_id=None, expiration_ts=None):

@@ -167,6 +167,53 @@ CANON = {
         "note": "writes are the scarce resource for a live maker; batch endpoint "
                 "limits NOT yet confirmed (docs paths 404'd — resolve when building)",
     },
+    "auth_scheme": {
+        "value": "RSA-PSS/SHA-256 over message '{ts_ms}{METHOD}{path}' where path "
+                 "EXCLUDES query params; headers KALSHI-ACCESS-KEY (=Key ID), "
+                 "KALSHI-ACCESS-TIMESTAMP (ms), KALSHI-ACCESS-SIGNATURE (b64). SAME "
+                 "for demo and prod. Keys made at kalshi.com/account/profile -> API "
+                 "Keys; private key shown ONCE, never retrievable again.",
+        "source": "docs.kalshi.com/getting_started/api_keys (2026-07-18)",
+        "status": "VERIFIED — our maker_kalshi_client.py matches exactly (incl. "
+                  "query-param stripping at :113)",
+    },
+    "order_surface_v2": {
+        "value": "CURRENT recommended order API is V2: POST /portfolio/events/orders "
+                 "with side='bid'|'ask' (bid==yes, ask==no), price as DOLLAR STRING, "
+                 "count as string, time_in_force, self_trade_prevention_type "
+                 "(e.g. 'taker_at_cross'), client_order_id (optional, recommended for "
+                 "dedup). Amend/batch/cancel have matching -v2 endpoints. The LEGACY "
+                 "shape (/portfolio/orders, side=yes/no, action, integer-cent "
+                 "yes_price/no_price, post_only) is DEPRECATED but still accepted.",
+        "source": "docs.kalshi.com getting_started/quick_start_create_order + "
+                  "order_direction + api-reference/orders/*-v2 (2026-07-18)",
+        "status": "our client is on the LEGACY shape — #1 demo-session item: confirm "
+                  "which the demo endpoint accepts + exact str/int formatting, pin one, "
+                  "ADD self-trade prevention (we quote both sides).",
+    },
+    "dev_agreement": {
+        "value": "API use requires accepting Kalshi's Developer Agreement (click-through "
+                 "before first API call). OPERATOR ACTION — accepting terms is not a "
+                 "session action.",
+        "source": "docs.kalshi.com/welcome (2026-07-18)",
+        "status": "OPERATOR TODO (part of account setup)",
+    },
+    "tier_upgrade_gotcha": {
+        "value": "Self-serve Advanced tier (300/300 tokens/s) requires >=1 of the "
+                 "user's last 100 Predictions orders was created VIA API — i.e. you "
+                 "can't pre-upgrade, you earn Advanced after trading a little. Basic "
+                 "(200 read/100 write tok/s) is ample for the pilot (measured churn "
+                 "~460 tokens/cycle) so this is not a blocker.",
+        "source": "docs.kalshi.com api-reference/account/upgrade-account-api-usage-level",
+        "status": "VERIFIED — non-blocking, informational",
+    },
+    "order_groups": {
+        "value": "Native risk tool: Order Groups auto-cancel resting orders when a "
+                 "rolling contract limit is hit — a candidate hard backstop for the "
+                 "pilot kill-criteria (exchange-side, independent of our code).",
+        "source": "docs.kalshi.com/getting_started/order_groups",
+        "status": "NICE-TO-HAVE for pilot; evaluate in demo session",
+    },
     "demo_env": {
         "value": "external-api.demo.kalshi.co (REST) + external-api-ws.demo.kalshi.co "
                  "(WS); separate credentials; docs verbatim: 'The price and behavior "
