@@ -80,6 +80,18 @@ def test_dry_run_is_default_and_records_intents(monkeypatch):
     assert r2["dry_run"] and len(c.intents) == 2
 
 
+def test_v2_order_body_shape(monkeypatch):
+    monkeypatch.delenv("KALSHI_TRADING_MODE", raising=False)
+    c = kc.KalshiOrderClient()
+    r = c.create_order_v2("KXT-1", "bid", 3, 0.42,
+                          client_order_id="cid-1")
+    b = r["intent"]["body"]
+    assert r["intent"]["path"].endswith("/portfolio/events/orders")
+    assert b["side"] == "bid" and b["count"] == "3" and b["price"] == "0.4200"
+    assert b["self_trade_prevention_type"] == "taker_at_cross"
+    assert b["time_in_force"] == "good_till_canceled"
+
+
 def test_live_requires_arming_phrase(monkeypatch):
     monkeypatch.setenv("KALSHI_TRADING_MODE", "live")
     monkeypatch.delenv("KALSHI_LIVE_ARMED", raising=False)

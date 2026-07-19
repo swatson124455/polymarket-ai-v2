@@ -166,10 +166,27 @@ class KalshiOrderClient:
             body["expiration_ts"] = int(expiration_ts)
         return self._write("POST", f"{API_ROOT}/portfolio/orders", body)
 
+    def create_order_v2(self, ticker, book_side, count, price_dollars,
+                        time_in_force="good_till_canceled",
+                        self_trade_prevention_type="taker_at_cross",
+                        client_order_id=None):
+        """CURRENT V2 shape: POST /portfolio/events/orders. book_side='bid'|'ask'
+        (bid==yes, ask==no per docs). price as DOLLAR STRING, count as string.
+        Native self-trade prevention. The demo session pins legacy-vs-this."""
+        body = {
+            "ticker": ticker, "side": book_side, "count": str(int(count)),
+            "price": f"{price_dollars:.4f}",
+            "time_in_force": time_in_force,
+            "self_trade_prevention_type": self_trade_prevention_type,
+        }
+        if client_order_id:
+            body["client_order_id"] = client_order_id
+        return self._write("POST", f"{API_ROOT}/portfolio/events/orders", body)
+
     def batch_create(self, orders):
         """orders: list of create_order-style dicts (already API-shaped).
-        NB: rate-limit billing is PER ITEM (10 tokens each) — batching saves
-        round-trips, NOT write budget. Quota math must count orders, not calls."""
+        NB: rate-limit billing is PER ITEM (create=10 tok, cancel=2) — batching
+        saves round-trips, NOT write budget. Quota math counts orders, not calls."""
         return self._write("POST", f"{API_ROOT}/portfolio/orders/batched",
                            {"orders": orders})
 
