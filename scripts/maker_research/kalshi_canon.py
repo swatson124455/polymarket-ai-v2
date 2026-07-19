@@ -157,15 +157,36 @@ CANON = {
     },
 
     # ---- Rate limits / demo ----
+    "api_environments": {
+        "value": "RECOMMENDED hosts: prod REST https://external-api.kalshi.com/trade-api/v2, "
+                 "demo REST https://external-api.demo.kalshi.co/trade-api/v2; WS prod "
+                 "wss://external-api-ws.kalshi.com/trade-api/ws/v2, demo "
+                 "wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2. LEGACY (still "
+                 "works): prod api.elections.kalshi.com, demo demo-api.kalshi.co. Paths "
+                 "identical across hosts. CREDENTIALS NOT SHARED across environments.",
+        "source": "docs.kalshi.com/getting_started/api_environments (2026-07-18); both "
+                  "recommended hosts probed live (exchange/status 200)",
+        "status": "VERIFIED. Order client now targets recommended hosts; recorder still "
+                  "reads legacy api.elections (working, not churned).",
+    },
     "rate_limits": {
-        "value": "token buckets, 10 tokens/request default. Basic 200 read / 100 "
-                 "write tokens/s (~20 reads/s, ~10 writes/s); Advanced 300/300 "
-                 "self-serve; Expert->Prestige (600 up to 6,000/8,000) via volume-share "
-                 "'Earn' thresholds 0.075%-1.00%",
-        "source": "docs.kalshi.com/getting_started/rate_limits (2026-07-17)",
+        "value": "7 tiers (per-second token budgets, read/write): Basic 200/100, "
+                 "Advanced 300/300, Expert 600/600, Premier 1000/1000, Paragon "
+                 "2000/2000, Prime 4000/4000, Prestige 6000/8000. TOKEN COSTS: most "
+                 "requests 10 tok; **order CANCEL = 2 tok**; batch billed PER ITEM "
+                 "(25 creates=250, 25 cancels=50). Burst: Advanced+ read / Premier+ "
+                 "write hold 2s of budget; Basic/Advanced WRITE hold only 1s (no burst). "
+                 "Auto tier progression by 30d volume share (Expert earn 0.075%/keep "
+                 "0.05% ... Prestige 1.00%/0.80%). Advanced self-serve needs >=1 of last "
+                 "100 orders via API.",
+        "source": "docs.kalshi.com/getting_started/rate_limits (2026-07-18)",
         "status": "VERIFIED (docs)",
-        "note": "writes are the scarce resource for a live maker; batch endpoint "
-                "limits NOT yet confirmed (docs paths 404'd — resolve when building)",
+        "note": "Basic is AMPLE for the pilot: measured quoter churn ~22 creates + "
+                "~24 cancels/cycle = ~268 write tokens/cycle (10-min cadence); the "
+                "constraint is the PER-SECOND burst, not daily — Basic write = 100 "
+                "tok/s with no burst credit, so our 0.12s request spacing (~83 tok/s "
+                "peak on all-creates) is the real guard. Cold-start 110 creates paces "
+                "over ~13s, under 100 tok/s. Demo session verifies real 429 behavior.",
     },
     "auth_scheme": {
         "value": "RSA-PSS/SHA-256 over message '{ts_ms}{METHOD}{path}' where path "

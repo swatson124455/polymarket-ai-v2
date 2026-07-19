@@ -28,8 +28,11 @@ import time
 import urllib.error
 import urllib.request
 
-PROD_BASE = "https://api.elections.kalshi.com"
-DEMO_BASE = "https://demo-api.kalshi.co"
+# Recommended hosts (docs.kalshi.com/getting_started/api_environments, 2026-07-18).
+# Legacy still works: prod api.elections.kalshi.com / demo demo-api.kalshi.co.
+# Credentials are NOT shared across environments (demo keys only hit demo).
+PROD_BASE = "https://external-api.kalshi.com"
+DEMO_BASE = "https://external-api.demo.kalshi.co"
 API_ROOT = "/trade-api/v2"
 
 WRITE_SPACING_S = 0.12        # floor between writes (~8/s < Basic 10/s)

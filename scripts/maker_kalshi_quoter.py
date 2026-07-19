@@ -250,10 +250,12 @@ def run_once():
             new_standing[t] = [dict(q, order_id=f"sim-{t}-{q['side']}") for q in qs]
         st["simulated_standing"] = new_standing
 
+    # real token cost (docs 2026-07-18): create=10, cancel=2, billed per item
+    write_tokens = len(creates) * 10 + len(cancels) * 2
     append_plan({"ts": now.isoformat(), "mode": client.mode,
                  "footprint": len(footprint), "quoted_markets": len(desired),
                  "cancels": len(cancels), "creates": len(creates),
-                 "order_ops": ops, "reads": _reads[0],
+                 "order_ops": ops, "write_tokens": write_tokens, "reads": _reads[0],
                  "gated_out": len(footprint) - len(desired),
                  "activate_markets": sum(1 for qs in desired.values()
                                          if qs and qs[0]["reason"] == "activate"),
@@ -261,7 +263,8 @@ def run_once():
                                               for qs in desired.values() for q in qs), 2)})
     save_state(st)
     print(f"cycle ok mode={client.mode} footprint={len(footprint)} quoted={len(desired)} "
-          f"ops={ops} (cancel {len(cancels)}/create {len(creates)}) reads={_reads[0]} "
+          f"ops={ops} (cancel {len(cancels)}/create {len(creates)}) write_tokens={write_tokens} "
+          f"reads={_reads[0]} "
           f"est_capital=${sum(q['price_dollars']*q['count'] for qs in desired.values() for q in qs):,.0f}")
     return 0
 
@@ -297,9 +300,11 @@ def report():
               "est_capital_usd", "gated_out"):
         vals = sorted(r.get(k, 0) for r in rows)
         print(f"{k:18} mean={sum(vals)/n:9.1f}  p50={vals[n//2]:9.1f}  max={vals[-1]:9.1f}")
-    total_ops = sum(r.get("order_ops", 0) for r in rows)
-    print(f"\norder-ops/day pace: {total_ops / max((parse_iso(rows[-1]['ts']) - parse_iso(rows[0]['ts'])).total_seconds() / 86400, 1e-6):,.0f} "
-          f"(x10 tokens; Basic write budget = 100 tokens/s = 8.64M tokens/day)")
+    span_days = max((parse_iso(rows[-1]["ts"]) - parse_iso(rows[0]["ts"])).total_seconds() / 86400, 1e-6)
+    total_tokens = sum(r.get("write_tokens", r.get("order_ops", 0) * 10) for r in rows)
+    print(f"\nwrite-token/day pace: {total_tokens / span_days:,.0f}  "
+          f"(create=10/cancel=2 tok; Basic write = 100 tok/s = 8.64M tok/day — "
+          f"peak per-cycle burst must stay <100 tok/s, our 0.12s spacing caps it ~83)")
     return 0
 
 
