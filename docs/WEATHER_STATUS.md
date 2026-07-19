@@ -118,7 +118,12 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
    80-100¢ off-book). Disclosures: ~98% NO book (YES n=6, FAILs survive dropping YES);
    79% of mass in the two lowest (UNDER-confident) bins; miswired-city contamination
    UNQUANTIFIED (join key-mismatch trap — cannot flip p=0.0000 but real+unmeasured);
-   calibrator mid-relearn (untouched, comparisons directional). Prior S230 records below.
+   calibrator mid-relearn (untouched, comparisons directional). **VIF TUNE DONE 07-19 (operator "do it"):**
+   `WEATHER_VARIANCE_INFLATION_FACTOR` 1.4→1.8 in WB-owned `.env.weather` (backup `.bak_20260719_vif`;
+   polymarket-weather restart 17:10:10Z; non-EMOS path ONLY per code-read probability_engine.py:135/156 —
+   EMOS stations + nowcast + gates UNAFFECTED). Verified live (3 flags in env; scan 47 cities/309 mkts).
+   Rollback: delete the line + restart. **Re-measure ~07-24** (`--since 20260719_171010`); if PIT still
+   rejects, VIF→2.0 before any control retires. Prior S230 records below.
 
    **(S230 record) S222 post-fix verification — CLEAN-WINDOW RUN 2026-07-14 ~23:45Z: PARTIAL;
    NOTHING retired (operator decides).** Gate hit 50/50 distinct resolved (299 predicted)
