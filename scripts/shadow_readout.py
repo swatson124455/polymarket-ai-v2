@@ -101,6 +101,15 @@ def load_cohorts(roster: dict) -> list[tuple[str, list[str], float]]:
     if probe:
         groups.append(("probe", probe,
                        _parse_epoch("probe", probe_blob, strict=True)))
+    for name, addrs, _ in groups:
+        # intra-group duplicate (adversarial review 2026-07-19, finding #1):
+        # a dup passes the cross-group set() checks but inflates the label
+        # count AND breaks the leave-one-out `rest` (a duplicated top trader
+        # leaves rest=[] -> filter_traders("") -> whole-roster pooling in the
+        # LOO line). Fail loud — a dup is a ledger typo, not a valid split.
+        if len(addrs) != len(set(addrs)):
+            raise ValueError(f"roster group '{name}' has a DUPLICATE address — "
+                             f"fix the ledger before reading out")
     memberships = [set(a) for _, a, _ in groups]
     union = set().union(*memberships)
     if sum(len(m) for m in memberships) != len(union):
@@ -325,6 +334,10 @@ def _self_test() -> int:
                              "admitted_utc": "2026-07-15T19:16:00+00:00"},
                  "cohort3": {"addresses": ["0xC"],
                              "admitted_utc": "2026-07-19T13:00:00+00:00"}},
+                {"clean": ["0xA", "0xB", "0xC"],  # INTRA-GROUP DUPLICATE ->
+                 "cohort1_original": ["0xa", "0xa", "0xb"],  # inflates+breaks LOO
+                 "cohort2": {"addresses": ["0xC"],
+                             "admitted_utc": "2026-07-15T19:16:00+00:00"}},
                 {"clean": ["0xA", "0xB", "0xC"],  # OVERLAP: 0xC in two groups
                  "cohort1_original": ["0xa", "0xb"],
                  "cohort2": {"addresses": ["0xC"],
