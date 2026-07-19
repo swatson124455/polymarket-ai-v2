@@ -208,6 +208,24 @@ def _nowcast_env(monkeypatch, tmp_path, enabled=True):
     monkeypatch.setattr(settings, "WEATHER_NOWCAST_MIN_LOCAL_HOUR", 0, raising=False)
 
 
+def test_maker_export_skips_nowcast_rows(weather_bot, monkeypatch, tmp_path):
+    """S232 re-review c5: a nowcast opp (model_override set) must NOT be
+    appended to the Maker forecast feed — its constant 0.44 is not a genuine
+    day-ahead forecast, and it would land mislabeled as weather_temperature.
+    A real ensemble opp (no model_override) still exports."""
+    feed = tmp_path / "wb_forecasts.jsonl"
+    monkeypatch.setattr(settings, "WEATHER_MAKER_FEED_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "WEATHER_MAKER_FEED_PATH", str(feed), raising=False)
+    nowcast_opp = {"city": "New York", "target_date": "2026-07-19",
+                   "model_override": "weather_nowcast_peak"}
+    weather_bot._export_forecast_for_maker("m1", 0.44, "temperature", nowcast_opp)
+    assert not feed.exists() or feed.read_text() == ""     # nowcast skipped
+    real_opp = {"city": "New York", "target_date": "2026-07-19"}
+    weather_bot._export_forecast_for_maker("m2", 0.63, "temperature", real_opp)
+    lines = feed.read_text().strip().splitlines()
+    assert len(lines) == 1 and '"m2"' in lines[0] and "weather_temperature" in lines[0]
+
+
 @pytest.mark.asyncio
 async def test_nowcast_scan_flag_off_is_noop(weather_bot, monkeypatch, tmp_path):
     _nowcast_env(monkeypatch, tmp_path, enabled=False)

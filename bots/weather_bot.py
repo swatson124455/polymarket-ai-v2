@@ -1061,6 +1061,15 @@ class WeatherBot(BaseBot):
             path = getattr(settings, "WEATHER_MAKER_FEED_PATH", "")
             if not path or opp is None:
                 return
+            # S232 re-review c5: nowcast entries (model_override set) carry a
+            # CONSTANT model_prob (0.44), not a genuine per-market day-ahead
+            # forecast. They also carry city+date, so without this guard they
+            # pass the city/date check below and get appended to the Maker feed
+            # MISLABELED as "weather_temperature" (the export ignored
+            # model_override, unlike the prediction_log path). Skip them — the
+            # Maker feed must carry only real ensemble forecasts.
+            if opp.get("model_override"):
+                return
             city = opp.get("city")
             date = opp.get("target_date")
             if not city or not date:
