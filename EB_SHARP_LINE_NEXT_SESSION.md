@@ -63,6 +63,30 @@ Short delta — §0-S7's lane (vendor reply → historical readout; 07-20+ →
   en route: eb_dump_aliases.sh was never persisted on the VPS (silent
   re-dump no-op caught by md5). **Future name-gaps: add pairs to
   eb_add_aliases.sh (same-team proof required), re-run + re-dump.**
+- **ALIAS ROOT-CAUSE-COMPLETENESS PASS 2026-07-19 (`76e4add`) — the earlier
+  "6/6 recovered, nothing left" was SYMPTOM-DRIVEN (fixed only the 6 pairs
+  visible in ONE 07-17 tick; Protocol-16 population census was skipped).**
+  Full census of the last-24h null rows (match rate had dropped to 84% as the
+  slate rotated to Korea-heavy LCK): 6 distinct unmatched pairs, classified
+  against gamma — **2 were LIVE fixable misses now ADDED** (Nongshim Redforce
+  ↔ PM "Nongshim Red Force", spacing, 49 null rows / 3 LCK matches; Titan ↔ PM
+  "TEC Esports" = Titan Esports Club, VCT China, VLR/Liquipedia-confirmed) →
+  aliases.json 22→24 groups, md5 `8800c40b…`, both verified matching live
+  (Nongshim `0x78ef4f79`, Titan `0x56a18fec`) + adversarial no-wrong-bijection
+  PASS. The other 4 unmatched pairs are GENUINE no-open-PM-market cases
+  (ROUNDS/Inner-Circle-Academy — plus correct Academy sibling-veto; CAG
+  Osaka/Dplus R6 — no open market) → correct-or-absent, not fixable. **84%
+  match rate is a data-availability floor set by the current slate (many
+  Korean-domestic matches PM lists only as tournament-winner futures), NOT a
+  matcher regression.**
+- **SYSTEMIC ROOT CAUSE (deeper than any one alias — PROPOSE-ONLY):** curated
+  aliases are the correct MECHANISM, but curation is REACTIVE — every slate
+  rotation surfaces new spacing/abbreviation variants, so per-symptom fixing
+  is a treadmill. The real systemic fix is PROACTIVE DETECTION: a periodic
+  audit that flags "PinnOdds pair has an OPEN PM match market but doesn't
+  match" (the ad-hoc census run this session, productized) OR re-running
+  `seed_esports_team_aliases.py` (fuzzy-link pass) against the current slate.
+  Not built (EB halted, scope) — operator call.
 - **⚠ 429 QUOTA — CORRECTED + RE-CHARACTERIZED 2026-07-19 (two triple-blind
   passes, all numbers independently re-derived from production `collect.log`).
   THIS bullet is the authoritative 429 statement; supersedes both the 07-17
@@ -119,7 +143,9 @@ Short delta — §0-S7's lane (vendor reply → historical readout; 07-20+ →
   cids (BB Team 0xcd650a07, KINGZERO 0xce444965, PVISION 0xc1861508,
   NiP/HEROIC 0x3fb3e660, GameHunters 0xedc045bc); tick pm_matched 45/46
   (~98%) vs 38/44 pre-fix. Nigma/BB EWC closing line captured 1.5h
-  pre-start.** Nothing left to investigate on this thread.
+  pre-start.** (⚠ "Nothing left to investigate" was WRONG — the 07-19
+  completeness census above found 2 more live fixable misses; that pass is
+  now the current alias state.)
 - **NEW FALSE-VETO INSTANCE (document-only, operator decision):** PM lists
   OPEN "Keyd vs Imperial (BO3)" (CS2 RUSH B! Summit); PinnOdds says "Keyd
   Stars" → the SIBLING_QUALIFIERS veto fires on "stars" (protects Karmine
