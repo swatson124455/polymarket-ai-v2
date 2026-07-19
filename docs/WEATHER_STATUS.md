@@ -103,7 +103,24 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
    `journalctl -u polymarket-weather | grep -E "calibration_reloaded|calibration_reload_failed|cal_fit|insufficient_data|holdout_valid"`
    — reload_failed / cal_fit_failed must STAY 0 (both are warning-level now).
 
-2. **S222 post-fix verification — CLEAN-WINDOW RUN 2026-07-14 ~23:45Z (S230): PARTIAL;
+2. **S222 gate-retirement RE-CUT 2026-07-19 (S232), N=627 distinct resolved: RETIRE
+   NOTHING — all 4 controls stay.** (Spec §"S222 GATE-RETIREMENT RE-CUT (2026-07-19,
+   N=627)"; canonical measurements + a 4-gate independent-grade→adversarial-verify→
+   synthesize workflow, all verdicts held.) A1/A3 **FAIL** (PIT KS p=0.0000, mean
+   0.563→0.588 more overconfident, traded high-conf gaps WIDENED) · price dampeners
+   **FAIL** (no positive BSS; 0.70+ bins miss stated by −14/−36/−38pp) · max-entry-price
+   caps **INSUFFICIENT→keep** (80-100¢ cell n=0 — cap blocks its own test data) · Kelly
+   C0 **FAIL** ([0.9,1.0) realized 55.6% vs ≥0.85; KS still rejects). **vs S230 n=133:
+   nothing moved — 4.7× more data converted "failed but thin" into "fails with
+   authority" (KS now decisively powered).** Next action (operator-scoped Tier-1):
+   raise `WEATHER_VARIANCE_INFLATION_FACTOR` >1.4, restart 4 shared services (behind MB),
+   re-measure BEFORE reconsidering any control; do NOT lift the cap to get data (score
+   80-100¢ off-book). Disclosures: ~98% NO book (YES n=6, FAILs survive dropping YES);
+   79% of mass in the two lowest (UNDER-confident) bins; miswired-city contamination
+   UNQUANTIFIED (join key-mismatch trap — cannot flip p=0.0000 but real+unmeasured);
+   calibrator mid-relearn (untouched, comparisons directional). Prior S230 records below.
+
+   **(S230 record) S222 post-fix verification — CLEAN-WINDOW RUN 2026-07-14 ~23:45Z: PARTIAL;
    NOTHING retired (operator decides).** Gate hit 50/50 distinct resolved (299 predicted)
    ~31h after the 16:02:29Z restart (resolution backfill drains in bursts — much faster
    than the ~19/day estimate). Verdicts (full numbers in the S230 session report;
