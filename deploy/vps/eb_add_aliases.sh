@@ -28,6 +28,12 @@ CURATED = [
     ("Ninjas in Pyjamas", "NIP",         "cs2"),      # PM NIP vs Heroic == Pinn Ninjas In Pyjamas vs HEROIC, 2026-07-17 STK
     ("Game Hunters",      "GameHunters", "cs2"),      # PM Game Hunters vs ALKA == Pinn GameHunters vs Alka, 2026-07-17 CCT SA
     ("KingZone",          "KINGZERO",    "r6siege"),  # PM Kingzone vs All Gamers == Pinn KINGZERO vs All Gamers, 2026-07-18 CN League; same captain (Fiber) both names
+    # 2026-07-19 population-census additions (root-cause-completeness pass — the
+    # earlier 6 were symptom-driven from ONE tick; these are the remaining LIVE
+    # fixable misses across the current slate, each same-team-verified):
+    ("Nongshim Red Force","Nongshim Redforce","lol"), # PM "Nongshim Red Force vs BNK FEARX" (open LCK Rd3-4) == Pinn "Nongshim Redforce vs BNK FearX"; spacing variant of the LCK org (49 null rows / 3 matches)
+    ("Titan Esports Club","Titan",        "valorant"),# PM "TEC Esports vs All Gamers" (open VCT China S2) == Pinn "Titan vs All Gamers"; Titan Esports Club = TEC (VLR/Liquipedia)
+    ("Titan Esports Club","TEC Esports",  "valorant"),# links the PM outcome name "TEC Esports" into the Titan group
 ]
 
 async def main():
