@@ -944,3 +944,56 @@ BOTH a trailing debias window AND a resolved market on those specific days. 6
 points is a supplement, not a scorecard; direction (50% vs 0.44) is consistent
 with the signal being real but the n is far too small to weigh. The live shadow
 set (deployed `20260719_095037`) is now the real accumulation path.
+
+## S222 GATE-RETIREMENT RE-CUT (2026-07-19, N=627) — RETIRE NOTHING
+
+Re-cut at the now-met sample gate (S230 ran n=133; clean window since the
+2026-07-13 16:02:29Z EMOS-fix restart is now N=627 distinct resolved markets).
+Canonical measurements only (calibration_check --since 20260713_160229 --clean
+--dedup-markets; weather_brier 5; weather_brier_by_side 142; bot_pnl 142 for
+conf-bins). Preconditions all PASS (release ≥ floor; S222 A1/A3 + S227≥4
+fingerprints; VIF default 1.4; calibration reloaded 6/24h, 0 fails; leak=0;
+PSW-frame-null=0; **nowcast rows 0 resolved in window → no S232 contamination**).
+Verdict cross-checked by a 4-gate independent grade + adversarial-verify +
+synthesis workflow (all four verdicts HELD under adversarial attack).
+
+| Gate | Verdict | Decisive number | Action |
+|---|---|---|---|
+| A1/A3 raw pipeline (VIF 1.4) | **FAIL** | PIT KS p=0.0000 (baseline p<1e-4 — did NOT rise); PIT mean 0.563→0.588 (more overconfident); traded high-conf gaps −0.12/−0.34/−0.30 → −0.14/−0.36/−0.38 (widened) | keep + tune VIF |
+| YES/NO price dampeners | **FAIL** | no positive BSS anywhere (overall −0.1205); traded 0.70+ bins miss stated by −14/−36/−38pp (n=24/33/27) | KEEP |
+| YES/NO max-entry-price caps | **INSUFFICIENT** (→ keep) | NO 80-100¢ n=0 — the cap blocks its own test data; skew unmeasurable while cap is live | KEEP |
+| Flat-size → Kelly (C0) | **FAIL** | [0.9,1.0) realized WR 55.6% (n=27) vs required ≥0.85; PIT KS still rejects | KEEP flat |
+
+**Delta vs S230 n=133: nothing moved — the 4.7× larger sample flipped no
+verdict.** It converted "failed but thin" into "fails with authority": KS is now
+decisively powered (crit ≈0.054, observed 0.1532 ≈2.8× over) so A1/A3 and
+KELLY's calibration leg are no longer arguably under-powered; the traded
+high-conf bins now carry real mass (n=17/24/33/27) so the dampener overconfidence
+miss is measured, not inferred — and WIDENED vs baseline. CAPS stayed
+structurally unmeasurable: more data can never populate the 80-100¢ cell while
+the cap blocks those entries.
+
+**Highest-value next action (operator-scoped, Tier-1):** raise
+`WEATHER_VARIANCE_INFLATION_FACTOR` above 1.4, restart the 4 shared-env services
+(sequence behind MB per standing priority), re-measure PIT KS + traded 0.70+
+reliability on a fresh clean window BEFORE reconsidering any control. VIF is the
+direct lever on the systemic overconfidence (PIT mean 0.588, top bin 2.34×) that
+underlies A1/A3's FAIL and gates KELLY; it touches neither the calibrator nor any
+gate under test. Do NOT lift the cap to get 80-100¢ data (removes a live control
+to measure it) — populate CAPS off-book via counterfactual scoring of 80-100¢
+predicted_prob rows vs realized outcomes until NO 80-100¢ and 0-20¢ each reach
+n≥20.
+
+**Disclosures:** (1) book ~98% NO — 617/627 markets carry a NO-side row, YES
+traded n=6; every FAIL survives dropping YES entirely. (2) 494/627 (79%) of mass
+sits in the two LOWEST bins, which are UNDER-confident (0.041→0.232) — the
+whole-distribution KS is partly tail-driven, which muddies reading CAPS
+specifically. (3) Miswired-city (Dallas/Denver/Houston pre-07-17-remap)
+contamination UNQUANTIFIED — the prediction_log→markets join returned an
+impossible 0 (Gamma-id vs condition_id key-mismatch trap), so no magnitude
+asserted; bounded well under the ~65% KS reduction needed to un-reject, cannot
+flip p=0.0000, but is a real unmeasured contaminant. (4) Calibrator mid-relearn
+since 07-11 (53 leak-era rows until ~08-07); NOT judged/gated/touched;
+baseline-vs-now comparisons cross a fitted→near-identity boundary → directional,
+not clean deltas. Re-cut retirement only after that window clears AND a fresh
+clean window has ≥30 traded resolutions per 0.70+ bin.
