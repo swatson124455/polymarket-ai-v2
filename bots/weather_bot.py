@@ -1125,6 +1125,14 @@ class WeatherBot(BaseBot):
                     "SELECT model_name, was_correct, confidence, market_id FROM prediction_log "
                     "WHERE bot_name = 'WeatherBot' "
                     "AND was_correct IS NOT NULL "
+                    # S232 re-review c9: EXCLUDE nowcast rows. They carry a
+                    # constant confidence (0.44) and share the crossing
+                    # market's market_id, so they double-counted into the
+                    # per-CITY Brier deque (keyed by city, not model_name) that
+                    # drives _get_city_brier_mult — throttling the MAIN model's
+                    # sizing in that city on the shadow signal's calibration.
+                    # NOT '= weather_temperature' (would drop precip/snow/wind).
+                    "AND model_name NOT LIKE '%nowcast%' "
                     "AND resolved_at > NOW() - INTERVAL '1 hour' AND resolved_at <= NOW()"
                 ))
                 _rows = result.fetchall()
