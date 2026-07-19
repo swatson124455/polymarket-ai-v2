@@ -50,19 +50,27 @@ def _dedup_latest_per_market(rows):
     reliability / PIT bin. Keeping one row per market removes that weighting bias.
 
     Rows are (predicted_prob, outcome, bot_name, category, market_id,
-    prediction_time). Returns the same tuple shape, one row per market_id.
+    prediction_time[, model_name]). Returns the same tuple shape, one row per
+    (market_id, model_name).
+
+    S232 re-review c11 (twin of the write-side dedup bug c2): keying by
+    market_id ALONE let a later-logged SECOND model for the same market (the
+    experimental nowcast 0.44 signal, which logs after the main analyze phase)
+    REPLACE the main model's genuine prediction in the collapse. Key by
+    (market_id, model_name) so distinct models are distinct observations.
+    Back-compatible: rows without a model_name element key on (market_id, None).
     """
     latest: dict = {}
     for row in rows:
-        market_id = row[4]
+        key = (row[4], row[6] if len(row) > 6 else None)
         prediction_time = row[5]
-        current = latest.get(market_id)
+        current = latest.get(key)
         if (
             current is None
             or current[5] is None
             or (prediction_time is not None and prediction_time > current[5])
         ):
-            latest[market_id] = row
+            latest[key] = row
     return list(latest.values())
 
 
@@ -123,6 +131,10 @@ async def calibration_check(
                        FILTER (WHERE pl.resolution IS NOT NULL) AS distinct_resolved
             FROM prediction_log pl
             WHERE pl.prediction_time > :cutoff
+              -- S232 re-review c11: exclude the experimental nowcast signal
+              -- (constant 0.44, own model_name) so the gate count matches the
+              -- main-model calibration cut below.
+              AND pl.model_name NOT LIKE '%nowcast%'
             {bot_clause}
         """), params)
         counts = count_result.fetchone()
@@ -153,12 +165,19 @@ async def calibration_check(
                    pl.bot_name,
                    m.category,
                    pl.market_id,
-                   pl.prediction_time
+                   pl.prediction_time,
+                   pl.model_name
             FROM prediction_log pl
             LEFT JOIN markets m ON (pl.market_id = CAST(m.id AS TEXT)
                                     OR pl.market_id = m.condition_id)
             WHERE pl.resolution IS NOT NULL
               AND pl.prediction_time > :cutoff
+              -- S232 re-review c11: exclude the experimental nowcast signal
+              -- (constant 0.44, own model_name) from the MAIN-model calibration
+              -- cut — it is graded separately by model_name. The (market_id,
+              -- model_name) dedup key below additionally prevents any second
+              -- model from replacing the main prediction.
+              AND pl.model_name NOT LIKE '%nowcast%'
               {bot_clause}
             ORDER BY pl.prediction_time
         """), params)
@@ -364,6 +383,9 @@ def _build_per_side_lead_time_sql(clean: bool) -> str:
           AND pl.resolution IS NOT NULL
           AND pl.prediction_time >= :since_dt
           AND e_entry.event_data->>'lead_time_hours' IS NOT NULL
+          -- S232 re-review c11: exclude nowcast (its ENTRY events also carry
+          -- side=YES + lead_time_hours) from the main-model side x lead view.
+          AND pl.model_name NOT LIKE '%nowcast%'
           {contamination_clause}
         ORDER BY e_entry.side, lead_time_hours
     """

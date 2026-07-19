@@ -225,3 +225,23 @@ class TestDedupLatestPerMarket:
 
     def test_empty(self):
         assert _dedup_latest_per_market([]) == []
+
+    def test_distinct_models_not_collapsed(self):
+        """S232 re-review c11: same market_id, DIFFERENT model_name must be
+        kept as SEPARATE observations — the later-logged nowcast 0.44 row must
+        NOT replace the main model's prediction (twin of write-side c2)."""
+        def _row7(prob, mid, ptime, model):
+            return (prob, 1, "WeatherBot", "weather", mid, ptime, model)
+        main = _row7(0.62, "0x7cee", datetime(2026, 7, 9, 1, 0, 0), "weather_temperature")
+        # nowcast logs LATER (would win a market_id-only collapse)
+        nowc = _row7(0.44, "0x7cee", datetime(2026, 7, 9, 1, 30, 0), "weather_nowcast_peak")
+        out = _dedup_latest_per_market([main, nowc])
+        assert len(out) == 2
+        assert {r[0] for r in out} == {0.62, 0.44}
+        assert {r[6] for r in out} == {"weather_temperature", "weather_nowcast_peak"}
+
+    def test_main_query_and_side_lead_exclude_nowcast(self):
+        """S232 re-review c11: the main-model cuts filter out the nowcast
+        model_name so S222/re-measure grade the deployed model cleanly."""
+        assert "NOT LIKE '%nowcast%'" in _build_per_side_lead_time_sql(clean=False)
+        assert "NOT LIKE '%nowcast%'" in _build_per_side_lead_time_sql(clean=True)
