@@ -138,6 +138,17 @@ def merge_ranges(cached: Optional[dict], new: dict, from_b: int, to_b: int
         return {"from_b": from_b, "to_b": to_b,
                 "v1_fills": new["v1_fills"], "v2_fills": new["v2_fills"],
                 "leaf_ok": new.get("leaf_ok", 0), "sides": {}}
+    if from_b <= cached["from_b"] and to_b >= cached["to_b"]:
+        # new range SUPERSETS the cache (e.g. populate re-sweeping [37M, head]
+        # over a prior [37M, T1]): REPLACE, don't sum — a raw leaf_ok sum
+        # double-counts the re-swept leaves and can understate the lossy-gap
+        # rpc_err_frac downstream, masking an incomplete sweep (adversarial
+        # review 2026-07-19, finding #3). New is a fresh authoritative sweep
+        # of a superset; keep only the accumulated receipt sides.
+        return {"from_b": from_b, "to_b": to_b,
+                "v1_fills": new["v1_fills"], "v2_fills": new["v2_fills"],
+                "leaf_ok": new.get("leaf_ok", 0),
+                "sides": cached.get("sides", {})}
     if from_b > cached["to_b"] + 1 or to_b < cached["from_b"] - 1:
         raise ValueError(
             f"non-adjacent merge: cache [{cached['from_b']}, {cached['to_b']}]"
@@ -386,6 +397,17 @@ def self_test() -> int:
         assert m["from_b"] == 100 and m["to_b"] == 300
         assert len(m["v1_fills"]) == 2  # 0xa dedup'd, 0xd added
         assert m["sides"] == ks         # sides survive a merge
+
+        # finding #3: a SUPERSET re-sweep REPLACES (no leaf_ok double-count)
+        base = {"from_b": 100, "to_b": 200, "leaf_ok": 2200, "sides": {"k": "BUY"},
+                "v1_fills": [{"tx": "0xa", "block": 150}], "v2_fills": []}
+        sup = {"v1_fills": [{"tx": "0xz", "block": 90}], "v2_fills": [],
+               "leaf_ok": 2205}
+        rep = merge_ranges(base, sup, 50, 300)  # [50,300] superset of [100,200]
+        assert rep["from_b"] == 50 and rep["to_b"] == 300
+        assert rep["leaf_ok"] == 2205  # REPLACED, not 2200+2205
+        assert [f["tx"] for f in rep["v1_fills"]] == ["0xz"]  # new's fills only
+        assert rep["sides"] == {"k": "BUY"}  # receipt sides preserved
 
         # review F1: a NON-ADJACENT merge must refuse (never mint a hole)
         try:
