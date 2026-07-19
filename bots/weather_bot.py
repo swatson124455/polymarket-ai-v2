@@ -4878,10 +4878,23 @@ class WeatherBot(BaseBot):
                                 pass
                         continue
                     if str(details.get("side", "")).upper() != "YES":
-                        # Finding 5b: details is one slot per bot:market — a
-                        # later NO entry by the main signal overwrites it;
-                        # selling the YES token with the NO size would corrupt
-                        # the position. Nowcast entries are always YES.
+                        # Finding 5b / S232 audit: _position_details is ONE slot
+                        # per bot:market (order_gateway.py:69), so a later NO
+                        # entry by the main signal overwrites the YES nowcast
+                        # slot. Selling with the NO size/side would corrupt the
+                        # position, so we conservatively SKIP — the YES position
+                        # rides to resolution (bounded <=$50/window, fail-SAFE:
+                        # we never erroneously sell). The fully-correct fix needs
+                        # per-(market,side) position tracking in order_gateway (a
+                        # shared structural change, not a surgical bugfix). Make
+                        # the skip VISIBLE instead of silent so the (rare) case
+                        # is observable if it ever fires.
+                        logger.warning(
+                            "weatherbot_nowcast_overshoot_skipped_slot_overwritten",
+                            market_id=mid, slot_side=details.get("side"),
+                            note="YES nowcast overshoot exit not firable — market slot "
+                                 "overwritten by a non-YES position; held to resolution",
+                        )
                         continue
                     if mid in self._recently_exited:
                         continue
