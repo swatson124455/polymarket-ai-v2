@@ -1138,3 +1138,30 @@ is a no-op for non-WeatherBot rows. **Flagged as system-wide latent debt (NOT WB
 `RedisCache.get()` swallows every exception → phantom cache-miss for any correctness-
 critical caller (c1's deeper cause; left under Rule 4). Proposal for the shared/MB owner:
 a variant that distinguishes error from miss. Full suite 4010 green.
+
+## S232 SHARED REDIS ROOT FIX (2026-07-19, operator-ordered, CROSS-BOT)
+
+Operator: "fix shared redis now for all deep root fix, notify all other bots."
+The deeper root cause behind c1 (flagged as system-wide debt) — `RedisCache.get()`
+/`set()` swallow EVERY exception → None/no-op, so a Redis ERROR is indistinguishable
+from a real MISS and correctness-critical callers fail OPEN on an outage.
+
+**Fix (both copies on the WB branch):** added opt-in `raise_on_error: bool = False`
+to `get()` and `set()` in `base_engine/data/redis_cache.py` (top-level/shared) AND
+`bots/weather/engine/base_engine/data/redis_cache.py` (WB vendored). Default False =
+BYTE-IDENTICAL legacy behavior — all ~225 existing `cache.*` callers across all 14
+bots unaffected. Correctness-critical callers pass `raise_on_error=True` → error
+RAISES (fail closed) while a real miss still returns None. New capability test
+(`tests/test_base_components.py::test_redis_cache_raise_on_error`). Full suite green.
+
+**Deploy split:** WB deploys its vendored copy (inert for WB today — c1 already
+fixed at the call site via the raw handle; the param is available for future/other
+adopters). The top-level copy reaches MB/main services only via a master merge +
+deploy.sh = **MB/operator action (PROPOSED, not executed from WB — RULE ONE)**.
+
+**Cross-bot notification:** shared memory `project_shared_redis_get_root_fix.md` +
+MEMORY.md coordination pointer (every session reads memory at start). Per-bot
+adoption actions (MB cherry-pick to master; EB/Maker/SB apply the 3-line change to
+their branch copy + adopt the flag in correctness-critical reads) are listed there.
+Related untouched debt noted: `RedisCache.delete()` same pattern; c12 shared
+prediction_log calibrators unfiltered (MB).
