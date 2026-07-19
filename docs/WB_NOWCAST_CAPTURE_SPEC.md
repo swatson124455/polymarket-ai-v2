@@ -997,3 +997,40 @@ since 07-11 (53 leak-era rows until ~08-07); NOT judged/gated/touched;
 baseline-vs-now comparisons cross a fitted→near-identity boundary → directional,
 not clean deltas. Re-cut retirement only after that window clears AND a fresh
 clean window has ≥30 traded resolutions per 0.70+ bin.
+
+## S222 FOLLOW-THROUGH — VIF TUNE (2026-07-19, operator-authorized "do it")
+
+Acting on the re-cut's highest-value next action. Tier-1 threshold tune:
+`WEATHER_VARIANCE_INFLATION_FACTOR` **1.4 → 1.8**.
+
+- **What/where:** appended to WB-owned `/opt/pa2-shared/.env.weather` (backup
+  `.env.weather.bak_20260719_vif`); polymarket-weather ONLY restarted
+  (ActiveEnter 2026-07-19 17:10:10Z). NOT the shared `/opt/pa2-shared/.env` —
+  no 4-service restart, no MB-priority collision.
+- **Mechanism (code-read, probability_engine.py:135 & :156):** VIF multiplies
+  the ensemble std ONLY on the NON-EMOS path (`std * _vif`); EMOS-calibrated
+  stations use `emos_sigma` and are UNAFFECTED. So this widens dispersion for
+  uncalibrated stations/leads only — currently the 7 cold-start corrected
+  stations + most international cities. It touches neither the calibrator nor
+  the nowcast signal (fixed model_prob 0.44 bypasses this engine) nor any S222
+  gate under test.
+- **Why 1.8:** within the cited empirical underdispersion range (1.3-2.0x,
+  Gneiting 2005/MeteoSwiss); upper-half because overconfidence is MEASURED
+  (PIT mean 0.588, top PIT bin 2.34x), not maxed so a second step (→2.0) stays
+  available. Judgment call, reversible in one line.
+- **Expected impact:** non-EMOS predictions less extreme → PIT mean toward
+  0.5, top-bin overload down, the cheap-NO tail's 0.041→0.232 gap narrows on
+  the non-EMOS subset. Does NOT fix EMOS-station overconfidence (that is the
+  calibrator's job, hands-off until ~08-07). So expect a PARTIAL PIT
+  improvement, not full uniformity.
+- **Verified live:** all 3 flags in process env (VIF=1.8, nowcast + priority-
+  wake still true); scan completed (47 cities/100 groups/309 weather markets);
+  only error is the pre-existing `_publish_signal` startup transient.
+- **Rollback:** remove the VIF line from `.env.weather` + restart
+  polymarket-weather → reverts to code default 1.4.
+- **RE-MEASURE (scheduled ~07-24):** re-run calibration_check
+  `--since 20260719_171010 --clean --dedup-markets` once N≥50 distinct resolved
+  accrue under VIF=1.8; compare PIT KS/mean + non-EMOS reliability vs the
+  pre-tune 0.588. If PIT improves but still rejects, consider VIF→2.0 (last
+  step) BEFORE any control retires. No control retires on this window
+  regardless (calibrator still mid-relearn until ~08-07).
