@@ -240,8 +240,11 @@ def run_once():
     for oid in cancels:
         client.cancel_order(oid)
     for c in creates:
-        client.create_order(c["ticker"], c["side"], "buy", c["count"],
-                            c["price_dollars"], post_only=True)
+        # create_quote maps our (outcome, outcome-price) to the V2 bid/ask +
+        # yes-scale price (verified demo 2026-07-19); post_only = never cross
+        client.create_quote(c["ticker"], c["side"], c["price_dollars"], c["count"],
+                            post_only=True,
+                            client_order_id=f"mk-{c['ticker'][:20]}-{c['side']}")
 
     # simulate the resulting standing book for the next dry-run cycle
     if client.mode == "dry_run":
@@ -270,15 +273,19 @@ def run_once():
 
 
 def _live_standing(client):
+    """Read resting V2 orders back into our internal (outcome, outcome-price) form.
+    V2 order objects carry outcome_side ('yes'|'no') + {yes,no}_price_dollars
+    (verified demo 2026-07-19)."""
     out = defaultdict(list)
     for o in (client.get_orders("resting").get("orders") or []):
-        side = o.get("side")
-        price_cents = o.get(f"{side}_price")
-        if price_cents is None:
+        outcome = o.get("outcome_side")   # 'yes' | 'no'
+        price_str = o.get(f"{outcome}_price_dollars")
+        if outcome is None or price_str is None:
             continue
-        out[o["ticker"]].append({"side": side, "price_dollars": price_cents / 100.0,
-                                 "count": o.get("remaining_count") or o.get("count"),
-                                 "order_id": o["order_id"]})
+        cnt = o.get("remaining_count_fp") or o.get("remaining_count") or \
+            o.get("initial_count_fp") or o.get("count") or 0
+        out[o["ticker"]].append({"side": outcome, "price_dollars": float(price_str),
+                                 "count": int(float(cnt)), "order_id": o["order_id"]})
     return dict(out)
 
 

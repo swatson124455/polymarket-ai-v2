@@ -138,60 +138,56 @@ class KalshiOrderClient:
             self._last_write = time.time()
 
     # ---------------- orders ----------------
-    # #1 DEMO-VERIFICATION ITEM (docs check 2026-07-18): Kalshi now documents a
-    # NEWER V2 order surface — `POST /portfolio/events/orders` with side="bid"|"ask"
-    # (bid==yes, ask==no), price as a DOLLAR STRING, count as string,
-    # time_in_force, and native `self_trade_prevention_type` (e.g. "taker_at_cross").
-    # The methods below use the LEGACY shape (`/portfolio/orders`, side="yes"/"no",
-    # action, integer-cent yes_price/no_price, post_only) — the same shape the SB
-    # lane's client uses (`b0c0da3`) and still accepted, but marked deprecated.
-    # DO NOT blind-switch: confirm which shape the DEMO endpoint accepts (and the
-    # exact string/int formatting) against real responses in the demo session,
-    # then pin one. Self-trade prevention is a REQUIRED add on the live path (we
-    # quote both sides of the same market — a taker_at_cross STP is the guard).
-
-    def create_order(self, ticker, side, action, count, price_dollars,
-                     post_only=True, client_order_id=None, expiration_ts=None):
-        """side: 'yes'|'no'; action: 'buy'|'sell'; count: contracts (int);
-        price in DOLLARS (converted to integer cents for the API)."""
-        body = {
-            "ticker": ticker, "side": side, "action": action, "type": "limit",
-            "count": int(count),
-            f"{side}_price": int(round(price_dollars * 100)),
-            "post_only": bool(post_only),
-        }
-        if client_order_id:
-            body["client_order_id"] = client_order_id
-        if expiration_ts:
-            body["expiration_ts"] = int(expiration_ts)
-        return self._write("POST", f"{API_ROOT}/portfolio/orders", body)
+    # ORDER SURFACE — V2, VERIFIED against demo 2026-07-19 (KALSHI_KEY cc7845…):
+    #  - LEGACY /portfolio/orders is DEAD (410 deprecated_v1_order_endpoint). Removed.
+    #  - Create: POST /portfolio/events/orders. side='bid'|'ask'. `price` is ALWAYS
+    #    the YES-scale price (verified: an ask@0.90 rested as a NO order @0.10).
+    #    So: YES bid @p  -> side='bid', price=p ;  NO  bid @p -> side='ask',
+    #    price=(1-p). count/price are STRINGS. Native self_trade_prevention_type.
+    #  - Cancel: DELETE /portfolio/events/orders/{id} (verified).
+    #  - Reads (GET /portfolio/orders, balance, fills) still work unchanged.
+    #  - maker_fees_dollars observed 0.000000 on a temp market (maker-free confirmed).
 
     def create_order_v2(self, ticker, book_side, count, price_dollars,
                         time_in_force="good_till_canceled",
                         self_trade_prevention_type="taker_at_cross",
-                        client_order_id=None):
-        """CURRENT V2 shape: POST /portfolio/events/orders. book_side='bid'|'ask'
-        (bid==yes, ask==no per docs). price as DOLLAR STRING, count as string.
-        Native self-trade prevention. The demo session pins legacy-vs-this."""
+                        post_only=True, client_order_id=None):
+        """POST /portfolio/events/orders. book_side='bid'(=yes) | 'ask'(=no).
+        price_dollars is the YES-scale price as a decimal (0..1). Verified demo."""
         body = {
             "ticker": ticker, "side": book_side, "count": str(int(count)),
             "price": f"{price_dollars:.4f}",
             "time_in_force": time_in_force,
             "self_trade_prevention_type": self_trade_prevention_type,
+            "post_only": bool(post_only),
         }
         if client_order_id:
             body["client_order_id"] = client_order_id
         return self._write("POST", f"{API_ROOT}/portfolio/events/orders", body)
 
+    def create_quote(self, ticker, outcome, price_dollars, count,
+                     post_only=True, client_order_id=None):
+        """Maker-friendly wrapper: rest a resting BID on the given OUTCOME side at
+        that outcome's own price. outcome='yes'|'no'. Maps to the V2 bid/ask +
+        yes-scale price (no @p -> ask @ 1-p). Never crosses (post_only)."""
+        if outcome == "yes":
+            return self.create_order_v2(ticker, "bid", count, price_dollars,
+                                        post_only=post_only, client_order_id=client_order_id)
+        if outcome == "no":
+            return self.create_order_v2(ticker, "ask", count, round(1.0 - price_dollars, 4),
+                                        post_only=post_only, client_order_id=client_order_id)
+        raise ValueError(f"outcome must be 'yes'|'no', got {outcome!r}")
+
     def batch_create(self, orders):
-        """orders: list of create_order-style dicts (already API-shaped).
-        NB: rate-limit billing is PER ITEM (create=10 tok, cancel=2) — batching
-        saves round-trips, NOT write budget. Quota math counts orders, not calls."""
-        return self._write("POST", f"{API_ROOT}/portfolio/orders/batched",
+        """orders: list of V2-shaped order dicts. Rate-limit billing is PER ITEM
+        (create=10 tok) — batch saves round-trips, NOT budget. NOTE: V2 batch path
+        not yet demo-verified — confirm before the live batch path is used."""
+        return self._write("POST", f"{API_ROOT}/portfolio/events/orders/batched",
                            {"orders": orders})
 
     def cancel_order(self, order_id):
-        return self._write("DELETE", f"{API_ROOT}/portfolio/orders/{order_id}", None)
+        """DELETE /portfolio/events/orders/{id} — V2, verified demo 2026-07-19."""
+        return self._write("DELETE", f"{API_ROOT}/portfolio/events/orders/{order_id}", None)
 
     def batch_cancel(self, order_ids):
         return self._write("DELETE", f"{API_ROOT}/portfolio/orders/batched",

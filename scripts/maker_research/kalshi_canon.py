@@ -199,18 +199,33 @@ CANON = {
                   "query-param stripping at :113)",
     },
     "order_surface_v2": {
-        "value": "CURRENT recommended order API is V2: POST /portfolio/events/orders "
-                 "with side='bid'|'ask' (bid==yes, ask==no), price as DOLLAR STRING, "
-                 "count as string, time_in_force, self_trade_prevention_type "
-                 "(e.g. 'taker_at_cross'), client_order_id (optional, recommended for "
-                 "dedup). Amend/batch/cancel have matching -v2 endpoints. The LEGACY "
-                 "shape (/portfolio/orders, side=yes/no, action, integer-cent "
-                 "yes_price/no_price, post_only) is DEPRECATED but still accepted.",
-        "source": "docs.kalshi.com getting_started/quick_start_create_order + "
-                  "order_direction + api-reference/orders/*-v2 (2026-07-18)",
-        "status": "our client is on the LEGACY shape — #1 demo-session item: confirm "
-                  "which the demo endpoint accepts + exact str/int formatting, pin one, "
-                  "ADD self-trade prevention (we quote both sides).",
+        "value": "VERIFIED on demo 2026-07-19 (key cc7845…). CREATE: POST "
+                 "/portfolio/events/orders, body {ticker, side:'bid'|'ask', "
+                 "count:STR, price:STR, time_in_force, self_trade_prevention_type, "
+                 "post_only, client_order_id}. `price` is ALWAYS the YES-scale price: "
+                 "an ask@yes-0.90 rests as a NO order @0.10 (yes-ask == no-bid). "
+                 "So YES bid@p -> side='bid',price=p ; NO bid@p -> side='ask',"
+                 "price=(1-p). CANCEL: DELETE /portfolio/events/orders/{id}. "
+                 "READS unchanged (GET /portfolio/orders returns outcome_side + "
+                 "{yes,no}_price_dollars). **LEGACY /portfolio/orders write path is "
+                 "DEAD — 410 deprecated_v1_order_endpoint** (the SB lane's client + "
+                 "our first draft used it; would have failed live).",
+        "source": "live demo order lifecycle 2026-07-19 (verify_kalshi_demo.py, "
+                  "6 PASS/0 FAIL): auth read $100, two-sided create_quote, read-back "
+                  "with correct mapping, cancel, 0 left resting",
+        "status": "VERIFIED & PINNED. client.create_quote(outcome,price) is the "
+                  "maker entry point. RESIDUAL: post_only not echoed in read-back "
+                  "(None) — confirm it actually blocks a crossing order via a "
+                  "marketable-order probe before live; STP field accepted. Batch V2 "
+                  "path (/portfolio/events/orders/batched) set but NOT yet demo-tested.",
+    },
+    "maker_fee_observed": {
+        "value": "maker_fees_dollars = 0.000000 on resting orders in KXTEMP* and "
+                 "KXWNBA* demo markets — direct confirmation of the maker-free "
+                 "reading for the temp/weather farm (see maker_fee entry).",
+        "source": "demo order read-back 2026-07-19",
+        "status": "VERIFIED on sampled markets (not exhaustive — still fetch "
+                  "per-series fee flag before quoting an unfamiliar market)",
     },
     "dev_agreement": {
         "value": "API use requires accepting Kalshi's Developer Agreement (click-through "

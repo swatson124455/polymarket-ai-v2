@@ -72,12 +72,33 @@ def test_dry_run_is_default_and_records_intents(monkeypatch):
     monkeypatch.delenv("KALSHI_TRADING_MODE", raising=False)
     c = kc.KalshiOrderClient()
     assert c.mode == "dry_run"
-    r = c.create_order("KXT-1", "yes", "buy", 100, 0.42)
+    r = c.create_quote("KXT-1", "yes", 0.42, 100)
     assert r["dry_run"] is True
-    assert c.intents[0]["body"]["yes_price"] == 42
-    assert c.intents[0]["body"]["post_only"] is True
+    b = c.intents[0]["body"]
+    assert b["side"] == "bid" and b["price"] == "0.4200" and b["post_only"] is True
     r2 = c.batch_cancel(["a", "b"])
     assert r2["dry_run"] and len(c.intents) == 2
+
+
+def test_create_quote_no_side_maps_to_ask_complement(monkeypatch):
+    monkeypatch.delenv("KALSHI_TRADING_MODE", raising=False)
+    c = kc.KalshiOrderClient()
+    # a NO bid at 0.30 must post as an ASK at the yes-scale price 0.70
+    c.create_quote("KXT-1", "no", 0.30, 50)
+    b = c.intents[0]["body"]
+    assert b["side"] == "ask" and b["price"] == "0.7000" and b["count"] == "50"
+    # a YES bid stays a bid at its own price
+    c.create_quote("KXT-1", "yes", 0.61, 50)
+    assert c.intents[1]["body"]["side"] == "bid" and c.intents[1]["body"]["price"] == "0.6100"
+
+
+def test_cancel_uses_v2_events_path(monkeypatch):
+    monkeypatch.delenv("KALSHI_TRADING_MODE", raising=False)
+    c = kc.KalshiOrderClient()
+    c.cancel_order("abc-123")
+    it = c.intents[0]
+    assert it["method"] == "DELETE"
+    assert it["path"] == "/trade-api/v2/portfolio/events/orders/abc-123"
 
 
 def test_v2_order_body_shape(monkeypatch):

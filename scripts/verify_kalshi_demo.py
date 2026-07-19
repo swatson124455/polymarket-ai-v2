@@ -73,78 +73,73 @@ def main():
                             f"(signature/key/clock issue — fix before proceeding)")
             return 1
 
-        # --- stage 2: discover a liquid demo market ---
+        # --- stage 2: discover a priceable demo market ---
         try:
             import urllib.request
             req = urllib.request.Request(
-                c.base + f"{API_ROOT}/markets?limit=200&status=open",
+                c.base + f"{API_ROOT}/markets?limit=1000&status=open",
                 headers={"User-Agent": "verify/1.0"})
             with urllib.request.urlopen(req, timeout=15) as r:
                 mkts = json.loads(r.read()).get("markets", [])
-            # pick one with a real two-sided book and mid away from extremes
+            # demo uses *_dollars string fields; skip the auto-gen combo markets
             for m in mkts:
-                yb, ya = m.get("yes_bid"), m.get("yes_ask")
-                if yb and ya and 10 <= yb <= 85 and ya > yb:
+                if m["ticker"].startswith("KXMVE"):
+                    continue
+                try:
+                    ya = float(m.get("yes_ask_dollars") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if 0.20 <= ya <= 0.80:
                     market = m
                     break
             if not market:
-                line(2, "FAIL", "no liquid two-sided demo market found in first 200")
+                line(2, "FAIL", "no priceable non-combo demo market found")
                 return 1
-            line(2, "PASS", f"market {market['ticker']} yes_bid={market['yes_bid']} "
-                            f"yes_ask={market['yes_ask']}")
+            line(2, "PASS", f"market {market['ticker']} "
+                            f"yes_bid=${market.get('yes_bid_dollars')} "
+                            f"yes_ask=${market.get('yes_ask_dollars')}")
         except Exception as e:
             line(2, "FAIL", f"market discovery failed: {e}")
             return 1
 
         tkr = market["ticker"]
-        # a deep, non-marketable YES bid: well below best bid, post-only -> rests, no fill
-        deep_price = max(0.01, round((market["yes_bid"] - 20) / 100.0, 2))
 
-        # --- stage 3: order lifecycle ---
-        oid = None
-        # 3a legacy shape
+        # --- stage 3: two-sided order lifecycle via create_quote (V2) ---
+        # deep, non-marketable quotes on BOTH outcomes: yes bid @0.10, no bid @0.10
         try:
-            t0 = time.time()
-            r = c.create_order(tkr, "yes", "buy", TINY, deep_price, post_only=True,
-                               client_order_id=f"verify-legacy-{int(time.time())}")
-            oid = (r.get("order") or {}).get("order_id") or r.get("order_id")
-            shape_used = "legacy"
-            line(3, "PASS", f"LEGACY create accepted ({(time.time()-t0)*1000:.0f}ms) "
-                            f"order_id={oid} resp={json.dumps(r)[:160]}")
-        except urllib.error.HTTPError as e:
-            line(3, "warn", f"legacy create rejected {e.code}: {err_body(e)} — trying V2")
-            # 3b V2 shape (bid == yes)
-            try:
+            for outcome in ("yes", "no"):
                 t0 = time.time()
-                r = c.create_order_v2(tkr, "bid", TINY, deep_price,
-                                      client_order_id=f"verify-v2-{int(time.time())}")
-                oid = (r.get("order") or {}).get("order_id") or r.get("order_id")
-                shape_used = "v2"
-                line(3, "PASS", f"V2 create accepted ({(time.time()-t0)*1000:.0f}ms) "
-                                f"order_id={oid} resp={json.dumps(r)[:160]}")
-            except urllib.error.HTTPError as e2:
-                line(3, "FAIL", f"V2 create ALSO rejected {e2.code}: {err_body(e2)} "
-                                f"— neither shape works; inspect field formatting")
-                return 1
-        if oid:
-            created_order_ids.append(oid)
+                r = c.create_quote(tkr, outcome, 0.10, TINY, post_only=True,
+                                   client_order_id=f"verify-{outcome}-{int(time.time())}")
+                oid = r.get("order_id") or (r.get("order") or {}).get("order_id")
+                if oid:
+                    created_order_ids.append(oid)
+                line(3, "PASS", f"{outcome} quote accepted ({(time.time()-t0)*1000:.0f}ms) "
+                                f"order_id={oid}")
+                time.sleep(0.3)
+            shape_used = "v2"
+        except urllib.error.HTTPError as e:
+            line(3, "FAIL", f"V2 create_quote rejected {e.code}: {err_body(e)}")
+            return 1
 
-        # read it back
+        # read them back — confirm outcome_side + complement price mapping
         try:
             orders = c.get_orders("resting").get("orders", [])
             mine = [o for o in orders if o.get("order_id") in created_order_ids]
-            line(3, "PASS" if mine else "warn",
-                 f"read-back: {len(mine)} of our order(s) resting; "
-                 f"sample={json.dumps(mine[0])[:200] if mine else '—'}")
+            sides = {o.get("outcome_side"): o for o in mine}
+            ok = "yes" in sides and "no" in sides
+            detail = "; ".join(f"{o.get('outcome_side')}:book={o.get('book_side')},"
+                               f"yes=${o.get('yes_price_dollars')},no=${o.get('no_price_dollars')},"
+                               f"fee=${o.get('maker_fees_dollars')}" for o in mine)
+            line(3, "PASS" if ok else "warn",
+                 f"read-back {len(mine)}/2 resting; {detail}")
         except urllib.error.HTTPError as e:
             line(3, "warn", f"resting-orders read {e.code}: {err_body(e)}")
 
-        # --- stage 4: STP probe (only if v2 shape + lifecycle worked) ---
-        if shape_used == "v2":
-            line(4, "SKIP", "STP probe deferred — run only after single-order lifecycle "
-                            "confirmed; native self_trade_prevention_type already in V2 body")
-        else:
-            line(4, "SKIP", "legacy shape has no native STP field — must add on live path")
+        # --- stage 4: post_only echo check (residual item) ---
+        po = next((o.get("post_only") for o in mine), None) if 'mine' in dir() else None
+        line(4, "SKIP", f"post_only echoed as {po!r} — API may not return it; the live "
+                        f"cross-block behaviour still needs a marketable-order probe")
 
     finally:
         # --- cleanup: cancel everything we created ---
