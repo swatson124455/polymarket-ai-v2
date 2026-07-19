@@ -29,7 +29,9 @@ import glob
 import gzip
 import json
 import os
+import statistics
 import sys
+import zlib
 from collections import defaultdict
 from datetime import datetime, timezone
 
@@ -40,15 +42,21 @@ def read_jsonl(pattern):
     rows = []
     for path in sorted(glob.glob(pattern)):
         opener = gzip.open if path.endswith(".gz") else open
-        with opener(path, "rt") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rows.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue  # torn final line of a live file
+        try:
+            with opener(path, "rt") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rows.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue  # torn final line of a live file
+        except (EOFError, OSError, gzip.BadGzipFile, zlib.error) as e:
+            # a truncated/interrupted .gz (live rotation, partial scp) must not
+            # abort the whole readout — take what parsed, warn, move on
+            sys.stderr.write(f"WARNING: stopped reading {path} ({type(e).__name__}); using partial\n")
+            continue
     return rows
 
 
@@ -85,10 +93,16 @@ def data_quality(samples):
 def census_timeline(census):
     out = []
     for r in census:
-        wc = sum(v for k, v in r.get("top_series_usd", []) if is_wc(k))
+        top = r.get("top_series_usd", [])
+        wc = sum(v for k, v in top if is_wc(k))
+        # top_series_usd is TRUNCATED (top-40), so `total - wc` UNDER-subtracts WC
+        # and is an UPPER bound on ex-WC. The true lower bound is the non-WC money
+        # we can actually SEE in the top list.
+        ex_wc_floor = sum(v for k, v in top if not is_wc(k))
         out.append({"ts": r["ts"], "total": r["total_scheduled_usd"],
                     "n": r["n_programs"], "wc_topN": wc,
-                    "ex_wc_topN_floor": r["total_scheduled_usd"] - wc})
+                    "ex_wc_topN_floor": ex_wc_floor,
+                    "ex_wc_topN_ceiling": r["total_scheduled_usd"] - wc})
     return out
 
 
@@ -158,8 +172,7 @@ def competition_arrival(samples):
         else:
             flipped += 1
             hours_to_flip.append((flip - obs[0][0]).total_seconds() / 3600)
-    hours_to_flip.sort()
-    med = hours_to_flip[len(hours_to_flip) // 2] if hours_to_flip else None
+    med = statistics.median(hours_to_flip) if hours_to_flip else None
     return {"first_seen_void": flipped + still_void, "flipped_to_contested": flipped,
             "still_void": still_void, "median_hours_to_flip": med}
 
@@ -202,10 +215,11 @@ def main():
     low = {h: c for h, c in q["ticks_per_hour"].items() if c < 10}
     print(f"low-coverage hours (<10 ticks): {low if low else 'none'}")
 
-    print("\n=== B. CENSUS TIMELINE (WC split = top-40-series floor) ===")
+    print("\n=== B. CENSUS TIMELINE (WC = top-40-series only; ex-WC bracketed) ===")
     for row in census_timeline(census):
         print(f"{row['ts'][:16]}  total=${row['total']:>10,.0f}  n={row['n']}  "
-              f"WC(top40)=${row['wc_topN']:>9,.0f}  exWC>=${row['ex_wc_topN_floor']:>10,.0f}")
+              f"WC(top40)=${row['wc_topN']:>9,.0f}  "
+              f"exWC=[${row['ex_wc_topN_floor']:>8,.0f} .. ${row['ex_wc_topN_ceiling']:>9,.0f}]")
 
     print("\n=== C. PER-SERIES CAPTURE (MODEL ESTIMATES) ===")
     print("rate$/d = instantaneous rate while programs run (short windows inflate");

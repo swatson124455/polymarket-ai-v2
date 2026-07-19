@@ -13,7 +13,9 @@ KalshiEX filing 2026-02-11, effective 2026-02-28):
      two-sided-void rule) with our hypothetical resting orders inserted:
        - JOIN policy: 100 contracts at the reference price, both sides.
        - ACTIVATE policy: on markets void for lack of Target Size, size our
-         orders to complete the target (unlocks 100% share; capital logged).
+         orders to complete the target (captures a DILUTED share — any pre-existing
+         sub-target bids stay in the qualifying set; ~100% only when the side was
+         empty; capital logged).
      Per valid snapshot the sum of all users' scores is exactly 2.0
      (yes-normalized 1.0 + no-normalized 1.0), so our period share is
      mean(our_snapshot_score / 2) over valid snapshots.
@@ -305,7 +307,7 @@ def program_usd_per_day(p):
         if e.tzinfo is None:
             e = e.replace(tzinfo=timezone.utc)
         days = max((e - s).total_seconds() / 86400.0, 1 / 24)
-        return (p.get("period_reward", 0) / 10000.0) / days, e
+        return ((p.get("period_reward") or 0) / 10000.0) / days, e
     except Exception:
         return 0.0, None
 
@@ -332,7 +334,7 @@ def select_footprint(progs):
         rows.append({
             "ticker": p["market_ticker"],
             "usd_day": usd_day,
-            "reward_usd": p.get("period_reward", 0) / 10000.0,
+            "reward_usd": (p.get("period_reward") or 0) / 10000.0,
             "target": float(p["target_size_fp"]),
             "df": p["discount_factor_bps"] / 10000.0,
             "end": end.isoformat(),
@@ -355,10 +357,10 @@ def select_footprint(progs):
 
 
 def census_row(progs):
-    tot = sum(p.get("period_reward", 0) for p in progs) / 10000.0
+    tot = sum((p.get("period_reward") or 0) for p in progs) / 10000.0
     by_series = defaultdict(float)
     for p in progs:
-        by_series[series_of(p.get("market_ticker") or "?")] += p.get("period_reward", 0) / 10000.0
+        by_series[series_of(p.get("market_ticker") or "?")] += (p.get("period_reward") or 0) / 10000.0
     top = sorted(by_series.items(), key=lambda kv: -kv[1])[:40]
     return {"ts": utcnow().isoformat(), "kind": "census",
             "n_programs": len(progs), "total_scheduled_usd": round(tot, 2),
@@ -467,7 +469,11 @@ def run_once():
     finally:
         save_state(state)  # budget spend must survive any crash path
 
-    print(f"tick ok: programs={len(progs)} footprint={len(footprint)} sampled={sampled} "
+    # symmetric with the empty-footprint warning: a full footprint that sampled
+    # nothing = total measurement outage (endpoint change, systematic fault), NOT ok
+    status = "tick ok" if not (footprint and sampled == 0) else \
+        "WARNING footprint>0 but sampled=0 (measurement outage?)"
+    print(f"{status}: programs={len(progs)} footprint={len(footprint)} sampled={sampled} "
           f"budget_used={state['budget']['used']}/{DAY_BUDGET}")
     return 0
 

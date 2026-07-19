@@ -62,7 +62,10 @@ FOOTPRINT_TOP = _envi("KALSHI_FOOTPRINT_TOP", 60)   # markets quoted per cycle
 PER_SERIES_CAP = _envi("KALSHI_PER_SERIES_CAP", 10)
 JOIN_SIZE = _envi("KALSHI_JOIN_SIZE", 100)          # contracts/side on non-void markets
 MAX_ACTIVATE_CAPITAL = _envf("KALSHI_MAX_ACTIVATE_CAPITAL", 150.0)  # $/void market
+MAX_MARKET_CAPITAL = _envf("KALSHI_MAX_MARKET_CAPITAL", 250.0)  # $ cap per market (both sides)
+MAX_TOTAL_CAPITAL = _envf("KALSHI_MAX_TOTAL_CAPITAL", 10000.0)  # $ cap on the whole resting book
 MAX_PRICE_DOLLARS = _envf("KALSHI_MAX_PRICE_DOLLARS", 0.97)  # never rest a bid above this
+MIN_PRICE_DOLLARS = _envf("KALSHI_MIN_PRICE_DOLLARS", 0.01)  # never rest a bid at/below this
 WIND_DOWN_MIN = _envi("KALSHI_WIND_DOWN_MIN", 45)   # pull quotes N min before end
 WRITE_BUDGET_PER_CYCLE = _envi("KALSHI_WRITE_BUDGET", 400)  # order-ops ceiling/cycle
 JOIN_ALWAYS = os.environ.get("KALSHI_JOIN_ALWAYS") == "1"   # drill switch (default off)
@@ -116,7 +119,8 @@ def select_footprint(progs, now):
         if end < now + timedelta(minutes=WIND_DOWN_MIN):
             continue  # wind-down gate applied at selection too
         days = max((end - start).total_seconds() / 86400, 1 / 24)
-        rows.append({"ticker": t, "usd_day": (p.get("period_reward", 0) / 10000) / days,
+        # period_reward may be present-but-null (pending programs) -> `or 0`, not .get default
+        rows.append({"ticker": t, "usd_day": ((p.get("period_reward") or 0) / 10000) / days,
                      "target": float(p["target_size_fp"]), "end": end.isoformat()})
     rows.sort(key=lambda r: (-r["usd_day"], r["ticker"]))
     picked, per_series = [], defaultdict(int)
@@ -131,43 +135,70 @@ def select_footprint(progs, now):
     return picked
 
 
-def desired_quotes(m, yes_levels, no_levels, now):
+def _levels(raw):
+    """Parse [[price_str,size_str]...] to [(price,size)] floats, dropping any
+    malformed/None entry (never let a bad book row raise mid-cycle)."""
+    out = []
+    for row in raw or []:
+        try:
+            p, s = float(row[0]), float(row[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if s > 0:
+            out.append((p, s))
+    return out
+
+
+def _capped_join(best, other_price):
+    """Contracts to rest at `best` so this side's $ stays within half the
+    per-market cap; >=1 (caller gates unpriceable elsewhere)."""
+    per_side = MAX_MARKET_CAPITAL / 2.0
+    n = min(JOIN_SIZE, int(per_side / best)) if best > 0 else 0
+    return max(1, n)
+
+
+def desired_quotes(m, yes_levels, no_levels, now, own=None):
     """Desired resting orders for one market. Returns list of
-    {side, price_dollars, count, reason} or [] (gated / unquotable)."""
-    best_y = max((float(p) for p, s in yes_levels if float(s) > 0), default=None)
-    best_n = max((float(p) for p, s in no_levels if float(s) > 0), default=None)
+    {side, price_dollars, count, reason} or [] (gated / unquotable).
+    own: {'yes':contracts,'no':contracts} of OUR current resting size on each
+    side (so activate sizes against EXTERNAL depth and does not chase itself)."""
+    own = own or {"yes": 0.0, "no": 0.0}
+    yl, nl = _levels(yes_levels), _levels(no_levels)
+    best_y = max((p for p, _ in yl), default=None)
+    best_n = max((p for p, _ in nl), default=None)
     end = parse_iso(m["end"])
     if end < now + timedelta(minutes=WIND_DOWN_MIN):
         return []                                   # wind_down
     if best_y is None or best_n is None:
         return []                                   # unpriceable side
-    if best_y > MAX_PRICE_DOLLARS or best_n > MAX_PRICE_DOLLARS:
-        return []                                   # spread_sanity
-    tot_y = sum(float(s) for _, s in yes_levels)
-    tot_n = sum(float(s) for _, s in no_levels)
-    void = tot_y < m["target"] or tot_n < m["target"]
-    quotes = []
+    if not (MIN_PRICE_DOLLARS < best_y <= MAX_PRICE_DOLLARS) or \
+       not (MIN_PRICE_DOLLARS < best_n <= MAX_PRICE_DOLLARS):
+        return []                                   # spread_sanity (both bounds)
+    # external depth = public depth minus our own resting order on that side
+    ext_y = max(0.0, sum(s for _, s in yl) - float(own.get("yes", 0)))
+    ext_n = max(0.0, sum(s for _, s in nl) - float(own.get("no", 0)))
+    target = m["target"]
+    void = ext_y < target or ext_n < target
     if JOIN_ALWAYS:
-        # drill/testing switch: always rest a tiny join on both sides of any
-        # priceable market, ignoring the void/activate economics — exercises the
-        # place/diff/cancel machinery on real (demo) orders. NOT for prod economics.
-        return [{"side": "yes", "price_dollars": best_y, "count": JOIN_SIZE, "reason": "join"},
-                {"side": "no", "price_dollars": best_n, "count": JOIN_SIZE, "reason": "join"}]
+        # drill/testing switch: tiny join on both sides of any priceable market,
+        # ignoring void/activate economics — exercises place/diff/cancel machinery.
+        return [{"side": "yes", "price_dollars": best_y, "count": _capped_join(best_y, best_n), "reason": "join"},
+                {"side": "no", "price_dollars": best_n, "count": _capped_join(best_n, best_y), "reason": "join"}]
+    quotes = []
     if void:
-        add_y = max(JOIN_SIZE, m["target"] - tot_y)
-        add_n = max(JOIN_SIZE, m["target"] - tot_n)
+        # size against EXTERNAL depth (stable across cycles; won't chase our own order)
+        add_y = max(JOIN_SIZE, target - ext_y)
+        add_n = max(JOIN_SIZE, target - ext_n)
         cap = best_y * add_y + best_n * add_n
         if cap > MAX_ACTIVATE_CAPITAL:
             return []                               # too expensive to activate
-        quotes.append({"side": "yes", "price_dollars": best_y, "count": int(add_y),
-                       "reason": "activate"})
-        quotes.append({"side": "no", "price_dollars": best_n, "count": int(add_n),
-                       "reason": "activate"})
+        quotes.append({"side": "yes", "price_dollars": best_y, "count": int(add_y), "reason": "activate"})
+        quotes.append({"side": "no", "price_dollars": best_n, "count": int(add_n), "reason": "activate"})
     else:
-        quotes.append({"side": "yes", "price_dollars": best_y, "count": JOIN_SIZE,
-                       "reason": "join"})
-        quotes.append({"side": "no", "price_dollars": best_n, "count": JOIN_SIZE,
-                       "reason": "join"})
+        quotes.append({"side": "yes", "price_dollars": best_y,
+                       "count": _capped_join(best_y, best_n), "reason": "join"})
+        quotes.append({"side": "no", "price_dollars": best_n,
+                       "count": _capped_join(best_n, best_y), "reason": "join"})
     return quotes
 
 
@@ -214,6 +245,56 @@ def append_plan(row):
         f.write(json.dumps(row, separators=(",", ":")) + "\n")
 
 
+def own_resting(standing):
+    """{ticker: {'yes':contracts,'no':contracts}} from our standing orders."""
+    out = defaultdict(lambda: {"yes": 0.0, "no": 0.0})
+    for t, orders in standing.items():
+        for o in orders:
+            if o.get("side") in ("yes", "no"):
+                out[t][o["side"]] += float(o.get("count") or 0)
+    return out
+
+
+def _mkt_capital(quotes):
+    return sum(q["price_dollars"] * q["count"] for q in quotes)
+
+
+def cap_desired(desired, usd_day):
+    """Keep whole markets in strict usd_day priority (highest first), stopping at
+    the first that would breach MAX_TOTAL_CAPITAL — i.e. keep the most valuable,
+    cut the tail. Returns (kept_desired, dropped_ticker_count)."""
+    order = sorted(desired, key=lambda t: -usd_day.get(t, 0))
+    kept, total = {}, 0.0
+    for i, t in enumerate(order):
+        c = _mkt_capital(desired[t])
+        if total + c > MAX_TOTAL_CAPITAL:
+            return kept, len(order) - i        # everything from here down is dropped
+        kept[t] = desired[t]
+        total += c
+    return kept, 0
+
+
+def bound_creates(creates, cancels, usd_day):
+    """Keep whole-ticker create groups (highest usd_day first) so
+    len(cancels)+kept <= WRITE_BUDGET. Never splits a market's two sides.
+    Returns (kept_creates, dropped_ticker_count)."""
+    if len(cancels) + len(creates) <= WRITE_BUDGET_PER_CYCLE:
+        return creates, 0
+    by_t = defaultdict(list)
+    for c in creates:
+        by_t[c["ticker"]].append(c)
+    budget = max(0, WRITE_BUDGET_PER_CYCLE - len(cancels))
+    kept, used, dropped = [], 0, 0
+    for t in sorted(by_t, key=lambda t: -usd_day.get(t, 0)):
+        grp = by_t[t]
+        if used + len(grp) <= budget:
+            kept.extend(grp)
+            used += len(grp)
+        else:
+            dropped += 1
+    return kept, dropped
+
+
 def run_once():
     if os.path.exists(STOP_FILE):
         print("STOP sentinel present; exiting")
@@ -221,75 +302,106 @@ def run_once():
     os.chdir(DATA_DIR)
     _reads[0] = 0
     now = utcnow()
+    cyc = int(now.timestamp())            # per-cycle nonce for unique order ids
     client = KalshiOrderClient()          # dry_run unless operator-configured
     st = load_state()
+    plan = {"ts": now.isoformat(), "mode": client.mode}
+    created_ok = []
+    cancels, creates = [], []
+    fetch_failed = 0
+    try:
+        progs = []
+        cursor = ""
+        for _ in range(5):
+            d = public_get("/trade-api/v2/incentive_programs?status=active&limit=10000"
+                           + (f"&cursor={cursor}" if cursor else ""))
+            progs.extend(d.get("incentive_programs", []))
+            cursor = d.get("next_cursor") or ""
+            if not cursor:
+                break
+        footprint = select_footprint(progs, now)
+        usd_day = {m["ticker"]: m["usd_day"] for m in footprint}
 
-    progs = []
-    cursor = ""
-    for _ in range(5):
-        d = public_get("/trade-api/v2/incentive_programs?status=active&limit=10000"
-                       + (f"&cursor={cursor}" if cursor else ""))
-        progs.extend(d.get("incentive_programs", []))
-        cursor = d.get("next_cursor") or ""
-        if not cursor:
-            break
-    footprint = select_footprint(progs, now)
+        # standing FIRST so activate can size against external (non-own) depth
+        standing = st.get("simulated_standing", {}) if client.mode == "dry_run" else _live_standing(client)
+        own = own_resting(standing)
 
-    desired = {}
-    for m in footprint:
-        try:
-            ob = public_get(f"/trade-api/v2/markets/{m['ticker']}/orderbook").get("orderbook_fp") or {}
-        except RuntimeError:
-            break
-        except Exception:
-            continue
-        q = desired_quotes(m, ob.get("yes_dollars") or [], ob.get("no_dollars") or [], now)
-        if q:
-            desired[m["ticker"]] = q
+        desired = {}
+        for m in footprint:
+            t = m["ticker"]
+            try:
+                ob = public_get(f"/trade-api/v2/markets/{t}/orderbook").get("orderbook_fp") or {}
+            except RuntimeError:
+                break                     # budget exhausted — stop fetching
+            except Exception:
+                # transient fetch fail: RETAIN this market's standing (do not
+                # let diff cancel everything on it); skip re-pricing this cycle
+                if standing.get(t):
+                    desired[t] = [{"side": o["side"], "price_dollars": o["price_dollars"],
+                                   "count": o["count"]} for o in standing[t]]
+                fetch_failed += 1
+                continue
+            try:
+                q = desired_quotes(m, ob.get("yes_dollars") or [], ob.get("no_dollars") or [],
+                                   now, own=own.get(t))
+            except Exception:
+                q = []                    # one degenerate market must not kill the cycle
+            if q:
+                desired[t] = q
 
-    # standing orders: dry_run reconstructs from last cycle's plan (simulated
-    # resting book); demo/live would read client.get_orders()
-    standing = st.get("simulated_standing", {}) if client.mode == "dry_run" else _live_standing(client)
-    cancels, creates = diff_orders(standing, desired)
+        desired, capped_markets = cap_desired(desired, usd_day)     # aggregate $ cap
+        cancels, creates = diff_orders(standing, desired)
+        creates, budget_dropped = bound_creates(creates, cancels, usd_day)  # whole-ticker
 
-    ops = len(cancels) + len(creates)
-    if ops > WRITE_BUDGET_PER_CYCLE:
-        # keep highest-value creates; cancels always execute (risk-off first)
-        creates = creates[: max(0, WRITE_BUDGET_PER_CYCLE - len(cancels))]
-        ops = len(cancels) + len(creates)
+        # execute — each order isolated; one failure never aborts the rest
+        cancel_fail = create_fail = 0
+        for oid in cancels:
+            try:
+                client.cancel_order(oid)
+            except Exception:
+                cancel_fail += 1
+        for i, c in enumerate(creates):
+            try:
+                client.create_quote(c["ticker"], c["side"], c["price_dollars"], c["count"],
+                                    post_only=True, client_order_id=f"mk-{cyc}-{i}-{c['side']}")
+                created_ok.append((c, f"sim-{cyc}-{i}"))
+            except Exception:
+                create_fail += 1
 
-    for oid in cancels:
-        client.cancel_order(oid)
-    for c in creates:
-        # create_quote maps our (outcome, outcome-price) to the V2 bid/ask +
-        # yes-scale price (verified demo 2026-07-19); post_only = never cross
-        client.create_quote(c["ticker"], c["side"], c["price_dollars"], c["count"],
-                            post_only=True,
-                            client_order_id=f"mk-{c['ticker'][:20]}-{c['side']}")
+        # next dry-run standing = prior standing - cancels + created (reflects truncation)
+        if client.mode == "dry_run":
+            cx = set(cancels)
+            ns = {t: [o for o in olist if o.get("order_id") not in cx]
+                  for t, olist in standing.items()}
+            for c, oid in created_ok:
+                ns.setdefault(c["ticker"], []).append(
+                    {"side": c["side"], "price_dollars": c["price_dollars"],
+                     "count": c["count"], "order_id": oid})
+            st["simulated_standing"] = {t: v for t, v in ns.items() if v}
 
-    # simulate the resulting standing book for the next dry-run cycle
-    if client.mode == "dry_run":
-        new_standing = {}
-        for t, qs in desired.items():
-            new_standing[t] = [dict(q, order_id=f"sim-{t}-{q['side']}") for q in qs]
-        st["simulated_standing"] = new_standing
-
-    # real token cost (docs 2026-07-18): create=10, cancel=2, billed per item
-    write_tokens = len(creates) * 10 + len(cancels) * 2
-    append_plan({"ts": now.isoformat(), "mode": client.mode,
-                 "footprint": len(footprint), "quoted_markets": len(desired),
-                 "cancels": len(cancels), "creates": len(creates),
-                 "order_ops": ops, "write_tokens": write_tokens, "reads": _reads[0],
-                 "gated_out": len(footprint) - len(desired),
-                 "activate_markets": sum(1 for qs in desired.values()
-                                         if qs and qs[0]["reason"] == "activate"),
-                 "est_capital_usd": round(sum(q["price_dollars"] * q["count"]
-                                              for qs in desired.values() for q in qs), 2)})
-    save_state(st)
-    print(f"cycle ok mode={client.mode} footprint={len(footprint)} quoted={len(desired)} "
-          f"ops={ops} (cancel {len(cancels)}/create {len(creates)}) write_tokens={write_tokens} "
-          f"reads={_reads[0]} "
-          f"est_capital=${sum(q['price_dollars']*q['count'] for qs in desired.values() for q in qs):,.0f}")
+        plan.update({
+            "footprint": len(footprint), "quoted_markets": len(desired),
+            "cancels": len(cancels), "creates": len(creates),
+            "order_ops": len(cancels) + len(creates),
+            "write_tokens": len(creates) * 10 + len(cancels) * 2,
+            "reads": _reads[0], "gated_out": len(footprint) - len(desired) - fetch_failed,
+            "fetch_failed": fetch_failed, "capped_markets": capped_markets,
+            "budget_dropped_markets": budget_dropped,
+            "cancel_fail": cancel_fail, "create_fail": create_fail,
+            "activate_markets": sum(1 for qs in desired.values()
+                                    if qs and qs[0].get("reason") == "activate"),
+            "est_capital_usd": round(sum(_mkt_capital(qs) for qs in desired.values()), 2),
+        })
+    finally:
+        # bookkeeping ALWAYS runs, even if the cycle body raised
+        append_plan(plan)
+        save_state(st)
+    print(f"cycle ok mode={plan['mode']} footprint={plan.get('footprint','?')} "
+          f"quoted={plan.get('quoted_markets','?')} ops={plan.get('order_ops','?')} "
+          f"(cancel {plan.get('cancels',0)}/create {plan.get('creates',0)}) "
+          f"fails={plan.get('cancel_fail',0)}c/{plan.get('create_fail',0)}cr "
+          f"capped={plan.get('capped_markets',0)} write_tokens={plan.get('write_tokens',0)} "
+          f"reads={_reads[0]} est_capital=${plan.get('est_capital_usd',0):,.0f}")
     return 0
 
 

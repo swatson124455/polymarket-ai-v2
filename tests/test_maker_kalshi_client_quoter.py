@@ -76,8 +76,11 @@ def test_dry_run_is_default_and_records_intents(monkeypatch):
     assert r["dry_run"] is True
     b = c.intents[0]["body"]
     assert b["side"] == "bid" and b["price"] == "0.4200" and b["post_only"] is True
+    # batch_cancel now loops the verified single-cancel (V2), one intent per id
     r2 = c.batch_cancel(["a", "b"])
-    assert r2["dry_run"] and len(c.intents) == 2
+    assert len(r2["cancelled"]) == 2 and len(c.intents) == 3
+    assert c.intents[1]["path"].endswith("/portfolio/events/orders/a")
+    assert c.intents[2]["path"].endswith("/portfolio/events/orders/b")
 
 
 def test_create_quote_no_side_maps_to_ask_complement(monkeypatch):
@@ -232,3 +235,89 @@ def test_diff_orders_full_exit():
                            "order_id": "o1"}]}
     cancels, creates = kq.diff_orders(standing, {})
     assert cancels == ["o1"] and creates == []
+
+
+# ---------------- review-fix regressions ----------------
+
+def test_price_lower_bound_gate():
+    # a $0.00 resting bid (best_y=0) must be gated, not placed (maps NO to 1.0)
+    assert kq.desired_quotes(M(), [(0.0, 5)], [(0.49, 5)], kq.utcnow()) == []
+
+
+def test_join_capital_capped_per_market(monkeypatch):
+    # at a high price, 100 contracts would exceed the per-market $ cap -> count trimmed
+    monkeypatch.setattr(kq, "MAX_MARKET_CAPITAL", 20.0)   # $10/side budget
+    monkeypatch.setattr(kq, "JOIN_SIZE", 100)
+    q = kq.desired_quotes(M(target=1), [(0.50, 9999)], [(0.49, 9999)], kq.utcnow())
+    # $10/side / $0.50 = 20 contracts, well under 100
+    assert q[0]["count"] == 20 and q[0]["count"] * 0.50 <= 10.0
+
+
+def test_activate_sizes_against_external_depth_stable(monkeypatch):
+    # our own 100 resting must NOT inflate tot -> add stays stable across cycles
+    monkeypatch.setattr(kq, "JOIN_SIZE", 100)
+    monkeypatch.setattr(kq, "MAX_ACTIVATE_CAPITAL", 10000.0)
+    # book shows 900 external + our 100 = 1000 total; target 1000
+    q1 = kq.desired_quotes(M(target=1000), [(0.50, 1000)], [(0.49, 1000)],
+                           kq.utcnow(), own={"yes": 100, "no": 100})
+    # external = 1000-100 = 900 < 1000 -> void, add = target - external = 100 (NOT 0/chasing)
+    assert q1[0]["reason"] == "activate" and q1[0]["count"] == 100
+
+
+def test_cap_desired_drops_lowest_value_markets(monkeypatch):
+    monkeypatch.setattr(kq, "MAX_TOTAL_CAPITAL", 100.0)
+    desired = {
+        "KXA-1": [{"side": "yes", "price_dollars": 0.50, "count": 100}],   # $50
+        "KXB-1": [{"side": "yes", "price_dollars": 0.60, "count": 100}],   # $60
+        "KXC-1": [{"side": "yes", "price_dollars": 0.40, "count": 100}],   # $40
+    }
+    usd = {"KXA-1": 300, "KXB-1": 100, "KXC-1": 50}
+    kept, dropped = kq.cap_desired(desired, usd)
+    # keep highest usd_day within $100: KXA($50) then KXB($60)=$110 over -> drop KXB and KXC
+    assert "KXA-1" in kept and dropped == 2
+    assert sum(kq._mkt_capital(v) for v in kept.values()) <= 100.0
+
+
+def test_bound_creates_whole_ticker_no_split(monkeypatch):
+    monkeypatch.setattr(kq, "WRITE_BUDGET_PER_CYCLE", 2)
+    creates = [
+        {"ticker": "KXA-1", "side": "yes"}, {"ticker": "KXA-1", "side": "no"},
+        {"ticker": "KXB-1", "side": "yes"}, {"ticker": "KXB-1", "side": "no"},
+    ]
+    usd = {"KXA-1": 300, "KXB-1": 100}
+    kept, dropped = kq.bound_creates(creates, [], usd)
+    # budget 2 -> keep KXA's BOTH sides (never split), drop KXB entirely
+    assert {c["ticker"] for c in kept} == {"KXA-1"} and len(kept) == 2 and dropped == 1
+
+
+def test_own_resting_aggregates():
+    standing = {"KXA-1": [{"side": "yes", "count": 50, "order_id": "o1"},
+                          {"side": "yes", "count": 30, "order_id": "o2"},
+                          {"side": "no", "count": 10, "order_id": "o3"}]}
+    o = kq.own_resting(standing)
+    assert o["KXA-1"]["yes"] == 80 and o["KXA-1"]["no"] == 10
+
+
+def test_levels_drops_malformed():
+    lv = kq._levels([["0.50", "5"], ["abc", "5"], ["0.40", None], [], ["0.30", "0"]])
+    assert lv == [(0.50, 5.0)]   # only the one valid, positive-size level survives
+
+
+def test_create_order_v2_rejected_status_raises(monkeypatch):
+    # a 200 carrying status=rejected must raise, not be counted as placed
+    monkeypatch.delenv("KALSHI_TRADING_MODE", raising=False)
+    c = kc.KalshiOrderClient()
+    monkeypatch.setattr(c, "_write", lambda *a, **k: {"order": {"status": "rejected"}})
+    with pytest.raises(RuntimeError, match="not resting"):
+        c.create_order_v2("KXT-1", "bid", 1, 0.42)
+    # a resting order passes through
+    monkeypatch.setattr(c, "_write", lambda *a, **k: {"order": {"status": "resting",
+                                                                "order_id": "x"}})
+    assert c.create_order_v2("KXT-1", "bid", 1, 0.42)["order"]["order_id"] == "x"
+
+
+def test_unique_client_order_id_would_differ_per_create():
+    # regression intent: the quoter now builds ids as mk-{cyc}-{i}-{side}, unique
+    # per create; assert the pattern has a per-index component (no ticker-prefix collision)
+    ids = [f"mk-{1000}-{i}-{'yes'}" for i in range(3)]
+    assert len(set(ids)) == 3

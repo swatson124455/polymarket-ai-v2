@@ -163,7 +163,14 @@ class KalshiOrderClient:
         }
         if client_order_id:
             body["client_order_id"] = client_order_id
-        return self._write("POST", f"{API_ROOT}/portfolio/events/orders", body)
+        resp = self._write("POST", f"{API_ROOT}/portfolio/events/orders", body)
+        # a 200 can still carry a rejected order — surface it, don't count it placed
+        if isinstance(resp, dict) and not resp.get("dry_run"):
+            o = resp.get("order") if isinstance(resp.get("order"), dict) else resp
+            status = (o or {}).get("status")
+            if status in ("rejected", "canceled", "cancelled"):
+                raise RuntimeError(f"order not resting: status={status} resp={resp}")
+        return resp
 
     def create_quote(self, ticker, outcome, price_dollars, count,
                      post_only=True, client_order_id=None):
@@ -190,8 +197,15 @@ class KalshiOrderClient:
         return self._write("DELETE", f"{API_ROOT}/portfolio/events/orders/{order_id}", None)
 
     def batch_cancel(self, order_ids):
-        return self._write("DELETE", f"{API_ROOT}/portfolio/orders/batched",
-                           {"ids": list(order_ids)})
+        """Cancel many orders. The legacy /portfolio/orders/batched path is DEAD
+        (410); the V2 batched-cancel shape is not demo-verified, so cancel one at
+        a time via the verified V2 single-cancel — safe, never silently 410s.
+        (Rate-limit billing is per-item anyway, so no round-trip savings lost that
+        matter for correctness.)"""
+        results = []
+        for oid in order_ids:
+            results.append(self.cancel_order(oid))
+        return {"cancelled": results}
 
     # ---------------- portfolio reads ----------------
 
@@ -220,6 +234,6 @@ class KalshiOrderClient:
 if __name__ == "__main__":
     c = KalshiOrderClient()
     print(f"mode={c.mode} base={c.base} authed={c.auth is not None}")
-    r = c.create_order("KXTEST-1", "yes", "buy", 100, 0.42)
+    r = c.create_quote("KXTEST-1", "yes", 0.42, 100)
     print("dry-run order:", json.dumps(r))
     print("exchange:", json.dumps(c.exchange_status()))

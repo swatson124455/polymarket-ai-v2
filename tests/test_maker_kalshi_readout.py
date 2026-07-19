@@ -14,6 +14,7 @@ share_stability = maker_kalshi_readout.share_stability
 census_timeline = maker_kalshi_readout.census_timeline
 data_quality = maker_kalshi_readout.data_quality
 is_wc = maker_kalshi_readout.is_wc
+read_jsonl = maker_kalshi_readout.read_jsonl
 
 
 
@@ -86,8 +87,32 @@ def test_census_timeline_wc_split():
                                   ["KXEGGS", 100.0]]}]
     t = census_timeline(census)
     assert t[0]["wc_topN"] == 500.0
-    assert t[0]["ex_wc_topN_floor"] == 500.0
+    # floor = non-WC money we can SEE in the (truncated) top list = KXEGGS 100
+    assert t[0]["ex_wc_topN_floor"] == 100.0
+    # ceiling = total - visible-WC (over-counts ex-WC because top list is truncated)
+    assert t[0]["ex_wc_topN_ceiling"] == 500.0
     assert is_wc("KXWCADS") and is_wc("KXWORLDCUPHALFTIME") and not is_wc("KXEGGS")
+
+
+def test_read_jsonl_survives_truncated_gz(tmp_path):
+    import gzip
+    good = tmp_path / "samples-20260101.jsonl"
+    good.write_text('{"ts":"2026-01-01T00:00:00+00:00","t":"A","join":0.1}\n')
+    # a deliberately corrupt .gz (not valid gzip) must not abort the whole read
+    bad = tmp_path / "samples-20260102.jsonl.gz"
+    bad.write_bytes(b"\x1f\x8b not really gzip \x00\x01\x02")
+    rows = read_jsonl(str(tmp_path / "samples-*.jsonl*"))
+    assert len(rows) == 1 and rows[0]["t"] == "A"   # good file read, bad file skipped
+
+
+def test_median_even_length_averages():
+    rows = []
+    # two markets void-then-flip at 2h and 10h -> median must be 6.0, not 10
+    for t, h in [("KXA-1", 2), ("KXB-1", 10)]:
+        rows.append(S(f"2026-07-18T00:00:00+00:00", t, None, 1.9, True))
+        rows.append(S(f"2026-07-18T{h:02d}:00:00+00:00", t, 0.1, 0.1, False))
+    c = competition_arrival(rows)
+    assert c["median_hours_to_flip"] == 6.0
 
 
 def test_data_quality_counts():
