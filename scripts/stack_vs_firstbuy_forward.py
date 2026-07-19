@@ -45,7 +45,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-import random
 import sys
 from collections import Counter
 
@@ -97,24 +96,12 @@ def grade(pos: dict, outcomes: dict) -> list[dict]:
     return rows
 
 
-def cluster_bootstrap_p(rows: list[dict], reps: int = 2000, seed: int = 7
-                        ) -> float:
-    """P(mean Delta > 0), resampling TOKEN CLUSTERS (the inference unit — a
-    market, possibly several traders' positions). The power bar is checked on
-    the count of these clusters, not on the position count (finding #5)."""
-    random.seed(seed)
-    by = {}
+def delta_by_cluster(rows: list[dict]) -> dict:
+    """{token: [Delta, ...]} — the token cluster is the bootstrap unit."""
+    by: dict = {}
     for r in rows:
         by.setdefault(r["token"], []).append(r["d"])
-    keys = list(by)
-    if not keys:
-        return float("nan")
-    wins = 0
-    for _ in range(reps):
-        s = [d for k in (random.choice(keys) for _ in keys) for d in by[k]]
-        if sum(s) / len(s) > 0:
-            wins += 1
-    return wins / reps
+    return by
 
 
 def report(rows: list[dict], power_bar: int, p_bar: float) -> str:
@@ -135,7 +122,9 @@ def report(rows: list[dict], power_bar: int, p_bar: float) -> str:
                      f"  mean edge_stack {sum(r['es'] for r in rows)/len(rows):+.4f}")
     if multi:
         md = sum(r["d"] for r in multi) / len(multi)
-        p = cluster_bootstrap_p(multi)
+        # canonical bootstrap (the money-gate readout's own), not a copy
+        # (root-cause audit 2026-07-19: a copy-pasted statistic can drift)
+        p = az.cluster_bootstrap_p(delta_by_cluster(multi))
         by_tok = Counter(r["token"] for r in multi)
         by_tr = Counter(r["trader"] for r in multi)
         top_tok_n = by_tok.most_common(1)[0][1]
