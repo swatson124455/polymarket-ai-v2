@@ -1088,9 +1088,14 @@ def resolution_sweep(state, base, now):
     settled = 0
     for k in batch:
         st = state[k]
-        rows = get(f"{GAMMA}?id={urllib.parse.quote(str(k))}") or []
-        m = rows[0] if isinstance(rows, list) and rows \
-            and isinstance(rows[0], dict) else None
+        # PATH form, not ?id= — the id query param EXCLUDES closed markets
+        # by default, i.e. exactly the sweep's targets returned empty rows
+        # forever (caught live 2026-07-19: respend stuck at 15 while gamma
+        # had the resolutions). The path form returns a dict.
+        rows = get(f"{GAMMA}/{urllib.parse.quote(str(k))}")
+        m = rows if isinstance(rows, dict) else \
+            (rows[0] if isinstance(rows, list) and rows
+             and isinstance(rows[0], dict) else None)
         # the row must be THIS market — settling k at an unrelated row's
         # outcome would be a permanent wrong realize (review finding 4)
         if not m or str(m.get("id")) != str(k) or not m.get("closed"):

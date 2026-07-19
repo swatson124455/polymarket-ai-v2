@@ -801,7 +801,9 @@ def test_resolution_sweep_gating_and_settle(tmp_path, monkeypatch):
                  "umaResolutionStatus": "resolved"}]
     monkeypatch.setattr(mle, "get", fake_get)
     mle.resolution_sweep(state, str(tmp_path), now)
-    assert len(calls) == 1 and "id=10" in calls[0]        # only the candidate
+    # PATH form required — the ?id= query excludes closed markets (the
+    # sweep's whole target set); caught live 2026-07-19
+    assert len(calls) == 1 and calls[0].endswith("/markets/10")
     assert state["10"]["settled"] is True
     assert state["10"]["spent"] == pytest.approx(-30.0)   # realized +30
     # cadence gate: immediate re-run does nothing
