@@ -4655,8 +4655,30 @@ class WeatherBot(BaseBot):
                                 bucket.low_bound, bucket.high_bound):
                             continue
                         price = float(bucket.yes_price or 0.0)
-                        if price <= 0.0 or price > model_prob - min_edge:
-                            continue  # no quote / already repriced — no entry
+                        if price <= 0.0:
+                            continue  # no quote — nothing gradeable
+                        if price > model_prob - min_edge:
+                            # S232 SHADOW LOGGING (operator order 07-19): a
+                            # crossing that passes the peak rule is a gradeable
+                            # prediction even when the price gate blocks the
+                            # trade — discarding it starves calibration (the
+                            # backtest fired ~8/day vs 2-5 executable). Log it
+                            # under weather_nowcast_peak. opp carries ONLY
+                            # model_override (no city/date) so the Maker-feed
+                            # export skips shadow rows by its own contract.
+                            logger.info(
+                                "weatherbot_nowcast_shadow",
+                                market_id=bucket.market_id, city=group.city,
+                                sid=st.station_id, price=round(price, 4),
+                                runmax_native=round(runmax_nat, 2),
+                                reason="repriced",
+                            )
+                            await self._log_weather_prediction(
+                                bucket.market_id, model_prob, price,
+                                model_prob, "temperature",
+                                opp={"model_override": "weather_nowcast_peak"},
+                            )
+                            continue
                         window_key = (f"weatherbot:nowcast_spent:"
                                       f"{st.station_id}:{group.target_date.isoformat()}")
                         try:
@@ -4670,6 +4692,19 @@ class WeatherBot(BaseBot):
                             continue
                         remaining = window_cap - spent
                         if remaining < min_trade:
+                            # window exhausted — still a gradeable prediction
+                            logger.info(
+                                "weatherbot_nowcast_shadow",
+                                market_id=bucket.market_id, city=group.city,
+                                sid=st.station_id, price=round(price, 4),
+                                runmax_native=round(runmax_nat, 2),
+                                reason="window_cap",
+                            )
+                            await self._log_weather_prediction(
+                                bucket.market_id, model_prob, price,
+                                model_prob, "temperature",
+                                opp={"model_override": "weather_nowcast_peak"},
+                            )
                             continue
                         lead_h = (datetime(group.target_date.year,
                                            group.target_date.month,
@@ -4711,6 +4746,16 @@ class WeatherBot(BaseBot):
                             window_remaining=round(remaining, 2),
                         )
                         ok = await self._execute_weather_trade(opp, group)
+                        if not ok:
+                            # blocked by an inner gate (spread/executable-edge/
+                            # dedup/cooldown/...) — keep the prediction anyway;
+                            # the 600s dedup cache stops re-log spam and also
+                            # tolerates a later successful entry (same prob).
+                            await self._log_weather_prediction(
+                                bucket.market_id, model_prob, price,
+                                model_prob, "temperature",
+                                opp={"model_override": "weather_nowcast_peak"},
+                            )
                         if ok:
                             try:
                                 await cache.set(window_key, spent + remaining,

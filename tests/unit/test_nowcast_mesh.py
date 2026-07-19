@@ -256,9 +256,22 @@ async def test_nowcast_scan_admission_blocks(case, weather_bot, mock_engine, mon
     low, high = (86.0, 87.0) if case == "not_crossed" else (84.0, 85.0)
     weather_bot._forecast_client.get_combined_forecast = AsyncMock(return_value=_forecast(det_high))
     weather_bot._execute_weather_trade = AsyncMock(return_value=True)
+    weather_bot._log_weather_prediction = AsyncMock()
     await weather_bot._scan_nowcast_entries(
         [([], _mk_group(local_date, yes_price=yes_price, low=low, high=high), {})])
     weather_bot._execute_weather_trade.assert_not_called()
+    if case == "repriced":
+        # S232 shadow logging: a price-gate reject is still a gradeable
+        # prediction — logged under weather_nowcast_peak, WITHOUT city/date
+        # (so the Maker-feed export skips it).
+        weather_bot._log_weather_prediction.assert_awaited_once()
+        args = weather_bot._log_weather_prediction.await_args
+        assert args.args[0] == "m-nowcast-1"
+        assert args.kwargs["opp"] == {"model_override": "weather_nowcast_peak"}
+    else:
+        # signal-level rejects (dropped city, upside remains, no crossing)
+        # are NOT predictions — nothing to grade, nothing logged
+        weather_bot._log_weather_prediction.assert_not_called()
 
 
 @pytest.mark.asyncio
