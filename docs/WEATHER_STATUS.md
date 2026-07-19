@@ -71,8 +71,17 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
    calibration from 07-19. Overridden gates disclosed at decision time: 7d
    debias depth (~3d at flip) + WU key (pending). KILL: both flags false +
    restart. WATCH: first crossings (US eligible from ~16Z daily), grader rows,
-   window-cap behavior, overshoot exits. (Superseded text below kept for the
-   decision record.)
+   window-cap behavior, overshoot exits. **RE-REVIEWED TWICE (triple-blind) +
+   HARDENED — release `20260719_150142`:** first pass fixed c1 (HIGH: Redis cap
+   failed OPEN → raw-handle fail-closed), c5/c2/c6; second pass (fix-validation +
+   unmasking) fixed c9 (nowcast contaminated the main-model city-Brier sizing
+   dampener) + c11 (calibration_check read-side dedup — nowcast 0.44 replaced the
+   main prediction in the S222 mode; now excluded). Full suite 4009 green. Spec
+   §"S232 SECOND TRIPLE-BLIND". Cross-bot flags open: c13 (Maker feed holds
+   pre-c5 mislabeled 0.44 lines — audit/purge before the tilt readout), c12 (MB
+   shared calibrators ingest nowcast rows — MB session to filter). NOTE: 0
+   nowcast rows logged in the first ~1.5h flag-on — the signal is that rare;
+   accumulation is the 07-24 re-measure's job. (Superseded text below kept.)
    **(pre-flip record)** PHASE-2 NOWCAST FLIP (operator decision at the Sat 07-18 day-2 review).
    S232: mesh-lead gate PASSED day-1 (60% of 93 events mesh-led, pooled median
    lead 74.8 min, false-crossing 10.8% — spec §"S232 MESH-LEAD VERDICT") and the

@@ -58,7 +58,12 @@
   "1bd54f4": "feat(wb): Phase-2 data plane \u2014 pws_mesh bot-readable mirror + mesh_debias.py producer",
   "1db55e6": "fix(wb): mesh_debias drop-rule residual uses consumer offset (block else scalar)",
   "9bfd27a": "feat(wb): S232 Phase-2 mesh-nowcast signal \u2014 flag-gated entries + overshoot invalidation (flag OFF)",
-  "7fceaa0": "fix(wb): S232 adversarial-review findings 1-8 (restart-safe tracking, D-1 file, Redis fail-closed, sell guards) \u2014 DEPLOYED 20260717_210429"
+  "7fceaa0": "fix(wb): S232 adversarial-review findings 1-8 (restart-safe tracking, D-1 file, Redis fail-closed, sell guards) \u2014 DEPLOYED 20260717_210429",
+  "207b925": "fix c1 HIGH nowcast window cap failed OPEN on Redis error (raw-handle fail-closed)",
+  "ebad791": "fix c5 nowcast entries leaked to Maker feed mislabeled weather_temperature",
+  "a3f00bb": "fix c2 prediction_log dedup keyed by (market_id,model_name)",
+  "76d64b6": "fix c9 nowcast contaminated city-Brier main-model sizing dampener",
+  "98b6f44": "fix c11 calibration_check read-side dedup + nowcast exclusion (twin of c2)"
  },
  "required_docs": [
   "docs/WEATHER_STATUS.md",
@@ -214,7 +219,7 @@
   {
    "file": "bots/weather_bot.py",
    "pattern": "S232",
-   "expect": 9
+   "expect": 15
   },
   {
    "file": "bots/weather/engine/base_engine/weather/nowcast_mesh.py",
