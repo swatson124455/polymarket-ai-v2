@@ -1,0 +1,40 @@
+# /opt/pa2-maker-live/env — Maker live-engine config (systemd EnvironmentFile)
+# PAPER defaults. Every knob is optional; unset = the paper-safe default.
+
+MAKER_SUBMIT_MODE=paper
+
+# Gate policy: P0_base (default, PROVISIONAL until the v5 gate-lab first
+# read ~2026-07-20) | P1_volfit | P2_ramp | P3_tapevel | P4_all
+#MAKER_GATE_POLICY=P0_base
+
+# Quote style: wide (default; wins NET so far) | touch (earns ~more rewards,
+# readout decides)
+#MAKER_QUOTE_STYLE=wide
+
+#MAKER_MAX_MARKETS=140
+#MAKER_MAX_PER_SECTOR=25
+#MAKER_EXCLUDED_SECTORS=esports,finance
+
+# Caps (USD unless noted)
+#MAKER_INV_CAP_MULT=3            # per-market net cap, x rewardsMinSize
+#MAKER_MARKET_GROSS_CAP_USD=150
+#MAKER_EVENT_CAP_USD=200         # one-winner-floor cap per event (v6 semantics)
+#MAKER_SECTOR_GROSS_CAP_USD=600
+#MAKER_SECTOR_CAPS_USD={"weather": 600, "politics": 600}
+#MAKER_DAY_LOSS_FLOOR_USD=75     # breach => cancel-ALL then HALT
+
+#MAKER_FRESHNESS_S=180           # stale-book interlock
+#MAKER_SIZE_JITTER=0.20          # anti-landmark: size up to +20% over min
+#MAKER_PX_JITTER_TICKS=1         # anti-landmark: up to N ticks toward mid
+#MAKER_ROTATION_FRAC=0.0         # anti-landmark: skip this fraction hourly
+
+# Informed-flow sensor consumption — OFF until hit-rate validation (>=07-25)
+#MAKER_SENSOR_FEED=/opt/pa2-maker-feeds/informed_flow.jsonl
+
+# ── LIVE MODE (operator-provisioned; ALL required together) ────────────────
+# The engine REFUSES to start if any is present without the others.
+#MAKER_SUBMIT_MODE=live
+#MAKER_PK=<deposit-flow wallet private key>
+#MAKER_FUNDER=<funder address if using the proxy/deposit wallet flow>
+#MAKER_SIG_TYPE=<int, only if the wallet flow requires it>
+#MAKER_LIVE_ACK=I-UNDERSTAND-REAL-MONEY

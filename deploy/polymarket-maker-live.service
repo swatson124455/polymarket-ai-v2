@@ -1,0 +1,35 @@
+# Maker LIVE ENGINE — deployable maker trader. Ships in PAPER mode
+# (MAKER_SUBMIT_MODE=paper in env file); flipping to live requires the
+# operator-provisioned wallet key + the MAKER_LIVE_ACK phrase in
+# /opt/pa2-maker-live/env AND removing the paper defaults — the engine
+# refuses to start on any partial live config (no silent fallback).
+# Stop:   sudo touch /opt/pa2-maker-live/STOP        (cancels quotes, exits cleanly)
+# Kill:   sudo systemctl disable --now polymarket-maker-live.service
+# Halt (loss floor) is self-imposed: cancel-all then HALT file; resume by
+# removing /opt/pa2-maker-live/HALT.
+[Unit]
+Description=Polymarket Maker Live Engine (paper-first; submit mode via env)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=polymarket
+Group=polymarket
+WorkingDirectory=/opt/pa2-maker-live
+EnvironmentFile=-/opt/pa2-maker-live/env
+ExecStart=/opt/pa2-maker-live/venv/bin/python /opt/pa2-maker-live/maker_live_engine.py --run
+Restart=on-failure
+RestartSec=30
+ProtectSystem=strict
+ReadWritePaths=/opt/pa2-maker-live
+# informed-flow + WB feeds are read-only to this unit
+ReadOnlyPaths=-/opt/pa2-maker-feeds
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectHome=true
+MemoryMax=384M
+CPUQuota=30%
+
+[Install]
+WantedBy=multi-user.target
