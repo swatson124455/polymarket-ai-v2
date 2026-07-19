@@ -219,7 +219,7 @@
   {
    "file": "bots/weather_bot.py",
    "pattern": "S232",
-   "expect": 15
+   "expect": 16
   },
   {
    "file": "bots/weather/engine/base_engine/weather/nowcast_mesh.py",
