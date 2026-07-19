@@ -162,6 +162,31 @@
 >    14/30 edge +0.0432 P(>0)=0.648 conc 0xbaa2bc…35%; probe 0 resolved.
 >    Both UNDERPOWERED, both drifting mildly POSITIVE as markets resolve
 >    (cohort1 +0.031→+0.044 within the day). No verdict; no alert.
+> 13. **TRIPLE-BLIND REVIEW of all session code (07-19; 3 blind lenses ×
+>    adversarial verify): 5 confirmed findings, ALL in NOT-YET-EXERCISED code
+>    — the live-critical paths (running readout on the live roster, flag-off
+>    run-4) came back CLEAN. All 5 FIXED + committed (`7f5c771`,`d2bca15`,
+>    `8b3ce27`):**
+>    - [med, stack_vs_firstbuy_forward #2/#4/#5] the forward test read RAW
+>      /price best_ask+verdict, bypassing `az.repair_records` (the /book-ladder
+>      repair the money-gate readout treats as ground truth) → priced the
+>      estimand off a flattered/gate-dodging quote; AND powered the verdict on
+>      POSITION count while the bootstrap clusters by TOKEN → cross-trader
+>      token overlap could fire a "POWERED" verdict on ~2 markets; no
+>      concentration disclosure. FIX: canonical repair pipeline + power on
+>      DISTINCT token-clusters + inline concentration. Pre-registration
+>      corrected BEFORE any data (tool not yet run). 4 new self-test asserts.
+>    - [low, shadow_readout #1] an intra-group DUPLICATE address passed the
+>      cross-group set() guards but broke the leave-one-out `rest` →
+>      filter_traders("") → whole-roster pooling in the LOO line. FIX: fail
+>      loud on any intra-group dup.
+>    - [low, chain_fill_cache #3] a superset re-populate summed leaf_ok
+>      (double-count) → could understate the lossy-gap rpc_err_frac and mask
+>      an incomplete sweep. FIX: replace-on-superset (don't sum).
+>    Nothing here changed a currently-live number. Method note: the two
+>    workflow reviews this session (readout cohort<N>, then this triple-blind)
+>    each caught a real defect the single-pass reviews missed — the money-gate
+>    surface warrants the multi-lens adversarial pass.
 
 > **2026-07-14 PM UPDATE (local steward session; VPS-direct SSH, operator-
 > approved per-command) — CHAIN DEEP-DIVE GATE BUILT, REVIEWED, VALIDATED,
