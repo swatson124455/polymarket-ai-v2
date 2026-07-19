@@ -10,13 +10,34 @@
 > 2026-07-11 incident: a fresh session read master's stale copy and
 > recommended the BANNED circular validate rerun it found there.)
 
-**Last updated:** 2026-07-17 (local steward session, ~12:40 UTC — run-3 killed, run-4 merged fair-params batch launched after 3-round blind review; hft-cache + stale-gamma landmines found+mitigated) · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
+**Last updated:** 2026-07-19 (local steward session, ~23:30 UTC — run-4 at 19/28, 6-ADMIT promotion queued at batch boundary; readout generalized to cohort<N>; fill-cache+multi-sweep built behind a proof gate; two workflow reviews + a root-cause audit fixed ~15 defects at root, all in not-yet-live code. HANDOFF: read `MB_DEEP_DIVE_NEXT_PROMPT.md` + §0 blocks 9–14) · **Branch:** `claude/repo-setup-docs-fq9bhn` (head = this commit)
 **Read first:** `CLAUDE.md` (binding directives), then this file, then **`docs/MB_COPYTRADER_CONTEXT.md` (FULL context brief for the live copy-trader investigation — the complete reasoning chain, API gotchas, and decision tree)**. `MB_REBUILD_PLAN.md` holds the older plan + operator decisions.
 **Protocol for updating this file:** `docs/MB_HANDOFF_PROTOCOL.md`.
 
 ---
 
-## 0. IMMEDIATE RESUME (2026-07-14 local steward session — read this block first)
+## 0. IMMEDIATE RESUME (read this block first)
+
+> **➡ NEXT SESSION: start from `MB_DEEP_DIVE_NEXT_PROMPT.md` (fresh, self-
+> contained, 2026-07-19) — it has the current state, armed queues, procedures,
+> and this session's landmines. The dated blocks below (9–14 newest first) are
+> the ledger detail; the blocks before them are prior-session history, kept for
+> provenance. Do NOT re-derive from the old blocks — the prompt + blocks 9–14
+> are current.**
+>
+> **2026-07-19 SESSION CLOSE (one-paragraph state):** run-4 (fair-params
+> re-adjudication, code `27ee79b`) at **19/28, alive (pid 3269649)**; promotion
+> queue = **6 chain-verified ADMITs** (`0xf705fa` graduates from probe +
+> `0x7c3db723`/`0xe542afd3`/`0x216509be`/`0x2ee04b8b`/`0xa6a856a8`), executes
+> as **cohort3** in ONE fenced watcher restart at the batch boundary (operator
+> word). Shadow watcher healthy (roster 25, 0 alarms). Readout generalized to
+> `cohort<N>` (blocks 11,13,14) so the promotion works. Fill-cache + multi-
+> sweep BUILT behind `--fill-cache-dir` (block 10) with a pre-registered proof
+> gate before the deepen wave uses it. **Reviews this session: two adversarial
+> workflows + one root-cause audit → ~15 defects found & fixed AT ROOT, every
+> one in not-yet-exercised code (the running readout + live run-4 were clean
+> throughout).** All work pushed to the branch (`329444e`+). NO live batch-end
+> watcher survives session end — next session re-checks run-4 on start.
 
 > **2026-07-17 UPDATE (local steward session; operator-approved "proceed with
 > all action items") — RUN-3 KILLED, RUN-4 (merged, fair-params) LAUNCHED
