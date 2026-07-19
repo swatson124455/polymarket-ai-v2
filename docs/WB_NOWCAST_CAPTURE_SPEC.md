@@ -918,3 +918,29 @@ $50/(station,date) caps. **Overridden gates, disclosed at decision time:**
 ≥7d debias depth (table was ~3 days) and the WU key/Synoptic token (still
 pending). Kill: both flags false + restart. First calibration data accrues
 under model_name `weather_nowcast_peak`.
+
+## S232 RETRO SHADOW REPLAY (operator order 07-19 "get what you missed back")
+
+`nowcast_retro_shadow.py` replays the EXACT deployed nowcast rule over the
+mesh days that predate live shadow logging (07-17/18/19-capped-at-13:50Z) and
+grades each would-be prediction vs the actual market resolution. No-lookahead:
+mesh obs, forecasts (forecast_time-stamped), and resolutions were all recorded
+contemporaneously. RESEARCH LEDGER ONLY (`~/wb_research/nowcast_retro_shadow.out`)
+— NOT inserted into prediction_log (retro rows would defeat the temporal-order
+guard). det-high proxied by the stored ensemble MEDIAN (closest recorded
+equivalent of the live deterministic_high); no price gate (grades the SIGNAL,
+same semantics as the live shadow set).
+
+**RESULT: n=6, 3 wins = 50% (vs model 0.44), Brier 0.254.**
+- 07-17: 5 preds (KLGA 3, KSEA 2), 2 wins — as-of table was 07-16 US-only, 2 clean cities
+- 07-18: 1 pred (KDAL), 1 win — 10 clean cities but few resolved in them
+- 07-19: 0 (capped at the 13:50Z shadow deploy; US barely into eligible hours)
+
+**Honest note on the recovery estimate:** I told the operator ~20-35 recoverable;
+actual is 6. The estimate anchored on the signal's raw fire rate (~8/day) and
+ignored the clean-city ∩ resolved-market intersection — the SAME error that
+inflated the live-throughput estimate. Recovery is bounded by how few cities had
+BOTH a trailing debias window AND a resolved market on those specific days. 6
+points is a supplement, not a scorecard; direction (50% vs 0.44) is consistent
+with the signal being real but the n is far too small to weigh. The live shadow
+set (deployed `20260719_095037`) is now the real accumulation path.
