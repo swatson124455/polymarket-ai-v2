@@ -60,7 +60,20 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
 
 ## OPEN DECISIONS  ← always at the top, always the first thing a resume reads
 
-0. **PHASE-2 NOWCAST FLIP (operator decision at the Sat 07-18 day-2 review).**
+0. **PHASE-2 NOWCAST — FLAG IS ON (flipped 2026-07-19 ~13:3xZ, paper).**
+   Day-2 lead grade PASSED (62% led / 61.0 min pooled median / 11.2% false-
+   crossings; day-1 60%/74.8/10.8 — spec §"S232 DAY-2 LEAD VERDICT + FLIP");
+   flip executed on the operator's standing order ("go and review to flip on
+   day 2"): `WEATHER_NOWCAST_ENTRY_ENABLED=true` + `WEATHER_PRIORITY_WAKE_ENABLED=true`
+   in WB-owned `.env.weather` (backup `.env.weather.bak_20260719_preflip`),
+   restart 13:34:40Z, flags verified in-process. Self-limiting to non-dropped
+   debias-table cities; $50/window; model_name `weather_nowcast_peak` accrues
+   calibration from 07-19. Overridden gates disclosed at decision time: 7d
+   debias depth (~3d at flip) + WU key (pending). KILL: both flags false +
+   restart. WATCH: first crossings (US eligible from ~16Z daily), grader rows,
+   window-cap behavior, overshoot exits. (Superseded text below kept for the
+   decision record.)
+   **(pre-flip record)** PHASE-2 NOWCAST FLIP (operator decision at the Sat 07-18 day-2 review).
    S232: mesh-lead gate PASSED day-1 (60% of 93 events mesh-led, pooled median
    lead 74.8 min, false-crossing 10.8% — spec §"S232 MESH-LEAD VERDICT") and the
    operator ordered "go and review to flip on day 2" → Phase-2 is **BUILT and
