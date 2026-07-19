@@ -469,12 +469,19 @@ def run_once():
     finally:
         save_state(state)  # budget spend must survive any crash path
 
-    # symmetric with the empty-footprint warning: a full footprint that sampled
-    # nothing = total measurement outage (endpoint change, systematic fault), NOT ok
-    status = "tick ok" if not (footprint and sampled == 0) else \
-        "WARNING footprint>0 but sampled=0 (measurement outage?)"
+    # a present-but-null period_reward is coalesced to 0 (can't crash) — but a
+    # FEED-WIDE null wave silently zeroes total_scheduled_usd (the headline number)
+    # while the tick looks fine, so make a high null fraction loud too.
+    null_reward = sum(1 for p in progs if p.get("period_reward") is None)
+    null_frac = null_reward / len(progs) if progs else 0.0
+    if footprint and sampled == 0:
+        status = "WARNING footprint>0 but sampled=0 (measurement outage?)"
+    elif null_frac > 0.5:
+        status = f"WARNING {null_reward}/{len(progs)} programs null period_reward (schema drift?)"
+    else:
+        status = "tick ok"
     print(f"{status}: programs={len(progs)} footprint={len(footprint)} sampled={sampled} "
-          f"budget_used={state['budget']['used']}/{DAY_BUDGET}")
+          f"null_reward={null_reward} budget_used={state['budget']['used']}/{DAY_BUDGET}")
     return 0
 
 

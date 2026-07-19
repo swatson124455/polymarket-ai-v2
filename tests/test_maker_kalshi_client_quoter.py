@@ -320,9 +320,19 @@ def test_own_resting_aggregates():
     assert o["KXA-1"]["yes"] == 80 and o["KXA-1"]["no"] == 10
 
 
-def test_levels_drops_malformed():
-    lv = kq._levels([["0.50", "5"], ["abc", "5"], ["0.40", None], [], ["0.30", "0"]])
+def test_levels_drops_malformed_and_counts():
+    lv, malformed = kq._levels([["0.50", "5"], ["abc", "5"], ["0.40", None], [], ["0.30", "0"]])
     assert lv == [(0.50, 5.0)]   # only the one valid, positive-size level survives
+    # 3 PARSE failures counted (abc / None / empty-row); the size-0 row is a legit
+    # empty level, NOT counted as malformed -> systematic parse failure is visible
+    assert malformed == 3
+
+
+def test_desired_quotes_surfaces_dropped_book_rows():
+    stats = {}
+    kq.desired_quotes(M(target=1), [("0.50", "5000"), ["bad"]], [("0.49", "5000")],
+                      kq.utcnow(), stats=stats)
+    assert stats["dropped_book_rows"] == 1   # the malformed yes row was counted, not silent
 
 
 def test_create_order_v2_rejected_status_raises(monkeypatch):

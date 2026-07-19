@@ -136,17 +136,20 @@ def select_footprint(progs, now):
 
 
 def _levels(raw):
-    """Parse [[price_str,size_str]...] to [(price,size)] floats, dropping any
-    malformed/None entry (never let a bad book row raise mid-cycle)."""
-    out = []
+    """Parse [[price_str,size_str]...] to [(price,size)] floats. Returns
+    (levels, n_malformed). Rows that fail to PARSE are counted (n_malformed) —
+    a systematic parse failure (e.g. API shape change) must not be invisible;
+    rows with size<=0 are legit-empty and NOT counted as malformed."""
+    out, malformed = [], 0
     for row in raw or []:
         try:
             p, s = float(row[0]), float(row[1])
         except (TypeError, ValueError, IndexError):
+            malformed += 1
             continue
         if s > 0:
             out.append((p, s))
-    return out
+    return out, malformed
 
 
 def _capped_join(best, other_price):
@@ -157,13 +160,15 @@ def _capped_join(best, other_price):
     return max(1, n)
 
 
-def desired_quotes(m, yes_levels, no_levels, now, own=None):
+def desired_quotes(m, yes_levels, no_levels, now, own=None, stats=None):
     """Desired resting orders for one market. Returns list of
     {side, price_dollars, count, reason} or [] (gated / unquotable).
     own: {'yes':contracts,'no':contracts} of OUR current resting size on each
     side (so activate sizes against EXTERNAL depth and does not chase itself)."""
     own = own or {"yes": 0.0, "no": 0.0}
-    yl, nl = _levels(yes_levels), _levels(no_levels)
+    (yl, bad_y), (nl, bad_n) = _levels(yes_levels), _levels(no_levels)
+    if stats is not None:
+        stats["dropped_book_rows"] = stats.get("dropped_book_rows", 0) + bad_y + bad_n
     best_y = max((p for p, _ in yl), default=None)
     best_n = max((p for p, _ in nl), default=None)
     end = parse_iso(m["end"])
@@ -316,6 +321,9 @@ def run_once():
     created_ok = []
     cancels, creates = [], []
     fetch_failed = 0
+    quote_fail = 0                        # desired_quotes raised (our-logic error, surfaced)
+    first_quote_err = None
+    qstats = {"dropped_book_rows": 0}     # malformed book rows skipped by _levels
     try:
         progs = []
         cursor = ""
@@ -354,9 +362,14 @@ def run_once():
                 continue
             try:
                 q = desired_quotes(m, ob.get("yes_dollars") or [], ob.get("no_dollars") or [],
-                                   now, own=own.get(t))
-            except Exception:
-                q = []                    # one degenerate market must not kill the cycle
+                                   now, own=own.get(t), stats=qstats)
+            except Exception as e:
+                # isolate one degenerate market, but SURFACE it as quote_fail (a
+                # systematic desired_quotes failure must not hide inside gated_out)
+                q = []
+                quote_fail += 1
+                if first_quote_err is None:
+                    first_quote_err = f"{t}: {e!r}"
             if q:
                 desired[t] = q
 
@@ -401,6 +414,8 @@ def run_once():
             "fetch_failed": fetch_failed, "capped_markets": capped_markets,
             "budget_dropped_markets": budget_dropped,
             "cancel_fail": cancel_fail, "create_fail": create_fail,
+            "quote_fail": quote_fail, "first_quote_err": first_quote_err,
+            "dropped_book_rows": qstats["dropped_book_rows"],
             "activate_markets": sum(1 for qs in desired.values()
                                     if qs and qs[0].get("reason") == "activate"),
             "est_capital_usd": round(sum(_mkt_capital(qs) for qs in desired.values()), 2),
@@ -409,12 +424,22 @@ def run_once():
         # bookkeeping ALWAYS runs, even if the cycle body raised
         append_plan(plan)
         save_state(st)
-    print(f"cycle ok mode={plan['mode']} footprint={plan.get('footprint','?')} "
+    # escalate to WARNING on a SYSTEMATIC failure (not per-item noise): most quotes
+    # failing to compute, most creates rejected, or the whole footprint gated out.
+    fp = plan.get("footprint", 0) or 0
+    cr = plan.get("creates", 0) or 0
+    sysfail = (plan.get("quote_fail", 0) > max(3, 0.5 * fp) or
+               (cr and plan.get("create_fail", 0) >= cr) or
+               (fp and plan.get("quoted_markets", 0) == 0 and not plan.get("fetch_failed")))
+    status = "cycle ok" if not sysfail else "WARNING systematic failure"
+    print(f"{status} mode={plan['mode']} footprint={plan.get('footprint','?')} "
           f"quoted={plan.get('quoted_markets','?')} ops={plan.get('order_ops','?')} "
           f"(cancel {plan.get('cancels',0)}/create {plan.get('creates',0)}) "
-          f"fails={plan.get('cancel_fail',0)}c/{plan.get('create_fail',0)}cr "
+          f"fails={plan.get('cancel_fail',0)}c/{plan.get('create_fail',0)}cr/"
+          f"{plan.get('quote_fail',0)}q badrows={plan.get('dropped_book_rows',0)} "
           f"capped={plan.get('capped_markets',0)} write_tokens={plan.get('write_tokens',0)} "
-          f"reads={_reads[0]} est_capital=${plan.get('est_capital_usd',0):,.0f}")
+          f"reads={_reads[0]} est_capital=${plan.get('est_capital_usd',0):,.0f}"
+          + (f" first_err={plan.get('first_quote_err')}" if plan.get("first_quote_err") else ""))
     return 0
 
 
