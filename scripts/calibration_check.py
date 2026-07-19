@@ -172,11 +172,15 @@ async def calibration_check(
                                     OR pl.market_id = m.condition_id)
             WHERE pl.resolution IS NOT NULL
               AND pl.prediction_time > :cutoff
-              -- S232 re-review c11: exclude the experimental nowcast signal
-              -- (constant 0.44, own model_name) from the MAIN-model calibration
-              -- cut — it is graded separately by model_name. The (market_id,
-              -- model_name) dedup key below additionally prevents any second
-              -- model from replacing the main prediction.
+              -- S232 re-review c11: EXCLUDE the experimental nowcast family
+              -- (weather_nowcast_%, constant 0.44) from the MAIN-model cut so
+              -- S222/the VIF re-measure grade the deployed model cleanly. This
+              -- tool has NO per-model view, so nowcast is DROPPED here, not
+              -- "graded separately" — grade it via a direct
+              -- model_name='weather_nowcast_peak' query. LIKE (not '=') is
+              -- deliberate: it also catches the planned weather_nowcast_peakpass
+              -- second signal. Only WeatherBot has nowcast models, so this is a
+              -- no-op for every other bot.
               AND pl.model_name NOT LIKE '%nowcast%'
               {bot_clause}
             ORDER BY pl.prediction_time
@@ -196,7 +200,7 @@ async def calibration_check(
         # Group by bot
         by_bot = defaultdict(list)
         by_category = defaultdict(list)
-        for prob, outcome, bot, category, _market_id, _prediction_time in rows:
+        for prob, outcome, bot, category, _market_id, _prediction_time, _model_name in rows:
             by_bot[bot or "unknown"].append((float(prob), int(outcome)))
             cat = category or "unknown"
             by_category[cat].append((float(prob), int(outcome)))

@@ -10,15 +10,58 @@ integration step (running the script against prod, in-session, per
 Protocol 11).
 """
 from datetime import datetime
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import scripts.calibration_check as cc
 from scripts.calibration_check import (
     _bucket_for_lead_time,
     _build_per_side_lead_time_sql,
     _dedup_latest_per_market,
     _parse_args,
+    calibration_check,
 )
+
+
+class TestCalibrationCheckIntegration:
+    """S232 re-review: the main fetch SELECT and the row-unpacking loop must
+    agree on column count. The c11 fix added pl.model_name (7th column) and a
+    6-target unpack shipped a live ValueError — the helper-only tests missed
+    it. This drives the real calibration_check() with a mocked session."""
+
+    @pytest.mark.asyncio
+    async def test_main_path_consumes_7col_rows_without_crash(self, monkeypatch):
+        d1 = datetime(2026, 7, 15, 12, 0, 0)
+        d2 = datetime(2026, 7, 15, 13, 0, 0)
+        # 7-column rows exactly as the main SELECT returns them
+        rows = [
+            (0.30, 0, "WeatherBot", "weather", "0xA", d1, "weather_temperature"),
+            (0.62, 1, "WeatherBot", "weather", "0xB", d2, "weather_temperature"),
+        ]
+        count_res = MagicMock()
+        count_res.fetchone.return_value = (120, 80, 55)   # distinct_resolved >= 50 gate
+        main_res = MagicMock()
+        main_res.fetchall.return_value = rows
+        side_res = MagicMock()
+        side_res.fetchall.return_value = []               # per-side×lead: empty ok
+
+        sess = MagicMock()
+        sess.execute = AsyncMock(side_effect=[count_res, main_res, side_res])
+
+        class _Ctx:
+            async def __aenter__(self_): return sess
+            async def __aexit__(self_, *a): return False
+
+        fake_db = MagicMock()
+        fake_db.init = AsyncMock()
+        fake_db.close = AsyncMock()
+        fake_db.get_session = MagicMock(return_value=_Ctx())
+        monkeypatch.setattr(cc, "Database", lambda: fake_db)
+
+        # Must NOT raise ValueError: too many values to unpack.
+        await calibration_check(bot_name="WeatherBot", cutoff="2026-07-13T16:02:29Z",
+                                dedup_markets=True)
 
 
 class TestBucketForLeadTime:
