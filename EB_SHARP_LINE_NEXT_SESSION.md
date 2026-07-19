@@ -31,19 +31,17 @@ Short delta — §0-S7's lane (vendor reply → historical readout; 07-20+ →
   20 post-fix Leviatán ticks captured with pm+books, correct cid
   `0x01a0ddbf…`, through 19:00Z pre-start; deployed bytes re-verified ==
   git blob (`3c2c43f1…` both sides).
-- **429 wall is SYSTEMATIC, not sporadic (post-close review, 07-17 —
-  supersedes this section's earlier "coping/no action" read):** every day
-  since 07-11, EXACTLY the 20:00–23:00Z ticks are full-429 losses (4/day,
-  dur≈182s = 3×Retry-After-60 exhausted) — the vendor's DAILY quota runs out
-  at 20:00Z and resets at midnight UTC. Consequence: **zero odds capture
-  20:00Z–00:00Z every day → for any match starting 20:00Z–01:00Z the
-  "closing line" is silently the 19:00Z line and the final-1–2h trigger
-  window is DARK.** The 07-15..19 slate readout MUST disclose this per-match
-  (evening starts get stale closing lines; trigger-time rule not evaluable
-  for them). Fix paths are OPERATOR decisions, in the open vendor thread:
-  paid tier (raises quota), or re-timing/skipping low-value hours to bank
-  daily quota for 20–23Z (changes dataset cadence mid-slate — needs explicit
-  sign-off; do NOT just edit the cron).
+- **⛔ SUPERSEDED by the 07-19 "429 QUOTA — CORRECTED" bullet below (read
+  that, not this).** 429 wall is SYSTEMATIC, not sporadic: every day since
+  07-11 the late-UTC-day ticks are full-429 losses (dur≈182s = retries
+  exhausted). ~~"the vendor's DAILY quota runs out at 20:00Z and resets at
+  midnight UTC. Consequence: zero odds capture 20:00Z–00:00Z every day → for
+  any match starting 20:00Z–01:00Z the closing line is silently the 19:00Z
+  line."~~ **RETRACTED — 20:00Z (and 00:00Z, 01:00Z) DO capture under the new
+  cron; the dark window is 21:00Z–00:00Z, and the quota mechanism is
+  re-characterized below.** The readout-must-disclose intent stands but the
+  window/mechanism are corrected below. Fix paths (OPERATOR): paid tier, or
+  cron re-timing (does NOT recover the evening — see below; needs sign-off).
 - **NAME-GAP CLASS BEYOND DIACRITICS (post-close review #2, 07-17):** ALL SIX
   pm=None rows in the 07-17T02:00Z tick are REAL open PM markets missed on
   naming, and the VPS alias table covers none of them (ground truth — the
@@ -65,23 +63,53 @@ Short delta — §0-S7's lane (vendor reply → historical readout; 07-20+ →
   en route: eb_dump_aliases.sh was never persisted on the VPS (silent
   re-dump no-op caught by md5). **Future name-gaps: add pairs to
   eb_add_aliases.sh (same-team proof required), re-run + re-dump.**
-- **⚠ 429 CRON RE-TIME did NOT fix the wall — CORRECTED 2026-07-19 (triple-blind
-  review, confirmed from production `collect.log`).** Cron re-timed `0 * * * *`
-  → `0 0,1,6-23 * * *` (skip 02–05Z; WB lines untouched; backup
-  `crontab.bak_20260717`). **It bought exactly ONE tick (20:00Z now succeeds);
-  21:00/22:00/23:00Z STILL wall every day** (07-18: 17 ok, 3 wall at 21/22/23Z;
-  07-12..17 old schedule: 20 ok, 4 wall at 20–23Z). My "20/day resetting at
-  00:00 UTC" model is **FALSIFIED** — 20 requests scheduled on 07-18, only 17
-  succeeded, so the effective budget is ~17–20 and does NOT cleanly reset at
-  midnight (likely a rolling window). **Consequence: reshuffling the cron only
-  SHIFTS which hours are dark, it cannot eliminate them at this quota; 21–23Z
-  esports closing lines (prime window, ~20–37 events/tick) are lost daily on
-  the SOLE viable real-Pinnacle path.** Current schedule is still strictly
-  better than hourly (recovers 20Z at ~zero cost — skipped 02–05Z have ≈0
-  starts), so keep it, but it is NOT a fix. **Real fix = paid tier (higher
-  quota) — operator decision.** Do NOT read "wall mitigated" anywhere as
-  true. The readout must still disclose 21–23Z-start matches get ≤20:00Z
-  (stale) closing lines.
+- **⚠ 429 QUOTA — CORRECTED + RE-CHARACTERIZED 2026-07-19 (two triple-blind
+  passes, all numbers independently re-derived from production `collect.log`).
+  THIS bullet is the authoritative 429 statement; supersedes both the 07-17
+  "SYSTEMATIC" bullet above and the earlier "wall mitigated" claim.**
+  - **Cron re-time did NOT fix the wall.** `0 * * * *` → `0 0,1,6-23 * * *`
+    (skip 02–05Z; WB lines untouched; backup `crontab.bak_20260717`) bought
+    exactly ONE evening tick (20:00Z now succeeds); **21/22/23Z STILL wall
+    every day** (07-18: 17 ok, walls 21/22/23; 07-12..17 old: 20 ok, walls
+    20–23). Keep the current schedule (strictly better than hourly — recovers
+    20Z at ≈0 cost, skipped 02–05Z have ≈0 starts) but it is NOT a fix.
+  - **Quota mechanism (corrected — my earlier "rolling window" guess was ALSO
+    wrong):** it IS a per-UTC-day cap that **resets cleanly at 00:00Z**
+    (00:00Z succeeds every single day right after the prior day's late walls —
+    firstOK-hour=00 for 10/10 days). The cap is **~17–21 successful ticks/day
+    and VARIABLE** (21 on 07-11, 20 on 07-12..17, dropped to 17 on 07-18;
+    cause of the drop unknown — likely vendor-side, NOT the cron change, since
+    removing early ticks cannot lower a daily cap). Quota is consumed
+    chronologically, so the wall always lands in the final hours of the UTC
+    day. Reshuffling the cron only SHIFTS which hours are dark; at a ~17–20/day
+    cap it cannot cover all 24h.
+  - **True daily loss (corrected — earlier "~20–37 events/tick" CONFLATED a
+    tick's upcoming-market payload with closing lines actually lost):** the
+    lines lost = matches that START in the dark window, ≈**4–5 closing
+    lines/day**, and they are concentrated in the **Americas / NA-evening**
+    region → a REGIONAL bias in the eventual forward sample, not a large raw
+    count. **Dark window for a match's final-1–2h capture = ~21:00Z–00:00Z
+    starts** (a 00:00Z-start match's last pre-start tick is 20:00Z — 21/22/23Z
+    walled, 00:00 tick fires at start — so ≤20Z ≈4h-stale; 00Z-starts ARE
+    affected, earlier "21–23Z-start" understated it).
+  - **Readout must disclose:** matches starting ~21:00Z–00:59Z get a ≤20:00Z
+    (stale) closing line, trigger-time rule not evaluable, skewed toward
+    Americas. **Real fix = paid tier — operator decision.**
+- **Masking-hunt results 2026-07-19 (the "did the problems hide anything" pass):**
+  (a) **Owls RECORDER verified HEALTHY** (top masking worry) — last 12 ticks
+  ok=8/8, monthly quota 222,693/300,000 left (~26% used; SB session is the
+  dominant consumer at ~12k/day but headroom is comfortable to month-end).
+  The shared-quota-starvation risk is NOT currently materializing; re-check if
+  rem_month trend steepens. (b) **Two LATENT rerun-hazard bugs** (prior review
+  over-refuted these as "didn't fire"): `eb_owls_pm_prices.py` and
+  `eb_owls_odds_pull.py` both build their resume `done` set from EVERY output
+  row incl. null/failed fetches with no success flag → **on rerun, a
+  transiently-failed cid is in `done` and NEVER retried** (silent loss,
+  indistinguishable from a genuine retention-empty). Does NOT affect current
+  data (both runs completed; nulls are genuine retention-empties + 3 real odds
+  fails). Only bites if someone reruns to recover — and the backtest is dead,
+  so unlikely. Fix if ever reused: gate `done` on a success flag (status==200
+  / points>0). Left as-is (LOW, no live impact).
 - **Alias timeline correction (ground truth via DB created_at):** the 6
   curated pairs went live 12:04:52Z 07-17 (NOT ~03Z — the operator box slept
   mid-session and displaced my wall-clock assumption; ticks 03–12Z correctly
