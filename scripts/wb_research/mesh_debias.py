@@ -195,18 +195,27 @@ def main():
         "cities": cities,
     }
     # S232 review Finding 7: a missing/unwritable feed dir must not kill the
-    # dated research copy below — the live-table write fails loudly instead.
+    # dated research copy FIRST so a broken FEED_DIR can't lose the data.
+    dated = os.path.join(MESH_DIR, f"mesh_debias_{now:%Y%m%d}.json")
+    with open(dated, "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=1)
+    # S232 audit F7: the live-table write must FAIL LOUD (non-zero exit) on a
+    # broken/unwritable FEED_DIR — a swallowed error + exit-0 left the bot
+    # reading a silently STALE live table with nothing to alert on. The dated
+    # research copy above is already safe, so failing here loses nothing.
+    _live_ok = False
     try:
         os.makedirs(FEED_DIR, exist_ok=True)
         tmp = OUT_LIVE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(doc, f, separators=(",", ":"))
         os.replace(tmp, OUT_LIVE)         # atomic — bot never sees a partial
+        _live_ok = True
     except OSError as exc:
-        print(f"mesh_debias FEED_DIR write failed ({exc}) — live table NOT written")
-    dated = os.path.join(MESH_DIR, f"mesh_debias_{now:%Y%m%d}.json")
-    with open(dated, "w", encoding="utf-8") as f:
-        json.dump(doc, f, indent=1)
+        print(f"mesh_debias FEED_DIR write FAILED ({exc}) — live table stale; "
+              f"dated copy written to {dated}")
+    if not _live_ok:
+        sys.exit(1)                        # cron/monitoring must see the failure
     # prune FEED-dir mesh day-files >7d (research copies untouched)
     cutoff = (now - timedelta(days=7)).strftime("%Y%m%d")
     for p in glob.glob(os.path.join(FEED_DIR, "pws_mesh_*.jsonl")):
