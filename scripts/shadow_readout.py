@@ -153,7 +153,16 @@ async def fresh_outcomes(tokens: list[str]) -> dict[str, int]:
 
 
 def cohort_readout(records, outcomes, trust_after, traders, cfg) -> dict:
-    recs = az.filter_traders(records, traders)
+    # ROOT guard for the whole silent-pooling CLASS (root-cause audit
+    # 2026-07-19): a per-group readout with an EMPTY member list must mean
+    # ZERO records, never the whole roster. filter_traders treats "" as
+    # "all records" (a legitimate CLI whole-roster feature), so an empty
+    # `traders` here is the shared footgun that the load_cohorts empty-cohort
+    # and intra-group-dup guards each only blocked ONE trigger-path of. This
+    # disarms the MECHANISM at the single chokepoint every group flows through
+    # (the group readout AND the leave-one-out `rest`), so any future path
+    # that yields empty members is safe, not just the two we enumerated.
+    recs = az.filter_traders(records, traders) if traders.strip() else []
     recs, _ = az.repair_records(recs, cfg.max_chase, cfg.max_spread, trust_after)
     return az.analyze(recs, outcomes, cfg.fee, cfg.econ_floor, cfg.p_min,
                       cfg.min_markets)
@@ -375,6 +384,19 @@ def _self_test() -> int:
                           "resolved_mkts": 35}, 30)
     ok9 = "conc=0xwhale" in line and any("CONCENTRATION" in a for a in al)
     print(f"  [conc] disclosed in line AND in every alert : {ok9}"); ok &= ok9
+    # ROOT guard (root-cause audit 2026-07-19): empty members -> ZERO records,
+    # NOT the whole roster, even if a ledger guard were bypassed. Disarms the
+    # shared silent-pooling mechanism at the cohort_readout chokepoint.
+    from types import SimpleNamespace
+    _cfg = SimpleNamespace(max_chase=0.02, max_spread=0.05, fee=0.02,
+                           econ_floor=0.02, p_min=0.95, min_markets=30)
+    _recs = [{"trader": "0xX", "token_id": "t", "verdict": "OK",
+              "first_buy": True, "whale_price": 0.5, "shadow_fill": 0.5,
+              "detect_lag_s": 1.0, "best_ask": 0.5, "detect_ts": TRUST1 + 1}]
+    ok10 = (cohort_readout(_recs, {}, TRUST1, "", _cfg)["first_buys"] == 0
+            and cohort_readout(_recs, {}, TRUST1, "0xX", _cfg)["first_buys"] == 1)
+    print(f"  [root] empty members -> 0 records not whole roster : {ok10}")
+    ok &= ok10
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
