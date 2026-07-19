@@ -1039,3 +1039,64 @@ Acting on the re-cut's highest-value next action. Tier-1 threshold tune:
   pre-tune 0.588. If PIT improves but still rejects, consider VIF→2.0 (last
   step) BEFORE any control retires. No control retires on this window
   regardless (calibrator still mid-relearn until ~08-07).
+
+## S232 SECOND TRIPLE-BLIND — FIX VALIDATION + UNMASKING SWEEP (2026-07-19)
+
+Operator asked: are the 4 re-review fixes (c1/c5/c2/c6) real & correct, did any
+break another item, and did the original bugs HIDE anything? Ran a 6-blind-finder
+→ triage → adversarial-verify → synthesis workflow.
+
+**Fixes validated:** all 4 CONFIRMED real bugs, correctly fixed, NO live-path
+regression (independently: c2 does NOT reach the live confidence calibrator — it
+fits from trade_events with a lead>=48 filter — nor EMOS/SAMOS which never read
+prediction_log; tuple-key eviction is safe; c6 is research-ledger-only). Full
+suite 4007 passed corroborates.
+
+**UNMASKED — 2 pre-existing WB bugs the fixes revealed (both FIXED now):**
+- **c9 (MED, `weather_bot.py`):** `_backfill_weather_outcomes` fed every resolved
+  WeatherBot row — incl. constant-0.44 nowcast rows sharing the crossing market's
+  market_id — into `_update_city_brier` (keyed by CITY, not model_name). That
+  deque drives `_get_city_brier_mult` → a <1.0 dampener on the MAIN model's
+  `combined_boost` in that city. Fix: exclude `model_name LIKE '%nowcast%'`.
+- **c11 (MED, `calibration_check.py`):** the read-side twin of c2 —
+  `_dedup_latest_per_market` keyed by market_id alone, so the later-logged
+  nowcast 0.44 row won the `--dedup-markets` collapse and REPLACED the main
+  model's prediction in the WeatherBot reliability/PIT/Brier (the exact mode
+  the S222 re-cut uses). Fix: dedup by (market_id, model_name) + exclude
+  `%nowcast%` from all three cuts (count/main/side×lead). **The 07-19 S222 re-cut
+  itself was CLEAN — 0 nowcast rows had resolved into that window (verified at
+  run time); the 07-24 VIF re-measure would NOT have been, so this had to land
+  before then.**
+
+**Cross-bot flags (NOT fixed from WB — RULE ONE-A / shared-module):**
+- **c13 (MED, Maker):** pre-c5, executed nowcast entries appended constant-0.44
+  lines to `/opt/pa2-maker-feeds/wb_forecasts.jsonl` mislabeled `weather_temperature`
+  (WEATHER_MAKER_FEED_ENABLED defaults TRUE). c5 stops future pollution but does
+  not purge written lines; the pending Maker forecast-tilt readout could ingest
+  them. Bounded ≤1 line/(station,date). **Maker/operator action:** audit 07-19
+  `wb_forecasts.jsonl` lines with prob≈0.44 & model==weather_temperature and
+  purge before the readout.
+- **c12 (LOW, MB/shared):** `base_engine/features/calibration.py`
+  Focal/FavoriteLongshot `fit_from_prediction_log` + `database.py`
+  `get_recent_brier_from_prediction_log` have no bot_name/model_name filter, so
+  MB's calibrator + the learning-scheduler brier meta-weighting now ingest the
+  weather_nowcast_peak 0.44 rows. INERT for the WB live path. **Flag for the
+  MB/owning session** (a bot_name/model_name filter is feasible).
+
+**Intended-but-now-visible (NO code change):**
+- **c7 (INFO):** the window cap charges the RESERVED amount (spent+remaining =
+  full $50 on the first entry) regardless of the smaller executed size → exactly
+  ONE nowcast entry per (station,date) window, ~45% nominal utilization
+  (fail-safe under-deploy). Documented as intended in the method docstring.
+  Operator may intent-confirm `WEATHER_NOWCAST_MAX_PER_WINDOW_USD=$50` as a
+  one-dampened-shot ceiling.
+- **c8 (LOW):** residual write-blip double-spend — if the raw READ succeeds but
+  the charge WRITE blips transiently and recovers before the next scan, a second
+  crossed bucket can re-enter uncharged. NOT a regression (the old `except: pass`
+  had the identical gap, silently); c1 made it LOUD (`weatherbot_nowcast_cap_charge_failed`)
+  but added no guard. Bounded (~1 extra $50 window, paper, flag-gated); sustained
+  outages fail closed at the read. Accept-as-is is defensible; optional
+  pre-charge/refund mirroring the exposure reserve/revert.
+
+Two REFUTED first-pass candidates (c3 conservative-direction group gate; c4
+producer-guarded row extraction) stayed refuted.
