@@ -153,6 +153,21 @@ def merge_ranges(cached: Optional[dict], new: dict, from_b: int, to_b: int
         raise ValueError(
             f"non-adjacent merge: cache [{cached['from_b']}, {cached['to_b']}]"
             f" vs new [{from_b}, {to_b}] — refusing to mint a coverage hole")
+    if from_b != cached["to_b"] + 1:
+        # after the superset-replace and disjoint-raise branches, the ONLY
+        # remaining safe additive case is a STRICTLY-ADJACENT extension
+        # (from_b == cache.to_b + 1, disjoint leaves). A partial overlap
+        # (cache.from_b < from_b <= cache.to_b) would sum leaf_ok over
+        # SHARED leaves -> double-count -> understated rpc_err_frac (root-cause
+        # audit 2026-07-19: the superset fix only covered the reachable shape;
+        # this closes the general additive-leaf_ok rule). Reachable if an
+        # operator raises --from-block between populate runs; populate_multi
+        # catches this and keeps the addr's prior cache.
+        raise ValueError(
+            f"partial-overlap merge: cache [{cached['from_b']}, "
+            f"{cached['to_b']}] vs new [{from_b}, {to_b}] — only a strictly-"
+            f"adjacent extension or a full superset is safe (no leaf double-"
+            f"count)")
     out = dict(cached)
     for fld in ("v1_fills", "v2_fills"):
         seen = {_fill_key(f) for f in cached[fld]}
@@ -413,6 +428,16 @@ def self_test() -> int:
         try:
             merge_ranges(c3, newer, 500, 600)
             raise AssertionError("disjoint merge did not raise")
+        except ValueError:
+            pass
+        # root-cause audit: a PARTIAL overlap (not superset, not adjacent)
+        # must refuse — else leaf_ok double-counts shared leaves
+        try:
+            merge_ranges({"from_b": 100, "to_b": 300, "leaf_ok": 5,
+                          "sides": {}, "v1_fills": [], "v2_fills": []},
+                         {"v1_fills": [], "v2_fills": [], "leaf_ok": 3},
+                         200, 400)  # 200 in (100,300], to 400 -> partial
+            raise AssertionError("partial-overlap merge did not raise")
         except ValueError:
             pass
 
