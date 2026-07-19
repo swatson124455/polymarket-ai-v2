@@ -978,7 +978,15 @@ class WeatherBot(BaseBot):
         cannot affect prediction logging or trading whether opp is present or not.
         """
         now_mono = time.monotonic()
-        cached = self._prediction_log_cache.get(market_id)
+        # S232 re-review c2: dedup by (market_id, model_name), NOT market_id
+        # alone. The main analyze phase always logs weather_temperature for a
+        # crossing market before the nowcast call; if its prob lands within
+        # 0.01 of the nowcast constant (0.44), a market_id-only key silently
+        # suppressed the weather_nowcast_peak row — non-randomly biasing the
+        # calibration sample the shadow set is built to gather.
+        _model_name = (opp or {}).get("model_override") or f"weather_{market_type}"
+        _cache_key = (market_id, _model_name)
+        cached = self._prediction_log_cache.get(_cache_key)
         if cached and abs(model_prob - cached[0]) < 0.01 and now_mono - cached[1] < 600:
             return
         db = getattr(self.base_engine, "db", None)
@@ -1011,8 +1019,9 @@ class WeatherBot(BaseBot):
                 market_price=market_price,
                 # S232: nowcast entries carry model_override so the graders,
                 # calibration_check, and the confidence calibrator treat the
-                # mesh signal as its own model (spec §PHASE-2 DESIGN).
-                model_name=(opp or {}).get("model_override") or f"weather_{market_type}",
+                # mesh signal as its own model (spec §PHASE-2 DESIGN). Same
+                # value the (market_id, model_name) dedup key uses above.
+                model_name=_model_name,
                 bot_name="WeatherBot",
                 confidence=confidence,
                 # S226 (V23): every caller passes P(YES) (via _yes_frame_prob
@@ -1020,7 +1029,7 @@ class WeatherBot(BaseBot):
                 # this row; unstamped PSW rows are never graded.
                 prob_frame="yes",
             )
-            self._prediction_log_cache[market_id] = (model_prob, now_mono)
+            self._prediction_log_cache[_cache_key] = (model_prob, now_mono)
             # S155: Size cap — evict oldest 50% when cache exceeds 5000 entries
             if len(self._prediction_log_cache) > 5000:
                 _sorted = sorted(self._prediction_log_cache,

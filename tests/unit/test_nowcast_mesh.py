@@ -208,6 +208,26 @@ def _nowcast_env(monkeypatch, tmp_path, enabled=True):
     monkeypatch.setattr(settings, "WEATHER_NOWCAST_MIN_LOCAL_HOUR", 0, raising=False)
 
 
+@pytest.mark.asyncio
+async def test_prediction_log_dedup_keys_by_model_name(weather_bot, mock_engine, monkeypatch):
+    """S232 re-review c2: same market_id, DIFFERENT model_name, probs within
+    0.01 (main weather_temperature 0.445 then nowcast weather_nowcast_peak
+    0.44) must BOTH log; a same-model repeat within 0.01 still dedups."""
+    db = MagicMock()
+    db.insert_prediction_log = AsyncMock()
+    mock_engine.db = db
+    monkeypatch.setattr(settings, "WEATHER_MAKER_FEED_ENABLED", False, raising=False)
+    await weather_bot._log_weather_prediction("m1", 0.445, 0.30, 0.445, "temperature", opp=None)
+    await weather_bot._log_weather_prediction("m1", 0.44, 0.30, 0.44, "temperature",
+                                              opp={"model_override": "weather_nowcast_peak"})
+    assert db.insert_prediction_log.await_count == 2       # nowcast NOT suppressed
+    names = {c.kwargs["model_name"] for c in db.insert_prediction_log.await_args_list}
+    assert names == {"weather_temperature", "weather_nowcast_peak"}
+    await weather_bot._log_weather_prediction("m1", 0.44, 0.30, 0.44, "temperature",
+                                              opp={"model_override": "weather_nowcast_peak"})
+    assert db.insert_prediction_log.await_count == 2       # same-model repeat deduped
+
+
 def test_maker_export_skips_nowcast_rows(weather_bot, monkeypatch, tmp_path):
     """S232 re-review c5: a nowcast opp (model_override set) must NOT be
     appended to the Maker forecast feed — its constant 0.44 is not a genuine
