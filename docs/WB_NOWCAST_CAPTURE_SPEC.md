@@ -1100,3 +1100,41 @@ suite 4007 passed corroborates.
 
 Two REFUTED first-pass candidates (c3 conservative-direction group gate; c4
 producer-guarded row extraction) stayed refuted.
+
+## S232 THIRD PASS — ROOT-CAUSE vs BAND-AID AUDIT (2026-07-19)
+
+Operator: "verify all fixes are root-cause, not band-aids." Ran a 5-blind-classifier
+→ adversarial-adjudicate → synthesis workflow over all 14 session code commits.
+
+**Verdict: 0 genuine band-aids.** Every fix removes a real defect/contaminating data
+at its call site; none masks a symptom or swallows an error. 7 unanimous root-cause;
+the rest partial-justified (scoped by Rule 4 / MB-priority). BUT the audit caught one
+thing the two prior review passes missed:
+
+**BLOCKING REGRESSION (fixed): c11 shipped a live `ValueError`.** The c11 fix added
+`pl.model_name` (7th SELECT column) but the consuming loop at calibration_check.py:199
+unpacked 6 → `ValueError: too many values to unpack` on EVERY non-empty run — it
+crashed the S222 / VIF-re-measure gate readout (offline tool; bot/capital never at
+risk). My c11 tests only hit the helper functions, not the integrated
+`calibration_check()` path — the "prove it after" step was skipped for the tool.
+Before/after PROVEN on the VPS: deployed release raised the ValueError; the fix runs
+clean (main-model N=683, verdict unchanged A1/A3 FAIL). Fixed + end-to-end integration
+test added (drives calibration_check() with mocked 7-col rows). Deployed `20260719_185505`.
+
+**Other audit reworks (all WB-local, done):**
+- **F5b** (weather_bot.py): the nowcast overshoot-exit skip when a later NO entry
+  overwrites the one-slot-per-market `_position_details` (order_gateway.py:69) is now
+  VISIBLE (`weatherbot_nowcast_overshoot_skipped_slot_overwritten`) instead of silent.
+  Fail-SAFE (YES rides to a bounded ≤$50 resolution; never an erroneous sell). The
+  fully-correct fix = per-(market,side) tracking in order_gateway = a shared structural
+  change, FLAGGED not jammed into a bugfix.
+- **F7** (mesh_debias.py): now fails LOUD (`sys.exit(1)`) on a broken feed dir after
+  writing the dated research copy first, instead of a swallowed error + exit-0 that
+  left the bot on a silently stale table.
+
+**Kept deliberately (not band-aids):** the `LIKE '%nowcast%'` filters (c9/c11) — LIKE,
+not `=`, is intentional: it catches the planned `weather_nowcast_peakpass` family and
+is a no-op for non-WeatherBot rows. **Flagged as system-wide latent debt (NOT WB-fixable):**
+`RedisCache.get()` swallows every exception → phantom cache-miss for any correctness-
+critical caller (c1's deeper cause; left under Rule 4). Proposal for the shared/MB owner:
+a variant that distinguishes error from miss. Full suite 4010 green.

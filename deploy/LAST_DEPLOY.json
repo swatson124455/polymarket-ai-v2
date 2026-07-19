@@ -1,10 +1,10 @@
 {
-  "release_stamp": "20260719_150142",
-  "git_sha": "f5ee7b3c9187e3a047f530016f0d67437d49c3aa",
+  "release_stamp": "20260719_185505",
+  "git_sha": "2e80b0a86c3ec5074addc9f6cb76ce12966a0a75",
   "git_branch": "claude/new-whiteboard-session-9b23tq",
   "s223_markers_weather_bot": 10,
   "tree_state_at_record": "DIRTY-at-record-time",
-  "recorded_at": "2026-07-19T19:04:29Z",
+  "recorded_at": "2026-07-19T22:58:02Z",
   "recorded_by": "deploy/wb-record-deploy.sh",
   "note": "Written locally at deploy time. git_sha is what was tarred+shipped. Commit this file so keyless sessions can verify parity via scripts/wb_resume_check.sh."
 }
