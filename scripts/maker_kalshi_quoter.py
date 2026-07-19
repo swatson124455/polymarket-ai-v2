@@ -245,6 +245,13 @@ def append_plan(row):
         f.write(json.dumps(row, separators=(",", ":")) + "\n")
 
 
+def order_id_for(cyc, i, side):
+    """Unique client_order_id per create: cycle-nonce + per-create index + side.
+    Unique within a cycle (index) and across cycles (nonce) — no ticker prefix,
+    so no truncation collision and no cross-cycle reuse of Kalshi's dedup key."""
+    return f"mk-{cyc}-{i}-{side}"
+
+
 def own_resting(standing):
     """{ticker: {'yes':contracts,'no':contracts}} from our standing orders."""
     out = defaultdict(lambda: {"yes": 0.0, "no": 0.0})
@@ -322,9 +329,13 @@ def run_once():
         footprint = select_footprint(progs, now)
         usd_day = {m["ticker"]: m["usd_day"] for m in footprint}
 
-        # standing FIRST so activate can size against external (non-own) depth
+        # standing FIRST so activate can size against external (non-own) depth.
+        # In demo/live the PUBLIC orderbook already includes our resting orders, so
+        # subtract own to get external depth. In dry_run the public book never
+        # contained our (never-placed) simulated orders, so own must be 0 there —
+        # subtracting it would double-count and make activate oscillate every cycle.
         standing = st.get("simulated_standing", {}) if client.mode == "dry_run" else _live_standing(client)
-        own = own_resting(standing)
+        own = {} if client.mode == "dry_run" else own_resting(standing)
 
         desired = {}
         for m in footprint:
@@ -363,7 +374,7 @@ def run_once():
         for i, c in enumerate(creates):
             try:
                 client.create_quote(c["ticker"], c["side"], c["price_dollars"], c["count"],
-                                    post_only=True, client_order_id=f"mk-{cyc}-{i}-{c['side']}")
+                                    post_only=True, client_order_id=order_id_for(cyc, i, c["side"]))
                 created_ok.append((c, f"sim-{cyc}-{i}"))
             except Exception:
                 create_fail += 1
@@ -384,7 +395,9 @@ def run_once():
             "cancels": len(cancels), "creates": len(creates),
             "order_ops": len(cancels) + len(creates),
             "write_tokens": len(creates) * 10 + len(cancels) * 2,
-            "reads": _reads[0], "gated_out": len(footprint) - len(desired) - fetch_failed,
+            # retained fetch-fail markets are already IN desired -> do NOT subtract
+            # them again (that double-counted and could go negative)
+            "reads": _reads[0], "gated_out": len(footprint) - len(desired),
             "fetch_failed": fetch_failed, "capped_markets": capped_markets,
             "budget_dropped_markets": budget_dropped,
             "cancel_fail": cancel_fail, "create_fail": create_fail,

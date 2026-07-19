@@ -95,6 +95,24 @@ def test_create_quote_no_side_maps_to_ask_complement(monkeypatch):
     assert c.intents[1]["body"]["side"] == "bid" and c.intents[1]["body"]["price"] == "0.6100"
 
 
+def test_batch_cancel_isolates_a_failure(monkeypatch):
+    monkeypatch.delenv("KALSHI_TRADING_MODE", raising=False)
+    c = kc.KalshiOrderClient()
+    calls = []
+
+    def flaky(oid):
+        calls.append(oid)
+        if oid == "bad":
+            raise RuntimeError("404 already gone")
+        return {"order_id": oid}
+    monkeypatch.setattr(c, "cancel_order", flaky)
+    r = c.batch_cancel(["a", "bad", "b"])
+    # one bad id does NOT abort the rest — all three attempted
+    assert calls == ["a", "bad", "b"]
+    assert len(r["cancelled"]) == 2 and len(r["failed"]) == 1
+    assert r["failed"][0]["order_id"] == "bad"
+
+
 def test_cancel_uses_v2_events_path(monkeypatch):
     monkeypatch.delenv("KALSHI_TRADING_MODE", raising=False)
     c = kc.KalshiOrderClient()
@@ -240,8 +258,12 @@ def test_diff_orders_full_exit():
 # ---------------- review-fix regressions ----------------
 
 def test_price_lower_bound_gate():
-    # a $0.00 resting bid (best_y=0) must be gated, not placed (maps NO to 1.0)
-    assert kq.desired_quotes(M(), [(0.0, 5)], [(0.49, 5)], kq.utcnow()) == []
+    # sub-min-tick best bid on a NON-void, cheap book: only the MIN_PRICE gate can
+    # reject it (the activate cap is not involved on a join) — so this isolates F17.
+    # target=1 -> non-void -> join branch; best_y=0.005 <= MIN_PRICE_DOLLARS(0.01) -> []
+    assert kq.desired_quotes(M(target=1), [(0.005, 5000)], [(0.49, 5000)], kq.utcnow()) == []
+    # sanity: same book with a valid best price DOES quote (proves it's the price gate)
+    assert kq.desired_quotes(M(target=1), [(0.20, 5000)], [(0.49, 5000)], kq.utcnow()) != []
 
 
 def test_join_capital_capped_per_market(monkeypatch):
@@ -316,8 +338,11 @@ def test_create_order_v2_rejected_status_raises(monkeypatch):
     assert c.create_order_v2("KXT-1", "bid", 1, 0.42)["order"]["order_id"] == "x"
 
 
-def test_unique_client_order_id_would_differ_per_create():
-    # regression intent: the quoter now builds ids as mk-{cyc}-{i}-{side}, unique
-    # per create; assert the pattern has a per-index component (no ticker-prefix collision)
-    ids = [f"mk-{1000}-{i}-{'yes'}" for i in range(3)]
-    assert len(set(ids)) == 3
+def test_order_id_for_unique_within_and_across_cycles():
+    # exercises the ACTUAL generator the quoter uses (order_id_for), not an inline copy
+    within = [kq.order_id_for(1000, i, s) for i in range(3) for s in ("yes", "no")]
+    assert len(set(within)) == 6            # unique per (index, side) within a cycle
+    # different cycle nonce -> different ids even at same index/side (no reuse)
+    assert kq.order_id_for(1000, 0, "yes") != kq.order_id_for(1001, 0, "yes")
+    # no ticker prefix -> two different long tickers can never collide (F3 root cause)
+    assert "mk-1000-0-yes" == kq.order_id_for(1000, 0, "yes")

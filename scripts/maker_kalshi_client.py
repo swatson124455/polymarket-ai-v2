@@ -202,10 +202,14 @@ class KalshiOrderClient:
         a time via the verified V2 single-cancel — safe, never silently 410s.
         (Rate-limit billing is per-item anyway, so no round-trip savings lost that
         matter for correctness.)"""
-        results = []
+        results, failed = [], []
         for oid in order_ids:
-            results.append(self.cancel_order(oid))
-        return {"cancelled": results}
+            try:
+                results.append(self.cancel_order(oid))
+            except Exception as e:
+                # one bad id (e.g. 404 already-gone) must not abort the rest
+                failed.append({"order_id": oid, "error": str(e)})
+        return {"cancelled": results, "failed": failed}
 
     # ---------------- portfolio reads ----------------
 
