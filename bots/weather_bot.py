@@ -4682,11 +4682,18 @@ class WeatherBot(BaseBot):
                         window_key = (f"weatherbot:nowcast_spent:"
                                       f"{st.station_id}:{group.target_date.isoformat()}")
                         try:
-                            _raw = await cache.get(window_key)
+                            # S232 re-review c1: read via the RAW redis handle,
+                            # NOT cache.get() — RedisCache.get() swallows every
+                            # error and returns None (redis_cache.py get()),
+                            # which is indistinguishable from a miss, so the
+                            # cap silently failed OPEN on an outage (spent=0 →
+                            # fresh $50 every scan → N-fold over-spend). The raw
+                            # handle RAISES on an outage → this except fails
+                            # CLOSED. decode_responses=True → value is a str;
+                            # json-encoded scalar parses cleanly via float().
+                            _raw = await cache.redis.get(window_key)
                             spent = float(_raw) if _raw is not None else 0.0
                         except Exception:
-                            # Finding 3: a failed cap read fails CLOSED — skip
-                            # this bucket rather than assume a fresh window.
                             logger.warning("weatherbot_nowcast_cap_read_failed",
                                            market_id=bucket.market_id)
                             continue
@@ -4758,10 +4765,21 @@ class WeatherBot(BaseBot):
                             )
                         if ok:
                             try:
-                                await cache.set(window_key, spent + remaining,
-                                                ttl=172800)
-                            except Exception:
-                                pass
+                                # S232 re-review c1: charge the window via the
+                                # RAW handle (symmetric with the raw read) and
+                                # LOG LOUDLY on failure — the trade already
+                                # fired, so an uncharged window is a real
+                                # over-spend that must be visible, not swallowed.
+                                await cache.redis.set(
+                                    window_key, str(spent + remaining), ex=172800)
+                            except Exception as _exc:
+                                logger.error(
+                                    "weatherbot_nowcast_cap_charge_failed",
+                                    market_id=bucket.market_id,
+                                    window_key=window_key,
+                                    charged=round(spent + remaining, 2),
+                                    error=str(_exc),
+                                )
                             try:
                                 await cache.set(
                                     f"weatherbot:nowcast_pos:{bucket.market_id}",

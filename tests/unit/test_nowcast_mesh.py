@@ -184,13 +184,18 @@ def _feed(tmp_path, dropped=False):
     return local_date
 
 
-def _mk_cache(get_value=None):
-    """Working Redis-cache mock — required since entries now FAIL CLOSED
-    without Redis (S232 review Finding 3)."""
+def _mk_cache(get_value=None, spent_raw=None):
+    """Working Redis-cache mock. The window-cap read/write use the RAW redis
+    handle (S232 re-review c1 — cache.get() swallows errors so it can't fail
+    closed); cache.get/.set (wrapped) still back the nowcast_pos tracking.
+    spent_raw = the raw string cache.redis.get returns for the window key
+    (None = fresh window)."""
     cache = MagicMock()
     cache.redis = MagicMock()
     cache.redis.keys = AsyncMock(return_value=[])
     cache.redis.delete = AsyncMock()
+    cache.redis.get = AsyncMock(return_value=spent_raw)
+    cache.redis.set = AsyncMock()
     cache.get = AsyncMock(return_value=get_value)
     cache.set = AsyncMock()
     return cache
@@ -225,6 +230,39 @@ async def test_nowcast_scan_fails_closed_without_redis(weather_bot, mock_engine,
     weather_bot._execute_weather_trade = AsyncMock(return_value=True)
     await weather_bot._scan_nowcast_entries([([], _mk_group(local_date), {})])
     weather_bot._execute_weather_trade.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_nowcast_cap_read_error_fails_closed(weather_bot, mock_engine, monkeypatch, tmp_path):
+    """S232 re-review c1: a Redis OUTAGE (raw redis.get raises) during the
+    window-cap read must fail CLOSED — no entry — not fall through to a fresh
+    $50 window. Regression guard for the fail-open cache.get() bug."""
+    _nowcast_env(monkeypatch, tmp_path)
+    local_date = _feed(tmp_path)
+    cache = _mk_cache()
+    cache.redis.get = AsyncMock(side_effect=ConnectionError("redis down"))
+    mock_engine.cache = cache
+    weather_bot._forecast_client.get_combined_forecast = AsyncMock(return_value=_forecast(84.4))
+    weather_bot._execute_weather_trade = AsyncMock(return_value=True)
+    await weather_bot._scan_nowcast_entries([([], _mk_group(local_date), {})])
+    weather_bot._execute_weather_trade.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_nowcast_cap_charges_window_via_raw_handle(weather_bot, mock_engine, monkeypatch, tmp_path):
+    """S232 re-review c1: on a successful entry the window is charged via the
+    RAW redis handle (str value), not the swallowing wrapper."""
+    _nowcast_env(monkeypatch, tmp_path)
+    local_date = _feed(tmp_path)
+    cache = _mk_cache()                                    # fresh window (spent_raw=None)
+    mock_engine.cache = cache
+    weather_bot._forecast_client.get_combined_forecast = AsyncMock(return_value=_forecast(84.4))
+    weather_bot._execute_weather_trade = AsyncMock(return_value=True)
+    await weather_bot._scan_nowcast_entries([([], _mk_group(local_date), {})])
+    cache.redis.set.assert_awaited()                      # charged via raw handle
+    key, val = cache.redis.set.await_args.args[0], cache.redis.set.await_args.args[1]
+    assert key.startswith("weatherbot:nowcast_spent:")
+    assert float(val) == 50.0                             # full window reserved
 
 
 @pytest.mark.asyncio
