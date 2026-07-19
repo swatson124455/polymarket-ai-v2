@@ -670,7 +670,14 @@ class Guards:
             if st2.get("ev") != m["ev"]:
                 continue
             y2, n2 = st2.get("y", 0.0), st2.get("n", 0.0)
-            if not (y2 or n2 or st2.get("spent")):
+            # base inclusion on CONTINGENT token holdings, not spent: a
+            # SETTLED sibling has y=n=0 with a realized spent!=0, and pulling
+            # that realized P&L in as still-contingent event cost loosens the
+            # floor for a winner / over-tightens for a loser (cold-eyes review
+            # finding 2). Settled realized belongs to portfolio_net + the day
+            # floor, never the forward event cap — same treatment the sector
+            # cap already gives departed markets (:617).
+            if st2.get("settled") or not (y2 or n2):
                 continue
             poss.append(y2 - n2)
             sum_n += n2
@@ -1108,16 +1115,30 @@ def resolution_sweep(state, base, now):
         except Exception:
             continue
         pre_spent = st.get("spent", 0.0)
+        # the settlement's effect on TODAY's day_pnl is the JUMP from the
+        # frozen mark to the outcome, NOT the whole-position lifetime
+        # realized. A prior-day loser already marked at 0 that settles at 0
+        # moved today's pnl by ZERO, but val-pre_spent would record a fake
+        # -$X "settlement" component in the kill reason and tell the operator
+        # "this isn't live bleed" when it is (cold-eyes review finding 1).
+        lm = st.get("last_mid")
+        pre_mark = (st.get("y", 0.0) * lm + st.get("n", 0.0) * (1.0 - lm)) \
+            if lm is not None else 0.0
         val = try_settle(st, prices, uma_resolved=(uma == "resolved"))
         if val is None:
             continue
         settled += 1
         meta["settle_realized_day"] = round(
-            meta.get("settle_realized_day", 0.0) + (val - pre_spent), 4)
+            meta.get("settle_realized_day", 0.0) + (val - pre_mark), 4)
         ledger_write(base, "settlements",
                      {"t": round(now), "mkt": k, "payout": round(val, 4),
-                      "realized": round(val - pre_spent, 4),
+                      "realized": round(val - pre_spent, 4),      # lifetime
+                      "day_jump": round(val - pre_mark, 4),       # today only
                       "uma": uma[:20]})
+        # persist per-settle: a crash between two settles in one sweep would
+        # otherwise leave the settled flag unpersisted while its ledger row
+        # is on disk -> re-settle -> duplicate ledger row (review finding 3)
+        _save_state(base, os.path.join(base, "state.json"), state)
     meta["res_pending"] = len(cands) - settled
     if settled:
         print(f"resolution sweep: settled {settled}/{len(batch)} looked-up "
@@ -1830,6 +1851,15 @@ def run(base, cfg):
                             if k != "meta" and isinstance(s2, dict))
                 nzomb = sum(len(s2.get("zombies") or []) for k, s2 in state.items()
                             if k != "meta" and isinstance(s2, dict))
+                # LIVE departed-unsettled count — meta["res_pending"] is only
+                # a sweep-time snapshot and lags the true set when a market
+                # departs between sweeps (health audit: 13 real vs 12 scalar).
+                # The sweep always recomputes fresh so nothing is missed, but
+                # the DISPLAY must not under-count committed capital.
+                respend = sum(1 for k, s2 in state.items()
+                              if k != "meta" and isinstance(s2, dict)
+                              and s2.get("departed") and not s2.get("settled")
+                              and (s2.get("y") or s2.get("n") or s2.get("spent")))
                 with BOOKS_LOCK:
                     stale = sum(1 for b in BOOKS.values() if now - b["ts"] > 300)
                     nobook = sum(1 for m2 in universe
@@ -1844,7 +1874,7 @@ def run(base, cfg):
                       f"feedfail={meta.get('feed_fail_n', 0)} "
                       f"anom={meta.get('feed_anomaly_n', 0)}"
                       f"/{meta.get('unmatched_fills_n', 0)} "
-                      f"respend={meta.get('res_pending', 0)} "
+                      f"respend={respend} "
                       f"deny={dict(dtop)} books={len(BOOKS)} stale={stale} "
                       f"nobook={nobook} http_hr={len(_http_window)}/{HTTP_BUDGET_PER_HOUR}",
                       flush=True)

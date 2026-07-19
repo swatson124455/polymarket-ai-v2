@@ -99,6 +99,35 @@ distinguish stale-loss kills from live bleed before resuming; (c) settled
 entries accumulate in state (pruning deferred — needs a realized-aggregate
 fold to keep `portfolio_net` and the day anchor consistent).
 
+## 6c. Independent verification (workflow, 4 agents, 2026-07-19) + residual watch items
+
+Gate-lab cross-check: the v5 lab paired ledger (independent of the canon
+script) AGREES with canon on every load-bearing rank — P3_tapevel/P4_all top
+tier, P0_base beaten by both, P5_ungated worst. Policy switch stays HELD
+(window 2.6d < 3.0, and Jul 19 is the cliff day — the 3-clean-day clock
+should restart AFTER the cliff). ⚠ Presentation trap for whoever locks it:
+the v5 report's headline "active markets" table ranks P5 (ungated) #1 because
+P5's damage sits in departed/frozen-mark markets excluded from that table —
+**rank only on total (active+departed) NET or canon EV/day, never the
+active-only column.** P3-vs-P4 tie-break deferred to decision-time on capital
+efficiency.
+
+Cold-eyes code audit fixed this session (settlement path): kill-reason
+`settle_realized` now reports the day-jump not lifetime realized (was masking
+live bleed from the resume decision); settled siblings excluded from the event
+floor; per-settle state persist (ledger-dup on mid-sweep crash); heartbeat
+`respend` is now a live count (was a stale sweep-snapshot, off-by-one).
+
+WATCH ITEMS (documented, not code-changed — changing risks re-introducing the
+respend-stuck bug just fixed): decisive settlement (prices within 1e-3 of 0/1)
+can proceed when gamma's `umaResolutionStatus` is absent — verified populated
+on the path form for real resolutions, but a closed-pre-final row with
+decisive-looking prices and an empty UMA field would settle irreversibly.
+Rewards accrual is MODEL, never yet reconciled to an on-chain receipt — the
+funded preflight's receipts stage is the first real check. Paper→live fill
+fidelity (queue position, adverse selection at quoted levels) is unmeasured
+until the pilot.
+
 ## 7. Rollback
 
 `sudo touch /opt/pa2-maker-live/STOP` (cancels all, exits clean) or

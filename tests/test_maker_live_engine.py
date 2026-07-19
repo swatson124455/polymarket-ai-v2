@@ -814,6 +814,47 @@ def test_resolution_sweep_gating_and_settle(tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
+def test_settle_realized_day_uses_jump_not_lifetime(tmp_path, monkeypatch):
+    """Cold-eyes finding 1: settle_realized_day must record the mark->outcome
+    JUMP (today's day_pnl effect), not the whole-position lifetime realized —
+    else the kill reason overstates settlement and masks live bleed."""
+    # prior-day loser: marked at 0.10 (frozen), spent $80, settles NO-wins
+    state = {"meta": {},
+             "10": {"departed": True, "y": 100.0, "n": 0.0, "spent": 80.0,
+                    "last_mid": 0.10}}
+    monkeypatch.setattr(mle, "get", lambda url, timeout=10:
+                        {"id": "10", "closed": True, "outcomePrices": '["0", "1"]',
+                         "umaResolutionStatus": "resolved"})
+    mle.resolution_sweep(state, str(tmp_path), 1e9)
+    st = state["10"]
+    assert st["settled"] is True
+    assert st["y"] == 0.0
+    # frozen mark was 100*0.10 = 10; outcome pays 0 -> today's jump = 0-10 = -10
+    assert state["meta"]["settle_realized_day"] == pytest.approx(-10.0)
+    # ledger carries BOTH: lifetime realized (-80) and today's jump (-10)
+    rows = [json.loads(l) for l in
+            open(next(tmp_path.glob("settlements-*.jsonl"))).read().splitlines()]
+    assert rows[-1]["realized"] == pytest.approx(-80.0)
+    assert rows[-1]["day_jump"] == pytest.approx(-10.0)
+
+
+def test_event_floor_ignores_settled_sibling(tmp_path):
+    """Cold-eyes finding 2: a SETTLED sibling's realized spent must not enter
+    the forward event floor (would loosen it for a winner)."""
+    g, m, state, uni = fresh_guard_ctx(ev="0xevent", neg_risk=True)
+    g.cfg = cfg_over(event_cap=40.0)
+    uni = {"0xevent": [m]}
+    order = intent(px=0.485, sz=100.0)          # $48.5 risk > $40 cap
+    ok0, why0 = g.check_place(order, m, state[str(m["id"])], state, uni, time.time())
+    assert not ok0 and why0 == "event_cap"      # blocked with no sibling
+    # add a settled big-winner sibling: if wrongly counted it slashes cost and
+    # would flip the verdict to allow
+    state["8888"] = {"sector": "politics", "ev": "0xevent", "departed": True,
+                     "settled": True, "y": 0.0, "n": 0.0, "spent": -1000.0}
+    ok1, why1 = g.check_place(order, m, state[str(m["id"])], state, uni, time.time())
+    assert not ok1 and why1 == "event_cap"      # STILL blocked — settled ignored
+
+
 def test_resolution_sweep_unresolved_retries_later(tmp_path, monkeypatch):
     now = 1e9
     state = {"meta": {}, "10": {"departed": True, "y": 50.0, "spent": 20.0}}
