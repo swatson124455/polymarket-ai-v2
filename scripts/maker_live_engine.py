@@ -1122,8 +1122,12 @@ def resolution_sweep(state, base, now):
         # -$X "settlement" component in the kill reason and tell the operator
         # "this isn't live bleed" when it is (cold-eyes review finding 1).
         lm = st.get("last_mid")
+        # the no-mark fallback MUST mirror portfolio_net (:1159) and report()
+        # which mark a lm-None position at 0.5*(y+n) — using 0.0 here made the
+        # kill-reason day_jump over-attribute 0.5*(y+n) to settlement, the very
+        # misleading-annotation class this jump fix targets (fix-review Q3 LOW)
         pre_mark = (st.get("y", 0.0) * lm + st.get("n", 0.0) * (1.0 - lm)) \
-            if lm is not None else 0.0
+            if lm is not None else 0.5 * (st.get("y", 0.0) + st.get("n", 0.0))
         val = try_settle(st, prices, uma_resolved=(uma == "resolved"))
         if val is None:
             continue
@@ -1213,16 +1217,36 @@ def run(base, cfg):
         state = {}
         if any_state_file:
             # files existed but NONE loaded — do not silently boot empty on a
-            # recoverable-looking failure; in live mode refuse (empty boot
-            # disables the floor + caps against real capital)
-            print("STATE UNRECOVERABLE: state.json/.bak/.tmp all present but "
-                  "unreadable — EMPTY ledgers (era note!)", flush=True)
+            # recoverable-looking failure (empty boot disables floor + caps).
             if cfg["mode"] == "live":
-                print("live mode: REFUSING to start on unrecoverable state "
-                      "(would blind the day-loss floor + caps). Restore a good "
-                      "state file or clear all three for a deliberate fresh "
-                      "start.", flush=True)
-                return 2
+                # cancel-ALL first: prior-run GTC orders may be resting and the
+                # refusal must be FLAT, not just down (fix-review Q2: return 2
+                # skipped the startup cancel_all). return 0 = clean stop so
+                # Restart=on-failure leaves the unit DOWN for the operator
+                # rather than 30s-flapping. Files are LEFT IN PLACE so the
+                # refusal stays sticky across a manual restart (renaming them
+                # aside would make the next boot see no files -> silent empty
+                # LIVE boot — the exact bug being refused).
+                ok = execc.cancel_all()
+                print(f"STATE UNRECOVERABLE (live): cancel_all="
+                      f"{'OK' if ok else 'FAILED'}; REFUSING to start (empty "
+                      f"boot would blind the day-loss floor + caps). Files left "
+                      f"in place — restore a good state file or clear all for a "
+                      f"deliberate fresh start.", flush=True)
+                return 0
+            # paper: data collection continues on empty ledgers, but LOUD, and
+            # preserve the unreadable files so the fresh empty-state save cannot
+            # clobber a hand-recoverable ledger (fix-review Q4 WATCH)
+            for suffix in ("", ".bak", ".tmp"):
+                p = state_path + suffix
+                if os.path.exists(p):
+                    try:
+                        os.replace(p, p + ".unreadable")
+                    except OSError:
+                        pass
+            print("STATE UNRECOVERABLE (paper): all present but unreadable — "
+                  "preserved as *.unreadable; EMPTY ledgers (era note!)",
+                  flush=True)
         else:
             print("no state file (fresh start) — EMPTY ledgers", flush=True)
     elif recovered_from != state_path:

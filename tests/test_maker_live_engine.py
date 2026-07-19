@@ -926,6 +926,22 @@ def test_settle_realized_day_uses_jump_not_lifetime(tmp_path, monkeypatch):
     assert rows[-1]["day_jump"] == pytest.approx(-10.0)
 
 
+def test_settle_realized_day_no_mark_branch(tmp_path, monkeypatch):
+    """Fix-review Q3 LOW: when last_mid is None the settlement jump must use
+    the codebase's 0.5*(y+n) mark (what portfolio_net/report use), not 0.0 —
+    else the kill annotation over-attributes 0.5*(y+n) to settlement."""
+    state = {"meta": {},
+             "10": {"departed": True, "y": 100.0, "n": 0.0, "spent": 80.0}}
+    # no last_mid at all -> portfolio_net marks this at 0.5*100 = 50
+    assert mle.portfolio_net({"10": state["10"]}) == pytest.approx(50.0 - 80.0)
+    monkeypatch.setattr(mle, "get", lambda url, timeout=10:
+                        {"id": "10", "closed": True, "outcomePrices": '["0", "1"]',
+                         "umaResolutionStatus": "resolved"})
+    mle.resolution_sweep(state, str(tmp_path), 1e9)
+    # NO wins -> val = 0; jump = val - pre_mark = 0 - 0.5*(100) = -50
+    assert state["meta"]["settle_realized_day"] == pytest.approx(-50.0)
+
+
 def test_event_floor_ignores_settled_sibling(tmp_path):
     """Cold-eyes finding 2: a SETTLED sibling's realized spent must not enter
     the forward event floor (would loosen it for a winner)."""
