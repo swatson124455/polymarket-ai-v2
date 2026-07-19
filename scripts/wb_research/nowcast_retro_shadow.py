@@ -22,9 +22,9 @@ Per replay day D:
      consensus bins chronologically; on the FIRST bin where the ROUNDED
      debiased running-max enters a bucket AND local hour >= 12 AND
      E_rem <= 1.0F-equivalent (E from the latest stored forecast issued
-     before the crossing; det-high proxied by the ensemble median — the
-     closest stored equivalent of the live deterministic_high), record ONE
-     shadow prediction (prob 0.44) for that bucket.
+     before the crossing; det-high = the STORED deterministic_high the live
+     rule uses, median only as a NULL fallback), record ONE shadow prediction
+     (prob 0.44) for that bucket.
   3. Grade vs resolution; report per day + pooled (win rate, Brier), with
      per-city counts and unit class.
 
@@ -184,9 +184,14 @@ def main():
         fams[(city, mon, day)].append(dict(lo=lo, hi=hi, typ=typ,
                                            won=r["resolution"] == "YES"))
     # forecasts
+    # S232 re-review c6: pull the STORED deterministic_high — the live rule's
+    # E_rem uses forecast.deterministic_high exactly, so proxying it with the
+    # ensemble median made the retro's crossing set diverge from what the
+    # deployed rule would have fired. Median only as a fallback for rows where
+    # deterministic_high is NULL (non-NBM stations).
     fc = json.loads(psql("""SELECT json_agg(row_to_json(t)) FROM (
       SELECT station_id sid, target_date::date::text td, forecast_time ft,
-             ensemble_members mem FROM weather_forecasts
+             ensemble_members mem, deterministic_high dh FROM weather_forecasts
       WHERE target_date::date >= '2026-07-16' AND ensemble_members IS NOT NULL) t""") or "[]")
     fmap = defaultdict(list)
     for f in fc or []:
@@ -194,7 +199,9 @@ def main():
             ft = datetime.fromisoformat(f["ft"])
             if ft.tzinfo is None:
                 ft = ft.replace(tzinfo=timezone.utc)
-            fmap[(f["sid"], f["td"])].append((ft, median(f["mem"])))
+            _dh = f.get("dh")
+            det_high = float(_dh) if _dh is not None else median(f["mem"])
+            fmap[(f["sid"], f["td"])].append((ft, det_high))
     for k in fmap:
         fmap[k].sort()
 
@@ -279,8 +286,8 @@ def main():
         brier = mean((MODEL_PROB - (1.0 if p["won"] else 0.0)) ** 2 for p in pooled)
         print(f"\nPOOLED RETRO: n={len(pooled)} wins={wins} "
               f"({wins/len(pooled):.0%} vs model 0.44) Brier={brier:.3f}")
-        print("CAVEATS: retro-flagged set (research ledger only); det-high proxied by")
-        print("ensemble median; 07-17 table = 07-16 US-only trailing data; no price")
+        print("CAVEATS: retro-flagged set (research ledger only); det-high = stored")
+        print("deterministic_high (median fallback); 07-17 table = 07-16 US-only; no price")
         print("gate (grades the SIGNAL, matching the live shadow set's semantics).")
 
 

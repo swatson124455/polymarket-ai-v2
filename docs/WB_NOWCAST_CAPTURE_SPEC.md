@@ -931,19 +931,24 @@ guard). det-high proxied by the stored ensemble MEDIAN (closest recorded
 equivalent of the live deterministic_high); no price gate (grades the SIGNAL,
 same semantics as the live shadow set).
 
-**RESULT: n=6, 3 wins = 50% (vs model 0.44), Brier 0.254.**
-- 07-17: 5 preds (KLGA 3, KSEA 2), 2 wins — as-of table was 07-16 US-only, 2 clean cities
-- 07-18: 1 pred (KDAL), 1 win — 10 clean cities but few resolved in them
+**RESULT (CORRECTED, re-review c6): n=2, 1 win = 50% (vs model 0.44), Brier 0.254.**
+- 07-17: 1 pred (KLGA), 0 wins — as-of table was 07-16 US-only, 2 clean cities
+- 07-18: 1 pred (KDAL), 1 win
 - 07-19: 0 (capped at the 13:50Z shadow deploy; US barely into eligible hours)
 
+⚠ **The FIRST run reported n=6 (3 wins) — that was WRONG.** It proxied the live
+rule's `forecast.deterministic_high` with the ensemble MEDIAN; the stored
+deterministic_high (NBM, higher for US 'F' stations) is what the deployed rule
+uses. Using it (c6 fix, `SELECT deterministic_high`) raises E_rem above the 1.0F
+frozen-peak bar for 4 of the 5 07-17 candidates → they correctly drop out.
+Corrected recovered count = **2**, not 6.
+
 **Honest note on the recovery estimate:** I told the operator ~20-35 recoverable;
-actual is 6. The estimate anchored on the signal's raw fire rate (~8/day) and
-ignored the clean-city ∩ resolved-market intersection — the SAME error that
-inflated the live-throughput estimate. Recovery is bounded by how few cities had
-BOTH a trailing debias window AND a resolved market on those specific days. 6
-points is a supplement, not a scorecard; direction (50% vs 0.44) is consistent
-with the signal being real but the n is far too small to weigh. The live shadow
-set (deployed `20260719_095037`) is now the real accumulation path.
+actual is **2** (my n=6 was itself inflated by the median-proxy bug). The estimate
+anchored on the signal's raw fire rate (~8/day) and ignored the clean-city ∩
+resolved-market intersection. 2 points is a footnote, not a scorecard. The live
+shadow set (deployed `20260719_095037`, further fixed by re-review c2 so nowcast
+rows near 0.44 are no longer deduped away) is the real accumulation path.
 
 ## S222 GATE-RETIREMENT RE-CUT (2026-07-19, N=627) — RETIRE NOTHING
 
