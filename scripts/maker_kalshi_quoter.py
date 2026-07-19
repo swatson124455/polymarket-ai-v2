@@ -304,7 +304,7 @@ def report():
     total_tokens = sum(r.get("write_tokens", r.get("order_ops", 0) * 10) for r in rows)
     print(f"\nwrite-token/day pace: {total_tokens / span_days:,.0f}  "
           f"(create=10/cancel=2 tok; Basic write = 100 tok/s = 8.64M tok/day — "
-          f"peak per-cycle burst must stay <100 tok/s, our 0.12s spacing caps it ~83)")
+          f"peak per-cycle burst must stay <100 tok/s, our 0.16s spacing caps it ~63)")
     return 0
 
 

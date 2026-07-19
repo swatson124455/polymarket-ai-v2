@@ -35,7 +35,11 @@ PROD_BASE = "https://external-api.kalshi.com"
 DEMO_BASE = "https://external-api.demo.kalshi.co"
 API_ROOT = "/trade-api/v2"
 
-WRITE_SPACING_S = 0.12        # floor between writes (~8/s < Basic 10/s)
+# 0.16s => 6.25 writes/s; all-creates peak = 62.5 tok/s (create=10 tok), a ~37%
+# margin under the Basic write ceiling of 100 tok/s (no burst credit). Widened
+# from 0.12 (~83 tok/s, only ~17% margin) for cold-start safety; latency is a
+# non-issue on minute-scale reward sampling.
+WRITE_SPACING_S = 0.16        # floor between writes
 HTTP_TIMEOUT_S = 15
 LIVE_ARM_PHRASE = "operator-approved-live-pilot"
 

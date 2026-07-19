@@ -184,9 +184,9 @@ CANON = {
         "note": "Basic is AMPLE for the pilot: measured quoter churn ~22 creates + "
                 "~24 cancels/cycle = ~268 write tokens/cycle (10-min cadence); the "
                 "constraint is the PER-SECOND burst, not daily — Basic write = 100 "
-                "tok/s with no burst credit, so our 0.12s request spacing (~83 tok/s "
-                "peak on all-creates) is the real guard. Cold-start 110 creates paces "
-                "over ~13s, under 100 tok/s. Demo session verifies real 429 behavior.",
+                "tok/s with no burst credit, so our 0.16s request spacing (~63 tok/s "
+                "peak on all-creates, ~37% margin) is the real guard. Cold-start 110 "
+                "creates paces over ~18s. Demo session verifies real 429 behavior.",
     },
     "auth_scheme": {
         "value": "RSA-PSS/SHA-256 over message '{ts_ms}{METHOD}{path}' where path "
