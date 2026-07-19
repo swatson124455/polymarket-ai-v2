@@ -187,6 +187,27 @@
 >    workflow reviews this session (readout cohort<N>, then this triple-blind)
 >    each caught a real defect the single-pass reviews missed — the money-gate
 >    surface warrants the multi-lens adversarial pass.
+> 14. **ROOT-CAUSE AUDIT of all fixes (07-19; classify + adversarial challenge
+>    per fix): most fixes root-cause+clean; 3 real residuals fixed at ROOT
+>    (`2856fe8`):**
+>    - **[the important one] the empty-cohort raise + intra-group-dup raise
+>      were TWO reactive per-path guards on the SAME footgun** — cohort_readout
+>      passing empty members into filter_traders (where ""=all records) → whole
+>      roster pooled+mislabeled. Added the CLASS fix: cohort_readout treats
+>      empty members as ZERO records at the single chokepoint every group +
+>      every LOO flows through. Kept the two fail-loud guards (ledger-integrity
+>      value). Any future empty-member path is now safe, not just the two we
+>      enumerated. Defense-in-depth self-test added.
+>    - fill_cache merge_ranges: superset-replace only covered the reachable
+>      shape; a PARTIAL overlap still summed leaf_ok → now refuses anything but
+>      strict-adjacent-or-superset (general double-count closed).
+>    - forward test: `cluster_bootstrap_p` was copy-pasted → now calls the
+>      canonical `az.cluster_bootstrap_p` (a duplicated verdict statistic can
+>      drift). Removed the copy + unused `random` import.
+>    - SKIPPED (documented, not a band-aid): element-wise dict validation in
+>      chain_fill_cache.load() — a contrived corruption the write path never
+>      produces, degrades gracefully (one trader INSUFFICIENT, self-heals), not
+>      worth an O(n) scan on every load. All self-tests + 65 pytest green.
 
 > **2026-07-14 PM UPDATE (local steward session; VPS-direct SSH, operator-
 > approved per-command) — CHAIN DEEP-DIVE GATE BUILT, REVIEWED, VALIDATED,
