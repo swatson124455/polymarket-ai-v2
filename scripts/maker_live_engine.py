@@ -50,6 +50,7 @@ Usage:  maker_live_engine.py --run    [--base /opt/pa2-maker-live]
         maker_live_engine.py --report [--base ...]
 """
 import argparse
+import atexit
 import gzip
 import json
 import os
@@ -659,6 +660,22 @@ class Guards:
             poss.append(y2 - n2)
             sum_n += n2
             cost += st2.get("spent", 0.0)
+        # departed same-event siblings still carry REAL one-winner exposure
+        # (2nd-pass NEW-4: enumerating only the live universe let the floor
+        # forget rotated-out inventory and re-load the surviving siblings)
+        sib_ids = {str(sm["id"]) for sm in sibs}
+        for k2, st2 in state.items():
+            if k2 == "meta" or not isinstance(st2, dict) or k2 in sib_ids:
+                continue
+            if st2.get("ev") != m["ev"]:
+                continue
+            y2, n2 = st2.get("y", 0.0), st2.get("n", 0.0)
+            if not (y2 or n2 or st2.get("spent")):
+                continue
+            poss.append(y2 - n2)
+            sum_n += n2
+            cost += st2.get("spent", 0.0)
+            covered += 1
         # nout: winnable outcomes. Binary standalone market = 2 (YES/NO);
         # negRisk event = at least one sibling beyond what we see (universe
         # under-counts siblings) -> covered+1 forces the conservative
@@ -852,8 +869,10 @@ class ExecCore:
         return False
 
     def fetch_my_trades(self):
-        """Live fill feed (authenticated). Defensive parse; the preflight
-        tiny-fill lifecycle is the shape verification gate."""
+        """Live fill feed (authenticated). Returns None on FAILURE — the
+        caller must distinguish a dead feed from an empty one: a silently
+        broken feed blinds inventory, caps, and the loss floor while
+        quoting continues (2nd-pass M1, the worst masking hole found)."""
         if not self.live:
             return []
         try:
@@ -861,7 +880,7 @@ class ExecCore:
             return self.client.get_trades(
                 TradeParams(maker_address=self.address)) or []
         except Exception:
-            return []
+            return None
 
     def earnings_for_day(self, date_iso):
         if not self.live:
@@ -987,6 +1006,8 @@ def kill_sequence(execc, state, base, reason):
       halt_unpersisted=True -> loop does a clean STOP (cannot guarantee
                                the halt survives, so don't keep running)"""
     ok = execc.cancel_all()
+    if ok:
+        _clear_zombies(state)
     for k in list(state):
         if k != "meta" and isinstance(state.get(k), dict):
             state[k]["ob"] = state[k]["oa"] = None
@@ -1032,10 +1053,32 @@ def _sigterm(_sig, _frm):
     _SIG["stop"] = True
 
 
+_LEDGER_MISS = {"n": 0}
+
+
 def ledger_write(base, name, row):
-    day = time.strftime("%Y%m%d", time.gmtime())
-    with open(os.path.join(base, f"{name}-{day}.jsonl"), "a") as f:
-        f.write(json.dumps(row) + "\n")
+    """Best-effort: a full disk must NEVER crash the engine mid-kill (2nd-
+    pass NEW-2: an ENOSPC raise out of kill_sequence resurrected the
+    unpersisted-halt hole). Misses are counted and heartbeat-surfaced."""
+    try:
+        day = time.strftime("%Y%m%d", time.gmtime())
+        with open(os.path.join(base, f"{name}-{day}.jsonl"), "a") as f:
+            f.write(json.dumps(row) + "\n")
+    except OSError:
+        _LEDGER_MISS["n"] += 1
+
+
+def _clear_zombies(state):
+    """After ANY successful cancel_all no order survives server-side —
+    every zombie list is moot. Leaving them set kept markets barred and
+    let the minute retry escalate into a collateral universe-wide
+    cancel_all (2nd-pass NEW-3)."""
+    for k, s2 in state.items():
+        if k != "meta" and isinstance(s2, dict) and s2.get("zombies"):
+            s2["zombies"] = []
+    m = state.get("meta")
+    if isinstance(m, dict):
+        m["zombie_fail_n"] = 0
 
 
 def run(base, cfg):
@@ -1061,6 +1104,20 @@ def run(base, cfg):
     meta = state.setdefault("meta", {})
     now0 = time.time()
     meta["era"] = now0
+    # crash-path cleanup (2nd-pass NEW-2): on ANY unhandled exception the
+    # process must still cancel live orders and persist state (incl. a
+    # halted flag set moments earlier) before exiting. atexit runs on
+    # unhandled-exception shutdown; SIGTERM/SIGINT have their own path.
+    def _final_cleanup():
+        try:
+            execc.cancel_all(attempts=1)
+        except Exception:
+            pass
+        try:
+            _save_state(base, os.path.join(base, "state.json"), state)
+        except Exception:
+            pass
+    atexit.register(_final_cleanup)
     # ── startup normalization (v5 discipline, review findings 9 + 14) ──
     # Quotes do NOT survive the process: standing paper quotes would become
     # zombies that accrue rewards but can never fill (qh is not persisted);
@@ -1091,6 +1148,8 @@ def run(base, cfg):
         # restart discipline: unknown standing orders are cancelled before
         # the first quote goes out
         ok = execc.cancel_all()
+        if ok:
+            _clear_zombies(state)   # nothing survives a cancel_all
         print(f"live start: cancel_all {'OK' if ok else 'FAILED (halting)'}",
               flush=True)
         if not ok:
@@ -1132,6 +1191,8 @@ def run(base, cfg):
         meta["day"] = day_key
         meta["day_anchor"] = portfolio_net(state)
         meta["acc_day"] = 0.0
+        meta["day_pnl"] = 0.0    # stale yesterday's pnl would wrongly deny
+                                 # placement for the first minute (NEW-6)
         if execc.live and yday_boot:
             # cross-midnight restart: don't lose yesterday's model-vs-
             # receipt comparison (review finding 22)
@@ -1195,6 +1256,7 @@ def run(base, cfg):
             meta["halt_cancel_last"] = now
             if execc.cancel_all(attempts=1):
                 meta["halt_cancel_ok"] = True
+                _clear_zombies(state)
                 print("halted: retried cancel_all — LANDED", flush=True)
         # operator resume: HALT file removed while halted flag set. Only a
         # file-backed halt is resumable (the file existing at some point is
@@ -1273,7 +1335,12 @@ def run(base, cfg):
                     nthreads += 1
                 print(f"universe: {len(universe)} markets, {len(assets)} assets, "
                       f"{nthreads} ws conns (gen {gen})", flush=True)
-                execc.prewarm_meta(universe)   # off the fast path (finding 13)
+                # prewarm in a BACKGROUND thread: serial on the engine
+                # thread stalled the fast loop for minutes at TTL rollover
+                # while live quotes rested unattended (2nd-pass NEW-5);
+                # _tickcache writes are GIL-atomic dict assignments
+                threading.Thread(target=execc.prewarm_meta,
+                                 args=(list(universe),), daemon=True).start()
                 # hourly rotation set (anti-landmark; default frac 0 = off)
                 meta["rot_until"] = 0
             last_discovery = now
@@ -1294,6 +1361,8 @@ def run(base, cfg):
             st["sector"] = m["sector"]
             st["msz"] = m["msz"]
             st["tok_y"], st["tok_n"] = m["yes"], m["no"]   # persistent map
+            st["ev"] = m["ev"]        # persisted: event floor must see
+                                      # departed siblings (2nd-pass NEW-4)
             st["departed"] = False
             bb, ba, bts = cached_touch(m["yes"])
             _, _, nts = cached_touch(m["no"])
@@ -1412,6 +1481,8 @@ def run(base, cfg):
             if any(r.get("ambiguous") for r in results):
                 guards.denials["ambiguous_response"] += 1
                 ok = execc.cancel_all()
+                if ok:
+                    _clear_zombies(state)
                 for k2 in list(state):
                     if k2 != "meta" and isinstance(state.get(k2), dict):
                         st2 = state[k2]
@@ -1487,6 +1558,18 @@ def run(base, cfg):
             # fills
             if execc.live:
                 _apply_live_trades(execc, state, universe, base, meta)
+                # fill-feed integrity kills (2nd-pass M1/M2): a blind or
+                # drifted feed means caps and the loss floor are fiction
+                if not meta.get("halted"):
+                    if meta.get("feed_fail_n", 0) >= 10:
+                        kill_sequence(execc, state, base,
+                                      "trade feed dead %d consecutive minutes"
+                                      % meta["feed_fail_n"])
+                    elif meta.get("unmatched_fills_n", 0) >= 5:
+                        kill_sequence(execc, state, base,
+                                      "%d unmatched own-address fills — "
+                                      "feed schema drift?"
+                                      % meta["unmatched_fills_n"])
             else:
                 from concurrent.futures import ThreadPoolExecutor
                 tape_cache = {}
@@ -1594,12 +1677,11 @@ def run(base, cfg):
                     meta["zombie_fail_n"] = meta.get("zombie_fail_n", 0) + 1
                     if meta["zombie_fail_n"] >= 5:
                         if execc.cancel_all():
+                            _clear_zombies(state)
                             for k2, s2 in state.items():
                                 if k2 != "meta" and isinstance(s2, dict):
-                                    s2["zombies"] = []
                                     s2["ob"] = s2["oa"] = None
                                     s2["want_raw"] = None
-                            meta["zombie_fail_n"] = 0
                             print("zombie escalation: cancel_all landed "
                                   "(all standing quotes voided)", flush=True)
                         else:
@@ -1634,6 +1716,10 @@ def run(base, cfg):
                       f"floor=-${cfg['day_loss_floor']:.0f} "
                       f"accday=${meta.get('acc_day', 0.0):.2f} "
                       f"halted={meta.get('halted', False)} zombies={nzomb} "
+                      f"lmiss={_LEDGER_MISS['n']} "
+                      f"feedfail={meta.get('feed_fail_n', 0)} "
+                      f"anom={meta.get('feed_anomaly_n', 0)}"
+                      f"/{meta.get('unmatched_fills_n', 0)} "
                       f"deny={dict(dtop)} books={len(BOOKS)} stale={stale} "
                       f"nobook={nobook} http_hr={len(_http_window)}/{HTTP_BUDGET_PER_HOUR}",
                       flush=True)
@@ -1684,6 +1770,12 @@ def _apply_live_trades(execc, state, universe, base, meta):
     rotated-out markets still reach the ledgers and caps."""
     addr = str(getattr(execc, "address", "") or "").lower()
     trades = execc.fetch_my_trades()
+    if trades is None:
+        # dead feed: count consecutively; blind quoting is the exact state
+        # the kill exists to prevent (2nd-pass M1)
+        meta["feed_fail_n"] = meta.get("feed_fail_n", 0) + 1
+        return
+    meta["feed_fail_n"] = 0
     wm = float(meta.get("trade_wm") or 0.0)
     recent = dict(meta.get("trade_recent") or {})
     tok2mkt = {}
@@ -1702,11 +1794,28 @@ def _apply_live_trades(execc, state, universe, base, meta):
             continue
         tid = str(tr.get("id") or tr.get("trade_id") or "")
         ts = _trade_ts(tr)
-        if ts and ts < wm - TRADE_LAP_S:
-            continue                        # decisively pre-watermark
-        if not tid or tid in recent:
+        if not tid:
+            # id-less record: loud, never applied (2nd-pass NEW-7 — the
+            # silent drop contradicted the everything-loud contract)
+            meta["feed_anomaly_n"] = meta.get("feed_anomaly_n", 0) + 1
+            ledger_write(base, "fills", {"t": round(time.time()),
+                                         "no_id": str(tr)[:250]})
             continue
-        recent[tid] = ts or time.time()
+        if tid in recent:
+            continue
+        if ts <= 0.0:
+            # ts-unparseable: QUARANTINE, never apply. Applying with a
+            # wall-clock recent-stamp let the id time-evict and the same
+            # historical record re-apply every LAP forever (2nd-pass
+            # NEW-1). Pin the id far-future so it never evicts.
+            recent[tid] = 4e12
+            meta["feed_anomaly_n"] = meta.get("feed_anomaly_n", 0) + 1
+            ledger_write(base, "fills", {"t": round(time.time()), "tid": tid,
+                                         "no_timestamp": str(tr)[:250]})
+            continue
+        if ts < wm - TRADE_LAP_S:
+            continue                        # decisively pre-watermark
+        recent[tid] = ts
         max_ts = max(max_ts, ts)
         legs = []                           # (asset, side, px, sz, role)
         for mo in tr.get("maker_orders") or []:
@@ -1725,6 +1834,7 @@ def _apply_live_trades(execc, state, universe, base, meta):
                              str(tr.get("side") or "").upper(), tr.get("price"),
                              tr.get("size"), "taker"))
         if not legs:
+            meta["feed_anomaly_n"] = meta.get("feed_anomaly_n", 0) + 1
             ledger_write(base, "fills", {"t": round(time.time()), "tid": tid,
                                          "no_our_leg": str(tr)[:250]})
             continue
@@ -1732,6 +1842,10 @@ def _apply_live_trades(execc, state, universe, base, meta):
             try:
                 px, sz = float(px_raw), float(sz_raw)
             except (TypeError, ValueError):
+                # OUR-address leg we cannot apply = possible schema drift:
+                # inventory silently stops tracking real money (2nd-pass
+                # M2) — counted, heartbeat-surfaced, kill-thresholded
+                meta["unmatched_fills_n"] = meta.get("unmatched_fills_n", 0) + 1
                 ledger_write(base, "fills", {"t": round(time.time()),
                                              "tid": tid, "unparsed":
                                              str((px_raw, sz_raw))[:120]})
@@ -1739,6 +1853,7 @@ def _apply_live_trades(execc, state, universe, base, meta):
             hit = tok2mkt.get(asset)
             if hit is None or side != "BUY" or not (0 < px < 1) or sz <= 0:
                 # the engine only ever BUYs — anything else is loud
+                meta["unmatched_fills_n"] = meta.get("unmatched_fills_n", 0) + 1
                 ledger_write(base, "fills",
                              {"t": round(time.time()), "tid": tid, "unmatched":
                               str((asset[:20], side, px_raw, sz_raw, role))[:200]})

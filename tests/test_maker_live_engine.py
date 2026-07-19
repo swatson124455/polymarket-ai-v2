@@ -617,6 +617,107 @@ def test_guard_departed_quarantined_from_sector_cap():
     assert ok, why       # departed spend no longer strangles the sector
 
 
+def test_apply_live_trades_ts_unparseable_quarantined_forever(tmp_path):
+    """2nd-pass NEW-1: a ts-less record must NEVER be applied, and its id
+    must survive eviction so the recurring feed can't re-apply it."""
+    m = mk()
+    now = time.time()
+    junk = {"id": "junk1", "maker_orders": [mo("Y", "0.48", "100")],
+            "taker_address": "0xT"}          # no timestamp anywhere
+    state = {"meta": {"trade_wm": now, "trade_recent": {}}}
+    mle._apply_live_trades(FakeFeed([junk]), state, [m], str(tmp_path),
+                           state["meta"])
+    assert "1234" not in state or not state.get("1234", {}).get("y")
+    assert state["meta"]["feed_anomaly_n"] == 1
+    assert state["meta"]["trade_recent"]["junk1"] == 4e12   # pinned
+    # advance the watermark far past the lap; pin must survive eviction
+    fresh = taker_trade("t9", now + 2 * mle.TRADE_LAP_S,
+                        [mo("Y", "0.48", "10")])
+    mle._apply_live_trades(FakeFeed([junk, fresh]), state, [m], str(tmp_path),
+                           state["meta"])
+    assert "junk1" in state["meta"]["trade_recent"]
+    assert state["1234"]["y"] == 10.0        # only the real fill applied
+    mle._apply_live_trades(FakeFeed([junk, fresh]), state, [m], str(tmp_path),
+                           state["meta"])
+    assert state["1234"]["y"] == 10.0        # junk still never applied
+
+
+def test_apply_live_trades_dead_feed_counts(tmp_path):
+    """2nd-pass M1: feed failure (None) must count consecutively and reset
+    on success — never masquerade as 'no fills'."""
+    class DeadFeed:
+        live = True
+        address = OUR
+        def fetch_my_trades(self):
+            return None
+    state = {"meta": {"trade_wm": 0, "trade_recent": {}}}
+    for i in range(3):
+        mle._apply_live_trades(DeadFeed(), state, [], str(tmp_path),
+                               state["meta"])
+    assert state["meta"]["feed_fail_n"] == 3
+    mle._apply_live_trades(FakeFeed([]), state, [], str(tmp_path),
+                           state["meta"])
+    assert state["meta"]["feed_fail_n"] == 0
+
+
+def test_apply_live_trades_unmatched_and_no_id_counted(tmp_path):
+    m = mk()
+    now = time.time()
+    trades = [
+        taker_trade("u1", now, [mo("UNKNOWN", "0.4", "10")]),   # unmatched
+        {"maker_orders": [mo("Y", "0.4", "10")], "match_time": now},  # no id
+    ]
+    state = {"meta": {"trade_wm": now - 10, "trade_recent": {}}}
+    mle._apply_live_trades(FakeFeed(trades), state, [m], str(tmp_path),
+                           state["meta"])
+    assert state["meta"]["unmatched_fills_n"] == 1      # M2 counter
+    assert state["meta"]["feed_anomaly_n"] == 1         # NEW-7 no-id loud
+    assert not state.get("1234", {}).get("y")
+
+
+def test_clear_zombies_helper():
+    state = {"meta": {"zombie_fail_n": 4},
+             "1": {"zombies": ["a", "b"]}, "2": {"zombies": []},
+             "3": {"y": 1.0}}
+    mle._clear_zombies(state)
+    assert state["1"]["zombies"] == []
+    assert state["meta"]["zombie_fail_n"] == 0
+    assert state["3"] == {"y": 1.0}
+
+
+def test_kill_sequence_clears_zombies_on_success(tmp_path):
+    """2nd-pass NEW-3: a successful cancel_all leaves no order standing —
+    zombie lists must not survive it and re-bar markets."""
+    class FakeExec:
+        def cancel_all(self, attempts=3):
+            return True
+    state = {"meta": {}, "1": {"zombies": ["x"], "ob": {"oid": "x"},
+                               "oa": None, "qh": []}}
+    mle.kill_sequence(FakeExec(), state, str(tmp_path), "t")
+    assert state["1"]["zombies"] == []
+
+
+def test_ledger_write_survives_bad_dir():
+    """2nd-pass NEW-2: ENOSPC/OSError in ledger_write must never raise."""
+    before = mle._LEDGER_MISS["n"]
+    mle.ledger_write("Z:/no/such/dir/nowhere", "orders", {"a": 1})
+    assert mle._LEDGER_MISS["n"] == before + 1
+
+
+def test_event_floor_sees_departed_siblings():
+    """2nd-pass NEW-4: rotated-out siblings holding inventory stay in the
+    one-winner floor."""
+    g, m, state, uni = fresh_guard_ctx(ev="0xevent", neg_risk=True)
+    g.cfg = cfg_over(event_cap=100.0)
+    # departed sibling NOT in uni_by_ev, but persisted in state with ev
+    state["7777"] = {"sector": "politics", "ev": "0xevent", "departed": True,
+                     "y": 100.0, "n": 0.0, "spent": 60.0}
+    uni = {"0xevent": [m]}
+    ok, why = g.check_place(intent(px=0.485, sz=100.0), m, state[str(m["id"])],
+                            state, uni, time.time())
+    assert not ok and why == "event_cap"    # 60 + 48.5 > 100 with 0-branch
+
+
 def test_guard_pair_sibling_gross_cap():
     """Review finding 11: the two legs individually pass the gross cap but
     the PAIR must not."""

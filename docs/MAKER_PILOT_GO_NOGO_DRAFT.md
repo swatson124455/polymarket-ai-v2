@@ -86,6 +86,17 @@ Do NOT scale before (a) the post-cliff pool re-measure (Jul 20+) and
 - Settlement success rate (#338 metric, expect ~0%).
 - 2 weeks receipt-verified → scale decision package (separate, new canon run).
 
+## 6b. Known accepted risk — NEEDS OPERATOR CONFIRMATION
+
+**The automated day-loss floor is blind to departed markets' real losses**
+(2nd-pass review M3): a market that rotates out of the rewarded universe
+keeps a FROZEN mark; if it later resolves worthless, that loss never moves
+`day_pnl` and cannot trip the floor. The `--report` output discloses the
+departed bucket as UNSETTLED. The real fix is resolution backfill
+(gamma outcome join) — queued as a pilot iteration. Until then the floor
+protects only against live-market drawdown. Confirm this is acceptable for
+a $1–2.5K pilot or prioritize the backfill before funding.
+
 ## 7. Rollback
 
 `sudo touch /opt/pa2-maker-live/STOP` (cancels all, exits clean) or
