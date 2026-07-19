@@ -137,6 +137,31 @@
 >    existing JSON exactly. Only then does the deepen wave run with
 >    `--fill-cache-dir` (expected ~10-25x cheaper sweeps). Failure of
 >    either → deepen wave runs FLAG-OFF (old path), no function lost.
+> 11. **COHORT-3 PROMOTION PREREQUISITE BUILT (operator "go" 07-19; `cdf01fb`):**
+>    `shadow_readout.load_cohorts` generalized from hardcoded cohort1/cohort2/
+>    probe to read any `cohort<N>` key (own epoch, never pooled) — needed
+>    because the daily readout couldn't represent a 3rd cohort. Differential-
+>    IDENTICAL on the live 16+8+1probe roster (offline AND a VPS dry-run in
+>    the real venv). Adversarial workflow (4 lenses × verify) caught a REAL
+>    HIGH defect I introduced — an empty `cohort<N>` addresses list slipped
+>    every guard → `filter_traders("")` pools the WHOLE roster mislabeled →
+>    could fire a false POWERED go/no-go alert (the 2026-07-15 finding-A
+>    silent-pooling class). FIXED at root (empty admitted cohort now raises,
+>    matching HEAD's `if not c2`); self-test PASS incl the new case; a
+>    simulated real promotion (16+8+6, probe emptied) loads clean. Cron
+>    auto-adopts at 12:30Z (branch-pinned refresh THEN roster read = new code
+>    + new roster always consistent). **BATCH-BOUNDARY PROMOTION (armed):**
+>    at run-4 exit, the run-4 ADMITs (6 so far: 0xf705fa graduates from probe
+>    + 0x7c3db7/0xe542af/0x216509/0x2ee04b/0xa6a856; +any more before t28)
+>    become cohort3 via ONE fenced mirror3_shadow_deploy.sh restart —
+>    procedure in steward scratchpad `cohort3_promotion_procedure.md`
+>    (chain_audit.json: clean 25→30, add cohort3 key w/ own epoch, empty the
+>    probe key; invariant clean==union checked offline before deploy).
+> 12. **READOUT (07-19 14:56Z VPS dry-run, fresh labels):** cohort1(16)
+>    28/30 resolved edge +0.0440 P(>0)=0.720 conc 0x448861…37%; cohort2(8)
+>    14/30 edge +0.0432 P(>0)=0.648 conc 0xbaa2bc…35%; probe 0 resolved.
+>    Both UNDERPOWERED, both drifting mildly POSITIVE as markets resolve
+>    (cohort1 +0.031→+0.044 within the day). No verdict; no alert.
 
 > **2026-07-14 PM UPDATE (local steward session; VPS-direct SSH, operator-
 > approved per-command) — CHAIN DEEP-DIVE GATE BUILT, REVIEWED, VALIDATED,
