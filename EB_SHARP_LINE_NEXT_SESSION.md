@@ -65,15 +65,23 @@ Short delta — §0-S7's lane (vendor reply → historical readout; 07-20+ →
   en route: eb_dump_aliases.sh was never persisted on the VPS (silent
   re-dump no-op caught by md5). **Future name-gaps: add pairs to
   eb_add_aliases.sh (same-team proof required), re-run + re-dump.**
-- **429 QUOTA WALL MITIGATED 2026-07-17 (operator "and 2"):** collector cron
-  re-timed `0 * * * *` → `0 0,1,6-23 * * *` (skip 02–05Z; 20 ticks/day ==
-  observed daily budget; hours chosen from the start-hour histogram — 03/04Z
-  have ZERO recorded starts, 01–06Z ≤4 each, vs 52 matches starting in the
-  previously-dark 20Z–01Z block). WB cron lines untouched; full backup at
-  `/home/ubuntu/eb-odds/crontab.bak_20260717`. **Transitional day 07-17:**
-  ticks 00–05Z had already run, so tonight may still wall at 22/23Z; clean
-  from 07-18. VERIFY next session: 20–23Z ticks appended>0 on 07-18+.
-  Vendor paid tier remains the real fix (open thread).
+- **⚠ 429 CRON RE-TIME did NOT fix the wall — CORRECTED 2026-07-19 (triple-blind
+  review, confirmed from production `collect.log`).** Cron re-timed `0 * * * *`
+  → `0 0,1,6-23 * * *` (skip 02–05Z; WB lines untouched; backup
+  `crontab.bak_20260717`). **It bought exactly ONE tick (20:00Z now succeeds);
+  21:00/22:00/23:00Z STILL wall every day** (07-18: 17 ok, 3 wall at 21/22/23Z;
+  07-12..17 old schedule: 20 ok, 4 wall at 20–23Z). My "20/day resetting at
+  00:00 UTC" model is **FALSIFIED** — 20 requests scheduled on 07-18, only 17
+  succeeded, so the effective budget is ~17–20 and does NOT cleanly reset at
+  midnight (likely a rolling window). **Consequence: reshuffling the cron only
+  SHIFTS which hours are dark, it cannot eliminate them at this quota; 21–23Z
+  esports closing lines (prime window, ~20–37 events/tick) are lost daily on
+  the SOLE viable real-Pinnacle path.** Current schedule is still strictly
+  better than hourly (recovers 20Z at ~zero cost — skipped 02–05Z have ≈0
+  starts), so keep it, but it is NOT a fix. **Real fix = paid tier (higher
+  quota) — operator decision.** Do NOT read "wall mitigated" anywhere as
+  true. The readout must still disclose 21–23Z-start matches get ≤20:00Z
+  (stale) closing lines.
 - **Alias timeline correction (ground truth via DB created_at):** the 6
   curated pairs went live 12:04:52Z 07-17 (NOT ~03Z — the operator box slept
   mid-session and displaced my wall-clock assumption; ticks 03–12Z correctly
@@ -166,25 +174,18 @@ Short delta — §0-S7's lane (vendor reply → historical readout; 07-20+ →
   ONLY viable readout path; the Owls historical shortcut is closed — do not
   re-attempt.** Owls sub value now = forward backup live feed only; operator
   may reconsider the $49.99/mo.
-- ~~**CORRECTION 2026-07-17 ~18:30Z — "45× the go-bar" WAS OVERSTATED; real
-  usable n ≈ 415 markets.**~~ (superseded by the FINAL VERDICT above — the
-  415 PM-priced markets ALSO fail on floored odds; true usable = 0) The 4,639 PM-market overlap is real for market
-  IDENTITY, but the backtest also needs PM INTRADAY price 1–2h pre-start, and
-  **CLOB `/prices-history` retains hourly (fidelity=60) only ~30 days**: of
-  4,231 matched markets, only **484 (all ≥2026-06-16) return hourly history**;
-  everything Feb–early-June returns empty at fidelity=60 (a clean date cliff,
-  independently reconfirmed — NOT a throttle/bug: fidelity=1440 yields ~3
-  DAILY points for old markets, too sparse to locate a pre-start touch).
-  Of the 484, **415 have ≥12 hourly points** (pre-start-locatable). So the
-  Owls Feb-2026 odds archive (4,636 events pulled, good) is **STRANDED** for
-  hourly-resolution backtesting — the binding constraint is PM-price
-  retention, not odds coverage. **Honest usable dataset = ~415 CS2 markets,
-  2026-06-16→07-17, 1xbet-benchmark; at ~1/3 firing ≈ ~140 candidate bets —
-  just above the n≥100 go-bar, CS2-only, soft-book benchmark → a MODEST,
-  heavily-caveated directional cross-check, NOT the hundreds-of-Pinnacle-grade
-  shortcut hoped.** Forward PinnOdds (real Pinnacle sharp line) REMAINS the
-  primary go/no-go path. Lesson: verify the SCARCEST leg's coverage
-  (PM-price retention) BEFORE sizing a multi-source join.
+- **~~STALE INTERMEDIATE (07-17 ~18:30Z): "45× overstated → ~415 usable /
+  ~140 bets, a modest cross-check is buildable."~~ FULLY RETRACTED — see the
+  FINAL VERDICT above (line ~150): true usable = 0.** The ~415 markets have PM
+  price but their odds are floored integers (Apr–Jul), so 0 of them are
+  usable. Do NOT act on any "~415 / ~140-bet / above-the-go-bar / buildable"
+  phrasing — the historical backtest is DEAD; forward PinnOdds is the only
+  path. Retained only for the two durable data facts: (a) CLOB
+  `/prices-history` retains hourly only ~30 days (usable PM price ≥2026-06-16;
+  fidelity=1440 gives ~3 daily pts, too sparse); (b) the Feb-2026 precise-odds
+  archive is stranded because it predates the PM-price window. Lesson: verify
+  the SCARCEST + LOWEST-QUALITY leg (odds PRECISION, not just coverage) BEFORE
+  sizing a multi-source join.
 - **BACKTEST DATA LEGS (post-sign-off, launched 2026-07-17 ~16:35Z):**
   (1) gamma META for all matched cids fetched locally → `owls_pm_meta.json`
   (VPS + scratch): 4,231 unique markets (the 4,639 rows dedup by cid —
