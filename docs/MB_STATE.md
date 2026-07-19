@@ -120,6 +120,23 @@
 >    roster file, detached launch, --max-receipts 30000. (c) THEN
 >    `0x70d94a` solo deepen at --max-receipts 120000 (~4h receipts).
 >    Sequence strictly serial (one batch at a time on the shared RPC).
+> 10. **SPEEDUPS 1+2 BUILT (operator-approved 07-19; option 3/paid endpoint
+>    REJECTED): `scripts/chain_fill_cache.py` (`b67fe20`)** — persistent
+>    per-address chain-fill cache (+receipt-side memory, key tx|token_id)
+>    + populate_multi ONE-sweep-for-N-addresses; wired into chain_deep_dive
+>    behind `--fill-cache-dir` (default OFF = byte-identical old path,
+>    differentially proven by adversarial review). 5 review findings fixed
+>    (silent coverage hole on non-adjacent merge; reorg margin on the write
+>    path; cache-file collision with API caches; gap error-frac denominator;
+>    malformed-blob fallback). 65 tests green.
+>    **EMPIRICAL PROOF GATE (pre-registered, MUST pass before any batch uses
+>    the flag):** at run-4 exit, on the idle RPC: (i) bounded A/B — multi
+>    sweep vs per-addr sweeps over the same block range for 2-3 addrs →
+>    fill sets must be IDENTICAL; (ii) full re-dive of one completed trader
+>    via populate+cache → verdict AND tier-1/2 counts must match its
+>    existing JSON exactly. Only then does the deepen wave run with
+>    `--fill-cache-dir` (expected ~10-25x cheaper sweeps). Failure of
+>    either → deepen wave runs FLAG-OFF (old path), no function lost.
 
 > **2026-07-14 PM UPDATE (local steward session; VPS-direct SSH, operator-
 > approved per-command) — CHAIN DEEP-DIVE GATE BUILT, REVIEWED, VALIDATED,
