@@ -886,3 +886,35 @@ day-2 flip overrides those two gates: operator's call, to be presented
 explicitly at the Sat review. React leg (S228 env flips) activates WITH the
 flag, same moment, per the design. PEAK-PASSED second signal NOT built this
 session (same infra, separate build after the crossing leg proves out).
+
+## S232 DAY-2 LEAD VERDICT + FLIP (2026-07-19 ~13:4xZ) — **FLAG IS ON (paper)**
+
+**Day-2 (`--lead 20260717`, graded after IEM backfill ~Sun 13:2xZ): PASS —
+gates hold twice.** 9 gradeable cities, 89 events, **62% mesh-led** (≥50% ✓),
+**pooled median lead 61.0 min** (≥15 ✓), false-crossings 10 = **11.2%** of
+truth events (15.4% worst-case denominator) (<20% ✓). Day-over-day: 60%/74.8/
+10.8% → 62%/61.0/11.2% — consistent. First correct-station lead reads: KDAL
+7/13 led (19.0 min), KHOU 5/7 (82.2 min). KSFO again the false-crossing
+hotspot (5 of 10). Max city share 15% (concentration OK). 07-18 lead grade
+still backfill-gated (~07-20).
+
+**Sat-review data-plane findings (fixed `448c05c`):** (a) `iem_prints` day2
+bound is EXCLUSIVE — the current day was silently dropped from every debias
+window and RCSS could never enter the table; (b) pws_mesh null-temp obs never
+counted as misses — Seoul/RKSI logged 600+ temp_f=None rows without rotating.
+**RCSS first correct-station read: −8.13F median (sd 1.53) — REFUTES the
+audit's "mesh right near Songshan" reinterpretation; the Taipei roster itself
+is broken and the drop rule correctly excludes it.** RKSI rotates when its
+local window reopens; KMA signup remains the best single upgrade.
+
+**FLIP executed 2026-07-19 ~13:3xZ on the operator's standing order ("go and
+review to flip on day 2") after the day-2 PASS:** `WEATHER_NOWCAST_ENTRY_ENABLED=true`
++ `WEATHER_PRIORITY_WAKE_ENABLED=true` (react leg, per design) appended to
+WB-owned `/opt/pa2-shared/.env.weather` (backup `.env.weather.bak_20260719_preflip`);
+service restarted 13:34:40Z; both flags verified in the process env; scans
+normal; nowcast hooks armed (silent until a crossing — correct). PAPER mode;
+self-limiting to the non-dropped debias-table cities (13 at flip time);
+$50/(station,date) caps. **Overridden gates, disclosed at decision time:**
+≥7d debias depth (table was ~3 days) and the WU key/Synoptic token (still
+pending). Kill: both flags false + restart. First calibration data accrues
+under model_name `weather_nowcast_peak`.
