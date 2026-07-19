@@ -2,10 +2,89 @@
 
 **Branch:** `claude/esports-sharp-line-rebuild-gqy1na` (session 4; supersedes
 `…-36c8u9-7m96gg` — same history + the PM-index coverage fix below)
-**Updated:** 2026-07-15 (session 7 CLOSE — start at §0-S8 delta, then §0-S7;
-§0-S7's PICK UP block still carries the full prompt/guardrails)
-**Read order:** this file (§0-S8 → §0-S7 → §0-S6f..§0-S6) → `EB_SHARP_LINE_STATE.md` →
-`EB_SHARP_LINE_PLUMBING.md` → `EB_MARKET_SHAPE_RESULTS.md` → `CLAUDE.md`.
+**Updated:** 2026-07-19 (session 7+8 CLOSE — start at §0-S9 PICK-UP, then the
+§0-S8 blocks for detail)
+**Read order:** this file (§0-S9 → §0-S8 → §0-S7 → §0-S6f..§0-S6) →
+`EB_SHARP_LINE_STATE.md` → `EB_SHARP_LINE_PLUMBING.md` →
+`EB_MARKET_SHAPE_RESULTS.md` → `CLAUDE.md`.
+
+---
+
+## 0-S9. SESSION-7+8 CLOSE (2026-07-19) — PICK-UP PROMPT + CLEAN-START STATE
+
+**Copy-paste this into the new session:**
+
+> **EsportsBot sharp-line rebuild — new session, picking up clean. Branch:
+> `git checkout claude/esports-sharp-line-rebuild-gqy1na && git pull`. Read
+> `EB_SHARP_LINE_NEXT_SESSION.md` §0-S9 (this block) then §0-S8, then
+> `CLAUDE.md` + memory `MEMORY.md`. BEFORE ANY repo write run
+> `git branch --show-current` — the local checkout is SHARED with an SB
+> (sports-bot) session on branch `claude/sports-bot-owls-backdata`; if the
+> tree is on their branch, commit via a linked git worktree, never checkout
+> over them.**
+>
+> **SESSION TYPE:** if LOCAL on the operator's Windows box, SSH key
+> `C:/Users/samwa/.ssh/LightsailDefaultKey-eu-west-1.pem` → `ubuntu@18.201.216.0`
+> works directly (read-only VPS checks + scp fine). NEVER run the PinnOdds
+> collector manually (quota). VPS ops scripts: commit to `deploy/vps/`, push,
+> scp the git-BLOB copy (`git show HEAD:<f>`), md5-verify — never the CRLF
+> working copy.
+>
+> **STATE — everything below is DONE + LIVE, do not redo:**
+> - Pipeline live e2e (PinnOdds+PM hourly collector → closing line →
+>   PandaScore results → backtest). **EB stays HALTED** (crons ≠ bot deploys).
+> - Diacritic fix + **9 curated same-team aliases** deployed & confirmed live
+>   (aliases.json 24 groups, md5 `8800c40b…`); population census done — the
+>   residual unmatched pairs are genuine no-open-PM-market (correct-or-absent).
+> - **429 wall NOT fixed** (only cron-shifted): PinnOdds quota = per-UTC-day
+>   cap resetting 00:00Z, ~17–21/day variable; **21:00–00:00Z-start matches
+>   get ≤20:00Z stale closing lines daily** (Americas-skewed). Real fix = paid
+>   tier (operator). The readout MUST disclose this per-match.
+> - **Owls-Insight historical 1xbet backtest is DEAD (0 usable rows)** —
+>   non-overlapping data-quality windows (PM price ≥Jun-16 vs precise odds
+>   ≤Feb; Mar+ floors odds to ints). Proven by
+>   `esports_v2/scripts/owls_backtest_feasibility.py`. **DO NOT re-attempt.**
+>   Owls forward recorder (`eb_owls_collect.py`, cron :30) runs 24/7 as a
+>   backup live feed only; verified HEALTHY (222k/300k monthly quota, shared
+>   with SB).
+>
+> **THE LANE (do these; nothing else without operator ask):**
+> 1. **STEP 0 health check (read-only):** `tail -3` `collect.log`
+>    (appended>0, pm_matched≈books, 21–23Z walls are EXPECTED) + `owls_collect.log`
+>    (ok=8/8); confirm the 9 aliases still match a marquee by NAME; run the
+>    esports+sharp-line test suite (expect green). Fix any real break at root,
+>    one fix per commit, suite green before commit.
+> 2. **CRITICAL PATH — PinnOdds vendor email (Pinnacle HISTORICAL esports
+>    odds):** ask the operator if it went out / got a reply. Reply=YES with a
+>    usable sample → build the historical readout (PM prices-history VERIFIED
+>    serving resolved markets; free results) → hundreds of settled matches.
+>    This is the ONLY route to a powered readout (Owls historical is dead).
+> 3. **PRIMARY (time-gated ~07-20+):** after the 07-15..19 slate resolves,
+>    `pip3 install shin` on the VPS then run the audit one-liner
+>    (`deploy/vps/eb_label_audit.sh`) → judge BOTH de-vig ways vs the
+>    pre-registered go-criteria (ROI>0, 95% CI ex-zero, ≥100 flat-stake bets;
+>    n<50 prints UNSTABLE = report, do NOT act). Disclose the 21–00Z stale/
+>    Americas-skew per-match. POSITIVE under Shin at the touch → STOP, report,
+>    propose the settlement/void ("panda") cross-check as next work. NEG/flat →
+>    report plainly; taker version dead at our speed; pivots are propose-only.
+>
+> **OPEN THREADS (operator decisions — surface, don't act):** (a) PinnOdds
+> paid tier (fixes the 429 wall); (b) rotate `PANDASCORE_API_KEY` +
+> `PINNACLE_ODDS_API_KEY` (chat-exposed); (c) cut or keep Owls sub $49.99/mo
+> (forward backup feed only now); (d) Keyd-Stars false-veto (matcher-design
+> change — document-only); (e) alias-treadmill proactive-detection proposal;
+> (f) 2 latent rerun-poison bugs in `eb_owls_pm_prices.py`/`eb_owls_odds_pull.py`
+> (LOW, no live impact — gate `done` on a success flag if ever reused).
+>
+> **DISCIPLINE (this arc's hard-won lessons):** numbers ONLY from cited
+> canonical sources, label n<50 UNSTABLE, NEVER quote P&L; verify the
+> SCARCEST + LOWEST-QUALITY leg before sizing any multi-source join; one fix
+> per commit, related suite green before commit; correct-or-absent everywhere
+> (doubt → None, never a guessed bool/side); MB has priority on all shared
+> resources; don't touch shared runtime infra (propose-only). Three status
+> overstatements happened this arc (45×→415→0 usable; "wall mitigated";
+> "rolling window") — state quantitative claims only as strongly as the data
+> proves, and adversarially re-verify verdict-producing numbers.
 
 ---
 
