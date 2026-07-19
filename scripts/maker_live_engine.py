@@ -1208,17 +1208,27 @@ def run(base, cfg):
     execc = ExecCore(cfg, base)
 
     state_path = os.path.join(base, "state.json")
-    state = {}
-    if os.path.exists(state_path):
-        try:
-            state = json.load(open(state_path))
-        except Exception as e:
-            print(f"STATE LOAD FAILED ({type(e).__name__}) — trying .bak", flush=True)
-            try:
-                state = json.load(open(state_path + ".bak"))
-                print("recovered state from .bak", flush=True)
-            except Exception:
-                print("STATE .bak ALSO FAILED — EMPTY ledgers (era note!)", flush=True)
+    state, recovered_from, any_state_file = recover_state(state_path)
+    if state is None:
+        state = {}
+        if any_state_file:
+            # files existed but NONE loaded — do not silently boot empty on a
+            # recoverable-looking failure; in live mode refuse (empty boot
+            # disables the floor + caps against real capital)
+            print("STATE UNRECOVERABLE: state.json/.bak/.tmp all present but "
+                  "unreadable — EMPTY ledgers (era note!)", flush=True)
+            if cfg["mode"] == "live":
+                print("live mode: REFUSING to start on unrecoverable state "
+                      "(would blind the day-loss floor + caps). Restore a good "
+                      "state file or clear all three for a deliberate fresh "
+                      "start.", flush=True)
+                return 2
+        else:
+            print("no state file (fresh start) — EMPTY ledgers", flush=True)
+    elif recovered_from != state_path:
+        print(f"STATE RECOVERED from {os.path.basename(recovered_from)} "
+              f"(state.json was missing/corrupt) — era note this restart!",
+              flush=True)
     meta = state.setdefault("meta", {})
     now0 = time.time()
     meta["era"] = now0
@@ -1972,66 +1982,117 @@ def _apply_live_trades(execc, state, universe, base, meta):
             continue                        # decisively pre-watermark
         recent[tid] = ts
         max_ts = max(max_ts, ts)
-        legs = []                           # (asset, side, px, sz, role)
-        for mo in tr.get("maker_orders") or []:
-            if not isinstance(mo, dict):
+        # per-trade processing is wrapped so NO exception can escape mid-loop:
+        # if one did, atexit's _final_cleanup would persist state with
+        # inventory advanced for fills 1..k but the watermark/recent map
+        # (committed only after the loop) stale -> restart re-applies fills
+        # 1..k and double-counts y/n/spent (triple-blind UNCERTAIN finding).
+        # The tid is already in `recent`, so a contained failure LOSES this
+        # one malformed trade (loud) rather than crashing or double-counting.
+        try:
+            legs = []                       # (asset, side, px, sz, role)
+            mos = tr.get("maker_orders")
+            # a truthy non-list maker_orders (scalar/str/dict) was the one
+            # genuinely unguarded raise — treat as "no maker legs"
+            for mo in (mos if isinstance(mos, list) else []):
+                if not isinstance(mo, dict):
+                    continue
+                mo_addr = str(mo.get("maker_address") or mo.get("owner") or "").lower()
+                if mo_addr != addr:
+                    continue
+                legs.append((str(mo.get("asset_id") or mo.get("asset") or ""),
+                             str(mo.get("side") or "").upper(), mo.get("price"),
+                             mo.get("matched_amount") or mo.get("size"), "maker"))
+            if not legs:
+                tk_addr = str(tr.get("taker_address") or tr.get("owner") or "").lower()
+                if tk_addr == addr:
+                    legs.append((str(tr.get("asset_id") or tr.get("asset") or ""),
+                                 str(tr.get("side") or "").upper(), tr.get("price"),
+                                 tr.get("size"), "taker"))
+            if not legs:
+                meta["feed_anomaly_n"] = meta.get("feed_anomaly_n", 0) + 1
+                ledger_write(base, "fills", {"t": round(time.time()), "tid": tid,
+                                             "no_our_leg": str(tr)[:250]})
                 continue
-            mo_addr = str(mo.get("maker_address") or mo.get("owner") or "").lower()
-            if mo_addr != addr:
-                continue
-            legs.append((str(mo.get("asset_id") or mo.get("asset") or ""),
-                         str(mo.get("side") or "").upper(), mo.get("price"),
-                         mo.get("matched_amount") or mo.get("size"), "maker"))
-        if not legs:
-            tk_addr = str(tr.get("taker_address") or tr.get("owner") or "").lower()
-            if tk_addr == addr:
-                legs.append((str(tr.get("asset_id") or tr.get("asset") or ""),
-                             str(tr.get("side") or "").upper(), tr.get("price"),
-                             tr.get("size"), "taker"))
-        if not legs:
+            for asset, side, px_raw, sz_raw, role in legs:
+                try:
+                    px, sz = float(px_raw), float(sz_raw)
+                except (TypeError, ValueError):
+                    # OUR-address leg we cannot apply = possible schema drift:
+                    # inventory silently stops tracking real money (2nd-pass
+                    # M2) — counted, heartbeat-surfaced, kill-thresholded
+                    meta["unmatched_fills_n"] = meta.get("unmatched_fills_n", 0) + 1
+                    ledger_write(base, "fills", {"t": round(time.time()),
+                                                 "tid": tid, "unparsed":
+                                                 str((px_raw, sz_raw))[:120]})
+                    continue
+                hit = tok2mkt.get(asset)
+                if hit is None or side != "BUY" or not (0 < px < 1) or sz <= 0:
+                    # the engine only ever BUYs — anything else is loud
+                    meta["unmatched_fills_n"] = meta.get("unmatched_fills_n", 0) + 1
+                    ledger_write(base, "fills",
+                                 {"t": round(time.time()), "tid": tid, "unmatched":
+                                  str((asset[:20], side, px_raw, sz_raw, role))[:200]})
+                    continue
+                key, leg = hit
+                st = state.setdefault(key, {})
+                if st.get("settled"):
+                    # late-arriving fill after settlement: the new tokens are
+                    # unrealized again — clear the flag so the next sweep
+                    # re-settles idempotently (settlement-review finding 3)
+                    st["settled"] = False
+                if leg == "yes":
+                    st["y"] = round(st.get("y", 0.0) + sz, 4)
+                else:
+                    st["n"] = round(st.get("n", 0.0) + sz, 4)
+                st["spent"] = round(st.get("spent", 0.0) + px * sz, 4)
+                merge_pairs(st)
+                ledger_write(base, "fills", {"t": round(time.time()), "tid": tid,
+                                             "mkt": key, "leg": leg, "px": px,
+                                             "sz": sz, "role": role})
+        except Exception as e:
             meta["feed_anomaly_n"] = meta.get("feed_anomaly_n", 0) + 1
             ledger_write(base, "fills", {"t": round(time.time()), "tid": tid,
-                                         "no_our_leg": str(tr)[:250]})
+                                         "trade_exc": f"{type(e).__name__}: "
+                                         f"{str(e)[:120]}"})
             continue
-        for asset, side, px_raw, sz_raw, role in legs:
-            try:
-                px, sz = float(px_raw), float(sz_raw)
-            except (TypeError, ValueError):
-                # OUR-address leg we cannot apply = possible schema drift:
-                # inventory silently stops tracking real money (2nd-pass
-                # M2) — counted, heartbeat-surfaced, kill-thresholded
-                meta["unmatched_fills_n"] = meta.get("unmatched_fills_n", 0) + 1
-                ledger_write(base, "fills", {"t": round(time.time()),
-                                             "tid": tid, "unparsed":
-                                             str((px_raw, sz_raw))[:120]})
-                continue
-            hit = tok2mkt.get(asset)
-            if hit is None or side != "BUY" or not (0 < px < 1) or sz <= 0:
-                # the engine only ever BUYs — anything else is loud
-                meta["unmatched_fills_n"] = meta.get("unmatched_fills_n", 0) + 1
-                ledger_write(base, "fills",
-                             {"t": round(time.time()), "tid": tid, "unmatched":
-                              str((asset[:20], side, px_raw, sz_raw, role))[:200]})
-                continue
-            key, leg = hit
-            st = state.setdefault(key, {})
-            if st.get("settled"):
-                # late-arriving fill after settlement: the new tokens are
-                # unrealized again — clear the flag so the next sweep
-                # re-settles idempotently (settlement-review finding 3)
-                st["settled"] = False
-            if leg == "yes":
-                st["y"] = round(st.get("y", 0.0) + sz, 4)
-            else:
-                st["n"] = round(st.get("n", 0.0) + sz, 4)
-            st["spent"] = round(st.get("spent", 0.0) + px * sz, 4)
-            merge_pairs(st)
-            ledger_write(base, "fills", {"t": round(time.time()), "tid": tid,
-                                         "mkt": key, "leg": leg, "px": px,
-                                         "sz": sz, "role": role})
     meta["trade_wm"] = max_ts
     meta["trade_recent"] = {i: t for i, t in recent.items()
                             if t >= max_ts - TRADE_LAP_S}
+
+
+def recover_state(state_path):
+    """Recovery LADDER: state.json -> .bak -> .tmp, tried on MISSING as well
+    as corrupt (triple-blind BUG-1). _save_state does two separate os.replace
+    calls (state.json->.bak, then .tmp->state.json); a crash/SIGKILL/power
+    loss BETWEEN them — or an operator deleting state.json expecting .bak to
+    cover it — leaves state.json absent while .bak/.tmp hold a full ledger.
+    The old code only consulted .bak inside `if exists(state.json)`, so a
+    missing state.json booted SILENTLY empty: day_anchor=portfolio_net({})=0
+    -> the day-loss floor never trips and every cap sees y=n=0 while real
+    positions stand.
+
+    Returns (state_dict|None, recovered_from_path|None, any_file_existed)."""
+    state = None
+    recovered_from = None
+    for suffix in ("", ".bak", ".tmp"):
+        p = state_path + suffix
+        if not os.path.exists(p):
+            continue
+        try:
+            with open(p) as f:
+                loaded = json.load(f)
+            if not isinstance(loaded, dict):
+                raise ValueError("state root is not an object")
+            state = loaded
+            recovered_from = p
+            break
+        except Exception as e:
+            print(f"STATE LOAD FAILED for {os.path.basename(p)} "
+                  f"({type(e).__name__}) — trying next in ladder", flush=True)
+    any_state_file = any(os.path.exists(state_path + s)
+                         for s in ("", ".bak", ".tmp"))
+    return state, recovered_from, any_state_file
 
 
 def _save_state(base, state_path, state):

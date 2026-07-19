@@ -11,6 +11,7 @@ No network access anywhere in this file.
 """
 import importlib.util
 import json
+import os
 import pathlib
 import time
 
@@ -419,6 +420,93 @@ def test_kill_sequence_halts_even_if_cancel_fails(tmp_path):
 
 
 # ── state persistence ────────────────────────────────────────────────────────
+def test_recover_state_ladder(tmp_path):
+    """Triple-blind BUG-1: .bak/.tmp must recover a MISSING state.json, not
+    only a corrupt one."""
+    sp = str(tmp_path / "state.json")
+    good = {"meta": {"day": "20260719"}, "1": {"y": 5.0, "spent": 2.0}}
+    # (a) genuine first boot — nothing exists -> boot empty, flagged
+    st, src, anyf = mle.recover_state(sp)
+    assert st is None and src is None and anyf is False
+    # (b) state.json MISSING but .bak present (the crash-window / deletion
+    # case the old code silently booted empty on)
+    with open(sp + ".bak", "w") as f:
+        json.dump(good, f)
+    st, src, anyf = mle.recover_state(sp)
+    assert st == good and src.endswith(".bak") and anyf is True
+    # (c) good state.json wins over stale .bak
+    with open(sp, "w") as f:
+        json.dump({"meta": {"day": "NEW"}}, f)
+    st, src, anyf = mle.recover_state(sp)
+    assert st["meta"]["day"] == "NEW" and src == sp
+    # (d) corrupt state.json falls through to .bak
+    with open(sp, "w") as f:
+        f.write("{not json")
+    st, src, anyf = mle.recover_state(sp)
+    assert st == good and src.endswith(".bak")
+    # (e) all present but unreadable -> None + any_file True (run() refuses
+    # in live mode)
+    for suf in ("", ".bak", ".tmp"):
+        with open(sp + suf, "w") as f:
+            f.write("garbage")
+    st, src, anyf = mle.recover_state(sp)
+    assert st is None and anyf is True
+    # (f) non-dict root rejected (would break meta = state.setdefault)
+    with open(sp, "w") as f:
+        json.dump([1, 2, 3], f)
+    for suf in (".bak", ".tmp"):
+        try:
+            os.remove(sp + suf)
+        except OSError:
+            pass
+    st, src, anyf = mle.recover_state(sp)
+    assert st is None and anyf is True
+
+
+def test_apply_live_trades_nonlist_maker_orders_no_raise(tmp_path):
+    """Triple-blind UNCERTAIN: a truthy non-list maker_orders (the one
+    unguarded raise) must be contained, not crash the loop — else atexit
+    persists inventory-advanced-but-watermark-stale -> restart double-count."""
+    now = time.time()
+    m = mk()
+    bad = {"id": "x1", "match_time": now, "maker_orders": "not-a-list",
+           "taker_address": "0xsomeone"}
+    real = taker_trade("x2", now, [mo("Y", "0.48", "100")])
+    state = {"meta": {"trade_wm": now - 10, "trade_recent": {}}}
+    # must not raise; the malformed record is contained + counted, the good
+    # one still applies, and the watermark advances (so no re-ingest)
+    mle._apply_live_trades(FakeFeed([bad, real]), state, [m], str(tmp_path),
+                           state["meta"])
+    assert state["meta"]["feed_anomaly_n"] >= 1
+    assert state["1234"]["y"] == 100.0
+    assert state["meta"]["trade_wm"] >= now
+    assert "x1" in state["meta"]["trade_recent"]      # marked seen, won't retry
+
+
+def test_apply_live_trades_exception_contained(tmp_path, monkeypatch):
+    """A raise deep in per-trade processing is caught, counted, and the loop
+    continues to the next trade + advances the watermark (so a later restart
+    cannot re-ingest the contained trade)."""
+    now = time.time()
+    m1 = mk()
+    m2 = mk(id="5678", cid="0xdef", yes="Y2", no="N2", ev="mkt:5678")
+    boom = taker_trade("b1", now, [mo("Y", "0.48", "100")])       # mkt 1234
+    good = taker_trade("g1", now + 1, [mo("Y2", "0.40", "50")])   # mkt 5678
+    real_lw = mle.ledger_write
+    def flaky_lw(base, name, row):
+        if row.get("tid") == "b1" and "mkt" in row:   # raise inside boom apply
+            raise RuntimeError("injected mid-apply fault")
+        return real_lw(base, name, row)
+    monkeypatch.setattr(mle, "ledger_write", flaky_lw)
+    state = {"meta": {"trade_wm": now - 10, "trade_recent": {}}}
+    mle._apply_live_trades(FakeFeed([boom, good]), state, [m1, m2],
+                           str(tmp_path), state["meta"])
+    assert state["meta"]["feed_anomaly_n"] >= 1        # boom contained
+    assert state["5678"]["y"] == 50.0                  # good still applied
+    assert state["meta"]["trade_wm"] >= now + 1        # watermark advanced
+    assert "b1" in state["meta"]["trade_recent"]       # won't re-ingest boom
+
+
 def test_save_state_slim_and_bak(tmp_path):
     sp = str(tmp_path / "state.json")
     state = {"meta": {"day": "20260718"},
