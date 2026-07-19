@@ -95,6 +95,29 @@ async def test_redis_cache(cache):
 
 
 @pytest.mark.asyncio
+async def test_redis_cache_raise_on_error():
+    """S232 shared root fix: raise_on_error surfaces a genuine Redis ERROR
+    (vs a real MISS) without changing the default swallow-to-None behavior
+    that every existing caller relies on."""
+    from unittest.mock import AsyncMock, MagicMock
+    rc = RedisCache()
+    rc.redis = MagicMock()
+    # get: error swallowed by default, raised on opt-in
+    rc.redis.get = AsyncMock(side_effect=ConnectionError("redis down"))
+    assert await rc.get("k") is None                       # legacy default unchanged
+    with pytest.raises(ConnectionError):
+        await rc.get("k", raise_on_error=True)             # opt-in fails closed
+    # a genuine MISS still returns None even with raise_on_error=True
+    rc.redis.get = AsyncMock(return_value=None)
+    assert await rc.get("k", raise_on_error=True) is None
+    # set: error swallowed by default, raised on opt-in
+    rc.redis.set = AsyncMock(side_effect=ConnectionError("redis down"))
+    await rc.set("k", {"a": 1})                             # legacy default: no raise
+    with pytest.raises(ConnectionError):
+        await rc.set("k", {"a": 1}, raise_on_error=True)
+
+
+@pytest.mark.asyncio
 async def test_learning_engine(learning_engine):
     confidence = await learning_engine.calculate_combined_confidence(
         user_address="0x123",
