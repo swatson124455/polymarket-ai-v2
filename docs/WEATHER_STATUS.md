@@ -12,17 +12,18 @@ two deploys below: **`nat_mesh.py` national-feed debias collector** (Item 2, com
 `39435b7`) — 4 feeds/6 cities (DWD/JMA/SG/BOM) pinned+validated live, running a
 10-min STAGING cron on the VPS (zero live impact; go-live = operator-gated
 `NAT_MESH_LIVE=1` after ~1-day validation); spec §"S233 NATIONAL-FEED MESH
-COLLECTOR". **HKO integration (Item 1) CODE-COMPLETE + DEPLOY-GATED** (`e2dd243`)
+COLLECTOR". **HKO integration (Item 1) DEPLOYED** (release `20260720_150112`, `e2dd243`)
 — HK grounding redirected from VHHH airport to the HK Observatory HQ (3 legs
 behind `truth_provider="hko"`, byte-identical for every other city; adversarial
-review found+fixed a fail-open-on-Redis defect → now fails closed; suite 4061);
-awaiting operator splinter deploy (spec §"S233 HKO WIRING"). Peakpass (Phase-2
+review found+fixed a fail-open-on-Redis defect → now fails closed; suite 4061;
+post-deploy verified live — HK is the only truth_provider station, scan healthy). Peakpass (Phase-2
 signal 2) DEFERRED — VIABILITY fail (supply vanishes after certainty), not signal
 quality; the ~9% false-lock was RETRACTED. Orphaned `city_icao_mapping.yaml`
 deleted. **Now live: release
-`20260720_115735`** (deploy 2 = shared `_publish_signal` market_id guard,
-`754555a`, restart 15:58:06Z; deploy 1 = registry additions `20260720_113011`,
-restart 15:31:08Z; rollback chain 115735→113011→`20260719_195417`). The signal
+`20260720_150112`** (deploy 3 = HKO grounding `e2dd243`, restart 19:01:55Z;
+deploy 2 = shared `_publish_signal` market_id guard `754555a`, 15:58:06Z; deploy 1
+= registry additions `20260720_113011`, 15:31:08Z; rollback chain
+150112→115735→113011→`20260719_195417`). The signal
 guard skips a market-agnostic signal (court_monitor federal_register, no
 market_id) instead of KeyError-ing; WB vendored copy deployed, TOP-LEVEL copy
 for mirror/esports/ingestion PENDING peer master deploy (memory

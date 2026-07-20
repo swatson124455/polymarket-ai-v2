@@ -22,20 +22,20 @@ relative-path `git`/`grep` silently reads/writes the WRONG file.** Guardrails:
   runtime artifact, NOT yours; never stage it.
 
 VPS: `ubuntu@18.201.216.0`, key `~/.ssh/wb_deploy2`. **Deployed release:
-`20260720_115735`** (S233 made TWO operator-authorized deploys: `20260720_113011`
-= the 7 registry additions + busan jma_seamless (restart 15:31:08Z), then
-`20260720_115735` = the shared signal_ingestion market_id guard (restart
-15:58:06Z). Rollback chain: 115735 → 113011 → `20260719_195417`). Do NOT deploy
-without operator sign-off.
+`20260720_150112`** (S233 made THREE operator-authorized deploys: `20260720_113011`
+= 7 registry additions + busan jma_seamless (restart 15:31:08Z); `20260720_115735`
+= shared signal_ingestion market_id guard (15:58:06Z); `20260720_150112` = HKO
+grounding for Hong Kong (restart 19:01:55Z). Rollback chain: 150112 → 115735 →
+113011 → `20260719_195417`). Do NOT deploy without operator sign-off.
 
 ## §0 — VERIFY THE S233 HANDOFF (before ANY other work)
 
 1. `bash scripts/wb_resume_check.sh` — expected: ALL PASS except (a) the known
    "agent WORKTREE" location FAIL, (b) at most a deploy-parity WARN (HEAD ahead
-   of `20260720_115735` by the trailing LAST_DEPLOY record commit + any S234 doc
+   of `20260720_150112` by the trailing LAST_DEPLOY record commit + any S234 doc
    commits — no undeployed CODE). Any OTHER FAIL → STOP and report.
 2. VPS spot-checks (read-only, key `~/.ssh/wb_deploy2`):
-   - `readlink /opt/polymarket-ai-v2-weather` → `20260720_115735`;
+   - `readlink /opt/polymarket-ai-v2-weather` → `20260720_150112`;
      `systemctl is-active polymarket-weather` → active.
    - 3 flags in the running process env (`sudo cat /proc/$(systemctl show -p
      MainPID --value polymarket-weather)/environ | tr '\0' '\n' | grep WEATHER_`):
@@ -79,11 +79,19 @@ service is unaffected) and it is MB-owned shared infra — DO NOT touch it.
   (`weatherbot_scan_done active_cities=49 weather_markets=341 groups=109`), no
   station/import errors. Commits: `e49aa01` (rows+tests), `71ba226` (busan
   model), `5dcdb26` (LAST_DEPLOY record).
-- **DEPLOY 2 — release `20260720_115735`** (operator-authorized, live, CURRENT):
+- **DEPLOY 2 — release `20260720_115735`** (operator-authorized, live):
   the shared `_publish_signal` market_id guard (`754555a`) + record `e06cd66`.
   Post-deploy verified: guard in running code, 0 KeyError since, registry
   additions still intact. See the SHARED SIGNAL FIX section below.
-  Rollback chain: 115735 → 113011 → `20260719_195417`.
+- **DEPLOY 3 — release `20260720_150112`** (operator-authorized, live, CURRENT):
+  HKO grounding for Hong Kong (`e2dd243`) + record `5cd91c6` (restart 19:01:55Z).
+  Post-deploy verified in the RUNNING venv: HK truth_provider="hko" at HKO HQ
+  coords (22.3019,114.1742); HKOClient imports; HK is the ONLY truth_provider
+  station; registry 114; scan healthy (`weatherbot_scan_done active_cities=49
+  groups=100 groups_with_edge=12`, first scan 71s cold-start); 0 errors/import
+  issues; 3 nowcast flags survived. One `trade_event_entry_returned_none` warning
+  post-deploy = PRE-EXISTING (21× over prior 3 days) + non-HK, NOT from the HKO
+  change. Rollback chain: 150112 → 115735 → 113011 → `20260719_195417`.
 - Full §0 verification of the S232 handoff: **all clean.** Details above.
 - **Consumed the day-3 mesh-lead grade** (`--lead 20260718`), which S232 left
   IEM-backfill-gated. Confirmed backfill landed via a per-station coverage
@@ -179,13 +187,15 @@ category (like intl_elections) rather than dropped.
    nat_mesh line's env (or prepend `NAT_MESH_LIVE=1 ` to the command). That
    injects national anchors into the FLAG-ON nowcast data plane. Rollback: unset
    the var / remove the cron line.
-3. **HKO integration (Item 1) — CODE-COMPLETE S233, DEPLOY-GATED** (commit
-   `e2dd243`; foundation `b75b9a9`). All 3 legs wired (override + forecast coords
-   + calibration) behind `truth_provider="hko"` — byte-identical for every other
-   city. Adversarial review found + FIXED a real fail-OPEN-on-Redis-outage defect
-   (now fails closed). 8 dispatch + 15 client tests; suite 4061. **← NEXT =
-   operator splinter deploy** (spec §"S233 HKO WIRING" has the post-deploy
-   verify). Karachi deferred (no open OPMR/PMD source; OPKC = the S231 trap).
+3. **HKO integration (Item 1) — DONE + DEPLOYED S233** (release `20260720_150112`,
+   commit `e2dd243`; foundation `b75b9a9`). HK grounding redirected VHHH airport
+   → HK Observatory HQ, all 3 legs behind `truth_provider="hko"` (byte-identical
+   for every other city). Adversarial review found + FIXED a real fail-OPEN-on-
+   Redis defect (now fails closed). 8 dispatch + 15 client tests; suite 4061;
+   post-deploy verified live. **WATCH:** HK's first resolution-day override via
+   HKO (fires when an HK market is <6h to resolution) + the calibration transition
+   (HK rows keyed VHHH mix old-airport/new-HKO grounding until aged out). Karachi
+   deferred (no open OPMR/PMD source; OPKC = the S231 trap).
 4. **Phase-2 second signal `weather_nowcast_peakpass` — DO NOT BUILD YET** (Item
    3). Deferred on two independent grounds:
    (a) signal 1 (`weather_nowcast_peak`) has fired 0 times → the shared data
