@@ -737,6 +737,70 @@ def parse_post_orders_resp(resp, n):
 
 
 # ── execution core ──────────────────────────────────────────────────────────
+OID_KEYS = ("id", "orderID", "orderId", "order_id")
+ASSET_KEYS = ("asset_id", "asset", "token_id", "tokenID", "tokenId")
+
+
+def _first_str(row, keys):
+    """First non-empty value among `keys`, as a string. Order records from the
+    CLOB have historically keyed the same field several ways; reading only one
+    spelling means an order silently classifies as 'not ours'."""
+    for k in keys:
+        v = row.get(k)
+        if v not in (None, ""):
+            return str(v)
+    return ""
+
+
+def _cancel_shortfall(resp, requested):
+    """Reasons the cancel of `requested` is NOT proven, given the API response.
+
+    The CLOB answers DELETE /orders with {"canceled": [...],
+    "not_canceled": {...}} and returns HTTP 200 even when ids are rejected, so
+    ignoring the body reports 40 cancelled while 3 still rest. Anything we
+    cannot affirmatively read as a full cancel is unproven — including a
+    response shape we did not anticipate. Failing loud here is the correct
+    direction: the funded preflight is where an unexpected-but-benign shape
+    would surface, not a live kill.
+    """
+    if not isinstance(resp, dict):
+        return [f"cancel response is {type(resp).__name__}, cannot prove"]
+    nc = resp.get("not_canceled")
+    if nc:
+        return [f"{len(nc)} id(s) not_canceled"]
+    canceled = resp.get("canceled")
+    if not isinstance(canceled, (list, tuple, set)):
+        return ["cancel response has no readable 'canceled' list"]
+    got = {str(c) for c in canceled}
+    missing = [r for r in requested if str(r) not in got]
+    return [f"{len(missing)} id(s) absent from 'canceled'"] if missing else []
+
+
+def collect_owned_assets(state, base):
+    """Every token id this engine could have an order on, from BOTH durable
+    sources. Extracted from run() so the seeding can actually be tested — a
+    key typo here silently unscopes every kill, and injecting _owned_assets
+    directly in tests can never catch that.
+
+      state.json    -> tok_y/tok_n, kept even for departed markets (departure
+                       is a flag, never a delete), so it is the full history
+      universe.json -> current generation only; readable even when state.json
+                       is the thing that failed to load
+    """
+    seed = []
+    for k, v in (state or {}).items():
+        if k != "meta" and isinstance(v, dict):
+            seed += [v.get("tok_y"), v.get("tok_n")]
+    try:
+        with open(os.path.join(base, "universe.json")) as uf:
+            for m in (json.load(uf).get("markets") or []):
+                if isinstance(m, dict):
+                    seed += [m.get("yes"), m.get("no")]
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return [s for s in seed if s]
+
+
 class ExecCore:
     """The ONLY component that touches order submission. Paper and live take
     the identical call path up to _submit_batch/_cancel; paper logs, live
@@ -923,15 +987,19 @@ class ExecCore:
                     if not isinstance(o, dict):
                         unprovable.append("non-dict order record")
                         continue
-                    asset = str(o.get("asset_id") or o.get("asset") or "")
+                    asset = _first_str(o, ASSET_KEYS)
                     # the engine's OWN post-order parser accepts orderId
                     # (camelCase) as a first-class key — parse_post_orders_resp
-                    # :724. Two different id chains in one file means one of
-                    # them is wrong, and here "wrong" reads as "nothing of ours
-                    # is open".
-                    oid = (o.get("id") or o.get("orderID")
-                           or o.get("orderId") or o.get("order_id"))
-                    if asset and asset in self._owned_assets:
+                    # :724. Two different chains in one file means one of them
+                    # is wrong, and here "wrong" reads as "nothing of ours is
+                    # open". The ASSET chain needs the identical treatment: an
+                    # unreadable asset used to fall through to the co-tenant
+                    # branch, which is the same silent-false-flat bug mirrored.
+                    oid = _first_str(o, OID_KEYS)
+                    if not asset:
+                        unprovable.append(f"order {str(oid)[:16] or '?'} has no "
+                                          f"readable asset field")
+                    elif asset in self._owned_assets:
                         if oid:
                             mine.append(oid)
                         else:
@@ -950,22 +1018,23 @@ class ExecCore:
                     # chunk like place_batch does: an unbounded DELETE would
                     # fail identically on every retry and never self-heal
                     for j in range(0, len(mine), BATCH_MAX):
-                        resp = self.client.cancel_orders(mine[j:j + BATCH_MAX])
-                        nc = (resp or {}).get("not_canceled") \
-                            if isinstance(resp, dict) else None
-                        if nc:
-                            # 200 with rejects is NOT success
-                            unprovable.append(f"{len(nc)} id(s) not_canceled")
+                        chunk = mine[j:j + BATCH_MAX]
+                        unprovable += _cancel_shortfall(
+                            self.client.cancel_orders(chunk), chunk)
 
-                if unprovable:
-                    print(f"cancel_all: NOT PROVABLY FLAT — cancelled "
-                          f"{len(mine)}, but {len(unprovable)} unresolved: "
-                          f"{unprovable[:3]}", flush=True)
-                    return False
-                print(f"cancel_all: cancelled {len(mine)} Maker order(s); "
-                      f"{len(orders) - len(mine)} co-tenant order(s) untouched",
-                      flush=True)
-                return True
+                if not unprovable:
+                    print(f"cancel_all: cancelled {len(mine)} Maker order(s); "
+                          f"{len(orders) - len(mine)} co-tenant order(s) "
+                          f"untouched", flush=True)
+                    return True
+                # RETRY rather than returning: a partial cancel is usually a
+                # transient fill race, and returning False on the first pass
+                # made `attempts` dead for every non-exception failure and
+                # turned a routine race into a sticky HALT.
+                print(f"cancel_all attempt {i + 1}/{attempts}: NOT PROVABLY "
+                      f"FLAT — cancelled {len(mine)}, {len(unprovable)} "
+                      f"unresolved: {unprovable[:3]}", flush=True)
+                time.sleep(0.5 * (i + 1))
             except Exception as e:
                 if i == attempts - 1:
                     print(f"cancel_all FAILED after {attempts}: "
@@ -1328,16 +1397,7 @@ def run(base, cfg):
     # to scope itself when state.json is the thing that failed to load:
     #   state.json  -> tok_y/tok_n, kept even for departed markets
     #   universe.json -> last discovery, readable even with state unrecoverable
-    _seed = []
-    for _k, _v in (state or {}).items():
-        if _k != "meta" and isinstance(_v, dict):
-            _seed += [_v.get("tok_y"), _v.get("tok_n")]
-    try:
-        with open(os.path.join(base, "universe.json")) as _uf:
-            for _m in (json.load(_uf).get("markets") or []):
-                _seed += [_m.get("yes"), _m.get("no")]
-    except (OSError, ValueError, AttributeError):
-        pass
+    _seed = collect_owned_assets(state, base)
     # scope is COMPLETE only when the durable token history loaded; with
     # state.json unrecoverable, universe.json alone is the current
     # generation only and cannot cover rotated-out zombie tokens

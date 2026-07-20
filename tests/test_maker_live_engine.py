@@ -1096,14 +1096,18 @@ def test_guard_pair_sibling_gross_cap():
 # live. cancel_all() now asks the exchange what is open and cancels only the
 # subset resting on Maker's own token ids.
 
+_UNSET = object()          # lets a test model "the client returned None"
+
+
 class _FakeClobClient:
     def __init__(self, open_orders, fail=False, bad_type=False,
-                 cancel_raises=False, not_canceled=None):
+                 cancel_raises=False, not_canceled=None, cancel_resp=_UNSET):
         self._open = open_orders
         self._fail = fail
         self._bad_type = bad_type
         self._cancel_raises = cancel_raises
         self._not_canceled = not_canceled
+        self._cancel_resp = cancel_resp
         self.cancelled = None
         self.cancel_batches = []
         self.calls = 0
@@ -1122,6 +1126,8 @@ class _FakeClobClient:
         self.cancelled = (self.cancelled or []) + list(oids)
         if self._not_canceled:
             return {"canceled": [], "not_canceled": self._not_canceled}
+        if self._cancel_resp is not _UNSET:
+            return self._cancel_resp
         return {"canceled": list(oids), "not_canceled": {}}
 
     def cancel_all(self):
@@ -1296,6 +1302,120 @@ def test_rotated_out_token_still_in_state_is_cancelled(tmp_path):
     """The zombie case: a market left the universe but its state entry (and
     therefore its token) persists, so its resting order is still ours."""
     client = _FakeClobClient([{"id": "zombie", "asset_id": "OLD_TOKEN"}])
-    ex = _live_exec(tmp_path, client, assets=("TY", "TN", "OLD_TOKEN"))
+    ex = _live_exec(tmp_path, client, assets=("OLD_TOKEN",))
+    # a LATER discovery that no longer lists the token must not drop it:
+    # add-only monotonicity IS the safety property, so exercise it as two calls
+    ex.set_owned_assets(("TY", "TN"))
     assert ex.cancel_all() is True
     assert client.cancelled == ["zombie"]
+
+
+# ── findings from the multi-lens verification round ─────────────────────────
+
+@pytest.mark.parametrize("akey", ["asset_id", "asset", "token_id", "tokenID", "tokenId"])
+def test_cancel_all_reads_every_asset_key(tmp_path, akey):
+    """The asset chain needs the same 4-way treatment the id chain got. The
+    fake previously only ever emitted `asset_id`, so the fallback limbs had
+    zero coverage."""
+    client = _FakeClobClient([{"id": "a", akey: "TY"}])
+    ex = _live_exec(tmp_path, client)
+    assert ex.cancel_all() is True
+    assert client.cancelled == ["a"]
+
+
+def test_unreadable_asset_is_not_flat_even_with_complete_scope(tmp_path):
+    """CRITICAL, the mirror of the id-chain bug: an order whose asset field we
+    cannot read used to fall to the co-tenant branch and return True. It could
+    equally be ours."""
+    client = _FakeClobClient([{"id": "x", "mystery_key": "TY"}])
+    ex = _live_exec(tmp_path, client, complete=True)
+    assert ex.cancel_all(attempts=1) is False
+
+
+@pytest.mark.parametrize("resp", [None, [], "ok", {"ok": True}, {"canceled": None},
+                                  {"canceled": ["other"]}])
+def test_unprovable_cancel_response_shapes_are_not_success(tmp_path, resp):
+    """Only an affirmative full cancel counts. Previously any shape without a
+    truthy `not_canceled` — including None and a list — read as proven."""
+    client = _FakeClobClient([{"id": "a", "asset_id": "TY"}], cancel_resp=resp)
+    ex = _live_exec(tmp_path, client)
+    assert ex.cancel_all(attempts=1) is False
+
+
+def test_full_cancel_body_is_success(tmp_path):
+    client = _FakeClobClient([{"id": "a", "asset_id": "TY"}],
+                             cancel_resp={"canceled": ["a"], "not_canceled": {}})
+    ex = _live_exec(tmp_path, client)
+    assert ex.cancel_all() is True
+
+
+def test_partial_cancel_retries_before_giving_up(tmp_path):
+    """`attempts` was dead for every non-exception failure: one transient
+    fill-race reject returned False on the first pass and turned a routine
+    kill into a sticky HALT."""
+    client = _FakeClobClient([{"id": "a", "asset_id": "TY"}],
+                             not_canceled={"a": "in flight"})
+    ex = _live_exec(tmp_path, client)
+    assert ex.cancel_all(attempts=3) is False
+    assert client.calls == 3            # it really retried
+
+
+def test_set_owned_assets_preserves_complete_when_omitted(tmp_path):
+    """The discovery refresh calls set_owned_assets with no `complete` arg and
+    relies on the None-guard to preserve the boot value. A default change
+    would silently re-scope every kill."""
+    ex = mle.ExecCore(cfg_over(), str(tmp_path))
+    ex.set_owned_assets(["A"], complete=True)
+    ex.set_owned_assets(["B"])                     # discovery refresh
+    assert ex._scope_complete is True
+    ex.set_owned_assets(["C"], complete=False)
+    ex.set_owned_assets(["D"])
+    assert ex._scope_complete is False
+
+
+# ── boot seeding: previously ZERO coverage, so a key typo was uncatchable ───
+
+def test_collect_owned_assets_reads_both_sources(tmp_path):
+    state = {"meta": {"day": "x"},
+             "m1": {"tok_y": "SY1", "tok_n": "SN1"},
+             "m2": {"tok_y": "SY2", "tok_n": "SN2"}}
+    (tmp_path / "universe.json").write_text(json.dumps(
+        {"t": 1, "markets": [{"yes": "UY1", "no": "UN1"}]}))
+    got = set(mle.collect_owned_assets(state, str(tmp_path)))
+    assert got == {"SY1", "SN1", "SY2", "SN2", "UY1", "UN1"}
+
+
+def test_collect_owned_assets_uses_the_keys_the_engine_actually_writes(tmp_path):
+    """Pins the seeding against the WRITER: state uses tok_y/tok_n
+    (:1629) and universe.json uses yes/no (discover, :342). A rename on
+    either side must fail here, not silently unscope the kill."""
+    src = pathlib.Path(mle.__file__).read_text(encoding="utf-8") \
+        if hasattr(mle, "__file__") and mle.__file__ else ""
+    state = {"m": {"tok_y": "Y", "tok_n": "N"}}
+    (tmp_path / "universe.json").write_text(json.dumps(
+        {"markets": [{"yes": "UY", "no": "UN"}]}))
+    assert set(mle.collect_owned_assets(state, str(tmp_path))) == {"Y", "N", "UY", "UN"}
+
+
+def test_collect_owned_assets_survives_a_missing_or_corrupt_universe(tmp_path):
+    state = {"m": {"tok_y": "Y", "tok_n": "N"}}
+    assert set(mle.collect_owned_assets(state, str(tmp_path))) == {"Y", "N"}
+    (tmp_path / "universe.json").write_text("{not json")
+    assert set(mle.collect_owned_assets(state, str(tmp_path))) == {"Y", "N"}
+    (tmp_path / "universe.json").write_text(json.dumps({"markets": [1, 2, 3]}))
+    assert set(mle.collect_owned_assets(state, str(tmp_path))) == {"Y", "N"}
+
+
+def test_collect_owned_assets_with_unrecoverable_state(tmp_path):
+    """state.json gone: universe.json alone still scopes the cancel — but the
+    caller marks scope INCOMPLETE, which is what stops an unrecognised token
+    from being written off as the co-tenant's."""
+    (tmp_path / "universe.json").write_text(json.dumps(
+        {"markets": [{"yes": "UY", "no": "UN"}]}))
+    assert set(mle.collect_owned_assets(None, str(tmp_path))) == {"UY", "UN"}
+
+
+def test_collect_owned_assets_ignores_meta_and_non_dicts(tmp_path):
+    state = {"meta": {"tok_y": "SHOULD_NOT_APPEAR"}, "bad": "string",
+             "m": {"tok_y": "Y", "tok_n": "N"}}
+    assert set(mle.collect_owned_assets(state, str(tmp_path))) == {"Y", "N"}
