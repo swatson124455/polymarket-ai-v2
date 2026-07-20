@@ -31,12 +31,19 @@ session's unpushed work is GONE"). This is the durable copy.
 
 ## Preconditions (ALL must hold before touching anything)
 
-1. **Run-4 EXITED.** `ps -p 3269649` reports dead, confirmed on two consecutive
-   reads. A mid-run restart resets FirstBuyDedup for zero informational gain
-   (§0 block 7) — the promotion is a batch-boundary action, not an urgent one.
+1. **Run-4 CLEANLY FINISHED — not just pid dead** (adversarial forecast M4,
+   2026-07-20). `ps -p 3269649` dead on two reads AND the log reached **[28/28]**
+   with **28 total verdicts** (`ADMIT+REJECT+INSUFFICIENT` count = 28). A pid
+   death at trader 27 reads as "done" at 26 verdicts — that is a CRASH, not a
+   finish: investigate/relaunch, do NOT promote. (Enhanced poller emits
+   CLEAN-FINISH vs WARN-CRASH.)
 2. **Operator go**, given after seeing the final run-4 tally.
-3. **Re-check the ADMIT list** — traders 21–28 may add ADMITs; any new ones join
-   this SAME single restart (never a second restart).
+3. **RE-PULL the live ADMIT list and RE-VALIDATE the ledger — the offline
+   artifact is likely stale** (forecast: ~42% chance one of the last traders
+   ADMITs at the observed 24% rate). If cohort-3 grew to 7/8, the `25→30` /
+   `cohort3(6)` validation no longer matches; rebuild the candidate against the
+   REAL current ADMITs and re-run `load_cohorts` + the 7 guard cases BEFORE any
+   edit. Any new ADMITs join this SAME single restart (never a second restart).
 
 ## The 6 ADMITs (full addresses, from the deep_dive JSONs 2026-07-17→19)
 
@@ -139,15 +146,48 @@ steward `cohort1_active.py`):
 0xf2f6af4f27ec2dcf4072095ab804016e14cd5817
 ```
 
-**Sequencing (peer rule — no jumping run-4 on the shared RPC):** runs AFTER
-run-4 exits, serial with the deepen wave. Cheapest as ONE multi-sweep with the
-deepen-wave addresses via `chain_fill_cache.populate_multi` once the fill-cache
-proof gate passes. Command mirrors run-4 (bare-address roster file,
-`--extra-traders`, fresh gamma cache, `--max-receipts 30000`, detached launch,
-own fresh log name).
+**Sequencing (operator "proceed as rec" 2026-07-20 — vetting PRIORITISED over
+the deepen wave):** all serial on the ONE shared RPC (tenderly is the only
+verified free archive endpoint; paid rejected; peer rule = no jumping run-4).
+Order: **run-4 exit → promotion+bench → fill-cache proof gate → cohort-1 vetting
+→ deepen wave → 0x70d94a solo.** The vetting jumps ahead of the deepen backlog
+because the operator asked for it. Cheapest as ONE multi-sweep with the deepen
+addresses via `chain_fill_cache.populate_multi` IF the proof gate passes; on a
+FAIL/INCONCLUSIVE it runs flag-off (per-addr, slower, no function lost). Command
+mirrors run-4 (bare-address roster file, `--extra-traders`, fresh gamma cache,
+`--max-receipts 30000`, detached launch, own fresh log name).
 
-**Outcome (diagnostic, NOT a roster change):** tells us which of the 7 are
-chain-copyable (skill-verified) vs noise — explains *why* cohort-1 failed. Any
-strong ADMIT becomes a candidate for a FRESH pre-registered cohort (operator
-go); this pass does NOT rescue cohort-1's locked NOT-DEMONSTRATED verdict and
-does NOT auto-change the roster. INSUFFICIENTs join the deepen backlog.
+**Realistic ETA (adversarial forecast 2026-07-20): ~24–60h wall-clock to 7
+verdicts** — hard-gated behind run-4's tail + the idle-RPC proof gate, all
+serial. NOT hours.
+
+**Expected outcome (sober — run-4 base rates 24% ADMIT / 32% REJECT / 44%
+INSUF applied to 7):** ~2 ADMIT / ~2 REJECT / ~3 INSUFFICIENT. High data-api
+BUY counts are ACTIVITY, not edge. The bum is a likely REJECT; `0xc6587b11`
+a likely INSUFFICIENT. Diagnostic, explains *why* cohort-1 failed.
+
+**⚠ THE PIPELINE LOOPS BACK — vetting does NOT terminate here (forecast M1):**
+- A cohort-1 **REJECT** (esp. the bum) → a SECOND roster-removal ledger cycle
+  (edit + clone refresh + watcher restart).
+- Cohort-1 **INSUFFICIENTs** → a SECOND deepen wave (freeze its set first).
+- A strong **ADMIT** → candidate for a FRESH pre-registered cohort (operator go).
+This pass does NOT rescue cohort-1's locked NOT-DEMONSTRATED verdict and does
+NOT auto-change the roster.
+
+## POST-PROMOTION VERIFICATION — clone-liveness (forecast M2, do NOT skip)
+
+Roster reading `25→30` proves the LEDGER changed, NOT that cohort-3 actually
+collects. Within ~24h of the promotion, confirm the 6 cohort-3 addresses are
+producing shadow records (`grep` their addrs in `mirror3_shadow.jsonl`) and the
+next 12:30Z readout's `cohort3(6)` first-buys count is climbing. If cohort-3's
+forward line sits at 0 first-buys, a clone/watcher bug is silently starving it —
+the readout verdict for cohort-3 could never complete. Same check applies to the
+`benched(1)` forward line (the bum is active, so it should populate within hours).
+
+## KEYSTONE RISK (forecast C1)
+
+The fill-cache proof gate is the keystone: a FAIL/INCONCLUSIVE (a spurious FAIL
+from Tenderly receipt-set nondeterminism is possible — `rpc_err=0.0` ≠ receipt
+determinism) flips cohort-1 vet + deepen + solo onto the 10–25× per-addr path,
+all serial → the RPC backlog stretches from ~1–2 days to a week-plus. Treat the
+gate's outcome as a cost multiplier on every downstream RPC item, not a coin flip.
