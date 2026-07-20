@@ -191,12 +191,20 @@ category (like intl_elections) rather than dropped.
    grounding = the HIGH risk), operator-gated splinter deploy. Karachi deferred
    (no open OPMR/PMD source; OPKC = the forbidden S231 trap).
 4. **Phase-2 second signal `weather_nowcast_peakpass` — DO NOT BUILD YET** (Item
-   3). Scoped S233: PREMATURE on two independent grounds — (a) signal 1
-   (`weather_nowcast_peak`) has fired 0 times so the shared data plane has zero
-   live-graded validation, and (b) peakpass's pre-registered gate (Study B, spec
-   :339-382) came back DEAD (~9.3% false-lock vs 1% bar) and the replacement
-   deep-inside-lock rule was never run. Next action is OFFLINE research (a
-   pre-registered peakpass backtest + the un-run lock rule), NOT bot code.
+   3). Deferred on two independent grounds:
+   (a) signal 1 (`weather_nowcast_peak`) has fired 0 times → the shared data
+   plane peakpass reuses has zero live-graded validation.
+   (b) **VIABILITY, not signal quality** (corrected Study B, spec :615-620): at
+   the RIGHT stations the peak-passed LOCK is real — false-locks L1 0/579
+   (0.00%), L2 1/579 (0.17%), both PASS the <1% gate (the old ~9% false-lock
+   number is RETRACTED — it was the 3-miswired-US-station artifact, spec
+   :564-571; do NOT re-cite it). Peakpass fails because **supply vanishes after
+   certainty**: fills ≤0.97 post-lock exist on only ~1% of locked days, so the
+   0.68→1.00 drift-capture buy has nothing to fill against; the 5 windows that
+   filled were Study-C-class rare events (accrual-watch). The drift leg also
+   wants resting-maker machinery the bot lacks (weather_bot.py:4605-4607). Next
+   action if revisited = OFFLINE research (does denser mesh / any regime move the
+   supply picture), NOT bot code.
 5. Cleanups: stale `data/city_icao_mapping.yaml` DELETED S233 (orphaned generated
    artifact, 0 code refs). `has_asos_1min` dead flag DELIBERATELY LEFT — it is
    dead (0 `.has_asos_1min` reads) but is SET on ~90 station rows, so removing it
