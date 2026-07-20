@@ -715,6 +715,22 @@ class SignalIngestionService:
     async def _publish_signal(self, signal: Dict[str, Any]):
         """Publish signal to database and Redis queue (with dedup)."""
         try:
+            # Signals are stored per-market (DB Signal.market_id + Redis
+            # signals:market:{id}), so a market-agnostic signal cannot be queued
+            # here. Some sources emit one — e.g. court_monitor federal_register
+            # macro signals carry categories_matched but NO market_id (they match
+            # a regulatory doc to a topic, not a specific market). Skip cleanly:
+            # the market_id subscripts below (Signal ctor, Redis key, log) would
+            # otherwise raise KeyError, which the outer except caught + logged as
+            # a full traceback before dropping the signal anyway. Same outcome
+            # (unstorable → dropped), without the noise and the false error-level.
+            if not signal.get("market_id"):
+                logger.debug(
+                    "Signal skipped: no market_id (market-agnostic source)",
+                    source=signal.get("source_name") or signal.get("source_type"),
+                )
+                return
+
             # Deduplicate
             if await self._is_duplicate_signal(signal):
                 logger.debug("Signal deduped: %s", signal.get("raw_text", "")[:60])
