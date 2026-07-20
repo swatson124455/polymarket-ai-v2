@@ -128,12 +128,24 @@ signal specifically being rare — NOT a broken pipeline. Do not "fix" it.
    build).
 5. Cleanups: `has_asos_1min` dead flag; stale `data/city_icao_mapping.yaml`.
 
-## CROSS-BOT FLAGS TO RELAY (WB did NOT touch other bots — RULE ONE/ONE-A)
+## CROSS-BOT FLAGS TO RELAY (WB did NOT touch other bots — SCOPE + RULE ONE-A)
+
+⚠ **RULE ONE (MB right-of-way) was RESCINDED 2026-07-20 — all bots are PEERS on
+shared resources** (deploys, master merges, shared modules, `/opt/pa2-shared/.env`,
+VPS capacity, operator bandwidth). Coordinate on contention; there is NO default
+winner. Any older doc/commit text saying "MB decides" or "MB/operator action —
+RULE ONE" is STALE FRAMING, including the body of commit `e37d666` and spec
+lines ~1160/1164 — do not re-derive priority from it. What still binds: Layer-1
+scope (a bot-scoped session works only on its own bot's code) and **RULE ONE-A**
+(WB/EB sessions never touch MB). Those are separate rules and are unchanged.
 
 - **Shared RedisCache root fix** — memory `project_shared_redis_get_root_fix.md`:
-  MB cherry-picks the top-level copy to master + deploy; EB/Maker/SB apply the
-  3-line change to their branch's copy. Backward-compatible (default False =
-  byte-identical legacy behavior).
+  the top-level copy still needs to land on master + deploy, but that is now a
+  PEER-COORDINATED action, not MB's call — whichever session lands it coordinates
+  the deploy (deploy.sh restarts mirror/esports/ingestion, so it affects several
+  bots' runtimes). EB/Maker/SB apply the 3-line change to their branch's copy.
+  Backward-compatible (default False = byte-identical legacy behavior), and
+  capability-only until a caller opts in — so no bot is forced to deploy for it.
 - **c13 (Maker):** the pre-c5 Maker feed holds mislabeled ~0.44 lines (07-19);
   Maker to audit/purge `wb_forecasts.jsonl` before the tilt readout.
 - **c12 (MB):** shared `prediction_log` calibrators (`base_engine/features/

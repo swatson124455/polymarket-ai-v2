@@ -1211,3 +1211,25 @@ KSEA 13/16 (54.0). Concentration OK — max city share 16/87 = 18% of events,
 
 No bot-code change; grading is read-only research. Flag state unchanged
 (ON, paper) — day-3 is confirmatory, the flip already happened on day-2.
+
+## ⚠ RULE ONE RESCINDED 2026-07-20 (operator) — MB IS A PEER, NOT TOP DOG
+
+Recorded at S233 close, AFTER the S232 blocks above were written. **All bots are
+PEERS on shared resources** — deploys, master merges, shared modules,
+`/opt/pa2-shared/.env`, shared RPC, VPS capacity, operator bandwidth.
+**Coordinate on contention; there is NO default winner.**
+
+**Stale framing in THIS file and in commit `e37d666`'s body** — specifically the
+"MB/operator action (PROPOSED, not executed from WB — RULE ONE)" language at
+~:1160 and the "MB cherry-pick to master" phrasing at ~:1164 — reflects the
+pre-rescission rule. Those lines are left as written (historical record; do not
+rewrite committed history) but **must NOT be used to derive current priority.**
+The shared RedisCache fix still needs to reach master + deploy; that is now a
+peer-coordinated action rather than MB's prerogative, and the deploy matters
+because deploy.sh restarts mirror/esports/ingestion (several bots' runtimes).
+
+**What did NOT change:** Layer-1 scope (a bot-scoped session works ONLY on its
+own bot's code) and **RULE ONE-A** (WB/EB sessions never touch MB — no reads of
+MB code/env/handoffs/telemetry). Those are separate rules and still bind. The
+rescission removes MB's *right of way*, not WB's *scope boundary* — do not read
+"MB is a peer" as "WB may now edit MB."
