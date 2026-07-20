@@ -29,6 +29,17 @@ by a FORWARD quantity (rewards density = rew/cap), never by hindsight net (that
 was the +116% mirage). Rewards remain MODEL accrual — stable-computed, not
 verified — until pilot receipts.
 
+### §0b — NO DERIVED EV UNTIL A RECEIPT (operator directive 2026-07-20)
+
+Every quantity's exact definition, source, verification tier, and quote rule is
+in **`docs/MAKER_NUMBERS_LEDGER.md`** — read it before quoting ANY Maker number.
+Standing rule: **no derived EV/return is presented until a real on-chain reward
+receipt to our wallet anchors it.** Trading-inclusive figures (net/EV/ROI, the
+blind/steered tiers, the "+116%" and "−$698"/"+$2,214" numbers) are BANNED, not
+just discouraged — they are the noise that whipsawed. rewROI is defined but not
+presented as a decision figure until a receipt exists
+(`maker_preflight.py --stage receipts`).
+
 ---
 
 *The single vision/plan anchor for the Maker (market-making) initiative.
