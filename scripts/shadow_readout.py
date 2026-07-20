@@ -254,6 +254,9 @@ _DIAG_POSTHOC = ("post-hoc cut — the pre-registered verdict is the cohort line
                  "only; this cut can never 'survive'")
 _DIAG_BENCH = ("benched trader in TIME-OUT — a forward re-evaluation, never a "
                "cohort verdict; re-admission is operator-gated")
+_DIAG_REDUCED = ("roster REDUCED by a time-out — a post-hoc cut, not the "
+                 "pre-registered population; the pre-registered verdict is the "
+                 "pre-bench line in the durable log; this cut can never 'survive'")
 
 
 def fmt_line(label: str, res: dict, min_markets: int,
@@ -315,9 +318,32 @@ def alerts_for(label: str, res: dict, min_markets: int,
     return out
 
 
+def reduced_cohorts(roster: dict) -> set:
+    """Cohort names that lost a member to a time-out (`benched.from_cohort`,
+    str or list). Such a cohort is a post-hoc cut and must print diagnostic —
+    never a pre-registered pass. Absent/empty benched => empty set (no-op)."""
+    fc = (roster.get("benched") or {}).get("from_cohort")
+    if isinstance(fc, str):
+        return {fc}
+    if isinstance(fc, (list, tuple)):
+        return {str(x) for x in fc}
+    return set()
+
+
 async def run(args) -> int:
     with open(args.roster) as f:
-        cohorts = load_cohorts(json.load(f))
+        roster_raw = json.load(f)
+    cohorts = load_cohorts(roster_raw)
+    # A cohort that had a member pulled into `benched` is NO LONGER its
+    # pre-registered self. Its pre-registered verdict is the pre-bench line
+    # already locked in the durable log; the reduced cohort is a post-hoc cut
+    # (dropping the trader who dragged it) and must NEVER print "SURVIVES
+    # (pre-registered bars met)" — the SAME defect fixed for the LOO line, which
+    # benching would otherwise relocate onto the cohort line (dry-run
+    # 2026-07-20: benching the bum left cohort1(15) at 28/30 P=0.924, ~2 markets
+    # from that false pass). The benched ledger entry names where each address
+    # came from via `from_cohort` (str or list); those cohorts print diagnostic.
+    reduced = reduced_cohorts(roster_raw)
     recs = az.load_records(args.log)
     tokens = sorted({str(r["token_id"]) for r in recs if r.get("token_id")})
     outcomes = await fresh_outcomes(tokens)
@@ -355,6 +381,12 @@ async def run(args) -> int:
             lines.append(fmt_line(f"{name}({len(members)}) TIME-OUT since {since}",
                                   res, args.min_markets, diagnostic=True,
                                   diag_reason=_DIAG_BENCH))
+        elif name in reduced:
+            # a cohort that lost a member to a time-out is a post-hoc cut: show
+            # its numbers but NEVER a pre-registered pass verdict, and do not
+            # re-alert (its pre-registered verdict is already logged/closed).
+            lines.append(fmt_line(f"{label} REDUCED", res, args.min_markets,
+                                  diagnostic=True, diag_reason=_DIAG_REDUCED))
         else:
             lines.append(fmt_line(label, res, args.min_markets))
             all_alerts += alerts_for(label, res, args.min_markets)
@@ -504,6 +536,22 @@ def _self_test() -> int:
             and "NO VERDICT" in bl)
     print(f"  [cohorts] benched line: diagnostic, no verdict : {ok5e}")
     ok &= ok5e
+    # a cohort that lost a member to a time-out prints diagnostic (REDUCED),
+    # never the pre-registered pass — else benching relocates the LOO defect
+    # onto the cohort line. from_cohort accepts str or list.
+    rl = fmt_line("cohort1(15) REDUCED", _wonb, 30, diagnostic=True,
+                  diag_reason=_DIAG_REDUCED)
+    ok5g = ("SURVIVES" not in rl and "REDUCED" in rl and "post-hoc" in rl
+            and "NO VERDICT" in rl)
+    print(f"  [cohorts] reduced cohort line: diagnostic, no pass : {ok5g}")
+    ok &= ok5g
+    ok5h = (reduced_cohorts({"benched": {"from_cohort": "cohort1"}}) == {"cohort1"}
+            and reduced_cohorts({"benched": {"from_cohort": ["cohort1", "cohort2"]}})
+                == {"cohort1", "cohort2"}
+            and reduced_cohorts({}) == set()
+            and reduced_cohorts({"benched": {"addresses": ["0xB"]}}) == set())
+    print(f"  [cohorts] reduced-set parse (str/list/absent) : {ok5h}")
+    ok &= ok5h
     # FORWARD-ONLY window (adversarial review 2026-07-20, HIGH): a benched line
     # must EXCLUDE pre-bench records. trust_after alone does not — it keeps
     # ladder-armed records regardless of detect_ts — so run()'s explicit
