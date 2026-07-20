@@ -72,6 +72,15 @@ JOIN_ALWAYS = os.environ.get("KALSHI_JOIN_ALWAYS") == "1"   # drill switch (defa
 # series allowlist: if set, ONLY quote markets whose series (ticker before the first
 # '-') is listed. The pilot scopes to the weather/temp slice; empty = no filter (legacy).
 SERIES_ALLOW = [s for s in os.environ.get("KALSHI_SERIES_ALLOW", "").split(",") if s.strip()]
+# --- DELTA-NEUTRALITY (inventory control) — the core maker mandate ---
+# inv = signed net contracts on a ticker (+ = long yes, - = long no/short yes). PER-TICKER
+# (Kalshi's ladder margin-offset is a CAPITAL concern, not directional delta — do NOT net
+# across strikes here). Above SOFT: skew 1 tick inside + shrink the ACCUMULATING side, keep
+# the REDUCING side at reference (its fill passively unwinds at $0 maker fee). Above HARD:
+# pull the accumulating side entirely (JOIN) / pull the whole market (ACTIVATE, void-safe).
+INV_SOFT_CT = _envf("KALSHI_INV_SOFT_CT", 30.0)
+INV_HARD_CT = _envf("KALSHI_INV_HARD_CT", 80.0)
+TICK = 0.01
 REQ_SPACING_S = 0.55
 READ_BUDGET_PER_CYCLE = 200
 
@@ -165,12 +174,15 @@ def _capped_join(best, other_price):
     return max(1, n)
 
 
-def desired_quotes(m, yes_levels, no_levels, now, own=None, stats=None):
+def desired_quotes(m, yes_levels, no_levels, now, own=None, inv=0.0, stats=None):
     """Desired resting orders for one market. Returns list of
     {side, price_dollars, count, reason} or [] (gated / unquotable).
-    own: {'yes':contracts,'no':contracts} of OUR current resting size on each
-    side (so activate sizes against EXTERNAL depth and does not chase itself)."""
+    own: {'yes':contracts,'no':contracts} of OUR current resting size on each side.
+    inv: OUR signed net position on this ticker (+ long yes, - long no); drives the
+    delta-neutral shaping — throttle the accumulating side, keep the reducing side at
+    reference as a $0-fee passive unwind."""
     own = own or {"yes": 0.0, "no": 0.0}
+    inv = float(inv or 0.0)
     (yl, bad_y), (nl, bad_n) = _levels(yes_levels), _levels(no_levels)
     if stats is not None:
         stats["dropped_book_rows"] = stats.get("dropped_book_rows", 0) + bad_y + bad_n
@@ -200,7 +212,12 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, stats=None):
                 {"side": "no", "price_dollars": best_n, "count": _capped_join(best_n, best_y), "reason": "join"}]
     quotes = []
     if void:
-        # size against EXTERNAL depth (stable across cycles; won't chase our own order)
+        # ACTIVATE: we supply the Target-Size depth. Inventory lever here is PULL-THE-MARKET
+        # (never price-skew or shrink below target — that re-voids the snapshot and zeroes
+        # BOTH sides' reward). Carrying inventory on a thin market we're activating is the
+        # worst adverse-selection spot, so stop quoting it entirely above SOFT.
+        if abs(inv) > INV_SOFT_CT:
+            return []
         add_y = max(JOIN_SIZE, target - ext_y)
         add_n = max(JOIN_SIZE, target - ext_n)
         cap = best_y * add_y + best_n * add_n
@@ -209,10 +226,31 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, stats=None):
         quotes.append({"side": "yes", "price_dollars": best_y, "count": int(add_y), "reason": "activate"})
         quotes.append({"side": "no", "price_dollars": best_n, "count": int(add_n), "reason": "activate"})
     else:
-        quotes.append({"side": "yes", "price_dollars": best_y,
-                       "count": _capped_join(best_y, best_n), "reason": "join"})
-        quotes.append({"side": "no", "price_dollars": best_n,
-                       "count": _capped_join(best_n, best_y), "reason": "join"})
+        # JOIN: external depth already meets Target both sides, so shrinking/pulling OUR size
+        # never voids the market — free to shape by inventory.
+        y_price, y_cnt = best_y, _capped_join(best_y, best_n)
+        n_price, n_cnt = best_n, _capped_join(best_n, best_y)
+        # accumulating side = the one whose fill grows |inv|. long yes(+): yes-bid accumulates,
+        # no-bid reduces (a filled no-bid shorts yes). long no(-): mirror.
+        if abs(inv) > INV_SOFT_CT:
+            over = min(1.0, (abs(inv) - INV_SOFT_CT) / max(1.0, INV_HARD_CT - INV_SOFT_CT))
+            if inv > 0:                             # long yes -> throttle YES (accumulating)
+                if abs(inv) > INV_HARD_CT:
+                    y_cnt = 0                       # pull the accumulating side entirely
+                else:
+                    y_price = round(best_y - TICK, 4)   # 1 tick inside: half score, fewer fills
+                    y_cnt = max(1, int(y_cnt * (1 - over)))
+            else:                                   # long no -> throttle NO (accumulating)
+                if abs(inv) > INV_HARD_CT:
+                    n_cnt = 0
+                else:
+                    n_price = round(best_n - TICK, 4)
+                    n_cnt = max(1, int(n_cnt * (1 - over)))
+        # re-apply spread_sanity to any skewed price; keep only priceable, non-empty sides
+        if y_cnt > 0 and MIN_PRICE_DOLLARS < y_price <= MAX_PRICE_DOLLARS:
+            quotes.append({"side": "yes", "price_dollars": y_price, "count": y_cnt, "reason": "join"})
+        if n_cnt > 0 and MIN_PRICE_DOLLARS < n_price <= MAX_PRICE_DOLLARS:
+            quotes.append({"side": "no", "price_dollars": n_price, "count": n_cnt, "reason": "join"})
     return quotes
 
 
@@ -354,6 +392,8 @@ def run_once():
         # subtract own to get external depth. In dry_run the public book never
         # contained our (never-placed) simulated orders, so own must be 0 there —
         # subtracting it would double-count and make activate oscillate every cycle.
+        held_by = {}                          # signed net position per ticker (delta)
+        held_cost = 0.0
         if client.mode == "dry_run":
             standing = st.get("simulated_standing", {})
             own = {}
@@ -374,6 +414,15 @@ def run_once():
                 print(f"WARNING reconcile FAIL: {raw_rows} resting rows parsed to 0 — halting (no order ops)")
                 return 0
             own = own_resting(standing)
+            # DELTA: read signed inventory ONCE, AHEAD of the quote loop, so shaping acts on
+            # THIS cycle's position (not one cycle stale). Fail CLOSED (defer) if unreadable —
+            # never shape/create blind to our own delta.
+            try:
+                held_cost, held_by = _held_cost(client)
+            except Exception as e:
+                plan["positions_read_failed"] = repr(e)[:120]
+                print(f"WARNING could not read positions ({e!r}); skipping cycle (delta unknown)")
+                return 0
 
         desired = {}
         for m in footprint:
@@ -392,7 +441,7 @@ def run_once():
                 continue
             try:
                 q = desired_quotes(m, ob.get("yes_dollars") or [], ob.get("no_dollars") or [],
-                                   now, own=own.get(t), stats=qstats)
+                                   now, own=own.get(t), inv=held_by.get(t, 0.0), stats=qstats)
             except Exception as e:
                 # isolate one degenerate market, but SURFACE it as quote_fail (a
                 # systematic desired_quotes failure must not hide inside gated_out)
@@ -425,35 +474,23 @@ def run_once():
         committed = sum(o["price_dollars"] * o["count"]
                         for ol in standing.values() for o in ol
                         if o["order_id"] not in cancelled_ok)
-        held_cost = 0.0
-        positions_ok = True
-        if client.mode != "dry_run":
-            try:
-                held_cost, _ = _held_cost(client)
-            except Exception as e:
-                # unknown held inventory -> committed is unknown -> FAIL CLOSED: defer
-                # ALL creates this cycle (never admit orders on top of unknown fills).
-                positions_ok = False
-                plan["positions_read_failed"] = repr(e)[:120]
-                print(f"WARNING positions read failed ({e!r}); deferring all creates (committed unknown)")
+        # held_cost was read ahead of the quote loop (fail-closed there); reuse it — no
+        # second positions fetch, and the cycle already halted if it was unreadable.
         committed += held_cost
-        if not positions_ok:
-            create_skipped += len(creates)
-        else:
-            for i, c in enumerate(creates):
-                cost = c["price_dollars"] * c["count"]
-                if c["ticker"] in failed_cancel_tickers:
-                    create_skipped += 1             # paired cancel failed; defer
-                    continue
-                if committed + cost > MAX_TOTAL_CAPITAL:
-                    create_skipped += 1             # hard committed-capital pre-check
-                    continue
-                try:
-                    client.create_quote(c["ticker"], c["side"], c["price_dollars"], c["count"],
-                                        post_only=True, client_order_id=order_id_for(cyc, i, c["side"]))
-                    created_ok.append((c, f"sim-{cyc}-{i}")); committed += cost
-                except Exception:
-                    create_fail += 1
+        for i, c in enumerate(creates):
+            cost = c["price_dollars"] * c["count"]
+            if c["ticker"] in failed_cancel_tickers:
+                create_skipped += 1                 # paired cancel failed; defer
+                continue
+            if committed + cost > MAX_TOTAL_CAPITAL:
+                create_skipped += 1                 # hard committed-capital pre-check
+                continue
+            try:
+                client.create_quote(c["ticker"], c["side"], c["price_dollars"], c["count"],
+                                    post_only=True, client_order_id=order_id_for(cyc, i, c["side"]))
+                created_ok.append((c, f"sim-{cyc}-{i}")); committed += cost
+            except Exception:
+                create_fail += 1
 
         # next dry-run standing = prior standing - cancels + created (reflects truncation)
         if client.mode == "dry_run":

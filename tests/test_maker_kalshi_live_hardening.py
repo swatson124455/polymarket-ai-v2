@@ -106,6 +106,49 @@ def test_series_allowlist_filters_to_temp(monkeypatch):
     assert len(picked2) == 2
 
 
+# ---- inventory-aware delta-neutral shaping (the P0 redesign core) ----
+def _mkt(target=1000): return {"target": target, "end": "2099-01-01T00:00:00Z"}
+_YL = [["0.50", "9999"]]      # deep external book, both sides >> target -> JOIN branch
+_NL = [["0.49", "9999"]]
+
+def test_flat_quotes_both_sides_at_reference(monkeypatch):
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    qs = q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=0.0)
+    sides = {x["side"]: x for x in qs}
+    assert sides["yes"]["price_dollars"] == 0.50 and sides["no"]["price_dollars"] == 0.49  # at ref
+
+def test_long_yes_throttles_yes_keeps_no_at_ref(monkeypatch):
+    # long yes above SOFT -> YES (accumulating) skewed 1 tick inside + shrunk; NO (reducing)
+    # stays at reference as the passive unwind.
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=50.0)}
+    assert qs["yes"]["price_dollars"] == 0.49          # 1 tick inside (0.50 - 0.01)
+    assert qs["no"]["price_dollars"] == 0.49           # reducing side unchanged at ref
+    assert qs["yes"]["count"] < qs["no"]["count"]      # accumulating side shrunk
+
+def test_long_yes_beyond_hard_pulls_yes_entirely(monkeypatch):
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=100.0)}
+    assert "yes" not in qs                             # accumulating side fully pulled
+    assert "no" in qs and qs["no"]["price_dollars"] == 0.49   # only the unwind side rests
+
+def test_long_no_mirror(monkeypatch):
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0); monkeypatch.setattr(q, "INV_HARD_CT", 80.0)
+    qs = {x["side"]: x for x in q.desired_quotes(_mkt(), _YL, _NL, q.utcnow(), inv=-50.0)}
+    assert qs["no"]["price_dollars"] == 0.48           # NO accumulating -> 1 tick inside
+    assert qs["yes"]["price_dollars"] == 0.50          # YES reducing -> at ref
+    assert qs["no"]["count"] < qs["yes"]["count"]
+
+def test_activate_market_pulled_when_carrying_inventory(monkeypatch):
+    # thin book (both sides < target) -> ACTIVATE branch; carrying inventory -> pull whole market
+    monkeypatch.setattr(q, "INV_SOFT_CT", 30.0)
+    thin_y = [["0.50", "10"]]; thin_n = [["0.49", "10"]]   # depth 10 << target 1000 -> void/activate
+    assert q.desired_quotes(_mkt(1000), thin_y, thin_n, q.utcnow(), inv=50.0) == []
+    # but flat -> activates normally (if affordable)
+    monkeypatch.setattr(q, "MAX_ACTIVATE_CAPITAL", 100000.0)
+    assert q.desired_quotes(_mkt(1000), thin_y, thin_n, q.utcnow(), inv=0.0)  # non-empty
+
+
 # ---- crossed-book gate ----
 def test_desired_quotes_gates_crossed_book():
     m = {"target": 1, "end": "2099-01-01T00:00:00Z"}
@@ -169,9 +212,10 @@ def test_positions_read_failure_defers_all_creates(monkeypatch, tmp_path):
         {"ticker": "T1", "usd_day": 100.0, "target": 1, "end": "2099-01-01T00:00:00Z"}])
     c = MockClient(mode="live", resting=[], positions=[], get_positions_raises=True)
     row = _run(monkeypatch, c, str(tmp_path))
+    # new behavior: the signed-inventory read is AHEAD of the quote loop and fails CLOSED —
+    # the whole cycle halts (delta unknown => never shape/create blind), not just creates.
     assert "positions_read_failed" in row
-    assert len(c.created) == 0                        # no blind creates on unknown inventory
-    assert row.get("create_skipped", 0) >= 1
+    assert len(c.created) == 0 and len(c.cancelled) == 0
 
 def test_failed_cancel_defers_same_ticker(monkeypatch, tmp_path):
     _cfg(monkeypatch, totcap=200)                     # cap not the binding constraint here
