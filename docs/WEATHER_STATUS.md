@@ -5,8 +5,15 @@
 > read them for detail, but THIS file is the source of truth for "what is live and what's open."
 > Update the three sections below at the end of every WB session (same commit as the work).
 
-**Last updated:** 2026-07-20 (S233 — verification/watch session, ZERO bot-code
-changes, ZERO deploys. Headlines: **§0 handoff verification ALL CLEAN** (resume
+**Last updated:** 2026-07-20 (S233 — verification/watch session + Tier-3 BUILD.
+Headlines: **REGISTRY ADDITIONS BUILT (commit `e49aa01`, NOT deployed — awaiting
+operator sign-off)** — 7 static rows (busan/cape_town/guangzhou/jeddah/manila/
+panama_city/qingdao) replacing centroid pseudo-stations that were mis-stationing
+these cities 5-42 km from their resolution airport (active S231-class defect);
+every field cross-verified vs live market descriptions + AWC METAR; 33-agent
+adversarial review; full suite 4017 green; spec §"S233 REGISTRY ADDITIONS —
+BUILT". Deploy = operator-only splinter release cut. Also: **§0 handoff
+verification ALL CLEAN** (resume
 check = only the known worktree FAIL + a doc-only deploy-parity WARN; release
 `20260719_195417` live, all 3 nowcast flags confirmed in the RUNNING process env,
 5 wb crons, pws_mesh 5-min ticks cities=49 wu_fails=0, calibration_check runs

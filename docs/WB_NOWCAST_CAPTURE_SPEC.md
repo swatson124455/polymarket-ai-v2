@@ -1233,3 +1233,61 @@ own bot's code) and **RULE ONE-A** (WB/EB sessions never touch MB — no reads o
 MB code/env/handoffs/telemetry). Those are separate rules and still bind. The
 rescission removes MB's *right of way*, not WB's *scope boundary* — do not read
 "MB is a peer" as "WB may now edit MB."
+
+## S233 REGISTRY ADDITIONS — BUILT (commit e49aa01, awaiting deploy sign-off)
+
+Queue item 1 executed. 7 static WeatherStation rows added
+(busan/cape_town/guangzhou/jeddah/manila/panama_city/qingdao), replacing the
+lowercase dynamic auto-discovered pseudo-stations that had been resolving these
+cities at city CENTROIDS (empty ICAO, source=open-meteo-geocoding, created
+2026-05-31). Measured centroid-vs-airport offset (live dynamic_stations DB row
+vs AWC airport metadata):
+
+```
+city          ICAO   offset_km
+qingdao       ZSQD      42.2
+guangzhou     ZGGG      31.2
+jeddah        OEJN      21.8
+cape_town     FACT      17.1
+busan         RKPK      12.0
+manila        RPLL      11.1
+panama_city   MPMG       4.9      (median 17.1, max 42.2)
+```
+
+This is an ACTIVE wrong-station defect of the S231 class — not an enhancement.
+lookup_station checks static before dynamic, so the new rows shadow the centroid
+rows and move the forecast query point onto the resolution airport.
+
+**Every field verified independently (S233, 2026-07-20):** station_id + AIRPORT
+coords from live Polymarket market descriptions ("...recorded at the <Airport>
+Station...") AND live AWC METAR, cross-checked; temp_unit="C" verbatim in each
+market text; timezone from the live dynamic rows (jeddah=Asia/Riyadh UTC+3, NOT
+Dubai UTC+4); ghcnd_id="" (seoul/taipei/istanbul/milan precedent);
+panama_city=MPMG (Gelabert) explicitly NOT Tocumen MPTO. Karachi NOT added
+(OPMR, no METARs; OPKC = S231 trap) — locked by a defect test.
+
+**Adversarial review:** 33-agent fan-out (7 per-station fact + 5 integration
+lenses + per-finding refutation). 21 HIGH/MED raised; the verify pass corrected
+most "HIGH" to MED/LOW and NONE impugned a shipped value — they drove the test
+set (exact-coord/hemisphere guard, explicit temp_unit=='C', ICAO-shape+unique,
+static-shadows-dynamic, karachi-exclusion). Full suite 4017 passed. Both
+byte-identical registry copies edited in sync.
+
+**KNOWN, DISCLOSED, non-blocking:**
+1. **Calibration cold-start (expected, corrective):** each city's bias/EMOS
+   history was accumulated under the old lowercase station_id against centroid
+   coords; the ICAO key starts with zero pairs and falls back to the pooled
+   global path until fresh (forecast,actual) pairs accrue. The discarded history
+   was miscalibrated anyway (wrong coords) — this is the S231 renamed-city
+   cold-start pattern, not a loss. WATCH the 7 cities re-learn EMOS post-deploy.
+2. **busan local_model:** left None. The Korea analog seoul uses jma_seamless,
+   and JMA covers Busan's coords — adding it would give busan a stronger blend.
+   NOT done unilaterally (model-behavior change → operator opt-in). Recommended
+   follow-up, one-line: local_model="jma_seamless" on the busan row.
+3. **panama_city alias "panama city":** follows convention (mexico_city etc.).
+   No US "Panama City, FL" market exists today; if Polymarket ever lists one it
+   would word-boundary-match MPMG (Panama, Celsius) — a prospective ambiguity of
+   the same class every shared city name carries. Documented, not guarded.
+
+**REMAINING = operator-only:** review + splinter release cut (deploy/wb-release-
+cut.sh) per the S231 Tier-3 pattern. Not deployed this session.
