@@ -28,6 +28,8 @@ Rules for future sessions:
 | 07-20 | Hierarchy model v1 adversarially reviewed → **UNSOUND** (silent tape loss; censoring; unfloored ranking; settle conflation); v1 full run KILLED mid-flight, output discarded | review earned its cost | reviewer agent, 3 criticals + 1 |
 | 07-20 | v2 rewritten (all criticals + moderates) → fix-verification: **SOUND-WITH-CAVEATS**; C1/C2/C3 CLOSED, C4/M10 partial (disclosure-grade) | reading rules: trust NETin/cap/d + fill/h; NETset indicative unless set%≈100; excluded>0 in a decision series ⇒ rerun | fix-verifier pass |
 | 07-20 | ALL-SECTOR hierarchy v2 full run (2,729 mkts, 0 fetch fails / 0 exclusions) | weather_temp #1 at 14.65 NET/cap/d, ~30x next sector; mentions NETset trap exposed | §C + SECTOR_HIERARCHY_2026-07-20.txt |
+| 07-20 | **FIRST LIVE ORDER on Kalshi PROD, from the VPS (operator-authorized: real money + Ireland compliance accepted)** — 1ct non-marketable post_only bid @ $0.05 on KXSILVERH; HTTP 201 accepted, cancelled HTTP 200, `status=canceled`; independent US read-only check: **account FLAT $100.00 / 0 positions / 0 resting** | **WRITE PATH WORKS FROM IRELAND** (Kalshi does not geo-block order placement from the eu-west-1 IP) | vps_trade_test.py run + flat-check |
+| 07-20 | Geo-block test (bogus-auth from VPS) + valid-auth balance read from VPS | endpoints auth-gated not geo-gated; authed read HTTP 200 | ssh probes |
 | 07-20 | **post_only cross-block probe PASS** (demo reopened): control rested, crossing order REJECTED at HTTP 400 `post only cross` vs EXTERNAL liquidity; post-run verify 0 resting / balance flat $100.0000 | residual **CLOSED** (demo) | verify_kalshi_postonly.py run |
 
 ## B. CANONICAL NUMBERS (latest-good; supersede by appending, with date)
@@ -45,6 +47,8 @@ Rules for future sessions:
 | Void rate (temp) | 52.4% of snapshots | MEASURED | samples (07-20) |
 | Competition | 83% of first-void mkts never contested; median 5min to flip when contested | MEASURED | READOUT §D (07-19) |
 | Maker fee | $0.000000 on sampled temp/WNBA mkts | MEASURED (demo receipt) | demo read-back (07-19) |
+| VPS (Ireland) live write path | WORKS — order placed+cancelled from eu-west-1, account flat | MEASURED (live prod, real money) | vps_trade_test.py 07-20; **compliance (trade-from-Ireland) = operator-accepted risk, NOT a legal ruling** |
+| Prod account | funded $100.00; key id 89314df3-… (demo key was cc784540-…) | MEASURED | prod balance read 07-20 |
 | Sector hierarchy | weather_temp #1 (14.65 NET/cap/d, ~30x next); mentions settlement-trap; rest ≤0.30 | MODEL | §C, v2 run (07-20) |
 
 ## C. SECTOR HIERARCHY (2026-07-20 v2 run — 2,729 mkts / 162 series / 50h window;
