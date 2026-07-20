@@ -104,6 +104,50 @@ QUOTE SANITY** lines. Record the cohort3 epoch in `docs/MB_STATE.md` §0.
 
 ## Post-deploy
 
-The next **12:30Z** readout must show `16+8+6` plus a fresh `cohort3` line, or
-it RAISES on ledger drift — fix before trusting any line. cohort3 starts at
-0 resolved; it is a NEW collection epoch, never pooled with cohort1/cohort2.
+With the bench folded in (operator 2026-07-20), the next **12:30Z** readout must
+show header `15+8+6+1probe→0+1benched` and:
+- `[cohort1(15) REDUCED] … :: NO VERDICT (roster REDUCED by a time-out …)`
+- a fresh `[cohort3(6)]` line (0 resolved — new epoch, never pooled)
+- `[benched(1) TIME-OUT since <date>] … :: NO VERDICT`
+
+or it RAISES on ledger drift — fix before trusting any line. Requires readout
+code ≥ `d423b78` live in the clone.
+
+---
+
+## FOLLOW-ON QUEUE — cohort-1 active-trader vetting (operator "proceed" 2026-07-20)
+
+**Why:** cohort-1's 16 were admitted on the deprecated V1 `audit_roster_chain.py`
+"clean" verdict — **0/16 ever had a chain deep-dive** (verified 2026-07-20).
+Cohort-2 (8) and cohort-3 (6) are deep-dive-vetted. This pass brings cohort-1's
+**7 ACTIVE** traders to the run-4 fair-params standard so the whole live roster
+is vetted on one method. The 9 dormant cohort-1 addresses are SKIPPED (they do
+not trade — deep-diving them is wasted RPC).
+
+**The 7 targets** (cohort-1 addresses with shadow records; regenerable via the
+steward `cohort1_active.py`):
+```
+0x448861155279dbf833d041b963e3ac854599e319   # the benched bum — dive gives a
+                                             # chain-native re-admission signal
+0x84dbb7103982e3617704a2ed7d5b39691952aeeb
+0xab19716584931d81cd9e7763402673a64baa4876
+0xc6587b11a2209e46dfe3928b31c5514a8e33b784   # BORDERLINE low activity (3 shadow
+                                             # recs, 21 API trades/168h) — may
+                                             # return INSUFFICIENT/un-gradeable
+0xecb14ac6e9ca447ce2f2912e6217b43d7b655da3
+0xee00ba338c59557141789b127927a55f5cc5cea1
+0xf2f6af4f27ec2dcf4072095ab804016e14cd5817
+```
+
+**Sequencing (peer rule — no jumping run-4 on the shared RPC):** runs AFTER
+run-4 exits, serial with the deepen wave. Cheapest as ONE multi-sweep with the
+deepen-wave addresses via `chain_fill_cache.populate_multi` once the fill-cache
+proof gate passes. Command mirrors run-4 (bare-address roster file,
+`--extra-traders`, fresh gamma cache, `--max-receipts 30000`, detached launch,
+own fresh log name).
+
+**Outcome (diagnostic, NOT a roster change):** tells us which of the 7 are
+chain-copyable (skill-verified) vs noise — explains *why* cohort-1 failed. Any
+strong ADMIT becomes a candidate for a FRESH pre-registered cohort (operator
+go); this pass does NOT rescue cohort-1's locked NOT-DEMONSTRATED verdict and
+does NOT auto-change the roster. INSUFFICIENTs join the deepen backlog.
