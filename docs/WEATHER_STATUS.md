@@ -6,8 +6,14 @@
 > Update the three sections below at the end of every WB session (same commit as the work).
 
 **Last updated:** 2026-07-20 (S233 — verification/watch + Tier-3 registry
-additions BUILT + DEPLOYED. **Now live: release `20260720_113011`** (restart
-15:31:08Z; rollback `20260719_195417`). Headlines: **REGISTRY ADDITIONS
+additions + a shared signal fix, TWO deploys. **Now live: release
+`20260720_115735`** (deploy 2 = shared `_publish_signal` market_id guard,
+`754555a`, restart 15:58:06Z; deploy 1 = registry additions `20260720_113011`,
+restart 15:31:08Z; rollback chain 115735→113011→`20260719_195417`). The signal
+guard skips a market-agnostic signal (court_monitor federal_register, no
+market_id) instead of KeyError-ing; WB vendored copy deployed, TOP-LEVEL copy
+for mirror/esports/ingestion PENDING peer master deploy (memory
+`project_shared_signal_market_id_fix.md`). Headlines: **REGISTRY ADDITIONS
 DEPLOYED** — 7 static rows (busan/cape_town/guangzhou/jeddah/manila/panama_city/
 qingdao) + busan jma_seamless, replacing centroid pseudo-stations that were
 mis-stationing these cities 5-42 km from their resolution airport (active

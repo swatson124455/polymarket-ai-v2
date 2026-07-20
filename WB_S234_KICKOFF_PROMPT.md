@@ -22,18 +22,20 @@ relative-path `git`/`grep` silently reads/writes the WRONG file.** Guardrails:
   runtime artifact, NOT yours; never stage it.
 
 VPS: `ubuntu@18.201.216.0`, key `~/.ssh/wb_deploy2`. **Deployed release:
-`20260720_113011`** (S233 DID deploy — the 7 registry additions + busan
-jma_seamless, operator-authorized live; restart 15:31:08Z; rollback = prior
-release `20260719_195417`). Do NOT deploy without operator sign-off.
+`20260720_115735`** (S233 made TWO operator-authorized deploys: `20260720_113011`
+= the 7 registry additions + busan jma_seamless (restart 15:31:08Z), then
+`20260720_115735` = the shared signal_ingestion market_id guard (restart
+15:58:06Z). Rollback chain: 115735 → 113011 → `20260719_195417`). Do NOT deploy
+without operator sign-off.
 
 ## §0 — VERIFY THE S233 HANDOFF (before ANY other work)
 
 1. `bash scripts/wb_resume_check.sh` — expected: ALL PASS except (a) the known
    "agent WORKTREE" location FAIL, (b) at most a deploy-parity WARN (HEAD ahead
-   of `20260720_113011` by the trailing LAST_DEPLOY record commit + any S234 doc
+   of `20260720_115735` by the trailing LAST_DEPLOY record commit + any S234 doc
    commits — no undeployed CODE). Any OTHER FAIL → STOP and report.
 2. VPS spot-checks (read-only, key `~/.ssh/wb_deploy2`):
-   - `readlink /opt/polymarket-ai-v2-weather` → `20260720_113011`;
+   - `readlink /opt/polymarket-ai-v2-weather` → `20260720_115735`;
      `systemctl is-active polymarket-weather` → active.
    - 3 flags in the running process env (`sudo cat /proc/$(systemctl show -p
      MainPID --value polymarket-weather)/environ | tr '\0' '\n' | grep WEATHER_`):
@@ -70,14 +72,18 @@ service is unaffected) and it is MB-owned shared infra — DO NOT touch it.
 
 ## WHAT S233 DID (verification + Tier-3 registry build + DEPLOY)
 
-- **DEPLOYED release `20260720_113011`** (operator-authorized, live): the 7
+- **DEPLOY 1 — release `20260720_113011`** (operator-authorized, live): the 7
   registry additions + busan jma_seamless. Post-deploy verified in the RUNNING
   release venv — registry 114, all 7 resolve to their ICAOs, busan
   local_model=jma_seamless, 3 nowcast flags survived the restart, scan healthy
   (`weatherbot_scan_done active_cities=49 weather_markets=341 groups=109`), no
   station/import errors. Commits: `e49aa01` (rows+tests), `71ba226` (busan
-  model), `5dcdb26` (LAST_DEPLOY record). Rollback = symlink back to
-  `20260719_195417` + restart.
+  model), `5dcdb26` (LAST_DEPLOY record).
+- **DEPLOY 2 — release `20260720_115735`** (operator-authorized, live, CURRENT):
+  the shared `_publish_signal` market_id guard (`754555a`) + record `e06cd66`.
+  Post-deploy verified: guard in running code, 0 KeyError since, registry
+  additions still intact. See the SHARED SIGNAL FIX section below.
+  Rollback chain: 115735 → 113011 → `20260719_195417`.
 - Full §0 verification of the S232 handoff: **all clean.** Details above.
 - **Consumed the day-3 mesh-lead grade** (`--lead 20260718`), which S232 left
   IEM-backfill-gated. Confirmed backfill landed via a per-station coverage
@@ -131,17 +137,24 @@ signal specifically being rare — NOT a broken pipeline. Do not "fix" it.
    proved the stations resolve, but they only surface in journal `city=` lines
    when they generate a trade signal — absence of a per-city line ≠ not processed.
 
-## ⚠ FLAG — pre-existing latent bug observed on the 07-20 restart (NOT WB scope)
+## SHARED SIGNAL FIX — `_publish_signal` market_id guard (FIXED + WB-DEPLOYED)
 
-`KeyError: 'market_id'` in `_publish_signal` handling a **`federal_register`**
-signal (today's doc 2026-14654, a regulatory doc with no market_id). Fired ONCE
-at 15:32:08Z, ~1 min after the restart; the bot did NOT crash (stayed active,
-scanning). This is in **shared `base_engine/signals`** code, data-dependent
-(the restart re-processed the current federal-register feed and hit a doc the
-handler mis-parses). ZERO coupling to the registry change (traceback frame is
-`_publish_signal` → `federal_register`, not station/weather). Prior-release
-startup (07-19 19:54) had 0 of these. WB did NOT fix it (shared signal code, not
-weather scope). Relay to whoever owns the federal_register signal handler.
+The `KeyError: 'market_id'` seen on the 07-20 restart (in `_publish_signal`
+handling a market-agnostic `federal_register` signal — carries
+`categories_matched`, no `market_id`) was **fixed on operator direction**
+(commit `754555a`): a guard skips a signal with no `market_id` cleanly instead
+of KeyError-ing on the per-market subscript. Byte-identical for signals that
+HAVE a market_id. Defect test proven fail→pass; full suite 4020 green.
+**DEPLOYED to polymarket-weather** (release `20260720_115735`, restart
+15:58:06Z) — the WB vendored copy. Post-deploy: guard present in running code,
+0 KeyError since, registry additions intact.
+**⚠ CROSS-BOT PENDING:** the TOP-LEVEL copy (`base_engine/signals/
+signal_ingestion.py`, same fix, in the same commit) serves
+mirror/esports/ingestion via master — that reach is a PEER-COORDINATED master
+merge + deploy, NOT done from WB. Tracked in memory
+`project_shared_signal_market_id_fix.md`. Also NOT done (design decision, not
+this bug): whether federal_register macro signals should be market-MATCHED by
+category (like intl_elections) rather than dropped.
 
 ## QUEUE (all need operator go where noted — NOT started in S233 per operator)
 
