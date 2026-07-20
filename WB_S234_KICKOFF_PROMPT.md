@@ -22,17 +22,18 @@ relative-path `git`/`grep` silently reads/writes the WRONG file.** Guardrails:
   runtime artifact, NOT yours; never stage it.
 
 VPS: `ubuntu@18.201.216.0`, key `~/.ssh/wb_deploy2`. **Deployed release:
-`20260719_195417`** (unchanged by S233 — that session made ZERO deploys and
-ZERO bot-code changes). Do NOT deploy without operator sign-off.
+`20260720_113011`** (S233 DID deploy — the 7 registry additions + busan
+jma_seamless, operator-authorized live; restart 15:31:08Z; rollback = prior
+release `20260719_195417`). Do NOT deploy without operator sign-off.
 
 ## §0 — VERIFY THE S233 HANDOFF (before ANY other work)
 
 1. `bash scripts/wb_resume_check.sh` — expected: ALL PASS except (a) the known
-   "agent WORKTREE" location FAIL, (b) a deploy-parity WARN (HEAD is ahead of
-   `20260719_195417` by DOC-ONLY commits — S233 shipped no code). Any OTHER
-   FAIL → STOP and report.
+   "agent WORKTREE" location FAIL, (b) at most a deploy-parity WARN (HEAD ahead
+   of `20260720_113011` by the trailing LAST_DEPLOY record commit + any S234 doc
+   commits — no undeployed CODE). Any OTHER FAIL → STOP and report.
 2. VPS spot-checks (read-only, key `~/.ssh/wb_deploy2`):
-   - `readlink /opt/polymarket-ai-v2-weather` → `20260719_195417`;
+   - `readlink /opt/polymarket-ai-v2-weather` → `20260720_113011`;
      `systemctl is-active polymarket-weather` → active.
    - 3 flags in the running process env (`sudo cat /proc/$(systemctl show -p
      MainPID --value polymarket-weather)/environ | tr '\0' '\n' | grep WEATHER_`):
@@ -67,8 +68,16 @@ prints `line 360: true}: command not found` — a JSON-ish value bash tries to
 eval. Harmless (systemd's EnvironmentFile parser does not shell-eval, so the
 service is unaffected) and it is MB-owned shared infra — DO NOT touch it.
 
-## WHAT S233 DID (verification/watch session — no code, no deploy)
+## WHAT S233 DID (verification + Tier-3 registry build + DEPLOY)
 
+- **DEPLOYED release `20260720_113011`** (operator-authorized, live): the 7
+  registry additions + busan jma_seamless. Post-deploy verified in the RUNNING
+  release venv — registry 114, all 7 resolve to their ICAOs, busan
+  local_model=jma_seamless, 3 nowcast flags survived the restart, scan healthy
+  (`weatherbot_scan_done active_cities=49 weather_markets=341 groups=109`), no
+  station/import errors. Commits: `e49aa01` (rows+tests), `71ba226` (busan
+  model), `5dcdb26` (LAST_DEPLOY record). Rollback = symlink back to
+  `20260719_195417` + restart.
 - Full §0 verification of the S232 handoff: **all clean.** Details above.
 - **Consumed the day-3 mesh-lead grade** (`--lead 20260718`), which S232 left
   IEM-backfill-gated. Confirmed backfill landed via a per-station coverage
@@ -112,6 +121,27 @@ signal specifically being rare — NOT a broken pipeline. Do not "fix" it.
    lines + grader rows under `weather_nowcast_peak`; window-cap + overshoot
    behavior.
 5. Cold-start midpoint (~07-24): 7 corrected stations re-learning EMOS.
+6. **NEW — the 7 S233 registry cities calibration cold-start:** busan/cape_town/
+   guangzhou/jeddah/manila/panama_city/qingdao switched from lowercase dynamic
+   keys to their ICAO keys on the 07-20 deploy, so their bias/EMOS history reset
+   (the old history was against wrong CENTROID coords — this is corrective, not
+   a loss). They fall back to the pooled global path until fresh (forecast,
+   actual) pairs accrue under the ICAO. WATCH them re-learn; expect a few days.
+   Verify the forecast now queries the airport: the running-venv import/lookup
+   proved the stations resolve, but they only surface in journal `city=` lines
+   when they generate a trade signal — absence of a per-city line ≠ not processed.
+
+## ⚠ FLAG — pre-existing latent bug observed on the 07-20 restart (NOT WB scope)
+
+`KeyError: 'market_id'` in `_publish_signal` handling a **`federal_register`**
+signal (today's doc 2026-14654, a regulatory doc with no market_id). Fired ONCE
+at 15:32:08Z, ~1 min after the restart; the bot did NOT crash (stayed active,
+scanning). This is in **shared `base_engine/signals`** code, data-dependent
+(the restart re-processed the current federal-register feed and hit a doc the
+handler mis-parses). ZERO coupling to the registry change (traceback frame is
+`_publish_signal` → `federal_register`, not station/weather). Prior-release
+startup (07-19 19:54) had 0 of these. WB did NOT fix it (shared signal code, not
+weather scope). Relay to whoever owns the federal_register signal handler.
 
 ## QUEUE (all need operator go where noted — NOT started in S233 per operator)
 

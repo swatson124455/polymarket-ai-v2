@@ -1290,5 +1290,19 @@ byte-identical registry copies edited in sync.
    would word-boundary-match MPMG (Panama, Celsius) — a prospective ambiguity of
    the same class every shared city name carries. Documented, not guarded.
 
-**REMAINING = operator-only:** review + splinter release cut (deploy/wb-release-
-cut.sh) per the S231 Tier-3 pattern. Not deployed this session.
+**DEPLOYED 2026-07-20 (operator-authorized "you do it"): release
+`20260720_113011`.** Sequence: git archive HEAD (71ba226) → scp → wb-release-cut.sh
+→ record parity (5dcdb26). Restart 15:31:08Z. POST-DEPLOY VERIFIED in the running
+release venv: registry 114, all 7 resolve to their ICAOs via lookup_station,
+busan local_model=jma_seamless, 3 nowcast flags survived (.env.weather not in the
+tarball), scan healthy (`weatherbot_scan_done active_cities=49 weather_markets=341
+groups=109`), 0 station/import errors post-restart. Rollback = symlink back to
+`20260719_195417` + restart. WATCH: the 7 cities cold-start EMOS/bias under their
+new ICAO keys (corrective; pooled-global fallback until fresh pairs accrue). The
+7 cities only surface in journal `city=` lines when they generate a trade signal
+— absence ≠ not processed (running-venv lookup is the ground truth).
+
+⚠ **Unrelated observation on the restart:** `KeyError: 'market_id'` in
+`_publish_signal` handling a `federal_register` signal (shared base_engine/signals
+code, data-dependent, non-fatal — bot stayed active). ZERO coupling to this
+registry change. Flagged for the signals owner; NOT fixed (out of WB scope).
