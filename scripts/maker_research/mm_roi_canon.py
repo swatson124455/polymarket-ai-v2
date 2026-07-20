@@ -167,10 +167,20 @@ def main():
     print()
 
     # ---- THE TABLE --------------------------------------------------------
+    # ROOT-FIX DOCTRINE (2026-07-20, after the SAME data was read to four
+    # different "EV"s in one session and rightly called out): the ONLY
+    # quotable Maker return is the REWARDS basis — model accrual per unit
+    # capital. Rewards are deterministic given the market set, so the number
+    # does NOT move when you reslice (by policy, sector, or budget). TRADING
+    # is a wave: open marks swing thousands intraday, mean ~0-to-negative,
+    # path-dependent, UNforecastable in-window. It is reported ONLY as a band
+    # (a risk range) or a labelled "drag", NEVER added into a headline point.
+    # Every prior "different answer" was a trading-inclusive point that
+    # reshuffled with the slice. DO NOT reintroduce a net/EV headline column.
     print("=" * 72)
-    print("CANONICAL ROI TABLE  (NET basis, %.2f days, departed included at"
+    print("CANONICAL RETURN  (%.2f days; QUOTABLE = REWARDS BASIS ONLY;"
           % days)
-    print("frozen marks; blind facts only)")
+    print("trading = band/noise, never a point. departed at frozen marks.)")
     print()
     # trading is a WAVE, not a rate: open marks swing thousands intraday.
     # Report the 24h band and center EV on the MEDIAN; never print a
@@ -196,8 +206,8 @@ def main():
     # erased the ungated control's older losses and printed it at +2.85%
     # ROI; caught before presentation 2026-07-18). The band is displayed
     # ONLY as the uncertainty on any short-window trading read.
-    print("%-11s %8s %9s %22s %8s %10s %8s" % ("policy", "rew/day",
-          "trade/day", "24h band [lo/med/hi]", "EV/day", "capital$", "ROI/day"))
+    print("%-11s %10s %9s %9s %24s" % ("policy", "capital$", "rew/day",
+          "rewROI/d", "trading band 24h [lo/med/hi]"))
     for p in POLICIES:
         acc, trade = ours[p]
         xs = sorted(traj[p].values())
@@ -205,19 +215,17 @@ def main():
         foot = sum(st.get("msz", 0) for k, st in state.items()
                    if k.endswith("|" + p) and isinstance(st, dict)
                    and st.get("bid") is not None)
-        ev = (acc + trade) / days
         cap = foot if foot else 1.0
-        print("%-11s %8.0f %9.0f %7.0f/%6.0f/%6.0f %8.0f %10.0f %7.2f%%"
-              % (p, acc / days, trade / days, lo, med, hi, ev, foot,
-                 100 * ev / cap))
-    print("  (trade/day = lifetime total / days; the band shows how far any")
-    print("   short-window trading read can swing — quote EV only WITH the band)")
+        print("%-11s %10.0f %9.0f %8.2f%% %7.0f/%6.0f/%6.0f"
+              % (p, foot, acc / days, 100 * (acc / days) / cap, lo, med, hi))
+    print("  rewROI/d is THE quotable number. The band is the trading swing")
+    print("  (noise), not a return — a negative low is risk, not expected")
+    print("  value. rewards are model accrual (caveat 1), stable across slices.")
     print()
-    print("BLIND CAPITAL TIERS  (rank = offered POOL/MIN_BET, public fields")
-    print("only; outcomes = NET incl. open marks; policy = P0_base)")
-    print("%10s %8s %9s %10s %8s  %s" % ("budget", "markets", "EV/day",
-                                         "of which", "ROI/day", "mix"))
-    print("%10s %8s %9s %10s %8s" % ("", "", "", "rewards", ""))
+    print("BLIND CAPITAL TIERS  (rank = offered POOL/MIN-BET, public fields;")
+    print("policy=P0_base. quotable = rew/day & rewROI; trade = noise drag)")
+    print("%10s %8s %10s %9s %11s  %s" % ("budget", "markets", "rew/day",
+                                          "rewROI/d", "tradeDrag", "mix"))
     mkts = []
     for k, st in state.items():
         if not k.endswith("|P0_base") or not isinstance(st, dict):
@@ -232,28 +240,87 @@ def main():
                      "net_d": (st.get("acc", 0.0) + net_of(st, sh)) / days})
     mkts.sort(key=lambda m: -m["pool"] / m["cap"])
     for budget in TIERS:
-        cap = ev = acc = 0.0
+        cap = rew = net = 0.0
         n = 0
         secs = Counter()
         for m in mkts:
             if cap + m["cap"] > budget:
                 continue
-            cap += m["cap"]; ev += m["net_d"]; acc += m["acc_d"]; n += 1
+            cap += m["cap"]; rew += m["acc_d"]; net += m["net_d"]; n += 1
             secs[m["sec"]] += 1
-        print("%10d %8d %9.0f %10.0f %7.1f%%  %s"
-              % (budget, n, ev, acc, 100 * ev / max(cap, 1),
+        print("%10d %8d %10.0f %8.2f%% %11.0f  %s"
+              % (budget, n, rew, 100 * rew / max(cap, 1), net - rew,
                  ",".join("%s:%d" % kv for kv in secs.most_common(3))))
     print()
+    # ---- PER-SECTOR cut (same per-market NET; splits the durable rewards
+    #      income from the trading/adverse-selection noise so a blind-rank
+    #      artifact cannot masquerade as a law) --------------------------
+    print("PER-SECTOR  (policy=P0_base; quotable = rew/day & rewROI. trade =")
+    print("noise drag. poolPerCap = median pool/min-bet. rewTop1 = one market's")
+    print("share of the sector's REWARDS = Protocol-14 concentration check.)")
+    print("%-13s %5s %9s %8s %9s %11s %10s %7s"
+          % ("sector", "mkts", "capital$", "rew/day", "rewROI/d", "tradeDrag",
+             "poolPerCap", "rewTop1"))
+    bysec = defaultdict(list)
+    for m in mkts:
+        bysec[m["sec"]].append(m)
+    rows = []
+    for sec, ms in bysec.items():
+        cap = sum(m["cap"] for m in ms)
+        rew = sum(m["acc_d"] for m in ms)
+        net = sum(m["net_d"] for m in ms)
+        drag = net - rew
+        ppc = sorted(m["pool"] / m["cap"] for m in ms)
+        med_ppc = ppc[len(ppc) // 2]
+        # concentration on the QUOTABLE basis (rewards), not on net: does one
+        # market carry the sector's income? high rewTop1 => fragile.
+        rws = sorted((m["acc_d"] for m in ms), key=abs, reverse=True)
+        top1 = abs(rws[0]) / max(sum(abs(x) for x in rws), 1e-9) if rws else 0.0
+        # sort by the quotable number (rew/day), not net
+        rows.append((rew, sec, len(ms), cap, 100 * rew / max(cap, 1),
+                     drag, med_ppc, top1))
+    for rew, sec, n, cap, rewroi, drag, ppc, top1 in sorted(rows, reverse=True):
+        print("%-13s %5d %9.0f %8.0f %8.2f%% %11.0f %10.1f %6.0f%%"
+              % (sec, n, cap, rew, rewroi, drag, ppc, 100 * top1))
+    print()
+    # ---- REWARDS-TARGETED pilot: fill from the highest REWARDS-DENSITY
+    #      (rew/cap) markets. rew/cap is FORWARD-computable from public pool/
+    #      min-size before ever quoting -> NOT hindsight, NOT circular. (The
+    #      old net/cap ranking sorted on the outcome it then reported = the
+    #      +116% mirage. Removed.) ---------------------------------------
+    print("REWARDS-TARGETED TIERS  (rank = rew/cap = rewards density, a FORWARD")
+    print("quantity from public pool/min-size; quotable = rewROI, no hindsight)")
+    print("%10s %8s %10s %9s %11s  %s" % ("budget", "markets", "rew/day",
+                                          "rewROI/d", "tradeDrag", "mix"))
+    steer = sorted(mkts, key=lambda m: -(m["acc_d"] / m["cap"]))
+    for budget in TIERS:
+        cap = rew = net = 0.0
+        n = 0
+        secs = Counter()
+        for m in steer:
+            if cap + m["cap"] > budget:
+                continue
+            cap += m["cap"]; rew += m["acc_d"]; net += m["net_d"]; n += 1
+            secs[m["sec"]] += 1
+        print("%10d %8d %10.0f %8.2f%% %11.0f  %s"
+              % (budget, n, rew, 100 * rew / max(cap, 1), net - rew,
+                 ",".join("%s:%d" % kv for kv in secs.most_common(3))))
+    print("  ranked by a FORWARD quantity (rewards density), so no hindsight.")
+    print("  tradeDrag is the noise you also take on, bounded by the band above.")
+    print()
     print("CAVEATS (unconditional, every run):")
-    print(" 1. rewards column = MODEL accrual. Formula verified vs official")
-    print("    docs; OUR SHARE is an estimate. Only pilot receipts to our")
-    print("    own wallet verify income. There is no chain proof of money")
-    print("    we have not yet earned.")
+    print(" 0. QUOTE THE REWARDS BASIS ONLY. rewROI is stable across every")
+    print("    slice (policy/sector/budget) because rewards are deterministic.")
+    print("    trading is a band, never a point. Quoting a trading-inclusive")
+    print("    'EV' is what produced four different answers in one session.")
+    print(" 1. rewards = MODEL accrual. Formula verified vs official docs;")
+    print("    OUR SHARE is an estimate. Only pilot receipts to our own wallet")
+    print("    verify income. No chain proof of money we have not yet earned.")
     print(" 2. departed markets carry FROZEN marks (family limitation).")
     print(" 3. window is short (%.1f days) and PRE promo-cliff (Jul 19);" % days)
     print("    every $ figure compresses by whatever the cliff removes.")
-    print(" 4. blind tiers use per-market rates diluted by mid-window")
-    print("    universe rotation -> tier EV is a LOWER-leaning estimate.")
+    print(" 4. tiers use per-market rates diluted by mid-window universe")
+    print("    rotation -> rewROI is a LOWER-leaning estimate.")
     print(" 5. never quote the realized/unrealized split from any output.")
 
 

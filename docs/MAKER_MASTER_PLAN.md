@@ -12,6 +12,23 @@ earlier one, FLAG IT AS A CORRECTION, never slip it in. This rule exists
 because min-bet got quoted 4 different ways in one session (median-off-subset,
 xprice, xpair) — all wrong except `MIN_BET = rewardsMinSize dollars`.
 
+### §0a — RETURN = REWARDS BASIS ONLY (hardcoded 2026-07-20, after the same
+data was read to four different "EV"s in one session)
+
+**The ONLY quotable Maker return is the REWARDS basis: model accrual per unit
+capital (`rewROI/day`).** Rewards are deterministic given the market set, so the
+number does NOT move when you reslice by policy, sector, or budget — it is the
+same across every cut of `mm_roi_canon.py`. **TRADING is a wave** (open marks
+swing thousands intraday, mean ~0-to-negative, path-dependent, UNforecastable
+in-window): report it ONLY as the 24h band or a labelled `tradeDrag`, **NEVER
+added into a headline point.** Every "different answer" in the whipsaw session
+was a trading-inclusive net/EV point that reshuffled with the slice. The canon
+was rebuilt so it structurally cannot print a net/EV headline — you cannot quote
+what the tool will not emit. Do NOT reintroduce one. Rank any targeted allocation
+by a FORWARD quantity (rewards density = rew/cap), never by hindsight net (that
+was the +116% mirage). Rewards remain MODEL accrual — stable-computed, not
+verified — until pilot receipts.
+
 ---
 
 *The single vision/plan anchor for the Maker (market-making) initiative.
