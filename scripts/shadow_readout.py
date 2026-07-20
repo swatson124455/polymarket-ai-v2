@@ -335,14 +335,25 @@ async def run(args) -> int:
     all_alerts: list[str] = []
     for name, members, trust in cohorts:
         label = f"{name}({len(members)})"
-        res = cohort_readout(recs, outcomes, trust, ",".join(members), args)
         # benched is an OBSERVATION line — a timed-out trader's FORWARD
         # re-evaluation. It is never a cohort verdict, so it prints diagnostic
         # (never "SURVIVES") and never fires a cohort POWERED/negative alert.
         is_bench = (name == "benched")
+        # FORWARD-ONLY time window for benched (adversarial review 2026-07-20,
+        # HIGH): `trust_after` is NOT a time filter — repair_record KEEPS every
+        # ladder-armed record regardless of detect_ts (80% of the live bum's
+        # records are ladder-armed), so passing the bench epoch as trust alone
+        # pools the dragged pre-bench history straight back in — the exact
+        # contamination the time-out removes. Apply a REAL detect_ts cutoff so
+        # the line measures recovery SINCE the bench, which is what gates
+        # re-admission. Cohorts are unfiltered (grp_recs is recs) → identical.
+        grp_recs = ([r for r in recs if float(r.get("detect_ts") or 0) >= trust]
+                    if is_bench else recs)
+        res = cohort_readout(grp_recs, outcomes, trust, ",".join(members), args)
         if is_bench:
-            lines.append(fmt_line(f"{name}({len(members)}) TIME-OUT", res,
-                                  args.min_markets, diagnostic=True,
+            since = datetime.fromtimestamp(trust, timezone.utc).strftime("%m-%d")
+            lines.append(fmt_line(f"{name}({len(members)}) TIME-OUT since {since}",
+                                  res, args.min_markets, diagnostic=True,
                                   diag_reason=_DIAG_BENCH))
         else:
             lines.append(fmt_line(label, res, args.min_markets))
@@ -352,7 +363,7 @@ async def run(args) -> int:
         top, share = concentration(res)
         if top and share >= args.conc_threshold and len(members) > 1:
             rest = [a for a in members if a.lower() != top.lower()]
-            loo = cohort_readout(recs, outcomes, trust, ",".join(rest), args)
+            loo = cohort_readout(grp_recs, outcomes, trust, ",".join(rest), args)
             # diagnostic=True: the LOO is a POST-HOC cut. Without this it prints
             # the pre-registered verdict vocabulary — including "SURVIVES
             # (pre-registered bars met)" — on a cohort re-cut by dropping the
@@ -363,7 +374,7 @@ async def run(args) -> int:
                                          loo, args.min_markets,
                                          diagnostic=True))
         if args.per_trader:
-            lines += per_trader_lines(recs, outcomes, trust, members, label, args)
+            lines += per_trader_lines(grp_recs, outcomes, trust, members, label, args)
     block = "\n".join(lines)
     print(block)
     if args.per_trader:
@@ -493,6 +504,30 @@ def _self_test() -> int:
             and "NO VERDICT" in bl)
     print(f"  [cohorts] benched line: diagnostic, no verdict : {ok5e}")
     ok &= ok5e
+    # FORWARD-ONLY window (adversarial review 2026-07-20, HIGH): a benched line
+    # must EXCLUDE pre-bench records. trust_after alone does not — it keeps
+    # ladder-armed records regardless of detect_ts — so run()'s explicit
+    # detect_ts cutoff is what enforces it. A pre-bench LADDER-ARMED record for
+    # the benched trader must NOT count toward its forward line. Assert the
+    # cutoff predicate directly (the same expression run() uses).
+    from types import SimpleNamespace as _NS
+    _cfgb = _NS(max_chase=0.02, max_spread=0.05, fee=0.02, econ_floor=0.02,
+                p_min=0.95, min_markets=30)
+    BE = TRUST1 + 10_000  # bench epoch
+    pre = {"trader": "0xB", "token_id": "old", "verdict": "OK", "first_buy": True,
+           "whale_price": 0.5, "shadow_fill": 0.5, "detect_lag_s": 1.0,
+           "best_ask": 0.5, "detect_ts": BE - 5000,          # BEFORE bench
+           "book_asks": [{"price": 0.5}]}                    # ladder-armed
+    post = {**pre, "token_id": "new", "detect_ts": BE + 5000}  # AFTER bench
+    fwd = [r for r in (pre, post) if float(r.get("detect_ts") or 0) >= BE]
+    # trust_after would KEEP the pre-bench ladder record (proves the bug the
+    # cutoff fixes); the detect_ts cutoff drops it.
+    kept_by_trust = cohort_readout([pre], {}, BE, "0xB", _cfgb)["first_buys"]
+    kept_by_cutoff = cohort_readout(fwd, {}, BE, "0xB", _cfgb)["first_buys"]
+    ok5f = (kept_by_trust == 1 and kept_by_cutoff == 1 and len(fwd) == 1
+            and fwd[0]["token_id"] == "new")
+    print(f"  [cohorts] benched forward cutoff drops pre-bench ladder : {ok5f}")
+    ok &= ok5f
     for bad in ({"clean": ["0xA"], "cohort1_original": [], "cohort2": {}},
                 {"clean": ["0xA", "0xB", "0xC", "0xD"],  # admit w/o ledger
                  "cohort1_original": ["0xa", "0xb"],
