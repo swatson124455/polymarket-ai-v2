@@ -24,22 +24,29 @@ If you think you need to block neg-risk, you don't. Read `feedback_negrisk_routi
 
 **DO NOT "repair" this index lookup.** Fixing the key mismatch ACTIVATES the blanket neg-risk block and re-creates Bug 14 (`59aa0e1`, reverted `f66ed43`) — every election and tournament market cut, silently, at the gateway. If this code path is ever touched, the only acceptable outcomes are: (a) remove the dead block entirely, with operator signoff and full shared-module protocol, or (b) leave it exactly as-is. Any session fixing the gateway's market-index keying for an UNRELATED reason must first neutralize the neg-risk block in the same commit, or it will ship Bug 14 as a side effect.
 
-## SESSION PRIORITY — MIRRORBOT HAS ALL PRIORITIES
+## SESSION PRIORITY — ALL BOTS ARE PEERS (MB PRIMACY RESCINDED 2026-07-20)
+
+> **Changed 2026-07-20 per operator directive: "you no longer have right of way
+> with all bots." Asked to disambiguate, operator selected "Peer — coordinate,
+> no default winner." This section previously read "MIRRORBOT HAS ALL
+> PRIORITIES" and made EB/WB explicitly SUBORDINATE. That rule is DEAD.**
 
 **Two layers, both binding:**
 
-1. **Scope.** A bot-scoped session works ONLY on its own bot's code. WB session touches WB files; EB session touches EB files; MB session touches MB files. Per `feedback_bot_sessions.md` — this is independent of priority.
-2. **Priority for shared resources.** ALL shared resources (deploys, master, shared modules, shared env files, operator attention) are secondary to MB. Not just "on contention" — always. If you are an EB or WB session and the work you need to do touches a shared resource, default-assume MB has primary claim and defer until you have explicit operator authorization that names the MB-state interaction.
+1. **Scope (UNCHANGED).** A bot-scoped session works ONLY on its own bot's code. WB session touches WB files; EB session touches EB files; MB session touches MB files. Per `feedback_bot_sessions.md` — this was always independent of priority, and rescinding priority does NOT grant cross-bot reach. If anything it tightens the duty to coordinate.
+2. **Shared resources: coordinate, no default winner.** ALL shared resources (deploys, master, shared modules, shared env files, the shared RPC endpoint, VPS capacity, operator attention) are contended on the merits. **No bot auto-wins and no bot auto-defers.** When your work needs a shared resource, check for contention and coordinate first — ask, don't assume.
 
-**MirrorBot (MB) is the highest-priority bot in the system.** When sessions contend for shared resources, MB wins. Non-negotiable.
+**No bot is the highest-priority bot.** When sessions contend, the operator decides; absent a decision, the session that would destroy the most work by yielding generally continues, and the other coordinates around it.
 
-1. **Deploys.** MB sessions deploy first. If an MB session is mid-deploy, about to deploy, or has uncommitted work pending deploy, EB and WB sessions DEFER. Never initiate a deploy that could race against MB work — even if your own work is "ready."
-2. **Master merges.** MB has right-of-way to land on master. EB/WB rebases against MB's master state, not vice versa. If a master merge from EB/WB would block or complicate a pending MB merge, defer the EB/WB merge.
-3. **Shared modules** (`base_engine/**`, `paper_trading/**`, `position_manager.py`, `database.py`, `deploy.sh`, `BotBankrollManager`, `risk_manager`, etc.): MB session's changes take precedence. EB/WB sessions assume MB is the source of truth for shared infrastructure; do not modify shared modules in EB/WB sessions without explicit operator authorization on top of MB session signoff.
-4. **Env / config conflicts.** `/opt/pa2-shared/.env` and other shared env files: MB session decides. EB-specific `.env.esports` and WB-specific `.env.weather` are owned by their respective sessions, but if a value in a per-bot file affects MB behavior, MB decides.
-5. **Time and bandwidth.** If operator attention or system resources are scarce, MB ships first. EB/WB sessions stand by.
+1. **Deploys.** No session has automatic deploy precedence. Before a deploy that restarts services another bot depends on, check whether another session is mid-flight and coordinate. Never race a deploy against known in-flight work — in either direction.
+2. **Master merges.** No bot has automatic right-of-way to land on master. Master merges remain operator-gated. Rebase against whatever landed first.
+3. **Shared modules** (`base_engine/**`, `paper_trading/**`, `position_manager.py`, `database.py`, `deploy.sh`, `BotBankrollManager`, `risk_manager`, etc.): no session's changes automatically take precedence. A shared-module change needs operator authorization and should name which bots it affects (see "Cross-Bot Verification" below).
+4. **Env / config conflicts.** `/opt/pa2-shared/.env` and other shared env files: operator decides on conflict. Per-bot env files (`.env.esports`, `.env.weather`, `.env.mirror`) stay owned by their respective sessions.
+5. **Time and bandwidth.** If operator attention or system resources are scarce, the operator sequences the work. No session assumes it ships first.
 
-EB and WB sessions are SUBORDINATE. When in doubt, stop and ask.
+**Bot-OWNED resources are unaffected by any of this.** A bot's own service, deploy script, branch, and env are its own to change — right of way never governed those. MB's `polymarket-mirror3` + `deploy/mirror3_shadow_deploy.sh` remain MB's, exactly as WB's splinter deploy remains WB's.
+
+When in doubt, stop and ask.
 
 ## STATE DOCS ARE BRANCH-VERSIONED (CODIFIED 2026-07-11 — CHECK BEFORE ANY MB WORK)
 
