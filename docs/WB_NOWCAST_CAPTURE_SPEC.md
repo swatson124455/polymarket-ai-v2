@@ -1384,6 +1384,34 @@ degrades to the current reading with no cache), `get_daily_max_history(year)`.
 Live-verified: current HQ 28.0C, cache accumulation, 181 CLMMAXT rows. 13 tests;
 suite 4051. **ZERO live-bot impact — nothing imports it yet.**
 
+## S233 HKO WIRING — Item 1 COMPLETE (commit e2dd243, DEPLOY-GATED)
+
+The wiring below is DONE (operator "wire all 3 now", overriding the calibrator
+hands-off — HK's mis-grounded calibration treated as a defect). truth_provider
+field added to the WeatherStation dataclass (both copies, default None =
+byte-identical for all 30+ cities); hong_kong row → truth_provider="hko" + coords
+moved to HKO HQ (22.3019,114.1742); weather_bot.py 3 legs dispatched (override →
+HKOClient.get_running_daily_max, forecast → moved coords, calibration →
+HKOClient.get_resolved_daily_max). HKOClient instantiated/closed in the bot.
+
+**Adversarial review (3-lens + verify) found + FIXED one real MED defect:** the
+HK override failed OPEN on a Redis outage (checked only `cache is not None`, but
+a downed RedisCache is a non-None object with `.redis`=None → accumulation
+collapsed to a single instantaneous reading → could misfire the <2h aggressive
+branch; same class as c1). Now FAILS CLOSED (requires `cache.redis` +
+raise_on_error=True → None on any missing/downed/erroring cache). 2nd finding
+(rhrread hourly under-samples continuous max) REFUTED — identical to the accepted
+METAR baseline. Tests: 8 dispatch/registry + 15 HKOClient (3 fail-closed); suite
+4061. Transient (accepted): HK calibration rows keyed VHHH mix old-airport + new-
+HKO grounding until they age out (cold-start-style, self-correcting).
+
+**REMAINING = OPERATOR-GATED splinter deploy** (like the registry additions). On
+deploy, post-verify: HK resolves to truth_provider="hko" in the running venv; a
+scan shows HK grounding via HKO (weatherbot_metar_resolution_override with the
+HKO running max, or the hko_runmax_failed_closed line if Redis hiccups). Karachi
+stays deferred (no open OPMR/PMD source; OPKC = the forbidden S231 trap).
+
+### (superseded plan — the wiring above is now built)
 **REMAINING Item 1 = the DEPLOY-GATED wiring (Tier-3, live-traded city):**
 1. Add `truth_provider: Optional[str] = None` to the frozen WeatherStation
    dataclass (BOTH station_registry.py copies) — default None = byte-identical
