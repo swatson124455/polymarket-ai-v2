@@ -1439,6 +1439,7 @@ STATION_REGISTRY: Dict[str, WeatherStation] = {
         temp_unit="C",
         aliases=("busan",),
         resolution_source="Weather Underground / RKPK (Gimhae Intl — per Polymarket market description)",
+        local_model="jma_seamless",  # S233: Korea, matches seoul; JMA domain covers Busan coords
     ),
     "cape_town": WeatherStation(
         city_name="Cape Town",

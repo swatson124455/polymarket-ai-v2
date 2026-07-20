@@ -1280,10 +1280,11 @@ byte-identical registry copies edited in sync.
    global path until fresh (forecast,actual) pairs accrue. The discarded history
    was miscalibrated anyway (wrong coords) — this is the S231 renamed-city
    cold-start pattern, not a loss. WATCH the 7 cities re-learn EMOS post-deploy.
-2. **busan local_model:** left None. The Korea analog seoul uses jma_seamless,
-   and JMA covers Busan's coords — adding it would give busan a stronger blend.
-   NOT done unilaterally (model-behavior change → operator opt-in). Recommended
-   follow-up, one-line: local_model="jma_seamless" on the busan row.
+2. **busan local_model:** operator opted IN (S233) — busan now carries
+   local_model="jma_seamless" (commit after e49aa01), matching the seoul Korea
+   analog; JMA's domain covers Busan's coords. Locked by
+   test_s233_busan_uses_jma_local_model. (This was flagged as a
+   model-behavior change requiring explicit consent; consent given.)
 3. **panama_city alias "panama city":** follows convention (mexico_city etc.).
    No US "Panama City, FL" market exists today; if Polymarket ever lists one it
    would word-boundary-match MPMG (Panama, Celsius) — a prospective ambiguity of

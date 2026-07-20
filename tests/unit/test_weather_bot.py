@@ -266,6 +266,11 @@ class TestStationRegistry:
             _DYNAMIC_REGISTRY.clear()
             _DYNAMIC_REGISTRY.update(snapshot)
 
+    def test_s233_busan_uses_jma_local_model(self):
+        """busan carries the jma_seamless local model (operator opt-in S233),
+        matching its Korea sibling seoul; JMA's domain covers Busan's coords."""
+        assert STATION_REGISTRY["busan"].local_model == "jma_seamless"
+
     def test_karachi_not_added_wrong_station_guard(self):
         """Karachi must NOT be a static row: it resolves at OPMR (no METARs),
         and adding OPKC would recreate the S231 wrong-station defect. Guard the
