@@ -1,0 +1,8 @@
+[Unit]
+Description=Kalshi Maker LIVE pilot quoter timer (10-min)
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+AccuracySec=20s
+[Install]
+WantedBy=timers.target

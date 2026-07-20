@@ -1,0 +1,25 @@
+# Kalshi Maker LIVE PILOT quoter — REAL MONEY (weather temp slice).
+# Three-lock safety in maker_kalshi_client.py; arm phrase + prod key in live.env.
+# Stop:    sudo touch /opt/pa2-maker-kalshi-live/STOP
+# Flatten: sudo -u polymarket bash -c 'set -a; . /opt/pa2-maker-kalshi-live/live.env; set +a; /opt/pa2-maker-kalshi-live/venv/bin/python /opt/pa2-maker-kalshi-live/flatten_kalshi.py'
+# Kill:    sudo systemctl disable --now polymarket-maker-kalshi-live.timer
+[Unit]
+Description=Kalshi Maker LIVE pilot quoter (REAL MONEY, weather temp slice)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=polymarket
+Group=polymarket
+WorkingDirectory=/opt/pa2-maker-kalshi-live
+EnvironmentFile=/opt/pa2-maker-kalshi-live/live.env
+ExecStart=/opt/pa2-maker-kalshi-live/venv/bin/python /opt/pa2-maker-kalshi-live/maker_kalshi_quoter.py
+TimeoutStartSec=280
+ProtectSystem=strict
+ReadWritePaths=/opt/pa2-maker-kalshi-live
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectHome=true
+MemoryMax=256M
+CPUQuota=25%

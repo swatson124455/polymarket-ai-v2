@@ -179,6 +179,10 @@ def desired_quotes(m, yes_levels, no_levels, now, own=None, stats=None):
     if not (MIN_PRICE_DOLLARS < best_y <= MAX_PRICE_DOLLARS) or \
        not (MIN_PRICE_DOLLARS < best_n <= MAX_PRICE_DOLLARS):
         return []                                   # spread_sanity (both bounds)
+    if best_y + best_n >= 1.0:
+        return []                                   # crossed/degenerate book — a yes
+        # bid @best_y and no bid @best_n would cross (yes_bid >= yes_ask); skip so a
+        # stale-book quote can never take even if post_only were silently ignored.
     # external depth = public depth minus our own resting order on that side
     ext_y = max(0.0, sum(s for _, s in yl) - float(own.get("yes", 0)))
     ext_n = max(0.0, sum(s for _, s in nl) - float(own.get("no", 0)))
@@ -308,14 +312,17 @@ def bound_creates(creates, cancels, usd_day):
 
 
 def run_once():
-    if os.path.exists(STOP_FILE):
-        print("STOP sentinel present; exiting")
-        return 0
     os.chdir(DATA_DIR)
-    _reads[0] = 0
     now = utcnow()
-    cyc = int(now.timestamp())            # per-cycle nonce for unique order ids
     client = KalshiOrderClient()          # dry_run unless operator-configured
+    if os.path.exists(STOP_FILE):
+        # emergency stop DE-RISKS the book — it does not merely freeze quoting.
+        print("STOP sentinel present; flattening resting orders + exiting")
+        if client.mode != "dry_run":
+            _flatten_all(client)
+        return 0
+    _reads[0] = 0
+    cyc = int(now.timestamp())            # per-cycle nonce for unique order ids
     st = load_state()
     plan = {"ts": now.isoformat(), "mode": client.mode}
     created_ok = []
@@ -342,8 +349,26 @@ def run_once():
         # subtract own to get external depth. In dry_run the public book never
         # contained our (never-placed) simulated orders, so own must be 0 there —
         # subtracting it would double-count and make activate oscillate every cycle.
-        standing = st.get("simulated_standing", {}) if client.mode == "dry_run" else _live_standing(client)
-        own = {} if client.mode == "dry_run" else own_resting(standing)
+        if client.mode == "dry_run":
+            standing = st.get("simulated_standing", {})
+            own = {}
+        else:
+            try:
+                standing, raw_rows = _live_standing(client)
+            except Exception as e:
+                # cannot read our resting orders -> act on NOTHING this cycle (safe):
+                # never cancel/create blind. Orders stay as-is; retry next cycle.
+                plan["standing_read_failed"] = repr(e)[:120]
+                print(f"WARNING could not read standing ({e!r}); skipping cycle (no order ops)")
+                return 0                     # finally: appends plan + saves state
+            parsed = sum(len(v) for v in standing.values())
+            if raw_rows > 0 and parsed == 0:
+                # reconcile guard: the exchange HAS resting orders we failed to parse.
+                # Do NOT create the book on top of them (that stacks collateral). Halt.
+                plan["reconcile_fail"] = raw_rows
+                print(f"WARNING reconcile FAIL: {raw_rows} resting rows parsed to 0 — halting (no order ops)")
+                return 0
+            own = own_resting(standing)
 
         desired = {}
         for m in footprint:
@@ -378,19 +403,52 @@ def run_once():
         creates, budget_dropped = bound_creates(creates, cancels, usd_day)  # whole-ticker
 
         # execute — each order isolated; one failure never aborts the rest
-        cancel_fail = create_fail = 0
+        cancel_fail = create_fail = create_skipped = 0
+        oid_ticker = {o["order_id"]: t for t, ol in standing.items() for o in ol}
+        cancelled_ok = set()
         for oid in cancels:
             try:
-                client.cancel_order(oid)
+                client.cancel_order(oid); cancelled_ok.add(oid)
             except Exception:
                 cancel_fail += 1
-        for i, c in enumerate(creates):
+        # tickers whose cancel FAILED -> defer their creates a cycle (never stack
+        # stale+new on the same ticker); a failed-cancel oid maps to its ticker.
+        failed_cancel_tickers = {oid_ticker.get(oid) for oid in cancels if oid not in cancelled_ok}
+        # REAL committed capital = surviving standing (not-cancelled) + held inventory.
+        # This is the guard the $ cap actually needs (cap_desired only bounds the
+        # freshly-computed desired book, blind to survivors + fills).
+        committed = sum(o["price_dollars"] * o["count"]
+                        for ol in standing.values() for o in ol
+                        if o["order_id"] not in cancelled_ok)
+        held_cost = 0.0
+        positions_ok = True
+        if client.mode != "dry_run":
             try:
-                client.create_quote(c["ticker"], c["side"], c["price_dollars"], c["count"],
-                                    post_only=True, client_order_id=order_id_for(cyc, i, c["side"]))
-                created_ok.append((c, f"sim-{cyc}-{i}"))
-            except Exception:
-                create_fail += 1
+                held_cost, _ = _held_cost(client)
+            except Exception as e:
+                # unknown held inventory -> committed is unknown -> FAIL CLOSED: defer
+                # ALL creates this cycle (never admit orders on top of unknown fills).
+                positions_ok = False
+                plan["positions_read_failed"] = repr(e)[:120]
+                print(f"WARNING positions read failed ({e!r}); deferring all creates (committed unknown)")
+        committed += held_cost
+        if not positions_ok:
+            create_skipped += len(creates)
+        else:
+            for i, c in enumerate(creates):
+                cost = c["price_dollars"] * c["count"]
+                if c["ticker"] in failed_cancel_tickers:
+                    create_skipped += 1             # paired cancel failed; defer
+                    continue
+                if committed + cost > MAX_TOTAL_CAPITAL:
+                    create_skipped += 1             # hard committed-capital pre-check
+                    continue
+                try:
+                    client.create_quote(c["ticker"], c["side"], c["price_dollars"], c["count"],
+                                        post_only=True, client_order_id=order_id_for(cyc, i, c["side"]))
+                    created_ok.append((c, f"sim-{cyc}-{i}")); committed += cost
+                except Exception:
+                    create_fail += 1
 
         # next dry-run standing = prior standing - cancels + created (reflects truncation)
         if client.mode == "dry_run":
@@ -414,11 +472,16 @@ def run_once():
             "fetch_failed": fetch_failed, "capped_markets": capped_markets,
             "budget_dropped_markets": budget_dropped,
             "cancel_fail": cancel_fail, "create_fail": create_fail,
+            "create_skipped": create_skipped,
             "quote_fail": quote_fail, "first_quote_err": first_quote_err,
             "dropped_book_rows": qstats["dropped_book_rows"],
             "activate_markets": sum(1 for qs in desired.values()
                                     if qs and qs[0].get("reason") == "activate"),
             "est_capital_usd": round(sum(_mkt_capital(qs) for qs in desired.values()), 2),
+            # REAL committed $ (surviving standing + held inventory + new creates) —
+            # the number that must respect MAX_TOTAL_CAPITAL, not the desired est above.
+            "committed_usd": round(committed, 2),
+            "held_cost_usd": round(held_cost, 2),
         })
     finally:
         # bookkeeping ALWAYS runs, even if the cycle body raised
@@ -436,28 +499,69 @@ def run_once():
           f"quoted={plan.get('quoted_markets','?')} ops={plan.get('order_ops','?')} "
           f"(cancel {plan.get('cancels',0)}/create {plan.get('creates',0)}) "
           f"fails={plan.get('cancel_fail',0)}c/{plan.get('create_fail',0)}cr/"
-          f"{plan.get('quote_fail',0)}q badrows={plan.get('dropped_book_rows',0)} "
+          f"{plan.get('quote_fail',0)}q skipped={plan.get('create_skipped',0)} "
+          f"badrows={plan.get('dropped_book_rows',0)} "
           f"capped={plan.get('capped_markets',0)} write_tokens={plan.get('write_tokens',0)} "
-          f"reads={_reads[0]} est_capital=${plan.get('est_capital_usd',0):,.0f}"
+          f"reads={_reads[0]} committed=${plan.get('committed_usd', plan.get('est_capital_usd',0)):,.2f}"
+          f"/{MAX_TOTAL_CAPITAL:,.0f} held=${plan.get('held_cost_usd',0):,.2f}"
           + (f" first_err={plan.get('first_quote_err')}" if plan.get("first_quote_err") else ""))
     return 0
 
 
-def _live_standing(client):
-    """Read resting V2 orders back into our internal (outcome, outcome-price) form.
-    V2 order objects carry outcome_side ('yes'|'no') + {yes,no}_price_dollars
-    (verified demo 2026-07-19)."""
-    out = defaultdict(list)
-    for o in (client.get_orders("resting").get("orders") or []):
-        outcome = o.get("outcome_side")   # 'yes' | 'no'
-        price_str = o.get(f"{outcome}_price_dollars")
-        if outcome is None or price_str is None:
+def _flatten_all(client):
+    """Cancel EVERY resting order (best-effort, per-order isolated). Shared by the
+    STOP handler and the standalone kill switch — an emergency stop must de-risk."""
+    try:
+        orders = client.get_orders("resting").get("orders") or []
+    except Exception as e:
+        print(f"flatten: could NOT read resting orders ({e!r}) — run flatten_kalshi.py manually")
+        return
+    n = 0
+    for o in orders:
+        try:
+            client.cancel_order(o["order_id"]); n += 1
+        except Exception:
+            pass
+    print(f"flatten: cancelled {n}/{len(orders)} resting orders")
+
+
+def _held_cost(client):
+    """(total_cost, {ticker: signed_contracts}) of held inventory (fills). Cost is
+    CONSERVATIVE — each held contract can be worth up to $1, so |pos|*1 reserves the
+    max. Real committed capital must include this, not just the resting book.
+    RAISES if positions cannot be read — the caller must fail CLOSED (defer creates),
+    never treat unknown inventory as $0 (matches the standing-read/reconcile guards)."""
+    pos = client.get_positions()          # may raise -> caller defers all creates
+    by, total = {}, 0.0
+    for p in (pos.get("market_positions") or []):
+        n = p.get("position") or 0
+        if not n:
             continue
-        cnt = o.get("remaining_count_fp") or o.get("remaining_count") or \
-            o.get("initial_count_fp") or o.get("count") or 0
-        out[o["ticker"]].append({"side": outcome, "price_dollars": float(price_str),
-                                 "count": int(float(cnt)), "order_id": o["order_id"]})
-    return dict(out)
+        by[p.get("ticker")] = n
+        total += abs(n) * 1.0
+    return total, by
+
+
+def _live_standing(client):
+    """Returns (standing_dict, raw_row_count). Reads resting V2 orders back into our
+    (outcome, outcome-price) form. Per-order parse is ISOLATED so one malformed
+    record cannot crash the cycle before cancels/wind-down run. The raw_row_count
+    lets the caller reconcile (rows>0 but parsed==0 => parse failure => halt)."""
+    out = defaultdict(list)
+    orders = client.get_orders("resting").get("orders") or []
+    for o in orders:
+        try:
+            outcome = o.get("outcome_side")   # 'yes' | 'no'
+            price_str = o.get(f"{outcome}_price_dollars") if outcome else None
+            if outcome is None or price_str is None:
+                continue
+            cnt = o.get("remaining_count_fp") or o.get("remaining_count") or \
+                o.get("initial_count_fp") or o.get("count") or 0
+            out[o["ticker"]].append({"side": outcome, "price_dollars": float(price_str),
+                                     "count": int(float(cnt)), "order_id": o["order_id"]})
+        except Exception:
+            continue
+    return dict(out), len(orders)
 
 
 def report():
