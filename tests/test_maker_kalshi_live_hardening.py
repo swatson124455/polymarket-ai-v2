@@ -134,6 +134,18 @@ def test_committed_precheck_creates_when_room(monkeypatch, tmp_path):
     assert len(c.created) == 2                        # both sides placed
     assert 0 < row.get("committed_usd", 0) <= 40.0
 
+def test_held_cost_reads_prod_position_fp():
+    # PROD payload shape (verified 2026-07-20): position_fp string, no 'position' key
+    c = MockClient(mode="live", positions=[
+        {"ticker": "T1", "position_fp": "18.71"},
+        {"ticker": "T2", "position_fp": "-6.12"},
+        {"ticker": "T3", "position_fp": "0.00"},
+    ])
+    total, by = q._held_cost(c)
+    assert abs(total - 24.83) < 1e-9          # |18.71| + |-6.12|, $1/contract
+    assert by == {"T1": 18.71, "T2": -6.12}
+
+
 def test_committed_precheck_skips_over_cap(monkeypatch, tmp_path):
     _cfg(monkeypatch, totcap=40)
     # standing survivor that CANNOT be cancelled (cancel 429) worth ~$38 -> only ~$2

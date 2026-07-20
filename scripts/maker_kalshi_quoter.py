@@ -539,7 +539,9 @@ def _held_cost(client):
     pos = client.get_positions()          # may raise -> caller defers all creates
     by, total = {}, 0.0
     for p in (pos.get("market_positions") or []):
-        n = p.get("position") or 0
+        # PROD-VERIFIED 2026-07-20: field is position_fp (string, fractional, signed);
+        # 'position' does not exist -> reading it silently blinded the committed cap.
+        n = float(p.get("position_fp") or p.get("position") or 0)
         if not n:
             continue
         by[p.get("ticker")] = n

@@ -68,7 +68,7 @@ def main():
     left = resting()
     _, bal = req("GET", f"{P}/portfolio/balance")
     _, pos = req("GET", f"{P}/portfolio/positions")
-    npos = [p for p in (pos.get("market_positions") or []) if p.get("position", 0) != 0]
+    npos = [p for p in (pos.get("market_positions") or []) if float(p.get("position_fp") or p.get("position") or 0) != 0]
     print(f"\nAFTER: resting={len(left) if left is not None else '?'} "
           f"balance={bal.get('balance_dollars')} nonzero_positions={len(npos)}")
     if left:
@@ -77,7 +77,7 @@ def main():
     if npos:
         print(f"!!! HOLDING {len(npos)} position(s) — NOT auto-sold. Decide manually:")
         for p in npos:
-            print(f"     {p.get('ticker')} position={p.get('position')}")
+            print(f"     {p.get('ticker')} position={p.get('position_fp') or p.get('position')}")
     print("\n=> FLAT (no resting orders)" if not left and not npos
           else "\n=> orders cleared; inventory noted above")
     return 0
