@@ -2,11 +2,55 @@
 
 **Branch:** `claude/esports-sharp-line-rebuild-gqy1na` (session 4; supersedes
 `…-36c8u9-7m96gg` — same history + the PM-index coverage fix below)
-**Updated:** 2026-07-19 (session 7+8 CLOSE — start at §0-S9 PICK-UP, then the
-§0-S8 blocks for detail)
-**Read order:** this file (§0-S9 → §0-S8 → §0-S7 → §0-S6f..§0-S6) →
+**Updated:** 2026-07-20 (session 9 — PRIMARY READOUT RAN at real n; NO-GO.
+Start at §0-S10, then §0-S9 for the lane, then §0-S8 for detail)
+**Read order:** this file (§0-S10 → §0-S9 → §0-S8 → §0-S7 → §0-S6f..§0-S6) →
 `EB_SHARP_LINE_STATE.md` → `EB_SHARP_LINE_PLUMBING.md` →
 `EB_MARKET_SHAPE_RESULTS.md` → `CLAUDE.md`.
+
+---
+
+## 0-S10. SESSION-9 (2026-07-20 ~00:15Z) — SLATE RESOLVED; PRIMARY READOUT RAN at n=175; **NO-GO** (edge did not materialize at the production gate)
+
+STEP 0 health check GREEN (collect.log daytime ticks append, pm_matched==books,
+21–23Z 429 walls EXPECTED; owls_collect ok=8/8 rem_month≈220.5k; aliases.json
+md5 `8800c40b…` unchanged, marquee names present; esports+sharp-line suite
+**538 passed / 0 failed**). EB stays HALTED.
+
+**Slate verified resolved (I checked gamma myself — closed=true + `User-Agent`
+header REQUIRED or every lookup 403s and silently reads as "unresolved"):**
+of 174 PM-matched slate cids (07-15..19), settled = 29/40/42/34/**20** by day
+(07-19 20/26 resolved; 6 stragglers all Americas-evening: FaZe Vegas/OpTic,
+Fluxo/Imperial, Patins/ODDIK, Kits/SDM Tigres). **165 PM-settled → gate met.**
+
+**PRIMARY readout (§0-S9 STEP 3) EXECUTED** — `pip3 install --user shin` (VPS,
+verified import), fresh clone HEAD `7bd87d8`, results re-fetched `--days-back 6`
+(the committed `eb_label_audit.sh` uses `--days-back 4` which DROPS 07-15 —
+use 6+), `eval_sharp_line` BOTH de-vig ways:
+- **n finally real: 175 joined+labeled** (was 38–39 on 07-14, ~4.6×). Closing
+  line well-calibrated: **favorite hit-rate 0.691 vs sharp-implied 0.682
+  (simple) / 0.694 (shin)**, CI [0.619,0.755]; reliability bins on the diagonal;
+  Brier closing 0.194, improves on opening (closing sharper).
+- **Production gate (should_bet, ≥edge-at-touch) fires only 2 bets (simple) /
+  1 (shin) — UNSTABLE (n<50), FAR below the ≥100 go-bar. → NO-GO.** Not a
+  data-shortage: the sample arrived and PM prices the closing favorite
+  efficiently, so almost no ≥5pt edge survives to the executable touch.
+- **The §0-S7 "≥2pt gap shape" (n=38, UNSTABLE) did NOT survive to n=175.**
+  Sweep confirms: min_edge 0.02 @ **zero fees** → simple 63 bets hit **0.365**
+  (below break-even after real taker fees); shin 39 @ 0.667 is the small-n
+  tail. All sweep rows explicitly non-actionable.
+- Positive-under-Shin (the "panda" settlement/void cross-check trigger) did NOT
+  occur → panda stays deferred. Fill coverage n=1–2 so slippage figures moot.
+  Caveat disclosed: sample under-represents Americas-evening fixtures (429 dark
+  window + 6 pending 07-19); re-run at n≈181 is immaterial (gate still 1–2).
+
+**IMPLICATION for the lane:** the taker strategy at the production threshold is
+**not viable on this slate's evidence** — report plainly, act on nothing, pivots
+are propose-only (§0-S9). The two forward paths that could still change the
+picture are UNCHANGED and both operator/time-gated: (1) **PinnOdds historical
+email** (still SENT, NO REPLY as of 07-20 — the only route to a large
+across-time readout); (2) the forward PinnOdds sample keeps accruing but on the
+same slow timeline and now against a NO-GO prior. No new work invented.
 
 ---
 
