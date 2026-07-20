@@ -1088,3 +1088,214 @@ def test_guard_pair_sibling_gross_cap():
     ok, why = g.check_place(leg2, m, st, state, uni, time.time(),
                             sibling={"leg": "yes", "px": 0.485, "sz": 100.0})
     assert not ok and why == "market_gross_cap"          # pair > $90
+
+
+# ── kill-primitive scoping: the wallet is shared with another bot ───────────
+# `client.cancel_all()` is ACCOUNT-wide. On a shared wallet it would silently
+# wipe the co-tenant bot's resting orders, which it would go on believing were
+# live. cancel_all() now asks the exchange what is open and cancels only the
+# subset resting on Maker's own token ids.
+
+class _FakeClobClient:
+    def __init__(self, open_orders, fail=False, bad_type=False,
+                 cancel_raises=False, not_canceled=None):
+        self._open = open_orders
+        self._fail = fail
+        self._bad_type = bad_type
+        self._cancel_raises = cancel_raises
+        self._not_canceled = not_canceled
+        self.cancelled = None
+        self.cancel_batches = []
+        self.calls = 0
+        self.cancel_all_called = False
+
+    def get_open_orders(self, *a, **kw):
+        self.calls += 1
+        if self._fail:
+            raise RuntimeError("clob down")
+        return "not-a-list" if self._bad_type else self._open
+
+    def cancel_orders(self, oids):
+        if self._cancel_raises:
+            raise RuntimeError("cancel rejected")
+        self.cancel_batches.append(list(oids))
+        self.cancelled = (self.cancelled or []) + list(oids)
+        if self._not_canceled:
+            return {"canceled": [], "not_canceled": self._not_canceled}
+        return {"canceled": list(oids), "not_canceled": {}}
+
+    def cancel_all(self):
+        self.cancel_all_called = True      # must NEVER happen
+
+
+def _live_exec(tmp_path, client, assets=("TY", "TN"), complete=True):
+    ex = mle.ExecCore(cfg_over(), str(tmp_path))
+    ex.live = True
+    ex.client = client
+    ex.set_owned_assets(assets, complete=complete)
+    return ex
+
+
+def test_cancel_all_cancels_only_maker_tokens(tmp_path):
+    """The co-tenant's orders must survive our kill path untouched."""
+    client = _FakeClobClient([
+        {"id": "mine-1", "asset_id": "TY"},
+        {"id": "cotenant-1", "asset_id": "MB_TOKEN"},
+        {"id": "mine-2", "asset_id": "TN"},
+        {"id": "cotenant-2", "asset_id": "OTHER"},
+    ])
+    ex = _live_exec(tmp_path, client)
+    assert ex.cancel_all() is True
+    assert sorted(client.cancelled) == ["mine-1", "mine-2"]
+    assert client.cancel_all_called is False
+
+
+def test_cancel_all_never_calls_the_account_wide_endpoint(tmp_path):
+    client = _FakeClobClient([{"id": "x", "asset_id": "TY"}])
+    _live_exec(tmp_path, client).cancel_all()
+    assert client.cancel_all_called is False
+
+
+def test_cancel_all_refuses_when_scope_is_incomplete(tmp_path):
+    """Scope incomplete (state.json did not load) + an unrecognised order =
+    we cannot claim it is the co-tenant's. Unknown must never read as flat."""
+    client = _FakeClobClient([{"id": "x", "asset_id": "MYSTERY"}])
+    ex = _live_exec(tmp_path, client, assets=(), complete=False)
+    assert ex.cancel_all() is False
+
+
+def test_empty_book_is_flat_even_with_no_scope(tmp_path):
+    """A fresh live install has no state, no universe, and no orders. That is
+    provably flat — refusing here would make every first boot come up halted
+    needing manual intervention."""
+    client = _FakeClobClient([])
+    ex = _live_exec(tmp_path, client, assets=(), complete=False)
+    assert ex.cancel_all() is True
+
+
+def test_cancel_all_true_when_nothing_of_ours_is_open(tmp_path):
+    client = _FakeClobClient([{"id": "cotenant", "asset_id": "MB_TOKEN"}])
+    ex = _live_exec(tmp_path, client)
+    assert ex.cancel_all() is True
+    assert client.cancelled is None          # provably flat, no call needed
+
+
+def test_cancel_all_false_when_the_exchange_is_unreachable(tmp_path):
+    """'We could not prove we are flat' must never read as 'we are flat'."""
+    client = _FakeClobClient([], fail=True)
+    ex = _live_exec(tmp_path, client)
+    assert ex.cancel_all(attempts=2) is False
+    assert client.calls == 2
+
+
+def test_cancel_all_false_on_non_list_response(tmp_path):
+    """A truthy non-list would otherwise iterate zero times and look flat."""
+    client = _FakeClobClient(None, bad_type=True)
+    ex = _live_exec(tmp_path, client)
+    assert ex.cancel_all(attempts=1) is False
+
+
+def test_cancel_all_catches_orders_whose_ids_we_never_held(tmp_path):
+    """Strictly stronger than oid bookkeeping: an ambiguous placement leaves
+    an order the engine has no id for. The exchange still reports it."""
+    client = _FakeClobClient([{"id": "ghost-from-ambiguous", "asset_id": "TY"}])
+    ex = _live_exec(tmp_path, client)
+    assert ex.cancel_all() is True
+    assert client.cancelled == ["ghost-from-ambiguous"]
+
+
+@pytest.mark.parametrize("idkey", ["id", "orderID", "orderId", "order_id"])
+def test_cancel_all_reads_every_id_key_the_engine_itself_accepts(tmp_path, idkey):
+    """`parse_post_orders_resp` treats orderId (camelCase) as a first-class
+    key. If cancel_all's chain disagrees, EVERY order is dropped for want of
+    an id and the kill reports flat while the book is live."""
+    client = _FakeClobClient([{idkey: "a", "asset_id": "TY"}])
+    ex = _live_exec(tmp_path, client)
+    assert ex.cancel_all() is True
+    assert client.cancelled == ["a"]
+
+
+def test_cancel_all_paper_is_still_a_noop_ok(tmp_path):
+    ex = mle.ExecCore(cfg_over(), str(tmp_path))
+    assert ex.live is False
+    assert ex.cancel_all() is True           # unchanged paper contract
+
+
+def test_set_owned_assets_normalises_and_ignores_blanks(tmp_path):
+    ex = mle.ExecCore(cfg_over(), str(tmp_path))
+    ex.set_owned_assets(["TY", None, "", 123, "TY"])
+    assert ex._owned_assets == {"TY", "123"}
+
+
+def test_kill_sequence_still_halts_when_scoped_cancel_fails(tmp_path):
+    """The kill contract is unchanged: cancel first, halt regardless."""
+    client = _FakeClobClient([], fail=True)
+    ex = _live_exec(tmp_path, client)
+    state = {"meta": {}}
+    ok = mle.kill_sequence(ex, state, str(tmp_path), "test")
+    assert ok is False
+    assert state["meta"]["halted"] is True
+    assert state["meta"]["halt_cancel_ok"] is False
+
+
+def test_our_asset_with_no_extractable_id_is_not_flat(tmp_path):
+    """CRITICAL: an order on OUR token whose id key we cannot read used to be
+    dropped silently, leaving `mine` empty and returning True — the kill path
+    reporting success with the book live."""
+    client = _FakeClobClient([{"weird_key": "zzz", "asset_id": "TY"}])
+    ex = _live_exec(tmp_path, client)
+    assert ex.cancel_all() is False
+
+
+def test_unknown_asset_is_co_tenant_only_when_scope_is_complete(tmp_path):
+    """With the durable token history loaded, an unrecognised token really is
+    the co-tenant's and must not block a clean kill."""
+    client = _FakeClobClient([{"id": "mb-1", "asset_id": "MB_TOKEN"},
+                              {"id": "mine", "asset_id": "TY"}])
+    ex = _live_exec(tmp_path, client, complete=True)
+    assert ex.cancel_all() is True
+    assert client.cancelled == ["mine"]
+
+
+def test_partial_cancel_is_not_success(tmp_path):
+    """The CLOB returns 200 with `not_canceled` populated when ids are
+    rejected. Ignoring the body reported 40 cancelled when 3 still rest."""
+    client = _FakeClobClient([{"id": "a", "asset_id": "TY"},
+                              {"id": "b", "asset_id": "TN"}],
+                             not_canceled={"b": "already matched"})
+    ex = _live_exec(tmp_path, client)
+    assert ex.cancel_all(attempts=1) is False
+
+
+def test_cancel_orders_raising_returns_false(tmp_path):
+    """Only get_open_orders failure was exercised before."""
+    client = _FakeClobClient([{"id": "a", "asset_id": "TY"}], cancel_raises=True)
+    ex = _live_exec(tmp_path, client)
+    assert ex.cancel_all(attempts=1) is False
+
+
+def test_cancel_is_chunked_like_placement(tmp_path):
+    """place_batch chunks at BATCH_MAX; an unbounded DELETE of up to 280 ids
+    would fail identically on every retry and never self-heal."""
+    orders = [{"id": f"o{i}", "asset_id": "TY"} for i in range(37)]
+    client = _FakeClobClient(orders)
+    ex = _live_exec(tmp_path, client)
+    assert ex.cancel_all() is True
+    assert len(client.cancel_batches) == 3           # 15 + 15 + 7
+    assert all(len(b) <= mle.BATCH_MAX for b in client.cancel_batches)
+    assert len(client.cancelled) == 37
+
+
+def test_non_dict_order_record_is_not_flat(tmp_path):
+    client = _FakeClobClient(["garbage", {"id": "a", "asset_id": "TY"}])
+    ex = _live_exec(tmp_path, client)
+    assert ex.cancel_all(attempts=1) is False
+
+
+def test_rotated_out_token_still_in_state_is_cancelled(tmp_path):
+    """The zombie case: a market left the universe but its state entry (and
+    therefore its token) persists, so its resting order is still ours."""
+    client = _FakeClobClient([{"id": "zombie", "asset_id": "OLD_TOKEN"}])
+    ex = _live_exec(tmp_path, client, assets=("TY", "TN", "OLD_TOKEN"))
+    assert ex.cancel_all() is True
+    assert client.cancelled == ["zombie"]

@@ -753,6 +753,8 @@ class ExecCore:
         self.client = None
         self.address = None
         self._tickcache = {}
+        self._owned_assets = set()   # token ids the kill primitive may cancel
+        self._scope_complete = False  # did the durable token history load?
         if self.live:
             self._init_live()
 
@@ -870,16 +872,104 @@ class ExecCore:
         except Exception:
             return False
 
+    def set_owned_assets(self, assets, complete=None):
+        """Register the token ids this engine may have orders on. Seeded from
+        persisted state at boot (BEFORE the first cancel) and refreshed at
+        every discovery. Rotated-out markets keep their entry in state
+        (departure is a flag, never a delete), so a token never silently
+        leaves this set while an order could still rest on it. Add-only: the
+        monotonicity IS the safety property.
+
+        `complete` records whether the durable token history (state.json)
+        actually loaded. It is the ONLY basis on which cancel_all may treat an
+        order on an unrecognised token as the co-tenant's rather than a gap in
+        our own scope — see cancel_all.
+        """
+        for a in assets:
+            if a:
+                self._owned_assets.add(str(a))
+        if complete is not None:
+            self._scope_complete = bool(complete)
+
     def cancel_all(self, attempts=3):
-        """The kill primitive. Cancel-ALL comes FIRST in every halt path;
-        retries fast because latency here is loss rate."""
+        """The kill primitive: cancel every Maker order, and ONLY Maker's.
+
+        NEVER `client.cancel_all()`. That endpoint is ACCOUNT-wide, and this
+        account is shared with another bot — an account-wide cancel in our
+        kill path would silently wipe that bot's resting orders, which it
+        would go on believing were live. Instead we ask the exchange what is
+        actually open and cancel the subset resting on OUR token ids. That is
+        both narrower and STRICTER than the old behaviour: it also catches
+        orders whose ids we never received (ambiguous placements), which the
+        oid bookkeeping alone cannot.
+
+        Returns False unless the whole sequence provably landed. A False here
+        makes the callers halt/retry, which is correct: "we could not prove we
+        are flat" must never read as "we are flat". Name, signature and
+        contract are unchanged, so every existing kill path is untouched.
+        """
         if not self.live:
             return True
         for i in range(attempts):
             try:
-                self.client.cancel_all()
+                orders = self.client.get_open_orders()
+                if not isinstance(orders, list):
+                    raise ValueError(f"get_open_orders returned {type(orders)}")
+                if not orders:
+                    return True         # provably flat: nothing rests at all
+
+                mine, unprovable = [], []
+                for o in orders:
+                    if not isinstance(o, dict):
+                        unprovable.append("non-dict order record")
+                        continue
+                    asset = str(o.get("asset_id") or o.get("asset") or "")
+                    # the engine's OWN post-order parser accepts orderId
+                    # (camelCase) as a first-class key — parse_post_orders_resp
+                    # :724. Two different id chains in one file means one of
+                    # them is wrong, and here "wrong" reads as "nothing of ours
+                    # is open".
+                    oid = (o.get("id") or o.get("orderID")
+                           or o.get("orderId") or o.get("order_id"))
+                    if asset and asset in self._owned_assets:
+                        if oid:
+                            mine.append(oid)
+                        else:
+                            # OUR token, no id we can cancel by: unprovable,
+                            # never a silent drop
+                            unprovable.append(f"no id on our asset {asset[:16]}")
+                    elif not self._scope_complete:
+                        # We may not claim this is the co-tenant's. Our own
+                        # token history did not load, so an unrecognised token
+                        # is equally likely to be a gap in OUR scope. Treating
+                        # unknown as foreign is what turns every scope gap into
+                        # a silent false-flat.
+                        unprovable.append(f"unattributable asset {asset[:16]}")
+
+                if mine:
+                    # chunk like place_batch does: an unbounded DELETE would
+                    # fail identically on every retry and never self-heal
+                    for j in range(0, len(mine), BATCH_MAX):
+                        resp = self.client.cancel_orders(mine[j:j + BATCH_MAX])
+                        nc = (resp or {}).get("not_canceled") \
+                            if isinstance(resp, dict) else None
+                        if nc:
+                            # 200 with rejects is NOT success
+                            unprovable.append(f"{len(nc)} id(s) not_canceled")
+
+                if unprovable:
+                    print(f"cancel_all: NOT PROVABLY FLAT — cancelled "
+                          f"{len(mine)}, but {len(unprovable)} unresolved: "
+                          f"{unprovable[:3]}", flush=True)
+                    return False
+                print(f"cancel_all: cancelled {len(mine)} Maker order(s); "
+                      f"{len(orders) - len(mine)} co-tenant order(s) untouched",
+                      flush=True)
                 return True
-            except Exception:
+            except Exception as e:
+                if i == attempts - 1:
+                    print(f"cancel_all FAILED after {attempts}: "
+                          f"{type(e).__name__}: {str(e)[:160]}", flush=True)
                 time.sleep(0.5 * (i + 1))
         return False
 
@@ -1233,6 +1323,29 @@ def run(base, cfg):
 
     state_path = os.path.join(base, "state.json")
     state, recovered_from, any_state_file = recover_state(state_path)
+    # Seed the kill primitive's owned-token set BEFORE any cancel can run.
+    # Two independent sources, because the startup cancel must still be able
+    # to scope itself when state.json is the thing that failed to load:
+    #   state.json  -> tok_y/tok_n, kept even for departed markets
+    #   universe.json -> last discovery, readable even with state unrecoverable
+    _seed = []
+    for _k, _v in (state or {}).items():
+        if _k != "meta" and isinstance(_v, dict):
+            _seed += [_v.get("tok_y"), _v.get("tok_n")]
+    try:
+        with open(os.path.join(base, "universe.json")) as _uf:
+            for _m in (json.load(_uf).get("markets") or []):
+                _seed += [_m.get("yes"), _m.get("no")]
+    except (OSError, ValueError, AttributeError):
+        pass
+    # scope is COMPLETE only when the durable token history loaded; with
+    # state.json unrecoverable, universe.json alone is the current
+    # generation only and cannot cover rotated-out zombie tokens
+    execc.set_owned_assets(_seed, complete=state is not None)
+    if execc.live:
+        print(f"kill scope: {len(execc._owned_assets)} Maker token(s) "
+              f"(cancels are restricted to these; co-tenant orders are never "
+              f"touched)", flush=True)
     if state is None:
         state = {}
         if any_state_file:
@@ -1411,14 +1524,19 @@ def run(base, cfg):
         now = time.time()
         if _SIG["stop"] or os.path.exists(os.path.join(base, "STOP")):
             print("STOP — cancelling quotes, saving, exiting cleanly", flush=True)
-            execc.cancel_all()
+            if not execc.cancel_all():
+                print("STOP: *** EXITING WITHOUT A PROVEN-FLAT BOOK *** — "
+                      "Maker orders may still rest; verify before restart",
+                      flush=True)
             _save_state(base, state_path, state)
             return 0
         if meta.get("halt_unpersisted"):
             # halt could not be made durable (full disk?) — do not keep
             # running on an in-memory-only halt (review CRIT 1)
             print("halt unpersisted — clean stop after final cancel_all", flush=True)
-            execc.cancel_all()
+            if not execc.cancel_all():
+                print("halt-unpersisted stop: *** NOT PROVABLY FLAT *** — "
+                      "Maker orders may still rest", flush=True)
             _save_state(base, state_path, state)
             return 0
         if meta.get("halted") and meta.get("halt_cancel_ok") is False \
@@ -1463,7 +1581,9 @@ def run(base, cfg):
                           for f in fs) / 1e6
             if size_mb > MAX_DISK_MB:
                 print(f"disk cap exceeded ({size_mb:.0f}MB) — CLEAN STOP", flush=True)
-                execc.cancel_all()
+                if not execc.cancel_all():
+                    print("disk-cap stop: *** NOT PROVABLY FLAT *** — Maker "
+                          "orders may still rest", flush=True)
                 _save_state(base, state_path, state)
                 return 0
 
@@ -1488,6 +1608,9 @@ def run(base, cfg):
                         # marks are reported in --report's departed bucket
                         st["departed"] = True
                 universe = u
+                # the kill primitive may only cancel tokens it knows are ours
+                execc.set_owned_assets(
+                    [t for m2 in u for t in (m2["yes"], m2["no"])])
                 # departure marking from STATE, not the in-memory old
                 # universe: at boot the old universe is [] and markets that
                 # departed while the engine was DOWN would otherwise never
