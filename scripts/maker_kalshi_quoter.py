@@ -69,6 +69,9 @@ MIN_PRICE_DOLLARS = _envf("KALSHI_MIN_PRICE_DOLLARS", 0.01)  # never rest a bid 
 WIND_DOWN_MIN = _envi("KALSHI_WIND_DOWN_MIN", 45)   # pull quotes N min before end
 WRITE_BUDGET_PER_CYCLE = _envi("KALSHI_WRITE_BUDGET", 400)  # order-ops ceiling/cycle
 JOIN_ALWAYS = os.environ.get("KALSHI_JOIN_ALWAYS") == "1"   # drill switch (default off)
+# series allowlist: if set, ONLY quote markets whose series (ticker before the first
+# '-') is listed. The pilot scopes to the weather/temp slice; empty = no filter (legacy).
+SERIES_ALLOW = [s for s in os.environ.get("KALSHI_SERIES_ALLOW", "").split(",") if s.strip()]
 REQ_SPACING_S = 0.55
 READ_BUDGET_PER_CYCLE = 200
 
@@ -111,6 +114,8 @@ def select_footprint(progs, now):
         t = p.get("market_ticker")
         if not t:
             continue
+        if SERIES_ALLOW and t.split("-")[0] not in SERIES_ALLOW:
+            continue                       # series allowlist (pilot = weather/temp only)
         try:
             end = parse_iso(p["end_date"])
             start = parse_iso(p["start_date"])

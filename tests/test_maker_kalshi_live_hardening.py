@@ -87,6 +87,25 @@ def test_live_standing_isolates_one_malformed_record():
     assert n == 3 and "T1" in st and "T2" not in st  # bad rows skipped, good survives
 
 
+# ---- series allowlist (pilot scoped to weather/temp) ----
+def test_series_allowlist_filters_to_temp(monkeypatch):
+    progs = [
+        {"market_ticker": "KXTEMPNYCH-26JUL2014-T81.99", "incentive_type": "liquidity",
+         "target_size_fp": 1000, "discount_factor_bps": 5000, "period_reward": 1000000,
+         "start_date": "2026-07-20T17:00:00Z", "end_date": "2099-01-01T00:00:00Z"},
+        {"market_ticker": "KXDXYDUD-26JUL20-T100", "incentive_type": "liquidity",
+         "target_size_fp": 1000, "discount_factor_bps": 5000, "period_reward": 9000000,
+         "start_date": "2026-07-20T17:00:00Z", "end_date": "2099-01-01T00:00:00Z"},
+    ]
+    monkeypatch.setattr(q, "SERIES_ALLOW", ["KXTEMPNYCH", "KXTEMPDCH"])
+    picked = q.select_footprint(progs, q.utcnow())
+    assert [m["ticker"] for m in picked] == ["KXTEMPNYCH-26JUL2014-T81.99"]  # DXY excluded
+    # empty allowlist = no filter (legacy behavior)
+    monkeypatch.setattr(q, "SERIES_ALLOW", [])
+    picked2 = q.select_footprint(progs, q.utcnow())
+    assert len(picked2) == 2
+
+
 # ---- crossed-book gate ----
 def test_desired_quotes_gates_crossed_book():
     m = {"target": 1, "end": "2099-01-01T00:00:00Z"}
