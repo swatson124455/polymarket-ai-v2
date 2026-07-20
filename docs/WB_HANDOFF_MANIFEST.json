@@ -63,7 +63,8 @@
   "ebad791": "fix c5 nowcast entries leaked to Maker feed mislabeled weather_temperature",
   "a3f00bb": "fix c2 prediction_log dedup keyed by (market_id,model_name)",
   "76d64b6": "fix c9 nowcast contaminated city-Brier main-model sizing dampener",
-  "98b6f44": "fix c11 calibration_check read-side dedup + nowcast exclusion (twin of c2)"
+  "98b6f44": "fix c11 calibration_check read-side dedup + nowcast exclusion (twin of c2)",
+  "e37d666": "fix(shared): RedisCache.get/set opt-in raise_on_error (deep root fix, cross-bot)"
  },
  "required_docs": [
   "docs/WEATHER_STATUS.md",
@@ -98,7 +99,8 @@
   "WB_S232_KICKOFF_PROMPT.md",
   "scripts/wb_research/mesh_debias.py",
   "bots/weather/engine/base_engine/weather/nowcast_mesh.py",
-  "tests/unit/test_nowcast_mesh.py"
+  "tests/unit/test_nowcast_mesh.py",
+  "WB_S233_KICKOFF_PROMPT.md"
  ],
  "fingerprints": [
   {

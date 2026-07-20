@@ -618,6 +618,8 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
 
 ## CHANGELOG (newest first — one line per session-end update)
 
+- **2026-07-19 (S232 CLOSE):** nowcast flag ON + VIF 1.8 + 3 adversarial review passes + shared RedisCache `raise_on_error` root fix; deployed `20260719_195417`, full suite 4011 green. Next session: `WB_S233_KICKOFF_PROMPT.md` §0.
+
 - **2026-07-18 (S232 — PHASE-2 session, operator GO, ONE deploy):** mesh-lead
   gate PASS day-1 (60% of 93 events led / 74.8 min pooled median / 10.8%
   false-crossing; legacy-sid crash fixed `8778f7d`); operator "go and review
