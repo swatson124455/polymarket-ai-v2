@@ -1165,3 +1165,49 @@ adoption actions (MB cherry-pick to master; EB/Maker/SB apply the 3-line change 
 their branch copy + adopt the flag in correctness-critical reads) are listed there.
 Related untouched debt noted: `RedisCache.delete()` same pattern; c12 shared
 prediction_log calibrators unfiltered (MB).
+
+## S233 DAY-3 LEAD VERDICT (2026-07-20 ~00:3xZ) — **PASS, gates hold a THIRD time**
+
+Day-3 (`--lead 20260718`) was IEM-1-min-backfill-gated at S232 close. Backfill
+confirmed landed this session by a per-station coverage probe against each
+station's OWN 07-16 baseline (cross-station row counts are NOT comparable —
+1-min reporting cadence varies per station):
+
+```
+sid   0718 rows   0716 baseline      read
+LGA        720          721          covered (LGA reports ~2-min)
+LAX        335          356          covered (LAX is natively sparse)
+ORD       1440         1196          covered (exceeds baseline)
+ATL       1138         1197          covered
+SEA       1440         1196          covered (exceeds)
+DAL       1440         1440          covered
+MIA       1440         1197          covered (exceeds)
+BKF          0            0          STRUCTURAL — no 1-min ASOS at Buckley
+HOU       1440         1440          covered
+SFO        886         1347          THIN (66% of baseline)
+AUS       1325          781          covered (exceeds)
+```
+
+**Grade: 8 gradeable stations, 87 events, 63 mesh-led = 72% (≥50% ✓), pooled
+median lead 49.0 min (≥15 ✓), false-crossings 5 = 5.7% of truth events
+(<20% ✓).** Per-station: KATL 10/16 (18.6 min), KAUS 12/12 (93.4), KDAL 7/15
+(19.0), KHOU 6/9 (87.7), KLGA 0/2 (nan), KMIA 8/9 (76.0), KORD 7/8 (55.2),
+KSEA 13/16 (54.0). Concentration OK — max city share 16/87 = 18% of events,
+13/63 = 21% of led events (Protocol 14 checked BEFORE presenting).
+
+**Three-day trend: 60%/74.8min/10.8% → 62%/61.0/11.2% → 72%/49.0/5.7%.**
+
+**Two caveats recorded so a later session does not over-read the improvement:**
+1. **Median lead is monotonically DECLINING** (74.8 → 61.0 → 49.0 min). Still
+   3.3x the 15-min gate, but three points cannot separate meteorological regime
+   from systematic drift. WATCH — if day-4/day-5 continue down, investigate
+   before treating the lead as a stable ~50-min property.
+2. **The false-crossing improvement is partly COMPOSITION, not quality.** KSFO
+   was the day-2 false-crossing hotspot (5 of 10) and is ABSENT from the day-3
+   grade (thin 1-min coverage, 66% of baseline). KLAX likewise absent; KBKF
+   structurally ungradeable. So 5.7% is measured over a station set that
+   excludes the known worst offender — weight it cautiously, do NOT quote it as
+   a clean halving vs day-2.
+
+No bot-code change; grading is read-only research. Flag state unchanged
+(ON, paper) — day-3 is confirmatory, the flip already happened on day-2.

@@ -5,7 +5,20 @@
 > read them for detail, but THIS file is the source of truth for "what is live and what's open."
 > Update the three sections below at the end of every WB session (same commit as the work).
 
-**Last updated:** 2026-07-18 (S232 — PHASE-2 session, operator GO. Headlines:
+**Last updated:** 2026-07-20 (S233 — verification/watch session, ZERO bot-code
+changes, ZERO deploys. Headlines: **§0 handoff verification ALL CLEAN** (resume
+check = only the known worktree FAIL + a doc-only deploy-parity WARN; release
+`20260719_195417` live, all 3 nowcast flags confirmed in the RUNNING process env,
+5 wb crons, pws_mesh 5-min ticks cities=49 wu_fails=0, calibration_check runs
+crash-free = c11 fix holds, leak SQL 0); the `cal_fit_failed` grep returned 7 —
+investigated and CLEARED as the pre-S227-fix historical cluster (all 07-11
+00:00-00:46Z, root-fixed by `92740f3`, zero since, zero since restart);
+**DAY-3 MESH-LEAD GRADE PASSED** (72%/49.0min/5.7%, gates hold 3rd time — see
+OPEN DECISION 0 for the two caveats: declining median lead + KSFO-absent
+composition effect); nowcast still **0 rows logged** (`weather_nowcast_peak`
+count 0 all-time) — expected, signal is rare, accumulation is the 07-24
+re-measure's job. Prior header (S232) below.)
+Prior header (S232 — PHASE-2 session, operator GO. Headlines:
 **MESH-LEAD GATE PASS day-1** (8 gradeable cities, 93 events, 60% mesh-led, pooled median
 lead 74.8 min, false-crossing 10.8%; spec §"S232 MESH-LEAD VERDICT"; mesh_validation legacy-sid
 crash fixed `8778f7d`); **Phase-2 mesh-nowcast signal BUILT + DEPLOYED flag-OFF** (see OPEN
@@ -61,6 +74,15 @@ operator reminder), tarballs deleted. EV research scoreboard = OPEN DECISION 2c.
 ## OPEN DECISIONS  ← always at the top, always the first thing a resume reads
 
 0. **PHASE-2 NOWCAST — FLAG IS ON (flipped 2026-07-19 ~13:3xZ, paper).**
+   **DAY-3 GRADED S233 (2026-07-20): PASS — gates hold a THIRD time.** 8
+   gradeable stations, 87 events, **72% mesh-led / 49.0 min pooled median /
+   5.7% false-crossings** (spec §"S233 DAY-3 LEAD VERDICT"). Three-day trend
+   60%/74.8/10.8 → 62%/61.0/11.2 → 72%/49.0/5.7. **Two caveats, do not
+   over-read:** (a) median lead is monotonically DECLINING (74.8→61.0→49.0) —
+   still 3.3x the gate, but WATCH day-4/5 before treating ~50 min as stable;
+   (b) the false-crossing drop is partly COMPOSITION — KSFO, the day-2 hotspot
+   (5 of 10), is absent from the day-3 station set (thin IEM 1-min coverage),
+   as are KLAX and KBKF (structural). Do NOT quote 5.7% as a clean halving.
    Day-2 lead grade PASSED (62% led / 61.0 min pooled median / 11.2% false-
    crossings; day-1 60%/74.8/10.8 — spec §"S232 DAY-2 LEAD VERDICT + FLIP");
    flip executed on the operator's standing order ("go and review to flip on
