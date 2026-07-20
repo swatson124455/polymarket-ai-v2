@@ -1,7 +1,27 @@
-# Cohort-3 Promotion Procedure (shadow roster 25 → 30)
+# Batch-Boundary Ledger Mutation — Cohort-3 Promotion + Bum Time-Out (25 → 30)
 
 **Status:** ARMED, pre-validated offline. **Gated on:** run-4 exit (batch
 boundary) + operator go. Nothing here has been applied to live state.
+
+**Operator directive 2026-07-20:** FOLD two changes into ONE ledger edit + one
+clone refresh + one watcher restart at the run-4 batch boundary:
+  1. **Bum time-out** — bench `0x44886115` (chain-verified negative drag: edge
+     −0.1051, P(>0)=0.107 on 22 resolved, 40% of cohort-1's first-buys). It
+     STAYS in `clean` (watcher keeps watching so recovery is measurable);
+     moves `cohort1_original` 16→15 and gains a `benched` entry with
+     `from_cohort:"cohort1"`. Reversible: re-admit when its forward-since-bench
+     line clears edge ≥ +0.02 AND P(>0) ≥ 0.90 on ≥ 20 resolved (operator go).
+  2. **Cohort-3 promotion** — the 6 run-4 ADMITs (below).
+
+**Combined invariant:** clean(30) == cohort1_original(15) ∪ cohort2(8) ∪
+cohort3(6) ∪ benched(1) ∪ probe(0) = 30. Validated offline through the REAL
+`load_cohorts` (→ `cohort1(15), cohort2(8), cohort3(6), benched(1)`;
+`reduced_cohorts` → `{cohort1}`) + 7 adversarial guard cases all fail loud.
+Requires readout code ≥ `d423b78` (benched + reduced-cohort support) live in
+the `/opt/pa2-shared/mb_readout` clone — refresh it in the SAME step, or the
+old clone RAISES on the new ledger at 12:30Z.
+
+Builder: steward scratch `build_combined.py` (stamp real ISO8601 at execution).
 
 **Why this file exists:** the 2026-07-19 session left this procedure in its
 session scratchpad, which does not survive session end (§7 landmine: "a frozen
