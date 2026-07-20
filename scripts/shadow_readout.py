@@ -168,6 +168,58 @@ def cohort_readout(records, outcomes, trust_after, traders, cfg) -> dict:
                       cfg.min_markets)
 
 
+def per_trader_lines(recs, outcomes, trust, members, label, cfg) -> list[str]:
+    """Per-trader DIAGNOSTIC breakdown for one cohort (opt-in `--per-trader`;
+    the POWERED alert's second half asks for it alongside the leave-one-out).
+
+    Runs the SAME canonical pipeline as the cohort line — cohort_readout ->
+    filter_traders -> repair_records -> az.analyze — so a per-trader number can
+    never drift from the money-gate readout's. A duplicated verdict statistic
+    is exactly the defect `bdcfefb` fixed; never re-implement the stats here.
+
+    DELIBERATELY never calls alerts_for(): one trader crossing the resolved bar
+    must not fire a COHORT-level POWERED alert — that would manufacture a
+    verdict out of a single arm (the silent-pooling class, inverted).
+
+    Returns [] for a 1-member group: the per-trader line would just restate the
+    cohort line, and an empty `members` must yield NO lines rather than a
+    whole-roster line (cohort_readout's root guard also zeroes that path)."""
+    if len(members) <= 1:
+        return []
+    # Bonferroni anchor: prose loses to a three-decimal number. An operator
+    # trained on p_min=0.95 reads an arm at P=0.96 as a finding; among N arms it
+    # is unremarkable. Give the warning a bar the reader can actually apply.
+    adj = 1.0 - (1.0 - cfg.p_min) / len(members)
+    out = [f"  --- {label} PER-TRADER (DIAGNOSTIC ONLY — {len(members)} post-hoc "
+           f"arms => multiple comparisons: an arm needs P(>0) >= {adj:.4f} "
+           f"(Bonferroni) to carry the weight P >= {cfg.p_min:.2f} carries on "
+           f"the cohort line. Arms do NOT partition the cohort — a token traded "
+           f"by two members is counted once in EACH arm, so arm 'resolved/N' is "
+           f"not comparable to the cohort's. NOT a verdict, and NOT grounds to "
+           f"re-cut a pre-registered cohort) ---"]
+    per = []
+    for addr in members:
+        r1 = cohort_readout(recs, outcomes, trust, addr, cfg)
+        per.append((r1.get("first_buys", 0), str(addr).lower(), r1))
+    # deterministic order: most-influential first, address as tiebreak.
+    # (sorted() compares ONLY key values, so the dict 3rd element is never
+    # compared even on a full tie — verified 2026-07-20 against a review claim
+    # that it would TypeError.)
+    for fb, addr, r1 in sorted(per, key=lambda x: (-x[0], x[1])):
+        if not fb:
+            # an empty sample formats as `OK-rate=nan% ... lag_p50=nans` and
+            # then advises "keep collecting" — garbage in a durable log, and
+            # wrong guidance for a member who is simply dormant
+            out.append(f"    [arm {addr[:10]}…] no first-buys in window")
+            continue
+        # label carries "arm" so a line QUOTED IN ISOLATION still announces what
+        # it is — the documented workflow is a human pasting single lines into
+        # chat, which strips the header warning above
+        out.append("    " + fmt_line(f"arm {addr[:10]}…", r1, cfg.min_markets,
+                                     diagnostic=True))
+    return out
+
+
 def concentration(res: dict) -> tuple[Optional[str], float]:
     """(dominant_trader, their share of first-buys). STANDING OPERATOR RULE
     (2026-07-15): every readout must disclose sample concentration BEFORE its
@@ -183,16 +235,38 @@ def concentration(res: dict) -> tuple[Optional[str], float]:
     return top, sum(by[top].values()) / tot
 
 
-def fmt_line(label: str, res: dict, min_markets: int) -> str:
+def fmt_line(label: str, res: dict, min_markets: int,
+             diagnostic: bool = False) -> str:
+    """One readout line. `diagnostic=True` marks a POST-HOC cut (leave-one-out,
+    per-trader arm).
+
+    A post-hoc cut must NEVER print the pre-registered verdict vocabulary.
+    `az.analyze` mints "SURVIVES (pre-registered bars met)" for ANY cut that
+    clears min_markets + p_min — but a cut CHOSEN AFTER SEEING THE DATA cannot
+    satisfy a pre-registration it was never part of, and "UNDERPOWERED — keep
+    collecting" on such a cut is an active instruction to collect until the
+    post-hoc cut passes. Adversarial review 2026-07-20 (3 independent lenses,
+    all converged): the LIVE cohort1-minus-top LOO sits at 28/30 resolved — TWO
+    markets from printing that exact string on a trader dropped for looking bad.
+    Default False keeps every pre-existing caller's output identical."""
     s = (f"[{label}] first-buys={res['first_buys']} OK-rate={res['ok_rate']:.1%} "
          f"tax_med={res['tax_p50']:+.4f} lag_p50={res['lag_p50']:.1f}s")
     top, share = concentration(res)
-    if top is not None:
+    # A single-trader DIAGNOSTIC arm is trivially 100% concentrated; 16 such
+    # markers desensitise the reader to the one conc marker that carries
+    # information (the cohort line's 40%). Concentration disclosure is a
+    # standing operator rule — diluting it is a real cost, not cosmetic.
+    # Scoped to `diagnostic` on purpose: a genuine 1-member COHORT (the probe)
+    # keeps its marker, so this fix does not churn the live cron line.
+    if top is not None and not (diagnostic
+                                and len(res.get("by_trader") or {}) <= 1):
         s += f" conc={top[:10]}…{share:.0%}"
     if "shadow_edge" in res:
         s += (f" | resolved={res['resolved_mkts']}/{min_markets} "
-              f"edge={res['shadow_edge']:+.4f} P(>0)={res['shadow_edge_p']:.3f} "
-              f":: {res['edge_verdict']}")
+              f"edge={res['shadow_edge']:+.4f} P(>0)={res['shadow_edge_p']:.3f}")
+        s += (" :: NO VERDICT (post-hoc cut — the pre-registered verdict is the "
+              "cohort line only; this cut can never 'survive')"
+              if diagnostic else f" :: {res['edge_verdict']}")
     return s
 
 
@@ -247,10 +321,35 @@ async def run(args) -> int:
         if top and share >= args.conc_threshold and len(members) > 1:
             rest = [a for a in members if a.lower() != top.lower()]
             loo = cohort_readout(recs, outcomes, trust, ",".join(rest), args)
+            # diagnostic=True: the LOO is a POST-HOC cut. Without this it prints
+            # the pre-registered verdict vocabulary — including "SURVIVES
+            # (pre-registered bars met)" — on a cohort re-cut by dropping the
+            # trader who looked worst AFTER the data was seen. Live cohort1-
+            # minus-top is at 28/30; two more resolved markets and the
+            # un-fixed line asserts a survival that never was.
             lines.append("  " + fmt_line(f"{label} minus {top[:10]}… (LOO)",
-                                         loo, args.min_markets))
+                                         loo, args.min_markets,
+                                         diagnostic=True))
+        if args.per_trader:
+            lines += per_trader_lines(recs, outcomes, trust, members, label, args)
     block = "\n".join(lines)
     print(block)
+    if args.per_trader:
+        # DIAGNOSTIC RUN — never mutate the durable record. Two verified hazards
+        # (adversarial review 2026-07-20):
+        #  (a) ALERT DESTRUCTION. alerts_for is recomputed from LIVE data and the
+        #      negative-firming trigger is NOT monotonic — it un-fires as new
+        #      records arrive. A steward running --per-trader to INVESTIGATE an
+        #      alert could take the else-branch below and os.remove() the very
+        #      alert file whose existence IS the operator's trigger signal.
+        #  (b) LOG POLLUTION. ~30 arm lines per run push the cohort verdict
+        #      lines, the concentration disclosure and the block header out of
+        #      the documented `tail` view, so the next session reads single-arm
+        #      extremes as the readout — the exact misreading the header warns
+        #      about, with the warning itself scrolled off.
+        print("\n(--per-trader: DIAGNOSTIC run — durable log NOT appended, ALERT "
+              "file NOT touched. Re-run without the flag for the daily record.)")
+        return 0
     with open(args.out, "a") as f:
         f.write(block + "\n")
     if all_alerts:
@@ -397,6 +496,88 @@ def _self_test() -> int:
             and cohort_readout(_recs, {}, TRUST1, "0xX", _cfg)["first_buys"] == 1)
     print(f"  [root] empty members -> 0 records not whole roster : {ok10}")
     ok &= ok10
+    # ---- per-trader diagnostic breakdown (2026-07-20, POWERED-alert follow-up)
+    _pt = [{"trader": "0xA", "token_id": "t1", "verdict": "OK", "first_buy": True,
+            "whale_price": 0.5, "shadow_fill": 0.5, "detect_lag_s": 1.0,
+            "best_ask": 0.5, "detect_ts": TRUST1 + 1},
+           {"trader": "0xA", "token_id": "t2", "verdict": "OK", "first_buy": True,
+            "whale_price": 0.5, "shadow_fill": 0.5, "detect_lag_s": 1.0,
+            "best_ask": 0.5, "detect_ts": TRUST1 + 1},
+           {"trader": "0xB", "token_id": "t3", "verdict": "OK", "first_buy": True,
+            "whale_price": 0.5, "shadow_fill": 0.5, "detect_lag_s": 1.0,
+            "best_ask": 0.5, "detect_ts": TRUST1 + 1}]
+    pl = per_trader_lines(_pt, {}, TRUST1, ["0xA", "0xB"], "c(2)", _cfg)
+    # one header + one line per member, most-influential FIRST (0xA has 2)
+    ok11 = (len(pl) == 3 and "PER-TRADER" in pl[0]
+            and "0xa" in pl[1] and "0xb" in pl[2])
+    print(f"  [per-trader] one line per member, sorted by influence : {ok11}")
+    ok &= ok11
+    # each arm is filtered to ITS OWN records — never the pooled cohort
+    ok12 = ("first-buys=2" in pl[1] and "first-buys=1" in pl[2])
+    print(f"  [per-trader] arms isolated (2/1), not pooled : {ok12}"); ok &= ok12
+    # a 1-member group adds NOTHING (would merely restate the cohort line)
+    ok13 = (per_trader_lines(_pt, {}, TRUST1, ["0xA"], "p(1)", _cfg) == []
+            and per_trader_lines(_pt, {}, TRUST1, [], "e(0)", _cfg) == [])
+    print(f"  [per-trader] 1-member/empty group -> no lines : {ok13}"); ok &= ok13
+    # DIAGNOSTIC framing must be present — the multiple-comparisons warning is
+    # what stops a reader treating an extreme arm as a verdict
+    ok14 = ("DIAGNOSTIC ONLY" in pl[0] and "multiple comparisons" in pl[0]
+            and "NOT a verdict" in pl[0])
+    print(f"  [per-trader] carries multiple-comparisons warning : {ok14}")
+    ok &= ok14
+    # deterministic across calls (no set/dict iteration order leakage)
+    ok15 = (per_trader_lines(_pt, {}, TRUST1, ["0xB", "0xA"], "c(2)", _cfg) == pl)
+    print(f"  [per-trader] order independent of input order : {ok15}"); ok &= ok15
+    # ---- post-hoc cuts must NEVER borrow the pre-registered verdict vocabulary
+    # (adversarial review 2026-07-20; the LIVE LOO is 2 markets from tripping it)
+    _won = {"first_buys": 40, "ok_rate": 1.0, "tax_p50": 0.01, "lag_p50": 1.0,
+            "by_trader": {"0xa": {"OK": 40}}, "shadow_edge": 0.21,
+            "shadow_edge_p": 0.999, "resolved_mkts": 40,
+            "edge_verdict": "SURVIVES (pre-registered bars met)"}
+    pre, diag = (fmt_line("c", _won, 30),
+                 fmt_line("c", _won, 30, diagnostic=True))
+    ok16 = ("SURVIVES (pre-registered bars met)" in pre
+            and "SURVIVES" not in diag and "NO VERDICT" in diag
+            and "post-hoc" in diag)
+    print(f"  [post-hoc] diagnostic cut refuses verdict vocabulary : {ok16}")
+    ok &= ok16
+    # the guard must be OPT-IN so every pre-existing caller is byte-identical
+    ok17 = (fmt_line("c", _won, 30) == fmt_line("c", _won, 30, diagnostic=False))
+    print(f"  [post-hoc] default OFF -> unchanged for old callers : {ok17}")
+    ok &= ok17
+    # arms carry it too, and stay self-describing when quoted in isolation
+    _dompt = _pt + [{"trader": "0xA", "token_id": f"x{i}", "verdict": "OK",
+                     "first_buy": True, "whale_price": 0.5, "shadow_fill": 0.5,
+                     "detect_lag_s": 1.0, "best_ask": 0.5,
+                     "detect_ts": TRUST1 + 1} for i in range(3)]
+    apl = per_trader_lines(_dompt, {}, TRUST1, ["0xA", "0xB"], "c(2)", _cfg)
+    ok18 = all("SURVIVES" not in ln for ln in apl) and "arm 0xa" in apl[1]
+    print(f"  [post-hoc] arms: no verdict, label self-describing : {ok18}")
+    ok &= ok18
+    # multiplicity anchor is a NUMBER, not just prose (0.95 over 2 arms -> 0.975)
+    ok19 = "0.9750" in apl[0] and "Bonferroni" in apl[0]
+    print(f"  [per-trader] Bonferroni bar shown numerically : {ok19}"); ok &= ok19
+    # a dormant member renders cleanly instead of nan-garbage
+    dl = per_trader_lines(_pt, {}, TRUST1, ["0xA", "0xZZ"], "c(2)", _cfg)
+    dormant = [ln for ln in dl if "0xzz" in ln]
+    # NOTE scope: only the DORMANT arm is asserted nan-free. An arm with
+    # first-buys but no RESOLVED markets still renders `edge=+nan P(>0)=nan` —
+    # that is pre-existing cohort-line behaviour (the live probe line shows it
+    # today), so it is deliberately NOT changed here; changing it would alter
+    # live output for a cosmetic gain.
+    ok20 = (len(dormant) == 1 and "no first-buys in window" in dormant[0]
+            and "nan" not in dormant[0])
+    print(f"  [per-trader] dormant member -> clean line, no nan : {ok20}")
+    ok &= ok20
+    # single-trader result: the trivially-100% conc marker is suppressed so it
+    # cannot dilute the ONE conc disclosure that carries information
+    ok21 = ("conc=" not in fmt_line("a", _won, 30, diagnostic=True)
+            and "conc=0xwhale" in line
+            # a genuine 1-member COHORT (the probe) is NOT diagnostic and KEEPS
+            # its marker — locks the reduced blast radius on the live cron line
+            and "conc=0xa" in fmt_line("probe(1)", _won, 30))
+    print(f"  [conc] tautological arm 100% cut, cohort line kept : {ok21}")
+    ok &= ok21
     print("\n  RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -422,6 +603,10 @@ if __name__ == "__main__":
                     dest="conc_threshold",
                     help="top-trader share of first-buys above which a leave-"
                          "one-out line is ALSO printed (standing operator rule)")
+    ap.add_argument("--per-trader", action="store_true", dest="per_trader",
+                    help="ALSO emit a per-trader diagnostic line per cohort "
+                         "(same canonical pipeline; never alerts). Default OFF "
+                         "so the daily cron output is unchanged.")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
     if args.self_test:
